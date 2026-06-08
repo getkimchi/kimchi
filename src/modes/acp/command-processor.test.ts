@@ -39,17 +39,13 @@ describe("processCommand", () => {
 			const lower = processCommand("/create_ferment Title")
 			const upper = processCommand("/CREATE_FERMENT Title")
 			const mixed = processCommand("/Create_Ferment Title")
-			const camel = processCommand("/Create_Ferment Title")
+			const partial = processCommand("/CREATE_ferment Title")
 
-			expect(lower.isCommand).toBe(true)
-			expect(upper.isCommand).toBe(true)
-			expect(mixed.isCommand).toBe(true)
-			expect(camel.isCommand).toBe(true)
-
-			expect(lower.command).toBe("create_ferment")
-			expect(upper.command).toBe("create_ferment")
-			expect(mixed.command).toBe("create_ferment")
-			expect(camel.command).toBe("create_ferment")
+			for (const result of [lower, upper, mixed, partial]) {
+				expect(result.isCommand).toBe(true)
+				expect(result.command).toBe("create_ferment")
+				expect(result.title).toBe("Title")
+			}
 		})
 
 		it("processes /create_ferment without argument", () => {
@@ -78,6 +74,14 @@ describe("processCommand", () => {
 			const original = "/create_ferment My Title"
 			const result = processCommand(original)
 			expect(result.originalText).toBe(original)
+		})
+	})
+
+	describe("edge cases", () => {
+		it("treats bare / as non-command", () => {
+			const result = processCommand("/")
+			expect(result.isCommand).toBe(false)
+			expect(result.promptText).toBe("/")
 		})
 	})
 

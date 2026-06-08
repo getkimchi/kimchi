@@ -1,7 +1,7 @@
 /**
- * ACP command processor - transforms slash commands into structured prompt data.
+ * Command processor — transforms slash commands into structured prompt data.
  *
- * This module is transport-agnostic. It doesn't know about ACP, JSON-RPC,
+ * This module is transport-agnostic: it knows nothing about ACP, JSON-RPC,
  * or any specific protocol. It simply parses command syntax and returns
  * structured data that can be used to build prompts.
  */
@@ -46,9 +46,13 @@ export function processCommand(text: string): CommandResult {
 
 	// Extract command name (case-insensitive) and argument
 	const spaceIndex = trimmed.indexOf(" ")
-	const commandRaw = spaceIndex === -1 ? trimmed.slice(1) : trimmed.slice(1, spaceIndex)
-	const command = commandRaw.toLowerCase()
+	const command = (spaceIndex === -1 ? trimmed.slice(1) : trimmed.slice(1, spaceIndex)).toLowerCase()
 	const argument = spaceIndex === -1 ? "" : trimmed.slice(spaceIndex + 1).trim()
+
+	if (!command) {
+		// Bare "/" with no command name — not a command
+		return { originalText: text, isCommand: false, promptText: text }
+	}
 
 	switch (command) {
 		case "create_ferment":
