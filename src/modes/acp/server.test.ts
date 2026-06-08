@@ -60,6 +60,7 @@ class FakeAgentSession {
 	abortImpl: () => Promise<void> = async () => {}
 	bindExtensionsImpl: (_bindings: unknown) => Promise<void> = async () => {}
 	lastPromptImages?: unknown[]
+	promptCalls: Array<{ prompt: string; opts?: { images?: unknown[] } }> = []
 	// Branch entries returned to the replay walker. Tests fill this with the
 	// shape buildSessionContext consumers expect (type:"message" + role).
 	branch: unknown[] = []
@@ -84,6 +85,7 @@ class FakeAgentSession {
 
 	async prompt(text: string, opts?: { images?: unknown[] }): Promise<void> {
 		this.lastPromptImages = opts?.images
+		this.promptCalls.push({ prompt: text, opts })
 		await this.promptImpl(text, opts)
 	}
 
@@ -1291,7 +1293,7 @@ describe("newSession model state", () => {
 })
 
 describe("newSession available commands", () => {
-	it("sends available_commands_update with start_ferment command on session init", async () => {
+	it("sends available_commands_update with create_ferment command on session init", async () => {
 		const fake = new FakeAgentSession("session-commands")
 		const factory: AcpSessionFactory = async () => asSession(fake)
 		const { conn, updates } = makeRecordingConn()
@@ -1312,13 +1314,13 @@ describe("newSession available commands", () => {
 
 		const cmd = updatePayload.availableCommands[0]
 		expect(cmd).toMatchObject({
-			name: "start_ferment",
-			description: "Start a new ferment workflow for structured multi-step project work",
+			name: "create_ferment",
+			description: "Create a new ferment workflow for structured multi-step project work",
 			input: { hint: "Provide a concise title (3-5 words) and full intent description" },
 		})
 	})
 
-	it("omits start_ferment command when hasActive is true", async () => {
+	it("omits create_ferment command when hasActive is true", async () => {
 		const fake = new FakeAgentSession("session-no-commands")
 		const factory: AcpSessionFactory = async () => asSession(fake)
 		const { conn, updates } = makeRecordingConn()
@@ -1338,6 +1340,56 @@ describe("newSession available commands", () => {
 		const updatePayload = update?.update as { availableCommands: Array<Record<string, unknown>> }
 		// When hasActive is true, available commands should be empty
 		expect(updatePayload.availableCommands).toHaveLength(0)
+	})
+})
+
+describe("create_ferment command handling", () => {
+	it("transforms /create_ferment command into tool invocation prompt", async () => {
+		const fake = new FakeAgentSession("session-cmd-test")
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const { conn } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+		})
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		// Send the create_ferment command with a title
+		await agent.prompt({
+			sessionId: "session-cmd-test",
+			prompt: [{ type: "text", text: "/create_ferment Rewrite authentication" }],
+			source: "client",
+		})
+
+		// Verify the session received the transformed prompt
+		expect(fake.promptCalls).toHaveLength(1)
+		const transformedPrompt = fake.promptCalls[0]?.prompt ?? ""
+		expect(transformedPrompt).toContain("request_ferment_workflow")
+		expect(transformedPrompt).toContain("Rewrite authentication")
+	})
+
+	it("uses default title when /create_ferment has no arguments", async () => {
+		const fake = new FakeAgentSession("session-cmd-default")
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const { conn } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+		})
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		// Send the command without arguments
+		await agent.prompt({
+			sessionId: "session-cmd-default",
+			prompt: [{ type: "text", text: "/create_ferment" }],
+			source: "client",
+		})
+
+		expect(fake.promptCalls).toHaveLength(1)
+		const transformedPrompt = fake.promptCalls[0]?.prompt ?? ""
+		expect(transformedPrompt).toContain("New Ferment")
 	})
 })
 

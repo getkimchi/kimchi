@@ -26,7 +26,7 @@ The server sends `available_commands_update` at two points:
         sessionUpdate: "available_commands_update",
         availableCommands: [
             {
-                name: string,           // Command identifier (e.g., "start_ferment")
+                name: string,           // Command identifier (e.g., "create_ferment")
                 description: string,    // Human-readable description
                 input?: {
                     hint: string        // Placeholder text for input field
@@ -37,14 +37,14 @@ The server sends `available_commands_update` at two points:
 }
 ```
 
-## The `start_ferment` Command
+## The `create_ferment` Command
 
-The primary command exposed for VS Code integration is `start_ferment`:
+The primary command exposed for VS Code integration is `create_ferment`:
 
 ```typescript
 {
-    name: "start_ferment",
-    description: "Start a new ferment workflow",
+    name: "create_ferment",
+    description: "Create a new ferment workflow",
     input: {
         hint: "Describe the task or paste ferment ID"
     }
@@ -52,6 +52,29 @@ The primary command exposed for VS Code integration is `start_ferment`:
 ```
 
 This command allows users to start a new ferment workflow from within your VS Code extension.
+
+## How the Server Handles the Command
+
+When a user sends a prompt containing `/create_ferment`, the ACP server:
+
+1. **Parses the command**: Extracts the title from text following the command
+2. **Transforms the request**: Converts the command into a tool invocation hint that triggers `request_ferment_workflow`
+3. **Passes to agent**: The transformed prompt instructs the agent to call the ferment workflow tool
+
+Example command handling:
+
+```typescript
+// User sends: "/create_ferment Rewrite login flow"
+// Server transforms to:
+// "Start a ferment workflow using request_ferment_workflow tool 
+//  with title "Rewrite login flow" and intent: User initiated via ACP command: Rewrite login flow"
+```
+
+The `request_ferment_workflow` tool then:
+- Validates no other ferment is active
+- Prompts for user confirmation (if UI available)
+- Creates the ferment draft
+- Activates the ferment workflow
 
 ## How VS Code Extensions Should Handle It
 
@@ -152,8 +175,8 @@ In `src/modes/acp/server.ts`, modify the `getAvailableCommands()` function:
 function getAvailableCommands(fermentState: FermentState): AvailableCommand[] {
     const commands: AvailableCommand[] = [
         {
-            name: 'start_ferment',
-            description: 'Start a new ferment workflow for structured multi-step project work',
+            name: 'create_ferment',
+            description: 'Create a new ferment workflow for structured multi-step project work',
             input: {
                 hint: 'Provide a concise title (3-5 words) and full intent description'
             }
@@ -193,8 +216,16 @@ async prompt(params: PromptRequest): Promise<PromptResponse> {
         .trim();
     
     // Handle commands
-    if (text.startsWith('/start_ferment')) {
-        // Handle start_ferment command
+    if (text.startsWith('/create_ferment')) {
+        // Parse command arguments
+        const commandArg = text.slice('/create_ferment'.length).trim();
+        const title = commandArg || 'New Ferment';
+        const intent = commandArg
+            ? `User initiated via ACP command: ${commandArg}`
+            : 'User initiated a new ferment workflow via ACP command';
+        
+        // Transform into a prompt that triggers the request_ferment_workflow tool
+        text = `Start a ferment workflow using request_ferment_workflow tool with title "${title}" and intent: ${intent}`;
     } else if (text.startsWith('/pause_ferment')) {
         // Handle pause_ferment command
     } else if (text.startsWith('/complete_ferment')) {

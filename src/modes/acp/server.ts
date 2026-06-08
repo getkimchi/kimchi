@@ -369,10 +369,22 @@ export class KimchiAcpAgent implements Agent {
 				process.stderr.write(`acp prompt: dropping ${b.type} block (${reason})\n`)
 			}
 		}
-		const text = params.prompt
+		let text = params.prompt
 			.map((b: ContentBlock) => (b.type === "text" ? b.text : ""))
 			.join("")
 			.trim()
+
+		// Handle ACP commands: transform command syntax into tool invocation hints
+		if (text.startsWith("/create_ferment ") || text === "/create_ferment") {
+			const commandArg = text.slice("/create_ferment".length).trim()
+			// Use the argument as title, and use a generic intent if empty
+			const title = commandArg || "New Ferment"
+			const intent = commandArg
+				? `User initiated via ACP command: ${commandArg}`
+				: "User initiated a new ferment workflow via ACP command"
+			// Transform into a prompt that will trigger the request_ferment_workflow tool
+			text = `Start a ferment workflow using request_ferment_workflow tool with title "${title}" and intent: ${intent}`
+		}
 		// Extract image blocks from the prompt only if model supports vision.
 		const images: ImageContent[] = supportsImages
 			? params.prompt
@@ -775,14 +787,14 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	private sendAvailableCommandsUpdate(sessionId: string, hasActive = false): void {
-		// When a ferment is active, omit the start_ferment command to prevent
-		// starting multiple ferments. The description is only sent when available.
+		// When a ferment is active, omit the create_ferment command to prevent
+		// creating multiple ferments. The description is only sent when available.
 		const availableCommands = hasActive
 			? []
 			: [
 					{
-						name: "start_ferment",
-						description: "Start a new ferment workflow for structured multi-step project work",
+						name: "create_ferment",
+						description: "Create a new ferment workflow for structured multi-step project work",
 						input: { hint: "Provide a concise title (3-5 words) and full intent description" },
 					},
 				]
