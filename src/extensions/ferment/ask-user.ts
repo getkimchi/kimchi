@@ -295,6 +295,9 @@ function buildAskJudgeFormUserMsg(
 				)
 			}
 		}
+		if ((q.type === "single" || q.type === "multi") && q.allowOther) {
+			parts.push(`      custom label="${q.otherLabel ?? "Type your own answer"}" value="<free-form text>"`)
+		}
 	}
 	return parts.join("\n")
 }

@@ -470,6 +470,46 @@ describe("askJudge", () => {
 		expect(userMsg).toContain('id="no"')
 	})
 
+	it("shows allowOther labels to form judges and accepts custom single answers", async () => {
+		let userMsg = ""
+		const apiCall = vi.fn(async (_sys: string, msg: string) => {
+			userMsg = msg
+			return ok(
+				'{"answers":[{"id":"criteria_ok","value":"Add go test ./... as verification."}],"rationale":"needs verification"}',
+			)
+		})
+		const result = await askJudgeForm(
+			"Completion criteria",
+			"I'll consider this done when README.md exists.",
+			[
+				{
+					id: "criteria_ok",
+					type: "single",
+					prompt: "Do these completion criteria look right?",
+					options: [{ id: "yes", label: "Yes, looks good" }],
+					allowOther: true,
+					otherLabel: "No, enter what is wrong",
+				},
+			],
+			makeFerment(),
+			apiCall,
+		)
+
+		expect(result.failed).toBeFalsy()
+		if (result.failed) return
+		expect(userMsg).toContain('option id="yes" label="Yes, looks good"')
+		expect(userMsg).toContain('custom label="No, enter what is wrong" value="<free-form text>"')
+		expect(result.answers).toEqual([
+			{
+				id: "criteria_ok",
+				type: "single",
+				value: "Add go test ./... as verification.",
+				label: "Add go test ./... as verification.",
+				wasCustom: true,
+			},
+		])
+	})
+
 	it("parses structured form judge responses", async () => {
 		const apiCall = vi.fn(async () =>
 			ok(
