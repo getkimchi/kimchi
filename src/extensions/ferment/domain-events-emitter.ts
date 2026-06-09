@@ -22,6 +22,14 @@ import {
 	type FermentStepStartedPayload,
 } from "./domain-events.js"
 
+/** Warn in non-production environments when a state-lookup fails, indicating
+ *  a mismatch between the emitted command and the resulting Ferment state. */
+function warnMismatch(cmdType: string, detail: string): void {
+	if (process.env.NODE_ENV !== "production") {
+		console.warn(`[ferment-events] ${cmdType}: ${detail} — event not emitted`)
+	}
+}
+
 export function emitFermentCreated(events: EventBus, ferment: Ferment): void {
 	const payload: FermentStartedPayload = {
 		fermentId: ferment.id,
@@ -64,7 +72,15 @@ export function emitFermentDomainEvent(events: EventBus, cmd: Command, post: Fer
 
 		case "activate_phase": {
 			const phase = post.phases.find((p) => p.id === cmd.phaseId)
-			if (!phase) return
+			if (!phase) {
+				warnMismatch(cmd.type, `phase ${cmd.phaseId} not found`)
+				return
+			} // guarded below
+			if (!phase) {
+				if (process.env.NODE_ENV !== "production")
+					console.warn(`[ferment-events] ${cmd.type}: phase ${cmd.phaseId} not found in post-state`)
+				return
+			}
 			const payload: FermentPhaseStartedPayload = {
 				fermentId: post.id,
 				phaseId: phase.id,
@@ -94,7 +110,15 @@ export function emitFermentDomainEvent(events: EventBus, cmd: Command, post: Fer
 		case "skip_phase":
 		case "fail_phase": {
 			const phase = post.phases.find((p) => p.id === cmd.phaseId)
-			if (!phase) return
+			if (!phase) {
+				warnMismatch(cmd.type, `phase ${cmd.phaseId} not found`)
+				return
+			} // guarded below
+			if (!phase) {
+				if (process.env.NODE_ENV !== "production")
+					console.warn(`[ferment-events] ${cmd.type}: phase ${cmd.phaseId} not found in post-state`)
+				return
+			}
 			const payload: FermentPhaseCompletedPayload = {
 				fermentId: post.id,
 				phaseId: phase.id,
@@ -116,7 +140,10 @@ export function emitFermentDomainEvent(events: EventBus, cmd: Command, post: Fer
 		case "start_step": {
 			const phase = post.phases.find((p) => p.id === cmd.phaseId)
 			const step = phase?.steps.find((s) => s.id === cmd.stepId)
-			if (!phase || !step) return
+			if (!phase || !step) {
+				warnMismatch(cmd.type, `phase ${cmd.phaseId} or step ${cmd.stepId} not found`)
+				return
+			}
 			const payload: FermentStepStartedPayload = {
 				fermentId: post.id,
 				phaseId: phase.id,
@@ -131,7 +158,10 @@ export function emitFermentDomainEvent(events: EventBus, cmd: Command, post: Fer
 		case "verify_step": {
 			const phase = post.phases.find((p) => p.id === cmd.phaseId)
 			const step = phase?.steps.find((s) => s.id === cmd.stepId)
-			if (!phase || !step) return
+			if (!phase || !step) {
+				warnMismatch(cmd.type, `phase ${cmd.phaseId} or step ${cmd.stepId} not found`)
+				return
+			}
 			const payload: FermentStepCompletedPayload = {
 				fermentId: post.id,
 				phaseId: phase.id,
@@ -149,7 +179,10 @@ export function emitFermentDomainEvent(events: EventBus, cmd: Command, post: Fer
 		case "fail_step": {
 			const phase = post.phases.find((p) => p.id === cmd.phaseId)
 			const step = phase?.steps.find((s) => s.id === cmd.stepId)
-			if (!phase || !step) return
+			if (!phase || !step) {
+				warnMismatch(cmd.type, `phase ${cmd.phaseId} or step ${cmd.stepId} not found`)
+				return
+			}
 			const payload: FermentStepFailedPayload = {
 				fermentId: post.id,
 				phaseId: phase.id,
@@ -164,7 +197,10 @@ export function emitFermentDomainEvent(events: EventBus, cmd: Command, post: Fer
 		case "skip_step": {
 			const phase = post.phases.find((p) => p.id === cmd.phaseId)
 			const step = phase?.steps.find((s) => s.id === cmd.stepId)
-			if (!phase || !step) return
+			if (!phase || !step) {
+				warnMismatch(cmd.type, `phase ${cmd.phaseId} or step ${cmd.stepId} not found`)
+				return
+			}
 			const payload: FermentStepCompletedPayload = {
 				fermentId: post.id,
 				phaseId: phase.id,

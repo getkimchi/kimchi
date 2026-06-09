@@ -191,6 +191,21 @@ export function trackSurveyDismissed(args: SurveyDismissedTelemetry): void {
 // Ferment domain event handlers (subscribed via pi.events)
 // ---------------------------------------------------------------------------
 
+function cleanupFermentState(fermentId: string): void {
+	fermentStartTimes.delete(fermentId)
+	fermentTokenSnapshots.delete(fermentId)
+	fermentSteeringCounts.delete(fermentId)
+	for (const key of phaseTokenSnapshots.keys()) {
+		if (key.startsWith(`${fermentId}:`)) phaseTokenSnapshots.delete(key)
+	}
+	for (const key of phaseStartTimes.keys()) {
+		if (key.startsWith(`${fermentId}:`)) phaseStartTimes.delete(key)
+	}
+	for (const key of stepStartTimes.keys()) {
+		if (key.startsWith(`${fermentId}:`)) stepStartTimes.delete(key)
+	}
+}
+
 function onFermentStarted(raw: unknown): void {
 	if (!isEnabled()) return
 	const ctx = _ctx
@@ -206,13 +221,16 @@ function onFermentStarted(raw: unknown): void {
 }
 
 function onFermentCompleted(raw: unknown): void {
-	if (!isEnabled()) return
-	const ctx = _ctx
-	if (!ctx) return
 	const payload = raw as FermentCompletedPayload
 	const startMs = fermentStartTimes.get(payload.fermentId) ?? 0
 	const durationMs = startMs > 0 ? Date.now() - startMs : 0
 	const steeringCount = fermentSteeringCounts.get(payload.fermentId) ?? 0
+	// Clean up all tracking state unconditionally — steering counts and snapshots
+	// accumulate regardless of whether telemetry is enabled, so cleanup must always run.
+	cleanupFermentState(payload.fermentId)
+	if (!isEnabled()) return
+	const ctx = _ctx
+	if (!ctx) return
 
 	// Compute total token/cost by diffing the snapshot taken at ferment.started.
 	// Phase snapshots are consumed per-phase at phase.completed — any still
@@ -223,21 +241,6 @@ function onFermentCompleted(raw: unknown): void {
 		deltaOutput: totalOutput,
 		deltaCost: totalCost,
 	} = fermentSnapshot && ctx ? diffSnapshot(ctx, fermentSnapshot) : { deltaInput: 0, deltaOutput: 0, deltaCost: 0 }
-
-	// Clean up all tracking state for this ferment
-	fermentStartTimes.delete(payload.fermentId)
-	fermentTokenSnapshots.delete(payload.fermentId)
-	fermentSteeringCounts.delete(payload.fermentId)
-	// Discard any orphaned tracking state from skipped/failed phases and steps
-	for (const key of phaseTokenSnapshots.keys()) {
-		if (key.startsWith(`${payload.fermentId}:`)) phaseTokenSnapshots.delete(key)
-	}
-	for (const key of phaseStartTimes.keys()) {
-		if (key.startsWith(`${payload.fermentId}:`)) phaseStartTimes.delete(key)
-	}
-	for (const key of stepStartTimes.keys()) {
-		if (key.startsWith(`${payload.fermentId}:`)) stepStartTimes.delete(key)
-	}
 
 	const attrs: Record<string, string | number | boolean> = {
 		ferment_name: payload.name,
@@ -255,22 +258,12 @@ function onFermentCompleted(raw: unknown): void {
 }
 
 function onFermentAbandoned(raw: unknown): void {
+	const payload = raw as FermentAbandonedPayload
+	// Clean up unconditionally — steering counts accumulate regardless of enabled state.
+	cleanupFermentState(payload.fermentId)
 	if (!isEnabled()) return
 	const ctx = _ctx
 	if (!ctx) return
-	const payload = raw as FermentAbandonedPayload
-	fermentStartTimes.delete(payload.fermentId)
-	fermentTokenSnapshots.delete(payload.fermentId)
-	fermentSteeringCounts.delete(payload.fermentId)
-	for (const key of phaseTokenSnapshots.keys()) {
-		if (key.startsWith(`${payload.fermentId}:`)) phaseTokenSnapshots.delete(key)
-	}
-	for (const key of phaseStartTimes.keys()) {
-		if (key.startsWith(`${payload.fermentId}:`)) phaseStartTimes.delete(key)
-	}
-	for (const key of stepStartTimes.keys()) {
-		if (key.startsWith(`${payload.fermentId}:`)) stepStartTimes.delete(key)
-	}
 	const attrs: Record<string, string | number | boolean> = {
 		ferment_name: payload.name,
 		model: ctx.currentModel,

@@ -157,7 +157,14 @@ export function createApplyAndPersist(runtime: FermentRuntime) {
 		)
 		if (outcome.ok) {
 			runtime.setActive(outcome.ferment)
-			if (runtime.events) emitFermentDomainEvent(runtime.events, cmd, outcome.ferment)
+			if (runtime.events) {
+				try {
+					emitFermentDomainEvent(runtime.events, cmd, outcome.ferment)
+				} catch {
+					// Domain event emission is best-effort — a subscriber failure must
+					// never destabilize the state-machine persistence path.
+				}
+			}
 		}
 		return outcome
 	}

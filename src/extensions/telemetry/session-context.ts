@@ -138,12 +138,7 @@ export class SessionContext {
 			...ids,
 			...attrs,
 		}
-		this.logBuffer.push(buildLogRecord(this.sessionId, eventName, toAttrs(merged)))
-		if (this.logBuffer.length >= LOG_BATCH_MAX_SIZE) {
-			this.flushLogBuffer()
-		} else if (this.logFlushTimer === undefined) {
-			this.logFlushTimer = setTimeout(() => this.flushLogBuffer(), LOG_BATCH_FLUSH_INTERVAL_MS)
-		}
+		this.enqueueLogRecord(buildLogRecord(this.sessionId, eventName, toAttrs(merged)))
 	}
 
 	emit(eventName: string, attrs: Record<string, string | number | boolean>): void {
@@ -163,7 +158,12 @@ export class SessionContext {
 		this.lastSessionType = sessionType
 
 		const merged = { ...attrs, source: this.source, session_type: sessionType, ferment_id: ferment?.id ?? "" }
-		this.logBuffer.push(buildLogRecord(this.sessionId, eventName, toAttrs(merged)))
+		this.enqueueLogRecord(buildLogRecord(this.sessionId, eventName, toAttrs(merged)))
+	}
+
+	/** Append a pre-built log record to the buffer and schedule/trigger a flush. */
+	private enqueueLogRecord(record: LogRecord): void {
+		this.logBuffer.push(record)
 		if (this.logBuffer.length >= LOG_BATCH_MAX_SIZE) {
 			this.flushLogBuffer()
 		} else if (this.logFlushTimer === undefined) {
