@@ -25,8 +25,14 @@ import { randomUUID } from "node:crypto"
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir, platform, userInfo } from "node:os"
 import { isAbsolute, join, normalize, resolve } from "node:path"
-import type { AssistantMessage } from "@earendil-works/pi-ai"
-import { type ExtensionAPI, type Skill, getAgentDir, loadSkills } from "@earendil-works/pi-coding-agent"
+import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai"
+import {
+	type ExtensionAPI,
+	type ModelRegistry as PiModelRegistry,
+	type Skill,
+	getAgentDir,
+	loadSkills,
+} from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
 import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
@@ -38,7 +44,6 @@ import {
 	setProcessOrchestratorRef,
 } from "../kimchi-process.js"
 import {
-	CONTINUATION_NUDGE_TEXT,
 	ContinuationNudge,
 	EMPTY_TURN_NUDGE_TEXT,
 	EmptyTurnNudge,
@@ -149,6 +154,18 @@ export function getOrchestratorModelId(): string {
 export function getOrchestratorModelRef(): string {
 	return getModelRoles().orchestrator
 }
+
+/**
+ * Resolve the orchestrator model from a registry. Returns the model object
+ * if found, or undefined if the orchestrator ref is invalid or unavailable.
+ */
+export function resolveOrchestratorModel(registry: PiModelRegistry): Model<Api> | undefined {
+	const ref = getOrchestratorModelRef()
+	const parsed = splitModelRef(ref)
+	if (!parsed) return undefined
+	return registry.find(parsed.provider, parsed.modelId)
+}
+
 const DELEGATION_TOOL_NAMES = new Set(["Agent", "subagent"])
 
 // Tracks sessions that have already received a deprecation notification to avoid duplicate alerts.
