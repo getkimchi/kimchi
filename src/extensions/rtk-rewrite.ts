@@ -66,11 +66,17 @@ export function detectRtk(): Promise<boolean> {
 /**
  * Package-manager script invocations that RTK must not rewrite.
  *
- * RTK maps `pnpm run lint` → `rtk lint` (its own lint subcommand) and
- * similarly mangles other `<pm> run <script>` forms.  These commands must
- * reach the package manager unchanged.
+ * RTK hijacks subcommand names that collide with its own — the most painful
+ * example is `pnpm lint` / `pnpm run lint` → `rtk lint` (its own ESLint
+ * wrapper), which breaks projects that use Biome or other linters.
+ *
+ * Rather than maintaining an allowlist of pnpm built-ins, we passthrough
+ * ALL `pnpm …` commands.  RTK's token-compression benefit on pnpm subcommands
+ * is negligible compared to the risk of future subcommand name collisions.
+ * Other package managers (`npm run`, `yarn run`, `bun run`) are also
+ * passed through because they may invoke arbitrary user-defined scripts.
  */
-const RTK_PASSTHROUGH_RE = /^\s*(pnpm|npm|yarn|bun)\s+run\b|^\s*(npx|bunx)\s|^\s*pnpm\s+exec\s/
+const RTK_PASSTHROUGH_RE = /^\s*(pnpm|npm\s+run|yarn\s+run|bun\s+run)\b|^\s*(npx|bunx)\s/
 
 /**
  * Returns true for commands that must bypass RTK rewriting entirely.
