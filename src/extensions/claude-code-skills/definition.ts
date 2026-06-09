@@ -61,6 +61,13 @@ export function getClaudeCodeSkillResourcePaths(
 	return paths
 }
 
+export function getConfiguredSkillResourcePaths(cwd: string, configuredSkillPaths: string[]): string[] {
+	return [
+		...getConfiguredNativeSkillPaths(cwd, configuredSkillPaths),
+		...getConfiguredClaudeCodeSkillResourcePaths(cwd, configuredSkillPaths),
+	]
+}
+
 export function materializeClaudeCodeSkillDir(
 	skillsDir: string,
 	options: Pick<ClaudeCodeSkillResourceOptions, "excludeSkillNames"> = {},
@@ -84,7 +91,10 @@ export function materializeClaudeCodeSkillDir(
 
 export function sanitizeSkillMarkdown(content: string, fallbackName: string): string {
 	const markdown = extractSkillMarkdown(content)
-	if (markdown === undefined) return content
+	if (markdown === undefined) {
+		const name = normalizeSkillName(fallbackName)
+		return ["---", stringifyFallbackSkillFrontmatter(name), "---", content].join("\n")
+	}
 
 	return ["---", sanitizeFrontmatter(markdown.frontmatter, fallbackName), "---", markdown.body.replace(/^\n/, "")].join(
 		"\n",
@@ -157,6 +167,14 @@ function sanitizeFrontmatter(frontmatter: string, fallbackName: string): string 
 	return sanitizeLooseFrontmatter(frontmatter, fallbackName)
 }
 
+function stringifyFallbackSkillFrontmatter(name: string): string {
+	return stringifyYaml({ name, description: fallbackSkillDescription(name) }).trimEnd()
+}
+
+function fallbackSkillDescription(name: string): string {
+	return `Claude Code skill: ${name}.`
+}
+
 function parseSkillFrontmatter(frontmatter: string): SkillFrontmatter | undefined {
 	try {
 		const parsed = SkillFrontmatterSchema.safeParse(parseYaml(frontmatter) ?? {})
@@ -168,9 +186,13 @@ function parseSkillFrontmatter(frontmatter: string): SkillFrontmatter | undefine
 
 function stringifySkillFrontmatter(frontmatter: SkillFrontmatter, fallbackName: string): string {
 	const name = normalizeSkillName(frontmatter.name ?? fallbackName, fallbackName)
-	const sanitized: Record<string, unknown> = { name }
+	const description = frontmatter.description?.trim()
+	const sanitized: Record<string, unknown> = {
+		name,
+		description: description ? frontmatter.description : fallbackSkillDescription(name),
+	}
 	for (const [key, value] of Object.entries(frontmatter)) {
-		if (key === "name" || isToolsFrontmatterKey(key)) continue
+		if (key === "name" || key === "description" || isToolsFrontmatterKey(key)) continue
 		sanitized[key] = value
 	}
 	return stringifyYaml(sanitized).trimEnd()
@@ -178,8 +200,10 @@ function stringifySkillFrontmatter(frontmatter: SkillFrontmatter, fallbackName: 
 
 function sanitizeLooseFrontmatter(frontmatter: string, fallbackName: string): string {
 	const lines = frontmatter.split("\n")
+	const name = findLooseFrontmatterName(lines, fallbackName)
 	const sanitized: string[] = []
 	let hasName = false
+	let hasDescription = false
 
 	for (let index = 0; index < lines.length; index++) {
 		const line = lines[index]
@@ -199,7 +223,22 @@ function sanitizeLooseFrontmatter(frontmatter: string, fallbackName: string): st
 
 		if (key === "name") {
 			hasName = true
-			sanitized.push(`name: ${quoteYamlString(normalizeSkillName(stripOuterQuotes(value), fallbackName))}`)
+			sanitized.push(`name: ${quoteYamlString(name)}`)
+			continue
+		}
+
+		if (key === "description") {
+			hasDescription = true
+			const description = stripOuterQuotes(value)
+			if (value === "" || description.trim() === "") {
+				sanitized.push(`description: ${quoteYamlString(fallbackSkillDescription(name))}`)
+				continue
+			}
+			if (isBlockScalar(value)) {
+				sanitized.push(line)
+				continue
+			}
+			sanitized.push(`${key}: ${formatLooseYamlScalar(value)}`)
 			continue
 		}
 
@@ -212,10 +251,36 @@ function sanitizeLooseFrontmatter(frontmatter: string, fallbackName: string): st
 	}
 
 	if (!hasName) {
-		sanitized.unshift(`name: ${quoteYamlString(normalizeSkillName(fallbackName))}`)
+		sanitized.unshift(`name: ${quoteYamlString(name)}`)
+	}
+
+	if (!hasDescription) {
+		const descriptionLine = `description: ${quoteYamlString(fallbackSkillDescription(name))}`
+		const nameIndex = sanitized.findIndex((line) => line.startsWith("name:"))
+		if (nameIndex === -1) {
+			sanitized.unshift(descriptionLine)
+		} else {
+			sanitized.splice(nameIndex + 1, 0, descriptionLine)
+		}
 	}
 
 	return sanitized.join("\n")
+}
+
+function findLooseFrontmatterName(lines: string[], fallbackName: string): string {
+	for (let index = 0; index < lines.length; index++) {
+		const line = lines[index]
+		const keyValue = /^([A-Za-z0-9_-]+):(.*)$/.exec(line)
+		if (keyValue === null) continue
+
+		const key = keyValue[1]
+		if (isToolsFrontmatterKey(key)) {
+			index = skipNestedYamlValue(lines, index, 0)
+			continue
+		}
+		if (key === "name") return normalizeSkillName(stripOuterQuotes(keyValue[2].trim()), fallbackName)
+	}
+	return normalizeSkillName(fallbackName)
 }
 
 function skipNestedYamlValue(lines: string[], index: number, parentIndent: number): number {
@@ -401,6 +466,45 @@ function readSkillName(skillDir: string): string {
 	} catch {
 		return normalizeSkillName(fallbackName)
 	}
+}
+
+function getConfiguredNativeSkillPaths(cwd: string, configuredSkillPaths: string[]): string[] {
+	return dedupePaths(
+		expandConfiguredSkillPaths(configuredSkillPaths, cwd).filter((path) => !isClaudeCodeSkillPath(path)),
+	)
+}
+
+function getConfiguredClaudeCodeSkillResourcePaths(cwd: string, configuredSkillPaths: string[]): string[] {
+	const excludedSkillNames = getNativeSkillNames(cwd, configuredSkillPaths)
+	const paths: string[] = []
+	for (const dir of getConfiguredClaudeCodeSkillDirs(cwd, configuredSkillPaths)) {
+		paths.push(...materializeClaudeCodeSkillDir(dir, { excludeSkillNames: excludedSkillNames }))
+	}
+	return paths
+}
+
+function getConfiguredClaudeCodeSkillDirs(cwd: string, configuredSkillPaths: string[]): string[] {
+	return dedupePaths(
+		expandConfiguredSkillPaths(configuredSkillPaths, cwd)
+			.filter(isClaudeCodeSkillPath)
+			.map((path) => (isSkillMarkdownFile(path) ? dirname(path) : path)),
+	)
+}
+
+function isClaudeCodeSkillPath(path: string): boolean {
+	return path.split(/[\\/]+/).includes(".claude")
+}
+
+function dedupePaths(paths: string[]): string[] {
+	const seen = new Set<string>()
+	const result: string[] = []
+	for (const path of paths) {
+		const resolved = resolve(path)
+		if (seen.has(resolved)) continue
+		seen.add(resolved)
+		result.push(resolved)
+	}
+	return result
 }
 
 function readSkillFrontmatterName(frontmatter: string): string | undefined {

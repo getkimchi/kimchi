@@ -78,6 +78,24 @@ describe("Claude Code skill discovery", () => {
 		)
 	})
 
+	it("adds generated frontmatter to Claude Code skills without frontmatter", () => {
+		expect(sanitizeSkillMarkdown("# Body\n", "My Skill")).toBe(
+			'---\nname: my-skill\ndescription: "Claude Code skill: my-skill."\n---\n# Body\n',
+		)
+	})
+
+	it("adds a fallback description when frontmatter only provides a name", () => {
+		expect(sanitizeSkillMarkdown("---\nname: My Skill\n---\nBody\n", "Fallback")).toBe(
+			'---\nname: my-skill\ndescription: "Claude Code skill: my-skill."\n---\nBody\n',
+		)
+	})
+
+	it("adds a fallback description when frontmatter description is blank", () => {
+		expect(sanitizeSkillMarkdown('---\nname: My Skill\ndescription: "   "\n---\nBody\n', "Fallback")).toBe(
+			'---\nname: my-skill\ndescription: "Claude Code skill: my-skill."\n---\nBody\n',
+		)
+	})
+
 	it("sanitizes valid skill frontmatter with YAML parsing", () => {
 		expect(
 			sanitizeSkillMarkdown(
@@ -96,7 +114,9 @@ describe("Claude Code skill discovery", () => {
 	it("does not treat prefixed fences as closing frontmatter", () => {
 		const content = "---\ndescription: Test\n---not-a-fence\nBody\n"
 
-		expect(sanitizeSkillMarkdown(content, "My Skill")).toBe(content)
+		expect(sanitizeSkillMarkdown(content, "My Skill")).toBe(
+			'---\nname: my-skill\ndescription: "Claude Code skill: my-skill."\n---\n---\ndescription: Test\n---not-a-fence\nBody\n',
+		)
 	})
 
 	it("drops nested tool frontmatter sequences when sanitizing", () => {

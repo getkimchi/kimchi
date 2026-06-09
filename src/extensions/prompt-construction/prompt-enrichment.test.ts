@@ -356,6 +356,22 @@ describe("prompt enrichment Claude Code skills", () => {
 		expect(result.systemPrompt).toContain("Use: generated API types")
 	})
 
+	it("injects configured Claude Code skills without descriptions through the sanitized cache", async () => {
+		const cwd = join(dir, "project")
+		writeRawSkill(join(cwd, ".claude", "skills", "typescript-safety", "SKILL.md"), "Use generated types.\n")
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers([".claude/skills"])
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		const result = (await beforeAgentStart(
+			{},
+			{ cwd, model: undefined, hasUI: false, sessionManager: { getSessionId: () => "session-1" } },
+		)) as { systemPrompt: string }
+
+		expect(result.systemPrompt).toContain("<available_skills>")
+		expect(result.systemPrompt).toContain("<name>typescript-safety</name>")
+		expect(result.systemPrompt).toContain("<description>Claude Code skill: typescript-safety.</description>")
+	})
+
 	it("does not inject Claude Code skills when the extension is disabled", async () => {
 		const cwd = join(dir, "project")
 		writeSkill(join(cwd, ".claude", "skills", "typescript-safety", "SKILL.md"), {
@@ -466,6 +482,11 @@ function buildPromptExtensionWithHandlers(skillPaths: string[] = []) {
 function writeSkill(path: string, frontmatter: { description: string }): void {
 	mkdirSync(join(path, ".."), { recursive: true })
 	writeFileSync(path, `---\ndescription: ${frontmatter.description}\n---\n# Skill\n`, "utf-8")
+}
+
+function writeRawSkill(path: string, content: string): void {
+	mkdirSync(join(path, ".."), { recursive: true })
+	writeFileSync(path, content, "utf-8")
 }
 
 describe("deprecated model notification", () => {
