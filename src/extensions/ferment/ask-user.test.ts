@@ -279,49 +279,6 @@ describe("askUser routing", () => {
 			},
 		])
 	})
-
-	it("returns confirm and optional text answers for the completion criteria form", async () => {
-		const normalized = normalizeAskUserQuestions([
-			{ id: "criteria_ok", type: "confirm", prompt: "Do these completion criteria look right?" },
-			{ id: "criteria_changes", type: "text", prompt: "Any additions or changes?", required: false },
-		])
-		expect(normalized.ok).toBe(true)
-		if (!normalized.ok) return
-		const custom = vi.fn(async () => ({
-			questions: [],
-			answers: [
-				{ id: "criteria_ok", value: "yes", label: "Yes", wasCustom: false, index: 0 },
-				{
-					id: "criteria_changes",
-					value: "Add a CLI smoke test.",
-					label: "Add a CLI smoke test.",
-					wasCustom: true,
-					index: 1,
-				},
-			],
-			cancelled: false,
-		}))
-
-		const result = await askUserForm("Completion criteria", undefined, normalized.questions, {
-			ferment: makeFerment(),
-			pi: makePi(),
-			ctx: { ui: { custom } as never },
-		})
-
-		expect(result.failed).toBeFalsy()
-		if (result.failed) return
-		expect(result.response_type).toBe("form")
-		expect(result.answers).toEqual([
-			{ id: "criteria_ok", type: "confirm", value: "yes", label: "Yes", wasCustom: false },
-			{
-				id: "criteria_changes",
-				type: "text",
-				value: "Add a CLI smoke test.",
-				label: "Add a CLI smoke test.",
-				wasCustom: true,
-			},
-		])
-	})
 })
 
 describe("toScopingQuestionType", () => {

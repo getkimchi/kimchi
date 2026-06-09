@@ -511,6 +511,94 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 	})
 })
 
+describe("confirm_ferment_completion_criteria via registerLifecycleTools", () => {
+	function createConfirmCriteriaHarness() {
+		const h = createHarness()
+		const tools = new Map<string, RegisteredTool>()
+		const pi = {
+			...h.pi,
+			registerTool: (tool: RegisteredTool) => {
+				tools.set(tool.name, tool)
+			},
+			getFlag: vi.fn(() => false),
+		} as unknown as ExtensionAPI
+		registerLifecycleTools(pi, h.runtime)
+
+		const tool = tools.get(FERMENT_TOOLS.CONFIRM_COMPLETION_CRITERIA)
+		if (!tool) throw new Error("confirm_ferment_completion_criteria not registered")
+		const execute = tool.execute as unknown as (
+			...args: unknown[]
+		) => Promise<{ content: { text: string }[]; isError?: boolean }>
+		return { h, execute }
+	}
+
+	it("renders fixed confirm plus optional text controls for drafted criteria", async () => {
+		const { h, execute } = createConfirmCriteriaHarness()
+		const select = vi.fn<(title: string, options: string[]) => Promise<string>>(async () => "Yes")
+		const input = vi.fn<(title: string, placeholder?: string) => Promise<string>>(async () => "")
+
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				criteria: [
+					"README.md exists at the project root; verify by opening README.md.",
+					"README.md documents all CLI commands; verify by reading the command list.",
+				],
+			},
+			undefined,
+			undefined,
+			{ ui: { select, input } },
+		)
+
+		const text = okText(result)
+		expect(text).toContain("Confirmed: yes")
+		expect(text).toContain("Changes: (none)")
+		expect(text).toContain("Next action: continue to exploration.")
+		expect(select).toHaveBeenCalledWith(expect.stringContaining("Do these completion criteria look right?"), [
+			"Yes",
+			"No",
+		])
+		expect(select.mock.calls[0]?.[0]).toContain("README.md exists at the project root")
+		expect(input).toHaveBeenCalledWith(expect.stringContaining("Any additions or changes?"), "")
+	})
+
+	it("blocks exploration when the user supplies criteria changes", async () => {
+		const { h, execute } = createConfirmCriteriaHarness()
+		const select = vi.fn<(title: string, options: string[]) => Promise<string>>(async () => "Yes")
+		const input = vi.fn<(title: string, placeholder?: string) => Promise<string>>(
+			async () => "Add go test ./... as verification.",
+		)
+
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				criteria: ["README.md exists at the project root; verify by opening README.md."],
+			},
+			undefined,
+			undefined,
+			{ ui: { select, input } },
+		)
+
+		const text = okText(result)
+		expect(text).toContain("Confirmed: yes")
+		expect(text).toContain("Changes: Add go test ./... as verification.")
+		expect(text).toContain(`call ${FERMENT_TOOLS.CONFIRM_COMPLETION_CRITERIA} again before exploration`)
+	})
+
+	it("rejects criteria that normalize to empty strings", async () => {
+		const { h, execute } = createConfirmCriteriaHarness()
+
+		const result = await execute("tool-call-1", {
+			ferment_id: h.fermentId,
+			criteria: ["  "],
+		})
+
+		expect(errText(result)).toContain('Field "criteria" must include at least one non-empty criterion')
+	})
+})
+
 describe("ask_user via registerLifecycleTools", () => {
 	function createAskUserHarness() {
 		const h = createHarness()
@@ -550,44 +638,6 @@ describe("ask_user via registerLifecycleTools", () => {
 
 		expect(okText(result)).toContain("Choice: yes")
 		expect(select).toHaveBeenCalledWith("Sound right?", ["Yes", "No"])
-	})
-
-	it("returns confirm and typed text answers from the recommended criteria questions form", async () => {
-		const { h, execute } = createAskUserHarness()
-		const custom = vi.fn(async () => ({
-			questions: [],
-			answers: [
-				{ id: "criteria_ok", value: "yes", label: "Yes", wasCustom: false, index: 0 },
-				{
-					id: "criteria_changes",
-					value: "Add a CLI smoke test.",
-					label: "Add a CLI smoke test.",
-					wasCustom: true,
-					index: 1,
-				},
-			],
-			cancelled: false,
-		}))
-
-		const result = await execute(
-			"tool-call-1",
-			{
-				ferment_id: h.fermentId,
-				title: "Completion criteria",
-				questions: [
-					{ id: "criteria_ok", type: "confirm", prompt: "Do these completion criteria look right?" },
-					{ id: "criteria_changes", type: "text", prompt: "Any additions or changes?", required: false },
-				],
-			},
-			undefined,
-			undefined,
-			{ ui: { custom } },
-		)
-
-		const text = okText(result)
-		expect(text).toContain("- criteria_ok: yes")
-		expect(text).toContain("- criteria_changes: Add a CLI smoke test. (custom)")
-		expect(text).toContain("Answered by: user")
 	})
 })
 

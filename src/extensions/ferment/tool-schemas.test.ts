@@ -5,7 +5,13 @@
 
 import { Value } from "typebox/value"
 import { describe, expect, it } from "vitest"
-import { AskUserParams, CompleteStepParams, ProposeScopingParams, ScopeParams } from "./tool-schemas.js"
+import {
+	AskUserParams,
+	CompleteStepParams,
+	ConfirmCompletionCriteriaParams,
+	ProposeScopingParams,
+	ScopeParams,
+} from "./tool-schemas.js"
 
 // Minimal valid payload fixtures
 const passingGates = () => [
@@ -460,14 +466,6 @@ describe("AskUserParams schema", () => {
 		expect(Value.Check(AskUserParams, payload)).toBe(true)
 	})
 
-	it("accepts the recommended completion criteria confirmation form", () => {
-		const payload = base([
-			{ id: "criteria_ok", type: "confirm", prompt: "Do these completion criteria look right?" },
-			{ id: "criteria_changes", type: "text", prompt: "Any additions or changes?", required: false },
-		])
-		expect(Value.Check(AskUserParams, payload)).toBe(true)
-	})
-
 	// LLM-1928: the original failure was ask_user.questions[].type using the
 	// wrong vocabulary. These types must now be rejected at the schema layer.
 	it("rejects the old radio vocabulary in questions[].type", () => {
@@ -485,5 +483,25 @@ describe("AskUserParams schema", () => {
 	it("rejects an invented question type", () => {
 		const payload = base([{ id: "ship", type: "confirmation", prompt: "Ship?" }])
 		expect(Value.Check(AskUserParams, payload)).toBe(false)
+	})
+})
+
+describe("ConfirmCompletionCriteriaParams schema", () => {
+	it("accepts non-empty criteria", () => {
+		const payload = {
+			ferment_id: "f-1",
+			criteria: ["README.md exists and documents usage; verify with manual read-through."],
+		}
+
+		expect(Value.Check(ConfirmCompletionCriteriaParams, payload)).toBe(true)
+	})
+
+	it("rejects empty criteria", () => {
+		const payload = {
+			ferment_id: "f-1",
+			criteria: [],
+		}
+
+		expect(Value.Check(ConfirmCompletionCriteriaParams, payload)).toBe(false)
 	})
 })

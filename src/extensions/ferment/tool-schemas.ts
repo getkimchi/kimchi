@@ -346,7 +346,7 @@ const AskUserQuestionSchema = Type.Object({
 	id: Type.String({ description: "Stable identifier for this question. Returned with the answer." }),
 	type: Type.String({
 		description:
-			"Question type. Must be 'single' (one choice), 'multi' (multiple choices), 'text' (free-form input), or 'confirm' (strict Yes/No only, always Yes/No — no options). If the prompt asks for additions, changes, anything else, or other free-form input, use a separate text question.",
+			"Question type. Must be 'single' (one choice), 'multi' (multiple choices), 'text' (free-form input), or 'confirm' (strict Yes/No only, always Yes/No — no options). Use text questions for free-form input.",
 		pattern: "^(single|multi|text|confirm)$",
 	}),
 	prompt: Type.String({ description: "The full question text shown to the user or judge." }),
@@ -382,13 +382,13 @@ export const AskUserParams = Type.Object({
 	response_type: Type.Optional(
 		Type.Union([Type.Literal("single"), Type.Literal("multi"), Type.Literal("text"), Type.Literal("confirm")], {
 			description:
-				"Compatibility shorthand for a single question. single returns choice, multi returns choices, text returns text, and confirm returns choice. confirm is strict Yes/No only and must not provide options. Prompts asking for additions, changes, anything else, or other free-form input must use questions[] with a text question, or response_type='text' for one free-form question. Default: single.",
+				"Compatibility shorthand for a single question. single returns choice, multi returns choices, text returns text, and confirm returns choice. confirm is strict Yes/No only and must not provide options. Use response_type='text' for one free-form question, or questions[] when multiple controls are needed. Default: single.",
 		}),
 	),
 	question: Type.Optional(
 		Type.String({
 			description:
-				"Compatibility shorthand for one question. For 1:1 TUI behavior, prefer questions[] with single/multi/text/confirm. Do not combine response_type='confirm' with additions/changes/anything-else wording; confirm is Yes/No only.",
+				"Compatibility shorthand for one question. For 1:1 TUI behavior, prefer questions[] with single/multi/text/confirm. Use response_type='text' for free-form input; confirm is Yes/No only.",
 		}),
 	),
 	options: Type.Optional(
@@ -400,7 +400,19 @@ export const AskUserParams = Type.Object({
 	questions: Type.Optional(
 		Type.Array(AskUserQuestionSchema, {
 			description:
-				"One or more form questions. Supports single, multi, text, and confirm; single/multi support allowOther. Use a confirm question plus a text question when asking whether something is approved and whether there are additions or changes. Multiple questions use Tab/Shift+Tab navigation and a Submit tab.",
+				"One or more form questions. Supports single, multi, text, and confirm; single/multi support allowOther. Use text questions for free-form input. Multiple questions use Tab/Shift+Tab navigation and a Submit tab.",
 		}),
+	),
+})
+
+export const ConfirmCompletionCriteriaParams = Type.Object({
+	ferment_id: Type.String(),
+	criteria: Type.Array(
+		Type.String({ description: "One concrete completion criterion, including its validation method." }),
+		{
+			minItems: 1,
+			description:
+				"Draft completion criteria to present for confirmation. The host always renders these through a fixed Yes/No plus optional text form.",
+		},
 	),
 })

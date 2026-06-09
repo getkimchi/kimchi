@@ -60,6 +60,7 @@ import { FERMENT_TOOLS } from "../tool-names.js"
 import {
 	AskUserParams,
 	CompleteFermentParams,
+	ConfirmCompletionCriteriaParams,
 	ListParams,
 	ProposeScopingParams,
 	ScopeParams,
@@ -83,6 +84,7 @@ type NormalizeProposeScopingResult =
 	| { ok: true; params: NormalizedProposeScopingArgs }
 	| { ok: false; error: ReturnType<typeof toolErr> }
 type CompleteFermentArgs = Static<typeof CompleteFermentParams>
+type ConfirmCompletionCriteriaArgs = Static<typeof ConfirmCompletionCriteriaParams>
 type ToolResult = ReturnType<typeof toolOk> | ReturnType<typeof toolErr>
 type ScopingAnswer = {
 	questionId: string
@@ -470,6 +472,88 @@ export function buildFreeformScopingFeedbackMessage(fermentId: string, userText:
 		"",
 		"Re-run propose_ferment_scoping for this same ferment_id, incorporating this direction. Do not call scope_ferment.",
 	].join("\n")
+}
+
+function formatCompletionCriteriaForReview(criteria: readonly string[]): string {
+	return [`I'll consider this done when:`, ...criteria.map((criterion, index) => `${index + 1}. ${criterion}`)].join(
+		"\n",
+	)
+}
+
+async function confirmCompletionCriteria(
+	runtime: FermentRuntime,
+	pi: ExtensionAPI,
+	params: ConfirmCompletionCriteriaArgs,
+	ctx: unknown,
+): Promise<ToolResult> {
+	const ferment = runtime.getStorage().get(params.ferment_id)
+	if (!ferment) return toolErr("Ferment not found.")
+
+	const criteria = params.criteria.map((criterion) => criterion.trim()).filter(Boolean)
+	if (criteria.length === 0) return toolErr('Field "criteria" must include at least one non-empty criterion.')
+
+	const response = await askUserForm(
+		"Completion criteria",
+		formatCompletionCriteriaForReview(criteria),
+		[
+			{
+				id: "criteria_ok",
+				type: "confirm",
+				prompt: "Do these completion criteria look right?",
+				options: [...YES_NO_OPTIONS],
+			},
+			{
+				id: "criteria_changes",
+				type: "text",
+				prompt: "Any additions or changes?",
+				required: false,
+				placeholder: "Leave blank if the criteria are ready.",
+			},
+		],
+		{
+			ferment,
+			pi,
+			ctx: ctx as { ui?: Partial<import("../ui.js").FermentUi> } | undefined,
+			runtime,
+		},
+	)
+
+	if (response.failed) {
+		const isJudgeFailure = response.reason === "judge_unavailable" || response.reason === "judge_unparseable"
+		const isOneShot = pi.getFlag?.("ferment-oneshot") === true
+		if (isJudgeFailure && isOneShot) {
+			const abandonOutcome = createApplyAndPersist(runtime)(params.ferment_id, {
+				type: "abandon",
+				reason: `confirm_ferment_completion_criteria: ${response.detail}`,
+			})
+			if (abandonOutcome.ok) runtime.setActive(abandonOutcome.ferment)
+			return toolErr(
+				`confirm_ferment_completion_criteria failed in one-shot mode — ferment abandoned. ${response.detail}\n\nThe ferment cannot continue without user input or a reachable judge. Restart with a valid API key, or run in interactive mode.`,
+			)
+		}
+		return toolErr(
+			`confirm_ferment_completion_criteria could not route the prompt (${response.reason}): ${response.detail}`,
+		)
+	}
+
+	const answers = response.answers ?? []
+	const criteriaOk = answers.find((answer) => answer.id === "criteria_ok")?.value === "yes"
+	const changes = answers.find((answer) => answer.id === "criteria_changes")?.value.trim() ?? ""
+	const ready = criteriaOk && changes.length === 0
+	const rationaleLine = response.rationale ? `\nRationale: ${response.rationale}` : ""
+	return toolOk(
+		[
+			"Completion criteria reviewed.",
+			`Confirmed: ${criteriaOk ? "yes" : "no"}`,
+			`Changes: ${changes || "(none)"}`,
+			`Answered by: ${response.answered_by}${rationaleLine}`,
+			`Next action: ${
+				ready
+					? "continue to exploration."
+					: `revise the criteria and call ${FERMENT_TOOLS.CONFIRM_COMPLETION_CRITERIA} again before exploration.`
+			}`,
+		].join("\n"),
+	)
 }
 
 export async function scopeFerment(
@@ -1120,6 +1204,22 @@ ${renderGateGuidance("complete_ferment")}`,
 	})
 
 	pi.registerTool({
+		name: FERMENT_TOOLS.CONFIRM_COMPLETION_CRITERIA,
+		label: "Confirm Completion Criteria",
+		description: `Confirm drafted Ferment completion criteria with deterministic UI. Use this in Step 3 after drafting criteria; do not hand-build completion-criteria confirmation with ask_user.
+
+The host always renders:
+  - criteria_ok: strict Yes/No confirmation
+  - criteria_changes: optional free-text additions/changes
+
+Proceed to exploration only when Confirmed is yes and Changes is empty. Otherwise revise the criteria and call this tool again.`,
+		parameters: ConfirmCompletionCriteriaParams,
+		async execute(_, params, _signal, _onUpdate, ctx) {
+			return confirmCompletionCriteria(runtime, pi, params, ctx)
+		},
+	})
+
+	pi.registerTool({
 		name: FERMENT_TOOLS.ASK_USER,
 		label: "Ask User",
 		description: `Ask the user a structured question. Use ONLY at genuine decision points the agent cannot resolve from context (e.g. ambiguous requirements, choice between viable approaches, user-only authorization).
@@ -1134,7 +1234,7 @@ The agent should:
   1. Frame the question concretely. The user/judge sees only the question plus options/context in this call.
   2. Prefer questions[] for the full TUI: single, multi, text, confirm. allowOther is only for single/multi custom free-text options.
   3. Use response_type="single" | "multi" | "text" | "confirm" only as a compatibility shorthand for one question.
-  4. Treat response_type="confirm" as strict Yes/No only. Any prompt asking for additions, changes, anything else, additional context, or other free-form input must use questions[] with a text question, or response_type="text" for a single free-form question.
+  4. Treat response_type="confirm" as strict Yes/No only. Use response_type="text" for one free-form question, or questions[] when multiple controls are needed.
   5. For single/multi, provide stable snake-case option ids and short labels (confirm defaults to Yes/No).
   6. Include "pause" or "abandon" as an explicit option when one is appropriate — the judge prefers these when uncertain.
   7. Act on the returned \`answers\`, \`choice\`, \`choices\`, or \`text\` field.
