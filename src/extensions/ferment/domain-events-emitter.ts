@@ -90,7 +90,9 @@ export function emitFermentDomainEvent(events: EventBus, cmd: Command, post: Fer
 			return
 		}
 
-		case "complete_phase": {
+		case "complete_phase":
+		case "skip_phase":
+		case "fail_phase": {
 			const phase = post.phases.find((p) => p.id === cmd.phaseId)
 			if (!phase) return
 			const payload: FermentPhaseCompletedPayload = {
@@ -98,7 +100,7 @@ export function emitFermentDomainEvent(events: EventBus, cmd: Command, post: Fer
 				phaseId: phase.id,
 				phaseIndex: phase.index,
 				phaseName: phase.name,
-				grade: cmd.grade?.grade,
+				grade: cmd.type === "complete_phase" ? cmd.grade?.grade : undefined,
 				// Duration and delta tokens are computed by the telemetry subscriber
 				// using its own snapshots taken at phase activation.
 				durationMs: 0,
@@ -156,6 +158,22 @@ export function emitFermentDomainEvent(events: EventBus, cmd: Command, post: Fer
 				reason: cmd.error,
 			}
 			events.emit(FERMENT_EVENTS.STEP_FAILED, payload)
+			return
+		}
+
+		case "skip_step": {
+			const phase = post.phases.find((p) => p.id === cmd.phaseId)
+			const step = phase?.steps.find((s) => s.id === cmd.stepId)
+			if (!phase || !step) return
+			const payload: FermentStepCompletedPayload = {
+				fermentId: post.id,
+				phaseId: phase.id,
+				stepId: step.id,
+				stepIndex: step.index,
+				durationMs: 0,
+				success: true,
+			}
+			events.emit(FERMENT_EVENTS.STEP_COMPLETED, payload)
 			return
 		}
 

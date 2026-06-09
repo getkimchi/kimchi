@@ -55,6 +55,11 @@ const fermentTokenSnapshots = new Map<string, TokenSnapshot>()
 const fermentStartTimes = new Map<string, number>()
 
 /**
+ * Wall-clock ms at phase activation, keyed by "${fermentId}:${phaseId}".
+ */
+const phaseStartTimes = new Map<string, number>()
+
+/**
  * Wall-clock ms at step start, keyed by "${fermentId}:${phaseId}:${stepId}".
  * Composite key avoids collisions across phases that reuse the same step index.
  */
@@ -68,6 +73,7 @@ export function _resetFermentTrackingState(): void {
 	phaseTokenSnapshots.clear()
 	fermentTokenSnapshots.clear()
 	fermentStartTimes.clear()
+	phaseStartTimes.clear()
 	stepStartTimes.clear()
 	fermentSteeringCounts.clear()
 }
@@ -222,9 +228,15 @@ function onFermentCompleted(raw: unknown): void {
 	fermentStartTimes.delete(payload.fermentId)
 	fermentTokenSnapshots.delete(payload.fermentId)
 	fermentSteeringCounts.delete(payload.fermentId)
-	// Discard any phase snapshots not consumed by phase.completed events
+	// Discard any orphaned tracking state from skipped/failed phases and steps
 	for (const key of phaseTokenSnapshots.keys()) {
 		if (key.startsWith(`${payload.fermentId}:`)) phaseTokenSnapshots.delete(key)
+	}
+	for (const key of phaseStartTimes.keys()) {
+		if (key.startsWith(`${payload.fermentId}:`)) phaseStartTimes.delete(key)
+	}
+	for (const key of stepStartTimes.keys()) {
+		if (key.startsWith(`${payload.fermentId}:`)) stepStartTimes.delete(key)
 	}
 
 	const attrs: Record<string, string | number | boolean> = {
@@ -253,6 +265,12 @@ function onFermentAbandoned(raw: unknown): void {
 	for (const key of phaseTokenSnapshots.keys()) {
 		if (key.startsWith(`${payload.fermentId}:`)) phaseTokenSnapshots.delete(key)
 	}
+	for (const key of phaseStartTimes.keys()) {
+		if (key.startsWith(`${payload.fermentId}:`)) phaseStartTimes.delete(key)
+	}
+	for (const key of stepStartTimes.keys()) {
+		if (key.startsWith(`${payload.fermentId}:`)) stepStartTimes.delete(key)
+	}
 	const attrs: Record<string, string | number | boolean> = {
 		ferment_name: payload.name,
 		model: ctx.currentModel,
@@ -266,6 +284,8 @@ function onPhaseStarted(raw: unknown): void {
 	const ctx = _ctx
 	if (!ctx) return
 	const payload = raw as FermentPhaseStartedPayload
+	const phaseKey = `${payload.fermentId}:${payload.phaseId}`
+	phaseStartTimes.set(phaseKey, Date.now())
 	snapshotPhaseTokens(payload.fermentId, payload.phaseId)
 	ctx.emitWithIds(
 		"ferment.phase.started",
@@ -279,11 +299,14 @@ function onPhaseCompleted(raw: unknown): void {
 	const ctx = _ctx
 	if (!ctx) return
 	const payload = raw as FermentPhaseCompletedPayload
+	const phaseKey = `${payload.fermentId}:${payload.phaseId}`
+	const phaseStartMs = phaseStartTimes.get(phaseKey) ?? 0
+	phaseStartTimes.delete(phaseKey)
 	const { deltaInput, deltaOutput, deltaCost } = consumePhaseTokenDelta(payload.fermentId, payload.phaseId)
 	const attrs: Record<string, string | number | boolean> = {
 		phase_index: payload.phaseIndex,
 		phase_name: payload.phaseName,
-		duration_ms: payload.durationMs,
+		duration_ms: phaseStartMs > 0 ? Date.now() - phaseStartMs : 0,
 		delta_input_tokens: deltaInput,
 		delta_output_tokens: deltaOutput,
 		delta_cost_usd: deltaCost,

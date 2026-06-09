@@ -595,3 +595,119 @@ describe("ferment lifecycle telemetry via pi.events", () => {
 		expect(attrsOf(rec as NonNullable<typeof rec>).ferment_id).toBe("f-explicit")
 	})
 })
+
+describe("edge case coverage", () => {
+	let fetchMock: ReturnType<typeof vi.fn>
+	let originalFetch: typeof globalThis.fetch
+
+	beforeEach(() => {
+		fetchMock = vi.fn().mockResolvedValue({ ok: true, text: async () => "" })
+		originalFetch = globalThis.fetch
+		// biome-ignore lint/suspicious/noExplicitAny: test mock
+		globalThis.fetch = fetchMock as any
+	})
+
+	afterEach(async () => {
+		globalThis.fetch = originalFetch
+		_resetSharedAccumulators()
+		const { _resetFermentTrackingState } = await import("./index.js")
+		_resetFermentTrackingState()
+		vi.restoreAllMocks()
+	})
+
+	async function setup() {
+		const { handlers, events, api } = createMockApi()
+		const { default: ext } = await import("./index.js")
+		ext(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, { model: { id: "claude-sonnet-4-6" } })
+		return { handlers, events }
+	}
+
+	function extractRecords() {
+		const logCalls = fetchMock.mock.calls.filter(([url]: unknown[]) => String(url).includes("/logs"))
+		return logCalls.flatMap(([, opts]: unknown[]) => {
+			const body = JSON.parse((opts as { body: string }).body)
+			return body.resourceLogs[0].scopeLogs[0].logRecords as Array<{
+				eventName: string
+				attributes: Array<{ key: string; value: { stringValue: string } }>
+			}>
+		})
+	}
+
+	function attrsOf(rec: { attributes: Array<{ key: string; value: { stringValue: string } }> }) {
+		return Object.fromEntries(rec.attributes.map((a) => [a.key, a.value.stringValue]))
+	}
+
+	it("phase duration_ms is computed from phase start time, not payload", async () => {
+		const { handlers, events } = await setup()
+		const { FERMENT_EVENTS } = await import("../ferment/domain-events.js")
+
+		events.emit(FERMENT_EVENTS.PHASE_STARTED, { fermentId: "f-d", phaseId: "ph-1", phaseIndex: 1, phaseName: "Build" })
+		// Small delay to ensure duration > 0
+		await new Promise((r) => setTimeout(r, 10))
+		events.emit(FERMENT_EVENTS.PHASE_COMPLETED, {
+			fermentId: "f-d",
+			phaseId: "ph-1",
+			phaseIndex: 1,
+			phaseName: "Build",
+			durationMs: 0,
+			deltaInputTokens: 0,
+			deltaOutputTokens: 0,
+			deltaCostUsd: 0,
+			blockRetries: 0,
+		})
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const rec = extractRecords().find((r) => r.eventName === "ferment.phase.completed")
+		expect(rec).toBeDefined()
+		const attrs = attrsOf(rec as NonNullable<typeof rec>)
+		expect(Number(attrs.duration_ms)).toBeGreaterThan(0)
+	})
+
+	it("skip_phase emits ferment.phase.completed", async () => {
+		const { handlers, events } = await setup()
+		const { FERMENT_EVENTS } = await import("../ferment/domain-events.js")
+
+		events.emit(FERMENT_EVENTS.PHASE_STARTED, {
+			fermentId: "f-s",
+			phaseId: "ph-skip",
+			phaseIndex: 1,
+			phaseName: "Skipped",
+		})
+		events.emit(FERMENT_EVENTS.PHASE_COMPLETED, {
+			fermentId: "f-s",
+			phaseId: "ph-skip",
+			phaseIndex: 1,
+			phaseName: "Skipped",
+			durationMs: 0,
+			deltaInputTokens: 0,
+			deltaOutputTokens: 0,
+			deltaCostUsd: 0,
+			blockRetries: 0,
+		})
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const rec = extractRecords().find((r) => r.eventName === "ferment.phase.completed")
+		expect(rec).toBeDefined()
+		expect(attrsOf(rec as NonNullable<typeof rec>).phase_id).toBe("ph-skip")
+	})
+
+	it("skip_step emits ferment.step.completed with success=true", async () => {
+		const { handlers, events } = await setup()
+		const { FERMENT_EVENTS } = await import("../ferment/domain-events.js")
+
+		events.emit(FERMENT_EVENTS.STEP_COMPLETED, {
+			fermentId: "f-ss",
+			phaseId: "ph-1",
+			stepId: "step-skip",
+			stepIndex: 1,
+			durationMs: 0,
+			success: true,
+		})
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const rec = extractRecords().find((r) => r.eventName === "ferment.step.completed")
+		expect(rec).toBeDefined()
+		expect(attrsOf(rec as NonNullable<typeof rec>).success).toBe("true")
+	})
+})
