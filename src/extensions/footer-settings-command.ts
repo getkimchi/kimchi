@@ -86,11 +86,11 @@ class FooterSettingsComponent implements Component {
 		out.push(`${b(`╭${"─".repeat(leftB)}`)}${dimText(titleText)}${b(`${"─".repeat(rightB)}╮`)}`)
 
 		// ── header row ───────────────────────────────────────────────────────
-		out.push(wrapRow(`  ${dimText("PIN")}  ${dimText("ELEMENT")}  ${dimText("DESCRIPTION")}`))
+		const maxLabelW = Math.max(...FOOTER_ELEMENTS.map((e) => visibleWidth(e.label)))
+		out.push(wrapRow(`  ${dimText("● ")}${dimText("ELEMENT".padEnd(maxLabelW))}  ${dimText("DESCRIPTION")}`))
 		out.push(b(`├${"─".repeat(innerW)}┤`))
 
 		// ── element rows — always exactly 9 (FOOTER_ELEMENTS is a fixed constant) ──
-		const maxLabelW = Math.max(...FOOTER_ELEMENTS.map((e) => visibleWidth(e.label)))
 
 		for (let i = 0; i < FOOTER_ELEMENTS.length; i++) {
 			const el = FOOTER_ELEMENTS[i]
@@ -124,7 +124,7 @@ class FooterSettingsComponent implements Component {
 }
 
 export default function footerSettingsExtension(pi: ExtensionAPI): void {
-	pi.registerCommand("footer-settings", {
+	pi.registerCommand("customize-footer", {
 		description: "Customize which footer elements are pinned",
 		handler: async (_args, ctx) => {
 			if (!ctx.hasUI) {
