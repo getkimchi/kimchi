@@ -22,9 +22,20 @@ export const AGENT_GENERAL_PURPOSE = "General-Purpose"
 export const AGENT_EXPLORE = "Explore"
 export const AGENT_PLAN = "Plan"
 export const AGENT_RESEARCHER = "Researcher"
+export const AGENT_BUILDER = "Builder"
+export const AGENT_REVIEWER = "Reviewer"
+export const AGENT_FIXER = "Fixer"
 
 /** Names of the embedded default agents (in canonical display order). */
-export const DEFAULT_AGENT_NAMES = [AGENT_GENERAL_PURPOSE, AGENT_EXPLORE, AGENT_PLAN, AGENT_RESEARCHER] as const
+export const DEFAULT_AGENT_NAMES = [
+	AGENT_GENERAL_PURPOSE,
+	AGENT_EXPLORE,
+	AGENT_PLAN,
+	AGENT_RESEARCHER,
+	AGENT_BUILDER,
+	AGENT_REVIEWER,
+	AGENT_FIXER,
+] as const
 
 /** Memory scope for persistent agent memory. */
 export type MemoryScope = "user" | "project" | "local"

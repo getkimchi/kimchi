@@ -69,14 +69,18 @@ describe("resolveOrchestrationInstructions", () => {
 		expect(result).toContain("delegate it to a model from the matching role pool")
 	})
 
-	it("instructs to always use General-Purpose subagent type", () => {
+	it("instructs to use matching persona for each step", () => {
 		const result = resolveOrchestrationInstructions({
 			currentModelId: "kimi-k2.6",
 			registry,
 			mode: "orchestrator",
 			roles: DEFAULT_MODEL_ROLES,
 		})
-		expect(result).toContain('subagent_type: "General-Purpose"')
+		expect(result).toContain('Agent(type: "Builder"')
+		expect(result).toContain('Agent(type: "Reviewer"')
+		expect(result).toContain('Agent(type: "Fixer"')
+		expect(result).toContain('Agent(type: "Explore"')
+		expect(result).toContain('Agent(type: "Plan"')
 	})
 
 	it("shows model IDs from the roles config", () => {
