@@ -21,13 +21,14 @@ export interface ClassifierOptions {
 type InternalResult = ClassifierResult & { retryable: boolean }
 
 export async function classifyToolCall(
-	model: Model<Api>,
+	primaryModel: Model<Api>,
+	fallbackModel: Model<Api> | undefined,
 	modelRegistry: ModelRegistry,
 	call: ClassifyInput,
 	options: ClassifierOptions,
 	signal?: AbortSignal,
 ): Promise<ClassifierResult> {
-	const auth = await modelRegistry.getApiKeyAndHeaders(model)
+	const auth = await modelRegistry.getApiKeyAndHeaders(primaryModel)
 	if (!auth.ok || !auth.apiKey) return unavailable("no API key for classifier")
 
 	if (signal?.aborted) return unavailable("classifier aborted")
@@ -37,12 +38,11 @@ export async function classifyToolCall(
 
 	for (let attempt = 0; attempt < maxAttempts; attempt++) {
 		if (attempt > 0) {
-			const backoff = 500 * 2 ** (attempt - 1)
-			await sleep(backoff)
+			await sleep(attempt * 500)
 			if (signal?.aborted) return unavailable("classifier aborted")
 		}
 
-		const result = await runClassifier(model, auth, call, options, signal)
+		const result = await runClassifier(primaryModel, auth, call, options, signal)
 		if (result.ok) return result
 
 		if (!result.retryable) return result
@@ -51,6 +51,13 @@ export async function classifyToolCall(
 	}
 
 	if (signal?.aborted) return unavailable("classifier aborted")
+
+	if (fallbackModel) {
+		const fallbackAuth = await modelRegistry.getApiKeyAndHeaders(fallbackModel)
+		if (fallbackAuth.ok && fallbackAuth.apiKey) {
+			return runClassifier(fallbackModel, fallbackAuth, call, options, signal)
+		}
+	}
 
 	return lastResult
 }

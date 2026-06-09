@@ -545,7 +545,7 @@ describe("permissions ferment tool classification", () => {
 
 		expect(result).toBeUndefined()
 		expect(classifyToolCall).toHaveBeenCalledTimes(1)
-		expect(vi.mocked(classifyToolCall).mock.calls[0]?.[2]).toMatchObject({
+		expect(vi.mocked(classifyToolCall).mock.calls[0]?.[3]).toMatchObject({
 			toolName: "unknown_tool",
 			input: { value: 1 },
 			cwd: "/test",

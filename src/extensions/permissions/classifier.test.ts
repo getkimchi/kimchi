@@ -47,6 +47,7 @@ describe("classifyToolCall", () => {
 
 		const result = await classifyToolCall(
 			fakeModel(),
+			undefined,
 			fakeRegistry(),
 			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
 			{ timeoutMs: 5000 },
@@ -62,6 +63,7 @@ describe("classifyToolCall", () => {
 
 		const promise = classifyToolCall(
 			fakeModel("nemotron-test"),
+			undefined,
 			fakeRegistry(),
 			{ toolName: "edit", input: { path: "foo.ts" }, cwd: "/tmp" },
 			{ timeoutMs: 5000 },
@@ -84,6 +86,7 @@ describe("classifyToolCall", () => {
 
 		const promise = classifyToolCall(
 			fakeModel(),
+			undefined,
 			fakeRegistry(),
 			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
 			{ timeoutMs: 5000 },
@@ -105,6 +108,7 @@ describe("classifyToolCall", () => {
 
 		const promise = classifyToolCall(
 			fakeModel(),
+			undefined,
 			fakeRegistry(),
 			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
 			{ timeoutMs: 5000 },
@@ -115,6 +119,48 @@ describe("classifyToolCall", () => {
 
 		expect(result.verdict).toBe("safe")
 		expect(result.ok).toBe(true)
+		expect(completeMock).toHaveBeenCalledTimes(3)
+	})
+
+	it("calls fallback model after 3 retryable failures and returns its result", async () => {
+		completeMock
+			.mockResolvedValueOnce(fakeResponse({ stopReason: "aborted" }))
+			.mockResolvedValueOnce(fakeResponse({ stopReason: "aborted" }))
+			.mockResolvedValueOnce(fakeResponse({ stopReason: "aborted" }))
+			.mockResolvedValueOnce(fakeResponse({ stopReason: "stop", content: '{"verdict":"safe","reason":"fine"}' }))
+
+		const promise = classifyToolCall(
+			fakeModel("primary-model"),
+			fakeModel("backoff-model"),
+			fakeRegistry(),
+			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
+			{ timeoutMs: 5000 },
+		)
+
+		await vi.runAllTimersAsync()
+		const result = await promise
+
+		expect(result.verdict).toBe("safe")
+		expect(result.ok).toBe(true)
+		expect(completeMock).toHaveBeenCalledTimes(4)
+	})
+
+	it("returns last result when no fallback model is provided", async () => {
+		completeMock.mockResolvedValue(fakeResponse({ stopReason: "aborted" }))
+
+		const promise = classifyToolCall(
+			fakeModel("primary-model"),
+			undefined,
+			fakeRegistry(),
+			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
+			{ timeoutMs: 5000 },
+		)
+
+		await vi.runAllTimersAsync()
+		const result = await promise
+
+		expect(result.verdict).toBe("requires-confirmation")
+		expect(result.ok).toBe(false)
 		expect(completeMock).toHaveBeenCalledTimes(3)
 	})
 
@@ -135,6 +181,7 @@ describe("classifyToolCall", () => {
 
 		const promise = classifyToolCall(
 			fakeModel(),
+			undefined,
 			fakeRegistry(),
 			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
 			{ timeoutMs: 5000 },
@@ -156,6 +203,7 @@ describe("classifyToolCall", () => {
 
 		const result = await classifyToolCall(
 			fakeModel(),
+			undefined,
 			fakeRegistry(),
 			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
 			{ timeoutMs: 5000 },
@@ -171,6 +219,7 @@ describe("classifyToolCall", () => {
 
 		const result = await classifyToolCall(
 			fakeModel(),
+			undefined,
 			fakeRegistry(),
 			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
 			{ timeoutMs: 5000 },
@@ -187,6 +236,7 @@ describe("classifyToolCall", () => {
 
 		const result = await classifyToolCall(
 			fakeModel(),
+			undefined,
 			fakeRegistry(),
 			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
 			{ timeoutMs: 5000 },
