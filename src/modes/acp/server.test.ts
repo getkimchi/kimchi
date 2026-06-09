@@ -1435,12 +1435,324 @@ describe("unstable_setSessionModel", () => {
 		expect(fake.model?.id).toBe(orchModelId)
 	})
 
+	it("isolates multi-model state between sessions", async () => {
+		// Use fixed test fixtures for orchestrator to ensure deterministic tests
+		const orchProvider = "test-provider"
+		const orchModelId = "test-orchestrator"
+
+		// Create session A
+		const fakeA = new FakeAgentSession("session-a")
+		fakeA.model = { provider: "provider-a", id: "model-a" }
+		fakeA.modelRegistry = {
+			getAvailable: () => [
+				{ provider: orchProvider, id: orchModelId, name: "Orchestrator Model" },
+				{ provider: "provider-a", id: "model-a", name: "Model A" },
+			],
+			find: (provider: string, modelId: string) => {
+				if (provider === orchProvider && modelId === orchModelId) {
+					return { provider: orchProvider, id: orchModelId, name: "Orchestrator Model" }
+				}
+				return undefined
+			},
+		}
+
+		// Create session B
+		const fakeB = new FakeAgentSession("session-b")
+		fakeB.model = { provider: "provider-b", id: "model-b" }
+		fakeB.modelRegistry = {
+			getAvailable: () => [
+				{ provider: orchProvider, id: orchModelId, name: "Orchestrator Model" },
+				{ provider: "provider-b", id: "model-b", name: "Model B" },
+			],
+			find: (provider: string, modelId: string) => {
+				if (provider === orchProvider && modelId === orchModelId) {
+					return { provider: orchProvider, id: orchModelId, name: "Orchestrator Model" }
+				}
+				return undefined
+			},
+		}
+
+		// Rotating factory returns different sessions in order
+		const fakes = [fakeA, fakeB]
+		let i = 0
+		const factory: AcpSessionFactory = async () => asSession(fakes[i++] ?? fakes[fakes.length - 1])
+
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+		})
+
+		// Create both sessions
+		const a = await agent.newSession({ cwd: "/tmp/a", mcpServers: [] })
+		const b = await agent.newSession({ cwd: "/tmp/b", mcpServers: [] })
+
+		// Switch session A to multi-model
+		await agent.unstable_setSessionModel({ sessionId: a.sessionId, modelId: "multi-model" })
+
+		// Keep session B on single model (explicitly switch to a specific model)
+		await agent.unstable_setSessionModel({ sessionId: b.sessionId, modelId: "provider-b/model-b" })
+
+		// Verify session A is in multi-model mode (model switched to orchestrator)
+		expect(fakeA.model?.provider).toBe(orchProvider)
+		expect(fakeA.model?.id).toBe(orchModelId)
+
+		// Verify session B is in single-model mode (model switched to provider-b/model-b)
+		expect(fakeB.model?.provider).toBe("provider-b")
+		expect(fakeB.model?.id).toBe("model-b")
+	})
+
 	it("throws invalidParams for unknown sessionId", async () => {
 		const agent = new KimchiAcpAgent(makeConn(), {
 			extensionFactories: [],
 			agentDir: "/tmp/fake-agent-dir",
 		})
 		await expect(agent.unstable_setSessionModel({ sessionId: "no-such-session", modelId: "model-a" })).rejects.toThrow()
+	})
+
+	// Concurrent model switches on different sessions must not interfere with each other.
+	// Each session must end up with the model mode it requested, regardless of timing.
+	it("handles concurrent model switches on different sessions independently", async () => {
+		const orchProvider = "test-provider"
+		const orchModelId = "test-orchestrator"
+
+		const fakeA = new FakeAgentSession("concurrent-a")
+		fakeA.model = { provider: "provider-a", id: "model-a" }
+		fakeA.modelRegistry = {
+			getAvailable: () => [
+				{ provider: orchProvider, id: orchModelId, name: "Orchestrator Model" },
+				{ provider: "provider-a", id: "model-a", name: "Model A" },
+			],
+			find: (provider: string, modelId: string) => {
+				if (provider === orchProvider && modelId === orchModelId) {
+					return { provider: orchProvider, id: orchModelId, name: "Orchestrator Model" }
+				}
+				return undefined
+			},
+		}
+
+		const fakeB = new FakeAgentSession("concurrent-b")
+		fakeB.model = { provider: "provider-b", id: "model-b" }
+		fakeB.modelRegistry = {
+			getAvailable: () => [
+				{ provider: orchProvider, id: orchModelId, name: "Orchestrator Model" },
+				{ provider: "provider-b", id: "model-b", name: "Model B" },
+			],
+			find: (provider: string, modelId: string) => {
+				if (provider === orchProvider && modelId === orchModelId) {
+					return { provider: orchProvider, id: orchModelId, name: "Orchestrator Model" }
+				}
+				return undefined
+			},
+		}
+
+		const fakes = [fakeA, fakeB]
+		let i = 0
+		const rotating: AcpSessionFactory = async () => asSession(fakes[i++] ?? fakes[fakes.length - 1])
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: rotating,
+		})
+
+		// Create both sessions
+		const [a, b] = await Promise.all([
+			agent.newSession({ cwd: "/tmp/a", mcpServers: [] }),
+			agent.newSession({ cwd: "/tmp/b", mcpServers: [] }),
+		])
+		expect(a.sessionId).toBe("concurrent-a")
+		expect(b.sessionId).toBe("concurrent-b")
+
+		// Concurrently switch both sessions - A to multi-model, B to single-model
+		const [resA, resB] = await Promise.all([
+			agent.unstable_setSessionModel({ sessionId: a.sessionId, modelId: "multi-model" }),
+			agent.unstable_setSessionModel({ sessionId: b.sessionId, modelId: "provider-b/model-b" }),
+		])
+		expect(resA).toEqual({})
+		expect(resB).toEqual({})
+
+		// Verify session A got the orchestrator (multi-model)
+		expect(fakeA.model?.provider).toBe(orchProvider)
+		expect(fakeA.model?.id).toBe(orchModelId)
+
+		// Verify session B got the single model
+		expect(fakeB.model?.provider).toBe("provider-b")
+		expect(fakeB.model?.id).toBe("model-b")
+	})
+})
+
+// ---------------------------------------------------------------------------
+// runSerializedModelSwitch lock tests
+// ---------------------------------------------------------------------------
+// These tests verify that the per-session model-switch lock serializes
+// concurrent switches on the SAME session and does NOT block switches on
+// DIFFERENT sessions.
+
+describe("runSerializedModelSwitch (lock behaviour)", () => {
+	const orchProvider = "test-provider"
+	const orchModelId = "test-orchestrator"
+	const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
+
+	function makeFakeWithDelay(id: string) {
+		const fake = new FakeAgentSession(id)
+		const log: string[] = []
+		fake.model = { provider: orchProvider, id: orchModelId }
+		fake.modelRegistry = {
+			getAvailable: () => [
+				{ provider: orchProvider, id: orchModelId, name: "Orchestrator" },
+				{ provider: "p-a", id: "model-a", name: "Model A" },
+				{ provider: "p-b", id: "model-b", name: "Model B" },
+				{ provider: "p-c", id: "model-c", name: "Model C" },
+			],
+			find: (provider: string, modelId: string) => {
+				for (const m of fake.modelRegistry.getAvailable()) {
+					if (m.provider === provider && m.id === modelId) return m
+				}
+				return undefined
+			},
+		}
+		return { fake, log }
+	}
+
+	async function makeAgentWithFakes(...fakeEntries: { fake: FakeAgentSession }[]) {
+		const fakes = fakeEntries.map((e) => e.fake)
+		let i = 0
+		const rotating: AcpSessionFactory = async () => asSession(fakes[i++] ?? fakes[fakes.length - 1])
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: rotating,
+		})
+		const sessions = []
+		for (const f of fakes) {
+			sessions.push(await agent.newSession({ cwd: `/tmp/${f.sessionId}`, mcpServers: [] }))
+		}
+		return { agent, sessions }
+	}
+
+	// Rapid-fire switches on the SAME session must serialize: each setModel
+	// must complete before the next one starts, and the final model must be
+	// the one from the last switch.
+	it("serializes rapid-fire switches on the same session", async () => {
+		const entry = makeFakeWithDelay("serial")
+		const { fake, log } = entry
+
+		// Override setModel to record order and introduce a delay
+		fake.setModel = async (model: { provider: string; id: string }) => {
+			log.push(`start:${model.provider}/${model.id}`)
+			await delay(20)
+			fake.model = model
+			log.push(`end:${model.provider}/${model.id}`)
+		}
+
+		const { agent, sessions } = await makeAgentWithFakes(entry)
+		const sid = sessions[0].sessionId
+
+		// Fire three switches concurrently on the same session
+		const [r1, r2, r3] = await Promise.all([
+			agent.unstable_setSessionModel({ sessionId: sid, modelId: "p-a/model-a" }),
+			agent.unstable_setSessionModel({ sessionId: sid, modelId: "p-b/model-b" }),
+			agent.unstable_setSessionModel({ sessionId: sid, modelId: "p-c/model-c" }),
+		])
+		expect(r1).toEqual({})
+		expect(r2).toEqual({})
+		expect(r3).toEqual({})
+
+		// Each switch must complete (end) before the next starts — serialized.
+		expect(log).toEqual([
+			"start:p-a/model-a",
+			"end:p-a/model-a",
+			"start:p-b/model-b",
+			"end:p-b/model-b",
+			"start:p-c/model-c",
+			"end:p-c/model-c",
+		])
+
+		// Final model is the last one switched to
+		expect(fake.model?.provider).toBe("p-c")
+		expect(fake.model?.id).toBe("model-c")
+	})
+
+	// If a switch fails, the next queued switch must still execute.
+	it("does not break the chain when a switch fails", async () => {
+		const entry = makeFakeWithDelay("fail-chain")
+		const { fake, log } = entry
+		let callCount = 0
+
+		fake.setModel = async (model: { provider: string; id: string }) => {
+			callCount++
+			log.push(`start:${model.provider}/${model.id}`)
+			await delay(10)
+			if (callCount === 1) {
+				log.push(`fail:${model.provider}/${model.id}`)
+				throw new Error("simulated setModel failure")
+			}
+			fake.model = model
+			log.push(`end:${model.provider}/${model.id}`)
+		}
+
+		const { agent, sessions } = await makeAgentWithFakes(entry)
+		const sid = sessions[0].sessionId
+
+		// Fire two switches: first will fail, second must still run
+		const results = await Promise.allSettled([
+			agent.unstable_setSessionModel({ sessionId: sid, modelId: "p-a/model-a" }),
+			agent.unstable_setSessionModel({ sessionId: sid, modelId: "p-b/model-b" }),
+		])
+
+		// First rejected, second fulfilled
+		expect(results[0].status).toBe("rejected")
+		expect(results[1].status).toBe("fulfilled")
+
+		// Second switch ran after the first completed (even though first failed)
+		expect(log).toEqual(["start:p-a/model-a", "fail:p-a/model-a", "start:p-b/model-b", "end:p-b/model-b"])
+
+		// Model ends up as the second switch's target
+		expect(fake.model?.provider).toBe("p-b")
+		expect(fake.model?.id).toBe("model-b")
+	})
+
+	// Switches on DIFFERENT sessions must NOT block each other — they should
+	// overlap in time (parallel execution).
+	it("does not block switches across different sessions", async () => {
+		const entryA = makeFakeWithDelay("cross-a")
+		const entryB = makeFakeWithDelay("cross-b")
+		const timeline: string[] = []
+
+		entryA.fake.setModel = async (model: { provider: string; id: string }) => {
+			timeline.push("a:start")
+			await delay(40)
+			entryA.fake.model = model
+			timeline.push("a:end")
+		}
+		entryB.fake.setModel = async (model: { provider: string; id: string }) => {
+			timeline.push("b:start")
+			await delay(40)
+			entryB.fake.model = model
+			timeline.push("b:end")
+		}
+
+		const { agent, sessions } = await makeAgentWithFakes(entryA, entryB)
+
+		await Promise.all([
+			agent.unstable_setSessionModel({ sessionId: sessions[0].sessionId, modelId: "p-a/model-a" }),
+			agent.unstable_setSessionModel({ sessionId: sessions[1].sessionId, modelId: "p-b/model-b" }),
+		])
+
+		// Both should start before either ends (parallel, not serialized)
+		const aStart = timeline.indexOf("a:start")
+		const bStart = timeline.indexOf("b:start")
+		const aEnd = timeline.indexOf("a:end")
+		const bEnd = timeline.indexOf("b:end")
+
+		// Both started before either finished
+		expect(aStart).toBeLessThan(aEnd)
+		expect(bStart).toBeLessThan(bEnd)
+		expect(aStart).toBeLessThan(bEnd)
+		expect(bStart).toBeLessThan(aEnd)
+
+		expect(entryA.fake.model?.id).toBe("model-a")
+		expect(entryB.fake.model?.id).toBe("model-b")
 	})
 })
 

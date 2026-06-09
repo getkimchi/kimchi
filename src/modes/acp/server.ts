@@ -53,11 +53,15 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import { isHideThinkingEnabled } from "../../extensions/hide-thinking.js"
 import {
-	getMultiModelEnabled,
 	getOrchestratorModelRef,
 	resolveOrchestratorModel,
-	setMultiModelEnabled,
 } from "../../extensions/prompt-construction/prompt-enrichment.js"
+import {
+	clearSessionMultiModelState,
+	getSessionMultiModelEnabled,
+	runWithSession,
+	setSessionMultiModelEnabled,
+} from "./session-state.js"
 
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
@@ -158,7 +162,11 @@ export class KimchiAcpAgent implements Agent {
 				// "supported"). loadSession remains the top-level flag because
 				// the spec hasn't unified it under sessionCapabilities yet.
 				sessionCapabilities: { list: {}, close: {} },
-				promptCapabilities: { image: supportsImages, audio: false, embeddedContext: false },
+				promptCapabilities: {
+					image: supportsImages,
+					audio: false,
+					embeddedContext: false,
+				},
 			},
 			authMethods: [],
 		}
@@ -286,7 +294,7 @@ export class KimchiAcpAgent implements Agent {
 
 			await this.runSerializedModelSwitch(params.sessionId, async () => {
 				await session.setModel(orchestrator)
-				setMultiModelEnabled(true)
+				setSessionMultiModelEnabled(session.sessionId, true)
 			})
 			return {}
 		}
@@ -300,7 +308,7 @@ export class KimchiAcpAgent implements Agent {
 
 		await this.runSerializedModelSwitch(params.sessionId, async () => {
 			await session.setModel(selectedModel)
-			setMultiModelEnabled(false)
+			setSessionMultiModelEnabled(session.sessionId, false)
 		})
 		return {}
 	}
@@ -380,6 +388,7 @@ export class KimchiAcpAgent implements Agent {
 			const existing = this.sessions.get(sid)
 			if (existing) {
 				this.sessions.delete(sid)
+				clearSessionMultiModelState(sid)
 				existing.unsubscribe()
 			}
 			session.dispose()
@@ -447,7 +456,10 @@ export class KimchiAcpAgent implements Agent {
 		// paused on `await session.prompt()`. Instead, attach handlers that drive
 		// finalizeTurn/failTurn and return `result` directly; settling `result`
 		// propagates to the caller regardless of whether session.prompt ever resolves.
-		entry.session.prompt(text, { source: "rpc", images }).then(
+		// Run the prompt inside an AsyncLocalStorage context so extensions
+		// (prompt-enrichment) can read per-session state like multiModelEnabled
+		// without a module-level global that breaks under concurrent sessions.
+		runWithSession(entry.session, () => entry.session.prompt(text, { source: "rpc", images })).then(
 			() => {
 				// pi-coding-agent's session.prompt() short-circuits for extension commands,
 				// input-handler intercepts, and no-op paths — in those cases agent.prompt()
@@ -514,6 +526,7 @@ export class KimchiAcpAgent implements Agent {
 		const entry = this.sessions.get(sessionId)
 		if (!entry) return
 		this.sessions.delete(sessionId)
+		clearSessionMultiModelState(sessionId)
 		unregisterAcpPrompter(sessionId)
 		entry.unsubscribe()
 		if (entry.turn) {
@@ -538,7 +551,10 @@ export class KimchiAcpAgent implements Agent {
 		// calling dispose(). dispose() is synchronous and returns void, so async
 		// extension handlers (e.g. telemetry drain, shutdown marker) would be
 		// fire-and-forgotten if we relied on dispose() alone.
-		await entry.session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" })
+		await entry.session.extensionRunner?.emit({
+			type: "session_shutdown",
+			reason: "quit",
+		})
 		entry.session.dispose()
 	}
 
@@ -796,7 +812,7 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	private modelStateForSession(session: AgentSession): SessionModelState | null {
-		return buildSessionModelState(session, getMultiModelEnabled())
+		return buildSessionModelState(session, getSessionMultiModelEnabled(session.sessionId))
 	}
 
 	private send(params: SessionNotification): void {
@@ -963,7 +979,10 @@ function parseSessionHeader(raw: string): Pick<SessionHeader, "id" | "cwd"> | nu
 	return null
 }
 
-function readSessionHeaderPeek(sessionPath: string): { raw: string; complete: boolean } {
+function readSessionHeaderPeek(sessionPath: string): {
+	raw: string
+	complete: boolean
+} {
 	const fd = openSync(sessionPath, "r")
 	try {
 		const buffer = Buffer.allocUnsafe(SESSION_HEADER_PEEK_BYTES)

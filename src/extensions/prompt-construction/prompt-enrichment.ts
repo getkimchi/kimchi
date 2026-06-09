@@ -34,6 +34,7 @@ import {
 	loadSkills,
 } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
+import { getCurrentSessionId, getSessionMultiModelEnabled } from "../../modes/acp/session-state.js"
 import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
 import { isAgentWorker } from "../agent-worker-context.js"
@@ -88,8 +89,11 @@ function safeUsername(): string {
 function readGitRemote(cwd: string): string | undefined {
 	try {
 		return (
-			execSync("git remote get-url origin", { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() ||
-			undefined
+			execSync("git remote get-url origin", {
+				cwd,
+				encoding: "utf8",
+				stdio: ["ignore", "pipe", "ignore"],
+			}).trim() || undefined
 		)
 	} catch {
 		return undefined
@@ -237,7 +241,10 @@ export function stripEmptyToolCalls(messages: OrchestratorMessages): Orchestrato
 			if (cleaned.length !== msg.content.length) {
 				changed = true
 				if (cleaned.length > 0) {
-					filtered.push({ ...msg, content: cleaned } as OrchestratorMessages[number])
+					filtered.push({
+						...msg,
+						content: cleaned,
+					} as OrchestratorMessages[number])
 				}
 				continue
 			}
@@ -256,7 +263,18 @@ export function stripEmptyToolCalls(messages: OrchestratorMessages): Orchestrato
 	return changed ? filtered : messages
 }
 
+/**
+ * Get the effective multi-model enabled state.
+ * In ACP mode (inside a runWithSession context), returns per-session state.
+ * In CLI mode, returns the global flag (synced with cross-process state).
+ */
 export function getMultiModelEnabled(): boolean {
+	// Check per-session state first (ACP mode)
+	const sessionId = getCurrentSessionId()
+	if (sessionId) {
+		return getSessionMultiModelEnabled(sessionId)
+	}
+	// CLI mode: cross-process sync — a subagent may have toggled the flag
 	const processFlag = getProcessMultiModelEnabled()
 	if (processFlag !== undefined && processFlag !== multiModelEnabled) {
 		multiModelEnabled = processFlag
@@ -265,10 +283,12 @@ export function getMultiModelEnabled(): boolean {
 	return multiModelEnabled
 }
 
+/**
+ * Set the global multi-model enabled state (CLI mode).
+ * ACP mode should use setSessionMultiModelEnabled from session-state.ts.
+ */
 export function setMultiModelEnabled(enabled: boolean): void {
 	multiModelEnabled = enabled
-	// Only update the enabled flag — the orchestrator ref is managed separately
-	// via setProcessOrchestratorRef() when roles actually change, not here.
 	setProcessMultiModelEnabled(enabled)
 	writeMultiModelSetting(enabled)
 }
@@ -319,7 +339,9 @@ export default function (skillPaths: string[]) {
 			function notifyIfDeprecated(ctx: {
 				sessionManager?: { getSessionId: () => string | undefined }
 				model?: { id: string }
-				ui?: { notify: (msg: string, kind?: "warning" | "error" | "info") => void }
+				ui?: {
+					notify: (msg: string, kind?: "warning" | "error" | "info") => void
+				}
 			}) {
 				const sessionId = ctx.sessionManager?.getSessionId() ?? "unknown"
 				if (ctx.model && deprecatedWarnings.has(ctx.model.id) && !deprecatedNotificationFired.has(sessionId)) {
@@ -345,7 +367,7 @@ export default function (skillPaths: string[]) {
 				// In multi-model mode the orchestrator must always be the configured
 				// orchestrator model. Force-switch if the user has a different model
 				// selected via /models.
-				if (multiModelEnabled && ctx.model?.id !== getOrchestratorModelId()) {
+				if (getMultiModelEnabled() && ctx.model?.id !== getOrchestratorModelId()) {
 					const ref = splitModelRef(getOrchestratorModelRef())
 					const orchestratorModel = ref ? ctx.modelRegistry?.find(ref.provider, ref.modelId) : undefined
 					if (orchestratorModel) {
@@ -430,7 +452,11 @@ export default function (skillPaths: string[]) {
 					// Fall through to continuationNudge.evaluateTurn below.
 				} else if (emptyTurnNudge.evaluateTurn(assistantMsg)) {
 					pi.sendMessage(
-						{ customType: NUDGE_CUSTOM_TYPE, content: EMPTY_TURN_NUDGE_TEXT, display: false },
+						{
+							customType: NUDGE_CUSTOM_TYPE,
+							content: EMPTY_TURN_NUDGE_TEXT,
+							display: false,
+						},
 						{ deliverAs: "followUp" },
 					)
 					return
@@ -467,7 +493,10 @@ export default function (skillPaths: string[]) {
 			})
 		}
 
-		const platformNames: Record<string, string> = { darwin: "macOS", win32: "Windows" }
+		const platformNames: Record<string, string> = {
+			darwin: "macOS",
+			win32: "Windows",
+		}
 		const cachedOs = platformNames[platform()] ?? platform()
 		const cachedUsername = safeUsername()
 		const cachedHomeDir = homedir()
@@ -510,7 +539,7 @@ export default function (skillPaths: string[]) {
 				gitRemote: isGitRepo ? (cachedGitRemote ?? undefined) : undefined,
 			}
 
-			const mode: PromptMode = subagentMode ? "subagent" : multiModelEnabled ? "orchestrator" : "single"
+			const mode: PromptMode = subagentMode ? "subagent" : getMultiModelEnabled() ? "orchestrator" : "single"
 			const roles = mode === "orchestrator" ? getModelRoles() : undefined
 
 			const systemPrompt = buildSystemPrompt({

@@ -7,6 +7,8 @@ import * as startupContext from "../../startup-context.js"
 import * as agentWorkerContext from "../agent-worker-context.js"
 import type { OrchestratorMessages } from "../orchestration/continuation-nudge.js"
 import promptEnrichmentExtension, {
+	getMultiModelEnabled,
+	setMultiModelEnabled,
 	stripEmptyToolCalls,
 	_resetDeprecatedNotificationTracking,
 } from "./prompt-enrichment.js"
@@ -681,5 +683,18 @@ describe("continuation nudge turn_end handler", () => {
 			message: makeAssistantWithStop([{ type: "text", text: "I was going to say..." }], "length"),
 		})
 		expect(sendMessageCalls.length).toBe(2)
+	})
+})
+
+describe("global multi-model state (CLI mode)", () => {
+	it("returns false by default", () => {
+		expect(getMultiModelEnabled()).toBe(false)
+	})
+
+	it("get/set round-trips", () => {
+		setMultiModelEnabled(true)
+		expect(getMultiModelEnabled()).toBe(true)
+		setMultiModelEnabled(false)
+		expect(getMultiModelEnabled()).toBe(false)
 	})
 })
