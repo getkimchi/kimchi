@@ -1,6 +1,5 @@
 /**
- * Task-type affinity used by the Orchestrator to match a model's strengths
- * to the nature of the work.
+ * Task-type affinity used by the Orchestrator to match a model to a role.
  *
  *  - "build"    — writing, modifying, and refactoring code.
  *  - "explore"  — navigating codebases, searching for information,
@@ -11,7 +10,7 @@
  *  - "research" — researching and investigating code, tracing dependencies,
  *                  understanding large codebases.
  */
-export type ModelStrength = "review" | "build" | "plan" | "explore" | "research"
+export type ModelRole = "review" | "build" | "plan" | "explore" | "research"
 
 /**
  * Relative cost/capability tier used by the Orchestrator to match task
@@ -32,7 +31,7 @@ export type Phase = "explore" | "research" | "plan" | "build" | "review"
 /** Injected into the Orchestrator LLM's context to steer model selection. */
 export interface ModelCapabilities {
 	vision: boolean
-	strengths: ModelStrength[]
+	roles: ModelRole[]
 	tier: ModelTier
 	description: string
 	/** Phase-specific guideline annexes. If a phase key is present, its value

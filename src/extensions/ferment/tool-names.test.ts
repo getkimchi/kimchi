@@ -1,6 +1,12 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it } from "vitest"
-import { FERMENT_TOOLS, FERMENT_TOOL_NAMES, isClassifiedFermentToolName, isFermentToolName } from "./tool-names.js"
+import {
+	FERMENT_TOOLS,
+	FERMENT_TOOL_NAMES,
+	isClassifiedFermentToolName,
+	isFermentToolName,
+	isUserFacingFermentToolName,
+} from "./tool-names.js"
 import { registerKnowledgeTools } from "./tools/knowledge.js"
 import { registerLifecycleTools } from "./tools/lifecycle.js"
 import { registerPhaseTools } from "./tools/phases.js"
@@ -37,5 +43,9 @@ describe("ferment tool name constants", () => {
 
 	it("classifies every ferment tool as planner-only or non-planner", () => {
 		expect(FERMENT_TOOL_NAMES.filter((name) => !isClassifiedFermentToolName(name))).toEqual([])
+	})
+
+	it("classifies criteria confirmation as user-facing", () => {
+		expect(isUserFacingFermentToolName(FERMENT_TOOLS.CONFIRM_COMPLETION_CRITERIA)).toBe(true)
 	})
 })

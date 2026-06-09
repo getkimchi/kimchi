@@ -43,3 +43,6 @@ kimchi-session-*.html
 
 .memory
 bin
+
+# LLM tools
+.codegraph/

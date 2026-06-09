@@ -1,7 +1,7 @@
 {
 	"name": "@kimchi-dev/cli",
 	"version": "0.0.0",
-	"description": "kimchi — a coding agent CLI powered by Cast AI",
+	"description": "kimchi \u2014 a coding agent CLI powered by Cast AI",
 	"type": "module",
 	"license": "Apache-2.0",
 	"bin": {
@@ -108,9 +108,9 @@
 			"nan"
 		],
 		"patchedDependencies": {
-			"@earendil-works/pi-coding-agent": "patches/@earendil-works__pi-coding-agent.patch",
 			"@earendil-works/pi-tui": "patches/@earendil-works__pi-tui.patch",
-			"playwright-core@1.59.1": "patches/playwright-core@1.59.1.patch"
+			"playwright-core@1.59.1": "patches/playwright-core@1.59.1.patch",
+			"@earendil-works/pi-coding-agent": "patches/@earendil-works__pi-coding-agent.patch"
 		}
 	}
 }

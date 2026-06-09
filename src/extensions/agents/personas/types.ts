@@ -3,7 +3,7 @@
  */
 
 import type { AgentSession } from "@earendil-works/pi-coding-agent"
-import type { ModelStrength, ModelTier } from "../../orchestration/model-registry/types.js"
+import type { ModelRole, ModelTier } from "../../orchestration/model-registry/types.js"
 import type { LifetimeUsage } from "../manager/usage.js"
 
 /** Thinking/reasoning level for models that support it. */
@@ -33,7 +33,7 @@ export type MemoryScope = "user" | "project" | "local"
 export type IsolationMode = "worktree"
 
 /** Re-export orchestration types used in agent configs. */
-export type { ModelStrength, ModelTier }
+export type { ModelRole, ModelTier }
 
 /** Unified agent configuration — used for both default and user-defined agents. */
 export interface AgentConfig {
@@ -51,7 +51,7 @@ export interface AgentConfig {
 	 * Set of models this persona may use. The list order has NO semantics —
 	 * it is not a tier ranking. The calling LLM is shown the set in the Agent
 	 * tool's description and picks per spawn based on capability metadata
-	 * (tier, strengths) it knows from the orchestration model registry. If
+	 * (tier, roles) it knows from the orchestration model registry. If
 	 * the caller omits `model`, the runtime falls back to the first entry as
 	 * a stable default — that is NOT a complexity-aware pick. Each entry is
 	 * a "<provider>/<id>" string. Legacy `model:` frontmatter is
@@ -86,12 +86,12 @@ export interface AgentConfig {
 	/** Where this agent was loaded from */
 	source?: "default" | "project" | "global" | "package"
 	/**
-	 * Task strengths this persona is optimized for. Used by the orchestrator
+	 * Task roles this persona is optimized for. Used by the orchestrator
 	 * auto-pick logic when no model is explicitly specified and models[] is empty.
 	 */
-	strengths?: ModelStrength[]
+	roles?: ModelRole[]
 	/**
-	 * Preferred model tier for auto-pick. Defaults to "standard" when strengths
+	 * Preferred model tier for auto-pick. Defaults to "standard" when roles
 	 * are set. Ignored when models[] is populated or model is passed explicitly.
 	 */
 	preferTier?: ModelTier

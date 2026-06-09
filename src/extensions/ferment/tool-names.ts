@@ -3,6 +3,7 @@ export const FERMENT_TOOLS = {
 	PROPOSE_SCOPING: "propose_ferment_scoping",
 	LIST: "list_ferments",
 	SCOPE: "scope_ferment",
+	CONFIRM_COMPLETION_CRITERIA: "confirm_ferment_completion_criteria",
 	UPDATE_SCOPE_FIELD: "update_ferment_scope_field",
 	COMPLETE: "complete_ferment",
 	ACTIVATE_PHASE: "activate_ferment_phase",
@@ -27,6 +28,7 @@ const NON_PLANNER_FERMENT_TOOL_NAMES = new Set<string>([FERMENT_TOOLS.LIST, FERM
 const PLANNER_ONLY_FERMENT_TOOL_NAMES = new Set<string>([
 	FERMENT_TOOLS.PROPOSE_SCOPING,
 	FERMENT_TOOLS.SCOPE,
+	FERMENT_TOOLS.CONFIRM_COMPLETION_CRITERIA,
 	FERMENT_TOOLS.UPDATE_SCOPE_FIELD,
 	FERMENT_TOOLS.COMPLETE,
 	FERMENT_TOOLS.ACTIVATE_PHASE,
@@ -46,7 +48,10 @@ const PLANNER_ONLY_FERMENT_TOOL_NAMES = new Set<string>([
 
 // Ferment tools that drive user-facing UI or other side-effects; must NOT bypass user
 // permission rules and the classifier. Membership opts a tool back into normal evaluation.
-const USER_FACING_FERMENT_TOOL_NAMES = new Set<string>([FERMENT_TOOLS.ASK_USER])
+const USER_FACING_FERMENT_TOOL_NAMES = new Set<string>([
+	FERMENT_TOOLS.CONFIRM_COMPLETION_CRITERIA,
+	FERMENT_TOOLS.ASK_USER,
+])
 
 export function isFermentToolName(name: string): boolean {
 	return FERMENT_TOOL_NAME_SET.has(name)

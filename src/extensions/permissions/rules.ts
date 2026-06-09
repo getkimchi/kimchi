@@ -1,5 +1,5 @@
 import micromatch from "micromatch"
-import { FILE_TOOLS } from "./taxonomy.js"
+import { FILE_TOOLS, extractBashProgram } from "./taxonomy.js"
 import type { Rule, RuleBehavior, RuleSource } from "./types.js"
 
 // Rule syntax: `toolname` or `toolname(content)`. Tool names are case-
@@ -26,7 +26,18 @@ export function stringifyRule(rule: Rule): string {
 const BASH_TOOL = "bash"
 
 export function matchRule(rule: Rule, toolName: string, input: Record<string, unknown>): boolean {
-	if (rule.toolName !== toolName.toLowerCase()) return false
+	const lowerToolName = toolName.toLowerCase()
+	if (rule.toolName !== lowerToolName) {
+		// Auto-rewrite: bare rules like "rm" or "mv" should match bash invocations
+		// of that program (including through rtk wrapper). Users naturally write
+		// deny: ["rm"] expecting it to block bash(rm ...) commands.
+		if (rule.content === undefined && lowerToolName === BASH_TOOL) {
+			const command = typeof input.command === "string" ? input.command : ""
+			const { program } = extractBashProgram(command)
+			if (rule.toolName === program) return true
+		}
+		return false
+	}
 	if (rule.content === undefined) return true
 
 	if (toolName === BASH_TOOL) {
