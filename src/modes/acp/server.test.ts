@@ -20,6 +20,19 @@ const THEME_KEY_OLD = Symbol.for("@mariozechner/pi-coding-agent:theme")
 
 import { _resetState as _resetHideThinking, _setHideThinking } from "../../extensions/hide-thinking.js"
 import { getAcpPrompter } from "./permission-prompter-registry.js"
+
+// Mock resolveModelRoles to ensure hermetic tests that don't depend on external settings
+vi.mock("../../extensions/orchestration/model-roles.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../../extensions/orchestration/model-roles.js")>()
+	return {
+		...actual,
+		resolveModelRoles: () => ({
+			roles: { orchestrator: "test-provider/test-orchestrator" },
+			warnings: [],
+		}),
+		getModelRoles: () => ({ orchestrator: "test-provider/test-orchestrator" }),
+	}
+})
 import {
 	type AcpSessionFactory,
 	type AcpSessionLister,
@@ -52,7 +65,10 @@ class FakeAgentSession {
 		name: "Test Model",
 		input: ["text"],
 	}
-	modelRegistry = {
+	modelRegistry: {
+		getAvailable: () => { provider: string; id: string; name: string }[]
+		find?: (provider: string, modelId: string) => { provider: string; id: string; name: string } | undefined
+	} = {
 		getAvailable: () =>
 			this.model ? [{ provider: this.model.provider, id: this.model.id, name: this.model.name ?? this.model.id }] : [],
 	}
@@ -1233,6 +1249,7 @@ describe("buildSessionModelState", () => {
 		expect(result).toEqual({
 			currentModelId: "openai/gpt-4",
 			availableModels: [
+				{ modelId: "multi-model", name: expect.stringContaining("Multi-model") },
 				{ modelId: "openai/gpt-4", name: "GPT-4" },
 				{ modelId: "anthropic/claude-3", name: "Claude 3" },
 			],
@@ -1246,7 +1263,35 @@ describe("buildSessionModelState", () => {
 		const result = buildSessionModelState(fake as unknown as Parameters<typeof buildSessionModelState>[0])
 		expect(result).toEqual({
 			currentModelId: "openai/gpt-4",
-			availableModels: [],
+			availableModels: [{ modelId: "multi-model", name: expect.stringContaining("Multi-model") }],
+		})
+	})
+
+	it("returns multi-model currentModelId when multi-model mode is active", () => {
+		const fake = new FakeAgentSession("s1")
+		fake.model = { provider: "openai", id: "gpt-4" }
+		// Fixed test fixture for orchestrator to ensure hermetic tests
+		const TEST_ORCHESTRATOR_PROVIDER = "test-provider"
+		const TEST_ORCHESTRATOR_MODEL = "test-model"
+		fake.modelRegistry = {
+			getAvailable: () => [
+				{ provider: "openai", id: "gpt-4", name: "GPT-4" },
+				{ provider: "anthropic", id: "claude-3", name: "Claude 3" },
+			],
+			find: (provider: string, modelId: string) => {
+				// Use fixed test fixture instead of calling resolveModelRoles()
+				if (provider === TEST_ORCHESTRATOR_PROVIDER && modelId === TEST_ORCHESTRATOR_MODEL) {
+					return { provider: TEST_ORCHESTRATOR_PROVIDER, id: TEST_ORCHESTRATOR_MODEL, name: "Orchestrator Model" }
+				}
+				return undefined
+			},
+		}
+		// Pass true as second argument to enable multi-model state
+		const result = buildSessionModelState(fake as unknown as Parameters<typeof buildSessionModelState>[0], true)
+		expect(result?.currentModelId).toBe("multi-model")
+		expect(result?.availableModels[0]).toEqual({
+			modelId: "multi-model",
+			name: expect.stringContaining("Multi-model"),
 		})
 	})
 })
@@ -1271,9 +1316,13 @@ describe("newSession model state", () => {
 		expect(res.sessionId).toBe("session-model")
 		expect(res.models).toBeDefined()
 		expect(res.models?.currentModelId).toBe("openai/gpt-4")
-		expect(res.models?.availableModels).toHaveLength(2)
-		expect(res.models?.availableModels[0]).toEqual({ modelId: "openai/gpt-4", name: "GPT-4" })
-		expect(res.models?.availableModels[1]).toEqual({ modelId: "anthropic/claude-3", name: "Claude 3" })
+		expect(res.models?.availableModels).toHaveLength(3)
+		expect(res.models?.availableModels[0]).toEqual({
+			modelId: "multi-model",
+			name: expect.stringContaining("Multi-model"),
+		})
+		expect(res.models?.availableModels[1]).toEqual({ modelId: "openai/gpt-4", name: "GPT-4" })
+		expect(res.models?.availableModels[2]).toEqual({ modelId: "anthropic/claude-3", name: "Claude 3" })
 	})
 
 	it("rejects with authRequired when no model is active", async () => {
@@ -1353,6 +1402,37 @@ describe("unstable_setSessionModel", () => {
 		expect(result).toBeDefined()
 		expect(fake.model?.provider).toBe("provider-b")
 		expect(fake.model?.id).toBe("model-b")
+	})
+
+	it("switches to multi-model mode", async () => {
+		const fake = new FakeAgentSession("switch-session")
+		fake.model = { provider: "provider-a", id: "model-a" }
+		// Use fixed test fixture for orchestrator to ensure deterministic, hermetic tests
+		const orchProvider = "test-provider"
+		const orchModelId = "test-orchestrator"
+		fake.modelRegistry = {
+			getAvailable: () => [
+				{ provider: orchProvider, id: orchModelId, name: "Orchestrator Model" },
+				{ provider: "provider-a", id: "model-a", name: "Model A" },
+			],
+			find: (provider: string, modelId: string) => {
+				if (provider === orchProvider && modelId === orchModelId) {
+					return { provider: orchProvider, id: orchModelId, name: "Orchestrator Model" }
+				}
+				return undefined
+			},
+		}
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+		})
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		const res = await agent.unstable_setSessionModel({ sessionId: "switch-session", modelId: "multi-model" })
+		expect(res).toEqual({})
+		expect(fake.model?.provider).toBe(orchProvider)
+		expect(fake.model?.id).toBe(orchModelId)
 	})
 
 	it("throws invalidParams for unknown sessionId", async () => {
@@ -1947,7 +2027,10 @@ describe("KimchiAcpAgent loadSession", () => {
 		})
 		expect(res.models).toMatchObject({
 			currentModelId: "test/test-model",
-			availableModels: [{ modelId: "test/test-model", name: "Test Model" }],
+			availableModels: [
+				{ modelId: "multi-model", name: expect.stringContaining("Multi-model") },
+				{ modelId: "test/test-model", name: "Test Model" },
+			],
 		})
 	})
 

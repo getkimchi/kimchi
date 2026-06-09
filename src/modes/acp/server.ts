@@ -52,6 +52,13 @@ import {
 	initTheme,
 } from "@earendil-works/pi-coding-agent"
 import { isHideThinkingEnabled } from "../../extensions/hide-thinking.js"
+import {
+	getMultiModelEnabled,
+	getOrchestratorModelRef,
+	resolveOrchestratorModel,
+	setMultiModelEnabled,
+} from "../../extensions/prompt-construction/prompt-enrichment.js"
+
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
 
@@ -123,6 +130,9 @@ export class KimchiAcpAgent implements Agent {
 	// the JSONL twice, and the later registration overwrites (and leaks) the
 	// earlier session record.
 	private loadingSessions = new Map<string, Promise<LoadSessionResponse>>()
+	// Per-session lock for model switching. Each call chains onto the tail of
+	// the current promise so that concurrent switches serialize correctly.
+	private modelSwitchLocks = new Map<string, Promise<void>>()
 	private shutdownPromise: Promise<void> | undefined
 
 	constructor(
@@ -206,13 +216,51 @@ export class KimchiAcpAgent implements Agent {
 			await bindAcpExtensions(session)
 			const unsubscribe = session.subscribe((event) => this.onSessionEvent(sessionId, event))
 			this.sessions.set(sessionId, { session, unsubscribe })
-			const models = buildSessionModelState(session)
+			const models = buildSessionModelState(session, false)
 			return { sessionId, models }
 		} catch (err) {
 			unregisterAcpPrompter(session.sessionId)
 			session.dispose()
 			throw err
 		}
+	}
+
+	/**
+	 * Serializes model switches per session by chaining onto the current lock
+	 * promise. Each call appends itself to the chain so that concurrent calls
+	 * (A → B → C) execute strictly in order rather than racing after A
+	 * completes.
+	 *
+	 * Uses async/await with try/catch to ensure synchronous throws from
+	 * session.setModel() are also caught and normalized to RequestError.
+	 */
+	private async runSerializedModelSwitch(sessionId: string, switchFn: () => Promise<void>): Promise<void> {
+		const pending = this.modelSwitchLocks.get(sessionId) ?? Promise.resolve()
+
+		// Chain onto whatever is currently pending. The .catch(() => {}) on
+		// `pending` ensures a rejected predecessor doesn't skip our switchFn.
+		const next = pending
+			.catch(() => {})
+			.then(async () => {
+				try {
+					await switchFn()
+				} catch (err) {
+					if (err instanceof RequestError) throw err
+					throw RequestError.internalError(
+						`Failed to switch model: ${err instanceof Error ? err.message : String(err)}`,
+					)
+				}
+			})
+
+		this.modelSwitchLocks.set(sessionId, next)
+
+		// Clean up the lock only if we're still the tail of the chain.
+		// A newer call may have already appended itself.
+		return next.finally(() => {
+			if (this.modelSwitchLocks.get(sessionId) === next) {
+				this.modelSwitchLocks.delete(sessionId)
+			}
+		})
 	}
 
 	async unstable_setSessionModel(params: SetSessionModelRequest): Promise<SetSessionModelResponse> {
@@ -223,23 +271,37 @@ export class KimchiAcpAgent implements Agent {
 		if (entry.turn) {
 			throw RequestError.invalidRequest(undefined, "a prompt is already in progress for this session")
 		}
+
 		const { session } = entry
+
+		// Handle multi-model mode
+		if (params.modelId === "multi-model") {
+			const orchestrator = resolveOrchestratorModel(session.modelRegistry)
+			if (!orchestrator) {
+				throw RequestError.invalidParams(
+					undefined,
+					`Multi-model orchestrator (${getOrchestratorModelRef()}) is not available.`,
+				)
+			}
+
+			await this.runSerializedModelSwitch(params.sessionId, async () => {
+				await session.setModel(orchestrator)
+				setMultiModelEnabled(true)
+			})
+			return {}
+		}
+
+		// Single-model mode
 		const availableModels = session.modelRegistry.getAvailable()
 		const selectedModel = availableModels.find((m) => getAcpModelId(m) === params.modelId)
 		if (!selectedModel) {
 			throw RequestError.invalidParams(undefined, `Unknown or unavailable model: ${params.modelId}`)
 		}
-		try {
+
+		await this.runSerializedModelSwitch(params.sessionId, async () => {
 			await session.setModel(selectedModel)
-		} catch (err) {
-			if (err instanceof RequestError) {
-				throw err
-			}
-			throw RequestError.invalidParams(
-				undefined,
-				`Failed to switch model: ${err instanceof Error ? err.message : String(err)}`,
-			)
-		}
+			setMultiModelEnabled(false)
+		})
 		return {}
 	}
 
@@ -305,7 +367,8 @@ export class KimchiAcpAgent implements Agent {
 			registerAcpPrompter(sid, createAcpPermissionPrompter(this.conn, sid, buildToolCallUpdate))
 			await bindAcpExtensions(session)
 			const unsubscribe = session.subscribe((event) => this.onSessionEvent(sid, event))
-			this.sessions.set(sid, { session, unsubscribe })
+			const entry: SessionRecord = { session, unsubscribe }
+			this.sessions.set(sid, entry)
 			// Replay BEFORE the response resolves so Zed sees a coherent transcript
 			// when the loadSession promise settles. No turn context is created, so a
 			// concurrent session/cancel during replay is a no-op — a turn must not
@@ -733,7 +796,7 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	private modelStateForSession(session: AgentSession): SessionModelState | null {
-		return buildSessionModelState(session)
+		return buildSessionModelState(session, getMultiModelEnabled())
 	}
 
 	private send(params: SessionNotification): void {
@@ -773,18 +836,33 @@ export class KimchiAcpAgent implements Agent {
 // Zed toward an auth prompt instead of showing a generic "internal error".
 export function buildSessionModelState(
 	session: Pick<AgentSession, "model" | "modelRegistry">,
+	isMultiModel = false,
 ): SessionModelState | null {
 	const currentModel = session.model
 	if (!currentModel) {
 		return null
 	}
 	const availableModels = session.modelRegistry.getAvailable()
+	// When multi-model is active, return "multi-model" as currentModelId to match
+	// what clients send in setSessionModel. Include orchestrator name in the name
+	// so the UI can display "Multi-model (Kimi K2.6)".
+	let multiModelName = "Multi-model"
+	if (isMultiModel) {
+		const orchModel = resolveOrchestratorModel(session.modelRegistry)
+		if (orchModel) {
+			multiModelName = `Multi-model (${orchModel.name})`
+		}
+	}
+	const currentModelId = isMultiModel ? "multi-model" : getAcpModelId(currentModel)
 	return {
-		currentModelId: getAcpModelId(currentModel),
-		availableModels: availableModels.map((m) => ({
-			modelId: getAcpModelId(m),
-			name: m.name,
-		})),
+		currentModelId,
+		availableModels: [
+			{ modelId: "multi-model", name: multiModelName },
+			...availableModels.map((m) => ({
+				modelId: getAcpModelId(m),
+				name: m.name,
+			})),
+		],
 	}
 }
 

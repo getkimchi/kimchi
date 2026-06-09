@@ -12,11 +12,11 @@ import {
 } from "./model-guard.js"
 import { MODEL_CAPABILITIES } from "./orchestration/model-registry/builtin-models.js"
 import type { ModelTier } from "./orchestration/model-registry/types.js"
-import { splitModelRef } from "./orchestration/model-roles.js"
 import {
 	getMultiModelEnabled,
 	getOrchestratorModelId,
 	getOrchestratorModelRef,
+	resolveOrchestratorModel,
 	setMultiModelEnabled,
 } from "./prompt-construction/prompt-enrichment.js"
 
@@ -64,8 +64,7 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 			if (model === "multi-model") {
 				const orchRef = getOrchestratorModelRef()
 				const orchId = getOrchestratorModelId()
-				const parsed = splitModelRef(orchRef)
-				const orchestrator = parsed ? ctx.modelRegistry?.find(parsed.provider, parsed.modelId) : undefined
+				const orchestrator = ctx.modelRegistry ? resolveOrchestratorModel(ctx.modelRegistry) : undefined
 				if (!orchestrator) {
 					return {
 						content: [{ type: "text" as const, text: `Multi-model orchestrator (${orchRef}) is not available.` }],
