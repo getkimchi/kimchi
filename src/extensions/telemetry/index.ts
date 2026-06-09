@@ -45,6 +45,12 @@ export interface TokenSnapshot {
 /** Snapshot taken at phase activation, keyed by "${fermentId}:${phaseId}". */
 const phaseTokenSnapshots = new Map<string, TokenSnapshot>()
 
+/**
+ * Snapshot taken at ferment creation, keyed by fermentId.
+ * Used to compute total token/cost delta for ferment.completed.
+ */
+const fermentTokenSnapshots = new Map<string, TokenSnapshot>()
+
 /** Wall-clock ms at ferment creation, keyed by fermentId. */
 const fermentStartTimes = new Map<string, number>()
 
@@ -60,6 +66,7 @@ const fermentSteeringCounts = new Map<string, number>()
 /** @internal — exposed for testing only */
 export function _resetFermentTrackingState(): void {
 	phaseTokenSnapshots.clear()
+	fermentTokenSnapshots.clear()
 	fermentStartTimes.clear()
 	stepStartTimes.clear()
 	fermentSteeringCounts.clear()
@@ -87,10 +94,8 @@ function isEnabled(): boolean {
  * Capture the current cumulative token/cost counters for a phase.
  * Called at phase activation via the ferment:phase_started domain event.
  */
-export function snapshotPhaseTokens(fermentId: string, phaseId: string): void {
-	if (!_ctx) return
-	const key = `${fermentId}:${phaseId}`
-	const { tokensByModel, costByModel } = _ctx.cumulative
+function captureSnapshot(ctx: SessionContext): TokenSnapshot {
+	const { tokensByModel, costByModel } = ctx.cumulative
 	const snapshot: TokenSnapshot = { inputByModel: {}, outputByModel: {}, costByModel: {} }
 	for (const [model, t] of Object.entries(tokensByModel)) {
 		snapshot.inputByModel[model] = t.input
@@ -99,7 +104,34 @@ export function snapshotPhaseTokens(fermentId: string, phaseId: string): void {
 	for (const [model, cost] of Object.entries(costByModel)) {
 		snapshot.costByModel[model] = cost
 	}
-	phaseTokenSnapshots.set(key, snapshot)
+	return snapshot
+}
+
+function diffSnapshot(
+	ctx: SessionContext,
+	snapshot: TokenSnapshot,
+): { deltaInput: number; deltaOutput: number; deltaCost: number } {
+	const { tokensByModel, costByModel } = ctx.cumulative
+	let deltaInput = 0
+	let deltaOutput = 0
+	let deltaCost = 0
+	for (const [model, t] of Object.entries(tokensByModel)) {
+		deltaInput += t.input - (snapshot.inputByModel[model] ?? 0)
+		deltaOutput += t.output - (snapshot.outputByModel[model] ?? 0)
+	}
+	for (const [model, cost] of Object.entries(costByModel)) {
+		deltaCost += cost - (snapshot.costByModel[model] ?? 0)
+	}
+	return {
+		deltaInput: Math.max(0, deltaInput),
+		deltaOutput: Math.max(0, deltaOutput),
+		deltaCost: Math.max(0, deltaCost),
+	}
+}
+
+export function snapshotPhaseTokens(fermentId: string, phaseId: string): void {
+	if (!_ctx) return
+	phaseTokenSnapshots.set(`${fermentId}:${phaseId}`, captureSnapshot(_ctx))
 }
 
 /**
@@ -113,27 +145,8 @@ export function consumePhaseTokenDelta(
 	const key = `${fermentId}:${phaseId}`
 	const snapshot = phaseTokenSnapshots.get(key)
 	phaseTokenSnapshots.delete(key)
-
 	if (!_ctx || !snapshot) return { deltaInput: 0, deltaOutput: 0, deltaCost: 0 }
-
-	const { tokensByModel, costByModel } = _ctx.cumulative
-	let deltaInput = 0
-	let deltaOutput = 0
-	let deltaCost = 0
-
-	for (const [model, t] of Object.entries(tokensByModel)) {
-		deltaInput += t.input - (snapshot.inputByModel[model] ?? 0)
-		deltaOutput += t.output - (snapshot.outputByModel[model] ?? 0)
-	}
-	for (const [model, cost] of Object.entries(costByModel)) {
-		deltaCost += cost - (snapshot.costByModel[model] ?? 0)
-	}
-
-	return {
-		deltaInput: Math.max(0, deltaInput),
-		deltaOutput: Math.max(0, deltaOutput),
-		deltaCost: Math.max(0, deltaCost),
-	}
+	return diffSnapshot(_ctx, snapshot)
 }
 
 // ---------------------------------------------------------------------------
@@ -178,6 +191,7 @@ function onFermentStarted(raw: unknown): void {
 	if (!ctx) return
 	const payload = raw as FermentStartedPayload
 	fermentStartTimes.set(payload.fermentId, Date.now())
+	fermentTokenSnapshots.set(payload.fermentId, captureSnapshot(ctx))
 	ctx.emitWithIds(
 		"ferment.started",
 		{ ferment_id: payload.fermentId },
@@ -194,23 +208,24 @@ function onFermentCompleted(raw: unknown): void {
 	const durationMs = startMs > 0 ? Date.now() - startMs : 0
 	const steeringCount = fermentSteeringCounts.get(payload.fermentId) ?? 0
 
-	// Sum token/cost deltas across all phases
-	const allPhaseDeltas = Object.entries(phaseTokenSnapshots)
-		.filter(([key]) => key.startsWith(`${payload.fermentId}:`))
-		.map(([, snapshot]) => {
-			// Snapshot still present = phase started but not completed; consume it now
-			const phaseId =
-				Object.keys(phaseTokenSnapshots)
-					.find((k) => k.startsWith(`${payload.fermentId}:`))
-					?.split(":")[1] ?? ""
-			return consumePhaseTokenDelta(payload.fermentId, phaseId)
-		})
-	const totalInput = allPhaseDeltas.reduce((s, d) => s + d.deltaInput, 0)
-	const totalOutput = allPhaseDeltas.reduce((s, d) => s + d.deltaOutput, 0)
-	const totalCost = allPhaseDeltas.reduce((s, d) => s + d.deltaCost, 0)
+	// Compute total token/cost by diffing the snapshot taken at ferment.started.
+	// Phase snapshots are consumed per-phase at phase.completed — any still
+	// present here belong to skipped/failed/abandoned phases and are cleaned up.
+	const fermentSnapshot = fermentTokenSnapshots.get(payload.fermentId)
+	const {
+		deltaInput: totalInput,
+		deltaOutput: totalOutput,
+		deltaCost: totalCost,
+	} = fermentSnapshot && ctx ? diffSnapshot(ctx, fermentSnapshot) : { deltaInput: 0, deltaOutput: 0, deltaCost: 0 }
 
+	// Clean up all tracking state for this ferment
 	fermentStartTimes.delete(payload.fermentId)
+	fermentTokenSnapshots.delete(payload.fermentId)
 	fermentSteeringCounts.delete(payload.fermentId)
+	// Discard any phase snapshots not consumed by phase.completed events
+	for (const key of phaseTokenSnapshots.keys()) {
+		if (key.startsWith(`${payload.fermentId}:`)) phaseTokenSnapshots.delete(key)
+	}
 
 	const attrs: Record<string, string | number | boolean> = {
 		ferment_name: payload.name,
@@ -233,7 +248,11 @@ function onFermentAbandoned(raw: unknown): void {
 	if (!ctx) return
 	const payload = raw as FermentAbandonedPayload
 	fermentStartTimes.delete(payload.fermentId)
+	fermentTokenSnapshots.delete(payload.fermentId)
 	fermentSteeringCounts.delete(payload.fermentId)
+	for (const key of phaseTokenSnapshots.keys()) {
+		if (key.startsWith(`${payload.fermentId}:`)) phaseTokenSnapshots.delete(key)
+	}
 	const attrs: Record<string, string | number | boolean> = {
 		ferment_name: payload.name,
 		model: ctx.currentModel,
