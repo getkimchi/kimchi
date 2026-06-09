@@ -492,31 +492,27 @@ async function confirmCompletionCriteria(
 	const criteria = params.criteria.map((criterion) => criterion.trim()).filter(Boolean)
 	if (criteria.length === 0) return toolErr('Field "criteria" must include at least one non-empty criterion.')
 
+	const askContext = {
+		ferment,
+		pi,
+		ctx: ctx as { ui?: Partial<import("../ui.js").FermentUi> } | undefined,
+		runtime,
+	}
+
 	const response = await askUserForm(
 		"Completion criteria",
 		formatCompletionCriteriaForReview(criteria),
 		[
 			{
 				id: "criteria_ok",
-				type: "confirm",
-				prompt: "Do these completion criteria look right?",
-				options: [...YES_NO_OPTIONS],
-			},
-			{
-				id: "criteria_changes",
 				type: "single",
-				prompt: "Any additions or changes?",
-				options: [{ id: "no", label: "No" }],
+				prompt: "Do these completion criteria look right?",
+				options: [{ id: "yes", label: "Yes, looks good" }],
 				allowOther: true,
-				otherLabel: "Yes (Type in your answer)",
+				otherLabel: "No, enter what is wrong",
 			},
 		],
-		{
-			ferment,
-			pi,
-			ctx: ctx as { ui?: Partial<import("../ui.js").FermentUi> } | undefined,
-			runtime,
-		},
+		askContext,
 	)
 
 	if (response.failed) {
@@ -538,17 +534,21 @@ async function confirmCompletionCriteria(
 	}
 
 	const answers = response.answers ?? []
-	const criteriaOk = answers.find((answer) => answer.id === "criteria_ok")?.value === "yes"
-	const changesAnswer = answers.find((answer) => answer.id === "criteria_changes")
-	const changes = changesAnswer?.wasCustom ? changesAnswer.value.trim() : ""
+	const decision = answers.find((answer) => answer.id === "criteria_ok")
+	if (!decision) return toolErr("confirm_ferment_completion_criteria response was missing an answer.")
+	const criteriaOk = decision.value === "yes"
+	const changes = decision.wasCustom ? decision.value.trim() : ""
+	const rationale = response.rationale
+	const answeredBy = response.answered_by
+
 	const ready = criteriaOk && changes.length === 0
-	const rationaleLine = response.rationale ? `\nRationale: ${response.rationale}` : ""
+	const rationaleLine = rationale ? `\nRationale: ${rationale}` : ""
 	return toolOk(
 		[
 			"Completion criteria reviewed.",
 			`Confirmed: ${criteriaOk ? "yes" : "no"}`,
 			`Changes: ${changes || "(none)"}`,
-			`Answered by: ${response.answered_by}${rationaleLine}`,
+			`Answered by: ${answeredBy}${rationaleLine}`,
 			`Next action: ${
 				ready
 					? "continue to exploration."
@@ -1210,11 +1210,12 @@ ${renderGateGuidance("complete_ferment")}`,
 		label: "Confirm Completion Criteria",
 		description: `Confirm drafted Ferment completion criteria with deterministic UI. Use this in Step 3 after drafting criteria; do not hand-build completion-criteria confirmation with ask_user.
 
-The host always renders:
-  - criteria_ok: strict Yes/No confirmation
-  - criteria_changes: No choice, with custom text entry only when changes are needed
+The host renders one question:
+  - "Yes, looks good"
+  - "No, enter what is wrong" with inline free-form text input for the explanation
 
-Proceed to exploration only when Confirmed is yes and Changes is empty. Otherwise revise the criteria and call this tool again.`,
+Proceed to exploration only when Confirmed is yes and Changes is empty.
+If the user answers No, the follow-up captures textual changes and control returns here for revision.`,
 		parameters: ConfirmCompletionCriteriaParams,
 		async execute(_, params, _signal, _onUpdate, ctx) {
 			return confirmCompletionCriteria(runtime, pi, params, ctx)

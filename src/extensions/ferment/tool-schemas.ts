@@ -418,7 +418,7 @@ export const ConfirmCompletionCriteriaParams = Type.Object({
 		{
 			minItems: 1,
 			description:
-				"Draft completion criteria to present for confirmation. The host always renders these through a fixed approval plus No/custom changes form.",
+				"Draft completion criteria to present for confirmation. The host asks one combined prompt with a Yes selection and an inline free-form 'No, enter what is wrong' path.",
 		},
 	),
 })
