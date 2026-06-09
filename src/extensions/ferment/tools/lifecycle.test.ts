@@ -21,6 +21,10 @@ vi.mock("../judge.js", async () => {
 	const actual = await vi.importActual<typeof import("../judge.js")>("../judge.js")
 	return {
 		...actual,
+		judgeApiCall: vi.fn(async () => ({
+			ok: true as const,
+			text: '{"answers":[{"id":"criteria_ok","value":"yes"}],"rationale":"criteria are clear"}',
+		})),
 		judgeJourneyGrade: vi.fn(async () => ({
 			ok: true as const,
 			grade: "A" as const,
@@ -29,7 +33,7 @@ vi.mock("../judge.js", async () => {
 	}
 })
 
-const { judgeJourneyGrade: mockJudgeJourneyGrade } = await import("../judge.js")
+const { judgeApiCall: mockJudgeApiCall, judgeJourneyGrade: mockJudgeJourneyGrade } = await import("../judge.js")
 
 interface RegisteredTool {
 	name: string
@@ -512,7 +516,7 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 })
 
 describe("confirm_ferment_completion_criteria via registerLifecycleTools", () => {
-	function createConfirmCriteriaHarness() {
+	function createConfirmCriteriaHarness(options?: { oneShot?: boolean }) {
 		const h = createHarness()
 		const tools = new Map<string, RegisteredTool>()
 		const pi = {
@@ -520,7 +524,7 @@ describe("confirm_ferment_completion_criteria via registerLifecycleTools", () =>
 			registerTool: (tool: RegisteredTool) => {
 				tools.set(tool.name, tool)
 			},
-			getFlag: vi.fn(() => false),
+			getFlag: vi.fn((flag: string) => flag === "ferment-oneshot" && options?.oneShot === true),
 		} as unknown as ExtensionAPI
 		registerLifecycleTools(pi, h.runtime)
 
@@ -594,6 +598,29 @@ describe("confirm_ferment_completion_criteria via registerLifecycleTools", () =>
 			"No, enter what is wrong",
 		])
 		expect(input).toHaveBeenCalledWith(expect.stringContaining("Do these completion criteria look right?"), "")
+	})
+
+	it("exposes the rejection label to one-shot criteria judges", async () => {
+		const { h, execute } = createConfirmCriteriaHarness({ oneShot: true })
+		let userMsg = ""
+		vi.mocked(mockJudgeApiCall).mockImplementationOnce(async (_sys: string, msg: string) => {
+			userMsg = msg
+			return {
+				ok: true,
+				text: '{"answers":[{"id":"criteria_ok","value":"Add go test ./... as verification."}],"rationale":"needs verification"}',
+			}
+		})
+
+		const result = await execute("tool-call-1", {
+			ferment_id: h.fermentId,
+			criteria: ["README.md exists at the project root; verify by opening README.md."],
+		})
+
+		const text = okText(result)
+		expect(text).toContain("Confirmed: no")
+		expect(text).toContain("Changes: Add go test ./... as verification.")
+		expect(userMsg).toContain('option id="yes" label="Yes, looks good"')
+		expect(userMsg).toContain('custom label="No, enter what is wrong" value="<free-form text>"')
 	})
 
 	it("rejects criteria that normalize to empty strings", async () => {
