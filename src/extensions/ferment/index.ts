@@ -130,6 +130,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	let planReviewTimer: ReturnType<typeof setTimeout> | undefined
 	let planReviewRunning = false
 	let suppressUntilAgentEnd = false
+	let reviewReadyForHandoff: PendingPlanReview | undefined
 
 	const clearPlanReviewTimer = () => {
 		if (planReviewTimer) {
@@ -140,6 +141,14 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 
 	const isCurrentPendingReview = (review: PendingPlanReview): boolean =>
 		runtime.getPendingPlanReview(review.fermentId) === review
+
+	const getReviewReadyForPrompt = (): PendingPlanReview | undefined => {
+		if (reviewReadyForHandoff) {
+			if (isCurrentPendingReview(reviewReadyForHandoff)) return reviewReadyForHandoff
+			reviewReadyForHandoff = undefined
+		}
+		return runtime.getCurrentPendingPlanReview()
+	}
 
 	const runPendingPlanReview = async (ctx: Pick<ExtensionContext, "ui"> | undefined, review: PendingPlanReview) => {
 		if (planReviewRunning) return
@@ -188,32 +197,42 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 		}
 	}
 
+	const schedulePendingPlanReview = (ctx: Pick<ExtensionContext, "ui"> | undefined) => {
+		const review = getReviewReadyForPrompt()
+		if (planReviewRunning || !review) return
+		clearPlanReviewTimer()
+		planReviewTimer = setTimeout(() => {
+			planReviewTimer = undefined
+			if (reviewReadyForHandoff === review) reviewReadyForHandoff = undefined
+			void runPendingPlanReview(ctx, review)
+		}, 0)
+	}
+
 	pi.on("session_shutdown", () => {
 		clearPlanReviewTimer()
+		reviewReadyForHandoff = undefined
 		runtime.clearAllPendingPlanReviews()
 		unregisterFermentTips()
 	})
 
 	pi.on("agent_end", (_event, ctx) => {
-		const review = runtime.getCurrentPendingPlanReview()
 		suppressUntilAgentEnd = false
-		if (planReviewRunning || !review) return
-		clearPlanReviewTimer()
-		planReviewTimer = setTimeout(() => {
-			planReviewTimer = undefined
-			void runPendingPlanReview(ctx, review)
-		}, 0)
+		schedulePendingPlanReview(ctx)
 	})
 
 	pi.on("tool_result", (event) => {
 		if (event.toolName !== FERMENT_TOOLS.PROPOSE_SCOPING || event.isError) return
 		const fermentId = typeof event.input.ferment_id === "string" ? event.input.ferment_id : undefined
-		if (!fermentId || !runtime.getPendingPlanReview(fermentId)) return
+		const review = fermentId ? runtime.getPendingPlanReview(fermentId) : undefined
+		if (!review) return
 		const text = event.content
 			.filter((block) => block.type === "text")
 			.map((block) => block.text)
 			.join("\n")
-		if (text.includes("Plan ready for review")) suppressUntilAgentEnd = true
+		if (text.includes("Plan ready for review")) {
+			reviewReadyForHandoff = review
+			suppressUntilAgentEnd = true
+		}
 	})
 
 	pi.on("message_update", (event) => {
@@ -241,6 +260,11 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	registerFermentStopPolicyShortcut(pi, runtime)
 	registerFermentEvents(pi, runtime)
 	registerFermentCommands(pi, runtime)
+
+	pi.on("turn_end", (_event, ctx) => {
+		suppressUntilAgentEnd = false
+		schedulePendingPlanReview(ctx)
+	})
 
 	// ─── Message renderers ────────────────────────────────────────────────────
 	pi.registerMessageRenderer("ferment_breadcrumb", fermentBreadcrumbRenderer)
