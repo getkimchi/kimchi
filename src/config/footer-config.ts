@@ -82,11 +82,22 @@ function asRecord(value: unknown): Record<string, unknown> {
 	return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {}
 }
 
+let _config: FooterConfig | null = null
+
+/** Reset the in-memory config cache. Exposed for test isolation only. */
+export function _invalidateFooterConfigCache(): void {
+	_config = null
+}
+
 export function readFooterConfig(): FooterConfig {
+	if (_config !== null) return _config
 	const settings = readJson(getSettingsPath())
 	const raw = asRecord(settings[FOOTER_KEY])
-	const pinned = Array.isArray(raw.pinned) ? raw.pinned.filter((v): v is FooterElementId => typeof v === "string") : []
-	return { pinned }
+	const pinned = Array.isArray(raw.pinned)
+		? raw.pinned.filter((v): v is FooterElementId => FOOTER_ELEMENTS.some((e) => e.id === v))
+		: []
+	_config = { pinned }
+	return _config
 }
 
 export function writeFooterConfig(config: FooterConfig): void {
@@ -98,26 +109,18 @@ export function writeFooterConfig(config: FooterConfig): void {
 		delete settings[FOOTER_KEY]
 	}
 	writeJson(path, settings)
+	_config = config
 }
 
 export function setPinned(id: FooterElementId, pinned: boolean): void {
-	const path = getSettingsPath()
-	const settings = readJson(path)
-	const raw = asRecord(settings[FOOTER_KEY])
-	const current = Array.isArray(raw.pinned) ? raw.pinned.filter((v): v is FooterElementId => typeof v === "string") : []
-	const set = new Set(current)
+	const current = readFooterConfig()
+	const set = new Set(current.pinned)
 	if (pinned) {
 		set.add(id)
 	} else {
 		set.delete(id)
 	}
-	const next: FooterConfig = { pinned: [...set] }
-	if (next.pinned.length > 0) {
-		settings[FOOTER_KEY] = next
-	} else {
-		delete settings[FOOTER_KEY]
-	}
-	writeJson(path, settings)
+	writeFooterConfig({ pinned: [...set] })
 }
 
 export function isPinned(id: FooterElementId): boolean {
