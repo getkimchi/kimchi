@@ -1,5 +1,5 @@
 import { resolve } from "node:path"
-import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai"
+import type { AssistantMessage } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedSemanticFg } from "../../ansi.js"
@@ -10,7 +10,7 @@ import { FERMENT_TOOLS, isFermentToolName, isUserFacingFermentToolName } from ".
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import { type ToolVisibilityAPI, createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
-import { resolveClassifierModel } from "./classifier-model.js"
+import { resolveClassifierModels } from "./classifier-model.js"
 import { classifyToolCall } from "./classifier.js"
 import { registerCommands } from "./commands.js"
 import { type LoadedConfig, loadConfig } from "./config.js"
@@ -599,11 +599,12 @@ ${text}
 			// through the classifier; prompts without a frontend fail closed.
 			const promptAvailable = canPrompt(ctx)
 			if (mode === "auto" || !promptAvailable) {
-				const classifierModel = resolveClassifierModel(ctx.model, ctx.modelRegistry)
-				if (!classifierModel) return { block: true, reason: "no model available for classifier" }
+				const classifierModels = resolveClassifierModels(ctx.modelRegistry)
+				if (!classifierModels) return { block: true, reason: "no model available for classifier" }
 
 				const verdict = await classifyToolCall(
-					classifierModel,
+					classifierModels.primary,
+					classifierModels.fallback,
 					ctx.modelRegistry,
 					{ toolName, input, cwd: ctx.cwd },
 					{ timeoutMs: loaded.config.classifierTimeoutMs },
