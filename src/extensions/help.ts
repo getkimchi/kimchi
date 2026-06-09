@@ -21,6 +21,7 @@ const HELP_ROWS: HelpRow[] = [
 	{ kind: "entry", key: "/multi-model", desc: "Configure model roles" },
 	{ kind: "entry", key: "/ferment", desc: "Run task in background" },
 	{ kind: "entry", key: "/compact", desc: "Compact context window" },
+	{ kind: "entry", key: "/name", desc: "Rename this session" },
 	{ kind: "entry", key: "/new", desc: "Start a new session" },
 	{ kind: "entry", key: "/agents", desc: "Manage background agents" },
 	{ kind: "entry", key: "/permissions", desc: "View or change permission mode and rules" },
