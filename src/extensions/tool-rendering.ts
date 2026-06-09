@@ -11,6 +11,7 @@ import type {
 	Theme,
 } from "@earendil-works/pi-coding-agent"
 import {
+	AssistantMessageComponent,
 	ToolExecutionComponent,
 	UserMessageComponent,
 	createBashTool,
@@ -311,7 +312,12 @@ function unrefTimer(timer: ReturnType<typeof setTimeout> | null | undefined): vo
 const TOOL_EXECUTION_PATCH_FLAG = Symbol.for("pi-claude-style-tools:patched-tool-execution")
 const WORKED_DURATION_KEY = "_piClaudeStyleWorkedDurationMs"
 const WORKED_START_KEY = "_piClaudeStyleWorkedStartMs"
-const WORKED_DURATION_MARKER = "Worked for"
+const ASSISTANT_MESSAGE_PATCH_FLAG = Symbol.for("pi-claude-style-tools:patched-assistant-message-render")
+// OSC 133 zone markers applied by AssistantMessageComponent.render() — must be
+// reattached to the last line after we append the duration widget.
+const OSC133_ZONE_END = "\x1b]133;B\x07"
+const OSC133_ZONE_FINAL = "\x1b]133;C\x07"
+const OSC133_ZONE_SUFFIX = OSC133_ZONE_END + OSC133_ZONE_FINAL
 // WORKED_LINE_FG is theme-derived (from "muted") when themeAdaptive is on.
 let WORKED_LINE_FG = "\x1b[38;2;140;140;140m"
 let currentAgentWorkStartMs: number | undefined
@@ -362,32 +368,39 @@ export function formatToolTimer(elapsedMs: number): string | undefined {
 	return formatDuration(elapsedMs)
 }
 
+// One space of indent — aligns the ✻ glyph with the assistant message body.
+const WORKED_DURATION_INDENT = " "
+
 function inlineWorkedDurationText(ms: number): string {
-	return `${WORKED_LINE_FG}✻ Worked for ${formatWorkedDuration(ms)}${RESET}`
+	return `${WORKED_DURATION_INDENT}${WORKED_LINE_FG}✻ Worked for ${formatWorkedDuration(ms)}${RESET}`
 }
 
-function isWorkedDurationLine(line: string): boolean {
-	return line.includes(WORKED_DURATION_MARKER) && /^✻ Worked for [^\r\n]+$/.test(stripAnsi(line).trim())
-}
-
-function stripWorkedDurationLine(text: string): string {
-	if (!text.includes(WORKED_DURATION_MARKER)) return text
-	return text
-		.split(/\r?\n/)
-		.filter((line) => !isWorkedDurationLine(line))
-		.join("\n")
-		.replace(/\n{3,}/g, "\n\n")
-}
-
-function appendWorkedDurationLine(message: any, durationMs: number): void {
-	if (!message || message.role !== "assistant" || !Array.isArray(message.content)) return
-	const textBlocks = message.content.filter(
-		(block: any) => block?.type === "text" && typeof block.text === "string" && block.text.trim(),
-	)
-	const lastText = textBlocks[textBlocks.length - 1]
-	if (!lastText) return
-	const text = lastText.text.includes(WORKED_DURATION_MARKER) ? stripWorkedDurationLine(lastText.text) : lastText.text
-	lastText.text = `${text.trimEnd()}\n\n${inlineWorkedDurationText(durationMs)}`
+function patchAssistantMessageRender(): void {
+	const proto = AssistantMessageComponent.prototype as any
+	if (proto[ASSISTANT_MESSAGE_PATCH_FLAG]) return
+	const originalRender = proto.render
+	if (typeof originalRender !== "function") return
+	proto.render = function patchedAssistantMessageRender(width: number) {
+		const lines: string[] = originalRender.call(this, width)
+		if (!Array.isArray(lines) || lines.length === 0) return lines
+		const message = (this as any).lastMessage
+		const durationMs = message?.[WORKED_DURATION_KEY]
+		if (typeof durationMs !== "number" || durationMs <= 0) return lines
+		// The original render() appends OSC 133 zone markers to the last line
+		// (B = command end, C = command output). Strip them off, push the widget
+		// line, then reattach so the zone still brackets the full message.
+		const lastIdx = lines.length - 1
+		const widgetLine = inlineWorkedDurationText(durationMs)
+		if (lines[lastIdx].includes(OSC133_ZONE_END)) {
+			lines[lastIdx] = lines[lastIdx].replace(OSC133_ZONE_SUFFIX, "")
+			lines.push("", widgetLine)
+			lines[lines.length - 1] += OSC133_ZONE_SUFFIX
+		} else {
+			lines.push("", widgetLine)
+		}
+		return lines
+	}
+	proto[ASSISTANT_MESSAGE_PATCH_FLAG] = true
 }
 
 // OSC 133 zone markers that UserMessageComponent prepends/appends for shell integration.
@@ -2484,12 +2497,14 @@ function registerThinkingLabels(pi: ExtensionAPI): void {
 			const isFinalAssistantMessage = message.stopReason !== "toolUse"
 			if (started !== undefined && isFinalAssistantMessage) {
 				const durationMs = Date.now() - started
+				// Store duration as metadata on the message object. The patched
+				// AssistantMessageComponent.render() reads it and appends the widget
+				// line outside of the message content blocks — never injected into
+				// the text that gets sent to the model.
 				;(message as any)[WORKED_DURATION_KEY] = durationMs
-				// Mutate the message itself before pi renders/persists it. This is more
-				// reliable than the spinner because pi removes the loader on agent_end,
-				// and more reliable than component monkey-patching when extensions are
-				// loaded from a different package instance than the running TUI.
-				appendWorkedDurationLine(message, durationMs)
+				// Persist the duration as a sidecar entry in the JSONL session file
+				// (type: "custom", does not participate in LLM context).
+				pi.appendEntry("turn_duration", { durationMs })
 			}
 			currentAssistantMessageStartMs = undefined
 		}
@@ -2507,8 +2522,18 @@ function registerThinkingLabels(pi: ExtensionAPI): void {
 				if (block && block.type === "thinking" && typeof block.thinking === "string") {
 					block.thinking = stripThinkingPresentationArtifacts(block.thinking)
 				}
+					// Legacy sessions written before this change may have the duration
+				// text injected directly into content blocks. Strip it so it doesn't
+				// appear twice alongside the widget.
 				if (block && block.type === "text" && typeof block.text === "string") {
-					block.text = stripWorkedDurationLine(block.text)
+					const marker = "Worked for"
+					if (block.text.includes(marker)) {
+						block.text = block.text
+							.split(/\r?\n/)
+							.filter((l: string) => !(l.includes(marker) && /^✻ Worked for [^\r\n]+$/.test(l.replace(/\x1b\[[0-9;]*m/g, "").trim())))
+							.join("\n")
+							.replace(/\n{3,}/g, "\n\n")
+					}
 				}
 			}
 		}
@@ -2576,7 +2601,7 @@ function humanizeToolName(name: string): string {
 		.replace(/\b\w/g, (char) => char.toUpperCase())
 }
 
-function isMcpToolName(name: string): boolean {
+export function isMcpToolName(name: string): boolean {
 	return name === "mcp" || /^mcp[_:-]/i.test(name) || /[_:-]mcp[_:-]/i.test(name)
 }
 
@@ -2591,6 +2616,25 @@ function genericToolLabel(name: string): string {
 function renderGenericToolCall(name: string, args: any, theme: Theme, ctx: any): Text {
 	ctx.state._openAiPatchFiles = []
 	const sp = (path: string) => shortPath(ctx.cwd ?? process.cwd(), path)
+	if (isMcpToolName(name)) {
+		// For MCP calls the summary may already contain ANSI color codes (muted
+		// for the args suffix) so we build the header line directly instead of
+		// passing it through toolHeader() which would re-wrap everything in accent.
+		// The cache key includes expanded state so ctrl+o triggers a full re-render.
+		const expanded = !!ctx.expanded
+		const cacheKey = `_mcpLabelSummary:${expanded ? 1 : 0}`
+		const packed = stableCallSummary(ctx, cacheKey, () => {
+			const ls = mcpCallLabelAndSummary(args, theme, expanded)
+			return `${ls.label}\x00${ls.summary}`
+		})
+		const sepIdx = packed.indexOf("\x00")
+		const mcpLabel = sepIdx >= 0 ? packed.slice(0, sepIdx) : "MCP"
+		const mcpSummary = sepIdx >= 0 ? packed.slice(sepIdx + 1) : ""
+		const dot = toolStatusDot(ctx, theme)
+		const labelPart = theme.fg("toolTitle", theme.bold(mcpLabel))
+		const header = mcpSummary ? `${dot}${labelPart} ${WRAP_MARK}${mcpSummary}` : `${dot}${labelPart}`
+		return makeText(ctx.lastComponent, header)
+	}
 	const summary = stableCallSummary(ctx, "_callSummary", () => summarizeGenericToolCall(name, args, theme, sp))
 	const timer = formatToolTimer(getToolElapsedMs(ctx))
 	return makeText(ctx.lastComponent, toolHeader(genericToolLabel(name), summary, theme, toolStatusDot(ctx, theme), timer))
@@ -3106,14 +3150,121 @@ function renderApplyPatchResult(result: any, isPartial: boolean, theme: Theme, c
 	)
 }
 
-function summarizeMcpToolCall(args: any, theme: Theme): string {
+/** Max chars shown for a single arg value before truncation. */
+const MCP_ARG_VALUE_MAX = 60
+/** Max total chars for the entire (key=val, …) suffix. */
+const MCP_ARGS_SUFFIX_MAX = 120
+
+/**
+ * Keys whose values are typically long blobs (file paths list, prompt text,
+ * raw content). These get truncated more aggressively or skipped when many
+ * other keys are present.
+ */
+
+/**
+ * For an MCP gateway call whose args contain `tool`, parse the nested args
+ * JSON and return a compact `(key=val, key=val)` style plain string (no ANSI),
+ * matching the style used by the `read` tool for offset/limit.
+ *
+ * When `expanded` is false (collapsed view) long values are truncated and the
+ * whole suffix is capped at MCP_ARGS_SUFFIX_MAX chars so the header stays on
+ * one line. When `expanded` is true all values are shown in full.
+ */
+export function summarizeMcpToolInvocationArgs(args: any, expanded = false): string {
+	const rawArgs = getStringArg(args, "args")
+	if (!rawArgs) return ""
+	try {
+		const parsed = JSON.parse(rawArgs)
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return ""
+
+		const parts: string[] = []
+		// Always use original key order — collapsed mode just stops at the cap.
+		const ordered = Object.entries(parsed as Record<string, unknown>)
+		for (const [key, val] of ordered) {
+			if (val === undefined || val === null) continue
+			let display: string
+			if (Array.isArray(val)) {
+				if (val.length === 0) continue
+				if (expanded) {
+					display = val.map((v) => String(v)).join(", ")
+				} else {
+					const first = String(val[0])
+					display =
+						val.length === 1
+							? summarizeText(first, MCP_ARG_VALUE_MAX)
+							: `${summarizeText(first, 30)} +${val.length - 1}`
+				}
+			} else if (typeof val === "object") {
+				continue // skip nested objects
+			} else {
+				display = expanded ? String(val) : summarizeText(String(val), MCP_ARG_VALUE_MAX)
+			}
+			const part = `${key}=${display}`
+			// In collapsed mode stop adding parts if we'd exceed the suffix cap.
+			if (!expanded) {
+				const currentLen = parts.reduce((n, p) => n + p.length + 2, 0)
+				if (currentLen + part.length > MCP_ARGS_SUFFIX_MAX) break
+			}
+			parts.push(part)
+		}
+
+		if (parts.length === 0) return ""
+		return `(${parts.join(", ")})`
+	} catch {
+		// not valid JSON — ignore
+	}
+	return ""
+}
+
+function summarizeMcpToolCall(args: any, theme: Theme, expanded = false): string {
 	const tool = getStringArg(args, "tool")
-	if (tool) return args?.server ? `${args.server}:${tool}` : tool
+	if (tool) {
+		const argsSummary = summarizeMcpToolInvocationArgs(args, expanded)
+		return argsSummary ? theme.fg("muted", argsSummary) : ""
+	}
 	const connect = getStringArg(args, "connect")
-	if (connect) return `connect ${connect}`
+	if (connect) return connect
 	const search = getStringArg(args, "search", "describe", "server", "action")
 	if (search) return summarizeText(search, 72)
 	return theme.fg("muted", "status")
+}
+
+/**
+ * Returns the display label and summary for an MCP gateway call.
+ * - Tool invocation (`args.tool` present): label = humanized tool name, summary = args preview
+ * - Discovery (`args.search` / `args.describe` / …): label = "Tool search" / "Tool describe" / …
+ * - Connect: label = "Tool connect"
+ */
+export function mcpCallLabelAndSummary(
+	args: any,
+	theme: Theme,
+	expanded = false,
+): { label: string; summary: string } {
+	const tool = getStringArg(args, "tool")
+	if (tool) {
+		const server = getStringArg(args, "server")
+		const toolDisplay = tool.replace(/_/g, " ")
+		const label = server ? `${server} - ${toolDisplay}` : toolDisplay
+		const rawSuffix = summarizeMcpToolInvocationArgs(args, expanded)
+		const summary = rawSuffix ? theme.fg("muted", rawSuffix) : ""
+		return { label, summary }
+	}
+	if (getStringArg(args, "connect")) {
+		return { label: "Tool connect", summary: theme.fg("muted", `(server=${getStringArg(args, "connect")})`) }
+	}
+	if (getStringArg(args, "describe")) {
+		return { label: "Tool describe", summary: theme.fg("muted", `(tool=${summarizeText(getStringArg(args, "describe"), 60)})`) }
+	}
+	if (getStringArg(args, "search")) {
+		return { label: "Tool search", summary: theme.fg("muted", `(query=${summarizeText(getStringArg(args, "search"), 60)})`) }
+	}
+	if (getStringArg(args, "server")) {
+		return { label: "Tool search", summary: theme.fg("muted", `(server=${summarizeText(getStringArg(args, "server"), 60)})`) }
+	}
+	if (getStringArg(args, "action")) {
+		return { label: "Tool action", summary: theme.fg("muted", `(action=${summarizeText(getStringArg(args, "action"), 60)})`) }
+	}
+	return { label: "MCP", summary: theme.fg("muted", "(status)") }
 }
 
 function summarizeGenericToolCall(name: string, args: any, theme: Theme, sp: (path: string) => string): string {
@@ -3469,6 +3620,7 @@ export default function (pi: ExtensionAPI) {
 	patchGlobalToolBorders()
 	patchToolExecutionRenderers()
 	patchUserMessageRender()
+	patchAssistantMessageRender()
 	applyDiffPalette()
 	registerThinkingLabels(pi)
 
