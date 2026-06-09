@@ -299,6 +299,32 @@ describe("contextFiles injection", () => {
 	})
 })
 
+describe("orchestrationGuidelinesBlock injection", () => {
+	it("includes orchestrationGuidelinesBlock in append mode (General-Purpose)", () => {
+		const agent = getRequired(AGENT_GENERAL_PURPOSE)
+		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT, {
+			orchestrationGuidelinesBlock: "### Orchestration Guidelines\n\nDelegate all build work to the Builder.",
+		})
+		expect(output).toContain("### Orchestration Guidelines")
+		expect(output).toContain("Delegate all build work to the Builder.")
+	})
+
+	it("includes orchestrationGuidelinesBlock in replace mode (Explore)", () => {
+		const agent = getRequired(AGENT_EXPLORE)
+		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT, {
+			orchestrationGuidelinesBlock: "### Orchestration Guidelines\n\nExplore thoroughly before planning.",
+		})
+		expect(output).toContain("### Orchestration Guidelines")
+		expect(output).toContain("Explore thoroughly before planning.")
+	})
+
+	it("does not include orchestration guidelines block when orchestrationGuidelinesBlock is absent", () => {
+		const agent = getRequired(AGENT_GENERAL_PURPOSE)
+		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT)
+		expect(output).not.toContain("### Orchestration Guidelines")
+	})
+})
+
 describe("formatTokenBudget", () => {
 	const cases: Record<string, { input: number; expected: string }> = {
 		"formats millions": { input: 1_500_000, expected: "1.5M" },
