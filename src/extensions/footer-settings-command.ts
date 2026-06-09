@@ -2,9 +2,10 @@ import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent"
 import type { Component } from "@earendil-works/pi-tui"
 import { Key, isKeyRelease, matchesKey, visibleWidth } from "@earendil-works/pi-tui"
 import { FOOTER_ELEMENTS, readFooterConfig, setPinned } from "../config/footer-config.js"
+import { requestSharedFooterRender } from "./shared-footer.js"
 
 /** Component holds only transient UI state (selectedIndex).
- *  Checked state is NEVER stored here — render() always reads from disk. */
+ *  Checked state is NEVER stored here — render() always reads from the config cache (always current). */
 class FooterSettingsComponent implements Component {
 	private selectedIndex: number
 	private readonly tui: { requestRender: (force?: boolean) => void }
@@ -49,6 +50,7 @@ class FooterSettingsComponent implements Component {
 			if (el.canPin === false) return
 			setPinned(el.id, !readFooterConfig().pinned.includes(el.id))
 			this.tui.requestRender()
+			requestSharedFooterRender()
 			return
 		}
 
@@ -59,7 +61,7 @@ class FooterSettingsComponent implements Component {
 	}
 
 	render(width: number): string[] {
-		// Always read from disk — no local cached pinned state.
+		// Always reads from the config cache (always current; updated by every setPinned write).
 		const pinned = new Set(readFooterConfig().pinned)
 
 		const b = (s: string) => this.theme.fg("border", s)

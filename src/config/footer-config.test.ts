@@ -1,7 +1,14 @@
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { FOOTER_ELEMENTS, isPinned, readFooterConfig, setPinned, writeFooterConfig } from "./footer-config.js"
+import {
+	FOOTER_ELEMENTS,
+	_invalidateFooterConfigCache,
+	isPinned,
+	readFooterConfig,
+	setPinned,
+	writeFooterConfig,
+} from "./footer-config.js"
 
 // ── memfs-backed mock of ./json.js ───────────────────────────────────────────
 // The mock factory computes the settings path at call time (after vi.mock hoisting).
@@ -27,6 +34,7 @@ const SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "settings.
 beforeEach(() => {
 	memfs.clear()
 	memfs.set(SETTINGS_PATH, "{}")
+	_invalidateFooterConfigCache()
 })
 
 afterEach(() => {

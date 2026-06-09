@@ -696,7 +696,7 @@ describe("footer pinning", () => {
 		})
 	})
 
-	it("pinned-first ordering: permissions pinned, agents not → permissions appears left of agents", () => {
+	it("pinned-first ordering: permissions pinned, agents not → unpinned agents appear left of pinned permissions", () => {
 		withPinned(["permissions"], () => {
 			vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(2) // agents now visible
 			vi.spyOn(ORCHESTRATION, "getMultiModelEnabled").mockReturnValue(true)
@@ -749,17 +749,17 @@ describe("footer pinning", () => {
 	it("unpinned phase is always hidden regardless of active phase value", () => {
 		withPinned([], () => {
 			// Hidden when no phase
-			vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue(null)
+			vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue(undefined)
 			expect(stripAnsi(footerWithContext().render(200)[0])).not.toContain("phase:")
 			// Hidden even when there is an active phase
-			vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("deploy")
+			vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("build")
 			expect(stripAnsi(footerWithContext().render(200)[0])).not.toContain("phase:")
 		})
 	})
 
 	it("pinned phase shows placeholder when no active phase", () => {
 		withPinned(["phase"], () => {
-			vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue(null)
+			vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue(undefined)
 			const footer = footerWithContext()
 			const visible = stripAnsi(footer.render(200)[0])
 			expect(visible).toContain("phase:")
@@ -769,7 +769,7 @@ describe("footer pinning", () => {
 
 	it("/ for commands hint shows at far right even when elements are pinned", () => {
 		withPinned(["phase"], () => {
-			vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue(null)
+			vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue(undefined)
 			const footer = footerWithContext()
 			const raw = footer.render(200)[0]
 			const visible = stripAnsi(raw)
@@ -780,7 +780,7 @@ describe("footer pinning", () => {
 
 	it("footer never overflows terminal width with pinned + unpinned segments", () => {
 		withPinned(["phase", "usage"], () => {
-			vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("deploy")
+			vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("build")
 			for (const w of [200, 160, 120, 100, 80, 60, 40, 20]) {
 				const raw = footerWithContext({ percent: 50 }).render(w)[0]
 				expect(visibleWidth(raw), `width=${w}`).toBeLessThanOrEqual(w)
