@@ -41,22 +41,32 @@ describe("resolveOrchestrationInstructions", () => {
 			roles: DEFAULT_MODEL_ROLES,
 		})
 		expect(result).toContain("## Your Team")
-		expect(result).toContain("Builder")
-		expect(result).toContain("Reviewer")
-		expect(result).toContain("Explorer")
+		expect(result).toContain("### Builder")
+		expect(result).toContain("### Reviewer")
+		expect(result).toContain("### Explorer")
 	})
 
-	it("uses role-based delegation rules", () => {
+	it("shows Your Capabilities section with orchestrator roles", () => {
 		const result = resolveOrchestrationInstructions({
 			currentModelId: "kimi-k2.6",
 			registry,
 			mode: "orchestrator",
 			roles: DEFAULT_MODEL_ROLES,
 		})
-		expect(result).toContain("delegate to the **Builder** model")
-		expect(result).toContain("delegate to the **Reviewer** model")
-		expect(result).toContain("delegate to the **Explorer** model")
-		expect(result).not.toContain("standard-tier model with `build` strength")
+		expect(result).toContain("## Your Capabilities")
+		expect(result).toContain("Roles: research, plan, review")
+	})
+
+	it("uses role-based delegation rules in Step 3", () => {
+		const result = resolveOrchestrationInstructions({
+			currentModelId: "kimi-k2.6",
+			registry,
+			mode: "orchestrator",
+			roles: DEFAULT_MODEL_ROLES,
+		})
+		expect(result).toContain("Your roles are the authoritative signal")
+		expect(result).toContain("If a step matches your roles")
+		expect(result).toContain("delegate it to a model from the matching role pool")
 	})
 
 	it("instructs to always use General-Purpose subagent type", () => {
@@ -67,7 +77,6 @@ describe("resolveOrchestrationInstructions", () => {
 			roles: DEFAULT_MODEL_ROLES,
 		})
 		expect(result).toContain('subagent_type: "General-Purpose"')
-		expect(result).toContain("Do not use other subagent types")
 	})
 
 	it("shows model IDs from the roles config", () => {
@@ -89,19 +98,18 @@ describe("resolveOrchestrationInstructions", () => {
 		expect(result).toContain("kimchi-dev/nemotron-3-super-fp4")
 	})
 
-	it("self-serves planning when planner equals orchestrator", () => {
+	it("omits Planner section when planner equals orchestrator", () => {
 		const result = resolveOrchestrationInstructions({
 			currentModelId: "kimi-k2.6",
 			registry,
 			mode: "orchestrator",
 			roles: DEFAULT_MODEL_ROLES,
 		})
-		expect(result).toContain("always write the plan yourself")
-		expect(result).not.toContain("delegate to the **Planner** model")
-		expect(result).not.toContain("**Planner**:")
+		expect(result).not.toContain("### Planner")
+		expect(result).toContain("you write the plan yourself in-process")
 	})
 
-	it("delegates planning when planner differs from orchestrator", () => {
+	it("shows Planner section when planner has multiple models or differs from orchestrator", () => {
 		const result = resolveOrchestrationInstructions({
 			currentModelId: "kimi-k2.6",
 			registry,
@@ -111,10 +119,20 @@ describe("resolveOrchestrationInstructions", () => {
 				planner: "anthropic/claude-opus-4-7",
 			},
 		})
-		expect(result).toContain("delegate to the **Planner** model")
-		expect(result).not.toContain("always write the plan yourself")
-		expect(result).toContain("**Planner**:")
+		expect(result).toContain("### Planner")
 		expect(result).toContain("anthropic/claude-opus-4-7")
+	})
+
+	it("renders tier and description for models in Your Team", () => {
+		const result = resolveOrchestrationInstructions({
+			currentModelId: "kimi-k2.6",
+			registry,
+			mode: "orchestrator",
+			roles: DEFAULT_MODEL_ROLES,
+		})
+		expect(result).toContain("Tier: standard")
+		expect(result).toContain("Tier: heavy")
+		expect(result).toContain("Tier: light")
 	})
 
 	it("still works without roles (no team section, instructions only)", () => {
@@ -133,6 +151,64 @@ describe("resolveOrchestrationInstructions", () => {
 		expect(result).toContain("Skip verification when")
 		expect(result).toContain("Require verification when")
 		expect(result).not.toContain("## Your Team")
+	})
+
+	it("includes concurrency test mandate in plan checklist", () => {
+		const result = resolveOrchestrationInstructions({
+			currentModelId: "kimi-k2.6",
+			registry,
+			mode: "orchestrator",
+			roles: DEFAULT_MODEL_ROLES,
+		})
+		expect(result).toContain("race/thread-safety detector")
+		expect(result).toContain("go test -race")
+	})
+
+	it("includes chunk complexity classification in plan and build phases", () => {
+		const result = resolveOrchestrationInstructions({
+			currentModelId: "kimi-k2.6",
+			registry,
+			mode: "orchestrator",
+			roles: DEFAULT_MODEL_ROLES,
+		})
+		expect(result).toContain("complexity")
+		expect(result).toContain("`simple`")
+		expect(result).toContain("`complex`")
+		expect(result).toContain("Match the Builder model to the chunk's complexity classification")
+	})
+
+	it("includes complex chunk spec detail requirements", () => {
+		const result = resolveOrchestrationInstructions({
+			currentModelId: "kimi-k2.6",
+			registry,
+			mode: "orchestrator",
+			roles: DEFAULT_MODEL_ROLES,
+		})
+		expect(result).toContain("What makes a good complex chunk spec")
+		expect(result).toContain("concurrency/algorithm primitives")
+		expect(result).toContain("lifecycle of goroutines/threads")
+		expect(result).toContain("error propagation path")
+	})
+
+	it("includes review row in budget table", () => {
+		const result = resolveOrchestrationInstructions({
+			currentModelId: "kimi-k2.6",
+			registry,
+			mode: "orchestrator",
+			roles: DEFAULT_MODEL_ROLES,
+		})
+		expect(result).toContain("Review (read code + write findings report)")
+		expect(result).toContain("Heavy-tier model duration scaling")
+	})
+
+	it("does not include lightweight re-verification guidance", () => {
+		const result = resolveOrchestrationInstructions({
+			currentModelId: "kimi-k2.6",
+			registry,
+			mode: "orchestrator",
+			roles: DEFAULT_MODEL_ROLES,
+		})
+		expect(result).not.toContain("Prefer lightweight re-verification")
 	})
 
 	it("returns single-model instructions with model ID in single-model mode", () => {
@@ -189,5 +265,24 @@ describe("resolveOrchestrationInstructions", () => {
 		})
 		expect(result).toContain("### Orchestration Guidelines")
 		expect(result).toContain("MiniMax M2 family")
+	})
+
+	it("renders multiple models per role when configured as array", () => {
+		const result = resolveOrchestrationInstructions({
+			currentModelId: "kimi-k2.6",
+			registry,
+			mode: "orchestrator",
+			roles: {
+				orchestrator: "kimchi-dev/kimi-k2.6",
+				planner: "kimchi-dev/kimi-k2.6",
+				builder: ["kimchi-dev/minimax-m2.7", "kimchi-dev/kimi-k2.6"],
+				reviewer: ["kimchi-dev/kimi-k2.6", "kimchi-dev/minimax-m2.7"],
+				explorer: "kimchi-dev/nemotron-3-super-fp4",
+				judge: "kimchi-dev/kimi-k2.6",
+			},
+		})
+		expect(result).toContain("### Builder")
+		expect(result).toContain("minimax-m2.7")
+		expect(result).toContain("### Reviewer")
 	})
 })

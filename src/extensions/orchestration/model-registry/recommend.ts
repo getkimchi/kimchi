@@ -1,10 +1,10 @@
 import { MODEL_CAPABILITIES } from "./builtin-models.js"
 import { KIMCHI_DEV_PROVIDER } from "./model-registry.js"
-import type { ModelCapabilities, ModelStrength, ModelTier } from "./types.js"
+import type { ModelCapabilities, ModelRole, ModelTier } from "./types.js"
 
 export interface RecommendOptions {
-	/** Task strengths required — ALL must be present on the model. */
-	strengths: ModelStrength[]
+	/** Task roles required — ALL must be present on the model. */
+	roles: ModelRole[]
 	/** Require vision capability. */
 	needsVision?: boolean
 	/** Tier preference; falls back through tiers if no exact match. Default "standard". */
@@ -30,7 +30,7 @@ const TIER_FALLBACK: Record<ModelTier, ModelTier[]> = {
  * Recommend the best model for the given criteria.
  *
  * Algorithm:
- * 1. Filter MODEL_CAPABILITIES entries: must have ALL `strengths`, must satisfy
+ * 1. Filter MODEL_CAPABILITIES entries: must have ALL `roles`, must satisfy
  *    `needsVision`, must not be ignored (unless excludeIgnored is false).
  * 2. Among matches, prefer the requested tier. If no exact tier match, fall back
  *    in order: light → standard → heavy (or heavy → standard → light etc.).
@@ -38,7 +38,7 @@ const TIER_FALLBACK: Record<ModelTier, ModelTier[]> = {
  * 4. If no match, return undefined.
  */
 export function recommendModel(opts: RecommendOptions): RecommendResult | undefined {
-	const { strengths, needsVision = false, preferTier = "standard", excludeIgnored = true } = opts
+	const { roles, needsVision = false, preferTier = "standard", excludeIgnored = true } = opts
 
 	const candidates: Array<{ id: string; capabilities: ModelCapabilities }> = []
 
@@ -49,8 +49,8 @@ export function recommendModel(opts: RecommendOptions): RecommendResult | undefi
 			continue
 		}
 
-		// Must have ALL requested strengths
-		if (strengths.length > 0 && !strengths.every((s) => entry.strengths.includes(s))) continue
+		// Must have ALL requested roles
+		if (roles.length > 0 && !roles.every((s) => entry.roles.includes(s))) continue
 
 		// Must satisfy vision requirement
 		if (needsVision && !entry.vision) continue

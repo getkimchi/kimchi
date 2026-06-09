@@ -58,6 +58,7 @@ import promptEnrichmentExtension from "./extensions/prompt-construction/prompt-e
 import promptSummaryExtension from "./extensions/prompt-summary.js"
 import questionnaireExtension from "./extensions/questionnaire.js"
 import reportBugExtension from "./extensions/report-bug.js"
+import reviewWriteGuardExtension from "./extensions/review-write-guard.js"
 import rtkRewriteExtension from "./extensions/rtk-rewrite.js"
 import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
@@ -456,6 +457,7 @@ try {
 			startupAuthGate,
 			loopGuardExtension,
 			explorationGuardExtension,
+			reviewWriteGuardExtension,
 			lspExtension,
 			...enabledExtensionFactories([
 				{ id: "plugins.mcp-apps", factory: mcpAdapterExtension },

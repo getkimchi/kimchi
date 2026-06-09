@@ -6,6 +6,7 @@ import {
 	DEFAULT_MODEL_ROLES,
 	type ModelRoles,
 	modelIdFromRef,
+	normalizeRoleModels,
 	parseModelRoles,
 	resetModelRolesCache,
 	saveModelRoles,
@@ -107,9 +108,33 @@ describe("parseModelRoles", () => {
 		expect(warnings).toHaveLength(0)
 	})
 
-	it("ignores array input", () => {
+	it("ignores array as top-level input", () => {
 		const { roles } = parseModelRoles(["not", "valid"])
 		expect(roles).toEqual(DEFAULT_MODEL_ROLES)
+	})
+
+	it("accepts string array for delegable roles", () => {
+		const { roles, warnings } = parseModelRoles({
+			builder: ["anthropic/claude-sonnet-4-5", "openai/gpt-4o"],
+		})
+		expect(roles.builder).toEqual(["anthropic/claude-sonnet-4-5", "openai/gpt-4o"])
+		expect(warnings).toHaveLength(0)
+	})
+
+	it("warns on empty array for delegable roles", () => {
+		const { roles, warnings } = parseModelRoles({
+			builder: [],
+		})
+		expect(roles.builder).toEqual(DEFAULT_MODEL_ROLES.builder)
+		expect(warnings).toHaveLength(1)
+	})
+
+	it("warns on array with non-string elements", () => {
+		const { roles, warnings } = parseModelRoles({
+			reviewer: [42, "valid/model"],
+		})
+		expect(roles.reviewer).toEqual(DEFAULT_MODEL_ROLES.reviewer)
+		expect(warnings).toHaveLength(1)
 	})
 
 	it("handles mixed valid and invalid roles", () => {
@@ -174,18 +199,43 @@ describe("modelIdFromRef", () => {
 })
 
 describe("DEFAULT_MODEL_ROLES", () => {
-	it("defaults to kimchi-dev OSS models", () => {
+	it("orchestrator is kimi-k2.6", () => {
 		expect(DEFAULT_MODEL_ROLES.orchestrator).toBe("kimchi-dev/kimi-k2.6")
-		expect(DEFAULT_MODEL_ROLES.planner).toBe("kimchi-dev/kimi-k2.6")
-		expect(DEFAULT_MODEL_ROLES.builder).toBe("kimchi-dev/minimax-m2.7")
-		expect(DEFAULT_MODEL_ROLES.reviewer).toBe("kimchi-dev/minimax-m2.7")
-		expect(DEFAULT_MODEL_ROLES.explorer).toBe("kimchi-dev/nemotron-3-super-fp4")
-		expect(DEFAULT_MODEL_ROLES.judge).toBe("kimchi-dev/kimi-k2.6")
+	})
+
+	it("builder pool contains minimax and kimi-k2.6 but not nemotron", () => {
+		const builders = normalizeRoleModels(DEFAULT_MODEL_ROLES.builder)
+		expect(builders).toContain("kimchi-dev/minimax-m2.7")
+		expect(builders).toContain("kimchi-dev/kimi-k2.6")
+		expect(builders).not.toContain("kimchi-dev/nemotron-3-super-fp4")
+	})
+
+	it("reviewer pool contains kimi-k2.6 and minimax", () => {
+		const reviewers = normalizeRoleModels(DEFAULT_MODEL_ROLES.reviewer)
+		expect(reviewers).toContain("kimchi-dev/kimi-k2.6")
+		expect(reviewers).toContain("kimchi-dev/minimax-m2.7")
+	})
+
+	it("explorer pool contains nemotron", () => {
+		const explorers = normalizeRoleModels(DEFAULT_MODEL_ROLES.explorer)
+		expect(explorers).toContain("kimchi-dev/nemotron-3-super-fp4")
+	})
+
+	it("planner pool contains kimi-k2.6", () => {
+		const planners = normalizeRoleModels(DEFAULT_MODEL_ROLES.planner)
+		expect(planners).toContain("kimchi-dev/kimi-k2.6")
+	})
+
+	it("judge defaults to orchestrator model", () => {
+		const judges = normalizeRoleModels(DEFAULT_MODEL_ROLES.judge)
+		expect(judges).toContain(DEFAULT_MODEL_ROLES.orchestrator)
 	})
 
 	it("all defaults contain a provider prefix", () => {
-		for (const ref of Object.values(DEFAULT_MODEL_ROLES)) {
-			expect(splitModelRef(ref)).toBeDefined()
+		for (const value of Object.values(DEFAULT_MODEL_ROLES)) {
+			for (const ref of normalizeRoleModels(value)) {
+				expect(splitModelRef(ref)).toBeDefined()
+			}
 		}
 	})
 })
@@ -266,8 +316,7 @@ describe("validateModelRoles", () => {
 			judge: "kimchi-dev/kimi-k2.6",
 		}
 		const result = validateModelRoles(roles, available)
-		expect(result.unavailable).toHaveLength(4)
-		const flaggedRoles = result.unavailable.map((u) => u.role)
+		const flaggedRoles = new Set(result.unavailable.map((u) => u.role))
 		expect(flaggedRoles).toContain("orchestrator")
 		expect(flaggedRoles).toContain("planner")
 		expect(flaggedRoles).toContain("builder")
@@ -287,6 +336,8 @@ describe("validateModelRoles", () => {
 
 	it("handles empty available set", () => {
 		const result = validateModelRoles(DEFAULT_MODEL_ROLES, new Set())
-		expect(result.unavailable).toHaveLength(6)
+		expect(result.unavailable.length).toBeGreaterThanOrEqual(5)
+		const flaggedRoles = new Set(result.unavailable.map((u) => u.role))
+		expect(flaggedRoles).toEqual(new Set(["orchestrator", "planner", "builder", "reviewer", "explorer", "judge"]))
 	})
 })

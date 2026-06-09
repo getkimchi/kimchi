@@ -305,7 +305,7 @@ function getStatusInstruction(status: string, abortReason?: AgentAbortReason): s
 		return "\nThe agent stopped producing output and was terminated. Review any partial results. If the work is incomplete, you may spawn a follow-up Agent to continue from where this one left off."
 	}
 	if (status === "aborted" && abortReason === "max_duration") {
-		return "\nThe agent exceeded its maximum allowed wall-clock duration and was terminated. Review any partial results. If the work is incomplete, you may spawn a follow-up Agent scoped to only the remaining unfinished work."
+		return "\nThe agent exceeded its maximum allowed wall-clock duration and was terminated. Review any partial results. If the work is incomplete, you may spawn a follow-up Agent scoped to only the remaining unfinished work. Do NOT implement the remaining work yourself — the orchestrator must delegate, not build."
 	}
 	return ""
 }
@@ -828,7 +828,7 @@ Guidelines:
 
 Model selection — YOU choose based on task complexity:
 - Each agent type's listing above shows the set of models it can use. The list order has no semantics — it is not a tier ranking.
-- Assess the task (single lookup vs. multi-step refactor vs. deep architectural analysis) and pick the model whose capabilities (tier, strengths) best match. Refer to your knowledge of the kimchi-dev models or to your initial system-prompt model section.
+- Assess the task (single lookup vs. multi-step refactor vs. deep architectural analysis) and pick the model whose capabilities (tier, roles) best match. Refer to your knowledge of the kimchi-dev models or to your initial system-prompt model section.
 - Pass \`model\` only when the user explicitly asks for a specific model or the profile does not lock model selection.
 - If \`model\` is omitted, the runtime uses the persona's profile model. Profiles with locked model selection ignore caller model overrides.`,
 			parameters: Type.Object({
@@ -844,7 +844,7 @@ Model selection — YOU choose based on task complexity:
 				model: Type.Optional(
 					Type.String({
 						description:
-							'Model to use for this spawn — YOU pick based on task complexity. Each agent type advertises a set of models it may use; the list order is not a ranking. Match the task to the model\'s tier/strengths. Format "provider/modelId" (e.g. "kimchi-dev/minimax-m2.7") or fuzzy ("kimi", "minimax", "nemotron"). Omit to use the persona\'s default or let the orchestrator auto-pick based on persona strengths.',
+							'Model to use for this spawn — YOU pick based on task complexity. Each agent type advertises a set of models it may use; the list order is not a ranking. Match the task to the model\'s tier/roles. Format "provider/modelId" (e.g. "kimchi-dev/minimax-m2.7") or fuzzy ("kimi", "minimax", "nemotron"). Omit to use the persona\'s default or let the orchestrator auto-pick based on persona roles.',
 					}),
 				),
 				thinking: Type.Optional(

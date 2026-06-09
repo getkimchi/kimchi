@@ -8,7 +8,7 @@ set -euo pipefail
 # the kimchi harness with kimi-k2.6.
 #
 # Usage:
-#   ./run-evaluation.sh                          # run default tasks (complex, mega)
+#   ./run-evaluation.sh                          # run default tasks (complex, mega, explore)
 #   ./run-evaluation.sh complex
 #   ./run-evaluation.sh complex mega
 
@@ -60,7 +60,7 @@ if (( ${#AVAILABLE_TASKS[@]} == 0 )); then
 fi
 
 if (( ${#REQUESTED_TASKS[@]} == 0 )); then
-  TASKS=(complex mega)
+  TASKS=(complex mega explore)
 else
   TASKS=("${REQUESTED_TASKS[@]}")
 fi
