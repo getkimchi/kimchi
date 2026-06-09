@@ -359,6 +359,9 @@ export default function (skillPaths: string[]) {
 			// circuits the input-handler chain.
 			const continuationNudge = new ContinuationNudge()
 			const emptyTurnNudge = new EmptyTurnNudge()
+			pi.on("agent_start", async () => {
+				continuationNudge.resetForNewAgentRun()
+			})
 			pi.on("input", async (event) => {
 				if (event.source === "extension") {
 					// Agent result arriving. Clear the delegation-pending flag so the
@@ -413,7 +416,15 @@ export default function (skillPaths: string[]) {
 					// in a recovery cycle. Skip empty-turn nudge here to avoid sending
 					// mixed instructions ("call a tool" vs "summarize or continue").
 					// Fall through to continuationNudge.evaluateTurn below.
-				} else if (emptyTurnNudge.evaluateTurn(assistantMsg)) {
+				} else if (
+					// Suppress the empty-turn nudge when any tool was called during this
+					// agent run. After a completed tool sequence, an empty response is
+					// almost certainly the model finishing, not a model glitch. Without
+					// this check the model treats the nudge as user input and continues
+					// working after it was already done.
+					!continuationNudge.hasToolBeenCalledThisRun() &&
+					emptyTurnNudge.evaluateTurn(assistantMsg)
+				) {
 					pi.sendMessage(
 						{ customType: NUDGE_CUSTOM_TYPE, content: EMPTY_TURN_NUDGE_TEXT, display: false },
 						{ deliverAs: "followUp" },

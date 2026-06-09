@@ -826,4 +826,46 @@ describe("continuation nudge turn_end handler", () => {
 		})
 		expect(sendMessageCalls.length).toBe(2)
 	})
+
+	it("does not send an empty-turn nudge after tools were called this agent run", async () => {
+		const { fire, sendMessageCalls } = buildNudgeHandlers()
+
+		// Start a fresh agent run.
+		await fire("agent_start", {})
+
+		// Simulate user input.
+		await fire("input", { source: "user" })
+
+		// Model calls a tool — marks the run as having used tools.
+		await fire("tool_execution_start", {})
+
+		// Model then produces an empty response (thinking-only or truly empty).
+		await fire("turn_end", {
+			message: makeAssistantWithStop([{ type: "thinking", thinking: "I am done." }]),
+		})
+
+		// No nudge should fire — tools were called this run, so the empty
+		// response is the model finishing, not a glitch.
+		expect(sendMessageCalls.length).toBe(0)
+	})
+
+	it("sends an empty-turn nudge when no tools have been called this run", async () => {
+		const { fire, sendMessageCalls } = buildNudgeHandlers()
+
+		// Start a fresh agent run.
+		await fire("agent_start", {})
+
+		// Simulate user input.
+		await fire("input", { source: "user" })
+
+		// Model returns an empty response with no prior tool calls.
+		await fire("turn_end", {
+			message: makeAssistantWithStop([]),
+		})
+
+		// Empty-turn nudge should fire — no tools have been called, the model
+		// might be stuck.
+		expect(sendMessageCalls.length).toBe(1)
+		expect((sendMessageCalls[0].message as { content?: string }).content).toContain("If you have finished")
+	})
 })
