@@ -504,10 +504,11 @@ async function confirmCompletionCriteria(
 			},
 			{
 				id: "criteria_changes",
-				type: "text",
+				type: "single",
 				prompt: "Any additions or changes?",
-				required: false,
-				placeholder: "Leave blank if the criteria are ready.",
+				options: [{ id: "no", label: "No" }],
+				allowOther: true,
+				otherLabel: "Yes (Type in your answer)",
 			},
 		],
 		{
@@ -538,7 +539,8 @@ async function confirmCompletionCriteria(
 
 	const answers = response.answers ?? []
 	const criteriaOk = answers.find((answer) => answer.id === "criteria_ok")?.value === "yes"
-	const changes = answers.find((answer) => answer.id === "criteria_changes")?.value.trim() ?? ""
+	const changesAnswer = answers.find((answer) => answer.id === "criteria_changes")
+	const changes = changesAnswer?.wasCustom ? changesAnswer.value.trim() : ""
 	const ready = criteriaOk && changes.length === 0
 	const rationaleLine = response.rationale ? `\nRationale: ${response.rationale}` : ""
 	return toolOk(
@@ -1210,7 +1212,7 @@ ${renderGateGuidance("complete_ferment")}`,
 
 The host always renders:
   - criteria_ok: strict Yes/No confirmation
-  - criteria_changes: optional free-text additions/changes
+  - criteria_changes: No choice, with custom text entry only when changes are needed
 
 Proceed to exploration only when Confirmed is yes and Changes is empty. Otherwise revise the criteria and call this tool again.`,
 		parameters: ConfirmCompletionCriteriaParams,

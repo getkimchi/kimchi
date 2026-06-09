@@ -36,6 +36,7 @@ export interface Question {
 	type: QuestionType
 	options: QuestionOption[]
 	allowOther: boolean
+	otherLabel?: string
 	required: boolean
 }
 
@@ -117,7 +118,7 @@ export function currentOptions(state: QuestionnaireState): RenderOption[] {
 	if (!q || q.type === "text") return []
 	const opts: RenderOption[] = [...q.options]
 	if (q.allowOther) {
-		opts.push({ id: "__other__", label: "Type your own answer", isOther: true })
+		opts.push({ id: "__other__", label: q.otherLabel ?? "Type your own answer", isOther: true })
 	}
 	return opts
 }
@@ -191,7 +192,7 @@ function mutableCurrentOptions(s: MutableState): RenderOption[] {
 	if (!q || q.type === "text") return []
 	const opts: RenderOption[] = [...q.options]
 	if (q.allowOther) {
-		opts.push({ id: "__other__", label: "Type your own answer", isOther: true })
+		opts.push({ id: "__other__", label: q.otherLabel ?? "Type your own answer", isOther: true })
 	}
 	return opts
 }

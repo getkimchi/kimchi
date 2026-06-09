@@ -466,6 +466,20 @@ describe("AskUserParams schema", () => {
 		expect(Value.Check(AskUserParams, payload)).toBe(true)
 	})
 
+	it("accepts a custom otherLabel for allowOther questions", () => {
+		const payload = base([
+			{
+				id: "changes",
+				type: "single",
+				prompt: "Any additions or changes?",
+				options: [{ id: "no", label: "No" }],
+				allowOther: true,
+				otherLabel: "Yes (Type in your answer)",
+			},
+		])
+		expect(Value.Check(AskUserParams, payload)).toBe(true)
+	})
+
 	// LLM-1928: the original failure was ask_user.questions[].type using the
 	// wrong vocabulary. These types must now be rejected at the schema layer.
 	it("rejects the old radio vocabulary in questions[].type", () => {

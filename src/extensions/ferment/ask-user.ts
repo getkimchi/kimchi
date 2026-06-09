@@ -56,6 +56,7 @@ export interface AskUserQuestion {
 	label?: string
 	options?: AskUserOption[]
 	allowOther?: boolean
+	otherLabel?: string
 	required?: boolean
 	placeholder?: string
 }

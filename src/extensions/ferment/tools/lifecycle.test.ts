@@ -532,9 +532,11 @@ describe("confirm_ferment_completion_criteria via registerLifecycleTools", () =>
 		return { h, execute }
 	}
 
-	it("renders fixed confirm plus optional text controls for drafted criteria", async () => {
+	it("renders fixed confirm plus conditional changes controls for drafted criteria", async () => {
 		const { h, execute } = createConfirmCriteriaHarness()
-		const select = vi.fn<(title: string, options: string[]) => Promise<string>>(async () => "Yes")
+		const select = vi.fn<(title: string, options: string[]) => Promise<string>>(async (_title, options) =>
+			options.includes("Yes") ? "Yes" : "No",
+		)
 		const input = vi.fn<(title: string, placeholder?: string) => Promise<string>>(async () => "")
 
 		const result = await execute(
@@ -560,12 +562,18 @@ describe("confirm_ferment_completion_criteria via registerLifecycleTools", () =>
 			"No",
 		])
 		expect(select.mock.calls[0]?.[0]).toContain("README.md exists at the project root")
-		expect(input).toHaveBeenCalledWith(expect.stringContaining("Any additions or changes?"), "")
+		expect(select).toHaveBeenCalledWith(expect.stringContaining("Any additions or changes?"), [
+			"No",
+			"Yes (Type in your answer)",
+		])
+		expect(input).not.toHaveBeenCalled()
 	})
 
 	it("blocks exploration when the user supplies criteria changes", async () => {
 		const { h, execute } = createConfirmCriteriaHarness()
-		const select = vi.fn<(title: string, options: string[]) => Promise<string>>(async () => "Yes")
+		const select = vi.fn<(title: string, options: string[]) => Promise<string>>(async (_title, options) =>
+			options.includes("Yes") ? "Yes" : "Yes (Type in your answer)",
+		)
 		const input = vi.fn<(title: string, placeholder?: string) => Promise<string>>(
 			async () => "Add go test ./... as verification.",
 		)

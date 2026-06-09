@@ -363,6 +363,12 @@ const AskUserQuestionSchema = Type.Object({
 				"For single/multi questions only. When true, the TUI adds an Other/free-text option and the judge may return a custom value. Must be omitted for confirm. Default: false.",
 		}),
 	),
+	otherLabel: Type.Optional(
+		Type.String({
+			description:
+				"For single/multi questions with allowOther=true, optional custom label for the free-text option. Default: 'Type your own answer'.",
+		}),
+	),
 	required: Type.Optional(Type.Boolean({ description: "Whether this question must be answered. Default: true." })),
 	placeholder: Type.Optional(Type.String({ description: "Optional placeholder hint for text/custom answers." })),
 })
@@ -412,7 +418,7 @@ export const ConfirmCompletionCriteriaParams = Type.Object({
 		{
 			minItems: 1,
 			description:
-				"Draft completion criteria to present for confirmation. The host always renders these through a fixed Yes/No plus optional text form.",
+				"Draft completion criteria to present for confirmation. The host always renders these through a fixed approval plus No/custom changes form.",
 		},
 	),
 })

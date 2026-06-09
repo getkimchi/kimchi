@@ -53,7 +53,7 @@ Draft concrete completion criteria and validation steps, then confirm with the u
 - State what "done" looks like in specific, testable terms.
 - Include the verification method for each criterion (test command, manual check, linter, etc.).
 - Use confirm_ferment_completion_criteria to present the criteria. Do not hand-build
-  this with ask_user — the host always renders approval plus optional text changes.
+  this with ask_user — the host always renders approval plus a No/custom changes choice.
 - Proceed only when the tool returns Confirmed: yes and Changes: (none). Otherwise
   revise the criteria and ask again with confirm_ferment_completion_criteria.
 - If the user already stated clear acceptance criteria in their intent, confirm them

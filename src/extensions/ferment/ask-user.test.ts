@@ -347,6 +347,22 @@ describe("normalizeAskUserQuestions", () => {
 		expect(result.error).toContain("allowOther")
 	})
 
+	it("preserves custom other-label for single/multi questions", () => {
+		const result = normalizeAskUserQuestions([
+			{
+				id: "changes",
+				type: "single",
+				prompt: "Any additions?",
+				options: [{ id: "no", label: "No" }],
+				allowOther: true,
+				otherLabel: "Yes (Type in your answer)",
+			},
+		])
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.questions[0]?.otherLabel).toBe("Yes (Type in your answer)")
+	})
+
 	it("reports an unknown type as a tool error rather than throwing", () => {
 		expect(() =>
 			normalizeAskUserQuestions([{ id: "bad", type: "bogus", prompt: "Which?", options: [{ id: "x", label: "X" }] }]),
