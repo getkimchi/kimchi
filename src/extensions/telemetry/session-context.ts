@@ -115,6 +115,37 @@ export class SessionContext {
 		p.finally(() => this.inFlight.delete(p))
 	}
 
+	/**
+	 * Emit a ferment lifecycle event with explicit identifiers that cannot be
+	 * clobbered by the auto-inject in `emit()`.
+	 *
+	 * Use this for all ferment.* events where the active ferment may already
+	 * have been cleared by the time the event fires (e.g. ferment.completed
+	 * fires after runtime.setActive(undefined)).
+	 *
+	 * Deliberately skips the session.type_changed side-effect — that is for
+	 * ambient session events, not explicit lifecycle events.
+	 */
+	emitWithIds(
+		eventName: string,
+		ids: { ferment_id: string; phase_id?: string; step_id?: string },
+		attrs: Record<string, string | number | boolean>,
+	): void {
+		const sessionType = getSessionType()
+		const merged: Record<string, string | number | boolean> = {
+			source: this.source,
+			session_type: sessionType,
+			...ids,
+			...attrs,
+		}
+		this.logBuffer.push(buildLogRecord(this.sessionId, eventName, toAttrs(merged)))
+		if (this.logBuffer.length >= LOG_BATCH_MAX_SIZE) {
+			this.flushLogBuffer()
+		} else if (this.logFlushTimer === undefined) {
+			this.logFlushTimer = setTimeout(() => this.flushLogBuffer(), LOG_BATCH_FLUSH_INTERVAL_MS)
+		}
+	}
+
 	emit(eventName: string, attrs: Record<string, string | number | boolean>): void {
 		const sessionType = getSessionType()
 		const ferment = getActiveFerment()

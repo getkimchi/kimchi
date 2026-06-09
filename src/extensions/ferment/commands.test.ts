@@ -96,6 +96,7 @@ function createHarness() {
 		setActiveTools: vi.fn((names: string[]) => {
 			activeTools = names
 		}),
+		events: { emit: vi.fn(), on: vi.fn(() => () => {}) },
 	} as unknown as ExtensionAPI
 	const ctx = {
 		hasUI: false,

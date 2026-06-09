@@ -8,6 +8,7 @@ import { requestSharedFooterRender } from "../shared-footer.js"
 import { pr_bold, pr_dim, pr_orange, pr_success, pr_teal } from "./colors.js"
 import { type FermentCommand, parseFermentCommand } from "./command-parser.js"
 import { decideContinuation } from "./continuation.js"
+import { emitFermentCreated } from "./domain-events-emitter.js"
 import { formatFermentStatus } from "./format.js"
 import { autoInitFromEnv, ensureGitRepo } from "./git-init.js"
 import { appendRefEntry, resetReactiveContinuationNudgeCount } from "./nudge.js"
@@ -236,6 +237,7 @@ export async function startFermentForIntent({
 		await ensureGitRepo({ ui: ctx.ui })
 		const shortName = deriveDraftFermentTitle(title ?? rawIntent)
 		const f = storage.create(shortName, rawIntent)
+		emitFermentCreated(pi.events, f)
 		setActiveFermentAndApplyProfile(pi, runtime, f)
 		appendRefEntry(pi, f.id)
 
@@ -878,6 +880,7 @@ export class FermentCommandController {
 				const shortName = deriveDraftFermentTitle(resolvedIntent)
 				const f = storage.create(shortName, resolvedIntent)
 				const updated = f
+				emitFermentCreated(pi.events, updated)
 				setActiveFermentAndApplyProfile(pi, runtime, updated)
 				appendRefEntry(pi, updated.id)
 				sendBreadcrumb(
@@ -939,6 +942,7 @@ export class FermentCommandController {
 			await ensureGitRepo({ ui: ctx.ui })
 			const shortName = deriveDraftFermentTitle(rawName)
 			const f = storage.create(shortName, rawName)
+			emitFermentCreated(pi.events, f)
 			setActiveFermentAndApplyProfile(pi, runtime, f)
 			appendRefEntry(pi, f.id)
 

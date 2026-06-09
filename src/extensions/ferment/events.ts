@@ -6,6 +6,7 @@ import { deferExtensionAction } from "../deferred-action.js"
 import { formatDuration } from "./colors.js"
 import { extractContextualOptions, extractTrailingQuestion } from "./contextual-options.js"
 import { decideContinuation } from "./continuation.js"
+import { emitFermentCreated } from "./domain-events-emitter.js"
 import { autoInitFromEnv, ensureGitRepo } from "./git-init.js"
 import { appendRefEntry, maybeInjectReactiveContinuationNudge, resetReactiveContinuationNudgeCount } from "./nudge.js"
 import { buildOneshotNudge } from "./oneshot.js"
@@ -339,6 +340,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 			const shortName = deriveDraftFermentTitle(intent)
 			const f = storage.create(shortName, intent)
 			const updated = f
+			emitFermentCreated(pi.events, updated)
 			runtime.setActive(updated)
 			appendRefEntry(pi, updated.id)
 			const ackText = `One-shot ferment: "${updated.name}"\nBranch: ${updated.worktree.branch ?? "n/a"}\nPolicy: automated`

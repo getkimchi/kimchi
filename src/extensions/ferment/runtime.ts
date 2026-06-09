@@ -1,7 +1,8 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
-import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
+import type { EventBus, ModelRegistry } from "@earendil-works/pi-coding-agent"
 import type { FermentEventStore } from "../../ferment/event-store.js"
 import type { Ferment } from "../../ferment/types.js"
+import { FERMENT_EVENTS } from "./domain-events.js"
 import {
 	type PendingPlanReview,
 	clearAllPendingPlanReviews,
@@ -53,6 +54,10 @@ import {
 import type { ContinuationPolicy } from "./state.js"
 
 export interface FermentRuntime {
+	/** pi.events bus — set by the ferment extension factory so all mutations
+	 *  can emit domain events for subscribers (e.g. telemetry). Undefined in
+	 *  tests and non-UI code paths that don't have access to pi. */
+	events: EventBus | undefined
 	getStorage(): FermentEventStore
 	getActive(): Ferment | undefined
 	getActiveId(): string | undefined
@@ -110,7 +115,8 @@ function clearFermentState(fermentId: string): void {
 }
 
 export function createDefaultFermentRuntime(): FermentRuntime {
-	return {
+	const runtime: FermentRuntime = {
+		events: undefined,
 		getStorage,
 		getActive,
 		getActiveId,
@@ -121,7 +127,13 @@ export function createDefaultFermentRuntime(): FermentRuntime {
 		setAutomatedContinuationEnabled,
 		now: () => new Date(),
 		nowIso: () => new Date().toISOString(),
-		markHumanInput,
+		markHumanInput: () => {
+			markHumanInput()
+			const active = getActive()
+			if (active && runtime.events) {
+				runtime.events.emit(FERMENT_EVENTS.STEERING, { fermentId: active.id })
+			}
+		},
 		getLastHumanInputAt,
 		captureJudgeContext,
 		bumpStepStart,
@@ -155,6 +167,7 @@ export function createDefaultFermentRuntime(): FermentRuntime {
 		clearStepCompleteAttempt,
 		clearFermentState,
 	}
+	return runtime
 }
 
 export const defaultFermentRuntime = createDefaultFermentRuntime()
