@@ -131,7 +131,7 @@ export function emitFermentDomainEvent(events: EventBus, cmd: Command, post: Fer
 				deltaInputTokens: 0,
 				deltaOutputTokens: 0,
 				deltaCostUsd: 0,
-				blockRetries: 0,
+				blockRetries: cmd.type === "complete_phase" ? (cmd.blockRetries ?? 0) : 0,
 			}
 			events.emit(FERMENT_EVENTS.PHASE_COMPLETED, payload)
 			return

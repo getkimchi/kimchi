@@ -711,3 +711,113 @@ describe("edge case coverage", () => {
 		expect(attrsOf(rec as NonNullable<typeof rec>).success).toBe("true")
 	})
 })
+
+describe("token accounting regression tests", () => {
+	let fetchMock: ReturnType<typeof vi.fn>
+	let originalFetch: typeof globalThis.fetch
+
+	beforeEach(() => {
+		fetchMock = vi.fn().mockResolvedValue({ ok: true, text: async () => "" })
+		originalFetch = globalThis.fetch
+		// biome-ignore lint/suspicious/noExplicitAny: test mock
+		globalThis.fetch = fetchMock as any
+	})
+
+	afterEach(async () => {
+		globalThis.fetch = originalFetch
+		_resetSharedAccumulators()
+		const { _resetFermentTrackingState } = await import("./index.js")
+		_resetFermentTrackingState()
+		vi.restoreAllMocks()
+	})
+
+	it("ferment.completed carries non-zero token totals after message_end usage accumulates", async () => {
+		// Regression: cleanupFermentState was called before the snapshot was read,
+		// causing token totals to always be 0.
+		const { handlers, events, api } = createMockApi()
+		const { default: ext, _resetFermentTrackingState } = await import("./index.js")
+		ext(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, { model: { id: "claude-sonnet-4-6" } })
+
+		// 1. Ferment starts (snapshot taken here)
+		const { FERMENT_EVENTS } = await import("../ferment/domain-events.js")
+		events.emit(FERMENT_EVENTS.STARTED, { fermentId: "f-tokens", name: "Token Test", phaseCount: 1 })
+
+		// 2. Simulate an API request completing with usage
+		await getHandler(
+			handlers,
+			"message_end",
+		)({
+			message: {
+				role: "assistant",
+				model: "claude-sonnet-4-6",
+				provider: "anthropic",
+				timestamp: Date.now(),
+				usage: { input: 500, output: 200, cacheRead: 0, cacheWrite: 0, cost: { total: 0.05 } },
+			},
+		})
+
+		// 3. Ferment completes (snapshot diff should give non-zero)
+		events.emit(FERMENT_EVENTS.COMPLETED, {
+			fermentId: "f-tokens",
+			name: "Token Test",
+			phaseCount: 1,
+			blockRetries: 0,
+			durationMs: 0,
+			totalInputTokens: 0,
+			totalOutputTokens: 0,
+			totalCostUsd: 0,
+			steeringCount: 0,
+		})
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const logCalls = fetchMock.mock.calls.filter(([url]: unknown[]) => String(url).includes("/logs"))
+		const allRecords = logCalls.flatMap(([, opts]: unknown[]) => {
+			const body = JSON.parse((opts as { body: string }).body)
+			return body.resourceLogs[0].scopeLogs[0].logRecords as Array<{
+				eventName: string
+				attributes: Array<{ key: string; value: { stringValue: string } }>
+			}>
+		})
+		const rec = allRecords.find((r) => r.eventName === "ferment.completed")
+		expect(rec).toBeDefined()
+		const attrs = Object.fromEntries(
+			(rec as NonNullable<typeof rec>).attributes.map((a) => [a.key, a.value.stringValue]),
+		)
+		expect(Number(attrs.total_input_tokens)).toBe(500)
+		expect(Number(attrs.total_output_tokens)).toBe(200)
+		expect(Number(attrs.total_cost_usd)).toBeGreaterThan(0)
+	})
+
+	it("ferment.started is emitted with session_type ferment (active ferment set before emit)", async () => {
+		// Regression: emitFermentCreated was called before setActiveFermentAndApplyProfile,
+		// so session_type was "coding" instead of "ferment".
+		const { handlers, events, api } = createMockApi()
+		const { default: ext } = await import("./index.js")
+		ext(makeConfig())(api)
+
+		// Simulate active ferment being set BEFORE the event fires (as fixed in commands.ts)
+		const { getActiveFerment } = await import("../ferment/index.js")
+		vi.mocked(getActiveFerment).mockReturnValue({ id: "f-stype" } as never)
+
+		await getHandler(handlers, "session_start")({}, { model: { id: "claude-sonnet-4-6" } })
+		const { FERMENT_EVENTS } = await import("../ferment/domain-events.js")
+		events.emit(FERMENT_EVENTS.STARTED, { fermentId: "f-stype", name: "Session Type", phaseCount: 1 })
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const logCalls = fetchMock.mock.calls.filter(([url]: unknown[]) => String(url).includes("/logs"))
+		const allRecords = logCalls.flatMap(([, opts]: unknown[]) => {
+			const body = JSON.parse((opts as { body: string }).body)
+			return body.resourceLogs[0].scopeLogs[0].logRecords as Array<{
+				eventName: string
+				attributes: Array<{ key: string; value: { stringValue: string } }>
+			}>
+		})
+		const rec = allRecords.find((r) => r.eventName === "ferment.started")
+		expect(rec).toBeDefined()
+		const attrs = Object.fromEntries(
+			(rec as NonNullable<typeof rec>).attributes.map((a) => [a.key, a.value.stringValue]),
+		)
+		expect(attrs.session_type).toBe("ferment")
+	})
+})

@@ -792,7 +792,7 @@ describe("complete_ferment_phase", () => {
 		expect(f.phases[0].summary).toBe("phase done")
 	})
 
-	it("does NOT assign a per-phase grade — grading is now journey-only at complete_ferment", async () => {
+	it("assigns a deterministic per-phase grade for telemetry (A when all gates pass)", async () => {
 		const id = await setupAllStepsTerminal()
 		ok(
 			await h.call("complete_ferment_phase", {
@@ -802,9 +802,10 @@ describe("complete_ferment_phase", () => {
 				gates: passingPhaseGates(),
 			}),
 		)
-		// Per-phase grading was removed: the only letter grade lives on
-		// ferment.grade after the journey-grade judge runs at complete_ferment.
-		expect(loadFerment(id).phases[0].grade).toBeUndefined()
+		// The deterministic grade (A/B/F from gate verdicts + project checks)
+		// is now persisted so telemetry can read it via the domain event.
+		// The journey-grade judge still assigns the final ferment.grade at complete_ferment.
+		expect(loadFerment(id).phases[0].grade?.grade).toBe("A")
 	})
 })
 

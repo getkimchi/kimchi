@@ -340,8 +340,8 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 			const shortName = deriveDraftFermentTitle(intent)
 			const f = storage.create(shortName, intent)
 			const updated = f
-			emitFermentCreated(pi.events, updated)
 			runtime.setActive(updated)
+			emitFermentCreated(pi.events, updated)
 			appendRefEntry(pi, updated.id)
 			const ackText = `One-shot ferment: "${updated.name}"\nBranch: ${updated.worktree.branch ?? "n/a"}\nPolicy: automated`
 			void pi.sendMessage(

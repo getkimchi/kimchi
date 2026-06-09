@@ -222,9 +222,12 @@ function onFermentStarted(raw: unknown): void {
 
 function onFermentCompleted(raw: unknown): void {
 	const payload = raw as FermentCompletedPayload
+	// Read all tracking state BEFORE cleanup — cleanupFermentState deletes the
+	// maps, so snapshot/time lookups after it return undefined.
 	const startMs = fermentStartTimes.get(payload.fermentId) ?? 0
 	const durationMs = startMs > 0 ? Date.now() - startMs : 0
 	const steeringCount = fermentSteeringCounts.get(payload.fermentId) ?? 0
+	const fermentSnapshot = fermentTokenSnapshots.get(payload.fermentId)
 	// Clean up all tracking state unconditionally — steering counts and snapshots
 	// accumulate regardless of whether telemetry is enabled, so cleanup must always run.
 	cleanupFermentState(payload.fermentId)
@@ -235,12 +238,11 @@ function onFermentCompleted(raw: unknown): void {
 	// Compute total token/cost by diffing the snapshot taken at ferment.started.
 	// Phase snapshots are consumed per-phase at phase.completed — any still
 	// present here belong to skipped/failed/abandoned phases and are cleaned up.
-	const fermentSnapshot = fermentTokenSnapshots.get(payload.fermentId)
 	const {
 		deltaInput: totalInput,
 		deltaOutput: totalOutput,
 		deltaCost: totalCost,
-	} = fermentSnapshot && ctx ? diffSnapshot(ctx, fermentSnapshot) : { deltaInput: 0, deltaOutput: 0, deltaCost: 0 }
+	} = fermentSnapshot ? diffSnapshot(ctx, fermentSnapshot) : { deltaInput: 0, deltaOutput: 0, deltaCost: 0 }
 
 	const attrs: Record<string, string | number | boolean> = {
 		ferment_name: payload.name,

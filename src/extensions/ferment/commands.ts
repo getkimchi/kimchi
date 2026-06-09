@@ -237,8 +237,8 @@ export async function startFermentForIntent({
 		await ensureGitRepo({ ui: ctx.ui })
 		const shortName = deriveDraftFermentTitle(title ?? rawIntent)
 		const f = storage.create(shortName, rawIntent)
-		emitFermentCreated(pi.events, f)
 		setActiveFermentAndApplyProfile(pi, runtime, f)
+		emitFermentCreated(pi.events, f)
 		appendRefEntry(pi, f.id)
 
 		sendBreadcrumb(
@@ -880,8 +880,8 @@ export class FermentCommandController {
 				const shortName = deriveDraftFermentTitle(resolvedIntent)
 				const f = storage.create(shortName, resolvedIntent)
 				const updated = f
-				emitFermentCreated(pi.events, updated)
 				setActiveFermentAndApplyProfile(pi, runtime, updated)
+				emitFermentCreated(pi.events, updated)
 				appendRefEntry(pi, updated.id)
 				sendBreadcrumb(
 					pi,
@@ -942,8 +942,8 @@ export class FermentCommandController {
 			await ensureGitRepo({ ui: ctx.ui })
 			const shortName = deriveDraftFermentTitle(rawName)
 			const f = storage.create(shortName, rawName)
-			emitFermentCreated(pi.events, f)
 			setActiveFermentAndApplyProfile(pi, runtime, f)
+			emitFermentCreated(pi.events, f)
 			appendRefEntry(pi, f.id)
 
 			sendBreadcrumb(
