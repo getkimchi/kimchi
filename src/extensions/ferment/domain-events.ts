@@ -40,7 +40,6 @@ export interface FermentCompletedPayload {
 	durationMs: number
 	totalInputTokens: number
 	totalOutputTokens: number
-	totalCostUsd: number
 	steeringCount: number
 	/** Total failed phases (proxy for ferment-level block retries). */
 	blockRetries: number
@@ -68,7 +67,6 @@ export interface FermentPhaseCompletedPayload {
 	durationMs: number
 	deltaInputTokens: number
 	deltaOutputTokens: number
-	deltaCostUsd: number
 	blockRetries: number
 }
 

@@ -323,7 +323,6 @@ describe("ferment lifecycle telemetry via pi.events", () => {
 			durationMs: 0,
 			totalInputTokens: 0,
 			totalOutputTokens: 0,
-			totalCostUsd: 0,
 			steeringCount: 0,
 		})
 		await getHandler(handlers, "session_shutdown")({ reason: "test" })
@@ -350,7 +349,6 @@ describe("ferment lifecycle telemetry via pi.events", () => {
 			durationMs: 0,
 			totalInputTokens: 0,
 			totalOutputTokens: 0,
-			totalCostUsd: 0,
 			steeringCount: 0,
 		})
 		await getHandler(handlers, "session_shutdown")({ reason: "test" })
@@ -409,7 +407,6 @@ describe("ferment lifecycle telemetry via pi.events", () => {
 			durationMs: 12000,
 			deltaInputTokens: 0,
 			deltaOutputTokens: 0,
-			deltaCostUsd: 0,
 			blockRetries: 2,
 		})
 		await getHandler(handlers, "session_shutdown")({ reason: "test" })
@@ -561,7 +558,6 @@ describe("ferment lifecycle telemetry via pi.events", () => {
 			durationMs: 0,
 			totalInputTokens: 0,
 			totalOutputTokens: 0,
-			totalCostUsd: 0,
 			steeringCount: 0,
 		})
 		events.emit(FERMENT_EVENTS.STEERING, { fermentId: "f-x" })
@@ -585,7 +581,6 @@ describe("ferment lifecycle telemetry via pi.events", () => {
 			durationMs: 0,
 			totalInputTokens: 0,
 			totalOutputTokens: 0,
-			totalCostUsd: 0,
 			steeringCount: 0,
 		})
 		await getHandler(handlers, "session_shutdown")({ reason: "test" })
@@ -653,7 +648,6 @@ describe("edge case coverage", () => {
 			durationMs: 0,
 			deltaInputTokens: 0,
 			deltaOutputTokens: 0,
-			deltaCostUsd: 0,
 			blockRetries: 0,
 		})
 		await getHandler(handlers, "session_shutdown")({ reason: "test" })
@@ -682,7 +676,6 @@ describe("edge case coverage", () => {
 			durationMs: 0,
 			deltaInputTokens: 0,
 			deltaOutputTokens: 0,
-			deltaCostUsd: 0,
 			blockRetries: 0,
 		})
 		await getHandler(handlers, "session_shutdown")({ reason: "test" })
@@ -731,19 +724,27 @@ describe("token accounting regression tests", () => {
 		vi.restoreAllMocks()
 	})
 
-	it("ferment.completed carries non-zero token totals after message_end usage accumulates", async () => {
-		// Regression: cleanupFermentState was called before the snapshot was read,
-		// causing token totals to always be 0.
+	it("ferment.completed carries non-zero token totals summed from phase deltas", async () => {
+		// Totals on ferment.completed come from summing phase deltas, not from
+		// diffing the session accumulator. This avoids counting scoping-conversation
+		// tokens that accumulated before phases started.
 		const { handlers, events, api } = createMockApi()
 		const { default: ext, _resetFermentTrackingState } = await import("./index.js")
 		ext(makeConfig())(api)
 		await getHandler(handlers, "session_start")({}, { model: { id: "claude-sonnet-4-6" } })
 
-		// 1. Ferment starts (snapshot taken here)
 		const { FERMENT_EVENTS } = await import("../ferment/domain-events.js")
-		events.emit(FERMENT_EVENTS.STARTED, { fermentId: "f-tokens", name: "Token Test", phaseCount: 1 })
 
-		// 2. Simulate an API request completing with usage
+		// 1. Ferment + phase start
+		events.emit(FERMENT_EVENTS.STARTED, { fermentId: "f-tokens", name: "Token Test", phaseCount: 1 })
+		events.emit(FERMENT_EVENTS.PHASE_STARTED, {
+			fermentId: "f-tokens",
+			phaseId: "phase-1",
+			phaseIndex: 0,
+			phaseName: "Phase 1",
+		})
+
+		// 2. Simulate a message_end with usage (this populates the session accumulator)
 		await getHandler(
 			handlers,
 			"message_end",
@@ -757,7 +758,16 @@ describe("token accounting regression tests", () => {
 			},
 		})
 
-		// 3. Ferment completes (snapshot diff should give non-zero)
+		// 3. Phase completes — delta is computed (500 input, 200 output, 0.05 cost)
+		events.emit(FERMENT_EVENTS.PHASE_COMPLETED, {
+			fermentId: "f-tokens",
+			phaseId: "phase-1",
+			phaseIndex: 0,
+			phaseName: "Phase 1",
+			blockRetries: 0,
+		})
+
+		// 4. Ferment completes — totals should reflect the summed phase deltas
 		events.emit(FERMENT_EVENTS.COMPLETED, {
 			fermentId: "f-tokens",
 			name: "Token Test",
@@ -766,7 +776,6 @@ describe("token accounting regression tests", () => {
 			durationMs: 0,
 			totalInputTokens: 0,
 			totalOutputTokens: 0,
-			totalCostUsd: 0,
 			steeringCount: 0,
 		})
 		await getHandler(handlers, "session_shutdown")({ reason: "test" })
@@ -784,9 +793,9 @@ describe("token accounting regression tests", () => {
 		const attrs = Object.fromEntries(
 			(rec as NonNullable<typeof rec>).attributes.map((a) => [a.key, a.value.stringValue]),
 		)
+		// Totals = sum of phase-1 delta (500 input, 200 output, 0.05 cost)
 		expect(Number(attrs.total_input_tokens)).toBe(500)
 		expect(Number(attrs.total_output_tokens)).toBe(200)
-		expect(Number(attrs.total_cost_usd)).toBeGreaterThan(0)
 	})
 
 	it("ferment.started is emitted with session_type ferment (active ferment set before emit)", async () => {

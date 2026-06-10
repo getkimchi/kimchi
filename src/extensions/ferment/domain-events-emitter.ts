@@ -52,7 +52,6 @@ export function emitFermentDomainEvent(events: EventBus, cmd: Command, post: Fer
 				durationMs: 0,
 				totalInputTokens: 0,
 				totalOutputTokens: 0,
-				totalCostUsd: 0,
 				steeringCount: 0,
 				blockRetries: post.phases.filter((p) => p.status === "failed").length,
 			}
@@ -130,7 +129,6 @@ export function emitFermentDomainEvent(events: EventBus, cmd: Command, post: Fer
 				durationMs: 0,
 				deltaInputTokens: 0,
 				deltaOutputTokens: 0,
-				deltaCostUsd: 0,
 				blockRetries: cmd.type === "complete_phase" ? (cmd.blockRetries ?? 0) : 0,
 			}
 			events.emit(FERMENT_EVENTS.PHASE_COMPLETED, payload)

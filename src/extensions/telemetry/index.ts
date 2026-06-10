@@ -39,17 +39,19 @@ import {
 export interface TokenSnapshot {
 	inputByModel: Record<string, number>
 	outputByModel: Record<string, number>
-	costByModel: Record<string, number>
 }
 
 /** Snapshot taken at phase activation, keyed by "${fermentId}:${phaseId}". */
 const phaseTokenSnapshots = new Map<string, TokenSnapshot>()
 
 /**
- * Snapshot taken at ferment creation, keyed by fermentId.
- * Used to compute total token/cost delta for ferment.completed.
+ * Running sum of phase token/cost deltas, keyed by fermentId.
+ * Accumulated as each phase completes. Used for ferment.completed totals.
+ * This is more reliable than diffing the session accumulator at ferment
+ * start/end: the session may include scoping-conversation tokens that
+ * accumulate before phases begin, making the start-snapshot too large.
  */
-const fermentTokenSnapshots = new Map<string, TokenSnapshot>()
+const fermentTokenTotals = new Map<string, { input: number; output: number }>()
 
 /** Wall-clock ms at ferment creation, keyed by fermentId. */
 const fermentStartTimes = new Map<string, number>()
@@ -71,7 +73,7 @@ const fermentSteeringCounts = new Map<string, number>()
 /** @internal — exposed for testing only */
 export function _resetFermentTrackingState(): void {
 	phaseTokenSnapshots.clear()
-	fermentTokenSnapshots.clear()
+	fermentTokenTotals.clear()
 	fermentStartTimes.clear()
 	phaseStartTimes.clear()
 	stepStartTimes.clear()
@@ -101,37 +103,26 @@ function isEnabled(): boolean {
  * Called at phase activation via the ferment:phase_started domain event.
  */
 function captureSnapshot(ctx: SessionContext): TokenSnapshot {
-	const { tokensByModel, costByModel } = ctx.cumulative
-	const snapshot: TokenSnapshot = { inputByModel: {}, outputByModel: {}, costByModel: {} }
+	const { tokensByModel } = ctx.cumulative
+	const snapshot: TokenSnapshot = { inputByModel: {}, outputByModel: {} }
 	for (const [model, t] of Object.entries(tokensByModel)) {
 		snapshot.inputByModel[model] = t.input
 		snapshot.outputByModel[model] = t.output
 	}
-	for (const [model, cost] of Object.entries(costByModel)) {
-		snapshot.costByModel[model] = cost
-	}
 	return snapshot
 }
 
-function diffSnapshot(
-	ctx: SessionContext,
-	snapshot: TokenSnapshot,
-): { deltaInput: number; deltaOutput: number; deltaCost: number } {
-	const { tokensByModel, costByModel } = ctx.cumulative
+function diffSnapshot(ctx: SessionContext, snapshot: TokenSnapshot): { deltaInput: number; deltaOutput: number } {
+	const { tokensByModel } = ctx.cumulative
 	let deltaInput = 0
 	let deltaOutput = 0
-	let deltaCost = 0
 	for (const [model, t] of Object.entries(tokensByModel)) {
 		deltaInput += t.input - (snapshot.inputByModel[model] ?? 0)
 		deltaOutput += t.output - (snapshot.outputByModel[model] ?? 0)
 	}
-	for (const [model, cost] of Object.entries(costByModel)) {
-		deltaCost += cost - (snapshot.costByModel[model] ?? 0)
-	}
 	return {
 		deltaInput: Math.max(0, deltaInput),
 		deltaOutput: Math.max(0, deltaOutput),
-		deltaCost: Math.max(0, deltaCost),
 	}
 }
 
@@ -147,11 +138,11 @@ export function snapshotPhaseTokens(fermentId: string, phaseId: string): void {
 export function consumePhaseTokenDelta(
 	fermentId: string,
 	phaseId: string,
-): { deltaInput: number; deltaOutput: number; deltaCost: number } {
+): { deltaInput: number; deltaOutput: number } {
 	const key = `${fermentId}:${phaseId}`
 	const snapshot = phaseTokenSnapshots.get(key)
 	phaseTokenSnapshots.delete(key)
-	if (!_ctx || !snapshot) return { deltaInput: 0, deltaOutput: 0, deltaCost: 0 }
+	if (!_ctx || !snapshot) return { deltaInput: 0, deltaOutput: 0 }
 	return diffSnapshot(_ctx, snapshot)
 }
 
@@ -193,7 +184,7 @@ export function trackSurveyDismissed(args: SurveyDismissedTelemetry): void {
 
 function cleanupFermentState(fermentId: string): void {
 	fermentStartTimes.delete(fermentId)
-	fermentTokenSnapshots.delete(fermentId)
+	fermentTokenTotals.delete(fermentId)
 	fermentSteeringCounts.delete(fermentId)
 	for (const key of phaseTokenSnapshots.keys()) {
 		if (key.startsWith(`${fermentId}:`)) phaseTokenSnapshots.delete(key)
@@ -212,7 +203,10 @@ function onFermentStarted(raw: unknown): void {
 	if (!ctx) return
 	const payload = raw as FermentStartedPayload
 	fermentStartTimes.set(payload.fermentId, Date.now())
-	fermentTokenSnapshots.set(payload.fermentId, captureSnapshot(ctx))
+	// Initialise the running phase-delta accumulator. Totals are summed as
+	// each phase completes rather than diffing the session accumulator at
+	// ferment start/end (which over-counts scoping-conversation tokens).
+	fermentTokenTotals.set(payload.fermentId, { input: 0, output: 0 })
 	ctx.emitWithIds(
 		"ferment.started",
 		{ ferment_id: payload.fermentId },
@@ -223,26 +217,23 @@ function onFermentStarted(raw: unknown): void {
 function onFermentCompleted(raw: unknown): void {
 	const payload = raw as FermentCompletedPayload
 	// Read all tracking state BEFORE cleanup — cleanupFermentState deletes the
-	// maps, so snapshot/time lookups after it return undefined.
+	// maps, so lookups after it return undefined.
 	const startMs = fermentStartTimes.get(payload.fermentId) ?? 0
 	const durationMs = startMs > 0 ? Date.now() - startMs : 0
 	const steeringCount = fermentSteeringCounts.get(payload.fermentId) ?? 0
-	const fermentSnapshot = fermentTokenSnapshots.get(payload.fermentId)
-	// Clean up all tracking state unconditionally — steering counts and snapshots
-	// accumulate regardless of whether telemetry is enabled, so cleanup must always run.
+	const totals = fermentTokenTotals.get(payload.fermentId) ?? { input: 0, output: 0 }
+	// Clean up all tracking state unconditionally — steering counts accumulate
+	// regardless of whether telemetry is enabled, so cleanup must always run.
 	cleanupFermentState(payload.fermentId)
 	if (!isEnabled()) return
 	const ctx = _ctx
 	if (!ctx) return
 
-	// Compute total token/cost by diffing the snapshot taken at ferment.started.
-	// Phase snapshots are consumed per-phase at phase.completed — any still
-	// present here belong to skipped/failed/abandoned phases and are cleaned up.
-	const {
-		deltaInput: totalInput,
-		deltaOutput: totalOutput,
-		deltaCost: totalCost,
-	} = fermentSnapshot ? diffSnapshot(ctx, fermentSnapshot) : { deltaInput: 0, deltaOutput: 0, deltaCost: 0 }
+	// Totals are the sum of per-phase deltas accumulated in onPhaseCompleted.
+	// Using phase-delta sums (rather than a session-accumulator diff) avoids
+	// counting scoping-conversation tokens that occur before phases start.
+	const totalInput = totals.input
+	const totalOutput = totals.output
 
 	const attrs: Record<string, string | number | boolean> = {
 		ferment_name: payload.name,
@@ -250,7 +241,6 @@ function onFermentCompleted(raw: unknown): void {
 		duration_ms: durationMs,
 		total_input_tokens: totalInput,
 		total_output_tokens: totalOutput,
-		total_cost_usd: totalCost,
 		steering_count: steeringCount,
 		block_retries: payload.blockRetries,
 		model: ctx.currentModel,
@@ -297,14 +287,19 @@ function onPhaseCompleted(raw: unknown): void {
 	const phaseKey = `${payload.fermentId}:${payload.phaseId}`
 	const phaseStartMs = phaseStartTimes.get(phaseKey) ?? 0
 	phaseStartTimes.delete(phaseKey)
-	const { deltaInput, deltaOutput, deltaCost } = consumePhaseTokenDelta(payload.fermentId, payload.phaseId)
+	const { deltaInput, deltaOutput } = consumePhaseTokenDelta(payload.fermentId, payload.phaseId)
+	// Accumulate into the ferment-level running total.
+	const ft = fermentTokenTotals.get(payload.fermentId)
+	if (ft) {
+		ft.input += deltaInput
+		ft.output += deltaOutput
+	}
 	const attrs: Record<string, string | number | boolean> = {
 		phase_index: payload.phaseIndex,
 		phase_name: payload.phaseName,
 		duration_ms: phaseStartMs > 0 ? Date.now() - phaseStartMs : 0,
 		delta_input_tokens: deltaInput,
 		delta_output_tokens: deltaOutput,
-		delta_cost_usd: deltaCost,
 		block_retries: payload.blockRetries,
 		model: ctx.currentModel,
 	}
