@@ -120,10 +120,8 @@ if (telemetryConfig.enabled) {
 	})
 }
 
-// ACP mode runs JSON-RPC over stdio; the "To resume:" print (even remapped to
-// stderr via console.log = console.error inside runAcpMode) is noise in IDE
-// logs and not actionable — the IDE owns session continuation. Decide once,
-// at module load, before anything else runs.
+// ACP mode runs JSON-RPC over stdio; interactive mode runs the standard TUI
+// harness. Decide once at module load, before anything else runs.
 const cliMode = getCliModeArg(process.argv.slice(2))
 const acpMode = cliMode === "acp"
 
