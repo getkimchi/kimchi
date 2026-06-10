@@ -444,7 +444,7 @@ class McpPanel {
 				if (fd && fd.serverName === server.name && fd.toolName === tool.name) {
 					this.focusDescription = null
 				} else {
-					this.focusDescription = { serverName: server.name, toolName: tool.name, text: tool.description }
+					this.focusDescription = { serverName: server.name, toolName: tool.name, text: tool.description ?? "" }
 				}
 			}
 			this.tui.requestRender()
