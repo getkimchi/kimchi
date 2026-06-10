@@ -3,7 +3,7 @@
 # Install the kimchi coding-harness CLI from the latest GitHub release.
 #
 # Usage:
-#   curl -fsSL https://github.com/castai/kimchi/releases/latest/download/install.sh | bash
+#   curl -fsSL https://github.com/getkimchi/kimchi/releases/latest/download/install.sh | bash
 #
 # Optional env:
 #   KIMCHI_INSTALL_DIR  Override install dir. Defaults to /usr/local/bin if
@@ -20,7 +20,7 @@ BLUE='\033[0;34m'
 YELLOW='\033[0;33m'
 NC='\033[0m'
 
-REPO="${KIMCHI_REPO_OVERRIDE:-castai/kimchi}"
+REPO="${KIMCHI_REPO_OVERRIDE:-getkimchi/kimchi}"
 VERSION="${KIMCHI_VERSION:-latest}"
 
 echo -e "${BLUE}Installing Kimchi from ${REPO}${VERSION:+ (${VERSION})}…${NC}"
@@ -30,9 +30,17 @@ OS_RAW="$(uname -s | tr '[:upper:]' '[:lower:]')"
 case "$OS_RAW" in
 darwin*) OS="darwin" ;;
 linux*) OS="linux" ;;
+mingw* | msys* | cygwin*)
+	echo -e "${RED}Windows is not supported natively.${NC}" >&2
+	echo "There is no native Windows build yet. Run this installer from inside the" >&2
+	echo "Windows Subsystem for Linux (WSL), where the Linux build works." >&2
+	echo "Set up WSL: https://learn.microsoft.com/windows/wsl/install" >&2
+	exit 1
+	;;
 *)
 	echo -e "${RED}Unsupported OS: $OS_RAW${NC}" >&2
-	echo "Windows: download the .zip from https://github.com/${REPO}/releases" >&2
+	echo "Kimchi ships builds for macOS (darwin) and Linux only." >&2
+	echo "See https://github.com/${REPO}/releases for available downloads." >&2
 	exit 1
 	;;
 esac
