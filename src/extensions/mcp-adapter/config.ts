@@ -86,7 +86,7 @@ export function loadMcpConfig(overridePath?: string): { config: McpConfig; warni
 	return { config, warnings }
 }
 
-function validateConfig(raw: unknown): McpConfig {
+export function validateConfig(raw: unknown): McpConfig {
 	if (!raw || typeof raw !== "object") {
 		return { mcpServers: {} }
 	}
