@@ -61,7 +61,7 @@ Platform: ${env.platform}`
 	}
 	const contextBlock = buildContextBlock(extras?.contextFiles)
 	if (contextBlock) extraSections.push(contextBlock)
-	const extrasSuffix = extraSections.length > 0 ? `\n\n${extraSections.join("\n")}` : ""
+	const extrasSuffix = extraSections.length > 0 ? `\n\n${extraSections.join("\n\n")}` : ""
 
 	if (config.promptMode === "append") {
 		const identity = parentSystemPrompt || genericBase
