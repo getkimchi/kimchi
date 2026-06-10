@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import questionnaireExtension, { formatAnswerText, normalizeQuestionType } from "./questionnaire.js"
+import { clearSecrets, storeSecret } from "./secrets-store.js"
 
 function registeredQuestionnaireTool() {
 	let tool:
@@ -18,11 +19,88 @@ function registeredQuestionnaireTool() {
 		registerTool: vi.fn((registered) => {
 			tool = registered as typeof tool
 		}),
+		on: vi.fn(),
 	} as unknown as ExtensionAPI
 	questionnaireExtension(pi)
 	if (!tool) throw new Error("questionnaire tool was not registered")
 	return tool
 }
+
+function makePi() {
+	const handlers = new Map<string, unknown[]>()
+	const pi = {
+		registerTool: vi.fn(),
+		on: vi.fn((event: string, handler: unknown) => {
+			const existing = handlers.get(event) ?? []
+			existing.push(handler)
+			handlers.set(event, existing)
+		}),
+	} as unknown as ExtensionAPI & { handlers: Map<string, unknown[]> }
+	pi.handlers = handlers
+	return pi
+}
+
+describe("questionnaire tool_call interceptor", () => {
+	beforeEach(() => clearSecrets())
+
+	it("intercepts write tool and substitutes secrets", () => {
+		storeSecret("api_key", "real123")
+		const pi = makePi()
+		questionnaireExtension(pi)
+		const toolCallHandlers = pi.handlers.get("tool_call")
+		expect(toolCallHandlers).toHaveLength(1)
+		const event = {
+			toolName: "write",
+			input: { content: "API_KEY=${kimchi_secret:api_key}" },
+		}
+		const result = ((toolCallHandlers ?? [])[0] as (e: unknown) => { block: boolean })(event as never)
+		expect(result).toEqual({ block: false })
+		expect((event.input as { content: string }).content).toBe("API_KEY=real123")
+	})
+
+	it("intercepts edit tool and substitutes secrets in newString", () => {
+		storeSecret("token", "tok456")
+		const pi = makePi()
+		questionnaireExtension(pi)
+		const toolCallHandlers = pi.handlers.get("tool_call")
+		const event = {
+			toolName: "edit",
+			input: { path: ".env", oldString: "x", newString: "TOKEN=${kimchi_secret:token}" },
+		}
+		const result = ((toolCallHandlers ?? [])[0] as (e: unknown) => { block: boolean })(event as never)
+		expect(result).toEqual({ block: false })
+		expect((event.input as { newString: string }).newString).toBe("TOKEN=tok456")
+	})
+
+	it("intercepts bash command and prepends env vars", () => {
+		storeSecret("db_pass", "p@ssw0rd")
+		const pi = makePi()
+		questionnaireExtension(pi)
+		const toolCallHandlers = pi.handlers.get("tool_call")
+		const event = {
+			toolName: "bash",
+			input: { command: 'echo "DB=${kimchi_secret:db_pass}" > .env' },
+		}
+		const result = ((toolCallHandlers ?? [])[0] as (e: unknown) => { block: boolean })(event as never)
+		expect(result).toEqual({ block: false })
+		const cmd = (event.input as { command: string }).command
+		// Env var assignment is prepended; placeholder replacement depends on the handler's regex
+		expect(cmd).toContain("KIMCHI_SECRET_db_pass='p@ssw0rd'")
+	})
+
+	it("ignores non-target tools", () => {
+		const pi = makePi()
+		questionnaireExtension(pi)
+		const toolCallHandlers = pi.handlers.get("tool_call")
+		const event = {
+			toolName: "read",
+			input: { path: "/tmp" },
+		}
+		const result = ((toolCallHandlers ?? [])[0] as (e: unknown) => { block: boolean })(event as never)
+		expect(result).toEqual({ block: false })
+		expect((event.input as { path: string }).path).toBe("/tmp")
+	})
+})
 
 describe("normalizeQuestionType", () => {
 	it("keeps canonical question types unchanged", () => {

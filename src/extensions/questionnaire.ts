@@ -21,6 +21,7 @@ import { type Static, Type } from "typebox"
 
 import { createQuestionForm } from "./questionnaire-form.js"
 import { type Answer, type Question, type QuestionType, YES_NO_OPTIONS } from "./questionnaire-reducer.js"
+import { getSecret, storeSecret, substituteSecrets } from "./secrets-store.js"
 
 export type { Answer, Question }
 
@@ -221,6 +222,11 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 				}
 			}
 
+			for (const answer of result.answers) {
+				const q = questions.find((qq) => qq.id === answer.id)
+				if (q?.type === "password") storeSecret(q.id, answer.value)
+			}
+
 			const text = formatAnswerText(questions, result.answers)
 			return {
 				content: [{ type: "text", text }],
@@ -271,5 +277,71 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 			})
 			return new Text(lines.join("\n"), 0, 0)
 		},
+	})
+
+	pi.on("tool_call", (event) => {
+		if (event.toolName === "write") {
+			const input = event.input as { content?: string }
+			if (typeof input.content === "string") {
+				input.content = substituteSecrets(input.content)
+			}
+			return { block: false }
+		}
+
+		if (event.toolName === "edit") {
+			const input = event.input as { newString?: string; oldString?: string }
+			if (typeof input.newString === "string") {
+				input.newString = substituteSecrets(input.newString)
+			}
+			if (typeof input.oldString === "string") {
+				input.oldString = substituteSecrets(input.oldString)
+			}
+			return { block: false }
+		}
+
+		if (event.toolName === "bash") {
+			const input = event.input as { command?: string }
+			if (typeof input.command !== "string") return { block: false }
+			const command = input.command
+
+			// Collect all ${kimchi_secret:<id>} refs
+			const refs = new Set<string>()
+			const refRegex = /\$\{kimchi_secret:([a-zA-Z0-9_-]+)\}/g
+			let match: RegExpExecArray | null = refRegex.exec(command)
+			while (match !== null) {
+				refs.add(match[1])
+				match = refRegex.exec(command)
+			}
+			// Also collect $KIMCHI_SECRET_<id> env-var style refs
+			const envRegex = /\$KIMCHI_SECRET_([a-zA-Z0-9_]+)/g
+			match = envRegex.exec(command)
+			while (match !== null) {
+				refs.add(match[1])
+				match = envRegex.exec(command)
+			}
+			if (refs.size === 0) return { block: false }
+
+			const assignments: string[] = []
+			let newCommand = command
+			for (const id of refs) {
+				const rawValue = getSecret(id) ?? getSecret(id.replace(/_/g, "-"))
+				if (rawValue === undefined) continue
+				// Bash-safe single-quote escaping: ' -> '\''
+				const escaped = rawValue.replace(/'/g, "'\\''")
+				const envVar = `KIMCHI_SECRET_${id.replace(/-/g, "_")}`
+				assignments.push(`${envVar}='${escaped}'`)
+				// Replace ${kimchi_secret:id} with $KIMCHI_SECRET_id
+				newCommand = newCommand.replace(
+					new RegExp(`\\\\$\\{kimchi_secret:${id.replace(/[-]/g, "\\-")}\\}`, "g"),
+					`\\$${envVar}`,
+				)
+			}
+			if (assignments.length > 0) {
+				input.command = `${assignments.join(" && ")} && ${newCommand}`
+			}
+			return { block: false }
+		}
+
+		return { block: false }
 	})
 }

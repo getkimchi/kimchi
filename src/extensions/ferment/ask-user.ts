@@ -30,6 +30,7 @@ import { renderLabeledSuccessCriteria } from "../../ferment/success-criteria.js"
 import type { Ferment, ScopingQuestionType } from "../../ferment/types.js"
 import { YES_NO_OPTIONS } from "../questionnaire-reducer.js"
 import { normalizeQuestionType } from "../questionnaire.js"
+import { storeSecret } from "../secrets-store.js"
 import { type JudgeApiResult, judgeApiCall } from "./judge.js"
 import { promptForm } from "./prompt-ui.js"
 import type { FermentRuntime } from "./runtime.js"
@@ -615,6 +616,10 @@ export async function askUserForm(
 		const result = await promptForm(context.ctx, { title, description, questions })
 		if (!result || result.cancelled) {
 			return { failed: true, reason: "user_cancelled", detail: "User cancelled the prompt." }
+		}
+		for (const answer of result.answers) {
+			const q = questions.find((qq) => qq.id === answer.id)
+			if (q?.type === "password") storeSecret(q.id, answer.value)
 		}
 		context.runtime?.markHumanInput()
 		return {
