@@ -37,7 +37,7 @@ export interface ScopingQuestionOption {
 	recommended?: boolean
 }
 
-export const SCOPING_QUESTION_TYPES = ["single", "multi", "text", "confirm"] as const
+export const SCOPING_QUESTION_TYPES = ["single", "multi", "text", "confirm", "password"] as const
 export type ScopingQuestionType = (typeof SCOPING_QUESTION_TYPES)[number]
 export const DEFAULT_SCOPING_QUESTION_TYPE: ScopingQuestionType = "single"
 

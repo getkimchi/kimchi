@@ -31,6 +31,7 @@ describe("normalizeQuestionType", () => {
 		expect(normalizeQuestionType("multi")).toBe("multi")
 		expect(normalizeQuestionType("text")).toBe("text")
 		expect(normalizeQuestionType("confirm")).toBe("confirm")
+		expect(normalizeQuestionType("password")).toBe("password")
 	})
 
 	it("throws on unknown strings instead of defaulting to single (no aliases)", () => {
@@ -81,7 +82,64 @@ describe("questionnaire confirm validation", () => {
 	})
 })
 
+describe("questionnaire password validation", () => {
+	it("rejects password with options", async () => {
+		const tool = registeredQuestionnaireTool()
+		const result = await tool.execute(
+			"call-1",
+			{
+				questions: [
+					{
+						id: "api_key",
+						type: "password",
+						prompt: "Enter secret",
+						options: [{ id: "a", label: "A" }],
+					},
+				],
+			},
+			undefined,
+			undefined,
+			{ hasUI: true, ui: { custom: vi.fn() } },
+		)
+		expect(result.details.cancelled).toBe(true)
+		expect(result.content[0]?.text).toContain('type "password"')
+		expect(result.content[0]?.text).toContain("must not have options")
+	})
+
+	it("rejects allowOther on password", async () => {
+		const tool = registeredQuestionnaireTool()
+		const result = await tool.execute(
+			"call-1",
+			{
+				questions: [{ id: "api_key", type: "password", prompt: "Enter secret", allowOther: true }],
+			},
+			undefined,
+			undefined,
+			{ hasUI: true, ui: { custom: vi.fn() } },
+		)
+		expect(result.details.cancelled).toBe(true)
+		expect(result.content[0]?.text).toContain('type "password"')
+		expect(result.content[0]?.text).toContain("must not set allowOther")
+	})
+})
+
 describe("formatAnswerText", () => {
+	it("masks password answers", () => {
+		const questions = [
+			{
+				id: "api_key",
+				label: "API Key",
+				prompt: "Enter API key",
+				type: "password" as const,
+				options: [],
+				allowOther: false,
+				required: true,
+			},
+		]
+		const answers = [{ id: "api_key", value: "secret123", label: "secret123", wasCustom: true }]
+		expect(formatAnswerText(questions, answers)).toBe("API Key: user provided: (hidden)")
+	})
+
 	it("formats a single-select answer with index", () => {
 		const questions = [
 			{
@@ -244,5 +302,55 @@ describe("formatAnswerText", () => {
 			},
 		]
 		expect(formatAnswerText(questions, answers)).toBe("Q1: user selected: A, B")
+	})
+})
+
+describe("renderResult", () => {
+	interface ToolWithRenderResult {
+		execute: (
+			toolCallId: string,
+			params: unknown,
+			signal: AbortSignal | undefined,
+			onUpdate: unknown,
+			ctx: unknown,
+		) => Promise<{ content: { text: string }[]; details: { cancelled: boolean } }>
+		renderResult: (
+			result: unknown,
+			options: unknown,
+			theme: unknown,
+			context: unknown,
+		) => { render: (w: number) => string[] }
+	}
+	const tool = registeredQuestionnaireTool() as ToolWithRenderResult
+
+	const mockTheme = {
+		fg: (color: string, text: string) => text,
+		bg: (_color: string, text: string) => text,
+		bold: (text: string) => text,
+	}
+
+	it("masks password answers with (hidden)", () => {
+		const result = {
+			details: {
+				questions: [
+					{
+						id: "api_key",
+						label: "API Key",
+						prompt: "Enter secret",
+						type: "password" as const,
+						options: [],
+						allowOther: false,
+						required: true,
+					},
+				],
+				answers: [{ id: "api_key", value: "hunter2", label: "hunter2", wasCustom: true }],
+				cancelled: false,
+			},
+		}
+		const rendered = tool.renderResult(result, {}, mockTheme, {})
+		const lines = rendered.render(80)
+		const output = lines.join("\n")
+		expect(output).toContain("(hidden)")
+		expect(output).not.toContain("hunter2")
 	})
 })

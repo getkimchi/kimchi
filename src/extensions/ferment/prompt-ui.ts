@@ -157,8 +157,13 @@ async function promptFormFallback(
 	const heading = [title, description].filter(Boolean).join("\n\n")
 	for (const question of questions) {
 		const promptTitle = [heading, question.prompt].filter(Boolean).join("\n\n")
-		if (question.type === "text") {
-			const value = await withWorkingHidden(ui, () => ui.input?.(promptTitle, "") ?? Promise.resolve(undefined))
+		if (question.type === "text" || question.type === "password") {
+			const value = await withWorkingHidden(
+				ui,
+				() =>
+					ui.input?.(question.type === "password" ? `[Secure input] ${promptTitle}` : promptTitle, "") ??
+					Promise.resolve(undefined),
+			)
 			if (!value && question.required) return { questions, answers, cancelled: true }
 			if (value) answers.push({ id: question.id, value, label: value, wasCustom: true })
 			continue

@@ -16,7 +16,7 @@
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type QuestionType = "single" | "multi" | "text" | "confirm"
+export type QuestionType = "single" | "multi" | "text" | "confirm" | "password"
 
 export interface QuestionOption {
 	id: string
@@ -114,7 +114,7 @@ export function currentQuestion(state: QuestionnaireState): Question | undefined
 
 export function currentOptions(state: QuestionnaireState): RenderOption[] {
 	const q = currentQuestion(state)
-	if (!q || q.type === "text") return []
+	if (!q || q.type === "text" || q.type === "password") return []
 	const opts: RenderOption[] = [...q.options]
 	if (q.allowOther) {
 		opts.push({ id: "__other__", label: "Type your own answer", isOther: true })
@@ -188,7 +188,7 @@ function mutableCurrentQuestion(s: MutableState): Question | undefined {
 
 function mutableCurrentOptions(s: MutableState): RenderOption[] {
 	const q = mutableCurrentQuestion(s)
-	if (!q || q.type === "text") return []
+	if (!q || q.type === "text" || q.type === "password") return []
 	const opts: RenderOption[] = [...q.options]
 	if (q.allowOther) {
 		opts.push({ id: "__other__", label: "Type your own answer", isOther: true })
@@ -354,8 +354,8 @@ export function reduce(state: QuestionnaireState, event: QuestionnaireEvent): Re
 		return { state: freeze(s), effects }
 	}
 
-	// ── Text question (no options): enter input mode on Enter or printable ─
-	if (q && q.type === "text") {
+	// ── Text/password question (no options): enter input mode on Enter or printable ─
+	if (q && (q.type === "text" || q.type === "password")) {
 		if (event.kind === "key-enter") {
 			s.inputMode = true
 			s.inputQuestionId = q.id

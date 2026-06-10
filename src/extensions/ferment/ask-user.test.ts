@@ -287,6 +287,7 @@ describe("toScopingQuestionType", () => {
 		expect(toScopingQuestionType("multi")).toEqual({ type: "multi", isConfirm: false })
 		expect(toScopingQuestionType("text")).toEqual({ type: "text", isConfirm: false })
 		expect(toScopingQuestionType("confirm")).toEqual({ type: "confirm", isConfirm: true })
+		expect(toScopingQuestionType("password")).toEqual({ type: "password", isConfirm: false })
 	})
 
 	it("defaults to single only for omitted input", () => {
@@ -357,6 +358,79 @@ describe("normalizeAskUserQuestions", () => {
 		expect(result.ok).toBe(false)
 		if (result.ok) return
 		expect(result.error).toMatch(/Unknown question type/)
+	})
+})
+
+describe("askUser password", () => {
+	it("routes password question through TUI input", async () => {
+		const input = vi.fn(async () => "hunter2")
+		const result = await askUser(
+			"Enter your secret",
+			[],
+			{
+				ferment: makeFerment(),
+				pi: makePi(),
+				ctx: { ui: { input } as never },
+			},
+			"password",
+		)
+		expect(result.failed).toBeFalsy()
+		if (result.failed) return
+		expect(result.response_type).toBe("password")
+		expect(result.text).toBe("hunter2")
+		expect(result.answered_by).toBe("user")
+	})
+
+	it("fails validation for password with options", async () => {
+		const select = vi.fn<() => Promise<string>>()
+		const input = vi.fn<() => Promise<string>>()
+		const result = await askUserForm(
+			"Secrets",
+			undefined,
+			[
+				{
+					id: "api_key",
+					type: "password",
+					prompt: "Enter secret",
+					options: [{ id: "a", label: "A" }],
+				},
+			],
+			{
+				ferment: makeFerment(),
+				pi: makePi(),
+				ctx: { ui: { select, input } as never },
+			},
+		)
+		expect(result.failed).toBe(true)
+		if (!result.failed) return
+		expect(result.reason).toBe("invalid_choice")
+		expect(result.detail).toMatch(/must not have options/)
+	})
+
+	it("fails validation for password with allowOther", async () => {
+		const select = vi.fn<() => Promise<string>>()
+		const input = vi.fn<() => Promise<string>>()
+		const result = await askUserForm(
+			"Secrets",
+			undefined,
+			[
+				{
+					id: "api_key",
+					type: "password",
+					prompt: "Enter secret",
+					allowOther: true,
+				},
+			],
+			{
+				ferment: makeFerment(),
+				pi: makePi(),
+				ctx: { ui: { select, input } as never },
+			},
+		)
+		expect(result.failed).toBe(true)
+		if (!result.failed) return
+		expect(result.reason).toBe("invalid_choice")
+		expect(result.detail).toMatch(/must not set allowOther/)
 	})
 })
 
@@ -548,5 +622,31 @@ describe("askJudge", () => {
 		expect(capturedUserMsg).toContain("Build retry loop")
 		expect(capturedUserMsg).toContain("Should I refactor first?")
 		expect(capturedUserMsg).toContain('id="proceed"')
+	})
+
+	it("parses password judge responses with response_type password", async () => {
+		const apiCall = vi.fn(async () => ok('{"text":"hunter2","rationale":"provided"}'))
+		const result = await askJudge("Enter secret", [], makeFerment(), "password", apiCall)
+		expect(result.failed).toBeFalsy()
+		if (result.failed) return
+		expect(result.response_type).toBe("password")
+		expect(result.text).toBe("hunter2")
+	})
+
+	it("parses form judge responses with a password question", async () => {
+		const apiCall = vi.fn(async () => ok('{"answers":[{"id":"api_key","value":"hunter2"}],"rationale":"ok"}'))
+		const result = await askJudgeForm(
+			"Secrets",
+			undefined,
+			[{ id: "api_key", type: "password", prompt: "Enter API key" }],
+			makeFerment(),
+			apiCall,
+		)
+		expect(result.failed).toBeFalsy()
+		if (result.failed) return
+		expect(result.response_type).toBe("form")
+		expect(result.answers).toEqual([
+			{ id: "api_key", type: "password", value: "hunter2", label: "hunter2", wasCustom: true },
+		])
 	})
 })

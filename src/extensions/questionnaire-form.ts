@@ -28,6 +28,8 @@ import {
 	reduce,
 } from "./questionnaire-reducer.js"
 
+const MASK_CHAR = "●"
+
 export interface QuestionFormResult {
 	questions: Question[]
 	answers: Answer[]
@@ -219,7 +221,12 @@ export function createQuestionForm(
 			if (opts.length > 0) renderOptions()
 			lines.push("")
 			add(theme.fg("muted", " Your answer:"))
-			for (const line of editor.render(width - 2)) add(` ${line}`)
+			if (q?.type === "password") {
+				const masked = MASK_CHAR.repeat(editor.getValue().length)
+				add(` ${theme.fg("text", masked)}`)
+			} else {
+				for (const line of editor.render(width - 2)) add(` ${line}`)
+			}
 			lines.push("")
 			add(theme.fg("dim", " Enter to submit • Esc to cancel"))
 		} else if (isSubmitTab(state)) {
@@ -229,7 +236,13 @@ export function createQuestionForm(
 				const answer = state.answers.get(question.id)
 				if (answer) {
 					const prefix = answer.wasCustom ? "(wrote) " : ""
-					const display = answer.values ? (answer.labels?.join(", ") ?? answer.label) : prefix + answer.label
+					const questionType = questions.find((qq) => qq.id === question.id)?.type
+					const display =
+						questionType === "password"
+							? theme.fg("muted", "(hidden)")
+							: answer.values
+								? (answer.labels?.join(", ") ?? answer.label)
+								: prefix + answer.label
 					add(`${theme.fg("muted", ` ${question.label}: `)}${theme.fg("text", display)}`)
 				} else if (!question.required) {
 					add(`${theme.fg("muted", ` ${question.label}: `)}${theme.fg("dim", "(skipped)")}`)
@@ -245,12 +258,13 @@ export function createQuestionForm(
 					.join(", ")
 				add(theme.fg("warning", ` Unanswered: ${missing}`))
 			}
-		} else if (q?.type === "text") {
+		} else if (q?.type === "text" || q?.type === "password") {
 			add(theme.fg("text", ` ${q.prompt}`))
 			lines.push("")
 			const existing = state.answers.get(q.id)
 			if (existing) {
-				add(theme.fg("muted", ` Current: ${existing.label}`))
+				const display = q?.type === "password" ? "(hidden)" : existing.label
+				add(theme.fg("muted", ` Current: ${display}`))
 				lines.push("")
 			}
 			add(theme.fg("dim", " Press Enter or start typing to answer"))
@@ -269,10 +283,10 @@ export function createQuestionForm(
 				help = isMulti
 					? " Tab/←→ navigate • ↑↓ select • Space toggle • Enter submit • Esc cancel"
 					: " ↑↓ navigate • Space toggle • Enter submit • Esc cancel"
-			} else if (q?.type === "text") {
-				help = isMulti
-					? " Tab/←→ navigate • Type answer • Enter edit • Esc cancel"
-					: " Type answer • Enter edit • Esc cancel"
+			} else if (q?.type === "text" || q?.type === "password") {
+				const baseHelp =
+					q?.type === "password" ? "Type secret • Enter edit • Esc cancel" : "Type answer • Enter edit • Esc cancel"
+				help = isMulti ? ` Tab/←→ navigate • ${baseHelp}` : ` ${baseHelp}`
 			} else {
 				help = isMulti
 					? " Tab/←→ navigate • ↑↓ select • Enter confirm • Esc cancel"

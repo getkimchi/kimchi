@@ -51,8 +51,8 @@ const QuestionSchema = Type.Object({
 	type: Type.Optional(
 		Type.String({
 			description:
-				"Question type. Must be 'single' (one choice, default), 'multi' (multiple choices), 'text' (free-text), or 'confirm' (yes/no).",
-			pattern: "^(single|multi|text|confirm)$",
+				"Question type. Must be 'single' (one choice, default), 'multi' (multiple choices), 'text' (free-text), 'confirm' (yes/no), or 'password' (hidden input).",
+			pattern: "^(single|multi|text|confirm|password)$",
 		}),
 	),
 	options: Type.Optional(
@@ -63,7 +63,7 @@ const QuestionSchema = Type.Object({
 	allowOther: Type.Optional(
 		Type.Boolean({
 			description:
-				"For single/multi questions only. Add a 'Type your own answer' option. Must be omitted for confirm. Default: true for single, false for others.",
+				"For single/multi questions only. Add a 'Type your own answer' option. Must be omitted for confirm/password. Default: true for single, false for others.",
 		}),
 	),
 	required: Type.Optional(Type.Boolean({ description: "Whether an answer is required. Default: true." })),
@@ -91,9 +91,10 @@ export function normalizeQuestionType(type: string | undefined): QuestionType {
 		multi: "multi",
 		text: "text",
 		confirm: "confirm",
+		password: "password",
 	}
 	const mapped = canonical[type.toLowerCase()]
-	if (!mapped) throw new Error(`Unknown question type: "${type}". Expected single, multi, text, or confirm.`)
+	if (!mapped) throw new Error(`Unknown question type: "${type}". Expected single, multi, text, confirm, or password.`)
 	return mapped
 }
 
@@ -129,12 +130,13 @@ function normalizeQuestion(q: Static<typeof QuestionSchema>, index: number): Que
 function validateRawQuestions(questions: Static<typeof QuestionSchema>[]): string | undefined {
 	for (const q of questions) {
 		const type = normalizeQuestionType(q.type)
-		if (type !== "confirm") continue
-		if ((q.options?.length ?? 0) > 0) {
-			return `Question "${q.id}" is type "confirm" and must not have options — confirm is always Yes/No.`
-		}
-		if (q.allowOther) {
-			return `Question "${q.id}" is type "confirm" and must not set allowOther — confirm is always Yes/No.`
+		if (type === "confirm" || type === "password") {
+			if ((q.options?.length ?? 0) > 0) {
+				return `Question "${q.id}" is type "${type}" and must not have options.`
+			}
+			if (q.allowOther) {
+				return `Question "${q.id}" is type "${type}" and must not set allowOther.`
+			}
 		}
 	}
 	return undefined
@@ -154,6 +156,10 @@ export function formatAnswerText(questions: Question[], answers: Answer[]): stri
 	return answers
 		.map((a) => {
 			const qLabel = questions.find((q) => q.id === a.id)?.label || a.id
+			const q = questions.find((qq) => qq.id === a.id)
+			if (q?.type === "password") {
+				return `${qLabel}: user provided: (hidden)`
+			}
 			if (a.values && a.labels) {
 				const items = a.labels
 					.map((l, i) => {
@@ -179,7 +185,7 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 		name: "questionnaire",
 		label: "Questionnaire",
 		description:
-			"Ask the user one or more structured questions. Use for clarifying requirements, getting preferences, or confirming decisions before acting. Supports single-select, multi-select, free-text input, and yes/no confirmation. For a single question, shows a simple option list. For multiple questions, shows a tab-based interface. Prefer this over outputting questions as plain text.",
+			"Ask the user one or more structured questions. Use for clarifying requirements, getting preferences, or confirming decisions before acting. Supports single-select, multi-select, free-text input, yes/no confirmation, and password (hidden) input. For a single question, shows a simple option list. For multiple questions, shows a tab-based interface. Prefer this over outputting questions as plain text.",
 		parameters: QuestionnaireParams,
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -244,6 +250,10 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 				return new Text(theme.fg("warning", "Cancelled"), 0, 0)
 			}
 			const lines = details.answers.map((a) => {
+				const q = details.questions.find((qq) => qq.id === a.id)
+				if (q?.type === "password") {
+					return `${theme.fg("success", "\u2713 ")}${theme.fg("accent", a.id)}: ${theme.fg("muted", "(hidden)")}`
+				}
 				if (a.values && a.labels) {
 					const items = a.labels
 						.map((l, i) => {

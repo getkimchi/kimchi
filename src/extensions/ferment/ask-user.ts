@@ -46,7 +46,7 @@ export interface AskUserOption {
 }
 
 export type AskUserAnsweredBy = "user" | "judge"
-export type AskUserResponseType = "single" | "multi" | "text" | "confirm"
+export type AskUserResponseType = "single" | "multi" | "text" | "confirm" | "password"
 export type AskUserQuestionType = ScopingQuestionType
 
 export interface AskUserQuestion {
@@ -329,7 +329,7 @@ function parseJudgeAnswer(
 	const obj = parsed as { choice?: unknown; choices?: unknown; text?: unknown; rationale?: unknown }
 	const rationale = typeof obj.rationale === "string" ? obj.rationale : "(no rationale provided)"
 
-	if (responseType === "text") {
+	if (responseType === "text" || responseType === "password") {
 		if (typeof obj.text !== "string" || obj.text.trim() === "") return undefined
 		return { text: obj.text.trim().slice(0, 4000), rationale: rationale.slice(0, 400) }
 	}
@@ -367,13 +367,21 @@ function validateFormQuestions(questions: ReadonlyArray<AskUserQuestion>): strin
 				return `askUserForm question "${q.id}" is type "confirm" and must not set allowOther.`
 			}
 		}
+		if (q.type === "password") {
+			if ((q.options?.length ?? 0) > 0) {
+				return `askUserForm question "${q.id}" is type "password" and must not have options.`
+			}
+			if (q.allowOther) {
+				return `askUserForm question "${q.id}" is type "password" and must not set allowOther.`
+			}
+		}
 	}
 	return undefined
 }
 
 function answerFromValue(q: AskUserQuestion, rawValue: unknown): AskUserAnswer | undefined {
 	const type = q.type
-	if (type === "text") {
+	if (type === "text" || type === "password") {
 		if (typeof rawValue !== "string") return undefined
 		const text = rawValue.trim().slice(0, 4000)
 		if (!text) return undefined
@@ -526,7 +534,7 @@ function normalizeShorthandOptions(
 	responseType: AskUserResponseType,
 	options: ReadonlyArray<AskUserOption>,
 ): { ok: true; options: ReadonlyArray<AskUserOption> } | { ok: false; failure: AskUserFailure } {
-	if (responseType === "text") return { ok: true, options }
+	if (responseType === "text" || responseType === "password") return { ok: true, options }
 	if (responseType === "confirm") {
 		if (options.length > 0) {
 			return {
@@ -671,9 +679,9 @@ export async function askUser(
 		if (!answer) {
 			return { failed: true, reason: "user_cancelled", detail: "User cancelled the prompt." }
 		}
-		if (responseType === "text") {
+		if (responseType === "text" || responseType === "password") {
 			context.runtime?.markHumanInput()
-			return { text: answer.value, response_type: "text", answered_by: "user" }
+			return { text: answer.value, response_type: responseType, answered_by: "user" }
 		}
 		if (responseType === "multi") {
 			const choices = answer.values ?? answer.value.split(",").map((value) => value.trim())

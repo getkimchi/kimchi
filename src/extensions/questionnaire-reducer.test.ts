@@ -307,6 +307,75 @@ describe('multi-select "Other" lifecycle', () => {
 // ─── Group 7: Free-text questions ─────────────────────────────────────────────
 
 describe("free-text questions", () => {
+	// Password questions behave identically to text questions.
+	it("Enter on a password question enters input mode", () => {
+		const state = initialState([
+			{
+				id: "q1",
+				label: "Password Q",
+				prompt: "Enter secret",
+				type: "password",
+				options: [],
+				allowOther: false,
+				required: true,
+			},
+		])
+		const { state: after } = reduce(state, { kind: "key-enter" })
+		expect(after.inputMode).toBe(true)
+		expect(after.inputQuestionId).toBe("q1")
+	})
+
+	it("editor-submit on a password question in single-question flow emits [done]", () => {
+		const { state } = reduce(
+			initialState([
+				{
+					id: "q1",
+					label: "Password Q",
+					prompt: "Enter secret",
+					type: "password",
+					options: [],
+					allowOther: false,
+					required: true,
+				},
+			]),
+			{ kind: "key-enter" },
+		)
+		const { state: s2 } = reduce(state, { kind: "key-enter" })
+		const { state: s3, effects } = reduce(s2, { kind: "editor-submit", value: "hunter2" })
+		expect(effects).toContainEqual({ kind: "done", cancelled: false })
+		const answer = s3.answers.get("q1")
+		expect(answer).toMatchObject({
+			id: "q1",
+			value: "hunter2",
+			label: "hunter2",
+			wasCustom: true,
+		})
+	})
+
+	it("char-typed on a password question opens input mode", () => {
+		const { state, effects } = reduce(
+			initialState([
+				{
+					id: "q1",
+					label: "Password Q",
+					prompt: "Enter secret",
+					type: "password",
+					options: [],
+					allowOther: false,
+					required: true,
+				},
+			]),
+			{ kind: "char-typed", char: "s" },
+		)
+		expect(state.inputMode).toBe(true)
+		expect(state.inputQuestionId).toBe("q1")
+		expect(effects).toContainEqual({ kind: "editor-set-text", text: "" })
+		expect(effects).toContainEqual({ kind: "editor-handle-input", data: "s" })
+		expect(effects).toContainEqual({ kind: "render" })
+	})
+})
+
+describe("free-text questions", () => {
 	it("Enter on a text question opens input mode pre-filled from existing custom answer", () => {
 		// Pre-seed state with a custom answer, then open editor via Enter
 		let s = initialState([textQ()])
@@ -411,6 +480,26 @@ describe("helpers", () => {
 		const opts = currentOptions(state)
 		expect(opts).toHaveLength(3) // 2 options + Other
 		expect(opts[2]).toMatchObject({ id: "__other__", label: "Type your own answer", isOther: true })
+	})
+
+	it("currentOptions returns [] for text questions", () => {
+		const state = initialState([textQ()])
+		expect(currentOptions(state)).toHaveLength(0)
+	})
+
+	it("currentOptions returns [] for password questions", () => {
+		const state = initialState([
+			{
+				id: "q1",
+				label: "Password Q",
+				prompt: "Enter secret",
+				type: "password",
+				options: [],
+				allowOther: false,
+				required: true,
+			},
+		])
+		expect(currentOptions(state)).toHaveLength(0)
 	})
 
 	it("currentOptions returns [] for text questions", () => {
