@@ -964,46 +964,6 @@ describe("runAgent — maxDuration enforcement", () => {
 	})
 })
 
-describe("runAgent — orchestrationGuidelinesBlock", () => {
-	let ctx: ReturnType<typeof makeFakeCtx>
-	let pi: ReturnType<typeof makeFakePi>
-
-	beforeEach(() => {
-		ctx = makeFakeCtx()
-		pi = makeFakePi()
-		mockCreateAgentSession.mockReset()
-		mockBuildAgentPrompt.mockReset()
-		mockBuildAgentPrompt.mockReturnValue("System prompt text")
-		mockGetConfig.mockReturnValue(makeTypeConfig({ extensions: false, skills: false }))
-		mockGetToolNamesForType.mockReturnValue([])
-	})
-
-	afterEach(() => {
-		vi.clearAllMocks()
-	})
-
-	it("populates extras.orchestrationGuidelinesBlock when model has orchestrationGuidelines", async () => {
-		mockGetAgentConfig.mockReturnValue(makeAgentConfig({ models: ["test/test-model"] }))
-
-		const session = makeFakeSession()
-		mockCreateAgentSession.mockResolvedValue({
-			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
-			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
-				ReturnType<typeof createAgentSession>
-			>["extensionsResult"],
-		})
-
-		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
-			pi: pi as unknown as RunOptions["pi"],
-			model: { provider: "test", id: "test-model" } as unknown as RunOptions["model"],
-		})
-
-		const extras = mockBuildAgentPrompt.mock.calls[0]?.[4] as { orchestrationGuidelinesBlock?: string }
-		expect(extras).toHaveProperty("orchestrationGuidelinesBlock")
-		expect(extras.orchestrationGuidelinesBlock).toContain("Builder")
-	})
-})
-
 describe("runAgent — includeContextFiles", () => {
 	let ctx: ReturnType<typeof makeFakeCtx>
 	let pi: ReturnType<typeof makeFakePi>

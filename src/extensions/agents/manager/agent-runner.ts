@@ -15,10 +15,7 @@ import {
 import { readTelemetryConfig } from "../../../config.js"
 import { getAvailableModels } from "../../../startup-context.js"
 import { runAsAgentWorker } from "../../agent-worker-context.js"
-import {
-	buildOrchestrationGuidelinesSection,
-	buildPhaseGuidelinesSection,
-} from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
+import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
 import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
@@ -291,9 +288,6 @@ async function runAgentInner(
 	const modelId = (options.model as { id?: string } | undefined)?.id
 	const guidelinesBlock = buildPhaseGuidelinesSection(modelId, getCurrentPhase(), getGuidelinesRegistry())
 	if (guidelinesBlock) extras.guidelinesBlock = guidelinesBlock
-
-	const orchGuidelines = buildOrchestrationGuidelinesSection(modelId, getGuidelinesRegistry())
-	if (orchGuidelines) extras.orchestrationGuidelinesBlock = orchGuidelines
 
 	const effectiveMaxTurns = normalizeMaxTurns(options.maxTurns ?? agentConfig?.maxTurns ?? defaultMaxTurns)
 	const MIN_TOKEN_BUDGET = 1024

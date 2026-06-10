@@ -1,7 +1,7 @@
 import type { Phase } from "../types.js"
 
 export const DEFAULT_EXPLORE_GUIDELINES = `During **explore** phase:
-- Goal: build a mental map, not a solution. Do NOT modify files. Do NOT write a plan yet.
+- Goal: build a mental map, not a solution. Do NOT write a plan yet.
 - **Skip explore for greenfield projects** (empty directory, no existing code). There is nothing to explore — proceed directly to plan. A trivial 1-turn explore that only runs \`ls\` on an empty directory wastes a turn and adds no value.
 - Start broad with \`grep\`/\`find\`/\`ls\`; then \`read\` the 3–5 most relevant files in full.
 - Trace imports and call chains across module boundaries — note the actual entry points and seams, not every file you saw.
@@ -19,7 +19,6 @@ export const DEFAULT_RESEARCH_GUIDELINES = `During **research** phase:
 
 export const DEFAULT_PLAN_GUIDELINES = `During **plan** phase:
 - Design BEFORE coding: file paths, interfaces, function signatures, data flow.
-- Save the spec as a markdown file in the Documents directory. The build phase reads from there — do not redo discovery in build.
 - List every file that will be created, modified, or deleted, with concrete paths.
 - Identify test files that need creation or update. State the testing strategy.
 - Call out non-obvious decisions and the alternatives you rejected — one line each.
@@ -48,7 +47,7 @@ export const DEFAULT_REVIEW_GUIDELINES = `During **review** phase:
 - Prioritise: correctness bugs > security issues > architectural concerns > edge cases > style. Skip nits.
 - Be specific: quote the exact line and propose the concrete fix.
 - Flag missing tests for behaviour the diff introduces or changes.
-- **Do NOT modify source files.** Do not apply fixes, do not refactor, do not commit changes. Your job is to report findings — never to act on them. The author or a separate build agent applies fixes.`
+- Do not apply fixes, do not refactor, do not commit changes. Your job is to report findings — never to act on them. The author or a separate build agent applies fixes.`
 
 export const DEFAULT_PHASE_GUIDELINES: Readonly<Record<Phase, string>> = {
 	explore: DEFAULT_EXPLORE_GUIDELINES,

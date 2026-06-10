@@ -72,7 +72,8 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 		roles,
 	})
 
-	const phaseSection = buildPhaseGuidelinesSection(currentModelId, currentPhase, registry)
+	const phaseSection =
+		mode === "orchestrator" ? "" : buildPhaseGuidelinesSection(currentModelId, currentPhase, registry)
 	const blocks = sessionId ? renderSystemPromptBlocks(sessionId, { mode }) : []
 	const suppressed = new Set<SuppressibleSection>()
 	for (const block of blocks) {

@@ -19,8 +19,6 @@ export interface PromptExtras {
 	skillBlocks?: { name: string; content: string }[]
 	/** Model-specific phase guidelines resolved from the model registry. */
 	guidelinesBlock?: string
-	/** Model-specific orchestration guidelines resolved from the model registry. */
-	orchestrationGuidelinesBlock?: string
 	/** Turn and token budget limits for agent self-regulation. */
 	budget?: BudgetInfo
 	/** Project context files (AGENTS.md, CLAUDE.md) to inject. */
@@ -52,9 +50,6 @@ Platform: ${env.platform}`
 	if (budgetBlock) extraSections.push(budgetBlock)
 	if (extras?.guidelinesBlock) {
 		extraSections.push(extras.guidelinesBlock)
-	}
-	if (extras?.orchestrationGuidelinesBlock) {
-		extraSections.push(extras.orchestrationGuidelinesBlock)
 	}
 	if (extras?.memoryBlock) {
 		extraSections.push(extras.memoryBlock)
