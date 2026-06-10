@@ -18,16 +18,30 @@ import {
 
 describe("isRtkPassthrough", () => {
 	it.each([
+		// explicit `run` forms
 		"pnpm run lint",
 		"npm run lint",
 		"yarn run build",
 		"bun run test",
 		"pnpm run lint --fix",
 		"npm run lint:fix",
-		"npx eslint .",
-		"pnpm exec eslint .",
-		"bunx tsx script.ts",
 		"  pnpm run lint", // leading whitespace
+		// npx / bunx
+		"npx eslint .",
+		"bunx tsx script.ts",
+		// all pnpm commands — scripts AND built-ins — are passed through
+		"pnpm lint",
+		"pnpm build",
+		"pnpm typecheck",
+		"pnpm lint:fix",
+		"pnpm dev",
+		"pnpm check",
+		"pnpm install",
+		"pnpm add react",
+		"pnpm i",
+		"pnpm update",
+		"pnpm remove lodash",
+		"pnpm exec eslint .",
 	])("returns true for %s", (cmd) => {
 		expect(isRtkPassthrough(cmd)).toBe(true)
 	})
@@ -35,10 +49,8 @@ describe("isRtkPassthrough", () => {
 	it.each([
 		"git status",
 		"cargo test",
-		"pnpm install",
-		"npm install",
-		"pnpm add react",
-		"echo pnpm run lint", // pnpm run not at start
+		"npm install", // npm without `run` is not passed through
+		"echo pnpm run lint", // pnpm not at start
 	])("returns false for %s", (cmd) => {
 		expect(isRtkPassthrough(cmd)).toBe(false)
 	})
