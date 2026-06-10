@@ -86,6 +86,8 @@ describe("questionnaire tool_call interceptor", () => {
 		const cmd = (event.input as { command: string }).command
 		// Env var assignment is prepended; placeholder replacement depends on the handler's regex
 		expect(cmd).toContain("KIMCHI_SECRET_db_pass='p@ssw0rd'")
+		expect(cmd).toContain("$KIMCHI_SECRET_db_pass")
+		expect(cmd).not.toContain("${kimchi_secret:db_pass}")
 	})
 
 	it("ignores non-target tools", () => {

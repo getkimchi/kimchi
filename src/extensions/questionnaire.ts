@@ -332,8 +332,8 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 				assignments.push(`${envVar}='${escaped}'`)
 				// Replace ${kimchi_secret:id} with $KIMCHI_SECRET_id
 				newCommand = newCommand.replace(
-					new RegExp(`\\\\$\\{kimchi_secret:${id.replace(/[-]/g, "\\-")}\\}`, "g"),
-					`\\$${envVar}`,
+					new RegExp(`\\$\\{kimchi_secret:${id.replace(/[-]/g, "\\-")}\\}`, "g"),
+					`$$${envVar}`,
 				)
 			}
 			if (assignments.length > 0) {
