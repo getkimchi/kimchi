@@ -2,7 +2,12 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { discoverClaudeCodeSkillDirs, getClaudeCodeSkillResourcePaths, sanitizeSkillMarkdown } from "./definition.js"
+import {
+	discoverClaudeCodeSkillDirs,
+	expandConfiguredSkillPaths,
+	getClaudeCodeSkillResourcePaths,
+	sanitizeSkillMarkdown,
+} from "./definition.js"
 
 let dir: string
 let oldHome: string | undefined
@@ -96,6 +101,12 @@ describe("Claude Code skill discovery", () => {
 		)
 	})
 
+	it("trims parsed frontmatter descriptions", () => {
+		expect(sanitizeSkillMarkdown('---\nname: My Skill\ndescription: " real desc "\n---\nBody\n', "Fallback")).toBe(
+			"---\nname: my-skill\ndescription: real desc\n---\nBody\n",
+		)
+	})
+
 	it("sanitizes valid skill frontmatter with YAML parsing", () => {
 		expect(
 			sanitizeSkillMarkdown(
@@ -109,6 +120,17 @@ describe("Claude Code skill discovery", () => {
 		expect(
 			sanitizeSkillMarkdown('---\ndescription: "true"\nmetadata: Use: colons safely\n---\nBody\n', "My Skill"),
 		).toBe('---\nname: "my-skill"\ndescription: "true"\nmetadata: "Use: colons safely"\n---\nBody\n')
+	})
+
+	it("preserves block scalar description bodies when repairing invalid frontmatter", () => {
+		expect(
+			sanitizeSkillMarkdown(
+				"---\ndescription: |\n  Use: generated types\n  Keep: safe\nmetadata: Use: colons safely\n---\nBody\n",
+				"My Skill",
+			),
+		).toBe(
+			'---\nname: "my-skill"\ndescription: |\n  Use: generated types\n  Keep: safe\nmetadata: "Use: colons safely"\n---\nBody\n',
+		)
 	})
 
 	it("does not treat prefixed fences as closing frontmatter", () => {
@@ -167,6 +189,21 @@ describe("Claude Code skill discovery", () => {
 		expect(readFileSync(join(paths[0], "SKILL.md"), "utf-8")).toBe(
 			'---\nname: "typescript-safety"\ndescription: "Use: generated API types"\n---\n# Skill\n',
 		)
+	})
+
+	it("keeps relative configured skill paths inside home and cwd", () => {
+		const cwd = join(dir, "project")
+
+		expect(expandConfiguredSkillPaths(["../../outside", ".claude/skills"], cwd)).toEqual([
+			join(dir, "home", ".claude", "skills"),
+			join(cwd, ".claude", "skills"),
+		])
+	})
+
+	it("normalizes absolute configured skill paths", () => {
+		expect(expandConfiguredSkillPaths([`${join(dir, "project")}/../skills`], join(dir, "project"))).toEqual([
+			join(dir, "skills"),
+		])
 	})
 })
 

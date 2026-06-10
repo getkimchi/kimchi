@@ -452,13 +452,15 @@ export default function (skillPaths: string[]) {
 			const tools = pi.getAllTools().filter((tool) => activeToolNames.has(tool.name))
 			cachedContextFiles ??= loadProjectContextFiles(ctx.cwd)
 			if (cachedSkills === undefined) {
-				const allSkillPaths = [
-					...getConfiguredSkillResourcePaths(ctx.cwd, skillPaths),
-					...(isResourceEnabled(CLAUDE_CODE_SKILLS_RESOURCE_ID)
-						? getClaudeCodeSkillResourcePaths(ctx.cwd, { excludeSkillPaths: skillPaths })
-						: []),
-					...getInstalledPackageResourceDirs(ctx.cwd, "skills"),
-				].filter((path, index, paths) => paths.indexOf(path) === index)
+				const allSkillPaths = Array.from(
+					new Set([
+						...getConfiguredSkillResourcePaths(ctx.cwd, skillPaths),
+						...(isResourceEnabled(CLAUDE_CODE_SKILLS_RESOURCE_ID)
+							? getClaudeCodeSkillResourcePaths(ctx.cwd, { excludeSkillPaths: skillPaths })
+							: []),
+						...getInstalledPackageResourceDirs(ctx.cwd, "skills"),
+					]),
+				)
 				cachedSkills = loadSkills({
 					cwd: ctx.cwd,
 					agentDir: getAgentDir(),

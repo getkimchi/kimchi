@@ -2,7 +2,7 @@ import { createHash } from "node:crypto"
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs"
 import type { Dirent } from "node:fs"
 import { homedir } from "node:os"
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path"
+import { basename, dirname, isAbsolute, join, normalize, relative, resolve } from "node:path"
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml"
 import { z } from "zod"
 
@@ -189,7 +189,7 @@ function stringifySkillFrontmatter(frontmatter: SkillFrontmatter, fallbackName: 
 	const description = frontmatter.description?.trim()
 	const sanitized: Record<string, unknown> = {
 		name,
-		description: description ? frontmatter.description : fallbackSkillDescription(name),
+		description: description || fallbackSkillDescription(name),
 	}
 	for (const [key, value] of Object.entries(frontmatter)) {
 		if (key === "name" || key === "description" || isToolsFrontmatterKey(key)) continue
@@ -236,6 +236,9 @@ function sanitizeLooseFrontmatter(frontmatter: string, fallbackName: string): st
 			}
 			if (isBlockScalar(value)) {
 				sanitized.push(line)
+				const end = skipNestedYamlValue(lines, index, 0)
+				sanitized.push(...lines.slice(index + 1, end + 1))
+				index = end
 				continue
 			}
 			sanitized.push(`${key}: ${formatLooseYamlScalar(value)}`)
@@ -403,15 +406,19 @@ export function findNearestAncestorSkillDir(cwd: string, relativeSkillDir: strin
 }
 
 export function expandConfiguredSkillPaths(paths: string[], cwd: string): string[] {
-	const home = homedir()
+	const home = resolve(homedir())
+	const projectDir = resolve(cwd)
 	const expanded: string[] = []
 	for (const path of paths) {
 		if (isAbsolute(path)) {
-			expanded.push(path)
+			expanded.push(normalize(path))
 		} else if (path.startsWith("~/")) {
 			expanded.push(resolve(home, path.slice(2)))
 		} else {
-			expanded.push(resolve(home, path), resolve(cwd, path))
+			const fromHome = resolve(home, path)
+			const fromCwd = resolve(projectDir, path)
+			if (isSameOrDescendant(fromHome, home)) expanded.push(fromHome)
+			if (isSameOrDescendant(fromCwd, projectDir)) expanded.push(fromCwd)
 		}
 	}
 	return expanded
