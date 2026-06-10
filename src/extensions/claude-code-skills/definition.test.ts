@@ -133,6 +133,12 @@ describe("Claude Code skill discovery", () => {
 		)
 	})
 
+	it("adds a fallback description for empty block scalar descriptions when repairing invalid frontmatter", () => {
+		expect(sanitizeSkillMarkdown("---\ndescription: |\n\nmetadata: Use: colons safely\n---\nBody\n", "My Skill")).toBe(
+			'---\nname: "my-skill"\ndescription: "Claude Code skill: my-skill."\nmetadata: "Use: colons safely"\n---\nBody\n',
+		)
+	})
+
 	it("does not treat prefixed fences as closing frontmatter", () => {
 		const content = "---\ndescription: Test\n---not-a-fence\nBody\n"
 

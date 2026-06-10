@@ -235,9 +235,13 @@ function sanitizeLooseFrontmatter(frontmatter: string, fallbackName: string): st
 				continue
 			}
 			if (isBlockScalar(value)) {
-				sanitized.push(line)
 				const end = skipNestedYamlValue(lines, index, 0)
-				sanitized.push(...lines.slice(index + 1, end + 1))
+				const blockLines = lines.slice(index + 1, end + 1)
+				if (blockLines.some((line) => line.trim() !== "")) {
+					sanitized.push(line, ...blockLines)
+				} else {
+					sanitized.push(`description: ${quoteYamlString(fallbackSkillDescription(name))}`)
+				}
 				index = end
 				continue
 			}
