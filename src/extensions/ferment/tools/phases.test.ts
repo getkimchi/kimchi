@@ -94,11 +94,12 @@ describe("completePhase", () => {
 			services,
 		)
 
-		// Phase grades no longer exist — grading happens only at complete_ferment
-		// (the journey-grade judge). Phase completion just transitions status.
+		// Phase grade is now persisted on the phase so telemetry can read it.
+		// The deterministic grade (A/B/F from gate verdicts) lives on phase.grade;
+		// the journey-grade judge assigns the final ferment.grade at complete_ferment.
 		expect(okText(result)).toContain('**Phase "Phase 1"** done')
 		expect(h.storage.get(h.fermentId)?.phases[0].status).toBe("completed")
-		expect(h.storage.get(h.fermentId)?.phases[0].grade).toBeUndefined()
+		expect(h.storage.get(h.fermentId)?.phases[0].grade?.grade).toBe("A")
 		expect(services.gatherEvidence).toHaveBeenCalledWith("abc123")
 		expect(services.onPhaseCompleted).toHaveBeenCalledWith(h.runtime)
 	})

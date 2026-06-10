@@ -8,6 +8,7 @@ import { requestSharedFooterRender } from "../shared-footer.js"
 import { pr_bold, pr_dim, pr_orange, pr_success, pr_teal } from "./colors.js"
 import { type FermentCommand, parseFermentCommand } from "./command-parser.js"
 import { decideContinuation } from "./continuation.js"
+import { emitFermentCreated } from "./domain-events-emitter.js"
 import { formatFermentStatus } from "./format.js"
 import { autoInitFromEnv, ensureGitRepo } from "./git-init.js"
 import { appendRefEntry, resetReactiveContinuationNudgeCount } from "./nudge.js"
@@ -237,6 +238,7 @@ export async function startFermentForIntent({
 		const shortName = deriveDraftFermentTitle(title ?? rawIntent)
 		const f = storage.create(shortName, rawIntent)
 		setActiveFermentAndApplyProfile(pi, runtime, f)
+		emitFermentCreated(pi.events, f)
 		appendRefEntry(pi, f.id)
 
 		sendBreadcrumb(
@@ -879,6 +881,7 @@ export class FermentCommandController {
 				const f = storage.create(shortName, resolvedIntent)
 				const updated = f
 				setActiveFermentAndApplyProfile(pi, runtime, updated)
+				emitFermentCreated(pi.events, updated)
 				appendRefEntry(pi, updated.id)
 				sendBreadcrumb(
 					pi,
@@ -940,6 +943,7 @@ export class FermentCommandController {
 			const shortName = deriveDraftFermentTitle(rawName)
 			const f = storage.create(shortName, rawName)
 			setActiveFermentAndApplyProfile(pi, runtime, f)
+			emitFermentCreated(pi.events, f)
 			appendRefEntry(pi, f.id)
 
 			sendBreadcrumb(

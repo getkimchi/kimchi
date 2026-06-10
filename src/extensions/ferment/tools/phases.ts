@@ -410,10 +410,19 @@ export async function completePhase(
 	}
 
 	// Step 4: no block flags. Transition phase to completed.
+	// Capture block retry count before clearing — the counter is reset on the
+	// line below and won't be readable afterwards.
+	const blockRetriesForTelemetry = reviewAttemptForLog - 1
 	const completeOutcome = applyAndPersist(params.ferment_id, {
 		type: "complete_phase",
 		phaseId: phase.id,
 		summary: params.summary,
+		grade: {
+			grade: derivedGrade as import("../../../ferment/types.js").Grade,
+			rationale,
+			gradedAt: runtime.nowIso(),
+		},
+		blockRetries: blockRetriesForTelemetry,
 	})
 	if (!completeOutcome.ok) return failedToolResult(completeOutcome.error, f)
 

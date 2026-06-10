@@ -81,6 +81,7 @@ function registerFermentExtension(runtime?: FermentRuntime, flagValues: Record<s
 		appendEntry: vi.fn(),
 		sendMessage: vi.fn(),
 		sendUserMessage: vi.fn(),
+		events: { emit: vi.fn(), on: vi.fn(() => () => {}) },
 	} as unknown as ExtensionAPI
 
 	fermentExtension(pi, runtime)
