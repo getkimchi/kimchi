@@ -138,23 +138,11 @@ function buildPrompt(parts: PromptParts): string {
 	const sections: string[] = []
 
 	const intro = parts.mode === "orchestrator" ? ORCHESTRATOR_INTRO : SINGLE_INTRO
-	sections.push(`${intro}\n\n${parts.environmentSection}`)
+	sections.push(intro)
 
 	sections.push(`## Documents\n\n${DOCUMENTS_SECTION}`)
 	sections.push(`## Guidelines\n\n${CORE_GUIDELINES}`)
 	sections.push(`## Factual Accuracy\n\n${FACTUAL_ACCURACY}`)
-
-	if (!parts.suppressed.has("orchestration") && parts.orchestrationSection) {
-		sections.push(parts.orchestrationSection)
-	}
-
-	if (!parts.suppressed.has("phase-guidelines") && parts.phaseSection) {
-		sections.push(parts.phaseSection)
-	}
-
-	if (!parts.suppressed.has("project-context") && parts.projectContext) {
-		sections.push(parts.projectContext)
-	}
 
 	if (parts.systemPromptBlocks) {
 		sections.push(parts.systemPromptBlocks)
@@ -164,6 +152,20 @@ function buildPrompt(parts: PromptParts): string {
 
 	if (!parts.suppressed.has("skills") && parts.skillsSection) {
 		sections.push(parts.skillsSection)
+	}
+
+	if (!parts.suppressed.has("orchestration") && parts.orchestrationSection) {
+		sections.push(parts.orchestrationSection)
+	}
+
+	if (!parts.suppressed.has("phase-guidelines") && parts.phaseSection) {
+		sections.push(parts.phaseSection)
+	}
+
+	sections.push(parts.environmentSection)
+
+	if (!parts.suppressed.has("project-context") && parts.projectContext) {
+		sections.push(parts.projectContext)
 	}
 
 	return sections.filter((s) => s.length > 0).join("\n\n")
