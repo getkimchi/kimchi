@@ -3,6 +3,7 @@ import { ToolExecutionComponent } from "@earendil-works/pi-coding-agent"
 import { Container, Spacer } from "@earendil-works/pi-tui"
 import { ToolBlockView } from "../components/tool-block.js"
 import { formatToolTimer } from "./tool-rendering.js"
+import { splitCompoundCommand } from "../permissions/taxonomy.js"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -17,6 +18,23 @@ export type Category = "file" | "pattern" | "directory" | "edit" | "command" | "
 const BASH_DIRECTORY_CMDS = new Set(["ls", "fd", "find"])
 const BASH_PATTERN_CMDS = new Set(["grep", "rg"])
 const BASH_FILE_CMDS = new Set(["cat", "head", "tail", "read"])
+const CD_CMDS = new Set(["cd", "pushd", "popd"])
+
+/**
+ * Extracts the effective command from a compound bash command by skipping
+ * segments whose first word is a directory-change command (cd, pushd, popd).
+ * Falls back to empty string when no non-cd segment remains.
+ */
+function extractEffectiveCommand(command: string): string {
+	const segments = splitCompoundCommand(command)
+	if (!segments) return command
+	const firstRemaining = segments.find((seg) => {
+		const firstWord = seg.trim().split(/\s+/)[0] ?? ""
+		const effectiveWord = firstWord === "rtk" ? (seg.trim().split(/\s+/)[1] ?? "") : firstWord
+		return !CD_CMDS.has(effectiveWord)
+	})
+	return firstRemaining ?? ""
+}
 
 export function classifyTool(toolName: string, args: Record<string, unknown>): Category {
 	switch (toolName) {
@@ -33,7 +51,8 @@ export function classifyTool(toolName: string, args: Record<string, unknown>): C
 			return "edit"
 		case "bash": {
 			const command = typeof args.command === "string" ? args.command.trim() : ""
-			const words = command.split(/\s+/)
+			const effectiveCmd = extractEffectiveCommand(command)
+			const words = effectiveCmd.split(/\s+/)
 			const firstWord = words[0] ?? ""
 			// rtk wraps known tools: "rtk grep ...", "rtk read ..." — classify by the wrapped tool
 			const effectiveWord = firstWord === "rtk" ? (words[1] ?? "") : firstWord
