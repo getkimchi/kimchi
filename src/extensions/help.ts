@@ -1,9 +1,12 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { Key, isKeyRelease, matchesKey, visibleWidth } from "@earendil-works/pi-tui"
 
-type HelpRow = { kind: "heading"; text: string } | { kind: "entry"; key: string; desc: string } | { kind: "spacer" }
+export type HelpRow =
+	| { kind: "heading"; text: string }
+	| { kind: "entry"; key: string; desc: string }
+	| { kind: "spacer" }
 
-const HELP_ROWS: HelpRow[] = [
+export const HELP_ROWS: HelpRow[] = [
 	{ kind: "heading", text: "Keyboard Shortcuts" },
 	{ kind: "entry", key: "Enter", desc: "Submit prompt" },
 	{ kind: "entry", key: "Shift+Enter / Ctrl+J", desc: "Newline in input" },
@@ -12,28 +15,80 @@ const HELP_ROWS: HelpRow[] = [
 	{ kind: "entry", key: "Ctrl+C", desc: "Clear input / Abort running agent" },
 	{ kind: "entry", key: "Ctrl+P", desc: "Cycle to next model" },
 	{ kind: "entry", key: "Shift+Tab", desc: "Change permissions mode" },
+	{ kind: "entry", key: "/hotkeys", desc: "Full upstream keyboard shortcut list" },
 
 	{ kind: "spacer" },
-	{ kind: "heading", text: "Slash Commands" },
-	{ kind: "entry", key: "/settings", desc: "Open settings menu" },
+	{ kind: "heading", text: "Session" },
+	{ kind: "entry", key: "/new", desc: "Start a new session" },
+	{ kind: "entry", key: "/name", desc: "Set session display name" },
+	{ kind: "entry", key: "/session", desc: "Show session info and stats" },
+	{ kind: "entry", key: "/resume", desc: "Resume a different session" },
+	{ kind: "entry", key: "/import", desc: "Import and resume session from JSONL" },
+	{ kind: "entry", key: "/export", desc: "Export session (HTML or path)" },
+	{ kind: "entry", key: "/share", desc: "Share session as secret GitHub gist" },
+	{ kind: "entry", key: "/clone", desc: "Duplicate current session" },
+	{ kind: "entry", key: "/tree", desc: "Navigate session tree" },
+	{ kind: "entry", key: "/fork", desc: "Fork from a previous user message" },
+	{ kind: "entry", key: "/compact", desc: "Compact context window" },
+
+	{ kind: "spacer" },
+	{ kind: "heading", text: "Model" },
 	{ kind: "entry", key: "/model", desc: "Switch to a specific model" },
 	{ kind: "entry", key: "/scoped-models", desc: "Enable or disable models for Ctrl+P cycling" },
 	{ kind: "entry", key: "/multi-model", desc: "Configure model roles" },
+
+	{ kind: "spacer" },
+	{ kind: "heading", text: "Kimchi" },
 	{ kind: "entry", key: "/ferment", desc: "Run task in background" },
-	{ kind: "entry", key: "/compact", desc: "Compact context window" },
-	{ kind: "entry", key: "/new", desc: "Start a new session" },
 	{ kind: "entry", key: "/agents", desc: "Manage background agents" },
 	{ kind: "entry", key: "/permissions", desc: "View or change permission mode and rules" },
 	{ kind: "entry", key: "/phase", desc: "Show or change the current work phase" },
-	{ kind: "entry", key: "/bug", desc: "Report a bug — opens GitHub issue form" },
-	{ kind: "entry", key: "/stats", desc: "View coding analytics and metrics" },
-	{ kind: "entry", key: "/mcp", desc: "Show MCP server status" },
-	{ kind: "entry", key: "/resources", desc: "Manage resources (files, URLs, images)" },
 	{ kind: "entry", key: "/tags", desc: "Manage usage tracking tags" },
+	{ kind: "entry", key: "/stats", desc: "View coding analytics and metrics" },
+	{ kind: "entry", key: "/bug", desc: "Report a bug — opens GitHub issue form" },
 	{ kind: "entry", key: "/tips", desc: "Show all tips" },
+	{ kind: "entry", key: "/thinking-steps", desc: "Switch thinking view or set/clear project/global defaults" },
+	{ kind: "entry", key: "/strip-images", desc: "Describe images with AI, then strip for non-vision models" },
+
+	{ kind: "spacer" },
+	{ kind: "heading", text: "MCP & resources" },
+	{ kind: "entry", key: "/mcp", desc: "Show MCP server status" },
+	{ kind: "entry", key: "/mcp-auth", desc: "Authenticate with an MCP server (OAuth)" },
+	{ kind: "entry", key: "/resources", desc: "Manage resources (files, URLs, images)" },
+	{ kind: "entry", key: "/hooks", desc: "View or change Kimchi hooks" },
+	{ kind: "entry", key: "/plugins", desc: "View or change Kimchi plugins" },
+
+	{ kind: "spacer" },
+	{ kind: "heading", text: "Teleport" },
+	{ kind: "entry", key: "/teleport", desc: "Open a kimchi PTY session in a sandbox workspace" },
+	{ kind: "entry", key: "/sessions", desc: "List kimchi sessions across all workspaces" },
+	{ kind: "entry", key: "/workspaces", desc: "List and manage kimchi workspaces" },
+	{ kind: "entry", key: "/terminal", desc: "Open a raw SSH shell into a sandbox workspace" },
+	{ kind: "entry", key: "/sync", desc: "Sync files between local and sandbox workspace" },
+	{ kind: "entry", key: "/ssh-config", desc: "Refresh ~/.config/kimchi/ssh_config from your workspaces" },
+
+	{ kind: "spacer" },
+	{ kind: "heading", text: "Settings & auth" },
+	{ kind: "entry", key: "/settings", desc: "Open settings menu" },
+	{ kind: "entry", key: "/login", desc: "Configure provider authentication" },
+	{ kind: "entry", key: "/logout", desc: "Remove provider authentication" },
+	{ kind: "entry", key: "/reload", desc: "Reload keybindings, extensions, skills, prompts, themes" },
+	{ kind: "entry", key: "/changelog", desc: "Show changelog entries" },
+
+	{ kind: "spacer" },
+	{ kind: "heading", text: "Utility" },
+	{ kind: "entry", key: "/copy", desc: "Copy last agent message to clipboard" },
+	{ kind: "entry", key: "/clear", desc: "Start a new session (alias for /new)" },
 	{ kind: "entry", key: "/help", desc: "Show this help" },
 	{ kind: "entry", key: "/exit", desc: "Exit the application" },
 ]
+
+/** Slash-command keys listed in HELP_ROWS (excludes keyboard shortcut rows). */
+export function getHelpCommandKeys(): string[] {
+	return HELP_ROWS.filter(
+		(row): row is Extract<HelpRow, { kind: "entry" }> => row.kind === "entry" && row.key.startsWith("/"),
+	).map((row) => row.key)
+}
 
 // The overlay maxHeight percentage — must match overlayOptions below.
 const MAX_HEIGHT_PCT = 0.9
