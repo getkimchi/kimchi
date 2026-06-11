@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { type ExtensionAPI, type ToolDefinition, loadSkillsFromDir } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import claudeCodeSkillsExtension from "./index.js"
@@ -175,11 +175,11 @@ function textResult(result: { content: Array<{ type: string; text?: string }> })
 }
 
 function writeSkill(path: string, body: string): void {
-	mkdirSync(join(path, ".."), { recursive: true })
+	mkdirSync(dirname(path), { recursive: true })
 	writeFileSync(path, `---\ndescription: Test skill.\n---\n${body}\n`, "utf-8")
 }
 
 function writeRawSkill(path: string, content: string): void {
-	mkdirSync(join(path, ".."), { recursive: true })
+	mkdirSync(dirname(path), { recursive: true })
 	writeFileSync(path, content, "utf-8")
 }

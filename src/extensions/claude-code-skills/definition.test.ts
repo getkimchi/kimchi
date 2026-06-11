@@ -6,6 +6,7 @@ import {
 	discoverClaudeCodeSkillDirs,
 	expandConfiguredSkillPaths,
 	getClaudeCodeSkillResourcePaths,
+	getConfiguredSkillResourcePaths,
 	sanitizeSkillMarkdown,
 } from "./definition.js"
 
@@ -133,6 +134,25 @@ describe("Claude Code skill discovery", () => {
 		)
 	})
 
+	it("preserves block scalar description headers with chomping and indentation indicators", () => {
+		expect(
+			sanitizeSkillMarkdown(
+				"---\ndescription: >-\n  Use: generated types\n  Keep: safe\nmetadata: Use: colons safely\n---\nBody\n",
+				"My Skill",
+			),
+		).toBe(
+			'---\nname: "my-skill"\ndescription: >-\n  Use: generated types\n  Keep: safe\nmetadata: "Use: colons safely"\n---\nBody\n',
+		)
+		expect(
+			sanitizeSkillMarkdown(
+				"---\ndescription: |+2\n  Use: generated types\n  Keep: safe\nmetadata: Use: colons safely\n---\nBody\n",
+				"My Skill",
+			),
+		).toBe(
+			'---\nname: "my-skill"\ndescription: |+2\n  Use: generated types\n  Keep: safe\nmetadata: "Use: colons safely"\n---\nBody\n',
+		)
+	})
+
 	it("adds a fallback description for empty block scalar descriptions when repairing invalid frontmatter", () => {
 		expect(sanitizeSkillMarkdown("---\ndescription: |\n\nmetadata: Use: colons safely\n---\nBody\n", "My Skill")).toBe(
 			'---\nname: "my-skill"\ndescription: "Claude Code skill: my-skill."\nmetadata: "Use: colons safely"\n---\nBody\n',
@@ -179,6 +199,19 @@ describe("Claude Code skill discovery", () => {
 		writeSkill(join(cwd, ".claude", "skills", "typescript-safety", "SKILL.md"))
 
 		expect(getClaudeCodeSkillResourcePaths(cwd, { excludeSkillPaths: [".custom/skills"] })).toEqual([])
+	})
+
+	it("materializes configured Claude Code skill paths instead of excluding them as native", () => {
+		const cwd = join(dir, "project")
+		writeSkill(join(cwd, ".claude", "custom-skills", "typescript-safety", "SKILL.md"), "# Skill\n")
+
+		const paths = getConfiguredSkillResourcePaths(cwd, [".claude/custom-skills"])
+
+		expect(paths).toHaveLength(1)
+		expect(paths[0]).toContain(join(dir, "cache", "kimchi", "claude-code-skills"))
+		expect(readFileSync(join(paths[0], "SKILL.md"), "utf-8")).toBe(
+			'---\nname: typescript-safety\ndescription: "Claude Code skill: typescript-safety."\n---\n# Skill\n',
+		)
 	})
 
 	it("materializes configured Claude Code skill paths through the sanitized cache", () => {

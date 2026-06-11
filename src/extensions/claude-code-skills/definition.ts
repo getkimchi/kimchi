@@ -342,7 +342,7 @@ function quoteYamlString(value: string): string {
 }
 
 function isBlockScalar(value: string): boolean {
-	return value === "|" || value === ">" || value.startsWith("|+") || value.startsWith("|-") || value.startsWith(">+")
+	return /^[|>](?:[+-]?[1-9]?|[1-9][+-]?)$/.test(value)
 }
 
 function slugPath(value: string): string {
@@ -359,17 +359,8 @@ function hash(value: string): string {
 function getNativeSkillNames(cwd: string, configuredSkillPaths: string[]): Set<string> {
 	return collectSkillNames([
 		...discoverNativeSkillDirs(cwd),
-		...excludeClaudeCodeSkillPaths(expandConfiguredSkillPaths(configuredSkillPaths, cwd), cwd),
+		...getConfiguredNativeSkillPaths(cwd, configuredSkillPaths),
 	])
-}
-
-function excludeClaudeCodeSkillPaths(paths: string[], cwd: string): string[] {
-	const claudeCodeSkillDirs = discoverClaudeCodeSkillDirs(cwd).map((dir) => resolve(dir))
-	if (claudeCodeSkillDirs.length === 0) return paths
-	return paths.filter((path) => {
-		const resolved = resolve(path)
-		return !claudeCodeSkillDirs.some((dir) => isSameOrDescendant(resolved, dir))
-	})
 }
 
 function isSameOrDescendant(path: string, parent: string): boolean {
