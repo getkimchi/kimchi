@@ -15,10 +15,10 @@ export function postProcessJsonlExport(filePath: string): void {
 	const lines = raw.split(/\r?\n/).filter((l) => l.trim().length > 0)
 	const processed = injectTraceIdsIntoExport(lines)
 
-	// Inject version into header line if present.
+	// Inject version into session header line if present.
 	if (processed.length > 0) {
 		const first = JSON.parse(processed[0]) as Record<string, unknown>
-		if (first.type === "header") {
+		if (first.type === "session") {
 			first.appVersion = getVersion()
 			processed[0] = JSON.stringify(first)
 		}
