@@ -1204,7 +1204,18 @@ function themeAdaptiveEnabled(): boolean {
 }
 
 let DIFF_THEME: BundledTheme = (process.env.DIFF_THEME as BundledTheme | undefined) ?? "github-dark"
+let hasExplicitShikiTheme = false
 let codeToAnsiLoader: Promise<any> | null = null
+
+function isHarnessThemeLight(themeName: string | undefined): boolean {
+	if (!themeName) return false
+	const n = themeName.toLowerCase()
+	return n === "light" || n.endsWith("-light") || n.startsWith("light-")
+}
+
+function shikiThemeForHarnessTheme(themeName: string | undefined): BundledTheme {
+	return isHarnessThemeLight(themeName) ? "github-light" : "github-dark"
+}
 
 const SPLIT_MIN_WIDTH = 150
 const SPLIT_MIN_CODE_WIDTH = 60
@@ -1380,6 +1391,16 @@ function applyThemePaletteIfNeeded(theme: any): void {
 		autoDeriveBgFromTheme(theme)
 		autoDerivePending = false
 	}
+
+	// Auto-select shiki theme to match harness theme light/dark mode, unless
+	// the user pinned an explicit shikiTheme in their diffTheme/diffColors config.
+	if (!hasExplicitShikiTheme && !process.env.DIFF_THEME) {
+		const derived = shikiThemeForHarnessTheme(theme?.name)
+		if (derived !== DIFF_THEME) {
+			DIFF_THEME = derived
+			clearHighlightCache()
+		}
+	}
 }
 
 function applyDiffPalette(): void {
@@ -1454,7 +1475,12 @@ function applyDiffPalette(): void {
 	})
 
 	const shiki = overrides.shikiTheme ?? preset?.shikiTheme
-	if (shiki) DIFF_THEME = shiki as BundledTheme
+	if (shiki) {
+		DIFF_THEME = shiki as BundledTheme
+		hasExplicitShikiTheme = true
+	} else {
+		hasExplicitShikiTheme = false
+	}
 
 	DIVIDER = `${FG_RULE}│${D_RST}`
 	DEFAULT_DIFF_COLORS = { fgAdd: FG_ADD, fgDel: FG_DEL, fgCtx: FG_DIM }
@@ -1558,6 +1584,10 @@ function ansiState(text: string): string {
 
 function normalizeShikiContrast(ansi: string): string {
 	return ansi.replace(/\x1b\[([0-9;]*)m/g, (seq, params: string) => {
+		// Strip background colors emitted by shiki — the diff renderer manages
+		// its own per-line backgrounds (BG_ADD, BG_DEL, BG_BASE, etc.) and shiki
+		// bg codes would override them regardless of the active harness theme.
+		if (params.startsWith("48;")) return ""
 		if (params === "30" || params === "90" || params === "38;5;0" || params === "38;5;8") return FG_SAFE_MUTED
 		if (!params.startsWith("38;2;")) return seq
 		const parts = params.split(";").map(Number)
