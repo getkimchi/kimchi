@@ -539,7 +539,7 @@ describe("confirm_ferment_completion_criteria via registerLifecycleTools", () =>
 	it("asks one inline question with yes/no style answers and no follow-up prompt on yes", async () => {
 		const { h, execute } = createConfirmCriteriaHarness()
 		const select = vi.fn<(title: string, options: string[]) => Promise<string>>(async (_title, options) =>
-			options.includes("Yes, looks good") ? "Yes, looks good" : "No, enter what is wrong",
+			options.includes("Yes, looks good") ? "Yes, looks good" : "No (input what is wrong)",
 		)
 		const input = vi.fn<(title: string, placeholder?: string) => Promise<string>>(async () => "")
 
@@ -563,7 +563,7 @@ describe("confirm_ferment_completion_criteria via registerLifecycleTools", () =>
 		expect(text).toContain("Next action: continue to exploration.")
 		expect(select).toHaveBeenCalledWith(expect.stringContaining("Do these completion criteria look right?"), [
 			"Yes, looks good",
-			"No, enter what is wrong",
+			"No (input what is wrong)",
 		])
 		expect(select.mock.calls[0]?.[0]).toContain("README.md exists at the project root")
 		expect(input).not.toHaveBeenCalled()
@@ -572,7 +572,7 @@ describe("confirm_ferment_completion_criteria via registerLifecycleTools", () =>
 	it("asks for inline text when criteria are rejected", async () => {
 		const { h, execute } = createConfirmCriteriaHarness()
 		const select = vi.fn<(title: string, options: string[]) => Promise<string>>(
-			async (_title, _options) => "No, enter what is wrong",
+			async (_title, _options) => "No (input what is wrong)",
 		)
 		const input = vi.fn<(title: string, placeholder?: string) => Promise<string>>(
 			async () => "Add go test ./... as verification.",
@@ -595,7 +595,7 @@ describe("confirm_ferment_completion_criteria via registerLifecycleTools", () =>
 		expect(text).toContain(`call ${FERMENT_TOOLS.CONFIRM_COMPLETION_CRITERIA} again before exploration`)
 		expect(select).toHaveBeenCalledWith(expect.stringContaining("Do these completion criteria look right?"), [
 			"Yes, looks good",
-			"No, enter what is wrong",
+			"No (input what is wrong)",
 		])
 		expect(input).toHaveBeenCalledWith(expect.stringContaining("Do these completion criteria look right?"), "")
 	})
@@ -620,7 +620,7 @@ describe("confirm_ferment_completion_criteria via registerLifecycleTools", () =>
 		expect(text).toContain("Confirmed: no")
 		expect(text).toContain("Changes: Add go test ./... as verification.")
 		expect(userMsg).toContain('option id="yes" label="Yes, looks good"')
-		expect(userMsg).toContain('custom label="No, enter what is wrong" value="<free-form text>"')
+		expect(userMsg).toContain('custom label="No (input what is wrong)" value="<free-form text>"')
 	})
 
 	it("rejects criteria that normalize to empty strings", async () => {
