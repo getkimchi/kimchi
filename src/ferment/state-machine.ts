@@ -75,7 +75,7 @@ export type Command =
 	| { type: "activate_phase"; phaseId: string }
 	| { type: "activate_phase_group"; groupIndex: number }
 	| { type: "refine_phase"; phaseId: string; steps: RefineStepInput[] }
-	| { type: "complete_phase"; phaseId: string; summary: string; grade?: JudgeGrade }
+	| { type: "complete_phase"; phaseId: string; summary: string; grade?: JudgeGrade; blockRetries?: number }
 	| { type: "skip_phase"; phaseId: string; reason?: string }
 	| { type: "fail_phase"; phaseId: string; reason: string }
 	| { type: "start_step"; phaseId: string; stepId: string }

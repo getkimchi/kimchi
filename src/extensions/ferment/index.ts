@@ -114,6 +114,10 @@ const fermentRequestRenderer: MessageRenderer<FermentRequestMessageDetails> = (m
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime) {
+	// Wire pi.events into the runtime so createApplyAndPersist can emit domain
+	// events for every state mutation without importing from telemetry.
+	runtime.events = pi.events
+
 	const unregisterFermentTips = registerTipProvider(createFermentTipProvider(runtime))
 	let planReviewTimer: ReturnType<typeof setTimeout> | undefined
 	let planReviewRunning = false
