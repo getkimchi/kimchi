@@ -126,8 +126,8 @@ export const ScopingQuestionSchema = Type.Object({
 	type: Type.Optional(
 		Type.String({
 			description:
-				"Question style. Must be 'single' (one choice, default), 'multi' (multiple choices), 'text' (enter-your-own answer only), or 'confirm' (yes/no, always Yes/No — no options). Omit for single.",
-			pattern: "^(single|multi|text|confirm)$",
+				"Question style. Must be 'single' (one choice, default), 'multi' (multiple choices), or 'text' (enter-your-own answer only). Omit for single. Do not use confirm here; plan approval is handled by the host when questions is empty.",
+			pattern: "^(single|multi|text)$",
 		}),
 	),
 	question: Type.String({
@@ -137,7 +137,7 @@ export const ScopingQuestionSchema = Type.Object({
 	options: Type.Optional(
 		Type.Array(ScopingQuestionOptionSchema, {
 			description:
-				"2–5 concrete options for single/multi questions. Omit for text and confirm questions (confirm is always Yes/No). Vary question framing across outcome boundary, risk/tradeoff, integration/deployment target, verification standard, and non-goal/scope-cut decisions. Avoid feature-shopping options; scope extras out unless requested.",
+				"2–5 concrete options for single/multi questions. Omit for text questions. Vary question framing across outcome boundary, risk/tradeoff, integration/deployment target, verification standard, and non-goal/scope-cut decisions. Avoid feature-shopping options; scope extras out unless requested.",
 		}),
 	),
 })
@@ -189,7 +189,7 @@ export const ProposeScopingParams = Type.Object({
 		Type.Union([
 			Type.Array(ScopingQuestionSchema, {
 				description:
-					'Emit ONLY for decision-blocking uncertainty where the answer materially changes architecture, dependencies, data model, user-facing scope, security posture, deployment/runtime assumptions, or verification strategy. Hard limits: at most 3 questions; single/multi questions need 2-5 options. Do not ask about defaults you can safely choose. For broad discovery or planning over an existing codebase, if discovery finds multiple plausible work areas and the user did not explicitly ask to include every area, ask one multi question selecting which areas belong in this ferment; this is an outcome/scope boundary, not a preference survey. Example question: "Which improvement areas should this ferment include?" If the user asks to be thorough with questions, be thorough in assumptions, success criteria, constraints, and verification steps; do not add default-choice questions unless implementation is blocked. Do not ask preference-survey or feature-shopping questions like tech stack, platform, persistence, or extra features for a simple greenfield app; record safe defaults in assumptions instead. If all recommended answers are generic defaults, emit questions: []. Must be a real JSON array of question objects, never a quoted string. Use type single for one choice, confirm for yes/no, multi for multi-select, and text for enter-your-own only. Put options in display order; text and confirm questions omit options (confirm is always Yes/No). The host appends Custom answer to single/multi. Mark at most ONE option per question with `recommended: true`. No reason text. On replans after user answers, ask only NEW decision-blocking questions; never repeat answered questions.',
+					'Emit ONLY for decision-blocking uncertainty where the answer materially changes architecture, dependencies, data model, user-facing scope, security posture, deployment/runtime assumptions, or verification strategy. Hard limits: at most 3 questions; single/multi questions need 2-5 options. Do not ask about defaults you can safely choose. For broad discovery or planning over an existing codebase, if discovery finds multiple plausible work areas and the user did not explicitly ask to include every area, ask one multi question selecting which areas belong in this ferment; this is an outcome/scope boundary, not a preference survey. Example question: "Which improvement areas should this ferment include?" If the user asks to be thorough with questions, be thorough in assumptions, success criteria, constraints, and verification steps; do not add default-choice questions unless implementation is blocked. Do not ask preference-survey or feature-shopping questions like tech stack, platform, persistence, or extra features for a simple greenfield app; record safe defaults in assumptions instead. If all recommended answers are generic defaults, emit questions: []. Must be a real JSON array of question objects, never a quoted string. Use type single for one choice, multi for multi-select, and text for enter-your-own only. Do not use confirm in propose_ferment_scoping; final plan approval is handled by the host when questions is empty. For a real yes/no scoping decision, use type single with explicit option labels. Put options in display order; text questions omit options. The host appends Custom answer to single/multi. Mark at most ONE option per question with `recommended: true`. No reason text. On replans after user answers, ask only NEW decision-blocking questions; never repeat answered questions.',
 			}),
 			Type.String({
 				description:

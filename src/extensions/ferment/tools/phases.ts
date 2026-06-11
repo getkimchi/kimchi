@@ -504,6 +504,11 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 			// then dispatch to the right state-machine command.
 			const f = runtime.getStorage().get(params.ferment_id)
 			if (!f) return toolErr("Ferment not found.")
+			if (runtime.getPendingPlanReview(params.ferment_id)) {
+				return toolErr(
+					"Plan review is pending. Do not activate phases until the host plan review dialog collects the user's Start execution choice.",
+				)
+			}
 
 			let target = params.phase_id ? f.phases.find((p) => p.id === params.phase_id) : undefined
 			if (!target && params.phase_id) {

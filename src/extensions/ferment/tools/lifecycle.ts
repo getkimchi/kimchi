@@ -27,6 +27,7 @@ import {
 } from "../../../ferment/types.js"
 import { isUserChosenYolo } from "../../permissions/index.js"
 import { YES_NO_OPTIONS } from "../../questionnaire-reducer.js"
+import { requestSharedFooterRender } from "../../shared-footer.js"
 import {
 	type AskUserQuestion,
 	askUser,
@@ -42,6 +43,12 @@ import { validateGatesOrErr } from "../gate-validation.js"
 import { judgeJourneyGrade } from "../judge.js"
 import { resetReactiveContinuationNudgeCount } from "../nudge.js"
 import { gatherPhaseEvidence } from "../phase-evidence.js"
+import {
+	type PendingPlanReview,
+	clearPlanReviewReadyForHandoff,
+	markPlanReviewReadyForHandoff,
+	promptPlanReview,
+} from "../plan-review.js"
 import { getPromptUi, promptEditor, promptForm, promptSelect } from "../prompt-ui.js"
 import { readLatestPhaseReviews } from "../review-evidence.js"
 import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
@@ -66,6 +73,7 @@ import {
 	ScopeParams,
 	UpdateScopeFieldParams,
 } from "../tool-schemas.js"
+import { applyFermentRuntimeToolProfile } from "../tool-scope.js"
 import type { FermentUiContext } from "../ui.js"
 
 type ScopeArgs = Static<typeof ScopeParams>
@@ -92,6 +100,9 @@ type ScopingAnswer = {
 	label: string
 	recommended: boolean
 }
+
+const PLAN_REVIEW_HANDOFF_MESSAGE =
+	"Plan ready for review. The review dialog will open when this turn finishes. Stop now; do not call more tools or skills, and do not treat this tool result as a user request."
 
 const SCOPING_STATUS_KEY = "ferment-scoping"
 const TITLE_REQUIRED_ERROR =
@@ -389,6 +400,10 @@ function validateScopingQuestions(questions: ScopingQuestion[]): string | null {
 	}
 
 	for (const q of questions) {
+		if (getScopingQuestionType(q) === "confirm") {
+			return `Question "${q.id}" uses type "confirm"; propose_ferment_scoping questions must use single, multi, or text. For final plan approval, emit questions: [] so the host plan review UI handles confirmation. For a genuinely decision-blocking yes/no scoping decision, use type "single" with explicit options.`
+		}
+
 		const options = q.options ?? []
 		const recommendedCount = options.filter((o) => o.recommended === true).length
 		if (recommendedCount > 1) {
@@ -465,7 +480,7 @@ function escapeXmlText(value: string): string {
 
 export function buildFreeformScopingFeedbackMessage(fermentId: string, userText: string): string {
 	return [
-		`User reviewed the pending plan for ferment_id "${fermentId}" and provided this feedback:`,
+		`User gave feedback on the pending ferment plan for ferment_id "${fermentId}":`,
 		"<user_feedback>",
 		escapeXmlText(userText),
 		"</user_feedback>",
@@ -935,9 +950,9 @@ ${renderGateGuidance("scope_ferment")}`,
 				)
 			}
 
-			// 6. Zero-questions path: defer the local review dialog until the
-			// agent turn ends, so terminal scrollback is not fighting active-turn
-			// progress writes.
+			// 6. Zero-questions path: collect host review before the tool returns.
+			// This prevents the model from seeing a "ready" result and continuing
+			// with summaries or phase activation before the user chooses.
 			if (questions.length === 0) {
 				if (!promptUi?.custom) {
 					// Some hosts expose select/input without custom components; keep them on the pre-review confirmation path.
@@ -958,11 +973,47 @@ ${renderGateGuidance("scope_ferment")}`,
 					)
 				}
 
-				runtime.setPendingPlanReview({
+				const review: PendingPlanReview = {
 					fermentId: params.ferment_id,
 					planMarkdown: planEntry,
-				})
-				return planToolOk("Plan ready for review. The review dialog will open when this turn finishes.")
+				}
+				runtime.setPendingPlanReview(review)
+				const outcome = await promptPlanReview(ctx, { planMarkdown: planEntry })
+				if (!outcome) {
+					markPlanReviewReadyForHandoff(review)
+					return planToolOk(PLAN_REVIEW_HANDOFF_MESSAGE)
+				}
+
+				clearPlanReviewReadyForHandoff(params.ferment_id)
+				if (outcome.kind === "cancelled") {
+					return planToolOk(
+						"Plan review cancelled. The draft plan remains pending for user review. Stop now and wait for user input.",
+					)
+				}
+				if (outcome.kind === "feedback") {
+					return planToolOk(buildFreeformScopingFeedbackMessage(params.ferment_id, outcome.text))
+				}
+
+				const scopeOutcome = confirmPendingScope(
+					runtime,
+					params.ferment_id,
+					params.phases,
+					"propose_ferment_scoping",
+					pi,
+				)
+				if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error, ferment)
+				if (outcome.kind === "start_auto") {
+					runtime.setContinuationPolicy("automated")
+					applyFermentRuntimeToolProfile(pi, runtime)
+					requestSharedFooterRender()
+				}
+				runtime.clearPendingPlanReview(params.ferment_id)
+				return planToolOk(
+					withNextActionHint(
+						`Plan saved. Ferment "${scopeOutcome.outcome.ferment.name}" is planned with ${scopeOutcome.outcome.ferment.phases.length} phase(s). Starting execution.`,
+						scopeOutcome.outcome.ferment,
+					),
+				)
 			}
 
 			// 7. Tabbed question form + review loop.

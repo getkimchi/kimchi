@@ -200,7 +200,10 @@ Question policy (for propose_ferment_scoping.questions, used in Step 5 only):
 - After Steps 1-4, any remaining decision-blocking questions go in propose_ferment_scoping.questions.
 - The host renders them as TUI dropdowns.
 - If no question remains decision-blocking, emit questions: [] and record defaults in assumptions.
+- Do not use questions for plan approval, plan feedback, or "should I proceed/start/continue with this plan?" confirmation. That confirmation is host-owned.
+- When no genuine decision-blocking scoping question remains, call propose_ferment_scoping with questions: []; the host renders the plan and collects start/feedback input.
 - Do not ask preference-survey questions when there is a safe, reversible default.
+- Do not use approval-style yes/no single-choice questions like "Proceed with this plan?" For real yes/no scoping decisions, use type: "single" with explicit option labels.
 
 Planning policy:
 - Default to one phase for simple tasks.
@@ -209,7 +212,8 @@ Planning policy:
 
 Output contract:
 Call propose_ferment_scoping with ferment_id "${f.id}" and a complete payload: title, goal, success_criteria, constraints, assumptions, 1-7 phases, questions, and gates. title is required; set it to a concise 3-5 word Ferment name.
-The gates array is required and must contain exactly P1, P2, and P3. Every gate object must include id, verdict, rationale, and evidence. Never emit a partial gates array.`,
+The gates array is required and must contain exactly P1, P2, and P3. Every gate object must include id, verdict, rationale, and evidence. Never emit a partial gates array.
+After propose_ferment_scoping returns "Plan ready for review", the host will collect the user's review after your turn ends. Stop there: do not call more tools or skills, do not summarize the plan in chat, do not say the plan is waiting for confirmation, and do not tell the user to wait for the TUI.`,
 				},
 			],
 			display: false,

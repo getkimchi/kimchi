@@ -20,10 +20,28 @@ export type PlanReviewOutcome =
 	| { kind: "cancelled"; reason: "decision_cancelled" | "feedback_cancelled" | "empty_feedback" }
 
 const pendingPlanReviews = new Map<string, PendingPlanReview>()
+let reviewReadyForHandoff: PendingPlanReview | undefined
 const DECISION_OPTIONS = ["Start execution", "Start execution in auto mode", "Let me say something"] as const
 
 export function setPendingPlanReview(review: PendingPlanReview): void {
 	pendingPlanReviews.set(review.fermentId, review)
+}
+
+export function markPlanReviewReadyForHandoff(review: PendingPlanReview): void {
+	reviewReadyForHandoff = review
+}
+
+export function getPlanReviewReadyForHandoff(): PendingPlanReview | undefined {
+	if (!reviewReadyForHandoff) return undefined
+	if (pendingPlanReviews.get(reviewReadyForHandoff.fermentId) === reviewReadyForHandoff) return reviewReadyForHandoff
+	reviewReadyForHandoff = undefined
+	return undefined
+}
+
+export function clearPlanReviewReadyForHandoff(fermentId?: string): void {
+	if (!reviewReadyForHandoff) return
+	if (fermentId && reviewReadyForHandoff.fermentId !== fermentId) return
+	reviewReadyForHandoff = undefined
 }
 
 export function getPendingPlanReview(fermentId: string): PendingPlanReview | undefined {
@@ -39,10 +57,12 @@ export function getCurrentPendingPlanReview(runtime: { getActiveId(): string | u
 
 export function clearPendingPlanReview(fermentId: string): void {
 	pendingPlanReviews.delete(fermentId)
+	clearPlanReviewReadyForHandoff(fermentId)
 }
 
 export function clearAllPendingPlanReviews(): void {
 	pendingPlanReviews.clear()
+	reviewReadyForHandoff = undefined
 }
 
 export async function promptPlanReview(

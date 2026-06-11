@@ -1154,8 +1154,8 @@ describe("propose_ferment_scoping", () => {
 		expect(tool?.description).toContain("answer-agnostic")
 	})
 
-	// (a) zero-questions + interactive UI -> deferred local review
-	it("(a) zero-questions + interactive UI -> stores pending review without planning inside the tool", async () => {
+	// (a) zero-questions + interactive UI -> local review opens before the tool returns
+	it("(a) zero-questions + interactive UI -> opens plan review and keeps pending state when no choice is returned", async () => {
 		const id = await createFerment("ZeroQ Review")
 		seedPending(id)
 		const ctx = { ui: { select: vi.fn(), custom: vi.fn() } }
@@ -1168,12 +1168,45 @@ describe("propose_ferment_scoping", () => {
 		expect(result).toContain("Plan ready for review")
 		expect(result).not.toContain("# Plan:")
 		expect(ctx.ui.select).not.toHaveBeenCalled()
-		expect(ctx.ui.custom).not.toHaveBeenCalled()
+		expect(ctx.ui.custom).toHaveBeenCalled()
 		expect(getPendingPlanReview(id)).toMatchObject({
 			fermentId: id,
 			planMarkdown: expect.stringContaining("# Plan: Proposed Ferment"),
 		})
 		expect(getPendingPlanReview(id)?.planMarkdown.includes(`${String.fromCharCode(27)}[`)).toBe(false)
+	})
+
+	it("(a2) zero-questions + Start execution plans before returning to the model", async () => {
+		const id = await createFerment("ZeroQ Start")
+		seedPending(id)
+		const ctx = { ui: { select: vi.fn(), custom: vi.fn().mockResolvedValue({ kind: "start" }) } }
+
+		const result = ok(await h.call("propose_ferment_scoping", basePayload(id), ctx))
+
+		expect(ctx.ui.custom).toHaveBeenCalled()
+		expect(loadFerment(id).status).toBe("planned")
+		expect(getPendingPlanReview(id)).toBeUndefined()
+		expect(result).toContain("Plan saved")
+		expect(result).toContain("activate_ferment_phase")
+	})
+
+	it("(a3) zero-questions + feedback returns a replanning instruction before any activation", async () => {
+		const id = await createFerment("ZeroQ Feedback")
+		seedPending(id)
+		const ctx = {
+			ui: {
+				select: vi.fn(),
+				custom: vi.fn().mockResolvedValue({ kind: "feedback", text: "Use no new dependencies." }),
+			},
+		}
+
+		const result = ok(await h.call("propose_ferment_scoping", basePayload(id), ctx))
+
+		expect(ctx.ui.custom).toHaveBeenCalled()
+		expect(loadFerment(id).status).toBe("draft")
+		expect(getPendingPlanReview(id)).toBeDefined()
+		expect(result).toContain("Use no new dependencies.")
+		expect(result).toContain("Re-run propose_ferment_scoping")
 	})
 
 	it("normalizes stringified phases before storing the pending review markdown", async () => {
@@ -1477,7 +1510,7 @@ describe("propose_ferment_scoping", () => {
 		expect(msgContent).toContain('free-form: "Browser smoke test passes"')
 	})
 
-	it("accepts questionnaire vocabulary (single) and synthesizes Yes/No for confirm scoping questions", async () => {
+	it("accepts questionnaire vocabulary and explicit yes/no single-choice scoping questions", async () => {
 		const id = await createFerment("Questionnaire Vocabulary")
 		seedPending(id)
 		const questions = [
@@ -1491,10 +1524,13 @@ describe("propose_ferment_scoping", () => {
 				],
 			},
 			{
-				// confirm with no options — host must default to Yes/No.
 				id: "ship",
-				type: "confirm",
+				type: "single",
 				question: "Ship behind a flag?",
+				options: [
+					{ id: "yes", label: "Yes", recommended: true },
+					{ id: "no", label: "No" },
+				],
 			},
 		]
 		const ctx = {
@@ -1515,13 +1551,13 @@ describe("propose_ferment_scoping", () => {
 		expect(loadFerment(id).status).toBe("draft")
 		expect(result).toContain("Your answers")
 		expect(result).toContain("Option A")
-		// The confirm question offered Yes/No and recorded the Yes answer.
+		// The yes/no scoping decision uses explicit single-choice labels.
 		const shipCall = ctx.ui.select.mock.calls.find((c: unknown[]) => String(c[0]).includes("Ship behind a flag?"))
 		expect(shipCall).toBeDefined()
-		expect(shipCall?.[1]).toEqual(expect.arrayContaining(["Yes", "No"]))
+		expect(shipCall?.[1]).toEqual(expect.arrayContaining(["Yes  ★ Recommended", "No"]))
 	})
 
-	it("rejects confirm scoping questions that carry options rather than rewriting them", async () => {
+	it("rejects confirm scoping questions instead of rewriting them", async () => {
 		const id = await createFerment("Confirm With Options")
 		seedPending(id)
 		const ctx = { ui: { select: vi.fn(), input: vi.fn() } }
@@ -1605,8 +1641,8 @@ describe("propose_ferment_scoping", () => {
 		expect(ctx.ui.select).not.toHaveBeenCalled()
 	})
 
-	// (d) say more is handled by the deferred review dialog, not inside the tool.
-	it("(d) zero-question review does not open input or send iteration while the tool is running", async () => {
+	// (d) say more is handled by the plan-review custom component, not the old input prompt.
+	it("(d) zero-question review opens custom review without using input or sending iteration", async () => {
 		const id = await createFerment("SayMore")
 		seedPending(id)
 		const ctx = {
@@ -1621,8 +1657,9 @@ describe("propose_ferment_scoping", () => {
 		ok(await h.call("propose_ferment_scoping", basePayload(id), ctx))
 
 		expect(ctx.ui.input).not.toHaveBeenCalled()
-		expect(ctx.ui.custom).not.toHaveBeenCalled()
-		expect(ctx.ui.setWorkingVisible).not.toHaveBeenCalled()
+		expect(ctx.ui.custom).toHaveBeenCalled()
+		expect(ctx.ui.setWorkingVisible).toHaveBeenCalledWith(false)
+		expect(ctx.ui.setWorkingVisible).toHaveBeenCalledWith(true)
 		expect(loadFerment(id).status).toBe("draft")
 
 		const sendMsg = h.pi.sendMessage as ReturnType<typeof vi.fn>

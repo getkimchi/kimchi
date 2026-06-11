@@ -134,7 +134,15 @@ describe("runScopingFlow", () => {
 		expect(text).toContain("Output contract:")
 		expect(text).toContain("gates array is required")
 		expect(text).toContain("exactly P1, P2, and P3")
+		expect(text).toContain("Do not use questions for plan approval")
+		expect(text).toContain("call propose_ferment_scoping with questions: []")
+		expect(text).toContain("Do not use approval-style yes/no single-choice questions")
+		expect(text).toContain('use type: "single" with explicit option labels')
 		expect(text).toContain("Call propose_ferment_scoping")
+		expect(text).toContain('After propose_ferment_scoping returns "Plan ready for review"')
+		expect(text).toContain("Stop there: do not call more tools or skills")
+		expect(text).toContain("do not summarize the plan in chat")
+		expect(text).toContain("do not say the plan is waiting for confirmation")
 	})
 
 	it("prefers ctx.ui.editor for the free-form scoping prompt", async () => {

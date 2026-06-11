@@ -21,6 +21,7 @@ import {
 	setContinuationPolicy,
 } from "./state.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
+import { FERMENT_TOOLS } from "./tool-names.js"
 import { completeFerment, scopeFerment } from "./tools/lifecycle.js"
 
 const requestSharedFooterRenderMock = vi.hoisted(() => vi.fn())
@@ -85,7 +86,20 @@ function registerFermentExtension(runtime?: FermentRuntime, flagValues: Record<s
 	} as unknown as ExtensionAPI
 
 	fermentExtension(pi, runtime)
-	return { commands, handlers, pi, shortcuts }
+	return { allHandlers, commands, handlers, pi, shortcuts }
+}
+
+async function emitHandlers(
+	allHandlers: Map<string, EventHandler[]>,
+	event: string,
+	payload: unknown,
+	ctx: unknown = {},
+) {
+	const results = []
+	for (const handler of allHandlers.get(event) ?? []) {
+		results.push(await handler(payload, ctx))
+	}
+	return results
 }
 
 afterEach(() => {
@@ -188,6 +202,94 @@ describe("fermentExtension stop-policy shortcut", () => {
 
 		expect(isAutomatedContinuationEnabled()).toBe(false)
 		expect(requestSharedFooterRenderMock).not.toHaveBeenCalled()
+	})
+})
+
+describe("fermentExtension plan review handoff guard", () => {
+	it("suppresses assistant text and blocks tool calls until agent_end after Plan ready for review", async () => {
+		vi.useFakeTimers()
+		try {
+			const runtime = createDefaultFermentRuntime()
+			const { allHandlers } = registerFermentExtension(runtime)
+			runtime.setPendingPlanReview({ fermentId: "f-123", planMarkdown: "# Plan: Test" })
+
+			await emitHandlers(allHandlers, "tool_result", {
+				type: "tool_result",
+				toolCallId: "tool-call-1",
+				toolName: FERMENT_TOOLS.PROPOSE_SCOPING,
+				input: { ferment_id: "f-123" },
+				content: [
+					{ type: "text", text: "Plan ready for review. The review dialog will open when this turn finishes." },
+				],
+				isError: false,
+			})
+
+			const streamingMessage = {
+				role: "assistant",
+				content: [{ type: "text", text: "The plan has been proposed. Waiting for confirmation." }],
+			}
+			await emitHandlers(allHandlers, "message_update", {
+				type: "message_update",
+				message: streamingMessage,
+				assistantMessageEvent: {},
+			})
+			expect(streamingMessage.content).toEqual([{ type: "text", text: "" }])
+
+			const finalMessage = {
+				role: "assistant",
+				content: [{ type: "text", text: "Plan ready for review. Here is a summary." }],
+				api: "test",
+				provider: "test",
+				model: "test",
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "stop",
+				timestamp: 0,
+			}
+			const messageEndResults = await emitHandlers(allHandlers, "message_end", {
+				type: "message_end",
+				message: finalMessage,
+			})
+			expect(messageEndResults).toContainEqual({
+				message: expect.objectContaining({ content: [{ type: "text", text: "" }] }),
+			})
+
+			const blocked = await emitHandlers(allHandlers, "tool_call", {
+				type: "tool_call",
+				toolCallId: "tool-call-2",
+				toolName: FERMENT_TOOLS.ACTIVATE_PHASE,
+				input: { ferment_id: "f-123", phase_id: "phase-1" },
+			})
+			expect(blocked).toContainEqual(
+				expect.objectContaining({
+					block: true,
+					reason: expect.stringContaining("Plan review is pending"),
+				}),
+			)
+
+			await emitHandlers(allHandlers, "agent_end", { type: "agent_end" }, { ui: { notify: vi.fn() } })
+			const allowed = await emitHandlers(allHandlers, "tool_call", {
+				type: "tool_call",
+				toolCallId: "tool-call-3",
+				toolName: FERMENT_TOOLS.ACTIVATE_PHASE,
+				input: { ferment_id: "f-123", phase_id: "phase-1" },
+			})
+			expect(allowed).toContainEqual(
+				expect.objectContaining({
+					block: true,
+					reason: expect.stringContaining("Plan review is pending"),
+				}),
+			)
+			await vi.runOnlyPendingTimersAsync()
+		} finally {
+			vi.useRealTimers()
+		}
 	})
 })
 
@@ -903,6 +1005,124 @@ describe("fermentExtension question dropdown", () => {
 				}),
 				expect.anything(),
 			)
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
+	it("opens the plan review captured from propose_ferment_scoping when active id is unavailable at agent_end", async () => {
+		vi.useFakeTimers()
+		try {
+			const storage = new FermentEventStore(
+				mkdtempSync(join(tmpdir(), "ferment-index-plan-review-captured-agent-end-test-")),
+			)
+			const runtime: FermentRuntime = {
+				...createDefaultFermentRuntime(),
+				getActiveId: vi.fn(() => undefined),
+				getStorage: () => storage,
+			}
+			const draft = storage.create("Captured Review")
+			runtime.setPendingScope(draft.id, {
+				goal: "Goal",
+				successCriteria: ["Works"],
+				constraints: [],
+				phases: [{ name: "Phase", goal: "Build", steps: [] }],
+			})
+			runtime.setPendingPlanReview({
+				fermentId: draft.id,
+				planMarkdown: "# Plan: Captured Review",
+			})
+
+			const { allHandlers, pi } = registerFermentExtension(runtime)
+			await emitHandlers(allHandlers, "tool_result", {
+				type: "tool_result",
+				toolCallId: "tool-call-1",
+				toolName: FERMENT_TOOLS.PROPOSE_SCOPING,
+				input: { ferment_id: draft.id },
+				content: [
+					{ type: "text", text: "Plan ready for review. The review dialog will open when this turn finishes." },
+				],
+				isError: false,
+			})
+
+			const ctx = {
+				ui: {
+					custom: vi.fn().mockResolvedValue({ kind: "start" }),
+					notify: vi.fn(),
+					setWorkingVisible: vi.fn(),
+				},
+			}
+			await emitHandlers(allHandlers, "agent_end", { type: "agent_end" }, ctx)
+			await vi.runOnlyPendingTimersAsync()
+
+			expect(ctx.ui.custom).toHaveBeenCalled()
+			expect(storage.get(draft.id)?.status).toBe("planned")
+			expect(getPendingPlanReview(draft.id)).toBeUndefined()
+			expect(pi.sendMessage).toHaveBeenCalledWith(
+				expect.objectContaining({ customType: "ferment_continuation_nudge", display: false }),
+				expect.objectContaining({ triggerTurn: true, deliverAs: "followUp" }),
+			)
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
+	it("opens the captured plan review from turn_end if agent_end does not drain it", async () => {
+		vi.useFakeTimers()
+		try {
+			const storage = new FermentEventStore(
+				mkdtempSync(join(tmpdir(), "ferment-index-plan-review-captured-turn-end-test-")),
+			)
+			const runtime: FermentRuntime = {
+				...createDefaultFermentRuntime(),
+				getActiveId: vi.fn(() => undefined),
+				getStorage: () => storage,
+			}
+			const draft = storage.create("Turn End Captured Review")
+			runtime.setPendingScope(draft.id, {
+				goal: "Goal",
+				successCriteria: ["Works"],
+				constraints: [],
+				phases: [{ name: "Phase", goal: "Build", steps: [] }],
+			})
+			runtime.setPendingPlanReview({
+				fermentId: draft.id,
+				planMarkdown: "# Plan: Turn End Captured Review",
+			})
+
+			const { allHandlers } = registerFermentExtension(runtime)
+			await emitHandlers(allHandlers, "tool_result", {
+				type: "tool_result",
+				toolCallId: "tool-call-1",
+				toolName: FERMENT_TOOLS.PROPOSE_SCOPING,
+				input: { ferment_id: draft.id },
+				content: [
+					{ type: "text", text: "Plan ready for review. The review dialog will open when this turn finishes." },
+				],
+				isError: false,
+			})
+
+			const ctx = {
+				ui: {
+					custom: vi.fn().mockResolvedValue({ kind: "start" }),
+					notify: vi.fn(),
+					setWorkingVisible: vi.fn(),
+				},
+			}
+			await emitHandlers(
+				allHandlers,
+				"turn_end",
+				{
+					type: "turn_end",
+					message: { role: "assistant", content: [{ type: "text", text: "" }] },
+				},
+				ctx,
+			)
+			await vi.runOnlyPendingTimersAsync()
+
+			expect(ctx.ui.custom).toHaveBeenCalled()
+			expect(storage.get(draft.id)?.status).toBe("planned")
+			expect(getPendingPlanReview(draft.id)).toBeUndefined()
 		} finally {
 			vi.useRealTimers()
 		}

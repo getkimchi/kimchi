@@ -10,6 +10,7 @@
  * Public exports re-export from ./state.ts for cli.ts and components/footer.ts.
  */
 
+import type { AssistantMessage } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext, MessageRenderer } from "@earendil-works/pi-coding-agent"
 import { Container, Text } from "@earendil-works/pi-tui"
 import type { Step } from "../../ferment/types.js"
@@ -20,7 +21,13 @@ import { fermentBreadcrumbRenderer } from "./breadcrumb-renderer.js"
 import { registerFermentCommands } from "./commands.js"
 import { registerFermentEvents } from "./events.js"
 import { FERMENT_STOP_POLICY_SHORTCUT, canToggleFermentStopPolicy } from "./footer-status.js"
-import { type PendingPlanReview, promptPlanReview } from "./plan-review.js"
+import {
+	type PendingPlanReview,
+	clearPlanReviewReadyForHandoff,
+	getPlanReviewReadyForHandoff,
+	markPlanReviewReadyForHandoff,
+	promptPlanReview,
+} from "./plan-review.js"
 import { buildFermentPromptBlock } from "./prompt-block.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { scheduleFermentWakeUp } from "./scheduler.js"
@@ -28,6 +35,7 @@ import { confirmPendingScope } from "./scoping-confirmation.js"
 import { FERMENT_REQUEST_MESSAGE_TYPE, type FermentRequestMessageDetails } from "./scoping.js"
 import { getActive, getActiveId, getContinuationPolicy } from "./state.js"
 import { createFermentTipProvider } from "./tips.js"
+import { FERMENT_TOOLS } from "./tool-names.js"
 import { applyFermentRuntimeToolProfile } from "./tool-scope.js"
 import { registerKnowledgeTools } from "./tools/knowledge.js"
 import { buildFreeformScopingFeedbackMessage, registerLifecycleTools } from "./tools/lifecycle.js"
@@ -92,6 +100,16 @@ function registerFermentStopPolicyShortcut(pi: ExtensionAPI, runtime: FermentRun
 	})
 }
 
+function blankAssistantText(message: AssistantMessage): AssistantMessage | undefined {
+	let changed = false
+	const content = message.content.map((block) => {
+		if (block.type !== "text" || block.text === "") return block
+		changed = true
+		return { ...block, text: "" }
+	})
+	return changed ? { ...message, content } : undefined
+}
+
 const fermentRequestRenderer: MessageRenderer<FermentRequestMessageDetails> = (message, _options, theme) => {
 	const intent =
 		message.details?.intent ??
@@ -121,6 +139,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	const unregisterFermentTips = registerTipProvider(createFermentTipProvider(runtime))
 	let planReviewTimer: ReturnType<typeof setTimeout> | undefined
 	let planReviewRunning = false
+	let suppressUntilAgentEnd = false
 
 	const clearPlanReviewTimer = () => {
 		if (planReviewTimer) {
@@ -132,6 +151,14 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	const isCurrentPendingReview = (review: PendingPlanReview): boolean =>
 		runtime.getPendingPlanReview(review.fermentId) === review
 
+	const getReviewReadyForPrompt = (): PendingPlanReview | undefined => {
+		const handoffReview = getPlanReviewReadyForHandoff()
+		if (handoffReview) return handoffReview
+		return runtime.getCurrentPendingPlanReview()
+	}
+
+	const shouldSuppressPlanReviewHandoff = (): boolean => suppressUntilAgentEnd || !!getPlanReviewReadyForHandoff()
+
 	const runPendingPlanReview = async (ctx: Pick<ExtensionContext, "ui"> | undefined, review: PendingPlanReview) => {
 		if (planReviewRunning) return
 		if (!isCurrentPendingReview(review)) return
@@ -140,6 +167,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 		try {
 			const outcome = await promptPlanReview(ctx, { planMarkdown: review.planMarkdown })
 			if (!outcome) return
+			clearPlanReviewReadyForHandoff(review.fermentId)
 			if (outcome.kind === "cancelled") {
 				return
 			}
@@ -179,26 +207,73 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 		}
 	}
 
-	pi.on("session_shutdown", () => {
-		clearPlanReviewTimer()
-		runtime.clearAllPendingPlanReviews()
-		unregisterFermentTips()
-	})
-
-	pi.on("agent_end", (_event, ctx) => {
-		const review = runtime.getCurrentPendingPlanReview()
+	const schedulePendingPlanReview = (ctx: Pick<ExtensionContext, "ui"> | undefined) => {
+		const review = getReviewReadyForPrompt()
 		if (planReviewRunning || !review) return
 		clearPlanReviewTimer()
 		planReviewTimer = setTimeout(() => {
 			planReviewTimer = undefined
 			void runPendingPlanReview(ctx, review)
 		}, 0)
+	}
+
+	pi.on("session_shutdown", () => {
+		clearPlanReviewTimer()
+		clearPlanReviewReadyForHandoff()
+		runtime.clearAllPendingPlanReviews()
+		unregisterFermentTips()
+	})
+
+	pi.on("agent_end", (_event, ctx) => {
+		suppressUntilAgentEnd = false
+		schedulePendingPlanReview(ctx)
+	})
+
+	pi.on("tool_result", (event) => {
+		if (event.toolName !== FERMENT_TOOLS.PROPOSE_SCOPING || event.isError) return
+		const fermentId = typeof event.input.ferment_id === "string" ? event.input.ferment_id : undefined
+		const review = fermentId ? runtime.getPendingPlanReview(fermentId) : undefined
+		if (!review) return
+		const text = event.content
+			.filter((block) => block.type === "text")
+			.map((block) => block.text)
+			.join("\n")
+		if (text.includes("Plan ready for review")) {
+			markPlanReviewReadyForHandoff(review)
+			suppressUntilAgentEnd = true
+		}
+	})
+
+	pi.on("message_update", (event) => {
+		if (!shouldSuppressPlanReviewHandoff() || event.message.role !== "assistant") return
+		const replacement = blankAssistantText(event.message as AssistantMessage)
+		if (replacement) event.message.content = replacement.content
+	})
+
+	pi.on("message_end", (event) => {
+		if (!shouldSuppressPlanReviewHandoff() || event.message.role !== "assistant") return
+		const replacement = blankAssistantText(event.message as AssistantMessage)
+		if (replacement) return { message: replacement }
+	})
+
+	pi.on("tool_call", () => {
+		if (!shouldSuppressPlanReviewHandoff()) return
+		return {
+			block: true,
+			reason:
+				"Plan review is pending. Stop now; do not call more tools or skills until the host plan review dialog collects the user's choice.",
+		}
 	})
 
 	pi.registerMessageRenderer(FERMENT_REQUEST_MESSAGE_TYPE, fermentRequestRenderer)
 	registerFermentStopPolicyShortcut(pi, runtime)
 	registerFermentEvents(pi, runtime)
 	registerFermentCommands(pi, runtime)
+
+	pi.on("turn_end", (_event, ctx) => {
+		suppressUntilAgentEnd = false
+		schedulePendingPlanReview(ctx)
+	})
 
 	// ─── Message renderers ────────────────────────────────────────────────────
 	pi.registerMessageRenderer("ferment_breadcrumb", fermentBreadcrumbRenderer)
