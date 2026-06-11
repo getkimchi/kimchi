@@ -15,7 +15,7 @@ import {
 import { readTelemetryConfig } from "../../../config.js"
 import { getAvailableModels } from "../../../startup-context.js"
 import { runAsAgentWorker } from "../../agent-worker-context.js"
-import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
+import { buildModelGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
 import type { Phase } from "../../orchestration/model-registry/types.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
@@ -288,7 +288,7 @@ async function runAgentInner(
 
 	const modelId = (options.model as { id?: string } | undefined)?.id
 	const guidelinePhase = agentConfig?.roles?.[0] as Phase | undefined
-	const guidelinesBlock = buildPhaseGuidelinesSection(modelId, guidelinePhase, getGuidelinesRegistry())
+	const guidelinesBlock = buildModelGuidelinesSection(modelId, guidelinePhase, getGuidelinesRegistry())
 	if (guidelinesBlock) extras.guidelinesBlock = guidelinesBlock
 
 	const effectiveMaxTurns = normalizeMaxTurns(options.maxTurns ?? agentConfig?.maxTurns ?? defaultMaxTurns)

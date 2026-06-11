@@ -2,10 +2,10 @@ import { describe, expect, it } from "vitest"
 import type { ModelMetadata } from "../../../../models.js"
 import { MODEL_CAPABILITIES, ModelRegistry } from "../index.js"
 import {
+	buildModelGuidelinesSection,
 	buildOrchestrationGuidelinesSection,
-	buildPhaseGuidelinesSection,
+	resolveModelGuideline,
 	resolveOrchestrationGuideline,
-	resolvePhaseGuideline,
 } from "./guidelines-resolver.js"
 
 const ALL_KNOWN_IDS = [...MODEL_CAPABILITIES.keys()]
@@ -24,39 +24,34 @@ function fakeMetadata(slug: string): ModelMetadata {
 
 const ALL_KNOWN_METADATA = ALL_KNOWN_IDS.map(fakeMetadata)
 
-describe("phase guideline resolution", () => {
+describe("model guideline resolution", () => {
 	const registry = new ModelRegistry(ALL_KNOWN_METADATA)
 
-	it("returns default guideline when no model is specified", () => {
-		const result = resolvePhaseGuideline("build", undefined, registry)
-		expect(result).toContain("During **build** phase")
-		expect(result).toContain("Read each file BEFORE modifying it")
+	it("returns empty string when no model is specified", () => {
+		const result = resolveModelGuideline("build", undefined, registry)
+		expect(result).toBe("")
 	})
 
-	it("returns model-specific override when model has one", () => {
-		const result = resolvePhaseGuideline("build", "minimax-m2.7", registry)
-		expect(result).toContain("During **build** phase:")
+	it("returns model-specific guideline when model has one", () => {
+		const result = resolveModelGuideline("build", "minimax-m2.7", registry)
 		expect(result).toContain("MiniMax M2 family")
 		expect(result).toContain("Outline-then-diff")
 		expect(result).toContain("minimax-m2.7 specific")
 		expect(result).toContain("mutex-based concurrency")
 	})
 
-	it("falls back to default for phases with no model override", () => {
-		const result = resolvePhaseGuideline("explore", "minimax-m2.7", registry)
-		expect(result).toContain("During **explore** phase")
-		expect(result).not.toContain("minimax")
+	it("returns empty string for phases with no model override", () => {
+		const result = resolveModelGuideline("explore", "minimax-m2.7", registry)
+		expect(result).toBe("")
 	})
 
-	it("returns default for unknown model IDs", () => {
-		const result = resolvePhaseGuideline("plan", "nonexistent-model", registry)
-		expect(result).toContain("During **plan** phase")
-		expect(result).toContain("Design BEFORE coding")
+	it("returns empty string for unknown model IDs", () => {
+		const result = resolveModelGuideline("plan", "nonexistent-model", registry)
+		expect(result).toBe("")
 	})
 
-	it("composes all three layers for kimi-k2.6 plan", () => {
-		const result = resolvePhaseGuideline("plan", "kimi-k2.6", registry)
-		expect(result).toContain("Design BEFORE coding")
+	it("composes family and per-model layers for kimi-k2.6 plan", () => {
+		const result = resolveModelGuideline("plan", "kimi-k2.6", registry)
 		expect(result).toContain("Kimi family")
 		expect(result).toContain("Chunks")
 		expect(result).toContain("kimi-k2.6 specific")
@@ -123,14 +118,24 @@ describe("guideline section building", () => {
 		expect(result).toBe("")
 	})
 
-	it("builds phase guidelines section with content", () => {
-		const result = buildPhaseGuidelinesSection("minimax-m2.7", "build", registry)
-		expect(result).toContain("## Phase Guidelines (build)")
+	it("builds model guidelines section with content", () => {
+		const result = buildModelGuidelinesSection("minimax-m2.7", "build", registry)
+		expect(result).toContain("## Model Guidelines")
 		expect(result).toContain("Outline-then-diff")
 	})
 
 	it("returns empty string when no phase", () => {
-		const result = buildPhaseGuidelinesSection("minimax-m2.7", undefined, registry)
+		const result = buildModelGuidelinesSection("minimax-m2.7", undefined, registry)
+		expect(result).toBe("")
+	})
+
+	it("returns empty string when model has no guideline for that phase", () => {
+		const result = buildModelGuidelinesSection("minimax-m2.7", "explore", registry)
+		expect(result).toBe("")
+	})
+
+	it("returns empty string for unknown model", () => {
+		const result = buildModelGuidelinesSection("nonexistent-model", "build", registry)
 		expect(result).toBe("")
 	})
 })
@@ -138,60 +143,47 @@ describe("guideline section building", () => {
 describe("builtin-model guideline content", () => {
 	const registry = new ModelRegistry(ALL_KNOWN_METADATA)
 
-	it("kimi-k2.5 build: falls back to default (ignored model)", () => {
-		const result = resolvePhaseGuideline("build", "kimi-k2.5", registry)
-		expect(result).toContain("During **build** phase:")
-		expect(result).not.toContain("Plan-first")
+	it("kimi-k2.5 build: returns empty (ignored model)", () => {
+		const result = resolveModelGuideline("build", "kimi-k2.5", registry)
+		expect(result).toBe("")
 	})
 
-	it("kimi-k2.5 explore: falls back to default (ignored model)", () => {
-		const result = resolvePhaseGuideline("explore", "kimi-k2.5", registry)
-		expect(result).toContain("During **explore** phase:")
-		expect(result).not.toContain("Plan-first")
+	it("kimi-k2.5 explore: returns empty (ignored model)", () => {
+		const result = resolveModelGuideline("explore", "kimi-k2.5", registry)
+		expect(result).toBe("")
 	})
 
-	it("kimi-k2.6 plan: contains default, family, and per-model layers", () => {
-		const result = resolvePhaseGuideline("plan", "kimi-k2.6", registry)
-		expect(result).toContain("Design BEFORE coding")
+	it("kimi-k2.6 plan: contains family and per-model layers", () => {
+		const result = resolveModelGuideline("plan", "kimi-k2.6", registry)
 		expect(result).toContain("Chunks")
 		expect(result).toContain("per-chunk acceptance criteria")
 	})
 
-	it("minimax-m2.7 build: contains default, family, and per-model layers", () => {
-		const result = resolvePhaseGuideline("build", "minimax-m2.7", registry)
-		expect(result).toContain("During **build** phase:")
+	it("minimax-m2.7 build: contains family and per-model layers", () => {
+		const result = resolveModelGuideline("build", "minimax-m2.7", registry)
 		expect(result).toContain("Outline-then-diff")
 		expect(result).toContain("mutex")
 	})
 
-	it("minimax-m2.7 review: contains default, family, and per-model layers", () => {
-		const result = resolvePhaseGuideline("review", "minimax-m2.7", registry)
-		expect(result).toContain("During **review** phase:")
+	it("minimax-m2.7 review: contains family and per-model layers", () => {
+		const result = resolveModelGuideline("review", "minimax-m2.7", registry)
 		expect(result).toContain("scope creep")
 		expect(result).toContain("hallucinated APIs")
 		expect(result).toContain("inappropriate concurrency")
 	})
 
-	it("nemotron-3-super-fp4 explore: contains default and per-model layers", () => {
-		const result = resolvePhaseGuideline("explore", "nemotron-3-super-fp4", registry)
-		expect(result).toContain("During **explore** phase:")
+	it("nemotron-3-super-fp4 explore: contains per-model layer", () => {
+		const result = resolveModelGuideline("explore", "nemotron-3-super-fp4", registry)
 		expect(result).toContain("1M token context window")
 	})
 
-	it("claude-opus-4-6 plan: falls back to default (ignored model)", () => {
-		const result = resolvePhaseGuideline("plan", "claude-opus-4-6", registry)
-		expect(result).toContain("Design BEFORE coding")
-		expect(result).not.toContain("Match plan depth")
+	it("claude-opus-4-6 plan: returns empty (ignored model)", () => {
+		const result = resolveModelGuideline("plan", "claude-opus-4-6", registry)
+		expect(result).toBe("")
 	})
 
-	it("claude-opus-4-6 explore: falls back to default (ignored model)", () => {
-		const result = resolvePhaseGuideline("explore", "claude-opus-4-6", registry)
-		expect(result).toContain("During **explore** phase:")
-		expect(result).not.toContain("Resist over-exploration")
-	})
-
-	it("default build guidelines contain the co-author trailer", () => {
-		const result = resolvePhaseGuideline("build", undefined, registry)
-		expect(result).toContain("Co-Authored-By: Kimchi <noreply@kimchi.dev>")
+	it("claude-opus-4-6 explore: returns empty (ignored model)", () => {
+		const result = resolveModelGuideline("explore", "claude-opus-4-6", registry)
+		expect(result).toBe("")
 	})
 })

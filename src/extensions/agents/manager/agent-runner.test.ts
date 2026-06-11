@@ -102,12 +102,12 @@ vi.mock("../../../config.js", () => ({
 }))
 
 vi.mock("../../orchestration/model-registry/guidelines/guidelines-resolver.js", () => ({
-	buildPhaseGuidelinesSection: vi.fn().mockReturnValue(""),
+	buildModelGuidelinesSection: vi.fn().mockReturnValue(""),
 }))
 
 import { type AgentSession, DefaultResourceLoader, createAgentSession } from "@earendil-works/pi-coding-agent"
 import { readTelemetryConfig } from "../../../config.js"
-import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
+import { buildModelGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
 import telemetryExtension from "../../telemetry/index.js"
 import { getAgentConfig, getConfig, getToolNamesForType } from "../personas/agent-types.js"
@@ -120,7 +120,7 @@ const mockGetAgentConfig = vi.mocked(getAgentConfig)
 const mockGetToolNamesForType = vi.mocked(getToolNamesForType)
 const mockLoadProjectContextFiles = vi.mocked(loadProjectContextFiles)
 const mockBuildAgentPrompt = vi.mocked(buildAgentPrompt)
-const mockBuildPhaseGuidelinesSection = vi.mocked(buildPhaseGuidelinesSection)
+const mockBuildPhaseGuidelinesSection = vi.mocked(buildModelGuidelinesSection)
 const mockDefaultResourceLoader = vi.mocked(DefaultResourceLoader)
 const mockTelemetryExtension = vi.mocked(telemetryExtension)
 const mockReadTelemetryConfig = vi.mocked(readTelemetryConfig)
@@ -1049,7 +1049,7 @@ describe("runAgent — includeContextFiles", () => {
 		mockGetAgentConfig.mockReturnValue(
 			makeAgentConfig({ name: "Builder", description: "Build agent", roles: ["build"] }),
 		)
-		mockBuildPhaseGuidelinesSection.mockReturnValue("## Phase Guidelines (build)\n\nBuilder guideline")
+		mockBuildPhaseGuidelinesSection.mockReturnValue("## Model Guidelines\n\nBuilder guideline")
 
 		mockCreateAgentSession.mockResolvedValue({
 			session: makeFakeSession() as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],

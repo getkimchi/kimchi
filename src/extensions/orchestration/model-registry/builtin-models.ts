@@ -1,12 +1,5 @@
 import { DEFAULT_ORCHESTRATION_GUIDELINES } from "./guidelines/default-orchestration-guidelines.js"
 import {
-	DEFAULT_BUILD_GUIDELINES,
-	DEFAULT_EXPLORE_GUIDELINES,
-	DEFAULT_PLAN_GUIDELINES,
-	DEFAULT_RESEARCH_GUIDELINES,
-	DEFAULT_REVIEW_GUIDELINES,
-} from "./guidelines/default-phase-guidelines.js"
-import {
 	KIMI_FAMILY_ORCHESTRATION,
 	KIMI_FAMILY_PLAN,
 	KIMI_FAMILY_RESEARCH,
@@ -32,7 +25,7 @@ import {
 	NEMOTRON_FAMILY_ORCHESTRATION,
 	NEMOTRON_FAMILY_RESEARCH,
 } from "./guidelines/nemotron-family.js"
-import type { ModelCapabilities } from "./types.js"
+import type { ModelCapabilities, Phase } from "./types.js"
 
 /**
  * This map is a local capability knowledge-base keyed by model ID. It acts
@@ -84,6 +77,16 @@ function optionalGuidelines(...layers: string[]): string | undefined {
 	return concatGuidelines(...layers) || undefined
 }
 
+/** Build a guidelines record, omitting entries where all layers are empty. */
+function guidelinesMap(entries: Record<string, string[]>): Partial<Readonly<Record<Phase, string>>> | undefined {
+	const result: Record<string, string> = {}
+	for (const [phase, layers] of Object.entries(entries)) {
+		const value = concatGuidelines(...layers)
+		if (value) result[phase] = value
+	}
+	return Object.keys(result).length > 0 ? result : undefined
+}
+
 // TODO: these capabilities could be returned by our models metadata API.
 /**
  * Capability knowledge-base keyed by model ID. Used to enrich the dynamic
@@ -105,11 +108,11 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 			roles: ["research", "plan", "review"],
 			tier: "heavy",
 			description: KIMI_K26_DESCRIPTION,
-			guidelines: {
-				research: concatGuidelines(DEFAULT_RESEARCH_GUIDELINES, KIMI_FAMILY_RESEARCH),
-				plan: concatGuidelines(DEFAULT_PLAN_GUIDELINES, KIMI_FAMILY_PLAN, KIMI_K26_PLAN),
-				review: concatGuidelines(DEFAULT_REVIEW_GUIDELINES, KIMI_FAMILY_REVIEW),
-			},
+			guidelines: guidelinesMap({
+				research: [KIMI_FAMILY_RESEARCH],
+				plan: [KIMI_FAMILY_PLAN, KIMI_K26_PLAN],
+				review: [KIMI_FAMILY_REVIEW],
+			}),
 			orchestrationGuidelines: optionalGuidelines(
 				DEFAULT_ORCHESTRATION_GUIDELINES,
 				KIMI_FAMILY_ORCHESTRATION,
@@ -125,10 +128,10 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 			roles: ["build", "review"],
 			tier: "standard",
 			description: MINIMAX_M27_DESCRIPTION,
-			guidelines: {
-				build: concatGuidelines(DEFAULT_BUILD_GUIDELINES, MINIMAX_FAMILY_BUILD, MINIMAX_M27_BUILD),
-				review: concatGuidelines(DEFAULT_REVIEW_GUIDELINES, MINIMAX_FAMILY_REVIEW, MINIMAX_M27_REVIEW),
-			},
+			guidelines: guidelinesMap({
+				build: [MINIMAX_FAMILY_BUILD, MINIMAX_M27_BUILD],
+				review: [MINIMAX_FAMILY_REVIEW, MINIMAX_M27_REVIEW],
+			}),
 			orchestrationGuidelines: optionalGuidelines(
 				DEFAULT_ORCHESTRATION_GUIDELINES,
 				MINIMAX_FAMILY_ORCHESTRATION,
@@ -143,11 +146,11 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 			roles: ["explore", "research"],
 			tier: "light",
 			description: NEMOTRON_3_SUPER_DESCRIPTION,
-			guidelines: {
-				build: concatGuidelines(DEFAULT_BUILD_GUIDELINES, NEMOTRON_FAMILY_BUILD, NEMOTRON_3_SUPER_BUILD),
-				research: concatGuidelines(DEFAULT_RESEARCH_GUIDELINES, NEMOTRON_FAMILY_RESEARCH, NEMOTRON_3_SUPER_RESEARCH),
-				explore: concatGuidelines(DEFAULT_EXPLORE_GUIDELINES, NEMOTRON_FAMILY_EXPLORE, NEMOTRON_3_SUPER_EXPLORE),
-			},
+			guidelines: guidelinesMap({
+				build: [NEMOTRON_FAMILY_BUILD, NEMOTRON_3_SUPER_BUILD],
+				research: [NEMOTRON_FAMILY_RESEARCH, NEMOTRON_3_SUPER_RESEARCH],
+				explore: [NEMOTRON_FAMILY_EXPLORE, NEMOTRON_3_SUPER_EXPLORE],
+			}),
 			orchestrationGuidelines: optionalGuidelines(
 				DEFAULT_ORCHESTRATION_GUIDELINES,
 				NEMOTRON_FAMILY_ORCHESTRATION,

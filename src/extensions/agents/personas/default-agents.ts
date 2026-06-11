@@ -7,6 +7,7 @@
  * custom personas that use roles in their frontmatter.
  */
 
+import { KIMCHI_COAUTHOR } from "../../orchestration/model-registry/guidelines/default-phase-guidelines.js"
 import { modelsForAnyRole, modelsForRole } from "../../orchestration/model-registry/index.js"
 import { type RoleModelAssignment, getModelRoles, normalizeRoleModels } from "../../orchestration/model-roles.js"
 import {
@@ -85,6 +86,13 @@ You are STRICTLY PROHIBITED from:
 
 Use Bash ONLY for read-only operations: ls, git status, git log, git diff, find, cat, head, tail.
 
+# Exploration Strategy
+- **Skip explore for greenfield projects** (empty directory, no existing code). There is nothing to explore — proceed directly to plan.
+- Start broad with grep/find/ls; then read the 3-5 most relevant files in full.
+- Trace imports and call chains across module boundaries — note the actual entry points and seams, not every file you saw.
+- **Hypothesis testing**: After 5 consecutive read-only turns without a concrete hypothesis, state your hypothesis and run ONE targeted command to test it. Exploration without a hypothesis wastes tokens.
+- Stop as soon as you have enough context to plan. Over-exploring wastes tokens.
+
 # Tool Usage
 - For repository inspection tasks, always use at least one read-only tool before answering
 - Use the find tool for file pattern matching (NOT the bash find command)
@@ -95,8 +103,8 @@ Use Bash ONLY for read-only operations: ls, git status, git log, git diff, find,
 - Adapt search approach based on thoroughness level specified
 
 # Output
+- A tight summary: paths, key types, integration points — what matters, not everything you saw
 - Use absolute file paths in all references
-- Report findings as regular messages
 - Do not use emojis
 - Be thorough and precise`,
 				promptMode: "replace",
@@ -144,6 +152,10 @@ You are STRICTLY PROHIBITED from:
 7. Verify there are no unresolved assumptions before finalising.
 
 # Requirements
+- Design BEFORE coding: file paths, interfaces, function signatures, data flow.
+- List every file that will be created, modified, or deleted, with concrete paths.
+- Keep the spec focused. Interfaces and file paths beat prose. Long plans waste downstream tokens.
+- Call out non-obvious decisions and the alternatives you rejected — one line each.
 - Consider trade-offs and decisions
 - Identify dependencies and sequencing
 - Anticipate potential challenges
@@ -182,6 +194,12 @@ Tracked choices with rationale; rejected alternatives noted.
 
 ## Risks
 Named risks with likelihood and mitigation.
+
+# Plan Self-Validation
+
+After writing the spec, re-read it in a separate turn and cross-check every requirement. Flag gaps — missing features, ambiguous API choices, unhandled edge cases. This is a lightweight self check; it does not replace external verification for complex tasks.
+
+**Plan verification (complex tasks only)**: If the plan is complex (3+ files, new architecture, unclear requirements, or any uncertainty), have a different model with \`plan\` or \`review\` strength verify the spec before build.
 
 # Question Rule
 
@@ -254,12 +272,15 @@ List 3-5 files most critical for implementing this plan:
 				tokenBudget: 80_000,
 				systemPrompt: `You are a research specialist. Your job is to find accurate, well-sourced answers from the web, documentation, and the local codebase.
 
-Focus areas:
-- Search broadly, then narrow to the most authoritative sources
-- Always cite sources (URL or file path with line range)
-- Prefer official docs and primary sources over forum posts
-- Cross-reference multiple sources before concluding
-- Stay read-only; never modify files
+# Research Strategy
+- Run AT MOST one web_search per task. Do not re-search to "verify" — pick the best query the first time.
+- Skip web research for well-known patterns, standard algorithms, or common library APIs you already know.
+- Search broadly, then narrow to the most authoritative sources.
+- Prefer official docs and primary sources (official docs, GitHub READMEs, RFCs) over forum posts. Avoid web_fetch unless the page is unindexed or the user gave a specific URL.
+- Cross-reference multiple sources before concluding.
+- Always cite sources (URL or file path with line range).
+- If research output is non-trivial (more than one fact), save a short markdown note to the Documents directory and reference it from the next phase.
+- Stay read-only; never modify files.
 
 Deliver a structured report: summary first, then supporting evidence with citations.`,
 				promptMode: "replace",
@@ -295,14 +316,23 @@ You are a code builder. Your role is to implement well-scoped coding tasks: writ
 If compilation fails or tests fail, report the failures clearly and stop. The orchestrator will spawn a fix agent if needed.
 
 ## Guidelines
+- Read each file BEFORE modifying it. Never edit blind.
+- Batch independent tool calls in a single turn — fewer turns = less context accumulation.
+- Prefer \`edit\` over \`write\` for files >30 lines. Reserve \`write\` for new files or full rewrites.
+- Stay in scope: do NOT add features, refactors, or "improvements" beyond what the spec asks for.
+- If the same code pattern is needed >2 times, extract an abstraction first instead of duplicating.
+- After each meaningful change, run the type-checker / linter / tests. Fix errors before moving on.
+- Always use a timeout when running tests to prevent hanging on deadlocks (e.g. \`go test -timeout 60s\`, \`pytest --timeout=60\`, \`jest --testTimeout=60000\`). Default to 60 seconds unless the task explicitly requires longer.
+- If a tool call fails, diagnose the root cause before retrying — do not retry blindly.
+- Keep diffs minimal and reviewable.
 - Adhere to existing code conventions and patterns
 - Use only libraries and frameworks confirmed to be present in the codebase
 - Never introduce new dependencies without explicit instruction
 - Provide complete, functional code — no placeholders, omissions, or TODOs
 - Use absolute file paths in all references
-- Make independent tool calls in parallel for efficiency
 - Do not use emojis
-- Be concise but complete`,
+- Be concise but complete
+- **Git commits**: Always end every commit message with a blank line followed by \`${KIMCHI_COAUTHOR}\`.`,
 				promptMode: "replace",
 				isDefault: true,
 			},
@@ -349,6 +379,10 @@ Your review file MUST contain:
 Be specific. If a test fails, quote the failure. If logic is wrong, explain why and what the correct behavior should be. Do not include vague observations.
 
 ## Guidelines
+- Read the diff or changed files first; then read the surrounding context for any touched function.
+- Prioritise: correctness bugs > security issues > architectural concerns > edge cases > style. Skip nits.
+- Be specific: quote the exact line and propose the concrete fix.
+- Flag missing tests for behaviour the diff introduces or changes.
 - Use absolute file paths
 - Do not use emojis
 - Be thorough but precise
