@@ -24,7 +24,7 @@ import { execSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir, platform, userInfo } from "node:os"
-import { isAbsolute, join, normalize, resolve } from "node:path"
+import { join } from "node:path"
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import { type ExtensionAPI, type Skill, getAgentDir, loadSkills } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
@@ -33,7 +33,11 @@ import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { getInstalledPackageResourceDirs } from "../agents/package-resources.js"
-import { CLAUDE_CODE_SKILLS_RESOURCE_ID, getClaudeCodeSkillResourcePaths } from "../claude-code-skills/definition.js"
+import {
+	CLAUDE_CODE_SKILLS_RESOURCE_ID,
+	getClaudeCodeSkillResourcePaths,
+	getConfiguredSkillResourcePaths,
+} from "../claude-code-skills/definition.js"
 import {
 	getProcessMultiModelEnabled,
 	setProcessMultiModelEnabled,
@@ -55,24 +59,6 @@ import { getModelRoles, modelIdFromRef, splitModelRef, validateModelRoles } from
 import { getCurrentPhase } from "../tags.js"
 import { type ContextFile, loadProjectContextFiles } from "./context-files.js"
 import { type EnvironmentInfo, type PromptMode, type ToolInfo, buildSystemPrompt } from "./system-prompt.js"
-
-function expandSkillPaths(configuredPaths: string[], cwd: string): string[] {
-	const home = homedir()
-	const expanded: string[] = []
-	for (const p of configuredPaths) {
-		if (isAbsolute(p)) {
-			expanded.push(normalize(p))
-		} else if (p.startsWith("~/")) {
-			expanded.push(resolve(home, p.slice(2)))
-		} else {
-			const fromHome = resolve(home, p)
-			const fromCwd = resolve(cwd, p)
-			if (fromHome.startsWith(`${home}/`) || fromHome === home) expanded.push(fromHome)
-			if (fromCwd.startsWith(`${cwd}/`) || fromCwd === cwd) expanded.push(fromCwd)
-		}
-	}
-	return expanded
-}
 
 function safeUsername(): string {
 	try {
@@ -477,13 +463,15 @@ export default function (skillPaths: string[]) {
 			const tools = pi.getAllTools().filter((tool) => activeToolNames.has(tool.name))
 			cachedContextFiles ??= loadProjectContextFiles(ctx.cwd)
 			if (cachedSkills === undefined) {
-				const allSkillPaths = [
-					...expandSkillPaths(skillPaths, ctx.cwd),
-					...(isResourceEnabled(CLAUDE_CODE_SKILLS_RESOURCE_ID)
-						? getClaudeCodeSkillResourcePaths(ctx.cwd, { excludeSkillPaths: skillPaths })
-						: []),
-					...getInstalledPackageResourceDirs(ctx.cwd, "skills"),
-				]
+				const allSkillPaths = Array.from(
+					new Set([
+						...getConfiguredSkillResourcePaths(ctx.cwd, skillPaths),
+						...(isResourceEnabled(CLAUDE_CODE_SKILLS_RESOURCE_ID)
+							? getClaudeCodeSkillResourcePaths(ctx.cwd, { excludeSkillPaths: skillPaths })
+							: []),
+						...getInstalledPackageResourceDirs(ctx.cwd, "skills"),
+					]),
+				)
 				cachedSkills = loadSkills({
 					cwd: ctx.cwd,
 					agentDir: getAgentDir(),
