@@ -774,6 +774,7 @@ export default function (pi: ExtensionAPI) {
 			...(customDescs.length > 0 ? ["", "Custom agents:", ...customDescs] : []),
 			"",
 			`Custom agents can be defined in .kimchi/agents/<name>.md (project) or ${getAgentDir()}/agents/<name>.md (global) — they are picked up automatically. Project-level agents override global ones. Creating a .md file with the same name as a default agent overrides it.`,
+			`Global user instructions (applied to every session) can be placed in the global ${getAgentDir()}/AGENTS.md. Project-level AGENTS.md or CLAUDE.md files in the working directory tree are combined with it.`,
 		].join("\n")
 	}
 
