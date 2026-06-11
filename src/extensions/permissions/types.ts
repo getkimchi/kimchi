@@ -1,5 +1,7 @@
 export type PermissionMode = "default" | "plan" | "auto" | "yolo"
 
+export const ALL_PERMISSION_MODES: readonly PermissionMode[] = ["default", "plan", "auto", "yolo"] as const
+
 export type RuleBehavior = "allow" | "deny"
 
 export type RuleSource = "session" | "cli" | "local" | "project" | "user" | "builtin"
@@ -27,6 +29,17 @@ export interface PermissionsConfig {
 	allow: string[]
 	deny: string[]
 	classifierTimeoutMs: number
+}
+
+/** Controller for session-scoped permission flags with subscription support. */
+export interface SessionPermissionFlagController {
+	getMode(): PermissionMode
+	setMode(mode: PermissionMode): void
+	subscribe(listener: (changes: SessionPermissionFlagChanges) => void): () => void
+}
+
+export interface SessionPermissionFlagChanges {
+	mode?: PermissionMode
 }
 
 export const DEFAULT_CONFIG: PermissionsConfig = {

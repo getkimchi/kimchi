@@ -121,6 +121,8 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	const unregisterFermentTips = registerTipProvider(createFermentTipProvider(runtime))
 	let planReviewTimer: ReturnType<typeof setTimeout> | undefined
 	let planReviewRunning = false
+	// ExtensionContext is populated on session start
+	let ctx: ExtensionContext | undefined
 
 	const clearPlanReviewTimer = () => {
 		if (planReviewTimer) {
@@ -179,6 +181,10 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 		}
 	}
 
+	pi.on("session_start", (_event, _ctx) => {
+		ctx = _ctx
+	})
+
 	pi.on("session_shutdown", () => {
 		clearPlanReviewTimer()
 		runtime.clearAllPendingPlanReviews()
@@ -208,7 +214,10 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 
 	createSystemPromptBlocks(pi, "ferment").register({
 		id: "ferment-supplement",
-		render: () => buildFermentPromptBlock(pi, runtime),
+		render: () => {
+			if (!ctx) return undefined
+			return buildFermentPromptBlock(ctx, pi, runtime)
+		},
 	})
 
 	// ─── Tool registrations ───────────────────────────────────────────────────

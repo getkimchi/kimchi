@@ -1,4 +1,4 @@
-import type { PermissionMode } from "./types.js"
+import { ALL_PERMISSION_MODES, type PermissionMode } from "./types.js"
 
 export interface ModeResolution {
 	mode: PermissionMode
@@ -19,7 +19,7 @@ export interface ModeResolutionInput {
 export function parseModeString(s: string | undefined): PermissionMode | undefined {
 	if (!s) return undefined
 	const lower = s.toLowerCase()
-	if (lower === "default" || lower === "plan" || lower === "auto" || lower === "yolo") return lower
+	if (ALL_PERMISSION_MODES.includes(lower as PermissionMode)) return lower as PermissionMode
 	return undefined
 }
 

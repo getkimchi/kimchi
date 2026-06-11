@@ -6,19 +6,22 @@ import { FERMENT_TOOLS } from "../ferment/tool-names.js"
 import { type EnvironmentInfo, buildSystemPrompt } from "../prompt-construction/system-prompt.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { classifyToolCall } from "./classifier.js"
+import { PERMISSIONS_ENV_KEY } from "./constants.js"
 import permissionsExtension, {
 	checkCompoundCommand,
-	getCurrentPermissionsMode,
+	getPermissionMode,
 	handleCompoundConfirm,
-	isUserChosenYolo,
+	isLaunchedWithYolo,
 	notifyFermentActive,
 } from "./index.js"
+import { unregisterSessionPermissionFlagController } from "./mode-controller-registry.js"
 import { SessionMemory } from "./session-memory.js"
 import type { Rule } from "./types.js"
 
 vi.mock("node:fs", () => ({
 	existsSync: vi.fn(() => true),
 	mkdirSync: vi.fn(),
+	readFileSync: vi.fn(),
 	writeFileSync: vi.fn(),
 }))
 
@@ -147,56 +150,62 @@ function createPermissionsHarness(
 	}
 }
 
-describe("isUserChosenYolo", () => {
+describe("isLaunchedWithYolo", () => {
 	afterEach(() => {
-		// Production code mutates process.env directly via propagateModeToEnv; revert it.
 		notifyFermentActive(false)
-		Reflect.deleteProperty(process.env, "KIMCHI_PERMISSIONS")
+		unregisterSessionPermissionFlagController(TEST_SESSION_ID)
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+		Reflect.deleteProperty(process.env, `${PERMISSIONS_ENV_KEY}_${TEST_SESSION_ID}`)
 		vi.unstubAllEnvs()
 	})
 
 	it("is true when yolo comes from the launch env", () => {
-		vi.stubEnv("KIMCHI_PERMISSIONS", "yolo")
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "yolo")
 		createPermissionsHarness(["bash"])
 
-		expect(isUserChosenYolo()).toBe(true)
+		expect(isLaunchedWithYolo()).toBe(true)
 	})
 
-	it("is false when yolo is only a runtime elevation (e.g. an active ferment)", () => {
+	it("is false when yolo is only a runtime elevation (e.g. an active ferment)", async () => {
 		// No user-chosen yolo source: env unset, no CLI flag, default config.
-		createPermissionsHarness(["bash"])
+		const harness = createPermissionsHarness(["bash"])
+		// Fire session_start so _lastCtx is set (required by onActiveFermentChange).
+		await harness.fire("session_start", {}, createMockContext([]))
 
 		// A ferment becoming active elevates runtimeMode to yolo and propagates it
-		// to the env — the exact condition that previously let the start gate be
-		// bypassed silently.
+		// to the per-session env — the exact condition that previously let the
+		// start gate be bypassed silently.
 		notifyFermentActive(true)
-		expect(process.env.KIMCHI_PERMISSIONS).toBe("yolo")
+		expect(getPermissionMode(TEST_SESSION_ID)).toBe("yolo")
 
 		// But runtime elevation must not count as user consent.
-		expect(isUserChosenYolo()).toBe(false)
+		expect(isLaunchedWithYolo()).toBe(false)
 	})
 })
 
 describe("permissions plan-mode tool visibility", () => {
 	afterEach(() => {
+		notifyFermentActive(false)
+		unregisterSessionPermissionFlagController(TEST_SESSION_ID)
+		Reflect.deleteProperty(process.env, `${PERMISSIONS_ENV_KEY}_${TEST_SESSION_ID}`)
 		vi.unstubAllEnvs()
 	})
 
 	it("ferment activation leaves plan mode and restores agent tools for scoping", async () => {
-		vi.stubEnv("KIMCHI_PERMISSIONS", "plan")
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "plan")
 		const harness = createPermissionsHarness(["read", "agent", "bash", "write", "grep"])
 		await harness.fire("session_start", {}, createMockContext([]))
-		expect(getCurrentPermissionsMode()).toBe("plan")
+		expect(getPermissionMode(TEST_SESSION_ID)).toBe("plan")
 		expect(harness.activeTools().sort()).toEqual(["bash", "grep", "read"])
 
 		notifyFermentActive(true)
 
-		expect(getCurrentPermissionsMode()).toBe("yolo")
+		expect(getPermissionMode(TEST_SESSION_ID)).toBe("yolo")
 		expect(harness.activeTools().sort()).toEqual(["agent", "bash", "grep", "read", "write"])
 
 		notifyFermentActive(false)
 
-		expect(getCurrentPermissionsMode()).toBe("plan")
+		expect(getPermissionMode(TEST_SESSION_ID)).toBe("plan")
 		expect(harness.activeTools().sort()).toEqual(["bash", "grep", "read"])
 	})
 
@@ -223,7 +232,7 @@ describe("permissions plan-mode tool visibility", () => {
 		expect(
 			await harness.fire("tool_call", { toolName: "questionnaire", input: { questions: [] } }, createMockContext([])),
 		).toBeUndefined()
-		expect(getCurrentPermissionsMode()).toBe("plan")
+		expect(getPermissionMode(TEST_SESSION_ID)).toBe("plan")
 
 		const result = await harness.fire(
 			"tool_call",
@@ -271,6 +280,12 @@ describe("permissions plan-mode tool visibility", () => {
 })
 
 describe("plan mode assumption detection", () => {
+	afterEach(() => {
+		unregisterSessionPermissionFlagController(TEST_SESSION_ID)
+		Reflect.deleteProperty(process.env, `${PERMISSIONS_ENV_KEY}_${TEST_SESSION_ID}`)
+		vi.unstubAllEnvs()
+	})
+
 	// --- Integration tests for turn_end handler ---
 
 	function makeAssistantMessage(text: string): unknown {
@@ -449,12 +464,14 @@ describe("plan mode assumption detection", () => {
 		)
 
 		// Mode should have switched from plan to default (ferment tools unlocked)
-		expect(getCurrentPermissionsMode()).toBe("default")
+		expect(getPermissionMode(TEST_SESSION_ID)).toBe("default")
 	})
 })
 
 describe("permissions prompt inheritance", () => {
 	afterEach(() => {
+		unregisterSessionPermissionFlagController(TEST_SESSION_ID)
+		Reflect.deleteProperty(process.env, `${PERMISSIONS_ENV_KEY}_${TEST_SESSION_ID}`)
 		vi.unstubAllEnvs()
 	})
 
@@ -484,6 +501,8 @@ describe("permissions ferment tool classification", () => {
 	})
 
 	afterEach(() => {
+		unregisterSessionPermissionFlagController(TEST_SESSION_ID)
+		Reflect.deleteProperty(process.env, `${PERMISSIONS_ENV_KEY}_${TEST_SESSION_ID}`)
 		vi.unstubAllEnvs()
 	})
 
@@ -568,12 +587,14 @@ describe("permissions ferment tool classification", () => {
 
 describe("permissions ACP prompter", () => {
 	beforeEach(() => {
-		Reflect.deleteProperty(process.env, "KIMCHI_PERMISSIONS")
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
 		vi.mocked(classifyToolCall).mockClear()
 	})
 
 	afterEach(() => {
 		unregisterAcpPrompter(TEST_SESSION_ID)
+		unregisterSessionPermissionFlagController(TEST_SESSION_ID)
+		Reflect.deleteProperty(process.env, `${PERMISSIONS_ENV_KEY}_${TEST_SESSION_ID}`)
 		vi.unstubAllEnvs()
 	})
 

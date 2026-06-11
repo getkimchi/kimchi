@@ -9,8 +9,8 @@ import type { PermissionMode, Rule } from "./types.js"
 export interface CommandDeps {
 	getSession: () => SessionMemory
 	getLoaded: () => LoadedConfig
-	getMode: () => PermissionMode
-	setRuntimeMode: (mode: PermissionMode | undefined) => void
+	getMode: (ctx: ExtensionContext) => PermissionMode
+	setRuntimeMode: (mode: PermissionMode, ctx: ExtensionContext) => void
 	applyPlanMode: () => void
 	restorePlanMode: () => void
 	rebuildConfigRules: () => void
@@ -76,7 +76,7 @@ async function openSelector(ctx: ExtensionContext, deps: CommandDeps): Promise<v
 		return showStatus(ctx as ExtensionCommandContext, deps)
 	}
 
-	const mode = deps.getMode()
+	const mode = deps.getMode(ctx)
 	const sessionCount = deps.getSession().all().length
 
 	const CHANGE_MODE = "Change mode"
@@ -118,10 +118,10 @@ async function openSelector(ctx: ExtensionContext, deps: CommandDeps): Promise<v
 
 async function openModePicker(ctx: ExtensionContext, deps: CommandDeps): Promise<void> {
 	if (!ctx.hasUI) {
-		ctx.ui.notify(`current mode: ${deps.getMode()}`, "info")
+		ctx.ui.notify(`current mode: ${deps.getMode(ctx)}`, "info")
 		return
 	}
-	const current = deps.getMode()
+	const current = deps.getMode(ctx)
 	const marker = (m: PermissionMode) => (m === current ? "●" : "○")
 
 	const OPT_DEFAULT = `${marker("default")}  default — ask before each tool call`
@@ -171,7 +171,7 @@ const HELP_TEXT = `/permissions — show current mode and rules
 /permissions help — show this help`
 
 function showStatus(ctx: ExtensionCommandContext, deps: CommandDeps): void {
-	const mode = deps.getMode()
+	const mode = deps.getMode(ctx)
 	const loaded = deps.getLoaded()
 	const session = deps.getSession()
 
@@ -209,8 +209,8 @@ function handleMode(ctx: ExtensionContext, deps: CommandDeps, arg: string): void
 		ctx.ui.notify(`unknown mode "${arg}". Valid: default, plan, auto, yolo`, "warning")
 		return
 	}
-	const prev = deps.getMode()
-	deps.setRuntimeMode(mode)
+	const prev = deps.getMode(ctx)
+	deps.setRuntimeMode(mode, ctx)
 	if (prev === "plan" && mode !== "plan") deps.restorePlanMode()
 	if (mode === "plan") deps.applyPlanMode()
 	deps.updateStatus(ctx)
