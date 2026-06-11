@@ -40,6 +40,7 @@ import {
 import { buildParentContext, extractText } from "../prompt/context.js"
 import { type PromptExtras, buildAgentPrompt, formatTokenBudget } from "../prompt/prompts.js"
 import { preloadSkills } from "../prompt/skill-loader.js"
+import { PARENT_SESSION_ID_ENV_KEY } from "./constants.js"
 import { type LifetimeUsage, addUsage, getLifetimeTotal, getOutputTotal, getSessionUsage } from "./usage.js"
 
 /** Names of tools registered by this extension that subagents must NOT inherit. */
@@ -558,6 +559,11 @@ async function runAgentInner(
 		}
 	}
 
+	// Propagate the parent's session ID so the child permissions extension can
+	// read the per-session mode from KIMCHI_PERMISSIONS_<sessionId>.
+	const prevParentSessionId = process.env[PARENT_SESSION_ID_ENV_KEY]
+	process.env[PARENT_SESSION_ID_ENV_KEY] = ctx.sessionManager.getSessionId()
+
 	// Propagate agent persona to child environment so permission rules can
 	// apply persona-specific path scopes (e.g. plan persona → .kimchi/plans/).
 	const prevPersona = process.env.KIMCHI_AGENT_PERSONA
@@ -582,7 +588,12 @@ async function runAgentInner(
 		// Emit session_shutdown so extensions (e.g. telemetry) can flush and
 		// clear timers. Mirrors the ACP server pattern in modes/acp/server.ts.
 		await session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" })
-		// Restore persona env — important for sequential runs in the same process.
+		// Restore parent-session-ID and persona env — important for sequential runs in the same process.
+		if (prevParentSessionId === undefined) {
+			delete process.env[PARENT_SESSION_ID_ENV_KEY]
+		} else {
+			process.env[PARENT_SESSION_ID_ENV_KEY] = prevParentSessionId
+		}
 		if (agentConfig?.name) {
 			if (prevPersona === undefined) {
 				// biome-ignore lint/performance/noDelete: must remove not set to undefined

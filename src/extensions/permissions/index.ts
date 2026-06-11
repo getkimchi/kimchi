@@ -3,8 +3,8 @@ import type { ExtensionAPI, ExtensionContext, ToolCallEvent } from "@earendil-wo
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedSemanticFg } from "../../ansi.js"
 import { getAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
-import { createSessionPermissionFlagController } from "../../modes/acp/permissions.js"
 import { isAgentWorker } from "../agent-worker-context.js"
+import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import { hasActiveFerment, notifyFermentActive, onActiveFermentChange } from "../ferment/state.js"
 import { FERMENT_TOOLS, isFermentToolName, isUserFacingFermentToolName } from "../ferment/tool-names.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
@@ -15,11 +15,9 @@ import { classifyToolCall } from "./classifier.js"
 import { registerCommands } from "./commands.js"
 import { type LoadedConfig, loadConfig } from "./config.js"
 import { PERMISSIONS_ENV_KEY } from "./constants.js"
-import {
-	getSessionPermissionFlagController,
-	registerSessionPermissionFlagController,
-} from "./mode-controller-registry.js"
-import { parseModeString, resolveMode } from "./mode.js"
+import { getSessionPermissionFlagController } from "./mode-controller-registry.js"
+import { getSessionPermissionsEnvKey, setPermissionMode } from "./mode-controller.js"
+import { resolveMode } from "./mode.js"
 import { saveApprovedPlan } from "./plan-persistence.js"
 import type { ToolPermissionPrompter } from "./prompter.js"
 import {
@@ -96,45 +94,6 @@ const MODES: Array<{
 	{ mode: "yolo", label: "yolo", color: "error" },
 ]
 
-function getSessionPermissionsEnvKey(sessionId: string): string {
-	return `${PERMISSIONS_ENV_KEY}_${sessionId}`
-}
-
-function persistPermissionMode(sessionId: string, mode: PermissionMode): void {
-	process.env[getSessionPermissionsEnvKey(sessionId)] = mode
-}
-
-export function clearPermissionMode(sessionId: string): void {
-	Reflect.deleteProperty(process.env, getSessionPermissionsEnvKey(sessionId))
-}
-
-export function setPermissionMode(sessionId: string, mode: PermissionMode, skipNotify = false): void {
-	const sessionController = getSessionPermissionFlagController(sessionId)
-	if (sessionController) {
-		sessionController.setMode(mode, skipNotify)
-	} else {
-		const controller = createSessionPermissionFlagController({ mode })
-		registerSessionPermissionFlagController(sessionId, controller)
-	}
-	persistPermissionMode(sessionId, mode)
-}
-
-export function getPermissionMode(sessionId: string): PermissionMode {
-	const sessionController = getSessionPermissionFlagController(sessionId)
-	if (sessionController) {
-		return sessionController.getMode()
-	}
-	const envKey = getSessionPermissionsEnvKey(sessionId)
-	const mode = parseModeString(process.env[envKey])
-	if (mode) {
-		setPermissionMode(sessionId, mode, true)
-		return mode
-	}
-	throw Error(
-		`No session permission mode could be found for session ${sessionId}. This is likely an error in the harness code.`,
-	)
-}
-
 let _isLaunchedWithYolo: () => boolean = () => process.env[PERMISSIONS_ENV_KEY] === "yolo"
 
 export function isLaunchedWithYolo(): boolean {
@@ -192,7 +151,13 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 
 	const session = new SessionMemory()
 	const builtinRules: Rule[] = parseRules(BUILTIN_DENY, "deny", "builtin")
-	const permissionsEnvFlag = process.env[PERMISSIONS_ENV_KEY]
+	// When a subagent is spawned, the parent stores its per-session mode under
+	// KIMCHI_PERMISSIONS_<sessionId> and advertises the session ID via
+	// KIMCHI_PARENT_SESSION_ID. If this variable is absent, we fall back to the
+	// base key.
+	const permissionsEnvFlag = process.env[PARENT_SESSION_ID_ENV_KEY]
+		? process.env[getSessionPermissionsEnvKey(process.env[PARENT_SESSION_ID_ENV_KEY])]
+		: process.env[PERMISSIONS_ENV_KEY]
 	let loaded: LoadedConfig = EMPTY_LOADED_CONFIG
 	let configRules: Rule[] = []
 	let sessionCtx: ExtensionContext | undefined
@@ -242,7 +207,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		runtimeMode = mode
 		// ExtensionContext may not be available when the session has not yet been started.
 		if (ctx) {
-			setPermissionMode(ctx.sessionManager.getSessionId(), mode)
+			setPermissionMode(ctx.sessionManager.getSessionId(), mode, skipNotify)
 		}
 	}
 

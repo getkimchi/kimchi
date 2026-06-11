@@ -1,4 +1,6 @@
-import type { SessionPermissionFlagController } from "./types.js"
+import { PERMISSIONS_ENV_KEY } from "./constants.js"
+import { parseModeString } from "./mode.js"
+import type { PermissionMode, SessionPermissionFlagChanges, SessionPermissionFlagController } from "./types.js"
 
 /**
  * Session-scoped permission flag controller registry.

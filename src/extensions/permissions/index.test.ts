@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext, ToolCallEvent, ToolInfo } from "@e
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { registerAcpPrompter, unregisterAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
 import { runAsAgentWorker } from "../agent-worker-context.js"
+import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import { FERMENT_TOOLS } from "../ferment/tool-names.js"
 import { type EnvironmentInfo, buildSystemPrompt } from "../prompt-construction/system-prompt.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
@@ -9,12 +10,12 @@ import { classifyToolCall } from "./classifier.js"
 import { PERMISSIONS_ENV_KEY } from "./constants.js"
 import permissionsExtension, {
 	checkCompoundCommand,
-	getPermissionMode,
 	handleCompoundConfirm,
 	isLaunchedWithYolo,
 	notifyFermentActive,
 } from "./index.js"
 import { unregisterSessionPermissionFlagController } from "./mode-controller-registry.js"
+import { getPermissionMode } from "./mode-controller.js"
 import { SessionMemory } from "./session-memory.js"
 import type { Rule } from "./types.js"
 
@@ -1129,5 +1130,89 @@ describe("compound command auto-mode fall-through", () => {
 		]
 		const result = checkCompoundCommand("ls -la && pwd", rules)
 		expect(result.decision).toBe("allow")
+	})
+})
+
+describe("subagent inherits parent session permission mode", () => {
+	const PARENT_SESSION_ID = "parent-acp-session-42"
+	const CHILD_SESSION_ID = "child-subagent-session-99"
+
+	afterEach(() => {
+		notifyFermentActive(false)
+		unregisterSessionPermissionFlagController(CHILD_SESSION_ID)
+		Reflect.deleteProperty(process.env, `${PERMISSIONS_ENV_KEY}_${PARENT_SESSION_ID}`)
+		Reflect.deleteProperty(process.env, `${PERMISSIONS_ENV_KEY}_${CHILD_SESSION_ID}`)
+		Reflect.deleteProperty(process.env, PARENT_SESSION_ID_ENV_KEY)
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+		vi.unstubAllEnvs()
+	})
+
+	it("reads mode from KIMCHI_PERMISSIONS_<parentSessionId> when KIMCHI_PARENT_SESSION_ID is set", async () => {
+		process.env[`${PERMISSIONS_ENV_KEY}_${PARENT_SESSION_ID}`] = "plan"
+		process.env[PARENT_SESSION_ID_ENV_KEY] = PARENT_SESSION_ID
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+
+		// Calling createPermissionsHarness re-invokes permissionsExtension(pi),
+		// which captures permissionsEnvFlag from process.env at construction time.
+		const harness = createPermissionsHarness(["read", "write", "bash"])
+
+		// Fire session_start with the CHILD's own session ID (different from parent).
+		const childCtx = {
+			...createMockContext([]),
+			sessionManager: { getSessionId: () => CHILD_SESSION_ID },
+		} as unknown as ExtensionContext
+		await harness.fire("session_start", {}, childCtx)
+
+		// The child's runtime mode should be "plan", inherited from the parent session.
+		expect(getPermissionMode(CHILD_SESSION_ID)).toBe("plan")
+	})
+
+	it("parent session key takes precedence over base KIMCHI_PERMISSIONS", async () => {
+		process.env[PERMISSIONS_ENV_KEY] = "auto"
+		process.env[`${PERMISSIONS_ENV_KEY}_${PARENT_SESSION_ID}`] = "plan"
+		process.env[PARENT_SESSION_ID_ENV_KEY] = PARENT_SESSION_ID
+
+		const harness = createPermissionsHarness(["read", "write", "bash"])
+
+		const childCtx = {
+			...createMockContext([]),
+			sessionManager: { getSessionId: () => CHILD_SESSION_ID },
+		} as unknown as ExtensionContext
+		await harness.fire("session_start", {}, childCtx)
+
+		// Parent session key takes precedence.
+		expect(getPermissionMode(CHILD_SESSION_ID)).toBe("plan")
+	})
+
+	it("falls back to config default when neither KIMCHI_PERMISSIONS nor parent session key is set", async () => {
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+		Reflect.deleteProperty(process.env, PARENT_SESSION_ID_ENV_KEY)
+
+		const harness = createPermissionsHarness(["read", "write", "bash"])
+
+		const childCtx = {
+			...createMockContext([]),
+			sessionManager: { getSessionId: () => CHILD_SESSION_ID },
+		} as unknown as ExtensionContext
+		await harness.fire("session_start", {}, childCtx)
+
+		expect(getPermissionMode(CHILD_SESSION_ID)).toBe("default")
+	})
+
+	it("child applies plan-mode tool gating when inheriting plan from parent", async () => {
+		process.env[`${PERMISSIONS_ENV_KEY}_${PARENT_SESSION_ID}`] = "plan"
+		process.env[PARENT_SESSION_ID_ENV_KEY] = PARENT_SESSION_ID
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+
+		const harness = createPermissionsHarness(["read", "write", "bash", "grep"])
+
+		const childCtx = {
+			...createMockContext([]),
+			sessionManager: { getSessionId: () => CHILD_SESSION_ID },
+		} as unknown as ExtensionContext
+		await harness.fire("session_start", {}, childCtx)
+
+		// Plan mode should hide write-capable tools.
+		expect(harness.activeTools().sort()).toEqual(["bash", "grep", "read"])
 	})
 })

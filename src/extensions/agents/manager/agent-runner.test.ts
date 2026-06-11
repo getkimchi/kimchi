@@ -222,6 +222,7 @@ function makeFakeCtx() {
 		},
 		getSystemPrompt: vi.fn().mockReturnValue(""),
 		sessionManager: {
+			getSessionId: vi.fn().mockReturnValue("session-1"),
 			getSessionDir: vi.fn().mockReturnValue(undefined),
 			getSessionFile: vi.fn().mockReturnValue(undefined),
 		},

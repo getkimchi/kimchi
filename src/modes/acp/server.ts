@@ -57,11 +57,16 @@ import {
 import { isHideThinkingEnabled } from "../../extensions/hide-thinking.js"
 import { loadConfig } from "../../extensions/permissions/config.js"
 import { PERMISSIONS_ENV_KEY } from "../../extensions/permissions/constants.js"
-import { clearPermissionMode, getPermissionMode, setPermissionMode } from "../../extensions/permissions/index.js"
 import {
 	registerSessionPermissionFlagController,
 	unregisterSessionPermissionFlagController,
 } from "../../extensions/permissions/mode-controller-registry.js"
+import {
+	clearPermissionMode,
+	createSessionPermissionFlagController,
+	getPermissionMode,
+	setPermissionMode,
+} from "../../extensions/permissions/mode-controller.js"
 import { resolveMode } from "../../extensions/permissions/mode.js"
 import {
 	ALL_PERMISSION_MODES,
@@ -70,7 +75,6 @@ import {
 } from "../../extensions/permissions/types.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
-import { createSessionPermissionFlagController } from "./permissions.js"
 
 /**
  * Produces an unbound AgentSession for a newSession request. The ACP agent owns
