@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext, InputEvent } from "@earendil-works/pi-coding-agent"
-import { getPermissionMode } from "./permissions/index.js"
+import { getPermissionMode } from "./permissions/mode-controller.js"
 
 export const DEFAULT_READ_TOOLS = new Set([
 	"read",
