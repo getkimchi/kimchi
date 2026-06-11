@@ -1,8 +1,24 @@
+import type { Theme } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it } from "vitest"
 import { formatCount } from "../format.js"
 import { getTimeRange } from "./api.js"
+import { formatAnalyticsSummary } from "./display.js"
 import { parseStatsArgs } from "./index.js"
-import { type SortBy, formatCurrency, getProviderDisplayName, getSourceName, sortFn } from "./visual.js"
+import type { GenerateAnalyticsResponse } from "./types.js"
+import {
+	type SortBy,
+	formatAnalyticsVisual,
+	formatCurrency,
+	getProviderDisplayName,
+	getSourceName,
+	sortFn,
+} from "./visual.js"
+
+// Simple pass-through mock for testing output shape without ANSI codes
+const mockTheme = {
+	bold: (text: string) => text,
+	fg: (_color: string, text: string) => text,
+} as unknown as Theme
 
 describe("getTimeRange", () => {
 	it("returns correct time range for 30 days", () => {
@@ -241,5 +257,200 @@ describe("sortFn", () => {
 			expect(sorted[0].modelName).toBe("claude-3")
 			expect(sorted[1].modelName).toBe("gpt-4")
 		})
+	})
+})
+
+function makeModelTokenStat(
+	overrides: Partial<import("./types.js").ModelTokenStat> = {},
+): import("./types.js").ModelTokenStat {
+	return {
+		model: "gpt-4",
+		provider: "openai",
+		castaiApiKey: "key-1",
+		providerName: "pi-otel",
+		inputTokens: 0,
+		outputTokens: 0,
+		totalTokens: 0,
+		cacheReadTokens: 0,
+		cacheWriteTokens: 0,
+		castaiApiKeyMetadata: { id: "1", name: "", ownerType: "", ownerId: "", ownerEmail: "" },
+		...overrides,
+	}
+}
+
+function makeModelCost(overrides: Partial<import("./types.js").ModelCost> = {}): import("./types.js").ModelCost {
+	return {
+		model: "gpt-4",
+		provider: "openai",
+		castaiApiKey: "key-1",
+		providerName: "pi-otel",
+		totalCost: "0",
+		totalCostPerMillionTokens: "0",
+		castaiApiKeyMetadata: { id: "1", name: "", ownerType: "", ownerId: "", ownerEmail: "" },
+		inputTokenCost: "0",
+		outputTokenCost: "0",
+		...overrides,
+	}
+}
+
+describe("formatAnalyticsVisual", () => {
+	it("uses new tokens field when present", () => {
+		const data: GenerateAnalyticsResponse = {
+			stepDuration: "0s",
+			tokens: {
+				items: [
+					{
+						executionTime: "2026-06-09T09:00:00Z",
+						models: [
+							makeModelTokenStat({
+								model: "gpt-4",
+								providerName: "pi-otel",
+								inputTokens: 1000,
+								outputTokens: 500,
+							}),
+							makeModelTokenStat({
+								model: "gpt-4",
+								providerName: "cloud-code-otel",
+								inputTokens: 2000,
+								outputTokens: 1000,
+							}),
+						],
+					},
+				],
+			},
+		}
+
+		const lines = formatAnalyticsVisual(data, mockTheme)
+		const joined = lines.join("\n")
+
+		// Should show gpt-4 aggregated by source
+		expect(joined).toContain("gpt-4")
+		expect(joined).toContain("Kimchi")
+		expect(joined).toContain("Claude Code")
+		// Total input = 3000, output = 1500
+		expect(joined).toContain("3.0k")
+		expect(joined).toContain("1.5k")
+	})
+
+	it("sums token counts across multiple execution times for same model+source", () => {
+		const data: GenerateAnalyticsResponse = {
+			stepDuration: "0s",
+			tokens: {
+				items: [
+					{
+						executionTime: "2026-06-09T09:00:00Z",
+						models: [
+							makeModelTokenStat({
+								model: "gpt-4",
+								providerName: "pi-otel",
+								inputTokens: 1000,
+								outputTokens: 500,
+							}),
+						],
+					},
+					{
+						executionTime: "2026-06-09T10:00:00Z",
+						models: [
+							makeModelTokenStat({
+								model: "gpt-4",
+								providerName: "pi-otel",
+								inputTokens: 2000,
+								outputTokens: 1000,
+							}),
+						],
+					},
+				],
+			},
+		}
+
+		const lines = formatAnalyticsVisual(data, mockTheme)
+		const joined = lines.join("\n")
+
+		// Input = 1000 + 2000 = 3000, Output = 500 + 1000 = 1500
+		expect(joined).toContain("3.0k")
+		expect(joined).toContain("1.5k")
+	})
+
+	it("coalesces undefined token values to 0", () => {
+		const data: GenerateAnalyticsResponse = {
+			stepDuration: "0s",
+			tokens: {
+				items: [
+					{
+						executionTime: "2026-06-09T09:00:00Z",
+						models: [
+							{
+								model: "gpt-4",
+								provider: "openai",
+								castaiApiKey: "key-1",
+								providerName: "pi-otel",
+								inputTokens: undefined as unknown as number,
+								outputTokens: 500,
+								totalTokens: 500,
+								cacheReadTokens: 0,
+								cacheWriteTokens: 0,
+								castaiApiKeyMetadata: { id: "1", name: "", ownerType: "", ownerId: "", ownerEmail: "" },
+							},
+						],
+					},
+				],
+			},
+		}
+
+		const lines = formatAnalyticsVisual(data, mockTheme)
+		const joined = lines.join("\n")
+
+		expect(joined).toContain("500")
+	})
+})
+
+describe("formatAnalyticsSummary", () => {
+	it("uses new tokens field when present", () => {
+		const data: GenerateAnalyticsResponse = {
+			stepDuration: "0s",
+			tokens: {
+				items: [
+					{
+						executionTime: "2026-06-09T09:00:00Z",
+						models: [makeModelTokenStat({ inputTokens: 3000, outputTokens: 1500 })],
+					},
+				],
+			},
+		}
+
+		const lines = formatAnalyticsSummary(data, mockTheme)
+		const joined = lines.join("\n")
+
+		expect(joined).toContain("4.5k")
+		expect(joined).toContain("3.0k")
+		expect(joined).toContain("1.5k")
+	})
+
+	it("aggregates model and source correctly", () => {
+		const data: GenerateAnalyticsResponse = {
+			stepDuration: "0s",
+			tokens: {
+				items: [
+					{
+						executionTime: "2026-06-09T09:00:00Z",
+						models: [
+							makeModelTokenStat({
+								model: "gpt-4",
+								providerName: "pi-otel",
+								inputTokens: 3000,
+								outputTokens: 1500,
+							}),
+						],
+					},
+				],
+			},
+		}
+
+		const lines = formatAnalyticsSummary(data, mockTheme)
+		const joined = lines.join("\n")
+
+		expect(joined).toContain("4.5k")
+		expect(joined).toContain("3.0k")
+		expect(joined).toContain("1.5k")
 	})
 })

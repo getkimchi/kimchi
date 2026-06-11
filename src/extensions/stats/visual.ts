@@ -140,8 +140,8 @@ export function formatAnalyticsVisual(
 		}
 	}
 
-	if (data.inputTokens?.items) {
-		for (const item of data.inputTokens.items) {
+	if (data.tokens?.items) {
+		for (const item of data.tokens.items) {
 			if (item.models) {
 				for (const model of item.models) {
 					const source = getSourceName(model.providerName)
@@ -155,29 +155,8 @@ export function formatAnalyticsVisual(
 						inputCost: 0,
 						outputCost: 0,
 					}
-					stats.inputTokens += model.totalCount || 0
-					modelStats.set(key, stats)
-				}
-			}
-		}
-	}
-
-	if (data.outputTokens?.items) {
-		for (const item of data.outputTokens.items) {
-			if (item.models) {
-				for (const model of item.models) {
-					const source = getSourceName(model.providerName)
-					const key = `${model.model}\t${source}`
-					const stats = modelStats.get(key) || {
-						modelName: model.model,
-						source,
-						cost: 0,
-						inputTokens: 0,
-						outputTokens: 0,
-						inputCost: 0,
-						outputCost: 0,
-					}
-					stats.outputTokens += model.totalCount || 0
+					stats.inputTokens += model.inputTokens || 0
+					stats.outputTokens += model.outputTokens || 0
 					modelStats.set(key, stats)
 				}
 			}
