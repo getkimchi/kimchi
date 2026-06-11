@@ -2,7 +2,13 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { discoverClaudeCodeSkillDirs, getClaudeCodeSkillResourcePaths, sanitizeSkillMarkdown } from "./definition.js"
+import {
+	discoverClaudeCodeSkillDirs,
+	expandConfiguredSkillPaths,
+	getClaudeCodeSkillResourcePaths,
+	getConfiguredSkillResourcePaths,
+	sanitizeSkillMarkdown,
+} from "./definition.js"
 
 let dir: string
 let oldHome: string | undefined
@@ -78,6 +84,30 @@ describe("Claude Code skill discovery", () => {
 		)
 	})
 
+	it("adds generated frontmatter to Claude Code skills without frontmatter", () => {
+		expect(sanitizeSkillMarkdown("# Body\n", "My Skill")).toBe(
+			'---\nname: my-skill\ndescription: "Claude Code skill: my-skill."\n---\n# Body\n',
+		)
+	})
+
+	it("adds a fallback description when frontmatter only provides a name", () => {
+		expect(sanitizeSkillMarkdown("---\nname: My Skill\n---\nBody\n", "Fallback")).toBe(
+			'---\nname: my-skill\ndescription: "Claude Code skill: my-skill."\n---\nBody\n',
+		)
+	})
+
+	it("adds a fallback description when frontmatter description is blank", () => {
+		expect(sanitizeSkillMarkdown('---\nname: My Skill\ndescription: "   "\n---\nBody\n', "Fallback")).toBe(
+			'---\nname: my-skill\ndescription: "Claude Code skill: my-skill."\n---\nBody\n',
+		)
+	})
+
+	it("trims parsed frontmatter descriptions", () => {
+		expect(sanitizeSkillMarkdown('---\nname: My Skill\ndescription: " real desc "\n---\nBody\n', "Fallback")).toBe(
+			"---\nname: my-skill\ndescription: real desc\n---\nBody\n",
+		)
+	})
+
 	it("sanitizes valid skill frontmatter with YAML parsing", () => {
 		expect(
 			sanitizeSkillMarkdown(
@@ -93,10 +123,48 @@ describe("Claude Code skill discovery", () => {
 		).toBe('---\nname: "my-skill"\ndescription: "true"\nmetadata: "Use: colons safely"\n---\nBody\n')
 	})
 
+	it("preserves block scalar description bodies when repairing invalid frontmatter", () => {
+		expect(
+			sanitizeSkillMarkdown(
+				"---\ndescription: |\n  Use: generated types\n  Keep: safe\nmetadata: Use: colons safely\n---\nBody\n",
+				"My Skill",
+			),
+		).toBe(
+			'---\nname: "my-skill"\ndescription: |\n  Use: generated types\n  Keep: safe\nmetadata: "Use: colons safely"\n---\nBody\n',
+		)
+	})
+
+	it("preserves block scalar description headers with chomping and indentation indicators", () => {
+		expect(
+			sanitizeSkillMarkdown(
+				"---\ndescription: >-\n  Use: generated types\n  Keep: safe\nmetadata: Use: colons safely\n---\nBody\n",
+				"My Skill",
+			),
+		).toBe(
+			'---\nname: "my-skill"\ndescription: >-\n  Use: generated types\n  Keep: safe\nmetadata: "Use: colons safely"\n---\nBody\n',
+		)
+		expect(
+			sanitizeSkillMarkdown(
+				"---\ndescription: |+2\n  Use: generated types\n  Keep: safe\nmetadata: Use: colons safely\n---\nBody\n",
+				"My Skill",
+			),
+		).toBe(
+			'---\nname: "my-skill"\ndescription: |+2\n  Use: generated types\n  Keep: safe\nmetadata: "Use: colons safely"\n---\nBody\n',
+		)
+	})
+
+	it("adds a fallback description for empty block scalar descriptions when repairing invalid frontmatter", () => {
+		expect(sanitizeSkillMarkdown("---\ndescription: |\n\nmetadata: Use: colons safely\n---\nBody\n", "My Skill")).toBe(
+			'---\nname: "my-skill"\ndescription: "Claude Code skill: my-skill."\nmetadata: "Use: colons safely"\n---\nBody\n',
+		)
+	})
+
 	it("does not treat prefixed fences as closing frontmatter", () => {
 		const content = "---\ndescription: Test\n---not-a-fence\nBody\n"
 
-		expect(sanitizeSkillMarkdown(content, "My Skill")).toBe(content)
+		expect(sanitizeSkillMarkdown(content, "My Skill")).toBe(
+			'---\nname: my-skill\ndescription: "Claude Code skill: my-skill."\n---\n---\ndescription: Test\n---not-a-fence\nBody\n',
+		)
 	})
 
 	it("drops nested tool frontmatter sequences when sanitizing", () => {
@@ -133,6 +201,19 @@ describe("Claude Code skill discovery", () => {
 		expect(getClaudeCodeSkillResourcePaths(cwd, { excludeSkillPaths: [".custom/skills"] })).toEqual([])
 	})
 
+	it("materializes configured Claude Code skill paths instead of excluding them as native", () => {
+		const cwd = join(dir, "project")
+		writeSkill(join(cwd, ".claude", "custom-skills", "typescript-safety", "SKILL.md"), "# Skill\n")
+
+		const paths = getConfiguredSkillResourcePaths(cwd, [".claude/custom-skills"])
+
+		expect(paths).toHaveLength(1)
+		expect(paths[0]).toContain(join(dir, "cache", "kimchi", "claude-code-skills"))
+		expect(readFileSync(join(paths[0], "SKILL.md"), "utf-8")).toBe(
+			'---\nname: typescript-safety\ndescription: "Claude Code skill: typescript-safety."\n---\n# Skill\n',
+		)
+	})
+
 	it("materializes configured Claude Code skill paths through the sanitized cache", () => {
 		const cwd = join(dir, "project")
 		writeSkill(
@@ -147,6 +228,21 @@ describe("Claude Code skill discovery", () => {
 		expect(readFileSync(join(paths[0], "SKILL.md"), "utf-8")).toBe(
 			'---\nname: "typescript-safety"\ndescription: "Use: generated API types"\n---\n# Skill\n',
 		)
+	})
+
+	it("keeps relative configured skill paths inside home and cwd", () => {
+		const cwd = join(dir, "project")
+
+		expect(expandConfiguredSkillPaths(["../../outside", ".claude/skills"], cwd)).toEqual([
+			join(dir, "home", ".claude", "skills"),
+			join(cwd, ".claude", "skills"),
+		])
+	})
+
+	it("normalizes absolute configured skill paths", () => {
+		expect(expandConfiguredSkillPaths([`${join(dir, "project")}/../skills`], join(dir, "project"))).toEqual([
+			join(dir, "skills"),
+		])
 	})
 })
 

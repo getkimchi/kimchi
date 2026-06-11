@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
-import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent"
+import { dirname, join } from "node:path"
+import { type ExtensionAPI, type ToolDefinition, loadSkillsFromDir } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import claudeCodeSkillsExtension from "./index.js"
 
@@ -118,7 +118,7 @@ describe("Claude Code skills extension", () => {
 	})
 
 	it("contributes sanitized Claude Code skills through resources_discover", async () => {
-		writeSkill(join(dir, "project", ".claude", "skills", "typescript-safety", "SKILL.md"), "Use generated types.")
+		writeRawSkill(join(dir, "project", ".claude", "skills", "typescript-safety", "SKILL.md"), "Use generated types.\n")
 		const { handlers } = registerExtension()
 
 		const result = await handlers.resources_discover?.({
@@ -126,10 +126,16 @@ describe("Claude Code skills extension", () => {
 			cwd: join(dir, "project"),
 			reason: "startup",
 		})
+		const skillPaths = (result as { skillPaths?: string[] } | undefined)?.skillPaths ?? []
 
 		expect(result).toMatchObject({
 			skillPaths: [expect.stringContaining(join(dir, "cache", "kimchi", "claude-code-skills"))],
 		})
+		const loaded = loadSkillsFromDir({ dir: skillPaths[0] ?? "", source: "path" })
+		expect(loaded.skills).toMatchObject([
+			{ name: "typescript-safety", description: "Claude Code skill: typescript-safety." },
+		])
+		expect(loaded.diagnostics.map((diagnostic) => diagnostic.message)).not.toContain("description is required")
 	})
 
 	it("does not contribute Claude Code skill resources that duplicate native project skills", async () => {
@@ -169,6 +175,11 @@ function textResult(result: { content: Array<{ type: string; text?: string }> })
 }
 
 function writeSkill(path: string, body: string): void {
-	mkdirSync(join(path, ".."), { recursive: true })
+	mkdirSync(dirname(path), { recursive: true })
 	writeFileSync(path, `---\ndescription: Test skill.\n---\n${body}\n`, "utf-8")
+}
+
+function writeRawSkill(path: string, content: string): void {
+	mkdirSync(dirname(path), { recursive: true })
+	writeFileSync(path, content, "utf-8")
 }
