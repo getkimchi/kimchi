@@ -34,7 +34,7 @@ export interface PermissionsConfig {
 /** Controller for session-scoped permission flags with subscription support. */
 export interface SessionPermissionFlagController {
 	getMode(): PermissionMode
-	setMode(mode: PermissionMode): void
+	setMode(mode: PermissionMode, skipNotify?: boolean): void
 	subscribe(listener: (changes: SessionPermissionFlagChanges) => void): () => void
 }
 

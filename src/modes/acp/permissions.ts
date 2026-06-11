@@ -17,9 +17,11 @@ export function createSessionPermissionFlagController(
 
 	return {
 		getMode: () => mode,
-		setMode: (newMode) => {
+		setMode: (newMode, skipNotify) => {
 			mode = newMode
-			for (const _l of listeners) _l({ mode })
+			if (!skipNotify) {
+				for (const _l of listeners) _l({ mode })
+			}
 		},
 		subscribe: (listener) => {
 			listeners.add(listener)

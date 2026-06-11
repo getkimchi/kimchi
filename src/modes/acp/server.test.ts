@@ -1981,6 +1981,53 @@ describe("ACP mode controller integration with permissions extension", () => {
 		// Cleanup
 		await agent.unstable_closeSession({ sessionId })
 	})
+
+	it("setSessionConfigOption emits exactly one config_option_update when permissions extension is active", async () => {
+		// Regression test for the double-notification bug:
+		// setSessionConfigOption -> controller.setMode fires the ACP notification subscriber.
+		// The permissions extension's session_start subscriber also fires changeMode ->
+		// setRuntimePermissionMode, which must NOT re-enter controller.setMode (which would
+		// fire a second notification). The insideControllerCallback guard prevents this.
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "")
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+
+		const sessionId = "test-no-double-notify"
+		const cwd = "/tmp"
+
+		const harness = await createPermissionsHarness(["write", "read"])
+
+		const { conn, updates } = makeRecordingConn()
+		const fake = new FakeAgentSession(sessionId)
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+
+		await agent.newSession({ cwd, mcpServers: [] })
+
+		// Fire session_start so the permissions extension subscribes to the controller.
+		const mockCtx = createMockContext(sessionId, cwd)
+		await harness.fireSessionStart(mockCtx)
+
+		// Drain any notifications emitted during session setup.
+		updates.length = 0
+
+		// Change mode — this is the operation that previously emitted two notifications.
+		await agent.setSessionConfigOption({
+			sessionId,
+			configId: "permissions-mode",
+			value: "plan",
+		})
+
+		const configUpdates = updates.filter((u) => u.update.sessionUpdate === "config_option_update")
+		expect(configUpdates).toHaveLength(1)
+		// biome-ignore lint/suspicious/noExplicitAny: union type requires assertion
+		const update = configUpdates[0].update as any
+		expect(update.configOptions[0].currentValue).toBe("plan")
+
+		await agent.unstable_closeSession({ sessionId })
+	})
 })
 
 describe("session mode controller lifecycle", () => {
@@ -2134,6 +2181,60 @@ describe("session mode controller lifecycle", () => {
 		// Session 1 is yolo, session 2 is still default
 		expect(getSessionPermissionFlagController(r1.sessionId)?.getMode()).toBe("yolo")
 		expect(getSessionPermissionFlagController(r2.sessionId)?.getMode()).toBe("default")
+	})
+
+	it("closeSession deletes the KIMCHI_PERMISSIONS_<sessionId> env key", async () => {
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "")
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+
+		const fake = new FakeAgentSession("close-env-key")
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+
+		const { sessionId } = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		// Set a mode so the namespaced env key is definitely written.
+		await agent.setSessionConfigOption({ sessionId, configId: "permissions-mode", value: "yolo" })
+		const envKey = `${PERMISSIONS_ENV_KEY}_${sessionId}`
+		expect(process.env[envKey]).toBe("yolo")
+
+		await agent.unstable_closeSession({ sessionId })
+
+		expect(process.env[envKey]).toBeUndefined()
+	})
+
+	it("shutdown deletes KIMCHI_PERMISSIONS_<sessionId> env keys for all sessions", async () => {
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "")
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+
+		const fake1 = new FakeAgentSession("shutdown-env-1")
+		const fake2 = new FakeAgentSession("shutdown-env-2")
+		let callCount = 0
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(++callCount === 1 ? fake1 : fake2),
+		})
+
+		const r1 = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		const r2 = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		// Write a namespaced env key for each session.
+		await agent.setSessionConfigOption({ sessionId: r1.sessionId, configId: "permissions-mode", value: "plan" })
+		await agent.setSessionConfigOption({ sessionId: r2.sessionId, configId: "permissions-mode", value: "auto" })
+
+		const key1 = `${PERMISSIONS_ENV_KEY}_${r1.sessionId}`
+		const key2 = `${PERMISSIONS_ENV_KEY}_${r2.sessionId}`
+		expect(process.env[key1]).toBe("plan")
+		expect(process.env[key2]).toBe("auto")
+
+		await agent.shutdown()
+
+		expect(process.env[key1]).toBeUndefined()
+		expect(process.env[key2]).toBeUndefined()
 	})
 })
 

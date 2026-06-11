@@ -104,10 +104,14 @@ function persistPermissionMode(sessionId: string, mode: PermissionMode): void {
 	process.env[getSessionPermissionsEnvKey(sessionId)] = mode
 }
 
-export function setPermissionMode(sessionId: string, mode: PermissionMode): void {
+export function clearPermissionMode(sessionId: string): void {
+	Reflect.deleteProperty(process.env, getSessionPermissionsEnvKey(sessionId))
+}
+
+export function setPermissionMode(sessionId: string, mode: PermissionMode, skipNotify = false): void {
 	const sessionController = getSessionPermissionFlagController(sessionId)
 	if (sessionController) {
-		sessionController.setMode(mode)
+		sessionController.setMode(mode, skipNotify)
 	} else {
 		const controller = createSessionPermissionFlagController({ mode })
 		registerSessionPermissionFlagController(sessionId, controller)
@@ -123,7 +127,7 @@ export function getPermissionMode(sessionId: string): PermissionMode {
 	const envKey = getSessionPermissionsEnvKey(sessionId)
 	const mode = parseModeString(process.env[envKey])
 	if (mode) {
-		setPermissionMode(sessionId, mode)
+		setPermissionMode(sessionId, mode, true)
 		return mode
 	}
 	throw Error(
@@ -231,9 +235,10 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	}
 
 	/**
-	 * Stores permission mode into runtimeMode and persists if a session is active.
+	 * Stores permission mode into runtimeMode, keeps the controller in sync, and
+	 * persists the env key for sub-agents.
 	 */
-	function setRuntimePermissionMode(ctx: ExtensionContext | undefined, mode: PermissionMode): void {
+	function setRuntimePermissionMode(ctx: ExtensionContext | undefined, mode: PermissionMode, skipNotify = false): void {
 		runtimeMode = mode
 		// ExtensionContext may not be available when the session has not yet been started.
 		if (ctx) {
@@ -309,8 +314,13 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		}
 	}
 
-	function changeMode(ctx: ExtensionContext, current: PermissionMode | undefined, next: PermissionMode): void {
-		setRuntimePermissionMode(ctx, next)
+	function changeMode(
+		ctx: ExtensionContext,
+		current: PermissionMode | undefined,
+		next: PermissionMode,
+		skipNotify = false,
+	): void {
+		setRuntimePermissionMode(ctx, next, skipNotify)
 		if (current === "plan" && next !== "plan") restoreToolsFromPlanMode()
 		if (next === "plan") applyPlanModeTools()
 		// Dismiss all active permission prompts so tool_call handlers re-evaluate under the new mode.
@@ -476,7 +486,7 @@ ${planText}
 				if (changes.mode !== undefined) {
 					const current = getRuntimePermissionMode()
 					if (changes.mode !== current) {
-						changeMode(ctx, current, changes.mode)
+						changeMode(ctx, current, changes.mode, true)
 					}
 				}
 			})

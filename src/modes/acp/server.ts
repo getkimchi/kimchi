@@ -57,7 +57,7 @@ import {
 import { isHideThinkingEnabled } from "../../extensions/hide-thinking.js"
 import { loadConfig } from "../../extensions/permissions/config.js"
 import { PERMISSIONS_ENV_KEY } from "../../extensions/permissions/constants.js"
-import { getPermissionMode, setPermissionMode } from "../../extensions/permissions/index.js"
+import { clearPermissionMode, getPermissionMode, setPermissionMode } from "../../extensions/permissions/index.js"
 import {
 	registerSessionPermissionFlagController,
 	unregisterSessionPermissionFlagController,
@@ -519,6 +519,7 @@ export class KimchiAcpAgent implements Agent {
 			if (entry.turn) this.failTurn(entry, new Error("acp agent shutting down"))
 			unregisterAcpPrompter(entry.session.sessionId)
 			unregisterSessionPermissionFlagController(entry.session.sessionId)
+			clearPermissionMode(entry.session.sessionId)
 			await this.disposeSessionRecord(entry)
 		}
 		this.sessions.clear()
@@ -530,6 +531,7 @@ export class KimchiAcpAgent implements Agent {
 		this.sessions.delete(sessionId)
 		unregisterAcpPrompter(sessionId)
 		unregisterSessionPermissionFlagController(sessionId)
+		clearPermissionMode(sessionId)
 		entry.unsubscribe()
 		if (entry.turn) {
 			entry.turn.cancelled = true
