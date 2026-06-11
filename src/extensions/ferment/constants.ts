@@ -54,7 +54,7 @@ Draft concrete completion criteria and validation steps, then confirm with the u
 - Include the verification method for each criterion (test command, manual check, linter, etc.).
 - Use confirm_ferment_completion_criteria to present the criteria. Do not hand-build
   this with ask_user — the host asks one question with two options:
-  "Yes, looks good" and "No, enter what is wrong", where "No" includes the
+  "Yes, looks good" and "No (input what is wrong)", where "No" includes the
   inline free-form explanation path.
 - Proceed only when the tool returns Confirmed: yes and Changes: (none). Otherwise
   revise the criteria and ask again with confirm_ferment_completion_criteria.
