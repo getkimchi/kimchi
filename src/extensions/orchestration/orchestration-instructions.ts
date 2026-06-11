@@ -136,7 +136,7 @@ If any chunk fails either check, the verdict MUST be NEEDS_REVISION with the spe
 
 **Handling the verdict:** If APPROVED: proceed to build phase. If NEEDS_REVISION: fix the gaps (yourself if plan is in your roles; otherwise delegate to a Planner agent). After revision, send ONLY the changed sections back to the verifier — not the full plan. Maximum one re-verification round; if still not approved, proceed with documented reservations.
 2. **Build phase** — Delegate **one Agent call per chunk** from the plan (externally verified for complex tasks, self-validated for simple ones), not one Agent for the entire build. Each agent gets the spec file path and is told which chunk to implement. Instruct every build agent to: (1) write the implementation, (2) write tests, (3) verify the code compiles and passes lint, (4) run tests exactly once. If compilation fails or tests fail, report the failures and stop — do not iterate on fix-retry cycles. The orchestrator will spawn a targeted fix agent if needed. If chunks are independent (no data dependency), run up to 3 build agents in parallel with run_in_background. If chunks are sequential, run them one at a time, passing the previous chunk's output as context to the next. **Match the Builder model to the chunk's complexity classification from the plan**: for \`simple\` chunks, use a standard-tier Builder; for \`complex\` chunks, use a heavy-tier Builder from the Builder pool. The cost of a stronger model for one chunk is far less than the cost of 2-3 aborted attempts.
-3. **Review phase** — After all build chunks complete, delegate a single review agent. Pick the **strongest available Reviewer by tier** — the review agent runs in a fresh context with no memory of earlier work, so using the same model family as the planner or builder is fine. Read the model descriptions in Your Team to pick the best Reviewer. Pass the spec file path and the full list of created files.
+3. **Review phase** — After all build chunks complete, delegate a single review agent. Pick a **standard-tier Reviewer** (fast, reliable) rather than a heavy-tier one — heavy-tier models are slower and frequently time out on review tasks, wasting the entire subagent budget. A standard-tier Reviewer that completes in 60 seconds finds the same bugs as a heavy-tier one that times out at 600 seconds. The review agent runs in a fresh context with no memory of earlier work. Pass the spec file path and the full list of created files.
 
 **Review output contract:** Instruct the review agent to write its findings to a Markdown file in the Documents directory (e.g. \`.kimchi/docs/review.md\`). The file MUST contain:
 - **Verdict**: APPROVED or NEEDS_FIXES
@@ -144,18 +144,22 @@ If any chunk fails either check, the verdict MUST be NEEDS_REVISION with the spe
 
 The review agent runs tests, checks lint, and verifies the implementation matches the spec, then writes all findings to the review file. It must NOT fix issues itself — only report them.
 
-**Handling review results:** After the review agent completes, read ONLY the review file — do NOT re-read source files yourself. If the verdict is APPROVED, the review phase is done. If the verdict is NEEDS_FIXES, delegate a fix agent: pass it the review file path and the spec file path.
+**If the review agent times out or produces no output:** Retry ONCE with the same or a different standard-tier Reviewer. If the retry also fails, skip review and report to the user that review could not be completed. Do NOT attempt a third reviewer.
+
+**Handling review results:** After the review agent completes, read ONLY the review file — do NOT re-read source files yourself. If the verdict is APPROVED, the review phase is done — produce the final summary and stop. If the verdict is NEEDS_FIXES, delegate a fix agent: pass it the review file path and the spec file path.
 
 **Fix agent contract:** Instruct the fix agent to: (1) read the review findings file, (2) apply all fixes, (3) run the full test suite (with race/thread-safety detection if applicable) and lint, (4) write a verification report to the Documents directory (e.g. \`.kimchi/docs/verification.md\`) containing:
 - **Test output**: pass/fail count, any failures
 - **Lint output**: any warnings or errors
 - **Verdict**: ALL_PASS or HAS_FAILURES
 
-**After the fix agent completes:** Read ONLY the verification file — this is the ONLY action you take. Do NOT re-read source files, do NOT run tests yourself, do NOT grep, do NOT smoke-test, do NOT edit any file. Then:
-- If the verdict is ALL_PASS → review phase is complete. Produce the final summary and stop.
+**After the fix agent completes:** Read ONLY the verification file — this is the ONLY action you take. Do NOT re-read source files, do NOT run tests yourself, do NOT grep, do NOT smoke-test, do NOT write any file, do NOT build the binary, do NOT create test scripts. Then:
+- If the verdict is ALL_PASS → review phase is complete. Produce ONE final summary message and stop. Do not repeat the summary.
 - If the verdict is HAS_FAILURES → this is fix round 1. Spawn ONE more fix agent with the remaining failures. When it returns its verification file, read it. That is fix round 2.
-- After round 2, STOP regardless of outcome. If failures remain, report them to the user as unresolved. Do NOT attempt a third round. Do NOT debug manually.
+- After round 2, STOP regardless of outcome. If failures remain, report them to the user as unresolved. Do NOT attempt a third round. Do NOT debug manually. Do NOT write smoke tests. Do NOT run the binary.
 - If remaining failures are tests that assert specific ordering of concurrently-executed operations (e.g. checking which goroutine/thread finishes first), these are non-deterministic test design flaws, not implementation bugs. Report them as known flaky tests and stop — do not attempt to fix non-deterministic ordering assertions.
+
+**Review phase turn budget:** The entire review phase (from \`set_phase(review)\` to final summary) should complete in at most 10 orchestrator turns: 1 turn to dispatch the reviewer, 1 turn to read the review file, 1 turn to dispatch the fixer (if needed), 1 turn to read the verification file, 1 turn for a possible second fix round, 1 turn for the final summary. If you are approaching 10 turns in the review phase, stop immediately and produce the summary with whatever state you have.
 
 **Review verdicts are final**: Never edit a review report to change its verdict. If a flag is genuinely wrong, add a separate rationale note alongside the original review — do not alter the reviewer's output.
 
@@ -188,7 +192,7 @@ Use the **Your Team** section above to pick the right model for each delegated s
 
 ### Review delegation
 
-The full review/fix/verification contract is described in the **Review phase** of the mandatory pipeline above. In summary: delegate to the strongest Reviewer by tier, require a findings file, pass it to a fix agent if needed, read only the verification report, and stop after at most 2 fix rounds.
+The full review/fix/verification contract is described in the **Review phase** of the mandatory pipeline above. In summary: delegate to a standard-tier Reviewer (fast and reliable — heavy-tier reviewers frequently time out), require a findings file, pass it to a fix agent if needed, read only the verification report, and stop after at most 2 fix rounds. The entire review phase must complete in at most 10 orchestrator turns.
 
 ### Token budgets and turn caps
 
