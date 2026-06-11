@@ -1,14 +1,16 @@
 /**
- * Plugin-package SessionStart hook adapter.
+ * Plugin-package hook adapter.
  *
- * Loads ONLY the SessionStart hooks from each enabled pi plugin package's
- * `hooks/hooks.json` (or `.claude-plugin/hooks/hooks.json`) and injects their
- * `additionalContext` into the system prompt on the first `before_agent_start`
- * event, giving a strong steering delivery.
+ * Loads the `hooks/hooks.json` (or `.claude-plugin/hooks/hooks.json`) from
+ * each enabled pi plugin package and honors the full Claude Code hook
+ * lifecycle — the same event set as the standalone claude-code-hook-adapter.
+ * SessionStart `additionalContext` is injected into the system prompt on the
+ * first `before_agent_start` event, giving a strong steering delivery.
  *
- * Tool capture and routing is intentionally left to each package's own pi
- * extension to avoid double-capturing PreToolUse/PostToolUse/etc.  This
- * adapter handles nothing except the SessionStart steering block.
+ * Hooks run unconditionally alongside any pi extension the package ships:
+ * extension event subscriptions are opaque, so no precedence check is
+ * possible. Avoiding duplicate behavior across a package's hooks.json and
+ * its pi extension is the package author's contract.
  */
 import { existsSync } from "node:fs"
 import { join } from "node:path"
@@ -17,6 +19,7 @@ import { getResourceOverride } from "../../resources/store.js"
 import {
 	type CommandHookAdapterDefinition,
 	type CommandHookSource,
+	FULL_COMMAND_HOOK_EVENTS,
 	discoverCommandHookResources,
 } from "../hook-adapters/discovery.js"
 
@@ -24,7 +27,7 @@ export const PLUGIN_PACKAGE_HOOK_ADAPTER_DEFINITION: CommandHookAdapterDefinitio
 	id: "plugin-package",
 	label: "Plugin package",
 	customType: "kimchi-plugin-package-hook-context",
-	supportedEvents: ["SessionStart"],
+	supportedEvents: FULL_COMMAND_HOOK_EVENTS,
 	sources: pluginPackageHookSources,
 	defaultTimeoutMs: 60_000,
 	sessionStartDelivery: "systemPrompt",

@@ -137,12 +137,18 @@ Supported events:
 
 - `PreToolUse`
 - `PostToolUse`
+- `PostToolUseFail` — runs only when a tool result is an error (`PostToolUse` still runs for all results)
+- `PostToolBatch` — synthesized once per turn after all tool executions in that turn finish
 - `SessionStart`
 - `PreCompact`
 - `PostCompact`
 - `UserPromptSubmit`
-- `Stop`
+- `Stop` — fires once when the agent finishes responding (pi `agent_end`); a `{"decision":"block","reason":"..."}` result continues the run, with `stop_hook_active` set on re-entry
+- `TaskCompleted` — fires at the end of each turn (pi `turn_end`); observer-only, block decisions are ignored
+- `TurnStart`, `MessageStart`, `MessageEnd`, `ModelSelect`, `UserBash` — kimchi-specific observer hooks for pi events with no Claude Code equivalent
 - `SessionEnd`
+
+Plugin packages installed via `kimchi install` may ship a `hooks/hooks.json` (or `.claude-plugin/hooks/hooks.json`). Those hooks honor the same full event set as the adapter above; `SessionStart` context from packages is injected into the system prompt.
 
 Example:
 

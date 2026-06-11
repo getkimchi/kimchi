@@ -4,6 +4,7 @@ import { join, resolve } from "node:path"
 import {
 	type CommandHookAdapterDefinition,
 	type CommandHookSource,
+	FULL_COMMAND_HOOK_EVENTS,
 	discoverCommandHookResources,
 } from "../hook-adapters/discovery.js"
 
@@ -11,16 +12,7 @@ export const CLAUDE_CODE_HOOK_ADAPTER_DEFINITION: CommandHookAdapterDefinition =
 	id: "claude-code",
 	label: "Claude Code",
 	customType: "kimchi-claude-code-hook-context",
-	supportedEvents: [
-		"PreToolUse",
-		"PostToolUse",
-		"SessionStart",
-		"PreCompact",
-		"PostCompact",
-		"UserPromptSubmit",
-		"Stop",
-		"SessionEnd",
-	],
+	supportedEvents: FULL_COMMAND_HOOK_EVENTS,
 	sources: claudeCodeHookSources,
 	defaultTimeoutMs: 60_000,
 }
