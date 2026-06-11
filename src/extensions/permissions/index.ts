@@ -15,8 +15,7 @@ import { classifyToolCall } from "./classifier.js"
 import { registerCommands } from "./commands.js"
 import { type LoadedConfig, loadConfig } from "./config.js"
 import { PERMISSIONS_ENV_KEY } from "./constants.js"
-import { getSessionPermissionFlagController } from "./mode-controller-registry.js"
-import { getSessionPermissionsEnvKey, setPermissionMode } from "./mode-controller.js"
+import { getPermissionMode, getSessionPermissionsEnvKey, setPermissionMode } from "./mode-controller.js"
 import { resolveMode } from "./mode.js"
 import { saveApprovedPlan } from "./plan-persistence.js"
 import type { ToolPermissionPrompter } from "./prompter.js"
@@ -100,6 +99,13 @@ export function isLaunchedWithYolo(): boolean {
 	return _isLaunchedWithYolo()
 }
 
+let _displayPermissionMode: PermissionMode
+
+/** Returns current permission mode to be displayed in the TUI. */
+export function getDisplayPermissionMode(): string {
+	return _displayPermissionMode
+}
+
 export { notifyFermentActive }
 
 function canPrompt(ctx: ExtensionContext): boolean {
@@ -161,7 +167,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	let loaded: LoadedConfig = EMPTY_LOADED_CONFIG
 	let configRules: Rule[] = []
 	let sessionCtx: ExtensionContext | undefined
-	let runtimeMode: PermissionMode | undefined
+	let preFermentMode: PermissionMode | undefined
 	let cliMode: PermissionMode | undefined
 	let planModeApplied = false
 	let planModeHiddenTools: string[] = []
@@ -185,12 +191,20 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		]
 	}
 
+	function getInitialPermissionMode(): PermissionMode {
+		return resolveMode({
+			runtime: undefined,
+			flag: cliMode,
+			env: permissionsEnvFlag,
+			config: loaded.config.defaultMode,
+		}).mode
+	}
+
 	/**
-	 * Returns the locally stored runtimeMode flag (which may differ from the persisted permission mode
-	 * if it's set by the agent during ferment, changing plan to build, etc), or falls back to
-	 * a default.
+	 * Returns the current permission mode flag or falls back to a user default.
 	 */
 	function getRuntimePermissionMode(): PermissionMode {
+		const runtimeMode = sessionCtx && getPermissionMode(sessionCtx.sessionManager.getSessionId())
 		return resolveMode({
 			runtime: runtimeMode,
 			flag: cliMode,
@@ -200,24 +214,15 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	}
 
 	/**
-	 * Stores permission mode into runtimeMode, keeps the controller in sync, and
+	 * Set current permission mode, keeps the controller in sync, and
 	 * persists the env key for sub-agents.
 	 */
-	function setRuntimePermissionMode(ctx: ExtensionContext | undefined, mode: PermissionMode, skipNotify = false): void {
-		runtimeMode = mode
-		// ExtensionContext may not be available when the session has not yet been started.
-		if (ctx) {
-			setPermissionMode(ctx.sessionManager.getSessionId(), mode, skipNotify)
-		}
+	function setRuntimePermissionMode(ctx: ExtensionContext, mode: PermissionMode, skipNotify = false): void {
+		_displayPermissionMode = mode
+		setPermissionMode(ctx.sessionManager.getSessionId(), mode, skipNotify)
 	}
 
-	_isLaunchedWithYolo = () =>
-		resolveMode({
-			runtime: undefined,
-			flag: cliMode,
-			env: permissionsEnvFlag,
-			config: loaded.config.defaultMode,
-		}).mode === "yolo"
+	_isLaunchedWithYolo = () => getInitialPermissionMode() === "yolo"
 
 	function allRules(): Rule[] {
 		return [...session.all(), ...configRules, ...builtinRules]
@@ -279,12 +284,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		}
 	}
 
-	function changeMode(
-		ctx: ExtensionContext,
-		current: PermissionMode | undefined,
-		next: PermissionMode,
-		skipNotify = false,
-	): void {
+	function changeMode(ctx: ExtensionContext, current: PermissionMode, next: PermissionMode, skipNotify = false): void {
 		setRuntimePermissionMode(ctx, next, skipNotify)
 		if (current === "plan" && next !== "plan") restoreToolsFromPlanMode()
 		if (next === "plan") applyPlanModeTools()
@@ -313,14 +313,18 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		if (cliMode) return // explicit CLI flag always wins
 		if (!sessionCtx) return // No active session
 		const current = getRuntimePermissionMode()
+		let next: PermissionMode | undefined
 		if (hasActive) {
-			runtimeMode = "yolo"
-		} else {
-			// Only clear runtimeMode if we set it for ferment (not if user changed it manually)
-			if (runtimeMode === "yolo") runtimeMode = undefined
+			preFermentMode = current
+			next = "yolo"
+		} else if (preFermentMode) {
+			// Clear mode that was set for ferment (not if user changed it manually)
+			next = preFermentMode
+			preFermentMode = undefined
 		}
-		const next = getRuntimePermissionMode()
-		changeMode(sessionCtx, current, next)
+		if (next && next !== current) {
+			changeMode(sessionCtx, current, next)
+		}
 	})
 
 	function doLoadConfig(ctx: ExtensionContext): { errors: string[] } {
@@ -428,34 +432,19 @@ ${planText}
 		// YOLO mode: --yolo and --dangerously-skip-permissions both set yolo mode (no classifier, auto-approve all)
 		else if (pi.getFlag("yolo") || pi.getFlag("dangerously-skip-permissions")) cliMode = "yolo"
 
-		const current = getRuntimePermissionMode()
+		const current = getInitialPermissionMode()
 		let next: PermissionMode
 		// Active ferment → auto-yolo so scoping/lifecycle work can proceed without approval prompts.
 		// Permission mode is persisted after the user explicitly approves ferment creation.
 		// Only applies when no explicit CLI mode flag was given.
 		if (!cliMode && hasActiveFerment()) {
 			next = "yolo"
+			preFermentMode = current
 		} else {
 			next = current
 		}
 
 		changeMode(ctx, current, next)
-
-		// Subscribe to external mode changes (e.g. ACP's setSessionConfigOption)
-		// so the extension-local runtimeMode stays in sync with the controller.
-		unsubscribePermissionFlagController?.()
-		const sessionId = ctx.sessionManager.getSessionId()
-		const controller = getSessionPermissionFlagController(sessionId)
-		if (controller) {
-			unsubscribePermissionFlagController = controller.subscribe((changes) => {
-				if (changes.mode !== undefined) {
-					const current = getRuntimePermissionMode()
-					if (changes.mode !== current) {
-						changeMode(ctx, current, changes.mode, true)
-					}
-				}
-			})
-		}
 	})
 
 	pi.on("session_shutdown", () => {

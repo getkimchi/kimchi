@@ -15,7 +15,7 @@ import permissionsExtension, {
 	notifyFermentActive,
 } from "./index.js"
 import { unregisterSessionPermissionFlagController } from "./mode-controller-registry.js"
-import { getPermissionMode } from "./mode-controller.js"
+import { getPermissionMode, setPermissionMode } from "./mode-controller.js"
 import { SessionMemory } from "./session-memory.js"
 import type { Rule } from "./types.js"
 
@@ -45,14 +45,15 @@ const TEST_SESSION_ID = "test-session"
 // Helper to create mock ExtensionContext with ui.select
 // When an AbortSignal is passed and aborted=true, returns undefined to trigger "aborted" outcome
 function createMockContext(
-	selectResults: (string | undefined)[],
+	selectResults: (string | undefined)[] = [],
+	sessionId = TEST_SESSION_ID,
 	opts?: { abortOnFirstSelect?: boolean },
 ): ExtensionContext {
 	let selectCallIndex = 0
 	return {
 		hasUI: true,
 		cwd: "/test",
-		sessionManager: { getSessionId: () => TEST_SESSION_ID },
+		sessionManager: { getSessionId: () => sessionId },
 		ui: {
 			select: vi.fn(async (_: string, __: string[], selectOpts?: { signal?: AbortSignal }) => {
 				if (selectOpts?.signal?.aborted) {

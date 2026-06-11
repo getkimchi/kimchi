@@ -55,7 +55,11 @@ export function setPermissionMode(sessionId: string, mode: PermissionMode, skipN
 	persistPermissionMode(sessionId, mode)
 }
 
-export function getPermissionMode(sessionId: string): PermissionMode {
+/**
+ * Returns the current permission mode for the given sessionId.
+ * Returns undefined if no persisted mode is found for the session.
+ */
+export function getPermissionMode(sessionId: string): PermissionMode | undefined {
 	const sessionController = getSessionPermissionFlagController(sessionId)
 	if (sessionController) {
 		return sessionController.getMode()
@@ -66,7 +70,5 @@ export function getPermissionMode(sessionId: string): PermissionMode {
 		setPermissionMode(sessionId, mode, true)
 		return mode
 	}
-	throw Error(
-		`No permission mode could be found for session ${sessionId}. This is likely an error in the harness code.`,
-	)
+	return undefined
 }

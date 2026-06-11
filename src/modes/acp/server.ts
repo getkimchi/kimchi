@@ -334,7 +334,9 @@ export class KimchiAcpAgent implements Agent {
 			this.replayTranscript(existing.session)
 			return {
 				models: this.modelStateForSession(existing.session),
-				configOptions: [buildPermissionsConfigOption(getPermissionMode(params.sessionId))],
+				configOptions: [
+					buildPermissionsConfigOption(getPermissionMode(params.sessionId) ?? this.resolveInitialMode(params.cwd)),
+				],
 			}
 		}
 		const loading = this.loadingSessions.get(params.sessionId)
