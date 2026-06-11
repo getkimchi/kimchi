@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import ClassVar
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from harbor.agents.installed.base import NonZeroAgentExitCodeError
 from harbor.environments.base import ExecResult
@@ -12,12 +12,14 @@ from harbor.models.agent.context import AgentContext
 
 from kimchi_agent.claude_code_kimchi import (
     CLAUDE_CODE_CONTEXT_SAFETY_MARGIN_TOKENS,
+    CLAUDE_CODE_INSTALL_RETRY_DELAYS_SEC,
     CLAUDE_CODE_OUTPUT_RESERVE_TOKENS,
     KIMCHI_ANTHROPIC_BASE_URL,
     ClaudeCodeKimchi,
     RetryableApiError,
 )
 from kimchi_agent.gateway import (
+    FETCH_TIMEOUT_SEC,
     KIMCHI_MODELS_METADATA_URL,
     KimchiModelMetadata,
     KimchiModelsMetadataResponse,
@@ -82,6 +84,22 @@ class FailingClaudeCodeKimchi(RecordingClaudeCodeKimchi):
             raise self.failure
 
 
+class InstallRecordingClaudeCodeKimchi(ClaudeCodeKimchi):
+    def __init__(self, *args, failures: list[Exception] | None = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.failures = list(failures or [])
+        self.root_commands: list[str] = []
+        self.agent_commands: list[str] = []
+
+    async def exec_as_root(self, _environment, command: str, env=None, cwd=None, timeout_sec=None):
+        self.root_commands.append(command)
+
+    async def exec_as_agent(self, _environment, command: str, env=None, cwd=None, timeout_sec=None):
+        self.agent_commands.append(command)
+        if self.failures:
+            raise self.failures.pop(0)
+
+
 class FakeEnvironment:
     def __init__(self, stdout: str, return_code: int = 0) -> None:
         self.stdout = stdout
@@ -103,6 +121,59 @@ class ClaudeCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
             os.environ.pop("KIMCHI_API_KEY", None)
         else:
             os.environ["KIMCHI_API_KEY"] = self._old_api_key
+
+    @staticmethod
+    def _killed_claude_install_error() -> NonZeroAgentExitCodeError:
+        return NonZeroAgentExitCodeError(
+            "Command failed (exit 137): set -euo pipefail; "
+            "curl -fsSL https://downloads.claude.ai/claude-code-releases/bootstrap.sh | bash -s -- && "
+            "export PATH=\"$HOME/.local/bin:$PATH\" && claude --version\n"
+            "stdout: Installing Claude Code native build latest..."
+            "bash: line 158: 235 Killed \"$binary_path\" install\n"
+            "stderr: None"
+        )
+
+    async def test_retries_killed_claude_code_installer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = InstallRecordingClaudeCodeKimchi(
+                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                model_name="kimchi-dev/kimi-k2.5",
+                failures=[self._killed_claude_install_error()],
+            )
+
+            with (
+                patch("kimchi_agent.claude_code_kimchi.asyncio.sleep", new_callable=AsyncMock) as sleep,
+                patch.object(agent.logger, "warning") as warning,
+            ):
+                await agent.install(object())
+
+        self.assertEqual(len(agent.root_commands), 2)
+        self.assertEqual(len(agent.agent_commands), 2)
+        sleep.assert_awaited_once_with(CLAUDE_CODE_INSTALL_RETRY_DELAYS_SEC[0])
+        warning.assert_called_once()
+
+    async def test_non_installer_exit_137_is_not_retried(self) -> None:
+        original_error = NonZeroAgentExitCodeError(
+            "Command failed (exit 137): export PATH=\"$HOME/.local/bin:$PATH\"; "
+            "claude --verbose --output-format=stream-json --print -- 'solve it'"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = InstallRecordingClaudeCodeKimchi(
+                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                model_name="kimchi-dev/kimi-k2.5",
+                failures=[original_error],
+            )
+
+            with (
+                patch("kimchi_agent.claude_code_kimchi.asyncio.sleep", new_callable=AsyncMock) as sleep,
+                self.assertRaises(NonZeroAgentExitCodeError) as raised,
+            ):
+                await agent.install(object())
+
+        self.assertIs(raised.exception, original_error)
+        self.assertEqual(len(agent.root_commands), 1)
+        self.assertEqual(len(agent.agent_commands), 1)
+        sleep.assert_not_awaited()
 
     async def test_runs_claude_code_against_selected_kimchi_model(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -395,7 +466,7 @@ class ClaudeCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
 
         http_get.assert_called_once()
         self.assertEqual(http_get.call_args.kwargs["headers"], {"Authorization": "Bearer test-key"})
-        self.assertEqual(http_get.call_args.kwargs["timeout"], 5)
+        self.assertEqual(http_get.call_args.kwargs["timeout"], FETCH_TIMEOUT_SEC)
         self.assertEqual(http_get.call_args.args, (KIMCHI_MODELS_METADATA_URL,))
 
 
