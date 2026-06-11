@@ -301,6 +301,42 @@ describe("completePhase", () => {
 })
 
 describe("registerPhaseTools", () => {
+	it("blocks phase activation while a plan review is pending", async () => {
+		const h = createHarness()
+		h.runtime.setPendingPlanReview({
+			fermentId: h.fermentId,
+			planMarkdown: "# Plan: Pending Review",
+		})
+		const tools = new Map<string, { execute: (...args: unknown[]) => Promise<unknown> }>()
+		const pi = {
+			registerTool: (tool: { name: string; execute: (...args: unknown[]) => Promise<unknown> }) => {
+				tools.set(tool.name, tool)
+			},
+			sendUserMessage: vi.fn(),
+			appendEntry: vi.fn(),
+			sendMessage: vi.fn(),
+			getActiveTools: vi.fn(() => ["read", "bash", "activate_ferment_phase"]),
+			getAllTools: vi.fn(() => [{ name: "read" }, { name: "bash" }, { name: "activate_ferment_phase" }]),
+			setActiveTools: vi.fn(),
+		} as unknown as ExtensionAPI
+		registerPhaseTools(pi, h.runtime)
+
+		const activateTool = tools.get("activate_ferment_phase")
+		if (!activateTool) throw new Error("activate_ferment_phase was not registered")
+
+		const result = (await activateTool.execute(
+			"test-call-id",
+			{ ferment_id: h.fermentId, phase_id: "phase-2" },
+			undefined,
+			undefined,
+			{},
+		)) as { content: { text: string }[]; isError?: boolean }
+
+		expect(result.isError).toBe(true)
+		expect(result.content[0]?.text).toContain("Plan review is pending")
+		expect(h.storage.get(h.fermentId)?.phases[1].status).toBe("planned")
+	})
+
 	it("uses the injected runtime, not the global active ferment, for phase completion", async () => {
 		const h = createHarness()
 		h.runtime.setContinuationPolicy("automated")

@@ -279,7 +279,12 @@ describe("fermentExtension plan review handoff guard", () => {
 				toolName: FERMENT_TOOLS.ACTIVATE_PHASE,
 				input: { ferment_id: "f-123", phase_id: "phase-1" },
 			})
-			expect(allowed).not.toContainEqual(expect.objectContaining({ block: true }))
+			expect(allowed).toContainEqual(
+				expect.objectContaining({
+					block: true,
+					reason: expect.stringContaining("Plan review is pending"),
+				}),
+			)
 			await vi.runOnlyPendingTimersAsync()
 		} finally {
 			vi.useRealTimers()
