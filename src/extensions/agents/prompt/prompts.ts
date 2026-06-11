@@ -17,7 +17,7 @@ export interface PromptExtras {
 	memoryBlock?: string
 	/** Preloaded skill contents to inject. */
 	skillBlocks?: { name: string; content: string }[]
-	/** Model-specific behavioral guidelines resolved from the model registry. */
+	/** Model-specific phase guidelines resolved from the model registry. */
 	guidelinesBlock?: string
 	/** Turn and token budget limits for agent self-regulation. */
 	budget?: BudgetInfo

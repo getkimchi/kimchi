@@ -102,12 +102,12 @@ vi.mock("../../../config.js", () => ({
 }))
 
 vi.mock("../../orchestration/model-registry/guidelines/guidelines-resolver.js", () => ({
-	buildModelGuidelinesSection: vi.fn().mockReturnValue(""),
+	buildPhaseGuidelinesSection: vi.fn().mockReturnValue(""),
 }))
 
 import { type AgentSession, DefaultResourceLoader, createAgentSession } from "@earendil-works/pi-coding-agent"
 import { readTelemetryConfig } from "../../../config.js"
-import { buildModelGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
+import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
 import telemetryExtension from "../../telemetry/index.js"
 import { getAgentConfig, getConfig, getToolNamesForType } from "../personas/agent-types.js"
@@ -120,7 +120,7 @@ const mockGetAgentConfig = vi.mocked(getAgentConfig)
 const mockGetToolNamesForType = vi.mocked(getToolNamesForType)
 const mockLoadProjectContextFiles = vi.mocked(loadProjectContextFiles)
 const mockBuildAgentPrompt = vi.mocked(buildAgentPrompt)
-const mockBuildPhaseGuidelinesSection = vi.mocked(buildModelGuidelinesSection)
+const mockBuildPhaseGuidelinesSection = vi.mocked(buildPhaseGuidelinesSection)
 const mockDefaultResourceLoader = vi.mocked(DefaultResourceLoader)
 const mockTelemetryExtension = vi.mocked(telemetryExtension)
 const mockReadTelemetryConfig = vi.mocked(readTelemetryConfig)

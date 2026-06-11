@@ -9,7 +9,7 @@
  */
 
 import { type Skill, formatSkillsForPrompt } from "@earendil-works/pi-coding-agent"
-import { buildModelGuidelinesSection } from "../orchestration/model-registry/guidelines/guidelines-resolver.js"
+import { buildPhaseGuidelinesSection } from "../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import type { ModelRegistry } from "../orchestration/model-registry/index.js"
 import type { Phase } from "../orchestration/model-registry/types.js"
 import type { ModelRoles } from "../orchestration/model-roles.js"
@@ -72,8 +72,7 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 		roles,
 	})
 
-	const phaseSection =
-		mode === "orchestrator" ? "" : buildModelGuidelinesSection(currentModelId, currentPhase, registry)
+	const phaseSection = buildPhaseGuidelinesSection(currentModelId, currentPhase, registry)
 	const blocks = sessionId ? renderSystemPromptBlocks(sessionId, { mode }) : []
 	const suppressed = new Set<SuppressibleSection>()
 	for (const block of blocks) {

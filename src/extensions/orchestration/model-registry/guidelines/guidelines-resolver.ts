@@ -1,25 +1,26 @@
 import type { ModelRegistry } from "../index.js"
 import type { Phase } from "../types.js"
 import { DEFAULT_ORCHESTRATION_GUIDELINES } from "./default-orchestration-guidelines.js"
+import { DEFAULT_PHASE_GUIDELINES } from "./default-phase-guidelines.js"
 
 // ---------------------------------------------------------------------------
-// Model Guidelines (per-phase, model-specific behavioral tweaks)
+// Phase Guidelines
 // ---------------------------------------------------------------------------
 
-export function resolveModelGuideline(phase: Phase, modelId: string | undefined, registry?: ModelRegistry): string {
+export function resolvePhaseGuideline(phase: Phase, modelId: string | undefined, registry?: ModelRegistry): string {
 	const descriptor = modelId ? registry?.getModelById(modelId) : undefined
-	return descriptor?.capabilities.guidelines?.[phase] ?? ""
+	return descriptor?.capabilities.guidelines?.[phase] ?? DEFAULT_PHASE_GUIDELINES[phase]
 }
 
-export function buildModelGuidelinesSection(
+export function buildPhaseGuidelinesSection(
 	modelId: string | undefined,
 	phase: Phase | undefined,
 	registry?: ModelRegistry,
 ): string {
 	if (!phase) return ""
-	const guideline = resolveModelGuideline(phase, modelId, registry)
+	const guideline = resolvePhaseGuideline(phase, modelId, registry)
 	if (!guideline) return ""
-	return `## Model Guidelines\n\n${guideline}`
+	return `## Phase Guidelines (${phase})\n\n${guideline}`
 }
 
 // ---------------------------------------------------------------------------

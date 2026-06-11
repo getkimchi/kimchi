@@ -1,5 +1,12 @@
 import { DEFAULT_ORCHESTRATION_GUIDELINES } from "./guidelines/default-orchestration-guidelines.js"
 import {
+	DEFAULT_BUILD_GUIDELINES,
+	DEFAULT_EXPLORE_GUIDELINES,
+	DEFAULT_PLAN_GUIDELINES,
+	DEFAULT_RESEARCH_GUIDELINES,
+	DEFAULT_REVIEW_GUIDELINES,
+} from "./guidelines/default-phase-guidelines.js"
+import {
 	KIMI_FAMILY_ORCHESTRATION,
 	KIMI_FAMILY_PLAN,
 	KIMI_FAMILY_RESEARCH,
@@ -109,9 +116,9 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 			tier: "heavy",
 			description: KIMI_K26_DESCRIPTION,
 			guidelines: guidelinesMap({
-				research: [KIMI_FAMILY_RESEARCH],
-				plan: [KIMI_FAMILY_PLAN, KIMI_K26_PLAN],
-				review: [KIMI_FAMILY_REVIEW],
+				research: [DEFAULT_RESEARCH_GUIDELINES, KIMI_FAMILY_RESEARCH],
+				plan: [DEFAULT_PLAN_GUIDELINES, KIMI_FAMILY_PLAN, KIMI_K26_PLAN],
+				review: [DEFAULT_REVIEW_GUIDELINES, KIMI_FAMILY_REVIEW],
 			}),
 			orchestrationGuidelines: optionalGuidelines(
 				DEFAULT_ORCHESTRATION_GUIDELINES,
@@ -129,8 +136,8 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 			tier: "standard",
 			description: MINIMAX_M27_DESCRIPTION,
 			guidelines: guidelinesMap({
-				build: [MINIMAX_FAMILY_BUILD, MINIMAX_M27_BUILD],
-				review: [MINIMAX_FAMILY_REVIEW, MINIMAX_M27_REVIEW],
+				build: [DEFAULT_BUILD_GUIDELINES, MINIMAX_FAMILY_BUILD, MINIMAX_M27_BUILD],
+				review: [DEFAULT_REVIEW_GUIDELINES, MINIMAX_FAMILY_REVIEW, MINIMAX_M27_REVIEW],
 			}),
 			orchestrationGuidelines: optionalGuidelines(
 				DEFAULT_ORCHESTRATION_GUIDELINES,
@@ -147,9 +154,9 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 			tier: "light",
 			description: NEMOTRON_3_SUPER_DESCRIPTION,
 			guidelines: guidelinesMap({
-				build: [NEMOTRON_FAMILY_BUILD, NEMOTRON_3_SUPER_BUILD],
-				research: [NEMOTRON_FAMILY_RESEARCH, NEMOTRON_3_SUPER_RESEARCH],
-				explore: [NEMOTRON_FAMILY_EXPLORE, NEMOTRON_3_SUPER_EXPLORE],
+				build: [DEFAULT_BUILD_GUIDELINES, NEMOTRON_FAMILY_BUILD, NEMOTRON_3_SUPER_BUILD],
+				research: [DEFAULT_RESEARCH_GUIDELINES, NEMOTRON_FAMILY_RESEARCH, NEMOTRON_3_SUPER_RESEARCH],
+				explore: [DEFAULT_EXPLORE_GUIDELINES, NEMOTRON_FAMILY_EXPLORE, NEMOTRON_3_SUPER_EXPLORE],
 			}),
 			orchestrationGuidelines: optionalGuidelines(
 				DEFAULT_ORCHESTRATION_GUIDELINES,

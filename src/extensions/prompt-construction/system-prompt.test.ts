@@ -195,7 +195,7 @@ describe("buildSystemPrompt", () => {
 			expect(envPos).toBeLessThan(contextPos)
 		})
 
-		it("excludes model guidelines regardless of phase provided", () => {
+		it("includes phase guidelines when phase is provided", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
@@ -204,8 +204,7 @@ describe("buildSystemPrompt", () => {
 				registry,
 				mode: "orchestrator",
 			})
-			expect(result).not.toContain("## Model Guidelines")
-			expect(result).not.toContain("Outline-then-diff")
+			expect(result).toContain("## Phase Guidelines (build)")
 		})
 
 		it("includes orchestration guidelines when model is provided", () => {
@@ -220,10 +219,7 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain("MiniMax M2 family")
 		})
 
-		it("model guidelines section is omitted so ordering test is not applicable in orchestrator mode", () => {
-			// Model guidelines section is excluded when mode is orchestrator, so this
-			// ordering test is not applicable. The orchestrator receives phase context
-			// through orchestration instructions instead.
+		it("includes both phase guidelines and orchestration guidelines in orchestrator mode", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
@@ -232,8 +228,7 @@ describe("buildSystemPrompt", () => {
 				registry,
 				mode: "orchestrator",
 			})
-			// Verify model guidelines section is excluded but orchestration section is included
-			expect(result).not.toContain("## Model Guidelines")
+			expect(result).toContain("## Phase Guidelines (build)")
 			expect(result).toContain("### Orchestration Guidelines")
 		})
 	})
@@ -282,7 +277,7 @@ describe("buildSystemPrompt", () => {
 			expect(result).not.toContain("Model selection for delegation")
 		})
 
-		it("includes model guidelines when phase and model are provided", () => {
+		it("includes phase guidelines when phase and model are provided", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
@@ -291,7 +286,7 @@ describe("buildSystemPrompt", () => {
 				registry,
 				mode: "subagent",
 			})
-			expect(result).toContain("## Model Guidelines")
+			expect(result).toContain("## Phase Guidelines (build)")
 			expect(result).toContain("Outline-then-diff")
 		})
 
@@ -403,7 +398,7 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain('<tool name="Agent">')
 		})
 
-		it("includes model guidelines when phase and model are provided", () => {
+		it("includes phase guidelines when phase and model are provided", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
@@ -412,7 +407,7 @@ describe("buildSystemPrompt", () => {
 				registry,
 				mode: "single",
 			})
-			expect(result).toContain("## Model Guidelines")
+			expect(result).toContain("## Phase Guidelines (build)")
 			expect(result).toContain("Outline-then-diff")
 		})
 	})
