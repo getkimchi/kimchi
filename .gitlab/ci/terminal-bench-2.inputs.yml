@@ -1,0 +1,137 @@
+inputs:
+  agent:
+    description: "Benchmark agent to run."
+    type: string
+    default: kimchi
+    options:
+      - kimchi
+      - opencode
+      - claude-code
+  target_ref:
+    description: "Git ref to fetch from origin and benchmark. Defaults to master."
+    type: string
+    default: "master"
+  tasks:
+    description: "Terminal Bench tasks to run. Leave empty to run the full benchmark."
+    type: array
+    default: []
+    options:
+      - adaptive-rejection-sampler
+      - bn-fit-modify
+      - break-filter-js-from-html
+      - build-cython-ext
+      - build-pmars
+      - build-pov-ray
+      - caffe-cifar-10
+      - cancel-async-tasks
+      - chess-best-move
+      - circuit-fibsqrt
+      - cobol-modernization
+      - code-from-image
+      - compile-compcert
+      - configure-git-webserver
+      - constraints-scheduling
+      - count-dataset-tokens
+      - crack-7z-hash
+      - custom-memory-heap-crash
+      - db-wal-recovery
+      - distribution-search
+      - dna-assembly
+      - dna-insert
+      - extract-elf
+      - extract-moves-from-video
+      - feal-differential-cryptanalysis
+      - feal-linear-cryptanalysis
+      - filter-js-from-html
+      - financial-document-processor
+      - fix-code-vulnerability
+      - fix-git
+      - fix-ocaml-gc
+      - gcode-to-text
+      - git-leak-recovery
+      - git-multibranch
+      - gpt2-codegolf
+      - headless-terminal
+      - hf-model-inference
+      - install-windows-3-11
+      - kv-store-grpc
+      - large-scale-text-editing
+      - largest-eigenval
+      - llm-inference-batching-scheduler
+      - log-summary-date-ranges
+      - mailman
+      - make-doom-for-mips
+      - make-mips-interpreter
+      - mcmc-sampling-stan
+      - merge-diff-arc-agi-task
+      - model-extraction-relu-logits
+      - modernize-scientific-stack
+      - mteb-leaderboard
+      - mteb-retrieve
+      - multi-source-data-merger
+      - nginx-request-logging
+      - openssl-selfsigned-cert
+      - overfull-hbox
+      - password-recovery
+      - path-tracing
+      - path-tracing-reverse
+      - polyglot-c-py
+      - polyglot-rust-c
+      - portfolio-optimization
+      - protein-assembly
+      - prove-plus-comm
+      - pypi-server
+      - pytorch-model-cli
+      - pytorch-model-recovery
+      - qemu-alpine-ssh
+      - qemu-startup
+      - query-optimize
+      - raman-fitting
+      - regex-chess
+      - regex-log
+      - reshard-c4-data
+      - rstan-to-pystan
+      - sam-cell-seg
+      - sanitize-git-repo
+      - schemelike-metacircular-eval
+      - sparql-university
+      - sqlite-db-truncate
+      - sqlite-with-gcov
+      - torch-pipeline-parallelism
+      - torch-tensor-parallelism
+      - train-fasttext
+      - tune-mjcf
+      - video-processing
+      - vulnerable-secret
+      - winning-avg-corewars
+      - write-compressor
+  model:
+    description: "Kimchi model used for the benchmark run."
+    type: string
+    default: "kimchi-dev/kimi-k2.6"
+    options:
+      - kimchi-dev/kimi-k2.6
+      - kimchi-dev/claude-sonnet-4-6
+      - kimchi-dev/claude-opus-4-6
+      - kimchi-dev/minimax-m2.7
+      - kimchi-dev/nemotron-3-super-fp4
+  kimchi_multi_model:
+    description: "Enable Kimchi multi-model routing. Ignored unless agent is kimchi."
+    type: boolean
+    default: true
+  kimchi_ferment_oneshot:
+    description: "Run each task through Kimchi ferment one-shot workflow. Ignored unless agent is kimchi."
+    type: boolean
+    default: false
+  parallelism:
+    description: "Maximum number of benchmark tasks to run concurrently."
+    type: number
+    default: 8
+  attempts:
+    description: "Attempts per selected task."
+    type: number
+    default: 1
+  timeout_multiplier:
+    description: "Scales each task timeout. Use 1 for the benchmark default."
+    type: number
+    default: 1

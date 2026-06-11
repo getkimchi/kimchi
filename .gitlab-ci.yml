@@ -1,0 +1,17 @@
+spec:
+  include:
+    - local: /.gitlab/ci/terminal-bench-2.inputs.yml
+---
+
+include:
+  - local: /.gitlab/ci/terminal-bench-2.yml
+    inputs:
+      agent: $[[ inputs.agent ]]
+      target_ref: $[[ inputs.target_ref ]]
+      tasks: $[[ inputs.tasks ]]
+      model: $[[ inputs.model ]]
+      kimchi_multi_model: $[[ inputs.kimchi_multi_model ]]
+      kimchi_ferment_oneshot: $[[ inputs.kimchi_ferment_oneshot ]]
+      parallelism: $[[ inputs.parallelism ]]
+      attempts: $[[ inputs.attempts ]]
+      timeout_multiplier: $[[ inputs.timeout_multiplier ]]
