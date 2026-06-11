@@ -1,13 +1,14 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import {
 	getResourceDefinition,
 	getResourceDefinitions,
 	invalidateResourceDefinitionsCache,
 } from "../../resources/definitions.js"
-import { discoverCommandHookResources } from "../hook-adapters/discovery.js"
+import { FULL_COMMAND_HOOK_EVENTS, discoverCommandHookResources } from "../hook-adapters/discovery.js"
+import { PLUGIN_PACKAGE_HOOK_ADAPTER_DEFINITION } from "./definition.js"
 
 // Isolate filesystem env
 let dir: string
@@ -186,6 +187,20 @@ describe("discoverCommandHookResources with pluginRoot", () => {
 		expect(resources).toHaveLength(2)
 		const ids = resources.map((r) => r.id)
 		expect(new Set(ids).size).toBe(2)
+	})
+
+	it("supports the full Claude Code hook lifecycle", () => {
+		expect(PLUGIN_PACKAGE_HOOK_ADAPTER_DEFINITION.supportedEvents).toEqual(FULL_COMMAND_HOOK_EVENTS)
+
+		const pkgRoot = join(dir, "pkg-full")
+		const hooksFile = makeHooksFile(join(pkgRoot, "hooks"))
+		const definition = {
+			...PLUGIN_PACKAGE_HOOK_ADAPTER_DEFINITION,
+			sources: () => [{ scope: "user" as const, path: hooksFile, pluginRoot: pkgRoot }],
+		}
+
+		const resources = discoverCommandHookResources(definition)
+		expect(resources.map((r) => r.eventName).sort()).toEqual(["PostToolUse", "PreToolUse", "SessionStart"])
 	})
 })
 

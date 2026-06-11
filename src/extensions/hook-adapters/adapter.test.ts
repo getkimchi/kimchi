@@ -325,21 +325,16 @@ describe("hook adapter command execution", () => {
 				Stop: [{ hooks: [{ type: "command", command: "continue" }] }],
 			},
 		})
-		mockBlockingHook({ stdout: JSON.stringify({ decision: "block", reason: "Run tests before stopping." }) })
+		const child = mockBlockingHook({
+			stdout: JSON.stringify({ decision: "block", reason: "Run tests before stopping." }),
+		})
 		const pi = fakePi()
 		claudeCodeHooksAdapter(pi as never)
 
-		await pi.handlers.turn_end[0](
-			{
-				type: "turn_end",
-				turnIndex: 1,
-				message: { role: "assistant", content: [{ type: "text", text: "done" }] },
-				toolResults: [],
-			},
-			fakeCtx(),
-		)
+		await pi.handlers.agent_end[0](agentEndEvent(), fakeCtx())
 
 		expect(pi.sendUserMessage).toHaveBeenCalledWith("Run tests before stopping.", { deliverAs: "followUp" })
+		expect(hookPayload(child).last_assistant_message).toBe("done")
 	})
 
 	it("keeps Stop hook active across an intervening input event", async () => {
@@ -348,19 +343,208 @@ describe("hook adapter command execution", () => {
 				Stop: [{ hooks: [{ type: "command", command: "continue" }] }],
 			},
 		})
-		const firstStop = mockBlockingHook({ stdout: JSON.stringify({ decision: "block", reason: "Continue once." }) })
-		const secondStop = mockBlockingHook({ stdout: JSON.stringify({ decision: "block", reason: "Continue once." }) })
+		const firstHook = mockBlockingHook({ stdout: JSON.stringify({ decision: "block", reason: "Continue once." }) })
+		const secondHook = mockBlockingHook({ stdout: JSON.stringify({ decision: "block", reason: "Continue once." }) })
 		const pi = fakePi()
 		claudeCodeHooksAdapter(pi as never)
 
-		await pi.handlers.turn_end[0](turnEndEvent(1), fakeCtx())
+		await pi.handlers.agent_end[0](agentEndEvent(), fakeCtx())
 		await pi.handlers.input[0]({ type: "input", text: "follow-up", source: "user" }, fakeCtx())
-		await pi.handlers.turn_end[0](turnEndEvent(2), fakeCtx())
+		await pi.handlers.agent_end[0](agentEndEvent(), fakeCtx())
 
 		expect(pi.sendUserMessage).toHaveBeenCalledTimes(1)
-		expect(hookPayload(firstStop).stop_hook_active).toBe(false)
-		const secondStopPayload = hookPayload(secondStop)
-		expect(secondStopPayload.stop_hook_active).toBe(true)
+		expect(hookPayload(firstHook).stop_hook_active).toBe(false)
+		const secondPayload = hookPayload(secondHook)
+		expect(secondPayload.stop_hook_active).toBe(true)
+	})
+
+	it("runs every Stop hook even when an earlier one blocks", async () => {
+		writeJson(join(dir, "home", ".claude", "settings.json"), {
+			hooks: {
+				Stop: [
+					{ hooks: [{ type: "command", command: "stop-one" }] },
+					{ hooks: [{ type: "command", command: "stop-two" }] },
+				],
+			},
+		})
+		mockBlockingHook({ stdout: JSON.stringify({ decision: "block", reason: "Keep going." }) })
+		mockBlockingHook()
+		const pi = fakePi()
+		claudeCodeHooksAdapter(pi as never)
+
+		await pi.handlers.agent_end[0](agentEndEvent(), fakeCtx())
+
+		expect(mockSpawn).toHaveBeenCalledTimes(2)
+		expect(pi.sendUserMessage).toHaveBeenCalledTimes(1)
+	})
+
+	it("runs TaskCompleted hooks per turn without follow-up continuation", async () => {
+		writeJson(join(dir, "home", ".claude", "settings.json"), {
+			hooks: {
+				TaskCompleted: [{ hooks: [{ type: "command", command: "task-observer" }] }],
+			},
+		})
+		const child = mockBlockingHook({ stdout: JSON.stringify({ decision: "block", reason: "ignored" }) })
+		const pi = fakePi()
+		claudeCodeHooksAdapter(pi as never)
+
+		await pi.handlers.turn_end[0](
+			{
+				type: "turn_end",
+				turnIndex: 3,
+				message: { role: "assistant", content: [{ type: "text", text: "turn done" }] },
+				toolResults: [{ toolCallId: "call-1", isError: false }],
+			},
+			fakeCtx(),
+		)
+
+		const payload = hookPayload(child)
+		expect(payload.turn_id).toBe("3")
+		expect(payload.last_assistant_message).toBe("turn done")
+		expect(payload.tool_results).toEqual([{ tool_use_id: "call-1", is_error: false }])
+		expect(pi.sendUserMessage).not.toHaveBeenCalled()
+	})
+
+	it("runs PostToolUseFail hooks only for failed tool results", async () => {
+		writeJson(join(dir, "home", ".claude", "settings.json"), {
+			hooks: {
+				PostToolUse: [{ hooks: [{ type: "command", command: "post-tool" }] }],
+				PostToolUseFail: [{ hooks: [{ type: "command", command: "post-tool-fail" }] }],
+			},
+		})
+		const postHook = mockBlockingHook()
+		const failHook = mockBlockingHook()
+		const pi = fakePi()
+		claudeCodeHooksAdapter(pi as never)
+
+		await pi.handlers.tool_result[0](
+			{
+				type: "tool_result",
+				toolCallId: "1",
+				toolName: "bash",
+				input: { command: "false" },
+				content: [{ type: "text", text: "exit 1" }],
+				isError: true,
+			},
+			fakeCtx(),
+		)
+
+		expect(mockSpawn).toHaveBeenCalledTimes(2)
+		expect(hookPayload(postHook).hook_event_name).toBe("PostToolUse")
+		const failPayload = hookPayload(failHook)
+		expect(failPayload.hook_event_name).toBe("PostToolUseFail")
+		expect(failPayload.is_error).toBe(true)
+
+		mockSpawn.mockClear()
+		mockBlockingHook()
+		await pi.handlers.tool_result[0](
+			{
+				type: "tool_result",
+				toolCallId: "2",
+				toolName: "bash",
+				input: { command: "true" },
+				content: [{ type: "text", text: "" }],
+				isError: false,
+			},
+			fakeCtx(),
+		)
+
+		expect(mockSpawn).toHaveBeenCalledTimes(1)
+	})
+
+	it("synthesizes PostToolBatch from tool executions within a turn", async () => {
+		writeJson(join(dir, "home", ".claude", "settings.json"), {
+			hooks: {
+				PostToolBatch: [{ hooks: [{ type: "command", command: "batch-observer" }] }],
+			},
+		})
+		const child = mockBlockingHook()
+		const pi = fakePi()
+		claudeCodeHooksAdapter(pi as never)
+
+		await pi.handlers.turn_start[0]({ type: "turn_start", turnIndex: 1 }, fakeCtx())
+		pi.handlers.tool_execution_end[0](
+			{ type: "tool_execution_end", toolCallId: "a", toolName: "bash", result: "ok", isError: false },
+			fakeCtx(),
+		)
+		pi.handlers.tool_execution_end[0](
+			{ type: "tool_execution_end", toolCallId: "b", toolName: "read", result: "boom", isError: true },
+			fakeCtx(),
+		)
+		await pi.handlers.turn_end[0](turnEndEvent(1), fakeCtx())
+
+		expect(mockSpawn).toHaveBeenCalledTimes(1)
+		const payload = hookPayload(child)
+		expect(payload.turn_id).toBe("1")
+		expect(payload.tool_results).toEqual([
+			{ tool_name: "Bash", tool_use_id: "a", is_error: false },
+			{ tool_name: "Read", tool_use_id: "b", is_error: true },
+		])
+
+		mockSpawn.mockClear()
+		await pi.handlers.turn_end[0](turnEndEvent(2), fakeCtx())
+		expect(mockSpawn).not.toHaveBeenCalled()
+	})
+
+	it("skips PostToolBatch when a turn ran no tools", async () => {
+		writeJson(join(dir, "home", ".claude", "settings.json"), {
+			hooks: {
+				PostToolBatch: [{ hooks: [{ type: "command", command: "batch-observer" }] }],
+			},
+		})
+		const pi = fakePi()
+		claudeCodeHooksAdapter(pi as never)
+
+		await pi.handlers.turn_start[0]({ type: "turn_start", turnIndex: 1 }, fakeCtx())
+		await pi.handlers.turn_end[0](turnEndEvent(1), fakeCtx())
+
+		expect(mockSpawn).not.toHaveBeenCalled()
+	})
+
+	it("runs observer hooks for TurnStart, MessageEnd, ModelSelect, and UserBash", async () => {
+		writeJson(join(dir, "home", ".claude", "settings.json"), {
+			hooks: {
+				TurnStart: [{ hooks: [{ type: "command", command: "turn-start" }] }],
+				MessageEnd: [{ hooks: [{ type: "command", command: "message-end" }] }],
+				ModelSelect: [{ hooks: [{ type: "command", command: "model-select" }] }],
+				UserBash: [{ hooks: [{ type: "command", command: "user-bash" }] }],
+			},
+		})
+		const turnStart = mockBlockingHook()
+		const messageEnd = mockBlockingHook()
+		const modelSelect = mockBlockingHook()
+		const userBash = mockBlockingHook()
+		const pi = fakePi()
+		claudeCodeHooksAdapter(pi as never)
+
+		await pi.handlers.turn_start[0]({ type: "turn_start", turnIndex: 5 }, fakeCtx())
+		await pi.handlers.message_end[0](
+			{ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "hello" }] } },
+			fakeCtx(),
+		)
+		await pi.handlers.model_select[0](
+			{ type: "model_select", model: { id: "new-model" }, previousModel: { id: "old-model" }, source: "user" },
+			fakeCtx(),
+		)
+		await pi.handlers.user_bash[0]({ type: "user_bash", command: "ls", excludeFromContext: true, cwd: dir }, fakeCtx())
+
+		expect(hookPayload(turnStart)).toMatchObject({ hook_event_name: "TurnStart", turn_id: "5" })
+		expect(hookPayload(messageEnd)).toMatchObject({
+			hook_event_name: "MessageEnd",
+			message_role: "assistant",
+			message_text: "hello",
+		})
+		expect(hookPayload(modelSelect)).toMatchObject({
+			hook_event_name: "ModelSelect",
+			model: "new-model",
+			previous_model: "old-model",
+			source: "user",
+		})
+		expect(hookPayload(userBash)).toMatchObject({
+			hook_event_name: "UserBash",
+			command: "ls",
+			exclude_from_context: true,
+		})
 	})
 
 	it("surfaces a Claude Code UserPromptSubmit denial reason without starting another turn", async () => {
@@ -568,6 +752,16 @@ function turnEndEvent(turnIndex: number) {
 		turnIndex,
 		message: { role: "assistant", content: [{ type: "text", text: "done" }] },
 		toolResults: [],
+	}
+}
+
+function agentEndEvent() {
+	return {
+		type: "agent_end",
+		messages: [
+			{ role: "user", content: [{ type: "text", text: "do the thing" }] },
+			{ role: "assistant", content: [{ type: "text", text: "done" }] },
+		],
 	}
 }
 
