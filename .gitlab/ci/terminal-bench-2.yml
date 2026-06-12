@@ -81,11 +81,12 @@ stages:
 
 terminal-bench-2:
   stage: benchmark
-  image: node:22-bookworm
+  image: mirror.gcr.io/library/node:22-bookworm
   id_tokens: !reference [.auth-gcp-id-tokens, id_tokens]
   services:
-    - name: docker:27.5.1-dind
+    - name: mirror.gcr.io/library/docker:27.5.1-dind
       alias: docker
+      command: ["--registry-mirror", "https://mirror.gcr.io"]
   tags:
     - runner::dind
   timeout: 12 hours
@@ -254,12 +255,11 @@ terminal-bench-2:
 
 terminal-bench-2-summary:
   stage: postprocess
-  image: node:22-bookworm
+  image: mirror.gcr.io/library/node:22-bookworm
   id_tokens: !reference [.auth-gcp-id-tokens, id_tokens]
   needs:
     - job: terminal-bench-2
       artifacts: true
-  when: always
   tags:
     - runner::dind
   variables:
