@@ -501,6 +501,131 @@ describe("hook adapter command execution", () => {
 		expect(mockSpawn).not.toHaveBeenCalled()
 	})
 
+	it("runs SubagentStart and SubagentStop hooks from subagent bus events", async () => {
+		writeJson(join(dir, "home", ".claude", "settings.json"), {
+			hooks: {
+				SubagentStart: [{ hooks: [{ type: "command", command: "subagent-start" }] }],
+				SubagentStop: [{ hooks: [{ type: "command", command: "subagent-stop" }] }],
+			},
+		})
+		const startHook = mockBlockingHook()
+		const stopHook = mockBlockingHook()
+		const pi = fakePi()
+		claudeCodeHooksAdapter(pi as never)
+
+		await pi.handlers.turn_start[0]({ type: "turn_start", turnIndex: 1 }, fakeCtx())
+		await pi.eventHandlers["subagents:started"][0]({
+			id: "agent-1",
+			type: "explore",
+			description: "scan the repo",
+			visibility: "user",
+		})
+		await pi.eventHandlers["subagents:completed"][0]({
+			id: "agent-1",
+			type: "explore",
+			description: "scan the repo",
+			visibility: "user",
+			status: "completed",
+			result: "all good",
+			toolUses: 4,
+			durationMs: 1234,
+			tokens: { input: 10, output: 5, total: 15 },
+		})
+
+		expect(mockSpawn).toHaveBeenCalledTimes(2)
+		expect(hookPayload(startHook)).toMatchObject({
+			hook_event_name: "SubagentStart",
+			subagent_id: "agent-1",
+			subagent_type: "explore",
+			description: "scan the repo",
+			visibility: "user",
+		})
+		expect(hookPayload(stopHook)).toMatchObject({
+			hook_event_name: "SubagentStop",
+			subagent_id: "agent-1",
+			subagent_type: "explore",
+			status: "completed",
+			result: "all good",
+			is_error: false,
+			duration_ms: 1234,
+			tool_uses: 4,
+			tokens: { input: 10, output: 5, total: 15 },
+		})
+	})
+
+	it("marks SubagentStop is_error for failed subagents", async () => {
+		writeJson(join(dir, "home", ".claude", "settings.json"), {
+			hooks: {
+				SubagentStop: [{ hooks: [{ type: "command", command: "subagent-stop" }] }],
+			},
+		})
+		const stopHook = mockBlockingHook()
+		const pi = fakePi()
+		claudeCodeHooksAdapter(pi as never)
+
+		await pi.handlers.turn_start[0]({ type: "turn_start", turnIndex: 1 }, fakeCtx())
+		await pi.eventHandlers["subagents:failed"][0]({
+			id: "agent-2",
+			type: "claude",
+			description: "doomed task",
+			visibility: "user",
+			status: "aborted",
+			abortReason: "user_abort",
+			error: "aborted by user",
+			toolUses: 0,
+			durationMs: 50,
+		})
+
+		expect(hookPayload(stopHook)).toMatchObject({
+			hook_event_name: "SubagentStop",
+			subagent_id: "agent-2",
+			status: "aborted",
+			abort_reason: "user_abort",
+			error: "aborted by user",
+			is_error: true,
+		})
+	})
+
+	it("fires subagent hooks for system-visibility agents", async () => {
+		writeJson(join(dir, "home", ".claude", "settings.json"), {
+			hooks: {
+				SubagentStart: [{ hooks: [{ type: "command", command: "subagent-start" }] }],
+			},
+		})
+		const startHook = mockBlockingHook()
+		const pi = fakePi()
+		claudeCodeHooksAdapter(pi as never)
+
+		await pi.handlers.turn_start[0]({ type: "turn_start", turnIndex: 1 }, fakeCtx())
+		await pi.eventHandlers["subagents:started"][0]({
+			id: "agent-3",
+			type: "summarizer",
+			description: "background summarization",
+			visibility: "system",
+		})
+
+		expect(mockSpawn).toHaveBeenCalledTimes(1)
+		expect(hookPayload(startHook)).toMatchObject({
+			hook_event_name: "SubagentStart",
+			subagent_id: "agent-3",
+			visibility: "system",
+		})
+	})
+
+	it("skips subagent hooks before any extension context is captured", async () => {
+		writeJson(join(dir, "home", ".claude", "settings.json"), {
+			hooks: {
+				SubagentStart: [{ hooks: [{ type: "command", command: "subagent-start" }] }],
+			},
+		})
+		const pi = fakePi()
+		claudeCodeHooksAdapter(pi as never)
+
+		await pi.eventHandlers["subagents:started"][0]({ id: "agent-4", type: "explore" })
+
+		expect(mockSpawn).not.toHaveBeenCalled()
+	})
+
 	it("runs observer hooks for TurnStart, MessageEnd, ModelSelect, and UserBash", async () => {
 		writeJson(join(dir, "home", ".claude", "settings.json"), {
 			hooks: {
@@ -727,12 +852,22 @@ type FakeHandler = (event: unknown, ctx: unknown) => unknown
 
 function fakePi() {
 	const handlers: Record<string, FakeHandler[]> = {}
+	const eventHandlers: Record<string, Array<(data: unknown) => unknown>> = {}
 	return {
 		handlers,
+		eventHandlers,
 		on: vi.fn((event: string, handler: FakeHandler) => {
 			handlers[event] ??= []
 			handlers[event].push(handler)
 		}),
+		events: {
+			emit: vi.fn(),
+			on: vi.fn((channel: string, handler: (data: unknown) => unknown) => {
+				eventHandlers[channel] ??= []
+				eventHandlers[channel].push(handler)
+				return () => {}
+			}),
+		},
 		sendMessage: vi.fn(),
 		sendUserMessage: vi.fn(),
 	}

@@ -19,6 +19,8 @@ export type CommandHookEventName =
 	| "MessageEnd"
 	| "ModelSelect"
 	| "UserBash"
+	| "SubagentStart"
+	| "SubagentStop"
 	| "SessionEnd"
 
 /** Every hook event the command-hook adapter machinery can drive. */
@@ -38,6 +40,8 @@ export const FULL_COMMAND_HOOK_EVENTS: readonly CommandHookEventName[] = [
 	"MessageEnd",
 	"ModelSelect",
 	"UserBash",
+	"SubagentStart",
+	"SubagentStop",
 	"SessionEnd",
 ]
 
