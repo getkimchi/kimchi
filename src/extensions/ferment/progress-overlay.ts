@@ -46,14 +46,31 @@ function parallelMarkerVerbose(s: Step): string {
 }
 
 export function buildPhaseListTitle(f: Ferment, runtime: FermentRuntime = defaultFermentRuntime): string {
-	const terminalCount = f.phases.filter(
+	// Count terminal steps across all phases. If no steps exist, fall back to phase-level counting.
+	const totalSteps = f.phases.reduce((sum, p) => sum + p.steps.length, 0)
+	const terminalSteps = f.phases.reduce(
+		(sum, p) =>
+			sum +
+			p.steps.filter(
+				(s) => s.status === "done" || s.status === "verified" || s.status === "skipped" || s.status === "failed",
+			).length,
+		0,
+	)
+
+	// Fallback to phase-level counting if there are no steps yet
+	const terminalPhases = f.phases.filter(
 		(p) => p.status === "completed" || p.status === "skipped" || p.status === "failed",
 	).length
-	const total = f.phases.length
+	const totalPhases = f.phases.length
+
+	const progressTotal = totalSteps > 0 ? totalSteps : totalPhases
+	const progressTerminal = totalSteps > 0 ? terminalSteps : terminalPhases
+	const progressUnit = totalSteps > 0 ? "steps" : "phases"
+
 	const barLen = 28
-	const filled = total > 0 ? Math.round((terminalCount / total) * barLen) : 0
+	const filled = progressTotal > 0 ? Math.round((progressTerminal / progressTotal) * barLen) : 0
 	const bar = `${SUCCESS_FG}${"█".repeat(filled)}${RST_FG}${DIM}${"░".repeat(barLen - filled)}${RST_ALL}`
-	const pct = total > 0 ? Math.round((terminalCount / total) * 100) : 0
+	const pct = progressTotal > 0 ? Math.round((progressTerminal / progressTotal) * 100) : 0
 	const scopeProgress = getScopingProgress(f)
 	const scopeTag = f.status === "draft" ? pr_dim(`  scoping ${scopeProgress.answered}/4`) : ""
 	const fermentGrade = f.grade ? `  ${gradeColor(f.grade.grade)}` : ""
@@ -64,7 +81,7 @@ export function buildPhaseListTitle(f: Ferment, runtime: FermentRuntime = defaul
 
 	return [
 		`${pr_teal("🍺")} ${pr_bold(f.name)}${fermentGrade}${scopeTag}`,
-		`${bar}  ${pr_teal(`${pct}%`)}  ${pr_dim(`${terminalCount}/${total}`)}`,
+		`${bar}  ${pr_teal(`${pct}%`)}  ${pr_dim(`${progressTerminal}/${progressTotal} ${progressUnit}`)}`,
 		`${pr_dim("human:")} ${sinceHuman}  ${pr_dim("branch:")} ${f.worktree.branch ? pr_teal(f.worktree.branch) : pr_dim("—")}`,
 		f.goal ? `${pr_dim("goal:")} ${truncateLabel(f.goal, 70)}` : "",
 	]
