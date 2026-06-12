@@ -1,9 +1,10 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { registerTodosCommand } from "./command.js"
 import { registerTodoPromptBlock } from "./prompt-block.js"
-import { clearTodoStore, subscribeTodoStore } from "./store.js"
-import { registerTodosTool } from "./tool.js"
+import { restoreTodoStoreFromDetails, subscribeTodoStore } from "./store.js"
+import { TODO_TOOL_NAME, registerTodosTool } from "./tool.js"
+import { TODO_TOOL_RESULT_SCHEMA_VERSION, type WriteTodosDetails } from "./types.js"
 import {
 	disposeTodoWidget,
 	ensureTodoWidget,
@@ -21,6 +22,31 @@ export * from "./widget.js"
 export * from "./command.js"
 export * from "./prompt-block.js"
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return value !== null && typeof value === "object"
+}
+
+function isWriteTodosDetails(value: unknown): value is WriteTodosDetails {
+	return (
+		isRecord(value) &&
+		value.schemaVersion === TODO_TOOL_RESULT_SCHEMA_VERSION &&
+		value.scope !== undefined &&
+		Array.isArray(value.todos)
+	)
+}
+
+function getWriteTodosDetails(entry: SessionEntry): WriteTodosDetails | undefined {
+	if (entry.type !== "message") return undefined
+	const message = entry.message as unknown
+	if (!isRecord(message)) return undefined
+	if (message.role !== "toolResult" || message.toolName !== TODO_TOOL_NAME) return undefined
+	return isWriteTodosDetails(message.details) ? message.details : undefined
+}
+
+export function restoreTodoStoreFromSessionEntries(entries: readonly SessionEntry[]): void {
+	restoreTodoStoreFromDetails(entries.map(getWriteTodosDetails).filter((details) => details !== undefined))
+}
+
 export default function todosExtension(pi: ExtensionAPI): void {
 	registerTodosTool(pi)
 	registerTodoPromptBlock(pi)
@@ -33,9 +59,9 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	registerTodosCommand(pi)
 	registerTodoShortcut(pi)
 
-	pi.on("session_start", (event, ctx) => {
+	pi.on("session_start", (_event, ctx) => {
 		latestCtx = ctx
-		if (event.reason === "new") clearTodoStore()
+		restoreTodoStoreFromSessionEntries(ctx.sessionManager.getBranch())
 		resetTodoWidgetState()
 		ensureTodoWidget(ctx)
 		unsubscribeTodoStore?.()

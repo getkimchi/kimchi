@@ -20,10 +20,9 @@
 		"lint": "biome check src/ scripts/",
 		"lint:fix": "biome check --write src/ scripts/",
 		"typecheck": "tsc --noEmit",
-	"check": "pnpm run lint && pnpm run typecheck",
-	"test": "vitest run --dir src",
-	"test:todos:benchmark": "KIMCHI_TODOS_BENCHMARK=1 vitest run src/extensions/todos/benchmark.test.ts",
-	"test:smoke": "vitest run --config tests/smoke/vitest.config.ts",
+		"check": "pnpm run lint && pnpm run typecheck",
+		"test": "vitest run --dir src",
+		"test:smoke": "vitest run --config tests/smoke/vitest.config.ts",
 		"postinstall": "node scripts/patch-pi-ai-oauth.js",
 		"prepare": "husky",
 		"verify": "pnpm run check && pnpm run build:binary && pnpm run test && pnpm run test:smoke"

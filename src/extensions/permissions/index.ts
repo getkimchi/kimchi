@@ -70,7 +70,17 @@ const EMPTY_LOADED_CONFIG: LoadedConfig = {
 }
 
 // bash is allowed but gated per-command by isReadOnlyBashCommand.
-const PLAN_MODE_TOOLS = ["read", "grep", "find", "ls", "web_search", "web_fetch", "questionnaire", "bash"]
+const PLAN_MODE_TOOLS = [
+	"read",
+	"grep",
+	"find",
+	"ls",
+	"web_search",
+	"web_fetch",
+	"questionnaire",
+	"bash",
+	"write_todos",
+]
 const PLAN_MODE_TOOL_SET = new Set<string>(PLAN_MODE_TOOLS)
 
 // Tools that auto-approve in headless/auto modes without LLM classification.

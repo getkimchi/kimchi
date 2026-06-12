@@ -73,6 +73,14 @@ export function clearTodoStore(): void {
 	state = createEmptyTodosSliceState()
 }
 
+export function restoreTodoStoreFromDetails(details: readonly WriteTodosDetails[]): void {
+	let restored = createEmptyTodosSliceState()
+	for (const detail of details) {
+		restored = reduceReplaceList(restored, { scope: detail.scope, todos: detail.todos }).state
+	}
+	state = restored
+}
+
 export function __resetTodoStore(): void {
 	clearTodoStore()
 	activeScopeProviders.length = 0
