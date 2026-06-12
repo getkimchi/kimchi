@@ -509,7 +509,7 @@ async function confirmCompletionCriteria(
 				prompt: "Do these completion criteria look right?",
 				options: [{ id: "yes", label: "Yes, looks good" }],
 				allowOther: true,
-				otherLabel: "No, enter what is wrong",
+				otherLabel: "No (input what is wrong)",
 			},
 		],
 		askContext,
@@ -1212,7 +1212,7 @@ ${renderGateGuidance("complete_ferment")}`,
 
 The host renders one question:
   - "Yes, looks good"
-  - "No, enter what is wrong" with inline free-form text input for the explanation
+  - "No (input what is wrong)" with inline free-form text input for the explanation
 
 Proceed to exploration only when Confirmed is yes and Changes is empty.
 If the user answers No, the follow-up captures textual changes and control returns here for revision.`,

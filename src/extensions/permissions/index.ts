@@ -66,6 +66,8 @@ export function isWithinKimchiPlans(filePath: string, cwd: string): boolean {
  */
 const DANGEROUS_BYPASS_FLAG = "dangerously-skip-permissions"
 
+type RuntimeModeSource = "user" | "ferment"
+
 // Safe default so any event that fires before session_start (and therefore
 // before doLoadConfig) doesn't crash reading `loaded.config.*`.
 const EMPTY_LOADED_CONFIG: LoadedConfig = {

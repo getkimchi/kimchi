@@ -1,3 +1,4 @@
+import asyncio
 import json
 import shlex
 from typing import Any
@@ -7,6 +8,7 @@ from harbor.agents.installed.claude_code import ClaudeCode
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 from harbor.models.trial.paths import EnvironmentPaths
+from tenacity import AsyncRetrying, RetryCallState, retry_if_exception, stop_after_attempt, wait_chain, wait_fixed
 
 from kimchi_agent.gateway import (
     KIMCHI_ANTHROPIC_BASE_URL,
@@ -18,6 +20,7 @@ CLAUDE_CODE_AUTO_COMPACT_PERCENT = 85
 CLAUDE_CODE_OUTPUT_RESERVE_TOKENS = 32_768
 CLAUDE_CODE_CONTEXT_SAFETY_MARGIN_TOKENS = 8_192
 CLAUDE_CODE_OUTPUT_PATH = "/logs/agent/claude-code.txt"
+CLAUDE_CODE_INSTALL_RETRY_DELAYS_SEC = (5, 15)
 RETRYABLE_API_STATUSES = frozenset({408, 409, 425, 429, 500, 502, 503, 504, 524, 529})
 RETRYABLE_API_ERROR_MESSAGE_LIMIT = 2_000
 CLAUDE_PASSTHROUGH_ENV_PREFIXES = ("CLAUDE_CODE_", "OTEL_")
@@ -92,6 +95,50 @@ class ClaudeCodeKimchi(KimchiGatewayMixin, ClaudeCode):
         percent_window = context_window * CLAUDE_CODE_AUTO_COMPACT_PERCENT // 100
         reserved_window = context_window - output_reserve - safety_margin
         return str(max(1, min(percent_window, reserved_window)))
+
+    @staticmethod
+    def _is_retryable_claude_install_error(exc: NonZeroAgentExitCodeError) -> bool:
+        message = str(exc)
+        if "Command failed (exit 137):" not in message or "claude --version" not in message:
+            return False
+
+        return any(
+            marker in message
+            for marker in (
+                "@anthropic-ai/claude-code",
+                "claude.ai/install.sh",
+                "claude-code-releases/bootstrap.sh",
+            )
+        )
+
+    @classmethod
+    def _is_retryable_install_exception(cls, exc: BaseException) -> bool:
+        return isinstance(exc, NonZeroAgentExitCodeError) and cls._is_retryable_claude_install_error(exc)
+
+    def _log_install_retry(self, retry_state: RetryCallState) -> None:
+        delay_sec = retry_state.next_action.sleep if retry_state.next_action else None
+        self.logger.warning(
+            "Claude Code installer was killed; retrying install",
+            extra={
+                "attempt": retry_state.attempt_number,
+                "max_attempts": len(CLAUDE_CODE_INSTALL_RETRY_DELAYS_SEC) + 1,
+                "delay_sec": delay_sec,
+            },
+        )
+
+    async def install(self, environment: BaseEnvironment) -> None:
+        retrying = AsyncRetrying(
+            retry=retry_if_exception(self._is_retryable_install_exception),
+            wait=wait_chain(*(wait_fixed(delay) for delay in CLAUDE_CODE_INSTALL_RETRY_DELAYS_SEC)),
+            stop=stop_after_attempt(len(CLAUDE_CODE_INSTALL_RETRY_DELAYS_SEC) + 1),
+            before_sleep=self._log_install_retry,
+            sleep=asyncio.sleep,
+            reraise=True,
+        )
+
+        async for attempt in retrying:
+            with attempt:
+                await super().install(environment)
 
     def _build_env(self) -> dict[str, str]:
         api_key = self._required_kimchi_api_key()

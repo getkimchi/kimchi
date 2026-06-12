@@ -491,7 +491,7 @@ wheels = [
 
 [[package]]
 name = "harbor"
-version = "0.4.0"
+version = "0.13.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "claude-agent-sdk" },
@@ -516,9 +516,9 @@ dependencies = [
     { name = "typer" },
     { name = "uvicorn" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e8/a4/4f1add77047bae43e0b172d7801dcab2b9a9a6d5903e154b7186ebc4acd7/harbor-0.4.0.tar.gz", hash = "sha256:bc0260b7db3e810399401f37456f4aabbc6b82f659e159acf896d72762527c1c", size = 882052, upload-time = "2026-04-16T04:19:33.28Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/09/d2/8ea1fa703ebc8acd15fffc020555259dd1bb4f4188e830b5467ca0fd1950/harbor-0.13.2.tar.gz", hash = "sha256:e5cf94f9dac9bb465d61f37a689679b69ecd1987bae1ad48714dc641bea2f699", size = 1154370, upload-time = "2026-06-11T00:15:35.44Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7b/2d/a731ae57852a97547fc6d913ecc9894c1b395fe60c125d2e0fcfe8adf662/harbor-0.4.0-py3-none-any.whl", hash = "sha256:133c0a45114f40b9214c6aadde6c108c98f890e95656aba08681ba554d69378c", size = 1006416, upload-time = "2026-04-16T04:19:31.507Z" },
+    { url = "https://files.pythonhosted.org/packages/e6/ae/fc41d4d2bf830a878cf778877aafe90c05ef45651dab05dee3df7e463e1d/harbor-0.13.2-py3-none-any.whl", hash = "sha256:7a60207965755268fb0a4748a553ce92ed91ce7b32805e7f0c8fea1ed61567b6", size = 1313409, upload-time = "2026-06-11T00:15:36.98Z" },
 ]
 
 [[package]]
@@ -636,14 +636,14 @@ wheels = [
 
 [[package]]
 name = "importlib-metadata"
-version = "9.0.0"
+version = "8.9.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "zipp" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a9/01/15bb152d77b21318514a96f43af312635eb2500c96b55398d020c93d86ea/importlib_metadata-9.0.0.tar.gz", hash = "sha256:a4f57ab599e6a2e3016d7595cfd72eb4661a5106e787a95bcc90c7105b831efc", size = 56405, upload-time = "2026-03-20T06:42:56.999Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e7/72/c600ae4f68c28fc19f9c31b9403053e5dbb8cace2e6842c7b7c3e4d42fe9/importlib_metadata-8.9.0.tar.gz", hash = "sha256:58850626cef4bd2df100378b0f2aea9724a7b92f10770d547725b047078f99ee", size = 56140, upload-time = "2026-03-20T16:56:26.362Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/38/3d/2d244233ac4f76e38533cfcb2991c9eb4c7bf688ae0a036d30725b8faafe/importlib_metadata-9.0.0-py3-none-any.whl", hash = "sha256:2d21d1cc5a017bd0559e36150c21c830ab1dc304dedd1b7ea85d20f45ef3edd7", size = 27789, upload-time = "2026-03-20T06:42:55.665Z" },
+    { url = "https://files.pythonhosted.org/packages/7d/f9/97f2ca8bb3ec6e4b1d64f983ebe98b9a192faddff67fac3d6303a537e670/importlib_metadata-8.9.0-py3-none-any.whl", hash = "sha256:e0f761b6ea91ced3b0844c14c9d955224d538105921f8e6754c00f6ca79fba7f", size = 27220, upload-time = "2026-03-20T16:56:25.07Z" },
 ]
 
 [[package]]
@@ -729,6 +729,7 @@ dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
+    { name = "tenacity" },
 ]
 
 [package.dev-dependencies]
@@ -738,10 +739,11 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "harbor", specifier = ">=0.4.0" },
+    { name = "harbor", specifier = ">=0.13.2" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "pydantic", specifier = ">=2.11" },
     { name = "pydantic-settings", specifier = ">=2.5" },
+    { name = "tenacity", specifier = ">=9.1" },
 ]
 
 [package.metadata.requires-dev]
@@ -749,7 +751,7 @@ dev = [{ name = "ruff", specifier = ">=0.7" }]
 
 [[package]]
 name = "litellm"
-version = "1.83.0"
+version = "1.88.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -765,9 +767,9 @@ dependencies = [
     { name = "tiktoken" },
     { name = "tokenizers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/22/92/6ce9737554994ca8e536e5f4f6a87cc7c4774b656c9eb9add071caf7d54b/litellm-1.83.0.tar.gz", hash = "sha256:860bebc76c4bb27b4cf90b4a77acd66dba25aced37e3db98750de8a1766bfb7a", size = 17333062, upload-time = "2026-03-31T05:08:25.331Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/16/ea/f99ececb7f22703fe120f1d8be9ffb749ec9453fbbbbbebc0d6a6b4d7864/litellm-1.88.1.tar.gz", hash = "sha256:89c6b74cc7912d6365793006ff951c0450fe847625008dfe49de8a7dc4529aa5", size = 13885969, upload-time = "2026-06-09T01:06:25.192Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/19/2c/a670cc050fcd6f45c6199eb99e259c73aea92edba8d5c2fc1b3686d36217/litellm-1.83.0-py3-none-any.whl", hash = "sha256:88c536d339248f3987571493015784671ba3f193a328e1ea6780dbebaa2094a8", size = 15610306, upload-time = "2026-03-31T05:08:21.987Z" },
+    { url = "https://files.pythonhosted.org/packages/42/9a/8f8909201b4bebaf96498c09226f6baa8540086a4c4188ad57d7dfbd97c1/litellm-1.88.1-py3-none-any.whl", hash = "sha256:369b84e57d9426582ddc35e731956ddb6618cda97cc44e4e4d2dfa75982a6e3a", size = 15276206, upload-time = "2026-06-09T01:06:16.72Z" },
 ]
 
 [[package]]

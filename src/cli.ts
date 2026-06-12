@@ -59,6 +59,7 @@ import questionnaireExtension from "./extensions/questionnaire.js"
 import reportBugExtension from "./extensions/report-bug.js"
 import reviewWriteGuardExtension from "./extensions/review-write-guard.js"
 import rtkRewriteExtension from "./extensions/rtk-rewrite.js"
+import sessionNameExtension from "./extensions/session-name.js"
 import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
@@ -407,6 +408,7 @@ try {
 		const extensionFactories = [
 			startupUpdateExtension,
 			superpowersExtension,
+			sessionNameExtension(),
 			shutdownMarkerExtension,
 			statsExtension,
 			...terminalUiExtensionFactories,
