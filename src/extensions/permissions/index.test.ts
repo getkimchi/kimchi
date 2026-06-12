@@ -239,6 +239,28 @@ describe("isLaunchedWithYolo", () => {
 		expect(isLaunchedWithYolo()).toBe(true)
 	})
 
+	it("keeps user-selected runtime yolo even during multiple ferment change callbacks", async () => {
+		const harness = createPermissionsHarness(["bash"])
+		const command = harness.commands.get("permissions")
+		const ctx = createMockContext([])
+		await command?.handler("mode auto", ctx)
+		await harness.fire("session_start", {}, ctx)
+
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "auto", source: "user" })
+
+		notifyFermentActive(true)
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "yolo", source: "ferment" })
+
+		notifyFermentActive(true)
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "yolo", source: "ferment" })
+
+		notifyFermentActive(true)
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "yolo", source: "ferment" })
+
+		notifyFermentActive(false)
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "auto", source: "user" })
+	})
+
 	it("clears ferment-owned runtime yolo when ferment clears", async () => {
 		const harness = createPermissionsHarness(["bash"])
 		const ctx = createMockContext([])

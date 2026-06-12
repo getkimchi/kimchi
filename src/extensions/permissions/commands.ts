@@ -9,7 +9,7 @@ import type { PermissionMode, PermissionModeRuntimeSource, Rule } from "./types.
 export interface CommandDeps {
 	getSession: () => SessionMemory
 	getLoaded: () => LoadedConfig
-	getPermissionMode: (ctx: ExtensionContext) => PermissionMode
+	getPermissionMode: (ctx: ExtensionContext) => { mode: PermissionMode; source: PermissionModeRuntimeSource }
 	setPermissionMode: (ctx: ExtensionContext, mode: PermissionMode, source: PermissionModeRuntimeSource) => void
 	applyPlanMode: () => void
 	restorePlanMode: () => void
@@ -76,7 +76,7 @@ async function openSelector(ctx: ExtensionContext, deps: CommandDeps): Promise<v
 		return showStatus(ctx as ExtensionCommandContext, deps)
 	}
 
-	const mode = deps.getPermissionMode(ctx)
+	const { mode } = deps.getPermissionMode(ctx)
 	const sessionCount = deps.getSession().all().length
 
 	const CHANGE_MODE = "Change mode"
@@ -121,7 +121,7 @@ async function openModePicker(ctx: ExtensionContext, deps: CommandDeps): Promise
 		ctx.ui.notify(`current mode: ${deps.getPermissionMode(ctx)}`, "info")
 		return
 	}
-	const current = deps.getPermissionMode(ctx)
+	const { mode: current } = deps.getPermissionMode(ctx)
 	const marker = (m: PermissionMode) => (m === current ? "●" : "○")
 
 	const OPT_DEFAULT = `${marker("default")}  default — ask before each tool call`
@@ -209,7 +209,7 @@ function handleMode(ctx: ExtensionContext, deps: CommandDeps, arg: string): void
 		ctx.ui.notify(`unknown mode "${arg}". Valid: default, plan, auto, yolo`, "warning")
 		return
 	}
-	const prev = deps.getPermissionMode(ctx)
+	const { mode: prev } = deps.getPermissionMode(ctx)
 	deps.setPermissionMode(ctx, mode, "user")
 	if (prev === "plan" && mode !== "plan") deps.restorePlanMode()
 	if (mode === "plan") deps.applyPlanMode()

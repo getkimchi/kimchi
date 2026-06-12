@@ -206,7 +206,6 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		}
 		return (
 			resolveMode({
-				runtime: undefined,
 				flag: cliMode,
 				env: permissionsEnvFlag,
 				config: loaded.config.defaultMode,
@@ -217,14 +216,19 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	/**
 	 * Returns the current permission mode flag or falls back to a user default.
 	 */
-	function getRuntimePermissionMode(): PermissionMode {
+	function getRuntimePermissionMode(): { mode: PermissionMode; source: PermissionModeRuntimeSource } {
 		const runtimeMode = sessionCtx && getPermissionMode(sessionCtx.sessionManager.getSessionId())
-		return resolveMode({
-			runtime: runtimeMode?.mode,
-			flag: cliMode,
-			env: permissionsEnvFlag,
-			config: loaded.config.defaultMode,
-		}).mode
+		if (runtimeMode) {
+			return runtimeMode
+		}
+		return {
+			mode: resolveMode({
+				flag: cliMode,
+				env: permissionsEnvFlag,
+				config: loaded.config.defaultMode,
+			}).mode,
+			source: "user",
+		}
 	}
 
 	/**
@@ -273,7 +277,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 
 	function updateStatus(ctx: ExtensionContext): void {
 		if (!ctx.hasUI) return
-		const mode = getRuntimePermissionMode()
+		const { mode } = getRuntimePermissionMode()
 		const active = MODES.find((m) => m.mode === mode) ?? MODES[0]
 		// Filled dot + active label hardcode kimchi palette so the cue stays legible
 		// under kimchi-minimal; unfilled dots + hint use the "text" token to match
@@ -289,8 +293,8 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 
 	function maybeShowYoloWarning(ctx: ExtensionContext) {
 		if (!ctx.hasUI) return
-		const mode = getRuntimePermissionMode()
-		if (mode === "yolo") {
+		const { mode, source } = getRuntimePermissionMode()
+		if (mode === "yolo" && source === "user") {
 			ctx.ui.setStatus(
 				"permissions-warning",
 				"WARNING: all permission checks disabled. Recommended for sandbox environments only.",
@@ -317,7 +321,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	}
 
 	function cycleMode(ctx: ExtensionContext): void {
-		const current = getRuntimePermissionMode()
+		const { mode: current } = getRuntimePermissionMode()
 		const idx = MODES.findIndex((m) => m.mode === current)
 		const next = MODES[(idx + 1) % MODES.length].mode
 		changeMode(ctx, current, next, "user")
@@ -333,17 +337,17 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	onActiveFermentChange((hasActive) => {
 		if (cliMode) return // explicit CLI flag always wins
 		if (!sessionCtx) return // No active session
-		const current = getRuntimePermissionMode()
-		let next: PermissionMode | undefined
-		let source: PermissionModeRuntimeSource = "user"
+		let { mode: current, source } = getRuntimePermissionMode()
+		let next = current
 		if (hasActive) {
-			preFermentMode = current
+			if (source === "user") preFermentMode = current
 			next = "yolo"
 			source = "ferment"
 		} else if (preFermentMode) {
 			// Clear mode that was set for ferment (not if user changed it manually)
 			next = preFermentMode
 			preFermentMode = undefined
+			source = "user"
 		}
 		if (next && next !== current) {
 			changeMode(sessionCtx, current, next, source)
@@ -455,14 +459,13 @@ ${planText}
 		// YOLO mode: --yolo and --dangerously-skip-permissions both set yolo mode (no classifier, auto-approve all)
 		else if (pi.getFlag("yolo") || pi.getFlag("dangerously-skip-permissions")) cliMode = "yolo"
 
-		const current = getRuntimePermissionMode()
-		let next: PermissionMode = current
-		let source: PermissionModeRuntimeSource = "user"
+		let { mode: current, source } = getRuntimePermissionMode()
+		let next = current
 		// Active ferment → auto-yolo so scoping/lifecycle work can proceed without approval prompts.
 		// Permission mode is persisted after the user explicitly approves ferment creation.
 		// Only applies when no explicit CLI mode flag was given.
 		if (!cliMode && hasActiveFerment()) {
-			preFermentMode = current
+			if (source === "user") preFermentMode = current
 			next = "yolo"
 			source = "ferment"
 		}
@@ -480,14 +483,14 @@ ${planText}
 	blocks.register({
 		id: "plan-mode-supplement",
 		render: () => {
-			if (getRuntimePermissionMode() !== "plan") return undefined
+			if (getRuntimePermissionMode().mode !== "plan") return undefined
 			return planModeSupplement.trim()
 		},
 	})
 
 	// When the agent produces <!-- PLAN_COMPLETE --> in plan mode, show the approval menu.
 	pi.on("turn_end", async (event, ctx) => {
-		if (getRuntimePermissionMode() !== "plan") return
+		if (getRuntimePermissionMode().mode !== "plan") return
 		if (!ctx.hasUI) return
 
 		const message = event.message
@@ -551,7 +554,7 @@ ${planText}
 		// changed mode via shift+tab, we re-evaluate the tool call under the new mode.
 		// Cap iterations at MODES.length to prevent infinite loops.
 		for (let attempt = 0; attempt < MODES.length; attempt++) {
-			const mode = getRuntimePermissionMode()
+			const { mode } = getRuntimePermissionMode()
 
 			// YOLO mode: bypass ALL permission checks including rules, denylist, and classifier
 			if (mode === "yolo") {
