@@ -9,7 +9,7 @@ const DEFAULT_CURSOR_CONFIG_PATHS = [
 	join(homedir(), ".config", "cursor", "mcp.json"),
 ]
 
-const DEFAULT_CURSOR_SKILLS_DIR = join(homedir(), ".cursor", "skills")
+const DEFAULT_CURSOR_SKILLS_DIRS = [join(process.cwd(), ".cursor", "skills"), join(homedir(), ".cursor", "skills")]
 
 interface CursorServerRaw {
 	command?: string
@@ -17,7 +17,6 @@ interface CursorServerRaw {
 	env?: Record<string, string>
 	url?: string
 	headers?: Record<string, string>
-	type?: string
 	disabled?: boolean
 }
 
@@ -47,7 +46,7 @@ export function makeCursorDefinition(overrides?: {
 	skillsDirs?: string[]
 }): AgentDefinition {
 	const configPaths = overrides?.configPaths ?? DEFAULT_CURSOR_CONFIG_PATHS
-	const skillsDirs = overrides?.skillsDirs ?? [DEFAULT_CURSOR_SKILLS_DIR]
+	const skillsDirs = overrides?.skillsDirs ?? DEFAULT_CURSOR_SKILLS_DIRS
 
 	return {
 		id: "cursor",

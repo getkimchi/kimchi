@@ -136,9 +136,13 @@ describe("cursor AgentDefinition", () => {
 		expect(result.mcpServers).toEqual({})
 	})
 
-	it("is registered after Claude Code and OpenCode in AGENT_DEFINITIONS", () => {
+	it("is registered once after Claude Code and OpenCode, before skills-only agents", () => {
 		const ids = AGENT_DEFINITIONS.map((d) => d.id)
-		expect(ids).toEqual(["claude-code", "opencode", "cursor"])
+		expect(ids.indexOf("claude-code")).toBe(0)
+		expect(ids.indexOf("opencode")).toBe(1)
+		expect(ids.indexOf("cursor")).toBe(2)
+		expect(ids.filter((id) => id === "cursor").length).toBe(1)
+		expect(ids.indexOf("codex")).toBeGreaterThan(ids.indexOf("cursor"))
 	})
 
 	// Documents expected merge priority (CC > OC > Cursor). Reimplements setup-wizard

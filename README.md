@@ -330,7 +330,7 @@ The prompt is only shown when something is actually worth migrating. If neither 
 |---|---|---|
 | Claude Code | `~/.claude.json` (top-level `mcpServers` + per-project `projects[*].mcpServers`) | `~/.claude/skills/` |
 | OpenCode | `$OPENCODE_CONFIG`, then `~/.config/opencode/opencode.json`, `opencode.jsonc`, `config.json`, `~/.opencode.json` | `~/.config/opencode/skills/` |
-| Cursor | `~/.cursor/mcp.json`, then `~/.config/cursor/mcp.json` | `~/.cursor/skills/` |
+| Cursor | `~/.cursor/mcp.json`, then `~/.config/cursor/mcp.json` | `.cursor/skills/`, then `~/.cursor/skills/` |
 
 For OpenCode, both the modern (`mcp` block) and legacy Go-binary (`mcpServers` block) schemas are supported. Servers with `enabled: false` are skipped. For Cursor, servers with `disabled: true` are skipped.
 
