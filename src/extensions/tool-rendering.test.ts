@@ -60,6 +60,21 @@ describe("user message render patch", () => {
 
 		expect(summary).toBe("Which improvement areas should this ferment include?")
 	})
+
+	it("renders Skill tool with skill name when skill arg is provided", () => {
+		const summary = summarizeOpenAiToolCall("Skill", { skill: "writing-plans" }, plainTheme, (path) => path)
+		expect(summary).toBe("writing-plans")
+	})
+
+	it("renders Skill tool with name arg as primary", () => {
+		const summary = summarizeOpenAiToolCall("Skill", { name: "test-skill" }, plainTheme, (path) => path)
+		expect(summary).toBe("test-skill")
+	})
+
+	it("renders Skill tool with fallback when no name or skill arg", () => {
+		const summary = summarizeOpenAiToolCall("Skill", {}, plainTheme, (path) => path)
+		expect(summary).toBe("run skill")
+	})
 })
 
 describe("execution timestamp tracking", () => {

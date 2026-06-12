@@ -3371,7 +3371,9 @@ export function summarizeOpenAiToolCall(name: string, args: any, theme: Theme, s
 		case "alpha_read_code":
 			return getStringArg(args, "githubUrl", "github_url") || theme.fg("muted", "repository")
 		case "Skill":
-			return getStringArg(args, "name") || theme.fg("muted", "run skill")
+			// SkillToolSchema accepts both 'skill' (primary) and 'name' (alias for Claude Code compat).
+			// The adapter passes 'skill'; direct tool calls may pass either. Check both before falling back.
+			return getStringArg(args, "skill") || getStringArg(args, "name") || theme.fg("muted", "run skill")
 		case "EnterPlanMode":
 			return theme.fg("muted", "enable read-only planning")
 		case "ExitPlanMode":
