@@ -389,6 +389,89 @@ describe("prompt enrichment Claude Code skills", () => {
 	})
 })
 
+describe("append system prompt", () => {
+	beforeEach(() => {
+		vi.restoreAllMocks()
+		vi.spyOn(config, "loadConfig").mockReturnValue({ apiKey: "" } as ReturnType<typeof config.loadConfig>)
+		vi.spyOn(startupContext, "getAvailableModels").mockReturnValue([])
+	})
+
+	it("appends systemPromptOptions.appendSystemPrompt to the built system prompt", async () => {
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		const result = (await beforeAgentStart(
+			{ systemPromptOptions: { appendSystemPrompt: "Custom appended instructions" } },
+			{
+				cwd: "/tmp",
+				model: undefined,
+				hasUI: false,
+				sessionManager: { getSessionId: () => "session-1" },
+			},
+		)) as { systemPrompt: string }
+
+		expect(result.systemPrompt).toContain("Custom appended instructions")
+		// It should be at the end of the prompt
+		expect(result.systemPrompt.endsWith("Custom appended instructions")).toBe(true)
+	})
+
+	it("does not append when appendSystemPrompt is undefined", async () => {
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		const resultWithout = (await beforeAgentStart(
+			{ systemPromptOptions: {} },
+			{
+				cwd: "/tmp",
+				model: undefined,
+				hasUI: false,
+				sessionManager: { getSessionId: () => "session-1" },
+			},
+		)) as { systemPrompt: string }
+
+		const resultWithEmpty = (await beforeAgentStart(
+			{ systemPromptOptions: { appendSystemPrompt: undefined } },
+			{
+				cwd: "/tmp",
+				model: undefined,
+				hasUI: false,
+				sessionManager: { getSessionId: () => "session-2" },
+			},
+		)) as { systemPrompt: string }
+
+		// Both should produce the same prompt (no trailing append)
+		expect(resultWithout.systemPrompt).toBe(resultWithEmpty.systemPrompt)
+	})
+
+	it("does not append when appendSystemPrompt is whitespace-only", async () => {
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		const resultBaseline = (await beforeAgentStart(
+			{ systemPromptOptions: {} },
+			{
+				cwd: "/tmp",
+				model: undefined,
+				hasUI: false,
+				sessionManager: { getSessionId: () => "session-1" },
+			},
+		)) as { systemPrompt: string }
+
+		const resultWhitespace = (await beforeAgentStart(
+			{ systemPromptOptions: { appendSystemPrompt: "   \n  " } },
+			{
+				cwd: "/tmp",
+				model: undefined,
+				hasUI: false,
+				sessionManager: { getSessionId: () => "session-2" },
+			},
+		)) as { systemPrompt: string }
+
+		// Whitespace-only should be skipped — prompt unchanged
+		expect(resultBaseline.systemPrompt).toBe(resultWhitespace.systemPrompt)
+	})
+})
+
 describe("model role startup warnings", () => {
 	beforeEach(() => {
 		vi.restoreAllMocks()
