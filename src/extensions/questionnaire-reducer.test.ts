@@ -403,7 +403,76 @@ describe("submit gating", () => {
 	})
 })
 
-// ─── Group 10: Helpers ────────────────────────────────────────────────────────
+// ─── Group 10: select-option (number-key direct selection) ──────────────────
+
+describe("select-option event", () => {
+	it("single question: select-option confirms the option immediately", () => {
+		const { state, effects } = reduce(initialState([singleQ()]), { kind: "select-option", index: 1 })
+		expect(effects).toContainEqual({ kind: "done", cancelled: false })
+		const answer = state.answers.get("q1")
+		expect(answer).toMatchObject({ value: "opt2", label: "Option 2", index: 2 })
+	})
+
+	it("single question: select-option sets optionIndex to the target", () => {
+		const { state } = reduce(initialState([singleQ()]), { kind: "select-option", index: 1 })
+		expect(state.optionIndex).toBe(1)
+	})
+
+	it("single question: select-option with out-of-range index is a no-op", () => {
+		const initial = initialState([singleQ()])
+		const { state, effects } = reduce(initial, { kind: "select-option", index: 99 })
+		expect(effects).toHaveLength(0)
+		expect(state.answers.size).toBe(0)
+	})
+
+	it("single question: select-option on Other row is a no-op (no text typed)", () => {
+		// singleQ has 2 options + Other at index 2
+		const { effects } = reduce(initialState([singleQ()]), { kind: "select-option", index: 2 })
+		expect(effects).not.toContainEqual({ kind: "done", cancelled: false })
+	})
+
+	it("confirm question: select-option 0 (Yes) confirms immediately", () => {
+		const { effects } = reduce(initialState([confirmQ()]), { kind: "select-option", index: 0 })
+		expect(effects).toContainEqual({ kind: "done", cancelled: false })
+	})
+
+	it("multi question: select-option toggles the option on", () => {
+		const { state, effects } = reduce(initialState([multiQ()]), { kind: "select-option", index: 0 })
+		expect(effects).toContainEqual({ kind: "render" })
+		expect(effects).not.toContainEqual({ kind: "done", cancelled: false })
+		const toggled = state.multiToggles.get("q1")
+		expect(toggled?.has(0)).toBe(true)
+	})
+
+	it("multi question: select-option toggles the option off when already on", () => {
+		let { state } = reduce(initialState([multiQ()]), { kind: "select-option", index: 1 })
+		;({ state } = reduce(state, { kind: "select-option", index: 1 }))
+		const toggled = state.multiToggles.get("q1")
+		expect(toggled?.has(1)).toBe(false)
+	})
+
+	it("multi question: select-option on Other row is a no-op", () => {
+		// multiQ has 3 options + Other at index 3
+		const initial = initialState([multiQ()])
+		const { state } = reduce(initial, { kind: "select-option", index: 3 })
+		const toggled = state.multiToggles.get("q1")
+		expect(toggled?.has(3)).toBeFalsy()
+	})
+
+	it("multi-question flow: select-option advances to next tab after single answer", () => {
+		const sq = { ...singleQ(), id: "sq" }
+		const mq = { ...multiQ(), id: "mq" }
+		const { state } = reduce(initialState([sq, mq]), { kind: "select-option", index: 0 })
+		expect(state.currentTab).toBe(1)
+	})
+
+	it("text question: select-option is ignored (no options)", () => {
+		const { effects } = reduce(initialState([textQ()]), { kind: "select-option", index: 0 })
+		expect(effects).toHaveLength(0)
+	})
+})
+
+// ─── Group 11: Helpers ────────────────────────────────────────────────────────
 
 describe("helpers", () => {
 	it("currentOptions returns options + synthesised Other row when allowOther=true", () => {

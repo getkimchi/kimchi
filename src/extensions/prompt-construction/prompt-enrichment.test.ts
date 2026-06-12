@@ -356,6 +356,22 @@ describe("prompt enrichment Claude Code skills", () => {
 		expect(result.systemPrompt).toContain("Use: generated API types")
 	})
 
+	it("injects configured Claude Code skills without descriptions through the sanitized cache", async () => {
+		const cwd = join(dir, "project")
+		writeRawSkill(join(cwd, ".claude", "skills", "typescript-safety", "SKILL.md"), "Use generated types.\n")
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers([".claude/skills"])
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		const result = (await beforeAgentStart(
+			{},
+			{ cwd, model: undefined, hasUI: false, sessionManager: { getSessionId: () => "session-1" } },
+		)) as { systemPrompt: string }
+
+		expect(result.systemPrompt).toContain("<available_skills>")
+		expect(result.systemPrompt).toContain("<name>typescript-safety</name>")
+		expect(result.systemPrompt).toContain("<description>Claude Code skill: typescript-safety.</description>")
+	})
+
 	it("does not inject Claude Code skills when the extension is disabled", async () => {
 		const cwd = join(dir, "project")
 		writeSkill(join(cwd, ".claude", "skills", "typescript-safety", "SKILL.md"), {
@@ -466,6 +482,11 @@ function buildPromptExtensionWithHandlers(skillPaths: string[] = []) {
 function writeSkill(path: string, frontmatter: { description: string }): void {
 	mkdirSync(join(path, ".."), { recursive: true })
 	writeFileSync(path, `---\ndescription: ${frontmatter.description}\n---\n# Skill\n`, "utf-8")
+}
+
+function writeRawSkill(path: string, content: string): void {
+	mkdirSync(join(path, ".."), { recursive: true })
+	writeFileSync(path, content, "utf-8")
 }
 
 describe("deprecated model notification", () => {
@@ -825,5 +846,47 @@ describe("continuation nudge turn_end handler", () => {
 			message: makeAssistantWithStop([{ type: "text", text: "I was going to say..." }], "length"),
 		})
 		expect(sendMessageCalls.length).toBe(2)
+	})
+
+	it("does not send an empty-turn nudge after tools were called this agent run", async () => {
+		const { fire, sendMessageCalls } = buildNudgeHandlers()
+
+		// Start a fresh agent run.
+		await fire("agent_start", {})
+
+		// Simulate user input.
+		await fire("input", { source: "user" })
+
+		// Model calls a tool — marks the run as having used tools.
+		await fire("tool_execution_start", {})
+
+		// Model then produces an empty response (thinking-only or truly empty).
+		await fire("turn_end", {
+			message: makeAssistantWithStop([{ type: "thinking", thinking: "I am done." }]),
+		})
+
+		// No nudge should fire — tools were called this run, so the empty
+		// response is the model finishing, not a glitch.
+		expect(sendMessageCalls.length).toBe(0)
+	})
+
+	it("sends an empty-turn nudge when no tools have been called this run", async () => {
+		const { fire, sendMessageCalls } = buildNudgeHandlers()
+
+		// Start a fresh agent run.
+		await fire("agent_start", {})
+
+		// Simulate user input.
+		await fire("input", { source: "user" })
+
+		// Model returns an empty response with no prior tool calls.
+		await fire("turn_end", {
+			message: makeAssistantWithStop([]),
+		})
+
+		// Empty-turn nudge should fire — no tools have been called, the model
+		// might be stuck.
+		expect(sendMessageCalls.length).toBe(1)
+		expect((sendMessageCalls[0].message as { content?: string }).content).toContain("If you have finished")
 	})
 })

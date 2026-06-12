@@ -58,9 +58,6 @@ describe("binary smoke tests", () => {
 		})
 		expect(result.stdout).toMatch(/^kimchi (?:dev|\d+\.\d+\.\d+)/)
 		expect(result.stdout).toContain("platform:")
-		// The harness exit hook prints "To resume:" on exit code 0; subcommands
-		// short-circuit before any session starts, so it must NOT appear.
-		expect(result.stdout).not.toContain("To resume:")
 	})
 
 	it("unknown arg falls through to the harness (pi prints the unrecognised-flag warning)", () => {

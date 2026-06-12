@@ -4,6 +4,7 @@ from collections.abc import Iterable
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, ValidationError
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 KIMCHI_API = "https://llm.kimchi.dev"
 KIMCHI_PROVIDER = "kimchi-dev"
@@ -12,7 +13,10 @@ KIMCHI_ANTHROPIC_BASE_URL = f"{KIMCHI_API}/anthropic"
 KIMCHI_MODELS_METADATA_URL = f"{KIMCHI_API}/v1/models/metadata?include_in_cli=true"
 KIMCHI_API_KEY_ENV = "KIMCHI_API_KEY"
 
-FETCH_TIMEOUT_SEC = 5
+FETCH_TIMEOUT_SEC = 20
+FETCH_MAX_ATTEMPTS = 3
+FETCH_RETRY_BACKOFF_SEC = 1
+RETRYABLE_FETCH_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504, 524, 529})
 
 
 class KimchiModelLimits(BaseModel):
@@ -36,6 +40,14 @@ class KimchiModelsMetadataResponse(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     models: list[KimchiModelMetadata] = Field(min_length=1)
+
+
+def _is_retryable_metadata_fetch_error(exc: BaseException) -> bool:
+    if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError)):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in RETRYABLE_FETCH_STATUSES
+    return False
 
 
 class KimchiGatewayMixin:
@@ -95,17 +107,34 @@ class KimchiGatewayMixin:
             )
         return api_key
 
+    @retry(
+        retry=retry_if_exception(_is_retryable_metadata_fetch_error),
+        stop=stop_after_attempt(FETCH_MAX_ATTEMPTS),
+        wait=wait_exponential(
+            multiplier=FETCH_RETRY_BACKOFF_SEC,
+            min=FETCH_RETRY_BACKOFF_SEC,
+            max=FETCH_RETRY_BACKOFF_SEC * (FETCH_MAX_ATTEMPTS - 1),
+        ),
+        reraise=True,
+    )
+    def _fetch_model_metadata_body(self, api_key: str) -> object:
+        response = httpx.get(
+            KIMCHI_MODELS_METADATA_URL,
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=FETCH_TIMEOUT_SEC,
+        )
+        response.raise_for_status()
+        return response.json()
+
     def _fetch_model_metadata(self, api_key: str) -> list[KimchiModelMetadata]:
         try:
-            response = httpx.get(
-                KIMCHI_MODELS_METADATA_URL,
-                headers={"Authorization": f"Bearer {api_key}"},
-                timeout=FETCH_TIMEOUT_SEC,
-            )
-            response.raise_for_status()
-            body = response.json()
+            body = self._fetch_model_metadata_body(api_key)
         except httpx.HTTPStatusError as exc:
             raise RuntimeError(f"Failed to fetch Kimchi model metadata: HTTP {exc.response.status_code}") from exc
+        except (httpx.TimeoutException, httpx.NetworkError) as exc:
+            raise RuntimeError(
+                f"Failed to fetch Kimchi model metadata after {FETCH_MAX_ATTEMPTS} attempts: {exc}"
+            ) from exc
         except (httpx.HTTPError, json.JSONDecodeError) as exc:
             raise RuntimeError(f"Failed to fetch Kimchi model metadata: {exc}") from exc
 

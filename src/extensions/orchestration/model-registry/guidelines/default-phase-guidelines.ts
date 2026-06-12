@@ -11,7 +11,7 @@ export const DEFAULT_EXPLORE_GUIDELINES = `During **explore** phase:
 - Output: a tight summary (paths, key types, integration points) — what matters, not everything you saw.`
 
 export const DEFAULT_RESEARCH_GUIDELINES = `During **research** phase:
-- \`web_search\` is available to ALL models regardless of tier or strengths. Prefer it over delegating a simple lookup.
+- \`web_search\` is available to ALL models regardless of tier or roles. Prefer it over delegating a simple lookup.
 - Run AT MOST one \`web_search\` per task. Do not re-search to "verify" — pick the best query the first time.
 - Skip web research for well-known patterns, standard algorithms, or common library APIs you already know.
 - Prefer primary sources (official docs, GitHub READMEs, RFCs). Avoid \`web_fetch\` unless the page is unindexed or the user gave a specific URL.
@@ -48,7 +48,7 @@ export const DEFAULT_REVIEW_GUIDELINES = `During **review** phase:
 - Prioritise: correctness bugs > security issues > architectural concerns > edge cases > style. Skip nits.
 - Be specific: quote the exact line and propose the concrete fix.
 - Flag missing tests for behaviour the diff introduces or changes.
-- Do NOT rewrite code inline unless explicitly asked. Report findings; let the author apply them.`
+- **Do NOT modify source files.** Do not apply fixes, do not refactor, do not commit changes. Your job is to report findings — never to act on them. The author or a separate build agent applies fixes.`
 
 export const DEFAULT_PHASE_GUIDELINES: Readonly<Record<Phase, string>> = {
 	explore: DEFAULT_EXPLORE_GUIDELINES,

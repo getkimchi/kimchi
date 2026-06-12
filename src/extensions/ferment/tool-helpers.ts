@@ -13,6 +13,7 @@ import type { Command, TransitionError } from "../../ferment/state-machine.js"
 import { applyCommand } from "../../ferment/state-machine.js"
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
 import { publicToolNameForActionKind } from "./action-tool-names.js"
+import { emitFermentDomainEvent } from "./domain-events-emitter.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 
 // ─── Tool result builders ─────────────────────────────────────────────────────
@@ -154,7 +155,17 @@ export function createApplyAndPersist(runtime: FermentRuntime) {
 				return { write: true, ferment: result.ferment, events, value: { ok: true, ferment: result.ferment } }
 			},
 		)
-		if (outcome.ok) runtime.setActive(outcome.ferment)
+		if (outcome.ok) {
+			runtime.setActive(outcome.ferment)
+			if (runtime.events) {
+				try {
+					emitFermentDomainEvent(runtime.events, cmd, outcome.ferment)
+				} catch {
+					// Domain event emission is best-effort — a subscriber failure must
+					// never destabilize the state-machine persistence path.
+				}
+			}
+		}
 		return outcome
 	}
 }

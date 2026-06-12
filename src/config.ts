@@ -46,7 +46,16 @@ export const DEFAULT_SKILL_PATHS = [...ALWAYS_SHOWN_SKILL_PATHS, ...OPTIONAL_SKI
 
 export function buildSkillPathOptions(discoveredDirs: string[]): string[] {
 	const home = homedir()
-	const toRelative = (abs: string): string => (abs === home || abs.startsWith(`${home}/`) ? relative(home, abs) : abs)
+	const cwd = process.cwd()
+	// Relativize home- and cwd-rooted dirs so the persisted skill path is
+	// location-independent: a relative path is re-scanned under both ~ and the
+	// current project at runtime (see expandUserPath/resolveUserPath), whereas
+	// an absolute path is pinned to the directory the wizard happened to run in.
+	const toRelative = (abs: string): string => {
+		if (abs === home || abs.startsWith(`${home}/`)) return relative(home, abs)
+		if (abs === cwd || abs.startsWith(`${cwd}/`)) return relative(cwd, abs)
+		return abs
+	}
 
 	const seen = new Set<string>()
 	const result: string[] = []

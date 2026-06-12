@@ -162,6 +162,44 @@ describe("isUserChosenYolo", () => {
 		expect(isUserChosenYolo()).toBe(true)
 	})
 
+	it("is true when yolo comes from the launch CLI flag", async () => {
+		const harness = createPermissionsHarness(["bash"], { yolo: true })
+
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		expect(isUserChosenYolo()).toBe(true)
+	})
+
+	it("is true after the user switches to yolo with the permissions command", async () => {
+		const harness = createPermissionsHarness(["bash"])
+		const command = harness.commands.get("permissions")
+
+		expect(command).toBeDefined()
+		await command?.handler("mode yolo", createMockContext([]))
+
+		expect(process.env.KIMCHI_PERMISSIONS).toBe("yolo")
+		expect(isUserChosenYolo()).toBe(true)
+	})
+
+	it("is true after the user cycles to yolo with shift+tab", async () => {
+		const harness = createPermissionsHarness(["bash"])
+		const ctx = createMockContext([])
+		let terminalHandler: ((data: string) => unknown) | undefined
+		ctx.ui.onTerminalInput = vi.fn((handler: (data: string) => unknown) => {
+			terminalHandler = handler
+			return () => {}
+		})
+
+		await harness.fire("session_start", {}, ctx)
+		expect(terminalHandler).toBeDefined()
+		terminalHandler?.("\x1b[Z")
+		terminalHandler?.("\x1b[Z")
+		terminalHandler?.("\x1b[Z")
+
+		expect(process.env.KIMCHI_PERMISSIONS).toBe("yolo")
+		expect(isUserChosenYolo()).toBe(true)
+	})
+
 	it("is false when yolo is only a runtime elevation (e.g. an active ferment)", () => {
 		// No user-chosen yolo source: env unset, no CLI flag, default config.
 		createPermissionsHarness(["bash"])
@@ -173,6 +211,30 @@ describe("isUserChosenYolo", () => {
 		expect(process.env.KIMCHI_PERMISSIONS).toBe("yolo")
 
 		// But runtime elevation must not count as user consent.
+		expect(isUserChosenYolo()).toBe(false)
+	})
+
+	it("keeps user-selected runtime yolo when ferment clears", async () => {
+		const harness = createPermissionsHarness(["bash"])
+		const command = harness.commands.get("permissions")
+		await command?.handler("mode yolo", createMockContext([]))
+
+		notifyFermentActive(true)
+		notifyFermentActive(false)
+
+		expect(process.env.KIMCHI_PERMISSIONS).toBe("yolo")
+		expect(isUserChosenYolo()).toBe(true)
+	})
+
+	it("clears ferment-owned runtime yolo when ferment clears", () => {
+		createPermissionsHarness(["bash"])
+
+		notifyFermentActive(true)
+		expect(process.env.KIMCHI_PERMISSIONS).toBe("yolo")
+		expect(isUserChosenYolo()).toBe(false)
+
+		notifyFermentActive(false)
+		expect(process.env.KIMCHI_PERMISSIONS).toBe("default")
 		expect(isUserChosenYolo()).toBe(false)
 	})
 })
@@ -545,7 +607,7 @@ describe("permissions ferment tool classification", () => {
 
 		expect(result).toBeUndefined()
 		expect(classifyToolCall).toHaveBeenCalledTimes(1)
-		expect(vi.mocked(classifyToolCall).mock.calls[0]?.[2]).toMatchObject({
+		expect(vi.mocked(classifyToolCall).mock.calls[0]?.[3]).toMatchObject({
 			toolName: "unknown_tool",
 			input: { value: 1 },
 			cwd: "/test",

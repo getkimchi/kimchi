@@ -59,6 +59,13 @@ export class ContinuationNudge {
 	private static readonly MAX_NUDGES = 2
 
 	private toolsCalledSinceLastUserInput = false
+	/** Tracks whether any tool has been called during the current agent run
+	 *  (between `resetForNewAgentRun` and the next `resetForNewAgentRun`).
+	 *  Unlike `toolsCalledSinceLastUserInput`, this is NOT reset by
+	 *  `resetForNewUserInput`, so a follow-up question after a tool sequence
+	 *  does not re-arm the nudge and cause spurious "you didn't call a tool"
+	 *  prompts that the model mistakes for user input. */
+	private toolsCalledThisAgentRun = false
 	private nudgeCountThisCycle = 0
 	private nudgeResponsePending = false
 	private accumulatedResponseText = ""
@@ -66,6 +73,13 @@ export class ContinuationNudge {
 	 *  Incremented by `markDelegationCall()`, decremented by `clearDelegationPending()`.
 	 *  The continuation nudge is suppressed while this is > 0. */
 	private pendingDelegationCount = 0
+
+	/** Called at the start of each agent run (agent_start event).
+	 *  Resets the run-level tool tracking so the nudge can fire if the model
+	 *  gets stuck in a new run. */
+	resetForNewAgentRun(): void {
+		this.toolsCalledThisAgentRun = false
+	}
 
 	resetForNewUserInput(): void {
 		this.toolsCalledSinceLastUserInput = false
@@ -80,6 +94,7 @@ export class ContinuationNudge {
 
 	recordToolCall(): void {
 		this.toolsCalledSinceLastUserInput = true
+		this.toolsCalledThisAgentRun = true
 		this.nudgeResponsePending = false
 		this.accumulatedResponseText = ""
 	}
@@ -137,6 +152,10 @@ export class ContinuationNudge {
 
 	hasToolBeenCalledThisCycle(): boolean {
 		return this.toolsCalledSinceLastUserInput
+	}
+
+	hasToolBeenCalledThisRun(): boolean {
+		return this.toolsCalledThisAgentRun
 	}
 
 	getNudgeText(): string {

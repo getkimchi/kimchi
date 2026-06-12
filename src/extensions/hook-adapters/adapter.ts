@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process"
 import type {
+	AgentEndEvent,
 	BeforeAgentStartEvent,
 	BeforeAgentStartEventResult,
 	ExtensionAPI,
@@ -8,7 +9,6 @@ import type {
 	InputEventResult,
 	SessionBeforeCompactEvent,
 	SessionCompactEvent,
-	SessionShutdownEvent,
 	SessionStartEvent,
 	ToolCallEvent,
 	ToolCallEventResult,
@@ -57,6 +57,7 @@ type HookToolResultEventResult = {
 export function createCommandHookAdapter(definition: CommandHookAdapterDefinition): (pi: ExtensionAPI) => void {
 	return (pi) => {
 		let stopHookFollowUpPending = false
+		let batchedToolResults: Array<{ tool_name: string; tool_use_id: string; is_error: boolean }> = []
 		const pendingSystemPrompt: { context?: string } = {}
 
 		if (definition.sessionStartDelivery === "systemPrompt") {
@@ -81,7 +82,29 @@ export function createCommandHookAdapter(definition: CommandHookAdapterDefinitio
 		pi.on("input", (event, ctx) => {
 			return runUserPromptSubmit(definition, pi, event, ctx)
 		})
+		pi.on("turn_start", async (event, ctx) => {
+			batchedToolResults = []
+			await runObserver(definition, "TurnStart", ctx, { turn_id: String(event.turnIndex) })
+		})
+		pi.on("tool_execution_end", (event) => {
+			batchedToolResults.push({
+				tool_name: externalToolName(event.toolName),
+				tool_use_id: event.toolCallId,
+				is_error: event.isError,
+			})
+		})
 		pi.on("turn_end", async (event, ctx) => {
+			if (batchedToolResults.length > 0) {
+				const toolResults = batchedToolResults
+				batchedToolResults = []
+				await runObserver(definition, "PostToolBatch", ctx, {
+					turn_id: String(event.turnIndex),
+					tool_results: toolResults,
+				})
+			}
+			await runTaskCompleted(definition, pi, event, ctx)
+		})
+		pi.on("agent_end", async (event, ctx) => {
 			const stopHookActive = stopHookFollowUpPending
 			const result = await runStop(definition, event, ctx, stopHookActive)
 			if (stopHookActive) stopHookFollowUpPending = false
@@ -90,8 +113,27 @@ export function createCommandHookAdapter(definition: CommandHookAdapterDefinitio
 				pi.sendUserMessage(result.reason, { deliverAs: "followUp" })
 			}
 		})
+		pi.on("message_start", async (event, ctx) => {
+			await runObserver(definition, "MessageStart", ctx, messagePayload(event.message))
+		})
+		pi.on("message_end", async (event, ctx) => {
+			await runObserver(definition, "MessageEnd", ctx, messagePayload(event.message))
+		})
+		pi.on("model_select", async (event, ctx) => {
+			await runObserver(definition, "ModelSelect", ctx, {
+				model: modelIdValue(event.model),
+				previous_model: modelIdValue(event.previousModel),
+				source: event.source,
+			})
+		})
+		pi.on("user_bash", async (event, ctx) => {
+			await runObserver(definition, "UserBash", ctx, {
+				command: event.command,
+				exclude_from_context: event.excludeFromContext,
+			})
+		})
 		pi.on("session_shutdown", async (event, ctx) => {
-			await runObserver(definition, "SessionEnd", event, ctx)
+			await runObserver(definition, "SessionEnd", ctx, event as unknown as Record<string, unknown>)
 		})
 	}
 }
@@ -262,6 +304,12 @@ async function runPostToolUse(
 		is_error: event.isError,
 	}
 	let result = await runMatchingHooks(definition, "PostToolUse", ctx, matcherCandidates(event.toolName), basePayload)
+	if (event.isError) {
+		result = mergeOptionalResults(
+			result,
+			await runMatchingHooks(definition, "PostToolUseFail", ctx, matcherCandidates(event.toolName), basePayload),
+		)
+	}
 	const skillName = skillNameFromReadPath(event)
 	if (skillName) {
 		result = mergeOptionalResults(
@@ -362,24 +410,40 @@ async function runUserPromptSubmit(
 
 async function runStop(
 	definition: CommandHookAdapterDefinition,
-	event: TurnEndEvent,
+	event: AgentEndEvent,
 	ctx: ExtensionContext,
 	stopHookActive: boolean,
 ): Promise<HookCommandResult | undefined> {
 	return runMatchingHooks(definition, "Stop", ctx, [], {
-		turn_id: String(event.turnIndex),
 		stop_hook_active: stopHookActive,
-		last_assistant_message: lastAssistantText(event.message),
+		last_assistant_message: lastAssistantTextFromMessages(event.messages),
 	})
+}
+
+async function runTaskCompleted(
+	definition: CommandHookAdapterDefinition,
+	pi: ExtensionAPI,
+	event: TurnEndEvent,
+	ctx: ExtensionContext,
+): Promise<void> {
+	const result = await runMatchingHooks(definition, "TaskCompleted", ctx, [], {
+		turn_id: String(event.turnIndex),
+		last_assistant_message: lastAssistantText(event.message),
+		tool_results: event.toolResults.map((toolResult) => ({
+			tool_use_id: stringValue((toolResult as unknown as Record<string, unknown>).toolCallId) ?? null,
+			is_error: (toolResult as unknown as Record<string, unknown>).isError === true,
+		})),
+	})
+	if (result?.additionalContext) sendAdditionalContext(definition, pi, result.additionalContext, "steer")
 }
 
 async function runObserver(
 	definition: CommandHookAdapterDefinition,
-	eventName: "SessionEnd",
-	event: SessionShutdownEvent,
+	eventName: CommandHookEventName,
 	ctx: ExtensionContext,
+	payload: Record<string, unknown>,
 ): Promise<void> {
-	await runMatchingHooks(definition, eventName, ctx, [], event as unknown as Record<string, unknown>)
+	await runMatchingHooks(definition, eventName, ctx, [], payload)
 }
 
 async function runMatchingHooks(
@@ -538,6 +602,26 @@ function skillNameFromReadPath(event: ToolResultEvent): string | undefined {
 function lastAssistantText(message: TurnEndEvent["message"]): string | null {
 	if (!isRecord(message) || !Array.isArray(message.content)) return null
 	return message.content.map((part) => (isRecord(part) && part.type === "text" ? part.text : "")).join("") || null
+}
+
+function lastAssistantTextFromMessages(messages: AgentEndEvent["messages"]): string | null {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const message = messages[i]
+		if (isRecord(message) && message.role === "assistant") return lastAssistantText(message)
+	}
+	return null
+}
+
+function messagePayload(message: TurnEndEvent["message"]): Record<string, unknown> {
+	return {
+		message_role: isRecord(message) ? (stringValue(message.role) ?? null) : null,
+		message_text: lastAssistantText(message),
+	}
+}
+
+function modelIdValue(model: unknown): string | null {
+	if (!isRecord(model)) return null
+	return stringValue(model.id) ?? stringValue(model.name) ?? null
 }
 
 function sessionStartSource(reason: SessionStartEvent["reason"]): string {

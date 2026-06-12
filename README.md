@@ -48,15 +48,16 @@ In single-model mode the orchestration system prompt (environment, tools, resear
 
 ### Model roles
 
-In multi-model mode, each task type is handled by a specific role. Use `/multi-model` in the interactive CLI to assign models to roles, or edit `~/.config/kimchi/harness/settings.json` directly:
+In multi-model mode, each task type is handled by a specific role. Each role can have one model or a **pool of candidates** — the orchestrator reads model descriptions (tier, capabilities) and picks the best fit for each task.
+
+Use `/multi-model` in the interactive CLI to toggle models on/off per role, or edit `~/.config/kimchi/harness/settings.json` directly:
 
 ```json
 {
   "modelRoles": {
     "orchestrator": "kimchi-dev/kimi-k2.6",
-    "planner": "kimchi-dev/kimi-k2.6",
-    "builder": "kimchi-dev/minimax-m2.7",
-    "reviewer": "kimchi-dev/minimax-m2.7",
+    "builder": ["kimchi-dev/minimax-m2.7", "anthropic/claude-sonnet-4-5"],
+    "reviewer": "anthropic/claude-sonnet-4-5",
     "explorer": "kimchi-dev/nemotron-3-super-fp4"
   }
 }
@@ -64,13 +65,49 @@ In multi-model mode, each task type is handled by a specific role. Use `/multi-m
 
 | Role | Default | Description |
 |------|---------|-------------|
-| **orchestrator** | `kimchi-dev/kimi-k2.6` | Runs the main loop, delegates work to other roles |
-| **planner** | `kimchi-dev/kimi-k2.6` | Designs the approach, writes specs. When set to the same model as orchestrator, planning is done in-process |
-| **builder** | `kimchi-dev/minimax-m2.7` | Code implementation, refactoring |
-| **reviewer** | `kimchi-dev/minimax-m2.7` | Code review, finding bugs, verifying correctness |
-| **explorer** | `kimchi-dev/nemotron-3-super-fp4` | Codebase exploration, reading files, tracing architecture, research |
+| **orchestrator** | `kimi-k2.6` | Runs the main loop, classifies tasks, delegates work. Single model. |
+| **planner** | `kimi-k2.6` | Designs the approach, writes specs. When same as orchestrator, planning is done in-process. |
+| **builder** | `minimax-m2.7` | Code implementation. For complex tasks the orchestrator may pick a heavier model from the pool. |
+| **reviewer** | `kimi-k2.6`, `minimax-m2.7` | Code review. Orchestrator picks the strongest by tier for initial review. |
+| **explorer** | `kimi-k2.6`, `nemotron-3-super-fp4` | Codebase exploration, research. Light models for broad scans, heavy for deep analysis. |
 
-Roles accept any `provider/model-id` string — kimchi-dev models, or models from other providers configured in `models.json` (e.g. `anthropic/claude-sonnet-4-5`, `openai/gpt-4o`). Only non-default values need to be specified; missing keys fall back to the defaults above.
+Defaults are derived from model capabilities in `MODEL_CAPABILITIES`. Roles accept any `provider/model-id` string or an array of strings. Only non-default values need to be specified; missing keys fall back to defaults.
+
+#### How model selection works
+
+The orchestrator sees each role's model pool with tier and description. It picks the model whose description best matches the task:
+
+- **Simple build chunk** (CRUD, parsers, CLI): picks standard-tier builder (minimax-m2.7)
+- **Complex build chunk** (concurrency, graph algorithms): picks the heaviest model whose description confirms correctness reasoning
+- **Code review**: picks the strongest reviewer by tier — fresh Agent context provides independence
+- **Exploration**: picks a light model for broad file reading, heavy for deep analysis
+
+#### Example: using Claude for builds
+
+To use Claude Sonnet for all build work while keeping kimchi-dev models for orchestration and review:
+
+```json
+{
+  "modelRoles": {
+    "builder": "anthropic/claude-sonnet-4-5"
+  }
+}
+```
+
+#### Example: mixed pool with tier-based selection
+
+To give the orchestrator a choice between a cheap builder and a strong one, and let it pick based on chunk complexity:
+
+```json
+{
+  "modelRoles": {
+    "builder": ["kimchi-dev/minimax-m2.7", "anthropic/claude-sonnet-4-5"],
+    "reviewer": "anthropic/claude-sonnet-4-5"
+  }
+}
+```
+
+The orchestrator will use minimax for simple chunks and Claude for complex ones (based on the plan's complexity classification).
 
 ### Phase tracking
 

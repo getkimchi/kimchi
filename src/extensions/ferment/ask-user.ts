@@ -56,6 +56,7 @@ export interface AskUserQuestion {
 	label?: string
 	options?: AskUserOption[]
 	allowOther?: boolean
+	otherLabel?: string
 	required?: boolean
 	placeholder?: string
 }
@@ -293,6 +294,9 @@ function buildAskJudgeFormUserMsg(
 					`      option id="${o.id}" label="${o.label}"${o.description ? ` description="${o.description}"` : ""}`,
 				)
 			}
+		}
+		if ((q.type === "single" || q.type === "multi") && q.allowOther) {
+			parts.push(`      custom label="${q.otherLabel ?? "Type your own answer"}" value="<free-form text>"`)
 		}
 	}
 	return parts.join("\n")

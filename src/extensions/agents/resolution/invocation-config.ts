@@ -1,5 +1,5 @@
 import { pickFromModelListByTier, recommendModel } from "../../orchestration/model-registry/recommend.js"
-import type { ModelStrength } from "../../orchestration/model-registry/types.js"
+import type { ModelRole } from "../../orchestration/model-registry/types.js"
 import { getCurrentPhase } from "../../tags.js"
 import type { AgentConfig, IsolationMode, JoinMode, ThinkingLevel } from "../personas/types.js"
 
@@ -49,11 +49,11 @@ export function resolveAgentInvocationConfig(
 			// matches the persona's preferTier.
 			return pickFromModelListByTier(agentConfig.models, agentConfig.preferTier ?? "standard")
 		}
-		if (agentConfig?.strengths?.length) {
-			// Persona has strengths but no explicit models[] — let the orchestrator
-			// auto-pick based on those strengths.
+		if (agentConfig?.roles?.length) {
+			// Persona has roles but no explicit models[] — let the orchestrator
+			// auto-pick based on those roles.
 			const rec = recommendModel({
-				strengths: agentConfig.strengths,
+				roles: agentConfig.roles,
 				preferTier: agentConfig.preferTier ?? "standard",
 			})
 			return rec ? `${rec.provider}/${rec.modelId}` : undefined
@@ -74,20 +74,14 @@ export function resolveAgentInvocationConfig(
 		modelInput = resolveProfileModel()
 	}
 
-	if (!modelInput && !agentConfig?.models?.length && !agentConfig?.strengths?.length) {
-		// Phase-aware fallback: if current phase is a known strength, recommend
+	if (!modelInput && !agentConfig?.models?.length && !agentConfig?.roles?.length) {
+		// Phase-aware fallback: if current phase is a known role, recommend
 		// a model for that phase.
 		const phase = getCurrentPhase()
-		const VALID_STRENGTHS: ReadonlySet<string> = new Set<ModelStrength>([
-			"build",
-			"explore",
-			"plan",
-			"review",
-			"research",
-		])
-		if (phase && VALID_STRENGTHS.has(phase)) {
+		const VALID_ROLES: ReadonlySet<string> = new Set<ModelRole>(["build", "explore", "plan", "review", "research"])
+		if (phase && VALID_ROLES.has(phase)) {
 			const rec = recommendModel({
-				strengths: [phase as ModelStrength],
+				roles: [phase as ModelRole],
 				preferTier: "standard",
 			})
 			if (rec) {

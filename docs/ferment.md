@@ -81,7 +81,7 @@ boundaries.
 | Policy | Behavior |
 |--------|----------|
 | **manual** | Ask before moving to the next phase. Work inside the current phase can continue autonomously. |
-| **automated** | Keep going until the ferment is complete, blocked, paused, or needs user input. |
+| **automated** | Keep going through all stages without asking until the ferment is complete, blocked, or paused. |
 
 Switch continuation policy at any time:
 ```
@@ -366,6 +366,7 @@ These tools are available to the agent during a ferment session. They are not me
 | Tool | Description |
 |------|-------------|
 | `propose_ferment_scoping` | Draft scoping for interactive confirmation |
+| `confirm_ferment_completion_criteria` | Confirm completion criteria via one question: Yes/looks good or No + inline text explanation |
 | `scope_ferment` | Save confirmed scoping answers → `draft` to `planned` |
 | `update_ferment_scope_field` | Update a single scoping field mid-draft |
 | `complete_ferment` | Mark the ferment `complete` after all phases are terminal |

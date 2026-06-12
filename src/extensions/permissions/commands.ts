@@ -10,7 +10,7 @@ export interface CommandDeps {
 	getSession: () => SessionMemory
 	getLoaded: () => LoadedConfig
 	getMode: () => PermissionMode
-	setRuntimeMode: (mode: PermissionMode | undefined) => void
+	setRuntimeMode: (mode: PermissionMode | undefined, source: "user") => void
 	applyPlanMode: () => void
 	restorePlanMode: () => void
 	rebuildConfigRules: () => void
@@ -210,7 +210,7 @@ function handleMode(ctx: ExtensionContext, deps: CommandDeps, arg: string): void
 		return
 	}
 	const prev = deps.getMode()
-	deps.setRuntimeMode(mode)
+	deps.setRuntimeMode(mode, "user")
 	if (prev === "plan" && mode !== "plan") deps.restorePlanMode()
 	if (mode === "plan") deps.applyPlanMode()
 	deps.updateStatus(ctx)

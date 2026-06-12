@@ -1,10 +1,9 @@
 // CLI logic — imported dynamically by entry.ts after PI_PACKAGE_DIR is set.
 // All static imports here (extensions, pi-mono) are safe because the env is already configured.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
-import { basename, dirname, resolve } from "node:path"
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { AgentSession } from "@earendil-works/pi-coding-agent"
 import {
 	getCliModeArg,
@@ -58,7 +57,9 @@ import promptEnrichmentExtension from "./extensions/prompt-construction/prompt-e
 import promptSummaryExtension from "./extensions/prompt-summary.js"
 import questionnaireExtension from "./extensions/questionnaire.js"
 import reportBugExtension from "./extensions/report-bug.js"
+import reviewWriteGuardExtension from "./extensions/review-write-guard.js"
 import rtkRewriteExtension from "./extensions/rtk-rewrite.js"
+import sessionNameExtension from "./extensions/session-name.js"
 import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
@@ -120,13 +121,8 @@ if (telemetryConfig.enabled) {
 	})
 }
 
-let sessionId: string | undefined
-let sessionFile: string | undefined
-let sessionStarted = false
-// ACP mode runs JSON-RPC over stdio; the "To resume:" print (even remapped to
-// stderr via console.log = console.error inside runAcpMode) is noise in IDE
-// logs and not actionable — the IDE owns session continuation. Decide once,
-// at module load, before anything else runs.
+// ACP mode runs JSON-RPC over stdio; interactive mode runs the standard TUI
+// harness. Decide once at module load, before anything else runs.
 const cliMode = getCliModeArg(process.argv.slice(2))
 const acpMode = cliMode === "acp"
 
@@ -165,35 +161,6 @@ const helpOrVersion = isHelpOrVersionArgs(process.argv.slice(2))
 // without a hard process.exit(), so clack can restore terminal state normally.
 class SetupCancelled extends Error {}
 
-process.on("exit", (code) => {
-	// Only print the resume hint after a real harness session ran. Subcommands
-	// (kimchi setup, kimchi version, …) and --help/--version short-circuit
-	// before any session starts, so sessionId stays undefined and we keep
-	// quiet. The non-resume case (sessionId still undefined after main exits)
-	// is preserved by checking whether session capture had a chance to run —
-	// done by the harness path setting sessionStarted = true below.
-	if (code === 0 && !acpMode && sessionStarted) {
-		// Only print a session-specific hint if the session file was actually
-		// flushed to disk. Empty sessions (immediate exit) never get persisted,
-		// so `--session <id>` would fail to resolve. Fall back to --continue,
-		// which finds the most recent persisted session for this cwd.
-		const persisted = sessionId && sessionFile && existsSync(sessionFile)
-		const resumeCmd = persisted ? `kimchi --session ${sessionId}` : "kimchi --continue"
-		console.log(`\nTo resume: ${resumeCmd}`)
-	}
-})
-
-function sessionIdCaptureExtension(pi: ExtensionAPI) {
-	pi.on("session_start", (_event, ctx: ExtensionContext) => {
-		try {
-			sessionId = ctx.sessionManager.getSessionId()
-			sessionFile = ctx.sessionManager.getSessionFile()
-		} catch {
-			// ignore — exit handler falls back to --continue
-		}
-	})
-}
-
 try {
 	// Top-level kimchi subcommands (setup, claude, opencode, …) and the
 	// top-level --help take ownership before any harness setup runs.
@@ -209,12 +176,6 @@ try {
 		const { main } = await import("@earendil-works/pi-coding-agent")
 		await main(process.argv.slice(2), { extensionFactories: [] })
 	} else {
-		// We're entering the harness/ACP path. Subcommands and --help/--version
-		// short-circuit above without ever reaching here, which is why the exit
-		// hook keys off this flag instead of just running unconditionally on a
-		// 0-status exit.
-		sessionStarted = true
-
 		// Fire harness_launched (one shot per harness session; respects telemetry opt-out)
 		if (telemetryConfig.enabled) {
 			sendPreSessionEvent(telemetryConfig, "harness_launched", { version: getVersion() })
@@ -247,7 +208,6 @@ try {
 			} else {
 				const result = await runSetupWizard({ needsSkillsSetup, needsMigrationCheck })
 				if (result.cancelled) {
-					sessionStarted = false
 					process.exitCode = 130
 					throw new SetupCancelled()
 				}
@@ -448,7 +408,7 @@ try {
 		const extensionFactories = [
 			startupUpdateExtension,
 			superpowersExtension,
-			sessionIdCaptureExtension,
+			sessionNameExtension(),
 			shutdownMarkerExtension,
 			statsExtension,
 			...terminalUiExtensionFactories,
@@ -456,6 +416,7 @@ try {
 			startupAuthGate,
 			loopGuardExtension,
 			explorationGuardExtension,
+			reviewWriteGuardExtension,
 			lspExtension,
 			...enabledExtensionFactories([
 				{ id: "plugins.mcp-apps", factory: mcpAdapterExtension },

@@ -76,6 +76,8 @@ let graceTurns = 5
 
 const INACTIVITY_CHECK_INTERVAL = 10_000
 const DEFAULT_INACTIVITY_TIMEOUT = 120_000
+/** Default wall-clock timeout for subagents (seconds). Prevents hangs on blocking operations. */
+const DEFAULT_MAX_DURATION = 900
 
 /** Get the grace turns value. */
 export function getGraceTurns(): number {
@@ -420,7 +422,7 @@ async function runAgentInner(
 		{
 			threshold: 0.75,
 			message:
-				"You're at 75% of your turn budget. Continue your current approach; avoid starting new exploratory work.",
+				"You're at 75% of your turn budget. Finish your current edit, run verification, and summarize any remaining work.",
 		},
 		{
 			threshold: 0.9,
@@ -536,7 +538,7 @@ async function runAgentInner(
 		}
 	}, INACTIVITY_CHECK_INTERVAL)
 
-	const effectiveMaxDuration = options.maxDuration ?? agentConfig?.maxDuration
+	const effectiveMaxDuration = options.maxDuration ?? agentConfig?.maxDuration ?? DEFAULT_MAX_DURATION
 	const durationTimer = effectiveMaxDuration
 		? setTimeout(() => {
 				aborted = true
@@ -564,7 +566,7 @@ async function runAgentInner(
 	}
 
 	const prevPhase = getCurrentPhase()
-	const personaPhase = agentConfig?.strengths?.[0]
+	const personaPhase = agentConfig?.roles?.[0]
 	if (personaPhase) {
 		setCurrentPhase(personaPhase)
 	}

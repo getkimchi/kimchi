@@ -1,5 +1,5 @@
 import { resolve } from "node:path"
-import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai"
+import type { AssistantMessage } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedSemanticFg } from "../../ansi.js"
@@ -10,7 +10,7 @@ import { FERMENT_TOOLS, isFermentToolName, isUserFacingFermentToolName } from ".
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import { type ToolVisibilityAPI, createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
-import { resolveClassifierModel } from "./classifier-model.js"
+import { resolveClassifierModels } from "./classifier-model.js"
 import { classifyToolCall } from "./classifier.js"
 import { registerCommands } from "./commands.js"
 import { type LoadedConfig, loadConfig } from "./config.js"
@@ -57,6 +57,8 @@ export function isWithinKimchiPlans(filePath: string, cwd: string): boolean {
  * For throwaway/sandboxed environments ONLY.
  */
 const DANGEROUS_BYPASS_FLAG = "dangerously-skip-permissions"
+
+type RuntimeModeSource = "user" | "ferment"
 
 // Safe default so any event that fires before session_start (and therefore
 // before doLoadConfig) doesn't crash reading `loaded.config.*`.
@@ -170,6 +172,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	let loaded: LoadedConfig = EMPTY_LOADED_CONFIG
 	let configRules: Rule[] = []
 	let runtimeMode: PermissionMode | undefined
+	let runtimeModeSource: RuntimeModeSource | undefined
 	let cliMode: PermissionMode | undefined
 	let planModeApplied = false
 	let planModeHiddenTools: string[] = []
@@ -207,9 +210,15 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		}).mode
 	}
 
+	function setRuntimeMode(mode: PermissionMode | undefined, source: RuntimeModeSource | undefined): void {
+		runtimeMode = mode
+		runtimeModeSource = mode === undefined ? undefined : source
+	}
+
 	_isUserChosenYolo = () =>
+		(runtimeMode === "yolo" && runtimeModeSource === "user") ||
 		resolveMode({ runtime: undefined, flag: cliMode, env: envBaseline, config: loaded.config.defaultMode }).mode ===
-		"yolo"
+			"yolo"
 
 	function allRules(): Rule[] {
 		return [...session.all(), ...configRules, ...builtinRules]
@@ -263,7 +272,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		const current = currentMode()
 		const idx = MODES.findIndex((m) => m.mode === current)
 		const next = MODES[(idx + 1) % MODES.length].mode
-		runtimeMode = next
+		setRuntimeMode(next, "user")
 		if (current === "plan" && next !== "plan") restoreToolsFromPlanMode()
 		if (next === "plan") applyPlanModeTools()
 		propagateModeToEnv()
@@ -281,10 +290,10 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		if (cliMode) return // explicit CLI flag always wins
 		const previousMode = currentMode()
 		if (hasActive) {
-			runtimeMode = "yolo"
+			if (!(runtimeMode === "yolo" && runtimeModeSource === "user")) setRuntimeMode("yolo", "ferment")
 		} else {
 			// Only clear runtimeMode if we set it for ferment (not if user changed it manually)
-			if (runtimeMode === "yolo") runtimeMode = undefined
+			if (runtimeMode === "yolo" && runtimeModeSource === "ferment") setRuntimeMode(undefined, undefined)
 		}
 		const nextMode = currentMode()
 		if (previousMode === "plan" && nextMode !== "plan") restoreToolsFromPlanMode()
@@ -322,7 +331,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	}
 
 	function switchToPlanModeRuntime(ctx: ExtensionContext): void {
-		runtimeMode = "plan"
+		setRuntimeMode("plan", "user")
 		applyPlanModeTools()
 		propagateModeToEnv()
 		updateStatus(ctx)
@@ -338,7 +347,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		planPath: string | undefined,
 		planText: string,
 	): void {
-		runtimeMode = targetMode
+		setRuntimeMode(targetMode, "user")
 		restoreToolsFromPlanMode()
 		propagateModeToEnv()
 		updateStatus(ctx)
@@ -399,7 +408,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		// No env var is set before the user explicitly approves ferment creation.
 		// Only applies when no explicit CLI mode flag was given.
 		if (!cliMode && hasActiveFerment()) {
-			runtimeMode = "yolo"
+			if (!(runtimeMode === "yolo" && runtimeModeSource === "user")) setRuntimeMode("yolo", "ferment")
 		}
 
 		if (currentMode() === "plan") applyPlanModeTools()
@@ -453,7 +462,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		} else if (choice === FERMENT) {
 			// Switch to default mode so ferment tools become available, then ask
 			// the agent to call request_ferment_workflow with the plan as intent.
-			runtimeMode = "default"
+			setRuntimeMode("default", "user")
 			restoreToolsFromPlanMode()
 			propagateModeToEnv()
 			updateStatus(ctx)
@@ -599,11 +608,12 @@ ${text}
 			// through the classifier; prompts without a frontend fail closed.
 			const promptAvailable = canPrompt(ctx)
 			if (mode === "auto" || !promptAvailable) {
-				const classifierModel = resolveClassifierModel(ctx.model, ctx.modelRegistry)
-				if (!classifierModel) return { block: true, reason: "no model available for classifier" }
+				const classifierModels = resolveClassifierModels(ctx.modelRegistry)
+				if (!classifierModels) return { block: true, reason: "no model available for classifier" }
 
 				const verdict = await classifyToolCall(
-					classifierModel,
+					classifierModels.primary,
+					classifierModels.fallback,
 					ctx.modelRegistry,
 					{ toolName, input, cwd: ctx.cwd },
 					{ timeoutMs: loaded.config.classifierTimeoutMs },
@@ -665,8 +675,8 @@ ${text}
 		getSession: () => session,
 		getLoaded: () => loaded,
 		getMode: () => currentMode(),
-		setRuntimeMode: (m) => {
-			runtimeMode = m
+		setRuntimeMode: (m, source) => {
+			setRuntimeMode(m, source)
 			propagateModeToEnv()
 		},
 		applyPlanMode: () => applyPlanModeTools(),

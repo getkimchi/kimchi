@@ -35,7 +35,7 @@ function buildPlannerSupplement(f: Ferment, continuationPolicy: ContinuationPoli
 	const phaseAdvancementContract =
 		continuationPolicy === "manual"
 			? "Manual continuation policy is active: work autonomously inside the current phase, but stop at phase boundaries and ask the user before activating the next phase. If the user says continue, call `activate_ferment_phase` for the next phase. Do not ask the user to confirm step results."
-			: "Automated continuation policy is active: do not ask the user to confirm phase advancement or step results. Continue across phases until the ferment is complete, blocked, paused, or needs user input."
+			: "Automated continuation policy is active: do not ask the user to confirm phase advancement or step results. Continue through all stages until the ferment is complete, blocked, or paused."
 	const delegationCheckpoint =
 		"For broad existing-codebase scoping requests, follow the shared discovery guidance in the Upfront Contract before drafting recommendations."
 	const upfrontContract = `\n\n## Upfront Contract\nTreat the Ferment Specification (goal, success criteria, constraints, assumptions) as the agreed plan. ${phaseAdvancementContract} Proceed with your highest-confidence interpretation and capture uncertainty via \`add_ferment_decision\` (architectural pivots) or \`add_ferment_memory\` (gotchas/conventions). Surface blockers only when you cannot proceed without human input.

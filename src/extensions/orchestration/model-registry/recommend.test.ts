@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest"
 import { pickFromModelListByTier, recommendModel } from "./recommend.js"
 
 describe("recommendModel", () => {
-	it("returns a result for a single strength with exact tier match", () => {
-		// build strength has standard (minimax-m2.7) and light (nemotron-3-super-fp4)
-		const result = recommendModel({ strengths: ["build"], preferTier: "standard" })
+	it("returns a result for a single role with exact tier match", () => {
+		// build role has standard (minimax-m2.7) and light (nemotron-3-super-fp4)
+		const result = recommendModel({ roles: ["build"], preferTier: "standard" })
 		expect(result).toBeDefined()
 		expect(result?.provider).toBe("kimchi-dev")
 		expect(result?.modelId).toBe("minimax-m2.7")
@@ -12,50 +12,50 @@ describe("recommendModel", () => {
 	})
 
 	it("falls back to next tier when preferred tier has no match", () => {
-		// build strength has no heavy tier model; should fall back to standard
-		const result = recommendModel({ strengths: ["build"], preferTier: "heavy" })
+		// build role has no heavy tier model; should fall back to standard
+		const result = recommendModel({ roles: ["build"], preferTier: "heavy" })
 		expect(result).toBeDefined()
 		// heavy → standard fallback
 		expect(result?.capabilities.tier).toBe("standard")
 	})
 
-	it("returns undefined when no model matches the strengths", () => {
-		// No model has both "build" and "research" as strengths simultaneously
-		const result = recommendModel({ strengths: ["build", "research"] })
+	it("returns undefined when no model matches the roles", () => {
+		// No model has both "build" and "research" as roles simultaneously
+		const result = recommendModel({ roles: ["build", "research"] })
 		expect(result).toBeUndefined()
 	})
 
 	it("respects vision filter — excludes non-vision models", () => {
 		// research + vision: kimi-k2.6 has research with vision
-		const result = recommendModel({ strengths: ["research"], needsVision: true })
+		const result = recommendModel({ roles: ["research"], needsVision: true })
 		expect(result).toBeDefined()
 		expect(result?.capabilities.vision).toBe(true)
 	})
 
 	it("returns undefined when vision required but no matching vision model", () => {
 		// build + vision: nemotron has no vision, minimax has no vision
-		const result = recommendModel({ strengths: ["build"], needsVision: true })
+		const result = recommendModel({ roles: ["build"], needsVision: true })
 		expect(result).toBeUndefined()
 	})
 
-	it("multi-strength filter: explore + research have overlapping light models", () => {
+	it("multi-role filter: explore + research have overlapping light models", () => {
 		// nemotron-3-super-fp4 has both explore and research, tier light
-		const result = recommendModel({ strengths: ["explore", "research"], preferTier: "light" })
+		const result = recommendModel({ roles: ["explore", "research"], preferTier: "light" })
 		expect(result).toBeDefined()
 		expect(result?.capabilities.tier).toBe("light")
-		expect(result?.capabilities.strengths).toContain("explore")
-		expect(result?.capabilities.strengths).toContain("research")
+		expect(result?.capabilities.roles).toContain("explore")
+		expect(result?.capabilities.roles).toContain("research")
 	})
 
 	it("ignored entries are excluded", () => {
-		// glm-5-fp8 is ignored; requesting any strength should not return it
-		const result = recommendModel({ strengths: ["build"] })
+		// glm-5-fp8 is ignored; requesting any role should not return it
+		const result = recommendModel({ roles: ["build"] })
 		expect(result?.modelId).not.toBe("glm-5-fp8")
 	})
 
 	it("light tier preference returns the lightest model", () => {
 		// explore + light → nemotron-3-super-fp4
-		const result = recommendModel({ strengths: ["explore"], preferTier: "light" })
+		const result = recommendModel({ roles: ["explore"], preferTier: "light" })
 		expect(result).toBeDefined()
 		expect(result?.modelId).toBe("nemotron-3-super-fp4")
 		expect(result?.capabilities.tier).toBe("light")
@@ -63,20 +63,20 @@ describe("recommendModel", () => {
 
 	it("returns first by registry insertion order when multiple match same tier", () => {
 		// plan + heavy: kimi-k2.6 has plan at heavy tier.
-		const result = recommendModel({ strengths: ["plan"], preferTier: "heavy" })
+		const result = recommendModel({ roles: ["plan"], preferTier: "heavy" })
 		expect(result).toBeDefined()
 		expect(result?.modelId).toBe("kimi-k2.6")
 	})
 
-	it("returns undefined for empty strengths that somehow miss all models — sanity check with impossible combo", () => {
-		// Empty strengths with vision=true should return the first vision model found
-		const result = recommendModel({ strengths: [], needsVision: true, preferTier: "heavy" })
+	it("returns undefined for empty roles that somehow miss all models — sanity check with impossible combo", () => {
+		// Empty roles with vision=true should return the first vision model found
+		const result = recommendModel({ roles: [], needsVision: true, preferTier: "heavy" })
 		expect(result).toBeDefined()
 		expect(result?.capabilities.vision).toBe(true)
 	})
 
 	it("provider is always kimchi-dev", () => {
-		const result = recommendModel({ strengths: ["build"] })
+		const result = recommendModel({ roles: ["build"] })
 		expect(result?.provider).toBe("kimchi-dev")
 	})
 })

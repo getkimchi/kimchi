@@ -4,6 +4,7 @@ import { dirname, join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import {
 	VENDOR_SKILL_PATHS,
+	buildSkillPathOptions,
 	clearApiKey,
 	getActiveVendorSkillPaths,
 	loadConfig,
@@ -689,5 +690,33 @@ describe("getActiveVendorSkillPaths", () => {
 
 	it("returns empty array when vendor dir does not exist", () => {
 		expect(getActiveVendorSkillPaths()).toEqual([])
+	})
+})
+
+describe("buildSkillPathOptions", () => {
+	let tempDir: string
+	let originalCwd: string
+
+	beforeEach(() => {
+		originalCwd = process.cwd()
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-skillpaths-"))
+	})
+
+	afterEach(() => {
+		process.chdir(originalCwd)
+		rmSync(tempDir, { recursive: true, force: true })
+	})
+
+	it("relativizes a cwd-rooted discovered dir so it is not pinned to the wizard's cwd", () => {
+		process.chdir(tempDir)
+		// Resolve through process.cwd() so the test matches macOS symlink-resolved
+		// /private/var paths, exactly as the discoverer (which builds dirs from cwd) does.
+		const skillsDir = join(process.cwd(), ".cursor", "skills")
+		mkdirSync(skillsDir, { recursive: true })
+
+		const options = buildSkillPathOptions([skillsDir])
+
+		expect(options).toContain(join(".cursor", "skills"))
+		expect(options).not.toContain(skillsDir)
 	})
 })
