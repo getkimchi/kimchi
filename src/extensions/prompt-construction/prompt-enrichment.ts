@@ -458,7 +458,7 @@ export default function (skillPaths: string[]) {
 		let cachedSkills: Skill[] | undefined
 		let cachedGitRemote: string | undefined | null = null
 
-		pi.on("before_agent_start", async (_event, ctx) => {
+		pi.on("before_agent_start", async (event, ctx) => {
 			const activeToolNames = new Set(pi.getActiveTools())
 			const tools = pi.getAllTools().filter((tool) => activeToolNames.has(tool.name))
 			cachedContextFiles ??= loadProjectContextFiles(ctx.cwd)
@@ -500,7 +500,7 @@ export default function (skillPaths: string[]) {
 			const mode: PromptMode = subagentMode ? "subagent" : multiModelEnabled ? "orchestrator" : "single"
 			const roles = mode === "orchestrator" ? getModelRoles() : undefined
 
-			const systemPrompt = buildSystemPrompt({
+			let systemPrompt = buildSystemPrompt({
 				tools: tools as readonly ToolInfo[],
 				env,
 				contextFiles: cachedContextFiles,
@@ -512,6 +512,16 @@ export default function (skillPaths: string[]) {
 				roles,
 				sessionId: ctx.sessionManager?.getSessionId(),
 			})
+
+			// The rebuilt prompt replaces pi's base prompt entirely, which would
+			// silently drop --append-system-prompt flag values (and SYSTEM/
+			// APPEND_SYSTEM.md content) collected by pi's resource loader.
+			// Re-append them so per-session prompt extensions keep working,
+			// e.g. orchestrators embedding kimchi as a managed agent.
+			const appendSystemPrompt = event.systemPromptOptions?.appendSystemPrompt?.trim()
+			if (appendSystemPrompt) {
+				systemPrompt = `${systemPrompt}\n\n${appendSystemPrompt}`
+			}
 
 			const debugSession = process.env.KIMCHI_DEBUG_SESSION
 			const debugFlag = pi.getFlag("debug-prompts") === true
