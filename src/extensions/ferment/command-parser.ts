@@ -6,6 +6,7 @@ export type FermentCommand =
 	| { type: "manual-policy" }
 	| { type: "auto-policy" }
 	| { type: "progress" }
+	| { type: "panel"; arg?: "on" | "off" }
 	| { type: "pause-lifecycle" }
 	| { type: "resume-lifecycle" }
 	| { type: "exit" }
@@ -35,6 +36,8 @@ export function parseFermentCommand(args: string): FermentCommand {
 	if (lo === "manual") return { type: "manual-policy" }
 	if (lo === "auto") return { type: "auto-policy" }
 	if (lo === "progress") return { type: "progress" }
+	if (lo === "panel") return { type: "panel" }
+	if (lo === "panel on" || lo === "panel off") return { type: "panel", arg: lo.slice("panel ".length) as "on" | "off" }
 	if (lo === "pause") return { type: "pause-lifecycle" }
 	if (lo === "resume") return { type: "resume-lifecycle" }
 	if (lo === "exit") return { type: "exit" }

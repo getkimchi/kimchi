@@ -218,12 +218,16 @@ Pause/resume is separate: `/ferment pause` stops the ferment, `/ferment resume` 
 | `/ferment switch <id>` | Resume by ID prefix or name |
 | `/ferment delete <id>` | Delete permanently |
 | `/ferment export` | Export stats to JSON |
-| `/ferment progress` | Open phase/step navigator overlay |
+| `/ferment panel [on/off]` | Toggle the right-side progress/history panel |
+| `/ferment progress` | Open the panel progress view |
+| `/ferment list` | Open the panel history view |
 | `/ferment manual` | Set manual continuation policy |
 | `/ferment auto` | Set automated continuation policy |
 | `/ferment pause` | Pause the active ferment lifecycle |
 | `/ferment resume` | Resume the active ferment lifecycle |
 | `/ferment exit` | Leave Ferment mode without deleting the ferment |
+
+Use `ctrl+\` in wide interactive terminals to focus the Ferment panel, then `esc` to return focus to the editor without losing typed text.
 
 ### Recovery
 

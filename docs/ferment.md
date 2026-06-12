@@ -174,7 +174,11 @@ context: 14 turns
 /ferment progress · /ferment manual · /ferment auto · /ferment pause
 ```
 
-Run `/ferment progress` for full phase/step navigation with grades and actions.
+On wide terminals, Ferment also shows a persistent right-side panel with progress, live activity, and history. Use
+`ctrl+\` to focus the panel without losing editor text; `esc` returns focus to the editor while keeping the panel
+visible. `/ferment panel`, `/ferment panel on`, and `/ferment panel off` toggle visibility. `/ferment list` opens
+the panel's history view, and `/ferment progress` opens the progress view; narrow or headless sessions keep the
+older notification/select fallback.
 
 ### 4. Pause and resume
 
@@ -342,13 +346,14 @@ The file is the authoritative source of truth. You can inspect it directly, back
 |---------|-------------|
 | `/ferment` | Interactive picker — create or switch |
 | `/ferment new "Name"` | Create a new ferment |
-| `/ferment list` | List all ferments |
+| `/ferment list` | Open ferment history (or list all ferments headlessly) |
 | `/ferment switch <id>` | Switch active ferment by ID prefix or name |
 | `/ferment delete <id>` | Delete a ferment permanently |
 | `/ferment abandon` | Abandon the active ferment (terminal — cannot resume) |
 | `/ferment revise goal` | Revise a scoping field |
 | `/ferment one-shot "task"` | Create and auto-execute a single task ferment |
-| `/ferment progress` | Open phase/step navigator overlay (toggle) |
+| `/ferment panel [on/off]` | Toggle the right-side Ferment panel |
+| `/ferment progress` | Open the panel progress view (or phase/step navigator headlessly) |
 | `/ferment manual` | Set manual continuation policy |
 | `/ferment auto` | Set automated continuation policy |
 | `/ferment pause` | Pause the active ferment lifecycle |

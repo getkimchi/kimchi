@@ -13,6 +13,7 @@ import { formatFermentStatus } from "./format.js"
 import { autoInitFromEnv, ensureGitRepo } from "./git-init.js"
 import { appendRefEntry, resetReactiveContinuationNudgeCount } from "./nudge.js"
 import { buildOneshotNudge } from "./oneshot.js"
+import { getFermentPanelController } from "./panel/index.js"
 import {
 	buildPhaseActionOptions,
 	buildPhaseDetailTitle,
@@ -68,6 +69,7 @@ const FERMENT_SUBCOMMAND_COMPLETIONS: FermentArgumentCompletion[] = [
 	{ value: "manual", label: "manual", description: "Ask before moving to the next phase" },
 	{ value: "auto", label: "auto", description: "Continue until done or blocked" },
 	{ value: "progress", label: "progress", description: "Open phase/step progress" },
+	{ value: "panel", label: "panel", description: "Toggle the Ferment side panel" },
 	{ value: "pause", label: "pause", description: "Pause the active ferment lifecycle" },
 	{ value: "resume", label: "resume", description: "Resume the active ferment lifecycle" },
 	{ value: "exit", label: "exit", description: "Exit Ferment mode" },
@@ -81,7 +83,7 @@ const FERMENT_SUBCOMMAND_COMPLETIONS: FermentArgumentCompletion[] = [
 ]
 
 const FERMENT_COMMAND_USAGE =
-	'Unknown /ferment command. Use /ferment, /ferment new "Name", /ferment progress, /ferment list, /ferment switch <id-or-name>, /ferment pause, /ferment resume, or /ferment exit.'
+	'Unknown /ferment command. Use /ferment, /ferment new "Name", /ferment panel, /ferment progress, /ferment list, /ferment switch <id-or-name>, /ferment pause, /ferment resume, or /ferment exit.'
 
 const FERMENT_REVISE_COMPLETIONS: FermentArgumentCompletion[] = [
 	{ value: "revise goal", label: "goal", description: "Revise the ferment goal" },
@@ -518,6 +520,7 @@ export class FermentCommandController {
 
 		if (command.type === "interactive") {
 			await startInteractiveFerment({ pi, ctx, runtime })
+			getFermentPanelController()?.openProgress(ctx)
 			return { handled: true }
 		}
 
@@ -532,6 +535,7 @@ export class FermentCommandController {
 				ctx.ui.notify("No ferments. Use /ferment to start one.")
 				return { handled: true }
 			}
+			if (getFermentPanelController()?.openHistory(ctx)) return { handled: true }
 
 			const activeId = runtime.getActiveId()
 			if (!ctx.hasUI) {
@@ -602,12 +606,20 @@ export class FermentCommandController {
 		}
 
 		if (command.type === "progress") {
+			if (getFermentPanelController()?.openProgress(ctx)) return { handled: true }
 			await openFermentProgress(pi, ctx, runtime)
+			return { handled: true }
+		}
+
+		if (command.type === "panel") {
+			if (getFermentPanelController()?.handlePanelCommand(ctx, command.arg)) return { handled: true }
+			ctx.ui.notify("Ferment panel is unavailable in this session.")
 			return { handled: true }
 		}
 
 		if (command.type === "exit") {
 			exitFermentMode(pi, ctx, runtime)
+			getFermentPanelController()?.hide()
 			return { handled: true }
 		}
 
@@ -663,6 +675,7 @@ export class FermentCommandController {
 
 			setActiveFermentAndApplyProfile(pi, runtime, outcome.ferment)
 			ctx.ui.notify(`Resumed "${outcome.ferment.name}". Continuation policy: ${runtime.getContinuationPolicy()}.`)
+			getFermentPanelController()?.openProgress(ctx)
 			if (await confirmManualPhaseBoundaryForCommand(pi, ctx, runtime, outcome.ferment)) {
 				return { handled: true }
 			}
@@ -718,6 +731,7 @@ export class FermentCommandController {
 				if (previousActiveId && previousActiveId !== f.id) runtime.clearPendingPlanReview(previousActiveId)
 				sendBreadcrumb(pi, `Switched to "${f.name}" [${f.status}]${wtWarning}`, "ack", "ferment_ack")
 				resumeFerment(pi, f.id, ctx, runtime)
+				getFermentPanelController()?.openProgress(ctx)
 			} catch (err) {
 				ctx.ui.notify(err instanceof FermentError ? err.message : "Switch failed.")
 			}

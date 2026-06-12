@@ -20,6 +20,7 @@ import { fermentBreadcrumbRenderer } from "./breadcrumb-renderer.js"
 import { registerFermentCommands } from "./commands.js"
 import { registerFermentEvents } from "./events.js"
 import { FERMENT_STOP_POLICY_SHORTCUT, canToggleFermentStopPolicy } from "./footer-status.js"
+import { registerFermentPanel } from "./panel/index.js"
 import { type PendingPlanReview, promptPlanReview } from "./plan-review.js"
 import { buildFermentPromptBlock } from "./prompt-block.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
@@ -199,6 +200,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	registerFermentStopPolicyShortcut(pi, runtime)
 	registerFermentEvents(pi, runtime)
 	registerFermentCommands(pi, runtime)
+	registerFermentPanel(pi, runtime)
 
 	// ─── Message renderers ────────────────────────────────────────────────────
 	pi.registerMessageRenderer("ferment_breadcrumb", fermentBreadcrumbRenderer)

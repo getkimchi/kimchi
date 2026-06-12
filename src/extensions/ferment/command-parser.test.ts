@@ -73,6 +73,12 @@ describe("parseFermentCommand", () => {
 		expect(parseFermentCommand("progress")).toEqual({ type: "progress" })
 	})
 
+	it("parses panel toggle commands", () => {
+		expect(parseFermentCommand("panel")).toEqual({ type: "panel" })
+		expect(parseFermentCommand("panel on")).toEqual({ type: "panel", arg: "on" })
+		expect(parseFermentCommand("panel off")).toEqual({ type: "panel", arg: "off" })
+	})
+
 	it("parses one-shot intent", () => {
 		expect(parseFermentCommand('one-shot "Fix failing tests"')).toEqual({
 			type: "one-shot",
