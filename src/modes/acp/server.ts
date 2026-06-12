@@ -158,7 +158,6 @@ export class KimchiAcpAgent implements Agent {
 	private resolveInitialMode(cwd: string): PermissionMode {
 		const { loaded } = loadConfig({ cwd })
 		return resolveMode({
-			runtime: undefined,
 			flag: undefined,
 			env: this.permissionsEnvFlag,
 			config: loaded.config.defaultMode,
