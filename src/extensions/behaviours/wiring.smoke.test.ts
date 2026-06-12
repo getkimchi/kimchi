@@ -332,8 +332,8 @@ describe("wireBehaviours — before_agent_start", () => {
 
 		expect(sp).toContain("## Rules")
 		expect(sp).toContain("Always do X.")
-		expect(sp.indexOf("Project rule.")).toBeLessThan(sp.indexOf("## Rules"))
 		expect(sp.indexOf("## Rules")).toBeLessThan(sp.indexOf("## Available Tools"))
+		expect(sp.indexOf("## Rules")).toBeLessThan(sp.indexOf("Project rule."))
 	})
 
 	it("delivers the body of a loaded triggered behaviour as a hidden message, exactly once", async () => {
