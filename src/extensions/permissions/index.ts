@@ -36,7 +36,13 @@ import {
 	isReadOnlyTool,
 	splitCompoundCommand,
 } from "./taxonomy.js"
-import { BUILTIN_DENY, DEFAULT_CONFIG, type PermissionMode, type Rule } from "./types.js"
+import {
+	BUILTIN_DENY,
+	DEFAULT_CONFIG,
+	type PermissionMode,
+	type PermissionModeRuntimeSource,
+	type Rule,
+} from "./types.js"
 
 /**
  * Check whether a file path is within .kimchi/plans/ relative to cwd.
@@ -191,13 +197,19 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		]
 	}
 
-	function getInitialPermissionMode(): PermissionMode {
-		return resolveMode({
-			runtime: undefined,
-			flag: cliMode,
-			env: permissionsEnvFlag,
-			config: loaded.config.defaultMode,
-		}).mode
+	_isLaunchedWithYolo = () => {
+		const runtimeMode = sessionCtx && getPermissionMode(sessionCtx.sessionManager.getSessionId())
+		if (runtimeMode?.mode === "yolo" && runtimeMode.source === "user") {
+			return true
+		}
+		return (
+			resolveMode({
+				runtime: undefined,
+				flag: cliMode,
+				env: permissionsEnvFlag,
+				config: loaded.config.defaultMode,
+			}).mode === "yolo"
+		)
 	}
 
 	/**
@@ -206,7 +218,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	function getRuntimePermissionMode(): PermissionMode {
 		const runtimeMode = sessionCtx && getPermissionMode(sessionCtx.sessionManager.getSessionId())
 		return resolveMode({
-			runtime: runtimeMode,
+			runtime: runtimeMode?.mode,
 			flag: cliMode,
 			env: permissionsEnvFlag,
 			config: loaded.config.defaultMode,
@@ -217,12 +229,14 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	 * Set current permission mode, keeps the controller in sync, and
 	 * persists the env key for sub-agents.
 	 */
-	function setRuntimePermissionMode(ctx: ExtensionContext, mode: PermissionMode, skipNotify = false): void {
+	function setRuntimePermissionMode(
+		ctx: ExtensionContext,
+		mode: PermissionMode,
+		source: PermissionModeRuntimeSource,
+	): void {
 		_displayPermissionMode = mode
-		setPermissionMode(ctx.sessionManager.getSessionId(), mode, skipNotify)
+		setPermissionMode(ctx.sessionManager.getSessionId(), mode, source)
 	}
-
-	_isLaunchedWithYolo = () => getInitialPermissionMode() === "yolo"
 
 	function allRules(): Rule[] {
 		return [...session.all(), ...configRules, ...builtinRules]
@@ -284,8 +298,13 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		}
 	}
 
-	function changeMode(ctx: ExtensionContext, current: PermissionMode, next: PermissionMode, skipNotify = false): void {
-		setRuntimePermissionMode(ctx, next, skipNotify)
+	function changeMode(
+		ctx: ExtensionContext,
+		current: PermissionMode,
+		next: PermissionMode,
+		source: PermissionModeRuntimeSource,
+	): void {
+		setRuntimePermissionMode(ctx, next, source)
 		if (current === "plan" && next !== "plan") restoreToolsFromPlanMode()
 		if (next === "plan") applyPlanModeTools()
 		// Dismiss all active permission prompts so tool_call handlers re-evaluate under the new mode.
@@ -299,7 +318,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		const current = getRuntimePermissionMode()
 		const idx = MODES.findIndex((m) => m.mode === current)
 		const next = MODES[(idx + 1) % MODES.length].mode
-		changeMode(ctx, current, next)
+		changeMode(ctx, current, next, "user")
 	}
 
 	// Ferment calls notifyFermentActive() when a ferment is activated or cleared,
@@ -314,16 +333,18 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		if (!sessionCtx) return // No active session
 		const current = getRuntimePermissionMode()
 		let next: PermissionMode | undefined
+		let source: PermissionModeRuntimeSource = "user"
 		if (hasActive) {
 			preFermentMode = current
 			next = "yolo"
+			source = "ferment"
 		} else if (preFermentMode) {
 			// Clear mode that was set for ferment (not if user changed it manually)
 			next = preFermentMode
 			preFermentMode = undefined
 		}
 		if (next && next !== current) {
-			changeMode(sessionCtx, current, next)
+			changeMode(sessionCtx, current, next, source)
 		}
 	})
 
@@ -432,19 +453,19 @@ ${planText}
 		// YOLO mode: --yolo and --dangerously-skip-permissions both set yolo mode (no classifier, auto-approve all)
 		else if (pi.getFlag("yolo") || pi.getFlag("dangerously-skip-permissions")) cliMode = "yolo"
 
-		const current = getInitialPermissionMode()
-		let next: PermissionMode
+		const current = getRuntimePermissionMode()
+		let next: PermissionMode = current
+		let source: PermissionModeRuntimeSource = "user"
 		// Active ferment → auto-yolo so scoping/lifecycle work can proceed without approval prompts.
 		// Permission mode is persisted after the user explicitly approves ferment creation.
 		// Only applies when no explicit CLI mode flag was given.
 		if (!cliMode && hasActiveFerment()) {
-			next = "yolo"
 			preFermentMode = current
-		} else {
-			next = current
+			next = "yolo"
+			source = "ferment"
 		}
 
-		changeMode(ctx, current, next)
+		changeMode(ctx, current, next, source)
 	})
 
 	pi.on("session_shutdown", () => {
@@ -492,12 +513,12 @@ ${planText}
 			} catch {
 				// Non-fatal: plan persistence is best-effort.
 			}
-			changeMode(ctx, "plan", "auto")
+			changeMode(ctx, "plan", "auto", "user")
 			executePlan(planPath, text)
 		} else if (choice === FERMENT) {
 			// Switch to default mode so ferment tools become available, then ask
 			// the agent to call request_ferment_workflow with the plan as intent.
-			changeMode(ctx, "plan", "default")
+			changeMode(ctx, "plan", "default", "user")
 			executeFermentPlan(text)
 		}
 		// Decline or escape: stay in plan mode.
@@ -569,7 +590,10 @@ ${planText}
 				if (isCompoundCommand(command)) {
 					const compoundCheck = checkCompoundCommand(command, allRules())
 					if (compoundCheck.decision === "deny") {
-						return { block: true, reason: compoundCheck.deniedReason ?? "Subcommand denied" }
+						return {
+							block: true,
+							reason: compoundCheck.deniedReason ?? "Subcommand denied",
+						}
 					}
 					if (compoundCheck.decision === "allow") {
 						return undefined
@@ -580,7 +604,10 @@ ${planText}
 
 			const match = evaluateRules(allRules(), toolName, input)
 			if (match.decision === "deny") {
-				return { block: true, reason: `Denied by rule ${formatRule(match.rule)}` }
+				return {
+					block: true,
+					reason: `Denied by rule ${formatRule(match.rule)}`,
+				}
 			}
 			if (match.decision === "allow") return undefined
 
@@ -588,7 +615,7 @@ ${planText}
 			// auto-promote the session to plan mode so the rest of the conversation
 			// runs under the right tool set instead of silently approving here.
 			if (toolName === "questionnaire" && mode === "default") {
-				changeMode(ctx, "default", "plan")
+				changeMode(ctx, "default", "plan", "user")
 				return undefined
 			}
 			if (isReadOnlyTool(toolName)) return undefined
@@ -615,10 +642,16 @@ ${planText}
 
 				if (verdict.verdict === "safe") return undefined
 				if (verdict.verdict === "blocked") {
-					return { block: true, reason: `Classifier blocked: ${verdict.reason}` }
+					return {
+						block: true,
+						reason: `Classifier blocked: ${verdict.reason}`,
+					}
 				}
 				if (!promptAvailable) {
-					return { block: true, reason: `Classifier: ${verdict.reason} (no UI to confirm)` }
+					return {
+						block: true,
+						reason: `Classifier: ${verdict.reason} (no UI to confirm)`,
+					}
 				}
 				const result = await handleConfirm(event, {
 					ctx,
@@ -661,14 +694,17 @@ ${planText}
 
 		// Exhausted re-evaluation attempts — fail closed.
 		console.warn("permissions: mode changed too many times during prompt, failing closed")
-		return { block: true, reason: "Permission mode changed too many times during prompt" }
+		return {
+			block: true,
+			reason: "Permission mode changed too many times during prompt",
+		}
 	})
 
 	registerCommands(pi, {
 		getSession: () => session,
 		getLoaded: () => loaded,
 		getMode: () => getRuntimePermissionMode(),
-		setRuntimeMode: (mode, ctx) => setRuntimePermissionMode(ctx, mode),
+		setRuntimeMode: (mode, ctx, source) => setRuntimePermissionMode(ctx, mode, source),
 		applyPlanMode: () => applyPlanModeTools(),
 		restorePlanMode: () => restoreToolsFromPlanMode(),
 		rebuildConfigRules,
@@ -778,7 +814,10 @@ export async function handleCompoundConfirm(
 					continue
 				}
 				if (match.decision === "deny") {
-					return { block: true, reason: `Subcommand blocked by rule: ${subcommand}` }
+					return {
+						block: true,
+						reason: `Subcommand blocked by rule: ${subcommand}`,
+					}
 				}
 
 				// Create a fake bash event for this subcommand
@@ -797,7 +836,10 @@ export async function handleCompoundConfirm(
 		}
 
 		if (outcome.kind === "deny-with-feedback") {
-			return { block: true, reason: `The user declined this action before execution and said: ${outcome.feedback}` }
+			return {
+				block: true,
+				reason: `The user declined this action before execution and said: ${outcome.feedback}`,
+			}
 		}
 
 		return { block: true, reason: "Declined by user" }
@@ -822,7 +864,10 @@ function applyApprovalOutcome(
 		return undefined
 	}
 	if (outcome.kind === "deny-with-feedback") {
-		return { block: true, reason: `The user declined this action before execution and said: ${outcome.feedback}` }
+		return {
+			block: true,
+			reason: `The user declined this action before execution and said: ${outcome.feedback}`,
+		}
 	}
 	return { block: true, reason: "Declined by user" }
 }

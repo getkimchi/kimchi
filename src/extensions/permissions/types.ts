@@ -1,5 +1,8 @@
 export type PermissionMode = "default" | "plan" | "auto" | "yolo"
 
+/** Source of a runtime permission mode change. */
+export type PermissionModeRuntimeSource = "user" | "ferment"
+
 export const ALL_PERMISSION_MODES: readonly PermissionMode[] = ["default", "plan", "auto", "yolo"] as const
 
 export type RuleBehavior = "allow" | "deny"
@@ -33,13 +36,19 @@ export interface PermissionsConfig {
 
 /** Controller for session-scoped permission flags with subscription support. */
 export interface SessionPermissionFlagController {
-	getMode(): PermissionMode
-	setMode(mode: PermissionMode, skipNotify?: boolean): void
+	getMode(): {
+		mode: PermissionMode
+		source: PermissionModeRuntimeSource
+	}
+	setMode(mode: PermissionMode, source: PermissionModeRuntimeSource): void
 	subscribe(listener: (changes: SessionPermissionFlagChanges) => void): () => void
 }
 
 export interface SessionPermissionFlagChanges {
-	mode?: PermissionMode
+	mode?: {
+		mode: PermissionMode
+		source: PermissionModeRuntimeSource
+	}
 }
 
 export const DEFAULT_CONFIG: PermissionsConfig = {

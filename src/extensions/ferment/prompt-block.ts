@@ -133,7 +133,7 @@ export function buildFermentPromptBlock(
 
 	// Plan mode is a separate lightweight planning path; suppress the ferment
 	// idle hint so the agent does not conflate it with the ferment workflow.
-	if (getPermissionMode(sessionId) === "plan") return undefined
+	if (getPermissionMode(sessionId)?.mode === "plan") return undefined
 
 	const f = runtime.getActive()
 	if (!f) return IDLE_FERMENT_HINT

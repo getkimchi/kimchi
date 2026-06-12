@@ -12,7 +12,7 @@ const TEST_SESSION_ID = "test-session"
 
 function makeMockCtx(): ExtensionContext {
 	// Set up permission mode for the test session
-	setPermissionMode(TEST_SESSION_ID, "default")
+	setPermissionMode(TEST_SESSION_ID, "default", "user")
 	return { sessionManager: { getSessionId: () => TEST_SESSION_ID } } as unknown as ExtensionContext
 }
 
@@ -199,7 +199,7 @@ describe("buildFermentPromptBlock", () => {
 		it("returns undefined when permissions mode is plan (no idle hint)", () => {
 			const ctx = makeMockCtx()
 			const sessionId = ctx.sessionManager.getSessionId()
-			setPermissionMode(sessionId, "plan")
+			setPermissionMode(sessionId, "plan", "user")
 			expect(buildFermentPromptBlock(ctx, PI_NORMAL, makeNoActiveFermentRuntime())).toBeUndefined()
 		})
 		it("preserves paused warning for status=paused regardless of ferment-oneshot flag", () => {

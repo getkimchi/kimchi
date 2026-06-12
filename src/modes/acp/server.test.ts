@@ -1670,7 +1670,7 @@ describe("setSessionConfigOption", () => {
 		// Verify the mode was updated
 		const controller = getSessionPermissionFlagController(sessionId)
 		expect(controller).toBeDefined()
-		expect(controller?.getMode()).toBe("plan")
+		expect(controller?.getMode()).toEqual({ mode: "plan", source: "user" })
 
 		// Verify mode can be switched back
 		await agent.setSessionConfigOption({
@@ -1678,7 +1678,7 @@ describe("setSessionConfigOption", () => {
 			configId: "permissions-mode",
 			value: "yolo",
 		})
-		expect(controller?.getMode()).toBe("yolo")
+		expect(controller?.getMode()).toEqual({ mode: "yolo", source: "user" })
 
 		// Cleanup
 		await agent.unstable_closeSession({ sessionId })
@@ -1708,7 +1708,7 @@ describe("setSessionConfigOption", () => {
 		// Verify the session controller is registered
 		const controller = getSessionPermissionFlagController(sessionId)
 		expect(controller).toBeDefined()
-		expect(controller?.getMode()).toBe("default")
+		expect(controller?.getMode()).toEqual({ mode: "default", source: "user" })
 
 		// Change to plan mode via ACP
 		await agent.setSessionConfigOption({
@@ -1718,7 +1718,8 @@ describe("setSessionConfigOption", () => {
 		})
 
 		// Verify the controller reflects the new mode
-		expect(controller?.getMode()).toBe("plan")
+
+		expect(controller?.getMode()).toEqual({ mode: "plan", source: "user" })
 
 		await agent.unstable_closeSession({ sessionId })
 	})
@@ -1914,7 +1915,7 @@ describe("ACP mode controller integration with permissions extension", () => {
 		})
 
 		// Verify controller mode is plan
-		expect(controller?.getMode()).toBe("plan")
+		expect(controller?.getMode()).toEqual({ mode: "plan", source: "user" })
 		const writeToolEvent = {
 			toolName: "write",
 			input: { path: "/tmp/test.txt", content: "hello" },
@@ -1967,7 +1968,7 @@ describe("ACP mode controller integration with permissions extension", () => {
 
 		// Verify controller mode is yolo
 		const controller = getSessionPermissionFlagController(sessionId)
-		expect(controller?.getMode()).toBe("yolo")
+		expect(controller?.getMode()).toEqual({ mode: "yolo", source: "user" })
 		const writeToolEvent = {
 			toolName: "write",
 			input: { path: "/tmp/test.txt", content: "hello" },
@@ -2168,8 +2169,8 @@ describe("session mode controller lifecycle", () => {
 		const r2 = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
 
 		// Both sessions start at "default"
-		expect(getSessionPermissionFlagController(r1.sessionId)?.getMode()).toBe("default")
-		expect(getSessionPermissionFlagController(r2.sessionId)?.getMode()).toBe("default")
+		expect(getSessionPermissionFlagController(r1.sessionId)?.getMode()).toEqual({ mode: "default", source: "user" })
+		expect(getSessionPermissionFlagController(r2.sessionId)?.getMode()).toEqual({ mode: "default", source: "user" })
 
 		// Change session 1 to yolo
 		await agent.setSessionConfigOption({
@@ -2179,8 +2180,8 @@ describe("session mode controller lifecycle", () => {
 		})
 
 		// Session 1 is yolo, session 2 is still default
-		expect(getSessionPermissionFlagController(r1.sessionId)?.getMode()).toBe("yolo")
-		expect(getSessionPermissionFlagController(r2.sessionId)?.getMode()).toBe("default")
+		expect(getSessionPermissionFlagController(r1.sessionId)?.getMode()).toEqual({ mode: "yolo", source: "user" })
+		expect(getSessionPermissionFlagController(r2.sessionId)?.getMode()).toEqual({ mode: "default", source: "user" })
 	})
 
 	it("closeSession deletes the KIMCHI_PERMISSIONS_<sessionId> env key", async () => {

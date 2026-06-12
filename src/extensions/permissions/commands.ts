@@ -4,13 +4,13 @@ import { parseModeString } from "./mode.js"
 import { parseRule, stringifyRule } from "./rules.js"
 import { numberedChoices, stripChoiceNumber } from "./select-utils.js"
 import type { SessionMemory } from "./session-memory.js"
-import type { PermissionMode, Rule } from "./types.js"
+import type { PermissionMode, PermissionModeRuntimeSource, Rule } from "./types.js"
 
 export interface CommandDeps {
 	getSession: () => SessionMemory
 	getLoaded: () => LoadedConfig
 	getMode: (ctx: ExtensionContext) => PermissionMode
-	setRuntimeMode: (mode: PermissionMode, ctx: ExtensionContext) => void
+	setRuntimeMode: (mode: PermissionMode, ctx: ExtensionContext, source: PermissionModeRuntimeSource) => void
 	applyPlanMode: () => void
 	restorePlanMode: () => void
 	rebuildConfigRules: () => void
@@ -210,7 +210,7 @@ function handleMode(ctx: ExtensionContext, deps: CommandDeps, arg: string): void
 		return
 	}
 	const prev = deps.getMode(ctx)
-	deps.setRuntimeMode(mode, ctx)
+	deps.setRuntimeMode(mode, ctx, "user")
 	if (prev === "plan" && mode !== "plan") deps.restorePlanMode()
 	if (mode === "plan") deps.applyPlanMode()
 	deps.updateStatus(ctx)

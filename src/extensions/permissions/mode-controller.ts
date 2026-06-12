@@ -4,7 +4,12 @@ import {
 	registerSessionPermissionFlagController,
 } from "./mode-controller-registry.js"
 import { parseModeString } from "./mode.js"
-import type { PermissionMode, SessionPermissionFlagChanges, SessionPermissionFlagController } from "./types.js"
+import type {
+	PermissionMode,
+	PermissionModeRuntimeSource,
+	SessionPermissionFlagChanges,
+	SessionPermissionFlagController,
+} from "./types.js"
 
 /**
  * Create a session-scoped permission mode controller.
@@ -12,18 +17,21 @@ import type { PermissionMode, SessionPermissionFlagChanges, SessionPermissionFla
  * from other sessions while still respecting initial CLI flag/env values.
  */
 export function createSessionPermissionFlagController(
-	initialFlags: { mode?: PermissionMode } = {},
+	initialFlags: {
+		mode?: {
+			mode: PermissionMode
+			source: PermissionModeRuntimeSource
+		}
+	} = {},
 ): SessionPermissionFlagController {
-	let mode = initialFlags.mode ?? "default"
+	let mode = initialFlags.mode ?? { mode: "default", source: "user" }
 	const listeners = new Set<(changes: SessionPermissionFlagChanges) => void>()
 
 	return {
 		getMode: () => mode,
-		setMode: (newMode, skipNotify) => {
-			mode = newMode
-			if (!skipNotify) {
-				for (const _l of listeners) _l({ mode })
-			}
+		setMode: (newMode, source) => {
+			mode = { mode: newMode, source }
+			for (const _l of listeners) _l({ mode })
 		},
 		subscribe: (listener) => {
 			listeners.add(listener)
@@ -44,12 +52,12 @@ export function clearPermissionMode(sessionId: string): void {
 	Reflect.deleteProperty(process.env, getSessionPermissionsEnvKey(sessionId))
 }
 
-export function setPermissionMode(sessionId: string, mode: PermissionMode, skipNotify = false): void {
+export function setPermissionMode(sessionId: string, mode: PermissionMode, source: PermissionModeRuntimeSource): void {
 	const sessionController = getSessionPermissionFlagController(sessionId)
 	if (sessionController) {
-		sessionController.setMode(mode, skipNotify)
+		sessionController.setMode(mode, source)
 	} else {
-		const controller = createSessionPermissionFlagController({ mode })
+		const controller = createSessionPermissionFlagController({ mode: { mode, source } })
 		registerSessionPermissionFlagController(sessionId, controller)
 	}
 	persistPermissionMode(sessionId, mode)
@@ -59,7 +67,9 @@ export function setPermissionMode(sessionId: string, mode: PermissionMode, skipN
  * Returns the current permission mode for the given sessionId.
  * Returns undefined if no persisted mode is found for the session.
  */
-export function getPermissionMode(sessionId: string): PermissionMode | undefined {
+export function getPermissionMode(
+	sessionId: string,
+): { mode: PermissionMode; source: PermissionModeRuntimeSource } | undefined {
 	const sessionController = getSessionPermissionFlagController(sessionId)
 	if (sessionController) {
 		return sessionController.getMode()
@@ -67,8 +77,8 @@ export function getPermissionMode(sessionId: string): PermissionMode | undefined
 	const envKey = getSessionPermissionsEnvKey(sessionId)
 	const mode = parseModeString(process.env[envKey])
 	if (mode) {
-		setPermissionMode(sessionId, mode, true)
-		return mode
+		setPermissionMode(sessionId, mode, "user")
+		return { mode, source: "user" }
 	}
 	return undefined
 }

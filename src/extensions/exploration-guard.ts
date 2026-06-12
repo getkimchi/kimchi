@@ -135,7 +135,7 @@ export default function explorationGuardExtension(pi: ExtensionAPI, options?: Ex
 		isEnabled: () => {
 			const sessionId = ctx?.sessionManager.getSessionId()
 			if (!sessionId) return false
-			if (getPermissionMode(sessionId) === "plan") return false
+			if (getPermissionMode(sessionId)?.mode === "plan") return false
 			try {
 				// Avoid a hard import cycle: ferment state is optional.
 				// eslint-disable-next-line @typescript-eslint/no-require-imports

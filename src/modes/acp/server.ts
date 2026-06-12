@@ -255,7 +255,7 @@ export class KimchiAcpAgent implements Agent {
 			return {
 				sessionId,
 				models,
-				configOptions: [buildPermissionsConfigOption(permissionFlagController.getMode())],
+				configOptions: [buildPermissionsConfigOption(permissionFlagController.getMode()?.mode)],
 			}
 		} catch (err) {
 			unregisterAcpPrompter(session.sessionId)
@@ -304,7 +304,7 @@ export class KimchiAcpAgent implements Agent {
 				if (!ALL_PERMISSION_MODES.includes(value)) {
 					throw RequestError.invalidParams(undefined, `invalid mode ${value}`)
 				}
-				setPermissionMode(params.sessionId, value)
+				setPermissionMode(params.sessionId, value, "user")
 				return {
 					configOptions: [buildPermissionsConfigOption(value)],
 				}
@@ -335,7 +335,9 @@ export class KimchiAcpAgent implements Agent {
 			return {
 				models: this.modelStateForSession(existing.session),
 				configOptions: [
-					buildPermissionsConfigOption(getPermissionMode(params.sessionId) ?? this.resolveInitialMode(params.cwd)),
+					buildPermissionsConfigOption(
+						getPermissionMode(params.sessionId)?.mode ?? this.resolveInitialMode(params.cwd),
+					),
 				],
 			}
 		}
@@ -392,7 +394,7 @@ export class KimchiAcpAgent implements Agent {
 			this.replayTranscript(session)
 			return {
 				models: this.modelStateForSession(session),
-				configOptions: [buildPermissionsConfigOption(permissionFlagController.getMode())],
+				configOptions: [buildPermissionsConfigOption(permissionFlagController.getMode()?.mode)],
 			}
 		} catch (err) {
 			unregisterAcpPrompter(sid)
@@ -942,7 +944,9 @@ function registerPermissionFlagController(
 	initialMode: PermissionMode,
 	send: (params: SessionNotification) => void,
 ): SessionPermissionFlagController {
-	const permissionFlagController = createSessionPermissionFlagController({ mode: initialMode })
+	const permissionFlagController = createSessionPermissionFlagController({
+		mode: { mode: initialMode, source: "user" },
+	})
 	// Register with permissions extension so tool gating uses session-scoped mode
 	registerSessionPermissionFlagController(sessionId, permissionFlagController)
 	permissionFlagController.subscribe(({ mode }) => {
@@ -951,7 +955,7 @@ function registerPermissionFlagController(
 			sessionId,
 			update: {
 				sessionUpdate: "config_option_update",
-				configOptions: [buildPermissionsConfigOption(mode)],
+				configOptions: [buildPermissionsConfigOption(mode.mode)],
 			},
 		})
 	})
