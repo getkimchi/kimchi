@@ -13,10 +13,10 @@ Read the user's intent. Before asking anything, build MINIMAL context:
 - Identify your unknowns: what assumptions are you making? What decisions can only the user make?
 - If the project is greenfield (no existing codebase), note that and move on immediately.
 
-HARD LIMIT: Spend at most 2 turns on Orient. Read at most 3-5 files. Do NOT read
-implementation files line by line — save that for Step 4 (Deep Exploration) which
-happens AFTER the interview and criteria confirmation. After your initial scan,
-immediately move to Step 2.
+Default budget: spend about 1-2 turns on Orient and aim for 3-5 targeted files. Exceed this only
+for a specific unknown that would materially change the interview questions or plan. Do NOT read
+implementation files line by line — save that for Step 4 (Deep Exploration) which happens AFTER
+the interview and criteria confirmation. After your initial scan, immediately move to Step 2.
 
 This step is about YOUR understanding, not the user's. Do not ask questions yet.
 

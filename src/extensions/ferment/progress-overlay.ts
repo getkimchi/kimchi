@@ -63,9 +63,14 @@ export function buildPhaseListTitle(f: Ferment, runtime: FermentRuntime = defaul
 	).length
 	const totalPhases = f.phases.length
 
-	const progressTotal = totalSteps > 0 ? totalSteps : totalPhases
-	const progressTerminal = totalSteps > 0 ? terminalSteps : terminalPhases
-	const progressUnit = totalSteps > 0 ? "steps" : "phases"
+	const progress =
+		totalSteps > 0
+			? { total: totalSteps, terminal: terminalSteps, unit: "steps" as const }
+			: { total: totalPhases, terminal: terminalPhases, unit: "phases" as const }
+
+	const progressTotal = progress.total
+	const progressTerminal = progress.terminal
+	const progressUnit = progress.unit
 
 	const barLen = 28
 	const filled = progressTotal > 0 ? Math.round((progressTerminal / progressTotal) * barLen) : 0
