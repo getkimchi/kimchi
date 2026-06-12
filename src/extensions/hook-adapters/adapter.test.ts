@@ -378,6 +378,84 @@ describe("hook adapter command execution", () => {
 		expect(pi.sendUserMessage).toHaveBeenCalledTimes(1)
 	})
 
+	it("runs StopFail hooks in addition to Stop when the run ends with an error", async () => {
+		writeJson(join(dir, "home", ".claude", "settings.json"), {
+			hooks: {
+				Stop: [{ hooks: [{ type: "command", command: "stop" }] }],
+				StopFail: [{ hooks: [{ type: "command", command: "stop-fail" }] }],
+			},
+		})
+		const stopHook = mockBlockingHook()
+		const failHook = mockBlockingHook()
+		const pi = fakePi()
+		claudeCodeHooksAdapter(pi as never)
+
+		await pi.handlers.agent_end[0](agentEndEvent({ stopReason: "error", errorMessage: "provider exploded" }), fakeCtx())
+
+		expect(mockSpawn).toHaveBeenCalledTimes(2)
+		expect(hookPayload(stopHook)).toMatchObject({
+			hook_event_name: "Stop",
+			stop_reason: "error",
+			error_message: "provider exploded",
+		})
+		expect(hookPayload(failHook)).toMatchObject({
+			hook_event_name: "StopFail",
+			stop_reason: "error",
+			error_message: "provider exploded",
+			is_error: true,
+			last_assistant_message: "done",
+		})
+	})
+
+	it("runs StopFail hooks for aborted runs", async () => {
+		writeJson(join(dir, "home", ".claude", "settings.json"), {
+			hooks: {
+				StopFail: [{ hooks: [{ type: "command", command: "stop-fail" }] }],
+			},
+		})
+		const failHook = mockBlockingHook()
+		const pi = fakePi()
+		claudeCodeHooksAdapter(pi as never)
+
+		await pi.handlers.agent_end[0](agentEndEvent({ stopReason: "aborted" }), fakeCtx())
+
+		expect(hookPayload(failHook)).toMatchObject({
+			hook_event_name: "StopFail",
+			stop_reason: "aborted",
+			error_message: null,
+			is_error: true,
+		})
+	})
+
+	it("skips StopFail hooks when the run ends normally", async () => {
+		writeJson(join(dir, "home", ".claude", "settings.json"), {
+			hooks: {
+				StopFail: [{ hooks: [{ type: "command", command: "stop-fail" }] }],
+			},
+		})
+		const pi = fakePi()
+		claudeCodeHooksAdapter(pi as never)
+
+		await pi.handlers.agent_end[0](agentEndEvent(), fakeCtx())
+
+		expect(mockSpawn).not.toHaveBeenCalled()
+	})
+
+	it("honors a StopFail continuation request like Stop", async () => {
+		writeJson(join(dir, "home", ".claude", "settings.json"), {
+			hooks: {
+				StopFail: [{ hooks: [{ type: "command", command: "stop-fail" }] }],
+			},
+		})
+		mockBlockingHook({ stdout: JSON.stringify({ decision: "block", reason: "Retry the failed run." }) })
+		const pi = fakePi()
+		claudeCodeHooksAdapter(pi as never)
+
+		await pi.handlers.agent_end[0](agentEndEvent({ stopReason: "error" }), fakeCtx())
+
+		expect(pi.sendUserMessage).toHaveBeenCalledWith("Retry the failed run.", { deliverAs: "followUp" })
+	})
+
 	it("runs TaskCompleted hooks per turn without follow-up continuation", async () => {
 		writeJson(join(dir, "home", ".claude", "settings.json"), {
 			hooks: {
@@ -890,12 +968,17 @@ function turnEndEvent(turnIndex: number) {
 	}
 }
 
-function agentEndEvent() {
+function agentEndEvent(stop: { stopReason?: string; errorMessage?: string } = {}) {
 	return {
 		type: "agent_end",
 		messages: [
 			{ role: "user", content: [{ type: "text", text: "do the thing" }] },
-			{ role: "assistant", content: [{ type: "text", text: "done" }] },
+			{
+				role: "assistant",
+				content: [{ type: "text", text: "done" }],
+				stopReason: stop.stopReason ?? "stop",
+				errorMessage: stop.errorMessage,
+			},
 		],
 	}
 }

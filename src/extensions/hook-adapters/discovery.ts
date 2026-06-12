@@ -13,6 +13,7 @@ export type CommandHookEventName =
 	| "PostCompact"
 	| "UserPromptSubmit"
 	| "Stop"
+	| "StopFail"
 	| "TaskCompleted"
 	| "TurnStart"
 	| "MessageStart"
@@ -34,6 +35,7 @@ export const FULL_COMMAND_HOOK_EVENTS: readonly CommandHookEventName[] = [
 	"PostCompact",
 	"UserPromptSubmit",
 	"Stop",
+	"StopFail",
 	"TaskCompleted",
 	"TurnStart",
 	"MessageStart",
