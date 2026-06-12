@@ -53,6 +53,7 @@ const TOOL_RENDER_CACHE = Symbol.for("pi-claude-style-tools:tool-render-cache")
 const TOOL_CACHE_PATCH_FLAG = Symbol.for("pi-claude-style-tools:patched-tool-cache-invalidation")
 const TOOL_IMAGE_EXPAND_PATCH_FLAG = Symbol.for("pi-claude-style-tools:patched-read-image-expansion")
 const USER_MESSAGE_PATCH_FLAG = Symbol.for("pi-claude-style-tools:patched-user-message-render")
+const HIDDEN_TOOL_BLOCK_NAMES = new Set(["write_todos"])
 const WRAP_MARK = "\uE000"
 const KITTY_IMAGE_PREFIX = "\x1b_G"
 const ITERM2_IMAGE_PREFIX = "\x1b]1337;File="
@@ -242,6 +243,7 @@ function patchGlobalToolBorders(): void {
 	const originalRender = proto.render
 	proto.render = function patchedContainerRender(width: number): string[] {
 		if (isToolExecutionLike(this)) {
+			if (HIDDEN_TOOL_BLOCK_NAMES.has(this.toolName.toLowerCase())) return []
 			const cached = (this as any)[TOOL_RENDER_CACHE]
 			if (cached?.width === width && cached?.mode === toolBackgroundMode) {
 				return cached.lines
