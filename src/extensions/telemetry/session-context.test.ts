@@ -207,6 +207,13 @@ describe("SessionContext", () => {
 		expect(ctx.logBuffer).toHaveLength(0)
 	})
 
+	it("turnIndex resets to 0 on ctx.reset()", () => {
+		const ctx = new SessionContext(makeConfig(), "cli")
+		ctx.turnIndex = 5
+		ctx.reset("cli")
+		expect(ctx.turnIndex).toBe(0)
+	})
+
 	it("reset preserves rootSessionId and clears per-instance state", () => {
 		const ctx = new SessionContext(makeConfig(), "cli")
 		const originalId = ctx.sessionId

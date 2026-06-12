@@ -1,5 +1,6 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, TurnStartEvent } from "@earendil-works/pi-coding-agent"
 import type { TelemetryConfig } from "../../config.js"
+import { onBeforeProviderHeaders } from "../../types/before-provider-headers.js"
 import {
 	FERMENT_EVENTS,
 	type FermentAbandonedPayload,
@@ -431,5 +432,19 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		pi.on("agent_end", async (event) => {
 			handleAgentEnd(ctx, event as { messages?: { role?: string; content?: unknown[] }[] })
 		})
+		pi.on("turn_start", async (event) => {
+			const incoming = (event as TurnStartEvent).turnIndex
+			if (incoming !== undefined) {
+				ctx.turnIndex = incoming
+			} else {
+				console.warn("[telemetry] turn_start received without turnIndex field — ctx.turnIndex unchanged")
+			}
+		})
+		onBeforeProviderHeaders(pi, (event) => ({
+			...event.headers,
+			"X-Session-Id": ctx.sessionId,
+			// 0 means "before first turn" (sentinel); backend should treat it accordingly.
+			"X-Turn-Index": String(ctx.turnIndex),
+		}))
 	}
 }

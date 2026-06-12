@@ -241,6 +241,36 @@ describe("telemetryExtension integration", () => {
 
 		expect(dismissedAttrs.survey_id).toBe("019e87cc-5033-0000-d9bd-5e6501640b6e")
 	})
+
+	it("turn_start event updates ctx.turnIndex", async () => {
+		const { handlers, api } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, { model: { id: "claude-opus-4-6" } })
+
+		await getHandler(handlers, "turn_start")({ turnIndex: 3 })
+
+		const { default: _ext, ...rest } = await import("./index.js")
+		// Verify via before_provider_headers which exposes ctx.turnIndex
+		const result = getHandler(handlers, "before_provider_headers")({ headers: {} })
+		expect((result as unknown as Record<string, string>)["X-Turn-Index"]).toBe("3")
+	})
+
+	it("before_provider_headers injects X-Session-Id and X-Turn-Index", async () => {
+		const { handlers, api } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, { model: { id: "claude-opus-4-6" } })
+
+		// Set a known turn index via the turn_start handler
+		await getHandler(handlers, "turn_start")({ turnIndex: 4 })
+
+		const result = getHandler(handlers, "before_provider_headers")({ headers: { "User-Agent": "kimchi/1.0" } })
+		const headers = result as unknown as Record<string, string>
+
+		expect(headers["User-Agent"]).toBe("kimchi/1.0")
+		expect(typeof headers["X-Session-Id"]).toBe("string")
+		expect(headers["X-Session-Id"]).toMatch(/^[0-9a-f-]{36}$/)
+		expect(headers["X-Turn-Index"]).toBe("4")
+	})
 })
 
 // ---------------------------------------------------------------------------
