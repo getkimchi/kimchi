@@ -29,9 +29,11 @@ export function createSessionPermissionFlagController(
 
 	return {
 		getMode: () => mode,
-		setMode: (newMode, source) => {
+		setMode: (newMode, source, skipNotify) => {
 			mode = { mode: newMode, source }
-			for (const _l of listeners) _l({ mode })
+			if (!skipNotify) {
+				for (const _l of listeners) _l({ mode })
+			}
 		},
 		subscribe: (listener) => {
 			listeners.add(listener)
@@ -52,10 +54,15 @@ export function clearPermissionMode(sessionId: string): void {
 	Reflect.deleteProperty(process.env, getSessionPermissionsEnvKey(sessionId))
 }
 
-export function setPermissionMode(sessionId: string, mode: PermissionMode, source: PermissionModeRuntimeSource): void {
+export function setPermissionMode(
+	sessionId: string,
+	mode: PermissionMode,
+	source: PermissionModeRuntimeSource,
+	skipNotify?: boolean,
+): void {
 	const sessionController = getSessionPermissionFlagController(sessionId)
 	if (sessionController) {
-		sessionController.setMode(mode, source)
+		sessionController.setMode(mode, source, skipNotify)
 	} else {
 		const controller = createSessionPermissionFlagController({ mode: { mode, source } })
 		registerSessionPermissionFlagController(sessionId, controller)

@@ -140,6 +140,7 @@ function makeRecordingConn(): {
 		sessionUpdate: async (p: SessionNotification) => {
 			updates.push(p)
 		},
+		requestPermission: vi.fn().mockResolvedValue({ outcome: "cancelled" }),
 	}
 	return { conn: stub as unknown as AgentSideConnection, updates }
 }
@@ -2026,6 +2027,118 @@ describe("ACP mode controller integration with permissions extension", () => {
 		// biome-ignore lint/suspicious/noExplicitAny: union type requires assertion
 		const update = configUpdates[0].update as any
 		expect(update.configOptions[0].currentValue).toBe("plan")
+
+		await agent.unstable_closeSession({ sessionId })
+	})
+
+	it("leaving plan mode via ACP restores write/edit tools and emits exactly one config update", async () => {
+		// Changing permissions-mode through ACP must run the full changeMode transition,
+		// including restoring tool visibility and aborting stale permission prompts.
+		// The skipNotify flag should prevent duplicate ACP config updates.
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "")
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+
+		const sessionId = "test-leave-plan-mode"
+		const cwd = "/tmp"
+
+		// Set up harness with write and edit tools that would be hidden in plan mode
+		const harness = await createPermissionsHarness(["write", "edit", "read", "bash"])
+
+		const { conn, updates } = makeRecordingConn()
+		const fake = new FakeAgentSession(sessionId)
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+
+		await agent.newSession({ cwd, mcpServers: [] })
+
+		// Fire session_start so the permissions extension subscribes to the controller
+		const mockCtx = createMockContext(sessionId, cwd)
+		await harness.fireSessionStart(mockCtx)
+
+		// Clear any notifications from setup
+		updates.length = 0
+
+		// Start in plan mode via ACP
+		await agent.setSessionConfigOption({
+			sessionId,
+			configId: "permissions-mode",
+			value: "plan",
+		})
+
+		// Verify we're in plan mode - write/edit should be blocked by permissions extension
+		const writeBlockedResult = (await harness.fireToolCall(
+			{ toolName: "write", input: { path: "/tmp/test.txt", content: "hello" } },
+			mockCtx,
+		)) as { block: boolean; reason: string }
+		expect(writeBlockedResult?.block).toBe(true)
+		expect(writeBlockedResult?.reason).toContain("Plan mode")
+
+		// Clear notifications from entering plan mode
+		updates.length = 0
+
+		// Test leaving plan mode to yolo
+		await agent.setSessionConfigOption({
+			sessionId,
+			configId: "permissions-mode",
+			value: "yolo",
+		})
+
+		// Verify exactly one config_option_update was emitted
+		const yoloConfigUpdates = updates.filter((u) => u.update.sessionUpdate === "config_option_update")
+		expect(yoloConfigUpdates).toHaveLength(1)
+		// biome-ignore lint/suspicious/noExplicitAny: union type requires assertion
+		const yoloUpdate = yoloConfigUpdates[0].update as any
+		expect(yoloUpdate.configOptions[0].currentValue).toBe("yolo")
+
+		// Verify write operations are now allowed (permissions extension allows them in yolo)
+		const writeAllowedResult = await harness.fireToolCall(
+			{ toolName: "write", input: { path: "/tmp/test.txt", content: "hello" } },
+			mockCtx,
+		)
+		expect(writeAllowedResult).toBeUndefined() // Not blocked
+
+		// Reset and test leaving plan mode to default
+		updates.length = 0
+
+		// Go back to plan mode
+		await agent.setSessionConfigOption({
+			sessionId,
+			configId: "permissions-mode",
+			value: "plan",
+		})
+		updates.length = 0 // Clear notifications
+
+		// Verify tools are blocked again in plan mode
+		const writeBlockedAgain = (await harness.fireToolCall(
+			{ toolName: "write", input: { path: "/tmp/test.txt", content: "hello" } },
+			mockCtx,
+		)) as { block: boolean; reason: string }
+		expect(writeBlockedAgain?.block).toBe(true)
+
+		// Leave plan mode to default
+		await agent.setSessionConfigOption({
+			sessionId,
+			configId: "permissions-mode",
+			value: "default",
+		})
+
+		// Verify exactly one config_option_update was emitted
+		const defaultConfigUpdates = updates.filter((u) => u.update.sessionUpdate === "config_option_update")
+		expect(defaultConfigUpdates).toHaveLength(1)
+		// biome-ignore lint/suspicious/noExplicitAny: union type requires assertion
+		const defaultUpdate = defaultConfigUpdates[0].update as any
+		expect(defaultUpdate.configOptions[0].currentValue).toBe("default")
+
+		// Verify write operations are now gated behind explicit user approval
+		const writeDefaultResult = (await harness.fireToolCall(
+			{ toolName: "write", input: { path: "/tmp/test.txt", content: "hello" } },
+			mockCtx,
+		)) as { block: boolean; reason: string }
+		expect(writeDefaultResult.block).toBe(true)
+		expect(writeDefaultResult.reason).toContain("Declined by user")
 
 		await agent.unstable_closeSession({ sessionId })
 	})

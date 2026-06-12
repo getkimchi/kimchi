@@ -15,6 +15,7 @@ import { classifyToolCall } from "./classifier.js"
 import { registerCommands } from "./commands.js"
 import { type LoadedConfig, loadConfig } from "./config.js"
 import { PERMISSIONS_ENV_KEY } from "./constants.js"
+import { getSessionPermissionFlagController } from "./mode-controller-registry.js"
 import { getPermissionMode, getSessionPermissionsEnvKey, setPermissionMode } from "./mode-controller.js"
 import { resolveMode } from "./mode.js"
 import { saveApprovedPlan } from "./plan-persistence.js"
@@ -174,7 +175,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		: process.env[PERMISSIONS_ENV_KEY]
 	let loaded: LoadedConfig = EMPTY_LOADED_CONFIG
 	let configRules: Rule[] = []
-	let sessionCtx: ExtensionContext | undefined
+	let currentCtx: ExtensionContext | undefined
 	let preFermentMode: PermissionMode | undefined
 	let cliMode: PermissionMode | undefined
 	let planModeApplied = false
@@ -200,7 +201,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	}
 
 	_isLaunchedWithYolo = () => {
-		const runtimeMode = sessionCtx && getPermissionMode(sessionCtx.sessionManager.getSessionId())
+		const runtimeMode = currentCtx && getPermissionMode(currentCtx.sessionManager.getSessionId())
 		if (runtimeMode?.mode === "yolo" && runtimeMode.source === "user") {
 			return true
 		}
@@ -217,7 +218,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	 * Returns the current permission mode flag or falls back to a user default.
 	 */
 	function getRuntimePermissionMode(): { mode: PermissionMode; source: PermissionModeRuntimeSource } {
-		const runtimeMode = sessionCtx && getPermissionMode(sessionCtx.sessionManager.getSessionId())
+		const runtimeMode = currentCtx && getPermissionMode(currentCtx.sessionManager.getSessionId())
 		if (runtimeMode) {
 			return runtimeMode
 		}
@@ -239,9 +240,10 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		ctx: ExtensionContext,
 		mode: PermissionMode,
 		source: PermissionModeRuntimeSource,
+		skipNotify?: boolean,
 	): void {
 		_displayPermissionMode = mode
-		setPermissionMode(ctx.sessionManager.getSessionId(), mode, source)
+		setPermissionMode(ctx.sessionManager.getSessionId(), mode, source, skipNotify)
 	}
 
 	function allRules(): Rule[] {
@@ -309,8 +311,9 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		current: PermissionMode,
 		next: PermissionMode,
 		source: PermissionModeRuntimeSource,
+		skipNotify?: boolean,
 	): void {
-		setRuntimePermissionMode(ctx, next, source)
+		setRuntimePermissionMode(ctx, next, source, skipNotify)
 		if (current === "plan" && next !== "plan") restoreToolsFromPlanMode()
 		if (next === "plan") applyPlanModeTools()
 		// Dismiss all active permission prompts so tool_call handlers re-evaluate under the new mode.
@@ -336,7 +339,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	// running at the same time. Fix this when introducing ferment commands to ACP.
 	onActiveFermentChange((hasActive) => {
 		if (cliMode) return // explicit CLI flag always wins
-		if (!sessionCtx) return // No active session
+		if (!currentCtx) return // No active session
 		let { mode: current, source } = getRuntimePermissionMode()
 		let next = current
 		if (hasActive) {
@@ -350,7 +353,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			source = "user"
 		}
 		if (next && next !== current) {
-			changeMode(sessionCtx, current, next, source)
+			changeMode(currentCtx, current, next, source)
 		}
 	})
 
@@ -422,7 +425,7 @@ ${planText}
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
-		sessionCtx = ctx
+		currentCtx = ctx
 		const { errors } = doLoadConfig(ctx)
 
 		for (const err of errors) {
@@ -471,12 +474,24 @@ ${planText}
 		}
 
 		changeMode(ctx, current, next, source)
+
+		const sessionId = currentCtx.sessionManager.getSessionId()
+		unsubscribePermissionFlagController = getSessionPermissionFlagController(sessionId)?.subscribe(({ mode: next }) => {
+			if (!next) return
+
+			const current = getRuntimePermissionMode()
+			if (current.mode === next.mode) return
+
+			// ACP already emitted the config update from controller.setMode().
+			// This call is only for local transition side effects.
+			changeMode(ctx, current.mode, next.mode, next.source, true)
+		})
 	})
 
 	pi.on("session_shutdown", () => {
 		unsubscribePermissionFlagController?.()
 		unsubscribePermissionFlagController = undefined
-		sessionCtx = undefined
+		currentCtx = undefined
 	})
 
 	const blocks = createSystemPromptBlocks(pi, "permissions")
@@ -708,10 +723,8 @@ ${planText}
 	registerCommands(pi, {
 		getSession: () => session,
 		getLoaded: () => loaded,
-		getPermissionMode: () => getRuntimePermissionMode(),
-		setPermissionMode: (ctx, mode, source) => setRuntimePermissionMode(ctx, mode, source),
-		applyPlanMode: () => applyPlanModeTools(),
-		restorePlanMode: () => restoreToolsFromPlanMode(),
+		getPermissionMode: () => getRuntimePermissionMode().mode,
+		setPermissionMode: (ctx, mode) => changeMode(ctx, getRuntimePermissionMode().mode, mode, "user"),
 		rebuildConfigRules,
 		reloadConfig: (ctx) => {
 			const { errors } = doLoadConfig(ctx)

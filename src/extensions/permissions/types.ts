@@ -40,7 +40,7 @@ export interface SessionPermissionFlagController {
 		mode: PermissionMode
 		source: PermissionModeRuntimeSource
 	}
-	setMode(mode: PermissionMode, source: PermissionModeRuntimeSource): void
+	setMode(mode: PermissionMode, source: PermissionModeRuntimeSource, skipNotify?: boolean): void
 	subscribe(listener: (changes: SessionPermissionFlagChanges) => void): () => void
 }
 
