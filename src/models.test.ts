@@ -712,6 +712,88 @@ describe("injectExperimentalProvider", () => {
 	})
 })
 
+describe("embedding model filtering", () => {
+	let tempDir: string
+	let modelsJsonPath: string
+
+	const EMBEDDING_MODEL: unknown = {
+		slug: "text-embedding-3-small",
+		display_name: "",
+		provider: "openai",
+		tool_call: false,
+		reasoning: false,
+		supports_images: false,
+		input_modalities: ["text"],
+		is_serverless: false,
+		is_routable: false,
+		limits: { context_window: 8191, max_output_tokens: 0 },
+	}
+
+	const GPT5: unknown = {
+		slug: "gpt-5",
+		display_name: "",
+		provider: "openai",
+		tool_call: true,
+		reasoning: true,
+		supports_images: true,
+		input_modalities: ["text", "image"],
+		is_serverless: false,
+		is_routable: false,
+		limits: { context_window: 272000, max_output_tokens: 128000 },
+	}
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-embedding-test-"))
+		modelsJsonPath = join(tempDir, "models.json")
+		vi.stubGlobal("fetch", vi.fn())
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+		vi.restoreAllMocks()
+	})
+
+	it("filters out embedding models with max_output_tokens: 0", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [KIMI, EMBEDDING_MODEL] }),
+		} as Response)
+
+		await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		const writtenIds = config.providers["kimchi-dev"].models.map((m: { id: string }) => m.id)
+		expect(writtenIds).not.toContain("text-embedding-3-small")
+	})
+
+	it("preserves valid chat models alongside filtered embedding models", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [KIMI, GPT5, EMBEDDING_MODEL] }),
+		} as Response)
+
+		const result = await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const slugs = result.models.map((m) => m.slug)
+		expect(slugs).toContain("kimi-k2.5")
+		expect(slugs).toContain("gpt-5")
+		expect(slugs).not.toContain("text-embedding-3-small")
+	})
+
+	it("handles response where all models are embeddings", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [EMBEDDING_MODEL] }),
+		} as Response)
+
+		const result = await updateModelsConfig(modelsJsonPath, "test-key")
+
+		expect(result.models).toHaveLength(0)
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		expect(config.providers["kimchi-dev"].models).toHaveLength(0)
+	})
+})
+
 describe("readExperimentalModels", () => {
 	let tempDir: string
 	let modelsJsonPath: string
