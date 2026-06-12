@@ -3,13 +3,16 @@
  *
  * After every successful `complete_ferment_step` or `complete_ferment_phase`,
  * the tool handler records a pending compaction request in `state.ts`.
- * The `agent_end` hook calls `maybeTriggerFermentCompaction` to:
- *   1. Guard against double-trigger with an in-flight set.
- *   2. Resolve the next step/phase from the current ferment state.
- *   3. Build custom instructions highlighting the ferment plan.
- *   4. Fire `ctx.compact()` which summarises the session.
- *   5. On completion, append a hidden `ferment_stage_handoff` session entry
+ * The `turn_end` and `agent_end` hooks call `maybeTriggerFermentCompaction` to:
+ *   1. Drain ready (non-in-flight) pending entries from the map.
+ *   2. Build custom instructions highlighting the ferment plan and stage.
+ *   3. Fire `ctx.compact()` which summarises the session.
+ *   4. On completion, append a hidden `ferment_stage_handoff` session entry
  *      so the next stage has all context it needs to resume cleanly.
+ *
+ * In-flight tracking lives in `state.ts` (via `FermentRuntime`) so it is
+ * scoped to the runtime instance and resets on session_start, not leaked across
+ * test runs.
  *
  * Failures warn via `ctx.ui.notify` and never block the pipeline.
  */
@@ -37,12 +40,6 @@ export interface FermentHandoffDetails {
 	/** Number of tokens in the session before compaction was triggered (from CompactionResult.tokensBefore) */
 	compactionTokensBefore?: number
 }
-
-// ─── In-flight guard ──────────────────────────────────────────────────────────
-
-/** Prevents double-trigger when agent_end fires multiple times while compaction
- *  is already in progress for the same ferment. */
-export const compactionInProgress = new Set<string>()
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -110,7 +107,6 @@ function findStepById(ferment: Ferment, phaseId: string, stepId: string): Step |
 export function buildCustomInstructions(ferment: Ferment, pending: PendingCompaction): string {
 	const completedPhase = findCompletedPhase(ferment, pending)
 	const completedStep = findCompletedStep(ferment, pending)
-
 	const nextAction = buildNextActionDescription(ferment)
 
 	const lines: string[] = ["Preserve ferment plan details in the summary:"]
@@ -121,23 +117,30 @@ export function buildCustomInstructions(ferment: Ferment, pending: PendingCompac
 		lines.push(`- Success criteria: ${ferment.successCriteria.join("; ")}`)
 	}
 
-	if (completedPhase) {
-		lines.push(`- Active phase: ${completedPhase.name} — ${completedPhase.goal}`)
-	} else {
-		const activePhase = ferment.phases.find((p) => p.status === "active")
+	// For step completions: show the phase that is still active.
+	// For phase completions: show the just-completed phase as "completed", then
+	// show the next active phase (if any) as the current context.
+	if (pending.kind === "step") {
+		const activePhase = ferment.phases.find((p) => p.status === "active") ?? completedPhase
 		if (activePhase) {
 			lines.push(`- Active phase: ${activePhase.name} — ${activePhase.goal}`)
 		}
-	}
-
-	if (pending.kind === "step" && completedStep) {
-		lines.push(
-			`- Completed step: ${completedStep.description}${completedStep.summary ? ` (${completedStep.summary})` : ""}`,
-		)
-	} else if (pending.kind === "phase" && completedPhase) {
-		lines.push(
-			`- Completed phase: ${completedPhase.name}${completedPhase.summary ? ` (${completedPhase.summary})` : ""}`,
-		)
+		if (completedStep) {
+			lines.push(
+				`- Completed step: ${completedStep.description}${completedStep.summary ? ` (${completedStep.summary})` : ""}`,
+			)
+		}
+	} else {
+		// kind === "phase"
+		if (completedPhase) {
+			lines.push(
+				`- Completed phase: ${completedPhase.name}${completedPhase.summary ? ` (${completedPhase.summary})` : ""}`,
+			)
+		}
+		const nextActivePhase = ferment.phases.find((p) => p.status === "active")
+		if (nextActivePhase) {
+			lines.push(`- Next active phase: ${nextActivePhase.name} — ${nextActivePhase.goal}`)
+		}
 	}
 
 	if (nextAction?.nextStepDescription) {
@@ -180,26 +183,24 @@ export function buildHandoffDetails(
 // ─── Main entry point ─────────────────────────────────────────────────────────
 
 /**
- * Check for a pending compaction request and fire `ctx.compact()` if one exists.
+ * Check for pending compaction requests and fire `ctx.compact()` for each ready one.
  *
- * Called from the `agent_end` event handler so the compaction does not interrupt
- * the agent loop that just finished. The in-flight guard prevents double-fire
- * when `agent_end` is dispatched multiple times while compaction is running.
+ * Called from both `turn_end` (between phases in automated-continuation runs)
+ * and `agent_end` (catch-all after the run finishes). The in-flight guard in
+ * `runtime` prevents double-fire for ferments whose previous compaction is still
+ * running — their pending entry is left in the map and retried on the next tick.
  *
  * @param pi      - ExtensionAPI (for sendMessage and events)
  * @param ctx     - ExtensionContext (for compact, ui.notify)
  * @param runtime - FermentRuntime (for storage, active-id, pending-compaction state)
  */
 export function maybeTriggerFermentCompaction(pi: ExtensionAPI, ctx: ExtensionContext, runtime: FermentRuntime): void {
-	// Drain ALL pending compactions — not just the active ferment's. In automated
-	// continuation mode the entire ferment runs in one long agent turn: agent_end
-	// fires once at the end, after complete_ferment has already cleared
-	// getActiveId(). Using drainPendingCompactions() ensures we catch every
-	// step/phase that completed during the run, regardless of active-ferment state.
-	const allPending = runtime.drainPendingCompactions()
-	if (allPending.length === 0) return
+	// drainPendingCompactions() skips in-flight ferments — their entries stay in
+	// the map for the next turn_end / agent_end to pick up.
+	const ready = runtime.drainPendingCompactions()
+	if (ready.length === 0) return
 
-	for (const pending of allPending) {
+	for (const pending of ready) {
 		triggerCompactionForPending(pi, ctx, runtime, pending)
 	}
 }
@@ -212,14 +213,14 @@ function triggerCompactionForPending(
 ): void {
 	const { fermentId } = pending
 
-	// Guard: don't re-enter if compaction is already running for this ferment.
-	if (compactionInProgress.has(fermentId)) return
-	compactionInProgress.add(fermentId)
+	// Mark in-flight via runtime so the guard is scoped to this runtime instance
+	// (resets at session_start, not leaked across test runs).
+	runtime.markCompactionInFlight(fermentId)
 
 	// Reload the ferment from disk — the in-memory copy may be stale.
 	const fermentMaybe = runtime.getStorage().get(fermentId)
 	if (!fermentMaybe) {
-		compactionInProgress.delete(fermentId)
+		runtime.clearCompactionInFlight(fermentId)
 		return
 	}
 	// Captured after the guard so the non-null type is visible inside closures.
@@ -250,22 +251,26 @@ function triggerCompactionForPending(
 	ctx.compact({
 		customInstructions,
 		onComplete: (result: CompactionResult) => {
-			compactionInProgress.delete(fermentId)
+			runtime.clearCompactionInFlight(fermentId)
 			appendHandoffEntry(result)
 		},
 		onError: (error: Error) => {
-			compactionInProgress.delete(fermentId)
-			// Silently skip expected non-errors: session too small, already
-			// compacted, cancelled. These are routine when steps are short.
-			const isExpected =
-				error.message.includes("too small") ||
-				error.message.includes("Already compacted") ||
-				error.message.includes("Compaction cancelled")
-			if (!isExpected) {
-				ctx.ui?.notify?.(`Stage compaction failed: ${error.message}`, "warning")
+			try {
+				runtime.clearCompactionInFlight(fermentId)
+				// Silently skip expected non-errors: session too small, already
+				// compacted, cancelled. These are routine when steps are short.
+				const isExpected =
+					error.message.includes("too small") ||
+					error.message.includes("Already compacted") ||
+					error.message.includes("Compaction cancelled")
+				if (!isExpected) {
+					ctx.ui?.notify?.(`Stage compaction failed: ${error.message}`, "warning")
+				}
+				// Always append the handoff entry even when compaction fails/is skipped.
+				appendHandoffEntry()
+			} catch {
+				// Best-effort: never let onError propagate and crash the extension.
 			}
-			// Always append the handoff entry even when compaction fails/is skipped.
-			appendHandoffEntry()
 		},
 	})
 }

@@ -11,12 +11,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { CompactionResult } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
-import {
-	buildCustomInstructions,
-	buildHandoffDetails,
-	compactionInProgress,
-	maybeTriggerFermentCompaction,
-} from "./auto-compaction.js"
+import { buildCustomInstructions, buildHandoffDetails, maybeTriggerFermentCompaction } from "./auto-compaction.js"
 import type { FermentRuntime } from "./runtime.js"
 import { createDefaultFermentRuntime } from "./runtime.js"
 import { type PendingCompaction, clearPendingCompaction, setPendingCompaction } from "./state.js"
@@ -31,9 +26,7 @@ const NOW = "2026-01-01T00:00:00.000Z"
 
 function makeStep(overrides: Partial<Step> & { id: string; description: string }): Step {
 	return {
-		id: "step-1",
 		index: 1,
-		description: "Do the thing",
 		status: "done",
 		...overrides,
 	}
@@ -41,10 +34,7 @@ function makeStep(overrides: Partial<Step> & { id: string; description: string }
 
 function makePhase(overrides: Partial<Phase> & { id: string; name: string; goal: string }): Phase {
 	return {
-		id: "phase-1",
 		index: 1,
-		name: "Phase One",
-		goal: "Build stuff",
 		status: "active",
 		steps: [],
 		...overrides,
@@ -409,8 +399,8 @@ describe("maybeTriggerFermentCompaction", () => {
 	})
 
 	afterEach(() => {
-		compactionInProgress.delete("ferment-1")
-		compactionInProgress.delete("ferment-2")
+		runtime.clearCompactionInFlight("ferment-1")
+		runtime.clearCompactionInFlight("ferment-2")
 		clearPendingCompaction("ferment-1")
 		clearPendingCompaction("ferment-2")
 		vi.restoreAllMocks()
@@ -523,7 +513,7 @@ describe("maybeTriggerFermentCompaction", () => {
 		expect(notifyCall[1]).toBe("warning")
 	})
 
-	it("in-flight guard: second call while compaction is running does not issue a second compact", () => {
+	it("in-flight guard: a new pending while compaction is running is left for the next tick", () => {
 		const ferment = makeFermentWithPhase(
 			{ id: "phase-1", name: "Phase", goal: "Goal" },
 			{ id: "step-1", description: "Step" },
@@ -532,15 +522,28 @@ describe("maybeTriggerFermentCompaction", () => {
 		runtime.setActive(ferment)
 		setPendingCompaction(ferment.id, makePendingStep(ferment.id, "phase-1", "step-1"))
 
-		// First call
+		// First call — starts compaction, marks ferment in-flight.
 		maybeTriggerFermentCompaction(pi, ctx, runtime)
-
-		// Second call before onComplete fires — clearPendingCompaction was already
-		// called by the first call, so this returns early.
-		maybeTriggerFermentCompaction(pi, ctx, runtime)
-
-		// Only one compact call should have been made
 		expect(ctx.compact).toHaveBeenCalledTimes(1)
+
+		// A new pending arrives while the first compaction is still running
+		// (onComplete has NOT been called yet, so in-flight flag is still set).
+		setPendingCompaction(ferment.id, makePendingStep(ferment.id, "phase-1", "step-2"))
+
+		// Second call — ferment is in-flight so drainPendingCompactions skips it;
+		// no additional compact() call is made.
+		maybeTriggerFermentCompaction(pi, ctx, runtime)
+		expect(ctx.compact).toHaveBeenCalledTimes(1)
+
+		// After onComplete fires, the in-flight flag is cleared.
+		const compactCall = (ctx.compact as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
+			onComplete: (result: CompactionResult) => void
+		}
+		compactCall.onComplete({ tokensBefore: 1000 } as unknown as CompactionResult)
+
+		// Now step-2 pending is still in the map and will fire on the next tick.
+		maybeTriggerFermentCompaction(pi, ctx, runtime)
+		expect(ctx.compact).toHaveBeenCalledTimes(2)
 	})
 
 	it("returns early when ferment is not found in storage after reload", () => {

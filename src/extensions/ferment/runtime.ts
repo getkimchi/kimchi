@@ -23,9 +23,11 @@ import {
 	bumpStepCompleteAttempt,
 	bumpStepStart,
 	captureJudgeContext,
+	clearAllPendingCompactions,
 	clearAllScopingGates,
 	clearAllStepStarts,
 	clearBlockRetry,
+	clearCompactionInFlight,
 	clearPendingCompaction,
 	clearFermentState as clearStateForFerment,
 	clearStepCompleteAttempt,
@@ -42,8 +44,10 @@ import {
 	getStepStartRef,
 	getStorage,
 	isAutomatedContinuationEnabled,
+	isCompactionInFlight,
 	isScopingConfirmed,
 	isScopingInteractive,
+	markCompactionInFlight,
 	markHumanInput,
 	markScopingConfirmed,
 	markScopingInteractive,
@@ -109,9 +113,12 @@ export interface FermentRuntime {
 	setPendingCompaction(fermentId: string, pending: PendingCompaction): void
 	getPendingCompaction(fermentId: string): PendingCompaction | undefined
 	clearPendingCompaction(fermentId: string): void
-	/** Drain and return all pending compactions, clearing the map. Used by
-	 *  agent_end so compaction fires even after getActiveId() is cleared. */
+	/** Drain ready (non-in-flight) pending compactions, leaving in-flight ones for the next tick. */
 	drainPendingCompactions(): PendingCompaction[]
+	markCompactionInFlight(fermentId: string): void
+	clearCompactionInFlight(fermentId: string): void
+	isCompactionInFlight(fermentId: string): boolean
+	clearAllPendingCompactions(): void
 }
 
 function getCurrentPendingPlanReview(): PendingPlanReview | undefined {
@@ -181,6 +188,10 @@ export function createDefaultFermentRuntime(): FermentRuntime {
 		setPendingCompaction,
 		clearPendingCompaction,
 		drainPendingCompactions,
+		markCompactionInFlight,
+		clearCompactionInFlight,
+		isCompactionInFlight,
+		clearAllPendingCompactions,
 	}
 	return runtime
 }

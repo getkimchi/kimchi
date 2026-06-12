@@ -255,6 +255,9 @@ export interface PendingCompaction {
 }
 
 const pendingCompactions = new Map<string, PendingCompaction>()
+/** Ferment IDs whose compaction is currently in-flight. Kept in state so it
+ *  resets with clearFermentState and doesn't leak across test runtimes. */
+const compactionInFlight = new Set<string>()
 
 export function setPendingCompaction(fermentId: string, pending: PendingCompaction): void {
 	pendingCompactions.set(fermentId, pending)
@@ -268,13 +271,35 @@ export function clearPendingCompaction(fermentId: string): void {
 	pendingCompactions.delete(fermentId)
 }
 
-/** Drain and return all pending compactions. Clears the map. Used by the
- *  agent_end handler so it fires even when getActiveId() is already cleared
- *  (e.g. after complete_ferment sets active to undefined). */
+/** Drain pending compactions that are NOT currently in-flight.
+ *  Items for in-flight ferments are left in the map so the next
+ *  turn_end / agent_end can retry them once the current compaction finishes. */
 export function drainPendingCompactions(): PendingCompaction[] {
-	const all = Array.from(pendingCompactions.values())
+	const ready: PendingCompaction[] = []
+	for (const [fermentId, pending] of pendingCompactions) {
+		if (!compactionInFlight.has(fermentId)) {
+			ready.push(pending)
+			pendingCompactions.delete(fermentId)
+		}
+	}
+	return ready
+}
+
+export function markCompactionInFlight(fermentId: string): void {
+	compactionInFlight.add(fermentId)
+}
+
+export function clearCompactionInFlight(fermentId: string): void {
+	compactionInFlight.delete(fermentId)
+}
+
+export function isCompactionInFlight(fermentId: string): boolean {
+	return compactionInFlight.has(fermentId)
+}
+
+export function clearAllPendingCompactions(): void {
 	pendingCompactions.clear()
-	return all
+	compactionInFlight.clear()
 }
 
 // ─── Block-retry counter (per phase) ─────────────────────────────────────────
