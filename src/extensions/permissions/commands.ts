@@ -9,8 +9,8 @@ import type { PermissionMode, PermissionModeRuntimeSource, Rule } from "./types.
 export interface CommandDeps {
 	getSession: () => SessionMemory
 	getLoaded: () => LoadedConfig
-	getMode: (ctx: ExtensionContext) => PermissionMode
-	setRuntimeMode: (mode: PermissionMode, ctx: ExtensionContext, source: PermissionModeRuntimeSource) => void
+	getPermissionMode: (ctx: ExtensionContext) => PermissionMode
+	setPermissionMode: (ctx: ExtensionContext, mode: PermissionMode, source: PermissionModeRuntimeSource) => void
 	applyPlanMode: () => void
 	restorePlanMode: () => void
 	rebuildConfigRules: () => void
@@ -76,7 +76,7 @@ async function openSelector(ctx: ExtensionContext, deps: CommandDeps): Promise<v
 		return showStatus(ctx as ExtensionCommandContext, deps)
 	}
 
-	const mode = deps.getMode(ctx)
+	const mode = deps.getPermissionMode(ctx)
 	const sessionCount = deps.getSession().all().length
 
 	const CHANGE_MODE = "Change mode"
@@ -118,10 +118,10 @@ async function openSelector(ctx: ExtensionContext, deps: CommandDeps): Promise<v
 
 async function openModePicker(ctx: ExtensionContext, deps: CommandDeps): Promise<void> {
 	if (!ctx.hasUI) {
-		ctx.ui.notify(`current mode: ${deps.getMode(ctx)}`, "info")
+		ctx.ui.notify(`current mode: ${deps.getPermissionMode(ctx)}`, "info")
 		return
 	}
-	const current = deps.getMode(ctx)
+	const current = deps.getPermissionMode(ctx)
 	const marker = (m: PermissionMode) => (m === current ? "●" : "○")
 
 	const OPT_DEFAULT = `${marker("default")}  default — ask before each tool call`
@@ -171,7 +171,7 @@ const HELP_TEXT = `/permissions — show current mode and rules
 /permissions help — show this help`
 
 function showStatus(ctx: ExtensionCommandContext, deps: CommandDeps): void {
-	const mode = deps.getMode(ctx)
+	const mode = deps.getPermissionMode(ctx)
 	const loaded = deps.getLoaded()
 	const session = deps.getSession()
 
@@ -209,8 +209,8 @@ function handleMode(ctx: ExtensionContext, deps: CommandDeps, arg: string): void
 		ctx.ui.notify(`unknown mode "${arg}". Valid: default, plan, auto, yolo`, "warning")
 		return
 	}
-	const prev = deps.getMode(ctx)
-	deps.setRuntimeMode(mode, ctx, "user")
+	const prev = deps.getPermissionMode(ctx)
+	deps.setPermissionMode(ctx, mode, "user")
 	if (prev === "plan" && mode !== "plan") deps.restorePlanMode()
 	if (mode === "plan") deps.applyPlanMode()
 	deps.updateStatus(ctx)

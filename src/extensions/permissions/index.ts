@@ -705,8 +705,8 @@ ${planText}
 	registerCommands(pi, {
 		getSession: () => session,
 		getLoaded: () => loaded,
-		getMode: () => getRuntimePermissionMode(),
-		setRuntimeMode: (mode, ctx, source) => setRuntimePermissionMode(ctx, mode, source),
+		getPermissionMode: () => getRuntimePermissionMode(),
+		setPermissionMode: (ctx, mode, source) => setRuntimePermissionMode(ctx, mode, source),
 		applyPlanMode: () => applyPlanModeTools(),
 		restorePlanMode: () => restoreToolsFromPlanMode(),
 		rebuildConfigRules,
