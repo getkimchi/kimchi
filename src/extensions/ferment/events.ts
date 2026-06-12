@@ -3,6 +3,7 @@ import { clearFermentCache } from "../../ferment/store.js"
 import { deriveDraftFermentTitle } from "../../ferment/title.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { deferExtensionAction } from "../deferred-action.js"
+import { maybeTriggerFermentCompaction } from "./auto-compaction.js"
 import { formatDuration } from "./colors.js"
 import { extractContextualOptions, extractTrailingQuestion } from "./contextual-options.js"
 import { decideContinuation } from "./continuation.js"
@@ -419,5 +420,10 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		const userInputHandled = await maybeRunUserInputDropdown(pi, ctx, content, f, runtime)
 		if (userInputHandled) return
 		if (!toolCallSeen) maybeInjectReactiveContinuationNudge(pi, runtime)
+
+		// Trigger compaction after any turn that completed a step or phase.
+		// Fires between turns in automated-continuation mode, so the next
+		// phase starts with a fresh compacted session.
+		maybeTriggerFermentCompaction(pi, ctx, runtime)
 	})
 }

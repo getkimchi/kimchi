@@ -26,15 +26,18 @@ import {
 	clearAllScopingGates,
 	clearAllStepStarts,
 	clearBlockRetry,
+	clearPendingCompaction,
 	clearFermentState as clearStateForFerment,
 	clearStepCompleteAttempt,
 	clearStepStart,
 	consumeScopingGate,
+	drainPendingCompactions,
 	getActive,
 	getActiveId,
 	getBlockRetry,
 	getContinuationPolicy,
 	getLastHumanInputAt,
+	getPendingCompaction,
 	getPhaseStartRef,
 	getStepStartRef,
 	getStorage,
@@ -48,10 +51,12 @@ import {
 	setActive,
 	setAutomatedContinuationEnabled,
 	setContinuationPolicy,
+	setPendingCompaction,
 	setPhaseStartRef,
 	setStepStartRef,
 } from "./state.js"
 import type { ContinuationPolicy } from "./state.js"
+import type { PendingCompaction } from "./state.js"
 
 export interface FermentRuntime {
 	/** pi.events bus — set by the ferment extension factory so all mutations
@@ -101,6 +106,12 @@ export interface FermentRuntime {
 	bumpStepCompleteAttempt(fermentId: string, phaseId: string, stepId: string): number
 	clearStepCompleteAttempt(fermentId: string, phaseId: string, stepId: string): void
 	clearFermentState(fermentId: string): void
+	setPendingCompaction(fermentId: string, pending: PendingCompaction): void
+	getPendingCompaction(fermentId: string): PendingCompaction | undefined
+	clearPendingCompaction(fermentId: string): void
+	/** Drain and return all pending compactions, clearing the map. Used by
+	 *  agent_end so compaction fires even after getActiveId() is cleared. */
+	drainPendingCompactions(): PendingCompaction[]
 }
 
 function getCurrentPendingPlanReview(): PendingPlanReview | undefined {
@@ -166,6 +177,10 @@ export function createDefaultFermentRuntime(): FermentRuntime {
 		bumpStepCompleteAttempt,
 		clearStepCompleteAttempt,
 		clearFermentState,
+		getPendingCompaction,
+		setPendingCompaction,
+		clearPendingCompaction,
+		drainPendingCompactions,
 	}
 	return runtime
 }

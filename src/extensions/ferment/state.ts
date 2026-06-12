@@ -241,6 +241,42 @@ export function clearAllScopingGates(): void {
 	scopingConfirmed.clear()
 }
 
+// ─── Pending compaction requests (transient) ─────────────────────────────────
+// Recorded on successful complete_ferment_step / complete_ferment_phase so the
+// agent_end hook can auto-compact the session context. Cleared when the
+// compaction fires. Not persisted — single-session handoff only.
+
+export interface PendingCompaction {
+	kind: "step" | "phase"
+	fermentId: string
+	phaseId: string
+	stepId?: string
+	completedAt: string
+}
+
+const pendingCompactions = new Map<string, PendingCompaction>()
+
+export function setPendingCompaction(fermentId: string, pending: PendingCompaction): void {
+	pendingCompactions.set(fermentId, pending)
+}
+
+export function getPendingCompaction(fermentId: string): PendingCompaction | undefined {
+	return pendingCompactions.get(fermentId)
+}
+
+export function clearPendingCompaction(fermentId: string): void {
+	pendingCompactions.delete(fermentId)
+}
+
+/** Drain and return all pending compactions. Clears the map. Used by the
+ *  agent_end handler so it fires even when getActiveId() is already cleared
+ *  (e.g. after complete_ferment sets active to undefined). */
+export function drainPendingCompactions(): PendingCompaction[] {
+	const all = Array.from(pendingCompactions.values())
+	pendingCompactions.clear()
+	return all
+}
+
 // ─── Block-retry counter (per phase) ─────────────────────────────────────────
 // Key: `${fermentId}:${phaseId}`. Incremented every time complete_ferment_phase is
 // called and the reviewer emits at least one `block` flag. After

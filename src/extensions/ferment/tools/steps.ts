@@ -309,6 +309,13 @@ export async function completeStep(
 		if (!completeOutcome.ok) return failedToolResult(completeOutcome.error, f)
 		runtime.clearStepStart(f.id, phase.id, step.id)
 		runtime.bumpStepCompleteAttempt(f.id, phase.id, step.id)
+		runtime.setPendingCompaction(f.id, {
+			kind: "step",
+			fermentId: f.id,
+			phaseId: phase.id,
+			stepId: step.id,
+			completedAt: runtime.nowIso(),
+		})
 		services.onStepCompleted(runtime)
 		sendStepBreadcrumb(pi, `Step ${step.index} ✓ ${step.description}`)
 		return toolOk(
@@ -346,6 +353,13 @@ export async function completeStep(
 	if (exitCode === 0) {
 		// Verification passed + all gates pass → silent advance. No LLM call.
 		runtime.bumpStepCompleteAttempt(f.id, phase.id, step.id)
+		runtime.setPendingCompaction(f.id, {
+			kind: "step",
+			fermentId: f.id,
+			phaseId: phase.id,
+			stepId: step.id,
+			completedAt: runtime.nowIso(),
+		})
 		services.onStepCompleted(runtime)
 		sendStepBreadcrumb(pi, `Step ${step.index} ✓ verified — ${step.description}`)
 		return toolOk(
@@ -368,6 +382,13 @@ export async function completeStep(
 		// is acceptable (e.g. linter noise on an unrelated file). Gate
 		// verdicts already passed above, so advance.
 		runtime.bumpStepCompleteAttempt(f.id, phase.id, step.id)
+		runtime.setPendingCompaction(f.id, {
+			kind: "step",
+			fermentId: f.id,
+			phaseId: phase.id,
+			stepId: step.id,
+			completedAt: runtime.nowIso(),
+		})
 		services.onStepCompleted(runtime)
 		sendStepBreadcrumb(pi, `Step ${step.index} ✓  Judge passed: ${judgeVerdict.reason}`)
 		return toolOk(
