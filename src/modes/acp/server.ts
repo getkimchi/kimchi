@@ -245,12 +245,15 @@ export class KimchiAcpAgent implements Agent {
 			assertSessionHasModel(session)
 			const sessionId = session.sessionId
 			registerAcpPrompter(sessionId, createAcpPermissionPrompter(this.conn, sessionId, buildToolCallUpdate))
-			await bindAcpExtensions(session)
-			const unsubscribe = session.subscribe((event) => this.onSessionEvent(sessionId, event))
+
 			const permissionFlagController = registerPermissionFlagController(sessionId, initialMode, (params) =>
 				this.send(params),
 			)
+
+			await bindAcpExtensions(session)
+			const unsubscribe = session.subscribe((event) => this.onSessionEvent(sessionId, event))
 			this.sessions.set(sessionId, { session, unsubscribe })
+
 			const models = buildSessionModelState(session)
 			return {
 				sessionId,
@@ -259,6 +262,9 @@ export class KimchiAcpAgent implements Agent {
 			}
 		} catch (err) {
 			unregisterAcpPrompter(session.sessionId)
+			unregisterSessionPermissionFlagController(session.sessionId)
+			clearPermissionMode(session.sessionId)
+
 			session.dispose()
 			throw err
 		}
@@ -383,10 +389,13 @@ export class KimchiAcpAgent implements Agent {
 		try {
 			assertSessionHasModel(session)
 			registerAcpPrompter(sid, createAcpPermissionPrompter(this.conn, sid, buildToolCallUpdate))
+
+			const permissionFlagController = registerPermissionFlagController(sid, initialMode, (params) => this.send(params))
+
 			await bindAcpExtensions(session)
 			const unsubscribe = session.subscribe((event) => this.onSessionEvent(sid, event))
-			const permissionFlagController = registerPermissionFlagController(sid, initialMode, (params) => this.send(params))
 			this.sessions.set(sid, { session, unsubscribe })
+
 			// Replay BEFORE the response resolves so Zed sees a coherent transcript
 			// when the loadSession promise settles. No turn context is created, so a
 			// concurrent session/cancel during replay is a no-op — a turn must not
@@ -398,6 +407,9 @@ export class KimchiAcpAgent implements Agent {
 			}
 		} catch (err) {
 			unregisterAcpPrompter(sid)
+			unregisterSessionPermissionFlagController(sid)
+			clearPermissionMode(sid)
+
 			const existing = this.sessions.get(sid)
 			if (existing) {
 				this.sessions.delete(sid)

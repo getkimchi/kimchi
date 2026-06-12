@@ -228,13 +228,28 @@ function forwardAbortSignal(session: AgentSession, signal?: AbortSignal): () => 
 	return () => signal.removeEventListener("abort", onAbort)
 }
 
+async function withParentSessionEnv<T>(ctx: ExtensionContext, fn: () => Promise<T>): Promise<T> {
+	const prevParentSessionId = process.env[PARENT_SESSION_ID_ENV_KEY]
+	process.env[PARENT_SESSION_ID_ENV_KEY] = ctx.sessionManager.getSessionId()
+
+	try {
+		return await fn()
+	} finally {
+		if (prevParentSessionId === undefined) {
+			delete process.env[PARENT_SESSION_ID_ENV_KEY]
+		} else {
+			process.env[PARENT_SESSION_ID_ENV_KEY] = prevParentSessionId
+		}
+	}
+}
+
 export async function runAgent(
 	ctx: ExtensionContext,
 	type: SubagentType,
 	prompt: string,
 	options: RunOptions,
 ): Promise<RunResult> {
-	return runAsAgentWorker(() => runAgentInner(ctx, type, prompt, options))
+	return runAsAgentWorker(() => withParentSessionEnv(ctx, () => runAgentInner(ctx, type, prompt, options)))
 }
 
 async function runAgentInner(
@@ -559,11 +574,6 @@ async function runAgentInner(
 		}
 	}
 
-	// Propagate the parent's session ID so the child permissions extension can
-	// read the per-session mode from KIMCHI_PERMISSIONS_<sessionId>.
-	const prevParentSessionId = process.env[PARENT_SESSION_ID_ENV_KEY]
-	process.env[PARENT_SESSION_ID_ENV_KEY] = ctx.sessionManager.getSessionId()
-
 	// Propagate agent persona to child environment so permission rules can
 	// apply persona-specific path scopes (e.g. plan persona → .kimchi/plans/).
 	const prevPersona = process.env.KIMCHI_AGENT_PERSONA
@@ -588,13 +598,8 @@ async function runAgentInner(
 		// Emit session_shutdown so extensions (e.g. telemetry) can flush and
 		// clear timers. Mirrors the ACP server pattern in modes/acp/server.ts.
 		await session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" })
-		// Restore parent-session-ID and persona env — important for sequential runs in the same process.
-		if (prevParentSessionId === undefined) {
-			delete process.env[PARENT_SESSION_ID_ENV_KEY]
-		} else {
-			process.env[PARENT_SESSION_ID_ENV_KEY] = prevParentSessionId
-		}
 		if (agentConfig?.name) {
+			// Restore persona env — important for sequential runs in the same process.
 			if (prevPersona === undefined) {
 				// biome-ignore lint/performance/noDelete: must remove not set to undefined
 				delete process.env.KIMCHI_AGENT_PERSONA

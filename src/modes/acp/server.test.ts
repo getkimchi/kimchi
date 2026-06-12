@@ -3620,6 +3620,167 @@ describe("KimchiAcpAgent loadSession", () => {
 	})
 })
 
+// Ordering regression test: permission flag controller must be registered
+// BEFORE bindAcpExtensions is called. This ensures that when upstream
+// bindExtensions() emits session_start, the permissions extension already
+// has access to the shared controller and doesn't create a duplicate one.
+describe("permission flag controller registration ordering", () => {
+	it("registers permission flag controller before bindAcpExtensions in newSession", async () => {
+		const ordering: string[] = []
+		const fake = new FakeAgentSession("session-ordering-test")
+
+		fake.bindExtensionsImpl = async () => {
+			// At this point, the permission controller should already be registered
+			const controller = getSessionPermissionFlagController("session-ordering-test")
+			ordering.push(controller ? "controller-present" : "controller-missing")
+			ordering.push("bindAcpExtensions-called")
+		}
+
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+		})
+
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		// The controller should be present when bindAcpExtensions is called
+		expect(ordering).toEqual(["controller-present", "bindAcpExtensions-called"])
+		// And should still be registered after newSession completes
+		expect(getSessionPermissionFlagController("session-ordering-test")).toBeDefined()
+
+		await agent.shutdown()
+	})
+
+	it("registers permission flag controller before bindAcpExtensions in loadSessionFresh", async () => {
+		const ordering: string[] = []
+		const fake = new FakeAgentSession("load-session-ordering")
+		// Add a minimal branch for replay
+		fake.branch = [
+			{
+				type: "message",
+				message: { role: "user", content: "test" },
+				timestamp: Date.now(),
+			},
+		]
+
+		fake.bindExtensionsImpl = async () => {
+			const controller = getSessionPermissionFlagController("load-session-ordering")
+			ordering.push(controller ? "controller-present" : "controller-missing")
+			ordering.push("bindAcpExtensions-called")
+		}
+
+		let loaderCallCount = 0
+		const loader: AcpSessionLoader = async () => {
+			loaderCallCount++
+			return asSession(fake)
+		}
+
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionLoader: loader,
+		})
+
+		await agent.loadSession({ sessionId: "load-session-ordering", cwd: "/tmp", mcpServers: [] })
+
+		expect(loaderCallCount).toBe(1)
+		expect(ordering).toEqual(["controller-present", "bindAcpExtensions-called"])
+		expect(getSessionPermissionFlagController("load-session-ordering")).toBeDefined()
+
+		await agent.shutdown()
+	})
+
+	it("unregisters permission flag controller when bindAcpExtensions throws in newSession", async () => {
+		const fake = new FakeAgentSession("session-bind-failure")
+		// Verify controller is registered during the call (before bind fails)
+		let controllerDuringBind: ReturnType<typeof getSessionPermissionFlagController>
+		fake.bindExtensionsImpl = async () => {
+			controllerDuringBind = getSessionPermissionFlagController("session-bind-failure")
+			throw new Error("bindExtensions failed")
+		}
+
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+		})
+
+		await expect(agent.newSession({ cwd: "/tmp", mcpServers: [] })).rejects.toThrow(/bindExtensions failed/)
+
+		// Controller should have been present during bind
+		expect(controllerDuringBind).toBeDefined()
+		// But should be unregistered after the catch block runs
+		expect(getSessionPermissionFlagController("session-bind-failure")).toBeUndefined()
+		expect(fake.disposed).toBe(true)
+	})
+
+	it("unregisters permission flag controller when bindAcpExtensions throws in loadSession", async () => {
+		const fake = new FakeAgentSession("load-bind-failure")
+		fake.branch = [
+			{
+				type: "message",
+				message: { role: "user", content: "test" },
+				timestamp: Date.now(),
+			},
+		]
+		fake.bindExtensionsImpl = async () => {
+			throw new Error("bindExtensions failed in load")
+		}
+
+		const loader: AcpSessionLoader = async () => asSession(fake)
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionLoader: loader,
+		})
+
+		await expect(agent.loadSession({ sessionId: "load-bind-failure", cwd: "/tmp", mcpServers: [] })).rejects.toThrow(
+			/bindExtensions failed in load/,
+		)
+
+		expect(getSessionPermissionFlagController("load-bind-failure")).toBeUndefined()
+		expect(fake.disposed).toBe(true)
+	})
+
+	it("provides a working controller that can get and set mode during bindAcpExtensions", async () => {
+		const fake = new FakeAgentSession("session-controller-functional")
+		let capturedMode: { mode: string; source: string } | undefined
+
+		fake.bindExtensionsImpl = async () => {
+			const controller = getSessionPermissionFlagController("session-controller-functional")
+			if (controller) {
+				// Verify the controller works - get initial mode
+				capturedMode = controller.getMode()
+				// Set a new mode
+				controller.setMode("plan", "user")
+			}
+		}
+
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+		})
+
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		// The controller should be present and functional during bindExtensions
+		expect(capturedMode).toBeDefined()
+		expect(capturedMode?.mode).toBeDefined()
+		expect(capturedMode?.source).toBeDefined()
+
+		// After setMode in bindExtensions, the controller should have the new mode "plan"
+		const finalController = getSessionPermissionFlagController("session-controller-functional")
+		expect(finalController?.getMode()).toEqual({ mode: "plan", source: "user" })
+
+		await agent.shutdown()
+	})
+})
+
 describe("shouldEmitThinking", () => {
 	it("returns true by default (hideThinkingBlock unset)", () => {
 		_resetHideThinking()
