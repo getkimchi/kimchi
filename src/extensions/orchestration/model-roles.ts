@@ -95,7 +95,6 @@ export function buildDefaultModelRoles(): ModelRoles {
 			}
 		}
 		if (entry.roles.includes("build")) builders.push(ref)
-		if (entry.tier === "heavy" && !builders.includes(ref)) builders.push(ref)
 		if (entry.roles.includes("review")) reviewers.push(ref)
 		if (entry.roles.includes("explore") || entry.roles.includes("research")) {
 			if (!explorers.includes(ref)) explorers.push(ref)

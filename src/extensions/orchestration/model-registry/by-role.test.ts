@@ -9,7 +9,7 @@ describe("modelsForRole", () => {
 
 	it("build role returns build-capable models", () => {
 		const result = modelsForRole("build")
-		expect(new Set(result)).toEqual(new Set(["kimchi-dev/minimax-m2.7"]))
+		expect(new Set(result)).toEqual(new Set(["kimchi-dev/kimi-k2.6", "kimchi-dev/minimax-m2.7"]))
 	})
 
 	it("review role returns multiple kimchi-dev/* models", () => {
@@ -25,9 +25,9 @@ describe("modelsForRole", () => {
 		expect(result).toEqual(["kimchi-dev/nemotron-3-super-fp4"])
 	})
 
-	it("returns empty array when no model matches the role", () => {
+	it("filters to available models with build role", () => {
 		const result = modelsForRole("build", { availableIds: new Set(["kimi-k2.6"]) })
-		expect(result).toEqual([])
+		expect(result).toEqual(["kimchi-dev/kimi-k2.6"])
 	})
 
 	it("result strings are always kimchi-dev/<id> format", () => {
@@ -60,8 +60,8 @@ describe("modelsForAnyRole", () => {
 		expect(result).toEqual(["kimchi-dev/nemotron-3-super-fp4"])
 	})
 
-	it("returns empty array when no models match any role with the filter", () => {
+	it("filters to available models with build role", () => {
 		const result = modelsForAnyRole(["build"], { availableIds: new Set(["kimi-k2.6"]) })
-		expect(result).toEqual([])
+		expect(result).toEqual(["kimchi-dev/kimi-k2.6"])
 	})
 })

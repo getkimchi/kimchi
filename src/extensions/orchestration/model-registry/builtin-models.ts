@@ -7,6 +7,7 @@ import {
 	DEFAULT_REVIEW_GUIDELINES,
 } from "./guidelines/default-phase-guidelines.js"
 import {
+	KIMI_FAMILY_BUILD,
 	KIMI_FAMILY_ORCHESTRATION,
 	KIMI_FAMILY_PLAN,
 	KIMI_FAMILY_RESEARCH,
@@ -47,10 +48,13 @@ import type { ModelCapabilities, Phase } from "./types.js"
 const KIMI_K26_DESCRIPTION = `\
 Flagship Kimi model with vision support — the key model for complex planning decisions, \
 deep research, and correctness-critical tasks. Handles images, screenshots, and visual input. \
-Best for: architectural planning, initial code review of complex projects, plan verification \
-involving concurrency or algorithmic design, and building chunks that require correctness \
-reasoning (graph algorithms, concurrent state machines, synchronization logic). \
-Use this model when getting it right the first time matters more than cost.`
+Best for: orchestration, architectural planning, plan verification involving concurrency \
+or algorithmic design. \
+WARNING — subagent reliability: This model is 2-3x slower than standard-tier models. \
+As a build subagent it frequently times out before completing, even with 1.5x duration \
+scaling. Prefer minimax-m2.7 for build subagents — it is faster and completes reliably \
+within standard budgets. Use kimi-k2.6 as a build subagent ONLY as a retry after \
+minimax has already failed on the same chunk.`
 
 const MINIMAX_M27_DESCRIPTION = `\
 The strongest coding model in the pool. \
@@ -112,12 +116,13 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 		"kimi-k2.6",
 		{
 			vision: true,
-			roles: ["research", "plan", "review"],
+			roles: ["research", "plan", "build", "review"],
 			tier: "heavy",
 			description: KIMI_K26_DESCRIPTION,
 			guidelines: guidelinesMap({
 				research: [DEFAULT_RESEARCH_GUIDELINES, KIMI_FAMILY_RESEARCH],
 				plan: [DEFAULT_PLAN_GUIDELINES, KIMI_FAMILY_PLAN, KIMI_K26_PLAN],
+				build: [DEFAULT_BUILD_GUIDELINES, KIMI_FAMILY_BUILD],
 				review: [DEFAULT_REVIEW_GUIDELINES, KIMI_FAMILY_REVIEW],
 			}),
 			orchestrationGuidelines: optionalGuidelines(

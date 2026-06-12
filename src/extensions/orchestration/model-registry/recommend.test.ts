@@ -11,18 +11,17 @@ describe("recommendModel", () => {
 		expect(result?.capabilities.tier).toBe("standard")
 	})
 
-	it("falls back to next tier when preferred tier has no match", () => {
-		// build role has no heavy tier model; should fall back to standard
+	it("returns heavy tier when preferred for build role", () => {
+		// build role has heavy (kimi-k2.6) and standard (minimax-m2.7)
 		const result = recommendModel({ roles: ["build"], preferTier: "heavy" })
 		expect(result).toBeDefined()
-		// heavy → standard fallback
-		expect(result?.capabilities.tier).toBe("standard")
+		expect(result?.capabilities.tier).toBe("heavy")
 	})
 
-	it("returns undefined when no model matches the roles", () => {
-		// No model has both "build" and "research" as roles simultaneously
+	it("returns kimi-k2.6 for build+research since it has both roles", () => {
 		const result = recommendModel({ roles: ["build", "research"] })
-		expect(result).toBeUndefined()
+		expect(result).toBeDefined()
+		expect(result?.modelId).toBe("kimi-k2.6")
 	})
 
 	it("respects vision filter — excludes non-vision models", () => {
@@ -32,10 +31,12 @@ describe("recommendModel", () => {
 		expect(result?.capabilities.vision).toBe(true)
 	})
 
-	it("returns undefined when vision required but no matching vision model", () => {
-		// build + vision: nemotron has no vision, minimax has no vision
+	it("returns kimi-k2.6 when build + vision required", () => {
+		// kimi-k2.6 has build and vision; minimax has build but no vision
 		const result = recommendModel({ roles: ["build"], needsVision: true })
-		expect(result).toBeUndefined()
+		expect(result).toBeDefined()
+		expect(result?.modelId).toBe("kimi-k2.6")
+		expect(result?.capabilities.vision).toBe(true)
 	})
 
 	it("multi-role filter: explore + research have overlapping light models", () => {

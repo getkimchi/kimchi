@@ -54,7 +54,7 @@ describe("resolveOrchestrationInstructions", () => {
 			roles: DEFAULT_MODEL_ROLES,
 		})
 		expect(result).toContain("## Your Capabilities")
-		expect(result).toContain("Roles: research, plan, review")
+		expect(result).toContain("Roles: research, plan, build, review")
 	})
 
 	it("uses role-based delegation rules in Step 3", () => {
@@ -178,7 +178,7 @@ describe("resolveOrchestrationInstructions", () => {
 		expect(result).toContain("complexity")
 		expect(result).toContain("`simple`")
 		expect(result).toContain("`complex`")
-		expect(result).toContain("Match the Builder model to the chunk's complexity classification")
+		expect(result).toContain("Complex chunks get the multi-file-package token budget")
 	})
 
 	it("includes complex chunk spec detail requirements", () => {
