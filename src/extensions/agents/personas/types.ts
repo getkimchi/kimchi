@@ -59,18 +59,12 @@ export interface AgentConfig {
 	/** true = inherit all, string[] = only listed, false = none */
 	skills: true | string[] | false
 	/**
-	 * Set of models this persona may use. The list order has NO semantics —
-	 * it is not a tier ranking. The calling LLM is shown the set in the Agent
-	 * tool's description and picks per spawn based on capability metadata
-	 * (tier, roles) it knows from the orchestration model registry. If
-	 * the caller omits `model`, the runtime falls back to the first entry as
-	 * a stable default — that is NOT a complexity-aware pick. Each entry is
-	 * a "<provider>/<id>" string. Legacy `model:` frontmatter is
-	 * auto-promoted to a single-element array on load.
+	 * Optional model list for custom personas. Default personas do not set
+	 * this — model selection is the orchestrator's responsibility. Custom
+	 * personas loaded from .md files may still declare `models:` or `model:`
+	 * in frontmatter for backward compatibility.
 	 */
 	models?: string[]
-	/** true = profile model selection wins over caller-provided model. */
-	modelLocked?: boolean
 	thinking?: ThinkingLevel
 	maxTurns?: number
 	tokenBudget?: number
@@ -101,11 +95,6 @@ export interface AgentConfig {
 	 * auto-pick logic when no model is explicitly specified and models[] is empty.
 	 */
 	roles?: ModelRole[]
-	/**
-	 * Preferred model tier for auto-pick. Defaults to "standard" when roles
-	 * are set. Ignored when models[] is populated or model is passed explicitly.
-	 */
-	preferTier?: ModelTier
 }
 
 export type JoinMode = "async" | "group" | "smart"

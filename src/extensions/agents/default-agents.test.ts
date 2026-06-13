@@ -10,24 +10,10 @@ describe("DEFAULT_AGENTS", () => {
 		expect(DEFAULT_AGENTS.has(AGENT_RESEARCHER)).toBe(true)
 	})
 
-	it("Explore agent uses a kimchi-dev model", () => {
-		const explore = DEFAULT_AGENTS.get(AGENT_EXPLORE) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
-		expect(explore.models?.[0]).toMatch(/^kimchi-dev\//)
-	})
-
-	it("Plan agent uses a kimchi-dev model", () => {
-		const plan = DEFAULT_AGENTS.get(AGENT_PLAN) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
-		expect(plan.models?.[0]).toMatch(/^kimchi-dev\//)
-	})
-
-	it("Researcher agent uses a kimchi-dev model", () => {
-		const r = DEFAULT_AGENTS.get(AGENT_RESEARCHER) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
-		expect(r.models?.[0]).toMatch(/^kimchi-dev\//)
-	})
-
-	it("General-Purpose agent declares a models[] array", () => {
-		const gp = DEFAULT_AGENTS.get(AGENT_GENERAL_PURPOSE) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
-		expect(gp.models?.length).toBeGreaterThan(0)
+	it("default personas do not declare models", () => {
+		for (const agent of DEFAULT_AGENTS.values()) {
+			expect(agent.models).toBeUndefined()
+		}
 	})
 
 	it("all default agents are marked isDefault", () => {

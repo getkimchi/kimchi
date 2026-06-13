@@ -1,15 +1,13 @@
 /**
  * default-agents.ts — Embedded default agent configurations.
  *
- * These are always available but can be overridden by user .md files with the same name.
- * Models are resolved from the role-based configuration (model-roles.ts).
- * The role-based lookup (modelsForRole) is preserved as a fallback for
- * custom personas that use roles in their frontmatter.
+ * Personas define agent behaviour (system prompt, tools, roles) only.
+ * Model selection is the orchestrator's responsibility — it sees all
+ * available models in the "Your Team" system prompt section and picks
+ * the right one for each delegation.
  */
 
 import { KIMCHI_COAUTHOR } from "../../orchestration/model-registry/guidelines/default-phase-guidelines.js"
-import { modelsForAnyRole, modelsForRole } from "../../orchestration/model-registry/index.js"
-import { type RoleModelAssignment, getModelRoles, normalizeRoleModels } from "../../orchestration/model-roles.js"
 import {
 	AGENT_BUILDER,
 	AGENT_EXPLORE,
@@ -23,25 +21,7 @@ import {
 
 const READ_ONLY_TOOLS = ["read", "bash", "grep", "find", "ls"]
 
-/** Pick models by role; returns undefined if no model has the role so the persona falls through to inherit. */
-function pick(roles: readonly ("review" | "build" | "plan" | "explore" | "research")[]): string[] | undefined {
-	const list = roles.length === 1 ? modelsForRole(roles[0]) : modelsForAnyRole(roles)
-	return list.length > 0 ? list : undefined
-}
-
-/** Resolve model list for a role. Normalizes string|string[] to string[],
- *  or falls back to capability-based lookup if the role assignment is empty. */
-function roleModels(
-	assignment: RoleModelAssignment,
-	fallbackRoles: readonly ("review" | "build" | "plan" | "explore" | "research")[],
-): string[] | undefined {
-	const models = normalizeRoleModels(assignment)
-	if (models.length > 0 && models[0]) return models
-	return pick(fallbackRoles)
-}
-
 function buildDefaultAgents(): Map<string, AgentConfig> {
-	const roles = getModelRoles()
 	return new Map([
 		[
 			AGENT_GENERAL_PURPOSE,
@@ -51,7 +31,6 @@ function buildDefaultAgents(): Map<string, AgentConfig> {
 				description: "General-purpose agent for complex, multi-step tasks",
 				extensions: true,
 				skills: true,
-				models: roleModels(roles.builder, ["build", "explore", "plan", "review", "research"]),
 				systemPrompt: "",
 				promptMode: "append",
 				isDefault: true,
@@ -66,9 +45,7 @@ function buildDefaultAgents(): Map<string, AgentConfig> {
 				builtinToolNames: READ_ONLY_TOOLS,
 				extensions: true,
 				skills: true,
-				models: roleModels(roles.explorer, ["explore"]),
 				roles: ["explore"],
-				preferTier: "light",
 				thinking: "low",
 				tokenBudget: 120_000,
 				systemPrompt: `# CRITICAL: READ-ONLY MODE - NO FILE MODIFICATIONS
@@ -121,9 +98,7 @@ Use Bash ONLY for read-only operations: ls, git status, git log, git diff, find,
 				extensions: true,
 				includeContextFiles: true,
 				skills: true,
-				models: roleModels(roles.planner, ["plan"]),
 				roles: ["plan"],
-				preferTier: "heavy",
 				thinking: "high",
 				tokenBudget: 120_000,
 				systemPrompt:
@@ -239,9 +214,7 @@ List 3-5 files most critical for implementing this plan:
 				builtinToolNames: READ_ONLY_TOOLS,
 				extensions: true,
 				skills: false,
-				models: roleModels(roles.explorer, ["research"]),
 				roles: ["research"],
-				preferTier: "heavy",
 				thinking: "medium",
 				tokenBudget: 80_000,
 				systemPrompt: `You are a research specialist. Your job is to find accurate, well-sourced answers from the web, documentation, and the local codebase.
@@ -269,9 +242,7 @@ Deliver a structured report: summary first, then supporting evidence with citati
 				description: "Code implementation agent — writes, modifies, and verifies code",
 				extensions: true,
 				skills: true,
-				models: roleModels(roles.builder, ["build"]),
 				roles: ["build"],
-				preferTier: "standard",
 				thinking: "medium",
 				tokenBudget: 150_000,
 				systemPrompt: `# Builder Agent — Code Implementation
@@ -311,9 +282,7 @@ If compilation fails or tests fail, report the failures clearly and stop. The or
 				disallowedTools: ["edit"],
 				extensions: true,
 				skills: true,
-				models: roleModels(roles.reviewer, ["review"]),
 				roles: ["review"],
-				preferTier: "standard",
 				thinking: "high",
 				tokenBudget: 100_000,
 				systemPrompt: `# Reviewer Agent — Code Verification
@@ -364,9 +333,7 @@ Be specific. If a test fails, quote the failure. If logic is wrong, explain why 
 				description: "Fix agent — applies review findings and verifies fixes",
 				extensions: true,
 				skills: true,
-				models: roleModels(roles.builder, ["build"]),
 				roles: ["build"],
-				preferTier: "standard",
 				thinking: "medium",
 				tokenBudget: 150_000,
 				systemPrompt: `# Fixer Agent — Apply Review Findings

@@ -1,6 +1,3 @@
-import { pickFromModelListByTier, recommendModel } from "../../orchestration/model-registry/recommend.js"
-import type { ModelRole } from "../../orchestration/model-registry/types.js"
-import { getCurrentPhase } from "../../tags.js"
 import type { AgentConfig, IsolationMode, JoinMode, ThinkingLevel } from "../personas/types.js"
 
 interface AgentInvocationParams {
@@ -19,8 +16,12 @@ interface AgentInvocationParams {
 /**
  * Resolves agent invocation config by merging caller params with persona defaults.
  *
- * Precedence by field:
- * - model: caller override first, unless the persona locks model selection.
+ * Model selection is pass-through: `params.model` is used as-is when
+ * provided, otherwise modelInput is undefined and the caller falls back
+ * to the parent model.  The orchestrator LLM is responsible for picking
+ * the right model from "Your Team" based on task complexity.
+ *
+ * Other fields:
  * - tokenBudget: caller override first, then persona default.
  * - thinking, maxTurns, isolation, inheritContext, runInBackground: persona
  *   policy first, then caller value.
@@ -43,51 +44,9 @@ export function resolveAgentInvocationConfig(
 	let modelInput: string | undefined
 	let modelFromParams = false
 
-	const resolveProfileModel = () => {
-		if (agentConfig?.models?.length) {
-			// Persona declared a list. Pick the entry whose capability tier best
-			// matches the persona's preferTier.
-			return pickFromModelListByTier(agentConfig.models, agentConfig.preferTier ?? "standard")
-		}
-		if (agentConfig?.roles?.length) {
-			// Persona has roles but no explicit models[] — let the orchestrator
-			// auto-pick based on those roles.
-			const rec = recommendModel({
-				roles: agentConfig.roles,
-				preferTier: agentConfig.preferTier ?? "standard",
-			})
-			return rec ? `${rec.provider}/${rec.modelId}` : undefined
-		}
-		return undefined
-	}
-
-	if (agentConfig?.modelLocked) {
-		modelInput = resolveProfileModel()
-	} else if (params.model) {
-		// Caller's explicit override — the LLM judges task complexity and picks
-		// from the persona's `models` list (or any model id). This is the
-		// preferred path for personas with multi-model arrays: the calling LLM
-		// is in a far better position to assess complexity than any heuristic.
+	if (params.model) {
 		modelInput = params.model
 		modelFromParams = true
-	} else {
-		modelInput = resolveProfileModel()
-	}
-
-	if (!modelInput && !agentConfig?.models?.length && !agentConfig?.roles?.length) {
-		// Phase-aware fallback: if current phase is a known role, recommend
-		// a model for that phase.
-		const phase = getCurrentPhase()
-		const VALID_ROLES: ReadonlySet<string> = new Set<ModelRole>(["build", "explore", "plan", "review", "research"])
-		if (phase && VALID_ROLES.has(phase)) {
-			const rec = recommendModel({
-				roles: [phase as ModelRole],
-				preferTier: "standard",
-			})
-			if (rec) {
-				modelInput = `${rec.provider}/${rec.modelId}`
-			}
-		}
 	}
 
 	return {

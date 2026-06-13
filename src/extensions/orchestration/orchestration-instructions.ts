@@ -81,12 +81,12 @@ Look at **Your Capabilities** above. Your roles are the authoritative signal —
 - If your tier is standard or light and the task requires explore or plan steps: you must delegate those steps. Your roles list is the gate — if a step type is not listed there, you are not qualified to perform it regardless of task scope or apparent simplicity.
 - **Exception — simple research (overrides every rule above)**: If a task only needs a quick factual lookup (e.g. library comparisons, version numbers, API references, a single fact), call web_search directly and answer from the results — do NOT delegate to an Agent. For simple lookups this is strictly cheaper, faster, and more reliable than spawning an Agent. The roles-based delegation rules apply only when research requires deep analysis, reading multiple long documents, or synthesising information across many sources.
 
-The goal is to use the model best suited for each step, not the one already running. Use the matching persona for each step:
-- Build chunks -> Agent(type: "Builder", model: <from Builder pool>)
-- Code review -> Agent(type: "Reviewer", model: <strongest from Reviewer pool>)
-- Fix review issues -> Agent(type: "Fixer", model: <from Builder pool>)
-- Explore codebase -> Agent(type: "Explore", model: <from Explorer pool>)
-- Verify plan -> Agent(type: "Plan", model: <from Planner pool>)
+The goal is to use the model best suited for each step, not the one already running. Pick the persona and model for each step from **Your Team**. You MUST always pass a concrete \`model\` — never omit it:
+- Build chunks -> Agent(type: "Builder", model: <standard-tier model for simple chunks, heavy-tier for complex>)
+- Code review -> Agent(type: "Reviewer", model: <standard-tier model>)
+- Fix review issues -> Agent(type: "Fixer", model: <standard-tier model>)
+- Explore codebase -> Agent(type: "Explore", model: <light-tier or standard-tier model>)
+- Verify plan -> Agent(type: "Plan", model: <heavy-tier model>)
 
 ### Step 4 — Execute
 
@@ -184,12 +184,14 @@ Pass plans and structured findings as Markdown files in the Documents directory,
 
 ### Model selection for delegation
 
-Use the **Your Team** section above to pick the right model for each delegated step. Read each model's **description** to understand its capabilities and limitations — the description is the primary signal for whether a model fits the task.
+You MUST always pass a \`model\` parameter on every Agent call — never omit it. Use the **Your Team** section above to pick the right model. Read each model's **description** and **tier** to match it to the task.
 
-- Match the model's **tier** to the task complexity: light for simple well-scoped work, heavy for ambiguous or multi-step work.
-- Read the model's **description** before selecting. A model listed in a role pool is a candidate, not a guarantee — its description may reveal limitations (e.g. "weakest at coding") that make it unsuitable for the specific task.
-- If the subtask involves images or visual content, you MUST select a model with \`Vision: yes\`.
-- **Use the lightest model with the required capability.** Unless the task explicitly requires deep reasoning or complex analysis, prefer the lightest tier model whose description confirms it can handle the work.
+- **Standard-tier models** for well-scoped tasks: CRUD, straightforward tests, mechanical fixes, code review, applying review findings.
+- **Heavy-tier models** for complex work: concurrency, graph algorithms, architectural reasoning, plan verification. Also use heavy-tier as a retry when a standard-tier model has failed on the same chunk.
+- **Light-tier models** for trivial work: codebase exploration, simple verification.
+- Read the model's **description** before selecting — a model in a role pool is a candidate, not a guarantee. Its description may reveal limitations.
+- If the subtask involves images or visual content, select a model with \`Vision: yes\`.
+- **Default to the lightest model that can handle the work.** Only escalate tier when the task genuinely requires it.
 
 ### Review delegation
 
