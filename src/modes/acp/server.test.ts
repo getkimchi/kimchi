@@ -1032,6 +1032,103 @@ describe("KimchiAcpAgent tool execution stream", () => {
 		expect(terminal).toBeDefined()
 	})
 
+	// web_fetch (and MCP image tools whose blocks survive transformMcpContent)
+	// can return image blocks in a tool result. toolResultContent must forward
+	// them as ACP image content; before this they were dropped and the client
+	// saw a completed tool call with empty content.
+	it("forwards an image block on tool_execution_end as ACP image content", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({ type: "tool_execution_start", toolCallId: "tc-img", toolName: "web_fetch", args: { url: "x" } })
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-img",
+				toolName: "web_fetch",
+				result: { content: [{ type: "image", data: "aGVsbG8=", mimeType: "image/png" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "run" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		const completed = updates.find(
+			(u) => u.update.sessionUpdate === "tool_call_update" && (u.update as { status?: string }).status === "completed",
+		)
+		expect(completed).toBeDefined()
+		const content = (completed?.update as { content: unknown[] }).content
+		expect(content).toEqual([{ type: "content", content: { type: "image", data: "aGVsbG8=", mimeType: "image/png" } }])
+	})
+
+	// The image path also runs on the streaming branch: an image-only partial
+	// must produce an in_progress update rather than being swallowed as empty.
+	it("forwards image blocks from a streaming partialResult", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({ type: "tool_execution_start", toolCallId: "tc-img2", toolName: "web_fetch", args: { url: "x" } })
+			fake.emit({
+				type: "tool_execution_update",
+				toolCallId: "tc-img2",
+				toolName: "web_fetch",
+				args: { url: "x" },
+				partialResult: { content: [{ type: "image", data: "Zm9v", mimeType: "image/jpeg" }] },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-img2",
+				toolName: "web_fetch",
+				result: { content: [{ type: "image", data: "Zm9v", mimeType: "image/jpeg" }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "run" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		const partial = updates.find(
+			(u) =>
+				u.update.sessionUpdate === "tool_call_update" && (u.update as { status?: string }).status === "in_progress",
+		)
+		expect(partial).toBeDefined()
+		const content = (partial?.update as { content: unknown[] }).content
+		expect(content).toEqual([{ type: "content", content: { type: "image", data: "Zm9v", mimeType: "image/jpeg" } }])
+	})
+
+	// A result mixing text and image blocks forwards every block, in order.
+	it("forwards text and image blocks together, preserving order", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({ type: "tool_execution_start", toolCallId: "tc-mix", toolName: "web_fetch", args: { url: "x" } })
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-mix",
+				toolName: "web_fetch",
+				result: {
+					content: [
+						{ type: "text", text: "before" },
+						{ type: "image", data: "YmFy", mimeType: "image/png" },
+					],
+				},
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "run" }] })
+		expect(res.stopReason).toBe("end_turn")
+
+		const completed = updates.find(
+			(u) => u.update.sessionUpdate === "tool_call_update" && (u.update as { status?: string }).status === "completed",
+		)
+		const content = (completed?.update as { content: unknown[] }).content
+		expect(content).toEqual([
+			{ type: "content", content: { type: "text", text: "before" } },
+			{ type: "content", content: { type: "image", data: "YmFy", mimeType: "image/png" } },
+		])
+	})
+
 	// Guard on server.ts:213-214: an empty partialResult must NOT produce a
 	// tool_call_update — an in_progress update with empty content is noise for
 	// clients that render the stream as it arrives.

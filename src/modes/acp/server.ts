@@ -1230,20 +1230,27 @@ export function shouldEmitThinking(_thinking: string): boolean {
 }
 
 function toolResultContent(result: unknown): ToolCallContent[] {
-	// TODO: non-text blocks are silently dropped here. web_fetch can in principle
-	// return image blocks, and MCP tools may return resource blocks — clients
-	// would see a completed tool call with empty content. Safe today because no
-	// registered tool emits non-text blocks in practice, but revisit when
-	// web_fetch or an MCP tool starts returning them.
+	// Tool results carry pi-ai content blocks, typed as (TextContent |
+	// ImageContent)[] on pi-ai's ToolResultMessage. Forward both, so a tool that
+	// emits an image (e.g. web_fetch, or an MCP image tool whose block survives
+	// transformMcpContent) doesn't surface to the client as a completed call with
+	// empty content.
+	//
+	// resource / resource_link / audio blocks never reach here: the MCP bridge
+	// (transformMcpContent) already flattens them to text, because pi-ai tool
+	// results only model text and image. Forwarding them as native ACP resource
+	// blocks would require widening pi-ai's tool-result content type upstream.
 	const r = result as { content?: unknown } | null | undefined
 	const content = r?.content
 	if (!Array.isArray(content)) return []
 	const out: ToolCallContent[] = []
 	for (const block of content) {
 		if (!block || typeof block !== "object") continue
-		const b = block as { type?: string; text?: string }
+		const b = block as { type?: string; text?: string; data?: string; mimeType?: string }
 		if (b.type === "text" && typeof b.text === "string") {
 			out.push({ type: "content", content: { type: "text", text: b.text } })
+		} else if (b.type === "image" && typeof b.data === "string" && typeof b.mimeType === "string") {
+			out.push({ type: "content", content: { type: "image", data: b.data, mimeType: b.mimeType } })
 		}
 	}
 	return out
