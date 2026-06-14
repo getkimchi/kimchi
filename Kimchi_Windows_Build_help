@@ -1,0 +1,98 @@
+Kimchi (Source Code)
+
+1.  Download & Extract
+
+-   Download kimchi-.zip
+-   Extract to: Folder
+
+2.  Install Required Software
+
+Node.js - Verify: node -v npm -v - Used: Node.js v24.16.0 npm 11.13.0
+
+Bun - Verify: bun –version - Used: 1.3.14
+
+Go - Install Go and verify: go version - Used: go1.26.4 windows/amd64
+
+pnpm - Install: npm install -g pnpm - Verify: pnpm -v
+
+3.  Install Project Dependencies
+
+From project root: npm install
+
+4.  Verify Project Builds
+
+npm run build
+
+Should complete without errors.
+
+5.  Run First-Time Setup
+
+Instead of: npm run dev
+
+(use of make fails on Windows)
+
+Run: bun run –preload ./src/set-package-dir.ts src/entry.ts
+
+Complete setup wizard.
+
+Kimchi creates: C:-Admin.config
+
+and downloads: fd.exe rg.exe
+
+6.  Build proxy-helper.exe Manually
+
+Go to: cd tools-helper
+
+Build: go build -ldflags=“-s -w” -o bin/proxy-helper.exe .
+
+Verify: tools-helper-helper.exe
+
+exists.
+
+7.  Patch scripts/build-binary.js
+
+Original:
+if (!isCI) {
+	run("build proxy-helper", "make -C tools/proxy-helper build")
+}
+
+Replace with: 
+if (!isCI) {
+    if (platform() === "win32") {
+        console.log("Using existing proxy-helper.exe")
+    } else {
+        run("build proxy-helper", "make -C tools/proxy-helper build")
+    }
+}
+
+8.  Patch package.json
+
+Original: "clean": "rm -rf dist"
+
+Replace with:
+"clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+
+9.  Build Windows Binary
+
+npm run build:binary
+
+Build reaches: → compile compile dist/bin/kimchi.exe
+
+and creates: dist.exe
+
+10. Resource Copy Error (Safe to Ignore)
+
+Build later fails because: tools/proxy-helper/bin/proxy-helper
+
+is expected on Linux/macOS, but Windows creates: proxy-helper.exe
+
+Error: copy resources failed ENOENT proxy-helper
+
+However: dist.exe
+
+is already successfully generated kimchi.exe.
+
+Final Result
+
+The EXE was built successfully despite the final resource-copy step
+failing.

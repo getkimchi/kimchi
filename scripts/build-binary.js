@@ -34,7 +34,11 @@ const isCI = !!process.env.CI
 
 // In CI the binary will be build in its own step.
 if (!isCI) {
-	run("build proxy-helper", "make -C tools/proxy-helper build")
+    if (platform() === "win32") {
+        console.log("Using existing proxy-helper.exe")
+    } else {
+        run("build proxy-helper", "make -C tools/proxy-helper build")
+    }
 }
 
 run("clean", "pnpm run clean")
