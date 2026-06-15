@@ -3947,7 +3947,7 @@ export default function (pi: ExtensionAPI) {
 				// Expanded: show the tool name + timer on line 1, then the full
 				// command (with real newlines) as a continued branch block below.
 				const hdr = toolHeader("Bash", "", theme, toolStatusDot(ctx, theme), timer)
-				const cmdBlock = withBranch(theme.fg("accent", command), theme, false, true)
+				const cmdBlock = withBranch(command.split("\n").map((l) => theme.fg("accent", l)).join("\n"), theme, false, true)
 				return makeText(ctx.lastComponent, `${hdr}\n${cmdBlock}`)
 			}
 			const summary = summarizeText(command, 72)
@@ -3980,7 +3980,7 @@ export default function (pi: ExtensionAPI) {
 			const collapsed = bashCollapsedLimit()
 			text += `\n${buildPreviewText(
 				nonEmpty.map((line) => theme.fg("dim", line)),
-				false,
+				expanded,
 				theme,
 				collapsed,
 			)}`
