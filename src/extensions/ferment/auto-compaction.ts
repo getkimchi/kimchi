@@ -22,6 +22,7 @@ import type { CompactionResult } from "@earendil-works/pi-coding-agent"
 import { determineNextAction } from "../../ferment/engine.js"
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
 import type { FermentRuntime } from "./runtime.js"
+import { scheduleNextFermentAction } from "./scheduler.js"
 import type { PendingCompaction } from "./state.js"
 
 // ─── Public types ─────────────────────────────────────────────────────────────
@@ -253,6 +254,23 @@ function triggerCompactionForPending(
 		onComplete: (result: CompactionResult) => {
 			runtime.clearCompactionInFlight(fermentId)
 			appendHandoffEntry(result)
+
+			// After compaction the session is idle. The LLM's previous
+			// next-action reasoning was discarded with the old history, so
+			// schedule the next ferment action as a follow-up turn to keep
+			// automated ferments moving forward without user intervention.
+			try {
+				const freshFerment = runtime.getStorage().get(fermentId)
+				if (freshFerment && (freshFerment.status === "running" || freshFerment.status === "planned")) {
+					runtime.setActive(freshFerment)
+					scheduleNextFermentAction(pi, freshFerment, runtime, {
+						tag: "Auto-compaction continuation",
+						deliverAsFollowUp: true,
+					})
+				}
+			} catch {
+				// Best-effort: scheduler errors must not propagate from a compaction callback.
+			}
 		},
 		onError: (error: Error) => {
 			try {

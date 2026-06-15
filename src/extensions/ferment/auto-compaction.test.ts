@@ -478,16 +478,22 @@ describe("maybeTriggerFermentCompaction", () => {
 		const fakeResult = { tokensBefore: 5000 } as unknown as CompactionResult
 		compactCall.onComplete(fakeResult)
 
-		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
-		const sendMsgCall = (pi.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0]
-		expect(sendMsgCall[0]).toMatchObject({
+		// onComplete should fire two sendMessage calls: handoff entry, then
+		// continuation nudge so the agent keeps moving.
+		expect(pi.sendMessage).toHaveBeenCalledTimes(2)
+		const sendMsgCalls = (pi.sendMessage as ReturnType<typeof vi.fn>).mock.calls
+		expect(sendMsgCalls[0][0]).toMatchObject({
 			customType: "ferment_stage_handoff",
 			display: false,
 		})
-		expect(sendMsgCall[0].details).toMatchObject({
+		expect(sendMsgCalls[0][0].details).toMatchObject({
 			fermentName: "My Ferment",
 			compactionTokensBefore: 5000,
 		})
+		expect(sendMsgCalls[1][0]).toMatchObject({
+			customType: "ferment_continuation_nudge",
+		})
+		expect(sendMsgCalls[1][1]).toMatchObject({ triggerTurn: true })
 	})
 
 	it("onError calls ctx.ui.notify with a warning and does not throw", () => {
