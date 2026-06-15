@@ -35,6 +35,7 @@ import claudeCodeSkillsExtension from "./extensions/claude-code-skills/index.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
 import explorationGuardExtension from "./extensions/exploration-guard.js"
 import fermentExtension from "./extensions/ferment/index.js"
+import footerSettingsExtension from "./extensions/footer-settings-command.js"
 import helpExtension from "./extensions/help.js"
 import hideThinkingExtension from "./extensions/hide-thinking.js"
 import ideAdapterExtension from "./extensions/ide-adapter/index.js"
@@ -454,6 +455,7 @@ try {
 				{ id: "extensions.agents", factory: agentsExtension },
 			] satisfies ManagedExtensionFactory[]),
 			helpExtension,
+			footerSettingsExtension,
 			inputHistoryExtension,
 			reportBugExtension,
 			tagsExtension,
