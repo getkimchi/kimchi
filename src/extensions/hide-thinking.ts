@@ -103,6 +103,22 @@ function stripThinkingTags(text: string): string {
 }
 
 /**
+ * Dim thinking content for display.
+ *
+ * The TUI's Markdown renderer splits text into paragraph tokens before
+ * applying ANSI, so a single ANSI open-code wrapping multi-paragraph content
+ * only colours the first paragraph — subsequent paragraphs start fresh with
+ * no colour. Prepending the dim code to every non-empty line ensures each
+ * paragraph token begins with the correct ANSI state regardless of how the
+ * lexer splits the input.
+ */
+function dimThinkingContent(text: string): string {
+	const lines = text.split("\n")
+	const dimmed = lines.map((line) => (line ? fg(ANSI.dim, line) : line))
+	return dimmed.join("\n")
+}
+
+/**
  * Strip markdown syntax from thinking content so the TUI's Markdown renderer
  * treats it as plain text. Without this, constructs like `backtick spans`,
  * **bold**, _italic_, and # headings inside a dim ANSI wrapper get re-styled
@@ -143,7 +159,7 @@ function replaceThinkingTagsWithDimmed(text: string): string {
 		const closeTag = getCloseTag(match)
 		const content = stripMarkdownSyntax(match.slice(openTag.length, -closeTag.length))
 		const visible = lastNLines(content, 5)
-		return visible ? fg(ANSI.dim, visible) : ""
+		return visible ? dimThinkingContent(visible) : ""
 	})
 }
 
@@ -161,7 +177,7 @@ function applyStreamingDisplay(text: string, hideThinking: boolean): string {
 		const openTag = getOpenTag(match)
 		const closeTag = getCloseTag(match)
 		const inner = stripMarkdownSyntax(match.slice(openTag.length, -closeTag.length))
-		return inner ? fg(ANSI.dim, inner) : ""
+		return inner ? dimThinkingContent(inner) : ""
 	})
 	// 2. Handle unclosed open tags (thinking content still streaming)
 	for (const openTag of ["<think>", "<mm:think>"]) {
@@ -172,7 +188,7 @@ function applyStreamingDisplay(text: string, hideThinking: boolean): string {
 				result = before
 			} else {
 				const inner = stripMarkdownSyntax(result.slice(openIdx + openTag.length))
-				result = before + (inner ? fg(ANSI.dim, inner) : "")
+				result = before + (inner ? dimThinkingContent(inner) : "")
 			}
 			break
 		}

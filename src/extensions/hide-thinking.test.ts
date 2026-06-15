@@ -108,8 +108,9 @@ describe("hideThinkingExtension", () => {
 
 		expect(endResult).toBeDefined()
 		const text = (endResult as { message: { content: Array<{ text: string }> } }).message.content[0].text
-		const expected = thinkingLines.slice(-5).join("\n")
-		expect(text).toBe(`Before ${fg(ANSI.dim, expected)} After`)
+		const expectedLines = thinkingLines.slice(-5)
+		const expectedDimmed = expectedLines.map((l) => fg(ANSI.dim, l)).join("\n")
+		expect(text).toBe(`Before ${expectedDimmed} After`)
 	})
 
 	// --- Streaming display ---
