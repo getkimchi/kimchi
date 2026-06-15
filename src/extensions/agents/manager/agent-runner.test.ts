@@ -85,6 +85,7 @@ vi.mock("../../memory/memory.js", () => ({
 
 vi.mock("../../prompt-construction/context-files.js", () => ({
 	loadProjectContextFiles: vi.fn().mockReturnValue([]),
+	loadGlobalContextFile: vi.fn().mockReturnValue(null),
 }))
 
 vi.mock("../../telemetry/index.js", () => ({
@@ -108,7 +109,7 @@ vi.mock("../../orchestration/model-registry/guidelines/guidelines-resolver.js", 
 import { type AgentSession, DefaultResourceLoader, createAgentSession } from "@earendil-works/pi-coding-agent"
 import { readTelemetryConfig } from "../../../config.js"
 import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
-import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
+import { loadGlobalContextFile, loadProjectContextFiles } from "../../prompt-construction/context-files.js"
 import telemetryExtension from "../../telemetry/index.js"
 import { getAgentConfig, getConfig, getToolNamesForType } from "../personas/agent-types.js"
 import { buildAgentPrompt } from "../prompt/prompts.js"
@@ -119,6 +120,7 @@ const mockGetConfig = vi.mocked(getConfig)
 const mockGetAgentConfig = vi.mocked(getAgentConfig)
 const mockGetToolNamesForType = vi.mocked(getToolNamesForType)
 const mockLoadProjectContextFiles = vi.mocked(loadProjectContextFiles)
+const mockLoadGlobalContextFile = vi.mocked(loadGlobalContextFile)
 const mockBuildAgentPrompt = vi.mocked(buildAgentPrompt)
 const mockBuildPhaseGuidelinesSection = vi.mocked(buildPhaseGuidelinesSection)
 const mockDefaultResourceLoader = vi.mocked(DefaultResourceLoader)
@@ -972,6 +974,8 @@ describe("runAgent — includeContextFiles", () => {
 		pi = makeFakePi()
 		mockCreateAgentSession.mockReset()
 		mockLoadProjectContextFiles.mockReset()
+		mockLoadGlobalContextFile.mockReset()
+		mockLoadGlobalContextFile.mockReturnValue(null)
 		mockBuildAgentPrompt.mockReset()
 		mockBuildAgentPrompt.mockReturnValue("System prompt text")
 		mockGetConfig.mockReturnValue(makeTypeConfig({ extensions: false, skills: false }))
@@ -1083,6 +1087,91 @@ describe("runAgent — includeContextFiles", () => {
 		})
 
 		expect(mockBuildPhaseGuidelinesSection).toHaveBeenCalledWith(undefined, undefined, expect.anything())
+	})
+
+	it("appends global file LAST after project files when both exist", async () => {
+		const projectFiles = [
+			{ path: "/repo/AGENTS.md", content: "project rule 1" },
+			{ path: "/repo/sub/CLAUDE.md", content: "project rule 2" },
+		]
+		const globalFile = {
+			path: "/home/user/.config/kimchi/harness/AGENTS.md",
+			content: "global rule",
+		}
+		mockLoadProjectContextFiles.mockReturnValue(projectFiles)
+		mockLoadGlobalContextFile.mockReturnValue(globalFile)
+		mockGetAgentConfig.mockReturnValue(
+			makeAgentConfig({ name: "Plan", description: "Plan agent", includeContextFiles: true }),
+		)
+
+		mockCreateAgentSession.mockResolvedValue({
+			session: makeFakeSession() as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Plan", "write a plan", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		expect(mockLoadGlobalContextFile).toHaveBeenCalledWith("/fake-agent-dir")
+		const extras = mockBuildAgentPrompt.mock.calls[0]?.[4]
+		expect(extras?.contextFiles).toEqual([...projectFiles, globalFile])
+	})
+
+	it("uses only global file when project files are empty", async () => {
+		const globalFile = {
+			path: "/home/user/.config/kimchi/harness/AGENTS.md",
+			content: "global rule",
+		}
+		mockLoadProjectContextFiles.mockReturnValue([])
+		mockLoadGlobalContextFile.mockReturnValue(globalFile)
+		mockGetAgentConfig.mockReturnValue(
+			makeAgentConfig({ name: "Plan", description: "Plan agent", includeContextFiles: true }),
+		)
+
+		mockCreateAgentSession.mockResolvedValue({
+			session: makeFakeSession() as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Plan", "write a plan", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		const extras = mockBuildAgentPrompt.mock.calls[0]?.[4]
+		expect(extras?.contextFiles).toEqual([globalFile])
+	})
+
+	it("does not load global file when isolated is true", async () => {
+		mockLoadProjectContextFiles.mockReturnValue([])
+		mockLoadGlobalContextFile.mockReturnValue({
+			path: "/home/user/.config/kimchi/harness/AGENTS.md",
+			content: "should not load",
+		})
+		mockGetAgentConfig.mockReturnValue(
+			makeAgentConfig({ name: "Plan", description: "Plan agent", includeContextFiles: true }),
+		)
+
+		mockCreateAgentSession.mockResolvedValue({
+			session: makeFakeSession() as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Plan", "write a plan", {
+			pi: pi as unknown as RunOptions["pi"],
+			isolated: true,
+		})
+
+		expect(mockLoadGlobalContextFile).not.toHaveBeenCalled()
+		expect(mockLoadProjectContextFiles).not.toHaveBeenCalled()
+		const extras = mockBuildAgentPrompt.mock.calls[0]?.[4]
+		expect(extras?.contextFiles).toBeUndefined()
 	})
 })
 

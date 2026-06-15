@@ -18,7 +18,11 @@ import { runAsAgentWorker } from "../../agent-worker-context.js"
 import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
 import type { Phase } from "../../orchestration/model-registry/types.js"
-import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
+import {
+	type ContextFile,
+	loadGlobalContextFile,
+	loadProjectContextFiles,
+} from "../../prompt-construction/context-files.js"
 import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import telemetryExtension from "../../telemetry/index.js"
 import { detectEnv } from "../env.js"
@@ -255,10 +259,14 @@ async function runAgentInner(
 	const extensions = options.isolated ? false : config.extensions
 	const skills = options.isolated ? false : config.skills
 
-	const extras: PromptExtras = {
-		contextFiles:
-			agentConfig?.includeContextFiles && !options.isolated ? loadProjectContextFiles(effectiveCwd) : undefined,
+	const includeContext = agentConfig?.includeContextFiles && !options.isolated
+	let contextFiles: ContextFile[] | undefined
+	if (includeContext) {
+		const projectFiles = loadProjectContextFiles(effectiveCwd)
+		const globalFile = loadGlobalContextFile(getAgentDir())
+		contextFiles = globalFile ? [...projectFiles, globalFile] : projectFiles
 	}
+	const extras: PromptExtras = { contextFiles }
 
 	if (Array.isArray(skills)) {
 		const loaded = preloadSkills(skills, effectiveCwd)
