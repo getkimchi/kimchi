@@ -3,7 +3,7 @@ import { dirname } from "node:path"
 import { getVersion } from "./utils.js"
 
 const KIMCHI_API = "https://llm.kimchi.dev"
-const FETCH_TIMEOUT_MS = 5000
+const FETCH_TIMEOUT_MS = 20000
 
 function normalizeKimchiEndpoint(endpoint?: string): string {
 	const trimmed = endpoint?.trim()
@@ -59,6 +59,11 @@ export interface FetchModelsOptions {
 
 const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
+/** Plain exponential backoff (ms), capped at MAX_RETRY_DELAY_MS. */
+function exponentialBackoffMs(attempt: number): number {
+	return Math.min(BASE_RETRY_DELAY_MS * 2 ** (attempt - 1), MAX_RETRY_DELAY_MS)
+}
+
 /** Delay before the next retry, honoring a `Retry-After` header when present. */
 function retryDelayMs(response: Response, attempt: number): number {
 	const header = response.headers?.get?.("retry-after")
@@ -68,7 +73,7 @@ function retryDelayMs(response: Response, attempt: number): number {
 		const dateMs = Date.parse(header)
 		if (!Number.isNaN(dateMs)) return Math.min(Math.max(dateMs - Date.now(), 0), MAX_RETRY_DELAY_MS)
 	}
-	return Math.min(BASE_RETRY_DELAY_MS * 2 ** (attempt - 1), MAX_RETRY_DELAY_MS)
+	return exponentialBackoffMs(attempt)
 }
 
 export interface ModelMetadata {
@@ -109,11 +114,13 @@ async function fetchAvailableModels(apiKey: string, options: FetchModelsOptions 
 				signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
 			})
 		} catch (err) {
-			// Network/timeout failures are transient; surface them so the caller can
-			// offer a retry rather than discarding the user's saved API key.
-			throw new ModelsFetchError(`Failed to fetch models: ${err instanceof Error ? err.message : String(err)}`, {
-				transient: true,
-			})
+			if (attempt === MAX_FETCH_ATTEMPTS) {
+				throw new ModelsFetchError(`Failed to fetch models: ${err instanceof Error ? err.message : String(err)}`, {
+					transient: true,
+				})
+			}
+			await sleep(exponentialBackoffMs(attempt))
+			continue
 		}
 
 		if (response.ok) {
