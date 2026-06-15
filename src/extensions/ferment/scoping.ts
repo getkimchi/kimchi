@@ -214,8 +214,7 @@ The gates array is required and must contain exactly P1, P2, and P3. Every gate 
 Example gates array:
 gates: [
   { id: "P1", verdict: "pass", rationale: "Every step has a verify command or test assertion", evidence: "Step 1: grep passes; Step 2: pnpm test passes" },
-  { id: "P2", verdict: "omitted", rationale: "Single phase, no ordering concerns", evidence: "n/a" },
-  { id: "P3", verdict: "pass", rationale: "C3 will check test output and file existence", evidence: "Tests run via pnpm run test; files exist at src/foo.ts" }
+  { id: "P2", verdict: "omitted", rationale: "Single phase, no ordering concerns", evidence: "n/a" }
 ]`,
 				},
 			],

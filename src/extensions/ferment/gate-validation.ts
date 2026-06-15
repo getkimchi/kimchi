@@ -33,8 +33,8 @@ import { toolErr, type toolOk } from "./tool-helpers.js"
  *
  * Registered as `prepareArguments` on every gate-bearing tool so it runs
  * **before** the pi-ai TypeBox schema validation in the agent loop. When
- * the LLM omits `evidence` or `rationale` from a gate object, TypeBox
- * produces a cryptic error like:
+ * the LLM omits a required field from a gate object, TypeBox produces a
+ * cryptic error like:
  *
  *   gates.1.evidence: must have required properties evidence
  *
@@ -42,9 +42,15 @@ import { toolErr, type toolOk } from "./tool-helpers.js"
  * provide. This guard detects the same omission and throws an actionable
  * error that names the gate, the missing field, and what the LLM must do.
  *
- * It intentionally does NOT fill in defaults — `evidence` and `rationale`
- * are mandatory, and the LLM must supply them.
+ * The guard enforces all four mandatory fields (`id`, `verdict`, `rationale`,
+ * `evidence`) and rejects entries that are not well-formed objects (null,
+ * primitives, arrays). It intentionally does NOT fill in defaults — all four
+ * fields are mandatory, and the LLM must supply them.
  */
+function isNonEmptyString(value: unknown): value is string {
+	return typeof value === "string" && value.trim() !== ""
+}
+
 // biome-ignore lint/suspicious/noExplicitAny: prepareArguments runs on raw LLM JSON; return must satisfy Static<TParams> for any gate schema.
 export function assertGateFieldsPresent(args: unknown): any {
 	if (args == null || typeof args !== "object") return args
@@ -54,15 +60,16 @@ export function assertGateFieldsPresent(args: unknown): any {
 	const missing: string[] = []
 	for (let i = 0; i < gates.length; i++) {
 		const gate = gates[i]
-		if (gate == null || typeof gate !== "object") continue
+		if (gate == null || typeof gate !== "object" || Array.isArray(gate)) {
+			missing.push(`gates[${i}]: invalid gate object (expected {id, verdict, rationale, evidence})`)
+			continue
+		}
 		const g = gate as Record<string, unknown>
-		const id = typeof g.id === "string" ? g.id : `gates[${i}]`
-		if (typeof g.evidence !== "string" || g.evidence.trim() === "") {
-			missing.push(`${id}: missing "evidence" (provide file:line, command output, or "n/a" for omitted gates)`)
-		}
-		if (typeof g.rationale !== "string" || g.rationale.trim() === "") {
-			missing.push(`${id}: missing "rationale" (one sentence justifying the verdict)`)
-		}
+		const id = isNonEmptyString(g.id) ? g.id : `gates[${i}]`
+		if (!isNonEmptyString(g.id)) missing.push(`gates[${i}]: missing "id"`)
+		if (!isNonEmptyString(g.verdict)) missing.push(`${id}: missing "verdict"`)
+		if (!isNonEmptyString(g.rationale)) missing.push(`${id}: missing "rationale"`)
+		if (!isNonEmptyString(g.evidence)) missing.push(`${id}: missing "evidence"`)
 	}
 	if (missing.length > 0) {
 		throw new Error(

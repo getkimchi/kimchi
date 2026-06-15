@@ -168,6 +168,20 @@ describe("assertGateFieldsPresent", () => {
 		expect(() => assertGateFieldsPresent(args)).toThrow(/P1: missing "rationale"/)
 	})
 
+	it("throws when verdict is missing (with id present)", () => {
+		const args = {
+			gates: [{ id: "P1", rationale: "ok", evidence: "file.ts:1" }],
+		}
+		expect(() => assertGateFieldsPresent(args)).toThrow(/P1: missing "verdict"/)
+	})
+
+	it("throws when id is missing (with verdict present)", () => {
+		const args = {
+			gates: [{ verdict: "pass", rationale: "ok", evidence: "file.ts:1" }],
+		}
+		expect(() => assertGateFieldsPresent(args)).toThrow(/gates\[0\]: missing "id"/)
+	})
+
 	it("rejects empty-string evidence", () => {
 		const args = {
 			gates: [{ id: "P1", verdict: "pass", rationale: "ok", evidence: "" }],
@@ -207,6 +221,7 @@ describe("assertGateFieldsPresent", () => {
 			gates: [{ verdict: "pass", rationale: "ok" }],
 		}
 		expect(() => assertGateFieldsPresent(args)).toThrow(/gates\[0\]: missing "evidence"/)
+		expect(() => assertGateFieldsPresent(args)).toThrow(/gates\[0\]: missing "id"/)
 	})
 
 	it("passes through args without gates unchanged", () => {
@@ -219,11 +234,18 @@ describe("assertGateFieldsPresent", () => {
 		expect(assertGateFieldsPresent(undefined)).toBeUndefined()
 	})
 
-	it("skips null/non-object gate entries", () => {
+	it("rejects null/non-object/array gate entries", () => {
 		const args = {
 			gates: [null, "string", { id: "P1", verdict: "pass", rationale: "ok", evidence: "file.ts" }],
 		}
-		expect(assertGateFieldsPresent(args)).toBe(args)
+		expect(() => assertGateFieldsPresent(args)).toThrow(/invalid gate object/)
+	})
+
+	it("rejects an array entry inside the gates array", () => {
+		const args = {
+			gates: [["nested"]],
+		}
+		expect(() => assertGateFieldsPresent(args)).toThrow(/invalid gate object/)
 	})
 
 	it("includes the fix instruction in the error message", () => {
