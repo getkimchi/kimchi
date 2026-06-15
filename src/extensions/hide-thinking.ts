@@ -102,11 +102,46 @@ function stripThinkingTags(text: string): string {
 	return text.replace(THINK_TAG_PATTERN, "")
 }
 
+/**
+ * Strip markdown syntax from thinking content so the TUI's Markdown renderer
+ * treats it as plain text. Without this, constructs like `backtick spans`,
+ * **bold**, _italic_, and # headings inside a dim ANSI wrapper get re-styled
+ * by the Markdown renderer's theme colors, overriding our dim.
+ */
+function stripMarkdownSyntax(text: string): string {
+	return (
+		text
+			// Inline code: `foo` → foo
+			.replace(/`([^`]*)`/g, "$1")
+			// Bold+italic: ***foo*** or ___foo___
+			.replace(/\*{3}([^*]+)\*{3}/g, "$1")
+			.replace(/_{3}([^_]+)_{3}/g, "$1")
+			// Bold: **foo** or __foo__
+			.replace(/\*{2}([^*]+)\*{2}/g, "$1")
+			.replace(/_{2}([^_]+)_{2}/g, "$1")
+			// Italic: *foo* or _foo_
+			.replace(/\*([^*]+)\*/g, "$1")
+			.replace(/_([^_]+)_/g, "$1")
+			// ATX headings: # Heading → Heading
+			.replace(/^#{1,6}\s+/gm, "")
+			// Setext headings: underline rows
+			.replace(/^[=-]{2,}\s*$/gm, "")
+			// Blockquotes: > text → text
+			.replace(/^>+\s?/gm, "")
+			// Horizontal rules
+			.replace(/^[-*_]{3,}\s*$/gm, "")
+			// Links: [text](url) → text
+			.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+			// Images: ![alt](url) → alt
+			.replace(/!\[([^\]]*?)\]\([^)]*\)/g, "$1")
+	)
+}
+
 function replaceThinkingTagsWithDimmed(text: string): string {
 	return text.replace(THINK_TAG_PATTERN, (match) => {
 		const openTag = getOpenTag(match)
 		const closeTag = getCloseTag(match)
-		const content = match.slice(openTag.length, -closeTag.length)
+		const content = stripMarkdownSyntax(match.slice(openTag.length, -closeTag.length))
 		const visible = lastNLines(content, 5)
 		return visible ? fg(ANSI.dim, visible) : ""
 	})
@@ -125,7 +160,7 @@ function applyStreamingDisplay(text: string, hideThinking: boolean): string {
 		if (hideThinking) return ""
 		const openTag = getOpenTag(match)
 		const closeTag = getCloseTag(match)
-		const inner = match.slice(openTag.length, -closeTag.length)
+		const inner = stripMarkdownSyntax(match.slice(openTag.length, -closeTag.length))
 		return inner ? fg(ANSI.dim, inner) : ""
 	})
 	// 2. Handle unclosed open tags (thinking content still streaming)
@@ -136,7 +171,7 @@ function applyStreamingDisplay(text: string, hideThinking: boolean): string {
 			if (hideThinking) {
 				result = before
 			} else {
-				const inner = result.slice(openIdx + openTag.length)
+				const inner = stripMarkdownSyntax(result.slice(openIdx + openTag.length))
 				result = before + (inner ? fg(ANSI.dim, inner) : "")
 			}
 			break
