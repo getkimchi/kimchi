@@ -141,6 +141,8 @@ export interface KimchiConfig {
 	migrationState?: MigrationState
 	onboarding: OnboardingConfig
 	deviceId: string
+	/** Default bash execution timeout in milliseconds. The bash tool's existing per-call `timeout` argument (seconds) overrides this. */
+	bashMaxTimeoutMs: number
 }
 
 /**
@@ -174,6 +176,7 @@ function readConfigExtras(configPath: string): {
 	onboarding?: OnboardingConfig
 	preferences?: PreferencesConfig
 	deviceId?: string
+	bashMaxTimeoutMs?: number
 } {
 	try {
 		const raw = readFileSync(configPath, "utf-8")
@@ -239,6 +242,10 @@ function readConfigExtras(configPath: string): {
 			(typeof parsed.device_id === "string" && parsed.device_id.length > 0 && parsed.device_id) ||
 			undefined
 
+		// Read bashMaxTimeoutMs (positive integer; anything else falls back to default)
+		const bashMaxTimeoutMs =
+			typeof parsed.bashMaxTimeoutMs === "number" && parsed.bashMaxTimeoutMs > 0 ? parsed.bashMaxTimeoutMs : undefined
+
 		return {
 			apiKey,
 			llmEndpoint,
@@ -250,6 +257,7 @@ function readConfigExtras(configPath: string): {
 			onboarding,
 			deviceId,
 			preferences,
+			bashMaxTimeoutMs,
 		}
 	} catch {
 		return {}
@@ -399,6 +407,7 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		migrationState: projectExtras.migrationState ?? globalExtras.migrationState,
 		onboarding: globalExtras.onboarding,
 		deviceId: projectExtras.deviceId ?? globalExtras.deviceId,
+		bashMaxTimeoutMs: projectExtras.bashMaxTimeoutMs ?? globalExtras.bashMaxTimeoutMs,
 	}
 
 	return {
@@ -413,6 +422,7 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		migrationState: extras.migrationState,
 		onboarding: extras.onboarding ?? {},
 		deviceId: extras.deviceId ?? "",
+		bashMaxTimeoutMs: extras.bashMaxTimeoutMs ?? 60_000,
 	}
 }
 

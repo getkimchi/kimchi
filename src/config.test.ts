@@ -49,6 +49,63 @@ describe("loadConfig", () => {
 		expect(config.apiKey).toBe("new-key")
 	})
 
+	describe("bashMaxTimeoutMs", () => {
+		it("defaults to 60000 when not set", () => {
+			const config = loadConfig({ configPath })
+			expect(config.bashMaxTimeoutMs).toBe(60_000)
+		})
+
+		it("reads bashMaxTimeoutMs from config file", () => {
+			writeFileSync(configPath, JSON.stringify({ bashMaxTimeoutMs: 12_345 }))
+			const config = loadConfig({ configPath })
+			expect(config.bashMaxTimeoutMs).toBe(12_345)
+		})
+
+		it("rejects non-positive values and falls back to the default", () => {
+			writeFileSync(configPath, JSON.stringify({ bashMaxTimeoutMs: -1 }))
+			const config = loadConfig({ configPath })
+			expect(config.bashMaxTimeoutMs).toBe(60_000)
+		})
+
+		it("rejects zero values and falls back to the default", () => {
+			writeFileSync(configPath, JSON.stringify({ bashMaxTimeoutMs: 0 }))
+			const config = loadConfig({ configPath })
+			expect(config.bashMaxTimeoutMs).toBe(60_000)
+		})
+
+		it("rejects non-numeric values and falls back to the default", () => {
+			writeFileSync(configPath, JSON.stringify({ bashMaxTimeoutMs: "30000" }))
+			const config = loadConfig({ configPath })
+			expect(config.bashMaxTimeoutMs).toBe(60_000)
+		})
+
+		it("project config wins over global", () => {
+			const projectDir = mkdtempSync(join(tmpdir(), "kimchi-proj-"))
+			mkdirSync(join(projectDir, ".kimchi"))
+			writeFileSync(configPath, JSON.stringify({ bashMaxTimeoutMs: 1000 }))
+			writeFileSync(join(projectDir, ".kimchi", "config.json"), JSON.stringify({ bashMaxTimeoutMs: 5000 }))
+			try {
+				const config = loadConfig({ configPath, cwd: projectDir })
+				expect(config.bashMaxTimeoutMs).toBe(5000)
+			} finally {
+				rmSync(projectDir, { recursive: true, force: true })
+			}
+		})
+
+		it("falls back to global when project omits the field", () => {
+			const projectDir = mkdtempSync(join(tmpdir(), "kimchi-proj-"))
+			mkdirSync(join(projectDir, ".kimchi"))
+			writeFileSync(configPath, JSON.stringify({ bashMaxTimeoutMs: 7777 }))
+			writeFileSync(join(projectDir, ".kimchi", "config.json"), JSON.stringify({ apiKey: "x" }))
+			try {
+				const config = loadConfig({ configPath, cwd: projectDir })
+				expect(config.bashMaxTimeoutMs).toBe(7777)
+			} finally {
+				rmSync(projectDir, { recursive: true, force: true })
+			}
+		})
+	})
+
 	it("reads deviceId from config file", () => {
 		writeFileSync(configPath, JSON.stringify({ deviceId: "550e8400-e29b-41d4-a716-446655440000" }))
 		const config = loadConfig({ configPath })
