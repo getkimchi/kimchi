@@ -1,6 +1,6 @@
 <div align="center">
 
-<a href="https://kimchi.dev"><img src="./kimchi.png" alt="kimchi" width="300" /></a>
+<a href="https://kimchi.dev"><img src="./kimchi.png" alt="kimchi" width="600" /></a>
 
 # kimchi
 
