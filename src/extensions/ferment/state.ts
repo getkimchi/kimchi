@@ -46,17 +46,26 @@ export function clearActiveFermentId(env: Record<string, string | undefined> = p
 	Reflect.deleteProperty(env, "KIMCHI_ACTIVE_FERMENT")
 }
 
-let activeFermentChangeListener: ((hasActive: boolean) => void) | undefined
+const activeFermentChangeListeners = new Set<(hasActive: boolean) => void>()
 
 export function onActiveFermentChange(listener: (hasActive: boolean) => void): () => void {
-	activeFermentChangeListener = listener
+	activeFermentChangeListeners.add(listener)
 	return () => {
-		if (activeFermentChangeListener === listener) activeFermentChangeListener = undefined
+		activeFermentChangeListeners.delete(listener)
 	}
 }
 
 export function notifyFermentActive(hasActive: boolean): void {
-	activeFermentChangeListener?.(hasActive)
+	// Snapshot to avoid concurrent-modification issues if a listener
+	// synchronously registers or unregisters another listener.
+	for (const listener of [...activeFermentChangeListeners]) {
+		try {
+			listener(hasActive)
+		} catch (err) {
+			// Log but don't let one failing listener prevent others from receiving updates
+			process.stderr.write(`[ferment] active ferment change listener failed: ${String(err)}\n`)
+		}
+	}
 }
 
 function shouldElevatePermissions(f: Ferment | undefined): boolean {

@@ -51,8 +51,10 @@ import {
 	createAgentSession,
 	initTheme,
 } from "@earendil-works/pi-coding-agent"
+import { hasActiveFerment, onActiveFermentChange } from "../../extensions/ferment/state.js"
 import { isHideThinkingEnabled } from "../../extensions/hide-thinking.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
+import { processCommand } from "./command-processor.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
 
 /**
@@ -124,6 +126,9 @@ export class KimchiAcpAgent implements Agent {
 	// earlier session record.
 	private loadingSessions = new Map<string, Promise<LoadSessionResponse>>()
 	private shutdownPromise: Promise<void> | undefined
+	// Unsubscribe function for the active ferment change listener; stored for
+	// cleanup during shutdown to prevent leaks and stale references.
+	private unsubscribeFromFermentChanges?: () => void
 
 	constructor(
 		private readonly conn: AgentSideConnection,
@@ -133,6 +138,19 @@ export class KimchiAcpAgent implements Agent {
 		this.agentDir = options.agentDir
 		this.sessionLister = options.sessionLister ?? defaultSessionLister(options)
 		this.sessionLoader = options.sessionLoader ?? defaultSessionLoader(options)
+
+		// Subscribe to ferment state changes to update available commands
+		this.unsubscribeFromFermentChanges = onActiveFermentChange((hasActive) => {
+			// When ferment state changes, re-send available commands to all active sessions
+			for (const [sessionId, _record] of this.sessions) {
+				try {
+					this.sendAvailableCommandsUpdate(sessionId, hasActive)
+				} catch (err) {
+					// Log but don't let one failing session prevent updates to others
+					process.stderr.write(`acp sendAvailableCommandsUpdate failed for ${sessionId}: ${String(err)}\n`)
+				}
+			}
+		})
 	}
 
 	async initialize(_: InitializeRequest): Promise<InitializeResponse> {
@@ -206,6 +224,10 @@ export class KimchiAcpAgent implements Agent {
 			await bindAcpExtensions(session)
 			const unsubscribe = session.subscribe((event) => this.onSessionEvent(sessionId, event))
 			this.sessions.set(sessionId, { session, unsubscribe })
+			// Send after sessions.set so that a throw from this.send (e.g., closed
+			// connection) doesn't abort session creation and leak the prompter
+			// registered above — disposeSessionRecord / doShutdown will clean it up.
+			this.sendAvailableCommandsUpdate(sessionId, hasActiveFerment())
 			const models = buildSessionModelState(session)
 			return { sessionId, models }
 		} catch (err) {
@@ -348,10 +370,16 @@ export class KimchiAcpAgent implements Agent {
 				process.stderr.write(`acp prompt: dropping ${b.type} block (${reason})\n`)
 			}
 		}
-		const text = params.prompt
+		let text = params.prompt
 			.map((b: ContentBlock) => (b.type === "text" ? b.text : ""))
 			.join("")
 			.trim()
+
+		// Process slash commands (e.g., /create_ferment)
+		const commandResult = processCommand(text)
+		if (commandResult.isCommand) {
+			text = commandResult.promptText
+		}
 		// Extract image blocks from the prompt only if model supports vision.
 		const images: ImageContent[] = supportsImages
 			? params.prompt
@@ -445,6 +473,8 @@ export class KimchiAcpAgent implements Agent {
 			await this.disposeSessionRecord(entry)
 		}
 		this.sessions.clear()
+		// Unsubscribe from ferment state changes to prevent leaks and stale references
+		this.unsubscribeFromFermentChanges?.()
 	}
 
 	private async closeSessionRecord(sessionId: string): Promise<void> {
@@ -748,6 +778,27 @@ export class KimchiAcpAgent implements Agent {
 		// _processAgentEvent does not expect.
 		this.conn.sessionUpdate(params).catch((err: unknown) => {
 			process.stderr.write(`acp sessionUpdate failed: ${String(err)}\n`)
+		})
+	}
+
+	private sendAvailableCommandsUpdate(sessionId: string, hasActive = false): void {
+		// When a ferment is active, omit the create_ferment command to prevent
+		// creating multiple ferments. The description is only sent when available.
+		const availableCommands = hasActive
+			? []
+			: [
+					{
+						name: "create_ferment",
+						description: "Create a new ferment workflow for structured multi-step project work",
+						input: { hint: "Provide a concise title (3-5 words) and full intent description" },
+					},
+				]
+		this.send({
+			sessionId,
+			update: {
+				sessionUpdate: "available_commands_update",
+				availableCommands,
+			},
 		})
 	}
 

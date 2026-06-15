@@ -60,6 +60,7 @@ class FakeAgentSession {
 	abortImpl: () => Promise<void> = async () => {}
 	bindExtensionsImpl: (_bindings: unknown) => Promise<void> = async () => {}
 	lastPromptImages?: unknown[]
+	promptCalls: Array<{ prompt: string; opts?: { images?: unknown[] } }> = []
 	// Branch entries returned to the replay walker. Tests fill this with the
 	// shape buildSessionContext consumers expect (type:"message" + role).
 	branch: unknown[] = []
@@ -84,6 +85,7 @@ class FakeAgentSession {
 
 	async prompt(text: string, opts?: { images?: unknown[] }): Promise<void> {
 		this.lastPromptImages = opts?.images
+		this.promptCalls.push({ prompt: text, opts })
 		await this.promptImpl(text, opts)
 	}
 
@@ -1290,6 +1292,134 @@ describe("newSession model state", () => {
 	})
 })
 
+describe("newSession available commands", () => {
+	it("sends available_commands_update with create_ferment command on session init", async () => {
+		const fake = new FakeAgentSession("session-commands")
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const { conn, updates } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+		})
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		// Find the available_commands_update notification
+		const update = updates.find((u) => u.update.sessionUpdate === "available_commands_update")
+		expect(update).toBeDefined()
+		expect(update?.sessionId).toBe("session-commands")
+
+		const updatePayload = update?.update as { availableCommands: Array<Record<string, unknown>> }
+		expect(updatePayload.availableCommands).toHaveLength(1)
+
+		const cmd = updatePayload.availableCommands[0]
+		expect(cmd).toMatchObject({
+			name: "create_ferment",
+			description: "Create a new ferment workflow for structured multi-step project work",
+			input: { hint: "Provide a concise title (3-5 words) and full intent description" },
+		})
+	})
+
+	it("omits create_ferment command when hasActive is true", async () => {
+		const fake = new FakeAgentSession("session-no-commands")
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const { conn, updates } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+		})
+
+		// @ts-expect-error Accessing private method for testing
+		agent.sendAvailableCommandsUpdate("session-no-commands", true)
+
+		// Find the available_commands_update notification
+		const update = updates.find((u) => u.update.sessionUpdate === "available_commands_update")
+		expect(update).toBeDefined()
+
+		const updatePayload = update?.update as { availableCommands: Array<Record<string, unknown>> }
+		// When hasActive is true, available commands should be empty
+		expect(updatePayload.availableCommands).toHaveLength(0)
+	})
+})
+
+describe("create_ferment command handling", () => {
+	it("transforms /create_ferment command into tool invocation prompt", async () => {
+		const fake = new FakeAgentSession("session-cmd-test")
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const { conn } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+		})
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		// Send the create_ferment command with a title
+		await agent.prompt({
+			sessionId: "session-cmd-test",
+			prompt: [{ type: "text", text: "/create_ferment Rewrite authentication" }],
+		})
+
+		// Verify the session received the transformed prompt
+		expect(fake.promptCalls).toHaveLength(1)
+		const transformedPrompt = fake.promptCalls[0]?.prompt ?? ""
+		expect(transformedPrompt).toContain("request_ferment_workflow")
+		expect(transformedPrompt).toContain("Rewrite authentication")
+	})
+
+	it("uses default title when /create_ferment has no arguments", async () => {
+		const fake = new FakeAgentSession("session-cmd-default")
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const { conn } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+		})
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		// Send the command without arguments
+		await agent.prompt({
+			sessionId: "session-cmd-default",
+			prompt: [{ type: "text", text: "/create_ferment" }],
+		})
+
+		expect(fake.promptCalls).toHaveLength(1)
+		const transformedPrompt = fake.promptCalls[0]?.prompt ?? ""
+		expect(transformedPrompt).toContain("New Ferment")
+	})
+})
+
+describe("loadSession available commands", () => {
+	it("does not send available_commands_update on session load", async () => {
+		const fake = new FakeAgentSession("session-load-test")
+		fake.branch = [userTextEntry("previous message", "u1", null)]
+		const loader: AcpSessionLoader = async () => asSession(fake)
+		const { conn, updates } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(new FakeAgentSession("unused")),
+			sessionLoader: loader,
+		})
+
+		await agent.loadSession({ sessionId: "session-load-test", cwd: "/tmp", mcpServers: [] })
+
+		// loadSession should NOT send available_commands_update
+		// It only replays transcript entries
+		const cmdUpdate = updates.find((u) => u.update.sessionUpdate === "available_commands_update")
+		expect(cmdUpdate).toBeUndefined()
+
+		// Should have only the transcript replay notification
+		expect(updates.length).toBeGreaterThanOrEqual(1)
+		expect(updates[0].update).toMatchObject({
+			sessionUpdate: "user_message_chunk",
+			content: { type: "text", text: "previous message" },
+		})
+	})
+})
+
 describe("unstable_setSessionModel", () => {
 	it("switches to a valid model", async () => {
 		const fake = new FakeAgentSession("switch-session")
@@ -1788,8 +1918,12 @@ describe("KimchiAcpAgent loadSession", () => {
 			currentModelId: "test/test-model",
 		})
 		expect(loaderCalls.count).toBe(0)
-		expect(updates).toHaveLength(1)
+		// newSession sends available_commands_update, then loadSession replay sends user_message_chunk
+		expect(updates).toHaveLength(2)
 		expect(updates[0].update).toMatchObject({
+			sessionUpdate: "available_commands_update",
+		})
+		expect(updates[1].update).toMatchObject({
 			sessionUpdate: "user_message_chunk",
 			content: { type: "text", text: "already here" },
 		})
