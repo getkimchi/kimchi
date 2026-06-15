@@ -164,7 +164,11 @@ The review agent runs tests, checks lint, and verifies the implementation matche
 
 **Review verdicts are final**: Never edit a review report to change its verdict. If a flag is genuinely wrong, add a separate rationale note alongside the original review — do not alter the reviewer's output.
 
-**Orchestrator discipline**: Between delegation calls, you may do at most 5 tool calls (e.g. reading the spec file, setting the phase, checking a subagent result). If you find yourself doing reads, edits, bash calls, or writes on implementation files, STOP — you are doing a subagent's job. Delegate it instead. **Post-abort anti-pattern**: When a subagent aborts (budget or turns), do NOT manually complete its remaining work — this is the most common violation. Spawn a follow-up Agent scoped to the unfinished portion. List what the aborted agent completed and what remains. The orchestrator orchestrates; it does not build.
+**Orchestrator discipline**: Between delegation calls, you may do at most 5 tool calls (e.g. reading the spec file, setting the phase, checking a subagent result). If you find yourself doing reads, edits, bash calls, or writes on implementation files, STOP — you are doing a subagent's job. Delegate it instead.
+
+**Post-abort rule (mandatory)**: When a subagent aborts due to token budget or turn limit, your ONLY permitted action in that turn is to spawn a follow-up Agent scoped to the unfinished portion. Zero other tool calls are allowed in that turn — no reading source files, no running tests, no grepping, no editing. List in the follow-up prompt what the aborted agent completed and what remains. If you call any tool other than Agent after receiving an abort, you are violating orchestrator discipline.
+
+**Write-tool guard**: If you catch yourself calling \`edit\` or \`write\` on implementation files (anything outside \`.kimchi/docs\`), STOP immediately. You are doing build work that belongs to a Builder subagent. Spawn a Builder Agent for the remaining work instead. Writing spec or findings files to \`.kimchi/docs\` is the only exception — those are orchestrator responsibilities.
 
 ### Sharing context between agents
 

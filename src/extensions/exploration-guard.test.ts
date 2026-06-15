@@ -135,14 +135,14 @@ describe("Threshold triggers", () => {
 		const steers: string[] = []
 		for (let i = 0; i < 7; i++) {
 			guard.turnStart()
-			guard.recordToolCall("grep")
+			guard.recordToolCall("read")
 			guard.turnEnd((text) => steers.push(text))
 		}
 		expect(steers).toHaveLength(1) // only the reminder at 5
 
 		// 8th read-only turn triggers mandatory steer
 		guard.turnStart()
-		guard.recordToolCall("find")
+		guard.recordToolCall("web_search")
 		guard.turnEnd((text) => steers.push(text))
 		expect(steers).toHaveLength(2)
 		expect(steers[1]).toContain("8 consecutive read-only turns")
@@ -154,32 +154,32 @@ describe("Threshold triggers", () => {
 		const steers: string[] = []
 
 		guard.turnStart()
-		guard.recordToolCall("ls")
+		guard.recordToolCall("read")
 		guard.turnEnd((text) => steers.push(text))
 		expect(steers).toHaveLength(0)
 
 		guard.turnStart()
-		guard.recordToolCall("ls")
+		guard.recordToolCall("read")
 		guard.turnEnd((text) => steers.push(text))
 		expect(steers).toHaveLength(1)
 		expect(steers[0]).toContain("2 consecutive read-only turns")
 
 		guard.turnStart()
-		guard.recordToolCall("ls")
+		guard.recordToolCall("read")
 		guard.turnEnd((text) => steers.push(text))
 		expect(steers).toHaveLength(1)
 
 		guard.turnStart()
-		guard.recordToolCall("ls")
+		guard.recordToolCall("read")
 		guard.turnEnd((text) => steers.push(text))
 		expect(steers).toHaveLength(2)
 		expect(steers[1]).toContain("4 consecutive read-only turns")
 	})
 
-	it("each threshold fires once per streak; mandatory steer resets the counter", () => {
+	it("each threshold fires once per streak; mandatory steer resets the counter to hypothesisThreshold", () => {
 		// 5 turns → hypothesis steer (no reset, counter stays at 5)
-		// 8 turns → mandatory steer + reset (counter back to 0)
-		// 5 more turns → hypothesis steer again in the new streak
+		// 8 turns → mandatory steer + reset (counter back to hypothesisThreshold=5)
+		// 3 more turns → mandatory steer again (counter hits steerThreshold=8 again)
 		const guard = createGuard()
 		const steers: string[] = []
 		const readTurn = () => {
@@ -192,34 +192,42 @@ describe("Threshold triggers", () => {
 		expect(steers).toHaveLength(2)
 		expect(steers[0]).toContain("5 consecutive read-only turns")
 		expect(steers[1]).toContain("8 consecutive read-only turns")
-		expect(guard.getConsecutiveReadOnlyTurns()).toBe(0)
+		// Counter resets to hypothesisThreshold (5), not 0
+		expect(guard.getConsecutiveReadOnlyTurns()).toBe(5)
 
-		for (let i = 0; i < 5; i++) readTurn() // new streak after reset
+		// Only 3 more read-only turns needed to reach steerThreshold (8) again
+		for (let i = 0; i < 3; i++) readTurn()
 		expect(steers).toHaveLength(3)
-		expect(steers[2]).toContain("5 consecutive read-only turns")
+		expect(steers[2]).toContain("8 consecutive read-only turns")
 	})
 
-	it("resets counter after mandatory steer fires", () => {
-		const guard = createGuard({ hypothesisThreshold: 99 }) // skip hypothesis steer
+	it("resets counter to hypothesisThreshold after mandatory steer fires", () => {
+		// Custom thresholds: hypothesis at 2, mandatory steer at 4.
+		// After the mandatory steer at turn 4, counter resets to 2 (hypothesisThreshold).
+		// The next 2 read-only turns (turns 5 and 6) increment it to 4 again,
+		// firing the mandatory steer a second time.
+		const guard = createGuard({ hypothesisThreshold: 2, steerThreshold: 4 })
 		const steers: string[] = []
-
-		for (let i = 0; i < 8; i++) {
+		const readTurn = () => {
 			guard.turnStart()
 			guard.recordToolCall("read")
 			guard.turnEnd((text) => steers.push(text))
 		}
-		expect(steers).toHaveLength(1)
-		expect(steers[0]).toContain("concrete action")
-		expect(guard.getConsecutiveReadOnlyTurns()).toBe(0)
 
-		// Subsequent read turns start a fresh streak
-		for (let i = 0; i < 4; i++) {
-			guard.turnStart()
-			guard.recordToolCall("read")
-			guard.turnEnd(() => {})
-		}
-		expect(guard.getConsecutiveReadOnlyTurns()).toBe(4)
-		expect(steers).toHaveLength(1)
+		// Turns 1-4: hypothesis at 2, mandatory at 4
+		for (let i = 0; i < 4; i++) readTurn()
+		expect(steers).toHaveLength(2)
+		expect(steers[0]).toContain("2 consecutive read-only turns")
+		expect(steers[1]).toContain("4 consecutive read-only turns")
+		// Counter resets to hypothesisThreshold (2), not 0
+		expect(guard.getConsecutiveReadOnlyTurns()).toBe(2)
+
+		// Only 2 more turns needed to reach steerThreshold (4) again
+		readTurn() // counter = 3, no steer
+		expect(steers).toHaveLength(2)
+		readTurn() // counter = 4, mandatory steer fires again
+		expect(steers).toHaveLength(3)
+		expect(steers[2]).toContain("4 consecutive read-only turns")
 	})
 
 	it("does not trigger when isEnabled returns false", () => {

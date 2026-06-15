@@ -3,9 +3,6 @@ import { getPermissionMode } from "./permissions/mode-controller.js"
 
 export const DEFAULT_READ_TOOLS = new Set([
 	"read",
-	"grep",
-	"find",
-	"ls",
 	"web_search",
 	"web_fetch",
 	"lsp_hover",
@@ -17,12 +14,21 @@ export const DEFAULT_READ_TOOLS = new Set([
 	// git log, grep). The false positives it caused on work turns outweigh the
 	// missed detections. Callers who want bash to count can pass a custom
 	// readTools set that includes it.
+	// grep, find, ls are NOT included: they are not first-class registered tools
+	// in every session — agents reach them via bash. Listing them here would
+	// make the guard track tool names that never fire, and encouraged models to
+	// call them by name (producing "tool not found" errors).
 	"mcp",
 ])
 
 export const DEFAULT_WRITE_TOOLS = new Set(["edit", "write", "lsp_rename", "ask_user", "steer_subagent", "Agent"])
 
-export const DEFAULT_NEUTRAL_TOOLS = new Set(["set_phase", "set_model"])
+export const DEFAULT_NEUTRAL_TOOLS = new Set([
+	// set_model is a first-class registered tool. set_phase is a ferment
+	// extension tool and is NOT registered in all session types — removing it
+	// here prevents "tool not found" errors in non-ferment subagent sessions.
+	"set_model",
+])
 
 export interface ExplorationGuardOptions {
 	/** Tools that count as read-only (default: common inspection tools). */
@@ -113,9 +119,12 @@ export class ExplorationGuard {
 		}
 		if (this.consecutiveReadOnlyTurns === this.steerThreshold) {
 			sendSteer(MANDATORY_STEER_BASE.replace("%d", String(this.steerThreshold)))
-			// Reset after the mandatory steer so the model gets a fresh budget
-			// rather than immediately re-triggering on the next read turn.
-			this.consecutiveReadOnlyTurns = 0
+			// Reset to hypothesisThreshold (not 0) so the model gets a short
+			// grace window rather than a full fresh budget. This means the next
+			// mandatory steer fires after (steerThreshold - hypothesisThreshold)
+			// additional read-only turns — 3 turns with the defaults — instead of
+			// the full 8, catching persistent exploration loops much sooner.
+			this.consecutiveReadOnlyTurns = this.hypothesisThreshold
 		}
 	}
 
