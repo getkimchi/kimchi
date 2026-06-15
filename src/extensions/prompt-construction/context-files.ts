@@ -59,6 +59,25 @@ function loadContextFileFromDir(dir: string): ContextFile | null {
 }
 
 /**
+ * Look up the user's personal context file in the harness directory.
+ * Returns at most one ContextFile: AGENTS.md if present, else CLAUDE.md,
+ * else null. Does NOT honour .local.md — the global file IS the user's
+ * file, so there is no shared-vs-local distinction to make.
+ *
+ * Exported separately from the project walk so callers can place the
+ * result wherever they want in the final ordering (typically LAST, so
+ * the user's rules override project rules).
+ */
+export function loadGlobalContextFile(harnessDir: string): ContextFile | null {
+	for (const filename of ["AGENTS.md", "CLAUDE.md"]) {
+		const filePath = join(harnessDir, filename)
+		const content = tryReadFile(filePath)
+		if (content !== null) return { path: filePath, content }
+	}
+	return null
+}
+
+/**
  * Walk from `cwd` up to the filesystem root, collecting one context file
  * per directory. Returns them in ancestor-first order (root → cwd).
  */

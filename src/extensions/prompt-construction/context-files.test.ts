@@ -1,7 +1,7 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { loadProjectContextFiles } from "./context-files.js"
+import { loadGlobalContextFile, loadProjectContextFiles } from "./context-files.js"
 
 describe("loadProjectContextFiles", () => {
 	const tmpBase = join(import.meta.dirname, "__test_tmp_context__")
@@ -106,5 +106,54 @@ describe("loadProjectContextFiles", () => {
 		expect(inTmp).toHaveLength(1)
 		expect(inTmp[0].path).toBe(join(nested, "AGENTS.md"))
 		expect(inTmp[0].content).toBe("agents wins")
+	})
+})
+
+describe("loadGlobalContextFile", () => {
+	const tmpDir = join(import.meta.dirname, "__test_tmp_global_context__")
+
+	beforeEach(() => {
+		mkdirSync(tmpDir, { recursive: true })
+	})
+
+	afterEach(() => {
+		rmSync(tmpDir, { recursive: true, force: true })
+	})
+
+	it("returns null when neither AGENTS.md nor CLAUDE.md exists", () => {
+		expect(loadGlobalContextFile(tmpDir)).toBeNull()
+	})
+
+	it("returns AGENTS.md content when AGENTS.md exists", () => {
+		writeFileSync(join(tmpDir, "AGENTS.md"), "# My personal rules")
+		const result = loadGlobalContextFile(tmpDir)
+		expect(result).toEqual({
+			path: join(tmpDir, "AGENTS.md"),
+			content: "# My personal rules",
+		})
+	})
+
+	it("returns CLAUDE.md content when only CLAUDE.md exists", () => {
+		writeFileSync(join(tmpDir, "CLAUDE.md"), "# Claude-style rules")
+		const result = loadGlobalContextFile(tmpDir)
+		expect(result).toEqual({
+			path: join(tmpDir, "CLAUDE.md"),
+			content: "# Claude-style rules",
+		})
+	})
+
+	it("prefers AGENTS.md over CLAUDE.md when both exist", () => {
+		writeFileSync(join(tmpDir, "AGENTS.md"), "agents wins")
+		writeFileSync(join(tmpDir, "CLAUDE.md"), "claude loses")
+		const result = loadGlobalContextFile(tmpDir)
+		expect(result?.path).toBe(join(tmpDir, "AGENTS.md"))
+		expect(result?.content).toBe("agents wins")
+	})
+
+	it("does NOT pick up .local.md variants", () => {
+		writeFileSync(join(tmpDir, "AGENTS.md"), "primary content")
+		writeFileSync(join(tmpDir, "AGENTS.local.md"), "local content must be ignored")
+		const result = loadGlobalContextFile(tmpDir)
+		expect(result?.content).toBe("primary content")
 	})
 })
