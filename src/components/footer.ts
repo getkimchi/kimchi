@@ -15,7 +15,17 @@ import { getMultiModelEnabled } from "../extensions/prompt-construction/prompt-e
 import { getActiveTags, getCurrentPhase, parseTag } from "../extensions/tags.js"
 
 /** Stable identifier used by compaction steps to find segments. */
-type SegmentId = "permissions" | "model" | "ferment" | "agents" | "context" | "usage" | "phase" | "tags" | "team"
+type SegmentId =
+	| "permissions"
+	| "model"
+	| "ferment"
+	| "agents"
+	| "context"
+	| "usage"
+	| "phase"
+	| "tags"
+	| "team"
+	| "lsp"
 
 /** Raw inputs preserved on segments that have compact forms, so compaction
  *  steps can rebuild the colorized text without round-tripping through ANSI.
@@ -433,6 +443,18 @@ export class StatsFooter implements Component {
 		return { id: "permissions", text: mode, width: visibleWidth(mode) }
 	}
 
+	private lspSegment(): Segment | null {
+		const lspStatus = this.footerData.getExtensionStatuses().get("lsp")
+		if (!lspStatus) return null
+		// Style "LSP:" as dimmed label, server names as accent
+		const colonIdx = lspStatus.indexOf(":")
+		if (colonIdx === -1) return { id: "lsp", text: this.accent(lspStatus), width: visibleWidth(lspStatus) }
+		const label = this.dim(lspStatus.slice(0, colonIdx + 1))
+		const names = this.accent(lspStatus.slice(colonIdx + 1).trim())
+		const text = `${label}${names}`
+		return { id: "lsp", text, width: visibleWidth(text) }
+	}
+
 	private subagentSegment(): Segment | null {
 		const count = getActiveAgentCount()
 		if (count === 0) return null
@@ -486,6 +508,7 @@ export class StatsFooter implements Component {
 			this.phaseSegment(),
 			this.tagsSegment(tags),
 			this.teamSegment(tags),
+			this.lspSegment(),
 		].filter((s): s is Segment => s !== null)
 
 		const sep = ` ${this.dim("·")} `
