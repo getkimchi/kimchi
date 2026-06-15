@@ -430,12 +430,39 @@ function persistFerment(fermentId: string): void {
 	})
 }
 
+// ─── Scoping exploration turn counter ─────────────────────────────────────────
+// Tracks consecutive turns during draft scoping where the model only called
+// read-like tools (read, grep, ls, find, bash, web_search, web_fetch, set_phase)
+// without calling any scoping-progression tool (ask_user,
+// confirm_ferment_completion_criteria, propose_ferment_scoping, Agent).
+// After MAX_SCOPING_EXPLORE_TURNS, the turn_end handler injects a nudge
+// telling the model to stop exploring and advance to the next scoping step.
+
+const scopingExploreTurns = new Map<string, number>()
+
+export const MAX_SCOPING_EXPLORE_TURNS = 4
+
+export function bumpScopingExploreTurns(fermentId: string): number {
+	const next = (scopingExploreTurns.get(fermentId) ?? 0) + 1
+	scopingExploreTurns.set(fermentId, next)
+	return next
+}
+
+export function getScopingExploreTurns(fermentId: string): number {
+	return scopingExploreTurns.get(fermentId) ?? 0
+}
+
+export function resetScopingExploreTurns(fermentId: string): void {
+	scopingExploreTurns.delete(fermentId)
+}
+
 // ─── Per-ferment cleanup ──────────────────────────────────────────────────────
 
 /** Clear all in-memory state scoped to a specific ferment. Called on abandon/delete/complete. */
 export function clearFermentState(fermentId: string): void {
 	scopingInteractive.delete(fermentId)
 	scopingConfirmed.delete(fermentId)
+	scopingExploreTurns.delete(fermentId)
 	const prefix = `${fermentId}:`
 	stepStartCounts.clearByPrefix(prefix)
 	blockRetryCounts.clearByPrefix(prefix)

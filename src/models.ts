@@ -337,7 +337,7 @@ export async function updateModelsConfig(
 		return { models: sortModels([...cached, ...otherModels]) }
 	}
 
-	const activeModels = fetched.filter((m) => m.status !== "sunset")
+	const activeModels = fetched.filter((m) => m.status !== "sunset" && m.limits.max_output_tokens > 0)
 	if (activeModels.length === 0 && fetched.length > 0) {
 		if (options.requireActiveModels) {
 			throw new ModelsFetchError("No active Kimchi models are available for this API key", { transient: false })

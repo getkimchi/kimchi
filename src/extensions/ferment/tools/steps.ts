@@ -260,7 +260,7 @@ Do NOT call start_ferment_step again without user input.`,
 
 	return toolOk(
 		withNextActionHint(
-			`Step ${step.index}: "${step.description}" started. Spawn a subagent with subagent_type "general-purpose". When it returns, call complete_ferment_step with its summary.${lowGradeCaution}${parallelNote}${contextBlock}`,
+			`Step ${step.index}: "${step.description}" started. Spawn a subagent with the persona that matches this step's intent. When it returns, call complete_ferment_step with its summary.${lowGradeCaution}${parallelNote}${contextBlock}`,
 			outcome.ferment,
 		),
 	)

@@ -110,7 +110,8 @@
 		"patchedDependencies": {
 			"@earendil-works/pi-tui": "patches/@earendil-works__pi-tui.patch",
 			"playwright-core@1.59.1": "patches/playwright-core@1.59.1.patch",
-			"@earendil-works/pi-coding-agent": "patches/@earendil-works__pi-coding-agent.patch"
+			"@earendil-works/pi-coding-agent": "patches/@earendil-works__pi-coding-agent.patch",
+			"@earendil-works/pi-ai@0.78.0": "patches/@earendil-works__pi-ai@0.78.0.patch"
 		}
 	}
 }

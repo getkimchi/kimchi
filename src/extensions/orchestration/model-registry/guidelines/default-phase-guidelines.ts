@@ -38,7 +38,7 @@ export const DEFAULT_BUILD_GUIDELINES = `During **build** phase:
 - Stay in scope: do NOT add features, refactors, or "improvements" beyond what the spec asks for.
 - If the same code pattern is needed >2 times, extract an abstraction first instead of duplicating.
 - After each meaningful change, run the type-checker / linter / tests. Fix errors before moving on.
-- Always use a timeout when running tests to prevent hanging on deadlocks (e.g. \`go test -timeout 60s\`, \`pytest --timeout=60\`, \`jest --testTimeout=60000\`). Default to 60 seconds unless the task explicitly requires longer.
+- Always wrap shell commands with a timeout to prevent hanging. Use language-native timeouts where available (e.g. \`go test -timeout 60s\`, \`pytest --timeout=60\`, \`jest --testTimeout=60000\`) and \`timeout <seconds> <command>\` for everything else (e.g. \`timeout 30 go run .\`, \`timeout 60 ./server\`). Default to 60 seconds unless the task explicitly requires longer.
 - If a tool call fails, diagnose the root cause before retrying — do not retry blindly.
 - Keep diffs minimal and reviewable.
 - **Git commits**: Always end every commit message with a blank line followed by \`${KIMCHI_COAUTHOR}\`.`

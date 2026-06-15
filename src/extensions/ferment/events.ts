@@ -8,7 +8,12 @@ import { extractContextualOptions, extractTrailingQuestion } from "./contextual-
 import { decideContinuation } from "./continuation.js"
 import { emitFermentCreated } from "./domain-events-emitter.js"
 import { autoInitFromEnv, ensureGitRepo } from "./git-init.js"
-import { appendRefEntry, maybeInjectReactiveContinuationNudge, resetReactiveContinuationNudgeCount } from "./nudge.js"
+import {
+	appendRefEntry,
+	maybeInjectReactiveContinuationNudge,
+	maybeInjectScopingProgressNudge,
+	resetReactiveContinuationNudgeCount,
+} from "./nudge.js"
 import { buildOneshotNudge } from "./oneshot.js"
 import { editPhaseProposal } from "./phase-editor.js"
 import { promptEditor, promptSelect } from "./prompt-ui.js"
@@ -41,6 +46,10 @@ function hasToolCall(content: AssistantContentPart[], toolName: string): boolean
 
 function hasAnyToolCall(content: AssistantContentPart[]): boolean {
 	return content.some((c) => c.type === "toolCall")
+}
+
+function getToolCallNames(content: AssistantContentPart[]): string[] {
+	return content.filter((c) => c.type === "toolCall" && c.name).map((c) => c.name as string)
 }
 
 function extractPromptTextAfterLastToolCall(content: AssistantContentPart[]): string {
@@ -416,6 +425,15 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 
 		const f = runtime.getActive()
 		if (!f) return
+
+		// During draft scoping, detect when the model is stuck exploring
+		// without progressing through the scoping steps.
+		if (f.status === "draft" && runtime.isScopingInteractive(f.id) && toolCallSeen) {
+			const toolNames = getToolCallNames(content)
+			const nudged = maybeInjectScopingProgressNudge(pi, f.id, toolNames)
+			if (nudged) return
+		}
+
 		const userInputHandled = await maybeRunUserInputDropdown(pi, ctx, content, f, runtime)
 		if (userInputHandled) return
 		if (!toolCallSeen) maybeInjectReactiveContinuationNudge(pi, runtime)

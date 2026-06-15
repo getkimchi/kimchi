@@ -205,7 +205,6 @@ describe("buildSystemPrompt", () => {
 				mode: "orchestrator",
 			})
 			expect(result).toContain("## Phase Guidelines (build)")
-			expect(result).toContain("Outline-then-diff")
 		})
 
 		it("includes orchestration guidelines when model is provided", () => {
@@ -220,7 +219,7 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain("MiniMax M2 family")
 		})
 
-		it("places orchestration section before phase section", () => {
+		it("includes both phase guidelines and orchestration guidelines in orchestrator mode", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
@@ -229,11 +228,8 @@ describe("buildSystemPrompt", () => {
 				registry,
 				mode: "orchestrator",
 			})
-			const orchPos = result.indexOf("### Orchestration Guidelines")
-			const phasePos = result.indexOf("## Phase Guidelines")
-			expect(orchPos).toBeGreaterThan(-1)
-			expect(phasePos).toBeGreaterThan(-1)
-			expect(orchPos).toBeLessThan(phasePos)
+			expect(result).toContain("## Phase Guidelines (build)")
+			expect(result).toContain("### Orchestration Guidelines")
 		})
 	})
 
@@ -279,6 +275,19 @@ describe("buildSystemPrompt", () => {
 			})
 			expect(result).not.toContain("Orchestrate the work")
 			expect(result).not.toContain("Model selection for delegation")
+		})
+
+		it("includes phase guidelines when phase and model are provided", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				currentModelId: "minimax-m2.7",
+				currentPhase: "build",
+				registry,
+				mode: "subagent",
+			})
+			expect(result).toContain("## Phase Guidelines (build)")
+			expect(result).toContain("Outline-then-diff")
 		})
 
 		it("handles tools list with only delegation tools", () => {
@@ -389,7 +398,7 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain('<tool name="Agent">')
 		})
 
-		it("includes phase guidelines when phase is provided", () => {
+		it("includes phase guidelines when phase and model are provided", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
