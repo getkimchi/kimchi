@@ -3942,10 +3942,15 @@ export default function (pi: ExtensionAPI) {
 		},
 		renderCall(args, theme, ctx) {
 			const command = getBashCommandForDisplay(args.command) ?? args.command
-			const summary = ctx.expanded
-				? (command ?? "").replace(/\n+/g, " \u23ce ")
-				: summarizeText(command, 72)
 			const timer = formatToolTimer(getToolElapsedMs(ctx))
+			if (ctx.expanded && command) {
+				// Expanded: show the tool name + timer on line 1, then the full
+				// command (with real newlines) as a continued branch block below.
+				const hdr = toolHeader("Bash", "", theme, toolStatusDot(ctx, theme), timer)
+				const cmdBlock = withBranch(theme.fg("accent", command), theme, false, true)
+				return makeText(ctx.lastComponent, `${hdr}\n${cmdBlock}`)
+			}
+			const summary = summarizeText(command, 72)
 			return makeText(ctx.lastComponent, toolHeader("Bash", summary, theme, toolStatusDot(ctx, theme), timer))
 		},
 		renderResult(result, { expanded, isPartial }, theme, ctx) {
