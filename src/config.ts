@@ -10,6 +10,9 @@ const CAST_AI_LLM_ENDPOINT = "https://llm.cast.ai/openai/v1"
 const DEFAULT_TELEMETRY_LOGS_ENDPOINT = "https://api.cast.ai/ai-optimizer/v1beta/logs:ingest"
 const DEFAULT_TELEMETRY_METRICS_ENDPOINT = "https://api.cast.ai/ai-optimizer/v1beta/metrics:ingest"
 
+/** Default `bashMaxTimeoutMs` when the value is missing or invalid in config.json. */
+export const DEFAULT_BASH_MAX_TIMEOUT_MS = 60_000
+
 export const ALWAYS_SHOWN_SKILL_PATHS = [join(".config", "kimchi", "harness", "skills")]
 
 export const OPTIONAL_SKILL_PATHS = [join(".pi", "agent", "skills"), join(".claude", "skills")]
@@ -422,7 +425,7 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		migrationState: extras.migrationState,
 		onboarding: extras.onboarding ?? {},
 		deviceId: extras.deviceId ?? "",
-		bashMaxTimeoutMs: extras.bashMaxTimeoutMs ?? 60_000,
+		bashMaxTimeoutMs: extras.bashMaxTimeoutMs ?? DEFAULT_BASH_MAX_TIMEOUT_MS,
 	}
 }
 

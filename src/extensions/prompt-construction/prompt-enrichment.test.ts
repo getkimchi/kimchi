@@ -3,6 +3,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ToolInfo } from "@earendil-works/pi-coding-agent"
+import { DEFAULT_BASH_MAX_TIMEOUT_MS } from "../../config.js"
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import * as config from "../../config.js"
 import type { ModelMetadata } from "../../models.js"
@@ -839,7 +841,7 @@ describe("continuation nudge turn_end handler", () => {
 			},
 			onboarding: {},
 			deviceId: "test",
-			bashMaxTimeoutMs: 60_000,
+			bashMaxTimeoutMs: DEFAULT_BASH_MAX_TIMEOUT_MS,
 		})
 
 		const pi = {
