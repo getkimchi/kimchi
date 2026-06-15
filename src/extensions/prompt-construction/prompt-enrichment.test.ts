@@ -839,6 +839,7 @@ describe("continuation nudge turn_end handler", () => {
 			},
 			onboarding: {},
 			deviceId: "test",
+			bashMaxTimeoutMs: 60_000,
 		})
 
 		const pi = {
