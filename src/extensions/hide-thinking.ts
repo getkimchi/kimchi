@@ -1,26 +1,35 @@
 /**
  * Hides <think></think> text tags from the UI without affecting LLM context.
  *
- * Some models (DeepSeek, QwQ, etc.) emit reasoning inside <think>...</think>
- * tags in regular text content. This extension transforms those for display
- * while preserving the original content in the LLM context via a shadow map.
+ * Some models (MiniMax, DeepSeek, QwQ, etc.) emit reasoning inside
+ * <think>...</think> tags in regular text content. This extension transforms
+ * those for display while preserving the original content in the LLM context
+ * via a shadow map.
  *
  * Native `thinking` content blocks (type: "thinking") are handled by the
  * upstream framework and are NOT touched by this extension.
  *
  * Behaviour controlled by `hideThinkingBlock` in settings.json:
  * - true: hides thinking content entirely from display
- * - false (default): strips tags, dims content (last 5 lines shown)
+ * - false (default): strips tags, renders thinking with thinkingText colour
+ *   and a ▍ gutter (matching the thinking-steps extension style)
  *
  * Architecture:
+ * - session_start: captures the UI theme for styled rendering.
  * - message_start: initialises per-message streaming state
- * - message_update: mutates block.text in-place with ANSI dim codes so the
- *   TUI (which renders AFTER extensions) shows dimmed thinking and hidden
- *   tags during streaming. Tracks the un-modified original text per block.
- * - message_end: applies the final transform (strip or dim based on setting)
- *   using the tracked originals, stores in shadow map.
+ * - message_update: mutates block.text in-place with styled thinking so the
+ *   TUI (which renders AFTER extensions) shows the thinking block during
+ *   streaming. Tracks the un-modified original text per block.
+ * - message_end: applies the final transform (strip or styled) using the
+ *   tracked originals, stores in shadow map.
  * - context: restores original text before LLM calls (emitContext uses
  *   structuredClone, so matching is content-based, not reference-based)
+ *
+ * Rendering note:
+ * Thinking content is injected into block.text and rendered by the pi-tui
+ * Markdown component. To prevent the Markdown renderer's inline code styling
+ * from breaking our ANSI colour wrapper, markdown syntax characters inside
+ * thinking content are backslash-escaped before colouring.
  */
 
 import { readFileSync } from "node:fs"
@@ -30,6 +39,17 @@ import type { AssistantMessage } from "@earendil-works/pi-ai"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { ANSI, fg } from "../ansi.js"
 import { isSubagent } from "./prompt-construction/prompt-enrichment.js"
+
+// ---------------------------------------------------------------------------
+// Theme — captured at session_start so rendering matches thinking-steps style.
+// ---------------------------------------------------------------------------
+
+interface ThinkingDisplayTheme {
+	fg(color: string, text: string): string
+}
+
+/** Module-level theme reference; undefined until the first session with a UI. */
+let activeTheme: ThinkingDisplayTheme | undefined
 
 const THINK_TAG_PATTERN = /<think>[\s\S]*?<\/think>/g
 
@@ -81,6 +101,21 @@ function readHideThinkingSetting(): boolean {
 // Text transforms
 // ---------------------------------------------------------------------------
 
+/**
+ * Escape markdown inline-syntax characters inside thinking content so that
+ * the pi-tui Markdown renderer treats them as literal text rather than
+ * formatting tokens.
+ *
+ * Without this, tokens like backtick code spans or **bold** markers cause
+ * the Markdown renderer to emit its own ANSI sequences (e.g. theme.code()),
+ * which terminate with \x1b[0m and break our surrounding colour wrapper.
+ * marked honours backslash escapes, so \` renders as a literal backtick and
+ * the visual output is unchanged — only the ANSI accounting differs.
+ */
+function escapeMarkdownSyntax(text: string): string {
+	return text.replace(/([`*_~\[\]\\])/g, "\\$1")
+}
+
 function lastNLines(text: string, n: number): string {
 	const lines = text.split("\n")
 	if (lines.length <= n) return text.trimEnd()
@@ -91,27 +126,51 @@ function stripThinkingTags(text: string): string {
 	return text.replace(THINK_TAG_PATTERN, "")
 }
 
-function replaceThinkingTagsWithDimmed(text: string): string {
+/**
+ * Render thinking content with the same visual style as the thinking-steps
+ * extension: thinkingText colour with a ▍ left gutter.
+ *
+ * Falls back to plain ANSI dim when no theme is available (print / RPC mode).
+ * Markdown syntax is escaped before colouring so inline code spans and bold
+ * markers inside thinking content don't break the surrounding colour wrapper.
+ */
+function renderThinkingContent(content: string): string {
+	const escaped = escapeMarkdownSyntax(content)
+	if (!activeTheme) {
+		// No theme available (print / RPC mode) — fall back to dim.
+		return fg(ANSI.dim, escaped)
+	}
+	const theme = activeTheme
+	const gutter = theme.fg("muted", "▍ ")
+	// Colour each line individually and prefix with the gutter so the
+	// ▍ border appears on every line, matching the thinking-steps style.
+	return escaped
+		.split("\n")
+		.map((line) => `${gutter}${theme.fg("thinkingText", line)}`)
+		.join("\n")
+}
+
+function replaceThinkingTagsWithStyled(text: string): string {
 	return text.replace(THINK_TAG_PATTERN, (match) => {
 		const content = match.slice("<think>".length, -"</think>".length)
 		const visible = lastNLines(content, 5)
-		return visible ? fg(ANSI.dim, visible) : ""
+		return visible ? renderThinkingContent(visible) : ""
 	})
 }
 
 /**
  * Streaming display transform — applied on every message_update.
  * When hideThinking is true, strips thinking content entirely.
- * When false, dims content and hides tags. Unlike the final transform
- * this keeps all lines (no last-5-lines truncation) so the display is
- * stable during streaming.
+ * When false, renders with thinkingText colour and ▍ gutter. Unlike the
+ * final transform this keeps all lines (no last-5-lines truncation) so
+ * the display is stable during streaming.
  */
 function applyStreamingDisplay(text: string, hideThinking: boolean): string {
 	// 1. Replace fully closed <think>…</think> blocks
 	let result = text.replace(THINK_TAG_PATTERN, (match) => {
 		if (hideThinking) return ""
 		const inner = match.slice("<think>".length, -"</think>".length)
-		return inner ? fg(ANSI.dim, inner) : ""
+		return inner ? renderThinkingContent(inner) : ""
 	})
 	// 2. Handle an unclosed <think> tag (thinking content still streaming)
 	const openIdx = result.indexOf("<think>")
@@ -121,7 +180,7 @@ function applyStreamingDisplay(text: string, hideThinking: boolean): string {
 			result = before
 		} else {
 			const inner = result.slice(openIdx + "<think>".length)
-			result = before + (inner ? fg(ANSI.dim, inner) : "")
+			result = before + (inner ? renderThinkingContent(inner) : "")
 		}
 	}
 	return result
@@ -180,6 +239,14 @@ export function _getDisplayToOriginal(): ReadonlyMap<string, string> {
 
 export default function hideThinkingExtension(pi: ExtensionAPI): void {
 	if (isSubagent()) return
+
+	// Capture the UI theme for styled rendering. Falls back to ANSI dim when
+	// no UI is available (print / RPC mode).
+	pi.on("session_start", (_event, ctx) => {
+		if (ctx.hasUI) {
+			activeTheme = ctx.ui.theme
+		}
+	})
 
 	// Initialise per-message streaming state.
 	pi.on("message_start", (event) => {
@@ -256,7 +323,7 @@ export default function hideThinkingExtension(pi: ExtensionAPI): void {
 		const displayContent = msg.content.map((block, i) => {
 			const original = blockOriginals.get(i)
 			if (!original || block.type !== "text") return block
-			const displayText = hideThinking ? stripThinkingTags(original) : replaceThinkingTagsWithDimmed(original)
+			const displayText = hideThinking ? stripThinkingTags(original) : replaceThinkingTagsWithStyled(original)
 			if (displayText !== original) {
 				displayToOriginal.set(displayText, original)
 				changed = true
