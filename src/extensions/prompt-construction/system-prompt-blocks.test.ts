@@ -238,8 +238,8 @@ describe("system prompt blocks", () => {
 		expect(project).toBeGreaterThan(-1)
 		expect(frame).toBeGreaterThan(-1)
 		expect(tools).toBeGreaterThan(-1)
-		expect(project).toBeLessThan(frame)
 		expect(frame).toBeLessThan(tools)
+		expect(tools).toBeLessThan(project)
 	})
 
 	it("joins rendered blocks with blank lines and prepends a blank line before the first block", () => {
@@ -249,7 +249,7 @@ describe("system prompt blocks", () => {
 		blocks.register({ id: "b", render: () => "## Second\n\nBeta" })
 
 		const result = prompt(pi)
-		expect(result).toContain("Project rule.\n\n## First")
+		expect(result).toContain("acting on it.\n\n## First")
 		expect(result).toContain("Alpha\n\n## Second")
 		expect(result).toContain("Beta\n\n## Available Tools")
 	})
