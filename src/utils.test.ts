@@ -20,13 +20,16 @@ describe("getVersion", () => {
 		expect(v).toBe("dev")
 	})
 
-	it("returns the real version from PI_PACKAGE_DIR package.json", async () => {
+	it("ignores PI_PACKAGE_DIR and always reads the kimchi workspace package.json", async () => {
+		// Point PI_PACKAGE_DIR at a foreign package.json with a real semver.
+		// Even with that set, getVersion() must report the kimchi workspace
+		// version ("0.0.0" → "dev"), not the foreign one.
 		const tmpDir = mkdtempSync(resolve(tmpdir(), "kimchi-test-"))
-		writeFileSync(resolve(tmpDir, "package.json"), JSON.stringify({ name: "kimchi-test", version: "1.2.3" }))
+		writeFileSync(resolve(tmpDir, "package.json"), JSON.stringify({ name: "foreign-pkg", version: "9.9.9" }))
 		vi.stubEnv("PI_PACKAGE_DIR", tmpDir)
 		const { getVersion } = await import("./utils.js")
 		const v = getVersion()
-		expect(v).toBe("1.2.3")
+		expect(v).toBe("dev")
 	})
 
 	it("memoizes the result (returns the same value on repeated calls)", async () => {

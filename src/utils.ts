@@ -45,10 +45,11 @@ let cachedVersion: string | undefined
 export function getVersion(): string {
 	if (cachedVersion !== undefined) return cachedVersion
 	try {
-		const pkgDir = process.env.PI_PACKAGE_DIR
-		const pkgPath = pkgDir
-			? resolve(pkgDir, "package.json")
-			: resolve(dirname(fileURLToPath(import.meta.url)), "../package.json")
+		// Always read kimchi's own package.json — `PI_PACKAGE_DIR` is set in
+		// dev to point at `@earendil-works/pi-coding-agent` so pi-coding-agent's
+		// getPackageDir() can locate its bundled assets, but it must not
+		// influence the version we report for the kimchi CLI itself.
+		const pkgPath = resolve(dirname(fileURLToPath(import.meta.url)), "../package.json")
 		const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"))
 		let version = pkg.version ?? "unknown"
 		// When the version field is the development placeholder (0.0.0)
