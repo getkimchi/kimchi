@@ -77,7 +77,7 @@ async function handleStatsCommand(args: string, ctx: ExtensionCommandContext): P
 		// Fetch analytics data
 		try {
 			const analytics = await api.generateAnalytics(startTime, endTime)
-			const hasTokenData = analytics.inputTokens?.items?.length || analytics.outputTokens?.items?.length
+			const hasTokenData = analytics.tokens?.items?.length
 			const hasCostData = analytics.cost?.items?.length
 			const hasApiCalls = analytics.apiCalls?.items?.length
 

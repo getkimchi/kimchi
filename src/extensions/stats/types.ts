@@ -38,22 +38,46 @@ export interface GenerateAnalyticsResponse {
 	comparison?: Comparison
 	cost?: Cost
 	apiCalls?: ApiCalls
-	inputTokens?: Tokens
-	outputTokens?: Tokens
 	errors?: Errors
 	ttft?: Ttft
 	requestDuration?: RequestDuration
 	hostedModels?: HostedModels
+	tokens?: TokensDetail
 	stepDuration: string
 	mostRecentTime?: string
 }
 
+/**
+ * Detailed token metrics with per-model breakdowns including cache tokens.
+ * Used when the API returns the new unified tokens structure.
+ */
+export interface TokensDetail {
+	items: TokenDetailItem[]
+}
+
+export interface TokenDetailItem {
+	executionTime: string
+	models: ModelTokenStat[]
+}
+
+export interface ModelTokenStat {
+	model: string
+	provider: string
+	castaiApiKey: string
+	providerName: string
+	inputTokens: number
+	outputTokens: number
+	totalTokens: number
+	cacheReadTokens: number
+	cacheWriteTokens: number
+	castaiApiKeyMetadata: CastAiApiKeyMetadata
+}
+
 export interface Comparison {
-	inputTokens?: ComparisonValue
-	outputTokens?: ComparisonValue
 	apiCalls?: ComparisonValue
 	errors?: ComparisonValue
 	cost?: ComparisonValue
+	tokens?: ComparisonValue
 }
 
 export interface ComparisonValue {
@@ -100,17 +124,7 @@ export interface ApiCallItem {
 	models: ModelStatItem[]
 }
 
-export interface Tokens {
-	items: TokenItem[]
-}
-
-// Token items have models array like cost
-export interface TokenItem {
-	executionTime: string
-	models: ModelStatItem[]
-}
-
-// Model stats used in apiCalls and tokens
+// Model stats used in apiCalls
 export interface ModelStatItem {
 	model: string
 	provider: string
