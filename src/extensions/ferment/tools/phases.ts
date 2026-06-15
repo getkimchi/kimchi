@@ -438,6 +438,14 @@ export async function completePhase(
 	services.onPhaseCompleted(runtime)
 	const fresh = completeOutcome.ferment
 
+	// Record pending phase-compaction request for agent_end to drain.
+	runtime.setPendingCompaction(params.ferment_id, {
+		kind: "phase",
+		fermentId: params.ferment_id,
+		phaseId: phase.id,
+		completedAt: runtime.nowIso(),
+	})
+
 	// Visual ack mirrors the step ✓ breadcrumb in steps.ts. The grade letter is
 	// the deterministic derivedGrade (A/B/F) from gate verdicts + project
 	// checks (post-#230 no LLM judge per phase), colorized via gradeColor for
