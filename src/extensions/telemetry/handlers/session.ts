@@ -16,6 +16,8 @@ export async function handleSessionShutdown(ctx: SessionContext, event: { reason
 		model: ctx.currentModel,
 		duration_ms: Date.now() - ctx.sessionStartMs,
 		ended_by: endedBy,
+		compaction_count: ctx.compactionCount,
+		turn_index: ctx.turnIndex,
 	})
 	ctx.flushLogBuffer()
 	await ctx.drain()
