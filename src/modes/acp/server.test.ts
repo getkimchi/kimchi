@@ -19,6 +19,9 @@ const THEME_KEY = Symbol.for("@earendil-works/pi-coding-agent:theme")
 const THEME_KEY_OLD = Symbol.for("@mariozechner/pi-coding-agent:theme")
 
 import { _resetState as _resetHideThinking, _setHideThinking } from "../../extensions/hide-thinking.js"
+import { PERMISSIONS_ENV_KEY } from "../../extensions/permissions/constants.js"
+import { getSessionPermissionFlagController } from "../../extensions/permissions/mode-controller-registry.js"
+import { ALL_PERMISSION_MODES } from "../../extensions/permissions/types.js"
 import { getAcpPrompter } from "./permission-prompter-registry.js"
 import {
 	type AcpSessionFactory,
@@ -54,7 +57,15 @@ class FakeAgentSession {
 	}
 	modelRegistry = {
 		getAvailable: () =>
-			this.model ? [{ provider: this.model.provider, id: this.model.id, name: this.model.name ?? this.model.id }] : [],
+			this.model
+				? [
+						{
+							provider: this.model.provider,
+							id: this.model.id,
+							name: this.model.name ?? this.model.id,
+						},
+					]
+				: [],
 	}
 	promptImpl: (text: string, opts?: { images?: unknown[] }) => Promise<void> = async () => {}
 	abortImpl: () => Promise<void> = async () => {}
@@ -120,12 +131,16 @@ function makeConn(): AgentSideConnection {
 // Recording variant of makeConn: captures every sessionUpdate the agent emits
 // so tests can assert on the full notification stream (tool_call, partial
 // tool_call_update, terminal tool_call_update, etc.).
-function makeRecordingConn(): { conn: AgentSideConnection; updates: SessionNotification[] } {
+function makeRecordingConn(): {
+	conn: AgentSideConnection
+	updates: SessionNotification[]
+} {
 	const updates: SessionNotification[] = []
 	const stub = {
 		sessionUpdate: async (p: SessionNotification) => {
 			updates.push(p)
 		},
+		requestPermission: vi.fn().mockResolvedValue({ outcome: "cancelled" }),
 	}
 	return { conn: stub as unknown as AgentSideConnection, updates }
 }
@@ -492,7 +507,11 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 	// Image blocks are supported when model supports vision: they should be
 	// extracted and passed to session.prompt() without warnings.
 	it("accepts image blocks when model supports vision", async () => {
-		fake.model = { provider: "test", id: "vision-model", input: ["text", "image"] }
+		fake.model = {
+			provider: "test",
+			id: "vision-model",
+			input: ["text", "image"],
+		}
 		fake.promptImpl = async () => {
 			fake.emit({ type: "agent_start" })
 			await delay(5)
@@ -568,7 +587,10 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			agentDir: "/tmp/fake-agent-dir",
 			sessionFactory: factory,
 		})
-		const { sessionId: sid } = await localAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+		const { sessionId: sid } = await localAgent.newSession({
+			cwd: "/tmp",
+			mcpServers: [],
+		})
 
 		localFake.promptImpl = async () => {
 			// Short-circuit: no events.
@@ -823,7 +845,11 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			newFake.emit(agentEnd())
 		}
 		oldFake.abortImpl = async () => {
-			await localAgent.loadSession({ sessionId: sid, cwd: "/tmp", mcpServers: [] })
+			await localAgent.loadSession({
+				sessionId: sid,
+				cwd: "/tmp",
+				mcpServers: [],
+			})
 			newPrompt = localAgent.prompt({
 				sessionId: sid,
 				prompt: [{ type: "text", text: "new turn" }],
@@ -944,8 +970,14 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		}
 
 		const [resA, resB] = await Promise.all([
-			parallelAgent.prompt({ sessionId: a.sessionId, prompt: [{ type: "text", text: "a" }] }),
-			parallelAgent.prompt({ sessionId: b.sessionId, prompt: [{ type: "text", text: "b" }] }),
+			parallelAgent.prompt({
+				sessionId: a.sessionId,
+				prompt: [{ type: "text", text: "a" }],
+			}),
+			parallelAgent.prompt({
+				sessionId: b.sessionId,
+				prompt: [{ type: "text", text: "b" }],
+			}),
 		])
 		expect(resA.stopReason).toBe("end_turn")
 		expect(resB.stopReason).toBe("end_turn")
@@ -1010,7 +1042,10 @@ describe("KimchiAcpAgent tool execution stream", () => {
 			fake.emit(agentEnd())
 		}
 
-		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "run" }] })
+		const res = await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "run" }],
+		})
 		expect(res.stopReason).toBe("end_turn")
 
 		const toolCallUpdates = updates.filter((u) => u.update.sessionUpdate === "tool_call_update")
@@ -1069,7 +1104,10 @@ describe("KimchiAcpAgent tool execution stream", () => {
 			fake.emit(agentEnd())
 		}
 
-		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "run" }] })
+		const res = await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "run" }],
+		})
 		expect(res.stopReason).toBe("end_turn")
 
 		const toolCallUpdates = updates.filter((u) => u.update.sessionUpdate === "tool_call_update")
@@ -1087,14 +1125,24 @@ describe("KimchiAcpAgent tool execution stream", () => {
 				type: "tool_execution_start",
 				toolCallId: "tc-system-agent",
 				toolName: "Agent",
-				args: { prompt: "classify", description: "permission classifier", visibility: "system" },
+				args: {
+					prompt: "classify",
+					description: "permission classifier",
+					visibility: "system",
+				},
 			})
 			fake.emit({
 				type: "tool_execution_update",
 				toolCallId: "tc-system-agent",
 				toolName: "Agent",
-				args: { prompt: "classify", description: "permission classifier", visibility: "system" },
-				partialResult: { content: [{ type: "text", text: "System agent started." }] },
+				args: {
+					prompt: "classify",
+					description: "permission classifier",
+					visibility: "system",
+				},
+				partialResult: {
+					content: [{ type: "text", text: "System agent started." }],
+				},
 			})
 			fake.emit({
 				type: "tool_execution_end",
@@ -1106,7 +1154,10 @@ describe("KimchiAcpAgent tool execution stream", () => {
 			fake.emit(agentEnd())
 		}
 
-		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "run" }] })
+		const res = await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "run" }],
+		})
 		expect(res.stopReason).toBe("end_turn")
 		expect(updates.some((u) => u.update.sessionUpdate === "tool_call")).toBe(false)
 		expect(updates.some((u) => u.update.sessionUpdate === "tool_call_update")).toBe(false)
@@ -1119,8 +1170,14 @@ describe("KimchiAcpAgent tool execution stream", () => {
 				type: "tool_execution_update",
 				toolCallId: "tc-system-agent-update-first",
 				toolName: "Agent",
-				args: { prompt: "classify", description: "permission classifier", visibility: "system" },
-				partialResult: { content: [{ type: "text", text: "System agent started." }] },
+				args: {
+					prompt: "classify",
+					description: "permission classifier",
+					visibility: "system",
+				},
+				partialResult: {
+					content: [{ type: "text", text: "System agent started." }],
+				},
 			})
 			fake.emit({
 				type: "tool_execution_end",
@@ -1132,7 +1189,10 @@ describe("KimchiAcpAgent tool execution stream", () => {
 			fake.emit(agentEnd())
 		}
 
-		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "run" }] })
+		const res = await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "run" }],
+		})
 		expect(res.stopReason).toBe("end_turn")
 		expect(updates.some((u) => u.update.sessionUpdate === "tool_call")).toBe(false)
 		expect(updates.some((u) => u.update.sessionUpdate === "tool_call_update")).toBe(false)
@@ -1182,7 +1242,9 @@ describe("assertSessionHasModel", () => {
 
 	it("is a no-op when model is present", () => {
 		expect(() =>
-			assertSessionHasModel({ model: {} as NonNullable<Parameters<typeof assertSessionHasModel>[0]["model"]> }),
+			assertSessionHasModel({
+				model: {} as NonNullable<Parameters<typeof assertSessionHasModel>[0]["model"]>,
+			}),
 		).not.toThrow()
 	})
 })
@@ -1207,7 +1269,9 @@ describe("initializeHeadlessTheme", () => {
 
 		expect(globals[THEME_KEY]).toBeDefined()
 		expect(globals[THEME_KEY_OLD]).toBeDefined()
-		const initializedTheme = globals[THEME_KEY] as { getFgAnsi(color: string): string }
+		const initializedTheme = globals[THEME_KEY] as {
+			getFgAnsi(color: string): string
+		}
 		expect(() => initializedTheme.getFgAnsi("accent")).not.toThrow()
 	})
 })
@@ -1272,8 +1336,14 @@ describe("newSession model state", () => {
 		expect(res.models).toBeDefined()
 		expect(res.models?.currentModelId).toBe("openai/gpt-4")
 		expect(res.models?.availableModels).toHaveLength(2)
-		expect(res.models?.availableModels[0]).toEqual({ modelId: "openai/gpt-4", name: "GPT-4" })
-		expect(res.models?.availableModels[1]).toEqual({ modelId: "anthropic/claude-3", name: "Claude 3" })
+		expect(res.models?.availableModels[0]).toEqual({
+			modelId: "openai/gpt-4",
+			name: "GPT-4",
+		})
+		expect(res.models?.availableModels[1]).toEqual({
+			modelId: "anthropic/claude-3",
+			name: "Claude 3",
+		})
 	})
 
 	it("rejects with authRequired when no model is active", async () => {
@@ -1287,6 +1357,24 @@ describe("newSession model state", () => {
 		})
 		await expect(agent.newSession({ cwd: "/tmp", mcpServers: [] })).rejects.toMatchObject({ code: -32000 })
 		expect(fake.disposed).toBe(true)
+	})
+
+	it("returns configOptions in newSession response", async () => {
+		const fake = new FakeAgentSession("test-session-config")
+		const sessionFactory: AcpSessionFactory = async () => asSession(fake)
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory,
+		})
+
+		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		expect(res.configOptions).toBeDefined()
+		expect(res.configOptions).toHaveLength(1)
+		expect(res.configOptions?.[0].id).toBe("permissions-mode")
+		expect(res.configOptions?.[0].type).toBe("select")
+		expect(res.configOptions?.[0].currentValue).toBeDefined()
 	})
 })
 
@@ -1307,7 +1395,10 @@ describe("unstable_setSessionModel", () => {
 			sessionFactory: factory,
 		})
 		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
-		const res = await agent.unstable_setSessionModel({ sessionId: "switch-session", modelId: "provider-b/model-b" })
+		const res = await agent.unstable_setSessionModel({
+			sessionId: "switch-session",
+			modelId: "provider-b/model-b",
+		})
 		expect(res).toEqual({})
 		expect(fake.model?.provider).toBe("provider-b")
 		expect(fake.model?.id).toBe("model-b")
@@ -1326,7 +1417,12 @@ describe("unstable_setSessionModel", () => {
 			sessionFactory: factory,
 		})
 		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
-		await expect(agent.unstable_setSessionModel({ sessionId: "switch-session", modelId: "unknown" })).rejects.toThrow()
+		await expect(
+			agent.unstable_setSessionModel({
+				sessionId: "switch-session",
+				modelId: "unknown",
+			}),
+		).rejects.toThrow()
 	})
 
 	it("prompt still works after switching model", async () => {
@@ -1345,7 +1441,10 @@ describe("unstable_setSessionModel", () => {
 			sessionFactory: factory,
 		})
 		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
-		await agent.unstable_setSessionModel({ sessionId: "switch-session", modelId: "provider-b/model-b" })
+		await agent.unstable_setSessionModel({
+			sessionId: "switch-session",
+			modelId: "provider-b/model-b",
+		})
 		const result = await agent.prompt({
 			sessionId: "switch-session",
 			prompt: [{ type: "text", text: "hello" }],
@@ -1360,7 +1459,896 @@ describe("unstable_setSessionModel", () => {
 			extensionFactories: [],
 			agentDir: "/tmp/fake-agent-dir",
 		})
-		await expect(agent.unstable_setSessionModel({ sessionId: "no-such-session", modelId: "model-a" })).rejects.toThrow()
+		await expect(
+			agent.unstable_setSessionModel({
+				sessionId: "no-such-session",
+				modelId: "model-a",
+			}),
+		).rejects.toThrow()
+	})
+})
+
+describe("setSessionConfigOption", () => {
+	it("sets permission mode via setSessionConfigOption and returns configOptions", async () => {
+		const fake = new FakeAgentSession("test-session")
+		const sessionFactory: AcpSessionFactory = async () => asSession(fake)
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory,
+		})
+
+		const { sessionId } = await agent.newSession({
+			cwd: "/tmp",
+			mcpServers: [],
+		})
+
+		const res = await agent.setSessionConfigOption({
+			sessionId,
+			configId: "permissions-mode",
+			value: "plan",
+		})
+
+		expect(res.configOptions).toHaveLength(1)
+		expect(res.configOptions[0].id).toBe("permissions-mode")
+		expect(res.configOptions[0].currentValue).toBe("plan")
+	})
+
+	it("sets all valid permission modes", async () => {
+		const fake = new FakeAgentSession("test-session-modes")
+		const sessionFactory: AcpSessionFactory = async () => asSession(fake)
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory,
+		})
+
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		for (const mode of ALL_PERMISSION_MODES) {
+			const res = await agent.setSessionConfigOption({
+				sessionId: "test-session-modes",
+				configId: "permissions-mode",
+				value: mode,
+			})
+			expect(res.configOptions).toHaveLength(1)
+			expect(res.configOptions[0].currentValue).toBe(mode)
+		}
+	})
+
+	it("rejects invalid permission mode value", async () => {
+		const fake = new FakeAgentSession("test-session-invalid")
+		const sessionFactory: AcpSessionFactory = async () => asSession(fake)
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory,
+		})
+
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		await expect(
+			agent.setSessionConfigOption({
+				sessionId: "test-session-invalid",
+				configId: "permissions-mode",
+				value: "invalid-mode",
+			}),
+		).rejects.toMatchObject({ code: -32602 })
+	})
+
+	it("rejects unknown configId", async () => {
+		const fake = new FakeAgentSession("test-session-unknown-config")
+		const sessionFactory: AcpSessionFactory = async () => asSession(fake)
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory,
+		})
+
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		await expect(
+			agent.setSessionConfigOption({
+				sessionId: "test-session-unknown-config",
+				configId: "unknown-config",
+				value: "plan",
+			}),
+		).rejects.toMatchObject({ code: -32602 })
+	})
+
+	it("rejects unknown sessionId", async () => {
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+		})
+
+		await expect(
+			agent.setSessionConfigOption({
+				sessionId: "no-such-session",
+				configId: "permissions-mode",
+				value: "plan",
+			}),
+		).rejects.toMatchObject({ code: -32602 })
+	})
+
+	it("returns configOptions with correct structure", async () => {
+		const fake = new FakeAgentSession("test-session-structure")
+		const sessionFactory: AcpSessionFactory = async () => asSession(fake)
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory,
+		})
+
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		const res = await agent.setSessionConfigOption({
+			sessionId: "test-session-structure",
+			configId: "permissions-mode",
+			value: "auto",
+		})
+
+		expect(res.configOptions[0]).toMatchObject({
+			id: "permissions-mode",
+			name: "Permissions Mode",
+			type: "select",
+			category: "mode",
+			currentValue: "auto",
+		})
+		// Verify options array is present with all valid modes
+		// biome-ignore lint/suspicious/noExplicitAny: union type requires assertion
+		const selectOption = res.configOptions[0] as any
+		expect(selectOption.options).toHaveLength(4)
+		expect(selectOption.options.map((o: { value: string }) => o.value)).toEqual(ALL_PERMISSION_MODES)
+	})
+
+	it("emits config_option_update when permission mode changes", async () => {
+		const { conn, updates } = makeRecordingConn()
+		const fake = new FakeAgentSession("test-session-notify")
+		const sessionFactory: AcpSessionFactory = async () => asSession(fake)
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory,
+		})
+
+		// Create a session (this subscribes to mode changes)
+		const { sessionId } = await agent.newSession({
+			cwd: "/tmp",
+			mcpServers: [],
+		})
+
+		// Change the mode using setSessionConfigOption (this emits the notification)
+		await agent.setSessionConfigOption({
+			sessionId,
+			configId: "permissions-mode",
+			value: "plan",
+		})
+
+		// Check that config_option_update was emitted
+		const configUpdates = updates.filter((u) => u.update.sessionUpdate === "config_option_update")
+		expect(configUpdates).toHaveLength(1)
+		expect(configUpdates[0].sessionId).toBe(sessionId)
+		// Type assertion needed because SessionUpdate is a union type
+		const configUpdate = configUpdates[0].update as {
+			sessionUpdate: "config_option_update"
+			configOptions: Array<{ id: string; currentValue: string }>
+		}
+		expect(configUpdate.configOptions[0].id).toBe("permissions-mode")
+		expect(configUpdate.configOptions[0].currentValue).toBe("plan")
+	})
+
+	it("session-scoped mode is used by permissions extension for tool gating", async () => {
+		const fake = new FakeAgentSession("test-session-enforcement")
+		const sessionFactory: AcpSessionFactory = async () => asSession(fake)
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory,
+		})
+
+		// Create a session
+		const { sessionId } = await agent.newSession({
+			cwd: "/tmp",
+			mcpServers: [],
+		})
+
+		// Verify initial mode is default
+		const initialRes = await agent.setSessionConfigOption({
+			sessionId,
+			configId: "permissions-mode",
+			value: "default",
+		})
+		expect(initialRes.configOptions[0].currentValue).toBe("default")
+
+		// Switch to plan mode via ACP
+		await agent.setSessionConfigOption({
+			sessionId,
+			configId: "permissions-mode",
+			value: "plan",
+		})
+
+		// Verify the mode was updated
+		const controller = getSessionPermissionFlagController(sessionId)
+		expect(controller).toBeDefined()
+		expect(controller?.getMode()).toEqual({ mode: "plan", source: "user" })
+
+		// Verify mode can be switched back
+		await agent.setSessionConfigOption({
+			sessionId,
+			configId: "permissions-mode",
+			value: "yolo",
+		})
+		expect(controller?.getMode()).toEqual({ mode: "yolo", source: "user" })
+
+		// Cleanup
+		await agent.unstable_closeSession({ sessionId })
+		const afterClose = getSessionPermissionFlagController(sessionId)
+		expect(afterClose).toBeUndefined()
+	})
+
+	it("mode changes via setSessionConfigOption are visible to permissions extension currentMode", async () => {
+		const fake = new FakeAgentSession("test-session-permissions-integration")
+		// Ensure clean env state - previous tests may have set this
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "")
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+
+		const sessionFactory: AcpSessionFactory = async () => asSession(fake)
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory,
+		})
+
+		// Create a session
+		const { sessionId } = await agent.newSession({
+			cwd: "/tmp",
+			mcpServers: [],
+		})
+
+		// Verify the session controller is registered
+		const controller = getSessionPermissionFlagController(sessionId)
+		expect(controller).toBeDefined()
+		expect(controller?.getMode()).toEqual({ mode: "default", source: "user" })
+
+		// Change to plan mode via ACP
+		await agent.setSessionConfigOption({
+			sessionId,
+			configId: "permissions-mode",
+			value: "plan",
+		})
+
+		// Verify the controller reflects the new mode
+
+		expect(controller?.getMode()).toEqual({ mode: "plan", source: "user" })
+
+		await agent.unstable_closeSession({ sessionId })
+	})
+
+	it("delivers config_option_update to multiple concurrent sessions independently", async () => {
+		const updates1: SessionNotification[] = []
+		const updates2: SessionNotification[] = []
+
+		// Create a connection that splits notifications by sessionId
+		const conn = {
+			sessionUpdate: async (msg: SessionNotification) => {
+				if (msg.sessionId === "multi-session-1") {
+					updates1.push(msg)
+				} else if (msg.sessionId === "multi-session-2") {
+					updates2.push(msg)
+				}
+			},
+		} as unknown as AgentSideConnection
+
+		let callCount = 0
+		const fake1 = new FakeAgentSession("multi-session-1")
+		const fake2 = new FakeAgentSession("multi-session-2")
+
+		// One agent with a session factory that returns different sessions
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => {
+				callCount++
+				return asSession(callCount === 1 ? fake1 : fake2)
+			},
+		})
+
+		const { sessionId: sid1 } = await agent.newSession({
+			cwd: "/tmp",
+			mcpServers: [],
+		})
+		const { sessionId: sid2 } = await agent.newSession({
+			cwd: "/tmp",
+			mcpServers: [],
+		})
+
+		// Verify sessions are under the same agent (same entries map)
+		expect(sid1).toBe("multi-session-1")
+		expect(sid2).toBe("multi-session-2")
+
+		const filter = (u: SessionNotification) => u.update.sessionUpdate === "config_option_update"
+
+		// Change mode via session 1 — only session 1 is notified
+		await agent.setSessionConfigOption({
+			sessionId: sid1,
+			configId: "permissions-mode",
+			value: "yolo",
+		})
+
+		// Session 1 should have exactly 1 notification (its own)
+		expect(updates1.filter(filter)).toHaveLength(1)
+		// Session 2 should have no notification yet
+		expect(updates2.filter(filter)).toHaveLength(0)
+
+		// Change mode via session 2 — only session 2 is notified
+		await agent.setSessionConfigOption({
+			sessionId: sid2,
+			configId: "permissions-mode",
+			value: "auto",
+		})
+
+		// Session 1 should still have only 1 notification
+		expect(updates1.filter(filter)).toHaveLength(1)
+		// Session 2 should now have exactly 1 notification
+		expect(updates2.filter(filter)).toHaveLength(1)
+	})
+})
+
+describe("ACP mode controller integration with permissions extension", () => {
+	// Import permissions extension test utilities
+	async function createPermissionsHarness(tools: string[], flags: Record<string, unknown> = {}) {
+		const { default: permissionsExtension } = await import("../../extensions/permissions/index.js")
+		const handlers = new Map<string, Array<(...args: unknown[]) => unknown>>()
+		const commands = new Map<
+			string,
+			{
+				description: string
+				handler: (args: string, ctx: unknown) => Promise<void> | void
+			}
+		>()
+		let activeTools: string[] = []
+
+		const pi = {
+			on: (event: string, handler: (...args: unknown[]) => unknown) => {
+				const list = handlers.get(event) ?? []
+				list.push(handler)
+				handlers.set(event, list)
+			},
+			registerCommand: (
+				name: string,
+				command: {
+					description: string
+					handler: (args: string, ctx: unknown) => Promise<void> | void
+				},
+			) => {
+				commands.set(name, command)
+			},
+			getAllTools: () => tools,
+			getActiveTools: () => activeTools,
+			setActiveTools: (names: string[]) => {
+				activeTools = names.filter((n) => tools.includes(n))
+			},
+			getFlag: (name: string) => flags[name],
+			registerFlag: () => {},
+			sendMessage: () => {},
+			getEnvironment: () => ({
+				environmentInfo: {
+					permittedTools: new Set(tools),
+				},
+			}),
+			setActiveToolIdsByServer: () => {},
+		} as unknown as import("@earendil-works/pi-coding-agent").ExtensionAPI
+
+		permissionsExtension(pi)
+
+		return {
+			async fireSessionStart(ctx: unknown) {
+				for (const handler of handlers.get("session_start") ?? []) {
+					await handler({}, ctx)
+				}
+			},
+			async fireToolCall(event: { toolName: string; input: unknown }, ctx: unknown) {
+				const toolHandlers = handlers.get("tool_call") ?? []
+				for (const handler of toolHandlers) {
+					const result = await handler(event, ctx)
+					if (result) return result
+				}
+				return undefined
+			},
+			commands,
+		}
+	}
+
+	function createMockContext(sessionId: string, cwd: string): unknown {
+		return {
+			sessionManager: { getSessionId: () => sessionId },
+			cwd,
+			hasUI: false,
+			ui: {
+				notify: () => {},
+				setStatus: () => {},
+				showPermissionSelector: () => Promise.resolve({ decision: "allow", remember: false }),
+				theme: { semanticColors: { fg: { red: "", yellow: "", green: "" } } },
+			},
+			modelRegistry: { authStorage: { getCredentials: () => ({}) } },
+		}
+	}
+
+	afterEach(() => {
+		vi.unstubAllEnvs()
+	})
+
+	it("plan mode via ACP blocks write operations through permissions extension", async () => {
+		// Clean env state
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "")
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+
+		const sessionId = "test-plan-mode-session"
+		const cwd = "/tmp"
+
+		// Set up permissions extension with write tool
+		const harness = await createPermissionsHarness(["write", "read"])
+
+		// Create an ACP session (registers the controller)
+		const fake = new FakeAgentSession(sessionId)
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+
+		await agent.newSession({ cwd, mcpServers: [] })
+
+		// Fire session_start so the permissions extension subscribes to the controller
+		const mockCtx = createMockContext(sessionId, cwd)
+		await harness.fireSessionStart(mockCtx)
+
+		// Verify controller is registered
+		const controller = getSessionPermissionFlagController(sessionId)
+		expect(controller).toBeDefined()
+
+		// Switch to plan mode via ACP
+		await agent.setSessionConfigOption({
+			sessionId,
+			configId: "permissions-mode",
+			value: "plan",
+		})
+
+		// Verify controller mode is plan
+		expect(controller?.getMode()).toEqual({ mode: "plan", source: "user" })
+		const writeToolEvent = {
+			toolName: "write",
+			input: { path: "/tmp/test.txt", content: "hello" },
+		}
+
+		const result = (await harness.fireToolCall(writeToolEvent, mockCtx)) as
+			| { block: boolean; reason: string }
+			| undefined
+
+		// Should be blocked in plan mode
+		expect(result).toBeDefined()
+		expect(result?.block).toBe(true)
+		expect(result?.reason).toContain("Plan")
+
+		// Cleanup
+		await agent.unstable_closeSession({ sessionId })
+	})
+
+	it("yolo mode via ACP allows write operations through permissions extension", async () => {
+		// Clean env state
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "")
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+
+		const sessionId = "test-yolo-mode-session"
+		const cwd = "/tmp"
+
+		// Set up permissions extension
+		const harness = await createPermissionsHarness(["write", "read", "bash"])
+
+		// Create an ACP session
+		const fake = new FakeAgentSession(sessionId)
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+
+		await agent.newSession({ cwd, mcpServers: [] })
+
+		// Fire session_start so the permissions extension subscribes to the controller
+		const mockCtx = createMockContext(sessionId, cwd)
+		await harness.fireSessionStart(mockCtx)
+
+		// Switch to yolo mode via ACP
+		await agent.setSessionConfigOption({
+			sessionId,
+			configId: "permissions-mode",
+			value: "yolo",
+		})
+
+		// Verify controller mode is yolo
+		const controller = getSessionPermissionFlagController(sessionId)
+		expect(controller?.getMode()).toEqual({ mode: "yolo", source: "user" })
+		const writeToolEvent = {
+			toolName: "write",
+			input: { path: "/tmp/test.txt", content: "hello" },
+		}
+
+		const result = await harness.fireToolCall(writeToolEvent, mockCtx)
+
+		// Should NOT be blocked in yolo mode
+		expect(result).toBeUndefined()
+
+		// Cleanup
+		await agent.unstable_closeSession({ sessionId })
+	})
+
+	it("setSessionConfigOption emits exactly one config_option_update when permissions extension is active", async () => {
+		// Regression test for the double-notification bug:
+		// setSessionConfigOption -> controller.setMode fires the ACP notification subscriber.
+		// The permissions extension's session_start subscriber also fires changeMode ->
+		// setRuntimePermissionMode, which must NOT re-enter controller.setMode (which would
+		// fire a second notification). The insideControllerCallback guard prevents this.
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "")
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+
+		const sessionId = "test-no-double-notify"
+		const cwd = "/tmp"
+
+		const harness = await createPermissionsHarness(["write", "read"])
+
+		const { conn, updates } = makeRecordingConn()
+		const fake = new FakeAgentSession(sessionId)
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+
+		await agent.newSession({ cwd, mcpServers: [] })
+
+		// Fire session_start so the permissions extension subscribes to the controller.
+		const mockCtx = createMockContext(sessionId, cwd)
+		await harness.fireSessionStart(mockCtx)
+
+		// Drain any notifications emitted during session setup.
+		updates.length = 0
+
+		// Change mode — this is the operation that previously emitted two notifications.
+		await agent.setSessionConfigOption({
+			sessionId,
+			configId: "permissions-mode",
+			value: "plan",
+		})
+
+		const configUpdates = updates.filter((u) => u.update.sessionUpdate === "config_option_update")
+		expect(configUpdates).toHaveLength(1)
+		// biome-ignore lint/suspicious/noExplicitAny: union type requires assertion
+		const update = configUpdates[0].update as any
+		expect(update.configOptions[0].currentValue).toBe("plan")
+
+		await agent.unstable_closeSession({ sessionId })
+	})
+
+	it("leaving plan mode via ACP restores write/edit tools and emits exactly one config update", async () => {
+		// Changing permissions-mode through ACP must run the full changeMode transition,
+		// including restoring tool visibility and aborting stale permission prompts.
+		// The skipNotify flag should prevent duplicate ACP config updates.
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "")
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+
+		const sessionId = "test-leave-plan-mode"
+		const cwd = "/tmp"
+
+		// Set up harness with write and edit tools that would be hidden in plan mode
+		const harness = await createPermissionsHarness(["write", "edit", "read", "bash"])
+
+		const { conn, updates } = makeRecordingConn()
+		const fake = new FakeAgentSession(sessionId)
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+
+		await agent.newSession({ cwd, mcpServers: [] })
+
+		// Fire session_start so the permissions extension subscribes to the controller
+		const mockCtx = createMockContext(sessionId, cwd)
+		await harness.fireSessionStart(mockCtx)
+
+		// Clear any notifications from setup
+		updates.length = 0
+
+		// Start in plan mode via ACP
+		await agent.setSessionConfigOption({
+			sessionId,
+			configId: "permissions-mode",
+			value: "plan",
+		})
+
+		// Verify we're in plan mode - write/edit should be blocked by permissions extension
+		const writeBlockedResult = (await harness.fireToolCall(
+			{ toolName: "write", input: { path: "/tmp/test.txt", content: "hello" } },
+			mockCtx,
+		)) as { block: boolean; reason: string }
+		expect(writeBlockedResult?.block).toBe(true)
+		expect(writeBlockedResult?.reason).toContain("Plan mode")
+
+		// Clear notifications from entering plan mode
+		updates.length = 0
+
+		// Test leaving plan mode to yolo
+		await agent.setSessionConfigOption({
+			sessionId,
+			configId: "permissions-mode",
+			value: "yolo",
+		})
+
+		// Verify exactly one config_option_update was emitted
+		const yoloConfigUpdates = updates.filter((u) => u.update.sessionUpdate === "config_option_update")
+		expect(yoloConfigUpdates).toHaveLength(1)
+		// biome-ignore lint/suspicious/noExplicitAny: union type requires assertion
+		const yoloUpdate = yoloConfigUpdates[0].update as any
+		expect(yoloUpdate.configOptions[0].currentValue).toBe("yolo")
+
+		// Verify write operations are now allowed (permissions extension allows them in yolo)
+		const writeAllowedResult = await harness.fireToolCall(
+			{ toolName: "write", input: { path: "/tmp/test.txt", content: "hello" } },
+			mockCtx,
+		)
+		expect(writeAllowedResult).toBeUndefined() // Not blocked
+
+		// Reset and test leaving plan mode to default
+		updates.length = 0
+
+		// Go back to plan mode
+		await agent.setSessionConfigOption({
+			sessionId,
+			configId: "permissions-mode",
+			value: "plan",
+		})
+		updates.length = 0 // Clear notifications
+
+		// Verify tools are blocked again in plan mode
+		const writeBlockedAgain = (await harness.fireToolCall(
+			{ toolName: "write", input: { path: "/tmp/test.txt", content: "hello" } },
+			mockCtx,
+		)) as { block: boolean; reason: string }
+		expect(writeBlockedAgain?.block).toBe(true)
+
+		// Leave plan mode to default
+		await agent.setSessionConfigOption({
+			sessionId,
+			configId: "permissions-mode",
+			value: "default",
+		})
+
+		// Verify exactly one config_option_update was emitted
+		const defaultConfigUpdates = updates.filter((u) => u.update.sessionUpdate === "config_option_update")
+		expect(defaultConfigUpdates).toHaveLength(1)
+		// biome-ignore lint/suspicious/noExplicitAny: union type requires assertion
+		const defaultUpdate = defaultConfigUpdates[0].update as any
+		expect(defaultUpdate.configOptions[0].currentValue).toBe("default")
+
+		// Verify write operations are now gated behind explicit user approval
+		const writeDefaultResult = (await harness.fireToolCall(
+			{ toolName: "write", input: { path: "/tmp/test.txt", content: "hello" } },
+			mockCtx,
+		)) as { block: boolean; reason: string }
+		expect(writeDefaultResult.block).toBe(true)
+		expect(writeDefaultResult.reason).toContain("Declined by user")
+
+		await agent.unstable_closeSession({ sessionId })
+	})
+})
+
+describe("session mode controller lifecycle", () => {
+	afterEach(() => {
+		vi.unstubAllEnvs()
+	})
+
+	it("unregisters mode controller on closeSession", async () => {
+		const fake = new FakeAgentSession("close-mode-ctrl")
+		const sessionFactory: AcpSessionFactory = async () => asSession(fake)
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory,
+		})
+
+		const { sessionId } = await agent.newSession({
+			cwd: "/tmp",
+			mcpServers: [],
+		})
+		expect(getSessionPermissionFlagController(sessionId)).toBeDefined()
+
+		await agent.unstable_closeSession({ sessionId })
+		expect(getSessionPermissionFlagController(sessionId)).toBeUndefined()
+	})
+
+	it("unregisters mode controllers on shutdown", async () => {
+		const fake1 = new FakeAgentSession("shutdown-mode-1")
+		const fake2 = new FakeAgentSession("shutdown-mode-2")
+		let callCount = 0
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(++callCount === 1 ? fake1 : fake2),
+		})
+
+		const r1 = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		const r2 = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		expect(getSessionPermissionFlagController(r1.sessionId)).toBeDefined()
+		expect(getSessionPermissionFlagController(r2.sessionId)).toBeDefined()
+
+		await agent.shutdown()
+		expect(getSessionPermissionFlagController(r1.sessionId)).toBeUndefined()
+		expect(getSessionPermissionFlagController(r2.sessionId)).toBeUndefined()
+	})
+
+	it("seeds initial mode from env baseline, not from live env mutations", async () => {
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "auto")
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(new FakeAgentSession("env-baseline-1")),
+		})
+
+		// Mutate env after construction (simulates another session writing to env)
+		process.env[PERMISSIONS_ENV_KEY] = "yolo"
+
+		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		// Should use the snapshotted baseline (auto), not the live env (yolo)
+		expect(res.configOptions?.[0].currentValue).toBe("auto")
+	})
+
+	it("defaults to 'default' mode when KIMCHI_PERMISSIONS env is unset", async () => {
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "")
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(new FakeAgentSession("env-unset")),
+		})
+
+		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		expect(res.configOptions?.[0].currentValue).toBe("default")
+	})
+
+	it("uses defaultMode from permissions config file when env is not set", async () => {
+		// Create a temp directory with a .kimchi/permissions.json
+		const tmpDir = mkdtempSync(join(tmpdir(), "acp-mode-config-test-"))
+		const kimchiDir = join(tmpDir, ".kimchi")
+		mkdirSync(kimchiDir, { recursive: true })
+		writeFileSync(join(kimchiDir, "permissions.json"), JSON.stringify({ defaultMode: "plan" }))
+
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "")
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+
+		try {
+			const agent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: "/tmp/fake-agent-dir",
+				sessionFactory: async () => asSession(new FakeAgentSession("config-mode")),
+			})
+
+			const res = await agent.newSession({ cwd: tmpDir, mcpServers: [] })
+			expect(res.configOptions?.[0].currentValue).toBe("plan")
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true })
+		}
+	})
+
+	it("env KIMCHI_PERMISSIONS takes precedence over config defaultMode", async () => {
+		// Create a temp directory with a .kimchi/permissions.json
+		const tmpDir = mkdtempSync(join(tmpdir(), "acp-mode-env-precedence-test-"))
+		const kimchiDir = join(tmpDir, ".kimchi")
+		mkdirSync(kimchiDir, { recursive: true })
+		writeFileSync(join(kimchiDir, "permissions.json"), JSON.stringify({ defaultMode: "plan" }))
+
+		// Set env to a different mode
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "auto")
+
+		try {
+			const agent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: "/tmp/fake-agent-dir",
+				sessionFactory: async () => asSession(new FakeAgentSession("env-precedence")),
+			})
+
+			const res = await agent.newSession({ cwd: tmpDir, mcpServers: [] })
+			// Env should take precedence over config
+			expect(res.configOptions?.[0].currentValue).toBe("auto")
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true })
+		}
+	})
+
+	it("per-session mode changes do not leak across sessions", async () => {
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "")
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+		const fake1 = new FakeAgentSession("isolate-1")
+		const fake2 = new FakeAgentSession("isolate-2")
+		let callCount = 0
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(++callCount === 1 ? fake1 : fake2),
+		})
+
+		const r1 = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		const r2 = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		// Both sessions start at "default"
+		expect(getSessionPermissionFlagController(r1.sessionId)?.getMode()).toEqual({ mode: "default", source: "user" })
+		expect(getSessionPermissionFlagController(r2.sessionId)?.getMode()).toEqual({ mode: "default", source: "user" })
+
+		// Change session 1 to yolo
+		await agent.setSessionConfigOption({
+			sessionId: r1.sessionId,
+			configId: "permissions-mode",
+			value: "yolo",
+		})
+
+		// Session 1 is yolo, session 2 is still default
+		expect(getSessionPermissionFlagController(r1.sessionId)?.getMode()).toEqual({ mode: "yolo", source: "user" })
+		expect(getSessionPermissionFlagController(r2.sessionId)?.getMode()).toEqual({ mode: "default", source: "user" })
+	})
+
+	it("closeSession deletes the KIMCHI_PERMISSIONS_<sessionId> env key", async () => {
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "")
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+
+		const fake = new FakeAgentSession("close-env-key")
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+
+		const { sessionId } = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		// Set a mode so the namespaced env key is definitely written.
+		await agent.setSessionConfigOption({ sessionId, configId: "permissions-mode", value: "yolo" })
+		const envKey = `${PERMISSIONS_ENV_KEY}_${sessionId}`
+		expect(process.env[envKey]).toBe("yolo")
+
+		await agent.unstable_closeSession({ sessionId })
+
+		expect(process.env[envKey]).toBeUndefined()
+	})
+
+	it("shutdown deletes KIMCHI_PERMISSIONS_<sessionId> env keys for all sessions", async () => {
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "")
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+
+		const fake1 = new FakeAgentSession("shutdown-env-1")
+		const fake2 = new FakeAgentSession("shutdown-env-2")
+		let callCount = 0
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(++callCount === 1 ? fake1 : fake2),
+		})
+
+		const r1 = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		const r2 = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		// Write a namespaced env key for each session.
+		await agent.setSessionConfigOption({ sessionId: r1.sessionId, configId: "permissions-mode", value: "plan" })
+		await agent.setSessionConfigOption({ sessionId: r2.sessionId, configId: "permissions-mode", value: "auto" })
+
+		const key1 = `${PERMISSIONS_ENV_KEY}_${r1.sessionId}`
+		const key2 = `${PERMISSIONS_ENV_KEY}_${r2.sessionId}`
+		expect(process.env[key1]).toBe("plan")
+		expect(process.env[key2]).toBe("auto")
+
+		await agent.shutdown()
+
+		expect(process.env[key1]).toBeUndefined()
+		expect(process.env[key2]).toBeUndefined()
 	})
 })
 
@@ -1406,19 +2394,31 @@ describe("describeToolCall", () => {
 			name: "read with file_path uses path and populates locations",
 			toolName: "read",
 			args: { file_path: "/etc/hosts" },
-			expect: { title: "/etc/hosts", kind: "read", locations: [{ path: "/etc/hosts" }] },
+			expect: {
+				title: "/etc/hosts",
+				kind: "read",
+				locations: [{ path: "/etc/hosts" }],
+			},
 		},
 		{
 			name: "edit with file_path uses path and edit kind",
 			toolName: "edit",
 			args: { file_path: "/tmp/a.ts" },
-			expect: { title: "/tmp/a.ts", kind: "edit", locations: [{ path: "/tmp/a.ts" }] },
+			expect: {
+				title: "/tmp/a.ts",
+				kind: "edit",
+				locations: [{ path: "/tmp/a.ts" }],
+			},
 		},
 		{
 			name: "write with path (not file_path) still populates locations",
 			toolName: "write",
 			args: { path: "/tmp/b.ts" },
-			expect: { title: "/tmp/b.ts", kind: "edit", locations: [{ path: "/tmp/b.ts" }] },
+			expect: {
+				title: "/tmp/b.ts",
+				kind: "edit",
+				locations: [{ path: "/tmp/b.ts" }],
+			},
 		},
 		{
 			name: "grep with pattern uses pattern as title and search kind",
@@ -1522,7 +2522,14 @@ function makePiSession(overrides: Partial<PiSessionInfo> = {}): PiSessionInfo {
 // updatedAt formatting are both load-bearing for Zed's thread-picker UI.
 describe("toAcpSessionInfo", () => {
 	it("uses the user-defined name when present", () => {
-		const out = toAcpSessionInfo(makePiSession({ id: "s1", cwd: "/p", name: "named", firstMessage: "ignored" }))
+		const out = toAcpSessionInfo(
+			makePiSession({
+				id: "s1",
+				cwd: "/p",
+				name: "named",
+				firstMessage: "ignored",
+			}),
+		)
 		expect(out).toEqual({
 			sessionId: "s1",
 			cwd: "/p",
@@ -1614,8 +2621,16 @@ describe("KimchiAcpAgent listSessions", () => {
 	it("dedupes sessions returned across multiple roots by id", async () => {
 		// Custom lister stand-in for the multi-root default lister: returns the
 		// same id from two roots; handler must surface it once.
-		const dup = makePiSession({ id: "shared", modified: new Date("2026-04-01T00:00:00Z"), name: "shared" })
-		const uniq = makePiSession({ id: "uniq", modified: new Date("2026-03-01T00:00:00Z"), name: "uniq" })
+		const dup = makePiSession({
+			id: "shared",
+			modified: new Date("2026-04-01T00:00:00Z"),
+			name: "shared",
+		})
+		const uniq = makePiSession({
+			id: "uniq",
+			modified: new Date("2026-03-01T00:00:00Z"),
+			name: "uniq",
+		})
 		const agent = makeAgent(async () => [dup, uniq, dup])
 		const res = await agent.listSessions({ cwd: "/p" } as never)
 		expect(res.sessions.map((s) => s.sessionId)).toEqual(["shared", "uniq"])
@@ -1635,9 +2650,21 @@ describe("KimchiAcpAgent listSessions", () => {
 
 	it("sorts sessions newest-first by updatedAt", async () => {
 		const piSessions: PiSessionInfo[] = [
-			makePiSession({ id: "old", modified: new Date("2026-01-01T00:00:00Z"), name: "old" }),
-			makePiSession({ id: "new", modified: new Date("2026-05-09T00:00:00Z"), name: "new" }),
-			makePiSession({ id: "mid", modified: new Date("2026-03-01T00:00:00Z"), name: "mid" }),
+			makePiSession({
+				id: "old",
+				modified: new Date("2026-01-01T00:00:00Z"),
+				name: "old",
+			}),
+			makePiSession({
+				id: "new",
+				modified: new Date("2026-05-09T00:00:00Z"),
+				name: "new",
+			}),
+			makePiSession({
+				id: "mid",
+				modified: new Date("2026-03-01T00:00:00Z"),
+				name: "mid",
+			}),
 		]
 		const agent = makeAgent(async () => piSessions)
 		const res = await agent.listSessions({ cwd: "/p" } as never)
@@ -1782,7 +2809,11 @@ describe("KimchiAcpAgent loadSession", () => {
 		})
 		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
 
-		const res = await agent.loadSession({ sessionId: "live-1", cwd: "/tmp", mcpServers: [] })
+		const res = await agent.loadSession({
+			sessionId: "live-1",
+			cwd: "/tmp",
+			mcpServers: [],
+		})
 
 		expect(res.models).toMatchObject({
 			currentModelId: "test/test-model",
@@ -1793,6 +2824,52 @@ describe("KimchiAcpAgent loadSession", () => {
 			sessionUpdate: "user_message_chunk",
 			content: { type: "text", text: "already here" },
 		})
+	})
+
+	it("returns configOptions in loadSession response", async () => {
+		const tmpDir = mkdtempSync(join(tmpdir(), "kimchi-acp-load-config-"))
+		try {
+			const fake = new FakeAgentSession("test-load-session-config")
+			const sessionFactory: AcpSessionFactory = async () => asSession(fake)
+			const lister: AcpSessionLister = async () => [
+				makePiSession({
+					id: "test-load-session-config",
+					cwd: tmpDir,
+					path: join(tmpDir, "test-load-session-config.jsonl"),
+				}),
+			]
+			const loader: AcpSessionLoader = async () => {
+				return asSession(fake)
+			}
+			const agent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tmpDir,
+				sessionFactory,
+				sessionLister: lister,
+				sessionLoader: loader,
+			})
+
+			// Create the session first
+			await agent.newSession({ cwd: tmpDir, mcpServers: [] })
+
+			// Close it
+			await agent.unstable_closeSession({
+				sessionId: "test-load-session-config",
+			})
+
+			// Load it back
+			const res = await agent.loadSession({
+				sessionId: "test-load-session-config",
+				cwd: tmpDir,
+				mcpServers: [],
+			})
+
+			expect(res.configOptions).toBeDefined()
+			expect(res.configOptions).toHaveLength(1)
+			expect(res.configOptions?.[0].id).toBe("permissions-mode")
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true })
+		}
 	})
 
 	it("coalesces concurrent loadSession requests for the same sessionId", async () => {
@@ -1813,9 +2890,17 @@ describe("KimchiAcpAgent loadSession", () => {
 			return asSession(fake)
 		}
 		const agent = makeAgent(loader)
-		const first = agent.loadSession({ sessionId: "coalesce-1", cwd: "/tmp", mcpServers: [] })
+		const first = agent.loadSession({
+			sessionId: "coalesce-1",
+			cwd: "/tmp",
+			mcpServers: [],
+		})
 		await loaderStarted
-		const second = agent.loadSession({ sessionId: "coalesce-1", cwd: "/tmp", mcpServers: [] })
+		const second = agent.loadSession({
+			sessionId: "coalesce-1",
+			cwd: "/tmp",
+			mcpServers: [],
+		})
 		releaseLoader()
 
 		await expect(Promise.all([first, second])).resolves.toHaveLength(2)
@@ -1885,14 +2970,24 @@ describe("KimchiAcpAgent loadSession", () => {
 			},
 		}
 		const agent = makeAgent(async () => asSession(fake))
-		await expect(agent.loadSession({ sessionId: "replay-boom", cwd: "/tmp", mcpServers: [] })).rejects.toThrow(
-			/branch read failed/,
-		)
+		await expect(
+			agent.loadSession({
+				sessionId: "replay-boom",
+				cwd: "/tmp",
+				mcpServers: [],
+			}),
+		).rejects.toThrow(/branch read failed/)
 		expect(fake.disposed).toBe(true)
 		// Re-load must not see the failed session as already-live.
 		fake.sessionManager = { getBranch: () => [] }
 		fake.disposed = false
-		await expect(agent.loadSession({ sessionId: "replay-boom", cwd: "/tmp", mcpServers: [] })).resolves.toBeDefined()
+		await expect(
+			agent.loadSession({
+				sessionId: "replay-boom",
+				cwd: "/tmp",
+				mcpServers: [],
+			}),
+		).resolves.toBeDefined()
 	})
 
 	it("replays user/assistant text turns as session/update notifications before the response resolves", async () => {
@@ -1913,10 +3008,16 @@ describe("KimchiAcpAgent loadSession", () => {
 		// Capture the order: replay notifications must land BEFORE the response
 		// resolves so Zed sees a coherent transcript on the load promise.
 		const updatesAtResolve: (typeof updates)[number][] = []
-		const original = (conn as unknown as { sessionUpdate: (p: SessionNotification) => Promise<void> }).sessionUpdate
-		;(conn as unknown as { sessionUpdate: (p: SessionNotification) => Promise<void> }).sessionUpdate = async (
-			p: SessionNotification,
-		) => {
+		const original = (
+			conn as unknown as {
+				sessionUpdate: (p: SessionNotification) => Promise<void>
+			}
+		).sessionUpdate
+		;(
+			conn as unknown as {
+				sessionUpdate: (p: SessionNotification) => Promise<void>
+			}
+		).sessionUpdate = async (p: SessionNotification) => {
 			await original(p)
 		}
 
@@ -1965,7 +3066,13 @@ describe("KimchiAcpAgent loadSession", () => {
 		const fake = new FakeAgentSession("header-id")
 		const loader: AcpSessionLoader = async () => asSession(fake)
 		const agent = makeAgent(loader)
-		await expect(agent.loadSession({ sessionId: "requested-id", cwd: "/tmp", mcpServers: [] })).rejects.toMatchObject({
+		await expect(
+			agent.loadSession({
+				sessionId: "requested-id",
+				cwd: "/tmp",
+				mcpServers: [],
+			}),
+		).rejects.toMatchObject({
 			code: -32602,
 		})
 		expect(fake.disposed).toBe(true)
@@ -1992,7 +3099,11 @@ describe("KimchiAcpAgent loadSession", () => {
 		]
 		const { conn, updates } = makeRecordingConn()
 		const agent = makeAgent(async () => asSession(fake), { conn })
-		await agent.loadSession({ sessionId: "loaded-coalesce", cwd: "/tmp", mcpServers: [] })
+		await agent.loadSession({
+			sessionId: "loaded-coalesce",
+			cwd: "/tmp",
+			mcpServers: [],
+		})
 		expect(updates.map((u) => u.update.sessionUpdate)).toEqual([
 			"user_message_chunk",
 			"agent_message_chunk",
@@ -2023,7 +3134,11 @@ describe("KimchiAcpAgent loadSession", () => {
 		]
 		const { conn, updates } = makeRecordingConn()
 		const agent = makeAgent(async () => asSession(fake), { conn })
-		await agent.loadSession({ sessionId: "loaded-ansi", cwd: "/tmp", mcpServers: [] })
+		await agent.loadSession({
+			sessionId: "loaded-ansi",
+			cwd: "/tmp",
+			mcpServers: [],
+		})
 		const messageTexts = updates
 			.filter((u) => u.update.sessionUpdate === "agent_message_chunk")
 			.map((u) => (u.update as { content: { text: string } }).content.text)
@@ -2044,7 +3159,11 @@ describe("KimchiAcpAgent loadSession", () => {
 			]
 			const { conn, updates } = makeRecordingConn()
 			const agent = makeAgent(async () => asSession(fake), { conn })
-			await agent.loadSession({ sessionId: "loaded-ansi-hidden", cwd: "/tmp", mcpServers: [] })
+			await agent.loadSession({
+				sessionId: "loaded-ansi-hidden",
+				cwd: "/tmp",
+				mcpServers: [],
+			})
 			const messageTexts = updates
 				.filter((u) => u.update.sessionUpdate === "agent_message_chunk")
 				.map((u) => (u.update as { content: { text: string } }).content.text)
@@ -2059,7 +3178,11 @@ describe("KimchiAcpAgent loadSession", () => {
 		const fake = new FakeAgentSession("loaded-cancel")
 		fake.branch = [userTextEntry("hi", "u1", null)]
 		const agent = makeAgent(async () => asSession(fake))
-		await agent.loadSession({ sessionId: "loaded-cancel", cwd: "/tmp", mcpServers: [] })
+		await agent.loadSession({
+			sessionId: "loaded-cancel",
+			cwd: "/tmp",
+			mcpServers: [],
+		})
 		// No turn was created during loadSession, so cancel must not throw and
 		// must not invoke abort with side effects beyond the no-op session.abort.
 		await expect(agent.cancel({ sessionId: "loaded-cancel" })).resolves.toBeUndefined()
@@ -2084,7 +3207,11 @@ describe("KimchiAcpAgent loadSession", () => {
 		const fake = new FakeAgentSession("loaded-prompt")
 		fake.branch = [userTextEntry("prior", "u1", null)]
 		const agent = makeAgent(async () => asSession(fake))
-		await agent.loadSession({ sessionId: "loaded-prompt", cwd: "/tmp", mcpServers: [] })
+		await agent.loadSession({
+			sessionId: "loaded-prompt",
+			cwd: "/tmp",
+			mcpServers: [],
+		})
 		// Drive a turn through the loaded session — short-circuit path is fine,
 		// we just need to confirm prompt() doesn't reject with "unknown
 		// sessionId" (which would mean the load registration failed).
@@ -2106,70 +3233,120 @@ describe("KimchiAcpAgent loadSession", () => {
 		toolName: string
 		args: Record<string, unknown>
 		result: { text: string; isError?: boolean }
-		expect: { kind: string; title: string; status: string; locations: Array<{ path: string }> }
+		expect: {
+			kind: string
+			title: string
+			status: string
+			locations: Array<{ path: string }>
+		}
 	}> = [
 		{
 			name: "bash → execute",
 			toolName: "bash",
 			args: { command: "ls -la" },
 			result: { text: "ok" },
-			expect: { kind: "execute", title: "ls -la", status: "completed", locations: [] },
+			expect: {
+				kind: "execute",
+				title: "ls -la",
+				status: "completed",
+				locations: [],
+			},
 		},
 		{
 			name: "read → read with location",
 			toolName: "read",
 			args: { file_path: "/tmp/a.ts" },
 			result: { text: "contents" },
-			expect: { kind: "read", title: "/tmp/a.ts", status: "completed", locations: [{ path: "/tmp/a.ts" }] },
+			expect: {
+				kind: "read",
+				title: "/tmp/a.ts",
+				status: "completed",
+				locations: [{ path: "/tmp/a.ts" }],
+			},
 		},
 		{
 			name: "edit → edit with location",
 			toolName: "edit",
 			args: { file_path: "/tmp/b.ts" },
 			result: { text: "edited" },
-			expect: { kind: "edit", title: "/tmp/b.ts", status: "completed", locations: [{ path: "/tmp/b.ts" }] },
+			expect: {
+				kind: "edit",
+				title: "/tmp/b.ts",
+				status: "completed",
+				locations: [{ path: "/tmp/b.ts" }],
+			},
 		},
 		{
 			name: "grep → search",
 			toolName: "grep",
 			args: { pattern: "foo" },
 			result: { text: "match" },
-			expect: { kind: "search", title: "foo", status: "completed", locations: [] },
+			expect: {
+				kind: "search",
+				title: "foo",
+				status: "completed",
+				locations: [],
+			},
 		},
 		{
 			name: "ls → read",
 			toolName: "ls",
 			args: { path: "/tmp" },
 			result: { text: "listing" },
-			expect: { kind: "read", title: "/tmp", status: "completed", locations: [{ path: "/tmp" }] },
+			expect: {
+				kind: "read",
+				title: "/tmp",
+				status: "completed",
+				locations: [{ path: "/tmp" }],
+			},
 		},
 		{
 			name: "find → search",
 			toolName: "find",
 			args: { pattern: "*.ts" },
 			result: { text: "found" },
-			expect: { kind: "search", title: "*.ts", status: "completed", locations: [] },
+			expect: {
+				kind: "search",
+				title: "*.ts",
+				status: "completed",
+				locations: [],
+			},
 		},
 		{
 			name: "web_fetch → fetch",
 			toolName: "web_fetch",
 			args: { url: "https://example.com" },
 			result: { text: "html" },
-			expect: { kind: "fetch", title: "web_fetch", status: "completed", locations: [] },
+			expect: {
+				kind: "fetch",
+				title: "web_fetch",
+				status: "completed",
+				locations: [],
+			},
 		},
 		{
 			name: "Agent → think",
 			toolName: "Agent",
 			args: { prompt: "go" },
 			result: { text: "done" },
-			expect: { kind: "think", title: "Agent", status: "completed", locations: [] },
+			expect: {
+				kind: "think",
+				title: "Agent",
+				status: "completed",
+				locations: [],
+			},
 		},
 		{
 			name: "unknown tool → other",
 			toolName: "mcp__foo__bar",
 			args: { arg: 1 },
 			result: { text: "ok" },
-			expect: { kind: "other", title: "mcp__foo__bar", status: "completed", locations: [] },
+			expect: {
+				kind: "other",
+				title: "mcp__foo__bar",
+				status: "completed",
+				locations: [],
+			},
 		},
 	]
 	for (const c of toolKindMatrix) {
@@ -2177,12 +3354,27 @@ describe("KimchiAcpAgent loadSession", () => {
 			const fake = new FakeAgentSession(`loaded-tool-${c.toolName}`)
 			fake.branch = [
 				userTextEntry("go", "u1", null),
-				assistantBlocksEntry([{ type: "toolCall", id: "tc-1", name: c.toolName, arguments: c.args }], "a1", "u1"),
+				assistantBlocksEntry(
+					[
+						{
+							type: "toolCall",
+							id: "tc-1",
+							name: c.toolName,
+							arguments: c.args,
+						},
+					],
+					"a1",
+					"u1",
+				),
 				toolResultEntry("tc-1", c.toolName, c.result.text, c.result.isError ?? false, "tr1", "a1"),
 			]
 			const { conn, updates } = makeRecordingConn()
 			const agent = makeAgent(async () => asSession(fake), { conn })
-			await agent.loadSession({ sessionId: fake.sessionId, cwd: "/tmp", mcpServers: [] })
+			await agent.loadSession({
+				sessionId: fake.sessionId,
+				cwd: "/tmp",
+				mcpServers: [],
+			})
 			const seq = updates.map((u) => u.update.sessionUpdate)
 			expect(seq).toEqual(["user_message_chunk", "tool_call", "tool_call_update"])
 
@@ -2212,7 +3404,14 @@ describe("KimchiAcpAgent loadSession", () => {
 		fake.branch = [
 			userTextEntry("go", "u1", null),
 			assistantBlocksEntry(
-				[{ type: "toolCall", id: "tc-deny", name: "bash", arguments: { command: "rm -rf /" } }],
+				[
+					{
+						type: "toolCall",
+						id: "tc-deny",
+						name: "bash",
+						arguments: { command: "rm -rf /" },
+					},
+				],
 				"a1",
 				"u1",
 			),
@@ -2220,9 +3419,16 @@ describe("KimchiAcpAgent loadSession", () => {
 		]
 		const { conn, updates } = makeRecordingConn()
 		const agent = makeAgent(async () => asSession(fake), { conn })
-		await agent.loadSession({ sessionId: "loaded-tool-fail", cwd: "/tmp", mcpServers: [] })
+		await agent.loadSession({
+			sessionId: "loaded-tool-fail",
+			cwd: "/tmp",
+			mcpServers: [],
+		})
 		const toolCall = updates[1].update as { status?: string }
-		const update = updates[2].update as { status?: string; content: Array<{ content: { text: string } }> }
+		const update = updates[2].update as {
+			status?: string
+			content: Array<{ content: { text: string } }>
+		}
 		expect(toolCall.status).toBe("failed")
 		expect(update.status).toBe("failed")
 		expect(update.content[0].content.text).toBe("permission denied")
@@ -2236,14 +3442,25 @@ describe("KimchiAcpAgent loadSession", () => {
 		fake.branch = [
 			userTextEntry("go", "u1", null),
 			assistantBlocksEntry(
-				[{ type: "toolCall", id: "tc-orphan", name: "bash", arguments: { command: "sleep 100" } }],
+				[
+					{
+						type: "toolCall",
+						id: "tc-orphan",
+						name: "bash",
+						arguments: { command: "sleep 100" },
+					},
+				],
 				"a1",
 				"u1",
 			),
 		]
 		const { conn, updates } = makeRecordingConn()
 		const agent = makeAgent(async () => asSession(fake), { conn })
-		await agent.loadSession({ sessionId: "loaded-tool-orphan", cwd: "/tmp", mcpServers: [] })
+		await agent.loadSession({
+			sessionId: "loaded-tool-orphan",
+			cwd: "/tmp",
+			mcpServers: [],
+		})
 		expect(updates.map((u) => u.update.sessionUpdate)).toEqual(["user_message_chunk", "tool_call", "tool_call_update"])
 		const toolCall = updates[1].update as { status?: string }
 		const update = updates[2].update as { status?: string; content: unknown[] }
@@ -2260,7 +3477,11 @@ describe("KimchiAcpAgent loadSession", () => {
 		]
 		const { conn, updates } = makeRecordingConn()
 		const agent = makeAgent(async () => asSession(fake), { conn })
-		await agent.loadSession({ sessionId: "loaded-thinking", cwd: "/tmp", mcpServers: [] })
+		await agent.loadSession({
+			sessionId: "loaded-thinking",
+			cwd: "/tmp",
+			mcpServers: [],
+		})
 		const thought = updates.find((u) => u.update.sessionUpdate === "agent_thought_chunk")
 		expect(thought).toBeDefined()
 		const content = (thought?.update as { content: { type: string; text: string } }).content
@@ -2284,7 +3505,11 @@ describe("KimchiAcpAgent loadSession", () => {
 			]
 			const { conn, updates } = makeRecordingConn()
 			const agent = makeAgent(async () => asSession(fake), { conn })
-			await agent.loadSession({ sessionId: "loaded-thinking-hidden", cwd: "/tmp", mcpServers: [] })
+			await agent.loadSession({
+				sessionId: "loaded-thinking-hidden",
+				cwd: "/tmp",
+				mcpServers: [],
+			})
 			expect(updates.find((u) => u.update.sessionUpdate === "agent_thought_chunk")).toBeUndefined()
 		} finally {
 			_resetHideThinking()
@@ -2299,14 +3524,25 @@ describe("KimchiAcpAgent loadSession", () => {
 		fake.branch = [
 			userTextEntry("go", "u1", null),
 			assistantBlocksEntry(
-				[{ type: "thinking", thinking: "ignored", redacted: true, thinkingSignature: "opaque" }],
+				[
+					{
+						type: "thinking",
+						thinking: "ignored",
+						redacted: true,
+						thinkingSignature: "opaque",
+					},
+				],
 				"a1",
 				"u1",
 			),
 		]
 		const { conn, updates } = makeRecordingConn()
 		const agent = makeAgent(async () => asSession(fake), { conn })
-		await agent.loadSession({ sessionId: "loaded-thinking-redacted", cwd: "/tmp", mcpServers: [] })
+		await agent.loadSession({
+			sessionId: "loaded-thinking-redacted",
+			cwd: "/tmp",
+			mcpServers: [],
+		})
 		expect(updates.find((u) => u.update.sessionUpdate === "agent_thought_chunk")).toBeUndefined()
 	})
 
@@ -2317,7 +3553,14 @@ describe("KimchiAcpAgent loadSession", () => {
 		// historical state changes the user never saw the first time around.
 		const fake = new FakeAgentSession("loaded-skip-only")
 		fake.branch = [
-			{ type: "model_change", id: "mc1", parentId: null, timestamp: "x", provider: "p", modelId: "m" },
+			{
+				type: "model_change",
+				id: "mc1",
+				parentId: null,
+				timestamp: "x",
+				provider: "p",
+				modelId: "m",
+			},
 			{
 				type: "compaction",
 				id: "c1",
@@ -2327,12 +3570,28 @@ describe("KimchiAcpAgent loadSession", () => {
 				firstKeptEntryId: "u1",
 				tokensBefore: 0,
 			},
-			{ type: "branch_summary", id: "bs1", parentId: "c1", timestamp: "x", summary: "branch" },
-			{ type: "custom", id: "cu1", parentId: "bs1", timestamp: "x", payload: { whatever: true } },
+			{
+				type: "branch_summary",
+				id: "bs1",
+				parentId: "c1",
+				timestamp: "x",
+				summary: "branch",
+			},
+			{
+				type: "custom",
+				id: "cu1",
+				parentId: "bs1",
+				timestamp: "x",
+				payload: { whatever: true },
+			},
 		]
 		const { conn, updates } = makeRecordingConn()
 		const agent = makeAgent(async () => asSession(fake), { conn })
-		await agent.loadSession({ sessionId: "loaded-skip-only", cwd: "/tmp", mcpServers: [] })
+		await agent.loadSession({
+			sessionId: "loaded-skip-only",
+			cwd: "/tmp",
+			mcpServers: [],
+		})
 		expect(updates).toHaveLength(0)
 	})
 
@@ -2344,14 +3603,26 @@ describe("KimchiAcpAgent loadSession", () => {
 				[
 					{ type: "text", text: "let me check" },
 					{ type: "thinking", thinking: "weighing options" },
-					{ type: "toolCall", id: "tc-1", name: "bash", arguments: { command: "ls" } },
+					{
+						type: "toolCall",
+						id: "tc-1",
+						name: "bash",
+						arguments: { command: "ls" },
+					},
 				],
 				"a1",
 				"u1",
 			),
 			toolResultEntry("tc-1", "bash", "file1\nfile2", false, "tr1", "a1"),
 			// Skipped entries scattered through the branch must not break the walker.
-			{ type: "model_change", id: "mc1", parentId: "tr1", timestamp: "x", provider: "p", modelId: "m" },
+			{
+				type: "model_change",
+				id: "mc1",
+				parentId: "tr1",
+				timestamp: "x",
+				provider: "p",
+				modelId: "m",
+			},
 			{
 				type: "compaction",
 				id: "c1",
@@ -2365,7 +3636,11 @@ describe("KimchiAcpAgent loadSession", () => {
 		]
 		const { conn, updates } = makeRecordingConn()
 		const agent = makeAgent(async () => asSession(fake), { conn })
-		await agent.loadSession({ sessionId: "loaded-mixed", cwd: "/tmp", mcpServers: [] })
+		await agent.loadSession({
+			sessionId: "loaded-mixed",
+			cwd: "/tmp",
+			mcpServers: [],
+		})
 		// Order is significant: tool_call must precede tool_call_update, and
 		// the post-skipped-entries assistant text must land last.
 		expect(updates.map((u) => u.update.sessionUpdate)).toEqual([
@@ -2390,7 +3665,12 @@ describe("KimchiAcpAgent loadSession", () => {
 				[
 					{ type: "text", text: "hello" },
 					{ type: "thinking", thinking: "thinking" },
-					{ type: "toolCall", id: "tc-1", name: "bash", arguments: { command: "ls" } },
+					{
+						type: "toolCall",
+						id: "tc-1",
+						name: "bash",
+						arguments: { command: "ls" },
+					},
 				],
 				"a1",
 				"u1",
@@ -2405,7 +3685,11 @@ describe("KimchiAcpAgent loadSession", () => {
 			extensionEventCount++
 		})
 		const agent = makeAgent(async () => asSession(fake))
-		await agent.loadSession({ sessionId: "loaded-no-events", cwd: "/tmp", mcpServers: [] })
+		await agent.loadSession({
+			sessionId: "loaded-no-events",
+			cwd: "/tmp",
+			mcpServers: [],
+		})
 		expect(extensionEventCount).toBe(0)
 	})
 
@@ -2423,7 +3707,12 @@ describe("KimchiAcpAgent loadSession", () => {
 				assistantBlocksEntry(
 					[
 						{ type: "text", text: `a${i}` },
-						{ type: "toolCall", id: `tc-${i}`, name: "bash", arguments: { command: `echo ${i}` } },
+						{
+							type: "toolCall",
+							id: `tc-${i}`,
+							name: "bash",
+							arguments: { command: `echo ${i}` },
+						},
 					],
 					`a${i}`,
 					`u${i}`,
@@ -2434,9 +3723,174 @@ describe("KimchiAcpAgent loadSession", () => {
 		fake.branch = branch
 		const agent = makeAgent(async () => asSession(fake))
 		const start = Date.now()
-		await agent.loadSession({ sessionId: "loaded-perf", cwd: "/tmp", mcpServers: [] })
+		await agent.loadSession({
+			sessionId: "loaded-perf",
+			cwd: "/tmp",
+			mcpServers: [],
+		})
 		const elapsed = Date.now() - start
 		expect(elapsed).toBeLessThan(3000)
+	})
+})
+
+// Ordering regression test: permission flag controller must be registered
+// BEFORE bindAcpExtensions is called. This ensures that when upstream
+// bindExtensions() emits session_start, the permissions extension already
+// has access to the shared controller and doesn't create a duplicate one.
+describe("permission flag controller registration ordering", () => {
+	it("registers permission flag controller before bindAcpExtensions in newSession", async () => {
+		const ordering: string[] = []
+		const fake = new FakeAgentSession("session-ordering-test")
+
+		fake.bindExtensionsImpl = async () => {
+			// At this point, the permission controller should already be registered
+			const controller = getSessionPermissionFlagController("session-ordering-test")
+			ordering.push(controller ? "controller-present" : "controller-missing")
+			ordering.push("bindAcpExtensions-called")
+		}
+
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+		})
+
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		// The controller should be present when bindAcpExtensions is called
+		expect(ordering).toEqual(["controller-present", "bindAcpExtensions-called"])
+		// And should still be registered after newSession completes
+		expect(getSessionPermissionFlagController("session-ordering-test")).toBeDefined()
+
+		await agent.shutdown()
+	})
+
+	it("registers permission flag controller before bindAcpExtensions in loadSessionFresh", async () => {
+		const ordering: string[] = []
+		const fake = new FakeAgentSession("load-session-ordering")
+		// Add a minimal branch for replay
+		fake.branch = [
+			{
+				type: "message",
+				message: { role: "user", content: "test" },
+				timestamp: Date.now(),
+			},
+		]
+
+		fake.bindExtensionsImpl = async () => {
+			const controller = getSessionPermissionFlagController("load-session-ordering")
+			ordering.push(controller ? "controller-present" : "controller-missing")
+			ordering.push("bindAcpExtensions-called")
+		}
+
+		let loaderCallCount = 0
+		const loader: AcpSessionLoader = async () => {
+			loaderCallCount++
+			return asSession(fake)
+		}
+
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionLoader: loader,
+		})
+
+		await agent.loadSession({ sessionId: "load-session-ordering", cwd: "/tmp", mcpServers: [] })
+
+		expect(loaderCallCount).toBe(1)
+		expect(ordering).toEqual(["controller-present", "bindAcpExtensions-called"])
+		expect(getSessionPermissionFlagController("load-session-ordering")).toBeDefined()
+
+		await agent.shutdown()
+	})
+
+	it("unregisters permission flag controller when bindAcpExtensions throws in newSession", async () => {
+		const fake = new FakeAgentSession("session-bind-failure")
+		// Verify controller is registered during the call (before bind fails)
+		let controllerDuringBind: ReturnType<typeof getSessionPermissionFlagController>
+		fake.bindExtensionsImpl = async () => {
+			controllerDuringBind = getSessionPermissionFlagController("session-bind-failure")
+			throw new Error("bindExtensions failed")
+		}
+
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+		})
+
+		await expect(agent.newSession({ cwd: "/tmp", mcpServers: [] })).rejects.toThrow(/bindExtensions failed/)
+
+		// Controller should have been present during bind
+		expect(controllerDuringBind).toBeDefined()
+		// But should be unregistered after the catch block runs
+		expect(getSessionPermissionFlagController("session-bind-failure")).toBeUndefined()
+		expect(fake.disposed).toBe(true)
+	})
+
+	it("unregisters permission flag controller when bindAcpExtensions throws in loadSession", async () => {
+		const fake = new FakeAgentSession("load-bind-failure")
+		fake.branch = [
+			{
+				type: "message",
+				message: { role: "user", content: "test" },
+				timestamp: Date.now(),
+			},
+		]
+		fake.bindExtensionsImpl = async () => {
+			throw new Error("bindExtensions failed in load")
+		}
+
+		const loader: AcpSessionLoader = async () => asSession(fake)
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionLoader: loader,
+		})
+
+		await expect(agent.loadSession({ sessionId: "load-bind-failure", cwd: "/tmp", mcpServers: [] })).rejects.toThrow(
+			/bindExtensions failed in load/,
+		)
+
+		expect(getSessionPermissionFlagController("load-bind-failure")).toBeUndefined()
+		expect(fake.disposed).toBe(true)
+	})
+
+	it("provides a working controller that can get and set mode during bindAcpExtensions", async () => {
+		const fake = new FakeAgentSession("session-controller-functional")
+		let capturedMode: { mode: string; source: string } | undefined
+
+		fake.bindExtensionsImpl = async () => {
+			const controller = getSessionPermissionFlagController("session-controller-functional")
+			if (controller) {
+				// Verify the controller works - get initial mode
+				capturedMode = controller.getMode()
+				// Set a new mode
+				controller.setMode("plan", "user")
+			}
+		}
+
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+		})
+
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		// The controller should be present and functional during bindExtensions
+		expect(capturedMode).toBeDefined()
+		expect(capturedMode?.mode).toBeDefined()
+		expect(capturedMode?.source).toBeDefined()
+
+		// After setMode in bindExtensions, the controller should have the new mode "plan"
+		const finalController = getSessionPermissionFlagController("session-controller-functional")
+		expect(finalController?.getMode()).toEqual({ mode: "plan", source: "user" })
+
+		await agent.shutdown()
 	})
 })
 

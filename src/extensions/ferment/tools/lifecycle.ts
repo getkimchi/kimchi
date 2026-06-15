@@ -25,7 +25,7 @@ import {
 	type ScopingQuestion,
 	type ScopingQuestionType,
 } from "../../../ferment/types.js"
-import { isUserChosenYolo } from "../../permissions/index.js"
+import { isLaunchedWithYolo } from "../../permissions/index.js"
 import { YES_NO_OPTIONS } from "../../questionnaire-reducer.js"
 import {
 	type AskUserQuestion,
@@ -756,7 +756,7 @@ export async function completeFerment(runtime: FermentRuntime, params: CompleteF
 }
 
 function canAutoApproveFermentStart(): boolean {
-	return isUserChosenYolo() && !hasActiveFerment()
+	return isLaunchedWithYolo() && !hasActiveFerment()
 }
 
 async function confirmFermentStart(ctx: unknown, title: string, intent: string): Promise<boolean | undefined> {

@@ -18,6 +18,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { FermentStorage, clearFermentCache } from "../../ferment/store.js"
 import type { Ferment } from "../../ferment/types.js"
+import { PERMISSIONS_ENV_KEY } from "../permissions/constants.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
 import { clearAllPendingScopes, getPendingScope, setPendingScope } from "./scoping.js"
 import {
@@ -287,7 +288,7 @@ describe("request_ferment_workflow approval gate", () => {
 	})
 
 	it("bypasses the approval gate in yolo mode", async () => {
-		vi.stubEnv("KIMCHI_PERMISSIONS", "yolo")
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "yolo")
 		const ctx = createWorkflowCtx({ confirm: false })
 		const text = ok(
 			await requestWorkflow(
@@ -306,7 +307,7 @@ describe("request_ferment_workflow approval gate", () => {
 	})
 
 	it("does not bypass approval when yolo came from an active ferment env", async () => {
-		vi.stubEnv("KIMCHI_PERMISSIONS", "yolo")
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "yolo")
 		vi.stubEnv("KIMCHI_ACTIVE_FERMENT", "existing-ferment")
 		const text = err(
 			await requestWorkflow({ title: "Blocked Ferment", intent: "Find improvements to this extension." }),

@@ -9,10 +9,8 @@ import type { PermissionMode, Rule } from "./types.js"
 export interface CommandDeps {
 	getSession: () => SessionMemory
 	getLoaded: () => LoadedConfig
-	getMode: () => PermissionMode
-	setRuntimeMode: (mode: PermissionMode | undefined, source: "user") => void
-	applyPlanMode: () => void
-	restorePlanMode: () => void
+	getPermissionMode: (ctx: ExtensionContext) => PermissionMode
+	setPermissionMode: (ctx: ExtensionContext, mode: PermissionMode) => void
 	rebuildConfigRules: () => void
 	reloadConfig: (ctx: ExtensionContext) => void
 	updateStatus: (ctx: ExtensionContext) => void
@@ -76,7 +74,7 @@ async function openSelector(ctx: ExtensionContext, deps: CommandDeps): Promise<v
 		return showStatus(ctx as ExtensionCommandContext, deps)
 	}
 
-	const mode = deps.getMode()
+	const mode = deps.getPermissionMode(ctx)
 	const sessionCount = deps.getSession().all().length
 
 	const CHANGE_MODE = "Change mode"
@@ -118,10 +116,10 @@ async function openSelector(ctx: ExtensionContext, deps: CommandDeps): Promise<v
 
 async function openModePicker(ctx: ExtensionContext, deps: CommandDeps): Promise<void> {
 	if (!ctx.hasUI) {
-		ctx.ui.notify(`current mode: ${deps.getMode()}`, "info")
+		ctx.ui.notify(`current mode: ${deps.getPermissionMode(ctx)}`, "info")
 		return
 	}
-	const current = deps.getMode()
+	const current = deps.getPermissionMode(ctx)
 	const marker = (m: PermissionMode) => (m === current ? "●" : "○")
 
 	const OPT_DEFAULT = `${marker("default")}  default — ask before each tool call`
@@ -171,7 +169,7 @@ const HELP_TEXT = `/permissions — show current mode and rules
 /permissions help — show this help`
 
 function showStatus(ctx: ExtensionCommandContext, deps: CommandDeps): void {
-	const mode = deps.getMode()
+	const mode = deps.getPermissionMode(ctx)
 	const loaded = deps.getLoaded()
 	const session = deps.getSession()
 
@@ -209,11 +207,7 @@ function handleMode(ctx: ExtensionContext, deps: CommandDeps, arg: string): void
 		ctx.ui.notify(`unknown mode "${arg}". Valid: default, plan, auto, yolo`, "warning")
 		return
 	}
-	const prev = deps.getMode()
-	deps.setRuntimeMode(mode, "user")
-	if (prev === "plan" && mode !== "plan") deps.restorePlanMode()
-	if (mode === "plan") deps.applyPlanMode()
-	deps.updateStatus(ctx)
+	deps.setPermissionMode(ctx, mode)
 }
 
 function addSessionRule(

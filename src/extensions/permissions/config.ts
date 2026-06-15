@@ -2,9 +2,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { z } from "zod"
-import { DEFAULT_CONFIG, type PermissionsConfig } from "./types.js"
+import { ALL_PERMISSION_MODES, DEFAULT_CONFIG, type PermissionsConfig } from "./types.js"
 
-const modeSchema = z.enum(["default", "plan", "auto", "yolo"])
+const modeSchema = z.enum(ALL_PERMISSION_MODES)
 
 const configSchema = z
 	.object({

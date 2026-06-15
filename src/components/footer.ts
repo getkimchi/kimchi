@@ -10,7 +10,7 @@ import { getActiveAgentCount } from "../extensions/agents/index.js"
 import { formatFermentFooterDisplay } from "../extensions/ferment/footer-status.js"
 import { getActiveFerment, getFermentContinuationPolicy } from "../extensions/ferment/index.js"
 import { formatCount } from "../extensions/format.js"
-import { getCurrentPermissionsMode } from "../extensions/permissions/index.js"
+import { getDisplayPermissionMode } from "../extensions/permissions/index.js"
 import { getMultiModelEnabled } from "../extensions/prompt-construction/prompt-enrichment.js"
 import { getActiveTags, getCurrentPhase, parseTag } from "../extensions/tags.js"
 
@@ -135,7 +135,7 @@ export function buildScriptPayload(
 		},
 		exceeds_200k_tokens: (usage?.tokens ?? 0) > 200_000,
 		permissions: {
-			mode: getCurrentPermissionsMode(),
+			mode: getDisplayPermissionMode(),
 		},
 		multi_model: {
 			enabled: getMultiModelEnabled(),

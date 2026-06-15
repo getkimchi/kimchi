@@ -1,11 +1,20 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it } from "vitest"
 import type { Ferment, FermentStatus } from "../../ferment/types.js"
 import { runAsAgentWorker } from "../agent-worker-context.js"
 import { registerAgents } from "../agents/personas/agent-types.js"
+import { setPermissionMode } from "../permissions/mode-controller.js"
 import { buildFermentPromptBlock } from "./prompt-block.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
 import type { ContinuationPolicy } from "./state.js"
+
+const TEST_SESSION_ID = "test-session"
+
+function makeMockCtx(): ExtensionContext {
+	// Set up permission mode for the test session
+	setPermissionMode(TEST_SESSION_ID, "default", "user")
+	return { sessionManager: { getSessionId: () => TEST_SESSION_ID } } as unknown as ExtensionContext
+}
 
 function makePi(oneshot: boolean): ExtensionAPI {
 	return {
@@ -96,7 +105,7 @@ describe("buildFermentPromptBlock", () => {
 
 		for (const c of cases) {
 			it(`${c.defined ? "returns text" : "returns undefined"} for status=${c.status}`, () => {
-				const out = buildFermentPromptBlock(PI_NORMAL, makeRuntime({ status: c.status }))
+				const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime({ status: c.status }))
 				if (c.defined) {
 					expect(out).toBeDefined()
 					expect(out).not.toBe("")
@@ -107,7 +116,7 @@ describe("buildFermentPromptBlock", () => {
 		}
 
 		it("returns idle hint when no ferment is active", () => {
-			const out = buildFermentPromptBlock(PI_NORMAL, makeNoActiveFermentRuntime())
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeNoActiveFermentRuntime())
 			expect(out).toContain("Ferment Workflow")
 			expect(out).toContain("The tool asks the user for explicit host confirmation")
 			expect(out).toContain("In yolo permissions mode, the host auto-approves")
@@ -130,7 +139,7 @@ describe("buildFermentPromptBlock", () => {
 
 		for (const c of cases) {
 			it(`${c.defined ? "returns text" : "returns undefined"} for status=${c.status}`, () => {
-				const out = buildFermentPromptBlock(PI_ONESHOT, makeRuntime({ status: c.status }))
+				const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status: c.status }))
 				if (c.defined) {
 					expect(out).toBeDefined()
 					expect(out).not.toBe("")
@@ -141,7 +150,7 @@ describe("buildFermentPromptBlock", () => {
 		}
 
 		it("returns planner supplement for draft status (one-shot scoping must not break)", () => {
-			const out = buildFermentPromptBlock(PI_ONESHOT, makeRuntime({ status: "draft" }))
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status: "draft" }))
 			expect(out).toContain(STATE_MACHINE_HEADER)
 			expect(out).toContain(FILE_RULE)
 		})
@@ -154,7 +163,7 @@ describe("buildFermentPromptBlock", () => {
 		for (const status of plannerStatuses) {
 			it(`preserves planner rules for status=${status} regardless of ferment-oneshot flag`, () => {
 				for (const surface of ["normal", "oneshot"] as const) {
-					const out = buildFermentPromptBlock(PI_BY_NAME[surface], makeRuntime({ status }))
+					const out = buildFermentPromptBlock(makeMockCtx(), PI_BY_NAME[surface], makeRuntime({ status }))
 					expect(out, `surface=${surface} status=${status}`).toContain(STATE_MACHINE_HEADER)
 					expect(out, `surface=${surface} status=${status}`).toContain(FILE_RULE)
 					expect(out, `surface=${surface} status=${status}`).toContain(KNOWLEDGE_HEADER)
@@ -164,7 +173,7 @@ describe("buildFermentPromptBlock", () => {
 		}
 
 		it("preserves planner rules for draft when ferment-oneshot is set", () => {
-			const out = buildFermentPromptBlock(PI_ONESHOT, makeRuntime({ status: "draft" }))
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status: "draft" }))
 			expect(out).toContain(STATE_MACHINE_HEADER)
 			expect(out).toContain(FILE_RULE)
 			expect(out).toContain(KNOWLEDGE_HEADER)
@@ -172,7 +181,7 @@ describe("buildFermentPromptBlock", () => {
 		})
 
 		it("tells planners that ferment creation is host-owned", () => {
-			const out = buildFermentPromptBlock(PI_NORMAL, makeRuntime({ status: "running" }))
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime({ status: "running" }))
 			expect(out).toContain(CREATE_GUARD)
 			expect(out).toContain('/ferment new "..."')
 			expect(out).toContain("Do not search for, retry with, or invent variants")
@@ -181,28 +190,28 @@ describe("buildFermentPromptBlock", () => {
 
 		it("returns undefined for subagent workers (no idle hint, no planner supplement)", async () => {
 			await runAsAgentWorker(async () => {
-				expect(buildFermentPromptBlock(PI_NORMAL, makeNoActiveFermentRuntime())).toBeUndefined()
-				expect(buildFermentPromptBlock(PI_NORMAL, makeRuntime({ status: "running" }))).toBeUndefined()
-				expect(buildFermentPromptBlock(PI_ONESHOT, makeRuntime({ status: "draft" }))).toBeUndefined()
+				expect(buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeNoActiveFermentRuntime())).toBeUndefined()
+				expect(buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime({ status: "running" }))).toBeUndefined()
+				expect(buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status: "draft" }))).toBeUndefined()
 			})
 		})
 
 		it("returns undefined when permissions mode is plan (no idle hint)", () => {
-			const original = process.env.KIMCHI_PERMISSIONS
-			process.env.KIMCHI_PERMISSIONS = "plan"
-			expect(buildFermentPromptBlock(PI_NORMAL, makeNoActiveFermentRuntime())).toBeUndefined()
-			process.env.KIMCHI_PERMISSIONS = original
+			const ctx = makeMockCtx()
+			const sessionId = ctx.sessionManager.getSessionId()
+			setPermissionMode(sessionId, "plan", "user")
+			expect(buildFermentPromptBlock(ctx, PI_NORMAL, makeNoActiveFermentRuntime())).toBeUndefined()
 		})
 		it("preserves paused warning for status=paused regardless of ferment-oneshot flag", () => {
 			for (const surface of ["normal", "oneshot"] as const) {
-				const out = buildFermentPromptBlock(PI_BY_NAME[surface], makeRuntime({ status: "paused" }))
+				const out = buildFermentPromptBlock(makeMockCtx(), PI_BY_NAME[surface], makeRuntime({ status: "paused" }))
 				expect(out, `surface=${surface}`).toContain(PAUSED_HEADER)
 				expect(out, `surface=${surface}`).toContain(PAUSED_RULE)
 			}
 		})
 
 		it("warns against turning fixed interfaces into configurable options", () => {
-			const out = buildFermentPromptBlock(PI_ONESHOT, makeRuntime()) ?? ""
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime()) ?? ""
 			expect(out).toContain("fixed output path")
 			expect(out).toContain("fixed runtime interface")
 			expect(out).toContain("extra CLI argument")
@@ -211,7 +220,7 @@ describe("buildFermentPromptBlock", () => {
 		})
 
 		it("includes Upfront Contract directives mentioning propose_ferment_scoping", () => {
-			const out = buildFermentPromptBlock(PI_ONESHOT, makeRuntime({}, "automated")) ?? ""
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({}, "automated")) ?? ""
 			expect(out).toContain("Upfront Contract")
 			expect(out).toContain("do not ask the user to confirm phase advancement")
 			expect(out).toContain("propose_ferment_scoping")
@@ -243,7 +252,7 @@ describe("buildFermentPromptBlock", () => {
 		})
 
 		it("guides orient-interview discovery before proposing scoping", () => {
-			const out = buildFermentPromptBlock(PI_ONESHOT, makeRuntime()) ?? ""
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime()) ?? ""
 			expect(out).toContain("follow the shared discovery guidance in the Upfront Contract")
 			// Orient-interview scoping sequence
 			expect(out).toContain('<scoping_sequence required="true">')
@@ -272,7 +281,7 @@ describe("buildFermentPromptBlock", () => {
 		})
 
 		it("uses manual phase-boundary instructions under manual continuation policy", () => {
-			const out = buildFermentPromptBlock(PI_NORMAL, makeRuntime({}, "manual")) ?? ""
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime({}, "manual")) ?? ""
 			expect(out).toContain("Manual continuation policy is active")
 			expect(out).toContain("ask the user before activating the next phase")
 			expect(out).toContain("do not call `activate_ferment_phase` until they say continue")
@@ -280,7 +289,7 @@ describe("buildFermentPromptBlock", () => {
 		})
 
 		it("uses automated cross-phase instructions under automated continuation policy", () => {
-			const out = buildFermentPromptBlock(PI_NORMAL, makeRuntime({}, "automated")) ?? ""
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime({}, "automated")) ?? ""
 			expect(out).toContain("Automated continuation policy is active")
 			expect(out).toContain("continue across phase boundaries")
 			expect(out).toContain("do not ask the user to confirm phase advancement")
@@ -291,13 +300,13 @@ describe("buildFermentPromptBlock", () => {
 			// agents extension.
 			registerAgents(new Map())
 
-			const out = buildFermentPromptBlock(PI_ONESHOT, makeRuntime()) ?? ""
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime()) ?? ""
 			expect(out).toContain("Available subagent types")
 			expect(out).toContain("**Explore**")
 		})
 
 		it("uses the active ferment name in the planner role line", () => {
-			const out = buildFermentPromptBlock(PI_ONESHOT, makeRuntime()) ?? ""
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime()) ?? ""
 			expect(out).toContain('ferment "Runtime Plan"')
 			// Phase-grade-based self-improvement was removed when per-phase grading
 			// went away. Corrective-step pipeline now lives in complete_ferment_phase
@@ -306,14 +315,14 @@ describe("buildFermentPromptBlock", () => {
 		})
 
 		it("does not prescribe concrete worker models — orchestrator owns that policy now", () => {
-			const out = buildFermentPromptBlock(PI_ONESHOT, makeRuntime()) ?? ""
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime()) ?? ""
 			expect(out).not.toContain("minimax-m2.7")
 			expect(out).not.toContain("kimi-k2.5")
 			expect(out).not.toContain("worker_model")
 		})
 
 		it("keeps phase tagging out of the pre-ferment classification path", () => {
-			const out = buildFermentPromptBlock(PI_NORMAL, makeNoActiveFermentRuntime()) ?? ""
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeNoActiveFermentRuntime()) ?? ""
 			expect(out).toContain("Do not call `set_phase`")
 			expect(out).toContain("*until* you have classified the request")
 			expect(out).toContain("called `request_ferment_workflow`")
@@ -328,7 +337,7 @@ describe("buildFermentPromptBlock", () => {
 
 		it("paused renders the warning without planner supplement substrings", () => {
 			for (const surface of ["normal", "oneshot"] as const) {
-				const out = buildFermentPromptBlock(PI_BY_NAME[surface], makeRuntime({ status: "paused" })) ?? ""
+				const out = buildFermentPromptBlock(makeMockCtx(), PI_BY_NAME[surface], makeRuntime({ status: "paused" })) ?? ""
 				expect(out, `surface=${surface}`).toContain(PAUSED_RULE)
 				expect(out, `surface=${surface}`).not.toContain(STATE_MACHINE_HEADER)
 				expect(out, `surface=${surface}`).not.toContain(KNOWLEDGE_HEADER)
@@ -340,7 +349,7 @@ describe("buildFermentPromptBlock", () => {
 		for (const status of runningLike) {
 			it(`status=${status} renders the planner supplement without the paused warning`, () => {
 				for (const surface of ["normal", "oneshot"] as const) {
-					const out = buildFermentPromptBlock(PI_BY_NAME[surface], makeRuntime({ status })) ?? ""
+					const out = buildFermentPromptBlock(makeMockCtx(), PI_BY_NAME[surface], makeRuntime({ status })) ?? ""
 					expect(out, `surface=${surface} status=${status}`).toContain(STATE_MACHINE_HEADER)
 					expect(out, `surface=${surface} status=${status}`).not.toContain(PAUSED_HEADER)
 					expect(out, `surface=${surface} status=${status}`).not.toContain(PAUSED_RULE)
@@ -355,8 +364,8 @@ describe("buildFermentPromptBlock", () => {
 		it("both flag states emit the same load-bearing planner substrings for an active running ferment", () => {
 			const runtime = makeRuntime({ status: "running" })
 
-			const normalText = buildFermentPromptBlock(PI_NORMAL, runtime) ?? ""
-			const oneshotText = buildFermentPromptBlock(PI_ONESHOT, runtime) ?? ""
+			const normalText = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, runtime) ?? ""
+			const oneshotText = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, runtime) ?? ""
 
 			for (const sub of PARITY_SUBSTRINGS) {
 				expect(normalText, `ferment-oneshot=false missing: ${sub}`).toContain(sub)
