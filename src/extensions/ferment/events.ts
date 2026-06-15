@@ -7,6 +7,7 @@ import { formatDuration } from "./colors.js"
 import { extractContextualOptions, extractTrailingQuestion } from "./contextual-options.js"
 import { decideContinuation } from "./continuation.js"
 import { emitFermentCreated } from "./domain-events-emitter.js"
+import { FERMENT_EVENTS, type FermentStalledPayload } from "./domain-events.js"
 import { autoInitFromEnv, ensureGitRepo } from "./git-init.js"
 import {
 	appendRefEntry,
@@ -239,6 +240,25 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 					if (!outcome.ok) {
 						// eslint-disable-next-line no-console
 						console.error("RECOVER FAILED for", f.id, outcome.error)
+					} else {
+						// Emit stalled telemetry for crash-recovered ferments.
+						// Load the full Ferment to access phases and lastActiveAt.
+						const full = runtime.getStorage().get(f.id)
+						if (full) {
+							const completedPhases = full.phases.filter((p) => p.status === "completed").length
+							const totalPhases = full.phases.length
+							const lastActiveMs = full.lastActiveAt ? Date.parse(full.lastActiveAt) : Number.NaN
+							const stalledPayload: FermentStalledPayload = {
+								fermentId: full.id,
+								name: full.name,
+								lifecycleStage: full.status,
+								idleDurationMs: Number.isFinite(lastActiveMs) ? Date.now() - lastActiveMs : 0,
+								completedPhases,
+								totalPhases,
+								phaseCompletionRatio: totalPhases > 0 ? completedPhases / totalPhases : 0,
+							}
+							pi.events.emit(FERMENT_EVENTS.STALLED, stalledPayload)
+						}
 					}
 				} catch (err) {
 					// eslint-disable-next-line no-console
@@ -296,6 +316,20 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 				if (choice === "Resume") {
 					deferExtensionAction(() => resumeFerment(pi, envId, ctx, runtime))
 				} else {
+					// User explicitly declined to resume — emit stalled telemetry.
+					const completedPhases = ferment.phases.filter((p) => p.status === "completed").length
+					const totalPhases = ferment.phases.length
+					const lastActiveMs = ferment.lastActiveAt ? Date.parse(ferment.lastActiveAt) : Number.NaN
+					const stalledPayload: FermentStalledPayload = {
+						fermentId: ferment.id,
+						name: ferment.name,
+						lifecycleStage: ferment.status,
+						idleDurationMs: Number.isFinite(lastActiveMs) ? runtime.now().getTime() - lastActiveMs : 0,
+						completedPhases,
+						totalPhases,
+						phaseCompletionRatio: totalPhases > 0 ? completedPhases / totalPhases : 0,
+					}
+					pi.events.emit(FERMENT_EVENTS.STALLED, stalledPayload)
 					deferExtensionAction(() => {
 						loadFermentSilently(pi, envId, runtime)
 					})

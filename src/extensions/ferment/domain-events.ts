@@ -7,10 +7,13 @@
  * path triggered it.
  */
 
+import type { FermentStatus } from "../../ferment/types.js"
+
 export const FERMENT_EVENTS = {
 	STARTED: "ferment:started",
 	COMPLETED: "ferment:completed",
 	ABANDONED: "ferment:abandoned",
+	STALLED: "ferment:stalled",
 	PHASE_STARTED: "ferment:phase_started",
 	PHASE_COMPLETED: "ferment:phase_completed",
 	STEP_STARTED: "ferment:step_started",
@@ -49,6 +52,22 @@ export interface FermentAbandonedPayload {
 	fermentId: string
 	name: string
 	reason?: string
+	/** Lifecycle stage the ferment was in when abandoned. */
+	lifecycleStage: FermentStatus
+	/** Whether scoping (goal + criteria) was confirmed before abandonment. */
+	scopingComplete: boolean
+	/** Number of phases that reached "completed" status. */
+	completedPhases: number
+	/** Total number of phases in the ferment plan. */
+	totalPhases: number
+	/** Ratio of completed phases to total phases (0–1). 0 when totalPhases is 0. */
+	phaseCompletionRatio: number
+	/** 1-based index of the last active phase, or undefined if no phase was ever activated. */
+	lastActivePhaseIndex?: number
+	/** Total number of steps that reached "failed" status across all phases. */
+	stepFailureCount: number
+	/** Wall-clock duration in ms from ferment creation to abandonment. */
+	durationMs: number
 }
 
 export interface FermentPhaseStartedPayload {
@@ -97,4 +116,19 @@ export interface FermentStepFailedPayload {
 
 export interface FermentSteeringPayload {
 	fermentId: string
+}
+
+export interface FermentStalledPayload {
+	fermentId: string
+	name: string
+	/** Lifecycle stage of the ferment when stalling was detected. */
+	lifecycleStage: FermentStatus
+	/** How long the ferment has been idle in ms (since lastActiveAt). 0 when unavailable. */
+	idleDurationMs: number
+	/** Number of phases that reached "completed" status. */
+	completedPhases: number
+	/** Total number of phases in the ferment plan. */
+	totalPhases: number
+	/** Ratio of completed phases to total phases (0–1). 0 when totalPhases is 0. */
+	phaseCompletionRatio: number
 }
