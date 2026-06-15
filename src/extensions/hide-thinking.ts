@@ -31,10 +31,21 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { ANSI, fg } from "../ansi.js"
 import { isSubagent } from "./prompt-construction/prompt-enrichment.js"
 
-const THINK_TAG_PATTERN = /<think>[\s\S]*?<\/think>/g
+const THINK_TAG_PATTERN = /<think>[\s\S]*?<\/think>|<mm:think>[\s\S]*?<\/mm:think>/g
 
 function containsThinkTags(text: string): boolean {
-	return text.includes("<think>") && text.includes("</think>")
+	return (
+		(text.includes("<think>") && text.includes("</think>")) ||
+		(text.includes("<mm:think>") && text.includes("</mm:think>"))
+	)
+}
+
+function getOpenTag(match: string): string {
+	return match.startsWith("<mm:think>") ? "<mm:think>" : "<think>"
+}
+
+function getCloseTag(match: string): string {
+	return match.startsWith("<mm:think>") ? "</mm:think>" : "</think>"
 }
 
 // ---------------------------------------------------------------------------
@@ -91,11 +102,67 @@ function stripThinkingTags(text: string): string {
 	return text.replace(THINK_TAG_PATTERN, "")
 }
 
+/**
+ * Dim thinking content for display.
+ *
+ * The TUI's Markdown renderer splits text into paragraph tokens before
+ * applying ANSI, so a single ANSI open-code wrapping multi-paragraph content
+ * only colours the first paragraph — subsequent paragraphs start fresh with
+ * no colour. Prepending the dim code to every non-empty line ensures each
+ * paragraph token begins with the correct ANSI state regardless of how the
+ * lexer splits the input.
+ */
+function dimThinkingContent(text: string): string {
+	const lines = text.split("\n")
+	const dimmed = lines.map((line) => (line ? fg(ANSI.dim, line) : line))
+	return dimmed.join("\n")
+}
+
+/**
+ * Strip markdown syntax from thinking content so the TUI's Markdown renderer
+ * treats it as plain text. Without this, constructs like `backtick spans`,
+ * **bold**, _italic_, and # headings inside a dim ANSI wrapper get re-styled
+ * by the Markdown renderer's theme colors, overriding our dim.
+ */
+function stripMarkdownSyntax(text: string): string {
+	return (
+		text
+			// Inline code: `foo` → foo
+			.replace(/`([^`]*)`/g, "$1")
+			// Bold+italic: ***foo*** or ___foo___
+			.replace(/\*{3}([^*]+)\*{3}/g, "$1")
+			.replace(/_{3}([^_]+)_{3}/g, "$1")
+			// Bold: **foo** or __foo__
+			.replace(/\*{2}([^*]+)\*{2}/g, "$1")
+			.replace(/_{2}([^_]+)_{2}/g, "$1")
+			// Italic: *foo* or _foo_
+			.replace(/\*([^*]+)\*/g, "$1")
+			.replace(/_([^_]+)_/g, "$1")
+			// ATX headings: # Heading → Heading
+			.replace(/^#{1,6}\s+/gm, "")
+			// Setext headings: underline rows
+			.replace(/^[=-]{2,}\s*$/gm, "")
+			// Blockquotes: > text → text
+			.replace(/^>+\s?/gm, "")
+			// Horizontal rules
+			.replace(/^[-*_]{3,}\s*$/gm, "")
+			// Links: [text](url) → text
+			.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+			// Images: ![alt](url) → alt
+			.replace(/!\[([^\]]*?)\]\([^)]*\)/g, "$1")
+	)
+}
+
 function replaceThinkingTagsWithDimmed(text: string): string {
-	return text.replace(THINK_TAG_PATTERN, (match) => {
-		const content = match.slice("<think>".length, -"</think>".length)
+	return text.replace(THINK_TAG_PATTERN, (match, offset, fullString) => {
+		const openTag = getOpenTag(match)
+		const closeTag = getCloseTag(match)
+		const content = stripMarkdownSyntax(match.slice(openTag.length, -closeTag.length))
 		const visible = lastNLines(content, 5)
-		return visible ? fg(ANSI.dim, visible) : ""
+		if (!visible) return ""
+		const after = fullString.slice(offset + match.length)
+		const separator = after.trimStart().length > 0 ? "\n\n" : ""
+		return dimThinkingContent(visible) + separator
 	})
 }
 
@@ -107,21 +174,29 @@ function replaceThinkingTagsWithDimmed(text: string): string {
  * stable during streaming.
  */
 function applyStreamingDisplay(text: string, hideThinking: boolean): string {
-	// 1. Replace fully closed <think>…</think> blocks
-	let result = text.replace(THINK_TAG_PATTERN, (match) => {
+	// 1. Replace fully closed <think>…</think> and <mm:think>…</mm:think> blocks
+	let result = text.replace(THINK_TAG_PATTERN, (match, offset, fullString) => {
 		if (hideThinking) return ""
-		const inner = match.slice("<think>".length, -"</think>".length)
-		return inner ? fg(ANSI.dim, inner) : ""
+		const openTag = getOpenTag(match)
+		const closeTag = getCloseTag(match)
+		const inner = stripMarkdownSyntax(match.slice(openTag.length, -closeTag.length))
+		if (!inner) return ""
+		const after = fullString.slice(offset + match.length)
+		const separator = after.trimStart().length > 0 ? "\n\n" : ""
+		return dimThinkingContent(inner) + separator
 	})
-	// 2. Handle an unclosed <think> tag (thinking content still streaming)
-	const openIdx = result.indexOf("<think>")
-	if (openIdx !== -1) {
-		const before = result.slice(0, openIdx)
-		if (hideThinking) {
-			result = before
-		} else {
-			const inner = result.slice(openIdx + "<think>".length)
-			result = before + (inner ? fg(ANSI.dim, inner) : "")
+	// 2. Handle unclosed open tags (thinking content still streaming)
+	for (const openTag of ["<think>", "<mm:think>"]) {
+		const openIdx = result.indexOf(openTag)
+		if (openIdx !== -1) {
+			const before = result.slice(0, openIdx)
+			if (hideThinking) {
+				result = before
+			} else {
+				const inner = stripMarkdownSyntax(result.slice(openIdx + openTag.length))
+				result = before + (inner ? dimThinkingContent(inner) : "")
+			}
+			break
 		}
 	}
 	return result
@@ -209,8 +284,8 @@ export default function hideThinkingExtension(pi: ExtensionAPI): void {
 			if (!newContent) continue
 			state.original += newContent
 
-			// Only touch the block when there is (or might be) a <think> tag.
-			if (!state.original.includes("<think>")) {
+			// Only touch the block when there is (or might be) a think tag.
+			if (!state.original.includes("<think>") && !state.original.includes("<mm:think>")) {
 				state.lastDisplayLength = block.text.length
 				continue
 			}
