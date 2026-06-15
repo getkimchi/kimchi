@@ -356,6 +356,11 @@ export interface McpPanelCallbacks {
 	reconnect: (serverName: string) => Promise<boolean>
 	getConnectionStatus: (serverName: string) => "connected" | "idle" | "failed" | "needs-auth"
 	refreshCacheAfterReconnect: (serverName: string) => import("./metadata-cache.js").ServerCacheEntry | null
+	/**
+	 * Persists the given changes to disk and shows a notification.
+	 * The panel stays open after this is called.
+	 */
+	onSave: (changes: Map<string, true | string[] | false>) => void
 }
 
 export interface McpPanelResult {
