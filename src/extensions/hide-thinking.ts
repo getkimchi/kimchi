@@ -31,10 +31,21 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { ANSI, fg } from "../ansi.js"
 import { isSubagent } from "./prompt-construction/prompt-enrichment.js"
 
-const THINK_TAG_PATTERN = /<think>[\s\S]*?<\/think>/g
+const THINK_TAG_PATTERN = /<think>[\s\S]*?<\/think>|<mm:think>[\s\S]*?<\/mm:think>/g
 
 function containsThinkTags(text: string): boolean {
-	return text.includes("<think>") && text.includes("</think>")
+	return (
+		(text.includes("<think>") && text.includes("</think>")) ||
+		(text.includes("<mm:think>") && text.includes("</mm:think>"))
+	)
+}
+
+function getOpenTag(match: string): string {
+	return match.startsWith("<mm:think>") ? "<mm:think>" : "<think>"
+}
+
+function getCloseTag(match: string): string {
+	return match.startsWith("<mm:think>") ? "</mm:think>" : "</think>"
 }
 
 // ---------------------------------------------------------------------------
@@ -93,7 +104,9 @@ function stripThinkingTags(text: string): string {
 
 function replaceThinkingTagsWithDimmed(text: string): string {
 	return text.replace(THINK_TAG_PATTERN, (match) => {
-		const content = match.slice("<think>".length, -"</think>".length)
+		const openTag = getOpenTag(match)
+		const closeTag = getCloseTag(match)
+		const content = match.slice(openTag.length, -closeTag.length)
 		const visible = lastNLines(content, 5)
 		return visible ? fg(ANSI.dim, visible) : ""
 	})
@@ -107,21 +120,26 @@ function replaceThinkingTagsWithDimmed(text: string): string {
  * stable during streaming.
  */
 function applyStreamingDisplay(text: string, hideThinking: boolean): string {
-	// 1. Replace fully closed <think>…</think> blocks
+	// 1. Replace fully closed <think>…</think> and <mm:think>…</mm:think> blocks
 	let result = text.replace(THINK_TAG_PATTERN, (match) => {
 		if (hideThinking) return ""
-		const inner = match.slice("<think>".length, -"</think>".length)
+		const openTag = getOpenTag(match)
+		const closeTag = getCloseTag(match)
+		const inner = match.slice(openTag.length, -closeTag.length)
 		return inner ? fg(ANSI.dim, inner) : ""
 	})
-	// 2. Handle an unclosed <think> tag (thinking content still streaming)
-	const openIdx = result.indexOf("<think>")
-	if (openIdx !== -1) {
-		const before = result.slice(0, openIdx)
-		if (hideThinking) {
-			result = before
-		} else {
-			const inner = result.slice(openIdx + "<think>".length)
-			result = before + (inner ? fg(ANSI.dim, inner) : "")
+	// 2. Handle unclosed open tags (thinking content still streaming)
+	for (const openTag of ["<think>", "<mm:think>"]) {
+		const openIdx = result.indexOf(openTag)
+		if (openIdx !== -1) {
+			const before = result.slice(0, openIdx)
+			if (hideThinking) {
+				result = before
+			} else {
+				const inner = result.slice(openIdx + openTag.length)
+				result = before + (inner ? fg(ANSI.dim, inner) : "")
+			}
+			break
 		}
 	}
 	return result
@@ -209,8 +227,8 @@ export default function hideThinkingExtension(pi: ExtensionAPI): void {
 			if (!newContent) continue
 			state.original += newContent
 
-			// Only touch the block when there is (or might be) a <think> tag.
-			if (!state.original.includes("<think>")) {
+			// Only touch the block when there is (or might be) a think tag.
+			if (!state.original.includes("<think>") && !state.original.includes("<mm:think>")) {
 				state.lastDisplayLength = block.text.length
 				continue
 			}

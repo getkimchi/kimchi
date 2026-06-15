@@ -266,6 +266,66 @@ describe("hideThinkingExtension", () => {
 		expect(text).toBe("A  B  C")
 	})
 
+	// --- mm:think tags ---
+
+	it("dims <mm:think> content by default", async () => {
+		const { endResult } = await simulateStreaming(h, ["Before ", "<mm:think>", "mm reason", "</mm:think>", " After"])
+		expect(endResult).toBeDefined()
+		const text = (endResult as { message: { content: Array<{ text: string }> } }).message.content[0].text
+		expect(text).toBe(`Before ${fg(ANSI.dim, "mm reason")} After`)
+	})
+
+	it("strips <mm:think> tags when hideThinking is true", async () => {
+		_setHideThinking(true)
+		const { endResult } = await simulateStreaming(h, ["Hello ", "<mm:think>", "mm reasoning", "</mm:think>", " World"])
+		expect(endResult).toBeDefined()
+		const text = (endResult as { message: { content: Array<{ text: string }> } }).message.content[0].text
+		expect(text).toBe("Hello  World")
+	})
+
+	it("hides <mm:think> tag and dims content during streaming", async () => {
+		const content = [{ type: "text" as const, text: "" }]
+		const message = { role: "assistant" as const, content }
+
+		await h.messageStart({ type: "message_start", message })
+
+		content[0].text += "Hello "
+		await h.messageUpdate({ type: "message_update", message, assistantMessageEvent: {} })
+		expect(content[0].text).toBe("Hello ")
+
+		content[0].text += "<mm:think>"
+		await h.messageUpdate({ type: "message_update", message, assistantMessageEvent: {} })
+		expect(content[0].text).toBe("Hello ")
+
+		content[0].text += "mm reasoning"
+		await h.messageUpdate({ type: "message_update", message, assistantMessageEvent: {} })
+		expect(content[0].text).toBe(`Hello ${fg(ANSI.dim, "mm reasoning")}`)
+
+		content[0].text += "</mm:think>"
+		await h.messageUpdate({ type: "message_update", message, assistantMessageEvent: {} })
+		expect(content[0].text).toBe(`Hello ${fg(ANSI.dim, "mm reasoning")}`)
+
+		content[0].text += " World"
+		await h.messageUpdate({ type: "message_update", message, assistantMessageEvent: {} })
+		expect(content[0].text).toBe(`Hello ${fg(ANSI.dim, "mm reasoning")} World`)
+	})
+
+	it("restores <mm:think> content in context event", async () => {
+		_setHideThinking(true)
+		const { endResult } = await simulateStreaming(h, ["Before ", "<mm:think>", "mm deep", "</mm:think>", " After"])
+		const displayText = (endResult as { message: { content: Array<{ text: string }> } }).message.content[0].text
+		expect(displayText).toBe("Before  After")
+
+		const contextResult = await h.context({
+			type: "context",
+			messages: [{ role: "assistant", content: [{ type: "text", text: displayText }] }],
+		})
+
+		expect(contextResult).toBeDefined()
+		const restored = (contextResult as { messages: Array<{ content: Array<{ text: string }> }> }).messages
+		expect(restored[0].content[0].text).toBe("Before <mm:think>mm deep</mm:think> After")
+	})
+
 	it("context handler is a no-op when shadow map is empty", async () => {
 		const result = await h.context({
 			type: "context",
@@ -308,6 +368,26 @@ describe("filterThinkingForDisplay", () => {
 		},
 		"handles unclosed think tag by dimming trailing content when hideThinking is false": {
 			input: "Before <think>still streaming",
+			hideThinking: false,
+			expected: `Before ${fg(ANSI.dim, "still streaming")}`,
+		},
+		"strips mm:think blocks when hideThinking is true": {
+			input: "Before <mm:think>mm reasoning</mm:think> After",
+			hideThinking: true,
+			expected: "Before  After",
+		},
+		"dims mm:think blocks when hideThinking is false": {
+			input: "Before <mm:think>mm reasoning</mm:think> After",
+			hideThinking: false,
+			expected: `Before ${fg(ANSI.dim, "mm reasoning")} After`,
+		},
+		"handles unclosed mm:think tag by hiding content when hideThinking is true": {
+			input: "Before <mm:think>still streaming",
+			hideThinking: true,
+			expected: "Before ",
+		},
+		"handles unclosed mm:think tag by dimming content when hideThinking is false": {
+			input: "Before <mm:think>still streaming",
 			hideThinking: false,
 			expected: `Before ${fg(ANSI.dim, "still streaming")}`,
 		},
