@@ -149,8 +149,8 @@ function showSessionModeWizard(
 
 	// Empty shim component mounted before activation. Renders nothing so the
 	// picker contributes zero visual footprint while we wait for any overlay
-	// (e.g. Mike's Shift+Enter terminal-compat warning) to clear. We still get
-	// the tui reference from setWidget's factory so we can poll hasOverlay().
+	// to clear. We still get the tui reference from setWidget's factory so we
+	// can poll hasOverlay().
 	const SHIM_COMPONENT = { render: () => [], invalidate: () => {} } as const
 
 	const activate = () => {
@@ -243,9 +243,8 @@ function showSessionModeWizard(
 		const overlayUp = !overlayUnknown && typeof tuiRef?.hasOverlay === "function" ? tuiRef.hasOverlay() : false
 		if (overlayUnknown || overlayUp) {
 			// The same keystroke that fires this handler may also dismiss the
-			// overlay (Mike's Shift+Enter warning dismisses on any key). Re-check
-			// on the next tick so the picker + editor swap happen as soon as the
-			// overlay clears — without requiring a second keypress.
+			// overlay. Re-check on the next tick so the picker + editor swap happen
+			// as soon as the overlay clears — without requiring a second keypress.
 			if (!activated) setTimeout(activate, 0)
 			return undefined
 		}

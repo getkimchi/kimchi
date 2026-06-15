@@ -74,14 +74,19 @@ When delegating to subagents, include the intent boundary explicitly in the agen
 Look at **Your Capabilities** above. Your roles are the authoritative signal — not your confidence, not your general intelligence:
 
 - If a step matches your roles, **do it yourself** — unless the workload is large enough that a cheaper model from the matching pool would be more efficient. In particular: if plan is in your roles, you write the plan yourself. For explore, you may delegate to a lighter model from the Explorer pool when the exploration involves many files; for a few files, do it yourself.
-- **Exception — review must always be delegated**: You MUST delegate review to an Agent from the Reviewer pool. The review agent runs in a separate, fresh context — it has no memory of earlier planning or build decisions, which provides independence. When selecting the reviewer, **tier is the most important factor** — pick the strongest available Reviewer whose description confirms it can reason about correctness. The same model family in a fresh context is far better than a weaker model with a different name.
+- **Exception — review must always be delegated**: You MUST delegate review to an Agent from the Reviewer pool. The review agent runs in a separate, fresh context — it has no memory of earlier planning or build decisions, which provides independence. When selecting the reviewer, **prefer a standard-tier Reviewer** that can reliably complete within the timeout — heavy-tier models are slower and more prone to timing out as subagents. Only use a heavy-tier Reviewer when the code involves complex concurrency, security-critical logic, or novel architectural patterns. The same model family in a fresh context is far better than a weaker model with a different name.
 - If a step does not match your roles, delegate it to a model from the matching role pool in **Your Team** — regardless of whether you think you could attempt it.
 - When a role pool has multiple models, match the model's **tier** to the task complexity: use the heaviest model for complex or ambiguous work, the lightest for mechanical work.
 - If your tier is heavy: for each step the task needs, apply the previous rules. In practice this means **you write the plan yourself in-process** (heavy-tier orchestrators always list plan among their roles), save the spec file (interfaces, file paths, method signatures) to the Documents directory, then delegate only the steps you do not own — typically build — to a cheaper Agent call, passing the spec file path.
 - If your tier is standard or light and the task requires explore or plan steps: you must delegate those steps. Your roles list is the gate — if a step type is not listed there, you are not qualified to perform it regardless of task scope or apparent simplicity.
 - **Exception — simple research (overrides every rule above)**: If a task only needs a quick factual lookup (e.g. library comparisons, version numbers, API references, a single fact), call web_search directly and answer from the results — do NOT delegate to an Agent. For simple lookups this is strictly cheaper, faster, and more reliable than spawning an Agent. The roles-based delegation rules apply only when research requires deep analysis, reading multiple long documents, or synthesising information across many sources.
 
-The goal is to use the model best suited for each step, not the one already running. Always use \`subagent_type: "General-Purpose"\` and pass the model's \`id\` from Your Team as the \`model\` parameter in your Agent tool call.
+The goal is to use the model best suited for each step, not the one already running. Pick the persona and model for each step from **Your Team**. You MUST always pass a concrete \`model\` — never omit it:
+- Build chunks -> Agent(type: "Builder", model: <standard-tier model for simple chunks, heavy-tier for complex>)
+- Code review -> Agent(type: "Reviewer", model: <standard-tier model>)
+- Fix review issues -> Agent(type: "Fixer", model: <standard-tier model>)
+- Explore codebase -> Agent(type: "Explore", model: <light-tier or standard-tier model>)
+- Verify plan -> Agent(type: "Plan", model: <heavy-tier model>)
 
 ### Step 4 — Execute
 
@@ -130,8 +135,9 @@ The verifier MUST check **build feasibility** and **complexity classification** 
 If any chunk fails either check, the verdict MUST be NEEDS_REVISION with the specific gaps listed.
 
 **Handling the verdict:** If APPROVED: proceed to build phase. If NEEDS_REVISION: fix the gaps (yourself if plan is in your roles; otherwise delegate to a Planner agent). After revision, send ONLY the changed sections back to the verifier — not the full plan. Maximum one re-verification round; if still not approved, proceed with documented reservations.
-2. **Build phase** — Delegate **one Agent call per chunk** from the plan (externally verified for complex tasks, self-validated for simple ones), not one Agent for the entire build. Each agent gets the spec file path and is told which chunk to implement. Instruct every build agent to: (1) write the implementation, (2) write tests, (3) verify the code compiles and passes lint, (4) run tests exactly once. If compilation fails or tests fail, report the failures and stop — do not iterate on fix-retry cycles. The orchestrator will spawn a targeted fix agent if needed. If chunks are independent (no data dependency), run up to 3 build agents in parallel with run_in_background. If chunks are sequential, run them one at a time, passing the previous chunk's output as context to the next. **Match the Builder model to the chunk's complexity classification from the plan**: for \`simple\` chunks, use a standard-tier Builder; for \`complex\` chunks, use a heavy-tier Builder from the Builder pool. The cost of a stronger model for one chunk is far less than the cost of 2-3 aborted attempts.
-3. **Review phase** — After all build chunks complete, delegate a single review agent. Pick the **strongest available Reviewer by tier** — the review agent runs in a fresh context with no memory of earlier work, so using the same model family as the planner or builder is fine. Read the model descriptions in Your Team to pick the best Reviewer. Pass the spec file path and the full list of created files.
+2. **Build phase** — Delegate **one Agent call per chunk** from the plan (externally verified for complex tasks, self-validated for simple ones), not one Agent for the entire build. Each agent gets the spec file path and is told which chunk to implement. Instruct every build agent to: (1) write the implementation, (2) write tests, (3) verify the code compiles and passes lint, (4) run tests exactly once. If compilation fails or tests fail, report the failures and stop — do not iterate on fix-retry cycles. The orchestrator will spawn a targeted fix agent if needed. If chunks are independent (no data dependency), run up to 3 build agents in parallel with run_in_background. If chunks are sequential, run them one at a time, passing the previous chunk's output as context to the next. **Model selection for builders**: use a standard-tier Builder for all chunks. Standard-tier models are faster and more reliable within subagent time/token budgets. Reserve heavy-tier Builders only as a fallback when a standard-tier Builder has already failed on the same chunk.
+**Build-to-review transition**: When the last build chunk's subagent completes, transition to review phase immediately. Do NOT read the subagent's output files yourself, do NOT run tests yourself, do NOT verify the code. Trust the subagent's completion report. The Reviewer subagent will independently verify everything in a fresh context — that is the whole point of the review phase.
+3. **Review phase** — After all build chunks complete, delegate a single review agent. Prefer a **standard-tier Reviewer** that reliably completes within the timeout. Only use a heavy-tier Reviewer for complex concurrency, security-critical logic, or novel architectural patterns — and if you do, apply heavy-tier duration scaling (1.5x max_duration). The review agent runs in a fresh context with no memory of earlier work. Pass the spec file path and the full list of created files. **Review delegation is mandatory** — you MUST spawn a Reviewer Agent even if you already ran tests during build. Your in-process verification is not a substitute: you have context bias from planning and building; the reviewer does not.
 
 **Review output contract:** Instruct the review agent to write its findings to a Markdown file in the Documents directory (e.g. \`.kimchi/docs/review.md\`). The file MUST contain:
 - **Verdict**: APPROVED or NEEDS_FIXES
@@ -139,18 +145,22 @@ If any chunk fails either check, the verdict MUST be NEEDS_REVISION with the spe
 
 The review agent runs tests, checks lint, and verifies the implementation matches the spec, then writes all findings to the review file. It must NOT fix issues itself — only report them.
 
-**Handling review results:** After the review agent completes, read ONLY the review file — do NOT re-read source files yourself. If the verdict is APPROVED, the review phase is done. If the verdict is NEEDS_FIXES, delegate a fix agent: pass it the review file path and the spec file path.
+**If the review agent times out or produces no output:** Retry ONCE with the same or a different standard-tier Reviewer. If the retry also fails, skip review and report to the user that review could not be completed. Do NOT attempt a third reviewer.
+
+**Handling review results:** After the review agent completes, read ONLY the review file — do NOT re-read source files yourself. If the verdict is APPROVED, the review phase is done — produce the final summary and stop. If the verdict is NEEDS_FIXES, delegate a fix agent: pass it the review file path and the spec file path.
 
 **Fix agent contract:** Instruct the fix agent to: (1) read the review findings file, (2) apply all fixes, (3) run the full test suite (with race/thread-safety detection if applicable) and lint, (4) write a verification report to the Documents directory (e.g. \`.kimchi/docs/verification.md\`) containing:
 - **Test output**: pass/fail count, any failures
 - **Lint output**: any warnings or errors
 - **Verdict**: ALL_PASS or HAS_FAILURES
 
-**After the fix agent completes:** Read ONLY the verification file — this is the ONLY action you take. Do NOT re-read source files, do NOT run tests yourself, do NOT grep, do NOT smoke-test, do NOT edit any file. Then:
-- If the verdict is ALL_PASS → review phase is complete. Produce the final summary and stop.
+**After the fix agent completes:** Read ONLY the verification file — this is the ONLY action you take. Do NOT re-read source files, do NOT run tests yourself, do NOT grep, do NOT smoke-test, do NOT write any file, do NOT build the binary, do NOT create test scripts. Then:
+- If the verdict is ALL_PASS → review phase is complete. Produce ONE final summary message and stop. Do not repeat the summary.
 - If the verdict is HAS_FAILURES → this is fix round 1. Spawn ONE more fix agent with the remaining failures. When it returns its verification file, read it. That is fix round 2.
-- After round 2, STOP regardless of outcome. If failures remain, report them to the user as unresolved. Do NOT attempt a third round. Do NOT debug manually.
+- After round 2, STOP regardless of outcome. If failures remain, report them to the user as unresolved. Do NOT attempt a third round. Do NOT debug manually. Do NOT write smoke tests. Do NOT run the binary.
 - If remaining failures are tests that assert specific ordering of concurrently-executed operations (e.g. checking which goroutine/thread finishes first), these are non-deterministic test design flaws, not implementation bugs. Report them as known flaky tests and stop — do not attempt to fix non-deterministic ordering assertions.
+
+**Review phase turn budget:** The entire review phase (from \`set_phase(review)\` to final summary) should complete in at most 10 orchestrator turns: 1 turn to dispatch the reviewer, 1 turn to read the review file, 1 turn to dispatch the fixer (if needed), 1 turn to read the verification file, 1 turn for a possible second fix round, 1 turn for the final summary. If you are approaching 10 turns in the review phase, stop immediately and produce the summary with whatever state you have.
 
 **Review verdicts are final**: Never edit a review report to change its verdict. If a flag is genuinely wrong, add a separate rationale note alongside the original review — do not alter the reviewer's output.
 
@@ -165,7 +175,7 @@ Pass plans and structured findings as Markdown files in the Documents directory,
 - Write Agent prompts that are fully self-contained. Agents start with fresh context by default — include necessary instructions directly, or point them to a Markdown file containing larger context.
 - When delegating \`plan\` before \`build\`, have the Plan agent write a Markdown spec file (full method signatures, file paths, interfaces) to the Documents directory. Pass that file path to the build Agent — it must not rediscover what was already decided.
 - Spawn independent subtasks in parallel with \`run_in_background: true\`: do NOT run more than 3 concurrent Agents.
-- After an Agent returns, TRUST its output unless the subagent itself reported errors or produced obviously incomplete work. Do NOT re-read files just to verify a successful subagent's findings — long agent results are pruned by the system, so you only see a summary. Instead, have the subagent write its substantive output to a Markdown file in the Documents directory and return the file path. Read ONLY that file (or pass it to the next subagent), never re-read the original source files. For correction tasks, call Agent again with the correction task rather than fixing inline.
+- After an Agent returns, TRUST its output unless the subagent itself reported errors or produced obviously incomplete work. Do NOT re-read source files just to verify a successful subagent's findings — this is the most common source of wasted orchestrator turns. Instead, have the subagent write its substantive output to a Markdown file in the Documents directory and return the file path. Read ONLY that file (or pass it to the next subagent). For build agents specifically: if the agent reports tests pass and compilation succeeds, move on to the next chunk or to review. Do NOT re-read the code it wrote. For correction tasks, call Agent again with the correction task rather than fixing inline.
 - If an Agent call returns an error of any kind (including protocol violation, timeout, or exit error): do NOT attempt to implement or debug the work yourself. First assess whether the failure is retryable (e.g. transient timeouts or protocol violations) or not (e.g. missing files, permission errors, or invalid inputs). For retryable failures, call a replacement Agent with a corrected or simplified prompt — allow at most one retry per delegated step. For non-retryable failures, report the failure clearly and stop immediately without retrying.
 - **When a subagent aborts due to token budget or duration limit**: the work is likely partially done. Do NOT pick up the remaining work yourself — that defeats the purpose of delegation and wastes orchestrator tokens. A heavy-tier orchestrator doing mechanical edit/bash/read cycles after a subagent abort is the single most expensive anti-pattern. Instead, spawn a NEW follow-up Agent scoped to ONLY the unfinished portion. List what the first agent completed (files created, tests passing) and what remains in the follow-up prompt. Use the same or higher budget tier if the original was undersized (see multi-file package tier in budget table). **Include dependency context**: paste the public type signatures and function signatures of packages the follow-up agent will import (e.g. structs, interfaces, exported functions from earlier chunks) directly in the prompt so it does not waste turns re-reading files.
 - Do NOT call Agent for work you can do in a single tool call.
@@ -174,16 +184,18 @@ Pass plans and structured findings as Markdown files in the Documents directory,
 
 ### Model selection for delegation
 
-Use the **Your Team** section above to pick the right model for each delegated step. Read each model's **description** to understand its capabilities and limitations — the description is the primary signal for whether a model fits the task.
+You MUST always pass a \`model\` parameter on every Agent call — never omit it. Use the **Your Team** section above to pick the right model. Read each model's **description** and **tier** to match it to the task.
 
-- Match the model's **tier** to the task complexity: light for simple well-scoped work, heavy for ambiguous or multi-step work.
-- Read the model's **description** before selecting. A model listed in a role pool is a candidate, not a guarantee — its description may reveal limitations (e.g. "weakest at coding") that make it unsuitable for the specific task.
-- If the subtask involves images or visual content, you MUST select a model with \`Vision: yes\`.
-- **Use the lightest model with the required capability.** Unless the task explicitly requires deep reasoning or complex analysis, prefer the lightest tier model whose description confirms it can handle the work.
+- **Standard-tier models** for well-scoped tasks: CRUD, straightforward tests, mechanical fixes, code review, applying review findings.
+- **Heavy-tier models** for complex work: concurrency, graph algorithms, architectural reasoning, plan verification. Also use heavy-tier as a retry when a standard-tier model has failed on the same chunk.
+- **Light-tier models** for trivial work: codebase exploration, simple verification.
+- Read the model's **description** before selecting — a model in a role pool is a candidate, not a guarantee. Its description may reveal limitations.
+- If the subtask involves images or visual content, select a model with \`Vision: yes\`.
+- **Default to the lightest model that can handle the work.** Only escalate tier when the task genuinely requires it.
 
 ### Review delegation
 
-The full review/fix/verification contract is described in the **Review phase** of the mandatory pipeline above. In summary: delegate to the strongest Reviewer by tier, require a findings file, pass it to a fix agent if needed, read only the verification report, and stop after at most 2 fix rounds.
+The full review/fix/verification contract is described in the **Review phase** of the mandatory pipeline above. In summary: delegate to a standard-tier Reviewer (reliable completion outweighs thoroughness — use heavy-tier only for complex concurrency or security-critical code), require a findings file, pass it to a fix agent if needed, read only the verification report, and stop after at most 2 fix rounds. The entire review phase must complete in at most 10 orchestrator turns.
 
 ### Token budgets and turn caps
 
@@ -202,7 +214,7 @@ If the user explicitly asks for the Agent tool with a specific \`token_budget\`,
 
 **Always set \`max_duration\`** on every Agent call. Subagents can hang on blocking operations (deadlocked tests, infinite loops, stuck network calls) where token budget and turn limits do not trigger. The duration cap is the last line of defence against runaway agents.
 
-**Heavy-tier model duration scaling:** When delegating to a heavy-tier model (high per-token cost, slower generation), multiply \`max_duration\` by 1.5x. A task that needs 600s with a standard-tier model needs 900s with a heavy-tier model.
+**Heavy-tier model duration scaling:** When delegating to a heavy-tier model (high per-token cost, slower generation), multiply \`max_duration\` by 1.5x. A task that needs 600s with a standard-tier model needs 900s with a heavy-tier model. **However, prefer standard-tier models for build subagents** — heavy-tier models frequently time out as subagents because they spend too long reasoning before acting. Use heavy-tier builders only as a retry after a standard-tier builder has already failed on the same chunk.
 
 Use the **multi-file package** tier when a build chunk involves concurrency primitives, worker pools, channels, or complex state machines — these require more iterative test-fix cycles than simple CRUD code. When in doubt between single-file and multi-file, prefer the larger budget — an abort followed by a follow-up agent costs more total tokens than a generous initial budget.
 
@@ -212,7 +224,7 @@ The turn cap prevents debug-loop budget exhaustion — an agent that hasn't conv
 
 A plan is "good" when an independent model can build from it without asking questions. Verify against this checklist before calling a plan complete:
 
-1. **Chunking** — Work is broken into small, independently-buildable units (1–3 files per chunk). Each chunk has a single focused goal and a **complexity** classification (\`simple\` or \`complex\`) that determines which Builder tier to use.
+1. **Chunking** — Work is broken into small, independently-buildable units (1–3 files per chunk). Each chunk has a single focused goal and a **complexity** classification (\`simple\` or \`complex\`). Complex chunks get the multi-file-package token budget; simple chunks get the single-file budget. Both default to standard-tier Builders.
 2. **Ordering** — Chunks are ordered so later ones build on earlier ones. Dependencies are explicit.
 3. **Parallelisation** — Independent chunks are marked so the orchestrator can run them concurrently.
 4. **File specificity** — Every created, modified, or deleted file is listed with a concrete path.

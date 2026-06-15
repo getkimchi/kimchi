@@ -113,11 +113,11 @@ done
 echo "iTerm2 tabs spawned. Commands are running in the background."
 
 # --- Step 3: Poll until runs complete ---
-echo "=== Waiting for runs to complete (poll every 60s, max 90 min) ==="
+echo "=== Waiting for runs to complete (poll every 60s, max 120 min) ==="
 echo ""
 
-for ((i = 1; i <= 90; i++)); do
-  echo "--- Poll $i/90 ---"
+for ((i = 1; i <= 120; i++)); do
+  echo "--- Poll $i/120 ---"
   if python3 "${SCRIPT_DIR}/check-session.py" "$SESSION_NAME" "${TASKS[@]}" 2>&1; then
     echo "=== All runs finished ==="
     break
