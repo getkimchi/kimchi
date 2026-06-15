@@ -9,7 +9,7 @@
  */
 import fs from "node:fs"
 import path from "node:path"
-import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent"
 import { Container, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 import { ensureFileOpen, getOrCreateClient, refreshFile, sendRequest, shutdownAll } from "./lsp/client.js"
@@ -17,22 +17,47 @@ import { applyWorkspaceEdit } from "./lsp/edits.js"
 import { detectServers, findRoot, serverForFile } from "./lsp/servers.js"
 import type { Hover, Location, LocationLink, TextDocumentEdit, WorkspaceEdit } from "./lsp/types.js"
 import { fileToUri, formatDiagnostic, uriToFile } from "./lsp/utils.js"
+import { createSystemPromptBlocks } from "./prompt-construction/index.js"
 
 export function clientCwd(filePath: string, sessionCwd: string): string {
 	if (filePath.startsWith(sessionCwd + path.sep) || filePath === sessionCwd) return sessionCwd
 	return path.dirname(filePath)
 }
 
+const LSP_SYSTEM_PROMPT = `## Language Server Protocol (LSP)
+
+LSP tools provide type-aware code intelligence. Prefer them over text-based alternatives:
+- Use \`lsp_diagnostics\` after editing a file to check for type errors — more precise than running the compiler manually.
+- Use \`lsp_hover\` to inspect types and documentation — faster than reading source.
+- Use \`lsp_definition\` to navigate to symbol definitions — more accurate than grep.
+- Use \`lsp_references\` before renaming or deleting a symbol to understand full impact.
+- Use \`lsp_rename\` for atomic cross-file renames — safer than find-and-replace.
+
+LSP tools are available when language servers are detected on PATH (currently TypeScript and Go).`
+
 export default function (pi: ExtensionAPI) {
 	let cwd = ""
 	let activeServers: ReturnType<typeof detectServers> = []
+	let ui: ExtensionUIContext | undefined
+
+	createSystemPromptBlocks(pi, "lsp").register({
+		id: "lsp-tools",
+		render: () => LSP_SYSTEM_PROMPT,
+	})
 
 	// ── Session start: detect servers, hook file sync, shutdown on exit ─────────
 
 	pi.on("session_start", async (_event, ctx) => {
 		cwd = ctx.cwd
+		ui = ctx.hasUI ? ctx.ui : undefined
 		activeServers = detectServers(cwd)
 		if (activeServers.length === 0) return
+
+		// Update status bar with detected server names
+		if (ui) {
+			const names = activeServers.map((s) => s.name).join(", ")
+			ui.setStatus("lsp", `LSP: ${names}`)
+		}
 
 		// Eagerly start servers that have a project marker directly in sessionCwd
 		const goMarkers = ["go.mod"]
@@ -45,6 +70,10 @@ export default function (pi: ExtensionAPI) {
 	})
 
 	pi.on("session_shutdown", async () => {
+		if (ui) {
+			ui.setStatus("lsp", undefined)
+			ui = undefined
+		}
 		shutdownAll()
 	})
 
@@ -52,7 +81,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("tool_result", async (event) => {
 		if (!("toolName" in event)) return
-		if (event.toolName !== "edit" && event.toolName !== "write") return
+		if (event.toolName !== "edit" && event.toolName !== "write" && event.toolName !== "read") return
 		if (event.isError) return
 
 		// Extract the file path from the tool input
@@ -66,7 +95,19 @@ export default function (pi: ExtensionAPI) {
 
 		try {
 			const client = await getOrCreateClient(server, cwd)
-			await refreshFile(client, resolved)
+			if (event.toolName === "read") {
+				// File was only read, not modified — just ensure LSP has it open
+				await ensureFileOpen(client, resolved)
+			} else {
+				await refreshFile(client, resolved)
+				// Update status bar with total diagnostic count across open files
+				if (ui) {
+					const totalDiags = [...client.diagnostics.values()].reduce((sum, entry) => sum + entry.diagnostics.length, 0)
+					const names = activeServers.map((s) => s.name).join(", ")
+					const diagPart = totalDiags > 0 ? ` (${totalDiags} diag${totalDiags === 1 ? "" : "s"})` : ""
+					ui.setStatus("lsp", `LSP: ${names}${diagPart}`)
+				}
+			}
 		} catch {
 			// Non-fatal: LSP sync failure doesn't break the agent
 		}
