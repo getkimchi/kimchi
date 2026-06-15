@@ -154,12 +154,15 @@ function stripMarkdownSyntax(text: string): string {
 }
 
 function replaceThinkingTagsWithDimmed(text: string): string {
-	return text.replace(THINK_TAG_PATTERN, (match) => {
+	return text.replace(THINK_TAG_PATTERN, (match, offset, fullString) => {
 		const openTag = getOpenTag(match)
 		const closeTag = getCloseTag(match)
 		const content = stripMarkdownSyntax(match.slice(openTag.length, -closeTag.length))
 		const visible = lastNLines(content, 5)
-		return visible ? dimThinkingContent(visible) : ""
+		if (!visible) return ""
+		const after = fullString.slice(offset + match.length)
+		const separator = after.trimStart().length > 0 ? "\n\n" : ""
+		return dimThinkingContent(visible) + separator
 	})
 }
 
@@ -172,12 +175,15 @@ function replaceThinkingTagsWithDimmed(text: string): string {
  */
 function applyStreamingDisplay(text: string, hideThinking: boolean): string {
 	// 1. Replace fully closed <think>…</think> and <mm:think>…</mm:think> blocks
-	let result = text.replace(THINK_TAG_PATTERN, (match) => {
+	let result = text.replace(THINK_TAG_PATTERN, (match, offset, fullString) => {
 		if (hideThinking) return ""
 		const openTag = getOpenTag(match)
 		const closeTag = getCloseTag(match)
 		const inner = stripMarkdownSyntax(match.slice(openTag.length, -closeTag.length))
-		return inner ? dimThinkingContent(inner) : ""
+		if (!inner) return ""
+		const after = fullString.slice(offset + match.length)
+		const separator = after.trimStart().length > 0 ? "\n\n" : ""
+		return dimThinkingContent(inner) + separator
 	})
 	// 2. Handle unclosed open tags (thinking content still streaming)
 	for (const openTag of ["<think>", "<mm:think>"]) {

@@ -78,7 +78,7 @@ describe("hideThinkingExtension", () => {
 		const { endResult } = await simulateStreaming(h, ["Before ", "<think>", "reason", "</think>", " After"])
 		expect(endResult).toBeDefined()
 		const text = (endResult as { message: { content: Array<{ text: string }> } }).message.content[0].text
-		expect(text).toBe(`Before ${fg(ANSI.dim, "reason")} After`)
+		expect(text).toBe(`Before ${fg(ANSI.dim, "reason")}\n\n After`)
 	})
 
 	// --- Explicit hideThinking = true (strip entirely) ---
@@ -110,7 +110,7 @@ describe("hideThinkingExtension", () => {
 		const text = (endResult as { message: { content: Array<{ text: string }> } }).message.content[0].text
 		const expectedLines = thinkingLines.slice(-5)
 		const expectedDimmed = expectedLines.map((l) => fg(ANSI.dim, l)).join("\n")
-		expect(text).toBe(`Before ${expectedDimmed} After`)
+		expect(text).toBe(`Before ${expectedDimmed}\n\n After`)
 	})
 
 	// --- Streaming display ---
@@ -144,7 +144,7 @@ describe("hideThinkingExtension", () => {
 		// More text after closing
 		content[0].text += " World"
 		await h.messageUpdate({ type: "message_update", message, assistantMessageEvent: {} })
-		expect(content[0].text).toBe(`Hello ${fg(ANSI.dim, "reasoning")} World`)
+		expect(content[0].text).toBe(`Hello ${fg(ANSI.dim, "reasoning")}\n\n World`)
 	})
 
 	it("hides thinking content entirely during streaming when hideThinking is true", async () => {
@@ -273,7 +273,7 @@ describe("hideThinkingExtension", () => {
 		const { endResult } = await simulateStreaming(h, ["Before ", "<mm:think>", "mm reason", "</mm:think>", " After"])
 		expect(endResult).toBeDefined()
 		const text = (endResult as { message: { content: Array<{ text: string }> } }).message.content[0].text
-		expect(text).toBe(`Before ${fg(ANSI.dim, "mm reason")} After`)
+		expect(text).toBe(`Before ${fg(ANSI.dim, "mm reason")}\n\n After`)
 	})
 
 	it("strips <mm:think> tags when hideThinking is true", async () => {
@@ -308,7 +308,7 @@ describe("hideThinkingExtension", () => {
 
 		content[0].text += " World"
 		await h.messageUpdate({ type: "message_update", message, assistantMessageEvent: {} })
-		expect(content[0].text).toBe(`Hello ${fg(ANSI.dim, "mm reasoning")} World`)
+		expect(content[0].text).toBe(`Hello ${fg(ANSI.dim, "mm reasoning")}\n\n World`)
 	})
 
 	it("restores <mm:think> content in context event", async () => {
@@ -350,7 +350,7 @@ describe("filterThinkingForDisplay", () => {
 		"dims thinking blocks when hideThinking is false": {
 			input: "Before <think>reasoning</think> After",
 			hideThinking: false,
-			expected: `Before ${fg(ANSI.dim, "reasoning")} After`,
+			expected: `Before ${fg(ANSI.dim, "reasoning")}\n\n After`,
 		},
 		"returns text unchanged when no thinking tags present": {
 			input: "plain text without thinking",
@@ -380,7 +380,7 @@ describe("filterThinkingForDisplay", () => {
 		"dims mm:think blocks when hideThinking is false": {
 			input: "Before <mm:think>mm reasoning</mm:think> After",
 			hideThinking: false,
-			expected: `Before ${fg(ANSI.dim, "mm reasoning")} After`,
+			expected: `Before ${fg(ANSI.dim, "mm reasoning")}\n\n After`,
 		},
 		"handles unclosed mm:think tag by hiding content when hideThinking is true": {
 			input: "Before <mm:think>still streaming",
