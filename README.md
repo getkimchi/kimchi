@@ -254,6 +254,35 @@ Every mutation is persisted as an append-only event with pre/post state hashes, 
 
 For full documentation see `docs/ferment.md` and `docs/ferment-storage-schema.md`.
 
+## LSP Integration
+
+kimchi ships with built-in Language Server Protocol (LSP) support, giving the agent type-aware code intelligence. The extension loads by default — no configuration required.
+
+### Supported languages
+
+| Language | Server | Install |
+|---|---|---|
+| TypeScript / JavaScript | `typescript-language-server` | `npm i -g typescript-language-server typescript` |
+| Go | `gopls` | `go install golang.org/x/tools/gopls@latest` |
+
+Servers are auto-detected via `which` on `PATH`. If a server binary is not found, the corresponding tools are silently unavailable.
+
+### Tools
+
+| Tool | Description |
+|---|---|
+| `lsp_diagnostics` | Get type errors, warnings, and linter diagnostics for a file |
+| `lsp_hover` | Get type information and documentation for a symbol at a position |
+| `lsp_definition` | Navigate to the definition of a symbol (supports `typeDefinition` and `implementation` variants) |
+| `lsp_references` | Find all references to a symbol across the codebase |
+| `lsp_rename` | Atomically rename a symbol across all files |
+
+The agent is prompted to prefer LSP tools over text-based alternatives (e.g., `lsp_definition` over `grep` for navigating to definitions). File changes made via `edit`, `write`, or `read` are automatically synced to the language server.
+
+### Status bar
+
+When LSP servers are active, the status bar shows the server name(s) and current diagnostic error count (e.g., `LSP: typescript-language-server (3 diags)`).
+
 ## Remote teleport (preview)
 
 Launch with `kimchi --teleport` to enable session-multiplex commands. The local TUI stays the home base; remote workers are spawned, detached, and re-attached without restarting kimchi.
