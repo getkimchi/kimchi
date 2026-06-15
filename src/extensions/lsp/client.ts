@@ -1,4 +1,7 @@
 // extensions/lsp/client.ts
+import { spawn } from "node:child_process"
+import { readFile } from "node:fs/promises"
+import { PassThrough } from "node:stream"
 import type {
 	BunProcess,
 	LspClient,
@@ -9,6 +12,59 @@ import type {
 	ServerConfig,
 } from "./types.js"
 import { detectLanguageId, fileToUri } from "./utils.js"
+
+// =============================================================================
+// Node process adapter — wraps child_process.spawn into the BunProcess shape
+// =============================================================================
+
+function spawnProcess(command: string, args: string[], cwd: string): BunProcess {
+	const proc = spawn(command, args, { cwd, stdio: ["pipe", "pipe", "pipe"] })
+
+	const toWebReadable = (nodeStream: NodeJS.ReadableStream): ReadableStream<Uint8Array> => {
+		return new ReadableStream<Uint8Array>({
+			start(controller) {
+				nodeStream.on("data", (chunk: Buffer) => {
+					controller.enqueue(new Uint8Array(chunk))
+				})
+				nodeStream.on("end", () => controller.close())
+				nodeStream.on("error", (err: Error) => controller.error(err))
+			},
+		})
+	}
+
+	let exitResolve!: () => void
+	let exitCode: number | null = null
+	const exited = new Promise<void>((resolve) => {
+		exitResolve = resolve
+	})
+	proc.on("exit", (code) => {
+		exitCode = code
+		exitResolve()
+	})
+
+	return {
+		stdin: {
+			write(data: Uint8Array | string) {
+				proc.stdin?.write(data)
+			},
+			flush() {
+				return Promise.resolve()
+			},
+			end() {
+				proc.stdin?.end()
+			},
+		},
+		stdout: toWebReadable(proc.stdout ?? new PassThrough()),
+		stderr: toWebReadable(proc.stderr ?? new PassThrough()),
+		kill() {
+			proc.kill()
+		},
+		exited,
+		get exitCode() {
+			return exitCode
+		},
+	}
+}
 
 // =============================================================================
 // Client State
@@ -169,15 +225,7 @@ export async function getOrCreateClient(config: ServerConfig, cwd: string): Prom
 	if (existingLock) return existingLock
 
 	const clientPromise = (async () => {
-		// Bun global available at runtime but not typed — use globalThis cast
-		// biome-ignore lint/suspicious/noExplicitAny: Bun not typed without @types/bun
-		const Bun = (globalThis as any).Bun
-		const proc = Bun.spawn([config.command, ...(config.args ?? [])], {
-			cwd,
-			stdin: "pipe",
-			stdout: "pipe",
-			stderr: "pipe",
-		}) as BunProcess
+		const proc = spawnProcess(config.command, config.args ?? [], cwd)
 
 		let resolveProjectLoaded!: () => void
 		const projectLoaded = new Promise<void>((resolve) => {
@@ -208,13 +256,11 @@ export async function getOrCreateClient(config: ServerConfig, cwd: string): Prom
 		}
 		clients.set(key, client)
 
-		// biome-ignore lint/suspicious/noExplicitAny: Bun not typed without @types/bun
-		;(proc as any).exited.then(() => {
+		proc.exited.then(() => {
 			clients.delete(key)
 			clientLocks.delete(key)
 			client.resolveProjectLoaded()
-			// biome-ignore lint/suspicious/noExplicitAny: Bun not typed without @types/bun
-			const err = new Error(`LSP server exited (code ${(proc as any).exitCode})`)
+			const err = new Error(`LSP server exited (code ${proc.exitCode})`)
 			for (const pending of client.pendingRequests.values()) pending.reject(err)
 			client.pendingRequests.clear()
 		})
@@ -331,9 +377,7 @@ export async function ensureFileOpen(client: LspClient, filePath: string): Promi
 		if (client.openFiles.has(uri)) return
 		let content: string
 		try {
-			// biome-ignore lint/suspicious/noExplicitAny: Bun not typed without @types/bun
-			const Bun = (globalThis as any).Bun
-			content = await Bun.file(filePath).text()
+			content = await readFile(filePath, "utf-8")
 		} catch {
 			return // file doesn't exist
 		}
@@ -374,9 +418,7 @@ export async function refreshFile(client: LspClient, filePath: string): Promise<
 
 		let content: string
 		try {
-			// biome-ignore lint/suspicious/noExplicitAny: Bun not typed without @types/bun
-			const Bun = (globalThis as any).Bun
-			content = await Bun.file(filePath).text()
+			content = await readFile(filePath, "utf-8")
 		} catch {
 			return
 		}
