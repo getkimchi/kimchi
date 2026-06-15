@@ -1,10 +1,10 @@
 import { resolve } from "node:path"
-import type { AssistantMessage } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedSemanticFg } from "../../ansi.js"
 import { getAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
 import { isAgentWorker } from "../agent-worker-context.js"
+import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import { hasActiveFerment, notifyFermentActive, onActiveFermentChange } from "../ferment/state.js"
 import { FERMENT_TOOLS, isFermentToolName, isUserFacingFermentToolName } from "../ferment/tool-names.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
@@ -14,6 +14,9 @@ import { resolveClassifierModels } from "./classifier-model.js"
 import { classifyToolCall } from "./classifier.js"
 import { registerCommands } from "./commands.js"
 import { type LoadedConfig, loadConfig } from "./config.js"
+import { PERMISSIONS_ENV_KEY } from "./constants.js"
+import { getSessionPermissionFlagController } from "./mode-controller-registry.js"
+import { getPermissionMode, getSessionPermissionsEnvKey, setPermissionMode } from "./mode-controller.js"
 import { resolveMode } from "./mode.js"
 import { saveApprovedPlan } from "./plan-persistence.js"
 import type { ToolPermissionPrompter } from "./prompter.js"
@@ -34,7 +37,13 @@ import {
 	isReadOnlyTool,
 	splitCompoundCommand,
 } from "./taxonomy.js"
-import { BUILTIN_DENY, DEFAULT_CONFIG, type PermissionMode, type Rule } from "./types.js"
+import {
+	BUILTIN_DENY,
+	DEFAULT_CONFIG,
+	type PermissionMode,
+	type PermissionModeRuntimeSource,
+	type Rule,
+} from "./types.js"
 
 /**
  * Check whether a file path is within .kimchi/plans/ relative to cwd.
@@ -70,7 +79,17 @@ const EMPTY_LOADED_CONFIG: LoadedConfig = {
 }
 
 // bash is allowed but gated per-command by isReadOnlyBashCommand.
-const PLAN_MODE_TOOLS = ["read", "grep", "find", "ls", "web_search", "web_fetch", "questionnaire", "bash"]
+const PLAN_MODE_TOOLS = [
+	"read",
+	"grep",
+	"find",
+	"ls",
+	"web_search",
+	"web_fetch",
+	"questionnaire",
+	"bash",
+	"write_todos",
+]
 const PLAN_MODE_TOOL_SET = new Set<string>(PLAN_MODE_TOOLS)
 
 // Tools that auto-approve in headless/auto modes without LLM classification.
@@ -80,25 +99,30 @@ const PLAN_MODE_TOOL_SET = new Set<string>(PLAN_MODE_TOOLS)
 //
 // Names are lowercased because the tool_call handler lowercases event.toolName
 // before comparing (see `const toolName = event.toolName.toLowerCase()` below).
-const BUILTIN_ALLOW_TOOL_NAMES = ["set_phase", "agent", "get_subagent_result", "steer_subagent"]
+const BUILTIN_ALLOW_TOOL_NAMES = ["set_phase", "agent", "get_subagent_result", "steer_subagent", "write_todos"]
 
-const MODES: Array<{ mode: PermissionMode; label: string; color: "success" | "warning" | "error" }> = [
+const MODES: Array<{
+	mode: PermissionMode
+	label: string
+	color: "success" | "warning" | "error"
+}> = [
 	{ mode: "default", label: "default", color: "success" },
 	{ mode: "plan", label: "plan", color: "warning" },
 	{ mode: "auto", label: "auto", color: "warning" },
 	{ mode: "yolo", label: "yolo", color: "error" },
 ]
 
-let _currentPermissionsMode: PermissionMode = "default"
+let _isLaunchedWithYolo: () => boolean = () => process.env[PERMISSIONS_ENV_KEY] === "yolo"
 
-export function getCurrentPermissionsMode(): PermissionMode {
-	return _currentPermissionsMode
+export function isLaunchedWithYolo(): boolean {
+	return _isLaunchedWithYolo()
 }
 
-let _isUserChosenYolo: () => boolean = () => process.env.KIMCHI_PERMISSIONS === "yolo"
+let _displayPermissionMode: PermissionMode
 
-export function isUserChosenYolo(): boolean {
-	return _isUserChosenYolo()
+/** Returns current permission mode to be displayed in the TUI. */
+export function getDisplayPermissionMode(): string {
+	return _displayPermissionMode
 }
 
 export { notifyFermentActive }
@@ -113,20 +137,6 @@ function resolvePrompter(ctx: ExtensionContext): ToolPermissionPrompter | undefi
 	if (isAgentWorker()) return undefined
 	if (ctx.hasUI) return terminalPrompter(ctx)
 	return getAcpPrompter(ctx.sessionManager.getSessionId())
-}
-
-let _modeChangeListener: ((mode: PermissionMode) => void) | undefined
-
-/**
- * Subscribe to permission mode changes (CLI flag init + shift+tab cycling).
- * Used by --remote to forward the client's mode to the server so the
- * server-side permissions instance gates tool calls under the same mode.
- */
-export function onPermissionsModeChange(listener: (mode: PermissionMode) => void): () => void {
-	_modeChangeListener = listener
-	return () => {
-		if (_modeChangeListener === listener) _modeChangeListener = undefined
-	}
 }
 
 export default function permissionsExtension(pi: ExtensionAPI): void {
@@ -166,13 +176,17 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 
 	const session = new SessionMemory()
 	const builtinRules: Rule[] = parseRules(BUILTIN_DENY, "deny", "builtin")
-	// Snapshot env before propagateModeToEnv overwrites it; otherwise
-	// currentMode() would read its own writes and ignore flag/runtime precedence.
-	const envBaseline = process.env.KIMCHI_PERMISSIONS
+	// When a subagent is spawned, the parent stores its per-session mode under
+	// KIMCHI_PERMISSIONS_<sessionId> and advertises the session ID via
+	// KIMCHI_PARENT_SESSION_ID. If this variable is absent, we fall back to the
+	// base key.
+	const permissionsEnvFlag = process.env[PARENT_SESSION_ID_ENV_KEY]
+		? process.env[getSessionPermissionsEnvKey(process.env[PARENT_SESSION_ID_ENV_KEY])]
+		: process.env[PERMISSIONS_ENV_KEY]
 	let loaded: LoadedConfig = EMPTY_LOADED_CONFIG
 	let configRules: Rule[] = []
-	let runtimeMode: PermissionMode | undefined
-	let runtimeModeSource: RuntimeModeSource | undefined
+	let currentCtx: ExtensionContext | undefined
+	let preFermentMode: PermissionMode | undefined
 	let cliMode: PermissionMode | undefined
 	let planModeApplied = false
 	let planModeHiddenTools: string[] = []
@@ -180,7 +194,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	/** Tracks all active permission prompt abort controllers for concurrent tool calls. */
 	const activeAbortControllers = new Set<AbortController>()
 	let unsubscribeTerminalInput: (() => void) | null = null
-	let _lastCtx: ExtensionContext | undefined
+	let unsubscribePermissionFlagController: (() => void) | undefined
 
 	// Plan completion menu state: tracks whether the agent used tools during the
 	// current user-input cycle so we can detect text-only turns (plan output).
@@ -196,29 +210,51 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		]
 	}
 
-	/** Propagate permission mode to spawned subagents. */
-	function propagateModeToEnv(): void {
-		process.env.KIMCHI_PERMISSIONS = currentMode()
+	_isLaunchedWithYolo = () => {
+		const runtimeMode = currentCtx && getPermissionMode(currentCtx.sessionManager.getSessionId())
+		if (runtimeMode?.mode === "yolo" && runtimeMode.source === "user") {
+			return true
+		}
+		return (
+			resolveMode({
+				flag: cliMode,
+				env: permissionsEnvFlag,
+				config: loaded.config.defaultMode,
+			}).mode === "yolo"
+		)
 	}
 
-	function currentMode(): PermissionMode {
-		return resolveMode({
-			runtime: runtimeMode,
-			flag: cliMode,
-			env: envBaseline,
-			config: loaded.config.defaultMode,
-		}).mode
+	/**
+	 * Returns the current permission mode flag or falls back to a user default.
+	 */
+	function getRuntimePermissionMode(): { mode: PermissionMode; source: PermissionModeRuntimeSource } {
+		const runtimeMode = currentCtx && getPermissionMode(currentCtx.sessionManager.getSessionId())
+		if (runtimeMode) {
+			return runtimeMode
+		}
+		return {
+			mode: resolveMode({
+				flag: cliMode,
+				env: permissionsEnvFlag,
+				config: loaded.config.defaultMode,
+			}).mode,
+			source: "user",
+		}
 	}
 
-	function setRuntimeMode(mode: PermissionMode | undefined, source: RuntimeModeSource | undefined): void {
-		runtimeMode = mode
-		runtimeModeSource = mode === undefined ? undefined : source
+	/**
+	 * Set current permission mode, keeps the controller in sync, and
+	 * persists the env key for sub-agents.
+	 */
+	function setRuntimePermissionMode(
+		ctx: ExtensionContext,
+		mode: PermissionMode,
+		source: PermissionModeRuntimeSource,
+		skipNotify?: boolean,
+	): void {
+		_displayPermissionMode = mode
+		setPermissionMode(ctx.sessionManager.getSessionId(), mode, source, skipNotify)
 	}
-
-	_isUserChosenYolo = () =>
-		(runtimeMode === "yolo" && runtimeModeSource === "user") ||
-		resolveMode({ runtime: undefined, flag: cliMode, env: envBaseline, config: loaded.config.defaultMode }).mode ===
-			"yolo"
 
 	function allRules(): Rule[] {
 		return [...session.all(), ...configRules, ...builtinRules]
@@ -253,8 +289,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 
 	function updateStatus(ctx: ExtensionContext): void {
 		if (!ctx.hasUI) return
-		const mode = currentMode()
-		_currentPermissionsMode = mode
+		const { mode } = getRuntimePermissionMode()
 		const active = MODES.find((m) => m.mode === mode) ?? MODES[0]
 		// Filled dot + active label hardcode kimchi palette so the cue stays legible
 		// under kimchi-minimal; unfilled dots + hint use the "text" token to match
@@ -268,42 +303,68 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		ctx.ui.setStatus("permissions-mode", `${dots} ${name} ${hint}`)
 	}
 
-	function cycleMode(ctx: ExtensionContext): void {
-		const current = currentMode()
-		const idx = MODES.findIndex((m) => m.mode === current)
-		const next = MODES[(idx + 1) % MODES.length].mode
-		setRuntimeMode(next, "user")
+	function maybeShowYoloWarning(ctx: ExtensionContext) {
+		if (!ctx.hasUI) return
+		const { mode, source } = getRuntimePermissionMode()
+		if (mode === "yolo" && source === "user") {
+			ctx.ui.setStatus(
+				"permissions-warning",
+				"WARNING: all permission checks disabled. Recommended for sandbox environments only.",
+			)
+		} else {
+			ctx.ui.setStatus("permissions-warning", undefined)
+		}
+	}
+
+	function changeMode(
+		ctx: ExtensionContext,
+		current: PermissionMode,
+		next: PermissionMode,
+		source: PermissionModeRuntimeSource,
+		skipNotify?: boolean,
+	): void {
+		setRuntimePermissionMode(ctx, next, source, skipNotify)
 		if (current === "plan" && next !== "plan") restoreToolsFromPlanMode()
 		if (next === "plan") applyPlanModeTools()
-		propagateModeToEnv()
-		updateStatus(ctx)
 		// Dismiss all active permission prompts so tool_call handlers re-evaluate under the new mode.
 		for (const ctrl of activeAbortControllers) ctrl.abort()
 		activeAbortControllers.clear()
-		maybeShowYoloWarning(ctx, next)
-		_modeChangeListener?.(next)
+		updateStatus(ctx)
+		maybeShowYoloWarning(ctx)
+	}
+
+	function cycleMode(ctx: ExtensionContext): void {
+		const { mode: current } = getRuntimePermissionMode()
+		const idx = MODES.findIndex((m) => m.mode === current)
+		const next = MODES[(idx + 1) % MODES.length].mode
+		changeMode(ctx, current, next, "user")
 	}
 
 	// Ferment calls notifyFermentActive() when a ferment is activated or cleared,
 	// so permissions can switch to/from yolo.
-	onActiveFermentChange((hasActive: boolean) => {
+	//
+	// FIXME: ferment isn't tracked per session ID, so we assume that active
+	// ferment change applies to the current session. This is fine for CLI usage,
+	// but incorrect for ACP use where a single process may have multiple sessions (and therefore ferments)
+	// running at the same time. Fix this when introducing ferment commands to ACP.
+	onActiveFermentChange((hasActive) => {
 		if (cliMode) return // explicit CLI flag always wins
-		const previousMode = currentMode()
+		if (!currentCtx) return // No active session
+		let { mode: current, source } = getRuntimePermissionMode()
+		let next = current
 		if (hasActive) {
-			if (!(runtimeMode === "yolo" && runtimeModeSource === "user")) setRuntimeMode("yolo", "ferment")
-		} else {
-			// Only clear runtimeMode if we set it for ferment (not if user changed it manually)
-			if (runtimeMode === "yolo" && runtimeModeSource === "ferment") setRuntimeMode(undefined, undefined)
+			if (source === "user") preFermentMode = current
+			next = "yolo"
+			source = "ferment"
+		} else if (preFermentMode) {
+			// Clear mode that was set for ferment (not if user changed it manually)
+			next = preFermentMode
+			preFermentMode = undefined
+			source = "user"
 		}
-		const nextMode = currentMode()
-		if (previousMode === "plan" && nextMode !== "plan") restoreToolsFromPlanMode()
-		if (nextMode === "plan") applyPlanModeTools()
-		propagateModeToEnv()
-		if (_lastCtx) {
-			updateStatus(_lastCtx)
-			maybeShowYoloWarning(_lastCtx, currentMode())
+		if (next && next !== current) {
+			changeMode(currentCtx, current, next, source)
 		}
-		_modeChangeListener?.(nextMode)
 	})
 
 	function doLoadConfig(ctx: ExtensionContext): { errors: string[] } {
@@ -318,41 +379,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		return { errors }
 	}
 
-	function maybeShowYoloWarning(ctx: ExtensionContext, mode: PermissionMode) {
-		if (!ctx.hasUI) return
-		if (mode === "yolo") {
-			ctx.ui.setStatus(
-				"permissions-warning",
-				"WARNING: all permission checks disabled. Recommended for sandbox environments only.",
-			)
-		} else {
-			ctx.ui.setStatus("permissions-warning", undefined)
-		}
-	}
-
-	function switchToPlanModeRuntime(ctx: ExtensionContext): void {
-		setRuntimeMode("plan", "user")
-		applyPlanModeTools()
-		propagateModeToEnv()
-		updateStatus(ctx)
-		// Other concurrent prompts are stale under the new mode — let them re-evaluate.
-		for (const ctrl of activeAbortControllers) ctrl.abort()
-		activeAbortControllers.clear()
-		maybeShowYoloWarning(ctx, "plan")
-	}
-
-	function switchFromPlanAndExecute(
-		ctx: ExtensionContext,
-		targetMode: PermissionMode,
-		planPath: string | undefined,
-		planText: string,
-	): void {
-		setRuntimeMode(targetMode, "user")
-		restoreToolsFromPlanMode()
-		propagateModeToEnv()
-		updateStatus(ctx)
-		maybeShowYoloWarning(ctx, targetMode)
-
+	function executePlan(planPath: string | undefined, planText: string): void {
 		// Send the approved plan as the execution trigger. No compaction needed —
 		// the plan text is already in context from the planning conversation.
 		const planRef = planPath ? `\n\nApproved plan saved to: ${planPath}` : ""
@@ -366,8 +393,49 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		)
 	}
 
+	function executeFermentPlan(planText: string): void {
+		// Extract a title from the plan text: first non-empty line after a Goal heading,
+		// or failing that the first heading text.
+		const lines = planText.split(/\r?\n/)
+		const goalIdx = lines.findIndex((l) => /^#+\s*Goal\b/i.test(l))
+		let title = ""
+		if (goalIdx >= 0) {
+			for (let i = goalIdx + 1; i < lines.length; i++) {
+				const trimmed = lines[i].trim()
+				if (trimmed.length > 0 && !/^#/.test(trimmed)) {
+					title = trimmed.slice(0, 80).trim()
+					break
+				}
+			}
+		}
+		if (!title) {
+			title =
+				lines[0]
+					?.replace(/^#+\s*/, "")
+					.trim()
+					.slice(0, 80) ?? "Plan"
+		}
+		pi.sendMessage(
+			{
+				customType: "plan-execute",
+				content: `The user approved the plan and wants to run it as a ferment workflow. You MUST call \`request_ferment_workflow\` now — do not describe it, do not ask for confirmation, just call it immediately.
+
+Use these exact values:
+- title: "${title}"
+- intent: the full plan text below (copy it verbatim as the intent)
+
+The plan text:
+\`\`\`
+${planText}
+\`\`\``,
+				display: false,
+			},
+			{ triggerTurn: true },
+		)
+	}
+
 	pi.on("session_start", async (_event, ctx) => {
-		_lastCtx = ctx
+		currentCtx = ctx
 		const { errors } = doLoadConfig(ctx)
 
 		for (const err of errors) {
@@ -404,36 +472,53 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		// YOLO mode: --yolo and --dangerously-skip-permissions both set yolo mode (no classifier, auto-approve all)
 		else if (pi.getFlag("yolo") || pi.getFlag("dangerously-skip-permissions")) cliMode = "yolo"
 
+		let { mode: current, source } = getRuntimePermissionMode()
+		let next = current
 		// Active ferment → auto-yolo so scoping/lifecycle work can proceed without approval prompts.
-		// No env var is set before the user explicitly approves ferment creation.
+		// Permission mode is persisted after the user explicitly approves ferment creation.
 		// Only applies when no explicit CLI mode flag was given.
 		if (!cliMode && hasActiveFerment()) {
-			if (!(runtimeMode === "yolo" && runtimeModeSource === "user")) setRuntimeMode("yolo", "ferment")
+			if (source === "user") preFermentMode = current
+			next = "yolo"
+			source = "ferment"
 		}
 
-		if (currentMode() === "plan") applyPlanModeTools()
-		propagateModeToEnv()
-		updateStatus(ctx)
+		changeMode(ctx, current, next, source)
 
-		maybeShowYoloWarning(ctx, currentMode())
-		_modeChangeListener?.(currentMode())
+		const sessionId = currentCtx.sessionManager.getSessionId()
+		unsubscribePermissionFlagController = getSessionPermissionFlagController(sessionId)?.subscribe(({ mode: next }) => {
+			if (!next) return
+
+			const current = getRuntimePermissionMode()
+			if (current.mode === next.mode) return
+
+			// ACP already emitted the config update from controller.setMode().
+			// This call is only for local transition side effects.
+			changeMode(ctx, current.mode, next.mode, next.source, true)
+		})
+	})
+
+	pi.on("session_shutdown", () => {
+		unsubscribePermissionFlagController?.()
+		unsubscribePermissionFlagController = undefined
+		currentCtx = undefined
 	})
 
 	const blocks = createSystemPromptBlocks(pi, "permissions")
 	blocks.register({
 		id: "plan-mode-supplement",
 		render: () => {
-			if (currentMode() !== "plan") return undefined
+			if (getRuntimePermissionMode().mode !== "plan") return undefined
 			return planModeSupplement.trim()
 		},
 	})
 
 	// When the agent produces <!-- PLAN_COMPLETE --> in plan mode, show the approval menu.
 	pi.on("turn_end", async (event, ctx) => {
-		if (currentMode() !== "plan") return
+		if (getRuntimePermissionMode().mode !== "plan") return
 		if (!ctx.hasUI) return
 
-		const message = event.message as AssistantMessage
+		const message = event.message
 		if (message.role !== "assistant") return
 
 		const text = message.content
@@ -458,54 +543,13 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			} catch {
 				// Non-fatal: plan persistence is best-effort.
 			}
-			switchFromPlanAndExecute(ctx, "auto", planPath, text)
+			changeMode(ctx, "plan", "auto", "user")
+			executePlan(planPath, text)
 		} else if (choice === FERMENT) {
 			// Switch to default mode so ferment tools become available, then ask
 			// the agent to call request_ferment_workflow with the plan as intent.
-			setRuntimeMode("default", "user")
-			restoreToolsFromPlanMode()
-			propagateModeToEnv()
-			updateStatus(ctx)
-			maybeShowYoloWarning(ctx, "default")
-
-			// Extract a title from the plan text: first non-empty line after a Goal heading,
-			// or failing that the first heading text.
-			const lines = text.split(/\r?\n/)
-			const goalIdx = lines.findIndex((l) => /^#+\s*Goal\b/i.test(l))
-			let title = ""
-			if (goalIdx >= 0) {
-				for (let i = goalIdx + 1; i < lines.length; i++) {
-					const trimmed = lines[i].trim()
-					if (trimmed.length > 0 && !/^#/.test(trimmed)) {
-						title = trimmed.slice(0, 80).trim()
-						break
-					}
-				}
-			}
-			if (!title) {
-				title =
-					lines[0]
-						?.replace(/^#+\s*/, "")
-						.trim()
-						.slice(0, 80) ?? "Plan"
-			}
-			pi.sendMessage(
-				{
-					customType: "plan-execute",
-					content: `The user approved the plan and wants to run it as a ferment workflow. You MUST call \`request_ferment_workflow\` now — do not describe it, do not ask for confirmation, just call it immediately.
-
-Use these exact values:
-- title: "${title}"
-- intent: the full plan text below (copy it verbatim as the intent)
-
-The plan text:
-\`\`\`
-${text}
-\`\`\``,
-					display: false,
-				},
-				{ triggerTurn: true },
-			)
+			changeMode(ctx, "plan", "default", "user")
+			executeFermentPlan(text)
 		}
 		// Decline or escape: stay in plan mode.
 	})
@@ -535,7 +579,7 @@ ${text}
 		// changed mode via shift+tab, we re-evaluate the tool call under the new mode.
 		// Cap iterations at MODES.length to prevent infinite loops.
 		for (let attempt = 0; attempt < MODES.length; attempt++) {
-			const mode = currentMode()
+			const { mode } = getRuntimePermissionMode()
 
 			// YOLO mode: bypass ALL permission checks including rules, denylist, and classifier
 			if (mode === "yolo") {
@@ -576,7 +620,10 @@ ${text}
 				if (isCompoundCommand(command)) {
 					const compoundCheck = checkCompoundCommand(command, allRules())
 					if (compoundCheck.decision === "deny") {
-						return { block: true, reason: compoundCheck.deniedReason ?? "Subcommand denied" }
+						return {
+							block: true,
+							reason: compoundCheck.deniedReason ?? "Subcommand denied",
+						}
 					}
 					if (compoundCheck.decision === "allow") {
 						return undefined
@@ -587,7 +634,10 @@ ${text}
 
 			const match = evaluateRules(allRules(), toolName, input)
 			if (match.decision === "deny") {
-				return { block: true, reason: `Denied by rule ${formatRule(match.rule)}` }
+				return {
+					block: true,
+					reason: `Denied by rule ${formatRule(match.rule)}`,
+				}
 			}
 			if (match.decision === "allow") return undefined
 
@@ -595,7 +645,7 @@ ${text}
 			// auto-promote the session to plan mode so the rest of the conversation
 			// runs under the right tool set instead of silently approving here.
 			if (toolName === "questionnaire" && mode === "default") {
-				switchToPlanModeRuntime(ctx)
+				changeMode(ctx, "default", "plan", "user")
 				return undefined
 			}
 			if (isReadOnlyTool(toolName)) return undefined
@@ -622,10 +672,16 @@ ${text}
 
 				if (verdict.verdict === "safe") return undefined
 				if (verdict.verdict === "blocked") {
-					return { block: true, reason: `Classifier blocked: ${verdict.reason}` }
+					return {
+						block: true,
+						reason: `Classifier blocked: ${verdict.reason}`,
+					}
 				}
 				if (!promptAvailable) {
-					return { block: true, reason: `Classifier: ${verdict.reason} (no UI to confirm)` }
+					return {
+						block: true,
+						reason: `Classifier: ${verdict.reason} (no UI to confirm)`,
+					}
 				}
 				const result = await handleConfirm(event, {
 					ctx,
@@ -668,19 +724,17 @@ ${text}
 
 		// Exhausted re-evaluation attempts — fail closed.
 		console.warn("permissions: mode changed too many times during prompt, failing closed")
-		return { block: true, reason: "Permission mode changed too many times during prompt" }
+		return {
+			block: true,
+			reason: "Permission mode changed too many times during prompt",
+		}
 	})
 
 	registerCommands(pi, {
 		getSession: () => session,
 		getLoaded: () => loaded,
-		getMode: () => currentMode(),
-		setRuntimeMode: (m, source) => {
-			setRuntimeMode(m, source)
-			propagateModeToEnv()
-		},
-		applyPlanMode: () => applyPlanModeTools(),
-		restorePlanMode: () => restoreToolsFromPlanMode(),
+		getPermissionMode: () => getRuntimePermissionMode().mode,
+		setPermissionMode: (ctx, mode) => changeMode(ctx, getRuntimePermissionMode().mode, mode, "user"),
 		rebuildConfigRules,
 		reloadConfig: (ctx) => {
 			const { errors } = doLoadConfig(ctx)
@@ -788,7 +842,10 @@ export async function handleCompoundConfirm(
 					continue
 				}
 				if (match.decision === "deny") {
-					return { block: true, reason: `Subcommand blocked by rule: ${subcommand}` }
+					return {
+						block: true,
+						reason: `Subcommand blocked by rule: ${subcommand}`,
+					}
 				}
 
 				// Create a fake bash event for this subcommand
@@ -807,7 +864,10 @@ export async function handleCompoundConfirm(
 		}
 
 		if (outcome.kind === "deny-with-feedback") {
-			return { block: true, reason: `The user declined this action before execution and said: ${outcome.feedback}` }
+			return {
+				block: true,
+				reason: `The user declined this action before execution and said: ${outcome.feedback}`,
+			}
 		}
 
 		return { block: true, reason: "Declined by user" }
@@ -832,7 +892,10 @@ function applyApprovalOutcome(
 		return undefined
 	}
 	if (outcome.kind === "deny-with-feedback") {
-		return { block: true, reason: `The user declined this action before execution and said: ${outcome.feedback}` }
+		return {
+			block: true,
+			reason: `The user declined this action before execution and said: ${outcome.feedback}`,
+		}
 	}
 	return { block: true, reason: "Declined by user" }
 }
@@ -878,7 +941,10 @@ interface CompoundCheckResult {
 export function checkCompoundCommand(command: string, rules: Rule[]): CompoundCheckResult {
 	// First check for hard-blocked programs
 	if (isHardBlockedBash(command)) {
-		return { decision: "deny", deniedReason: `Hard-blocked program in command: ${command}` }
+		return {
+			decision: "deny",
+			deniedReason: `Hard-blocked program in command: ${command}`,
+		}
 	}
 
 	// If not compound, fall through to normal flow
@@ -897,11 +963,17 @@ export function checkCompoundCommand(command: string, rules: Rule[]): CompoundCh
 	for (const subcommand of subcommands) {
 		// Check for hard-blocked programs in subcommand
 		if (isHardBlockedBash(subcommand)) {
-			return { decision: "deny", deniedReason: `Hard-blocked program in command: ${subcommand}` }
+			return {
+				decision: "deny",
+				deniedReason: `Hard-blocked program in command: ${subcommand}`,
+			}
 		}
 		const match = evaluateRules(rules, "bash", { command: subcommand })
 		if (match.decision === "deny") {
-			return { decision: "deny", deniedReason: `Subcommand blocked by rule: ${subcommand}` }
+			return {
+				decision: "deny",
+				deniedReason: `Subcommand blocked by rule: ${subcommand}`,
+			}
 		}
 		if (match.decision !== "allow") {
 			allAllowed = false

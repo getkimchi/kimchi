@@ -20,6 +20,7 @@ const HELP_ROWS: HelpRow[] = [
 	{ kind: "entry", key: "/scoped-models", desc: "Enable or disable models for Ctrl+P cycling" },
 	{ kind: "entry", key: "/multi-model", desc: "Configure model roles" },
 	{ kind: "entry", key: "/ferment", desc: "Run task in background" },
+	{ kind: "entry", key: "/todos", desc: "Open todo overlay / manage short-lived todo items" },
 	{ kind: "entry", key: "/compact", desc: "Compact context window" },
 	{ kind: "entry", key: "/new", desc: "Start a new session" },
 	{ kind: "entry", key: "/agents", desc: "Manage background agents" },

@@ -41,21 +41,12 @@ export function formatAnalyticsSummary(data: GenerateAnalyticsResponse, theme: T
 	let totalInput = 0
 	let totalOutput = 0
 
-	if (data.inputTokens?.items) {
-		for (const item of data.inputTokens.items) {
+	if (data.tokens?.items) {
+		for (const item of data.tokens.items) {
 			if (item.models) {
 				for (const model of item.models) {
-					totalInput += model.totalCount || 0
-				}
-			}
-		}
-	}
-
-	if (data.outputTokens?.items) {
-		for (const item of data.outputTokens.items) {
-			if (item.models) {
-				for (const model of item.models) {
-					totalOutput += model.totalCount || 0
+					totalInput += model.inputTokens || 0
+					totalOutput += model.outputTokens || 0
 				}
 			}
 		}
@@ -100,11 +91,8 @@ export function formatAnalyticsSummary(data: GenerateAnalyticsResponse, theme: T
 
 	// Change indicators line
 	const changeParts: string[] = []
-	if (data.comparison?.inputTokens?.changePercentage !== undefined) {
-		changeParts.push(`in: ${formatChangeIndicator(data.comparison.inputTokens.changePercentage, theme)}`)
-	}
-	if (data.comparison?.outputTokens?.changePercentage !== undefined) {
-		changeParts.push(`out: ${formatChangeIndicator(data.comparison.outputTokens.changePercentage, theme)}`)
+	if (data.comparison?.tokens?.changePercentage !== undefined) {
+		changeParts.push(`tokens: ${formatChangeIndicator(data.comparison.tokens.changePercentage, theme)}`)
 	}
 	if (data.comparison?.cost?.changePercentage !== undefined) {
 		changeParts.push(`cost: ${formatChangeIndicator(data.comparison.cost.changePercentage, theme)}`)

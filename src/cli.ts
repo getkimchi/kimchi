@@ -75,6 +75,7 @@ import { probeKittyKeyboardSupport } from "./extensions/terminal-compat/keyboard
 import { emitTerminalCompatWarning } from "./extensions/terminal-compat/startup-warning.js"
 import thinkingStepsExtension from "./extensions/thinking-steps/index.js"
 import tipsExtension from "./extensions/tips/index.js"
+import todosExtension from "./extensions/todos/index.js"
 import toolGroupingExtension from "./extensions/tool-grouping.js"
 import toolRenderingExtension from "./extensions/tool-rendering.js"
 import traceIdExtension from "./extensions/trace-id.js"
@@ -444,6 +445,9 @@ try {
 			resourceToolBlockerExtension,
 			behavioursExtension,
 			promptSummaryExtension,
+			...enabledExtensionFactories([
+				{ id: "extensions.todos", factory: todosExtension },
+			] satisfies ManagedExtensionFactory[]),
 			hideThinkingExtension,
 			thinkingStepsExtension,
 			assistantPrefixExtension,

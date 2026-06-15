@@ -1,4 +1,5 @@
-import type { ExtensionAPI, InputEvent } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext, InputEvent } from "@earendil-works/pi-coding-agent"
+import { getPermissionMode } from "./permissions/mode-controller.js"
 
 export const DEFAULT_READ_TOOLS = new Set([
 	"read",
@@ -124,12 +125,17 @@ export class ExplorationGuard {
 }
 
 export default function explorationGuardExtension(pi: ExtensionAPI, options?: ExplorationGuardOptions): void {
+	// ExtensionContext is populated on session start
+	let ctx: ExtensionContext | undefined
+
 	const guard = new ExplorationGuard({
 		...options,
 		// Disabled during plan-permission mode (e.g. ferment build phase) and
 		// during active ferment scoping — both contexts mandate deep exploration.
 		isEnabled: () => {
-			if (process.env.KIMCHI_PERMISSIONS === "plan") return false
+			const sessionId = ctx?.sessionManager.getSessionId()
+			if (!sessionId) return false
+			if (getPermissionMode(sessionId)?.mode === "plan") return false
 			try {
 				// Avoid a hard import cycle: ferment state is optional.
 				// eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -145,7 +151,8 @@ export default function explorationGuardExtension(pi: ExtensionAPI, options?: Ex
 		},
 	})
 
-	pi.on("session_start", () => {
+	pi.on("session_start", (_event, _ctx) => {
+		ctx = _ctx
 		guard.reset()
 	})
 

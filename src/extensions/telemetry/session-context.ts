@@ -56,6 +56,13 @@ export class SessionContext {
 	sessionStartMs: number
 	source: string
 	currentModel = "unknown"
+	/**
+	 * Current turn index, updated on each turn_start event.
+	 * `0` is a sentinel meaning "before the first turn" (e.g. a provider call
+	 * made during session warmup before any user message). Backends should treat
+	 * `0` as "unknown / pre-turn" rather than a valid 1-based turn number.
+	 */
+	turnIndex = 0
 	sentMessages = new Set<string>()
 	pendingArgs = new Map<string, { toolName: string; args: unknown }>()
 	messageStartTimes = new Map<string, number>()
@@ -97,6 +104,7 @@ export class SessionContext {
 		this.sessionId = rootSessionId
 		this.sessionStartMs = Date.now()
 		this.currentModel = "unknown"
+		this.turnIndex = 0
 		this.sentMessages.clear()
 		this.pendingArgs.clear()
 		this.messageStartTimes.clear()

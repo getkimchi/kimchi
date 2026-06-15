@@ -2,23 +2,28 @@ import type { ExtensionAPI, ExtensionContext, ToolCallEvent, ToolInfo } from "@e
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { registerAcpPrompter, unregisterAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
 import { runAsAgentWorker } from "../agent-worker-context.js"
+import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import { FERMENT_TOOLS } from "../ferment/tool-names.js"
 import { type EnvironmentInfo, buildSystemPrompt } from "../prompt-construction/system-prompt.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
+import { TODO_TOOL_NAME } from "../todos/tool.js"
 import { classifyToolCall } from "./classifier.js"
+import { PERMISSIONS_ENV_KEY } from "./constants.js"
 import permissionsExtension, {
 	checkCompoundCommand,
-	getCurrentPermissionsMode,
 	handleCompoundConfirm,
-	isUserChosenYolo,
+	isLaunchedWithYolo,
 	notifyFermentActive,
 } from "./index.js"
+import { unregisterSessionPermissionFlagController } from "./mode-controller-registry.js"
+import { getPermissionMode } from "./mode-controller.js"
 import { SessionMemory } from "./session-memory.js"
 import type { Rule } from "./types.js"
 
 vi.mock("node:fs", () => ({
 	existsSync: vi.fn(() => true),
 	mkdirSync: vi.fn(),
+	readFileSync: vi.fn(),
 	writeFileSync: vi.fn(),
 }))
 
@@ -41,14 +46,15 @@ const TEST_SESSION_ID = "test-session"
 // Helper to create mock ExtensionContext with ui.select
 // When an AbortSignal is passed and aborted=true, returns undefined to trigger "aborted" outcome
 function createMockContext(
-	selectResults: (string | undefined)[],
+	selectResults: (string | undefined)[] = [],
+	sessionId = TEST_SESSION_ID,
 	opts?: { abortOnFirstSelect?: boolean },
 ): ExtensionContext {
 	let selectCallIndex = 0
 	return {
 		hasUI: true,
 		cwd: "/test",
-		sessionManager: { getSessionId: () => TEST_SESSION_ID },
+		sessionManager: { getSessionId: () => sessionId },
 		ui: {
 			select: vi.fn(async (_: string, __: string[], selectOpts?: { signal?: AbortSignal }) => {
 				if (selectOpts?.signal?.aborted) {
@@ -147,19 +153,20 @@ function createPermissionsHarness(
 	}
 }
 
-describe("isUserChosenYolo", () => {
+describe("isLaunchedWithYolo", () => {
 	afterEach(() => {
-		// Production code mutates process.env directly via propagateModeToEnv; revert it.
 		notifyFermentActive(false)
-		Reflect.deleteProperty(process.env, "KIMCHI_PERMISSIONS")
+		unregisterSessionPermissionFlagController(TEST_SESSION_ID)
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+		Reflect.deleteProperty(process.env, `${PERMISSIONS_ENV_KEY}_${TEST_SESSION_ID}`)
 		vi.unstubAllEnvs()
 	})
 
 	it("is true when yolo comes from the launch env", () => {
-		vi.stubEnv("KIMCHI_PERMISSIONS", "yolo")
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "yolo")
 		createPermissionsHarness(["bash"])
 
-		expect(isUserChosenYolo()).toBe(true)
+		expect(isLaunchedWithYolo()).toBe(true)
 	})
 
 	it("is true when yolo comes from the launch CLI flag", async () => {
@@ -167,18 +174,21 @@ describe("isUserChosenYolo", () => {
 
 		await harness.fire("session_start", {}, createMockContext([]))
 
-		expect(isUserChosenYolo()).toBe(true)
+		expect(isLaunchedWithYolo()).toBe(true)
 	})
 
 	it("is true after the user switches to yolo with the permissions command", async () => {
 		const harness = createPermissionsHarness(["bash"])
 		const command = harness.commands.get("permissions")
+		const ctx = createMockContext([])
 
 		expect(command).toBeDefined()
-		await command?.handler("mode yolo", createMockContext([]))
+		await command?.handler("mode yolo", ctx)
 
-		expect(process.env.KIMCHI_PERMISSIONS).toBe("yolo")
-		expect(isUserChosenYolo()).toBe(true)
+		await harness.fire("session_start", {}, ctx)
+
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "yolo", source: "user" })
+		expect(isLaunchedWithYolo()).toBe(true)
 	})
 
 	it("is true after the user cycles to yolo with shift+tab", async () => {
@@ -196,69 +206,100 @@ describe("isUserChosenYolo", () => {
 		terminalHandler?.("\x1b[Z")
 		terminalHandler?.("\x1b[Z")
 
-		expect(process.env.KIMCHI_PERMISSIONS).toBe("yolo")
-		expect(isUserChosenYolo()).toBe(true)
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "yolo", source: "user" })
+		expect(isLaunchedWithYolo()).toBe(true)
 	})
 
-	it("is false when yolo is only a runtime elevation (e.g. an active ferment)", () => {
+	it("is false when yolo is only a runtime elevation (e.g. an active ferment)", async () => {
 		// No user-chosen yolo source: env unset, no CLI flag, default config.
-		createPermissionsHarness(["bash"])
+		const harness = createPermissionsHarness(["bash"])
+		// Fire session_start so sessionContext is set (required by onActiveFermentChange).
+		await harness.fire("session_start", {}, createMockContext([]))
 
 		// A ferment becoming active elevates runtimeMode to yolo and propagates it
-		// to the env — the exact condition that previously let the start gate be
-		// bypassed silently.
+		// to the per-session env — the exact condition that previously let the
+		// start gate be bypassed silently.
 		notifyFermentActive(true)
-		expect(process.env.KIMCHI_PERMISSIONS).toBe("yolo")
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "yolo", source: "ferment" })
 
 		// But runtime elevation must not count as user consent.
-		expect(isUserChosenYolo()).toBe(false)
+		expect(isLaunchedWithYolo()).toBe(false)
 	})
 
 	it("keeps user-selected runtime yolo when ferment clears", async () => {
 		const harness = createPermissionsHarness(["bash"])
 		const command = harness.commands.get("permissions")
-		await command?.handler("mode yolo", createMockContext([]))
+		const ctx = createMockContext([])
+		await command?.handler("mode yolo", ctx)
+		await harness.fire("session_start", {}, ctx)
 
 		notifyFermentActive(true)
 		notifyFermentActive(false)
 
-		expect(process.env.KIMCHI_PERMISSIONS).toBe("yolo")
-		expect(isUserChosenYolo()).toBe(true)
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "yolo", source: "user" })
+		expect(isLaunchedWithYolo()).toBe(true)
 	})
 
-	it("clears ferment-owned runtime yolo when ferment clears", () => {
-		createPermissionsHarness(["bash"])
+	it("keeps user-selected runtime yolo even during multiple ferment change callbacks", async () => {
+		const harness = createPermissionsHarness(["bash"])
+		const command = harness.commands.get("permissions")
+		const ctx = createMockContext([])
+		await command?.handler("mode auto", ctx)
+		await harness.fire("session_start", {}, ctx)
+
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "auto", source: "user" })
 
 		notifyFermentActive(true)
-		expect(process.env.KIMCHI_PERMISSIONS).toBe("yolo")
-		expect(isUserChosenYolo()).toBe(false)
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "yolo", source: "ferment" })
+
+		notifyFermentActive(true)
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "yolo", source: "ferment" })
+
+		notifyFermentActive(true)
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "yolo", source: "ferment" })
 
 		notifyFermentActive(false)
-		expect(process.env.KIMCHI_PERMISSIONS).toBe("default")
-		expect(isUserChosenYolo()).toBe(false)
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "auto", source: "user" })
+	})
+
+	it("clears ferment-owned runtime yolo when ferment clears", async () => {
+		const harness = createPermissionsHarness(["bash"])
+		const ctx = createMockContext([])
+		await harness.fire("session_start", {}, ctx)
+
+		notifyFermentActive(true)
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "yolo", source: "ferment" })
+		expect(isLaunchedWithYolo()).toBe(false)
+
+		notifyFermentActive(false)
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "default", source: "user" })
+		expect(isLaunchedWithYolo()).toBe(false)
 	})
 })
 
 describe("permissions plan-mode tool visibility", () => {
 	afterEach(() => {
+		notifyFermentActive(false)
+		unregisterSessionPermissionFlagController(TEST_SESSION_ID)
+		Reflect.deleteProperty(process.env, `${PERMISSIONS_ENV_KEY}_${TEST_SESSION_ID}`)
 		vi.unstubAllEnvs()
 	})
 
 	it("ferment activation leaves plan mode and restores agent tools for scoping", async () => {
-		vi.stubEnv("KIMCHI_PERMISSIONS", "plan")
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "plan")
 		const harness = createPermissionsHarness(["read", "agent", "bash", "write", "grep"])
 		await harness.fire("session_start", {}, createMockContext([]))
-		expect(getCurrentPermissionsMode()).toBe("plan")
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "plan", source: "user" })
 		expect(harness.activeTools().sort()).toEqual(["bash", "grep", "read"])
 
 		notifyFermentActive(true)
 
-		expect(getCurrentPermissionsMode()).toBe("yolo")
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "yolo", source: "ferment" })
 		expect(harness.activeTools().sort()).toEqual(["agent", "bash", "grep", "read", "write"])
 
 		notifyFermentActive(false)
 
-		expect(getCurrentPermissionsMode()).toBe("plan")
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "plan", source: "user" })
 		expect(harness.activeTools().sort()).toEqual(["bash", "grep", "read"])
 	})
 
@@ -278,6 +319,21 @@ describe("permissions plan-mode tool visibility", () => {
 		expect(JSON.stringify(result)).toContain("Plan mode")
 	})
 
+	it("keeps write_todos visible and allowed under explicit --plan", async () => {
+		const harness = createPermissionsHarness(["read", "bash", TODO_TOOL_NAME], { plan: true })
+
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		expect(harness.activeTools().sort()).toEqual(["bash", "read", TODO_TOOL_NAME])
+		await expect(
+			harness.fire(
+				"tool_call",
+				{ toolName: TODO_TOOL_NAME, input: { todos: [{ content: "Plan task", status: "pending" }] } },
+				createMockContext([]),
+			),
+		).resolves.toBeUndefined()
+	})
+
 	it("allows request_ferment_workflow after runtime plan-mode questionnaire", async () => {
 		const harness = createPermissionsHarness(["read", "questionnaire", "bash", FERMENT_TOOLS.REQUEST_WORKFLOW])
 		await harness.fire("session_start", {}, createMockContext([]))
@@ -285,7 +341,7 @@ describe("permissions plan-mode tool visibility", () => {
 		expect(
 			await harness.fire("tool_call", { toolName: "questionnaire", input: { questions: [] } }, createMockContext([])),
 		).toBeUndefined()
-		expect(getCurrentPermissionsMode()).toBe("plan")
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "plan", source: "user" })
 
 		const result = await harness.fire(
 			"tool_call",
@@ -333,6 +389,12 @@ describe("permissions plan-mode tool visibility", () => {
 })
 
 describe("plan mode assumption detection", () => {
+	afterEach(() => {
+		unregisterSessionPermissionFlagController(TEST_SESSION_ID)
+		Reflect.deleteProperty(process.env, `${PERMISSIONS_ENV_KEY}_${TEST_SESSION_ID}`)
+		vi.unstubAllEnvs()
+	})
+
 	// --- Integration tests for turn_end handler ---
 
 	function makeAssistantMessage(text: string): unknown {
@@ -511,12 +573,14 @@ describe("plan mode assumption detection", () => {
 		)
 
 		// Mode should have switched from plan to default (ferment tools unlocked)
-		expect(getCurrentPermissionsMode()).toBe("default")
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "default", source: "user" })
 	})
 })
 
 describe("permissions prompt inheritance", () => {
 	afterEach(() => {
+		unregisterSessionPermissionFlagController(TEST_SESSION_ID)
+		Reflect.deleteProperty(process.env, `${PERMISSIONS_ENV_KEY}_${TEST_SESSION_ID}`)
 		vi.unstubAllEnvs()
 	})
 
@@ -546,6 +610,8 @@ describe("permissions ferment tool classification", () => {
 	})
 
 	afterEach(() => {
+		unregisterSessionPermissionFlagController(TEST_SESSION_ID)
+		Reflect.deleteProperty(process.env, `${PERMISSIONS_ENV_KEY}_${TEST_SESSION_ID}`)
 		vi.unstubAllEnvs()
 	})
 
@@ -630,12 +696,14 @@ describe("permissions ferment tool classification", () => {
 
 describe("permissions ACP prompter", () => {
 	beforeEach(() => {
-		Reflect.deleteProperty(process.env, "KIMCHI_PERMISSIONS")
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
 		vi.mocked(classifyToolCall).mockClear()
 	})
 
 	afterEach(() => {
 		unregisterAcpPrompter(TEST_SESSION_ID)
+		unregisterSessionPermissionFlagController(TEST_SESSION_ID)
+		Reflect.deleteProperty(process.env, `${PERMISSIONS_ENV_KEY}_${TEST_SESSION_ID}`)
 		vi.unstubAllEnvs()
 	})
 
@@ -1170,5 +1238,89 @@ describe("compound command auto-mode fall-through", () => {
 		]
 		const result = checkCompoundCommand("ls -la && pwd", rules)
 		expect(result.decision).toBe("allow")
+	})
+})
+
+describe("subagent inherits parent session permission mode", () => {
+	const PARENT_SESSION_ID = "parent-acp-session-42"
+	const CHILD_SESSION_ID = "child-subagent-session-99"
+
+	afterEach(() => {
+		notifyFermentActive(false)
+		unregisterSessionPermissionFlagController(CHILD_SESSION_ID)
+		Reflect.deleteProperty(process.env, `${PERMISSIONS_ENV_KEY}_${PARENT_SESSION_ID}`)
+		Reflect.deleteProperty(process.env, `${PERMISSIONS_ENV_KEY}_${CHILD_SESSION_ID}`)
+		Reflect.deleteProperty(process.env, PARENT_SESSION_ID_ENV_KEY)
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+		vi.unstubAllEnvs()
+	})
+
+	it("reads mode from KIMCHI_PERMISSIONS_<parentSessionId> when KIMCHI_PARENT_SESSION_ID is set", async () => {
+		process.env[`${PERMISSIONS_ENV_KEY}_${PARENT_SESSION_ID}`] = "plan"
+		process.env[PARENT_SESSION_ID_ENV_KEY] = PARENT_SESSION_ID
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+
+		// Calling createPermissionsHarness re-invokes permissionsExtension(pi),
+		// which captures permissionsEnvFlag from process.env at construction time.
+		const harness = createPermissionsHarness(["read", "write", "bash"])
+
+		// Fire session_start with the CHILD's own session ID (different from parent).
+		const childCtx = {
+			...createMockContext([]),
+			sessionManager: { getSessionId: () => CHILD_SESSION_ID },
+		} as unknown as ExtensionContext
+		await harness.fire("session_start", {}, childCtx)
+
+		// The child's runtime mode should be "plan", inherited from the parent session.
+		expect(getPermissionMode(CHILD_SESSION_ID)).toEqual({ mode: "plan", source: "user" })
+	})
+
+	it("parent session key takes precedence over base KIMCHI_PERMISSIONS", async () => {
+		process.env[PERMISSIONS_ENV_KEY] = "auto"
+		process.env[`${PERMISSIONS_ENV_KEY}_${PARENT_SESSION_ID}`] = "plan"
+		process.env[PARENT_SESSION_ID_ENV_KEY] = PARENT_SESSION_ID
+
+		const harness = createPermissionsHarness(["read", "write", "bash"])
+
+		const childCtx = {
+			...createMockContext([]),
+			sessionManager: { getSessionId: () => CHILD_SESSION_ID },
+		} as unknown as ExtensionContext
+		await harness.fire("session_start", {}, childCtx)
+
+		// Parent session key takes precedence.
+		expect(getPermissionMode(CHILD_SESSION_ID)).toEqual({ mode: "plan", source: "user" })
+	})
+
+	it("falls back to config default when neither KIMCHI_PERMISSIONS nor parent session key is set", async () => {
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+		Reflect.deleteProperty(process.env, PARENT_SESSION_ID_ENV_KEY)
+
+		const harness = createPermissionsHarness(["read", "write", "bash"])
+
+		const childCtx = {
+			...createMockContext([]),
+			sessionManager: { getSessionId: () => CHILD_SESSION_ID },
+		} as unknown as ExtensionContext
+		await harness.fire("session_start", {}, childCtx)
+
+		expect(getPermissionMode(CHILD_SESSION_ID)).toEqual({ mode: "default", source: "user" })
+	})
+
+	it("child applies plan-mode tool gating when inheriting plan from parent", async () => {
+		process.env[`${PERMISSIONS_ENV_KEY}_${PARENT_SESSION_ID}`] = "plan"
+		process.env[PARENT_SESSION_ID_ENV_KEY] = PARENT_SESSION_ID
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+
+		const harness = createPermissionsHarness(["read", "write", "bash", "grep"])
+
+		const childCtx = {
+			...createMockContext([]),
+			sessionManager: { getSessionId: () => CHILD_SESSION_ID },
+		} as unknown as ExtensionContext
+		await harness.fire("session_start", {}, childCtx)
+
+		// Plan mode should hide write-capable tools.
+		expect(harness.activeTools().sort()).toEqual(["bash", "grep", "read"])
 	})
 })

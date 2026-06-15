@@ -1,7 +1,8 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import type { Ferment } from "../../ferment/types.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { getAgentConfig, getDefaultAgentNames } from "../agents/personas/agent-types.js"
+import { getPermissionMode } from "../permissions/mode-controller.js"
 import { SCOPING_DISCOVERY_GUIDANCE, SCOPING_EXPLORE_TOKEN_BUDGET } from "./constants.js"
 import { formatDecisionsAndMemories, formatScopingContext } from "./format.js"
 import type { FermentRuntime } from "./runtime.js"
@@ -121,12 +122,18 @@ Call \`request_ferment_workflow\` with a concise \`title\` and an \`intent\` con
  * own flow; idle (no ferment) renders a soft, optional hint that nudges the
  * agent to ask the user before starting substantial work, never to block.
  */
-export function buildFermentPromptBlock(pi: ExtensionAPI, runtime: FermentRuntime): string | undefined {
+export function buildFermentPromptBlock(
+	ctx: ExtensionContext,
+	pi: ExtensionAPI,
+	runtime: FermentRuntime,
+): string | undefined {
 	if (isAgentWorker()) return undefined
+
+	const sessionId = ctx.sessionManager.getSessionId()
 
 	// Plan mode is a separate lightweight planning path; suppress the ferment
 	// idle hint so the agent does not conflate it with the ferment workflow.
-	if (process.env.KIMCHI_PERMISSIONS === "plan") return undefined
+	if (getPermissionMode(sessionId)?.mode === "plan") return undefined
 
 	const f = runtime.getActive()
 	if (!f) return IDLE_FERMENT_HINT

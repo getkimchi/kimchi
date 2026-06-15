@@ -1,3 +1,25 @@
+# Patch: kimchi-dev runtime extensions for pi-coding-agent
+#
+# Changes included:
+#   1. dist/cli/args.js         — expose KIMCHI_API_KEY in --help env-var block
+#   2. dist/core/extensions/runner.js — add emitBeforeProviderHeaders(headers) method,
+#                                       mirroring emitBeforeProviderRequest pattern
+#   3. dist/core/sdk.js         — call emitBeforeProviderHeaders in streamFn after
+#                                 static header assembly, so extensions can inject
+#                                 per-request dynamic headers (X-Session-Id, X-Turn-Index)
+#   4. dist/core/model-registry.js, dist/core/tools/edit.js,
+#      dist/modes/interactive/  — miscellaneous upstream fixes bundled in this patch
+#
+# Tracking: open an upstream PR against pi-mono to ship before_provider_headers as
+# a first-class extension hook in ExtensionRunner and ExtensionAPI.
+# Issue: TODO — file against https://github.com/earendil-works/pi-mono once the
+# API design is confirmed stable.
+#
+# Removal criteria: Remove this patch (and the companion type augmentation in
+# src/types/pi-coding-agent-utils.d.ts) once upstream pi-coding-agent ships
+# BeforeProviderHeadersEvent + ExtensionAPI.on("before_provider_headers", ...) and
+# the fixed version is pinned in package.json.
+#
 diff --git a/dist/cli/args.js b/dist/cli/args.js
 index a15ca52038d6ad71737fca0a3a99d5a62eaa8a0b..f4ed40d3ae21f4b296cc95ecdb7ffdbd7be3bc76 100644
 --- a/dist/cli/args.js
@@ -10,6 +32,41 @@ index a15ca52038d6ad71737fca0a3a99d5a62eaa8a0b..f4ed40d3ae21f4b296cc95ecdb7ffdbd
    ANTHROPIC_API_KEY                - Anthropic Claude API key
    ANTHROPIC_OAUTH_TOKEN            - Anthropic OAuth token (alternative to API key)
    OPENAI_API_KEY                   - OpenAI GPT API key
+diff --git a/dist/core/extensions/runner.js b/dist/core/extensions/runner.js
+index 60dbdae6192943bbc085c596aa6af563014a1eb4..ebbe8fce28074b5dec61fd63544eeb71cfcb84e6 100644
+--- a/dist/core/extensions/runner.js
++++ b/dist/core/extensions/runner.js
+@@ -697,6 +697,30 @@ export class ExtensionRunner {
+         }
+         return currentPayload;
+     }
++    async emitBeforeProviderHeaders(headers) {
++        const ctx = this.createContext();
++        let current = headers;
++        for (const ext of this.extensions) {
++            const handlers = ext.handlers.get("before_provider_headers");
++            if (!handlers || handlers.length === 0)
++                continue;
++            for (const handler of handlers) {
++                try {
++                    const result = await handler({ type: "before_provider_headers", headers: current }, ctx);
++                    if (result !== undefined)
++                        current = result;
++                } catch (err) {
++                    this.emitError({
++                        extensionPath: ext.path,
++                        event: "before_provider_headers",
++                        error: err instanceof Error ? err.message : String(err),
++                        stack: err instanceof Error ? err.stack : undefined,
++                    });
++                }
++            }
++        }
++        return current;
++    }
+     async emitBeforeAgentStart(prompt, images, systemPrompt, systemPromptOptions) {
+         let currentSystemPrompt = systemPrompt;
+         const ctx = Object.defineProperties({}, Object.getOwnPropertyDescriptors(this.createContext()));
 diff --git a/dist/core/model-registry.js b/dist/core/model-registry.js
 index 41ffa679c862f6d0862f1ed07be45836046b97e4..dc6468f0627a2b85dac9abb08b5b424085c02217 100644
 --- a/dist/core/model-registry.js
@@ -36,6 +93,36 @@ index 21f0270f903b0461a2fa1ef8cb53ffdad4f5894d..041ead7eeddc216065864ac0725c3eb8
      "cloudflare-workers-ai": "@cf/moonshotai/kimi-k2.6",
      "cloudflare-ai-gateway": "workers-ai/@cf/moonshotai/kimi-k2.6",
      xiaomi: "mimo-v2.5-pro",
+diff --git a/dist/core/sdk.js b/dist/core/sdk.js
+index 6f56e8568e7be821a8a17c71a5e1a9fbf4665a8a..fa9e4869016b1aecba1880ee9b455be26999e4ba 100644
+--- a/dist/core/sdk.js
++++ b/dist/core/sdk.js
+@@ -209,6 +209,14 @@ export async function createAgentSession(options = {}) {
+                 (model.api === "openai-codex-responses" ? settingsManager.getHttpIdleTimeoutMs() : undefined);
+             const websocketConnectTimeoutMs = options?.websocketConnectTimeoutMs ?? settingsManager.getWebSocketConnectTimeoutMs();
+             const attributionHeaders = getAttributionHeaders(model, settingsManager, options?.sessionId);
++            let headers = attributionHeaders || auth.headers || options?.headers
++                ? { ...attributionHeaders, ...auth.headers, ...options?.headers }
++                : undefined;
++            // Let extensions inject per-request dynamic headers (e.g. X-Session-Id, X-Turn-Index)
++            const runner = extensionRunnerRef.current;
++            if (runner?.hasHandlers("before_provider_headers")) {
++                headers = await runner.emitBeforeProviderHeaders(headers ?? {});
++            }
+             return streamSimple(model, context, {
+                 ...options,
+                 apiKey: auth.apiKey,
+@@ -216,9 +224,7 @@ export async function createAgentSession(options = {}) {
+                 websocketConnectTimeoutMs,
+                 maxRetries: options?.maxRetries ?? providerRetrySettings.maxRetries,
+                 maxRetryDelayMs: options?.maxRetryDelayMs ?? providerRetrySettings.maxRetryDelayMs,
+-                headers: attributionHeaders || auth.headers || options?.headers
+-                    ? { ...attributionHeaders, ...auth.headers, ...options?.headers }
+-                    : undefined,
++                headers,
+             });
+         },
+         onPayload: async (payload, _model) => {
 diff --git a/dist/core/tools/edit.js b/dist/core/tools/edit.js
 index bf8a79ebfdbe23415cd1effdd3db0b9ebfd804bc..f69116ceafe8ee7f1e2dbfeaa37f60c5d97aa84c 100644
 --- a/dist/core/tools/edit.js
@@ -108,6 +195,7 @@ index 2d54902da1800044206eb1f00ca07501a7310145..44daf4982a5ab6f671f5bce373a94a31
      }
      setExpanded(expanded) {
 diff --git a/dist/modes/interactive/components/extension-selector.js b/dist/modes/interactive/components/extension-selector.js
+index 8220e06bc1e2b136c4b84c4af3cd29fd21b98a9f..b213a26c7ac002776850a59d7cafce4ce1379683 100644
 --- a/dist/modes/interactive/components/extension-selector.js
 +++ b/dist/modes/interactive/components/extension-selector.js
 @@ -2,7 +2,7 @@
@@ -119,7 +207,7 @@ diff --git a/dist/modes/interactive/components/extension-selector.js b/dist/mode
  import { theme } from "../theme/theme.js";
  import { CountdownTimer } from "./countdown-timer.js";
  import { DynamicBorder } from "./dynamic-border.js";
-@@ -75,6 +75,16 @@
+@@ -75,6 +75,16 @@ export class ExtensionSelectorComponent extends Container {
          else if (kb.matches(keyData, "tui.select.cancel")) {
              this.onCancelCallback();
          }
@@ -258,7 +346,7 @@ index 0e85e9006835b754e38a7af725b4f1ca18eb3a61..94ea3d983a2abe039a7729d452f60c32
              color: (content) => theme.fg("userMessageText", content),
          }, { preserveOrderedListMarkers: true }));
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index 3f7bfee32e1aad19be55097c2b8577d6380779ab..70fc577b6476bd81deaa27de272f02eb83628fb5 100644
+index 3f7bfee32e1aad19be55097c2b8577d6380779ab..4e264c42a2407fbf618760612a1d65a7e1ce0781 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
 @@ -1575,7 +1575,7 @@ export class InteractiveMode {
