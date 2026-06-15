@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent"
+import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
 import { applyWriteTodos, getTodosForScope } from "./store.js"
-import type { TodoStatus } from "./types.js"
+import type { TodoStatus, WriteTodosDetails, WriteTodosParams } from "./types.js"
 import { buildTodoLines, collapseTodoWidget, openTodoWidget, syncTodoWidget, toggleTodoWidget } from "./widget.js"
 
 export const TODOS_COMMAND = "todos"
@@ -118,18 +119,31 @@ function targetStatus(action: TodoAction, currentStatus: TodoStatus): TodoStatus
 	return undefined
 }
 
-function applyTodoAction(parsed: TodoUiLine): { message: string; level: "info" | "error" } | null {
+interface ApplyTodoActionOptions {
+	onWrite?: (details: WriteTodosDetails) => void
+}
+
+function writeTodos(params: WriteTodosParams, options: ApplyTodoActionOptions): WriteTodosDetails {
+	const details = applyWriteTodos(params)
+	options.onWrite?.(details)
+	return details
+}
+
+function applyTodoAction(
+	parsed: TodoUiLine,
+	options: ApplyTodoActionOptions = {},
+): { message: string; level: "info" | "error" } | null {
 	const todos = getTodosForScope()
 
 	if (parsed.action === "add") {
 		const content = parsed.text.trim().replace(/\s+/g, " ")
 		if (!content) return { message: "No todo text provided. Use '/todos add <text>'.", level: "error" }
-		applyWriteTodos({ todos: [...todos, { content, status: "pending" }] })
+		writeTodos({ todos: [...todos, { content, status: "pending" }] }, options)
 		return { message: `Added todo: ${content}`, level: "info" }
 	}
 
 	if (parsed.action === "clear") {
-		applyWriteTodos({ todos: [] })
+		writeTodos({ todos: [] }, options)
 		return { message: "Cleared global todos.", level: "info" }
 	}
 
@@ -162,7 +176,7 @@ function applyTodoAction(parsed: TodoUiLine): { message: string; level: "info" |
 		next[parsed.index] = { ...current, status }
 	}
 
-	applyWriteTodos({ todos: next })
+	writeTodos({ todos: next }, options)
 	return { message: `Updated todo ${parsed.index + 1}.`, level: "info" }
 }
 
@@ -170,7 +184,7 @@ function plainTheme(): Theme {
 	return { fg: (_color: string, text: string) => text } as Theme
 }
 
-async function handleTodosCommand(args: string, ctx: ExtensionCommandContext): Promise<void> {
+async function handleTodosCommand(args: string, ctx: ExtensionCommandContext, pi: ExtensionAPI): Promise<void> {
 	const parsed = parseTodoArgs(args)
 
 	if (parsed.action === "open") {
@@ -200,7 +214,9 @@ async function handleTodosCommand(args: string, ctx: ExtensionCommandContext): P
 		return
 	}
 
-	const outcome = applyTodoAction(parsed)
+	const outcome = applyTodoAction(parsed, {
+		onWrite: (details) => pi.appendEntry(TODO_CUSTOM_ENTRY_TYPE, details),
+	})
 	if (outcome) {
 		if (ctx.hasUI) ctx.ui.notify(outcome.message, outcome.level)
 		else console.log(outcome.message)
@@ -217,7 +233,7 @@ export function registerTodosCommand(pi: ExtensionAPI): void {
 				label: value,
 				description: `/${TODOS_COMMAND} ${value}`,
 			})),
-		handler: handleTodosCommand,
+		handler: (args, ctx) => handleTodosCommand(args, ctx, pi),
 	})
 }
 

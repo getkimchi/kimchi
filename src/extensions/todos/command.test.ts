@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it } from "vitest"
-import { __test_applyTodoAction, __test_parseTodoArgs } from "./command.js"
+import { beforeEach, describe, expect, it, vi } from "vitest"
+import { __test_applyTodoAction, __test_parseTodoArgs, registerTodosCommand } from "./command.js"
+import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
 import { __resetTodoStore, applyWriteTodos, getTodosForScope } from "./store.js"
 
 describe("/todos command helpers", () => {
@@ -46,5 +47,33 @@ describe("/todos command helpers", () => {
 
 		__test_applyTodoAction({ action: "clear", text: "", index: null })
 		expect(getTodosForScope()).toEqual([])
+	})
+
+	it("persists slash-command edits as custom session entries", async () => {
+		const registered = new Map<string, { handler: (args: string, ctx: never) => Promise<void> | void }>()
+		const appendEntry = vi.fn()
+		const log = vi.spyOn(console, "log").mockImplementation(() => {})
+		registerTodosCommand({
+			registerCommand: (name: string, config: { handler: (args: string, ctx: never) => Promise<void> | void }) => {
+				registered.set(name, config)
+			},
+			appendEntry,
+		} as never)
+
+		try {
+			await registered.get("todos")?.handler("add persisted task", { hasUI: false } as never)
+		} finally {
+			log.mockRestore()
+		}
+
+		expect(appendEntry).toHaveBeenCalledOnce()
+		expect(appendEntry).toHaveBeenCalledWith(
+			TODO_CUSTOM_ENTRY_TYPE,
+			expect.objectContaining({
+				schemaVersion: 1,
+				scope: { kind: "global" },
+				todos: [{ id: 1, content: "persisted task", status: "pending" }],
+			}),
+		)
 	})
 })

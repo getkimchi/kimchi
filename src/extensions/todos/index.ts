@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { registerTodosCommand } from "./command.js"
+import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
 import { registerTodoPromptBlock } from "./prompt-block.js"
 import { restoreTodoStoreFromDetails, subscribeTodoStore } from "./store.js"
 import { TODO_TOOL_NAME, registerTodosTool } from "./tool.js"
@@ -14,8 +15,8 @@ import {
 } from "./widget.js"
 
 export * from "./types.js"
-export * from "./scope.js"
 export * from "./reducer.js"
+export * from "./constants.js"
 export * from "./store.js"
 export * from "./tool.js"
 export * from "./widget.js"
@@ -36,11 +37,18 @@ function isWriteTodosDetails(value: unknown): value is WriteTodosDetails {
 }
 
 function getWriteTodosDetails(entry: SessionEntry): WriteTodosDetails | undefined {
-	if (entry.type !== "message") return undefined
-	const message = entry.message as unknown
-	if (!isRecord(message)) return undefined
-	if (message.role !== "toolResult" || message.toolName !== TODO_TOOL_NAME) return undefined
-	return isWriteTodosDetails(message.details) ? message.details : undefined
+	if (entry.type === "custom" && entry.customType === TODO_CUSTOM_ENTRY_TYPE) {
+		return isWriteTodosDetails(entry.data) ? entry.data : undefined
+	}
+
+	if (entry.type === "message") {
+		const message = entry.message as unknown
+		if (!isRecord(message)) return undefined
+		if (message.role !== "toolResult" || message.toolName !== TODO_TOOL_NAME) return undefined
+		return isWriteTodosDetails(message.details) ? message.details : undefined
+	}
+
+	return undefined
 }
 
 export function restoreTodoStoreFromSessionEntries(entries: readonly SessionEntry[]): void {
@@ -59,9 +67,13 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	registerTodosCommand(pi)
 	registerTodoShortcut(pi)
 
-	pi.on("session_start", (_event, ctx) => {
+	const replayAndSync = (ctx: ExtensionContext) => {
 		latestCtx = ctx
 		restoreTodoStoreFromSessionEntries(ctx.sessionManager.getBranch())
+		syncTodoWidget(ctx)
+	}
+
+	pi.on("session_start", (_event, ctx) => {
 		resetTodoWidgetState()
 		ensureTodoWidget(ctx)
 		unsubscribeTodoStore?.()
@@ -69,7 +81,11 @@ export default function todosExtension(pi: ExtensionAPI): void {
 			if (!latestCtx?.hasUI) return
 			syncTodoWidget(latestCtx)
 		})
-		syncTodoWidget(ctx)
+		replayAndSync(ctx)
+	})
+
+	pi.on("session_tree", (_event, ctx) => {
+		replayAndSync(ctx)
 	})
 
 	pi.on("session_shutdown", (_event, ctx) => {

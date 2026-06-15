@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
 import todosExtension from "./index.js"
 import { __test_renderTodoPromptBlock } from "./prompt-block.js"
 import { __resetTodoStore, applyWriteTodos, getTodosForScope } from "./store.js"
@@ -64,6 +65,22 @@ function writeTodosEntry(id: string, content: string, status: TodoStatus = "pend
 	} as unknown as SessionEntry
 }
 
+function customTodosEntry(id: string, content: string, status: TodoStatus = "pending"): SessionEntry {
+	return {
+		type: "custom",
+		id,
+		parentId: null,
+		timestamp: "2026-01-01T00:00:00.000Z",
+		customType: TODO_CUSTOM_ENTRY_TYPE,
+		data: {
+			schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
+			scope: { kind: "global" },
+			todos: [{ id: 1, content, status }],
+			updatedAt: "2026-01-01T00:00:00.000Z",
+		},
+	} as unknown as SessionEntry
+}
+
 describe("todos extension session state", () => {
 	beforeEach(() => {
 		__resetTodoStore()
@@ -95,5 +112,39 @@ describe("todos extension session state", () => {
 
 		expect(getTodosForScope()).toEqual([])
 		expect(__test_renderTodoPromptBlock()).not.toContain("stale previous session")
+	})
+
+	it("replays todos when the active session tree branch changes", async () => {
+		const harness = createTodosHarness()
+		await harness.fire(
+			"session_start",
+			{ reason: "resume" },
+			createContext("session", [writeTodosEntry("a", "root todo")]),
+		)
+
+		expect(getTodosForScope().map((todo) => todo.content)).toEqual(["root todo"])
+
+		await harness.fire(
+			"session_tree",
+			{ oldLeafId: "a", newLeafId: "b" },
+			createContext("session", [writeTodosEntry("b", "branch todo", "in_progress")]),
+		)
+
+		expect(getTodosForScope().map((todo) => todo.content)).toEqual(["branch todo"])
+		expect(__test_renderTodoPromptBlock()).toContain("branch todo")
+		expect(__test_renderTodoPromptBlock()).not.toContain("root todo")
+	})
+
+	it("restores slash-command todo edits from custom entries", async () => {
+		const harness = createTodosHarness()
+
+		await harness.fire(
+			"session_start",
+			{ reason: "resume" },
+			createContext("session", [customTodosEntry("c", "command todo")]),
+		)
+
+		expect(getTodosForScope().map((todo) => todo.content)).toEqual(["command todo"])
+		expect(__test_renderTodoPromptBlock()).toContain("command todo")
 	})
 })
