@@ -50,7 +50,7 @@ interface StartFakeOpenAiServerOptions {
 	responses: FakeResponseScript[]
 }
 
-const DEFAULT_MODEL: FakeModel = {
+export const DEFAULT_MODEL: Required<FakeModel> = {
 	slug: "basic",
 	displayName: "Fake Basic",
 	provider: "openai",
@@ -60,10 +60,28 @@ const DEFAULT_MODEL: FakeModel = {
 	maxTokens: 1024,
 }
 
+/** Fill every optional field of a partial model spec from DEFAULT_MODEL. */
+export function withModelDefaults(model: FakeModel): Required<FakeModel> {
+	return {
+		slug: model.slug,
+		displayName: model.displayName,
+		provider: model.provider ?? DEFAULT_MODEL.provider,
+		reasoning: model.reasoning ?? DEFAULT_MODEL.reasoning,
+		input: model.input ?? DEFAULT_MODEL.input,
+		contextWindow: model.contextWindow ?? DEFAULT_MODEL.contextWindow,
+		maxTokens: model.maxTokens ?? DEFAULT_MODEL.maxTokens,
+	}
+}
+
+export function resolveModels(models: FakeModel[] | undefined): Required<FakeModel>[] {
+	const list = models && models.length > 0 ? models : [DEFAULT_MODEL]
+	return list.map(withModelDefaults)
+}
+
 export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOptions): Promise<FakeOpenAiServer> {
 	const requests: RecordedRequest[] = []
 	const sockets = new Set<Socket>()
-	const models = options.models && options.models.length > 0 ? options.models : [DEFAULT_MODEL]
+	const models = resolveModels(options.models)
 	const responseQueue = [...options.responses]
 
 	const server = createServer(async (req, res) => {
@@ -86,13 +104,13 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 					models: models.map((model) => ({
 						slug: model.slug,
 						display_name: model.displayName,
-						provider: model.provider ?? "openai",
-						reasoning: model.reasoning ?? false,
-						input_modalities: model.input ?? ["text"],
+						provider: model.provider,
+						reasoning: model.reasoning,
+						input_modalities: model.input,
 						is_serverless: true,
 						limits: {
-							context_window: model.contextWindow ?? 8192,
-							max_output_tokens: model.maxTokens ?? 1024,
+							context_window: model.contextWindow,
+							max_output_tokens: model.maxTokens,
 						},
 						status: "active",
 					})),
@@ -162,12 +180,12 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 	}
 
 	const request = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
-	const model = typeof request.model === "string" ? request.model : "fake/basic"
+	const model = typeof request.model === "string" ? request.model : DEFAULT_MODEL.slug
 	if (request.stream === false) {
 		writeJson(res, 200, {
 			id: "chatcmpl_fake",
 			object: "chat.completion",
-			created: Math.floor(Date.now() / 1000),
+			created: unixNow(),
 			model,
 			choices: [
 				{
@@ -186,24 +204,16 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 		Connection: "keep-alive",
 	})
 
-	let emitted = 0
-	writeSse(res, {
-		id: "chatcmpl_fake",
-		object: "chat.completion.chunk",
-		created: Math.floor(Date.now() / 1000),
-		model,
-		choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }],
-	})
+	// Emit one chunk envelope; only `choices` varies between chunks.
+	const chunk = (choices: unknown[]) =>
+		writeSse(res, { id: "chatcmpl_fake", object: "chat.completion.chunk", created: unixNow(), model, choices })
 
-	for (const chunk of script.stream ?? []) {
+	let emitted = 0
+	chunk([{ index: 0, delta: { role: "assistant" }, finish_reason: null }])
+
+	for (const text of script.stream ?? []) {
 		if (script.delayMs) await sleep(script.delayMs)
-		writeSse(res, {
-			id: "chatcmpl_fake",
-			object: "chat.completion.chunk",
-			created: Math.floor(Date.now() / 1000),
-			model,
-			choices: [{ index: 0, delta: { content: chunk }, finish_reason: null }],
-		})
+		chunk([{ index: 0, delta: { content: text }, finish_reason: null }])
 		emitted += 1
 		if (script.closeSocketAfterChunks && emitted >= script.closeSocketAfterChunks) {
 			res.destroy()
@@ -212,39 +222,31 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 	}
 
 	for (const toolCall of script.toolCalls ?? []) {
-		writeSse(res, {
-			id: "chatcmpl_fake",
-			object: "chat.completion.chunk",
-			created: Math.floor(Date.now() / 1000),
-			model,
-			choices: [
-				{
-					index: 0,
-					delta: {
-						tool_calls: [
-							{
-								index: toolCall.index ?? 0,
-								id: toolCall.id ?? "call_fake",
-								type: toolCall.type ?? "function",
-								function: toolCall.function,
-							},
-						],
-					},
-					finish_reason: null,
+		chunk([
+			{
+				index: 0,
+				delta: {
+					tool_calls: [
+						{
+							index: toolCall.index ?? 0,
+							id: toolCall.id ?? "call_fake",
+							type: toolCall.type ?? "function",
+							function: toolCall.function,
+						},
+					],
 				},
-			],
-		})
+				finish_reason: null,
+			},
+		])
 	}
 
-	writeSse(res, {
-		id: "chatcmpl_fake",
-		object: "chat.completion.chunk",
-		created: Math.floor(Date.now() / 1000),
-		model,
-		choices: [{ index: 0, delta: {}, finish_reason: script.toolCalls?.length ? "tool_calls" : "stop" }],
-	})
+	chunk([{ index: 0, delta: {}, finish_reason: script.toolCalls?.length ? "tool_calls" : "stop" }])
 	res.write("data: [DONE]\n\n")
 	res.end()
+}
+
+function unixNow(): number {
+	return Math.floor(Date.now() / 1000)
 }
 
 function writeSse(res: ServerResponse, event: unknown): void {

@@ -29,7 +29,7 @@ coverage/
 # TUI E2E generated artifacts
 .tui-test/
 tui-traces/
-test-results/tui-e2e/
+*.tui-e2e.txt
 
 # Kimchi docs directory
 .kimchi/

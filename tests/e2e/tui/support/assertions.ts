@@ -1,17 +1,20 @@
 import type { Terminal } from "@microsoft/tui-test/lib/terminal/term.js"
 
+/** Named timeouts so each wait documents what it is waiting for and can be tuned in one place. */
+export const STARTUP_TIMEOUT_MS = 10_000
+export const STREAM_TIMEOUT_MS = 15_000
+export const INPUT_TIMEOUT_MS = 5_000
+
+function render(rows: string[][]): string {
+	return rows.map((row) => row.join("").trimEnd()).join("\n")
+}
+
 export function viewText(terminal: Terminal): string {
-	return terminal
-		.getViewableBuffer()
-		.map((row) => row.join("").trimEnd())
-		.join("\n")
+	return render(terminal.getViewableBuffer())
 }
 
 export function fullText(terminal: Terminal): string {
-	return terminal
-		.getBuffer()
-		.map((row) => row.join("").trimEnd())
-		.join("\n")
+	return render(terminal.getBuffer())
 }
 
 export async function waitForText(
@@ -20,22 +23,13 @@ export async function waitForText(
 	options: { timeoutMs?: number; full?: boolean } = {},
 ): Promise<void> {
 	const { timeoutMs = 15_000, full = true } = options
+	const read = () => (full ? fullText(terminal) : viewText(terminal))
 	const startedAt = Date.now()
+	let text = read()
 	while (Date.now() - startedAt < timeoutMs) {
-		const text = full ? fullText(terminal) : viewText(terminal)
 		if (typeof pattern === "string" ? text.includes(pattern) : pattern.test(text)) return
 		await new Promise((resolve) => setTimeout(resolve, 100))
+		text = read()
 	}
-	throw new Error(
-		`Timed out waiting for ${String(pattern)}.\n\nTerminal:\n${full ? fullText(terminal) : viewText(terminal)}`,
-	)
-}
-
-export function normalizeTerminalText(text: string): string {
-	return text
-		.replaceAll(process.cwd(), "<repo>")
-		.replace(/\/var\/folders\/[^\s]+/g, "<tmp>")
-		.replace(/\/tmp\/[^\s]+/g, "<tmp>")
-		.replace(/\b\d+(?:\.\d+)?s\b/g, "<duration>")
-		.replace(/\b\d+ms\b/g, "<duration>")
+	throw new Error(`Timed out waiting for ${String(pattern)}.\n\nTerminal:\n${text}`)
 }

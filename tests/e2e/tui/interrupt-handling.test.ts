@@ -1,45 +1,35 @@
-import { Shell, expect, test } from "@microsoft/tui-test"
-import { fullText, viewText, waitForText } from "./support/assertions.js"
-import { createKimchiFixture, launchKimchi, stopKimchi, writeTuiArtifact } from "./support/kimchi-fixture.js"
+import { expect, test } from "@microsoft/tui-test"
+import { INPUT_TIMEOUT_MS, STREAM_TIMEOUT_MS, viewText, waitForText } from "./support/assertions.js"
+import { PROMPT_READY, TUI_TEST_CONFIG, runKimchiSession } from "./support/kimchi-fixture.js"
 
-test.use({
-	shell: Shell.Bash,
-	rows: 40,
-	columns: 120,
-})
+test.use(TUI_TEST_CONFIG)
 
 test("ctrl-c clears draft input and aborts streaming response", async ({ terminal }) => {
-	const fixture = await createKimchiFixture({
-		responses: [
-			{
-				stream: ["first chunk ", "second chunk ", "third chunk "],
-				delayMs: 500,
-			},
-		],
-	})
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "interrupt-handling.txt",
+			responses: [
+				{
+					stream: ["first chunk ", "second chunk ", "third chunk "],
+					delayMs: 500,
+				},
+			],
+		},
+		async (fixture) => {
+			terminal.write("draft that should clear")
+			await waitForText(terminal, "draft that should clear", { timeoutMs: INPUT_TIMEOUT_MS })
+			terminal.keyCtrlC()
+			await waitForText(terminal, PROMPT_READY, { timeoutMs: INPUT_TIMEOUT_MS })
+			expect(viewText(terminal)).not.toContain("draft that should clear")
 
-	try {
-		launchKimchi(terminal, fixture)
-		await waitForText(terminal, "ask anything or type / for commands", { timeoutMs: 10_000 })
+			terminal.submit("Stream slowly")
+			await waitForText(terminal, "first chunk", { timeoutMs: STREAM_TIMEOUT_MS })
+			terminal.keyCtrlC()
+			await waitForText(terminal, PROMPT_READY, { timeoutMs: STREAM_TIMEOUT_MS })
 
-		terminal.write("draft that should clear")
-		await waitForText(terminal, "draft that should clear", { timeoutMs: 5_000 })
-		terminal.keyCtrlC()
-		await waitForText(terminal, "ask anything or type / for commands", { timeoutMs: 5_000 })
-		expect(viewText(terminal)).not.toContain("draft that should clear")
-
-		terminal.submit("Stream slowly")
-		await waitForText(terminal, "first chunk", { timeoutMs: 15_000 })
-		terminal.keyCtrlC()
-		await waitForText(terminal, "ask anything or type / for commands", { timeoutMs: 15_000 })
-
-		const chatRequest = fixture.fake.requests.find((request) => request.url.startsWith("/openai/v1/chat/completions"))
-		expect(chatRequest).toBeDefined()
-	} catch (error) {
-		await writeTuiArtifact("interrupt-handling.txt", fullText(terminal))
-		throw error
-	} finally {
-		await stopKimchi(terminal)
-		await fixture.stop()
-	}
+			const chatRequest = fixture.fake.requests.find((request) => request.url.startsWith("/openai/v1/chat/completions"))
+			expect(chatRequest).toBeDefined()
+		},
+	)
 })

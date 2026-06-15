@@ -1,19 +1,32 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
+import { Shell } from "@microsoft/tui-test"
 import type { Terminal } from "@microsoft/tui-test/lib/terminal/term.js"
+import { STARTUP_TIMEOUT_MS, fullText, waitForText } from "./assertions.js"
 import {
+	DEFAULT_MODEL,
 	type FakeModel,
 	type FakeOpenAiServer,
 	type FakeResponseScript,
+	resolveModels,
 	startFakeOpenAiServer,
 } from "./fake-openai-server.js"
 
+/** Shared terminal geometry/shell for every TUI e2e test. */
+export const TUI_TEST_CONFIG = { shell: Shell.Bash, rows: 40, columns: 120 } as const
+
+/** Prompt shown once the TUI is ready for input. */
+export const PROMPT_READY = "ask anything or type / for commands"
+
 const REPO_ROOT = resolve(process.env.KIMCHI_REPO_ROOT ?? "../../..")
+const TUI_ARTIFACT_RUN_ID = `${new Date().toISOString().replace(/[:.]/g, "-")}-${process.pid}`
+
+/** Provider key written into models.json and passed to the kimchi CLI; the two must agree. */
+export const FAKE_PROVIDER = "fake"
 
 export const BINARY_PATH = resolve(REPO_ROOT, "dist/bin/kimchi")
 export const PACKAGE_DIR = resolve(REPO_ROOT, "dist/share/kimchi")
-export const TUI_ARTIFACT_DIR = resolve(REPO_ROOT, "test-results/tui-e2e")
 
 export interface KimchiFixture {
 	homeDir: string
@@ -76,8 +89,8 @@ export function launchKimchi(terminal: Terminal, fixture: KimchiFixture): void {
 			`PI_PACKAGE_DIR=${sh(PACKAGE_DIR)}`,
 			"TERM=xterm-256color",
 			sh(BINARY_PATH),
-			"--provider fake",
-			"--model basic",
+			`--provider ${FAKE_PROVIDER}`,
+			`--model ${DEFAULT_MODEL.slug}`,
 		].join(" "),
 	)
 }
@@ -90,9 +103,34 @@ export async function stopKimchi(terminal: Terminal): Promise<void> {
 	if (!result) terminal.kill()
 }
 
+/**
+ * Run a TUI session end-to-end: create the fixture, launch kimchi, wait for the
+ * ready prompt, run `body`, and always tear down — dumping the terminal to an
+ * artifact if anything throws. Tests only supply their assertions.
+ */
+export async function runKimchiSession(
+	terminal: Terminal,
+	options: CreateKimchiFixtureOptions & { artifactName: string },
+	body: (fixture: KimchiFixture) => Promise<void>,
+): Promise<void> {
+	const { artifactName, ...fixtureOptions } = options
+	const fixture = await createKimchiFixture(fixtureOptions)
+	try {
+		launchKimchi(terminal, fixture)
+		await waitForText(terminal, PROMPT_READY, { timeoutMs: STARTUP_TIMEOUT_MS })
+		await body(fixture)
+	} catch (error) {
+		await writeTuiArtifact(artifactName, fullText(terminal))
+		throw error
+	} finally {
+		await stopKimchi(terminal)
+		await fixture.stop()
+	}
+}
+
 export async function writeTuiArtifact(name: string, content: string): Promise<void> {
-	const path = join(TUI_ARTIFACT_DIR, name)
-	mkdirSync(dirname(path), { recursive: true })
+	const baseName = name.replace(/\.txt$/i, "")
+	const path = join(REPO_ROOT, `${baseName}.${TUI_ARTIFACT_RUN_ID}.tui-e2e.txt`)
 	writeFileSync(path, content, "utf-8")
 }
 
@@ -101,27 +139,26 @@ export function sh(value: string): string {
 }
 
 function writeModelsConfig(path: string, baseUrl: string, models: FakeModel[] | undefined): void {
-	const configuredModels = models && models.length > 0 ? models : [{ slug: "basic", displayName: "Fake Basic" }]
 	writeFileSync(
 		path,
 		JSON.stringify(
 			{
 				providers: {
-					fake: {
+					[FAKE_PROVIDER]: {
 						baseUrl: `${baseUrl}/openai/v1`,
 						apiKey: "fake",
 						api: "openai-completions",
 						authHeader: true,
 						headers: { "User-Agent": "kimchi/tui-e2e" },
-						models: configuredModels.map((model) => ({
+						models: resolveModels(models).map((model) => ({
 							id: model.slug,
 							name: model.displayName,
-							reasoning: model.reasoning ?? false,
-							input: model.input ?? ["text"],
-							contextWindow: model.contextWindow ?? 8192,
-							maxTokens: model.maxTokens ?? 1024,
+							reasoning: model.reasoning,
+							input: model.input,
+							contextWindow: model.contextWindow,
+							maxTokens: model.maxTokens,
 							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-							provider: model.provider ?? "openai",
+							provider: model.provider,
 						})),
 					},
 				},
