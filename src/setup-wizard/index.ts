@@ -3,6 +3,7 @@
 // otherwise byId() returns undefined for an unimported tool.
 import "../integrations/claude-code.js"
 import "../integrations/cursor.js"
+import "../integrations/droid.js"
 import "../integrations/gsd2.js"
 import "../integrations/openclaw.js"
 import "../integrations/opencode.js"

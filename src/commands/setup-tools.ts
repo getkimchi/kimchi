@@ -2,6 +2,7 @@
 // and byId() in the integrations registry return nothing.
 import "../integrations/claude-code.js"
 import "../integrations/cursor.js"
+import "../integrations/droid.js"
 import "../integrations/gsd2.js"
 import "../integrations/openclaw.js"
 import "../integrations/opencode.js"
