@@ -9,7 +9,7 @@ export const TODO_SHORTCUT_HINT = "F7"
 const TODO_WIDGET_KEY = "kimchi-todos"
 const TODO_WIDGET_OPTIONS = { placement: "aboveEditor" } as const
 const TODO_STATUS_KEY = "todos"
-const TODO_LIST_HINT_TEXT = "Esc/q/Enter/F7 to collapse"
+const TODO_LIST_HINT_TEXT = "F7 or enter '/todos' to collapse"
 const MAX_TODO_WIDGET_LINES = 14
 const TODO_SYMBOL: Record<TodoStatus, string> = {
 	pending: "○",
