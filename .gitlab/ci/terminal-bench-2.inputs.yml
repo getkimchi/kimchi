@@ -113,6 +113,7 @@ inputs:
       - kimchi-dev/kimi-k2.6
       - kimchi-dev/claude-sonnet-4-6
       - kimchi-dev/claude-opus-4-6
+      - kimchi-dev/minimax-m3
       - kimchi-dev/minimax-m2.7
       - kimchi-dev/nemotron-3-super-fp4
   kimchi_multi_model:

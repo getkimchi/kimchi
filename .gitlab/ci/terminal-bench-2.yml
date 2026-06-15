@@ -1,42 +1,6 @@
 spec:
-  inputs:
-    agent:
-      type: string
-      default: kimchi
-      options:
-        - kimchi
-        - opencode
-        - claude-code
-    target_ref:
-      type: string
-      default: "master"
-    tasks:
-      type: array
-      default: []
-    model:
-      type: string
-      default: "kimchi-dev/kimi-k2.6"
-      options:
-        - kimchi-dev/kimi-k2.6
-        - kimchi-dev/claude-sonnet-4-6
-        - kimchi-dev/claude-opus-4-6
-        - kimchi-dev/minimax-m2.7
-        - kimchi-dev/nemotron-3-super-fp4
-    kimchi_multi_model:
-      type: boolean
-      default: true
-    kimchi_ferment_oneshot:
-      type: boolean
-      default: false
-    parallelism:
-      type: number
-      default: 8
-    attempts:
-      type: number
-      default: 1
-    timeout_multiplier:
-      type: number
-      default: 1
+  include:
+    - local: /.gitlab/ci/terminal-bench-2.inputs.yml
 ---
 
 include:
