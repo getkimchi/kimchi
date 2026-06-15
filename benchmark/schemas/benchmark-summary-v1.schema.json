@@ -1,0 +1,242 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kimchi.dev/schemas/benchmark-summary-v1.schema.json",
+  "title": "Benchmark summary",
+  "description": "JSON artifact schema owned by kimchi-gitlab benchmark scripts for benchmark run summaries.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run",
+    "trials",
+    "source"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "benchmark-summary/v1"
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "benchmark",
+        "run_id",
+        "status",
+        "started_at",
+        "ended_at",
+        "agent",
+        "configuration",
+        "model"
+      ],
+      "properties": {
+        "benchmark": {
+          "type": "string",
+          "minLength": 1
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "type": "string",
+          "minLength": 1
+        },
+        "started_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "ended_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "agent": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "version"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "version": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "configuration": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "trials": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "trial_id",
+          "task",
+          "attempt",
+          "status",
+          "score",
+          "error",
+          "models"
+        ],
+        "properties": {
+          "trial_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "task": {
+            "type": "string",
+            "minLength": 1
+          },
+          "attempt": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "passed",
+              "failed",
+              "error"
+            ]
+          },
+          "score": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "duration_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "error": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type",
+              "message"
+            ],
+            "properties": {
+              "type": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              }
+            }
+          },
+          "models": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "model",
+                "llm_rounds",
+                "tokens",
+                "tools"
+              ],
+              "properties": {
+                "model": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "llm_rounds": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "tokens": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "input",
+                    "cache_read",
+                    "cache_write",
+                    "output"
+                  ],
+                  "properties": {
+                    "input": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "cache_read": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "cache_write": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "output": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  }
+                },
+                "tools": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "name",
+                      "calls"
+                    ],
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "calls": {
+                        "type": "integer",
+                        "minimum": 0
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gitlab"
+      ],
+      "properties": {
+        "gitlab": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ref",
+            "commit_sha"
+          ],
+          "properties": {
+            "ref": {
+              "type": "string"
+            },
+            "commit_sha": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  }
+}
