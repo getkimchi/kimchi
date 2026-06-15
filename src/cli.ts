@@ -29,6 +29,7 @@ import { isBunBinary } from "./env.js"
 import activityExtension from "./extensions/activity.js"
 import agentsExtension from "./extensions/agents/index.js"
 import assistantPrefixExtension from "./extensions/assistant-prefix.js"
+import bashMaxTimeoutExtension from "./extensions/bash-max-timeout/index.js"
 import behavioursExtension from "./extensions/behaviours/index.js"
 import claudeCodeHooksAdapter from "./extensions/claude-code-hook-adapter/index.js"
 import claudeCodeSkillsExtension from "./extensions/claude-code-skills/index.js"
@@ -440,6 +441,7 @@ try {
 			// SessionStart steering blocks into the system prompt. Gated per-package
 			// by each package's own resource toggle (see pluginPackageHookSources).
 			pluginPackageHooksAdapter,
+			bashMaxTimeoutExtension,
 			permissionsExtension,
 			resourcesExtension,
 			resourceToolBlockerExtension,
