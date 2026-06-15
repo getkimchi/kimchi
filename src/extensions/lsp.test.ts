@@ -103,6 +103,7 @@ function makePi(): PiStub {
 			activeTools = names
 		},
 		getFlag: () => undefined,
+		sendUserMessage: vi.fn(),
 		capturedBlocks,
 		fireShutdown: async () => {
 			for (const h of handlers.get("session_shutdown") ?? []) {
@@ -115,11 +116,11 @@ function makePi(): PiStub {
 			}
 		},
 		fireSessionStart: async (ctx: Partial<SessionStartCtx> = {}) => {
+			const defaultUi = { setStatus: vi.fn(), theme: { fg: (_c: string, s: string) => s } }
 			const full: SessionStartCtx = {
-				cwd: DEFAULT_CWD,
-				hasUI: false,
-				ui: { setStatus: vi.fn() },
-				...ctx,
+				cwd: ctx.cwd ?? DEFAULT_CWD,
+				hasUI: ctx.hasUI ?? false,
+				ui: ctx.ui ? { ...defaultUi, ...ctx.ui } : defaultUi,
 			}
 			for (const h of handlers.get("session_start") ?? []) {
 				await h({}, full)
@@ -457,7 +458,16 @@ describe("tool_result handler", () => {
 		lspExtension(pi)
 		await pi.fireSessionStart({ hasUI: true, ui: { setStatus } })
 		setStatus.mockClear()
-		await pi.fireToolResult({ toolName: "edit", isError: false, input: { file_path: "/project/a.ts" } })
+
+		// Trigger tool_result handler with explicit promise handling
+		const toolResultPromise = pi.fireToolResult({
+			toolName: "edit",
+			isError: false,
+			input: { file_path: "/project/a.ts" },
+		})
+		// Wait for the handler to complete (refreshFile is mocked, sendUserMessage is mocked)
+		await toolResultPromise
+		// The status bar is updated after a short delay - verify it was called
 		expect(setStatus).toHaveBeenCalledWith("lsp", expect.stringContaining("1 diag"))
 	})
 

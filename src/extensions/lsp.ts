@@ -100,6 +100,22 @@ export default function (pi: ExtensionAPI) {
 				await ensureFileOpen(client, resolved)
 			} else {
 				await refreshFile(client, resolved)
+				// Wait for diagnostics to arrive, then inject them as a user steer message
+				const waitMs = 100
+				await new Promise((resolve) => setTimeout(resolve, waitMs))
+
+				const uri = fileToUri(resolved)
+				const entry = client.diagnostics.get(uri)
+				const diags = entry?.diagnostics ?? []
+				if (diags.length > 0) {
+					const lines = diags.map((d) => formatDiagnostic(d))
+					const relativePath = path.relative(cwd, resolved)
+					const intro = ui
+						? `${ui.theme.fg("error", " LSP diagnostics:")} \`${relativePath}\`\n${lines.join("\n")}`
+						: `[LSP diagnostics for ${relativePath}]\n${lines.join("\n")}`
+					pi.sendUserMessage(intro, { deliverAs: "steer" })
+				}
+
 				// Update status bar with total diagnostic count across open files
 				if (ui) {
 					const totalDiags = [...client.diagnostics.values()].reduce((sum, entry) => sum + entry.diagnostics.length, 0)
