@@ -292,3 +292,26 @@ inside the agent's tool calls. Conventional layout:
 Memory is read-only for agents whose `tools` set lacks `write`/`edit` — the
 runtime detects this and skips memory injection rather than confusing the agent
 with directives it cannot act on.
+
+## Global context file
+
+In addition to project-discovered context files, the harness looks up a single
+user-level context file in the harness config directory, applied to every agent
+invocation:
+
+| File | Priority |
+|---|---|
+| `~/.config/kimchi/harness/AGENTS.md` | Preferred |
+| `~/.config/kimchi/harness/CLAUDE.md` | Fallback |
+
+The file is injected **after** any project-level `AGENTS.md` / `CLAUDE.md` files,
+so personal rules win on conflict (recency in the final prompt block). The
+lookup is gated on the persona flag `includeContextFiles` and is skipped when an
+agent runs in `isolated` mode (the Explore/Plan-equivalent fast path).
+
+The location respects `KIMCHI_CODING_AGENT_DIR` (set automatically by the
+harness entrypoint from your `~/.config/kimchi/harness` directory) — set that
+env var to redirect the whole harness directory.
+
+`.local.md` variants are **not** honoured at the global level — the global file
+is already your file, so there is no shared/local distinction to make.
