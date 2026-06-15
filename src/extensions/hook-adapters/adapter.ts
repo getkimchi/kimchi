@@ -59,6 +59,9 @@ export function createCommandHookAdapter(definition: CommandHookAdapterDefinitio
 		let stopHookFollowUpPending = false
 		let batchedToolResults: Array<{ tool_name: string; tool_use_id: string; is_error: boolean }> = []
 		const pendingSystemPrompt: { context?: string } = {}
+		// Custom bus events (pi.events.on) carry no ExtensionContext, so keep the
+		// most recent one from core events for the subagent lifecycle hooks.
+		let latestCtx: ExtensionContext | undefined
 
 		if (definition.sessionStartDelivery === "systemPrompt") {
 			pi.on("before_agent_start", (event: BeforeAgentStartEvent): BeforeAgentStartEventResult | undefined => {
@@ -72,6 +75,7 @@ export function createCommandHookAdapter(definition: CommandHookAdapterDefinitio
 		pi.on("tool_call", (event, ctx) => runPreToolUse(definition, pi, event, ctx))
 		pi.on("tool_result", (event, ctx) => runPostToolUse(definition, pi, event, ctx))
 		pi.on("session_start", async (event, ctx) => {
+			latestCtx = ctx
 			await runSessionStart(definition, pi, event, ctx, pendingSystemPrompt)
 		})
 		pi.on("session_compact", async (event, ctx) => {
@@ -83,6 +87,7 @@ export function createCommandHookAdapter(definition: CommandHookAdapterDefinitio
 			return runUserPromptSubmit(definition, pi, event, ctx)
 		})
 		pi.on("turn_start", async (event, ctx) => {
+			latestCtx = ctx
 			batchedToolResults = []
 			await runObserver(definition, "TurnStart", ctx, { turn_id: String(event.turnIndex) })
 		})
@@ -106,7 +111,11 @@ export function createCommandHookAdapter(definition: CommandHookAdapterDefinitio
 		})
 		pi.on("agent_end", async (event, ctx) => {
 			const stopHookActive = stopHookFollowUpPending
-			const result = await runStop(definition, event, ctx, stopHookActive)
+			let result = await runStop(definition, event, ctx, stopHookActive)
+			const stop = lastAssistantStop(event.messages)
+			if (stop.stopReason === "error" || stop.stopReason === "aborted") {
+				result = mergeOptionalResults(result, await runStopFail(definition, event, ctx, stopHookActive))
+			}
 			if (stopHookActive) stopHookFollowUpPending = false
 			if (result?.block && result.reason && !stopHookActive) {
 				stopHookFollowUpPending = true
@@ -134,6 +143,18 @@ export function createCommandHookAdapter(definition: CommandHookAdapterDefinitio
 		})
 		pi.on("session_shutdown", async (event, ctx) => {
 			await runObserver(definition, "SessionEnd", ctx, event as unknown as Record<string, unknown>)
+		})
+		pi.events.on("subagents:started", async (data) => {
+			if (!latestCtx) return
+			await runObserver(definition, "SubagentStart", latestCtx, subagentBasePayload(data))
+		})
+		pi.events.on("subagents:completed", async (data) => {
+			if (!latestCtx) return
+			await runObserver(definition, "SubagentStop", latestCtx, subagentStopPayload(data, false))
+		})
+		pi.events.on("subagents:failed", async (data) => {
+			if (!latestCtx) return
+			await runObserver(definition, "SubagentStop", latestCtx, subagentStopPayload(data, true))
 		})
 	}
 }
@@ -414,10 +435,29 @@ async function runStop(
 	ctx: ExtensionContext,
 	stopHookActive: boolean,
 ): Promise<HookCommandResult | undefined> {
-	return runMatchingHooks(definition, "Stop", ctx, [], {
+	return runMatchingHooks(definition, "Stop", ctx, [], stopPayload(event, stopHookActive))
+}
+
+async function runStopFail(
+	definition: CommandHookAdapterDefinition,
+	event: AgentEndEvent,
+	ctx: ExtensionContext,
+	stopHookActive: boolean,
+): Promise<HookCommandResult | undefined> {
+	return runMatchingHooks(definition, "StopFail", ctx, [], {
+		...stopPayload(event, stopHookActive),
+		is_error: true,
+	})
+}
+
+function stopPayload(event: AgentEndEvent, stopHookActive: boolean): Record<string, unknown> {
+	const stop = lastAssistantStop(event.messages)
+	return {
 		stop_hook_active: stopHookActive,
 		last_assistant_message: lastAssistantTextFromMessages(event.messages),
-	})
+		stop_reason: stop.stopReason ?? null,
+		error_message: stop.errorMessage ?? null,
+	}
 }
 
 async function runTaskCompleted(
@@ -610,6 +650,41 @@ function lastAssistantTextFromMessages(messages: AgentEndEvent["messages"]): str
 		if (isRecord(message) && message.role === "assistant") return lastAssistantText(message)
 	}
 	return null
+}
+
+function lastAssistantStop(messages: AgentEndEvent["messages"]): { stopReason?: string; errorMessage?: string } {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const message = messages[i]
+		if (isRecord(message) && message.role === "assistant") {
+			return { stopReason: stringValue(message.stopReason), errorMessage: stringValue(message.errorMessage) }
+		}
+	}
+	return {}
+}
+
+function subagentBasePayload(data: unknown): Record<string, unknown> {
+	const event = asRecord(data) ?? {}
+	return {
+		subagent_id: stringValue(event.id) ?? null,
+		subagent_type: stringValue(event.type) ?? null,
+		description: stringValue(event.description) ?? null,
+		visibility: stringValue(event.visibility) ?? null,
+	}
+}
+
+function subagentStopPayload(data: unknown, isError: boolean): Record<string, unknown> {
+	const event = asRecord(data) ?? {}
+	return {
+		...subagentBasePayload(data),
+		status: stringValue(event.status) ?? null,
+		result: stringValue(event.result) ?? null,
+		error: stringValue(event.error) ?? null,
+		abort_reason: stringValue(event.abortReason) ?? null,
+		duration_ms: typeof event.durationMs === "number" ? event.durationMs : null,
+		tool_uses: typeof event.toolUses === "number" ? event.toolUses : null,
+		tokens: asRecord(event.tokens) ?? null,
+		is_error: isError,
+	}
 }
 
 function messagePayload(message: TurnEndEvent["message"]): Record<string, unknown> {
