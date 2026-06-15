@@ -9,7 +9,7 @@
  */
 import fs from "node:fs"
 import path from "node:path"
-import type { ExtensionAPI, ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext, ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent"
 import { Container, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 import { ensureFileOpen, getOrCreateClient, refreshFile, sendRequest, shutdownAll } from "./lsp/client.js"
@@ -79,7 +79,7 @@ export default function (pi: ExtensionAPI) {
 
 	// ── File sync: refresh LSP after agent edits files ───────────────────────────
 
-	pi.on("tool_result", async (event) => {
+	pi.on("tool_result", async (event, ctx) => {
 		if (!("toolName" in event)) return
 		if (event.toolName !== "edit" && event.toolName !== "write" && event.toolName !== "read") return
 		if (event.isError) return
@@ -93,6 +93,8 @@ export default function (pi: ExtensionAPI) {
 		const server = serverForFile(resolved, activeServers)
 		if (!server) return
 
+		const effectiveUi = ui ?? (ctx as ExtensionContext).ui
+
 		try {
 			const client = await getOrCreateClient(server, cwd)
 			if (event.toolName === "read") {
@@ -101,7 +103,8 @@ export default function (pi: ExtensionAPI) {
 			} else {
 				await refreshFile(client, resolved)
 				// Wait for diagnostics to arrive, then inject them as a user steer message
-				const waitMs = 100
+				// LSP servers (especially TypeScript) need time to parse and type-check after edits
+				const waitMs = 2000
 				await new Promise((resolve) => setTimeout(resolve, waitMs))
 
 				const uri = fileToUri(resolved)
@@ -110,18 +113,18 @@ export default function (pi: ExtensionAPI) {
 				if (diags.length > 0) {
 					const lines = diags.map((d) => formatDiagnostic(d))
 					const relativePath = path.relative(cwd, resolved)
-					const intro = ui
-						? `${ui.theme.fg("error", " LSP diagnostics:")} \`${relativePath}\`\n${lines.join("\n")}`
+					const intro = effectiveUi
+						? `${effectiveUi.theme.fg("error", " LSP diagnostics:")} \`${relativePath}\`\n${lines.join("\n")}`
 						: `[LSP diagnostics for ${relativePath}]\n${lines.join("\n")}`
 					pi.sendUserMessage(intro, { deliverAs: "steer" })
 				}
 
 				// Update status bar with total diagnostic count across open files
-				if (ui) {
+				if (effectiveUi) {
 					const totalDiags = [...client.diagnostics.values()].reduce((sum, entry) => sum + entry.diagnostics.length, 0)
 					const names = activeServers.map((s) => s.name).join(", ")
 					const diagPart = totalDiags > 0 ? ` (${totalDiags} diag${totalDiags === 1 ? "" : "s"})` : ""
-					ui.setStatus("lsp", `LSP: ${names}${diagPart}`)
+					effectiveUi.setStatus("lsp", `LSP: ${names}${diagPart}`)
 				}
 			}
 		} catch {
