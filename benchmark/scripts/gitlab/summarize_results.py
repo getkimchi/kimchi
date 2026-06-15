@@ -233,6 +233,13 @@ def parse_time(value: str | None) -> datetime | None:
     return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
+def rfc3339_utc(value: str | None) -> str | None:
+    parsed = parse_time(value)
+    if parsed is None:
+        return None
+    return parsed.astimezone(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
 def seconds_between(start: str | None, end: str | None) -> int | None:
     start_dt = parse_time(start)
     end_dt = parse_time(end)
@@ -528,8 +535,8 @@ def build_run(
 ) -> dict[str, Any]:
     gitlab = metadata_dict(metadata, "gitlab")
     gcs = metadata_dict(metadata, "gcs")
-    start = started_at or generated_at
-    end = finished_at or start
+    start = rfc3339_utc(started_at) or generated_at
+    end = rfc3339_utc(finished_at) or start
     run_id = str(gcs.get("run_id") or gitlab.get("job_id") or gitlab.get("pipeline_id") or "") or "unknown"
     source_sha = str(gitlab.get("target_commit_sha") or gitlab.get("commit_sha") or "") or "unknown"
     return {
