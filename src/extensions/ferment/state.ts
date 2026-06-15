@@ -108,19 +108,6 @@ export function markHumanInput(): void {
 	lastHumanInputAt = new Date()
 }
 
-// ─── Model-switch suppression ─────────────────────────────────────────────────
-// Used by model_select handler to prevent infinite recursion when reverting.
-
-let restoringModel = false
-
-export function isRestoringModel(): boolean {
-	return restoringModel
-}
-
-export function setRestoringModel(v: boolean): void {
-	restoringModel = v
-}
-
 // ─── Judge model handles (captured opportunistically from ctx) ────────────────
 
 let judgeModel: Model<Api> | undefined
