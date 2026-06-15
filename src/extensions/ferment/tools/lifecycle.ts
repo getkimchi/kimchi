@@ -38,7 +38,7 @@ import { pr_bold, pr_dim } from "../colors.js"
 import { startFermentForIntent } from "../commands.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { renderGateGuidance } from "../gate-registry.js"
-import { validateGatesOrErr } from "../gate-validation.js"
+import { assertGateFieldsPresent, validateGatesOrErr } from "../gate-validation.js"
 import { judgeJourneyGrade } from "../judge.js"
 import { resetReactiveContinuationNudgeCount } from "../nudge.js"
 import { gatherPhaseEvidence } from "../phase-evidence.js"
@@ -835,6 +835,7 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 
 ${renderGateGuidance("scope_ferment")}`,
 		parameters: ProposeScopingParams,
+		prepareArguments: assertGateFieldsPresent,
 		renderResult(result) {
 			const text = result.content[0]?.type === "text" ? result.content[0].text : ""
 			return new Markdown(text, 1, 0, getMarkdownTheme())
@@ -1153,6 +1154,7 @@ ${renderGateGuidance("scope_ferment")}`,
 
 ${renderGateGuidance("scope_ferment")}`,
 		parameters: ScopeParams,
+		prepareArguments: assertGateFieldsPresent,
 		renderResult(result) {
 			const text = result.content[0]?.type === "text" ? result.content[0].text : ""
 			return new Markdown(text, 1, 0, getMarkdownTheme())
@@ -1196,6 +1198,7 @@ ${renderGateGuidance("scope_ferment")}`,
 
 ${renderGateGuidance("complete_ferment")}`,
 		parameters: CompleteFermentParams,
+		prepareArguments: assertGateFieldsPresent,
 		renderResult(result) {
 			const text = result.content[0]?.type === "text" ? result.content[0].text : ""
 			return new Markdown(text, 1, 0, getMarkdownTheme())

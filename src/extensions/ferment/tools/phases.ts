@@ -17,7 +17,7 @@ import { decideContinuation } from "../continuation.js"
 import { formatDecisionsAndMemories } from "../format.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { flaggedVerdicts, renderGateGuidance } from "../gate-registry.js"
-import { validateGatesOrErr } from "../gate-validation.js"
+import { assertGateFieldsPresent, validateGatesOrErr } from "../gate-validation.js"
 import type { JudgeFlag } from "../judge.js"
 import { onPhaseCompleted } from "../nudge.js"
 import { type PhaseEvidence, captureGitHead, gatherPhaseEvidence } from "../phase-evidence.js"
@@ -642,6 +642,7 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 
 ${renderGateGuidance("complete_ferment_phase")}`,
 		parameters: CompletePhaseParams,
+		prepareArguments: assertGateFieldsPresent,
 		renderResult(result) {
 			const text = result.content[0]?.type === "text" ? result.content[0].text : ""
 			return new Markdown(text, 1, 0, getMarkdownTheme())

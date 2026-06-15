@@ -12,7 +12,7 @@ import type { StepResult } from "../../../ferment/types.js"
 import { askUser } from "../ask-user.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { renderGateGuidance } from "../gate-registry.js"
-import { validateGatesOrErr } from "../gate-validation.js"
+import { assertGateFieldsPresent, validateGatesOrErr } from "../gate-validation.js"
 import { type JudgeVerdict, judgeStepVerification } from "../judge.js"
 import { onStepCompleted } from "../nudge.js"
 import { type PhaseEvidence, captureGitHead, gatherPhaseEvidence } from "../phase-evidence.js"
@@ -502,6 +502,7 @@ export function registerStepTools(pi: ExtensionAPI, runtime: FermentRuntime = de
 
 ${renderGateGuidance("complete_ferment_step")}`,
 		parameters: CompleteStepParams,
+		prepareArguments: assertGateFieldsPresent,
 		async execute(_, params, signal, onUpdate, ctx) {
 			return completeStep(runtime, params, { pi, ctx, signal, onUpdate }, stepServices)
 		},

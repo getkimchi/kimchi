@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { validateGatesOrErr } from "./gate-validation.js"
+import { assertGateFieldsPresent, validateGatesOrErr } from "./gate-validation.js"
 
 const validPhaseGates = () => [
 	{ id: "F1", verdict: "pass", rationale: "ok", evidence: "n/a" },
@@ -131,5 +131,129 @@ describe("validateGatesOrErr", () => {
 		const result = validateGatesOrErr(flagged, { turn: "complete_ferment_phase", flagPolicy: "block-on-flag" })
 		expect(result && "isError" in result && result.isError).toBe(true)
 		expect(result?.content.map((c) => c.text).join("\n")).toContain("Call refused — agent self-flagged on 1 gate(s)")
+	})
+})
+
+describe("assertGateFieldsPresent", () => {
+	it("passes through args when all gate fields are present", () => {
+		const args = {
+			ferment_id: "f1",
+			gates: [
+				{ id: "P1", verdict: "pass", rationale: "ok", evidence: "file.ts:1" },
+				{ id: "P2", verdict: "omitted", rationale: "single phase", evidence: "n/a" },
+			],
+		}
+		expect(assertGateFieldsPresent(args)).toBe(args)
+	})
+
+	it("throws when evidence is missing from a gate", () => {
+		const args = {
+			gates: [{ id: "P1", verdict: "pass", rationale: "ok" }],
+		}
+		expect(() => assertGateFieldsPresent(args)).toThrow(/P1: missing "evidence"/)
+	})
+
+	it("throws when rationale is missing from a gate", () => {
+		const args = {
+			gates: [{ id: "P1", verdict: "pass", evidence: "file.ts:1" }],
+		}
+		expect(() => assertGateFieldsPresent(args)).toThrow(/P1: missing "rationale"/)
+	})
+
+	it("throws when both evidence and rationale are missing", () => {
+		const args = {
+			gates: [{ id: "P1", verdict: "pass" }],
+		}
+		expect(() => assertGateFieldsPresent(args)).toThrow(/P1: missing "evidence"/)
+		expect(() => assertGateFieldsPresent(args)).toThrow(/P1: missing "rationale"/)
+	})
+
+	it("throws when verdict is missing (with id present)", () => {
+		const args = {
+			gates: [{ id: "P1", rationale: "ok", evidence: "file.ts:1" }],
+		}
+		expect(() => assertGateFieldsPresent(args)).toThrow(/P1: missing "verdict"/)
+	})
+
+	it("throws when id is missing (with verdict present)", () => {
+		const args = {
+			gates: [{ verdict: "pass", rationale: "ok", evidence: "file.ts:1" }],
+		}
+		expect(() => assertGateFieldsPresent(args)).toThrow(/gates\[0\]: missing "id"/)
+	})
+
+	it("rejects empty-string evidence", () => {
+		const args = {
+			gates: [{ id: "P1", verdict: "pass", rationale: "ok", evidence: "" }],
+		}
+		expect(() => assertGateFieldsPresent(args)).toThrow(/P1: missing "evidence"/)
+	})
+
+	it("rejects whitespace-only evidence", () => {
+		const args = {
+			gates: [{ id: "P1", verdict: "pass", rationale: "ok", evidence: "   " }],
+		}
+		expect(() => assertGateFieldsPresent(args)).toThrow(/P1: missing "evidence"/)
+	})
+
+	it("reports all gates with missing fields, not just the first", () => {
+		const args = {
+			gates: [
+				{ id: "P1", verdict: "pass" },
+				{ id: "P2", verdict: "omitted", rationale: "single phase" },
+				{ id: "P3", verdict: "pass", rationale: "criteria", evidence: "file.ts" },
+			],
+		}
+		try {
+			assertGateFieldsPresent(args)
+			expect.fail("should have thrown")
+		} catch (e: unknown) {
+			const msg = (e as Error).message
+			expect(msg).toContain('P1: missing "evidence"')
+			expect(msg).toContain('P1: missing "rationale"')
+			expect(msg).toContain('P2: missing "evidence"')
+			expect(msg).not.toContain("P3")
+		}
+	})
+
+	it("uses positional index when gate has no id", () => {
+		const args = {
+			gates: [{ verdict: "pass", rationale: "ok" }],
+		}
+		expect(() => assertGateFieldsPresent(args)).toThrow(/gates\[0\]: missing "evidence"/)
+		expect(() => assertGateFieldsPresent(args)).toThrow(/gates\[0\]: missing "id"/)
+	})
+
+	it("passes through args without gates unchanged", () => {
+		const args = { ferment_id: "f1", summary: "done" }
+		expect(assertGateFieldsPresent(args)).toEqual({ ferment_id: "f1", summary: "done" })
+	})
+
+	it("handles null/undefined input safely", () => {
+		expect(assertGateFieldsPresent(null)).toBeNull()
+		expect(assertGateFieldsPresent(undefined)).toBeUndefined()
+	})
+
+	it("rejects null/non-object/array gate entries", () => {
+		const args = {
+			gates: [null, "string", { id: "P1", verdict: "pass", rationale: "ok", evidence: "file.ts" }],
+		}
+		expect(() => assertGateFieldsPresent(args)).toThrow(/invalid gate object/)
+	})
+
+	it("rejects an array entry inside the gates array", () => {
+		const args = {
+			gates: [["nested"]],
+		}
+		expect(() => assertGateFieldsPresent(args)).toThrow(/invalid gate object/)
+	})
+
+	it("includes the fix instruction in the error message", () => {
+		const args = {
+			gates: [{ id: "P1", verdict: "pass" }],
+		}
+		expect(() => assertGateFieldsPresent(args)).toThrow(
+			/Every gate object requires \{id, verdict, rationale, evidence\}/,
+		)
 	})
 })
