@@ -75,6 +75,7 @@ describe("hideThinkingExtension", () => {
 	// --- Default behaviour (hideThinking = false → dim) ---
 
 	it("dims thinking content by default (hideThinking not set)", async () => {
+		_setHideThinking(false)
 		const { endResult } = await simulateStreaming(h, ["Before ", "<think>", "reason", "</think>", " After"])
 		expect(endResult).toBeDefined()
 		const text = (endResult as { message: { content: Array<{ text: string }> } }).message.content[0].text
@@ -116,6 +117,7 @@ describe("hideThinkingExtension", () => {
 	// --- Streaming display ---
 
 	it("hides <think> tag and dims content during streaming", async () => {
+		_setHideThinking(false)
 		const content = [{ type: "text" as const, text: "" }]
 		const message = { role: "assistant" as const, content }
 
@@ -270,6 +272,7 @@ describe("hideThinkingExtension", () => {
 	// --- mm:think tags ---
 
 	it("dims <mm:think> content by default", async () => {
+		_setHideThinking(false)
 		const { endResult } = await simulateStreaming(h, ["Before ", "<mm:think>", "mm reason", "</mm:think>", " After"])
 		expect(endResult).toBeDefined()
 		const text = (endResult as { message: { content: Array<{ text: string }> } }).message.content[0].text
@@ -285,6 +288,7 @@ describe("hideThinkingExtension", () => {
 	})
 
 	it("hides <mm:think> tag and dims content during streaming", async () => {
+		_setHideThinking(false)
 		const content = [{ type: "text" as const, text: "" }]
 		const message = { role: "assistant" as const, content }
 
