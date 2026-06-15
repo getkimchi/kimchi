@@ -5,6 +5,10 @@ import type { WriteTodosParams } from "./types.js"
 
 export const TODO_TOOL_NAME = "write_todos"
 
+function todoErrorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error)
+}
+
 export function registerTodosTool(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: TODO_TOOL_NAME,
@@ -29,10 +33,17 @@ export function registerTodosTool(pi: ExtensionAPI): void {
 			),
 		}),
 		async execute(_toolCallId, params: WriteTodosParams) {
-			const details = applyWriteTodos(params)
-			return {
-				content: [{ type: "text" as const, text: `Updated ${details.todos.length} todos.` }],
-				details,
+			try {
+				const details = applyWriteTodos(params)
+				return {
+					content: [{ type: "text" as const, text: `Updated ${details.todos.length} todos.` }],
+					details,
+				}
+			} catch (error) {
+				return {
+					content: [{ type: "text" as const, text: `Failed to write todos: ${todoErrorMessage(error)}` }],
+					details: null,
+				}
 			}
 		},
 	})

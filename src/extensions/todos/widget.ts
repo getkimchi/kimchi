@@ -18,10 +18,36 @@ const TODO_SYMBOL: Record<TodoStatus, string> = {
 	completed: "✓",
 }
 
-let visibleTodoWidget = false
-let collapsedTodoWidget = false
-let todoWidgetRegistered = false
-let todoTui: { requestRender?: (force?: boolean) => void } | undefined
+interface TodoWidgetState {
+	visible: boolean
+	collapsed: boolean
+	registered: boolean
+	registrationId: number
+	ctx?: ExtensionContext
+	tui?: { requestRender?: (force?: boolean) => void }
+}
+
+const todoWidgetStates = new Map<string, TodoWidgetState>()
+let activeTodoWidgetSessionId: string | undefined
+
+function createTodoWidgetState(): TodoWidgetState {
+	return { visible: false, collapsed: false, registered: false, registrationId: 0 }
+}
+
+function todoWidgetSessionId(ctx: ExtensionContext): string {
+	return ctx.sessionManager.getSessionId()
+}
+
+function getTodoWidgetState(ctx: ExtensionContext): TodoWidgetState {
+	const sessionId = todoWidgetSessionId(ctx)
+	let state = todoWidgetStates.get(sessionId)
+	if (!state) {
+		state = createTodoWidgetState()
+		todoWidgetStates.set(sessionId, state)
+	}
+	activeTodoWidgetSessionId = sessionId
+	return state
+}
 
 export function summarizeTodoCounts(counts: TodoCounts): string {
 	if (counts.total === 0) return "No todos"
@@ -62,15 +88,15 @@ export function buildTodoLines(theme: Theme): string[] {
 }
 
 export function resetTodoWidgetState(): void {
-	visibleTodoWidget = false
-	collapsedTodoWidget = false
-	todoWidgetRegistered = false
-	todoTui = undefined
+	todoWidgetStates.clear()
+	activeTodoWidgetSessionId = undefined
 }
 
 function requestTodoRender(ctx: ExtensionContext): void {
-	if (!ctx.hasUI || !todoWidgetRegistered) return
-	todoTui?.requestRender?.(true)
+	if (!ctx.hasUI) return
+	const state = todoWidgetStates.get(todoWidgetSessionId(ctx))
+	if (!state?.registered) return
+	state.tui?.requestRender?.(true)
 }
 
 export function setTodosStatus(ctx: ExtensionContext): void {
@@ -80,12 +106,18 @@ export function setTodosStatus(ctx: ExtensionContext): void {
 }
 
 export function ensureTodoWidget(ctx: ExtensionContext): void {
-	if (!ctx.hasUI || todoWidgetRegistered) return
+	if (!ctx.hasUI) return
+	const sessionId = todoWidgetSessionId(ctx)
+	const state = getTodoWidgetState(ctx)
+	if (state.registered && state.ctx === ctx) return
+
+	const registrationId = state.registrationId + 1
+	state.registrationId = registrationId
 	const component = (tui: unknown, theme: Theme) => {
-		todoTui = tui as { requestRender?: (force?: boolean) => void }
+		state.tui = tui as { requestRender?: (force?: boolean) => void }
 		return {
 			render(width: number): string[] {
-				if (!visibleTodoWidget) return []
+				if (!state.visible) return []
 				const lines = buildTodoLines(theme)
 				const withHint = [...lines, "", theme.fg("dim", TODO_LIST_HINT_TEXT)]
 				const visibleLines =
@@ -98,8 +130,11 @@ export function ensureTodoWidget(ctx: ExtensionContext): void {
 				return visibleLines.map((line) => truncateToWidth(line, Math.max(20, width - 4)))
 			},
 			invalidate() {
-				todoWidgetRegistered = false
-				todoTui = undefined
+				if (state.registrationId !== registrationId) return
+				state.registered = false
+				state.tui = undefined
+				state.ctx = undefined
+				if (activeTodoWidgetSessionId === sessionId) activeTodoWidgetSessionId = undefined
 			},
 			handleInput(data: string): void {
 				if (isKeyRelease(data)) return
@@ -112,13 +147,16 @@ export function ensureTodoWidget(ctx: ExtensionContext): void {
 		}
 	}
 	ctx.ui.setWidget(TODO_WIDGET_KEY, component, TODO_WIDGET_OPTIONS)
-	todoWidgetRegistered = true
+	state.registered = true
+	state.ctx = ctx
+	activeTodoWidgetSessionId = sessionId
 }
 
 export function openTodoWidget(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return
-	collapsedTodoWidget = false
-	visibleTodoWidget = true
+	const state = getTodoWidgetState(ctx)
+	state.collapsed = false
+	state.visible = true
 	ensureTodoWidget(ctx)
 	requestTodoRender(ctx)
 	setTodosStatus(ctx)
@@ -126,35 +164,43 @@ export function openTodoWidget(ctx: ExtensionContext): void {
 
 export function clearTodoWidget(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return
-	visibleTodoWidget = false
+	getTodoWidgetState(ctx).visible = false
 	requestTodoRender(ctx)
 }
 
 export function collapseTodoWidget(ctx: ExtensionContext): void {
-	collapsedTodoWidget = true
+	getTodoWidgetState(ctx).collapsed = true
 	clearTodoWidget(ctx)
 	setTodosStatus(ctx)
 }
 
 export function toggleTodoWidget(ctx: ExtensionContext): void {
-	if (visibleTodoWidget) collapseTodoWidget(ctx)
+	if (getTodoWidgetState(ctx).visible) collapseTodoWidget(ctx)
 	else openTodoWidget(ctx)
 }
 
 export function syncTodoWidget(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return
 	const counts = getTodoCountsForScope(GLOBAL_TODO_SCOPE)
-	if (!collapsedTodoWidget && counts.total > 0) openTodoWidget(ctx)
+	const state = getTodoWidgetState(ctx)
+	if (!state.collapsed && counts.total > 0) openTodoWidget(ctx)
 	else clearTodoWidget(ctx)
 	setTodosStatus(ctx)
 }
 
 export function disposeTodoWidget(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return
+	const sessionId = todoWidgetSessionId(ctx)
+	const state = todoWidgetStates.get(sessionId)
 	ctx.ui.setWidget(TODO_WIDGET_KEY, undefined, TODO_WIDGET_OPTIONS)
-	visibleTodoWidget = false
-	todoWidgetRegistered = false
-	todoTui = undefined
+	if (state) {
+		state.visible = false
+		state.registered = false
+		state.tui = undefined
+		state.ctx = undefined
+	}
+	todoWidgetStates.delete(sessionId)
+	if (activeTodoWidgetSessionId === sessionId) activeTodoWidgetSessionId = undefined
 }
 
 export function registerTodoShortcut(pi: ExtensionAPI): void {
