@@ -250,7 +250,7 @@ git:
     ) -> None:
         env = self._build_env()
         self._force_session_env()
-        api_key = env[KIMCHI_API_KEY_ENV]
+        process.env.SECRET_KEY
         model = self._selected_model_metadata(api_key)
 
         await self.exec_as_agent(
