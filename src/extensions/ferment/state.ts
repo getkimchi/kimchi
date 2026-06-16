@@ -511,6 +511,12 @@ export function clearFermentState(fermentId: string): void {
 		if (key.startsWith(prefix)) stepStartRefs.delete(key)
 	}
 	hydratedFerments.delete(fermentId)
+	// Per-ferment compaction state: a pending request left in the map for a
+	// completed/abandoned/deleted ferment will never be drained, and an
+	// in-flight marker that outlives the ferment blocks future compactions
+	// for the same id (key collisions are vanishingly unlikely but cheap to avoid).
+	pendingCompactions.delete(fermentId)
+	compactionInFlight.delete(fermentId)
 	deleteRuntimeState(fermentId, runtimeStatePersistRoot)
 }
 
