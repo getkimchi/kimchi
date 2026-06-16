@@ -243,6 +243,50 @@ describe("bashToolGuardExtension wiring", () => {
 		expect(pi._blockResult).toBeUndefined()
 	})
 
+	it("caller-supplied isEnabled=false disables the guard", () => {
+		// Regression: previously the extension factory hardcoded its own
+		// isEnabled predicate, silently ignoring any caller-supplied one.
+		mockMode = "default"
+		const pi = createMockPI()
+		bashToolGuardExtension(pi as unknown as PI, { isEnabled: () => false })
+		fireSessionStart(pi)
+
+		// Anti-patterns pass without warn/block/steer events.
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat a.ts" } })
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat b.ts" } })
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+		expect(pi._blockResult).toBeUndefined()
+		expect(pi._emittedEvents).toHaveLength(0)
+	})
+
+	it("caller-supplied isEnabled=true is overridden by plan mode", () => {
+		// Plan mode is inspection-only and must take precedence over a
+		// permissive caller predicate.
+		mockMode = "plan"
+		const pi = createMockPI()
+		bashToolGuardExtension(pi as unknown as PI, { isEnabled: () => true })
+		fireSessionStart(pi)
+
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat a.ts" } })
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat b.ts" } })
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+		expect(pi._blockResult).toBeUndefined()
+	})
+
+	it("caller-supplied isEnabled=true permits guard outside plan mode", () => {
+		// Sanity check: a permissive caller predicate lets the guard run.
+		mockMode = "default"
+		const pi = createMockPI()
+		bashToolGuardExtension(pi as unknown as PI, { isEnabled: () => true })
+		fireSessionStart(pi)
+
+		// First `cat` warns (steer message), second blocks.
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat a.ts" } })
+		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+		const result = emit(pi, "tool_call", { toolName: "bash", input: { command: "cat b.ts" } })
+		expect(result?.block).toBe(true)
+	})
+
 	it("block reason text names the better tool", () => {
 		const pi = createMockPI()
 		bashToolGuardExtension(pi as unknown as PI)
