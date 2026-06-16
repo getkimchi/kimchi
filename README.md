@@ -20,7 +20,7 @@ brew install getkimchi/tap/kimchi
 curl -fsSL https://github.com/getkimchi/kimchi/releases/latest/download/install.sh | bash
 ```
 
-### PowerShell installer (Windows)
+### PowerShell installer (Windows x64)
 
 ```powershell
 irm https://github.com/getkimchi/kimchi/releases/latest/download/install.ps1 | iex
