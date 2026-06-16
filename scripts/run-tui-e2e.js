@@ -72,7 +72,6 @@ function runEach(stems) {
 /** Test stems to run: every *.test.ts minus the quarantined ones. Exits early if
  *  everything is quarantined (otherwise an empty filter would run all tests). */
 function testsToRun() {
-	if (SKIPPED_TUI_TESTS.length === 0) return []
 	const skipped = new Set(SKIPPED_TUI_TESTS.map((s) => s.test))
 	for (const s of SKIPPED_TUI_TESTS) process.stderr.write(`[tui-e2e] SKIP ${s.test} — ${s.reason}\n`)
 	const all = readdirSync(tuiCwd)
