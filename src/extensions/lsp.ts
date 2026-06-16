@@ -112,8 +112,11 @@ export default function (pi: ExtensionAPI) {
 		if (event.isError) return
 
 		// Extract the file path from the tool input
-		const input = event.input as Record<string, unknown>
-		const filePath = (input.file_path ?? input.path) as string | undefined
+		const input = event.input
+		if (typeof input !== "object" || input === null) return
+		const filePath = ((input as Record<string, unknown>).file_path ?? (input as Record<string, unknown>).path) as
+			| string
+			| undefined
 		if (!filePath) return
 
 		const resolved = path.isAbsolute(filePath) ? filePath : path.join(cwd, filePath)

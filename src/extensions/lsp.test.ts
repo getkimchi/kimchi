@@ -31,7 +31,6 @@ vi.mock("./prompt-construction/index.js", () => ({
 // Imports after mocks are set up
 // ---------------------------------------------------------------------------
 
-import { afterEach as _afterEach } from "vitest"
 import lspExtension from "./lsp.js"
 import * as clientMod from "./lsp/client.js"
 import * as editsMod from "./lsp/edits.js"
@@ -403,6 +402,21 @@ describe("tool_result handler", () => {
 		lspExtension(pi)
 		await pi.fireSessionStart()
 		await pi.fireToolResult({ toolName: "edit", isError: false, input: {} })
+		expect(clientMod.getOrCreateClient).not.toHaveBeenCalled()
+	})
+
+	it("ignores events with a missing or non-object input", async () => {
+		vi.mocked(serversMod.detectServers).mockReturnValue([FAKE_SERVER])
+		vi.mocked(serversMod.serverForFile).mockReturnValue(FAKE_SERVER)
+		const pi = makePi()
+		lspExtension(pi)
+		await pi.fireSessionStart()
+		// Missing input entirely
+		await expect(pi.fireToolResult({ toolName: "edit", isError: false })).resolves.not.toThrow()
+		// Null input
+		await expect(pi.fireToolResult({ toolName: "edit", isError: false, input: null })).resolves.not.toThrow()
+		// Non-object input
+		await expect(pi.fireToolResult({ toolName: "edit", isError: false, input: "oops" })).resolves.not.toThrow()
 		expect(clientMod.getOrCreateClient).not.toHaveBeenCalled()
 	})
 
