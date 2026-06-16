@@ -394,7 +394,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		return {}
 	})
 
-	pi.on("model_select", async (event, ctx) => {
+	pi.on("model_select", (event, ctx) => {
 		runtime.captureJudgeContext(event.model, ctx?.modelRegistry)
 	})
 
