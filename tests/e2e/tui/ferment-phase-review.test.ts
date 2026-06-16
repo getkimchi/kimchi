@@ -6,7 +6,12 @@ test.use(TUI_TEST_CONFIG)
 
 // Drives the ferment scoping flow to the "Review the proposed phases" picker to
 // prove the separator line ("─────") is selectable/navigable (bug report).
-test("ferment phase-review separator is not selectable", async ({ terminal }) => {
+//
+// Marked `test.fail`: the separator IS currently focusable, so the assertion below
+// times out and the test "fails" — which tui-test counts as the EXPECTED outcome, so
+// CI stays green. When the bug is fixed (Down skips the separator), this test will
+// pass unexpectedly and tui-test will flag it — that's the signal to drop `.fail`.
+test.fail("ferment phase-review separator is not selectable", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		{
@@ -43,10 +48,16 @@ test("ferment phase-review separator is not selectable", async ({ terminal }) =>
 			],
 		},
 		async (_fixture, trace) => {
-			// Stage 1: enter ferment mode -> intent prompt.
-			terminal.submit("/ferment")
-			trace.step("submitted /ferment")
-			await waitForText(terminal, "What would you like to ferment", { timeoutMs: STARTUP_TIMEOUT_MS })
+			// Stage 1: enter ferment mode -> intent prompt. Type the command and confirm
+			// it is in the editor before pressing Enter — submitting "/ferment\r" in one
+			// shot can race startup and be handled before the slash command registers,
+			// which skips the intent prompt entirely.
+			terminal.write("/ferment")
+			await waitForText(terminal, "/ferment", { timeoutMs: INPUT_TIMEOUT_MS })
+			trace.step("typed /ferment")
+			terminal.submit("")
+			trace.step("ran /ferment")
+			await waitForText(terminal, "would you like to ferment", { timeoutMs: STARTUP_TIMEOUT_MS })
 			trace.step("intent prompt visible")
 
 			// Stage 2: submit intent -> model proposes scoping -> draft-confirm dropdown.

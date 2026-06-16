@@ -13,8 +13,8 @@
 
 /** @type {{ test: string; reason: string }[]} */
 export const SKIPPED_TUI_TESTS = [
-	{
-		test: "ferment-phase-review",
-		reason: "Bug: phase-review separator (─────) is selectable/navigable; fix pending.",
-	},
+	// {
+	// 	test: <file name with extensions>,
+	// 	reason: <for example will do in later>,
+	// },
 ]

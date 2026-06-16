@@ -26,6 +26,7 @@ const traceEnabled = args.includes("--trace") || args.includes("-t")
 const env = {
 	...process.env,
 	KIMCHI_REPO_ROOT: repoRoot,
+	BASH_SILENCE_DEPRECATION_WARNING: "1",
 	...(debugEnabled ? { KIMCHI_TUI_E2E_DEBUG: "1" } : {}),
 }
 
