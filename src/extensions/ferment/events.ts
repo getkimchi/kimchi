@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { clearFermentCache } from "../../ferment/store.js"
 import { deriveDraftFermentTitle } from "../../ferment/title.js"
+import type { Ferment } from "../../ferment/types.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { deferExtensionAction } from "../deferred-action.js"
 import { formatDuration } from "./colors.js"
@@ -138,6 +139,28 @@ async function maybeRunManualBoundaryDropdown(
 	return true
 }
 
+/**
+ * Build the `FermentStalledPayload` for telemetry emission. Shared by
+ * the crash-recovery and user-decline stall paths so the two sites
+ * stay in sync as the payload evolves.
+ */
+function buildStalledPayload(ferment: Ferment, now: number): FermentStalledPayload {
+	const completedPhases = ferment.phases.filter((p) => p.status === "completed").length
+	const totalPhases = ferment.phases.length
+	const phaseCompletionRatio = totalPhases > 0 ? completedPhases / totalPhases : 0
+	const lastActiveMs = ferment.lastActiveAt ? Date.parse(ferment.lastActiveAt) : Number.NaN
+	const idleDurationMs = Number.isFinite(lastActiveMs) ? now - lastActiveMs : 0
+	return {
+		fermentId: ferment.id,
+		name: ferment.name,
+		lifecycleStage: ferment.status,
+		idleDurationMs,
+		completedPhases,
+		totalPhases,
+		phaseCompletionRatio,
+	}
+}
+
 async function maybeRunUserInputDropdown(
 	pi: ExtensionAPI,
 	ctx: TurnEndContext | undefined,
@@ -245,19 +268,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 						// Load the full Ferment to access phases and lastActiveAt.
 						const full = runtime.getStorage().get(f.id)
 						if (full) {
-							const completedPhases = full.phases.filter((p) => p.status === "completed").length
-							const totalPhases = full.phases.length
-							const lastActiveMs = full.lastActiveAt ? Date.parse(full.lastActiveAt) : Number.NaN
-							const stalledPayload: FermentStalledPayload = {
-								fermentId: full.id,
-								name: full.name,
-								lifecycleStage: full.status,
-								idleDurationMs: Number.isFinite(lastActiveMs) ? Date.now() - lastActiveMs : 0,
-								completedPhases,
-								totalPhases,
-								phaseCompletionRatio: totalPhases > 0 ? completedPhases / totalPhases : 0,
-							}
-							pi.events.emit(FERMENT_EVENTS.STALLED, stalledPayload)
+							pi.events.emit(FERMENT_EVENTS.STALLED, buildStalledPayload(full, runtime.now().getTime()))
 						}
 					}
 				} catch (err) {
@@ -317,19 +328,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 					deferExtensionAction(() => resumeFerment(pi, envId, ctx, runtime))
 				} else {
 					// User explicitly declined to resume — emit stalled telemetry.
-					const completedPhases = ferment.phases.filter((p) => p.status === "completed").length
-					const totalPhases = ferment.phases.length
-					const lastActiveMs = ferment.lastActiveAt ? Date.parse(ferment.lastActiveAt) : Number.NaN
-					const stalledPayload: FermentStalledPayload = {
-						fermentId: ferment.id,
-						name: ferment.name,
-						lifecycleStage: ferment.status,
-						idleDurationMs: Number.isFinite(lastActiveMs) ? runtime.now().getTime() - lastActiveMs : 0,
-						completedPhases,
-						totalPhases,
-						phaseCompletionRatio: totalPhases > 0 ? completedPhases / totalPhases : 0,
-					}
-					pi.events.emit(FERMENT_EVENTS.STALLED, stalledPayload)
+					pi.events.emit(FERMENT_EVENTS.STALLED, buildStalledPayload(ferment, runtime.now().getTime()))
 					deferExtensionAction(() => {
 						loadFermentSilently(pi, envId, runtime)
 					})
