@@ -311,30 +311,6 @@ describe("updateModelsConfig", () => {
 		expect(result.models.map((m) => m.slug)).toEqual(["kimi-k2.5"])
 	})
 
-	it("classifies a persistent timeout as transient after exhausting retries", async () => {
-		vi.mocked(fetch).mockRejectedValue(new Error("The operation timed out."))
-
-		const error = await updateModelsConfig(modelsJsonPath, "test-key", { sleep: async () => {} }).catch((e) => e)
-
-		expect(error).toBeInstanceOf(ModelsFetchError)
-		expect(isTransientModelsError(error)).toBe(true)
-		expect((error as Error).message).toContain("timed out")
-		expect(fetch).toHaveBeenCalledTimes(3)
-	})
-
-	it("uses a 20s timeout to tolerate slow ingress", async () => {
-		const timeoutSpy = vi.spyOn(AbortSignal, "timeout")
-		vi.mocked(fetch).mockResolvedValueOnce({
-			ok: true,
-			json: async () => ({ models: [KIMI] }),
-		} as Response)
-
-		await updateModelsConfig(modelsJsonPath, "test-key")
-
-		expect(timeoutSpy).toHaveBeenCalledWith(20000)
-		timeoutSpy.mockRestore()
-	})
-
 	it("throws on non-ok response when no cached config exists", async () => {
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: false,

@@ -59,21 +59,15 @@ export interface FetchModelsOptions {
 
 const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
-/** Plain exponential backoff (ms), capped at MAX_RETRY_DELAY_MS. */
-function exponentialBackoffMs(attempt: number): number {
-	return Math.min(BASE_RETRY_DELAY_MS * 2 ** (attempt - 1), MAX_RETRY_DELAY_MS)
-}
-
-/** Delay before the next retry, honoring a `Retry-After` header when present. */
-function retryDelayMs(response: Response, attempt: number): number {
-	const header = response.headers?.get?.("retry-after")
-	if (header) {
-		const seconds = Number(header)
+// Delay before the next retry, honoring a `Retry-After` header when present.
+function retryDelayMs(retryAfterHeader: string | null, attempt: number): number {
+	if (retryAfterHeader) {
+		const seconds = Number(retryAfterHeader)
 		if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1000, MAX_RETRY_DELAY_MS)
-		const dateMs = Date.parse(header)
+		const dateMs = Date.parse(retryAfterHeader)
 		if (!Number.isNaN(dateMs)) return Math.min(Math.max(dateMs - Date.now(), 0), MAX_RETRY_DELAY_MS)
 	}
-	return exponentialBackoffMs(attempt)
+	return Math.min(BASE_RETRY_DELAY_MS * 2 ** (attempt - 1), MAX_RETRY_DELAY_MS)
 }
 
 export interface ModelMetadata {
@@ -119,7 +113,7 @@ async function fetchAvailableModels(apiKey: string, options: FetchModelsOptions 
 					transient: true,
 				})
 			}
-			await sleep(exponentialBackoffMs(attempt))
+			await sleep(retryDelayMs(null, attempt))
 			continue
 		}
 
@@ -140,7 +134,7 @@ async function fetchAvailableModels(apiKey: string, options: FetchModelsOptions 
 			transient,
 		})
 		if (!transient || attempt === MAX_FETCH_ATTEMPTS) throw lastError
-		await sleep(retryDelayMs(response, attempt))
+		await sleep(retryDelayMs(response.headers?.get?.("retry-after"), attempt))
 	}
 
 	// Unreachable: the loop returns on success or throws on the final attempt.
