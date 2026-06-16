@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
@@ -51,12 +52,15 @@ interface TuiStepSnapshot {
 interface CreateKimchiFixtureOptions {
 	models?: FakeModel[]
 	responses: FakeResponseScript[]
+	/** Run `git init` in the work dir so flows that check for a repo (e.g. ferment) don't prompt to initialize one. */
+	gitInit?: boolean
 }
 
 export async function createKimchiFixture(options: CreateKimchiFixtureOptions): Promise<KimchiFixture> {
 	const fake = await startFakeOpenAiServer(options)
 	const homeDir = mkdtempSync(join(tmpdir(), "kimchi-tui-home-"))
 	const workDir = mkdtempSync(join(tmpdir(), "kimchi-tui-work-"))
+	if (options.gitInit) execFileSync("git", ["init", "-q"], { cwd: workDir })
 	const configDir = join(homeDir, ".config", "kimchi")
 	const agentDir = join(configDir, "harness")
 	mkdirSync(agentDir, { recursive: true })

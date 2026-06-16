@@ -221,7 +221,14 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 		}
 	}
 
+	// Some tools (e.g. ferment's propose_ferment_scoping) require a runtime-generated
+	// id the host embedded in the request. Let scripts use a `__FERMENT_ID__` token in
+	// tool arguments; substitute the real id parsed from the request messages.
+	const fermentId = extractFermentId(body)
 	for (const toolCall of script.toolCalls ?? []) {
+		const fn = fermentId
+			? { ...toolCall.function, arguments: toolCall.function.arguments.replaceAll("__FERMENT_ID__", fermentId) }
+			: toolCall.function
 		chunk([
 			{
 				index: 0,
@@ -231,7 +238,7 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 							index: toolCall.index ?? 0,
 							id: toolCall.id ?? "call_fake",
 							type: toolCall.type ?? "function",
-							function: toolCall.function,
+							function: fn,
 						},
 					],
 				},
@@ -243,6 +250,12 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 	chunk([{ index: 0, delta: {}, finish_reason: script.toolCalls?.length ? "tool_calls" : "stop" }])
 	res.write("data: [DONE]\n\n")
 	res.end()
+}
+
+/** Pull the ferment id the host put in the scoping nudge (`ferment_id: "<uuid>"`). */
+function extractFermentId(body: unknown): string | undefined {
+	const match = JSON.stringify(body ?? "").match(/ferment_id[\\"\s:]+([0-9a-fA-F-]{8,})/)
+	return match?.[1]
 }
 
 function unixNow(): number {
