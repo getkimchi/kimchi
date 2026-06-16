@@ -157,5 +157,4 @@ if [ "$NEEDS_PATH_SETUP" = "yes" ] || { [ "$NEEDS_PATH_SETUP" = "maybe" ] && ! c
 fi
 
 echo ""
-echo -e "${BLUE}Next:${NC} run ${GREEN}kimchi setup${NC} to configure your API key and migrate your skills and MCPs,"
-echo -e "      or just ${GREEN}kimchi${NC} to launch the coding harness."
+echo -e "${BLUE}Next:${NC} run ${GREEN}kimchi${NC} and follow the first-time wizard to configure your API key and migrate your skills and MCPs"
