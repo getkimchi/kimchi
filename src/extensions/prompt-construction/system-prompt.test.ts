@@ -112,6 +112,24 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain("Always run tests before committing.")
 		})
 
+		it("places global context files before project context files", () => {
+			const contextFiles = [
+				{ path: "/home/testuser/.config/kimchi/harness/AGENTS.md", content: "Global rule" },
+				{ path: "/repo/AGENTS.md", content: "Project rule" },
+			]
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				contextFiles,
+				mode: "orchestrator",
+			})
+			const globalPos = result.indexOf("Global rule")
+			const projectPos = result.indexOf("Project rule")
+			expect(globalPos).toBeGreaterThan(-1)
+			expect(projectPos).toBeGreaterThan(-1)
+			expect(globalPos).toBeLessThan(projectPos)
+		})
+
 		it("injects skills", () => {
 			const skills = [createSkill({ name: "deploy", description: "Deploy the app to production" })]
 			const result = buildSystemPrompt({

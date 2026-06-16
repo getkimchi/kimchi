@@ -18,6 +18,7 @@
 
 import { existsSync, readFileSync } from "node:fs"
 import { join, resolve } from "node:path"
+import { getAgentDir } from "@earendil-works/pi-coding-agent"
 
 export interface ContextFile {
 	path: string
@@ -81,4 +82,30 @@ export function loadProjectContextFiles(cwd: string): ContextFile[] {
 	}
 
 	return files
+}
+
+/**
+ * Discover the global context file (AGENTS.md) from the agent
+ * configuration directory (~/.config/kimchi/harness/).
+ *
+ * Only AGENTS.md is checked globally. If a `.local.md` variant
+ * (AGENTS.local.md) exists, it is appended.
+ *
+ * Returns an array of at most one ContextFile, or empty if none found.
+ */
+export function loadGlobalContextFiles(): ContextFile[] {
+	const dir = getAgentDir()
+	if (!dir) return []
+	const filePath = join(dir, "AGENTS.md")
+	const localPath = join(dir, localVariant("AGENTS.md"))
+	const primary = tryReadFile(filePath)
+	const local = tryReadFile(localPath)
+	if (primary !== null) {
+		const content = local !== null ? `${primary}\n\n${local}` : primary
+		return [{ path: filePath, content }]
+	}
+	if (local !== null) {
+		return [{ path: localPath, content: local }]
+	}
+	return []
 }

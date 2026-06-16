@@ -370,4 +370,36 @@ describe("SessionContext", () => {
 		await ctx.userEmailReady
 		expect(ctx.userEmail).toBeUndefined()
 	})
+
+	it("emit includes user.account_uuid from userId after getMe resolves", async () => {
+		const { getMe } = await import("../../api/me.js")
+		vi.mocked(getMe).mockResolvedValue({ id: "user-uuid-123" })
+
+		const ctx = new SessionContext(makeConfig({ apiKey: "key" }), "cli")
+		await ctx.userEmailReady
+
+		ctx.emit("test.event", { foo: "bar" })
+		ctx.flushLogBuffer()
+		await Promise.allSettled([...ctx.inFlight])
+
+		const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.find(([url]: unknown[]) =>
+			String(url).includes("/logs"),
+		)
+		const body = JSON.parse((call?.[1] as { body: string }).body)
+		const attrMap = Object.fromEntries(
+			body.resourceLogs[0].scopeLogs[0].logRecords[0].attributes.map(
+				(a: { key: string; value: { stringValue: string } }) => [a.key, a.value.stringValue],
+			),
+		)
+		expect(attrMap["user.account_uuid"]).toBe("user-uuid-123")
+	})
+
+	it("compactionCount resets to 0 on ctx.reset()", () => {
+		const ctx = new SessionContext(makeConfig(), "cli")
+		ctx.compactionCount = 3
+
+		ctx.reset("cli")
+
+		expect(ctx.compactionCount).toBe(0)
+	})
 })

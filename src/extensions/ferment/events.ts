@@ -3,6 +3,7 @@ import { clearFermentCache } from "../../ferment/store.js"
 import { deriveDraftFermentTitle } from "../../ferment/title.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { deferExtensionAction } from "../deferred-action.js"
+import { maybeTriggerFermentCompaction } from "./auto-compaction.js"
 import { formatDuration } from "./colors.js"
 import { extractContextualOptions, extractTrailingQuestion } from "./contextual-options.js"
 import { decideContinuation } from "./continuation.js"
@@ -21,7 +22,7 @@ import { loadFermentSilently, resumeFerment } from "./resume.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { scheduleFermentWakeUp } from "./scheduler.js"
 import { confirmPendingScope } from "./scoping-confirmation.js"
-import { clearActiveFermentId, getActiveFermentId, isRestoringModel, setRestoringModel } from "./state.js"
+import { clearActiveFermentId, getActiveFermentId } from "./state.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
 import {
 	applyFermentRuntimeToolProfile,
@@ -257,6 +258,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		runtime.clearAllScopingGates()
 		runtime.clearAllPendingScopes()
 		runtime.clearAllPendingPlanReviews()
+		runtime.clearAllPendingCompactions()
 		clearFermentCache()
 
 		const envId = getActiveFermentId()
@@ -394,24 +396,8 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		return {}
 	})
 
-	pi.on("model_select", async (event, ctx) => {
-		runtime.captureJudgeContext(ctx?.model, ctx?.modelRegistry)
-		const f = runtime.getActive()
-		if (!f || f.status !== "running") return
-		if (isRestoringModel()) return
-
-		if (event.previousModel) {
-			setRestoringModel(true)
-			pi.setModel(event.previousModel)
-				.catch(() => {})
-				.finally(() => {
-					setRestoringModel(false)
-				})
-		}
-		ctx.ui.notify(
-			`Model switching is locked while ferment "${f.name}" is running. Finish or abandon the ferment first.`,
-			"warning",
-		)
+	pi.on("model_select", (event, ctx) => {
+		runtime.captureJudgeContext(event.model, ctx?.modelRegistry)
 	})
 
 	pi.on("turn_end", async (event, ctx) => {
@@ -437,5 +423,10 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		const userInputHandled = await maybeRunUserInputDropdown(pi, ctx, content, f, runtime)
 		if (userInputHandled) return
 		if (!toolCallSeen) maybeInjectReactiveContinuationNudge(pi, runtime)
+
+		// Trigger compaction after any turn that completed a step or phase.
+		// Fires between turns in automated-continuation mode, so the next
+		// phase starts with a fresh compacted session.
+		maybeTriggerFermentCompaction(pi, ctx, runtime)
 	})
 }

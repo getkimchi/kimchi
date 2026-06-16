@@ -411,6 +411,14 @@ export default function telemetryExtension(config: TelemetryConfig) {
 			const e = event as { model?: { id?: string } }
 			ctx.currentModel = e.model?.id ?? "unknown"
 		})
+		pi.on("session_compact", async () => {
+			ctx.compactionCount++
+			ctx.emit("session.compacted", {
+				model: ctx.currentModel,
+				compaction_count: ctx.compactionCount,
+				turn_index: ctx.turnIndex,
+			})
+		})
 		pi.on("tool_execution_start", async (event) =>
 			handleToolExecutionStart(ctx, event as { toolCallId: string; toolName: string; args: unknown }),
 		)

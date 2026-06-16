@@ -1,7 +1,8 @@
 import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { Api, Model } from "@earendil-works/pi-ai"
+import type { ExtensionAPI, ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { registerFermentEvents } from "./events.js"
@@ -316,5 +317,27 @@ describe("registerFermentEvents", () => {
 			{ triggerTurn: false },
 		)
 		expect(ctx.ui.notify).toHaveBeenCalledWith('Plan saved for "Google OAuth Login". 1 phase(s) ready.')
+	})
+
+	it("model_select captures the newly-selected model in the judge context", () => {
+		const captureJudgeContext = vi.fn()
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			captureJudgeContext,
+		}
+		const { handlers, pi } = createPi()
+		registerFermentEvents(pi, runtime)
+
+		const handler = handlers.get("model_select")
+		if (!handler) throw new Error("model_select handler was not registered")
+
+		const newModel = { id: "new-model" } as unknown as Model<Api>
+		const previousModel = { id: "previous-model" } as unknown as Model<Api>
+		const modelRegistry = {} as ModelRegistry
+		const ctx = { modelRegistry }
+
+		handler({ model: newModel, previousModel }, ctx)
+
+		expect(captureJudgeContext).toHaveBeenCalledWith(newModel, modelRegistry)
 	})
 })
