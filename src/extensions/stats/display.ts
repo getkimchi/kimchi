@@ -45,8 +45,8 @@ export function formatAnalyticsSummary(data: GenerateAnalyticsResponse, theme: T
 		for (const item of data.tokens.items) {
 			if (item.models) {
 				for (const model of item.models) {
-					totalInput += model.inputTokens || 0
-					totalOutput += model.outputTokens || 0
+					totalInput += Number(model.inputTokens) || 0
+					totalOutput += Number(model.outputTokens) || 0
 				}
 			}
 		}

@@ -155,8 +155,8 @@ export function formatAnalyticsVisual(
 						inputCost: 0,
 						outputCost: 0,
 					}
-					stats.inputTokens += model.inputTokens || 0
-					stats.outputTokens += model.outputTokens || 0
+					stats.inputTokens += Number(model.inputTokens) || 0
+					stats.outputTokens += Number(model.outputTokens) || 0
 					modelStats.set(key, stats)
 				}
 			}
