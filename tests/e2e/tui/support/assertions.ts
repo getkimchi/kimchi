@@ -24,10 +24,16 @@ export async function waitForText(
 ): Promise<void> {
 	const { timeoutMs = 15_000, full = true } = options
 	const read = () => (full ? fullText(terminal) : viewText(terminal))
+	const matches = (text: string) => {
+		if (typeof pattern === "string") return text.includes(pattern)
+		// Reset lastIndex so a global/sticky regex doesn't skip matches across polls.
+		pattern.lastIndex = 0
+		return pattern.test(text)
+	}
 	const startedAt = Date.now()
 	let text = read()
 	while (Date.now() - startedAt < timeoutMs) {
-		if (typeof pattern === "string" ? text.includes(pattern) : pattern.test(text)) return
+		if (matches(text)) return
 		await new Promise((resolve) => setTimeout(resolve, 100))
 		text = read()
 	}

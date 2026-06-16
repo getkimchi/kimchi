@@ -23,21 +23,17 @@ if (process.argv[2] === "replay") {
 const debugEnabled = process.argv.includes("--debug")
 const args = process.argv.slice(2).filter((arg) => arg !== "--debug")
 const traceEnabled = args.includes("--trace") || args.includes("-t")
+const env = {
+	...process.env,
+	KIMCHI_REPO_ROOT: repoRoot,
+	...(debugEnabled ? { KIMCHI_TUI_E2E_DEBUG: "1" } : {}),
+}
 
-// With no explicit test filter, exclude quarantined tests (see skip-list.js) so CI
-// stays green. Naming a test explicitly still runs it, even if quarantined.
+// With an explicit test filter, run it as-is (even if quarantined). With no filter,
+// run every non-quarantined test — one tui-test invocation per file, because a single
+// filter matching multiple files only runs one of them.
 const hasTestFilter = args.some((arg) => !arg.startsWith("-"))
-const runArgs = hasTestFilter ? args : [...args, ...testsToRun()]
-
-const result = spawnSync(tuiTest, runArgs, {
-	cwd: tuiCwd,
-	stdio: "inherit",
-	env: {
-		...process.env,
-		KIMCHI_REPO_ROOT: repoRoot,
-		...(debugEnabled ? { KIMCHI_TUI_E2E_DEBUG: "1" } : {}),
-	},
-})
+const status = hasTestFilter ? runTui(args) : runEach(testsToRun())
 
 if (traceEnabled) {
 	// --trace writes zipped recordings silently; point at them and how to replay.
@@ -51,12 +47,27 @@ if (debugEnabled) {
 	process.stderr.write(`[tui-e2e] readable artifacts written to ${resolve(repoRoot, "*.tui-e2e.log")}\n`)
 }
 
-if (result.error) {
-	console.error(result.error)
-	process.exit(1)
+process.exit(status)
+
+/** Run tui-test once; exit immediately on spawn error, else return its exit status. */
+function runTui(runArgs) {
+	const result = spawnSync(tuiTest, runArgs, { cwd: tuiCwd, stdio: "inherit", env })
+	if (result.error) {
+		console.error(result.error)
+		process.exit(1)
+	}
+	return result.status ?? 1
 }
 
-process.exit(result.status ?? 1)
+/** Run each test file in its own invocation; non-zero if any fails. */
+function runEach(stems) {
+	let status = 0
+	for (const stem of stems) {
+		const code = runTui([...args, stem])
+		if (code !== 0) status = code
+	}
+	return status
+}
 
 /** Test stems to run: every *.test.ts minus the quarantined ones. Exits early if
  *  everything is quarantined (otherwise an empty filter would run all tests). */

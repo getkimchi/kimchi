@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
+import { fileURLToPath } from "node:url"
 import { Shell } from "@microsoft/tui-test"
 import type { Terminal } from "@microsoft/tui-test/lib/terminal/term.js"
 import { STARTUP_TIMEOUT_MS, fullText, viewText, waitForText } from "./assertions.js"
@@ -20,7 +21,11 @@ export const TUI_TEST_CONFIG = { shell: Shell.Bash, rows: 40, columns: 120 } as 
 /** Prompt shown once the TUI is ready for input. */
 export const PROMPT_READY = "ask anything or type / for commands"
 
-const REPO_ROOT = resolve(process.env.KIMCHI_REPO_ROOT ?? "../../..")
+// Prefer the env set by run-tui-e2e.js; otherwise derive from this file's location
+// (tests/e2e/tui/support/ -> repo root) so the path is stable regardless of cwd.
+const REPO_ROOT = process.env.KIMCHI_REPO_ROOT
+	? resolve(process.env.KIMCHI_REPO_ROOT)
+	: fileURLToPath(new URL("../../../../", import.meta.url))
 const TUI_ARTIFACT_RUN_ID = `${new Date().toISOString().replace(/[:.]/g, "-")}-${process.pid}`
 /** `--debug` (run-tui-e2e.js) writes a readable artifact for every run, not just failures. */
 const DEBUG_ARTIFACTS = process.env.KIMCHI_TUI_E2E_DEBUG === "1"
@@ -60,39 +65,47 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 	const fake = await startFakeOpenAiServer(options)
 	const homeDir = mkdtempSync(join(tmpdir(), "kimchi-tui-home-"))
 	const workDir = mkdtempSync(join(tmpdir(), "kimchi-tui-work-"))
-	if (options.gitInit) execFileSync("git", ["init", "-q"], { cwd: workDir })
-	const configDir = join(homeDir, ".config", "kimchi")
-	const agentDir = join(configDir, "harness")
-	mkdirSync(agentDir, { recursive: true })
+	// If any setup step throws, tear down the server and temp dirs so nothing leaks.
+	try {
+		if (options.gitInit) execFileSync("git", ["init", "-q"], { cwd: workDir })
+		const configDir = join(homeDir, ".config", "kimchi")
+		const agentDir = join(configDir, "harness")
+		mkdirSync(agentDir, { recursive: true })
 
-	writeFileSync(
-		join(configDir, "config.json"),
-		JSON.stringify(
-			{
-				apiKey: "fake",
-				llmEndpoint: fake.baseUrl,
-				skillPaths: [],
-				migrationState: "done",
-				onboarding: { hideSessionModeDialog: true },
+		writeFileSync(
+			join(configDir, "config.json"),
+			JSON.stringify(
+				{
+					apiKey: "fake",
+					llmEndpoint: fake.baseUrl,
+					skillPaths: [],
+					migrationState: "done",
+					onboarding: { hideSessionModeDialog: true },
+				},
+				null,
+				"\t",
+			),
+			"utf-8",
+		)
+
+		writeModelsConfig(join(agentDir, "models.json"), fake.baseUrl, options.models)
+
+		return {
+			homeDir,
+			workDir,
+			agentDir,
+			fake,
+			async stop() {
+				await fake.stop()
+				rmSync(homeDir, { recursive: true, force: true })
+				rmSync(workDir, { recursive: true, force: true })
 			},
-			null,
-			"\t",
-		),
-		"utf-8",
-	)
-
-	writeModelsConfig(join(agentDir, "models.json"), fake.baseUrl, options.models)
-
-	return {
-		homeDir,
-		workDir,
-		agentDir,
-		fake,
-		async stop() {
-			await fake.stop()
-			rmSync(homeDir, { recursive: true, force: true })
-			rmSync(workDir, { recursive: true, force: true })
-		},
+		}
+	} catch (error) {
+		await fake.stop().catch(() => {})
+		rmSync(homeDir, { recursive: true, force: true })
+		rmSync(workDir, { recursive: true, force: true })
+		throw error
 	}
 }
 
@@ -146,15 +159,35 @@ export async function runKimchiSession(
 		await body(fixture, trace)
 		trace.step("scenario body completed")
 	} catch (error) {
-		await writeTuiArtifact({ name: artifactName, outcome: "fail", terminal, fixture, steps, error })
+		// Mark written first so a throw inside writeTuiArtifact can't make `finally`
+		// emit a misleading "pass" artifact, and never let it mask the original error.
 		artifactWritten = true
+		try {
+			await writeTuiArtifact({ name: artifactName, outcome: "fail", terminal, fixture, steps, error })
+		} catch (writeError) {
+			process.stderr.write(`[tui-e2e] failed to write fail artifact: ${String(writeError)}\n`)
+		}
 		throw error
 	} finally {
 		if (DEBUG_ARTIFACTS && !artifactWritten) {
-			await writeTuiArtifact({ name: artifactName, outcome: "pass", terminal, fixture, steps })
+			try {
+				await writeTuiArtifact({ name: artifactName, outcome: "pass", terminal, fixture, steps })
+			} catch (writeError) {
+				process.stderr.write(`[tui-e2e] failed to write pass artifact: ${String(writeError)}\n`)
+			}
 		}
-		await stopKimchi(terminal)
-		await fixture.stop()
+		// Both teardown steps must run even if one throws, so neither leaks the
+		// fake server nor the temp dirs.
+		try {
+			await stopKimchi(terminal)
+		} catch (stopError) {
+			process.stderr.write(`[tui-e2e] stopKimchi failed: ${String(stopError)}\n`)
+		}
+		try {
+			await fixture.stop()
+		} catch (stopError) {
+			process.stderr.write(`[tui-e2e] fixture.stop failed: ${String(stopError)}\n`)
+		}
 	}
 }
 

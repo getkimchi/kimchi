@@ -23,9 +23,12 @@ jobs:
           node-version: "22"
           cache: pnpm
 
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25.1"
+          go-version-file: tools/proxy-helper/go.mod
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -43,6 +46,5 @@ jobs:
           name: tui-e2e-artifacts
           path: |
             *.tui-e2e.log
-            *.tui-e2e.txt
             **/tui-traces/**
           if-no-files-found: ignore
