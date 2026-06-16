@@ -8,17 +8,35 @@ A coding agent CLI powered by [kimchi](https://kimchi.dev/). Built on the [pi-mo
 
 Install the latest release:
 
-**Homebrew (macOS / Linux):**
+### Homebrew (macOS / Linux)
 
 ```bash
 brew install getkimchi/tap/kimchi
 ```
 
-**Install script:**
+### Install script (macOS / Linux)
 
 ```bash
 curl -fsSL https://github.com/getkimchi/kimchi/releases/latest/download/install.sh | bash
 ```
+
+### PowerShell installer (Windows x64)
+
+```powershell
+irm https://github.com/getkimchi/kimchi/releases/latest/download/install.ps1 | iex
+```
+
+### Manual download
+
+Download the appropriate release package from:
+
+https://github.com/getkimchi/kimchi/releases/latest
+
+- macOS Intel → `kimchi_darwin_amd64.tar.gz`
+- macOS Apple Silicon → `kimchi_darwin_arm64.tar.gz`
+- Linux x64 → `kimchi_linux_amd64.tar.gz`
+- Linux ARM64 → `kimchi_linux_arm64.tar.gz`
+- Windows x64 → `kimchi_windows_amd64.zip`
 
 Then configure your API key and launch:
 
@@ -292,29 +310,6 @@ Kimchi stores its configuration (settings, sessions, models) under:
 ```
 ~/.config/kimchi/harness/
 ```
-
-### Context files
-
-You can provide custom instructions that are injected into the system prompt on every session. Kimchi discovers two kinds of context files:
-
-**Global** — applied to every session, regardless of project:
-
-```
-~/.config/kimchi/harness/AGENTS.md
-```
-
-Place rules that apply everywhere (e.g., your name, code style preferences, or global tool defaults) in this file. It is loaded before any project-level files.
-
-**Project-level** — applied when working in a specific directory tree. Kimchi walks from the working directory up to the filesystem root and collects one context file per directory:
-
-```
-AGENTS.md
-CLAUDE.md
-```
-
-Per directory, `AGENTS.md` takes priority over `CLAUDE.md`. A `.local.md` variant (e.g. `AGENTS.local.md`) is appended to its primary file for user-specific, gitignored overrides.
-
-When both global and project files exist, global instructions appear first in the prompt, followed by ancestor directories, and finally the working directory. This means project-level rules can refine or override global ones.
 
 ### Packages
 
