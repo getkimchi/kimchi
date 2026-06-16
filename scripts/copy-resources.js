@@ -87,7 +87,7 @@ if (!isDev) {
 	cpSync(oauthSrc, oauthDest, { recursive: true })
 
 	// Copy proxy-helper binary built by tools/proxy-helper/Makefile
-	const buildTarget = process.env.BUILD_TARGET
+	const buildTarget = process.argv[2]
 
 	const proxyHelperName =
 		buildTarget?.startsWith("windows") || platform() === "win32" ? "proxy-helper.exe" : "proxy-helper"

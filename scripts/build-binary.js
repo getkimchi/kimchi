@@ -67,4 +67,4 @@ if (platform() === "darwin" && isDarwinTarget) {
 	run("codesign (ad-hoc)", `codesign -s - dist/bin/${exeName}`)
 }
 
-run("copy resources", `BUILD_TARGET=${targetArg ?? ""} node scripts/copy-resources.js`)
+run("copy resources", `node scripts/copy-resources.js ${targetArg ?? ""}`)
