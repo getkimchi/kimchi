@@ -70,6 +70,16 @@ describe("resource definitions", () => {
 			restartRequired: true,
 		})
 	})
+
+	it("registers bash-tool-guard as a toggleable extension", () => {
+		const resources = getResourceDefinitions()
+		expect(resources.find((resource) => resource.id === "extensions.bash-tool-guard")).toMatchObject({
+			kind: "extensions",
+			label: "Bash-tool guard",
+			defaultEnabled: true,
+			restartRequired: true,
+		})
+	})
 })
 
 function writeJson(path: string, data: unknown): void {
