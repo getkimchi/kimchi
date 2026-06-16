@@ -17,7 +17,7 @@ describe("verifyApiKey", () => {
 
 		expect(orgId).toBe("org-42")
 		expect(mockFetch).toHaveBeenCalledTimes(1)
-		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/ai-optimizer/v1beta/api-keys:verify`)
+		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/ai-optimizer/v1beta/workspace-tokens:verifyKey`)
 		expect(mockFetch.mock.calls[0][1]).toMatchObject({
 			method: "POST",
 			headers: expect.objectContaining({
