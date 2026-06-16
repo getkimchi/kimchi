@@ -20,6 +20,7 @@ workflow:
 stages:
   - benchmark
   - postprocess
+  - notify
 
 .gcloud-setup:
   script:
@@ -261,4 +262,62 @@ terminal-bench-2-summary:
     expire_in: 30 days
     name: "terminal-bench-2-summary-$CI_COMMIT_REF_SLUG-$CI_PIPELINE_ID"
     paths:
+      - .benchmark/run-metadata.json
       - .benchmark/summary.json
+
+terminal-bench-2-apa-notify:
+  stage: notify
+  image: mirror.gcr.io/library/alpine:3.22
+  needs:
+    - job: terminal-bench-2-summary
+      artifacts: true
+  tags:
+    - runner::dind
+  variables:
+    APA_API_URL: "https://api.cast.ai"
+  before_script:
+    - |
+      set -euo pipefail
+      apk add --no-cache curl jq
+  script:
+    - |
+      set -euo pipefail
+
+      : "${APA_API_KEY:?APA_API_KEY CI/CD variable is required}"
+      : "${BENCHMARK_GCS_BUCKET:?BENCHMARK_GCS_BUCKET CI/CD variable is required}"
+
+      metadata_path=".benchmark/run-metadata.json"
+      summary_path=".benchmark/summary.json"
+      test -f "$metadata_path"
+      test -f "$summary_path"
+
+      gcs_prefix="$(jq -r '.gcs.prefix // empty' "$metadata_path")"
+      if [ -z "$gcs_prefix" ]; then
+        echo "No GCS prefix found in benchmark run metadata." >&2
+        exit 1
+      fi
+
+      artifact_uri="gs://${BENCHMARK_GCS_BUCKET}/${gcs_prefix}/summary.json"
+      endpoint="${APA_API_URL%/}/application-automation/v1alpha/benchmarks/terminal-bench-2/runs:import"
+      payload="$(mktemp)"
+      response_body="$(mktemp)"
+      jq -n --arg artifactUri "$artifact_uri" '{artifactUri: $artifactUri}' > "$payload"
+
+      echo "POST $endpoint"
+      echo "artifactUri=$artifact_uri"
+
+      http_status="$(
+        curl -sS -o "$response_body" -w "%{http_code}" \
+          -X POST "$endpoint" \
+          -H "Content-Type: application/json" \
+          -H "X-API-Key: ${APA_API_KEY}" \
+          --data-binary @"$payload"
+      )"
+
+      echo "HTTP $http_status"
+      cat "$response_body"
+      echo
+
+      if [ "$http_status" -lt 200 ] || [ "$http_status" -ge 300 ]; then
+        exit 1
+      fi
