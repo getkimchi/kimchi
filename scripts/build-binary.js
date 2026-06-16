@@ -15,7 +15,6 @@ const TARGET_MAP = {
 	"linux-arm64": "bun-linux-arm64",
 	"linux-x64": "bun-linux-x64",
 	"windows-x64": "bun-windows-x64",
-	"windows-arm64": "bun-windows-arm64",
 }
 
 const targetArg =
@@ -61,7 +60,7 @@ run(
 // Bun --compile produces binaries with an invalid code signature on macOS.
 // The kernel kills badly-signed arm64 binaries immediately (SIGKILL, exit 137).
 // Strip the corrupt signature and re-sign ad-hoc. See: https://github.com/oven-sh/bun/issues/7208
-if (!isCrossCompile && platform() === "darwin") {
+if (platform() === "darwin") {
 	run("codesign (strip)", `codesign --remove-signature dist/bin/${exeName}`)
 	run("codesign (ad-hoc)", `codesign -s - dist/bin/${exeName}`)
 }
