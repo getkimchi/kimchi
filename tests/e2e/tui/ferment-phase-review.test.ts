@@ -4,13 +4,8 @@ import { TUI_TEST_CONFIG, runKimchiSession } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
-// Drives the ferment scoping flow to the "Review the proposed phases" picker to
-// prove the separator line ("─────") is selectable/navigable (bug report).
-//
-// Marked `test.fail`: the separator IS currently focusable, so the assertion below
-// times out and the test "fails" — which tui-test counts as the EXPECTED outcome, so
-// CI stays green. When the bug is fixed (Down skips the separator), this test will
-// pass unexpectedly and tui-test will flag it — that's the signal to drop `.fail`.
+// Bug repro: the phase-review separator is focusable. `test.fail` => expected fail (CI green);
+// when fixed it passes unexpectedly and tui-test flags it — the signal to drop `.fail`.
 test.fail("ferment phase-review separator is not selectable", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
@@ -18,7 +13,7 @@ test.fail("ferment phase-review separator is not selectable", async ({ terminal 
 			artifactName: "ferment-phase-review",
 			gitInit: true,
 			responses: [
-				// Turn triggered by the scoping nudge: model proposes scoping.
+				// Scoping nudge -> model proposes scoping.
 				{
 					toolCalls: [
 						{
@@ -42,16 +37,13 @@ test.fail("ferment phase-review separator is not selectable", async ({ terminal 
 						},
 					],
 				},
-				// Follow-up message after the tool result: a question ending in "?" so the
-				// host renders the draft-confirmation dropdown at turn_end.
+				// Question ending in "?" -> host renders the draft-confirm dropdown at turn_end.
 				{ stream: ["Here is the proposed plan. Does this look right?"] },
 			],
 		},
 		async (_fixture, trace) => {
-			// Stage 1: enter ferment mode -> intent prompt. Type the command and confirm
-			// it is in the editor before pressing Enter — submitting "/ferment\r" in one
-			// shot can race startup and be handled before the slash command registers,
-			// which skips the intent prompt entirely.
+			// Stage 1: enter ferment. Type then Enter separately — one-shot "/ferment\r" can
+			// race startup and skip the intent prompt.
 			terminal.write("/ferment")
 			await waitForText(terminal, "/ferment", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("typed /ferment")
@@ -74,10 +66,8 @@ test.fail("ferment phase-review separator is not selectable", async ({ terminal 
 			trace.step("phase-review picker visible")
 
 			// Stage 4 (the bug): items are [phase, ─────, + Add phase, ✓ Confirm, ✗ Cancel].
-			// The focused row is marked with "→". Pressing Down once from the phase should
-			// move focus to "+ Add phase" — a separator must be skipped, not focusable.
-			// With the bug, "→" lands on the divider line and never reaches "+ Add phase",
-			// so this wait times out (and the final frame shows "→" parked on the marker).
+			// Down once from the phase should focus "+ Add phase" ("→" marks focus); with the
+			// bug "→" parks on the divider, so this wait times out.
 			terminal.keyDown()
 			trace.step("pressed down once from the first phase")
 			await waitForText(terminal, /→\s*\+ Add phase/, { timeoutMs: INPUT_TIMEOUT_MS })

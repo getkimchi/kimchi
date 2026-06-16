@@ -21,8 +21,7 @@ export const TUI_TEST_CONFIG = { shell: Shell.Bash, rows: 40, columns: 120 } as 
 /** Prompt shown once the TUI is ready for input. */
 export const PROMPT_READY = "ask anything or type / for commands"
 
-// Prefer the env set by run-tui-e2e.js; otherwise derive from this file's location
-// (tests/e2e/tui/support/ -> repo root) so the path is stable regardless of cwd.
+// Env from run-tui-e2e.js, else derive from file location (stable regardless of cwd).
 const REPO_ROOT = process.env.KIMCHI_REPO_ROOT
 	? resolve(process.env.KIMCHI_REPO_ROOT)
 	: fileURLToPath(new URL("../../../../", import.meta.url))
@@ -57,7 +56,7 @@ interface TuiStepSnapshot {
 interface CreateKimchiFixtureOptions {
 	models?: FakeModel[]
 	responses: FakeResponseScript[]
-	/** Run `git init` in the work dir so flows that check for a repo (e.g. ferment) don't prompt to initialize one. */
+	/** `git init` the work dir so repo-checking flows (e.g. ferment) don't prompt to init one. */
 	gitInit?: boolean
 }
 
@@ -65,7 +64,7 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 	const fake = await startFakeOpenAiServer(options)
 	const homeDir = mkdtempSync(join(tmpdir(), "kimchi-tui-home-"))
 	const workDir = mkdtempSync(join(tmpdir(), "kimchi-tui-work-"))
-	// If any setup step throws, tear down the server and temp dirs so nothing leaks.
+	// Tear down server + temp dirs if any setup step throws.
 	try {
 		if (options.gitInit) execFileSync("git", ["init", "-q"], { cwd: workDir })
 		const configDir = join(homeDir, ".config", "kimchi")
@@ -132,11 +131,7 @@ export async function stopKimchi(terminal: Terminal): Promise<void> {
 	if (!result) terminal.kill()
 }
 
-/**
- * Run a TUI session end-to-end: create the fixture, launch kimchi, wait for the
- * ready prompt, run `body`, and always tear down — dumping the terminal to an
- * artifact if anything throws. Tests only supply their assertions.
- */
+/** Create fixture, launch kimchi, wait for ready, run `body`, always tear down (artifact on throw). */
 export async function runKimchiSession(
 	terminal: Terminal,
 	options: CreateKimchiFixtureOptions & { artifactName: string },
@@ -159,8 +154,7 @@ export async function runKimchiSession(
 		await body(fixture, trace)
 		trace.step("scenario body completed")
 	} catch (error) {
-		// Mark written first so a throw inside writeTuiArtifact can't make `finally`
-		// emit a misleading "pass" artifact, and never let it mask the original error.
+		// Set first so a throw in writeTuiArtifact can't trigger a "pass" artifact or mask the error.
 		artifactWritten = true
 		try {
 			await writeTuiArtifact({ name: artifactName, outcome: "fail", terminal, fixture, steps, error })
@@ -176,8 +170,7 @@ export async function runKimchiSession(
 				process.stderr.write(`[tui-e2e] failed to write pass artifact: ${String(writeError)}\n`)
 			}
 		}
-		// Both teardown steps must run even if one throws, so neither leaks the
-		// fake server nor the temp dirs.
+		// Run both teardowns even if one throws.
 		try {
 			await stopKimchi(terminal)
 		} catch (stopError) {

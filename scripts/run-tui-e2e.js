@@ -10,16 +10,12 @@ const tuiCwd = resolve(repoRoot, "tests/e2e/tui")
 const traceFolder = resolve(tuiCwd, "tui-traces")
 const tuiTest = resolve(repoRoot, "node_modules/.bin/tui-test")
 
-// `replay [file]` plays back a recorded --trace file in the alternate screen.
-// Frames are re-spaced at a fixed step (default 150ms) so the playback is watchable;
-// the native recorded-speed viewer finishes in ~1s for these tests. Override the step
-// with `--slow <ms>`. No scrollback (alt screen) — for scrollable history use --debug.
+// `replay [file] [--slow <ms>]` plays back a recorded --trace file (alt screen, no scrollback).
 if (process.argv[2] === "replay") {
 	await replayTrace(process.argv[3])
 }
 
-// --debug is ours (readable .tui-e2e.log artifacts); strip it before forwarding to
-// tui-test, which would reject the unknown flag. --trace is a native tui-test flag.
+// --debug is ours (readable .tui-e2e.log artifacts); strip before forwarding. --trace is native.
 const debugEnabled = process.argv.includes("--debug")
 const args = process.argv.slice(2).filter((arg) => arg !== "--debug")
 const traceEnabled = args.includes("--trace") || args.includes("-t")
@@ -30,27 +26,22 @@ const env = {
 	...(debugEnabled ? { KIMCHI_TUI_E2E_DEBUG: "1" } : {}),
 }
 
-// With an explicit test filter, run it as-is (even if quarantined). With no filter,
-// run every non-quarantined test — one tui-test invocation per file, because a single
-// filter matching multiple files only runs one of them.
+// No filter: run each non-quarantined file separately (one filter matching many files runs only one).
 const hasTestFilter = args.some((arg) => !arg.startsWith("-"))
 const status = hasTestFilter ? runTui(args) : runEach(testsToRun())
 
 if (traceEnabled) {
-	// --trace writes zipped recordings silently; point at them and how to replay.
 	process.stderr.write(`[tui-e2e] traces written to ${traceFolder}\n`)
 	process.stderr.write("[tui-e2e] replay (live, not scrollable): pnpm test:e2e:tui:trace:replay <name>\n")
 	process.stderr.write("[tui-e2e] scrollable history: pnpm test:e2e:tui:debug -> *.tui-e2e.log\n")
 }
 
 if (debugEnabled) {
-	// Readable, editor-openable text artifact (full terminal buffer + step snapshots).
 	process.stderr.write(`[tui-e2e] readable artifacts written to ${resolve(repoRoot, "*.tui-e2e.log")}\n`)
 }
 
 process.exit(status)
 
-/** Run tui-test once; exit immediately on spawn error, else return its exit status. */
 function runTui(runArgs) {
 	const result = spawnSync(tuiTest, runArgs, { cwd: tuiCwd, stdio: "inherit", env })
 	if (result.error) {
@@ -60,7 +51,6 @@ function runTui(runArgs) {
 	return result.status ?? 1
 }
 
-/** Run each test file in its own invocation; non-zero if any fails. */
 function runEach(stems) {
 	let status = 0
 	for (const stem of stems) {
@@ -70,8 +60,7 @@ function runEach(stems) {
 	return status
 }
 
-/** Test stems to run: every *.test.ts minus the quarantined ones. Exits early if
- *  everything is quarantined (otherwise an empty filter would run all tests). */
+// Every *.test.ts minus quarantined ones; exits 0 if all are quarantined.
 function testsToRun() {
 	const skipped = new Set(SKIPPED_TUI_TESTS.map((s) => s.test))
 	for (const s of SKIPPED_TUI_TESTS) process.stderr.write(`[tui-e2e] SKIP ${s.test} — ${s.reason}\n`)
@@ -92,9 +81,7 @@ function listTraces() {
 	return readdirSync(traceFolder).sort()
 }
 
-/** Resolve a trace argument, accepting an exact path (absolute, relative, or
- *  relative to tui-traces/) or a case-insensitive substring of a trace name.
- *  Returns { path } on a unique hit, { matches } when a substring is ambiguous. */
+// Resolve a trace arg: exact path or case-insensitive name substring. { path } | { matches } | {}.
 function matchTrace(file) {
 	const exact = [
 		isAbsolute(file) ? file : resolve(process.cwd(), file),
@@ -131,8 +118,7 @@ async function replayTrace(file) {
 	process.exit(file ? 1 : 0)
 }
 
-/** Inter-frame delay (ms) for replay. Defaults to 150ms; override with
- *  `--slow <ms>` or `--slow=<ms>`. */
+// Inter-frame delay (ms): default 150; `--slow <ms>` or `--slow=<ms>` overrides.
 function parseStepMs(argv) {
 	const DEFAULT_MS = 150
 	const i = argv.indexOf("--slow")
@@ -146,8 +132,7 @@ function parseStepMs(argv) {
 	return Number.isFinite(v) && v > 0 ? v : DEFAULT_MS
 }
 
-/** Replay: re-emit the recorded ANSI frames spaced by a fixed step so the playback
- *  is watchable. Uses the alternate screen (no scrollback). */
+// Re-emit recorded ANSI frames spaced by stepMs, in the alternate screen.
 async function playTraceSlow(path, stepMs) {
 	const trace = JSON.parse(inflateSync(readFileSync(path)).toString("utf-8"))
 	const frames = (trace.tracePoints ?? []).filter((p) => typeof p.data === "string" && p.data !== "")

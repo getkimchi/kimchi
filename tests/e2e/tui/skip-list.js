@@ -1,16 +1,5 @@
-/**
- * Quarantined TUI e2e tests.
- *
- * Tests listed here are known-failing (usually a test written before its bug is
- * fixed) and are EXCLUDED from default runs so CI stays green. They remain in the
- * tree and still run when named explicitly, e.g.:
- *
- *   pnpm test:e2e:tui ferment-phase-review
- *
- * To quarantine a test: add `{ test, reason }` below (`test` = file name without
- * `.test.ts`). Once the underlying bug is fixed, delete the entry so it gates CI again.
- */
-
+// Quarantined TUI e2e tests: excluded from default runs (still run when named explicitly).
+// Add `{ test, reason }` (`test` = file name without `.test.ts`); remove once fixed.
 /** @type {{ test: string; reason: string }[]} */
 export const SKIPPED_TUI_TESTS = [
 	// {

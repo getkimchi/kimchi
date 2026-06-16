@@ -221,9 +221,7 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 		}
 	}
 
-	// Some tools (e.g. ferment's propose_ferment_scoping) require a runtime-generated
-	// id the host embedded in the request. Let scripts use a `__FERMENT_ID__` token in
-	// tool arguments; substitute the real id parsed from the request messages.
+	// Substitute the `__FERMENT_ID__` token in tool args with the real id from the request.
 	const fermentId = extractFermentId(body)
 	for (const toolCall of script.toolCalls ?? []) {
 		const fn = fermentId

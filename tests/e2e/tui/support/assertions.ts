@@ -1,6 +1,6 @@
 import type { Terminal } from "@microsoft/tui-test/lib/terminal/term.js"
 
-/** Named timeouts so each wait documents what it is waiting for and can be tuned in one place. */
+/** Named timeouts, tunable in one place. */
 export const STARTUP_TIMEOUT_MS = 10_000
 export const STREAM_TIMEOUT_MS = 15_000
 export const INPUT_TIMEOUT_MS = 5_000
