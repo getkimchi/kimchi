@@ -11,6 +11,7 @@
 //                                   so the compiled binary resolves assets from the shared data directory
 
 import { cpSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs"
+import { platform } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -86,10 +87,15 @@ if (!isDev) {
 	cpSync(oauthSrc, oauthDest, { recursive: true })
 
 	// Copy proxy-helper binary built by tools/proxy-helper/Makefile
-	const proxyHelperSrc = join(projectRoot, "tools", "proxy-helper", "bin", "proxy-helper")
+	const buildTarget = process.argv[2]
+
+	const proxyHelperName =
+		buildTarget?.startsWith("windows") || platform() === "win32" ? "proxy-helper.exe" : "proxy-helper"
+
+	const proxyHelperSrc = join(projectRoot, "tools", "proxy-helper", "bin", proxyHelperName)
 	const proxyHelperBinDest = join(projectRoot, "dist", "share", "kimchi", "bin")
 	mkdirSync(proxyHelperBinDest, { recursive: true })
-	cpSync(proxyHelperSrc, join(proxyHelperBinDest, "proxy-helper"))
+	cpSync(proxyHelperSrc, join(proxyHelperBinDest, proxyHelperName))
 
 	// teleport-proxy.js is invoked by `node` (spawned via ssh ProxyCommand), so it
 	// has to live on the real filesystem next to the binary's share assets — it

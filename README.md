@@ -8,17 +8,35 @@ A coding agent CLI powered by [kimchi](https://kimchi.dev/). Built on the [pi-mo
 
 Install the latest release:
 
-**Homebrew (macOS / Linux):**
+### Homebrew (macOS / Linux)
 
 ```bash
 brew install getkimchi/tap/kimchi
 ```
 
-**Install script:**
+### Install script (macOS / Linux)
 
 ```bash
 curl -fsSL https://github.com/getkimchi/kimchi/releases/latest/download/install.sh | bash
 ```
+
+### PowerShell installer (Windows x64)
+
+```powershell
+irm https://github.com/getkimchi/kimchi/releases/latest/download/install.ps1 | iex
+```
+
+### Manual download
+
+Download the appropriate release package from:
+
+https://github.com/getkimchi/kimchi/releases/latest
+
+- macOS Intel → `kimchi_darwin_amd64.tar.gz`
+- macOS Apple Silicon → `kimchi_darwin_arm64.tar.gz`
+- Linux x64 → `kimchi_linux_amd64.tar.gz`
+- Linux ARM64 → `kimchi_linux_arm64.tar.gz`
+- Windows x64 → `kimchi_windows_amd64.zip`
 
 Then configure your API key and launch:
 
