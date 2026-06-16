@@ -10,8 +10,11 @@ import { execSync } from "node:child_process"
 import { platform } from "node:os"
 
 const TARGET_MAP = {
+	"darwin-x64": "bun-darwin-x64",
+	"darwin-arm64": "bun-darwin-arm64",
 	"linux-arm64": "bun-linux-arm64",
 	"linux-x64": "bun-linux-x64",
+	"windows-x64": "bun-windows-x64",
 }
 
 const targetArg =
@@ -20,6 +23,8 @@ const targetArg =
 
 const crossTarget = targetArg ? (TARGET_MAP[targetArg] ?? targetArg) : undefined
 const isCrossCompile = !!crossTarget
+
+const exeName = platform() === "win32" || crossTarget?.includes("windows") ? "kimchi.exe" : "kimchi"
 
 function run(label, cmd) {
 	console.log(`\n→ ${label}`)
@@ -49,15 +54,15 @@ const targetFlag = crossTarget ? ` --target=${crossTarget}` : ""
 // extra env vars. Bun ignores the system store by default; --use-system-ca is additive.
 run(
 	"compile",
-	`bun build src/entry.ts --compile${targetFlag} --compile-exec-argv="--use-system-ca" --outfile dist/bin/kimchi --external chromium-bidi --external electron`.trim(),
+	`bun build src/entry.ts --compile${targetFlag} --compile-exec-argv="--use-system-ca" --outfile dist/bin/${exeName} --external chromium-bidi --external electron`.trim(),
 )
 
 // Bun --compile produces binaries with an invalid code signature on macOS.
 // The kernel kills badly-signed arm64 binaries immediately (SIGKILL, exit 137).
 // Strip the corrupt signature and re-sign ad-hoc. See: https://github.com/oven-sh/bun/issues/7208
-if (!isCrossCompile && platform() === "darwin") {
-	run("codesign (strip)", "codesign --remove-signature dist/bin/kimchi")
-	run("codesign (ad-hoc)", "codesign -s - dist/bin/kimchi")
+if (platform() === "darwin") {
+	run("codesign (strip)", `codesign --remove-signature dist/bin/${exeName}`)
+	run("codesign (ad-hoc)", `codesign -s - dist/bin/${exeName}`)
 }
 
 run("copy resources", "node scripts/copy-resources.js")
