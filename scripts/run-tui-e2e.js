@@ -10,11 +10,10 @@ const tuiCwd = resolve(repoRoot, "tests/e2e/tui")
 const traceFolder = resolve(tuiCwd, "tui-traces")
 const tuiTest = resolve(repoRoot, "node_modules/.bin/tui-test")
 
-// `replay [file]` opens tui-test's interactive viewer for a recorded --trace file.
-// The viewer uses the alternate screen buffer (no scrollback / scroll-to-top); for
-// scrollable history, read the readable .tui-e2e.log written by --debug instead.
-// Add `--slow [ms]` to re-space frames (the native viewer replays at recorded speed,
-// which for sub-second tests flashes by) — uses a custom player at a fixed step.
+// `replay [file]` plays back a recorded --trace file in the alternate screen.
+// Frames are re-spaced at a fixed step (default 150ms) so the playback is watchable;
+// the native recorded-speed viewer finishes in ~1s for these tests. Override the step
+// with `--slow <ms>`. No scrollback (alt screen) — for scrollable history use --debug.
 if (process.argv[2] === "replay") {
 	await replayTrace(process.argv[3])
 }
@@ -103,18 +102,13 @@ function matchTrace(file) {
 async function replayTrace(file) {
 	const result = file ? matchTrace(file) : {}
 	if (result.path) {
-		const slowMs = parseSlowMs(process.argv)
-		if (slowMs !== undefined) {
-			await playTraceSlow(result.path, slowMs)
-			return
-		}
-		const replay = spawnSync(tuiTest, ["show-trace", result.path], { cwd: tuiCwd, stdio: "inherit" })
-		process.exit(replay.error ? 1 : (replay.status ?? 0))
+		await playTraceSlow(result.path, parseStepMs(process.argv))
+		return
 	}
 
 	const traces = result.matches ?? listTraces()
 	process.stderr.write(
-		"[tui-e2e] usage: pnpm test:e2e:tui:trace:replay <trace-file> [--slow [ms]]  (name or substring)\n",
+		"[tui-e2e] usage: pnpm test:e2e:tui:trace:replay <trace-file> [--slow <ms>]  (name or substring)\n",
 	)
 	process.stderr.write(`[tui-e2e] traces live in ${traceFolder}\n`)
 	if (result.matches) process.stderr.write(`[tui-e2e] '${file}' is ambiguous — matched:\n`)
@@ -126,23 +120,23 @@ async function replayTrace(file) {
 	process.exit(file ? 1 : 0)
 }
 
-/** Inter-frame delay (ms) for slow replay, or undefined for native (recorded-speed)
- *  playback. `--slow` defaults to 150ms; `--slow 300` / `--slow=300` overrides. */
-function parseSlowMs(argv) {
+/** Inter-frame delay (ms) for replay. Defaults to 150ms; override with
+ *  `--slow <ms>` or `--slow=<ms>`. */
+function parseStepMs(argv) {
+	const DEFAULT_MS = 150
 	const i = argv.indexOf("--slow")
 	if (i === -1) {
 		const eq = argv.find((a) => a.startsWith("--slow="))
-		if (!eq) return undefined
+		if (!eq) return DEFAULT_MS
 		const v = Number(eq.slice("--slow=".length))
-		return Number.isFinite(v) && v > 0 ? v : 150
+		return Number.isFinite(v) && v > 0 ? v : DEFAULT_MS
 	}
 	const v = Number(argv[i + 1])
-	return Number.isFinite(v) && v > 0 ? v : 150
+	return Number.isFinite(v) && v > 0 ? v : DEFAULT_MS
 }
 
-/** Custom replay: re-emit the recorded ANSI frames spaced by a fixed step so the
- *  playback is watchable. The native viewer uses recorded timing, which for fast
- *  tests finishes in ~1s. Uses the alternate screen like the native viewer. */
+/** Replay: re-emit the recorded ANSI frames spaced by a fixed step so the playback
+ *  is watchable. Uses the alternate screen (no scrollback). */
 async function playTraceSlow(path, stepMs) {
 	const trace = JSON.parse(inflateSync(readFileSync(path)).toString("utf-8"))
 	const frames = (trace.tracePoints ?? []).filter((p) => typeof p.data === "string" && p.data !== "")
