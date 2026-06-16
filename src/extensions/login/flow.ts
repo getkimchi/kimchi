@@ -20,7 +20,7 @@ import {
 } from "../../models.js"
 
 export const KIMCHI_PROVIDER_ID = "kimchi-dev"
-export const KIMCHI_DEFAULT_MODEL_ID = "kimi-k2.6"
+export const KIMCHI_DEFAULT_MODEL_ID = "minimax-m3"
 export const KIMCHI_ACCOUNT_LABEL = "Use a Kimchi account"
 export const KIMCHI_API_KEY_LABEL = "Use a Kimchi API key"
 export const SUBSCRIPTION_LABEL = "Use a subscription"

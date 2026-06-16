@@ -89,7 +89,7 @@ index 21f0270f903b0461a2fa1ef8cb53ffdad4f5894d..041ead7eeddc216065864ac0725c3eb8
      opencode: "kimi-k2.6",
      "opencode-go": "kimi-k2.6",
      "kimi-coding": "kimi-for-coding",
-+    "kimchi-dev": "kimi-k2.6",
++    "kimchi-dev": "minimax-m3",
      "cloudflare-workers-ai": "@cf/moonshotai/kimi-k2.6",
      "cloudflare-ai-gateway": "workers-ai/@cf/moonshotai/kimi-k2.6",
      xiaomi: "mimo-v2.5-pro",
