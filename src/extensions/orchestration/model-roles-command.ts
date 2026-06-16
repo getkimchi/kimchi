@@ -10,10 +10,13 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { getAvailableModels } from "../../startup-context.js"
 import { setProcessOrchestratorRef } from "../kimchi-process.js"
 import { getMultiModelEnabled } from "../prompt-construction/prompt-enrichment.js"
+import { MODEL_CAPABILITIES } from "./model-registry/builtin-models.js"
 import {
+	type CustomModelConfig,
 	DEFAULT_MODEL_ROLES,
 	type ModelRoles,
 	type RoleModelAssignment,
+	extractCustomConfigs,
 	getModelRoles,
 	modelIdFromRef,
 	normalizeRoleModels,
@@ -56,6 +59,29 @@ export function formatRoleDisplay(role: keyof ModelRoles, value: RoleModelAssign
 	return `${info.label}: ${formatRoleAssignment(value)}${suffix}`
 }
 
+function hasBuiltinCapability(ref: string): boolean {
+	const id = modelIdFromRef(ref)
+	const entry = MODEL_CAPABILITIES.get(id)
+	return entry !== undefined && entry !== "ignored"
+}
+
+function formatMetadataSnippet(ref: string): string {
+	return `\n"modelRoles": {\n  "builder": [\n    "kimchi-dev/minimax-m2.7",\n    {\n      "model": "${ref}",\n      "tier": "heavy",\n      "description": "Describe this model's strengths...",\n      "vision": false\n    }\n  ]\n}\n`
+}
+
+function findModelRoleEntry(roles: ModelRoles, ref: string): { key: keyof ModelRoles; index: number } | undefined {
+	for (const key of ROLE_KEYS) {
+		const value = roles[key]
+		if (Array.isArray(value)) {
+			const idx = value.findIndex((item) => (typeof item === "string" ? item : item.model) === ref)
+			if (idx !== -1) return { key, index: idx }
+		} else if (typeof value === "string" && value === ref) {
+			return { key, index: 0 }
+		}
+	}
+	return undefined
+}
+
 export function registerModelRolesCommand(pi: ExtensionAPI): void {
 	pi.registerCommand("multi-model", {
 		description: "Configure model roles (orchestrator, planner, builder, reviewer, explorer, judge)",
@@ -66,6 +92,7 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 			}
 
 			const roles = { ...getModelRoles() }
+			const customConfigs = extractCustomConfigs(roles)
 
 			const apiModels = getAvailableModels()
 			const availableModelRefs = apiModels.map((m) => `kimchi-dev/${m.slug}`)
@@ -79,7 +106,11 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 			}
 
 			const showMainMenu = async (): Promise<void> => {
-				const options = [...ROLE_KEYS.map((key) => formatRoleDisplay(key, roles[key])), "Reset all to defaults"]
+				const options = [
+					...ROLE_KEYS.map((key) => formatRoleDisplay(key, roles[key])),
+					"Add metadata to a model...",
+					"Reset all to defaults",
+				]
 
 				const choice = await ctx.ui.select("Model Roles", options)
 				if (!choice) return
@@ -112,6 +143,12 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 							}
 						}
 					}
+					return
+				}
+
+				if (choice === "Add metadata to a model...") {
+					await showMetadataEditor()
+					await showMainMenu()
 					return
 				}
 
@@ -280,6 +317,111 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 					return
 				}
 				ctx.ui.notify(`${info.label} set to ${models.join(", ")}`, "info")
+				encourageMetadataIfNeeded(models)
+			}
+
+			const encourageMetadataIfNeeded = (models: string[]) => {
+				for (const ref of models) {
+					if (!hasBuiltinCapability(ref) && !customConfigs.has(ref)) {
+						ctx.ui.notify(
+							`Tip: ${ref} has no built-in metadata. Add tier/description in settings.json to help the orchestrator route tasks. ${formatMetadataSnippet(ref)}`,
+							"info",
+						)
+					}
+				}
+			}
+
+			const showMetadataEditor = async (): Promise<void> => {
+				// Collect all unique model refs across all roles
+				const seen = new Set<string>()
+				const modelOptions: string[] = []
+				for (const key of ROLE_KEYS) {
+					for (const ref of normalizeRoleModels(roles[key])) {
+						if (!seen.has(ref)) {
+							seen.add(ref)
+							const config = customConfigs.get(ref)
+							const annotation = config ? " (metadata ✓)" : ""
+							modelOptions.push(`${ref}${annotation}`)
+						}
+					}
+				}
+				if (modelOptions.length === 0) {
+					ctx.ui.notify("No models are currently configured.", "warning")
+					return
+				}
+				modelOptions.push("Back")
+
+				const choice = await ctx.ui.select("Choose a model to annotate", modelOptions)
+				if (!choice || choice === "Back") return
+
+				const ref = choice.replace(/\s*\(metadata.*\)$/, "")
+				const existing = customConfigs.get(ref)
+
+				// Tier
+				const tierChoice = await ctx.ui.select("Tier", [
+					"heavy",
+					"standard",
+					"light",
+					existing?.tier ? `keep current (${existing.tier})` : "skip",
+				])
+				if (!tierChoice) return
+				const tier = tierChoice.startsWith("keep current")
+					? existing?.tier
+					: tierChoice === "skip"
+						? undefined
+						: (tierChoice as "heavy" | "standard" | "light")
+
+				// Vision
+				const visionChoice = await ctx.ui.select("Vision support", [
+					"yes",
+					"no",
+					existing?.vision !== undefined ? `keep current (${existing.vision ? "yes" : "no"})` : "skip",
+				])
+				if (!visionChoice) return
+				const vision = visionChoice.startsWith("keep current")
+					? existing?.vision
+					: visionChoice === "skip"
+						? undefined
+						: visionChoice === "yes"
+
+				// Description
+				const descDefault = existing?.description ?? ""
+				const descInput = await ctx.ui.input("Description (optional):", descDefault)
+				const description = descInput?.trim() || existing?.description || undefined
+
+				// Build config object, omitting undefined fields
+				const config: CustomModelConfig = { model: ref }
+				if (tier !== undefined) config.tier = tier
+				if (vision !== undefined) config.vision = vision
+				if (description !== undefined) config.description = description
+
+				// Find the first role containing this model and convert to object
+				const location = findModelRoleEntry(roles, ref)
+				if (!location) {
+					ctx.ui.notify(`Could not find ${ref} in any role.`, "error")
+					return
+				}
+
+				const { key, index } = location
+				const value = roles[key]
+				if (Array.isArray(value)) {
+					const item = value[index]
+					if (typeof item === "string") {
+						value[index] = config
+					} else {
+						Object.assign(item, config)
+					}
+				} else if (typeof value === "string") {
+					;(roles as Record<string, RoleModelAssignment>)[key] = config
+				}
+
+				try {
+					saveModelRoles(roles)
+				} catch (err) {
+					ctx.ui.notify(`Failed to save model roles: ${err instanceof Error ? err.message : err}`, "error")
+					return
+				}
+				ctx.ui.notify(`Metadata saved for ${ref}.`, "info")
 			}
 
 			await showMainMenu()

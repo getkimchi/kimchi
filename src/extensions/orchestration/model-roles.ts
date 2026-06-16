@@ -10,7 +10,8 @@
  *   - judge: ferment verification and final grading calls
  *
  * Delegable roles (planner, builder, reviewer, explorer) accept either a
- * single model string or an array of candidates. When multiple models are
+ * single model string, an array of candidates, a CustomModelConfig object,
+ * or an array mixing strings and objects. When multiple models are
  * assigned, the orchestrator selects the best fit based on tier and task
  * complexity.
  *
@@ -40,9 +41,18 @@ import { dirname, join } from "node:path"
 
 import { MODEL_CAPABILITIES } from "./model-registry/builtin-models.js"
 import { KIMCHI_DEV_PROVIDER } from "./model-registry/model-registry.js"
+import type { ModelTier } from "./model-registry/types.js"
 
-/** Model assignment for a role: single model or ordered list of candidates. */
-export type RoleModelAssignment = string | string[]
+/** Custom metadata for a non-registry model assigned to a role. */
+export interface CustomModelConfig {
+	model: string
+	tier?: ModelTier
+	description?: string
+	vision?: boolean
+}
+
+/** Model assignment for a role: single model, ordered list of candidates, custom config, or mixed array. */
+export type RoleModelAssignment = string | CustomModelConfig | (string | CustomModelConfig)[]
 
 export interface ModelRoles {
 	/** Main model: runs the orchestrator loop, delegates work to other roles. */
@@ -103,7 +113,7 @@ export function buildDefaultModelRoles(): ModelRoles {
 
 	const orch = orchestrator ?? `${KIMCHI_DEV_PROVIDER}/kimi-k2.6`
 
-	const toAssignment = (arr: string[], fallback: string): string | string[] =>
+	const toAssignment = (arr: string[], fallback: string): RoleModelAssignment =>
 		arr.length === 1 ? arr[0] : arr.length > 0 ? arr : fallback
 
 	return {
@@ -126,24 +136,43 @@ export interface ModelRolesWarning {
 }
 
 /** Normalize a role value to an array of model refs. */
-export function normalizeRoleModels(value: RoleModelAssignment): string[] {
-	return Array.isArray(value) ? value : [value]
+export function normalizeRoleModels(value: RoleModelAssignment | (string | CustomModelConfig)[]): string[] {
+	if (Array.isArray(value)) {
+		return value.map((v) => (typeof v === "string" ? v : v.model))
+	}
+	if (typeof value === "string") return [value]
+	return [value.model]
+}
+
+function isValidCustomModelConfig(value: unknown): value is CustomModelConfig {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		typeof (value as { model?: string }).model === "string" &&
+		(value as { model: string }).model.trim().length > 0
+	)
 }
 
 function isValidRoleValue(value: unknown): value is string | string[] {
 	if (typeof value === "string" && value.trim().length > 0) return true
+	if (Array.isArray(value) && value.length > 0 && value.every((v) => typeof v === "string" && v.trim().length > 0))
+		return true
+	if (isValidCustomModelConfig(value)) return true
 	if (
 		Array.isArray(value) &&
 		value.length > 0 &&
-		value.every((v) => typeof v === "string" && (v as string).trim().length > 0)
+		value.every((v) => isValidCustomModelConfig(v) || (typeof v === "string" && v.trim().length > 0))
 	)
 		return true
 	return false
 }
 
-function trimRoleValue(value: string | string[]): string | string[] {
+function trimRoleValue(value: string | string[] | CustomModelConfig | CustomModelConfig[]): RoleModelAssignment {
 	if (typeof value === "string") return value.trim()
-	return value.map((v) => v.trim())
+	if (Array.isArray(value)) {
+		return value.map((v) => (typeof v === "string" ? v.trim() : { ...v, model: v.model.trim() }))
+	}
+	return { ...value, model: value.model.trim() }
 }
 
 /**
@@ -183,7 +212,7 @@ export function parseModelRoles(raw: unknown): { roles: ModelRoles; warnings: Mo
 				})
 				continue
 			}
-			roles[key] = trimRoleValue(value as string | string[])
+			roles[key] = trimRoleValue(value as string | string[] | CustomModelConfig | CustomModelConfig[])
 		}
 	}
 
@@ -210,9 +239,7 @@ export function resolveModelRoles(settingsPath?: string): { roles: ModelRoles; w
 
 function isEqualRoleValue(a: RoleModelAssignment, b: RoleModelAssignment): boolean {
 	if (typeof a === "string" && typeof b === "string") return a === b
-	const arrA = normalizeRoleModels(a)
-	const arrB = normalizeRoleModels(b)
-	return arrA.length === arrB.length && arrA.every((v, i) => v === arrB[i])
+	return JSON.stringify(a) === JSON.stringify(b)
 }
 
 /**
@@ -228,7 +255,7 @@ export function saveModelRoles(roles: ModelRoles, settingsPath?: string): void {
 		// absent or unreadable — start fresh
 	}
 
-	const rolesObj: Record<string, string | string[]> = {}
+	const rolesObj: Record<string, RoleModelAssignment> = {}
 	for (const key of ROLE_KEYS) {
 		if (!isEqualRoleValue(roles[key], DEFAULT_MODEL_ROLES[key])) {
 			rolesObj[key] = roles[key]
@@ -274,6 +301,20 @@ export function modelIdFromRef(ref: string): string {
 // ---------------------------------------------------------------------------
 // Validation against available models
 // ---------------------------------------------------------------------------
+
+export function extractCustomConfigs(roles: ModelRoles): ReadonlyMap<string, CustomModelConfig> {
+	const map = new Map<string, CustomModelConfig>()
+	for (const key of ROLE_KEYS) {
+		const value = roles[key]
+		const items = Array.isArray(value) ? value : [value]
+		for (const item of items) {
+			if (typeof item === "object" && item !== null) {
+				map.set(item.model, item)
+			}
+		}
+	}
+	return map
+}
 
 export interface ModelRoleValidationResult {
 	/** Roles whose configured model is not available in the API. */

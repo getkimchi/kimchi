@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import type { ModelMetadata } from "../../models.js"
 import { MODEL_CAPABILITIES, ModelRegistry } from "./model-registry/index.js"
+import type { CustomModelConfig } from "./model-roles.js"
 import { DEFAULT_MODEL_ROLES } from "./model-roles.js"
 import { resolveOrchestrationInstructions } from "./orchestration-instructions.js"
 
@@ -288,5 +289,106 @@ describe("resolveOrchestrationInstructions", () => {
 		expect(result).toContain("### Builder")
 		expect(result).toContain("minimax-m2.7")
 		expect(result).toContain("### Reviewer")
+	})
+})
+
+describe("resolveOrchestrationInstructions with custom configs", () => {
+	const registry = new ModelRegistry(ALL_KNOWN_METADATA)
+
+	it("shows external model with custom config in Your Team with tier and description", () => {
+		const customConfig: CustomModelConfig = {
+			model: "anthropic/external-model",
+			tier: "heavy",
+			description: "Anthropic's flagship external model.",
+			vision: false,
+		}
+		const customConfigs = new Map<string, CustomModelConfig>([["anthropic/external-model", customConfig]])
+		const result = resolveOrchestrationInstructions({
+			currentModelId: "kimi-k2.6",
+			registry,
+			mode: "orchestrator",
+			roles: {
+				orchestrator: "kimchi-dev/kimi-k2.6",
+				planner: "kimchi-dev/kimi-k2.6",
+				builder: "anthropic/external-model",
+				reviewer: "kimchi-dev/minimax-m2.7",
+				explorer: "kimchi-dev/nemotron-3-super-fp4",
+				judge: "kimchi-dev/kimi-k2.6",
+			},
+			customConfigs,
+		})
+		expect(result).toContain("anthropic/external-model")
+		expect(result).toContain("Tier: heavy")
+		expect(result).toContain("Anthropic's flagship external model.")
+	})
+
+	it("shows external orchestrator model with custom config in Your Capabilities", () => {
+		const customConfig: CustomModelConfig = {
+			model: "external-orchestrator",
+			tier: "heavy",
+			description: "External orchestrator model.",
+			vision: true,
+		}
+		const customConfigs = new Map<string, CustomModelConfig>([["external-orchestrator", customConfig]])
+		const result = resolveOrchestrationInstructions({
+			currentModelId: "external-orchestrator",
+			registry,
+			mode: "orchestrator",
+			roles: {
+				orchestrator: "external-orchestrator",
+				planner: "external-orchestrator",
+				builder: "kimchi-dev/minimax-m2.7",
+				reviewer: "kimchi-dev/minimax-m2.7",
+				explorer: "kimchi-dev/nemotron-3-super-fp4",
+				judge: "external-orchestrator",
+			},
+			customConfigs,
+		})
+		expect(result).toContain("Tier: heavy")
+		expect(result).toContain("Roles: plan, research, build, review")
+		expect(result).toContain("Vision: yes")
+		expect(result).toContain("External orchestrator model.")
+	})
+
+	it("external model without custom config falls back to generic text", () => {
+		const result = resolveOrchestrationInstructions({
+			currentModelId: "unknown-model",
+			registry,
+			mode: "orchestrator",
+			roles: {
+				orchestrator: "kimchi-dev/kimi-k2.6",
+				planner: "kimchi-dev/kimi-k2.6",
+				builder: "unknown-model",
+				reviewer: "kimchi-dev/minimax-m2.7",
+				explorer: "kimchi-dev/nemotron-3-super-fp4",
+				judge: "kimchi-dev/kimi-k2.6",
+			},
+		})
+		expect(result).toContain("unknown-model")
+		expect(result).not.toContain("Tier: undefined")
+		expect(result).not.toContain("description: undefined")
+	})
+
+	it("custom config with only model field renders without undefined tier/description", () => {
+		const customConfig: CustomModelConfig = { model: "bare-external/model" }
+		const customConfigs = new Map<string, CustomModelConfig>([["bare-external/model", customConfig]])
+		const result = resolveOrchestrationInstructions({
+			currentModelId: "kimi-k2.6",
+			registry,
+			mode: "orchestrator",
+			roles: {
+				orchestrator: "kimchi-dev/kimi-k2.6",
+				planner: "kimchi-dev/kimi-k2.6",
+				builder: "bare-external/model",
+				reviewer: "kimchi-dev/minimax-m2.7",
+				explorer: "kimchi-dev/nemotron-3-super-fp4",
+				judge: "kimchi-dev/kimi-k2.6",
+			},
+			customConfigs,
+		})
+		expect(result).toContain("bare-external/model")
+		expect(result).not.toContain("Tier: undefined")
+		expect(result).not.toContain("Vision: undefined")
+		expect(result).not.toContain("  undefined")
 	})
 })

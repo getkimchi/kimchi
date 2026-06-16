@@ -109,6 +109,35 @@ To give the orchestrator a choice between a cheap builder and a strong one, and 
 
 The orchestrator will use minimax for simple chunks and Claude for complex ones (based on the plan's complexity classification).
 
+#### Custom metadata for external models
+
+Models without a built-in capability entry (e.g., Anthropic or OpenAI models) can be annotated with custom metadata so the orchestrator sees their tier, roles, and description when making routing decisions. Provide an object instead of a plain string:
+
+```json
+{
+  "modelRoles": {
+    "planner": [
+      "kimchi-dev/kimi-k2.6",
+      {
+        "model": "anthropic/claude-opus-4-6",
+        "tier": "heavy",
+        "description": "Anthropic flagship — best for complex architectural planning and deep reasoning.",
+        "vision": false
+      }
+    ]
+  }
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `model` | **Yes** | Full model reference (`provider/model-id`). |
+| `tier` | No | `light`, `standard`, or `heavy`. Used for complexity-based routing. |
+| `description` | No | Shown to the orchestrator in the **Your Team** section. |
+| `vision` | No | `true` if the model supports image input. Shown in **Your Capabilities**. |
+
+If an external model is assigned without custom metadata, it still works — it simply appears in the prompt with no tier or description, and the orchestrator must infer its strengths from the model name alone.
+
 ### Phase tracking
 
 Kimchi tags every LLM request with a `phase:{name}` label for usage analytics and cost attribution. The orchestrator sets the phase as work progresses and it is displayed in the footer.

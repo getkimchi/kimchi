@@ -3,8 +3,10 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 import {
+	type CustomModelConfig,
 	DEFAULT_MODEL_ROLES,
 	type ModelRoles,
+	extractCustomConfigs,
 	modelIdFromRef,
 	normalizeRoleModels,
 	parseModelRoles,
@@ -339,5 +341,247 @@ describe("validateModelRoles", () => {
 		expect(result.unavailable.length).toBeGreaterThanOrEqual(5)
 		const flaggedRoles = new Set(result.unavailable.map((u) => u.role))
 		expect(flaggedRoles).toEqual(new Set(["orchestrator", "planner", "builder", "reviewer", "explorer", "judge"]))
+	})
+})
+
+describe("parseModelRoles with CustomModelConfig objects", () => {
+	it("accepts a single CustomModelConfig object for a delegable role", () => {
+		const custom: CustomModelConfig = {
+			model: "anthropic/claude-opus-4-6",
+			tier: "heavy",
+			description: "Anthropic's flagship model.",
+			vision: false,
+		}
+		const { roles, warnings } = parseModelRoles({ planner: custom })
+		expect(roles.planner).toEqual(custom)
+		expect(warnings).toHaveLength(0)
+	})
+
+	it("accepts a mixed array of strings and CustomModelConfig objects", () => {
+		const { roles, warnings } = parseModelRoles({
+			planner: [
+				"kimchi-dev/kimi-k2.6",
+				{
+					model: "anthropic/claude-opus-4-6",
+					tier: "heavy",
+					description: "Anthropic's flagship model.",
+				},
+			],
+		})
+		expect(Array.isArray(roles.planner)).toBe(true)
+		expect((roles.planner as (string | CustomModelConfig)[])[0]).toBe("kimchi-dev/kimi-k2.6")
+		expect(((roles.planner as (string | CustomModelConfig)[])[1] as CustomModelConfig).model).toBe(
+			"anthropic/claude-opus-4-6",
+		)
+		expect(warnings).toHaveLength(0)
+	})
+
+	it("accepts CustomModelConfig with only model field", () => {
+		const { roles, warnings } = parseModelRoles({
+			builder: { model: "anthropic/claude-sonnet-4-5" },
+		})
+		expect((roles.builder as CustomModelConfig).model).toBe("anthropic/claude-sonnet-4-5")
+		expect(warnings).toHaveLength(0)
+	})
+
+	it("warns on object with missing model field", () => {
+		const { roles, warnings } = parseModelRoles({
+			builder: { tier: "heavy" } as unknown as CustomModelConfig,
+		})
+		expect(roles.builder).toBe(DEFAULT_MODEL_ROLES.builder)
+		expect(warnings).toHaveLength(1)
+		expect(warnings[0].role).toBe("builder")
+	})
+
+	it("warns on object with empty model string", () => {
+		const { roles, warnings } = parseModelRoles({
+			builder: { model: "   " },
+		})
+		expect(roles.builder).toBe(DEFAULT_MODEL_ROLES.builder)
+		expect(warnings).toHaveLength(1)
+		expect(warnings[0].role).toBe("builder")
+	})
+
+	it("warns on array with invalid object entry", () => {
+		const { roles, warnings } = parseModelRoles({
+			planner: ["kimchi-dev/kimi-k2.6", { tier: "heavy" }],
+		})
+		expect(roles.planner).toBe(DEFAULT_MODEL_ROLES.planner)
+		expect(warnings).toHaveLength(1)
+		expect(warnings[0].role).toBe("planner")
+	})
+
+	it("trims whitespace from model field in custom config", () => {
+		const { roles } = parseModelRoles({
+			builder: { model: "  anthropic/claude-sonnet-4-5  " },
+		})
+		expect((roles.builder as CustomModelConfig).model).toBe("anthropic/claude-sonnet-4-5")
+	})
+})
+
+describe("normalizeRoleModels with CustomModelConfig", () => {
+	it("extracts model ref from a single CustomModelConfig object", () => {
+		const config: CustomModelConfig = { model: "anthropic/claude-opus-4-6", tier: "heavy" }
+		expect(normalizeRoleModels(config)).toEqual(["anthropic/claude-opus-4-6"])
+	})
+
+	it("extracts model refs from mixed string/object array", () => {
+		const mixed: (string | CustomModelConfig)[] = [
+			"kimchi-dev/kimi-k2.6",
+			{ model: "anthropic/claude-opus-4-6", tier: "heavy" },
+			"openai/gpt-4o",
+		]
+		expect(normalizeRoleModels(mixed)).toEqual(["kimchi-dev/kimi-k2.6", "anthropic/claude-opus-4-6", "openai/gpt-4o"])
+	})
+
+	it("still works with plain string", () => {
+		expect(normalizeRoleModels("kimchi-dev/kimi-k2.6")).toEqual(["kimchi-dev/kimi-k2.6"])
+	})
+
+	it("still works with string array", () => {
+		expect(normalizeRoleModels(["a", "b"])).toEqual(["a", "b"])
+	})
+})
+
+describe("extractCustomConfigs", () => {
+	it("returns empty map when no custom configs present", () => {
+		const roles: ModelRoles = {
+			...DEFAULT_MODEL_ROLES,
+			builder: "kimchi-dev/minimax-m2.7",
+			planner: "kimchi-dev/kimi-k2.6",
+		}
+		const result = extractCustomConfigs(roles)
+		expect(result.size).toBe(0)
+	})
+
+	it("extracts single custom config from a role", () => {
+		const roles: ModelRoles = {
+			...DEFAULT_MODEL_ROLES,
+			planner: { model: "anthropic/claude-opus-4-6", tier: "heavy" },
+		}
+		const result = extractCustomConfigs(roles)
+		expect(result.size).toBe(1)
+		expect(result.get("anthropic/claude-opus-4-6")).toEqual({
+			model: "anthropic/claude-opus-4-6",
+			tier: "heavy",
+		})
+	})
+
+	it("extracts multiple custom configs from a role array", () => {
+		const roles: ModelRoles = {
+			...DEFAULT_MODEL_ROLES,
+			planner: [
+				"kimchi-dev/kimi-k2.6",
+				{ model: "anthropic/claude-opus-4-6", tier: "heavy", description: "Test" },
+				{ model: "openai/gpt-4o", tier: "standard" },
+			],
+		}
+		const result = extractCustomConfigs(roles)
+		expect(result.size).toBe(2)
+		expect(result.get("anthropic/claude-opus-4-6")).toEqual({
+			model: "anthropic/claude-opus-4-6",
+			tier: "heavy",
+			description: "Test",
+		})
+		expect(result.get("openai/gpt-4o")).toEqual({ model: "openai/gpt-4o", tier: "standard" })
+	})
+
+	it("extracts configs from multiple roles", () => {
+		const roles: ModelRoles = {
+			...DEFAULT_MODEL_ROLES,
+			planner: { model: "anthropic/claude-opus-4-6", tier: "heavy" },
+			builder: { model: "openai/gpt-4o", tier: "standard" },
+		}
+		const result = extractCustomConfigs(roles)
+		expect(result.size).toBe(2)
+	})
+
+	it("last-wins when same model ref appears in multiple roles", () => {
+		const roles: ModelRoles = {
+			...DEFAULT_MODEL_ROLES,
+			planner: { model: "anthropic/claude-opus-4-6", tier: "heavy", description: "Planner description" },
+			builder: { model: "anthropic/claude-opus-4-6", tier: "standard", description: "Builder description" },
+		}
+		const result = extractCustomConfigs(roles)
+		expect(result.size).toBe(1)
+		expect(result.get("anthropic/claude-opus-4-6")).toEqual({
+			model: "anthropic/claude-opus-4-6",
+			tier: "standard",
+			description: "Builder description",
+		})
+	})
+})
+
+describe("validateModelRoles with CustomModelConfig", () => {
+	it("validates model ID extracted from CustomModelConfig object", () => {
+		const roles: ModelRoles = {
+			...DEFAULT_MODEL_ROLES,
+			builder: { model: "anthropic/claude-sonnet-4-5", tier: "standard" },
+		}
+		const available = new Set(["kimi-k2.6", "minimax-m2.7", "nemotron-3-super-fp4"])
+		const result = validateModelRoles(roles, available)
+		expect(result.unavailable).toHaveLength(1)
+		expect(result.unavailable[0].role).toBe("builder")
+		expect(result.unavailable[0].configuredModel).toBe("anthropic/claude-sonnet-4-5")
+	})
+
+	it("validates model IDs from mixed string/object arrays", () => {
+		const roles: ModelRoles = {
+			...DEFAULT_MODEL_ROLES,
+			planner: ["kimchi-dev/kimi-k2.6", { model: "anthropic/claude-opus-4-6", tier: "heavy" }],
+		}
+		const available = new Set(["kimi-k2.6", "minimax-m2.7", "nemotron-3-super-fp4"])
+		const result = validateModelRoles(roles, available)
+		expect(result.unavailable).toHaveLength(1)
+		expect(result.unavailable[0].configuredModel).toBe("anthropic/claude-opus-4-6")
+	})
+
+	it("strips provider prefix from model ref in CustomModelConfig when validating", () => {
+		const roles: ModelRoles = {
+			...DEFAULT_MODEL_ROLES,
+			builder: { model: "custom-provider/minimax-m2.7", tier: "standard" },
+		}
+		const available = new Set(["minimax-m2.7", "kimi-k2.6", "nemotron-3-super-fp4"])
+		const result = validateModelRoles(roles, available)
+		// Should strip provider and find minimax-m2.7 in available set
+		expect(result.unavailable).toHaveLength(0)
+	})
+})
+
+describe("saveModelRoles with CustomModelConfig", () => {
+	const testDir = join(tmpdir(), `kimchi-model-roles-test-${process.pid}`)
+	const testPath = join(testDir, "settings.json")
+
+	afterEach(() => {
+		try {
+			rmSync(testDir, { recursive: true, force: true })
+		} catch {}
+	})
+
+	it("saves CustomModelConfig object and reads it back", () => {
+		const custom: CustomModelConfig = {
+			model: "anthropic/claude-opus-4-6",
+			tier: "heavy",
+			description: "Anthropic's flagship.",
+			vision: false,
+		}
+		const roles: ModelRoles = {
+			...DEFAULT_MODEL_ROLES,
+			planner: custom,
+		}
+		saveModelRoles(roles, testPath)
+		const saved = JSON.parse(readFileSync(testPath, "utf-8"))
+		expect(saved.modelRoles.planner).toEqual(custom)
+	})
+
+	it("saves mixed string/object array and reads it back", () => {
+		const roles: ModelRoles = {
+			...DEFAULT_MODEL_ROLES,
+			planner: ["kimchi-dev/kimi-k2.6", { model: "anthropic/claude-opus-4-6", tier: "heavy" }],
+		}
+		saveModelRoles(roles, testPath)
+		const saved = JSON.parse(readFileSync(testPath, "utf-8"))
+		expect(saved.modelRoles.planner[0]).toBe("kimchi-dev/kimi-k2.6")
+		expect(saved.modelRoles.planner[1]).toEqual({ model: "anthropic/claude-opus-4-6", tier: "heavy" })
 	})
 })
