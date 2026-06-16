@@ -63,15 +63,14 @@ test("ferment phase-review separator is not selectable", async ({ terminal }) =>
 			trace.step("phase-review picker visible")
 
 			// Stage 4 (the bug): items are [phase, ─────, + Add phase, ✓ Confirm, ✗ Cancel].
-			// From the phase (cursor at index 0), one Down should reach "+ Add phase".
-			// With the bug the divider is selectable, so Down lands on it and Enter is a
-			// no-op (the picker just re-renders) — the add-phase prompt never opens.
+			// The focused row is marked with "→". Pressing Down once from the phase should
+			// move focus to "+ Add phase" — a separator must be skipped, not focusable.
+			// With the bug, "→" lands on the divider line and never reaches "+ Add phase",
+			// so this wait times out (and the final frame shows "→" parked on the marker).
 			terminal.keyDown()
 			trace.step("pressed down once from the first phase")
-			terminal.submit("")
-			trace.step("pressed enter on the item below the first phase")
-			await waitForText(terminal, "New phase name", { timeoutMs: INPUT_TIMEOUT_MS })
-			trace.step("add-phase prompt opened (separator was skipped)")
+			await waitForText(terminal, /→\s*\+ Add phase/, { timeoutMs: INPUT_TIMEOUT_MS })
+			trace.step("focus reached '+ Add phase' (separator was skipped)")
 		},
 	)
 })
