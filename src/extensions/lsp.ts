@@ -39,6 +39,31 @@ export default function (pi: ExtensionAPI) {
 	let cwd = ""
 	let activeServers: ReturnType<typeof detectServers> = []
 	let ui: ExtensionUIContext | undefined
+	// Tracks the pending diagnostic-refresh timer so rapid edits can cancel
+	// a previous wait (avoiding overlapping status-bar updates) and so
+	// session_shutdown can clear any leftover timer before tearing down clients.
+	let diagRefresh: { timer: NodeJS.Timeout; resolve: () => void } | undefined
+
+	function cancelPendingDiagRefresh(): void {
+		if (!diagRefresh) return
+		clearTimeout(diagRefresh.timer)
+		const { resolve } = diagRefresh
+		diagRefresh = undefined
+		// Unblock any awaiter that was waiting on the cancelled timer so the
+		// tool_result handler can finish instead of hanging until the process exits.
+		resolve()
+	}
+
+	function waitForDiagRefresh(ms: number): Promise<void> {
+		cancelPendingDiagRefresh()
+		return new Promise<void>((resolve) => {
+			const timer = setTimeout(() => {
+				if (diagRefresh?.timer === timer) diagRefresh = undefined
+				resolve()
+			}, ms)
+			diagRefresh = { timer, resolve }
+		})
+	}
 
 	createSystemPromptBlocks(pi, "lsp").register({
 		id: "lsp-tools",
@@ -70,6 +95,7 @@ export default function (pi: ExtensionAPI) {
 	})
 
 	pi.on("session_shutdown", async () => {
+		cancelPendingDiagRefresh()
 		if (ui) {
 			ui.setStatus("lsp", undefined)
 			ui = undefined
@@ -80,7 +106,8 @@ export default function (pi: ExtensionAPI) {
 	// ── File sync: refresh LSP after agent edits files ───────────────────────────
 
 	pi.on("tool_result", async (event, ctx) => {
-		if (!("toolName" in event)) return
+		// Guard against non-object events (e.g. null/undefined) before checking properties
+		if (typeof event !== "object" || event === null || !("toolName" in event)) return
 		if (event.toolName !== "edit" && event.toolName !== "write" && event.toolName !== "read") return
 		if (event.isError) return
 
@@ -102,10 +129,11 @@ export default function (pi: ExtensionAPI) {
 				await ensureFileOpen(client, resolved)
 			} else {
 				await refreshFile(client, resolved)
-				// Wait for diagnostics to arrive, then inject them as a user steer message
-				// LSP servers (especially TypeScript) need time to parse and type-check after edits
-				const waitMs = 2000
-				await new Promise((resolve) => setTimeout(resolve, waitMs))
+				// Wait for diagnostics to arrive, then inject them as a user steer message.
+				// LSP servers (especially TypeScript) need time to parse and type-check after edits.
+				// waitForDiagRefresh cancels any previous pending refresh so only the latest edit
+				// triggers a status-bar update.
+				await waitForDiagRefresh(2000)
 
 				const uri = fileToUri(resolved)
 				const entry = client.diagnostics.get(uri)
@@ -116,7 +144,7 @@ export default function (pi: ExtensionAPI) {
 					const intro = effectiveUi
 						? `${effectiveUi.theme.fg("error", " LSP diagnostics:")} \`${relativePath}\`\n${lines.join("\n")}`
 						: `[LSP diagnostics for ${relativePath}]\n${lines.join("\n")}`
-					pi.sendUserMessage(intro, { deliverAs: "steer" })
+					await pi.sendUserMessage(intro, { deliverAs: "steer" })
 				}
 
 				// Update status bar with total diagnostic count across open files
@@ -127,8 +155,10 @@ export default function (pi: ExtensionAPI) {
 					effectiveUi.setStatus("lsp", `LSP: ${names}${diagPart}`)
 				}
 			}
-		} catch {
-			// Non-fatal: LSP sync failure doesn't break the agent
+		} catch (err) {
+			// Non-fatal: LSP sync failure doesn't break the agent, but log it so
+			// production debugging is possible.
+			console.error("LSP file sync failed:", err)
 		}
 	})
 
