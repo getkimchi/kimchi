@@ -8,13 +8,13 @@ A coding agent CLI powered by [kimchi](https://kimchi.dev/). Built on the [pi-mo
 
 Install the latest release:
 
-### Homebrew (macOS / Linux)
+**Homebrew (macOS / Linux):**
 
 ```bash
 brew install getkimchi/tap/kimchi
 ```
 
-### Install script (macOS / Linux)
+**Install script:**
 
 ```bash
 curl -fsSL https://github.com/getkimchi/kimchi/releases/latest/download/install.sh | bash
@@ -311,6 +311,29 @@ Kimchi stores its configuration (settings, sessions, models) under:
 ~/.config/kimchi/harness/
 ```
 
+### Context files
+
+You can provide custom instructions that are injected into the system prompt on every session. Kimchi discovers two kinds of context files:
+
+**Global** — applied to every session, regardless of project:
+
+```
+~/.config/kimchi/harness/AGENTS.md
+```
+
+Place rules that apply everywhere (e.g., your name, code style preferences, or global tool defaults) in this file. It is loaded before any project-level files.
+
+**Project-level** — applied when working in a specific directory tree. Kimchi walks from the working directory up to the filesystem root and collects one context file per directory:
+
+```
+AGENTS.md
+CLAUDE.md
+```
+
+Per directory, `AGENTS.md` takes priority over `CLAUDE.md`. A `.local.md` variant (e.g. `AGENTS.local.md`) is appended to its primary file for user-specific, gitignored overrides.
+
+When both global and project files exist, global instructions appear first in the prompt, followed by ancestor directories, and finally the working directory. This means project-level rules can refine or override global ones.
+
 ### Packages
 
 Kimchi supports native Pi packages. `kimchi install npm:<package>` installs a package only for Kimchi, while `pi install npm:<package>` keeps the package owned by the original Pi harness. Kimchi can also load original Pi packages through the **Pi package lookup** resource, so both CLIs can use Pi packages without sharing Kimchi's install scope.
@@ -508,8 +531,14 @@ Supported platforms:
 
 - macOS (amd64, arm64)
 - Linux (amd64, arm64)
+- Windows (amd64)
 
-Release assets follow the naming convention `kimchi_{os}_{arch}.tar.gz` with a `checksums.txt` (SHA256) for verification.
+Release assets follow the naming convention:
+
+- kimchi_{os}_{arch}.tar.gz (macOS/Linux)
+- kimchi_windows_{arch}.zip (Windows)
+
+A checksums.txt file is published for verification.
 
 ## License
 
