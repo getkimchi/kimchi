@@ -90,9 +90,7 @@ if (!isDev) {
 	const buildTarget = process.env.BUILD_TARGET
 
 	const proxyHelperName =
-		buildTarget?.startsWith("windows") || platform() === "win32"
-			? "proxy-helper.exe"
-			: "proxy-helper"
+		buildTarget?.startsWith("windows") || platform() === "win32" ? "proxy-helper.exe" : "proxy-helper"
 
 	const proxyHelperSrc = join(projectRoot, "tools", "proxy-helper", "bin", proxyHelperName)
 	const proxyHelperBinDest = join(projectRoot, "dist", "share", "kimchi", "bin")
