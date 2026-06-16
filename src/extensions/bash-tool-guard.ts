@@ -25,7 +25,6 @@
  *     turn starts with a clean slate.
  *   - Disabled in plan-mode permission context (inspection, not
  *     enforcement — same rationale as `exploration-guard`).
- *   - Phase-aware: stricter in build/review, lenient in explore.
  *   - Explicit user request override: detects both program names ("cat",
  *     "sed") and semantic intents ("read the file", "fix with sed",
  *     "write a marker"). Uses word-boundary matching to avoid false
@@ -45,7 +44,6 @@ import {
 } from "./bash-tool-guard-events.js"
 import { getPermissionMode } from "./permissions/mode-controller.js"
 import { parseCommandSegments } from "./permissions/taxonomy.js"
-import { getCurrentPhase } from "./tags.js"
 
 export const STEER_MESSAGE_TYPE = "bash-tool-guard-steer"
 
@@ -401,45 +399,23 @@ export class BashToolGuard {
 	}
 }
 
-/**
- * Phase-aware enable predicate. Returns true when the guard should be active.
- *
- * Plan mode is always disabled (existing exploration-guard precedent). Build
- * and review phases get stricter enforcement (warn threshold 1, not blocked
- * by default — same as the global default). Research phase follows the
- * default. Explore phase is slightly more lenient (warn threshold 2) so
- * deep code-diving during initial exploration isn't aggressively steered.
- *
- * Note: `phaseOverride` is exposed as a parameter for unit tests so we can
- * inject a fake phase without monkey-patching the tags module.
- */
-export function phaseAwareIsEnabled(phaseOverride?: () => string | undefined): () => boolean {
-	return () => {
-		// plan mode (permission) is always disabled — deep inspection
-		// during scoping shouldn't be blocked
-		// (caller passes `getPermissionMode` check separately)
-		const phase = phaseOverride ? phaseOverride() : getCurrentPhase()
-		// All phases active by default; per-phase threshold tuning lives in
-		// the extension's `warnThresholds` option, not in this predicate.
-		// Review phase stays active: orchestrators in review should still
-		// use `read` over `cat` for LSP context.
-		return phase !== undefined // active in all defined phases
-	}
-}
-
 export default function bashToolGuardExtension(pi: ExtensionAPI, options?: BashGuardOptions): void {
 	let ctx: ExtensionContext | undefined
 
 	const guard = new BashToolGuard({
 		...options,
 		isEnabled: () => {
+			// Caller predicate (if any) is consulted first so users can
+			// disable the guard from their own config. Plan mode then
+			// short-circuits because inspection should never be enforced,
+			// regardless of what the caller asked for.
+			if (options?.isEnabled && !options.isEnabled()) return false
 			const sessionId = ctx?.sessionManager.getSessionId()
 			if (!sessionId) return true
 			// Plan mode is for inspection; the existing exploration-guard
 			// precedent disables itself there. We follow suit so deep
 			// reads during scoping aren't blocked.
-			if (getPermissionMode(sessionId)?.mode === "plan") return false
-			return true
+			return getPermissionMode(sessionId)?.mode !== "plan"
 		},
 	})
 
