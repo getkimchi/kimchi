@@ -24,10 +24,10 @@ import {
 	MINIMAX_M27_REVIEW,
 } from "./guidelines/minimax-family.js"
 import {
-	NEMOTRON_3_SUPER_BUILD,
-	NEMOTRON_3_SUPER_EXPLORE,
-	NEMOTRON_3_SUPER_ORCHESTRATION,
-	NEMOTRON_3_SUPER_RESEARCH,
+	NEMOTRON_3_ULTRA_BUILD,
+	NEMOTRON_3_ULTRA_EXPLORE,
+	NEMOTRON_3_ULTRA_ORCHESTRATION,
+	NEMOTRON_3_ULTRA_RESEARCH,
 	NEMOTRON_FAMILY_BUILD,
 	NEMOTRON_FAMILY_EXPLORE,
 	NEMOTRON_FAMILY_ORCHESTRATION,
@@ -64,7 +64,7 @@ and mechanical code review of straightforward code. \
 Not reliable for algorithm-correctness tasks (graph algorithms, topological sort, complex data \
 structure invariants) — use a heavy-tier model for those.`
 
-const NEMOTRON_3_SUPER_DESCRIPTION = `\
+const NEMOTRON_3_ULTRA_DESCRIPTION = `\
 Cheapest and fastest. 1M token context window with near-perfect retrieval — \
 can ingest entire large codebases in a single pass. \
 Best for: codebase exploration, research, and trivial re-verification (confirming tests pass \
@@ -152,21 +152,21 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 		},
 	],
 	[
-		"nemotron-3-super-fp4",
+		"nemotron-3-ultra-fp4",
 		{
 			vision: false,
 			roles: ["explore", "research"],
 			tier: "light",
-			description: NEMOTRON_3_SUPER_DESCRIPTION,
+			description: NEMOTRON_3_ULTRA_DESCRIPTION,
 			guidelines: guidelinesMap({
-				build: [DEFAULT_BUILD_GUIDELINES, NEMOTRON_FAMILY_BUILD, NEMOTRON_3_SUPER_BUILD],
-				research: [DEFAULT_RESEARCH_GUIDELINES, NEMOTRON_FAMILY_RESEARCH, NEMOTRON_3_SUPER_RESEARCH],
-				explore: [DEFAULT_EXPLORE_GUIDELINES, NEMOTRON_FAMILY_EXPLORE, NEMOTRON_3_SUPER_EXPLORE],
+				build: [DEFAULT_BUILD_GUIDELINES, NEMOTRON_FAMILY_BUILD, NEMOTRON_3_ULTRA_BUILD],
+				research: [DEFAULT_RESEARCH_GUIDELINES, NEMOTRON_FAMILY_RESEARCH, NEMOTRON_3_ULTRA_RESEARCH],
+				explore: [DEFAULT_EXPLORE_GUIDELINES, NEMOTRON_FAMILY_EXPLORE, NEMOTRON_3_ULTRA_EXPLORE],
 			}),
 			orchestrationGuidelines: optionalGuidelines(
 				DEFAULT_ORCHESTRATION_GUIDELINES,
 				NEMOTRON_FAMILY_ORCHESTRATION,
-				NEMOTRON_3_SUPER_ORCHESTRATION,
+				NEMOTRON_3_ULTRA_ORCHESTRATION,
 			),
 		},
 	],

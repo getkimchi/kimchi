@@ -58,7 +58,7 @@ Use `/multi-model` in the interactive CLI to toggle models on/off per role, or e
     "orchestrator": "kimchi-dev/kimi-k2.6",
     "builder": ["kimchi-dev/minimax-m2.7", "anthropic/claude-sonnet-4-5"],
     "reviewer": "anthropic/claude-sonnet-4-5",
-    "explorer": "kimchi-dev/nemotron-3-super-fp4"
+    "explorer": "kimchi-dev/nemotron-3-ultra-fp4"
   }
 }
 ```
@@ -69,7 +69,7 @@ Use `/multi-model` in the interactive CLI to toggle models on/off per role, or e
 | **planner** | `kimi-k2.6` | Designs the approach, writes specs. When same as orchestrator, planning is done in-process. |
 | **builder** | `minimax-m2.7` | Code implementation. For complex tasks the orchestrator may pick a heavier model from the pool. |
 | **reviewer** | `kimi-k2.6`, `minimax-m2.7` | Code review. Orchestrator picks the strongest by tier for initial review. |
-| **explorer** | `kimi-k2.6`, `nemotron-3-super-fp4` | Codebase exploration, research. Light models for broad scans, heavy for deep analysis. |
+| **explorer** | `kimi-k2.6`, `nemotron-3-ultra-fp4` | Codebase exploration, research. Light models for broad scans, heavy for deep analysis. |
 
 Defaults are derived from model capabilities in `MODEL_CAPABILITIES`. Roles accept any `provider/model-id` string or an array of strings. Only non-default values need to be specified; missing keys fall back to defaults.
 
