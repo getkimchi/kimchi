@@ -7,7 +7,7 @@ test("basic session lifecycle", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		{
-			artifactName: "basic-session-lifecycle.txt",
+			artifactName: "basic-session-lifecycle",
 			responses: [{ stream: ["Hello", " from", " fake", " Kimchi."] }],
 		},
 		async (fixture) => {

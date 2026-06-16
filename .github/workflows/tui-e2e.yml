@@ -42,6 +42,7 @@ jobs:
         with:
           name: tui-e2e-artifacts
           path: |
+            *.tui-e2e.log
             *.tui-e2e.txt
-            tui-traces
+            **/tui-traces/**
           if-no-files-found: ignore

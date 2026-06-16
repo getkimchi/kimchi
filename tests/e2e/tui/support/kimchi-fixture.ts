@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { Shell } from "@microsoft/tui-test"
 import type { Terminal } from "@microsoft/tui-test/lib/terminal/term.js"
-import { STARTUP_TIMEOUT_MS, fullText, waitForText } from "./assertions.js"
+import { STARTUP_TIMEOUT_MS, fullText, viewText, waitForText } from "./assertions.js"
 import {
 	DEFAULT_MODEL,
 	type FakeModel,
@@ -21,6 +21,8 @@ export const PROMPT_READY = "ask anything or type / for commands"
 
 const REPO_ROOT = resolve(process.env.KIMCHI_REPO_ROOT ?? "../../..")
 const TUI_ARTIFACT_RUN_ID = `${new Date().toISOString().replace(/[:.]/g, "-")}-${process.pid}`
+/** `--debug` (run-tui-e2e.js) writes a readable artifact for every run, not just failures. */
+const DEBUG_ARTIFACTS = process.env.KIMCHI_TUI_E2E_DEBUG === "1"
 
 /** Provider key written into models.json and passed to the kimchi CLI; the two must agree. */
 export const FAKE_PROVIDER = "fake"
@@ -34,6 +36,16 @@ export interface KimchiFixture {
 	agentDir: string
 	fake: FakeOpenAiServer
 	stop(): Promise<void>
+}
+
+export interface TuiScenarioTrace {
+	step(label: string): void
+}
+
+interface TuiStepSnapshot {
+	label: string
+	at: string
+	view: string
 }
 
 interface CreateKimchiFixtureOptions {
@@ -111,27 +123,52 @@ export async function stopKimchi(terminal: Terminal): Promise<void> {
 export async function runKimchiSession(
 	terminal: Terminal,
 	options: CreateKimchiFixtureOptions & { artifactName: string },
-	body: (fixture: KimchiFixture) => Promise<void>,
+	body: (fixture: KimchiFixture, trace: TuiScenarioTrace) => Promise<void>,
 ): Promise<void> {
 	const { artifactName, ...fixtureOptions } = options
 	const fixture = await createKimchiFixture(fixtureOptions)
+	let artifactWritten = false
+	const steps: TuiStepSnapshot[] = []
+	const trace: TuiScenarioTrace = {
+		step(label) {
+			steps.push({ label, at: new Date().toISOString(), view: viewText(terminal) })
+		},
+	}
+
 	try {
 		launchKimchi(terminal, fixture)
 		await waitForText(terminal, PROMPT_READY, { timeoutMs: STARTUP_TIMEOUT_MS })
-		await body(fixture)
+		trace.step("ready prompt visible")
+		await body(fixture, trace)
+		trace.step("scenario body completed")
 	} catch (error) {
-		await writeTuiArtifact(artifactName, fullText(terminal))
+		await writeTuiArtifact({ name: artifactName, outcome: "fail", terminal, fixture, steps, error })
+		artifactWritten = true
 		throw error
 	} finally {
+		if (DEBUG_ARTIFACTS && !artifactWritten) {
+			await writeTuiArtifact({ name: artifactName, outcome: "pass", terminal, fixture, steps })
+		}
 		await stopKimchi(terminal)
 		await fixture.stop()
 	}
 }
 
-export async function writeTuiArtifact(name: string, content: string): Promise<void> {
-	const baseName = name.replace(/\.txt$/i, "")
-	const path = join(REPO_ROOT, `${baseName}.${TUI_ARTIFACT_RUN_ID}.tui-e2e.txt`)
-	writeFileSync(path, content, "utf-8")
+interface WriteTuiArtifactOptions {
+	name: string
+	outcome: "pass" | "fail"
+	terminal: Terminal
+	fixture: KimchiFixture
+	steps: TuiStepSnapshot[]
+	error?: unknown
+}
+
+export async function writeTuiArtifact(options: WriteTuiArtifactOptions): Promise<void> {
+	const { name, outcome } = options
+	const baseName = name.replace(/\.(log|txt)$/i, "")
+	const path = join(REPO_ROOT, `${baseName}.${outcome}.${TUI_ARTIFACT_RUN_ID}.tui-e2e.log`)
+	writeFileSync(path, formatTuiArtifact(options), "utf-8")
+	process.stderr.write(`[tui-e2e] wrote ${outcome} artifact: ${path}\n`)
 }
 
 export function sh(value: string): string {
@@ -168,4 +205,44 @@ function writeModelsConfig(path: string, baseUrl: string, models: FakeModel[] | 
 		),
 		"utf-8",
 	)
+}
+
+function formatTuiArtifact({ name, outcome, terminal, fixture, steps, error }: WriteTuiArtifactOptions): string {
+	return [
+		"# Kimchi TUI E2E Artifact",
+		[
+			`name: ${name}`,
+			`outcome: ${outcome}`,
+			`runId: ${TUI_ARTIFACT_RUN_ID}`,
+			`createdAt: ${new Date().toISOString()}`,
+			`terminal: ${TUI_TEST_CONFIG.columns}x${TUI_TEST_CONFIG.rows}`,
+			`binary: ${BINARY_PATH}`,
+			`packageDir: ${PACKAGE_DIR}`,
+			`homeDir: ${fixture.homeDir}`,
+			`workDir: ${fixture.workDir}`,
+			`fakeModelBaseUrl: ${fixture.fake.baseUrl}`,
+			`fakeRequestCount: ${fixture.fake.requests.length}`,
+		].join("\n"),
+		error ? `## Error\n\n${formatError(error)}` : undefined,
+		`## Scenario Steps\n\n${formatSteps(steps)}`,
+		`## Fake OpenAI Requests\n\n${formatJson(fixture.fake.requests)}`,
+		`## Final Viewable Terminal\n\n${viewText(terminal)}`,
+		`## Final Full Terminal Buffer\n\n${fullText(terminal)}`,
+	]
+		.filter((section): section is string => Boolean(section))
+		.join("\n\n")
+}
+
+function formatSteps(steps: TuiStepSnapshot[]): string {
+	if (steps.length === 0) return "(none)"
+	return steps.map((step, index) => `### ${index + 1}. ${step.label}\n\nat: ${step.at}\n\n${step.view}`).join("\n\n")
+}
+
+function formatJson(value: unknown): string {
+	return JSON.stringify(value, null, "\t")
+}
+
+function formatError(error: unknown): string {
+	if (error instanceof Error) return `${error.name}: ${error.message}\n\n${error.stack ?? "(no stack)"}`
+	return String(error)
 }

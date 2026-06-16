@@ -21,6 +21,10 @@ const targetArg =
 const crossTarget = targetArg ? (TARGET_MAP[targetArg] ?? targetArg) : undefined
 const isCrossCompile = !!crossTarget
 
+// --fast skips `clean` and `typecheck` (the dominant cost: ~5s vs ~0.3s to compile).
+// Used by the e2e scripts for fast iteration; typecheck still runs in `check`/`verify`.
+const isFast = process.argv.includes("--fast")
+
 function run(label, cmd) {
 	console.log(`\n→ ${label}`)
 	try {
@@ -37,8 +41,10 @@ if (!isCI) {
 	run("build proxy-helper", "make -C tools/proxy-helper build")
 }
 
-run("clean", "pnpm run clean")
-run("typecheck", "pnpm run typecheck")
+if (!isFast) {
+	run("clean", "pnpm run clean")
+	run("typecheck", "pnpm run typecheck")
+}
 
 // Externalize packages that cannot be bundled into a Bun compiled binary (native addons, browser automation harnesses).
 // If a new dependency causes a build failure, check whether it also needs --external here.
