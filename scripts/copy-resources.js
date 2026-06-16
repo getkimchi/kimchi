@@ -87,7 +87,12 @@ if (!isDev) {
 	cpSync(oauthSrc, oauthDest, { recursive: true })
 
 	// Copy proxy-helper binary built by tools/proxy-helper/Makefile
-	const proxyHelperName = platform() === "win32" ? "proxy-helper.exe" : "proxy-helper"
+	const buildTarget = process.env.BUILD_TARGET
+
+	const proxyHelperName =
+		buildTarget?.startsWith("windows") || platform() === "win32"
+			? "proxy-helper.exe"
+			: "proxy-helper"
 
 	const proxyHelperSrc = join(projectRoot, "tools", "proxy-helper", "bin", proxyHelperName)
 	const proxyHelperBinDest = join(projectRoot, "dist", "share", "kimchi", "bin")

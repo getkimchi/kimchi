@@ -60,9 +60,15 @@ run(
 // Bun --compile produces binaries with an invalid code signature on macOS.
 // The kernel kills badly-signed arm64 binaries immediately (SIGKILL, exit 137).
 // Strip the corrupt signature and re-sign ad-hoc. See: https://github.com/oven-sh/bun/issues/7208
-if (platform() === "darwin") {
+const isDarwinTarget =
+	!crossTarget || crossTarget.includes("darwin")
+
+if (platform() === "darwin" && isDarwinTarget) {
 	run("codesign (strip)", `codesign --remove-signature dist/bin/${exeName}`)
 	run("codesign (ad-hoc)", `codesign -s - dist/bin/${exeName}`)
 }
 
-run("copy resources", "node scripts/copy-resources.js")
+run(
+	"copy resources",
+	`BUILD_TARGET=${targetArg ?? ""} node scripts/copy-resources.js`,
+)
