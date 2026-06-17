@@ -291,16 +291,9 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		if (!ctx.hasUI) return
 		const { mode } = getRuntimePermissionMode()
 		const active = MODES.find((m) => m.mode === mode) ?? MODES[0]
-		// Filled dot + active label hardcode kimchi palette so the cue stays legible
-		// under kimchi-minimal; unfilled dots + hint use the "text" token to match
-		// editor input/cwd chrome.
-		const text = (s: string): string => ctx.ui.theme.fg("text", s)
-		const dots = MODES.map((m) =>
-			m.mode === mode ? `${resolvedSemanticFg(ctx.ui.theme, m.color)}●${RST_FG}` : text("○"),
-		).join(" ")
 		const name = `${resolvedSemanticFg(ctx.ui.theme, active.color)}${active.label}${RST_FG}`
-		const hint = text("→ shift+tab")
-		ctx.ui.setStatus("permissions-mode", `${dots} ${name} ${hint}`)
+		const hint = ctx.ui.theme.fg("dim", "→ shift+tab")
+		ctx.ui.setStatus("permissions-mode", `${name} ${hint}`)
 	}
 
 	function maybeShowYoloWarning(ctx: ExtensionContext) {
