@@ -18,14 +18,16 @@
  * Behaviour:
  *   - First match for a category within a session: steer (don't block).
  *   - Second match for the same category: hard-block with a reason pointing
- *     at the right tool.
+ *     at the right tool — but only when `blockOnThreshold: true` is passed
+ *     to the extension. The default is warn-only so adopting the guard
+ *     never stalls a session if the replacement tool is unavailable.
  *   - Per-category counters: a `cat` doesn't burn the budget for `sed -i`.
  *   - Per-category thresholds: read/edit/write can have different budgets.
  *   - Reset on `session_start` and on each user `input` event so a fresh
  *     turn starts with a clean slate.
  *   - Disabled in plan-mode permission context (inspection, not
  *     enforcement — same rationale as `exploration-guard`).
- *   - Explicit user request override: detects both program names ("cat",
+ *   - Explicit user request override: detects both tool names ("cat",
  *     "sed") and semantic intents ("read the file", "fix with sed",
  *     "write a marker"). Uses word-boundary matching to avoid false
  *     positives (e.g. "cat" inside "categorize").
@@ -36,6 +38,7 @@
  */
 
 import type { ExtensionAPI, ExtensionContext, InputEvent } from "@earendil-works/pi-coding-agent"
+import { isResourceEnabled } from "../resources/store.js"
 import {
 	BASH_TOOL_GUARD_EVENTS,
 	type BashToolGuardAllowedByUserRequestPayload,
@@ -44,6 +47,8 @@ import {
 } from "./bash-tool-guard-events.js"
 import { getPermissionMode } from "./permissions/mode-controller.js"
 import { parseCommandSegments } from "./permissions/taxonomy.js"
+
+const RESOURCE_ID = "extensions.bash-tool-guard"
 
 export const STEER_MESSAGE_TYPE = "bash-tool-guard-steer"
 
@@ -54,8 +59,8 @@ export interface BashClassification {
 	suggestion: string
 	/** A short, human-readable rendering of the matched segment (for steer text). */
 	matchedSegment: string
-	/** The program name detected (first token after stripping rtk wrapper). */
-	program: string
+	/** The tool name detected (first token after stripping rtk wrapper). */
+	tool: string
 }
 
 export interface PerCategoryThresholds {
@@ -72,6 +77,12 @@ export interface BashGuardOptions {
 	warnThresholds?: PerCategoryThresholds
 	/** Predicate to temporarily disable the guard (e.g., during plan mode). */
 	isEnabled?: () => boolean
+	/** When true, the guard hard-blocks bash calls once the per-category
+	 *  warn threshold is exceeded. Default: false (warn/steer only).
+	 *  Hard blocking is opt-in so users can adopt the guard without
+	 *  risking session stalls if the replacement tool is unavailable
+	 *  or misconfigured in a given environment. */
+	blockOnThreshold?: boolean
 }
 
 export interface BashGuardResult {
@@ -85,6 +96,7 @@ export interface BashGuardWarnResult {
 	category: BashCategory
 	suggestion: string
 	matchedSegment: string
+	tool: string
 	count: number
 }
 
@@ -93,6 +105,7 @@ export interface BashGuardBlockResult {
 	category: BashCategory
 	suggestion: string
 	matchedSegment: string
+	tool: string
 	count: number
 }
 
@@ -101,7 +114,7 @@ export type BashGuardDecision = BashGuardResult | BashGuardWarnResult | BashGuar
 const WARN_STEER_BASE =
 	"Bash-tool guard: this command reads/updates files via a shell command (%matchedSegment%, category: %category%). " +
 	"The dedicated tool is faster and unlocks LSP context (hover/definition/diagnostics): %suggestion% " +
-	"Next occurrence of the same category will be blocked."
+	"Hard blocking is opt-in; pass `blockOnThreshold: true` to enable."
 
 const BLOCK_REASON_BASE =
 	"Bash-tool guard: blocked %category% via shell after a warning in this session. " +
@@ -127,10 +140,10 @@ export function classifyBashCommand(command: string): BashClassification | null 
 	const segments = parseCommandSegments(command)
 
 	for (const segment of segments) {
-		// Drop the leading program name and any RTK wrapper to inspect args.
+		// Drop the leading tool name and any RTK wrapper to inspect args.
 		const tokens = stripRtk(segment.tokens)
-		const program = tokens[0]
-		if (!program) continue
+		const tool = tokens[0]
+		if (!tool) continue
 
 		const matchedSegment = tokens.join(" ")
 
@@ -140,24 +153,24 @@ export function classifyBashCommand(command: string): BashClassification | null 
 		// file the model wants to produce.
 		for (const op of segment.ops) {
 			if ((op.op === ">" || op.op === ">>") && op.target && !isStreamRedirectTarget(op.target)) {
-				return { category: "write", suggestion: WRITE_SUGGESTION, matchedSegment, program }
+				return { category: "write", suggestion: WRITE_SUGGESTION, matchedSegment, tool }
 			}
 		}
-		if (program === "tee" && tokens.length >= 2) {
-			return { category: "write", suggestion: WRITE_SUGGESTION, matchedSegment, program }
+		if (tool === "tee" && tokens.length >= 2) {
+			return { category: "write", suggestion: WRITE_SUGGESTION, matchedSegment, tool }
 		}
 
 		// Category 2: edit — in-place mutation flags.
-		if (isInPlaceEditProgram(program, tokens)) {
-			return { category: "edit", suggestion: EDIT_SUGGESTION, matchedSegment, program }
+		if (isInPlaceEditTool(tool, tokens)) {
+			return { category: "edit", suggestion: EDIT_SUGGESTION, matchedSegment, tool }
 		}
 
-		// Category 3: read — programs whose only purpose is to print a file's
+		// Category 3: read — tools whose only purpose is to print a file's
 		// contents, plus `sed -n` read mode. Each requires at least one
 		// positional file argument; bare `cat` / `head` reading stdin is
 		// harmless and not flagged.
-		if (isFileReader(program, tokens)) {
-			return { category: "read", suggestion: READ_SUGGESTION, matchedSegment, program }
+		if (isFileReader(tool, tokens)) {
+			return { category: "read", suggestion: READ_SUGGESTION, matchedSegment, tool }
 		}
 	}
 
@@ -175,14 +188,14 @@ function isStreamRedirectTarget(target: string): boolean {
  * `awk -i inplace`. These mutate the file in place; the LLM should use
  * `edit` instead so the diff is reviewable and reversible.
  */
-function isInPlaceEditProgram(program: string, tokens: string[]): boolean {
-	if (program === "sed") {
+function isInPlaceEditTool(tool: string, tokens: string[]): boolean {
+	if (tool === "sed") {
 		return tokens.slice(1).some((t) => t === "-i" || t.startsWith("-i"))
 	}
-	if (program === "perl") {
+	if (tool === "perl") {
 		return tokens.slice(1).some((t) => t === "-i" || t.startsWith("-i"))
 	}
-	if (program === "awk") {
+	if (tool === "awk") {
 		// awk uses `-i file` (separate arg), not a fused flag.
 		for (let i = 1; i < tokens.length - 1; i++) {
 			if (tokens[i] === "-i" && tokens[i + 1] === "inplace") return true
@@ -191,12 +204,12 @@ function isInPlaceEditProgram(program: string, tokens: string[]): boolean {
 	return false
 }
 
-const READER_PROGRAMS = new Set(["cat", "head", "tail", "less", "more", "bat", "batcat"])
+const READER_TOOLS = new Set(["cat", "head", "tail", "less", "more", "bat", "batcat"])
 
-function isFileReader(program: string, tokens: string[]): boolean {
-	if (!READER_PROGRAMS.has(program)) {
+function isFileReader(tool: string, tokens: string[]): boolean {
+	if (!READER_TOOLS.has(tool)) {
 		// `sed -n '<range>p' <files...>` is read-only sed usage.
-		if (program === "sed") {
+		if (tool === "sed") {
 			const args = tokens.slice(1)
 			const hasQuiet = args.includes("-n") || args.includes("--quiet") || args.includes("--silent")
 			// Heuristic: read mode usually has `-n` together with a `p` print
@@ -282,6 +295,7 @@ const SEMANTIC_INTENT_PATTERNS: Record<BashCategory, RegExp[]> = {
 export class BashToolGuard {
 	private readonly warnThresholds: Record<BashCategory, number>
 	private readonly isEnabled: () => boolean
+	private readonly blockOnThreshold: boolean
 	private readonly categoryCounts: Map<BashCategory, number> = new Map()
 	/** Most recent user prompt text, lowercased. Used to detect explicit
 	 *  requests like "use sed" or "cat this file" so the guard doesn't
@@ -296,6 +310,7 @@ export class BashToolGuard {
 			write: options.warnThresholds?.write ?? defaultThreshold,
 		}
 		this.isEnabled = options.isEnabled ?? (() => true)
+		this.blockOnThreshold = options.blockOnThreshold ?? false
 	}
 
 	reset(): void {
@@ -315,23 +330,23 @@ export class BashToolGuard {
 	}
 
 	/** True when the user's most recent prompt explicitly requests the
-	 *  matched program or category. Detection is two-tiered:
+	 *  matched tool or category. Detection is two-tiered:
 	 *    1. Program-name match (word-boundary): "use sed to fix this",
 	 *       "cat the file", "echo to marker".
 	 *    2. Semantic intent match: "read the file", "fix with sed",
 	 *       "write to foo.ts", etc. — catches prompts that don't mention
-	 *       the program by name but clearly intend the operation.
+	 *       the tool by name but clearly intend the operation.
 	 *  Both use word-boundary matching to avoid false positives (e.g.
 	 *  "cat" inside "categorize", "sed" inside "used"). */
 	isExplicitlyRequested(matchedSegment: string, category: BashCategory): boolean {
 		if (!this.lastUserPrompt) return false
-		// First token of the matched segment is the program name.
-		const program = matchedSegment.split(/\s+/)[0]?.toLowerCase()
-		if (program) {
-			const programPattern = new RegExp(`\\b${escapeRegex(program)}\\b`)
-			if (programPattern.test(this.lastUserPrompt)) return true
+		// First token of the matched segment is the tool name.
+		const tool = matchedSegment.split(/\s+/)[0]?.toLowerCase()
+		if (tool) {
+			const toolPattern = new RegExp(`\\b${escapeRegex(tool)}\\b`)
+			if (toolPattern.test(this.lastUserPrompt)) return true
 		}
-		// Semantic intent fallback — catches intent without naming the program.
+		// Semantic intent fallback — catches intent without naming the tool.
 		const intentPatterns = SEMANTIC_INTENT_PATTERNS[category]
 		return intentPatterns.some((pattern) => pattern.test(this.lastUserPrompt))
 	}
@@ -348,9 +363,11 @@ export class BashToolGuard {
 	/**
 	 * Inspect a bash command. Returns:
 	 *   - `{ decision: "allow" }` when the command is fine.
-	 *   - `{ decision: "warn", ... }` for the first match of a category.
+	 *   - `{ decision: "warn", ... }` for the first match of a category,
+	 *     AND for every subsequent match when `blockOnThreshold` is false
+	 *     (default). The LLM keeps getting nudged on each occurrence.
 	 *   - `{ decision: "block", ... }` once the per-category warnThreshold
-	 *     is exceeded.
+	 *     is exceeded, but only when `blockOnThreshold` is true (opt-in).
 	 */
 	recordCommand(command: string): BashGuardDecision {
 		if (!this.isEnabled()) return { decision: "allow" }
@@ -368,11 +385,27 @@ export class BashToolGuard {
 		this.categoryCounts.set(classification.category, count)
 
 		if (count > threshold) {
+			// Hard blocking is opt-in. When disabled, the guard keeps
+			// steering on every occurrence instead of refusing the call.
+			// The downstream `tool_call` handler falls back to a warn in
+			// that case so the LLM keeps getting nudged without losing
+			// the ability to proceed.
+			if (!this.blockOnThreshold) {
+				return {
+					decision: "warn",
+					category: classification.category,
+					suggestion: classification.suggestion,
+					matchedSegment: classification.matchedSegment,
+					tool: classification.tool,
+					count,
+				}
+			}
 			return {
 				decision: "block",
 				category: classification.category,
 				suggestion: classification.suggestion,
 				matchedSegment: classification.matchedSegment,
+				tool: classification.tool,
 				count,
 			}
 		}
@@ -382,6 +415,7 @@ export class BashToolGuard {
 			category: classification.category,
 			suggestion: classification.suggestion,
 			matchedSegment: classification.matchedSegment,
+			tool: classification.tool,
 			count,
 		}
 	}
@@ -448,6 +482,12 @@ export default function bashToolGuardExtension(pi: ExtensionAPI, options?: BashG
 		if (!event.toolName) return { block: false }
 		if (event.toolName !== "bash") return { block: false }
 
+		// Dynamic resource toggle: consult the resource store on every
+		// bash call so users can disable the guard mid-session from the
+		// /resources UI without a restart. Startup-time disablement is
+		// still handled by the extension filter; this is a no-op there.
+		if (!isResourceEnabled(RESOURCE_ID)) return { block: false }
+
 		const input = event.input as { command?: unknown }
 		const command = typeof input.command === "string" ? input.command : ""
 		if (!command) return { block: false }
@@ -461,7 +501,7 @@ export default function bashToolGuardExtension(pi: ExtensionAPI, options?: BashG
 				if (classification) {
 					const payload: BashToolGuardAllowedByUserRequestPayload = {
 						category: classification.category,
-						program: classification.program,
+						tool: classification.tool,
 					}
 					emitGuardEvent(BASH_TOOL_GUARD_EVENTS.ALLOWED_BY_USER_REQUEST, payload)
 				}
@@ -472,7 +512,7 @@ export default function bashToolGuardExtension(pi: ExtensionAPI, options?: BashG
 		if (result.decision === "block") {
 			const payload: BashToolGuardBlockPayload = {
 				category: result.category,
-				matchedSegment: result.matchedSegment,
+				tool: result.tool ?? "",
 				count: result.count,
 			}
 			emitGuardEvent(BASH_TOOL_GUARD_EVENTS.BLOCK, payload)
@@ -485,7 +525,7 @@ export default function bashToolGuardExtension(pi: ExtensionAPI, options?: BashG
 		// decision === "warn"
 		const payload: BashToolGuardWarnPayload = {
 			category: result.category,
-			matchedSegment: result.matchedSegment,
+			tool: result.tool ?? "",
 			count: result.count,
 		}
 		emitGuardEvent(BASH_TOOL_GUARD_EVENTS.WARN, payload)

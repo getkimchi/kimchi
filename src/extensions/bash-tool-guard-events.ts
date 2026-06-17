@@ -18,20 +18,22 @@ export type BashToolGuardEventChannel = (typeof BASH_TOOL_GUARD_EVENTS)[keyof ty
 export interface BashToolGuardWarnPayload {
 	/** The read/edit/write category that triggered the warn. */
 	category: "read" | "edit" | "write"
-	/** Short rendering of the matched command segment (first ~80 chars). */
-	matchedSegment: string
+	/** The tool name detected in the matched segment (e.g. "cat", "sed").
+	 *  Kept short and structured so telemetry can aggregate without
+	 *  receiving raw command text. */
+	tool: string
 	/** How many times this category has been seen in the session so far. */
 	count: number
 }
 
 export interface BashToolGuardBlockPayload {
 	category: "read" | "edit" | "write"
-	matchedSegment: string
+	tool: string
 	count: number
 }
 
 export interface BashToolGuardAllowedByUserRequestPayload {
 	category: "read" | "edit" | "write"
-	/** The program name detected in the matched segment (e.g. "cat", "sed"). */
-	program: string
+	/** The tool name detected in the matched segment (e.g. "cat", "sed"). */
+	tool: string
 }

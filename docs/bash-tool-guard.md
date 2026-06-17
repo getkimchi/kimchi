@@ -29,14 +29,19 @@ flagged because they discard or duplicate state rather than creating it.
 1. **First match per category in a session** — the LLM is steered (a
    message is injected into the conversation) explaining the better tool.
    The bash call still executes.
-2. **Second match for the same category** — hard-blocked. The bash call
-   is refused with a reason pointing at the right tool.
+2. **Subsequent matches for the same category** — by default, the guard
+   keeps steering on every occurrence (warn/steer-only). Hard blocking
+   is opt-in: pass `blockOnThreshold: true` when registering the
+   extension to refuse the bash call with a reason pointing at the
+   right tool once the threshold is exceeded. Default is warn-only so
+   adopting the guard never stalls a session if the replacement tool
+   is unavailable or misconfigured in a given environment.
 3. **Per-category counters** — `cat` doesn't burn the budget for `sed -i`.
    A session can have one read warning, one edit warning, and one write
    warning independently.
 4. **Per-category thresholds** — read/edit/write can each have their own
-   warn threshold. Default is 1 (warn once, then block). Set
-   `warnThresholds: { read: 3 }` to be more lenient on reads.
+   warn threshold. Default is 1 (warn once, then block when blocking is
+   enabled). Set `warnThresholds: { read: 3 }` to be more lenient on reads.
 5. **Reset on each user prompt** — counters clear on `session_start` and
    on every user `input` event so a fresh turn starts clean.
 6. **Disabled in plan mode** — same rationale as `exploration-guard`:
@@ -45,7 +50,7 @@ flagged because they discard or duplicate state rather than creating it.
 
 ## Explicit user request override
 
-If the user's most recent prompt explicitly mentions the matched program
+If the user's most recent prompt explicitly mentions the matched tool
 OR expresses the intent in natural language, the guard allows the call.
 The user knows what they're asking for; we don't override explicit intent.
 
@@ -55,7 +60,7 @@ The user knows what they're asking for; we don't override explicit intent.
 - "cat src/foo.ts and tell me what it does" → allows `cat src/foo.ts`
 - "use echo to create a marker file" → allows `echo 'done' > marker.txt`
 
-### Semantic intent match (catches intent without naming the program)
+### Semantic intent match (catches intent without naming the tool)
 
 Read intent:
 - "read the file foo.ts" → allows `cat foo.ts`
@@ -96,9 +101,15 @@ The extension emits domain events via `pi.events` for telemetry to observe:
 
 | Channel | Payload | When |
 |---|---|---|
-| `bash_tool_guard:warn` | `{ category, matchedSegment, count }` | First match of a category (steer) |
-| `bash_tool_guard:block` | `{ category, matchedSegment, count }` | Threshold exceeded (hard block) |
-| `bash_tool_guard:allowed_by_user_request` | `{ category, program }` | User explicitly asked for the bash tool |
+| `bash_tool_guard:warn` | `{ category, tool, count }` | First match of a category (steer) |
+| `bash_tool_guard:block` | `{ category, tool, count }` | Threshold exceeded (hard block; only fires when `blockOnThreshold: true`) |
+| `bash_tool_guard:allowed_by_user_request` | `{ category, tool }` | User explicitly asked for the bash tool |
+
+The payloads carry only structured fields — `category`, `tool`,
+`count` — so telemetry can aggregate without receiving raw command
+text. Anything that could include user data or secrets inline
+(heredocs, `echo "..." > file`, sed replacement strings) stays out
+of OTLP.
 
 These events are consumed by the telemetry extension to track guard
 effectiveness (how often it fires, how often users override it).
@@ -141,8 +152,12 @@ in `~/.config/kimchi/harness/settings.json`:
 }
 ```
 
-Or via the kimchi TUI's resource toggle. A restart is required
-(`restartRequired: true`).
+Or via the kimchi TUI's resource toggle. The toggle is dynamic — the
+`tool_call` handler consults `isResourceEnabled` on every bash call,
+so flipping it from `/resources` takes effect immediately without a
+process restart. Startup-time disablement is still handled by the
+extension filter (the extension isn't registered at all if disabled
+in `settings.json` before launch).
 
 ### Custom thresholds
 
@@ -154,9 +169,12 @@ import bashToolGuardExtension from "./extensions/bash-tool-guard.js"
 bashToolGuardExtension(pi, {
   warnThresholds: {
     read: 3,   // tolerate more reads (deep exploration)
-    edit: 0,   // block edits immediately (production safety)
-    write: 1,  // default: warn once, then block
+    edit: 0,   // block edits immediately when blocking is enabled
+    write: 1,  // default: warn once, then block (when blocking is enabled)
   },
+  // Hard blocking is opt-in. Default is false (warn/steer only).
+  // Set to true to refuse the bash call once the threshold is exceeded.
+  blockOnThreshold: false,
 })
 ```
 
@@ -167,7 +185,7 @@ bashToolGuardExtension(pi, {
 - `classifyBashCommand(command: string): BashClassification | null` —
   pure function, used by tests and the guard class.
 - `BashToolGuard` — stateful class with per-category counters,
-  per-category thresholds, and explicit-request detection (program-name
+  per-category thresholds, and explicit-request detection (tool-name
   + semantic intent).
 - `bashToolGuardExtension(pi, options?)` — default export, registers
   `session_start`, `input`, and `tool_call` handlers.
@@ -182,12 +200,13 @@ bashToolGuardExtension(pi, {
 
 ## Tests
 
-- `src/extensions/bash-tool-guard.test.ts` — 111 unit tests covering
-  pattern detection (read/edit/write categories), compound commands,
+- `src/extensions/bash-tool-guard.test.ts` — unit coverage of pattern
+  detection (read/edit/write categories), compound commands,
   RTK-wrapped commands, per-category counters, threshold configuration,
-  explicit-request detection (program-name + semantic intent),
-  word-boundary matching.
-- `src/extensions/bash-tool-guard.integration.test.ts` — 34 integration
-  tests covering wiring, session_start reset, user-input reset, plan-mode
+  explicit-request detection (tool-name + semantic intent),
+  word-boundary matching, and the opt-in blocking flag.
+- `src/extensions/bash-tool-guard.integration.test.ts` — integration
+  coverage of wiring, session_start reset, user-input reset, plan-mode
   disable, explicit-request flow, compound commands, semantic intent
-  override, telemetry event emission.
+  override, dynamic resource-toggle behaviour, and telemetry event
+  emission.

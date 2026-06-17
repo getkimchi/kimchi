@@ -1025,13 +1025,13 @@ describe("bash-tool-guard telemetry via pi.events", () => {
 		return Object.fromEntries(rec.attributes.map((a) => [a.key, a.value.stringValue]))
 	}
 
-	it("bash_tool_guard:warn → bash_tool_guard.warn OTLP record with category, count, preview", async () => {
+	it("bash_tool_guard:warn → bash_tool_guard.warn OTLP record with category, tool, count", async () => {
 		const { handlers, events } = await setup()
 		const { BASH_TOOL_GUARD_EVENTS } = await import("../bash-tool-guard-events.js")
 
 		events.emit(BASH_TOOL_GUARD_EVENTS.WARN, {
 			category: "read",
-			matchedSegment: "cat src/foo.ts",
+			tool: "cat",
 			count: 1,
 		})
 		await getHandler(handlers, "session_shutdown")({ reason: "test" })
@@ -1040,18 +1040,21 @@ describe("bash-tool-guard telemetry via pi.events", () => {
 		expect(rec).toBeDefined()
 		const attrs = attrsOf(rec as NonNullable<typeof rec>)
 		expect(attrs.category).toBe("read")
+		expect(attrs.tool).toBe("cat")
 		expect(attrs.count).toBe("1")
-		expect(attrs.segment_preview).toBe("cat src/foo.ts")
+		// Raw command text must not leak into OTLP — only structured fields.
+		expect(attrs.segment_preview).toBeUndefined()
+		expect(attrs.matchedSegment).toBeUndefined()
 		expect(attrs.model).toBe("claude-sonnet-4-6")
 	})
 
-	it("bash_tool_guard:block → bash_tool_guard.block OTLP record", async () => {
+	it("bash_tool_guard:block → bash_tool_guard.block OTLP record with tool", async () => {
 		const { handlers, events } = await setup()
 		const { BASH_TOOL_GUARD_EVENTS } = await import("../bash-tool-guard-events.js")
 
 		events.emit(BASH_TOOL_GUARD_EVENTS.BLOCK, {
 			category: "edit",
-			matchedSegment: "sed -i 's/a/b/' foo.ts",
+			tool: "sed",
 			count: 2,
 		})
 		await getHandler(handlers, "session_shutdown")({ reason: "test" })
@@ -1060,17 +1063,20 @@ describe("bash-tool-guard telemetry via pi.events", () => {
 		expect(rec).toBeDefined()
 		const attrs = attrsOf(rec as NonNullable<typeof rec>)
 		expect(attrs.category).toBe("edit")
+		expect(attrs.tool).toBe("sed")
 		expect(attrs.count).toBe("2")
-		expect(attrs.segment_preview).toBe("sed -i 's/a/b/' foo.ts")
+		// Raw command text must not leak into OTLP — only structured fields.
+		expect(attrs.segment_preview).toBeUndefined()
+		expect(attrs.matchedSegment).toBeUndefined()
 	})
 
-	it("bash_tool_guard:allowed_by_user_request → OTLP record with program", async () => {
+	it("bash_tool_guard:allowed_by_user_request → OTLP record with tool", async () => {
 		const { handlers, events } = await setup()
 		const { BASH_TOOL_GUARD_EVENTS } = await import("../bash-tool-guard-events.js")
 
 		events.emit(BASH_TOOL_GUARD_EVENTS.ALLOWED_BY_USER_REQUEST, {
 			category: "read",
-			program: "cat",
+			tool: "cat",
 		})
 		await getHandler(handlers, "session_shutdown")({ reason: "test" })
 
@@ -1078,25 +1084,7 @@ describe("bash-tool-guard telemetry via pi.events", () => {
 		expect(rec).toBeDefined()
 		const attrs = attrsOf(rec as NonNullable<typeof rec>)
 		expect(attrs.category).toBe("read")
-		expect(attrs.program).toBe("cat")
-	})
-
-	it("truncates long matched segments in segment_preview", async () => {
-		const { handlers, events } = await setup()
-		const { BASH_TOOL_GUARD_EVENTS } = await import("../bash-tool-guard-events.js")
-
-		const longSegment = `echo '${"x".repeat(200)}' > foo.ts`
-		events.emit(BASH_TOOL_GUARD_EVENTS.WARN, {
-			category: "write",
-			matchedSegment: longSegment,
-			count: 1,
-		})
-		await getHandler(handlers, "session_shutdown")({ reason: "test" })
-
-		const rec = extractRecords().find((r) => r.eventName === "bash_tool_guard.warn")
-		expect(rec).toBeDefined()
-		const attrs = attrsOf(rec as NonNullable<typeof rec>)
-		expect(attrs.segment_preview?.length).toBeLessThanOrEqual(80)
+		expect(attrs.tool).toBe("cat")
 	})
 
 	it("does NOT emit OTLP records when telemetry is disabled", async () => {
@@ -1109,7 +1097,7 @@ describe("bash-tool-guard telemetry via pi.events", () => {
 		// emit() simply has no listeners and nothing reaches the network.
 		events.emit(BASH_TOOL_GUARD_EVENTS.WARN, {
 			category: "read",
-			matchedSegment: "cat foo.ts",
+			tool: "cat",
 			count: 1,
 		})
 		expect(fetchMock).not.toHaveBeenCalled()

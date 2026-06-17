@@ -73,12 +73,16 @@ describe("resource definitions", () => {
 
 	it("registers bash-tool-guard as a toggleable extension", () => {
 		const resources = getResourceDefinitions()
-		expect(resources.find((resource) => resource.id === "extensions.bash-tool-guard")).toMatchObject({
+		const resource = resources.find((r) => r.id === "extensions.bash-tool-guard")
+		expect(resource).toMatchObject({
 			kind: "extensions",
 			label: "Bash-tool guard",
 			defaultEnabled: true,
-			restartRequired: true,
 		})
+		// Toggling is dynamic — the tool_call handler consults
+		// isResourceEnabled on every bash call, so no restart is
+		// required when the user flips the /resources toggle.
+		expect(resource?.restartRequired).toBeFalsy()
 	})
 })
 

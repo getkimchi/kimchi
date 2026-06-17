@@ -12,7 +12,7 @@ describe("classifyBashCommand — read patterns", () => {
 		expect(classifyBashCommand("cat src/foo.ts")).toMatchObject({
 			category: "read",
 			matchedSegment: "cat src/foo.ts",
-			program: "cat",
+			tool: "cat",
 		})
 	})
 
@@ -64,9 +64,9 @@ describe("classifyBashCommand — read patterns", () => {
 		expect(classifyBashCommand("cat src/foo.ts")?.suggestion).toMatch(/read tool/)
 	})
 
-	it("exposes the program name (for telemetry)", () => {
-		expect(classifyBashCommand("sed -n '1,5p' foo.ts")?.program).toBe("sed")
-		expect(classifyBashCommand("rtk cat foo.ts")?.program).toBe("cat")
+	it("exposes the tool name (for telemetry)", () => {
+		expect(classifyBashCommand("sed -n '1,5p' foo.ts")?.tool).toBe("sed")
+		expect(classifyBashCommand("rtk cat foo.ts")?.tool).toBe("cat")
 	})
 })
 
@@ -207,8 +207,8 @@ describe("BashToolGuard", () => {
 		expect(result.count).toBe(1)
 	})
 
-	it("returns block on second match of same category", () => {
-		const guard = new BashToolGuard()
+	it("returns block on second match of same category (when blockOnThreshold=true)", () => {
+		const guard = new BashToolGuard({ blockOnThreshold: true })
 		guard.recordCommand("cat foo.ts")
 		const result = guard.recordCommand("head -n 5 bar.ts") as BashGuardBlockResult
 		expect(result.decision).toBe("block")
@@ -216,8 +216,18 @@ describe("BashToolGuard", () => {
 		expect(result.count).toBe(2)
 	})
 
-	it("uses per-category counters (cat doesn't burn sed budget)", () => {
+	it("keeps steering after threshold when blockOnThreshold is false (default)", () => {
+		// Default behaviour: warn-only. The guard never refuses a bash call
+		// unless the caller explicitly opts in via blockOnThreshold: true.
 		const guard = new BashToolGuard()
+		expect(guard.recordCommand("cat foo.ts").decision).toBe("warn")
+		expect(guard.recordCommand("cat bar.ts").decision).toBe("warn")
+		expect(guard.recordCommand("cat baz.ts").decision).toBe("warn")
+		expect(guard.recordCommand("cat qux.ts").decision).toBe("warn")
+	})
+
+	it("uses per-category counters (cat doesn't burn sed budget)", () => {
+		const guard = new BashToolGuard({ blockOnThreshold: true })
 		expect(guard.recordCommand("cat foo.ts").decision).toBe("warn")
 		// Different category, fresh budget → warn again, not block.
 		expect(guard.recordCommand("sed -i 's/foo/bar/' foo.ts").decision).toBe("warn")
@@ -229,14 +239,17 @@ describe("BashToolGuard", () => {
 	})
 
 	it("respects custom warnThreshold (global)", () => {
-		const guard = new BashToolGuard({ warnThreshold: 2 })
+		const guard = new BashToolGuard({ warnThreshold: 2, blockOnThreshold: true })
 		expect(guard.recordCommand("cat a.ts").decision).toBe("warn")
 		expect(guard.recordCommand("cat b.ts").decision).toBe("warn")
 		expect(guard.recordCommand("cat c.ts").decision).toBe("block")
 	})
 
 	it("respects per-category warnThresholds", () => {
-		const guard = new BashToolGuard({ warnThresholds: { read: 3, edit: 0, write: 1 } })
+		const guard = new BashToolGuard({
+			warnThresholds: { read: 3, edit: 0, write: 1 },
+			blockOnThreshold: true,
+		})
 		// read budget = 3 warns before block
 		expect(guard.recordCommand("cat a.ts").decision).toBe("warn")
 		expect(guard.recordCommand("cat b.ts").decision).toBe("warn")
@@ -250,7 +263,11 @@ describe("BashToolGuard", () => {
 	})
 
 	it("per-category overrides fallback to global warnThreshold when partial", () => {
-		const guard = new BashToolGuard({ warnThreshold: 1, warnThresholds: { edit: 3 } })
+		const guard = new BashToolGuard({
+			warnThreshold: 1,
+			warnThresholds: { edit: 3 },
+			blockOnThreshold: true,
+		})
 		// read falls back to global (1)
 		expect(guard.recordCommand("cat a.ts").decision).toBe("warn")
 		expect(guard.recordCommand("cat b.ts").decision).toBe("block")
@@ -345,8 +362,8 @@ describe("BashToolGuard", () => {
 	})
 })
 
-describe("BashToolGuard — explicit user request override (program name)", () => {
-	it("allows when user prompt mentions the matched program", () => {
+describe("BashToolGuard — explicit user request override (tool name)", () => {
+	it("allows when user prompt mentions the matched tool", () => {
 		const guard = new BashToolGuard()
 		guard.setLastUserPrompt("please use sed to fix the typo in foo.ts")
 		expect(guard.recordCommand("sed -i 's/typo/fix/' foo.ts")).toEqual({
@@ -378,13 +395,21 @@ describe("BashToolGuard — explicit user request override (program name)", () =
 		expect(guard.recordCommand("cat foo.ts")).toEqual({ decision: "allow", reason: "user-request" })
 	})
 
-	it("blocks when user prompt does NOT mention the program AND has no semantic intent", () => {
-		const guard = new BashToolGuard()
+	it("blocks when user prompt does NOT mention the tool AND has no semantic intent (opt-in)", () => {
+		const guard = new BashToolGuard({ blockOnThreshold: true })
 		// 'fix the typo in foo.ts' would match the edit semantic intent
-		// pattern, so use a prompt that mentions neither program nor intent.
+		// pattern, so use a prompt that mentions neither tool nor intent.
 		guard.setLastUserPrompt("please change foo.ts")
 		expect(guard.recordCommand("sed -i 's/typo/fix/' foo.ts").decision).toBe("warn")
 		expect(guard.recordCommand("sed -i 's/x/y/' foo.ts").decision).toBe("block")
+	})
+
+	it("warns repeatedly when user prompt lacks explicit intent (default opt-in)", () => {
+		const guard = new BashToolGuard()
+		guard.setLastUserPrompt("please change foo.ts")
+		expect(guard.recordCommand("sed -i 's/typo/fix/' foo.ts").decision).toBe("warn")
+		expect(guard.recordCommand("sed -i 's/x/y/' foo.ts").decision).toBe("warn")
+		expect(guard.recordCommand("sed -i 's/a/b/' foo.ts").decision).toBe("warn")
 	})
 
 	it("uses word-boundary matching (no false positives on substrings)", () => {
@@ -410,7 +435,7 @@ describe("BashToolGuard — explicit user request override (program name)", () =
 	})
 
 	it("explicit request overrides per-category but other categories still guard", () => {
-		const guard = new BashToolGuard()
+		const guard = new BashToolGuard({ blockOnThreshold: true })
 		guard.setLastUserPrompt("use sed to fix foo.ts")
 		// sed is explicitly requested → allow
 		expect(guard.recordCommand("sed -i 's/a/b/' foo.ts")).toEqual({
@@ -439,7 +464,7 @@ describe("BashToolGuard — explicit user request override (program name)", () =
 		expect(guard.recordCommand("cat foo.ts")).toEqual({ decision: "allow", reason: "user-request" })
 	})
 
-	it("matches programs wrapped in RTK (matchedSegment is the unwrapped form)", () => {
+	it("matches tools wrapped in RTK (matchedSegment is the unwrapped form)", () => {
 		const guard = new BashToolGuard()
 		guard.setLastUserPrompt("use cat to read foo.ts")
 		// matchedSegment is "cat foo.ts" after stripRtk
@@ -463,9 +488,9 @@ describe("BashToolGuard — explicit user request override (program name)", () =
 	})
 })
 
-describe("BashToolGuard — semantic intent override (no program name)", () => {
+describe("BashToolGuard — semantic intent override (no tool name)", () => {
 	// These tests verify the guard detects intent phrases like "read the file"
-	// even when the user doesn't name the program explicitly.
+	// even when the user doesn't name the tool explicitly.
 
 	describe("read intent", () => {
 		it("'read the file foo.ts' allows cat", () => {

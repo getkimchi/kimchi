@@ -8,13 +8,19 @@ import { BASH_TOOL_GUARD_EVENTS } from "./bash-tool-guard-events.js"
 import bashToolGuardExtension, { STEER_MESSAGE_TYPE } from "./bash-tool-guard.js"
 
 let mockMode: string | undefined = "default"
+let mockResourceEnabled = true
 
 vi.mock("./permissions/mode-controller.js", () => ({
 	getPermissionMode: () => (mockMode ? { mode: mockMode, source: "user" } : undefined),
 }))
 
+vi.mock("../resources/store.js", () => ({
+	isResourceEnabled: (id: string) => (id === "extensions.bash-tool-guard" ? mockResourceEnabled : true),
+}))
+
 afterEach(() => {
 	mockMode = "default"
+	mockResourceEnabled = true
 })
 
 interface BlockResult {
@@ -78,7 +84,7 @@ function fireSessionStart(pi: MockExtensionAPI): void {
 describe("bashToolGuardExtension wiring", () => {
 	it("registers session_start, input, and tool_call handlers", () => {
 		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
+		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		expect(pi.handlers.session_start?.length).toBeGreaterThan(0)
 		expect(pi.handlers.input?.length).toBeGreaterThan(0)
 		expect(pi.handlers.tool_call?.length).toBeGreaterThan(0)
@@ -86,7 +92,7 @@ describe("bashToolGuardExtension wiring", () => {
 
 	it("first matching bash call steers, doesn't block", () => {
 		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
+		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
 		const result = emit(pi, "tool_call", {
@@ -103,7 +109,7 @@ describe("bashToolGuardExtension wiring", () => {
 
 	it("second matching bash call blocks", () => {
 		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
+		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
 		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat a.ts" } })
@@ -117,7 +123,7 @@ describe("bashToolGuardExtension wiring", () => {
 
 	it("different categories have independent budgets", () => {
 		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
+		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
 		// First read → steer
@@ -138,7 +144,7 @@ describe("bashToolGuardExtension wiring", () => {
 
 	it("session_start resets counters", () => {
 		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
+		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
 		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat a.ts" } })
@@ -158,7 +164,7 @@ describe("bashToolGuardExtension wiring", () => {
 
 	it("user `input` event resets counters (extension source does not)", () => {
 		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
+		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
 		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat a.ts" } })
@@ -177,7 +183,7 @@ describe("bashToolGuardExtension wiring", () => {
 
 	it("extension-source input does NOT reset counters", () => {
 		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
+		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
 		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat a.ts" } })
@@ -196,7 +202,7 @@ describe("bashToolGuardExtension wiring", () => {
 
 	it("non-bash tool calls are ignored", () => {
 		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
+		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
 		emit(pi, "tool_call", { toolName: "read", input: { filePath: "foo.ts" } })
@@ -208,7 +214,7 @@ describe("bashToolGuardExtension wiring", () => {
 
 	it("legitimate bash calls are not flagged", () => {
 		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
+		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
 		const legitCommands = [
@@ -232,7 +238,7 @@ describe("bashToolGuardExtension wiring", () => {
 	it("plan-mode permission context disables the guard", () => {
 		mockMode = "plan"
 		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
+		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
 		// Even repeated anti-patterns should pass under plan mode.
@@ -277,7 +283,10 @@ describe("bashToolGuardExtension wiring", () => {
 		// Sanity check: a permissive caller predicate lets the guard run.
 		mockMode = "default"
 		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI, { isEnabled: () => true })
+		bashToolGuardExtension(pi as unknown as PI, {
+			isEnabled: () => true,
+			blockOnThreshold: true,
+		})
 		fireSessionStart(pi)
 
 		// First `cat` warns (steer message), second blocks.
@@ -287,9 +296,36 @@ describe("bashToolGuardExtension wiring", () => {
 		expect(result?.block).toBe(true)
 	})
 
+	it("dynamically skips tool_call when resource is disabled at runtime", () => {
+		// The /resources toggle should take effect mid-session without
+		// a restart. The tool_call handler consults isResourceEnabled
+		// on every bash call.
+		mockMode = "default"
+		mockResourceEnabled = false
+		const pi = createMockPI()
+		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
+		fireSessionStart(pi)
+
+		// Resource disabled → guard stays silent even on repeated
+		// anti-patterns that would otherwise exceed the threshold.
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat a.ts" } })
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat b.ts" } })
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat c.ts" } })
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+		expect(pi._blockResult).toBeUndefined()
+		expect(pi._emittedEvents).toHaveLength(0)
+
+		// Re-enabling the resource mid-session restores the guard.
+		mockResourceEnabled = true
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat a.ts" } })
+		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+		const result = emit(pi, "tool_call", { toolName: "bash", input: { command: "cat b.ts" } })
+		expect(result?.block).toBe(true)
+	})
+
 	it("block reason text names the better tool", () => {
 		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
+		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
 		emit(pi, "tool_call", {
@@ -305,7 +341,7 @@ describe("bashToolGuardExtension wiring", () => {
 
 	it("non-string command input is ignored", () => {
 		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
+		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
 		const result = emit(pi, "tool_call", {
@@ -318,7 +354,7 @@ describe("bashToolGuardExtension wiring", () => {
 
 	it("empty command is ignored", () => {
 		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
+		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
 		const result = emit(pi, "tool_call", {
@@ -331,7 +367,7 @@ describe("bashToolGuardExtension wiring", () => {
 
 	it("missing toolName is ignored", () => {
 		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
+		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
 		const result = emit(pi, "tool_call", { input: { command: "cat foo.ts" } })
@@ -339,9 +375,9 @@ describe("bashToolGuardExtension wiring", () => {
 		expect(pi.sendMessage).not.toHaveBeenCalled()
 	})
 
-	it("user prompt mentioning the program bypasses the guard", () => {
+	it("user prompt mentioning the tool bypasses the guard", () => {
 		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
+		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
 		// User explicitly asks: "please use sed to fix foo.ts"
@@ -364,9 +400,9 @@ describe("bashToolGuardExtension wiring", () => {
 		expect(pi.sendMessage).not.toHaveBeenCalled()
 	})
 
-	it("explicit-request override is per-program (cat allowed, sed still guarded)", () => {
+	it("explicit-request override is per-tool (cat allowed, sed still guarded)", () => {
 		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
+		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
 		emit(pi, "input", { source: "interactive", text: "use cat to read foo.ts" })
@@ -389,7 +425,7 @@ describe("bashToolGuardExtension wiring", () => {
 
 	it("substring false-positive guard: 'categorize' does not bypass cat block", () => {
 		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
+		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
 		// 'cat' inside 'categorize' — word-boundary match means this should NOT bypass.
@@ -405,7 +441,7 @@ describe("bashToolGuardExtension wiring", () => {
 
 	it("next user input overrides the previous prompt (no stale override)", () => {
 		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
+		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
 		// First prompt explicitly asks for sed → allowed
@@ -431,7 +467,7 @@ describe("bashToolGuardExtension wiring", () => {
 describe("bashToolGuardExtension — compound commands", () => {
 	it("flags read in compound (cat foo && echo done)", () => {
 		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
+		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
 		const result = emit(pi, "tool_call", {
@@ -453,7 +489,7 @@ describe("bashToolGuardExtension — compound commands", () => {
 
 	it("flags write in compound (git status; echo x > foo)", () => {
 		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
+		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
 		const result = emit(pi, "tool_call", {
@@ -466,7 +502,7 @@ describe("bashToolGuardExtension — compound commands", () => {
 
 	it("blocks write in compound on second match", () => {
 		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
+		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
 		emit(pi, "tool_call", {
@@ -483,7 +519,7 @@ describe("bashToolGuardExtension — compound commands", () => {
 
 	it("allows compound read when user explicitly asks", () => {
 		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
+		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
 		emit(pi, "input", { source: "interactive", text: "cat foo.ts and bar.ts" })
@@ -497,7 +533,7 @@ describe("bashToolGuardExtension — compound commands", () => {
 
 	it("flags pipe where first segment is a read", () => {
 		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
+		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
 		const result = emit(pi, "tool_call", {
@@ -512,7 +548,7 @@ describe("bashToolGuardExtension — compound commands", () => {
 describe("bashToolGuardExtension — semantic intent override", () => {
 	it("'read the file' intent allows cat through the full extension", () => {
 		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
+		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
 		emit(pi, "input", { source: "interactive", text: "read the file foo.ts and summarize" })
@@ -526,7 +562,7 @@ describe("bashToolGuardExtension — semantic intent override", () => {
 
 	it("'fix the typo' intent allows sed through the full extension", () => {
 		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
+		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
 		emit(pi, "input", { source: "interactive", text: "fix the typo in foo.ts" })
@@ -540,7 +576,7 @@ describe("bashToolGuardExtension — semantic intent override", () => {
 
 	it("'write to file' intent allows echo redirect through the full extension", () => {
 		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
+		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
 		emit(pi, "input", { source: "interactive", text: "write the result to output.txt" })
@@ -554,7 +590,7 @@ describe("bashToolGuardExtension — semantic intent override", () => {
 
 	it("semantic intent for one category does NOT bypass other categories", () => {
 		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
+		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
 		// 'read the file' → read semantic intent active
@@ -579,7 +615,7 @@ describe("bashToolGuardExtension — semantic intent override", () => {
 describe("bashToolGuardExtension — telemetry events via pi.events", () => {
 	it("emits warn event when first category match fires", () => {
 		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
+		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
 		emit(pi, "tool_call", {
@@ -591,7 +627,7 @@ describe("bashToolGuardExtension — telemetry events via pi.events", () => {
 			BASH_TOOL_GUARD_EVENTS.WARN,
 			expect.objectContaining({
 				category: "read",
-				matchedSegment: "cat foo.ts",
+				tool: "cat",
 				count: 1,
 			}),
 		)
@@ -599,7 +635,7 @@ describe("bashToolGuardExtension — telemetry events via pi.events", () => {
 
 	it("emits block event when threshold exceeded", () => {
 		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
+		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
 		emit(pi, "tool_call", {
@@ -622,7 +658,7 @@ describe("bashToolGuardExtension — telemetry events via pi.events", () => {
 
 	it("emits allow-by-user-request event when explicit override fires", () => {
 		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
+		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
 		emit(pi, "input", { source: "interactive", text: "please use sed to fix foo.ts" })
@@ -635,14 +671,14 @@ describe("bashToolGuardExtension — telemetry events via pi.events", () => {
 			BASH_TOOL_GUARD_EVENTS.ALLOWED_BY_USER_REQUEST,
 			expect.objectContaining({
 				category: "edit",
-				program: "sed",
+				tool: "sed",
 			}),
 		)
 	})
 
 	it("emits semantic intent allow-by-user-request event", () => {
 		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
+		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
 		emit(pi, "input", { source: "interactive", text: "read the file foo.ts" })
@@ -655,14 +691,14 @@ describe("bashToolGuardExtension — telemetry events via pi.events", () => {
 			BASH_TOOL_GUARD_EVENTS.ALLOWED_BY_USER_REQUEST,
 			expect.objectContaining({
 				category: "read",
-				program: "cat",
+				tool: "cat",
 			}),
 		)
 	})
 
 	it("does NOT emit events for non-matching bash", () => {
 		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
+		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
 		emit(pi, "tool_call", {
@@ -676,7 +712,7 @@ describe("bashToolGuardExtension — telemetry events via pi.events", () => {
 	it("does NOT emit events when guard is disabled (plan mode)", () => {
 		mockMode = "plan"
 		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
+		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
 		fireSessionStart(pi)
 
 		emit(pi, "tool_call", {
@@ -697,6 +733,7 @@ describe("bashToolGuardExtension — per-category thresholds", () => {
 		const pi = createMockPI()
 		bashToolGuardExtension(pi as unknown as PI, {
 			warnThresholds: { read: 3, edit: 0, write: 1 },
+			blockOnThreshold: true,
 		})
 		fireSessionStart(pi)
 

@@ -435,12 +435,15 @@ function onBashGuardWarn(raw: unknown): void {
 	const ctx = _ctx
 	if (!ctx) return
 	const payload = raw as BashToolGuardWarnPayload
+	// Only structured fields land in OTLP. Raw command text is
+	// intentionally NOT emitted to avoid leaking user data or secrets
+	// that may appear inside heredocs, echo payloads, or sed/awk
+	// replacement strings. Aggregation is done by category + tool.
 	ctx.emit("bash_tool_guard.warn", {
 		model: ctx.currentModel,
 		category: payload.category,
+		tool: payload.tool,
 		count: payload.count,
-		// Trim matched segment so we don't leak huge command strings into telemetry.
-		segment_preview: payload.matchedSegment.slice(0, 80),
 	})
 }
 
@@ -453,8 +456,8 @@ function onBashGuardBlock(raw: unknown): void {
 	ctx.emit("bash_tool_guard.block", {
 		model: ctx.currentModel,
 		category: payload.category,
+		tool: payload.tool,
 		count: payload.count,
-		segment_preview: payload.matchedSegment.slice(0, 80),
 	})
 }
 
@@ -467,7 +470,7 @@ function onBashGuardAllowedByUserRequest(raw: unknown): void {
 	ctx.emit("bash_tool_guard.allowed_by_user_request", {
 		model: ctx.currentModel,
 		category: payload.category,
-		program: payload.program,
+		tool: payload.tool,
 	})
 }
 
