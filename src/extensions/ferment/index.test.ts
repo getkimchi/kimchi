@@ -14,11 +14,13 @@ import { clearAllPendingPlanReviews, getPendingPlanReview, setPendingPlanReview 
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
 import {
 	clearActiveFermentId,
+	clearPendingCompaction,
 	getActive,
 	getActiveFermentId,
 	isAutomatedContinuationEnabled,
 	setActive,
 	setContinuationPolicy,
+	setPendingCompaction,
 } from "./state.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
 import { completeFerment, scopeFerment } from "./tools/lifecycle.js"
@@ -1233,5 +1235,78 @@ Does this plan look right?`,
 
 		expect(ctx.ui.select).not.toHaveBeenCalled()
 		expect(pi.sendUserMessage).not.toHaveBeenCalled()
+	})
+
+	describe("auto-compaction on agent_end", () => {
+		const NOW = "2026-01-01T00:00:00.000Z"
+
+		afterEach(() => {
+			vi.restoreAllMocks()
+		})
+
+		it("calls ctx.compact() when a pending compaction exists for the active ferment", async () => {
+			const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-compaction-trigger-test-")))
+			const runtime: FermentRuntime = {
+				...createDefaultFermentRuntime(),
+				getStorage: () => storage,
+			}
+			const draft = storage.create("Compaction Trigger Test")
+			runtime.setActive(draft)
+			setPendingCompaction(draft.id, {
+				kind: "step",
+				fermentId: draft.id,
+				phaseId: "phase-1",
+				stepId: "step-1",
+				completedAt: NOW,
+			})
+
+			const { handlers } = registerFermentExtension(runtime)
+			const agentEnd = handlers.get("agent_end")
+			if (!agentEnd) throw new Error("agent_end handler was not registered")
+
+			const compact = vi.fn()
+			const notify = vi.fn()
+			const ctx = {
+				compact,
+				ui: { notify },
+			}
+
+			await agentEnd({ type: "agent_end" }, ctx)
+
+			expect(compact).toHaveBeenCalledTimes(1)
+			expect(compact).toHaveBeenCalledWith(
+				expect.objectContaining({
+					customInstructions: expect.stringContaining("Compaction Trigger Test"),
+				}),
+			)
+
+			clearPendingCompaction(draft.id)
+		})
+
+		it("does not call ctx.compact() when no pending compaction exists", async () => {
+			const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-no-compaction-test-")))
+			const runtime: FermentRuntime = {
+				...createDefaultFermentRuntime(),
+				getStorage: () => storage,
+			}
+			const draft = storage.create("No Compaction Test")
+			runtime.setActive(draft)
+			// Intentionally do NOT set a pending compaction
+
+			const { handlers } = registerFermentExtension(runtime)
+			const agentEnd = handlers.get("agent_end")
+			if (!agentEnd) throw new Error("agent_end handler was not registered")
+
+			const compact = vi.fn()
+			const notify = vi.fn()
+			const ctx = {
+				compact,
+				ui: { notify },
+			}
+
+			await agentEnd({ type: "agent_end" }, ctx)
+
+			expect(compact).not.toHaveBeenCalled()
+		})
 	})
 })

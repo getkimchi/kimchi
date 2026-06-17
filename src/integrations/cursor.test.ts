@@ -22,8 +22,8 @@ describe("mergeCursorConfig", () => {
 		expect(mc["deep-search"].modelName).toBe("kimchi/kimi-k2.6")
 		expect(mc["background-composer"].modelName).toBe("kimchi/kimi-k2.6")
 		expect(mc["composer-ensemble"].modelName).toBe("kimchi/kimi-k2.6")
-		expect(mc["cmd-k"].modelName).toBe("kimchi/nemotron-3-super-fp4")
-		expect(mc["plan-execution"].modelName).toBe("kimchi/nemotron-3-super-fp4")
+		expect(mc["cmd-k"].modelName).toBe("kimchi/nemotron-3-ultra-fp4")
+		expect(mc["plan-execution"].modelName).toBe("kimchi/nemotron-3-ultra-fp4")
 		expect(mc["quick-agent"].modelName).toBe("kimchi/minimax-m2.7")
 	})
 
@@ -42,7 +42,7 @@ describe("mergeCursorConfig", () => {
 			"other/model-a",
 			"kimchi/kimi-k2.6",
 			"kimchi/kimi-k2.5",
-			"kimchi/nemotron-3-super-fp4",
+			"kimchi/nemotron-3-ultra-fp4",
 			"kimchi/minimax-m2.7",
 			"kimchi/claude-op-4-6",
 			"kimchi/claude-so-4-7",
@@ -56,7 +56,7 @@ describe("mergeCursorConfig", () => {
 					"kimchi/kimi-k2.6",
 					"other/keep-me",
 					"kimchi/claude-op-4-6",
-					"kimchi/nemotron-3-super-fp4",
+					"kimchi/nemotron-3-ultra-fp4",
 				],
 			},
 		}

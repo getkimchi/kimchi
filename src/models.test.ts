@@ -273,9 +273,42 @@ describe("updateModelsConfig", () => {
 		expect(written.providers.openai.models).toHaveLength(1)
 	})
 
-	it("throws on fetch failure when no cached config exists", async () => {
-		vi.mocked(fetch).mockRejectedValueOnce(new Error("network error"))
-		await expect(updateModelsConfig(modelsJsonPath, "test-key")).rejects.toThrow("network error")
+	it("throws after exhausting retries on network errors when no cache exists", async () => {
+		vi.mocked(fetch).mockRejectedValue(new Error("network error"))
+		const error = await updateModelsConfig(modelsJsonPath, "test-key", { sleep: async () => {} }).catch((e) => e)
+
+		expect(error).toBeInstanceOf(ModelsFetchError)
+		expect(isTransientModelsError(error)).toBe(true)
+		expect((error as Error).message).toContain("network error")
+		expect(fetch).toHaveBeenCalledTimes(3)
+	})
+
+	it("retries a network error and succeeds on a later attempt", async () => {
+		vi.mocked(fetch)
+			.mockRejectedValueOnce(new Error("ECONNREFUSED"))
+			.mockResolvedValueOnce({
+				ok: true,
+				json: async () => ({ models: [KIMI] }),
+			} as Response)
+
+		const result = await updateModelsConfig(modelsJsonPath, "test-key", { sleep: async () => {} })
+
+		expect(fetch).toHaveBeenCalledTimes(2)
+		expect(result.models.map((m) => m.slug)).toEqual(["kimi-k2.5"])
+	})
+
+	it("retries a timeout error and succeeds on a later attempt", async () => {
+		vi.mocked(fetch)
+			.mockRejectedValueOnce(new Error("The operation timed out."))
+			.mockResolvedValueOnce({
+				ok: true,
+				json: async () => ({ models: [KIMI] }),
+			} as Response)
+
+		const result = await updateModelsConfig(modelsJsonPath, "test-key", { sleep: async () => {} })
+
+		expect(fetch).toHaveBeenCalledTimes(2)
+		expect(result.models.map((m) => m.slug)).toEqual(["kimi-k2.5"])
 	})
 
 	it("throws on non-ok response when no cached config exists", async () => {
@@ -380,6 +413,40 @@ describe("updateModelsConfig", () => {
 		const result = await updateModelsConfig(modelsJsonPath, "test-key")
 
 		expect(result.models.map((m) => m.slug)).toEqual(["kimi-k2.5", "claude-sonnet-4-6", "gpt-4"])
+	})
+
+	it("falls back to cached metadata after exhausting network retries", async () => {
+		const OPENAI_MODEL = {
+			id: "gpt-4",
+			name: "GPT-4",
+			reasoning: false,
+			input: ["text"],
+			contextWindow: 8192,
+			maxTokens: 4096,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			provider: "openai",
+		}
+
+		// Seed cache with a successful fetch
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [KIMI, SONNET_46] }),
+		} as Response)
+		await updateModelsConfig(modelsJsonPath, "test-key")
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		config.providers.openai = { models: [OPENAI_MODEL] }
+		writeFileSync(modelsJsonPath, JSON.stringify(config))
+		vi.mocked(fetch).mockClear()
+
+		// All retry attempts fail — proves fallback works after retry exhaustion
+		vi.mocked(fetch).mockRejectedValue(new Error("network down"))
+
+		const result = await updateModelsConfig(modelsJsonPath, "test-key", { sleep: async () => {} })
+
+		// Cache + custom provider are returned
+		expect(result.models.map((m) => m.slug)).toEqual(["kimi-k2.5", "claude-sonnet-4-6", "gpt-4"])
+		// Confirms retry exhaustion actually happened (3 attempts, no success)
+		expect(fetch).toHaveBeenCalledTimes(3)
 	})
 
 	it("falls back to cached metadata when API returns empty list", async () => {

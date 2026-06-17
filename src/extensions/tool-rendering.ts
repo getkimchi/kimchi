@@ -242,8 +242,8 @@ function patchGlobalToolBorders(): void {
 
 	const originalRender = proto.render
 	proto.render = function patchedContainerRender(width: number): string[] {
+		if (isToolExecutionLike(this) && HIDDEN_TOOL_BLOCK_NAMES.has(this.toolName.toLowerCase())) return []
 		if (isToolExecutionLike(this)) {
-			if (HIDDEN_TOOL_BLOCK_NAMES.has(this.toolName.toLowerCase())) return []
 			const cached = (this as any)[TOOL_RENDER_CACHE]
 			if (cached?.width === width && cached?.mode === toolBackgroundMode) {
 				return cached.lines
@@ -3373,7 +3373,9 @@ export function summarizeOpenAiToolCall(name: string, args: any, theme: Theme, s
 		case "alpha_read_code":
 			return getStringArg(args, "githubUrl", "github_url") || theme.fg("muted", "repository")
 		case "Skill":
-			return getStringArg(args, "name") || theme.fg("muted", "run skill")
+			// SkillToolSchema accepts both 'skill' (primary) and 'name' (alias for Claude Code compat).
+			// The adapter passes 'skill'; direct tool calls may pass either. Check both before falling back.
+			return getStringArg(args, "skill") || getStringArg(args, "name") || theme.fg("muted", "run skill")
 		case "EnterPlanMode":
 			return theme.fg("muted", "enable read-only planning")
 		case "ExitPlanMode":
@@ -3943,8 +3945,16 @@ export default function (pi: ExtensionAPI) {
 			return bashTool.execute(toolCallId, params, signal, onUpdate)
 		},
 		renderCall(args, theme, ctx) {
-			const summary = summarizeText(getBashCommandForDisplay(args.command) ?? args.command, 72)
+			const command = getBashCommandForDisplay(args.command) ?? args.command
 			const timer = formatToolTimer(getToolElapsedMs(ctx))
+			if (ctx.expanded && command) {
+				// Expanded: show the tool name + timer on line 1, then the full
+				// command (with real newlines) as a continued branch block below.
+				const hdr = toolHeader("Bash", "", theme, toolStatusDot(ctx, theme), timer)
+				const cmdBlock = withBranch(command.split("\n").map((l) => theme.fg("accent", l)).join("\n"), theme, false, true)
+				return makeText(ctx.lastComponent, `${hdr}\n${cmdBlock}`)
+			}
+			const summary = summarizeText(command, 72)
 			return makeText(ctx.lastComponent, toolHeader("Bash", summary, theme, toolStatusDot(ctx, theme), timer))
 		},
 		renderResult(result, { expanded, isPartial }, theme, ctx) {
@@ -3974,7 +3984,7 @@ export default function (pi: ExtensionAPI) {
 			const collapsed = bashCollapsedLimit()
 			text += `\n${buildPreviewText(
 				nonEmpty.map((line) => theme.fg("dim", line)),
-				false,
+				expanded,
 				theme,
 				collapsed,
 			)}`

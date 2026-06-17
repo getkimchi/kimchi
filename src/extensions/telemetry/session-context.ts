@@ -74,9 +74,13 @@ export class SessionContext {
 	logBuffer: LogRecord[] = []
 	private logFlushTimer: NodeJS.Timeout | undefined
 	lastSessionType: string | undefined
+	/** Number of context compactions in the current session. */
+	compactionCount = 0
 
 	/** Cached user email from /v1/me — populated once in the background. */
 	userEmail: string | undefined
+	/** Cached user ID (uuid) from /v1/me — populated once in the background. */
+	userId: string | undefined
 	/** Resolves when the userEmail has been fetched (or the fetch failed). */
 	userEmailReady: Promise<void>
 	private resolveUserEmailReady!: () => void
@@ -110,6 +114,7 @@ export class SessionContext {
 		this.messageStartTimes.clear()
 		this.toolStartTimes.clear()
 		this.lastSessionType = undefined
+		this.compactionCount = 0
 		this.cumulative = getOrCreateAccumulator(this.sessionId)
 		this.inFlight.clear()
 		this.shuttingDown = false
@@ -145,6 +150,7 @@ export class SessionContext {
 			session_type: sessionType,
 			...ids,
 			...attrs,
+			"user.account_uuid": this.userId ?? "",
 		}
 		this.enqueueLogRecord(buildLogRecord(this.sessionId, eventName, toAttrs(merged)))
 	}
@@ -165,7 +171,13 @@ export class SessionContext {
 		}
 		this.lastSessionType = sessionType
 
-		const merged = { ...attrs, source: this.source, session_type: sessionType, ferment_id: ferment?.id ?? "" }
+		const merged = {
+			...attrs,
+			source: this.source,
+			session_type: sessionType,
+			ferment_id: ferment?.id ?? "",
+			"user.account_uuid": this.userId ?? "",
+		}
 		this.enqueueLogRecord(buildLogRecord(this.sessionId, eventName, toAttrs(merged)))
 	}
 
@@ -198,7 +210,18 @@ export class SessionContext {
 		if (metrics.length > 0) {
 			this.track(
 				this.userEmailReady.then(() =>
-					sendMetrics(this.config, this.sessionId, metrics, this.sessionStartNano, this.userEmail),
+					sendMetrics(
+						this.config,
+						this.sessionId,
+						metrics.map((m) => ({
+							...m,
+							attrs: {
+								...m.attrs,
+								"user.account_uuid": this.userId ?? "",
+							},
+						})),
+						this.sessionStartNano,
+					),
 				),
 			)
 		}
@@ -224,6 +247,7 @@ export class SessionContext {
 		}
 		getMe(apiKey)
 			.then((me) => {
+				this.userId = me.id
 				this.userEmail = me.email
 			})
 			.catch(() => {

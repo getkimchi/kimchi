@@ -5,7 +5,7 @@
  * docs/ferment-storage-schema.md.
  */
 
-import type { Ferment, Grade, Phase, Step } from "./types.js"
+import type { Ferment, FermentStatus, Grade, Phase, Step } from "./types.js"
 
 // ─── Grade helpers ────────────────────────────────────────────────────────────
 
@@ -97,6 +97,8 @@ export interface StatsMemories {
 
 export interface FermentStats {
 	fermentId: string
+	/** Current lifecycle stage of the ferment. */
+	lifecycleStage: FermentStatus
 	phases: StatsPhases
 	steps: StatsSteps
 	timing: StatsTiming
@@ -277,6 +279,7 @@ export function computeStats(ferment: Ferment): FermentStats {
 	// ── Assemble ───────────────────────────────────────────────────────────────
 	return {
 		fermentId: ferment.id,
+		lifecycleStage: ferment.status,
 		phases: {
 			total: phaseTotal,
 			completed: phaseCompleted,

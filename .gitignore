@@ -26,6 +26,13 @@ Thumbs.db
 # Test coverage
 coverage/
 
+# TUI E2E generated artifacts
+.tui-test/
+tui-traces/
+**/tui-traces/
+*.tui-e2e.txt
+*.tui-e2e.log
+
 # Kimchi docs directory
 .kimchi/
 .worktrees

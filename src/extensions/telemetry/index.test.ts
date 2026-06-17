@@ -388,11 +388,27 @@ describe("ferment lifecycle telemetry via pi.events", () => {
 		expect((rec as NonNullable<typeof rec>).attributes.map((a) => a.key)).not.toContain("grade")
 	})
 
-	it("ferment:abandoned → ferment.abandoned with reason", async () => {
+	it("ferment:abandoned → ferment.abandoned with all new diagnostic fields", async () => {
 		const { handlers, events } = await setup()
 		const { FERMENT_EVENTS } = await import("../ferment/domain-events.js")
 
-		events.emit(FERMENT_EVENTS.ABANDONED, { fermentId: "f-004", name: "Aborted", reason: "judge failed" })
+		// Emit a steering event first so steering_count is tracked.
+		events.emit(FERMENT_EVENTS.STARTED, { fermentId: "f-004", name: "Aborted", phaseCount: 3 })
+		events.emit(FERMENT_EVENTS.STEERING, { fermentId: "f-004" })
+		events.emit(FERMENT_EVENTS.STEERING, { fermentId: "f-004" })
+		events.emit(FERMENT_EVENTS.ABANDONED, {
+			fermentId: "f-004",
+			name: "Aborted",
+			reason: "judge failed",
+			lifecycleStage: "running",
+			scopingComplete: true,
+			completedPhases: 1,
+			totalPhases: 3,
+			phaseCompletionRatio: 1 / 3,
+			lastActivePhaseIndex: 2,
+			stepFailureCount: 1,
+			durationMs: 12345,
+		})
 		await getHandler(handlers, "session_shutdown")({ reason: "test" })
 
 		const rec = extractRecords().find((r) => r.eventName === "ferment.abandoned")
@@ -401,6 +417,103 @@ describe("ferment lifecycle telemetry via pi.events", () => {
 		expect(attrs.ferment_id).toBe("f-004")
 		expect(attrs.reason).toBe("judge failed")
 		expect(attrs.model).toBe("claude-sonnet-4-6")
+		// New diagnostic fields
+		expect(attrs.lifecycle_stage).toBe("running")
+		expect(attrs.scoping_complete).toBe("true")
+		expect(attrs.completed_phases).toBe("1")
+		expect(attrs.total_phases).toBe("3")
+		expect(Number(attrs.phase_completion_ratio)).toBeCloseTo(1 / 3)
+		expect(attrs.last_active_phase_index).toBe("2")
+		expect(attrs.step_failure_count).toBe("1")
+		expect(attrs.duration_ms).toBe("12345")
+		expect(attrs.steering_count).toBe("2")
+	})
+
+	it("ferment:abandoned → ferment.abandoned omits last_active_phase_index when undefined", async () => {
+		const { handlers, events } = await setup()
+		const { FERMENT_EVENTS } = await import("../ferment/domain-events.js")
+
+		events.emit(FERMENT_EVENTS.ABANDONED, {
+			fermentId: "f-004b",
+			name: "Draft Aborted",
+			lifecycleStage: "draft",
+			scopingComplete: false,
+			completedPhases: 0,
+			totalPhases: 0,
+			phaseCompletionRatio: 0,
+			lastActivePhaseIndex: undefined,
+			stepFailureCount: 0,
+			durationMs: 500,
+		})
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const rec = extractRecords().find((r) => r.eventName === "ferment.abandoned")
+		expect(rec).toBeDefined()
+		const attrs = attrsOf(rec as NonNullable<typeof rec>)
+		expect(attrs.lifecycle_stage).toBe("draft")
+		expect(attrs.scoping_complete).toBe("false")
+		expect(attrs.completed_phases).toBe("0")
+		expect(attrs.total_phases).toBe("0")
+		expect(attrs.phase_completion_ratio).toBe("0")
+		expect(attrs.duration_ms).toBe("500")
+		expect(attrs.steering_count).toBe("0")
+		// Optional field must be absent when undefined
+		expect((rec as NonNullable<typeof rec>).attributes.map((a) => a.key)).not.toContain("last_active_phase_index")
+	})
+
+	it("ferment:stalled → ferment.stalled event emitted for Leave paused path", async () => {
+		const { handlers, events } = await setup()
+		const { FERMENT_EVENTS } = await import("../ferment/domain-events.js")
+
+		events.emit(FERMENT_EVENTS.STALLED, {
+			fermentId: "f-stall-1",
+			name: "Stalled Ferment",
+			lifecycleStage: "paused",
+			idleDurationMs: 86400000, // 24 hours
+			completedPhases: 2,
+			totalPhases: 4,
+			phaseCompletionRatio: 0.5,
+		})
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const rec = extractRecords().find((r) => r.eventName === "ferment.stalled")
+		expect(rec).toBeDefined()
+		const attrs = attrsOf(rec as NonNullable<typeof rec>)
+		expect(attrs.ferment_id).toBe("f-stall-1")
+		expect(attrs.ferment_name).toBe("Stalled Ferment")
+		expect(attrs.lifecycle_stage).toBe("paused")
+		expect(attrs.idle_duration_ms).toBe("86400000")
+		expect(attrs.completed_phases).toBe("2")
+		expect(attrs.total_phases).toBe("4")
+		expect(attrs.phase_completion_ratio).toBe("0.5")
+		expect(attrs.model).toBe("claude-sonnet-4-6")
+	})
+
+	it("ferment:stalled → ferment.stalled event emitted for crash-recovery path", async () => {
+		const { handlers, events } = await setup()
+		const { FERMENT_EVENTS } = await import("../ferment/domain-events.js")
+
+		events.emit(FERMENT_EVENTS.STALLED, {
+			fermentId: "f-stall-crash",
+			name: "Crashed Ferment",
+			lifecycleStage: "running",
+			idleDurationMs: 3600000, // 1 hour
+			completedPhases: 0,
+			totalPhases: 2,
+			phaseCompletionRatio: 0,
+		})
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const rec = extractRecords().find((r) => r.eventName === "ferment.stalled")
+		expect(rec).toBeDefined()
+		const attrs = attrsOf(rec as NonNullable<typeof rec>)
+		expect(attrs.ferment_id).toBe("f-stall-crash")
+		expect(attrs.ferment_name).toBe("Crashed Ferment")
+		expect(attrs.lifecycle_stage).toBe("running")
+		expect(attrs.idle_duration_ms).toBe("3600000")
+		expect(attrs.completed_phases).toBe("0")
+		expect(attrs.total_phases).toBe("2")
+		expect(attrs.phase_completion_ratio).toBe("0")
 	})
 
 	it("ferment:phase_started → ferment.phase.started with phase_id", async () => {

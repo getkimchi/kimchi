@@ -23,24 +23,31 @@ import {
 	bumpStepCompleteAttempt,
 	bumpStepStart,
 	captureJudgeContext,
+	clearAllPendingCompactions,
 	clearAllScopingGates,
 	clearAllStepStarts,
 	clearBlockRetry,
+	clearCompactionInFlight,
+	clearPendingCompaction,
 	clearFermentState as clearStateForFerment,
 	clearStepCompleteAttempt,
 	clearStepStart,
 	consumeScopingGate,
+	drainPendingCompactions,
 	getActive,
 	getActiveId,
 	getBlockRetry,
 	getContinuationPolicy,
 	getLastHumanInputAt,
+	getPendingCompaction,
 	getPhaseStartRef,
 	getStepStartRef,
 	getStorage,
 	isAutomatedContinuationEnabled,
+	isCompactionInFlight,
 	isScopingConfirmed,
 	isScopingInteractive,
+	markCompactionInFlight,
 	markHumanInput,
 	markScopingConfirmed,
 	markScopingInteractive,
@@ -48,10 +55,12 @@ import {
 	setActive,
 	setAutomatedContinuationEnabled,
 	setContinuationPolicy,
+	setPendingCompaction,
 	setPhaseStartRef,
 	setStepStartRef,
 } from "./state.js"
 import type { ContinuationPolicy } from "./state.js"
+import type { PendingCompaction } from "./state.js"
 
 export interface FermentRuntime {
 	/** pi.events bus — set by the ferment extension factory so all mutations
@@ -101,6 +110,15 @@ export interface FermentRuntime {
 	bumpStepCompleteAttempt(fermentId: string, phaseId: string, stepId: string): number
 	clearStepCompleteAttempt(fermentId: string, phaseId: string, stepId: string): void
 	clearFermentState(fermentId: string): void
+	setPendingCompaction(fermentId: string, pending: PendingCompaction): void
+	getPendingCompaction(fermentId: string): PendingCompaction | undefined
+	clearPendingCompaction(fermentId: string): void
+	/** Drain ready (non-in-flight) pending compactions, leaving in-flight ones for the next tick. */
+	drainPendingCompactions(): PendingCompaction[]
+	markCompactionInFlight(fermentId: string): void
+	clearCompactionInFlight(fermentId: string): void
+	isCompactionInFlight(fermentId: string): boolean
+	clearAllPendingCompactions(): void
 }
 
 function getCurrentPendingPlanReview(): PendingPlanReview | undefined {
@@ -166,6 +184,14 @@ export function createDefaultFermentRuntime(): FermentRuntime {
 		bumpStepCompleteAttempt,
 		clearStepCompleteAttempt,
 		clearFermentState,
+		getPendingCompaction,
+		setPendingCompaction,
+		clearPendingCompaction,
+		drainPendingCompactions,
+		markCompactionInFlight,
+		clearCompactionInFlight,
+		isCompactionInFlight,
+		clearAllPendingCompactions,
 	}
 	return runtime
 }

@@ -72,7 +72,7 @@ describe("buildOpenClawModelsCatalog", () => {
 		const catalog = buildOpenClawModelsCatalog(TEST_MODELS)
 		expect(catalog["kimchi/kimi-k2.6"]).toEqual({ alias: "Kimi K2.6" })
 		expect(catalog["kimchi/kimi-k2.5"]).toEqual({ alias: "Kimi K2.5" })
-		expect(catalog["kimchi/nemotron-3-super-fp4"]).toEqual({ alias: "Nemotron 3 Super FP4" })
+		expect(catalog["kimchi/nemotron-3-ultra-fp4"]).toEqual({ alias: "Nemotron 3 Ultra FP4" })
 		expect(catalog["kimchi/minimax-m2.7"]).toEqual({ alias: "MiniMax M2.7" })
 	})
 
@@ -241,7 +241,7 @@ describe("writeOpenClawDirect integration", () => {
 
 		expect(written.agents.defaults.model.temperature).toBe(0.7)
 		expect(written.agents.defaults.model.fallbacks).toContain("other/model")
-		expect(written.agents.defaults.model.fallbacks).toContain("kimchi/nemotron-3-super-fp4")
+		expect(written.agents.defaults.model.fallbacks).toContain("kimchi/nemotron-3-ultra-fp4")
 		expect(written.agents.defaults.model.fallbacks).toContain("kimchi/minimax-m2.7")
 		expect(written.agents.defaults.models["other/model"]).toEqual({ alias: "Other" })
 		expect(written.agents.defaults.models["kimchi/kimi-k2.6"]).toBeDefined()
@@ -296,7 +296,7 @@ describe("writeOpenClawViaCLI integration", () => {
 		expect(fallbackSetCall).toBeDefined()
 		const mergedFallbacks = JSON.parse((fallbackSetCall?.[1] as string[])[3])
 		expect(mergedFallbacks).toContain("existing/model")
-		expect(mergedFallbacks).toContain("kimchi/nemotron-3-super-fp4")
+		expect(mergedFallbacks).toContain("kimchi/nemotron-3-ultra-fp4")
 
 		const modelsSetCall = calls.find((c) => {
 			const args = c[1] as string[] | undefined
@@ -306,7 +306,7 @@ describe("writeOpenClawViaCLI integration", () => {
 		const mergedModels = JSON.parse((modelsSetCall?.[1] as string[])[3]) as Record<string, unknown>
 		expect(mergedModels["other/model"]).toEqual({ alias: "Other" })
 		expect(mergedModels["kimchi/kimi-k2.6"]).toBeDefined()
-		expect(mergedModels["kimchi/nemotron-3-super-fp4"]).toBeDefined()
+		expect(mergedModels["kimchi/nemotron-3-ultra-fp4"]).toBeDefined()
 
 		const envContent = readFileSync(join(tmp, ".openclaw", ".env"), "utf-8")
 		expect(envContent).toBe("KIMCHI_API_KEY=test-key-123\n")

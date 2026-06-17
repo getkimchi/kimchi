@@ -27,7 +27,7 @@
  *     "orchestrator": "anthropic/claude-sonnet-4-5",
  *     "builder": ["anthropic/claude-sonnet-4-5", "openai/gpt-4o"],
  *     "reviewer": "kimchi-dev/minimax-m2.7",
- *     "explorer": "kimchi-dev/nemotron-3-super-fp4",
+ *     "explorer": "kimchi-dev/nemotron-3-ultra-fp4",
  *     "judge": "kimchi-dev/kimi-k2.6"
  *   }
  * }

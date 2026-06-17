@@ -36,9 +36,9 @@ const MODELS: ModelEntry[] = [
 	{ id: "kimi-k2.6", provider: "kimchi-dev", name: "Kimi K2.6", input: ["text", "image"], contextWindow: 200_000 },
 	{ id: "minimax-m2.7", provider: "kimchi-dev", name: "MiniMax M2.7", input: ["text"], contextWindow: 100_000 },
 	{
-		id: "nemotron-3-super-fp4",
+		id: "nemotron-3-ultra-fp4",
 		provider: "kimchi-dev",
-		name: "Nemotron 3 Super FP4",
+		name: "Nemotron 3 Ultra FP4",
 		input: ["text"],
 		contextWindow: 1_000_000,
 	},
@@ -338,11 +338,11 @@ describe("modelSwitchExtension", () => {
 			)
 			expect(sessionHasImages()).toBe(true)
 
-			const result = await h.exec("kimchi-dev/nemotron-3-super-fp4", {
+			const result = await h.exec("kimchi-dev/nemotron-3-ultra-fp4", {
 				currentModel: { id: "minimax-m2.7", provider: "kimchi-dev", name: "MiniMax M2.7", input: ["text"] },
 			})
 			expect(h.setModel).toHaveBeenCalled()
-			expect(textOf(result)).toContain("Switched to model kimchi-dev/nemotron-3-super-fp4")
+			expect(textOf(result)).toContain("Switched to model kimchi-dev/nemotron-3-ultra-fp4")
 		})
 	})
 
@@ -350,7 +350,7 @@ describe("modelSwitchExtension", () => {
 		it("MODEL_CAPABILITIES contains expected keys", async () => {
 			const { MODEL_CAPABILITIES } = await import("./orchestration/model-registry/builtin-models.js")
 			const kimiCaps = MODEL_CAPABILITIES.get("kimi-k2.6")
-			const nemotronCaps = MODEL_CAPABILITIES.get("nemotron-3-super-fp4")
+			const nemotronCaps = MODEL_CAPABILITIES.get("nemotron-3-ultra-fp4")
 			expect(kimiCaps).toBeDefined()
 			expect(kimiCaps).not.toBe("ignored")
 			if (kimiCaps && kimiCaps !== "ignored") {
@@ -378,7 +378,7 @@ describe("modelSwitchExtension", () => {
 			const { MODEL_CAPABILITIES } = await import("./orchestration/model-registry/builtin-models.js")
 			const currentTier = getModelTier({ id: "kimi-k2.6", provider: "kimchi-dev" } as never, MODEL_CAPABILITIES)
 			const targetTier = getModelTier(
-				{ id: "nemotron-3-super-fp4", provider: "kimchi-dev" } as never,
+				{ id: "nemotron-3-ultra-fp4", provider: "kimchi-dev" } as never,
 				MODEL_CAPABILITIES,
 			)
 			expect(currentTier).toBe("heavy")
@@ -392,7 +392,7 @@ describe("modelSwitchExtension", () => {
 		})
 		it("does not include tier warning in tool result", async () => {
 			const h = createHarness()
-			const result = await h.exec("kimchi-dev/nemotron-3-super-fp4", {
+			const result = await h.exec("kimchi-dev/nemotron-3-ultra-fp4", {
 				currentModel: { id: "kimi-k2.6", provider: "kimchi-dev", name: "Kimi K2.6" },
 			})
 			expect(h.setModel).toHaveBeenCalled()
@@ -403,7 +403,7 @@ describe("modelSwitchExtension", () => {
 
 		it("does NOT append a warning when current model is not in MODEL_CAPABILITIES", async () => {
 			const h = createHarness()
-			const result = await h.exec("kimchi-dev/nemotron-3-super-fp4", {
+			const result = await h.exec("kimchi-dev/nemotron-3-ultra-fp4", {
 				currentModel: { id: "unknown-model", provider: "kimchi-dev", name: "Unknown Model" },
 			})
 			expect(h.setModel).toHaveBeenCalled()
@@ -721,7 +721,7 @@ describe("modelSwitchExtension", () => {
 				"model_select",
 				{
 					type: "model_select",
-					model: { id: "nemotron-3-super-fp4", provider: "kimchi-dev", input: ["text"], contextWindow: 1_000_000 },
+					model: { id: "nemotron-3-ultra-fp4", provider: "kimchi-dev", input: ["text"], contextWindow: 1_000_000 },
 					previousModel: { id: "minimax-m2.7", provider: "kimchi-dev", input: ["text"] },
 					source: "set",
 				},
@@ -742,7 +742,7 @@ describe("modelSwitchExtension", () => {
 				"model_select",
 				{
 					type: "model_select",
-					model: { id: "nemotron-3-super-fp4", provider: "kimchi-dev", input: ["text"], contextWindow: 1_000_000 },
+					model: { id: "nemotron-3-ultra-fp4", provider: "kimchi-dev", input: ["text"], contextWindow: 1_000_000 },
 					previousModel: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
 					source: "set",
 				},
