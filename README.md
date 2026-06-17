@@ -48,7 +48,7 @@ In single-model mode the orchestration system prompt (environment, tools, resear
 
 ### Model roles
 
-In multi-model mode, each task type is handled by a specific role. Each role can have one model or a **pool of candidates** — the orchestrator reads model descriptions (tier, capabilities) and picks the best fit for each task.
+In multi-model mode, each task type is handled by a specific role. Each role can have one model or a **pool of candidates** — the orchestrator reads model tier and description and picks the best fit for each task.
 
 Use `/multi-model` in the interactive CLI to toggle models on/off per role, or edit `~/.config/kimchi/harness/settings.json` directly:
 
@@ -77,57 +77,27 @@ Defaults are derived from model capabilities in `MODEL_CAPABILITIES`. Roles acce
 
 The orchestrator sees each role's model pool with tier and description. It picks the model whose description best matches the task:
 
-- **Simple build chunk** (CRUD, parsers, CLI): picks standard-tier builder (minimax-m2.7)
+- **Simple build chunk** (CRUD, parsers, CLI): picks standard-tier builder
 - **Complex build chunk** (concurrency, graph algorithms): picks the heaviest model whose description confirms correctness reasoning
 - **Code review**: picks the strongest reviewer by tier — fresh Agent context provides independence
 - **Exploration**: picks a light model for broad file reading, heavy for deep analysis
 
-#### Example: using Claude for builds
+Built-in models (kimchi-dev) have tier and description baked in. External models need metadata — see below.
 
-To use Claude Sonnet for all build work while keeping kimchi-dev models for orchestration and review:
+#### Model metadata
 
-```json
-{
-  "modelRoles": {
-    "builder": "anthropic/claude-sonnet-4-5"
-  }
-}
-```
-
-#### Example: mixed pool with tier-based selection
-
-To give the orchestrator a choice between a cheap builder and a strong one, and let it pick based on chunk complexity:
+External models (Anthropic, OpenAI, or any non-builtin provider) have no built-in tier or description. Without metadata, they default to `standard` tier, `vision: false`, and an auto-generated description based on their assigned roles. To give the orchestrator better routing information, add a `modelMetadata` section to `settings.json`:
 
 ```json
 {
   "modelRoles": {
     "builder": ["kimchi-dev/minimax-m2.7", "anthropic/claude-sonnet-4-5"],
     "reviewer": "anthropic/claude-sonnet-4-5"
-  }
-}
-```
-
-The orchestrator will use minimax for simple chunks and Claude for complex ones (based on the plan's complexity classification).
-
-#### Custom metadata for external models
-
-Models without a built-in capability entry (e.g., Anthropic or OpenAI models) can be annotated with custom metadata so the orchestrator sees their tier, description, and vision support when making routing decisions. Add a `modelMetadata` section to `settings.json`:
-
-```json
-{
-  "modelRoles": {
-    "planner": ["kimchi-dev/kimi-k2.6", "anthropic/claude-opus-4-6"],
-    "builder": "openai/gpt-4o"
   },
   "modelMetadata": {
-    "anthropic/claude-opus-4-6": {
+    "anthropic/claude-sonnet-4-5": {
       "tier": "heavy",
-      "description": "Anthropic flagship — best for complex architectural planning and deep reasoning.",
-      "vision": false
-    },
-    "openai/gpt-4o": {
-      "tier": "standard",
-      "description": "Fast and capable general-purpose model."
+      "description": "Strong general-purpose model — use for complex builds and thorough reviews."
     }
   }
 }
@@ -136,12 +106,12 @@ Models without a built-in capability entry (e.g., Anthropic or OpenAI models) ca
 | Field | Default | Description |
 |-------|---------|-------------|
 | `tier` | `standard` | `light`, `standard`, or `heavy`. Used for complexity-based routing. |
-| `description` | Auto-generated | Shown to the orchestrator in the **Your Team** and **Your Capabilities** sections. When omitted, a description is generated based on the model's assigned roles. |
+| `description` | Auto-generated | Shown to the orchestrator so it can match model strengths to task requirements. |
 | `vision` | `false` | Whether the model supports image input. |
 
-External models assigned without custom metadata still work — they default to `standard` tier with `vision: false`, and the orchestrator receives an auto-generated description based on their assigned roles.
+With the metadata above, the orchestrator will use minimax for simple build chunks and Claude for complex ones. Without it, both models look like standard-tier to the orchestrator and selection is arbitrary.
 
-Metadata can also be managed interactively via `/multi-model` → "Edit model metadata". Custom overrides can be reset to defaults from the same menu. When switching to an unknown model, a wizard prompts for metadata configuration.
+Metadata can also be managed interactively via `/multi-model` → "Edit model metadata". Custom overrides can be reset to defaults from the same menu. When switching to an unknown model, a wizard prompts for metadata configuration. Metadata for builtin models can be overridden the same way.
 
 ### Phase tracking
 
