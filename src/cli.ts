@@ -16,6 +16,7 @@ import { dispatchSubcommand } from "./commands/dispatch.js"
 // IMPORTANT: must be first local import — patches InteractiveMode.prototype
 // before any module can construct an InteractiveMode instance.
 import "./login-command-patch.js"
+import "./paste-to-editor-patch.js"
 import {
 	DEFAULT_SKILL_PATHS,
 	getActiveVendorSkillPaths,

@@ -1,5 +1,6 @@
 import { InteractiveMode } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
+import "./paste-to-editor-patch.js"
 
 describe("pasteToEditor patch", () => {
 	it("routes pasteToEditor through ui.handleInput instead of editor.handleInput", () => {
