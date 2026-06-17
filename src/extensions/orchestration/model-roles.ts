@@ -161,7 +161,7 @@ function isValidCustomModelConfig(value: unknown): value is CustomModelConfig {
 	)
 }
 
-function isValidRoleValue(value: unknown): value is string | string[] {
+function isValidRoleValue(value: unknown): value is RoleModelAssignment {
 	if (typeof value === "string" && value.trim().length > 0) return true
 	if (Array.isArray(value) && value.length > 0 && value.every((v) => typeof v === "string" && v.trim().length > 0))
 		return true
