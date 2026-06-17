@@ -10,6 +10,9 @@ describe("todo prompt block", () => {
 	it("renders guidance without a current list", () => {
 		const block = __test_renderTodoPromptBlock()
 		expect(block).toContain("## Todos")
+		expect(block).toContain("For any non-trivial task, maintain a todo list.")
+		expect(block).toContain("code changes, debugging, reviews, investigations")
+		expect(block).toContain("Skip todos only for a single straightforward answer")
 		expect(block).toContain("Use add_todo for one missing item")
 		expect(block).toContain("mark_todo for one status change")
 		expect(block).toContain("clear_todos only when the work is done or obsolete")
