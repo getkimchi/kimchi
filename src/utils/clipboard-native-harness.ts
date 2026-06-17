@@ -113,6 +113,23 @@ export function getNativeClipboard(): { clipboard: NativeClipboard | null; error
 		return { clipboard: null, error: loadError }
 	}
 
+	// On Linux use subprocess-based clipboard access (xclip/wl-paste) instead of
+	// the native .node addon. The addon calls ClipboardContext::new() on every
+	// method call which opens a new X11 connection; background threads in the Rust
+	// library keep those connections alive and exhaust X11's 255-client limit.
+	if (process.platform === "linux") {
+		try {
+			// eslint-disable-next-line @typescript-eslint/no-require-imports
+			const mod = require("./clipboard-linux-subprocess.js") as typeof import("./clipboard-linux-subprocess.js")
+			const { createLinuxClipboard } = mod
+			cached = createLinuxClipboard()
+		} catch (err) {
+			cached = null
+			loadError = err instanceof Error ? err.message : String(err)
+		}
+		return { clipboard: cached, error: loadError }
+	}
+
 	try {
 		const binding = loadPlatformBinding()
 		// Eagerly probe the binding so that a Rust panic from a broken display
