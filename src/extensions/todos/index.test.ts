@@ -198,6 +198,19 @@ describe("todos extension session state", () => {
 		}
 	})
 
+	it("restores todos from legacy write_todos tool results", async () => {
+		const harness = createTodosHarness()
+
+		await harness.fire(
+			"session_start",
+			{ reason: "resume" },
+			createContext("session", [writeTodosEntry("legacy", "legacy todo", "in_progress", "write_todos")]),
+		)
+
+		expect(getTodosForScope().map((todo) => todo.content)).toEqual(["legacy todo"])
+		expect(getTodosForScope()[0]?.status).toBe("in_progress")
+	})
+
 	it("adds todo guidance to a system prompt that missed extension prompt blocks", async () => {
 		const harness = createTodosHarness()
 		const result = (await harness.fire(
@@ -259,6 +272,18 @@ describe("todos extension session state", () => {
 		await harness.fire("tool_call", toolCall("read"), ctx)
 
 		expect(harness.sendMessage).toHaveBeenCalledTimes(1)
+	})
+
+	it("does not steer for infrastructure tools", async () => {
+		const harness = createTodosHarness()
+		const result = await harness.fire(
+			"tool_call",
+			toolCall("set_phase"),
+			createContext("session", [userEntry("user", "enter build phase")]),
+		)
+
+		expect(result).toEqual({ block: false })
+		expect(harness.sendMessage).not.toHaveBeenCalled()
 	})
 
 	it("allows todo tools to start the list when enforcement is active", async () => {

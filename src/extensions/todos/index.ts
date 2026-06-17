@@ -40,13 +40,17 @@ function isWriteTodosDetails(value: unknown): value is WriteTodosDetails {
 }
 
 const TODO_TOOL_NAME_SET = new Set<string>(TODO_TOOL_NAMES)
+const TODO_REPLAY_TOOL_NAME_SET = new Set<string>([...TODO_TOOL_NAMES, "write_todos"])
+const TODO_STEER_EXEMPT_TOOL_NAME_SET = new Set<string>(["set_phase", "agent", "get_subagent_result", "steer_subagent"])
 
 function hasOpenTodos(): boolean {
 	return getTodosForScope().some((todo) => todo.status !== "completed")
 }
 
 export function shouldSteerForMissingTodos(toolName: string): boolean {
-	if (TODO_TOOL_NAME_SET.has(toolName)) return false
+	const normalizedToolName = toolName.toLowerCase()
+	if (TODO_TOOL_NAME_SET.has(normalizedToolName)) return false
+	if (TODO_STEER_EXEMPT_TOOL_NAME_SET.has(normalizedToolName)) return false
 	if (hasOpenTodos()) return false
 	return true
 }
@@ -59,7 +63,7 @@ function getWriteTodosDetails(entry: SessionEntry): WriteTodosDetails | undefine
 	if (entry.type === "message") {
 		const message = entry.message as unknown
 		if (!isRecord(message)) return undefined
-		if (message.role !== "toolResult" || !TODO_TOOL_NAME_SET.has(String(message.toolName))) return undefined
+		if (message.role !== "toolResult" || !TODO_REPLAY_TOOL_NAME_SET.has(String(message.toolName))) return undefined
 		return isWriteTodosDetails(message.details) ? message.details : undefined
 	}
 

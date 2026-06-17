@@ -14,7 +14,6 @@ import {
 export type { TodoItem, TodoScope, TodosSliceState, WriteTodosDetails, WriteTodosParams }
 
 const FIRST_TODO_ID = 1
-const TODO_STATUS_ORDER: Record<TodoStatus, number> = { in_progress: 0, blocked: 1, pending: 2, completed: 3 }
 
 export interface ReplaceListResult {
 	state: TodosSliceState
@@ -45,8 +44,8 @@ function normalizeOptionalText(value: unknown): string | undefined {
 	return text && text.length > 0 ? text : undefined
 }
 
-function sortTodosForStorage(todos: readonly TodoItem[]): TodoItem[] {
-	return [...todos].sort((a, b) => TODO_STATUS_ORDER[a.status] - TODO_STATUS_ORDER[b.status] || a.id - b.id)
+function orderTodosForStorage(todos: readonly TodoItem[]): TodoItem[] {
+	return [...todos].sort((a, b) => a.id - b.id)
 }
 
 function normalizeIncomingTodos(scopeTodos: unknown, nextId: number): { todos: TodoItem[]; nextTodoId: number } {
@@ -87,7 +86,7 @@ function normalizeIncomingTodos(scopeTodos: unknown, nextId: number): { todos: T
 		result.push({ id, content, status, ...(activeForm ? { activeForm } : {}), ...(note ? { note } : {}) })
 	}
 
-	return { todos: sortTodosForStorage(result), nextTodoId: currentNextId }
+	return { todos: orderTodosForStorage(result), nextTodoId: currentNextId }
 }
 
 export function createEmptyTodosSliceState(): TodosSliceState {

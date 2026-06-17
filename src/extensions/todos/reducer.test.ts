@@ -42,8 +42,8 @@ describe("reduceReplaceList", () => {
 		const scopeKey = getTodoScopeKey(GLOBAL_SCOPE)
 		expect(state.byScope[scopeKey].todos).toEqual([
 			{ id: 1, content: "alpha", status: "pending" },
-			{ id: 4, content: "charlie", status: "pending" },
 			{ id: 3, content: "bravo", status: "completed" },
+			{ id: 4, content: "charlie", status: "pending" },
 		])
 
 		const secondState = reduceReplaceList(state, {
@@ -55,12 +55,12 @@ describe("reduceReplaceList", () => {
 			],
 		}).state
 		expect(secondState.byScope[scopeKey].todos).toEqual([
-			{ id: 5, content: "delta", status: "pending" },
 			{ id: 3, content: "bravo updated", status: "completed" },
+			{ id: 5, content: "delta", status: "pending" },
 		])
 	})
 
-	it("sorts active statuses before completed todos", () => {
+	it("keeps todos in creation order when statuses change", () => {
 		const state = reduceReplaceList(createEmptyTodosSliceState(), {
 			action: "replace-list",
 			scope: GLOBAL_SCOPE,
@@ -73,10 +73,10 @@ describe("reduceReplaceList", () => {
 		}).state
 
 		expect(state.byScope[getTodoScopeKey(GLOBAL_SCOPE)].todos.map((todo) => todo.content)).toEqual([
-			"active",
+			"done",
 			"blocked",
 			"pending",
-			"done",
+			"active",
 		])
 	})
 

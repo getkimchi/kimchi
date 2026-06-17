@@ -128,7 +128,7 @@ async function executeAddTodo(_toolCallId: string, params: AddTodoParams) {
 		const { scope, todos } = scopedTodos(params.scope)
 		const knownIds = new Set(todos.map((todo) => todo.id))
 		const details = applyWriteTodos({ scope, todos: [...todos, todoDraftWithOptionalFields(params)] })
-		// reduceReplaceList sorts by status/id, so identify the new item by id rather than position.
+		// Storage order is id-based; identify the new item by id rather than position.
 		const added = details.todos.find((todo) => !knownIds.has(todo.id))
 		return {
 			content: [{ type: "text" as const, text: added ? `Added todo #${added.id}.` : "Added todo." }],
