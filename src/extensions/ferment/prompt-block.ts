@@ -24,7 +24,7 @@ function buildAgentsSection(): string {
 	return `\n\n**Available subagent types (pick one per start_ferment_step by step intent):**\n${lines.join("\n")}`
 }
 
-function buildPlannerSupplement(f: Ferment, continuationPolicy: ContinuationPolicy): string {
+function buildPlannerSupplement(f: Ferment, continuationPolicy: ContinuationPolicy, isOneshot = false): string {
 	const dm = formatDecisionsAndMemories(f)
 	const dmSection = dm ? `\n\n${dm}` : ""
 	const sc = formatScopingContext(f)
@@ -39,6 +39,14 @@ function buildPlannerSupplement(f: Ferment, continuationPolicy: ContinuationPoli
 			: "Automated continuation policy is active: do not ask the user to confirm phase advancement or step results. Continue through all stages until the ferment is complete, blocked, or paused."
 	const delegationCheckpoint =
 		"For broad existing-codebase scoping requests, follow the shared discovery guidance in the Upfront Contract before drafting recommendations."
+	// In one-shot mode the interactive gate (markScopingInteractive) is never
+	// armed, so scope_ferment is a perfectly legal tool — the bootstrap nudge
+	// (`oneshot.ts`) tells the model to call it. The interactive flow still
+	// routes through propose_ferment_scoping, so we keep that rule there and
+	// soften it here. Either way, every call must carry the P1/P2/P3 gates.
+	const scopeFermentDirectCallRule = isOneshot
+		? "Either `scope_ferment` or `propose_ferment_scoping` is fine; pick whichever matches the shape of your plan. Either call must include the full P1/P2/P3 plan-scope gate verdicts in the `gates` array — the schema hard-rejects calls missing this array."
+		: "Do NOT call `scope_ferment` directly in the interactive flow — only `propose_ferment_scoping`. If a tool call fails (e.g. missing gate verdicts or invalid step shape), re-emit the FULL payload INCLUDING the questions you drafted and all P1/P2/P3 gates — never silently drop them on retry."
 	const upfrontContract = `\n\n## Upfront Contract\nTreat the Ferment Specification (goal, success criteria, constraints, assumptions) as the agreed plan. ${phaseAdvancementContract} Proceed with your highest-confidence interpretation and capture uncertainty via \`add_ferment_decision\` (architectural pivots) or \`add_ferment_memory\` (gotchas/conventions). Surface blockers only when you cannot proceed without human input.
 
 ${SCOPING_DISCOVERY_GUIDANCE}
@@ -78,7 +86,7 @@ Phases are executable implementation slices after answers are incorporated. Do n
 
 Every \`propose_ferment_scoping\` call must include the full \`gates\` array for plan review: exactly P1, P2, and P3. Each gate object must include \`id\`, \`verdict\`, \`rationale\`, and \`evidence\`. Never emit a partial gates array, never include only P1, and never omit \`rationale\` or \`evidence\`.
 
-Do NOT call \`scope_ferment\` directly in the interactive flow — only \`propose_ferment_scoping\`. If a tool call fails (e.g. missing gate verdicts or invalid step shape), re-emit the FULL payload INCLUDING the questions you drafted and all P1/P2/P3 gates — never silently drop them on retry.
+${scopeFermentDirectCallRule}
 
 After \`propose_ferment_scoping\` returns "Plan ready for review", the host will collect the user's review after your turn ends. Do not call \`propose_ferment_scoping\` again, do not summarize the plan in chat, and do not tell the user to wait for the TUI.
 
@@ -142,11 +150,11 @@ export function buildFermentPromptBlock(
 
 	switch (f.status) {
 		case "draft":
-			if (oneshot) return buildPlannerSupplement(f, runtime.getContinuationPolicy()).trim()
+			if (oneshot) return buildPlannerSupplement(f, runtime.getContinuationPolicy(), true).trim()
 			return undefined
 		case "planned":
 		case "running":
-			return buildPlannerSupplement(f, runtime.getContinuationPolicy()).trim()
+			return buildPlannerSupplement(f, runtime.getContinuationPolicy(), oneshot).trim()
 		case "paused":
 			return buildPausedWarning(f).trim()
 		case "complete":

@@ -277,7 +277,7 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).toContain("continue with direct targeted reads")
 			expect(out).toContain('otherwise become an "explore", "find the existing pattern"')
 			expect(out).toContain("The plan you propose should reflect the discovered files")
-			expect(out).toContain("all P1/P2/P3 gates")
+			expect(out).toContain("P1/P2/P3")
 		})
 
 		it("uses manual phase-boundary instructions under manual continuation policy", () => {
@@ -329,6 +329,41 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).toContain("open-ended analysis of an existing app")
 			expect(out).toContain("request the ferment workflow before analysis, file reads, or phase tagging")
 			expect(out).toContain("the host handles confirmation and queues scoping")
+		})
+
+		// Regression for Bug 2: prompt-block.ts:81 told every planner (including
+		// one-shot) to "Do NOT call scope_ferment directly — only propose_ferment_scoping".
+		// In one-shot mode `markScopingInteractive` is never armed
+		// (events.ts:341-343 / scoping.ts:165 / resume.ts:99), so the hard gate at
+		// tools/lifecycle.ts:586-587 is bypassed and scope_ferment is legal. The
+		// bootstrap nudge (oneshot.ts) tells the model to call it — the supplement
+		// must not contradict that.
+		it("tells interactive planners to avoid scope_ferment and use propose_ferment_scoping", () => {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime({ status: "running" })) ?? ""
+			expect(out).toContain("Do NOT call `scope_ferment` directly in the interactive flow")
+			expect(out).toContain("only `propose_ferment_scoping`")
+		})
+
+		it("tells one-shot planners that scope_ferment and propose_ferment_scoping are both valid", () => {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status: "running" })) ?? ""
+			expect(out).toContain("`scope_ferment` or `propose_ferment_scoping` is fine")
+			expect(out).not.toContain("Do NOT call `scope_ferment` directly in the interactive flow")
+		})
+
+		it("one-shot planner supplement still names the P1/P2/P3 gate requirement", () => {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status: "running" })) ?? ""
+			expect(out).toContain("P1/P2/P3")
+			expect(out).toMatch(/schema\s+hard-?rejects/i)
+		})
+
+		it("one-shot rule applies for status=draft, planned, and running", () => {
+			// The ferment lifecycle in one-shot mode walks draft → planned → running,
+			// so the supplement must use the one-shot wording for all three states.
+			for (const status of ["draft", "planned", "running"] as const) {
+				const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status })) ?? ""
+				expect(out, `status=${status}`).toContain("`scope_ferment` or `propose_ferment_scoping` is fine")
+				expect(out, `status=${status}`).not.toContain("Do NOT call `scope_ferment` directly in the interactive flow")
+			}
 		})
 	})
 
