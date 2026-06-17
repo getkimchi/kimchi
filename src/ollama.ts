@@ -68,7 +68,8 @@ export interface OllamaProbeOptions {
 /** Normalized representation of a model discovered via Ollama's native API.
  *  This is the internal type that feeds `ollamaToModelConfig`. */
 export interface OllamaModel {
-	id: string
+	/** Ollama model reference (e.g. "llama3:8b"). Acts as both display name
+	 *  and registry id; consumers should reference `name` for both purposes. */
 	name: string
 	/** Parameter size in billions (e.g. 8.0, 30, 70). `null` when unknown. */
 	parameterSize: number | null
@@ -174,12 +175,7 @@ async function enrichFromShow(
 			signal: AbortSignal.timeout(timeoutMs),
 		})
 	} catch {
-		return deriveFromCapabilities(tagsCapabilities)
-			? {
-					contextWindow: fallbackContext,
-					...deriveFromCapabilities(tagsCapabilities),
-				}
-			: { contextWindow: fallbackContext, reasoning: false, inputModalities: ["text"] }
+		return { contextWindow: fallbackContext, ...deriveFromCapabilities(tagsCapabilities) }
 	}
 
 	if (!response.ok) {
@@ -247,13 +243,11 @@ export async function probeOllamaModels(host: string, options: OllamaProbeOption
 
 		const details = entry.details ?? {}
 		const parameterSize = parseParameterSize(details.parameter_size)
-		const tagsDerived = deriveFromCapabilities(entry.capabilities)
 		const fallbackContext = DEFAULT_CONTEXT_WINDOW
 
 		const enriched = await enrichFromShow(normalizedHost, ref, fallbackContext, entry.capabilities, options)
 
 		out.push({
-			id: ref,
 			name: ref,
 			parameterSize,
 			contextWindow: enriched.contextWindow,
@@ -262,10 +256,6 @@ export async function probeOllamaModels(host: string, options: OllamaProbeOption
 			family: typeof details.family === "string" ? details.family : "",
 			quantization: typeof details.quantization_level === "string" ? details.quantization_level : "",
 		})
-
-		// Reference `tagsDerived` so it stays in the call graph — it captures
-		// the vision/tools/thinking signal that we may surface later.
-		void tagsDerived
 	}
 
 	return out
@@ -341,7 +331,18 @@ export async function injectOllamaProvider(
 ): Promise<void> {
 	try {
 		const models = await probeOllamaModels(host, options)
-		if (models.length === 0) return
+
+		// Spec criterion #6: when Ollama is unreachable, the `ollama` provider
+		// must be omitted from models.json — including any pre-existing block
+		// left behind by a previous run when Ollama was online.
+		if (models.length === 0) {
+			if (!existsSync(modelsJsonPath)) return
+			const existingProviders = readAllProviders(modelsJsonPath)
+			if (!(OLLAMA_PROVIDER_ID in existingProviders)) return
+			const { [OLLAMA_PROVIDER_ID]: _staleOllama, ...remaining } = existingProviders
+			writeFileSync(modelsJsonPath, JSON.stringify({ providers: remaining }, null, "\t"), "utf-8")
+			return
+		}
 
 		if (!existsSync(modelsJsonPath) && !options.createIfMissing) return
 
@@ -350,7 +351,12 @@ export async function injectOllamaProvider(
 		const ollamaProvider = {
 			api: "openai-completions",
 			baseUrl: `${normalizedHost}/v1`,
-			apiKey: OLLAMA_PROVIDER_ID,
+			// pi-coding-agent's openai-completions provider requires a non-empty
+			// `apiKey` at runtime (`throw new Error("No API key for provider: ...")`)
+			// and its model registry refuses to register a custom provider without
+			// one ("apiKey is required when defining custom models"). Ollama itself
+			// ignores the value, so any non-empty sentinel satisfies the contract.
+			apiKey: "ollama-no-key-needed",
 			models: models.map(ollamaToModelConfig),
 		}
 
@@ -409,9 +415,9 @@ function appendToAssignment(value: RoleModelAssignment, ref: string): RoleModelA
 	return next.length === 1 ? next[0] : next
 }
 
-/** Extract the bare model id from either a `provider/id` ref or a raw id. */
+/** Build the `ollama/<ref>` model reference consumed by the registry. */
 function refForOllamaModel(model: PiModelConfig | OllamaModel): string {
-	return `ollama/${model.id}`
+	return `ollama/${model.name}`
 }
 
 /**

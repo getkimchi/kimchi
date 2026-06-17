@@ -146,7 +146,6 @@ describe("probeOllamaModels — /api/tags parsing", () => {
 		const models = await probeOllamaModels("http://localhost:11434", { fetch: fetchImpl })
 		expect(models).toHaveLength(1)
 		expect(models[0]).toMatchObject({
-			id: "llama3:8b",
 			name: "llama3:8b",
 			parameterSize: 8,
 			contextWindow: 8192,
@@ -180,7 +179,7 @@ describe("probeOllamaModels — /api/tags parsing", () => {
 			(url) => (url.endsWith("/api/show") ? makeShowResponse({ "llama.context_length": 4096 }) : null),
 		])
 		const models = await probeOllamaModels("http://localhost:11434", { fetch: fetchImpl })
-		expect(models.map((m) => m.id)).toEqual(["model-a:7b", "model-b:30b", "model-c:70b"])
+		expect(models.map((m) => m.name)).toEqual(["model-a:7b", "model-b:30b", "model-c:70b"])
 		expect(models.map((m) => m.parameterSize)).toEqual([7, 30, 70])
 	})
 
@@ -195,7 +194,7 @@ describe("probeOllamaModels — /api/tags parsing", () => {
 		])
 		const models = await probeOllamaModels("http://localhost:11434", { fetch: fetchImpl })
 		expect(models).toHaveLength(1)
-		expect(models[0].id).toBe("valid:8b")
+		expect(models[0].name).toBe("valid:8b")
 	})
 
 	it("falls back to default context window when /api/show has no context_length", async () => {
@@ -224,7 +223,7 @@ describe("probeOllamaModels — /api/tags parsing", () => {
 
 		const models = await probeOllamaModels("http://localhost:11434", { fetch: fetchImpl })
 		expect(models).toHaveLength(1)
-		expect(models[0].id).toBe("robust:8b")
+		expect(models[0].name).toBe("robust:8b")
 	})
 
 	it("extracts context from arch-specific model_info keys (qwen2.context_length)", async () => {
@@ -352,7 +351,6 @@ describe("probeOllamaModels — /api/show capability enrichment", () => {
 describe("ollamaModelTier — parameter_size boundaries", () => {
 	function modelWith(paramsB: number | null): OllamaModel {
 		return {
-			id: "test",
 			name: "test",
 			parameterSize: paramsB,
 			contextWindow: 8192,
@@ -404,7 +402,6 @@ describe("ollamaModelTier — parameter_size boundaries", () => {
 describe("ollamaToModelConfig", () => {
 	it("produces zero cost across the board (local inference)", () => {
 		const config = ollamaToModelConfig({
-			id: "llama3:8b",
 			name: "llama3:8b",
 			parameterSize: 8,
 			contextWindow: 8192,
@@ -418,7 +415,6 @@ describe("ollamaToModelConfig", () => {
 
 	it("sets provider='ollama'", () => {
 		const config = ollamaToModelConfig({
-			id: "x",
 			name: "x",
 			parameterSize: 8,
 			contextWindow: 4096,
@@ -432,7 +428,6 @@ describe("ollamaToModelConfig", () => {
 
 	it("caps maxTokens at 8192 even when context is larger", () => {
 		const config = ollamaToModelConfig({
-			id: "big",
 			name: "big",
 			parameterSize: 70,
 			contextWindow: 131072,
@@ -446,7 +441,6 @@ describe("ollamaToModelConfig", () => {
 
 	it("preserves reasoning and input modalities from the Ollama model", () => {
 		const config = ollamaToModelConfig({
-			id: "vision",
 			name: "vision",
 			parameterSize: 13,
 			contextWindow: 16384,
@@ -515,7 +509,7 @@ describe("injectOllamaProvider — models.json merge", () => {
 		).ollama
 		expect(ollama.api).toBe("openai-completions")
 		expect(ollama.baseUrl).toBe("http://localhost:11434/v1")
-		expect(ollama.apiKey).toBe("ollama")
+		expect(ollama.apiKey).toBe("ollama-no-key-needed")
 		expect(ollama.models).toHaveLength(1)
 	})
 
@@ -651,6 +645,40 @@ describe("injectOllamaProvider — models.json merge", () => {
 		// File untouched — no provider was added
 		const config = readModelsJson()
 		expect(config.providers).not.toHaveProperty("ollama")
+	})
+
+	it("strips a stale ollama block when the probe returns zero models (offline fallback)", async () => {
+		writeModelsJson({
+			providers: {
+				"kimchi-dev": { models: [{ id: "kimchi-1" }] },
+				ollama: {
+					api: "openai-completions",
+					baseUrl: "http://localhost:11434/v1",
+					apiKey: "ollama-no-key-needed",
+					models: [{ id: "old-model:7b", name: "old-model:7b" }],
+				},
+			},
+		})
+		const fetchImpl = makeFetchMock([(url) => (url.endsWith("/api/tags") ? okJson({ models: [] }) : null)])
+
+		await injectOllamaProvider(modelsJsonPath, "http://localhost:11434", { fetch: fetchImpl })
+
+		const config = readModelsJson()
+		const providers = config.providers as Record<string, unknown>
+		expect(providers).not.toHaveProperty("ollama")
+		// Custom providers must still be preserved
+		expect(providers["kimchi-dev"]).toBeDefined()
+	})
+
+	it("does not write models.json when probe is empty and no ollama block exists", async () => {
+		writeModelsJson({ providers: { "kimchi-dev": { models: [] } } })
+		const original = readFileSync(modelsJsonPath, "utf-8")
+		const fetchImpl = makeFetchMock([(url) => (url.endsWith("/api/tags") ? okJson({ models: [] }) : null)])
+
+		await injectOllamaProvider(modelsJsonPath, "http://localhost:11434", { fetch: fetchImpl })
+
+		// File unchanged — no ollama block existed, nothing to strip.
+		expect(readFileSync(modelsJsonPath, "utf-8")).toBe(original)
 	})
 })
 
@@ -795,7 +823,6 @@ describe("augmentModelRolesWithOllama — role pool augmentation", () => {
 
 	const ollamaModels: OllamaModel[] = [
 		{
-			id: "llama3:8b",
 			name: "llama3:8b",
 			parameterSize: 8,
 			contextWindow: 8192,
@@ -805,7 +832,6 @@ describe("augmentModelRolesWithOllama — role pool augmentation", () => {
 			quantization: "Q4_K_M",
 		},
 		{
-			id: "qwen2:70b",
 			name: "qwen2:70b",
 			parameterSize: 70,
 			contextWindow: 32768,
