@@ -402,6 +402,44 @@ describe("formatAnalyticsVisual", () => {
 
 		expect(joined).toContain("500")
 	})
+
+	it("coerces string int64 token values from protobuf JSON encoding", () => {
+		// Protobuf JSON encodes int64 as strings (e.g. "9007199254740993") because
+		// JavaScript Number can't safely represent integers > 2^53. The formatter
+		// must parse these strings before aggregating.
+		const data: GenerateAnalyticsResponse = {
+			stepDuration: "0s",
+			tokens: {
+				items: [
+					{
+						executionTime: "2026-06-09T09:00:00Z",
+						models: [
+							makeModelTokenStat({
+								model: "gpt-4",
+								providerName: "pi-otel",
+								inputTokens: "1000",
+								outputTokens: "500",
+							}),
+							makeModelTokenStat({
+								model: "claude-3",
+								providerName: "pi-otel",
+								inputTokens: "2000",
+								outputTokens: "1000",
+							}),
+						],
+					},
+				],
+			},
+		}
+
+		const lines = formatAnalyticsVisual(data, mockTheme)
+		const joined = lines.join("\n")
+
+		// Total input across all models: 3000, output: 1500
+		expect(joined).toContain("4.5k")
+		expect(joined).toContain("3.0k")
+		expect(joined).toContain("1.5k")
+	})
 })
 
 describe("formatAnalyticsSummary", () => {
@@ -439,6 +477,37 @@ describe("formatAnalyticsSummary", () => {
 								providerName: "pi-otel",
 								inputTokens: 3000,
 								outputTokens: 1500,
+							}),
+						],
+					},
+				],
+			},
+		}
+
+		const lines = formatAnalyticsSummary(data, mockTheme)
+		const joined = lines.join("\n")
+
+		expect(joined).toContain("4.5k")
+		expect(joined).toContain("3.0k")
+		expect(joined).toContain("1.5k")
+	})
+
+	it("coerces string int64 token values from protobuf JSON encoding", () => {
+		// Protobuf JSON encodes int64 as strings (e.g. "9007199254740993") because
+		// JavaScript Number can't safely represent integers > 2^53. The formatter
+		// must parse these strings before aggregating.
+		const data: GenerateAnalyticsResponse = {
+			stepDuration: "0s",
+			tokens: {
+				items: [
+					{
+						executionTime: "2026-06-09T09:00:00Z",
+						models: [
+							makeModelTokenStat({
+								model: "gpt-4",
+								providerName: "pi-otel",
+								inputTokens: "3000",
+								outputTokens: "1500",
 							}),
 						],
 					},
