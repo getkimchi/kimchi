@@ -3,13 +3,11 @@ import { Type } from "typebox"
 import { applyWriteTodos, getTodosForScope, resolveTodoScope } from "./store.js"
 import { TODO_STATUSES, type TodoDraft, type TodoItem, type TodoStatus, type WriteTodosParams } from "./types.js"
 
-export const TODO_TOOL_NAME = "write_todos"
 export const UPDATE_TODOS_TOOL_NAME = "update_todos"
 export const ADD_TODO_TOOL_NAME = "add_todo"
 export const MARK_TODO_TOOL_NAME = "mark_todo"
 export const CLEAR_TODOS_TOOL_NAME = "clear_todos"
 export const TODO_TOOL_NAMES = [
-	TODO_TOOL_NAME,
 	UPDATE_TODOS_TOOL_NAME,
 	ADD_TODO_TOOL_NAME,
 	MARK_TODO_TOOL_NAME,
@@ -130,6 +128,7 @@ async function executeAddTodo(_toolCallId: string, params: AddTodoParams) {
 		const { scope, todos } = scopedTodos(params.scope)
 		const knownIds = new Set(todos.map((todo) => todo.id))
 		const details = applyWriteTodos({ scope, todos: [...todos, todoDraftWithOptionalFields(params)] })
+		// reduceReplaceList sorts by status/id, so identify the new item by id rather than position.
 		const added = details.todos.find((todo) => !knownIds.has(todo.id))
 		return {
 			content: [{ type: "text" as const, text: added ? `Added todo #${added.id}.` : "Added todo." }],
@@ -192,19 +191,10 @@ async function executeClearTodos(_toolCallId: string, params: ClearTodosParams) 
 
 export function registerTodosTool(pi: ExtensionAPI): void {
 	pi.registerTool({
-		name: TODO_TOOL_NAME,
-		label: "Write Todos",
-		description: "Create or update the todo list by replacing it for the current scope. Call again to mark progress.",
-		promptSnippet: "Maintain a tactical todo list for multi-step work",
-		parameters: TODO_TOOL_PARAMETERS,
-		execute: executeWriteTodos,
-	})
-
-	pi.registerTool({
 		name: UPDATE_TODOS_TOOL_NAME,
 		label: "Update Todos",
 		description: "Update todo progress by replacing the current todo list. Use after meaningful progress.",
-		promptSnippet: "Update todo progress for multi-step work",
+		promptSnippet: "Replace the todo list for batch progress updates",
 		parameters: TODO_TOOL_PARAMETERS,
 		execute: executeWriteTodos,
 	})

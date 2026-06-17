@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest"
-import { __test_renderTodoPromptBlock } from "./prompt-block.js"
+import { __test_renderTodoPromptBlock, appendTodoPromptBlockIfMissing } from "./prompt-block.js"
 import { __resetTodoStore, applyWriteTodos } from "./store.js"
 
 describe("todo prompt block", () => {
@@ -13,6 +13,7 @@ describe("todo prompt block", () => {
 		expect(block).toContain("For any non-trivial task, maintain a todo list.")
 		expect(block).toContain("code changes, debugging, reviews, investigations")
 		expect(block).toContain("Skip todos only for a single straightforward answer")
+		expect(block).toContain("different from leaving TODO comments/placeholders in code")
 		expect(block).toContain("Use add_todo for one missing item")
 		expect(block).toContain("mark_todo for one status change")
 		expect(block).toContain("clear_todos only when the work is done or obsolete")
@@ -31,5 +32,13 @@ describe("todo prompt block", () => {
 		expect(__test_renderTodoPromptBlock()).toContain(
 			"Current global todos:\n- #1 [in_progress] alpha\n- #2 [pending] bravo",
 		)
+	})
+
+	it("appends guidance when the assembled system prompt missed the todo block", () => {
+		const prompt = appendTodoPromptBlockIfMissing("## Tools\n- read")
+
+		expect(prompt).toContain("## Tools")
+		expect(prompt).toContain("## Todos")
+		expect(appendTodoPromptBlockIfMissing(prompt ?? "")).toBeUndefined()
 	})
 })

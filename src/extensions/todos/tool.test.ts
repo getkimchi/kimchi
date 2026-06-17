@@ -8,7 +8,7 @@ function registeredTools() {
 	return Object.fromEntries(registerTool.mock.calls.map(([tool]) => [tool.name, tool]))
 }
 
-describe("write_todos tool", () => {
+describe("todo tools", () => {
 	beforeEach(() => {
 		__resetTodoStore()
 	})
@@ -36,7 +36,8 @@ describe("write_todos tool", () => {
 	})
 
 	it("describes update_todos as an update path", () => {
-		const tool = registeredTools()[UPDATE_TODOS_TOOL_NAME]
+		const tools = registeredTools()
+		const tool = tools[UPDATE_TODOS_TOOL_NAME]
 
 		expect(tool.description).toContain("Update todo progress")
 		expect(tool.description).toContain("meaningful progress")

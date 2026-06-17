@@ -2,8 +2,8 @@ import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-wor
 import { isAgentWorker } from "../agent-worker-context.js"
 import { registerTodosCommand } from "./command.js"
 import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
-import { registerTodoPromptBlock } from "./prompt-block.js"
-import { restoreTodoStoreFromDetails, subscribeTodoStore } from "./store.js"
+import { appendTodoPromptBlockIfMissing, registerTodoPromptBlock } from "./prompt-block.js"
+import { getTodosForScope, restoreTodoStoreFromDetails, subscribeTodoStore } from "./store.js"
 import { TODO_TOOL_NAMES, registerTodosTool } from "./tool.js"
 import { TODO_TOOL_RESULT_SCHEMA_VERSION, type WriteTodosDetails } from "./types.js"
 import {
@@ -23,6 +23,9 @@ export * from "./widget.js"
 export * from "./command.js"
 export * from "./prompt-block.js"
 
+export const TODO_STEER_MESSAGE =
+	"Maintain session todos for this work. Call add_todo or update_todos with concrete tactical items before continuing; do not create TODO comments/placeholders in code."
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object"
 }
@@ -37,6 +40,16 @@ function isWriteTodosDetails(value: unknown): value is WriteTodosDetails {
 }
 
 const TODO_TOOL_NAME_SET = new Set<string>(TODO_TOOL_NAMES)
+
+function hasOpenTodos(): boolean {
+	return getTodosForScope().some((todo) => todo.status !== "completed")
+}
+
+export function shouldSteerForMissingTodos(toolName: string): boolean {
+	if (TODO_TOOL_NAME_SET.has(toolName)) return false
+	if (hasOpenTodos()) return false
+	return true
+}
 
 function getWriteTodosDetails(entry: SessionEntry): WriteTodosDetails | undefined {
 	if (entry.type === "custom" && entry.customType === TODO_CUSTOM_ENTRY_TYPE) {
@@ -60,8 +73,35 @@ export function restoreTodoStoreFromSessionEntries(entries: readonly SessionEntr
 export default function todosExtension(pi: ExtensionAPI): void {
 	registerTodosTool(pi)
 	registerTodoPromptBlock(pi)
+	pi.on("before_agent_start", (event) => {
+		const systemPrompt = appendTodoPromptBlockIfMissing(event.systemPrompt)
+		return systemPrompt ? { systemPrompt } : undefined
+	})
 
 	if (isAgentWorker()) return
+
+	let missingTodoSteerSent = false
+
+	pi.on("tool_call", (event) => {
+		if (!event.toolName) return { block: false }
+		if (!shouldSteerForMissingTodos(event.toolName)) {
+			missingTodoSteerSent = false
+			return { block: false }
+		}
+		if (!missingTodoSteerSent) {
+			missingTodoSteerSent = true
+			pi.sendMessage(
+				{
+					customType: TODO_CUSTOM_ENTRY_TYPE,
+					content: [{ type: "text", text: TODO_STEER_MESSAGE }],
+					display: false,
+					details: { reason: "missing_todos" },
+				},
+				{ deliverAs: "steer", triggerTurn: false },
+			)
+		}
+		return { block: false }
+	})
 
 	let latestCtx: ExtensionContext | undefined
 	let unsubscribeTodoStore: (() => void) | undefined
