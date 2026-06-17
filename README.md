@@ -67,7 +67,7 @@ Use `/multi-model` in the interactive CLI to toggle models on/off per role, or e
 |------|---------|-------------|
 | **orchestrator** | `kimi-k2.6` | Runs the main loop, classifies tasks, delegates work. Single model. |
 | **planner** | `kimi-k2.6` | Designs the approach, writes specs. When same as orchestrator, planning is done in-process. |
-| **builder** | `minimax-m2.7` | Code implementation. For complex tasks the orchestrator may pick a heavier model from the pool. |
+| **builder** | `kimi-k2.6`, `minimax-m2.7` | Code implementation. For complex tasks the orchestrator may pick a heavier model from the pool. |
 | **reviewer** | `kimi-k2.6`, `minimax-m2.7` | Code review. Orchestrator picks the strongest by tier for initial review. |
 | **explorer** | `kimi-k2.6`, `nemotron-3-ultra-fp4` | Codebase exploration, research. Light models for broad scans, heavy for deep analysis. |
 
