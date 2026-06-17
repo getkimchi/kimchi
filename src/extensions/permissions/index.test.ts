@@ -6,7 +6,7 @@ import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import { FERMENT_TOOLS } from "../ferment/tool-names.js"
 import { type EnvironmentInfo, buildSystemPrompt } from "../prompt-construction/system-prompt.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
-import { TODO_TOOL_NAME } from "../todos/tool.js"
+import { TODO_TOOL_NAMES } from "../todos/tool.js"
 import { classifyToolCall } from "./classifier.js"
 import { PERMISSIONS_ENV_KEY } from "./constants.js"
 import permissionsExtension, {
@@ -319,19 +319,21 @@ describe("permissions plan-mode tool visibility", () => {
 		expect(JSON.stringify(result)).toContain("Plan mode")
 	})
 
-	it("keeps write_todos visible and allowed under explicit --plan", async () => {
-		const harness = createPermissionsHarness(["read", "bash", TODO_TOOL_NAME], { plan: true })
+	it("keeps todo tools visible and allowed under explicit --plan", async () => {
+		const harness = createPermissionsHarness(["read", "bash", ...TODO_TOOL_NAMES], { plan: true })
 
 		await harness.fire("session_start", {}, createMockContext([]))
 
-		expect(harness.activeTools().sort()).toEqual(["bash", "read", TODO_TOOL_NAME])
-		await expect(
-			harness.fire(
-				"tool_call",
-				{ toolName: TODO_TOOL_NAME, input: { todos: [{ content: "Plan task", status: "pending" }] } },
-				createMockContext([]),
-			),
-		).resolves.toBeUndefined()
+		expect(harness.activeTools().sort()).toEqual(["bash", "read", ...TODO_TOOL_NAMES].sort())
+		for (const toolName of TODO_TOOL_NAMES) {
+			await expect(
+				harness.fire(
+					"tool_call",
+					{ toolName, input: { todos: [{ content: "Plan task", status: "pending" }] } },
+					createMockContext([]),
+				),
+			).resolves.toBeUndefined()
+		}
 	})
 
 	it("allows request_ferment_workflow after runtime plan-mode questionnaire", async () => {

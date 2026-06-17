@@ -4,7 +4,7 @@ import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
 import todosExtension from "./index.js"
 import { __test_renderTodoPromptBlock } from "./prompt-block.js"
 import { __resetTodoStore, applyWriteTodos, getTodosForScope } from "./store.js"
-import { TODO_TOOL_NAME } from "./tool.js"
+import { TODO_TOOL_NAME, TODO_TOOL_NAMES } from "./tool.js"
 import { TODO_TOOL_RESULT_SCHEMA_VERSION, type TodoStatus } from "./types.js"
 
 type ExtensionHandler = (event: unknown, ctx: ExtensionContext) => unknown | Promise<unknown>
@@ -44,7 +44,12 @@ function createContext(sessionId: string, branch: SessionEntry[]): ExtensionCont
 	} as unknown as ExtensionContext
 }
 
-function writeTodosEntry(id: string, content: string, status: TodoStatus = "pending"): SessionEntry {
+function writeTodosEntry(
+	id: string,
+	content: string,
+	status: TodoStatus = "pending",
+	toolName: string = TODO_TOOL_NAME,
+): SessionEntry {
 	return {
 		type: "message",
 		id,
@@ -53,7 +58,7 @@ function writeTodosEntry(id: string, content: string, status: TodoStatus = "pend
 		message: {
 			role: "toolResult",
 			toolCallId: `tool-${id}`,
-			toolName: TODO_TOOL_NAME,
+			toolName,
 			content: [{ type: "text", text: "Updated 1 todos." }],
 			details: {
 				schemaVersion: TODO_TOOL_RESULT_SCHEMA_VERSION,
@@ -146,5 +151,21 @@ describe("todos extension session state", () => {
 
 		expect(getTodosForScope().map((todo) => todo.content)).toEqual(["command todo"])
 		expect(__test_renderTodoPromptBlock()).toContain("command todo")
+	})
+
+	it("restores todos from every todo tool result", async () => {
+		for (const toolName of TODO_TOOL_NAMES) {
+			__resetTodoStore()
+			const harness = createTodosHarness()
+
+			await harness.fire(
+				"session_start",
+				{ reason: "resume" },
+				createContext("session", [writeTodosEntry("u", `${toolName} todo`, "completed", toolName)]),
+			)
+
+			expect(getTodosForScope().map((todo) => todo.content)).toEqual([`${toolName} todo`])
+			expect(getTodosForScope()[0]?.status).toBe("completed")
+		}
 	})
 })

@@ -4,7 +4,7 @@ import { registerTodosCommand } from "./command.js"
 import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
 import { registerTodoPromptBlock } from "./prompt-block.js"
 import { restoreTodoStoreFromDetails, subscribeTodoStore } from "./store.js"
-import { TODO_TOOL_NAME, registerTodosTool } from "./tool.js"
+import { TODO_TOOL_NAMES, registerTodosTool } from "./tool.js"
 import { TODO_TOOL_RESULT_SCHEMA_VERSION, type WriteTodosDetails } from "./types.js"
 import {
 	disposeTodoWidget,
@@ -36,6 +36,8 @@ function isWriteTodosDetails(value: unknown): value is WriteTodosDetails {
 	)
 }
 
+const TODO_TOOL_NAME_SET = new Set<string>(TODO_TOOL_NAMES)
+
 function getWriteTodosDetails(entry: SessionEntry): WriteTodosDetails | undefined {
 	if (entry.type === "custom" && entry.customType === TODO_CUSTOM_ENTRY_TYPE) {
 		return isWriteTodosDetails(entry.data) ? entry.data : undefined
@@ -44,7 +46,7 @@ function getWriteTodosDetails(entry: SessionEntry): WriteTodosDetails | undefine
 	if (entry.type === "message") {
 		const message = entry.message as unknown
 		if (!isRecord(message)) return undefined
-		if (message.role !== "toolResult" || message.toolName !== TODO_TOOL_NAME) return undefined
+		if (message.role !== "toolResult" || !TODO_TOOL_NAME_SET.has(String(message.toolName))) return undefined
 		return isWriteTodosDetails(message.details) ? message.details : undefined
 	}
 
