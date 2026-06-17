@@ -319,3 +319,27 @@ export function getModelRolesWarnings(): readonly ModelRolesWarning[] {
 export function resetModelRolesCache(): void {
 	_resolved = undefined
 }
+
+/** Apply a post-resolution transform to the model roles singleton.
+ *  If the cache is already populated, the transform runs against the cached
+ *  roles; otherwise it runs against a fresh `resolveModelRoles()` result and
+ *  the augmented value becomes the cached value. This is the hook extension
+ *  authors (e.g. Ollama auto-discovery) should use to add runtime-discovered
+ *  models to role pools without touching settings.json on disk.
+ *
+ *  The transform must be pure and idempotent — it may be called multiple
+ *  times across the lifetime of the process (e.g. after a cache reset). */
+export function applyRoleAugmentation(transform: (roles: ModelRoles) => ModelRoles): void {
+	const base = _resolved ?? resolveModelRoles()
+	const augmented = transform(base.roles)
+	if (!isEqualModelRoles(augmented, base.roles)) {
+		_resolved = { roles: augmented, warnings: base.warnings }
+	}
+}
+
+function isEqualModelRoles(a: ModelRoles, b: ModelRoles): boolean {
+	for (const key of ROLE_KEYS) {
+		if (!isEqualRoleValue(a[key], b[key])) return false
+	}
+	return true
+}
