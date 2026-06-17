@@ -79,6 +79,7 @@ import todosExtension from "./extensions/todos/index.js"
 import toolGroupingExtension from "./extensions/tool-grouping.js"
 import toolRenderingExtension from "./extensions/tool-rendering.js"
 import traceIdExtension from "./extensions/trace-id.js"
+import truncateReasoningExtension from "./extensions/truncate-reasoning.js"
 import uiExtension from "./extensions/ui.js"
 import webFetchExtension from "./extensions/web-fetch/index.js"
 import webSearchExtension from "./extensions/web-search/index.js"
@@ -449,6 +450,7 @@ try {
 				{ id: "extensions.todos", factory: todosExtension },
 			] satisfies ManagedExtensionFactory[]),
 			hideThinkingExtension,
+			truncateReasoningExtension,
 			thinkingStepsExtension,
 			assistantPrefixExtension,
 			clipboardImageExtension,
