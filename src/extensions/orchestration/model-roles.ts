@@ -10,10 +10,12 @@
  *   - judge: ferment verification and final grading calls
  *
  * Delegable roles (planner, builder, reviewer, explorer) accept either a
- * single model string, an array of candidates, a CustomModelConfig object,
- * or an array mixing strings and objects. When multiple models are
+ * single model string or an array of candidates. When multiple models are
  * assigned, the orchestrator selects the best fit based on tier and task
  * complexity.
+ *
+ * Model metadata (tier, description, vision) is stored separately in the
+ * "modelMetadata" key of settings.json — see model-metadata.ts.
  *
  * Defaults are derived from MODEL_CAPABILITIES — each model's `roles` field
  * determines which role pools it belongs to.
@@ -43,24 +45,14 @@ import {
 	type ModelCustomMetadata,
 	getModelMetadata,
 	resetModelMetadataCache as resetMetadataCache,
-	saveModelMetadata,
 } from "./model-metadata.js"
 export { modelIdFromRef, splitModelRef } from "./model-ref-utils.js"
 import { modelIdFromRef } from "./model-ref-utils.js"
 import { MODEL_CAPABILITIES } from "./model-registry/builtin-models.js"
 import { KIMCHI_DEV_PROVIDER } from "./model-registry/model-registry.js"
-import type { ModelTier } from "./model-registry/types.js"
 
-/** Custom metadata for a non-registry model assigned to a role. */
-export interface CustomModelConfig {
-	model: string
-	tier?: ModelTier
-	description?: string
-	vision?: boolean
-}
-
-/** Model assignment for a role: single model, ordered list of candidates, custom config, or mixed array. */
-export type RoleModelAssignment = string | CustomModelConfig | (string | CustomModelConfig)[]
+/** Model assignment for a role: single model ref or ordered list of candidates. */
+export type RoleModelAssignment = string | string[]
 
 export interface ModelRoles {
 	/** Main model: runs the orchestrator loop, delegates work to other roles. */
@@ -144,43 +136,21 @@ export interface ModelRolesWarning {
 }
 
 /** Normalize a role value to an array of model refs. */
-export function normalizeRoleModels(value: RoleModelAssignment | (string | CustomModelConfig)[]): string[] {
-	if (Array.isArray(value)) {
-		return value.map((v) => (typeof v === "string" ? v : v.model))
-	}
-	if (typeof value === "string") return [value]
-	return [value.model]
-}
-
-function isValidCustomModelConfig(value: unknown): value is CustomModelConfig {
-	return (
-		typeof value === "object" &&
-		value !== null &&
-		typeof (value as { model?: string }).model === "string" &&
-		(value as { model: string }).model.trim().length > 0
-	)
+export function normalizeRoleModels(value: RoleModelAssignment): string[] {
+	if (Array.isArray(value)) return value
+	return [value]
 }
 
 function isValidRoleValue(value: unknown): value is RoleModelAssignment {
 	if (typeof value === "string" && value.trim().length > 0) return true
 	if (Array.isArray(value) && value.length > 0 && value.every((v) => typeof v === "string" && v.trim().length > 0))
 		return true
-	if (isValidCustomModelConfig(value)) return true
-	if (
-		Array.isArray(value) &&
-		value.length > 0 &&
-		value.every((v) => isValidCustomModelConfig(v) || (typeof v === "string" && v.trim().length > 0))
-	)
-		return true
 	return false
 }
 
-function trimRoleValue(value: string | string[] | CustomModelConfig | CustomModelConfig[]): RoleModelAssignment {
+function trimRoleValue(value: string | string[]): RoleModelAssignment {
 	if (typeof value === "string") return value.trim()
-	if (Array.isArray(value)) {
-		return value.map((v) => (typeof v === "string" ? v.trim() : { ...v, model: v.model.trim() }))
-	}
-	return { ...value, model: value.model.trim() }
+	return value.map((v) => v.trim())
 }
 
 /**
@@ -220,7 +190,7 @@ export function parseModelRoles(raw: unknown): { roles: ModelRoles; warnings: Mo
 				})
 				continue
 			}
-			roles[key] = trimRoleValue(value as string | string[] | CustomModelConfig | CustomModelConfig[])
+			roles[key] = trimRoleValue(value as string | string[])
 		}
 	}
 
@@ -253,10 +223,6 @@ function isEqualRoleValue(a: RoleModelAssignment, b: RoleModelAssignment): boole
 /**
  * Save model roles to settings.json. Merges with existing settings,
  * only writing non-default values (omits keys that match DEFAULT_MODEL_ROLES).
- *
- * Embedded CustomModelConfig objects in role assignments are extracted and
- * saved to the global modelMetadata store. Role assignments are saved as
- * strings only (model ref), preserving backwards compat for unmigrated readers.
  */
 export function saveModelRoles(roles: ModelRoles, settingsPath?: string): void {
 	const path = settingsPath ?? HARNESS_SETTINGS_PATH
@@ -267,60 +233,10 @@ export function saveModelRoles(roles: ModelRoles, settingsPath?: string): void {
 		// absent or unreadable — start fresh
 	}
 
-	// 1. Extract embedded CustomModelConfig objects and convert to strings
-	const metadataToSave = new Map<string, ModelCustomMetadata>()
-	const stringifiedRoles: ModelRoles = { ...roles }
-
-	for (const key of ROLE_KEYS) {
-		const value = roles[key]
-		if (key === "orchestrator") {
-			// orchestrator is always a string
-			stringifiedRoles.orchestrator = value as string
-			continue
-		}
-
-		const items = Array.isArray(value) ? value : [value]
-		const stringifiedItems: (string | CustomModelConfig)[] = []
-
-		for (const item of items) {
-			if (typeof item === "object" && item !== null) {
-				// Extract metadata and save just the string ref
-				const { model, tier, description, vision } = item
-				const meta: ModelCustomMetadata = {}
-				if (tier !== undefined) meta.tier = tier
-				if (description !== undefined) meta.description = description
-				if (vision !== undefined) meta.vision = vision
-				if (Object.keys(meta).length > 0) {
-					metadataToSave.set(model, meta)
-				}
-				stringifiedItems.push(model)
-			} else {
-				stringifiedItems.push(item)
-			}
-		}
-
-		stringifiedRoles[key] = items.length === 1 ? stringifiedItems[0] : stringifiedItems
-	}
-
-	// 2. Save extracted metadata via the canonical saveModelMetadata path
-	if (metadataToSave.size > 0) {
-		saveModelMetadata(metadataToSave, path)
-	}
-
-	// 3. Save stringified roles (only non-default values)
-	// Re-read the file since saveModelMetadata may have written to it
-	if (metadataToSave.size > 0) {
-		try {
-			existing = JSON.parse(readFileSync(path, "utf-8"))
-		} catch {
-			// should not happen since saveModelMetadata just wrote it
-		}
-	}
-
 	const rolesObj: Record<string, RoleModelAssignment> = {}
 	for (const key of ROLE_KEYS) {
-		if (!isEqualRoleValue(stringifiedRoles[key], DEFAULT_MODEL_ROLES[key])) {
-			rolesObj[key] = stringifiedRoles[key]
+		if (!isEqualRoleValue(roles[key], DEFAULT_MODEL_ROLES[key])) {
+			rolesObj[key] = roles[key]
 		}
 	}
 
@@ -344,34 +260,10 @@ export function saveModelRoles(roles: ModelRoles, settingsPath?: string): void {
 // ---------------------------------------------------------------------------
 
 export function extractCustomConfigs(
-	roles: ModelRoles,
+	_roles: ModelRoles,
 	overrides?: ReadonlyMap<string, ModelCustomMetadata>,
-): ReadonlyMap<string, CustomModelConfig> {
-	const map = new Map<string, CustomModelConfig>()
-
-	// 1. Read from global metadata store (new format)
-	const globalRefs = new Set<string>()
-	const globalMetadata = overrides ?? getModelMetadata()
-	for (const [ref, meta] of globalMetadata) {
-		globalRefs.add(ref)
-		map.set(ref, { model: ref, ...meta })
-	}
-
-	// 2. Backwards compat: scan role assignments for embedded objects
-	// Global metadata wins, but embedded objects among themselves keep last-wins semantics
-	for (const key of ROLE_KEYS) {
-		const value = roles[key]
-		const items = Array.isArray(value) ? value : [value]
-		for (const item of items) {
-			if (typeof item === "object" && item !== null) {
-				if (!globalRefs.has(item.model)) {
-					map.set(item.model, item)
-				}
-			}
-		}
-	}
-
-	return map
+): ReadonlyMap<string, ModelCustomMetadata> {
+	return overrides ?? getModelMetadata()
 }
 
 export interface ModelRoleValidationResult {

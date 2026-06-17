@@ -2,9 +2,13 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
-import { loadModelMetadata, resetModelMetadataCache } from "./model-metadata.js"
 import {
-	type CustomModelConfig,
+	type ModelCustomMetadata,
+	loadModelMetadata,
+	resetModelMetadataCache,
+	saveModelMetadata,
+} from "./model-metadata.js"
+import {
 	DEFAULT_MODEL_ROLES,
 	type ModelRoles,
 	extractCustomConfigs,
@@ -346,266 +350,51 @@ describe("validateModelRoles", () => {
 	})
 })
 
-describe("parseModelRoles with CustomModelConfig objects", () => {
-	it("accepts a single CustomModelConfig object for a delegable role", () => {
-		const custom: CustomModelConfig = {
-			model: "anthropic/claude-opus-4-6",
-			tier: "heavy",
-			description: "Anthropic's flagship model.",
-			vision: false,
-		}
-		const { roles, warnings } = parseModelRoles({ planner: custom })
-		expect(roles.planner).toEqual(custom)
-		expect(warnings).toHaveLength(0)
-	})
-
-	it("accepts a mixed array of strings and CustomModelConfig objects", () => {
+describe("parseModelRoles rejects objects", () => {
+	it("warns on object value for a delegable role", () => {
 		const { roles, warnings } = parseModelRoles({
-			planner: [
-				"kimchi-dev/kimi-k2.6",
-				{
-					model: "anthropic/claude-opus-4-6",
-					tier: "heavy",
-					description: "Anthropic's flagship model.",
-				},
-			],
-		})
-		expect(Array.isArray(roles.planner)).toBe(true)
-		expect((roles.planner as (string | CustomModelConfig)[])[0]).toBe("kimchi-dev/kimi-k2.6")
-		expect(((roles.planner as (string | CustomModelConfig)[])[1] as CustomModelConfig).model).toBe(
-			"anthropic/claude-opus-4-6",
-		)
-		expect(warnings).toHaveLength(0)
-	})
-
-	it("accepts CustomModelConfig with only model field", () => {
-		const { roles, warnings } = parseModelRoles({
-			builder: { model: "anthropic/claude-sonnet-4-5" },
-		})
-		expect((roles.builder as CustomModelConfig).model).toBe("anthropic/claude-sonnet-4-5")
-		expect(warnings).toHaveLength(0)
-	})
-
-	it("warns on object with missing model field", () => {
-		const { roles, warnings } = parseModelRoles({
-			builder: { tier: "heavy" } as unknown as CustomModelConfig,
+			builder: { model: "anthropic/claude-sonnet-4-5", tier: "heavy" },
 		})
 		expect(roles.builder).toBe(DEFAULT_MODEL_ROLES.builder)
 		expect(warnings).toHaveLength(1)
 		expect(warnings[0].role).toBe("builder")
 	})
 
-	it("warns on object with empty model string", () => {
+	it("warns on array containing objects", () => {
 		const { roles, warnings } = parseModelRoles({
-			builder: { model: "   " },
-		})
-		expect(roles.builder).toBe(DEFAULT_MODEL_ROLES.builder)
-		expect(warnings).toHaveLength(1)
-		expect(warnings[0].role).toBe("builder")
-	})
-
-	it("warns on array with invalid object entry", () => {
-		const { roles, warnings } = parseModelRoles({
-			planner: ["kimchi-dev/kimi-k2.6", { tier: "heavy" }],
+			planner: ["kimchi-dev/kimi-k2.6", { model: "anthropic/claude-opus-4-6" }],
 		})
 		expect(roles.planner).toBe(DEFAULT_MODEL_ROLES.planner)
 		expect(warnings).toHaveLength(1)
 		expect(warnings[0].role).toBe("planner")
 	})
-
-	it("trims whitespace from model field in custom config", () => {
-		const { roles } = parseModelRoles({
-			builder: { model: "  anthropic/claude-sonnet-4-5  " },
-		})
-		expect((roles.builder as CustomModelConfig).model).toBe("anthropic/claude-sonnet-4-5")
-	})
-})
-
-describe("normalizeRoleModels with CustomModelConfig", () => {
-	it("extracts model ref from a single CustomModelConfig object", () => {
-		const config: CustomModelConfig = { model: "anthropic/claude-opus-4-6", tier: "heavy" }
-		expect(normalizeRoleModels(config)).toEqual(["anthropic/claude-opus-4-6"])
-	})
-
-	it("extracts model refs from mixed string/object array", () => {
-		const mixed: (string | CustomModelConfig)[] = [
-			"kimchi-dev/kimi-k2.6",
-			{ model: "anthropic/claude-opus-4-6", tier: "heavy" },
-			"openai/gpt-4o",
-		]
-		expect(normalizeRoleModels(mixed)).toEqual(["kimchi-dev/kimi-k2.6", "anthropic/claude-opus-4-6", "openai/gpt-4o"])
-	})
-
-	it("still works with plain string", () => {
-		expect(normalizeRoleModels("kimchi-dev/kimi-k2.6")).toEqual(["kimchi-dev/kimi-k2.6"])
-	})
-
-	it("still works with string array", () => {
-		expect(normalizeRoleModels(["a", "b"])).toEqual(["a", "b"])
-	})
 })
 
 describe("extractCustomConfigs", () => {
-	it("returns empty map when no custom configs present and no overrides", () => {
+	it("returns empty map when no overrides provided", () => {
 		const roles: ModelRoles = {
 			...DEFAULT_MODEL_ROLES,
 			builder: "kimchi-dev/minimax-m2.7",
-			planner: "kimchi-dev/kimi-k2.6",
 		}
-		// Pass empty overrides to avoid relying on global cache state
 		const result = extractCustomConfigs(roles, new Map())
 		expect(result.size).toBe(0)
 	})
 
-	it("extracts single custom config from a role (embedded only, no overrides)", () => {
-		const roles: ModelRoles = {
-			...DEFAULT_MODEL_ROLES,
-			planner: { model: "anthropic/claude-opus-4-6", tier: "heavy" },
-		}
-		const result = extractCustomConfigs(roles, new Map())
-		expect(result.size).toBe(1)
-		expect(result.get("anthropic/claude-opus-4-6")).toEqual({
-			model: "anthropic/claude-opus-4-6",
-			tier: "heavy",
-		})
-	})
-
-	it("extracts multiple custom configs from a role array (embedded only)", () => {
-		const roles: ModelRoles = {
-			...DEFAULT_MODEL_ROLES,
-			planner: [
-				"kimchi-dev/kimi-k2.6",
-				{ model: "anthropic/claude-opus-4-6", tier: "heavy", description: "Test" },
-				{ model: "openai/gpt-4o", tier: "standard" },
-			],
-		}
-		const result = extractCustomConfigs(roles, new Map())
-		expect(result.size).toBe(2)
-		expect(result.get("anthropic/claude-opus-4-6")).toEqual({
-			model: "anthropic/claude-opus-4-6",
-			tier: "heavy",
-			description: "Test",
-		})
-		expect(result.get("openai/gpt-4o")).toEqual({ model: "openai/gpt-4o", tier: "standard" })
-	})
-
-	it("extracts configs from multiple roles (embedded only)", () => {
-		const roles: ModelRoles = {
-			...DEFAULT_MODEL_ROLES,
-			planner: { model: "anthropic/claude-opus-4-6", tier: "heavy" },
-			builder: { model: "openai/gpt-4o", tier: "standard" },
-		}
-		const result = extractCustomConfigs(roles, new Map())
-		expect(result.size).toBe(2)
-	})
-
-	it("last-wins when same model ref appears in multiple roles (embedded only)", () => {
-		const roles: ModelRoles = {
-			...DEFAULT_MODEL_ROLES,
-			planner: { model: "anthropic/claude-opus-4-6", tier: "heavy", description: "Planner description" },
-			builder: { model: "anthropic/claude-opus-4-6", tier: "standard", description: "Builder description" },
-		}
-		const result = extractCustomConfigs(roles, new Map())
-		expect(result.size).toBe(1)
-		expect(result.get("anthropic/claude-opus-4-6")).toEqual({
-			model: "anthropic/claude-opus-4-6",
-			tier: "standard",
-			description: "Builder description",
-		})
-	})
-
-	it("returns global metadata when no embedded objects present", () => {
-		const roles: ModelRoles = {
-			...DEFAULT_MODEL_ROLES,
-			builder: "anthropic/claude-sonnet-4-5",
-		}
-		const globalOverrides = new Map<string, { tier?: "heavy"; description?: string }>([
+	it("returns overrides directly", () => {
+		const roles: ModelRoles = { ...DEFAULT_MODEL_ROLES }
+		const overrides = new Map<string, ModelCustomMetadata>([
 			["anthropic/claude-sonnet-4-5", { tier: "heavy", description: "From global store" }],
 		])
-		const result = extractCustomConfigs(roles, globalOverrides)
+		const result = extractCustomConfigs(roles, overrides)
 		expect(result.size).toBe(1)
 		expect(result.get("anthropic/claude-sonnet-4-5")).toEqual({
-			model: "anthropic/claude-sonnet-4-5",
 			tier: "heavy",
 			description: "From global store",
 		})
 	})
-
-	it("global metadata wins over embedded objects for same model ref", () => {
-		const roles: ModelRoles = {
-			...DEFAULT_MODEL_ROLES,
-			planner: { model: "anthropic/claude-opus-4-6", tier: "heavy", description: "Embedded" },
-		}
-		const globalOverrides = new Map<string, { tier?: "standard"; description?: string }>([
-			["anthropic/claude-opus-4-6", { tier: "standard", description: "From global" }],
-		])
-		const result = extractCustomConfigs(roles, globalOverrides)
-		expect(result.size).toBe(1)
-		expect(result.get("anthropic/claude-opus-4-6")).toEqual({
-			model: "anthropic/claude-opus-4-6",
-			tier: "standard",
-			description: "From global",
-		})
-	})
-
-	it("embedded objects included when model ref is not in global metadata", () => {
-		const roles: ModelRoles = {
-			...DEFAULT_MODEL_ROLES,
-			planner: { model: "anthropic/claude-opus-4-6", tier: "heavy", description: "Embedded only" },
-			builder: "openai/gpt-4o",
-		}
-		const globalOverrides = new Map<string, { tier?: "standard" }>([["openai/gpt-4o", { tier: "standard" }]])
-		const result = extractCustomConfigs(roles, globalOverrides)
-		expect(result.size).toBe(2)
-		expect(result.get("anthropic/claude-opus-4-6")).toEqual({
-			model: "anthropic/claude-opus-4-6",
-			tier: "heavy",
-			description: "Embedded only",
-		})
-		expect(result.get("openai/gpt-4o")).toEqual({
-			model: "openai/gpt-4o",
-			tier: "standard",
-		})
-	})
 })
 
-describe("validateModelRoles with CustomModelConfig", () => {
-	it("validates model ID extracted from CustomModelConfig object", () => {
-		const roles: ModelRoles = {
-			...DEFAULT_MODEL_ROLES,
-			builder: { model: "anthropic/claude-sonnet-4-5", tier: "standard" },
-		}
-		const available = new Set(["kimi-k2.6", "minimax-m2.7", "nemotron-3-super-fp4"])
-		const result = validateModelRoles(roles, available)
-		expect(result.unavailable).toHaveLength(1)
-		expect(result.unavailable[0].role).toBe("builder")
-		expect(result.unavailable[0].configuredModel).toBe("anthropic/claude-sonnet-4-5")
-	})
-
-	it("validates model IDs from mixed string/object arrays", () => {
-		const roles: ModelRoles = {
-			...DEFAULT_MODEL_ROLES,
-			planner: ["kimchi-dev/kimi-k2.6", { model: "anthropic/claude-opus-4-6", tier: "heavy" }],
-		}
-		const available = new Set(["kimi-k2.6", "minimax-m2.7", "nemotron-3-super-fp4"])
-		const result = validateModelRoles(roles, available)
-		expect(result.unavailable).toHaveLength(1)
-		expect(result.unavailable[0].configuredModel).toBe("anthropic/claude-opus-4-6")
-	})
-
-	it("strips provider prefix from model ref in CustomModelConfig when validating", () => {
-		const roles: ModelRoles = {
-			...DEFAULT_MODEL_ROLES,
-			builder: { model: "custom-provider/minimax-m2.7", tier: "standard" },
-		}
-		const available = new Set(["minimax-m2.7", "kimi-k2.6", "nemotron-3-super-fp4"])
-		const result = validateModelRoles(roles, available)
-		// Should strip provider and find minimax-m2.7 in available set
-		expect(result.unavailable).toHaveLength(0)
-	})
-})
-
-describe("saveModelRoles with CustomModelConfig", () => {
+describe("saveModelRoles", () => {
 	const testDir = join(tmpdir(), `kimchi-model-roles-test-${process.pid}`)
 	const testPath = join(testDir, "settings.json")
 
@@ -615,68 +404,7 @@ describe("saveModelRoles with CustomModelConfig", () => {
 		} catch {}
 	})
 
-	it("extracts metadata and saves to modelMetadata, saves strings to modelRoles", () => {
-		const custom: CustomModelConfig = {
-			model: "anthropic/claude-opus-4-6",
-			tier: "heavy",
-			description: "Anthropic's flagship.",
-			vision: false,
-		}
-		const roles: ModelRoles = {
-			...DEFAULT_MODEL_ROLES,
-			planner: custom,
-		}
-		saveModelRoles(roles, testPath)
-		const saved = JSON.parse(readFileSync(testPath, "utf-8"))
-		// modelRoles should have the string ref, not the object
-		expect(saved.modelRoles.planner).toBe("anthropic/claude-opus-4-6")
-		// metadata should be in modelMetadata
-		expect(saved.modelMetadata).toBeDefined()
-		expect(saved.modelMetadata["anthropic/claude-opus-4-6"]).toEqual({
-			tier: "heavy",
-			description: "Anthropic's flagship.",
-			vision: false,
-		})
-	})
-
-	it("extracts metadata from mixed string/object array", () => {
-		const roles: ModelRoles = {
-			...DEFAULT_MODEL_ROLES,
-			planner: ["kimchi-dev/kimi-k2.6", { model: "anthropic/claude-opus-4-6", tier: "heavy" }],
-		}
-		saveModelRoles(roles, testPath)
-		const saved = JSON.parse(readFileSync(testPath, "utf-8"))
-		// First element stays as string
-		expect(saved.modelRoles.planner[0]).toBe("kimchi-dev/kimi-k2.6")
-		// Second element is converted to string ref
-		expect(saved.modelRoles.planner[1]).toBe("anthropic/claude-opus-4-6")
-		// metadata extracted for the object
-		expect(saved.modelMetadata["anthropic/claude-opus-4-6"]).toEqual({ tier: "heavy" })
-	})
-
-	it("round-trip: save with objects, read back with parseModelRoles and loadModelMetadata", () => {
-		const roles: ModelRoles = {
-			...DEFAULT_MODEL_ROLES,
-			planner: ["kimchi-dev/kimi-k2.6", { model: "anthropic/claude-opus-4-6", tier: "heavy", description: "Test" }],
-			builder: { model: "openai/gpt-4o", tier: "standard" },
-		}
-		saveModelRoles(roles, testPath)
-
-		// Read back modelRoles (should be strings now)
-		const saved = JSON.parse(readFileSync(testPath, "utf-8"))
-		const { roles: parsedRoles } = parseModelRoles(saved.modelRoles)
-		// Verify planner has string refs
-		expect(parsedRoles.planner).toEqual(["kimchi-dev/kimi-k2.6", "anthropic/claude-opus-4-6"])
-		// Verify builder is just string
-		expect(parsedRoles.builder).toBe("openai/gpt-4o")
-
-		// Read back modelMetadata
-		const metadata = loadModelMetadata(testPath)
-		expect(metadata.get("anthropic/claude-opus-4-6")).toEqual({ tier: "heavy", description: "Test" })
-		expect(metadata.get("openai/gpt-4o")).toEqual({ tier: "standard" })
-	})
-
-	it("saves string-only roles as before (backwards compat)", () => {
+	it("saves string roles to modelRoles key", () => {
 		const roles: ModelRoles = {
 			...DEFAULT_MODEL_ROLES,
 			builder: "anthropic/claude-sonnet-4-5",
@@ -684,26 +412,31 @@ describe("saveModelRoles with CustomModelConfig", () => {
 		saveModelRoles(roles, testPath)
 		const saved = JSON.parse(readFileSync(testPath, "utf-8"))
 		expect(saved.modelRoles.builder).toBe("anthropic/claude-sonnet-4-5")
+	})
+
+	it("does not write modelMetadata", () => {
+		const roles: ModelRoles = {
+			...DEFAULT_MODEL_ROLES,
+			builder: "anthropic/claude-sonnet-4-5",
+		}
+		saveModelRoles(roles, testPath)
+		const saved = JSON.parse(readFileSync(testPath, "utf-8"))
 		expect(saved.modelMetadata).toBeUndefined()
 	})
 
-	it("preserves existing modelMetadata when saving string-only roles", () => {
-		const rolesWithMeta: ModelRoles = {
-			...DEFAULT_MODEL_ROLES,
-			planner: { model: "anthropic/claude-opus-4-6", tier: "heavy" },
-		}
-		saveModelRoles(rolesWithMeta, testPath)
+	it("preserves existing modelMetadata when saving roles", () => {
+		mkdirSync(testDir, { recursive: true })
+		const metadata = new Map<string, ModelCustomMetadata>([["anthropic/claude-opus-4-6", { tier: "heavy" }]])
+		saveModelMetadata(metadata, testPath)
 
-		let saved = JSON.parse(readFileSync(testPath, "utf-8"))
-		expect(saved.modelMetadata).toBeDefined()
-
-		const rolesNoMeta: ModelRoles = {
+		const roles: ModelRoles = {
 			...DEFAULT_MODEL_ROLES,
 			builder: "openai/gpt-4o",
 		}
-		saveModelRoles(rolesNoMeta, testPath)
+		saveModelRoles(roles, testPath)
 
-		saved = JSON.parse(readFileSync(testPath, "utf-8"))
+		const saved = JSON.parse(readFileSync(testPath, "utf-8"))
 		expect(saved.modelMetadata["anthropic/claude-opus-4-6"]).toEqual({ tier: "heavy" })
+		expect(saved.modelRoles.builder).toBe("openai/gpt-4o")
 	})
 })

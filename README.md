@@ -111,48 +111,37 @@ The orchestrator will use minimax for simple chunks and Claude for complex ones 
 
 #### Custom metadata for external models
 
-Models without a built-in capability entry (e.g., Anthropic or OpenAI models) can be annotated with custom metadata so the orchestrator sees their tier, description, and vision support when making routing decisions. Provide an object instead of a plain string:
+Models without a built-in capability entry (e.g., Anthropic or OpenAI models) can be annotated with custom metadata so the orchestrator sees their tier, description, and vision support when making routing decisions. Add a `modelMetadata` section to `settings.json`:
 
 ```json
 {
   "modelRoles": {
-    "planner": [
-      "kimchi-dev/kimi-k2.6",
-      {
-        "model": "anthropic/claude-opus-4-6",
-        "tier": "heavy",
-        "description": "Anthropic flagship — best for complex architectural planning and deep reasoning.",
-        "vision": false
-      }
-    ]
-  }
-}
-```
-
-| Field | Required | Default | Description |
-|-------|----------|---------|-------------|
-| `model` | **Yes** | — | Full model reference (`provider/model-id`). |
-| `tier` | No | `standard` | `light`, `standard`, or `heavy`. Used for complexity-based routing. |
-| `description` | No | Auto-generated | Shown to the orchestrator in the **Your Team** and **Your Capabilities** sections. When omitted, a description is generated indicating the model was configured by the user and listing its assigned roles. |
-| `vision` | No | `false` | Whether the model supports image input. |
-
-External models assigned without custom metadata still work — they default to `standard` tier with `vision: false`, and the orchestrator receives an auto-generated description noting the model was chosen by the user for its assigned roles.
-
-Metadata can also be managed interactively via `/multi-model` → "Edit model metadata". Custom overrides can be reset to defaults from the same menu. When switching to an unknown model, a wizard prompts for metadata configuration.
-
-Under the hood, metadata from inline objects is extracted and stored in the `modelMetadata` key of `settings.json`, separate from role assignments. The `modelMetadata` key can also be edited directly:
-
-```json
-{
+    "planner": ["kimchi-dev/kimi-k2.6", "anthropic/claude-opus-4-6"],
+    "builder": "openai/gpt-4o"
+  },
   "modelMetadata": {
     "anthropic/claude-opus-4-6": {
       "tier": "heavy",
-      "description": "Anthropic flagship — best for complex architectural planning.",
+      "description": "Anthropic flagship — best for complex architectural planning and deep reasoning.",
       "vision": false
+    },
+    "openai/gpt-4o": {
+      "tier": "standard",
+      "description": "Fast and capable general-purpose model."
     }
   }
 }
 ```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `tier` | `standard` | `light`, `standard`, or `heavy`. Used for complexity-based routing. |
+| `description` | Auto-generated | Shown to the orchestrator in the **Your Team** and **Your Capabilities** sections. When omitted, a description is generated based on the model's assigned roles. |
+| `vision` | `false` | Whether the model supports image input. |
+
+External models assigned without custom metadata still work — they default to `standard` tier with `vision: false`, and the orchestrator receives an auto-generated description based on their assigned roles.
+
+Metadata can also be managed interactively via `/multi-model` → "Edit model metadata". Custom overrides can be reset to defaults from the same menu. When switching to an unknown model, a wizard prompts for metadata configuration.
 
 ### Phase tracking
 

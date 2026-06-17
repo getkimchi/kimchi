@@ -7,11 +7,11 @@
  */
 
 import type { PromptMode } from "../prompt-construction/system-prompt.js"
+import type { ModelCustomMetadata } from "./model-metadata.js"
 import { buildOrchestrationGuidelinesSection } from "./model-registry/guidelines/guidelines-resolver.js"
 import type { ModelRegistry } from "./model-registry/index.js"
 import type { ModelTier, OrchestrationModelDescriptor } from "./model-registry/types.js"
 import type { ModelRoles, RoleModelAssignment } from "./model-roles.js"
-import type { CustomModelConfig } from "./model-roles.js"
 import { modelIdFromRef, normalizeRoleModels, splitModelRef } from "./model-roles.js"
 
 export interface OrchestrationInstructionsContext {
@@ -20,8 +20,8 @@ export interface OrchestrationInstructionsContext {
 	mode: PromptMode
 	/** Role-based model assignments for orchestrator mode. */
 	roles?: ModelRoles
-	/** Custom model configs for non-registry models. */
-	customConfigs?: ReadonlyMap<string, CustomModelConfig>
+	/** Custom model metadata for non-registry models. */
+	customConfigs?: ReadonlyMap<string, ModelCustomMetadata>
 }
 
 export function resolveOrchestrationInstructions(ctx: OrchestrationInstructionsContext): string {
@@ -309,7 +309,7 @@ interface ResolvedModelMeta {
 function resolveModelMeta(
 	ref: string,
 	registry?: ModelRegistry,
-	customConfigs?: ReadonlyMap<string, CustomModelConfig>,
+	customConfigs?: ReadonlyMap<string, ModelCustomMetadata>,
 	roles?: ModelRoles,
 ): ResolvedModelMeta {
 	const descriptor = resolveDescriptor(ref, registry)
@@ -326,7 +326,7 @@ function resolveModelMeta(
 function formatModelEntry(
 	ref: string,
 	registry?: ModelRegistry,
-	customConfigs?: ReadonlyMap<string, CustomModelConfig>,
+	customConfigs?: ReadonlyMap<string, ModelCustomMetadata>,
 	roles?: ModelRoles,
 ): string {
 	const displayName = resolveModelDisplayName(ref, registry)
@@ -347,7 +347,7 @@ function formatRoleSection(
 	roleName: string,
 	assignment: RoleModelAssignment,
 	registry?: ModelRegistry,
-	customConfigs?: ReadonlyMap<string, CustomModelConfig>,
+	customConfigs?: ReadonlyMap<string, ModelCustomMetadata>,
 	roles?: ModelRoles,
 ): string {
 	const models = normalizeRoleModels(assignment)
@@ -371,7 +371,7 @@ function deriveRolesFromTier(tier: ModelTier | undefined): string {
 function formatCurrentModelCapabilities(
 	currentModelId: string,
 	registry?: ModelRegistry,
-	customConfigs?: ReadonlyMap<string, CustomModelConfig>,
+	customConfigs?: ReadonlyMap<string, ModelCustomMetadata>,
 	roles?: ModelRoles,
 ): string {
 	const meta = resolveModelMeta(currentModelId, registry, customConfigs, roles)
@@ -393,7 +393,7 @@ function buildRoleAssignmentsSection(
 	roles: ModelRoles,
 	registry?: ModelRegistry,
 	currentModelId?: string,
-	customConfigs?: ReadonlyMap<string, CustomModelConfig>,
+	customConfigs?: ReadonlyMap<string, ModelCustomMetadata>,
 ): string {
 	const sections: string[] = []
 

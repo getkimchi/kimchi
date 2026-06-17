@@ -9,10 +9,11 @@
  */
 
 import { type Skill, formatSkillsForPrompt } from "@earendil-works/pi-coding-agent"
+import type { ModelCustomMetadata } from "../orchestration/model-metadata.js"
 import { buildPhaseGuidelinesSection } from "../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import type { ModelRegistry } from "../orchestration/model-registry/index.js"
 import type { Phase } from "../orchestration/model-registry/types.js"
-import type { CustomModelConfig, ModelRoles } from "../orchestration/model-roles.js"
+import type { ModelRoles } from "../orchestration/model-roles.js"
 import { resolveOrchestrationInstructions } from "../orchestration/orchestration-instructions.js"
 import type { ContextFile } from "./context-files.js"
 import { type SuppressibleSection, renderSystemPromptBlocks } from "./system-prompt-blocks.js"
@@ -47,8 +48,8 @@ export interface SystemPromptBuildOptions {
 	mode: PromptMode
 	/** Role-based model assignments for orchestrator mode. */
 	roles?: ModelRoles
-	/** Custom model configs for non-registry models. */
-	customConfigs?: ReadonlyMap<string, CustomModelConfig>
+	/** Custom model metadata for non-registry models. */
+	customConfigs?: ReadonlyMap<string, ModelCustomMetadata>
 	/** Session ID for the active pi-mono session. Used to scope extension prompt blocks
 	 *  to this session so an in-process subagent's blocks don't leak into the parent's
 	 *  prompt and vice versa. Omit only in unit tests or before any session has started. */

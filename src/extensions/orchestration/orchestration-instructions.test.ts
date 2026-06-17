@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import type { ModelMetadata } from "../../models.js"
+import type { ModelCustomMetadata } from "./model-metadata.js"
 import { MODEL_CAPABILITIES, ModelRegistry } from "./model-registry/index.js"
-import type { CustomModelConfig } from "./model-roles.js"
 import { DEFAULT_MODEL_ROLES } from "./model-roles.js"
 import { resolveOrchestrationInstructions } from "./orchestration-instructions.js"
 
@@ -296,13 +296,12 @@ describe("resolveOrchestrationInstructions with custom configs", () => {
 	const registry = new ModelRegistry(ALL_KNOWN_METADATA)
 
 	it("shows external model with custom config in Your Team with tier and description", () => {
-		const customConfig: CustomModelConfig = {
-			model: "anthropic/external-model",
-			tier: "heavy",
-			description: "Anthropic's flagship external model.",
-			vision: false,
-		}
-		const customConfigs = new Map<string, CustomModelConfig>([["anthropic/external-model", customConfig]])
+		const customConfigs = new Map<string, ModelCustomMetadata>([
+			[
+				"anthropic/external-model",
+				{ tier: "heavy", description: "Anthropic's flagship external model.", vision: false },
+			],
+		])
 		const result = resolveOrchestrationInstructions({
 			currentModelId: "kimi-k2.6",
 			registry,
@@ -323,13 +322,9 @@ describe("resolveOrchestrationInstructions with custom configs", () => {
 	})
 
 	it("shows external orchestrator model with custom config in Your Capabilities using assigned roles", () => {
-		const customConfig: CustomModelConfig = {
-			model: "external-orchestrator",
-			tier: "heavy",
-			description: "External orchestrator model.",
-			vision: true,
-		}
-		const customConfigs = new Map<string, CustomModelConfig>([["external-orchestrator", customConfig]])
+		const customConfigs = new Map<string, ModelCustomMetadata>([
+			["external-orchestrator", { tier: "heavy", description: "External orchestrator model.", vision: true }],
+		])
 		const result = resolveOrchestrationInstructions({
 			currentModelId: "external-orchestrator",
 			registry,
@@ -372,9 +367,8 @@ describe("resolveOrchestrationInstructions with custom configs", () => {
 		expect(result).not.toContain("Tier: undefined")
 	})
 
-	it("custom config with only model field defaults tier to standard and vision to no", () => {
-		const customConfig: CustomModelConfig = { model: "bare-external/model" }
-		const customConfigs = new Map<string, CustomModelConfig>([["bare-external/model", customConfig]])
+	it("empty custom metadata defaults tier to standard and vision to no", () => {
+		const customConfigs = new Map<string, ModelCustomMetadata>([["bare-external/model", {}]])
 		const roles = {
 			orchestrator: "kimchi-dev/kimi-k2.6",
 			planner: "kimchi-dev/kimi-k2.6",
@@ -420,8 +414,7 @@ describe("resolveOrchestrationInstructions with custom configs", () => {
 	})
 
 	it("model assigned to multiple roles lists all roles in default description", () => {
-		const customConfig: CustomModelConfig = { model: "multi-role/model" }
-		const customConfigs = new Map<string, CustomModelConfig>([["multi-role/model", customConfig]])
+		const customConfigs = new Map<string, ModelCustomMetadata>([["multi-role/model", {}]])
 		const roles = {
 			orchestrator: "kimchi-dev/kimi-k2.6",
 			planner: "kimchi-dev/kimi-k2.6",
