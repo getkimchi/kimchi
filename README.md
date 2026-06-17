@@ -138,6 +138,22 @@ Models without a built-in capability entry (e.g., Anthropic or OpenAI models) ca
 
 External models assigned without custom metadata still work — they default to `standard` tier with `vision: false`, and the orchestrator receives an auto-generated description noting the model was chosen by the user for its assigned roles.
 
+Metadata can also be managed interactively via `/multi-model` → "Edit model metadata". Custom overrides can be reset to defaults from the same menu. When switching to an unknown model, a wizard prompts for metadata configuration.
+
+Under the hood, metadata from inline objects is extracted and stored in the `modelMetadata` key of `settings.json`, separate from role assignments. The `modelMetadata` key can also be edited directly:
+
+```json
+{
+  "modelMetadata": {
+    "anthropic/claude-opus-4-6": {
+      "tier": "heavy",
+      "description": "Anthropic flagship — best for complex architectural planning.",
+      "vision": false
+    }
+  }
+}
+```
+
 ### Phase tracking
 
 Kimchi tags every LLM request with a `phase:{name}` label for usage analytics and cost attribution. The orchestrator sets the phase as work progresses and it is displayed in the footer.
