@@ -472,7 +472,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 	/** Tracks whether a tool-executed block is awaiting user input at the TUI.
 	 *  Incremented when toolsInFlight hits 0 and the UI may be blocking (e.g. questionnaire).
 	 *  Decremented when the user actually types a response (input event).
-	 *  message_start checks this to avoid restarting the spinner while the user is being prompted.
+	 *  message_start checks this to avoid re-arming the spinner while the user is being prompted.
 	 */
 	let userInputPending = 0
 	/** Used by the cooking-animator callback to render the "(thinking…)" /
@@ -521,9 +521,10 @@ export default function uiExtension(pi: ExtensionAPI) {
 		if (evt.type === "thinking_start") {
 			thinkingStartMs = Date.now()
 			thinkingStatus = "thinking"
-			// Reasoning is in flight. If the spinner isn't running (e.g. because the
-			// TUI was blocking on a permission prompt) and no suppression is active,
-			// start it so the cooking animation covers the reasoning window.
+			// Re-arm the cooking animation if it was stopped. The cooking animator
+			// was previously torn down by message_start; reasoning tokens stream
+			// as message_update events AFTER message_start, so without this the
+			// user would stare at a blank TUI during the reasoning window.
 			if (ctx && userInputPending === 0) {
 				startIndicator(ctx)
 			}
@@ -541,45 +542,27 @@ export default function uiExtension(pi: ExtensionAPI) {
 			stopIndicator(ctx)
 		}
 	})
-	pi.on("message_start", (event, ctx) => {
+	pi.on("message_start", (event, _ctx) => {
 		if (event.message.role !== "assistant") return
-		// The spinner is intentionally kept alive through message_start so the
-		// cooking animation is visible during the gap before the first content
-		// event arrives — text_start for non-thinking models, thinking_start for
-		// thinking models. For models with significant prefill/reasoning-setup
-		// time, this gap can be tens of seconds; killing the spinner here would
-		// leave the user staring at a blank TUI with no feedback.
-		//
-		// We also re-arm the spinner here: the upstream TUI only creates the
-		// loader when session.isStreaming is true (which becomes true around
-		// message_start). The setWorkingVisible(true) call at turn_start was a
-		// no-op for rendering; this one triggers loader creation so the cooking
-		// animation is visible during the message_start → first_content_event
-		// gap, not just once thinking_start fires.
-		//
-		// text_start and message_end are responsible for stopping the spinner
-		// once content is visible or the assistant finishes.
-		//
-		// We still decrement userInputPending here — it was incremented by
-		// tool_execution_end when the TUI may be blocking on a prompt — so the
-		// suppression is lifted for the next thinking_start or text_start.
+		// Keep the spinner up throughout text streaming. The cooking animation was
+		// armed by turn_start (or just re-armed by thinking_start) and continues to
+		// cycle through cooking verbs as tokens arrive. The only reason to suppress
+		// it here is when a tool just finished and the UI may be blocking on user
+		// input (permission prompt, questionnaire) — in that case the spinner stays
+		// hidden and userInputPending is decremented so it can re-arm later.
 		if (userInputPending > 0) {
 			userInputPending--
-		} else {
-			ctx.ui.setWorkingVisible(true)
 		}
 	})
-	pi.on("message_end", (event, ctx) => {
+	pi.on("message_end", (event, ctx) => 
 		if (event.message.role !== "assistant") return
 		// Assistant finished its message. Stop the spinner so the response can
 		// render cleanly. turn_end will follow up with the "Worked for Xs" display.
-		stopIndicator(ctx)
-	})
-	pi.on("tool_execution_start", (_, ctx) => {
+		stopIndicator(ctx))
+	pi.on("tool_execution_start", (_, ctx) => 
 		toolsInFlight++
-		startIndicator(ctx)
-	})
-	pi.on("tool_execution_end", (_, ctx) => {
+		startIndicator(ctx))
+	pi.on("tool_execution_end", (_, ctx) => 
 		toolsInFlight = Math.max(0, toolsInFlight - 1)
 		if (toolsInFlight === 0) {
 			// Last tool finished — the UI may now be blocking waiting for user input
@@ -587,9 +570,8 @@ export default function uiExtension(pi: ExtensionAPI) {
 			// the spinner on the assistant text that follows before the user responds.
 			userInputPending++
 			stopIndicator(ctx)
-		}
-	})
-	pi.on("turn_end", (_, ctx) => {
+		})
+	pi.on("turn_end", (_, ctx) => 
 		currentCtx = ctx
 		refresh("idle")
 		if (ctx.hasUI && turnStartMs > 0) {
@@ -601,27 +583,23 @@ export default function uiExtension(pi: ExtensionAPI) {
 				workedForTimer = undefined
 				ctx.ui.setWorkingVisible(false)
 			}, 2500)
-		}
-	})
-	pi.on("agent_end", (_, ctx) => {
+		})
+	pi.on("agent_end", (_, ctx) => 
 		clearTimeout(workedForTimer)
 		workedForTimer = undefined
 		toolsInFlight = 0
 		userInputPending = 0
 		thinkingStatus = null
 		thinkingStartMs = 0
-		stopIndicator(ctx)
-	})
-	pi.on("model_select", (_, ctx) => {
+		stopIndicator(ctx))
+	pi.on("model_select", (_, ctx) => 
 		currentCtx = ctx
 		refresh("idle")
-		uiTui?.requestRender()
-	})
-	pi.on("session_shutdown", () => {
-		setSessionModeOnboardingFooterSuppressed(false)
-	})
+		uiTui?.requestRender())
+	pi.on("session_shutdown", () => 
+		setSessionModeOnboardingFooterSuppressed(false))
 
-	pi.on("tool_result", (event) => {
+	pi.on("tool_result", (event) => 
 		if (isEditToolResult(event) && event.details?.diff) {
 			for (const line of event.details.diff.split("\n")) {
 				if (line.startsWith("+") && !line.startsWith("+++")) linesAdded++
@@ -630,20 +608,15 @@ export default function uiExtension(pi: ExtensionAPI) {
 		} else if (isWriteToolResult(event)) {
 			const content = event.input.content
 			if (typeof content === "string") linesAdded += content.split("\n").length
-		}
-	})
+		})
 
-	pi.registerCommand("exit", {
+	pi.registerCommand("exit", 
 		description: "Exit the application (alias for /quit)",
-		handler: async (_args, ctx) => {
-			ctx.shutdown()
-		},
-	})
+		handler: async (_args, ctx) => 
+			ctx.shutdown(),)
 
-	pi.registerCommand("clear", {
+	pi.registerCommand("clear", 
 		description: "Start a new session (alias for /new)",
-		handler: async (_args, ctx) => {
-			await ctx.newSession()
-		},
-	})
+		handler: async (_args, ctx) => 
+			await ctx.newSession(),)
 }

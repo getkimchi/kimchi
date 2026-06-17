@@ -1,7 +1,7 @@
 import { Key, matchesKey } from "@earendil-works/pi-tui"
-import { describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { isBareExitAlias } from "./exit-utils.js"
-import { findNextCompatibleModel } from "./ui.js"
+import uiExtension, { findNextCompatibleModel } from "./ui.js"
 
 // Helper to create a minimal Model mock
 function makeModel(id: string, contextWindow: number, input: string[] = ["text", "image"]) {
@@ -181,5 +181,629 @@ describe("findNextCompatibleModel", () => {
 		const result = findNextCompatibleModel(models, 0, 50_000, false)
 		expect(result.model).toBeUndefined()
 		expect(result.skipped).toHaveLength(1)
+	})
+})
+
+type FakeHandler = (event: unknown, ctx: unknown) => Promise<unknown> | unknown
+
+function makeFakePi() {
+	const handlers: Record<string, FakeHandler[]> = {}
+	return {
+		handlers,
+		on: vi.fn((event: string, handler: FakeHandler) => {
+			handlers[event] ??= []
+			handlers[event].push(handler)
+		}),
+		registerCommand: vi.fn(),
+		registerShortcut: vi.fn(),
+		registerFlag: vi.fn(),
+		getFlag: vi.fn(),
+		sendMessage: vi.fn(),
+		sendUserMessage: vi.fn(),
+	}
+}
+
+interface FakeUi {
+	setWorkingVisible: ReturnType<typeof vi.fn>
+	setWorkingIndicator: ReturnType<typeof vi.fn>
+	setWorkingMessage: ReturnType<typeof vi.fn>
+	setStatus: ReturnType<typeof vi.fn>
+	setHeader: ReturnType<typeof vi.fn>
+	setFooter: ReturnType<typeof vi.fn>
+	setWidget: ReturnType<typeof vi.fn>
+	setEditorComponent: ReturnType<typeof vi.fn>
+	getEditorComponent: ReturnType<typeof vi.fn>
+	addAutocompleteProvider: ReturnType<typeof vi.fn>
+	setTheme: ReturnType<typeof vi.fn>
+	getTheme: ReturnType<typeof vi.fn>
+	getAllThemes: ReturnType<typeof vi.fn>
+	theme: { fg: ReturnType<typeof vi.fn>; getFgAnsi: ReturnType<typeof vi.fn> }
+	select: ReturnType<typeof vi.fn>
+	confirm: ReturnType<typeof vi.fn>
+	input: ReturnType<typeof vi.fn>
+	editor: ReturnType<typeof vi.fn>
+	custom: ReturnType<typeof vi.fn>
+	notify: ReturnType<typeof vi.fn>
+	showError: ReturnType<typeof vi.fn>
+	onTerminalInput: ReturnType<typeof vi.fn>
+	setTitle: ReturnType<typeof vi.fn>
+	pasteToEditor: ReturnType<typeof vi.fn>
+	setEditorText: ReturnType<typeof vi.fn>
+	getEditorText: ReturnType<typeof vi.fn>
+}
+
+function makeFakeUi(): FakeUi {
+	const theme = {
+		fg: vi.fn((_name: string, s: string) => s),
+		getFgAnsi: vi.fn(() => ""),
+	}
+	return {
+		setWorkingVisible: vi.fn(),
+		setWorkingIndicator: vi.fn(),
+		setWorkingMessage: vi.fn(),
+		setStatus: vi.fn(),
+		setHeader: vi.fn(),
+		setFooter: vi.fn(),
+		setWidget: vi.fn(),
+		setEditorComponent: vi.fn(),
+		getEditorComponent: vi.fn(() => undefined),
+		addAutocompleteProvider: vi.fn(),
+		setTheme: vi.fn(),
+		getTheme: vi.fn(),
+		getAllThemes: vi.fn(() => []),
+		theme,
+		select: vi.fn(async () => undefined),
+		confirm: vi.fn(async () => false),
+		input: vi.fn(async () => undefined),
+		editor: vi.fn(async () => undefined),
+		custom: vi.fn(async () => undefined),
+		notify: vi.fn(),
+		showError: vi.fn(),
+		onTerminalInput: vi.fn(() => () => {}),
+		setTitle: vi.fn(),
+		pasteToEditor: vi.fn(),
+		setEditorText: vi.fn(),
+		getEditorText: vi.fn(() => ""),
+	}
+}
+
+function makeFakeCtx() {
+	return {
+		hasUI: true,
+		ui: makeFakeUi(),
+		cwd: "/tmp",
+		model: { id: "test-model", provider: "test-provider" },
+	}
+}
+
+function fire<T = unknown>(pi: ReturnType<typeof makeFakePi>, event: string, payload: T, ctx: unknown) {
+	const handlers = pi.handlers[event]
+	if (!handlers || handlers.length === 0) {
+		throw new Error(`No handler registered for event "${event}"`)
+	}
+	return handlers[0](payload, ctx)
+}
+
+describe("uiExtension spinner state machine", () => {
+	let pi: ReturnType<typeof makeFakePi>
+	let ctx: ReturnType<typeof makeFakeCtx>
+
+	beforeEach(() => {
+		pi = makeFakePi()
+		ctx = makeFakeCtx()
+		uiExtension(pi as never)
+	})
+
+	afterEach(() => {
+		vi.useRealTimers()
+	})
+
+	describe("turn_start → agent_end lifecycle", () => {
+		it("shows the spinner on turn_start", async () => {
+			await fire(pi, "turn_start", { type: "turn_start", turnIndex: 0 }, ctx)
+			expect(ctx.ui.setWorkingVisible).toHaveBeenCalledWith(true)
+		})
+
+		it("hides the spinner on agent_end", async () => {
+			await fire(pi, "turn_start", { type: "turn_start", turnIndex: 0 }, ctx)
+			ctx.ui.setWorkingVisible.mockClear()
+
+			await fire(pi, "agent_end", { type: "agent_end", messages: [] }, ctx)
+			expect(ctx.ui.setWorkingVisible).toHaveBeenCalledWith(false)
+		})
+
+		it("turn_start resets toolsInFlight and userInputPending", async () => {
+			// Simulate a prior turn that incremented counters
+			await fire(pi, "message_start", { type: "message_start", message: { role: "assistant", content: [] } }, ctx)
+			await fire(
+				pi,
+				"tool_execution_start",
+				{ type: "tool_execution_start", toolCallId: "t1", toolName: "bash", args: {} },
+				ctx,
+			)
+			await fire(
+				pi,
+				"tool_execution_end",
+				{
+					type: "tool_execution_end",
+					toolCallId: "t1",
+					toolName: "bash",
+					result: { content: [], isError: false },
+					isError: false,
+				},
+				ctx,
+			)
+			ctx.ui.setWorkingVisible.mockClear()
+
+			// New turn should not have userInputPending carried over
+			await fire(pi, "turn_start", { type: "turn_start", turnIndex: 1 }, ctx)
+			ctx.ui.setWorkingVisible.mockClear()
+
+			// Assistant message_start should NOT decrement userInputPending (it was reset by turn_start)
+			await fire(pi, "message_start", { type: "message_start", message: { role: "assistant", content: [] } }, ctx)
+
+			// After turn_start, no setWorkingVisible(false) should fire on text streaming start
+			expect(ctx.ui.setWorkingVisible).not.toHaveBeenCalledWith(false)
+		})
+	})
+
+	describe("text streaming (LLM-2071 — bug fix)", () => {
+		it("does NOT hide the spinner on message_start when no tools/thinking/input are pending", async () => {
+			await fire(pi, "turn_start", { type: "turn_start", turnIndex: 0 }, ctx)
+			ctx.ui.setWorkingVisible.mockClear()
+
+			await fire(
+				pi,
+				"message_start",
+				{ type: "message_start", message: { role: "assistant", content: [{ type: "text", text: "" }] } },
+				ctx,
+			)
+			expect(ctx.ui.setWorkingVisible).not.toHaveBeenCalledWith(false)
+		})
+
+		it("does NOT hide the spinner on text_delta events", async () => {
+			await fire(pi, "turn_start", { type: "turn_start", turnIndex: 0 }, ctx)
+			await fire(
+				pi,
+				"message_start",
+				{ type: "message_start", message: { role: "assistant", content: [{ type: "text", text: "" }] } },
+				ctx,
+			)
+			ctx.ui.setWorkingVisible.mockClear()
+
+			// Stream several text_delta events
+			for (const delta of ["Hello", " world", "!"]) {
+				await fire(
+					pi,
+					"message_update",
+					{
+						type: "message_update",
+						message: { role: "assistant", content: [{ type: "text", text: delta }] },
+						assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta, partial: undefined },
+					},
+					ctx,
+				)
+			}
+
+			// No setWorkingVisible(false) during text streaming
+			expect(ctx.ui.setWorkingVisible).not.toHaveBeenCalledWith(false)
+		})
+
+		it("registers no message_end handler — spinner stays up until agent_end", () => {
+			// LLM-2071 deliberately drops the f1be2201 message_end → stopIndicator handler.
+			// The spinner is owned by the turn (turn_start → agent_end), so a per-message
+			// teardown would just cause flicker between consecutive assistant messages.
+			expect(pi.handlers.message_end).toBeUndefined()
+		})
+
+		it("ignores non-assistant message_start (user messages do not toggle the spinner)", async () => {
+			await fire(pi, "turn_start", { type: "turn_start", turnIndex: 0 }, ctx)
+			ctx.ui.setWorkingVisible.mockClear()
+
+			await fire(
+				pi,
+				"message_start",
+				{ type: "message_start", message: { role: "user", content: [{ type: "text", text: "hi" }] } },
+				ctx,
+			)
+			expect(ctx.ui.setWorkingVisible).not.toHaveBeenCalledWith(false)
+		})
+
+		it("keeps the spinner up across multiple assistant messages in one turn", async () => {
+			await fire(pi, "turn_start", { type: "turn_start", turnIndex: 0 }, ctx)
+
+			// First assistant message (text + toolcall pattern)
+			await fire(
+				pi,
+				"message_start",
+				{ type: "message_start", message: { role: "assistant", content: [{ type: "text", text: "let me check" }] } },
+				ctx,
+			)
+
+			// Tool execution round-trip
+			await fire(
+				pi,
+				"tool_execution_start",
+				{ type: "tool_execution_start", toolCallId: "t1", toolName: "bash", args: {} },
+				ctx,
+			)
+			await fire(
+				pi,
+				"tool_execution_end",
+				{
+					type: "tool_execution_end",
+					toolCallId: "t1",
+					toolName: "bash",
+					result: { content: [], isError: false },
+					isError: false,
+				},
+				ctx,
+			)
+
+			ctx.ui.setWorkingVisible.mockClear()
+
+			// Second assistant message
+			await fire(
+				pi,
+				"message_start",
+				{ type: "message_start", message: { role: "assistant", content: [{ type: "text", text: "the result is X" }] } },
+				ctx,
+			)
+			await fire(
+				pi,
+				"message_update",
+				{
+					type: "message_update",
+					message: { role: "assistant", content: [{ type: "text", text: "the result is X" }] },
+					assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "the result is X", partial: undefined },
+				},
+				ctx,
+			)
+
+			// Spinner should NOT be hidden during the second message's text streaming
+			expect(ctx.ui.setWorkingVisible).not.toHaveBeenCalledWith(false)
+		})
+	})
+
+	describe("reasoning (rebuilt from f1be2201)", () => {
+		it("re-arms the spinner on thinking_start when no user input is pending", async () => {
+			await fire(pi, "turn_start", { type: "turn_start", turnIndex: 0 }, ctx)
+			ctx.ui.setWorkingVisible.mockClear()
+
+			await fire(
+				pi,
+				"message_update",
+				{
+					type: "message_update",
+					message: { role: "assistant", content: [{ type: "thinking", thinking: "pondering" }] },
+					assistantMessageEvent: { type: "thinking_start", contentIndex: 0, partial: undefined },
+				},
+				ctx,
+			)
+
+			// thinking_start should re-arm by calling setWorkingVisible(true)
+			expect(ctx.ui.setWorkingVisible).toHaveBeenCalledWith(true)
+		})
+
+		it("does NOT re-arm the spinner on thinking_start when user input is pending", async () => {
+			await fire(pi, "turn_start", { type: "turn_start", turnIndex: 0 }, ctx)
+
+			// Trigger userInputPending++ by completing a tool
+			await fire(
+				pi,
+				"tool_execution_start",
+				{ type: "tool_execution_start", toolCallId: "t1", toolName: "bash", args: {} },
+				ctx,
+			)
+			await fire(
+				pi,
+				"tool_execution_end",
+				{
+					type: "tool_execution_end",
+					toolCallId: "t1",
+					toolName: "bash",
+					result: { content: [], isError: false },
+					isError: false,
+				},
+				ctx,
+			)
+			ctx.ui.setWorkingVisible.mockClear()
+
+			// thinking_start should be a no-op for the spinner while userInputPending > 0
+			await fire(
+				pi,
+				"message_update",
+				{
+					type: "message_update",
+					message: { role: "assistant", content: [{ type: "thinking", thinking: "pondering" }] },
+					assistantMessageEvent: { type: "thinking_start", contentIndex: 0, partial: undefined },
+				},
+				ctx,
+			)
+
+			expect(ctx.ui.setWorkingVisible).not.toHaveBeenCalledWith(true)
+		})
+
+		it("does NOT stop the spinner on thinking_end", async () => {
+			await fire(pi, "turn_start", { type: "turn_start", turnIndex: 0 }, ctx)
+			await fire(
+				pi,
+				"message_update",
+				{
+					type: "message_update",
+					message: { role: "assistant", content: [{ type: "thinking", thinking: "pondering" }] },
+					assistantMessageEvent: { type: "thinking_start", contentIndex: 0, partial: undefined },
+				},
+				ctx,
+			)
+			ctx.ui.setWorkingVisible.mockClear()
+
+			await fire(
+				pi,
+				"message_update",
+				{
+					type: "message_update",
+					message: { role: "assistant", content: [{ type: "thinking", thinking: "pondering" }] },
+					assistantMessageEvent: { type: "thinking_end", contentIndex: 0, content: "pondering", partial: undefined },
+				},
+				ctx,
+			)
+			expect(ctx.ui.setWorkingVisible).not.toHaveBeenCalledWith(false)
+		})
+
+		it("keeps the spinner up across a reasoning → text transition", async () => {
+			await fire(pi, "turn_start", { type: "turn_start", turnIndex: 0 }, ctx)
+			await fire(
+				pi,
+				"message_update",
+				{
+					type: "message_update",
+					message: { role: "assistant", content: [{ type: "thinking", thinking: "pondering" }] },
+					assistantMessageEvent: { type: "thinking_start", contentIndex: 0, partial: undefined },
+				},
+				ctx,
+			)
+			await fire(
+				pi,
+				"message_update",
+				{
+					type: "message_update",
+					message: { role: "assistant", content: [{ type: "thinking", thinking: "pondering" }] },
+					assistantMessageEvent: { type: "thinking_end", contentIndex: 0, content: "pondering", partial: undefined },
+				},
+				ctx,
+			)
+			ctx.ui.setWorkingVisible.mockClear()
+
+			await fire(
+				pi,
+				"message_update",
+				{
+					type: "message_update",
+					message: { role: "assistant", content: [{ type: "text", text: "answer" }] },
+					assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: "answer", partial: undefined },
+				},
+				ctx,
+			)
+			expect(ctx.ui.setWorkingVisible).not.toHaveBeenCalledWith(false)
+		})
+	})
+
+	describe("tool execution", () => {
+		it("shows the spinner on tool_execution_start", async () => {
+			await fire(pi, "turn_start", { type: "turn_start", turnIndex: 0 }, ctx)
+			ctx.ui.setWorkingVisible.mockClear()
+
+			await fire(
+				pi,
+				"tool_execution_start",
+				{ type: "tool_execution_start", toolCallId: "t1", toolName: "bash", args: {} },
+				ctx,
+			)
+			expect(ctx.ui.setWorkingVisible).toHaveBeenCalledWith(true)
+		})
+
+		it("hides the spinner on tool_execution_end when toolsInFlight reaches 0 (user input may be pending)", async () => {
+			await fire(pi, "turn_start", { type: "turn_start", turnIndex: 0 }, ctx)
+			await fire(
+				pi,
+				"tool_execution_start",
+				{ type: "tool_execution_start", toolCallId: "t1", toolName: "bash", args: {} },
+				ctx,
+			)
+			ctx.ui.setWorkingVisible.mockClear()
+
+			await fire(
+				pi,
+				"tool_execution_end",
+				{
+					type: "tool_execution_end",
+					toolCallId: "t1",
+					toolName: "bash",
+					result: { content: [], isError: false },
+					isError: false,
+				},
+				ctx,
+			)
+			expect(ctx.ui.setWorkingVisible).toHaveBeenCalledWith(false)
+		})
+
+		it("keeps the spinner up across parallel tool_execution_end events until toolsInFlight is 0", async () => {
+			await fire(pi, "turn_start", { type: "turn_start", turnIndex: 0 }, ctx)
+			await fire(
+				pi,
+				"tool_execution_start",
+				{ type: "tool_execution_start", toolCallId: "t1", toolName: "bash", args: {} },
+				ctx,
+			)
+			await fire(
+				pi,
+				"tool_execution_start",
+				{ type: "tool_execution_start", toolCallId: "t2", toolName: "read", args: {} },
+				ctx,
+			)
+			ctx.ui.setWorkingVisible.mockClear()
+
+			// First tool ends, but toolsInFlight is still 1
+			await fire(
+				pi,
+				"tool_execution_end",
+				{
+					type: "tool_execution_end",
+					toolCallId: "t1",
+					toolName: "bash",
+					result: { content: [], isError: false },
+					isError: false,
+				},
+				ctx,
+			)
+			expect(ctx.ui.setWorkingVisible).not.toHaveBeenCalledWith(false)
+
+			// Second tool ends — toolsInFlight hits 0, spinner should hide
+			await fire(
+				pi,
+				"tool_execution_end",
+				{
+					type: "tool_execution_end",
+					toolCallId: "t2",
+					toolName: "read",
+					result: { content: [], isError: false },
+					isError: false,
+				},
+				ctx,
+			)
+			expect(ctx.ui.setWorkingVisible).toHaveBeenCalledWith(false)
+		})
+	})
+
+	describe("turn_end 'Worked for Xs' status", () => {
+		it("shows 'Worked for Xs' on turn_end and hides after 2500ms", async () => {
+			vi.useFakeTimers()
+			await fire(pi, "turn_start", { type: "turn_start", turnIndex: 0 }, ctx)
+			await fire(pi, "agent_end", { type: "agent_end", messages: [] }, ctx)
+			ctx.ui.setWorkingVisible.mockClear()
+			ctx.ui.setWorkingMessage.mockClear()
+
+			await fire(
+				pi,
+				"turn_end",
+				{
+					type: "turn_end",
+					turnIndex: 0,
+					message: { role: "assistant", content: [{ type: "text", text: "done" }] },
+					toolResults: [],
+				},
+				ctx,
+			)
+
+			expect(ctx.ui.setWorkingVisible).toHaveBeenCalledWith(true)
+			const lastMessage = ctx.ui.setWorkingMessage.mock.calls.at(-1)?.[0] as string
+			expect(lastMessage).toContain("Worked for")
+
+			vi.advanceTimersByTime(2500)
+			expect(ctx.ui.setWorkingVisible).toHaveBeenCalledWith(false)
+		})
+
+		it("clears any pending workedForTimer on agent_end", async () => {
+			vi.useFakeTimers()
+			await fire(pi, "turn_start", { type: "turn_start", turnIndex: 0 }, ctx)
+			await fire(
+				pi,
+				"turn_end",
+				{
+					type: "turn_end",
+					turnIndex: 0,
+					message: { role: "assistant", content: [{ type: "text", text: "done" }] },
+					toolResults: [],
+				},
+				ctx,
+			)
+			// Advance less than 2500ms — timer should still be pending
+			vi.advanceTimersByTime(1000)
+			ctx.ui.setWorkingVisible.mockClear()
+
+			// Next turn_start → agent_end should clear the pending workedForTimer
+			await fire(pi, "turn_start", { type: "turn_start", turnIndex: 1 }, ctx)
+			ctx.ui.setWorkingVisible.mockClear()
+			await fire(pi, "agent_end", { type: "agent_end", messages: [] }, ctx)
+			expect(ctx.ui.setWorkingVisible).toHaveBeenCalledWith(false)
+
+			// Advancing past the original 2500ms should NOT trigger an extra hide
+			ctx.ui.setWorkingVisible.mockClear()
+			vi.advanceTimersByTime(2000)
+			expect(ctx.ui.setWorkingVisible).not.toHaveBeenCalledWith(false)
+		})
+	})
+
+	describe("user input pending suppression", () => {
+		it("decrements userInputPending on assistant message_start after a tool finishes", async () => {
+			await fire(pi, "turn_start", { type: "turn_start", turnIndex: 0 }, ctx)
+			await fire(
+				pi,
+				"tool_execution_start",
+				{ type: "tool_execution_start", toolCallId: "t1", toolName: "bash", args: {} },
+				ctx,
+			)
+			await fire(
+				pi,
+				"tool_execution_end",
+				{
+					type: "tool_execution_end",
+					toolCallId: "t1",
+					toolName: "bash",
+					result: { content: [], isError: false },
+					isError: false,
+				},
+				ctx,
+			)
+			ctx.ui.setWorkingVisible.mockClear()
+
+			// Assistant message_start decrements userInputPending (does not re-arm spinner)
+			await fire(
+				pi,
+				"message_start",
+				{ type: "message_start", message: { role: "assistant", content: [{ type: "text", text: "" }] } },
+				ctx,
+			)
+
+			expect(ctx.ui.setWorkingVisible).not.toHaveBeenCalledWith(true)
+		})
+	})
+
+	describe("input event handling", () => {
+		it("decrements userInputPending when the user types (input event)", async () => {
+			await fire(pi, "turn_start", { type: "turn_start", turnIndex: 0 }, ctx)
+			await fire(
+				pi,
+				"tool_execution_start",
+				{ type: "tool_execution_start", toolCallId: "t1", toolName: "bash", args: {} },
+				ctx,
+			)
+			await fire(
+				pi,
+				"tool_execution_end",
+				{
+					type: "tool_execution_end",
+					toolCallId: "t1",
+					toolName: "bash",
+					result: { content: [], isError: false },
+					isError: false,
+				},
+				ctx,
+			)
+
+			// Now userInputPending should be 1. User types → decrements.
+			await fire(pi, "input", { type: "input", text: "yes" }, ctx)
+
+			// Next assistant message_start should NOT decrement userInputPending (it's already 0)
+			ctx.ui.setWorkingVisible.mockClear()
+			await fire(
+				pi,
+				"message_start",
+				{ type: "message_start", message: { role: "assistant", content: [{ type: "text", text: "" }] } },
+				ctx,
+			)
+			expect(ctx.ui.setWorkingVisible).not.toHaveBeenCalledWith(true)
+		})
 	})
 })
