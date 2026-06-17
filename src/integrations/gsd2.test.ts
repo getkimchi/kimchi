@@ -28,7 +28,7 @@ describe("buildGsd2KimchiProvider", () => {
 		expect(opus?.cost).toEqual({ input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 })
 		const sonnet = p.models.find((m) => m.id === "claude-sonnet-4-7")
 		expect(sonnet?.cost).toEqual({ input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 })
-		for (const slug of ["kimi-k2.6", "kimi-k2.5", "nemotron-3-super-fp4", "minimax-m2.7"]) {
+		for (const slug of ["kimi-k2.6", "kimi-k2.5", "nemotron-3-ultra-fp4", "minimax-m2.7"]) {
 			const m = p.models.find((x) => x.id === slug)
 			expect(m?.cost).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 })
 		}
@@ -38,7 +38,7 @@ describe("buildGsd2KimchiProvider", () => {
 		const p = buildGsd2KimchiProvider("k", TEST_MODELS) as { models: Array<{ id: string; input: string[] }> }
 		expect(p.models.find((m) => m.id === "kimi-k2.6")?.input).toEqual(["text", "image"])
 		expect(p.models.find((m) => m.id === "kimi-k2.5")?.input).toEqual(["text", "image"])
-		expect(p.models.find((m) => m.id === "nemotron-3-super-fp4")?.input).toEqual(["text"])
+		expect(p.models.find((m) => m.id === "nemotron-3-ultra-fp4")?.input).toEqual(["text"])
 		expect(p.models.find((m) => m.id === "claude-opus-4-6")?.input).toEqual(["text"])
 	})
 })
@@ -58,15 +58,15 @@ describe("buildGsd2Preferences", () => {
 		expect(prefs).toMatch(/validation: kimchi\/(claude-opus-4-6|kimi-k2\.6)/)
 		expect(prefs).toMatch(/auto_supervisor:\s*\n\s*model: kimchi\/(claude-opus-4-6|kimi-k2\.6)/)
 		// Coding model for research + subagent.
-		expect(prefs).toContain("research: kimchi/nemotron-3-super-fp4")
-		expect(prefs).toContain("subagent: kimchi/nemotron-3-super-fp4")
+		expect(prefs).toContain("research: kimchi/nemotron-3-ultra-fp4")
+		expect(prefs).toContain("subagent: kimchi/nemotron-3-ultra-fp4")
 		// Sub model for execution_simple + discuss.
 		expect(prefs).toContain("discuss: kimchi/minimax-m2.7")
 		expect(prefs).toContain("execution_simple: kimchi/minimax-m2.7")
 	})
 
 	it("uses the new tier_models shape (light → coding, standard → sub, heavy → [main, planning])", () => {
-		expect(prefs).toContain("light: kimchi/nemotron-3-super-fp4")
+		expect(prefs).toContain("light: kimchi/nemotron-3-ultra-fp4")
 		expect(prefs).toContain("standard: kimchi/minimax-m2.7")
 		expect(prefs).toMatch(/heavy:\s*\n\s*- kimchi\/kimi-k2\.6\s*\n\s*- kimchi\/(claude-opus-4-6|kimi-k2\.6)/)
 	})

@@ -128,7 +128,7 @@ export async function suggestSessionName(ctx: ExtensionContext, hint?: string, q
 
 	try {
 		const payload = {
-			model: "nemotron-3-super-fp4",
+			model: "nemotron-3-ultra-fp4",
 			messages: [
 				{ role: "system", content: SESSION_NAME_SYSTEM_PROMPT },
 				// Frame the message exactly like shortenTitle does - cheap models need

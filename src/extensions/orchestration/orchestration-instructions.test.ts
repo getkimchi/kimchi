@@ -93,13 +93,13 @@ describe("resolveOrchestrationInstructions", () => {
 				planner: "anthropic/claude-opus-4-7",
 				builder: "anthropic/claude-sonnet-4-5",
 				reviewer: "openai/gpt-4o",
-				explorer: "kimchi-dev/nemotron-3-super-fp4",
+				explorer: "kimchi-dev/nemotron-3-ultra-fp4",
 				judge: "kimchi-dev/claude-opus-4-6",
 			},
 		})
 		expect(result).toContain("anthropic/claude-sonnet-4-5")
 		expect(result).toContain("openai/gpt-4o")
-		expect(result).toContain("kimchi-dev/nemotron-3-super-fp4")
+		expect(result).toContain("kimchi-dev/nemotron-3-ultra-fp4")
 	})
 
 	it("omits Planner section when planner equals orchestrator", () => {
@@ -281,7 +281,7 @@ describe("resolveOrchestrationInstructions", () => {
 				planner: "kimchi-dev/kimi-k2.6",
 				builder: ["kimchi-dev/minimax-m2.7", "kimchi-dev/kimi-k2.6"],
 				reviewer: ["kimchi-dev/kimi-k2.6", "kimchi-dev/minimax-m2.7"],
-				explorer: "kimchi-dev/nemotron-3-super-fp4",
+				explorer: "kimchi-dev/nemotron-3-ultra-fp4",
 				judge: "kimchi-dev/kimi-k2.6",
 			},
 		})

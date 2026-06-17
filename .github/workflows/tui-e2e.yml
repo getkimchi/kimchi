@@ -1,0 +1,50 @@
+name: TUI E2E
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tui-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/proxy-helper/go.mod
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build proxy-helper
+        run: make -C tools/proxy-helper build
+
+      - name: Run TUI E2E tests
+        run: KIMCHI_PROXY_HELPER=$(pwd)/bin/proxy-helper pnpm run test:e2e:tui
+
+      - name: Upload TUI E2E artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tui-e2e-artifacts
+          path: |
+            *.tui-e2e.log
+            **/tui-traces/**
+          if-no-files-found: ignore

@@ -48,8 +48,8 @@ export const KIMI_K25_MODEL: KimchiModel = {
 }
 
 export const CODING_MODEL: KimchiModel = {
-	slug: "nemotron-3-super-fp4",
-	displayName: "Nemotron 3 Super FP4",
+	slug: "nemotron-3-ultra-fp4",
+	displayName: "Nemotron 3 Ultra FP4",
 	description: "High-performance reasoning model for complex tasks.",
 	toolCall: true,
 	reasoning: true,
@@ -206,7 +206,7 @@ export function resolveAllModelRoles(
 
 /**
  * Build a human-readable model pair string for CLI banners.
- * e.g. "kimi-k2.6 (reasoning) / nemotron-3-super-fp4 (coding)"
+ * e.g. "kimi-k2.6 (reasoning) / nemotron-3-ultra-fp4 (coding)"
  */
 export function formatModelPair(models: readonly ModelMetadata[]): string {
 	if (models.length === 0) return "dynamic models"

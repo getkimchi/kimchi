@@ -7,6 +7,7 @@ import {
 	type FermentCompletedPayload,
 	type FermentPhaseCompletedPayload,
 	type FermentPhaseStartedPayload,
+	type FermentStalledPayload,
 	type FermentStartedPayload,
 	type FermentSteeringPayload,
 	type FermentStepCompletedPayload,
@@ -252,6 +253,8 @@ function onFermentCompleted(raw: unknown): void {
 
 function onFermentAbandoned(raw: unknown): void {
 	const payload = raw as FermentAbandonedPayload
+	// Read steering count BEFORE cleanup — cleanupFermentState deletes it.
+	const steeringCount = fermentSteeringCounts.get(payload.fermentId) ?? 0
 	// Clean up unconditionally — steering counts accumulate regardless of enabled state.
 	cleanupFermentState(payload.fermentId)
 	if (!isEnabled()) return
@@ -260,9 +263,36 @@ function onFermentAbandoned(raw: unknown): void {
 	const attrs: Record<string, string | number | boolean> = {
 		ferment_name: payload.name,
 		model: ctx.currentModel,
+		lifecycle_stage: payload.lifecycleStage,
+		scoping_complete: payload.scopingComplete,
+		completed_phases: payload.completedPhases,
+		total_phases: payload.totalPhases,
+		phase_completion_ratio: payload.phaseCompletionRatio,
+		step_failure_count: payload.stepFailureCount,
+		duration_ms: payload.durationMs,
+		steering_count: steeringCount,
 	}
 	if (payload.reason) attrs.reason = payload.reason
+	if (payload.lastActivePhaseIndex !== undefined) attrs.last_active_phase_index = payload.lastActivePhaseIndex
 	ctx.emitWithIds("ferment.abandoned", { ferment_id: payload.fermentId }, attrs)
+}
+
+function onFermentStalled(raw: unknown): void {
+	const payload = raw as FermentStalledPayload
+	// No per-ferment Maps to clean up for stalled — ferment remains accessible.
+	if (!isEnabled()) return
+	const ctx = _ctx
+	if (!ctx) return
+	const attrs: Record<string, string | number | boolean> = {
+		ferment_name: payload.name,
+		model: ctx.currentModel,
+		lifecycle_stage: payload.lifecycleStage,
+		idle_duration_ms: payload.idleDurationMs,
+		completed_phases: payload.completedPhases,
+		total_phases: payload.totalPhases,
+		phase_completion_ratio: payload.phaseCompletionRatio,
+	}
+	ctx.emitWithIds("ferment.stalled", { ferment_id: payload.fermentId }, attrs)
 }
 
 function onPhaseStarted(raw: unknown): void {
@@ -389,6 +419,7 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		pi.events.on(FERMENT_EVENTS.STARTED, onFermentStarted)
 		pi.events.on(FERMENT_EVENTS.COMPLETED, onFermentCompleted)
 		pi.events.on(FERMENT_EVENTS.ABANDONED, onFermentAbandoned)
+		pi.events.on(FERMENT_EVENTS.STALLED, onFermentStalled)
 		pi.events.on(FERMENT_EVENTS.PHASE_STARTED, onPhaseStarted)
 		pi.events.on(FERMENT_EVENTS.PHASE_COMPLETED, onPhaseCompleted)
 		pi.events.on(FERMENT_EVENTS.STEP_STARTED, onStepStarted)

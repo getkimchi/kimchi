@@ -23,6 +23,10 @@
 		"check": "pnpm run lint && pnpm run typecheck",
 		"test": "vitest run --dir src",
 		"test:smoke": "vitest run --config tests/smoke/vitest.config.ts",
+		"test:e2e:tui": "pnpm run build:binary && node scripts/run-tui-e2e.js",
+		"test:e2e:tui:debug": "pnpm run build:binary && node scripts/run-tui-e2e.js --debug",
+		"test:e2e:tui:trace": "pnpm run build:binary && node scripts/run-tui-e2e.js --trace",
+		"test:e2e:tui:trace:replay": "node scripts/run-tui-e2e.js replay",
 		"postinstall": "node scripts/patch-pi-ai-oauth.js",
 		"prepare": "husky",
 		"verify": "pnpm run check && pnpm run build:binary && pnpm run test && pnpm run test:smoke"
@@ -74,6 +78,7 @@
 	"devDependencies": {
 		"@biomejs/biome": "^1.9.4",
 		"@earendil-works/pi-ai": "^0.78.0",
+		"@microsoft/tui-test": "0.0.4",
 		"@mixmark-io/domino": "^2.2.0",
 		"@types/micromatch": "^4.0.10",
 		"@types/node": "^22.19.18",
@@ -96,17 +101,8 @@
 	},
 	"packageManager": "pnpm@10.8.1",
 	"pnpm": {
-		"onlyBuiltDependencies": [
-			"@biomejs/biome",
-			"esbuild",
-			"koffi",
-			"node-pty",
-			"protobufjs"
-		],
-		"ignoredOptionalDependencies": [
-			"cpu-features",
-			"nan"
-		],
+		"onlyBuiltDependencies": ["@biomejs/biome", "esbuild", "koffi", "node-pty", "protobufjs"],
+		"ignoredOptionalDependencies": ["cpu-features", "nan"],
 		"patchedDependencies": {
 			"@earendil-works/pi-tui": "patches/@earendil-works__pi-tui.patch",
 			"playwright-core@1.59.1": "patches/playwright-core@1.59.1.patch",
