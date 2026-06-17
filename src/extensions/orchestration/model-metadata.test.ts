@@ -4,6 +4,7 @@ import { join } from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 import {
 	type ModelCustomMetadata,
+	deleteModelMetadata,
 	getModelMetadata,
 	getModelMetadataWarnings,
 	isModelMetadataMissing,
@@ -250,6 +251,102 @@ describe("saveModelMetadata", () => {
 		const saved = JSON.parse(readFileSync(testPath, "utf-8"))
 		expect(saved.modelMetadata["model/a"]).toEqual({ tier: "heavy", description: "Updated" })
 		expect(saved.modelMetadata["model/b"]).toEqual({ tier: "standard" })
+	})
+})
+
+describe("deleteModelMetadata", () => {
+	const testDir = join(tmpdir(), `kimchi-model-metadata-test-${process.pid}`)
+	const testPath = join(testDir, "settings.json")
+
+	afterEach(() => {
+		try {
+			rmSync(testDir, { recursive: true, force: true })
+		} catch {}
+	})
+
+	it("removes a single model entry", () => {
+		mkdirSync(testDir, { recursive: true })
+		writeFileSync(
+			testPath,
+			JSON.stringify({
+				modelMetadata: {
+					"custom/model-a": { tier: "heavy" },
+					"custom/model-b": { tier: "light" },
+				},
+			}),
+		)
+
+		deleteModelMetadata("custom/model-a", testPath)
+
+		const saved = JSON.parse(readFileSync(testPath, "utf-8"))
+		expect(saved.modelMetadata["custom/model-a"]).toBeUndefined()
+		expect(saved.modelMetadata["custom/model-b"]).toEqual({ tier: "light" })
+	})
+
+	it("removes modelMetadata key when last entry is deleted", () => {
+		mkdirSync(testDir, { recursive: true })
+		writeFileSync(
+			testPath,
+			JSON.stringify({
+				otherSetting: true,
+				modelMetadata: { "custom/only-model": { tier: "standard" } },
+			}),
+		)
+
+		deleteModelMetadata("custom/only-model", testPath)
+
+		const saved = JSON.parse(readFileSync(testPath, "utf-8"))
+		expect(saved.modelMetadata).toBeUndefined()
+		expect(saved.otherSetting).toBe(true)
+	})
+
+	it("is a no-op when model ref does not exist", () => {
+		mkdirSync(testDir, { recursive: true })
+		writeFileSync(
+			testPath,
+			JSON.stringify({
+				modelMetadata: { "custom/model": { tier: "heavy" } },
+			}),
+		)
+
+		deleteModelMetadata("custom/nonexistent", testPath)
+
+		const saved = JSON.parse(readFileSync(testPath, "utf-8"))
+		expect(saved.modelMetadata["custom/model"]).toEqual({ tier: "heavy" })
+	})
+
+	it("is a no-op when settings file does not exist", () => {
+		deleteModelMetadata("custom/model", testPath)
+		expect(existsSync(testPath)).toBe(false)
+	})
+
+	it("is a no-op when modelMetadata key is absent", () => {
+		mkdirSync(testDir, { recursive: true })
+		writeFileSync(testPath, JSON.stringify({ otherSetting: true }))
+
+		deleteModelMetadata("custom/model", testPath)
+
+		const saved = JSON.parse(readFileSync(testPath, "utf-8"))
+		expect(saved.modelMetadata).toBeUndefined()
+		expect(saved.otherSetting).toBe(true)
+	})
+
+	it("invalidates the metadata cache", () => {
+		mkdirSync(testDir, { recursive: true })
+		writeFileSync(
+			testPath,
+			JSON.stringify({
+				modelMetadata: { "custom/model": { tier: "heavy" } },
+			}),
+		)
+
+		const before = getModelMetadata(testPath)
+		expect(before.get("custom/model")).toEqual({ tier: "heavy" })
+
+		deleteModelMetadata("custom/model", testPath)
+
+		const after = getModelMetadata(testPath)
+		expect(after.has("custom/model")).toBe(false)
 	})
 })
 

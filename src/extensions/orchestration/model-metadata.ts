@@ -111,6 +111,39 @@ export function saveModelMetadata(metadata: Map<string, ModelCustomMetadata>, se
 }
 
 /**
+ * Remove a single model's custom metadata from settings.json.
+ * If the modelMetadata object becomes empty, the key is removed entirely.
+ */
+export function deleteModelMetadata(ref: string, settingsPath?: string): void {
+	const path = settingsPath ?? HARNESS_SETTINGS_PATH
+	let existing: Record<string, unknown> = {}
+	try {
+		existing = JSON.parse(readFileSync(path, "utf-8"))
+	} catch {
+		return
+	}
+
+	if (!existing.modelMetadata || typeof existing.modelMetadata !== "object" || Array.isArray(existing.modelMetadata)) {
+		return
+	}
+
+	const metaObj = { ...(existing.modelMetadata as Record<string, ModelCustomMetadata>) }
+	if (!(ref in metaObj)) return
+
+	delete metaObj[ref]
+
+	if (Object.keys(metaObj).length === 0) {
+		const { modelMetadata: _, ...rest } = existing
+		existing = rest
+	} else {
+		existing.modelMetadata = metaObj
+	}
+
+	writeFileSync(path, `${JSON.stringify(existing, null, 2)}\n`)
+	resetModelMetadataCache()
+}
+
+/**
  * Unified lookup: settings metadata → builtin MODEL_CAPABILITIES → undefined
  * ref format: "provider/model-id". For builtin lookup, strip provider and use model ID.
  */

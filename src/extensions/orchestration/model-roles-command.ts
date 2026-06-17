@@ -15,6 +15,7 @@ import { withSuppressedModelSelectGuard } from "../model-switch.js"
 import { getMultiModelEnabled } from "../prompt-construction/prompt-enrichment.js"
 import {
 	type ModelCustomMetadata,
+	deleteModelMetadata,
 	getModelMetadata,
 	isModelMetadataMissing,
 	resolveModelMetadata,
@@ -555,6 +556,17 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 				const existingMeta: ModelCustomMetadata | undefined = existing
 					? { tier: existing.tier, description: existing.description, vision: existing.vision }
 					: undefined
+
+				const hasCustomOverride = existing?.source === "custom"
+				const actionOptions = hasCustomOverride ? ["Edit", "Reset to defaults", "Cancel"] : ["Edit", "Cancel"]
+				const action = await ctx.ui.select(`${ref} — metadata`, actionOptions)
+				if (!action || action === "Cancel") return
+
+				if (action === "Reset to defaults") {
+					deleteModelMetadata(ref)
+					ctx.ui.notify(`Custom metadata removed for ${ref}.`, "info")
+					return
+				}
 
 				const metadata = await collectModelMetadata(ref, existingMeta, ctx)
 				if (!metadata) return
