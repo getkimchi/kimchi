@@ -9,10 +9,18 @@
  */
 import fs from "node:fs"
 import path from "node:path"
-import type { ExtensionAPI, ExtensionContext, ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent"
+import { isEditToolResult, isReadToolResult, isWriteToolResult } from "@earendil-works/pi-coding-agent"
 import { Container, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
-import { ensureFileOpen, getOrCreateClient, refreshFile, sendRequest, shutdownAll } from "./lsp/client.js"
+import {
+	ensureFileOpen,
+	getOrCreateClient,
+	refreshFile,
+	sendRequest,
+	shutdownAll,
+	waitForDiagnostics,
+} from "./lsp/client.js"
 import { applyWorkspaceEdit } from "./lsp/edits.js"
 import { detectServers, findRoot, serverForFile } from "./lsp/servers.js"
 import type { Hover, Location, LocationLink, TextDocumentEdit, WorkspaceEdit } from "./lsp/types.js"
@@ -23,6 +31,9 @@ export function clientCwd(filePath: string, sessionCwd: string): string {
 	if (filePath.startsWith(sessionCwd + path.sep) || filePath === sessionCwd) return sessionCwd
 	return path.dirname(filePath)
 }
+
+const LSP_DIAGNOSTICS_CUSTOM_TYPE = "lsp_diagnostics"
+const DIAG_WAIT_TIMEOUT_MS = 2000
 
 const LSP_SYSTEM_PROMPT = `## Language Server Protocol (LSP)
 
@@ -39,30 +50,17 @@ export default function (pi: ExtensionAPI) {
 	let cwd = ""
 	let activeServers: ReturnType<typeof detectServers> = []
 	let ui: ExtensionUIContext | undefined
-	// Tracks the pending diagnostic-refresh timer so rapid edits can cancel
-	// a previous wait (avoiding overlapping status-bar updates) and so
-	// session_shutdown can clear any leftover timer before tearing down clients.
-	let diagRefresh: { timer: NodeJS.Timeout; resolve: () => void } | undefined
+	// Tracks the pending diagnostic wait so a newer edit can cancel the previous
+	// one (avoiding stale status-bar updates) and so session_shutdown can
+	// abort any leftover waiter before tearing down clients. The local
+	// controller is combined with ctx.signal so user/session aborts also unwind
+	// the wait, but we never abort ctx.signal ourselves.
+	let pendingRefresh: { abort: AbortController } | undefined
 
-	function cancelPendingDiagRefresh(): void {
-		if (!diagRefresh) return
-		clearTimeout(diagRefresh.timer)
-		const { resolve } = diagRefresh
-		diagRefresh = undefined
-		// Unblock any awaiter that was waiting on the cancelled timer so the
-		// tool_result handler can finish instead of hanging until the process exits.
-		resolve()
-	}
-
-	function waitForDiagRefresh(ms: number): Promise<void> {
-		cancelPendingDiagRefresh()
-		return new Promise<void>((resolve) => {
-			const timer = setTimeout(() => {
-				if (diagRefresh?.timer === timer) diagRefresh = undefined
-				resolve()
-			}, ms)
-			diagRefresh = { timer, resolve }
-		})
+	function cancelPendingRefresh(): void {
+		if (!pendingRefresh) return
+		pendingRefresh.abort.abort()
+		pendingRefresh = undefined
 	}
 
 	createSystemPromptBlocks(pi, "lsp").register({
@@ -95,7 +93,7 @@ export default function (pi: ExtensionAPI) {
 	})
 
 	pi.on("session_shutdown", async () => {
-		cancelPendingDiagRefresh()
+		cancelPendingRefresh()
 		if (ui) {
 			ui.setStatus("lsp", undefined)
 			ui = undefined
@@ -106,48 +104,60 @@ export default function (pi: ExtensionAPI) {
 	// ── File sync: refresh LSP after agent edits files ───────────────────────────
 
 	pi.on("tool_result", async (event, ctx) => {
-		// Guard against non-object events (e.g. null/undefined) before checking properties
-		if (typeof event !== "object" || event === null || !("toolName" in event)) return
-		if (event.toolName !== "edit" && event.toolName !== "write" && event.toolName !== "read") return
+		// Only react to read/edit/write tool results. The upstream guards narrow
+		// `event` to one of these three result events so the toolName check is
+		// removed; `event.input` is still `Record<string, unknown>` on result
+		// events, so we narrow the path field with a runtime check.
+		if (!isReadToolResult(event) && !isEditToolResult(event) && !isWriteToolResult(event)) return
 		if (event.isError) return
+		if (typeof event.input !== "object" || event.input === null) return
 
-		// Extract the file path from the tool input
-		const input = event.input
-		if (typeof input !== "object" || input === null) return
-		const filePath = ((input as Record<string, unknown>).file_path ?? (input as Record<string, unknown>).path) as
-			| string
-			| undefined
-		if (!filePath) return
+		const filePath = event.input.path
+		if (typeof filePath !== "string") return
 
 		const resolved = path.isAbsolute(filePath) ? filePath : path.join(cwd, filePath)
 		const server = serverForFile(resolved, activeServers)
 		if (!server) return
 
-		const effectiveUi = ui ?? (ctx as ExtensionContext).ui
+		const effectiveUi = ui ?? ctx.ui
+
+		// Supersede any previous diagnostic wait for this handler. The local
+		// controller is combined with ctx.signal so the wait also unwinds on
+		// harness-level aborts.
+		cancelPendingRefresh()
+		const refreshController = new AbortController()
+		pendingRefresh = { abort: refreshController }
+		const combinedSignal = ctx.signal
+			? AbortSignal.any([ctx.signal, refreshController.signal])
+			: refreshController.signal
 
 		try {
 			const client = await getOrCreateClient(server, cwd)
-			if (event.toolName === "read") {
+			if (isReadToolResult(event)) {
 				// File was only read, not modified — just ensure LSP has it open
 				await ensureFileOpen(client, resolved)
 			} else {
 				await refreshFile(client, resolved)
-				// Wait for diagnostics to arrive, then inject them as a user steer message.
-				// LSP servers (especially TypeScript) need time to parse and type-check after edits.
-				// waitForDiagRefresh cancels any previous pending refresh so only the latest edit
-				// triggers a status-bar update.
-				await waitForDiagRefresh(2000)
-
+				// Wait for diagnostics to arrive via the LSP publishDiagnostics
+				// notification, with a deadline fallback. Resolves false on
+				// timeout/abort so we don't block forever on a slow server.
 				const uri = fileToUri(resolved)
-				const entry = client.diagnostics.get(uri)
-				const diags = entry?.diagnostics ?? []
-				if (diags.length > 0) {
-					const lines = diags.map((d) => formatDiagnostic(d))
-					const relativePath = path.relative(cwd, resolved)
-					const intro = effectiveUi
-						? `${effectiveUi.theme.fg("error", " LSP diagnostics:")} \`${relativePath}\`\n${lines.join("\n")}`
-						: `[LSP diagnostics for ${relativePath}]\n${lines.join("\n")}`
-					await pi.sendUserMessage(intro, { deliverAs: "steer" })
+				const gotDiagnostics = await waitForDiagnostics(client, uri, {
+					signal: combinedSignal,
+					timeoutMs: DIAG_WAIT_TIMEOUT_MS,
+				})
+				if (gotDiagnostics) {
+					const entry = client.diagnostics.get(uri)
+					const diags = entry?.diagnostics ?? []
+					if (diags.length > 0) {
+						const lines = diags.map((d) => formatDiagnostic(d))
+						const relativePath = path.relative(cwd, resolved)
+						// Inject diagnostics as a hidden custom message so the model
+						// sees them as context (not as a visible user turn). Plain
+						// text — no terminal coloring, since this is model-facing.
+						const content = `[LSP diagnostics for ${relativePath}]\n${lines.join("\n")}`
+						pi.sendMessage({ customType: LSP_DIAGNOSTICS_CUSTOM_TYPE, content, display: false }, { deliverAs: "steer" })
+					}
 				}
 
 				// Update status bar with total diagnostic count across open files
@@ -162,6 +172,10 @@ export default function (pi: ExtensionAPI) {
 			// Non-fatal: LSP sync failure doesn't break the agent, but log it so
 			// production debugging is possible.
 			console.error("LSP file sync failed:", err)
+		} finally {
+			if (pendingRefresh?.abort === refreshController) {
+				pendingRefresh = undefined
+			}
 		}
 	})
 

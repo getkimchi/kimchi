@@ -17,6 +17,7 @@ vi.mock("./lsp/client.js", () => ({
 	refreshFile: vi.fn(),
 	sendRequest: vi.fn(),
 	shutdownAll: vi.fn(),
+	waitForDiagnostics: vi.fn(),
 }))
 
 vi.mock("./lsp/edits.js", () => ({
@@ -102,7 +103,7 @@ function makePi(): PiStub {
 			activeTools = names
 		},
 		getFlag: () => undefined,
-		sendUserMessage: vi.fn(),
+		sendMessage: vi.fn(),
 		capturedBlocks,
 		fireShutdown: async () => {
 			for (const h of handlers.get("session_shutdown") ?? []) {
@@ -194,6 +195,9 @@ beforeEach(() => {
 	vi.mocked(clientMod.refreshFile).mockResolvedValue(undefined)
 	vi.mocked(clientMod.sendRequest).mockResolvedValue(null)
 	vi.mocked(clientMod.shutdownAll).mockReturnValue(undefined)
+	// Default: no diagnostics arrive within the deadline. Individual tests
+	// override this with mockResolvedValue(true) to exercise the diag path.
+	vi.mocked(clientMod.waitForDiagnostics).mockResolvedValue(false)
 	vi.mocked(editsMod.applyWorkspaceEdit).mockResolvedValue([])
 })
 
@@ -395,7 +399,7 @@ describe("tool_result handler", () => {
 		expect(clientMod.getOrCreateClient).not.toHaveBeenCalled()
 	})
 
-	it("ignores events without a file_path or path", async () => {
+	it("ignores events without a path", async () => {
 		vi.mocked(serversMod.detectServers).mockReturnValue([FAKE_SERVER])
 		vi.mocked(serversMod.serverForFile).mockReturnValue(FAKE_SERVER)
 		const pi = makePi()
@@ -428,7 +432,7 @@ describe("tool_result handler", () => {
 		const pi = makePi()
 		lspExtension(pi)
 		await pi.fireSessionStart()
-		await pi.fireToolResult({ toolName: "read", isError: false, input: { file_path: "/project/a.ts" } })
+		await pi.fireToolResult({ toolName: "read", isError: false, input: { path: "/project/a.ts" } })
 		expect(clientMod.ensureFileOpen).toHaveBeenCalledWith(fakeClient, "/project/a.ts")
 	})
 
@@ -440,7 +444,7 @@ describe("tool_result handler", () => {
 		const pi = makePi()
 		lspExtension(pi)
 		await pi.fireSessionStart()
-		await pi.fireToolResult({ toolName: "edit", isError: false, input: { file_path: "/project/a.ts" } })
+		await pi.fireToolResult({ toolName: "edit", isError: false, input: { path: "/project/a.ts" } })
 		expect(clientMod.refreshFile).toHaveBeenCalledWith(fakeClient, "/project/a.ts")
 	})
 
@@ -459,6 +463,9 @@ describe("tool_result handler", () => {
 	it("updates status bar with diagnostic count after edit", async () => {
 		vi.mocked(serversMod.detectServers).mockReturnValue([FAKE_SERVER])
 		vi.mocked(serversMod.serverForFile).mockReturnValue(FAKE_SERVER)
+		// waitForDiagnostics resolves true so the handler reads diagnostics
+		// from the fake client and updates the status bar.
+		vi.mocked(clientMod.waitForDiagnostics).mockResolvedValue(true)
 		const diagMap = new Map([
 			[
 				"file:///project/a.ts",
@@ -473,16 +480,102 @@ describe("tool_result handler", () => {
 		await pi.fireSessionStart({ hasUI: true, ui: { setStatus } })
 		setStatus.mockClear()
 
-		// Trigger tool_result handler with explicit promise handling
-		const toolResultPromise = pi.fireToolResult({
-			toolName: "edit",
-			isError: false,
-			input: { file_path: "/project/a.ts" },
-		})
-		// Wait for the handler to complete (refreshFile is mocked, sendUserMessage is mocked)
-		await toolResultPromise
-		// The status bar is updated after a short delay - verify it was called
+		await pi.fireToolResult({ toolName: "edit", isError: false, input: { path: "/project/a.ts" } })
 		expect(setStatus).toHaveBeenCalledWith("lsp", expect.stringContaining("1 diag"))
+	})
+
+	it("sends diagnostics as a hidden custom message when waitForDiagnostics resolves true", async () => {
+		vi.mocked(serversMod.detectServers).mockReturnValue([FAKE_SERVER])
+		vi.mocked(serversMod.serverForFile).mockReturnValue(FAKE_SERVER)
+		vi.mocked(clientMod.waitForDiagnostics).mockResolvedValue(true)
+		const diagMap = new Map([
+			[
+				"file:///project/a.ts",
+				{
+					diagnostics: [
+						{ range: { start: { line: 4, character: 2 } }, message: "Type 'string' is not assignable", severity: 1 },
+					],
+				},
+			],
+		])
+		const fakeClient = makeClient(diagMap)
+		vi.mocked(clientMod.getOrCreateClient).mockResolvedValue(fakeClient as never)
+		const pi = makePi()
+		lspExtension(pi)
+		await pi.fireSessionStart({ hasUI: true })
+
+		await pi.fireToolResult({ toolName: "edit", isError: false, input: { path: "/project/a.ts" } })
+
+		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+		const [message, options] = vi.mocked(pi.sendMessage).mock.calls[0]
+		expect(message).toMatchObject({
+			customType: "lsp_diagnostics",
+			display: false,
+		})
+		expect(message.content).toContain("[LSP diagnostics for a.ts]")
+		expect(message.content).toContain("Type 'string' is not assignable")
+		// Plain text only: no ANSI/theme color escapes in the model-facing content.
+		// biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape sequences are required to detect terminal color codes
+		expect(message.content).not.toMatch(/\x1b\[/)
+		expect(options).toEqual({ deliverAs: "steer" })
+	})
+
+	it("does not send diagnostics when waitForDiagnostics resolves false (timeout/abort)", async () => {
+		vi.mocked(serversMod.detectServers).mockReturnValue([FAKE_SERVER])
+		vi.mocked(serversMod.serverForFile).mockReturnValue(FAKE_SERVER)
+		vi.mocked(clientMod.waitForDiagnostics).mockResolvedValue(false)
+		const fakeClient = makeClient(
+			new Map([
+				[
+					"file:///project/a.ts",
+					{ diagnostics: [{ range: { start: { line: 0, character: 0 } }, message: "err", severity: 1 }] },
+				],
+			]),
+		)
+		vi.mocked(clientMod.getOrCreateClient).mockResolvedValue(fakeClient as never)
+		const pi = makePi()
+		lspExtension(pi)
+		await pi.fireSessionStart({ hasUI: true })
+
+		await pi.fireToolResult({ toolName: "edit", isError: false, input: { path: "/project/a.ts" } })
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("cancels a pending diagnostic wait when a newer edit supersedes it", async () => {
+		vi.mocked(serversMod.detectServers).mockReturnValue([FAKE_SERVER])
+		vi.mocked(serversMod.serverForFile).mockReturnValue(FAKE_SERVER)
+		// First wait: never resolves until the superseding edit aborts it.
+		// Second wait: resolves true so the handler completes.
+		let firstAbort: AbortSignal | undefined
+		vi.mocked(clientMod.waitForDiagnostics).mockImplementationOnce(async (_client, _uri, opts) => {
+			firstAbort = opts.signal
+			// Wait until aborted, then resolve false (superseded).
+			return new Promise<boolean>((resolve) => {
+				opts.signal?.addEventListener("abort", () => resolve(false), { once: true })
+			})
+		})
+		vi.mocked(clientMod.waitForDiagnostics).mockResolvedValueOnce(true)
+		const fakeClient = makeClient(
+			new Map([
+				[
+					"file:///project/a.ts",
+					{ diagnostics: [{ range: { start: { line: 0, character: 0 } }, message: "err", severity: 1 }] },
+				],
+			]),
+		)
+		vi.mocked(clientMod.getOrCreateClient).mockResolvedValue(fakeClient as never)
+		const pi = makePi()
+		lspExtension(pi)
+		await pi.fireSessionStart({ hasUI: true })
+
+		const firstEdit = pi.fireToolResult({ toolName: "edit", isError: false, input: { path: "/project/a.ts" } })
+		// Yield so the first handler runs and registers its waitForDiagnostics.
+		await new Promise((r) => setImmediate(r))
+		const secondEdit = pi.fireToolResult({ toolName: "edit", isError: false, input: { path: "/project/a.ts" } })
+
+		// The superseding edit should abort the first handler's local signal.
+		expect(firstAbort?.aborted).toBe(true)
+		await Promise.all([firstEdit, secondEdit])
 	})
 
 	it("does not call LSP functions when no server matches the file", async () => {
@@ -491,7 +584,7 @@ describe("tool_result handler", () => {
 		const pi = makePi()
 		lspExtension(pi)
 		await pi.fireSessionStart()
-		await pi.fireToolResult({ toolName: "edit", isError: false, input: { file_path: "/project/a.rb" } })
+		await pi.fireToolResult({ toolName: "edit", isError: false, input: { path: "/project/a.rb" } })
 		expect(clientMod.getOrCreateClient).not.toHaveBeenCalled()
 	})
 })

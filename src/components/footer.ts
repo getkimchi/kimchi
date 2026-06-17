@@ -446,12 +446,14 @@ export class StatsFooter implements Component {
 	private lspSegment(): Segment | null {
 		const lspStatus = this.footerData.getExtensionStatuses().get("lsp")
 		if (!lspStatus) return null
-		// Style "LSP:" as dimmed label, server names as accent
+		// Style "LSP:" as dimmed label, server names as accent. Preserve the
+		// space after the colon so the label and value don't render run-together
+		// (e.g. "LSP:typescript-language-server" instead of "LSP: typescript-language-server").
 		const colonIdx = lspStatus.indexOf(":")
 		if (colonIdx === -1) return { id: "lsp", text: this.accent(lspStatus), width: visibleWidth(lspStatus) }
 		const label = this.dim(lspStatus.slice(0, colonIdx + 1))
-		const names = this.accent(lspStatus.slice(colonIdx + 1).trim())
-		const text = `${label}${names}`
+		const value = lspStatus.slice(colonIdx + 1).trimStart()
+		const text = value.length > 0 ? `${label} ${this.accent(value)}` : label
 		return { id: "lsp", text, width: visibleWidth(text) }
 	}
 

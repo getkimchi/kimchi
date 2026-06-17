@@ -1,6 +1,7 @@
 // extensions/lsp/client.ts
 import type {
 	BunProcess,
+	DiagnosticWaiter,
 	LspClient,
 	LspJsonRpcNotification,
 	LspJsonRpcRequest,
@@ -124,6 +125,17 @@ async function startMessageReader(client: LspClient): Promise<void> {
 							version: params.version ?? null,
 						})
 						client.diagnosticsVersion++
+						// Resolve any waiters waiting for diagnostics on this URI.
+						// Single-shot: once resolved, the waiter is removed; a subsequent
+						// publishDiagnostics for the same URI won't re-resolve it.
+						const waiters = client.diagnosticWaiters.get(params.uri)
+						if (waiters) {
+							client.diagnosticWaiters.delete(params.uri)
+							client.pendingDiagBaseline.delete(params.uri)
+							for (const waiter of waiters) {
+								waiter.resolve()
+							}
+						}
 					} else if (message.method === "$/progress" && message.params) {
 						const params = message.params as { token: string | number; value?: { kind?: string } }
 						if (params.value?.kind === "begin") {
@@ -197,6 +209,8 @@ export async function getOrCreateClient(config: ServerConfig, cwd: string): Prom
 			requestId: 0,
 			diagnostics: new Map(),
 			diagnosticsVersion: 0,
+			pendingDiagBaseline: new Map(),
+			diagnosticWaiters: new Map(),
 			openFiles: new Map(),
 			pendingRequests: new Map(),
 			messageBuffer: Buffer.alloc(0),
@@ -361,6 +375,10 @@ export async function refreshFile(client: LspClient, filePath: string): Promise<
 	if (existingLock) await existingLock
 
 	const refreshPromise = (async () => {
+		// Capture the diagnosticsVersion baseline BEFORE deleting so a
+		// waitForDiagnostics call after this returns can detect the next
+		// publishDiagnostics even if it races with the call.
+		client.pendingDiagBaseline.set(uri, client.diagnosticsVersion)
 		client.diagnostics.delete(uri)
 		const info = client.openFiles.get(uri)
 
@@ -403,4 +421,80 @@ export async function refreshFile(client: LspClient, filePath: string): Promise<
 
 export function getAllClients(): LspClient[] {
 	return Array.from(clients.values())
+}
+
+// =============================================================================
+// Diagnostic Notification Wait
+// =============================================================================
+
+/**
+ * Wait for the LSP server's `textDocument/publishDiagnostics` notification for
+ * the given URI, returning as soon as fresh diagnostics arrive. Resolves with
+ * `false` on timeout or abort; resolves with `true` once a notification arrives
+ * that updates `client.diagnosticsVersion` past the captured baseline.
+ *
+ * The baseline is taken from `client.pendingDiagBaseline` when present (set by
+ * `refreshFile` before it deletes the URI's diagnostics), otherwise from the
+ * current `client.diagnosticsVersion`. This handles the race where a
+ * publishDiagnostics arrives between `refreshFile` and this call.
+ */
+export function waitForDiagnostics(
+	client: LspClient,
+	uri: string,
+	options: { signal?: AbortSignal; timeoutMs: number },
+): Promise<boolean> {
+	const { signal, timeoutMs } = options
+	const baseline = client.pendingDiagBaseline.get(uri) ?? client.diagnosticsVersion
+
+	return new Promise<boolean>((resolve) => {
+		let settled = false
+		const waiter: DiagnosticWaiter = {
+			snapshot: baseline,
+			resolve: () => {
+				if (settled) return
+				settled = true
+				finish()
+				resolve(true)
+			},
+		}
+
+		const onAbort = () => {
+			if (settled) return
+			settled = true
+			finish()
+			resolve(false)
+		}
+
+		const onTimeout = () => {
+			if (settled) return
+			settled = true
+			finish()
+			resolve(false)
+		}
+
+		const finish = () => {
+			clearTimeout(timer)
+			if (signal && onAbort) signal.removeEventListener("abort", onAbort)
+			const waiters = client.diagnosticWaiters.get(uri)
+			if (waiters) {
+				waiters.delete(waiter)
+				if (waiters.size === 0) client.diagnosticWaiters.delete(uri)
+			}
+		}
+
+		const timer = setTimeout(onTimeout, timeoutMs)
+
+		if (signal?.aborted) {
+			onAbort()
+			return
+		}
+		signal?.addEventListener("abort", onAbort, { once: true })
+
+		let waiters = client.diagnosticWaiters.get(uri)
+		if (!waiters) {
+			waiters = new Set()
+			client.diagnosticWaiters.set(uri, waiters)
+		}
+		waiters.add(waiter)
+	})
 }
