@@ -39,6 +39,11 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 
+import {
+	type ModelCustomMetadata,
+	getModelMetadata,
+	resetModelMetadataCache as resetMetadataCache,
+} from "./model-metadata.js"
 import { MODEL_CAPABILITIES } from "./model-registry/builtin-models.js"
 import { KIMCHI_DEV_PROVIDER } from "./model-registry/model-registry.js"
 import type { ModelTier } from "./model-registry/types.js"
@@ -245,6 +250,10 @@ function isEqualRoleValue(a: RoleModelAssignment, b: RoleModelAssignment): boole
 /**
  * Save model roles to settings.json. Merges with existing settings,
  * only writing non-default values (omits keys that match DEFAULT_MODEL_ROLES).
+ *
+ * Embedded CustomModelConfig objects in role assignments are extracted and
+ * saved to the global modelMetadata store. Role assignments are saved as
+ * strings only (model ref), preserving backwards compat for unmigrated readers.
  */
 export function saveModelRoles(roles: ModelRoles, settingsPath?: string): void {
 	const path = settingsPath ?? HARNESS_SETTINGS_PATH
@@ -255,10 +264,46 @@ export function saveModelRoles(roles: ModelRoles, settingsPath?: string): void {
 		// absent or unreadable — start fresh
 	}
 
+	// 1. Extract embedded CustomModelConfig objects and convert to strings
+	const metadataToSave = new Map<string, ModelCustomMetadata>()
+	const stringifiedRoles: ModelRoles = { ...roles }
+
+	for (const key of ROLE_KEYS) {
+		const value = roles[key]
+		if (key === "orchestrator") {
+			// orchestrator is always a string
+			stringifiedRoles.orchestrator = value as string
+			continue
+		}
+
+		const items = Array.isArray(value) ? value : [value]
+		const stringifiedItems: (string | CustomModelConfig)[] = []
+
+		for (const item of items) {
+			if (typeof item === "object" && item !== null) {
+				// Extract metadata and save just the string ref
+				const { model, tier, description, vision } = item
+				const meta: ModelCustomMetadata = {}
+				if (tier !== undefined) meta.tier = tier
+				if (description !== undefined) meta.description = description
+				if (vision !== undefined) meta.vision = vision
+				if (Object.keys(meta).length > 0) {
+					metadataToSave.set(model, meta)
+				}
+				stringifiedItems.push(model)
+			} else {
+				stringifiedItems.push(item)
+			}
+		}
+
+		stringifiedRoles[key] = items.length === 1 ? stringifiedItems[0] : stringifiedItems
+	}
+
+	// 2. Save stringified roles (only non-default values)
 	const rolesObj: Record<string, RoleModelAssignment> = {}
 	for (const key of ROLE_KEYS) {
-		if (!isEqualRoleValue(roles[key], DEFAULT_MODEL_ROLES[key])) {
-			rolesObj[key] = roles[key]
+		if (!isEqualRoleValue(stringifiedRoles[key], DEFAULT_MODEL_ROLES[key])) {
+			rolesObj[key] = stringifiedRoles[key]
 		}
 	}
 
@@ -269,11 +314,25 @@ export function saveModelRoles(roles: ModelRoles, settingsPath?: string): void {
 		existing.modelRoles = rolesObj
 	}
 
+	// 3. Merge embedded metadata into existing modelMetadata (preserves other models)
+	if (metadataToSave.size > 0) {
+		const existingMeta =
+			existing.modelMetadata && typeof existing.modelMetadata === "object" && !Array.isArray(existing.modelMetadata)
+				? { ...(existing.modelMetadata as Record<string, ModelCustomMetadata>) }
+				: {}
+		for (const [ref, entry] of metadataToSave.entries()) {
+			const prev = existingMeta[ref]
+			existingMeta[ref] = prev ? { ...prev, ...entry } : entry
+		}
+		existing.modelMetadata = existingMeta
+	}
+
 	const dir = dirname(path)
 	if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
 	writeFileSync(path, `${JSON.stringify(existing, null, 2)}\n`)
 
 	resetModelRolesCache()
+	resetMetadataCache()
 }
 
 /**
@@ -302,17 +361,34 @@ export function modelIdFromRef(ref: string): string {
 // Validation against available models
 // ---------------------------------------------------------------------------
 
-export function extractCustomConfigs(roles: ModelRoles): ReadonlyMap<string, CustomModelConfig> {
+export function extractCustomConfigs(
+	roles: ModelRoles,
+	overrides?: ReadonlyMap<string, ModelCustomMetadata>,
+): ReadonlyMap<string, CustomModelConfig> {
 	const map = new Map<string, CustomModelConfig>()
+
+	// 1. Read from global metadata store (new format)
+	const globalRefs = new Set<string>()
+	const globalMetadata = overrides ?? getModelMetadata()
+	for (const [ref, meta] of globalMetadata) {
+		globalRefs.add(ref)
+		map.set(ref, { model: ref, ...meta })
+	}
+
+	// 2. Backwards compat: scan role assignments for embedded objects
+	// Global metadata wins, but embedded objects among themselves keep last-wins semantics
 	for (const key of ROLE_KEYS) {
 		const value = roles[key]
 		const items = Array.isArray(value) ? value : [value]
 		for (const item of items) {
 			if (typeof item === "object" && item !== null) {
-				map.set(item.model, item)
+				if (!globalRefs.has(item.model)) {
+					map.set(item.model, item)
+				}
 			}
 		}
 	}
+
 	return map
 }
 

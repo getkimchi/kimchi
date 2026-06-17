@@ -1,0 +1,524 @@
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { afterEach, describe, expect, it } from "vitest"
+import {
+	type ModelCustomMetadata,
+	getModelMetadata,
+	getModelMetadataWarnings,
+	isModelMetadataMissing,
+	loadModelMetadata,
+	resetModelMetadataCache,
+	resolveModelMetadata,
+	saveModelMetadata,
+} from "./model-metadata.js"
+
+afterEach(() => {
+	resetModelMetadataCache()
+})
+
+describe("loadModelMetadata", () => {
+	const testDir = join(tmpdir(), `kimchi-model-metadata-test-${process.pid}`)
+	const testPath = join(testDir, "settings.json")
+
+	afterEach(() => {
+		try {
+			rmSync(testDir, { recursive: true, force: true })
+		} catch {}
+	})
+
+	it("returns empty map when settings file absent", () => {
+		const result = loadModelMetadata(testPath)
+		expect(result.size).toBe(0)
+	})
+
+	it("reads metadata from settings.json", () => {
+		mkdirSync(testDir, { recursive: true })
+		writeFileSync(
+			testPath,
+			JSON.stringify(
+				{
+					modelMetadata: {
+						"custom/model-1": { tier: "heavy", description: "A heavy model", vision: true },
+						"custom/model-2": { tier: "light" },
+					},
+				},
+				null,
+				2,
+			),
+		)
+
+		const result = loadModelMetadata(testPath)
+		expect(result.size).toBe(2)
+		expect(result.get("custom/model-1")).toEqual({
+			tier: "heavy",
+			description: "A heavy model",
+			vision: true,
+		})
+		expect(result.get("custom/model-2")).toEqual({ tier: "light" })
+	})
+
+	it("ignores entries with no valid fields", () => {
+		mkdirSync(testDir, { recursive: true })
+		writeFileSync(
+			testPath,
+			JSON.stringify(
+				{
+					modelMetadata: {
+						"valid/model": { tier: "standard" },
+						"empty/model": {},
+						"invalid/model": { unknownField: "test" },
+						"null/model": null,
+					},
+				},
+				null,
+				2,
+			),
+		)
+
+		const result = loadModelMetadata(testPath)
+		expect(result.size).toBe(1)
+		expect(result.has("valid/model")).toBe(true)
+		expect(result.has("empty/model")).toBe(false)
+		expect(result.has("invalid/model")).toBe(false)
+		expect(result.has("null/model")).toBe(false)
+	})
+
+	it("ignores non-object modelMetadata value", () => {
+		mkdirSync(testDir, { recursive: true })
+		writeFileSync(testPath, JSON.stringify({ modelMetadata: "not an object" }, null, 2))
+
+		const result = loadModelMetadata(testPath)
+		expect(result.size).toBe(0)
+	})
+
+	it("ignores array modelMetadata value", () => {
+		mkdirSync(testDir, { recursive: true })
+		writeFileSync(testPath, JSON.stringify({ modelMetadata: [] }, null, 2))
+
+		const result = loadModelMetadata(testPath)
+		expect(result.size).toBe(0)
+	})
+
+	it("trims whitespace from ref keys", () => {
+		mkdirSync(testDir, { recursive: true })
+		writeFileSync(
+			testPath,
+			JSON.stringify(
+				{
+					modelMetadata: {
+						"  custom/model-1  ": { tier: "heavy" },
+						"custom/model-2": { tier: "light" },
+					},
+				},
+				null,
+				2,
+			),
+		)
+
+		const result = loadModelMetadata(testPath)
+		expect(result.get("custom/model-1")).toEqual({ tier: "heavy" })
+		// Note: whitespace trimming happens on the key itself, not the value
+		// So "  custom/model-1  " becomes "custom/model-1" (trims leading/trailing)
+		expect(result.has("  custom/model-1  ")).toBe(false)
+	})
+
+	it("validates tier values strictly", () => {
+		mkdirSync(testDir, { recursive: true })
+		writeFileSync(
+			testPath,
+			JSON.stringify(
+				{
+					modelMetadata: {
+						"valid/model": { tier: "standard" },
+						"invalid/tier": { tier: "not-a-tier" },
+					},
+				},
+				null,
+				2,
+			),
+		)
+
+		const result = loadModelMetadata(testPath)
+		expect(result.get("valid/model")?.tier).toBe("standard")
+		expect(result.get("invalid/tier")?.tier).toBeUndefined()
+	})
+})
+
+describe("saveModelMetadata", () => {
+	const testDir = join(tmpdir(), `kimchi-model-metadata-test-${process.pid}`)
+	const testPath = join(testDir, "settings.json")
+
+	afterEach(() => {
+		try {
+			rmSync(testDir, { recursive: true, force: true })
+		} catch {}
+	})
+
+	it("creates file and directory if absent", () => {
+		const metadata = new Map<string, ModelCustomMetadata>([["custom/model", { tier: "heavy" }]])
+		saveModelMetadata(metadata, testPath)
+		expect(existsSync(testPath)).toBe(true)
+	})
+
+	it("writes to modelMetadata key", () => {
+		const metadata = new Map<string, ModelCustomMetadata>([
+			["custom/model", { tier: "heavy", description: "Test model", vision: true }],
+		])
+		saveModelMetadata(metadata, testPath)
+
+		const saved = JSON.parse(readFileSync(testPath, "utf-8"))
+		expect(saved.modelMetadata).toBeDefined()
+		expect(saved.modelMetadata["custom/model"]).toEqual({
+			tier: "heavy",
+			description: "Test model",
+			vision: true,
+		})
+	})
+
+	it("removes modelMetadata key when map is empty", () => {
+		// First save some data
+		const metadata = new Map<string, ModelCustomMetadata>([["custom/model", { tier: "heavy" }]])
+		saveModelMetadata(metadata, testPath)
+		expect(existsSync(testPath)).toBe(true)
+
+		// Then save empty map
+		saveModelMetadata(new Map(), testPath)
+
+		const saved = JSON.parse(readFileSync(testPath, "utf-8"))
+		expect(saved.modelMetadata).toBeUndefined()
+	})
+
+	it("preserves other settings in the file", () => {
+		mkdirSync(testDir, { recursive: true })
+		writeFileSync(testPath, JSON.stringify({ multiModel: true, theme: "dark", otherSetting: 42 }, null, 2))
+
+		const metadata = new Map<string, ModelCustomMetadata>([["custom/model", { tier: "heavy", description: "Test" }]])
+		saveModelMetadata(metadata, testPath)
+
+		const saved = JSON.parse(readFileSync(testPath, "utf-8"))
+		expect(saved.multiModel).toBe(true)
+		expect(saved.theme).toBe("dark")
+		expect(saved.otherSetting).toBe(42)
+		expect(saved.modelMetadata["custom/model"]).toEqual({ tier: "heavy", description: "Test" })
+	})
+
+	it("merges new metadata with existing modelMetadata", () => {
+		mkdirSync(testDir, { recursive: true })
+		writeFileSync(
+			testPath,
+			JSON.stringify(
+				{
+					modelMetadata: {
+						"old/model": { tier: "light" },
+						"another/old": { description: "Old description" },
+					},
+				},
+				null,
+				2,
+			),
+		)
+
+		const metadata = new Map<string, ModelCustomMetadata>([["new/model", { tier: "heavy" }]])
+		saveModelMetadata(metadata, testPath)
+
+		const saved = JSON.parse(readFileSync(testPath, "utf-8"))
+		expect(saved.modelMetadata["old/model"]).toEqual({ tier: "light" })
+		expect(saved.modelMetadata["another/old"]).toEqual({ description: "Old description" })
+		expect(saved.modelMetadata["new/model"]).toEqual({ tier: "heavy" })
+	})
+
+	it("overwriting a model updates it while keeping others", () => {
+		mkdirSync(testDir, { recursive: true })
+		writeFileSync(
+			testPath,
+			JSON.stringify(
+				{
+					modelMetadata: {
+						"model/a": { tier: "light" },
+						"model/b": { tier: "standard" },
+					},
+				},
+				null,
+				2,
+			),
+		)
+
+		const metadata = new Map<string, ModelCustomMetadata>([["model/a", { tier: "heavy", description: "Updated" }]])
+		saveModelMetadata(metadata, testPath)
+
+		const saved = JSON.parse(readFileSync(testPath, "utf-8"))
+		expect(saved.modelMetadata["model/a"]).toEqual({ tier: "heavy", description: "Updated" })
+		expect(saved.modelMetadata["model/b"]).toEqual({ tier: "standard" })
+	})
+})
+
+describe("resolveModelMetadata", () => {
+	it("returns builtin for known model (e.g. kimchi-dev/kimi-k2.6)", () => {
+		const result = resolveModelMetadata("kimchi-dev/kimi-k2.6")
+		expect(result).toEqual(expect.objectContaining({ source: "builtin", tier: "heavy", vision: true }))
+	})
+
+	it("returns builtin for known model without provider prefix", () => {
+		const result = resolveModelMetadata("kimi-k2.6")
+		expect(result).toEqual(expect.objectContaining({ source: "builtin", tier: "heavy" }))
+	})
+
+	it("returns custom for model in settings", () => {
+		const testDir = join(tmpdir(), `kimchi-model-metadata-test-${process.pid}`)
+		const testPath = join(testDir, "settings.json")
+
+		mkdirSync(testDir, { recursive: true })
+		writeFileSync(
+			testPath,
+			JSON.stringify(
+				{
+					modelMetadata: {
+						"custom/my-model": { tier: "standard", description: "My custom model", vision: false },
+					},
+				},
+				null,
+				2,
+			),
+		)
+
+		const loaded = loadModelMetadata(testPath)
+		expect(loaded.get("custom/my-model")).toEqual({
+			tier: "standard",
+			description: "My custom model",
+			vision: false,
+		})
+
+		const result = resolveModelMetadata("custom/my-model", testPath)
+		expect(result).toEqual({
+			source: "custom",
+			tier: "standard",
+			description: "My custom model",
+			vision: false,
+		})
+
+		try {
+			rmSync(testDir, { recursive: true, force: true })
+		} catch {}
+	})
+
+	it("returns undefined for unknown model with no custom metadata", () => {
+		const result = resolveModelMetadata("unknown/provider-model")
+		expect(result).toBeUndefined()
+	})
+
+	it("prefers custom over builtin when both exist", () => {
+		const testDir = join(tmpdir(), `kimchi-model-metadata-test-${process.pid}`)
+		const testPath = join(testDir, "settings.json")
+
+		mkdirSync(testDir, { recursive: true })
+		writeFileSync(
+			testPath,
+			JSON.stringify(
+				{
+					modelMetadata: {
+						"kimchi-dev/kimi-k2.6": { tier: "light", description: "Custom override" },
+					},
+				},
+				null,
+				2,
+			),
+		)
+
+		const result = resolveModelMetadata("kimchi-dev/kimi-k2.6", testPath)
+		expect(result).toEqual(expect.objectContaining({ source: "custom", tier: "light", description: "Custom override" }))
+
+		try {
+			rmSync(testDir, { recursive: true, force: true })
+		} catch {}
+	})
+
+	it("returns builtin for minimax-m2.7", () => {
+		const result = resolveModelMetadata("kimchi-dev/minimax-m2.7")
+		expect(result).toEqual(expect.objectContaining({ source: "builtin", tier: "standard", vision: false }))
+	})
+
+	it("returns builtin for nemotron-3-super-fp4", () => {
+		const result = resolveModelMetadata("kimchi-dev/nemotron-3-super-fp4")
+		expect(result).toEqual(expect.objectContaining({ source: "builtin", tier: "light" }))
+	})
+})
+
+describe("isModelMetadataMissing", () => {
+	it("returns false for known builtin model", () => {
+		expect(isModelMetadataMissing("kimchi-dev/kimi-k2.6")).toBe(false)
+		expect(isModelMetadataMissing("kimchi-dev/minimax-m2.7")).toBe(false)
+	})
+
+	it("returns true for completely unknown model with no custom metadata", () => {
+		expect(isModelMetadataMissing("completely/unknown-model-xyz")).toBe(true)
+	})
+
+	it("returns false when custom metadata exists for a model", () => {
+		const testDir = join(tmpdir(), `kimchi-model-metadata-test-${process.pid}`)
+		const testPath = join(testDir, "settings.json")
+
+		mkdirSync(testDir, { recursive: true })
+		writeFileSync(
+			testPath,
+			JSON.stringify(
+				{
+					modelMetadata: {
+						"custom/my-model": { tier: "standard" },
+					},
+				},
+				null,
+				2,
+			),
+		)
+
+		// Populate cache from the test path
+		getModelMetadata(testPath)
+		expect(isModelMetadataMissing("custom/my-model", testPath)).toBe(false)
+
+		try {
+			rmSync(testDir, { recursive: true, force: true })
+		} catch {}
+	})
+})
+
+describe("Cache functions", () => {
+	const testDir = join(tmpdir(), `kimchi-model-metadata-test-${process.pid}`)
+	const testPath = join(testDir, "settings.json")
+
+	afterEach(() => {
+		resetModelMetadataCache()
+		try {
+			rmSync(testDir, { recursive: true, force: true })
+		} catch {}
+	})
+
+	it("getModelMetadata returns cached data", () => {
+		mkdirSync(testDir, { recursive: true })
+		writeFileSync(
+			testPath,
+			JSON.stringify(
+				{
+					modelMetadata: {
+						"cached/model": { tier: "heavy" },
+					},
+				},
+				null,
+				2,
+			),
+		)
+
+		// First call loads from disk at the test path
+		const first = getModelMetadata(testPath)
+		expect(first.get("cached/model")).toEqual({ tier: "heavy" })
+
+		// Modify the file on disk
+		writeFileSync(
+			testPath,
+			JSON.stringify(
+				{
+					modelMetadata: {
+						"cached/model": { tier: "light" },
+						"new/model": { tier: "standard" },
+					},
+				},
+				null,
+				2,
+			),
+		)
+
+		// Second call with same path should return cached data, not the new file content
+		const second = getModelMetadata(testPath)
+		expect(second.get("cached/model")).toEqual({ tier: "heavy" })
+		expect(second.has("new/model")).toBe(false)
+	})
+
+	it("resetModelMetadataCache clears the cache", () => {
+		mkdirSync(testDir, { recursive: true })
+		writeFileSync(
+			testPath,
+			JSON.stringify(
+				{
+					modelMetadata: {
+						"test/model": { tier: "heavy" },
+					},
+				},
+				null,
+				2,
+			),
+		)
+
+		// Load and cache
+		const first = getModelMetadata(testPath)
+		expect(first.get("test/model")).toEqual({ tier: "heavy" })
+
+		// Modify file
+		writeFileSync(
+			testPath,
+			JSON.stringify(
+				{
+					modelMetadata: {
+						"test/model": { tier: "light" },
+						"new/model": { tier: "standard" },
+					},
+				},
+				null,
+				2,
+			),
+		)
+
+		// Reset cache
+		resetModelMetadataCache()
+
+		// Next call should re-read from disk
+		const afterReset = getModelMetadata(testPath)
+		expect(afterReset.get("test/model")).toEqual({ tier: "light" })
+		expect(afterReset.get("new/model")).toEqual({ tier: "standard" })
+	})
+
+	it("getModelMetadataWarnings returns empty array initially", () => {
+		const warnings = getModelMetadataWarnings()
+		expect(warnings).toEqual([])
+	})
+})
+
+describe("Integration: saveModelMetadata and loadModelMetadata round-trip", () => {
+	const testDir = join(tmpdir(), `kimchi-model-metadata-test-${process.pid}`)
+	const testPath = join(testDir, "settings.json")
+
+	afterEach(() => {
+		resetModelMetadataCache()
+		try {
+			rmSync(testDir, { recursive: true, force: true })
+		} catch {}
+	})
+
+	it("round-trips a complex metadata map correctly", () => {
+		const original = new Map<string, ModelCustomMetadata>([
+			["custom/model-1", { tier: "heavy", description: "Heavy model", vision: true }],
+			["custom/model-2", { tier: "light" }],
+			["custom/model-3", { description: "Description only" }],
+			["custom/model-4", { vision: false }],
+		])
+
+		saveModelMetadata(original, testPath)
+		const loaded = loadModelMetadata(testPath)
+
+		expect(loaded.size).toBe(4)
+		expect(loaded.get("custom/model-1")).toEqual({ tier: "heavy", description: "Heavy model", vision: true })
+		expect(loaded.get("custom/model-2")).toEqual({ tier: "light" })
+		expect(loaded.get("custom/model-3")).toEqual({ description: "Description only" })
+		expect(loaded.get("custom/model-4")).toEqual({ vision: false })
+	})
+
+	it("empty map removes modelMetadata from settings", () => {
+		const metadata = new Map<string, ModelCustomMetadata>([["temp/model", { tier: "standard" }]])
+		saveModelMetadata(metadata, testPath)
+		expect(existsSync(testPath)).toBe(true)
+
+		saveModelMetadata(new Map(), testPath)
+
+		const saved = JSON.parse(readFileSync(testPath, "utf-8"))
+		expect(saved.modelMetadata).toBeUndefined()
+	})
+})
