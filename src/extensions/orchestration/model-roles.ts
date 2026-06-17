@@ -43,7 +43,10 @@ import {
 	type ModelCustomMetadata,
 	getModelMetadata,
 	resetModelMetadataCache as resetMetadataCache,
+	saveModelMetadata,
 } from "./model-metadata.js"
+export { modelIdFromRef, splitModelRef } from "./model-ref-utils.js"
+import { modelIdFromRef } from "./model-ref-utils.js"
 import { MODEL_CAPABILITIES } from "./model-registry/builtin-models.js"
 import { KIMCHI_DEV_PROVIDER } from "./model-registry/model-registry.js"
 import type { ModelTier } from "./model-registry/types.js"
@@ -299,7 +302,21 @@ export function saveModelRoles(roles: ModelRoles, settingsPath?: string): void {
 		stringifiedRoles[key] = items.length === 1 ? stringifiedItems[0] : stringifiedItems
 	}
 
-	// 2. Save stringified roles (only non-default values)
+	// 2. Save extracted metadata via the canonical saveModelMetadata path
+	if (metadataToSave.size > 0) {
+		saveModelMetadata(metadataToSave, path)
+	}
+
+	// 3. Save stringified roles (only non-default values)
+	// Re-read the file since saveModelMetadata may have written to it
+	if (metadataToSave.size > 0) {
+		try {
+			existing = JSON.parse(readFileSync(path, "utf-8"))
+		} catch {
+			// should not happen since saveModelMetadata just wrote it
+		}
+	}
+
 	const rolesObj: Record<string, RoleModelAssignment> = {}
 	for (const key of ROLE_KEYS) {
 		if (!isEqualRoleValue(stringifiedRoles[key], DEFAULT_MODEL_ROLES[key])) {
@@ -314,47 +331,12 @@ export function saveModelRoles(roles: ModelRoles, settingsPath?: string): void {
 		existing.modelRoles = rolesObj
 	}
 
-	// 3. Merge embedded metadata into existing modelMetadata (preserves other models)
-	if (metadataToSave.size > 0) {
-		const existingMeta =
-			existing.modelMetadata && typeof existing.modelMetadata === "object" && !Array.isArray(existing.modelMetadata)
-				? { ...(existing.modelMetadata as Record<string, ModelCustomMetadata>) }
-				: {}
-		for (const [ref, entry] of metadataToSave.entries()) {
-			const prev = existingMeta[ref]
-			existingMeta[ref] = prev ? { ...prev, ...entry } : entry
-		}
-		existing.modelMetadata = existingMeta
-	}
-
 	const dir = dirname(path)
 	if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
 	writeFileSync(path, `${JSON.stringify(existing, null, 2)}\n`)
 
 	resetModelRolesCache()
 	resetMetadataCache()
-}
-
-/**
- * Extract provider and model ID from a "provider/model-id" string.
- * Returns undefined if the string doesn't contain a slash.
- */
-export function splitModelRef(ref: string): { provider: string; modelId: string } | undefined {
-	const slashIdx = ref.indexOf("/")
-	if (slashIdx <= 0) return undefined
-	return {
-		provider: ref.slice(0, slashIdx),
-		modelId: ref.slice(slashIdx + 1),
-	}
-}
-
-/**
- * Extract just the model ID from a "provider/model-id" string.
- * Returns the full string if no slash is present.
- */
-export function modelIdFromRef(ref: string): string {
-	const slashIdx = ref.indexOf("/")
-	return slashIdx >= 0 ? ref.slice(slashIdx + 1) : ref
 }
 
 // ---------------------------------------------------------------------------

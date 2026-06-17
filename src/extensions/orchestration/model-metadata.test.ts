@@ -254,20 +254,26 @@ describe("saveModelMetadata", () => {
 })
 
 describe("resolveModelMetadata", () => {
+	const testDir = join(tmpdir(), `kimchi-model-metadata-test-${process.pid}`)
+	const testPath = join(testDir, "settings.json")
+
+	afterEach(() => {
+		try {
+			rmSync(testDir, { recursive: true, force: true })
+		} catch {}
+	})
+
 	it("returns builtin for known model (e.g. kimchi-dev/kimi-k2.6)", () => {
-		const result = resolveModelMetadata("kimchi-dev/kimi-k2.6")
+		const result = resolveModelMetadata("kimchi-dev/kimi-k2.6", testPath)
 		expect(result).toEqual(expect.objectContaining({ source: "builtin", tier: "heavy", vision: true }))
 	})
 
 	it("returns builtin for known model without provider prefix", () => {
-		const result = resolveModelMetadata("kimi-k2.6")
+		const result = resolveModelMetadata("kimi-k2.6", testPath)
 		expect(result).toEqual(expect.objectContaining({ source: "builtin", tier: "heavy" }))
 	})
 
 	it("returns custom for model in settings", () => {
-		const testDir = join(tmpdir(), `kimchi-model-metadata-test-${process.pid}`)
-		const testPath = join(testDir, "settings.json")
-
 		mkdirSync(testDir, { recursive: true })
 		writeFileSync(
 			testPath,
@@ -296,21 +302,14 @@ describe("resolveModelMetadata", () => {
 			description: "My custom model",
 			vision: false,
 		})
-
-		try {
-			rmSync(testDir, { recursive: true, force: true })
-		} catch {}
 	})
 
 	it("returns undefined for unknown model with no custom metadata", () => {
-		const result = resolveModelMetadata("unknown/provider-model")
+		const result = resolveModelMetadata("unknown/provider-model", testPath)
 		expect(result).toBeUndefined()
 	})
 
 	it("prefers custom over builtin when both exist", () => {
-		const testDir = join(tmpdir(), `kimchi-model-metadata-test-${process.pid}`)
-		const testPath = join(testDir, "settings.json")
-
 		mkdirSync(testDir, { recursive: true })
 		writeFileSync(
 			testPath,
@@ -327,37 +326,39 @@ describe("resolveModelMetadata", () => {
 
 		const result = resolveModelMetadata("kimchi-dev/kimi-k2.6", testPath)
 		expect(result).toEqual(expect.objectContaining({ source: "custom", tier: "light", description: "Custom override" }))
-
-		try {
-			rmSync(testDir, { recursive: true, force: true })
-		} catch {}
 	})
 
 	it("returns builtin for minimax-m2.7", () => {
-		const result = resolveModelMetadata("kimchi-dev/minimax-m2.7")
+		const result = resolveModelMetadata("kimchi-dev/minimax-m2.7", testPath)
 		expect(result).toEqual(expect.objectContaining({ source: "builtin", tier: "standard", vision: false }))
 	})
 
 	it("returns builtin for nemotron-3-super-fp4", () => {
-		const result = resolveModelMetadata("kimchi-dev/nemotron-3-super-fp4")
+		const result = resolveModelMetadata("kimchi-dev/nemotron-3-super-fp4", testPath)
 		expect(result).toEqual(expect.objectContaining({ source: "builtin", tier: "light" }))
 	})
 })
 
 describe("isModelMetadataMissing", () => {
+	const testDir = join(tmpdir(), `kimchi-model-metadata-test-${process.pid}`)
+	const testPath = join(testDir, "settings.json")
+
+	afterEach(() => {
+		try {
+			rmSync(testDir, { recursive: true, force: true })
+		} catch {}
+	})
+
 	it("returns false for known builtin model", () => {
-		expect(isModelMetadataMissing("kimchi-dev/kimi-k2.6")).toBe(false)
-		expect(isModelMetadataMissing("kimchi-dev/minimax-m2.7")).toBe(false)
+		expect(isModelMetadataMissing("kimchi-dev/kimi-k2.6", testPath)).toBe(false)
+		expect(isModelMetadataMissing("kimchi-dev/minimax-m2.7", testPath)).toBe(false)
 	})
 
 	it("returns true for completely unknown model with no custom metadata", () => {
-		expect(isModelMetadataMissing("completely/unknown-model-xyz")).toBe(true)
+		expect(isModelMetadataMissing("completely/unknown-model-xyz", testPath)).toBe(true)
 	})
 
 	it("returns false when custom metadata exists for a model", () => {
-		const testDir = join(tmpdir(), `kimchi-model-metadata-test-${process.pid}`)
-		const testPath = join(testDir, "settings.json")
-
 		mkdirSync(testDir, { recursive: true })
 		writeFileSync(
 			testPath,
@@ -372,13 +373,8 @@ describe("isModelMetadataMissing", () => {
 			),
 		)
 
-		// Populate cache from the test path
 		getModelMetadata(testPath)
 		expect(isModelMetadataMissing("custom/my-model", testPath)).toBe(false)
-
-		try {
-			rmSync(testDir, { recursive: true, force: true })
-		} catch {}
 	})
 })
 

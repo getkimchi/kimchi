@@ -272,50 +272,74 @@ function resolveDescriptor(ref: string, registry?: ModelRegistry): Orchestration
 	return registry?.getModelById(modelId)
 }
 
+function resolveModelRoleNames(ref: string, roles?: ModelRoles): string[] {
+	if (!roles) return []
+	const assigned: string[] = []
+	const roleMap: Record<string, RoleModelAssignment> = {
+		planner: roles.planner,
+		builder: roles.builder,
+		reviewer: roles.reviewer,
+		explorer: roles.explorer,
+	}
+	for (const [roleName, assignment] of Object.entries(roleMap)) {
+		if (normalizeRoleModels(assignment).includes(ref)) {
+			assigned.push(roleName)
+		}
+	}
+	if (roles.orchestrator === ref) {
+		assigned.unshift("orchestrator")
+	}
+	return assigned
+}
+
+function defaultDescription(ref: string, roleNames: string[]): string {
+	if (roleNames.length > 0) {
+		const roles = roleNames.join(", ")
+		return `This model was configured by the user to handle ${roles} work.`
+	}
+	return "This model was configured by the user."
+}
+
+interface ResolvedModelMeta {
+	tier: ModelTier
+	vision: boolean
+	description: string
+}
+
+function resolveModelMeta(
+	ref: string,
+	registry?: ModelRegistry,
+	customConfigs?: ReadonlyMap<string, CustomModelConfig>,
+	roles?: ModelRoles,
+): ResolvedModelMeta {
+	const descriptor = resolveDescriptor(ref, registry)
+	const custom = customConfigs?.get(ref)
+	const roleNames = resolveModelRoleNames(ref, roles)
+
+	const tier = custom?.tier ?? descriptor?.capabilities.tier ?? "standard"
+	const vision = custom?.vision ?? descriptor?.capabilities.vision ?? false
+	const description = custom?.description ?? descriptor?.capabilities.description ?? defaultDescription(ref, roleNames)
+
+	return { tier, vision, description }
+}
+
 function formatModelEntry(
 	ref: string,
 	registry?: ModelRegistry,
 	customConfigs?: ReadonlyMap<string, CustomModelConfig>,
+	roles?: ModelRoles,
 ): string {
 	const displayName = resolveModelDisplayName(ref, registry)
-	const descriptor = resolveDescriptor(ref, registry)
 	const parsed = splitModelRef(ref)
 	const providerInfo = parsed ? `, provider: \`${parsed.provider}\`` : ""
 
-	// If descriptor is available, use it
-	if (descriptor) {
-		const tierInfo = `Tier: ${descriptor.capabilities.tier}`
-		const vision = descriptor.capabilities.vision ? " | Vision: yes" : ""
-		const description = descriptor.capabilities.description ?? ""
+	const meta = resolveModelMeta(ref, registry, customConfigs, roles)
+	const tierInfo = `Tier: ${meta.tier}`
+	const visionInfo = ` | Vision: ${meta.vision ? "yes" : "no"}`
+	const metaSuffix = ` — ${tierInfo}${visionInfo}`
 
-		const meta = [tierInfo, vision].filter(Boolean).join("")
-		const metaSuffix = meta ? ` — ${meta}` : ""
-
-		const lines = [`- **${displayName}** (id: \`${ref}\`${providerInfo})${metaSuffix}`]
-		if (description) {
-			lines.push(`  ${description}`)
-		}
-		return lines.join("\n")
-	}
-
-	// Check custom config as fallback
-	const custom = customConfigs?.get(ref)
-	if (custom) {
-		const tierInfo = custom.tier ? `Tier: ${custom.tier}` : ""
-		const vision = custom.vision ? " | Vision: yes" : ""
-
-		const meta = [tierInfo, vision].filter(Boolean).join("")
-		const metaSuffix = meta ? ` — ${meta}` : ""
-
-		const lines = [`- **${displayName}** (id: \`${ref}\`${providerInfo})${metaSuffix}`]
-		if (custom.description) {
-			lines.push(`  ${custom.description}`)
-		}
-		return lines.join("\n")
-	}
-
-	// Generic fallback
-	const lines = [`- **${displayName}** (id: \`${ref}\`${providerInfo})`]
+	const lines = [`- **${displayName}** (id: \`${ref}\`${providerInfo})${metaSuffix}`]
+	lines.push(`  ${meta.description}`)
 	return lines.join("\n")
 }
 
@@ -324,20 +348,21 @@ function formatRoleSection(
 	assignment: RoleModelAssignment,
 	registry?: ModelRegistry,
 	customConfigs?: ReadonlyMap<string, CustomModelConfig>,
+	roles?: ModelRoles,
 ): string {
 	const models = normalizeRoleModels(assignment)
-	const entries = models.map((ref) => formatModelEntry(ref, registry, customConfigs))
+	const entries = models.map((ref) => formatModelEntry(ref, registry, customConfigs, roles))
 	return `### ${roleName}\n${entries.join("\n\n")}`
 }
 
 function deriveRolesFromTier(tier: ModelTier | undefined): string {
 	switch (tier) {
 		case "heavy":
-			return "plan, research, build, review"
+			return "plan, build, review"
 		case "standard":
 			return "build, review"
 		case "light":
-			return "explore, research"
+			return "explore"
 		default:
 			return "build"
 	}
@@ -347,28 +372,21 @@ function formatCurrentModelCapabilities(
 	currentModelId: string,
 	registry?: ModelRegistry,
 	customConfigs?: ReadonlyMap<string, CustomModelConfig>,
+	roles?: ModelRoles,
 ): string {
+	const meta = resolveModelMeta(currentModelId, registry, customConfigs, roles)
 	const descriptor = resolveDescriptor(currentModelId, registry)
-	if (descriptor) {
-		const roles = descriptor.capabilities.roles.join(", ")
-		const vision = descriptor.capabilities.vision ? "yes" : "no"
-		return `Tier: ${descriptor.capabilities.tier} | Roles: ${roles} | Vision: ${vision}\n${descriptor.capabilities.description}`
-	}
-
 	const custom = customConfigs?.get(currentModelId)
-	if (custom) {
-		const derivedRoles = deriveRolesFromTier(custom.tier)
-		const vision = custom.vision ? "yes" : "no"
-		const tier = custom.tier ?? "unknown"
-		const description = custom.description ?? ""
-		const lines = [`Tier: ${tier} | Roles: ${derivedRoles} | Vision: ${vision}`]
-		if (description) {
-			lines.push(description)
-		}
-		return lines.join("\n")
-	}
 
-	return "No capability information available for this model."
+	const roleNames = resolveModelRoleNames(currentModelId, roles)
+	const capRoles =
+		custom || !descriptor
+			? roleNames.length > 0
+				? roleNames.join(", ")
+				: deriveRolesFromTier(meta.tier)
+			: descriptor.capabilities.roles.join(", ")
+
+	return `Tier: ${meta.tier} | Roles: ${capRoles} | Vision: ${meta.vision ? "yes" : "no"}\n${meta.description}`
 }
 
 function buildRoleAssignmentsSection(
@@ -382,15 +400,15 @@ function buildRoleAssignmentsSection(
 	const plannerModels = normalizeRoleModels(roles.planner)
 	const orchestratorIsPlanner = plannerModels.length === 1 && plannerModels[0] === roles.orchestrator
 	if (!orchestratorIsPlanner) {
-		sections.push(formatRoleSection("Planner", roles.planner, registry, customConfigs))
+		sections.push(formatRoleSection("Planner", roles.planner, registry, customConfigs, roles))
 	}
 
-	sections.push(formatRoleSection("Builder", roles.builder, registry, customConfigs))
-	sections.push(formatRoleSection("Reviewer", roles.reviewer, registry, customConfigs))
-	sections.push(formatRoleSection("Explorer", roles.explorer, registry, customConfigs))
+	sections.push(formatRoleSection("Builder", roles.builder, registry, customConfigs, roles))
+	sections.push(formatRoleSection("Reviewer", roles.reviewer, registry, customConfigs, roles))
+	sections.push(formatRoleSection("Explorer", roles.explorer, registry, customConfigs, roles))
 
 	const capabilitiesSection = currentModelId
-		? formatCurrentModelCapabilities(currentModelId, registry, customConfigs)
+		? formatCurrentModelCapabilities(currentModelId, registry, customConfigs, roles)
 		: "No capability information available for this model."
 
 	return `## Your Team\n\n${sections.join("\n\n")}\n\n## Your Capabilities\n\n${capabilitiesSection}`

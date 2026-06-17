@@ -129,14 +129,14 @@ Models without a built-in capability entry (e.g., Anthropic or OpenAI models) ca
 }
 ```
 
-| Field | Required | Description |
-|-------|----------|-------------|
-| `model` | **Yes** | Full model reference (`provider/model-id`). |
-| `tier` | No | `light`, `standard`, or `heavy`. Used for complexity-based routing. |
-| `description` | No | Shown to the orchestrator in the **Your Team** section. |
-| `vision` | No | `true` if the model supports image input. Shown in **Your Capabilities**. |
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `model` | **Yes** | — | Full model reference (`provider/model-id`). |
+| `tier` | No | `standard` | `light`, `standard`, or `heavy`. Used for complexity-based routing. |
+| `description` | No | Auto-generated | Shown to the orchestrator in the **Your Team** and **Your Capabilities** sections. When omitted, a description is generated indicating the model was configured by the user and listing its assigned roles. |
+| `vision` | No | `false` | Whether the model supports image input. |
 
-If an external model is assigned without custom metadata, it still works — it simply appears in the prompt with no tier or description, and the orchestrator must infer its strengths from the model name alone.
+External models assigned without custom metadata still work — they default to `standard` tier with `vision: false`, and the orchestrator receives an auto-generated description noting the model was chosen by the user for its assigned roles.
 
 ### Phase tracking
 

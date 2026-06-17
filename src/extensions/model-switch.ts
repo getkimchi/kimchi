@@ -44,18 +44,18 @@ let isRevertingModel = false
 let sessionSkippedModels = new Set<string>()
 
 /** Models the user has permanently skipped the metadata wizard for. */
-let permanentlySkippedModels: Set<string> | undefined
+let sessionWideSkippedModels: Set<string> | undefined
 
-function getPermanentlySkippedModels(): Set<string> {
-	if (permanentlySkippedModels) return permanentlySkippedModels
+function getSessionWideSkippedModels(): Set<string> {
+	if (sessionWideSkippedModels) return sessionWideSkippedModels
 	// No persistent skip list yet — could be added to settings.json later
-	permanentlySkippedModels = new Set<string>()
-	return permanentlySkippedModels
+	sessionWideSkippedModels = new Set<string>()
+	return sessionWideSkippedModels
 }
 
 function shouldShowMetadataWizard(ref: string): boolean {
 	if (sessionSkippedModels.has(ref)) return false
-	if (getPermanentlySkippedModels().has(ref)) return false
+	if (getSessionWideSkippedModels().has(ref)) return false
 	return isModelMetadataMissing(ref)
 }
 
@@ -80,32 +80,39 @@ export function getModelTier(
 	return (caps as { tier: ModelTier }).tier
 }
 
-interface WizardUI {
-	ui: {
-		select(label: string, options: string[]): Promise<string | undefined>
-		input(label: string, defaultValue?: string): Promise<string | undefined>
-		notify(message: string, type: "info" | "warning" | "error"): void
-	}
+interface MetadataWizardUI {
+	select(label: string, options: string[]): Promise<string | undefined>
+	input(label: string, defaultValue?: string): Promise<string | undefined>
+	notify(message: string, type: "info" | "warning" | "error"): void
 }
 
-async function promptAndSaveMetadata(ref: string, ctx: WizardUI): Promise<void> {
-	const wizardChoice = await ctx.ui.select(
+function asWizardUI(ctx: { ui?: Partial<MetadataWizardUI> }): MetadataWizardUI | undefined {
+	const ui = ctx.ui
+	if (!ui) return undefined
+	if (typeof ui.select !== "function" || typeof ui.input !== "function" || typeof ui.notify !== "function") {
+		return undefined
+	}
+	return ui as MetadataWizardUI
+}
+
+async function promptAndSaveMetadata(ref: string, ui: MetadataWizardUI): Promise<void> {
+	const wizardChoice = await ui.select(
 		`${ref}\nThis model has no metadata (tier, description, vision).\nSpecifying metadata will improve orchestration.`,
-		["Configure now", "Skip this time", "Skip permanently"],
+		["Configure now", "Skip this time", "Skip for this session"],
 	)
 
 	if (wizardChoice === "Skip this time") {
 		sessionSkippedModels.add(ref)
 		return
 	}
-	if (wizardChoice === "Skip permanently") {
+	if (wizardChoice === "Skip for this session") {
 		sessionSkippedModels.add(ref)
-		getPermanentlySkippedModels().add(ref)
+		getSessionWideSkippedModels().add(ref)
 		return
 	}
 	if (wizardChoice !== "Configure now") return
 
-	const existing = resolveModelMetadata(ref) ?? undefined
+	const existing = resolveModelMetadata(ref)
 	const existingMeta: ModelCustomMetadata | undefined = existing
 		? { tier: existing.tier, description: existing.description, vision: existing.vision }
 		: undefined
@@ -116,7 +123,7 @@ async function promptAndSaveMetadata(ref: string, ctx: WizardUI): Promise<void> 
 	} else {
 		tierOptions.push("skip")
 	}
-	const tierChoice = await ctx.ui.select(
+	const tierChoice = await ui.select(
 		`${ref}\nSpecifying metadata will improve orchestration.\nTier - what capability level is this model?`,
 		tierOptions,
 	)
@@ -133,7 +140,7 @@ async function promptAndSaveMetadata(ref: string, ctx: WizardUI): Promise<void> 
 	} else {
 		visionOptions.push("skip")
 	}
-	const visionChoice = await ctx.ui.select(`${ref}\nVision support - can this model process images?`, visionOptions)
+	const visionChoice = await ui.select(`${ref}\nVision support - can this model process images?`, visionOptions)
 	if (!visionChoice) return
 	const vision = visionChoice.startsWith("keep current")
 		? existingMeta?.vision
@@ -142,7 +149,7 @@ async function promptAndSaveMetadata(ref: string, ctx: WizardUI): Promise<void> 
 			: visionChoice === "yes"
 
 	const descDefault = existingMeta?.description ?? ""
-	const descInput = await ctx.ui.input(`${ref}\nDescription - when should this model be used? (optional):`, descDefault)
+	const descInput = await ui.input(`${ref}\nDescription - when should this model be used? (optional):`, descDefault)
 	if (descInput === undefined) return
 	const description = descInput.trim() || existingMeta?.description || undefined
 
@@ -155,7 +162,7 @@ async function promptAndSaveMetadata(ref: string, ctx: WizardUI): Promise<void> 
 		const map = new Map<string, ModelCustomMetadata>()
 		map.set(ref, config)
 		saveModelMetadata(map)
-		ctx.ui.notify(`Metadata saved for ${ref}.`, "info")
+		ui.notify(`Metadata saved for ${ref}.`, "info")
 	}
 }
 
@@ -366,9 +373,12 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 
 		// Metadata wizard for models without tier/description/vision
 		if (event.source === "set" && event.model && ctx.hasUI) {
-			const selectedRef = `${event.model.provider}/${event.model.id}`
-			if (shouldShowMetadataWizard(selectedRef)) {
-				await promptAndSaveMetadata(selectedRef, ctx as unknown as WizardUI)
+			const wizardUI = asWizardUI(ctx)
+			if (wizardUI) {
+				const selectedRef = `${event.model.provider}/${event.model.id}`
+				if (shouldShowMetadataWizard(selectedRef)) {
+					await promptAndSaveMetadata(selectedRef, wizardUI)
+				}
 			}
 		}
 	})

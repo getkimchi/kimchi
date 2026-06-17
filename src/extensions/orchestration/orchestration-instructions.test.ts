@@ -322,7 +322,7 @@ describe("resolveOrchestrationInstructions with custom configs", () => {
 		expect(result).toContain("Anthropic's flagship external model.")
 	})
 
-	it("shows external orchestrator model with custom config in Your Capabilities", () => {
+	it("shows external orchestrator model with custom config in Your Capabilities using assigned roles", () => {
 		const customConfig: CustomModelConfig = {
 			model: "external-orchestrator",
 			tier: "heavy",
@@ -345,50 +345,98 @@ describe("resolveOrchestrationInstructions with custom configs", () => {
 			customConfigs,
 		})
 		expect(result).toContain("Tier: heavy")
-		expect(result).toContain("Roles: plan, research, build, review")
+		expect(result).toContain("Roles: orchestrator, planner")
 		expect(result).toContain("Vision: yes")
 		expect(result).toContain("External orchestrator model.")
 	})
 
-	it("external model without custom config falls back to generic text", () => {
+	it("external model without custom config defaults to standard tier and vision no", () => {
+		const roles = {
+			orchestrator: "kimchi-dev/kimi-k2.6",
+			planner: "kimchi-dev/kimi-k2.6",
+			builder: "unknown-model",
+			reviewer: "kimchi-dev/minimax-m2.7",
+			explorer: "kimchi-dev/nemotron-3-super-fp4",
+			judge: "kimchi-dev/kimi-k2.6",
+		}
 		const result = resolveOrchestrationInstructions({
 			currentModelId: "unknown-model",
 			registry,
 			mode: "orchestrator",
-			roles: {
-				orchestrator: "kimchi-dev/kimi-k2.6",
-				planner: "kimchi-dev/kimi-k2.6",
-				builder: "unknown-model",
-				reviewer: "kimchi-dev/minimax-m2.7",
-				explorer: "kimchi-dev/nemotron-3-super-fp4",
-				judge: "kimchi-dev/kimi-k2.6",
-			},
+			roles,
 		})
 		expect(result).toContain("unknown-model")
+		expect(result).toContain("Tier: standard")
+		expect(result).toContain("Vision: no")
+		expect(result).toContain("This model was configured by the user to handle builder work.")
 		expect(result).not.toContain("Tier: undefined")
-		expect(result).not.toContain("description: undefined")
 	})
 
-	it("custom config with only model field renders without undefined tier/description", () => {
+	it("custom config with only model field defaults tier to standard and vision to no", () => {
 		const customConfig: CustomModelConfig = { model: "bare-external/model" }
 		const customConfigs = new Map<string, CustomModelConfig>([["bare-external/model", customConfig]])
+		const roles = {
+			orchestrator: "kimchi-dev/kimi-k2.6",
+			planner: "kimchi-dev/kimi-k2.6",
+			builder: "bare-external/model",
+			reviewer: "kimchi-dev/minimax-m2.7",
+			explorer: "kimchi-dev/nemotron-3-super-fp4",
+			judge: "kimchi-dev/kimi-k2.6",
+		}
 		const result = resolveOrchestrationInstructions({
 			currentModelId: "kimi-k2.6",
 			registry,
 			mode: "orchestrator",
-			roles: {
-				orchestrator: "kimchi-dev/kimi-k2.6",
-				planner: "kimchi-dev/kimi-k2.6",
-				builder: "bare-external/model",
-				reviewer: "kimchi-dev/minimax-m2.7",
-				explorer: "kimchi-dev/nemotron-3-super-fp4",
-				judge: "kimchi-dev/kimi-k2.6",
-			},
+			roles,
 			customConfigs,
 		})
 		expect(result).toContain("bare-external/model")
+		expect(result).toContain("Tier: standard")
+		expect(result).toContain("Vision: no")
+		expect(result).toContain("This model was configured by the user to handle builder work.")
 		expect(result).not.toContain("Tier: undefined")
 		expect(result).not.toContain("Vision: undefined")
-		expect(result).not.toContain("  undefined")
+	})
+
+	it("external orchestrator without custom config shows roles from config", () => {
+		const roles = {
+			orchestrator: "external-orchestrator",
+			planner: "external-orchestrator",
+			builder: "kimchi-dev/minimax-m2.7",
+			reviewer: "kimchi-dev/minimax-m2.7",
+			explorer: "kimchi-dev/nemotron-3-super-fp4",
+			judge: "external-orchestrator",
+		}
+		const result = resolveOrchestrationInstructions({
+			currentModelId: "external-orchestrator",
+			registry,
+			mode: "orchestrator",
+			roles,
+		})
+		expect(result).toContain("Tier: standard")
+		expect(result).toContain("Roles: orchestrator, planner")
+		expect(result).toContain("Vision: no")
+		expect(result).toContain("This model was configured by the user to handle orchestrator, planner work.")
+	})
+
+	it("model assigned to multiple roles lists all roles in default description", () => {
+		const customConfig: CustomModelConfig = { model: "multi-role/model" }
+		const customConfigs = new Map<string, CustomModelConfig>([["multi-role/model", customConfig]])
+		const roles = {
+			orchestrator: "kimchi-dev/kimi-k2.6",
+			planner: "kimchi-dev/kimi-k2.6",
+			builder: "multi-role/model",
+			reviewer: "multi-role/model",
+			explorer: "kimchi-dev/nemotron-3-super-fp4",
+			judge: "kimchi-dev/kimi-k2.6",
+		}
+		const result = resolveOrchestrationInstructions({
+			currentModelId: "kimi-k2.6",
+			registry,
+			mode: "orchestrator",
+			roles,
+			customConfigs,
+		})
+		expect(result).toContain("This model was configured by the user to handle builder, reviewer work.")
 	})
 })

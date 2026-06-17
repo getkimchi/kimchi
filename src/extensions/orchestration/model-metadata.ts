@@ -12,6 +12,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 
+import { modelIdFromRef } from "./model-ref-utils.js"
 import { MODEL_CAPABILITIES } from "./model-registry/builtin-models.js"
 import type { ModelTier } from "./model-registry/types.js"
 
@@ -22,15 +23,6 @@ export interface ModelCustomMetadata {
 }
 
 const HARNESS_SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "settings.json")
-
-/**
- * Strip provider prefix from a "provider/model-id" ref to get the model ID.
- * Returns the full string if no slash is present.
- */
-function modelIdFromRef(ref: string): string {
-	const slashIdx = ref.indexOf("/")
-	return slashIdx >= 0 ? ref.slice(slashIdx + 1) : ref
-}
 
 /**
  * Load metadata from settings.json "modelMetadata" key.

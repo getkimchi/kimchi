@@ -12,6 +12,7 @@ import {
 	formatRoleSummaryBlock,
 	isEqualAssignment,
 } from "./model-roles-command.js"
+import type { RoleModelAssignment } from "./model-roles.js"
 import { splitModelRef } from "./model-roles.js"
 
 // Mock model-metadata module
@@ -87,7 +88,6 @@ describe("isEqualAssignment", () => {
 		},
 	}
 
-	type RoleModelAssignment = string | string[]
 	for (const [name, { a, b, expected }] of Object.entries(cases)) {
 		it(name, () => {
 			expect(isEqualAssignment(a, b)).toBe(expected)
