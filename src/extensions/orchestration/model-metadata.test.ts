@@ -430,8 +430,8 @@ describe("resolveModelMetadata", () => {
 		expect(result).toEqual(expect.objectContaining({ source: "builtin", tier: "standard", vision: false }))
 	})
 
-	it("returns builtin for nemotron-3-super-fp4", () => {
-		const result = resolveModelMetadata("kimchi-dev/nemotron-3-super-fp4", testPath)
+	it("returns builtin for nemotron-3-ultra-fp4", () => {
+		const result = resolveModelMetadata("kimchi-dev/nemotron-3-ultra-fp4", testPath)
 		expect(result).toEqual(expect.objectContaining({ source: "builtin", tier: "light" }))
 	})
 })
