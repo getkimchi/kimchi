@@ -111,7 +111,7 @@ The orchestrator will use minimax for simple chunks and Claude for complex ones 
 
 #### Custom metadata for external models
 
-Models without a built-in capability entry (e.g., Anthropic or OpenAI models) can be annotated with custom metadata so the orchestrator sees their tier, roles, and description when making routing decisions. Provide an object instead of a plain string:
+Models without a built-in capability entry (e.g., Anthropic or OpenAI models) can be annotated with custom metadata so the orchestrator sees their tier, description, and vision support when making routing decisions. Provide an object instead of a plain string:
 
 ```json
 {
