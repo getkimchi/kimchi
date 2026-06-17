@@ -226,8 +226,6 @@ export default function uiExtension(pi: ExtensionAPI) {
 	let turnStartMs = 0
 	let linesAdded = 0
 	let linesRemoved = 0
-	let thinkingStatus: "thinking" | number | null = null
-	let thinkingStartMs = 0
 	let workedForTimer: ReturnType<typeof setTimeout> | undefined
 	let piToolsExpanded = false
 
@@ -252,6 +250,8 @@ export default function uiExtension(pi: ExtensionAPI) {
 		stopWorkingAnimation?.()
 		stopWorkingAnimation = undefined
 		toolsInFlight = 0
+		thinkingInFlight = 0
+		userInputPending = 0
 		resetState()
 		currentCtx = ctx
 		sessionStartMs = Date.now()
@@ -470,12 +470,24 @@ export default function uiExtension(pi: ExtensionAPI) {
 
 	let stopWorkingAnimation: (() => void) | undefined
 	let toolsInFlight = 0
+	/** Number of reasoning blocks currently streaming inside the active assistant message.
+	 *  Tracked like toolsInFlight so the cooking animation stays visible while the
+	 *  model thinks. Incremented on `message_update(thinking_start)`, decremented on
+	 *  `message_update(thinking_end)`. message_start's kill condition checks both
+	 *  counters together; thinking_start brings the spinner back if it was torn down.
+	 */
+	let thinkingInFlight = 0
 	/** Tracks whether a tool-executed block is awaiting user input at the TUI.
 	 *  Incremented when toolsInFlight hits 0 and the UI may be blocking (e.g. questionnaire).
 	 *  Decremented when the user actually types a response (input event).
 	 *  message_start checks this to avoid restarting the spinner while the user is being prompted.
 	 */
 	let userInputPending = 0
+	/** Used by the cooking-animator callback to render the "(thinking…)" /
+	 *  "(thought for Ns)" suffix. Updated on `message_update(thinking_start/_end)`.
+	 */
+	let thinkingStatus: "thinking" | number | null = null
+	let thinkingStartMs = 0
 
 	const startIndicator = (ctx: ExtensionContext) => {
 		ctx.ui.setWorkingVisible(true)
@@ -494,11 +506,18 @@ export default function uiExtension(pi: ExtensionAPI) {
 		})
 	}
 
+	const stopIndicator = (ctx: ExtensionContext) => {
+		stopWorkingAnimation?.()
+		stopWorkingAnimation = undefined
+		ctx.ui.setWorkingVisible(false)
+	}
+
 	pi.on("turn_start", (_, ctx) => {
 		clearTimeout(workedForTimer)
 		workedForTimer = undefined
 		currentCtx = ctx
 		toolsInFlight = 0
+		thinkingInFlight = 0
 		userInputPending = 0
 		turnStartMs = Date.now()
 		thinkingStatus = null
@@ -506,28 +525,36 @@ export default function uiExtension(pi: ExtensionAPI) {
 		refresh("generating")
 		startIndicator(ctx)
 	})
-	pi.on("message_update", (event) => {
+	pi.on("message_update", (event, ctx) => {
 		const evt = event.assistantMessageEvent as { type: string }
 		if (evt.type === "thinking_start") {
 			thinkingStartMs = Date.now()
 			thinkingStatus = "thinking"
+			thinkingInFlight++
+			// If the spinner was torn down at message_start but the model is now
+			// reasoning, bring it back so the user sees the cooking animation
+			// throughout the (potentially long) reasoning window. The upstream TUI
+			// coalesces consecutive requestRender() calls, so the brief off-then-on
+			// at message_start → thinking_start isn't user-visible.
+			if (ctx && userInputPending === 0) {
+				startIndicator(ctx)
+			}
 		} else if (evt.type === "thinking_end") {
 			if (thinkingStatus === "thinking") {
 				const duration = Date.now() - thinkingStartMs
 				thinkingStatus = duration > 100 ? duration : null
 			}
+			thinkingInFlight = Math.max(0, thinkingInFlight - 1)
 		}
 	})
 	pi.on("message_start", (event, ctx) => {
 		if (event.message.role !== "assistant") return
-		// Only stop the tool animation when assistant text arrives if no tools are
-		// still running AND we are not awaiting user input at the TUI. Parallel tool
-		// calls (Kimi K2.5+, deepseek) may have their results arrive while the
-		// assistant message is still streaming; keeping the indicator alive until all
-		// tools finish avoids a premature flash-and-clear. userInputPending is set
-		// by tool_execution_end when the last in-flight tool finishes and the UI may
-		// be blocking on a prompt (e.g. questionnaire, ask_user).
-		if (toolsInFlight === 0) {
+		// Stop the spinner only when nothing is keeping it alive: no tools and no
+		// reasoning blocks in flight, and no user-input prompt pending. When the
+		// model starts reasoning (the common case for thinking-enabled models),
+		// the message_update(thinking_start) handler re-arms the spinner so the
+		// cooking animation runs throughout reasoning.
+		if (toolsInFlight + thinkingInFlight === 0) {
 			if (userInputPending > 0) {
 				// Still waiting for user input — suppress spinner restart; decrement so
 				// it re-arms for the next message_start if no user input arrives (e.g.
@@ -535,10 +562,14 @@ export default function uiExtension(pi: ExtensionAPI) {
 				userInputPending--
 				return
 			}
-			stopWorkingAnimation?.()
-			stopWorkingAnimation = undefined
-			ctx.ui.setWorkingVisible(false)
+			stopIndicator(ctx)
 		}
+	})
+	pi.on("message_end", (event, ctx) => {
+		if (event.message.role !== "assistant") return
+		// Assistant finished its message. Stop the spinner so the response can
+		// render cleanly. turn_end will follow up with the "Worked for Xs" display.
+		stopIndicator(ctx)
 	})
 	pi.on("tool_execution_start", (_, ctx) => {
 		toolsInFlight++
@@ -551,9 +582,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 			// (e.g. a questionnaire prompt). Mark it so message_start does not restart
 			// the spinner on the assistant text that follows before the user responds.
 			userInputPending++
-			stopWorkingAnimation?.()
-			stopWorkingAnimation = undefined
-			ctx.ui.setWorkingVisible(false)
+			stopIndicator(ctx)
 		}
 	})
 	pi.on("turn_end", (_, ctx) => {
@@ -574,9 +603,11 @@ export default function uiExtension(pi: ExtensionAPI) {
 		clearTimeout(workedForTimer)
 		workedForTimer = undefined
 		toolsInFlight = 0
-		stopWorkingAnimation?.()
-		stopWorkingAnimation = undefined
-		ctx.ui.setWorkingVisible(false)
+		thinkingInFlight = 0
+		userInputPending = 0
+		thinkingStatus = null
+		thinkingStartMs = 0
+		stopIndicator(ctx)
 	})
 	pi.on("model_select", (_, ctx) => {
 		currentCtx = ctx
