@@ -78,3 +78,99 @@ describe("availableFormats — Wayland", () => {
 		expect(mockSpawn).toHaveBeenCalledWith("wl-paste", ["--list-types"], expect.objectContaining({ encoding: "utf8" }))
 	})
 })
+
+describe("hasImage", () => {
+	beforeEach(() => {
+		vi.stubEnv("WAYLAND_DISPLAY", "")
+		vi.stubEnv("DISPLAY", ":0")
+	})
+
+	it("returns true when image/png is in formats", async () => {
+		mockSpawnResult("image/png\ntext/plain\n")
+		const cb = await freshShim()
+		expect(cb.hasImage()).toBe(true)
+	})
+
+	it("returns true when image/jpeg is in formats", async () => {
+		mockSpawnResult("image/jpeg\ntext/plain\n")
+		const cb = await freshShim()
+		expect(cb.hasImage()).toBe(true)
+	})
+
+	it("returns false when no image format present", async () => {
+		mockSpawnResult("text/plain\napplication/json\n")
+		const cb = await freshShim()
+		expect(cb.hasImage()).toBe(false)
+	})
+
+	it("returns false when xclip fails", async () => {
+		// biome-ignore lint/suspicious/noExplicitAny: test mock
+		mockSpawn.mockReturnValue({ stdout: "", stderr: "", status: 1, pid: 1, signal: null, output: [] } as any)
+		const cb = await freshShim()
+		expect(cb.hasImage()).toBe(false)
+	})
+})
+
+describe("getImageBinary", () => {
+	beforeEach(() => {
+		vi.stubEnv("WAYLAND_DISPLAY", "")
+		vi.stubEnv("DISPLAY", ":0")
+	})
+
+	it("returns image bytes from xclip", async () => {
+		// First call: TARGETS (availableFormats), second call: image bytes
+		mockSpawn
+			// biome-ignore lint/suspicious/noExplicitAny: test mock
+			.mockReturnValueOnce({ stdout: "image/png\n", stderr: "", status: 0, pid: 1, signal: null, output: [] } as any)
+			.mockReturnValueOnce({
+				stdout: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+				stderr: "",
+				status: 0,
+				pid: 1,
+				signal: null,
+				output: [],
+				// biome-ignore lint/suspicious/noExplicitAny: test mock
+			} as any)
+		const cb = await freshShim()
+		const bytes = await cb.getImageBinary()
+		expect(bytes).toEqual([0x89, 0x50, 0x4e, 0x47])
+	})
+
+	it("returns empty array when xclip fails", async () => {
+		mockSpawn.mockReturnValue({
+			stdout: Buffer.alloc(0),
+			stderr: "",
+			status: 1,
+			pid: 1,
+			signal: null,
+			output: [],
+			// biome-ignore lint/suspicious/noExplicitAny: test mock
+		} as any)
+		const cb = await freshShim()
+		const bytes = await cb.getImageBinary()
+		expect(bytes).toEqual([])
+	})
+
+	it("picks correct MIME type from available formats", async () => {
+		mockSpawn
+			// biome-ignore lint/suspicious/noExplicitAny: test mock
+			.mockReturnValueOnce({ stdout: "image/jpeg\n", stderr: "", status: 0, pid: 1, signal: null, output: [] } as any)
+			.mockReturnValueOnce({
+				stdout: Buffer.from([0xff, 0xd8]),
+				stderr: "",
+				status: 0,
+				pid: 1,
+				signal: null,
+				output: [],
+				// biome-ignore lint/suspicious/noExplicitAny: test mock
+			} as any)
+		const cb = await freshShim()
+		await cb.getImageBinary()
+		expect(mockSpawn).toHaveBeenNthCalledWith(
+			2,
+			"xclip",
+			["-selection", "clipboard", "-t", "image/jpeg", "-o"],
+			expect.anything(),
+		)
+	})
+})
