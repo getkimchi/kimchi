@@ -6,6 +6,8 @@ body:
     attributes:
       value: |
         Before filing, please check existing issues to avoid duplicates.
+
+        **Tip:** Before submitting, check that your report doesn't include any sensitive information (API keys, credentials, proprietary code).
   - type: input
     id: version
     attributes:
@@ -43,6 +45,39 @@ body:
       label: Expected behavior
     validations:
       required: true
+  - type: textarea
+    id: reproduction-command
+    attributes:
+      label: Reproduction command
+      description: |
+        A one-liner that reproduces the issue. Pin the model with `--provider` and `--model` for consistency.
+      placeholder: |
+        kimchi -p "your prompt here" --provider kimchi-dev --model kimi-k2.5
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: session-file
+    attributes:
+      label: Session file
+      description: |
+        If the bug occurred during an interactive session, paste the session file path. You can also export it to HTML for easier sharing: `kimchi --export <path-to-session.jsonl>`
+      placeholder: ~/.config/kimchi/harness/sessions/--path--/session.jsonl
+    validations:
+      required: false
+  - type: textarea
+    id: json-event-stream
+    attributes:
+      label: JSON event stream
+      description: |
+        Optional. Re-run your reproduction command with `--mode json --no-session` to capture a machine-readable event trace:
+        ```
+        kimchi --mode json -p "your prompt" --no-session --provider kimchi-dev --model kimi-k2.5 > events.jsonl
+        ```
+        Paste the contents or attach the file.
+      render: json
+    validations:
+      required: false
   - type: textarea
     id: logs
     attributes:
