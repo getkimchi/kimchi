@@ -21,7 +21,7 @@ describe("skills-only agents", () => {
 		mkdirSync(join(skillsDir, "alpha"), { recursive: true })
 		mkdirSync(join(skillsDir, "beta"), { recursive: true })
 
-		const def = makeSkillsOnlyAgent("cursor", "Cursor", ".cursor", { skillsDirs: [skillsDir] })
+		const def = makeSkillsOnlyAgent("warp", "Warp", ".warp", { skillsDirs: [skillsDir] })
 		const discovery = discoverAgent(def)
 
 		expect(discovery.skillsDir).toBe(skillsDir)
@@ -54,9 +54,9 @@ describe("skills-only agents", () => {
 	})
 
 	it("defaults to the project-local skills dir first, then the global fallback", () => {
-		const def = makeSkillsOnlyAgent("cursor", "Cursor", ".cursor")
-		expect(def.skillsDirs[0]).toBe(join(process.cwd(), ".cursor", "skills"))
-		expect(def.skillsDirs[1]).toBe(join(homedir(), ".cursor", "skills"))
+		const def = makeSkillsOnlyAgent("codex", "Codex", ".codex")
+		expect(def.skillsDirs[0]).toBe(join(process.cwd(), ".codex", "skills"))
+		expect(def.skillsDirs[1]).toBe(join(homedir(), ".codex", "skills"))
 	})
 
 	it("registers the converged skills directories in AGENT_DEFINITIONS", () => {
@@ -66,7 +66,6 @@ describe("skills-only agents", () => {
 		}
 		expect(SKILLS_ONLY_AGENTS.map((a) => a.id)).toEqual([
 			"codex",
-			"cursor",
 			"warp",
 			"factory",
 			"gemini",

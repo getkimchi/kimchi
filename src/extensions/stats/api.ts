@@ -4,6 +4,7 @@
  * Fetches analytics, productivity metrics, and timeseries data from Cast AI.
  */
 
+import { fetchWithRetry } from "../../utils/http.js"
 import type {
 	GenerateAnalyticsResponse,
 	GenerateProductivityMetricsTimeseriesResponse,
@@ -36,10 +37,7 @@ export class CastAiStatsApi {
 		headers.set("Content-Type", "application/json")
 		headers.set("Accept", "application/json")
 
-		const response = await fetch(url, {
-			...options,
-			headers,
-		})
+		const response = await fetchWithRetry(url, { ...options, headers }, { timeoutMs: 10_000, retry: { maxRetries: 3 } })
 
 		if (!response.ok) {
 			const errorText = await response.text().catch(() => "Unknown error")

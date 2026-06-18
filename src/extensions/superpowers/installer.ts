@@ -2,6 +2,8 @@ import { createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, writeFi
 import { unlink } from "node:fs/promises"
 import { join } from "node:path"
 import { extract } from "tar"
+import { THIRD_PARTY_MAX_RETRIES } from "../../config.js"
+import { fetchWithRetry } from "../../utils/http.js"
 import { SUPERPOWERS_VERSION, getSuperpowersTarballUrl, getSuperpowersVendorDir } from "./config.js"
 
 export async function ensureSuperpowersInstalled(): Promise<boolean> {
@@ -21,7 +23,10 @@ export async function ensureSuperpowersInstalled(): Promise<boolean> {
 	const tarballPath = `${vendorDir}.download.tar.gz`
 	mkdirSync(vendorDir, { recursive: true })
 
-	const response = await fetch(getSuperpowersTarballUrl())
+	const response = await fetchWithRetry(getSuperpowersTarballUrl(), undefined, {
+		timeoutMs: 60_000,
+		retry: { maxRetries: THIRD_PARTY_MAX_RETRIES },
+	})
 	if (!response.ok) {
 		throw new Error(`Failed to download superpowers: ${response.status} ${response.statusText}`)
 	}

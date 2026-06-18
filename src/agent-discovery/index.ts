@@ -1,5 +1,6 @@
 import type { ServerEntry } from "../extensions/mcp-adapter/types.js"
 import { claudeCode } from "./agents/claude-code.js"
+import { cursor } from "./agents/cursor.js"
 import { openCode } from "./agents/opencode.js"
 import { SKILLS_ONLY_AGENTS } from "./agents/skills-only.js"
 import { discoverAgent } from "./engine.js"
@@ -71,4 +72,4 @@ export interface AgentDiscovery {
 
 export { discoverAgent }
 
-export const AGENT_DEFINITIONS: readonly AgentDefinition[] = [claudeCode, openCode, ...SKILLS_ONLY_AGENTS]
+export const AGENT_DEFINITIONS: readonly AgentDefinition[] = [claudeCode, openCode, cursor, ...SKILLS_ONLY_AGENTS]

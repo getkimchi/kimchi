@@ -36,7 +36,7 @@ const toolCallMessage = makeAssistant([
 		type: "toolCall",
 		id: "call_1",
 		name: "Agent",
-		arguments: { model: "kimchi-dev/nemotron-3-super-fp4", subagent_type: "General-Purpose", prompt: "build it" },
+		arguments: { model: "kimchi-dev/nemotron-3-ultra-fp4", subagent_type: "General-Purpose", prompt: "build it" },
 	},
 ])
 
@@ -46,7 +46,7 @@ const textAndToolCallMessage = makeAssistant([
 		type: "toolCall",
 		id: "call_2",
 		name: "Agent",
-		arguments: { model: "kimchi-dev/nemotron-3-super-fp4", subagent_type: "General-Purpose", prompt: "build it" },
+		arguments: { model: "kimchi-dev/nemotron-3-ultra-fp4", subagent_type: "General-Purpose", prompt: "build it" },
 	},
 ])
 

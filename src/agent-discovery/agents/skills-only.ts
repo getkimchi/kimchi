@@ -34,7 +34,6 @@ export function makeSkillsOnlyAgent(
 /** Converged skills directories beyond the agents that have full migrators. */
 const SKILLS_ONLY_DIRS: ReadonlyArray<{ id: string; displayName: string; dir: string }> = [
 	{ id: "codex", displayName: "Codex", dir: ".codex" },
-	{ id: "cursor", displayName: "Cursor", dir: ".cursor" },
 	{ id: "warp", displayName: "Warp", dir: ".warp" },
 	{ id: "factory", displayName: "Factory (Droid)", dir: ".factory" },
 	{ id: "gemini", displayName: "Gemini", dir: ".gemini" },

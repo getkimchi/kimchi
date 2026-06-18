@@ -19,6 +19,15 @@ You are editing the kimchi-code CLI harness. This repo extends the pi-mono SDK (
 - **Pre-commit**: `.husky/pre-commit` runs `pnpm run lint` — CI runs full `check` (lint + typecheck)
 - **README changes**: Run `./scripts/copy-resources.js --dev` after editing to propagate to dist/
 
+## Testing Expectations
+- **Always add or update tests with behavior changes.** Bug fixes should include a regression test that fails before the fix; new features should cover the user-visible behavior they introduce. If a test is not practical, say why in the PR/commit notes.
+- **Keep unit/integration tests close to the code** as `*.test.ts` beside the source file. Prefer focused tests that exercise the contract of the module or extension being changed.
+- **Use TUI E2E tests for user workflows.** Put terminal-level scenarios under `tests/e2e/tui/*.test.ts` and run them with `pnpm run test:e2e:tui`.
+- **Treat TUI E2E tests as human-designed behavioural specs.** They should describe important UX flows a user would recognize, not broad agent-generated coverage. Keep one clear workflow per test, name it by the behavior, and assert on user-visible terminal text/state.
+- **Structure TUI tests through the shared fixture.** Use `runKimchiSession`, deterministic fake OpenAI responses, isolated temp `HOME`/workdir, and trace steps for meaningful checkpoints. Avoid brittle ANSI/snapshot assertions unless the rendering itself is the behavior under test.
+- **Known product bugs can use `test.fail`.** Add a short comment naming the bug/repro. When the underlying issue is fixed, the unexpected pass is the signal to remove `test.fail`.
+- **Quarantine only for unstable tests.** Use `tests/e2e/tui/skip-list.js` with a specific reason and remove the entry as soon as the instability is fixed.
+
 ## Documents Directory
 - `.kimchi/docs/` → Transient AI working files — git-ignored, do NOT commit
 - `/docs/` → Permanent project documentation — commit here

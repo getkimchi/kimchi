@@ -28,6 +28,30 @@ Kimchi is licensed under the **Apache License 2.0**. By contributing, you agree 
 3. Ensure tests pass and code follows the existing style.
 4. Open a pull request and complete the CLA check.
 
+## Contribution workflow
+
+1. **Open an issue first.** For anything beyond a typo fix, open an issue and get maintainer acknowledgement before starting work. This avoids duplicated effort and ensures the change aligns with the project direction.
+2. **Fork and branch.** Fork the repo and create a feature branch (`feat/your-feature` or `fix/your-fix`).
+3. **Keep PRs focused.** One issue per PR. Large PRs are hard to review and slow to merge.
+4. **Pass CI.** Run `pnpm run check` and `pnpm run test` locally before opening a PR. PRs that fail CI will not be reviewed.
+5. **Fill in the PR template.** Every field in the template exists for a reason. PRs with blank or placeholder descriptions will be closed.
+
+## What we will and won't accept
+
+**Likely to be accepted:**
+- Bug fixes with a clear reproduction case
+- Performance improvements with benchmark data
+- Features that were discussed and approved in an issue first
+
+**Unlikely to be accepted without prior discussion:**
+- Large refactors or architectural changes
+- New dependencies
+- Features that duplicate existing functionality
+
+## Review SLA
+
+We aim to triage new issues within **3 business days** and provide a first review on PRs within **5 business days**. If you haven't heard back, a polite ping on the issue is welcome.
+
 ## Code of Conduct
 
 Be respectful, constructive, and assume good intent. We enforce the [Contributor Covenant Code of Conduct](https://www.contributor-covenant.org/version/2/1/code_of_conduct/).

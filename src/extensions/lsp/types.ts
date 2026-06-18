@@ -126,6 +126,13 @@ export interface BunProcess {
 	exitCode: number | null
 }
 
+export interface DiagnosticWaiter {
+	/** diagnosticsVersion snapshot taken at wait time. Resolved when the next
+	 *  publishDiagnostics for this URI arrives (version > snapshot). */
+	snapshot: number
+	resolve: () => void
+}
+
 export interface LspClient {
 	name: string
 	cwd: string
@@ -133,6 +140,13 @@ export interface LspClient {
 	requestId: number
 	diagnostics: Map<string, { diagnostics: Diagnostic[]; version: number | null }>
 	diagnosticsVersion: number
+	/** Per-URI baseline captured at refreshFile time. Cleared by refreshFile
+	 *  before the next publishDiagnostics arrives. waitForDiagnostics uses the
+	 *  baseline as the version threshold so a publishDiagnostics that races
+	 *  between refreshFile and waitForDiagnostics still resolves the waiter. */
+	pendingDiagBaseline: Map<string, number>
+	/** Per-URI waiters for the next publishDiagnostics notification. */
+	diagnosticWaiters: Map<string, Set<DiagnosticWaiter>>
 	openFiles: Map<string, OpenFileInfo>
 	pendingRequests: Map<number, PendingRequest>
 	messageBuffer: Buffer

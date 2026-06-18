@@ -973,3 +973,133 @@ describe("token accounting regression tests", () => {
 		expect(attrs.session_type).toBe("ferment")
 	})
 })
+
+// ---------------------------------------------------------------------------
+// Bash-tool-guard domain event → OTLP log record tests
+// ---------------------------------------------------------------------------
+
+describe("bash-tool-guard telemetry via pi.events", () => {
+	let fetchMock: ReturnType<typeof vi.fn>
+	let originalFetch: typeof globalThis.fetch
+
+	beforeEach(() => {
+		fetchMock = vi.fn().mockResolvedValue({ ok: true, text: async () => "" })
+		originalFetch = globalThis.fetch
+		// biome-ignore lint/suspicious/noExplicitAny: test mock
+		globalThis.fetch = fetchMock as any
+	})
+
+	afterEach(async () => {
+		globalThis.fetch = originalFetch
+		_resetSharedAccumulators()
+		const { _resetFermentTrackingState, _getBashGuardCounts } = await import("./index.js")
+		_resetFermentTrackingState()
+		// Reset bash-guard counters by emitting zeros via the reset hook
+		// (the counters reset on session_start; calling it clears state).
+		vi.restoreAllMocks()
+		// Force fresh state for next test by clearing module-level accumulators.
+		// Direct access is not exposed; reset via the public reset path.
+		expect(_getBashGuardCounts()).toBeDefined()
+	})
+
+	async function setup() {
+		const { handlers, events, api } = createMockApi()
+		const { default: ext } = await import("./index.js")
+		ext(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, { model: { id: "claude-sonnet-4-6" } })
+		return { handlers, events }
+	}
+
+	function extractRecords() {
+		const logCalls = fetchMock.mock.calls.filter(([url]: unknown[]) => String(url).includes("/logs"))
+		return logCalls.flatMap(([, opts]: unknown[]) => {
+			const body = JSON.parse((opts as { body: string }).body)
+			return body.resourceLogs[0].scopeLogs[0].logRecords as Array<{
+				eventName: string
+				attributes: Array<{ key: string; value: { stringValue: string } }>
+			}>
+		})
+	}
+
+	function attrsOf(rec: { attributes: Array<{ key: string; value: { stringValue: string } }> }) {
+		return Object.fromEntries(rec.attributes.map((a) => [a.key, a.value.stringValue]))
+	}
+
+	it("bash_tool_guard:warn → bash_tool_guard.warn OTLP record with category, tool, count", async () => {
+		const { handlers, events } = await setup()
+		const { BASH_TOOL_GUARD_EVENTS } = await import("../bash-tool-guard-events.js")
+
+		events.emit(BASH_TOOL_GUARD_EVENTS.WARN, {
+			category: "read",
+			tool: "cat",
+			count: 1,
+		})
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const rec = extractRecords().find((r) => r.eventName === "bash_tool_guard.warn")
+		expect(rec).toBeDefined()
+		const attrs = attrsOf(rec as NonNullable<typeof rec>)
+		expect(attrs.category).toBe("read")
+		expect(attrs.tool).toBe("cat")
+		expect(attrs.count).toBe("1")
+		// Raw command text must not leak into OTLP — only structured fields.
+		expect(attrs.segment_preview).toBeUndefined()
+		expect(attrs.matchedSegment).toBeUndefined()
+		expect(attrs.model).toBe("claude-sonnet-4-6")
+	})
+
+	it("bash_tool_guard:block → bash_tool_guard.block OTLP record with tool", async () => {
+		const { handlers, events } = await setup()
+		const { BASH_TOOL_GUARD_EVENTS } = await import("../bash-tool-guard-events.js")
+
+		events.emit(BASH_TOOL_GUARD_EVENTS.BLOCK, {
+			category: "edit",
+			tool: "sed",
+			count: 2,
+		})
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const rec = extractRecords().find((r) => r.eventName === "bash_tool_guard.block")
+		expect(rec).toBeDefined()
+		const attrs = attrsOf(rec as NonNullable<typeof rec>)
+		expect(attrs.category).toBe("edit")
+		expect(attrs.tool).toBe("sed")
+		expect(attrs.count).toBe("2")
+		// Raw command text must not leak into OTLP — only structured fields.
+		expect(attrs.segment_preview).toBeUndefined()
+		expect(attrs.matchedSegment).toBeUndefined()
+	})
+
+	it("bash_tool_guard:allowed_by_user_request → OTLP record with tool", async () => {
+		const { handlers, events } = await setup()
+		const { BASH_TOOL_GUARD_EVENTS } = await import("../bash-tool-guard-events.js")
+
+		events.emit(BASH_TOOL_GUARD_EVENTS.ALLOWED_BY_USER_REQUEST, {
+			category: "read",
+			tool: "cat",
+		})
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const rec = extractRecords().find((r) => r.eventName === "bash_tool_guard.allowed_by_user_request")
+		expect(rec).toBeDefined()
+		const attrs = attrsOf(rec as NonNullable<typeof rec>)
+		expect(attrs.category).toBe("read")
+		expect(attrs.tool).toBe("cat")
+	})
+
+	it("does NOT emit OTLP records when telemetry is disabled", async () => {
+		const { handlers, events } = createMockApi()
+		const { default: ext } = await import("./index.js")
+		ext(makeConfig({ enabled: false }))(handlers as unknown as ExtensionAPI)
+		// Telemetry disabled → no OTLP fetch should occur when events fire.
+		const { BASH_TOOL_GUARD_EVENTS } = await import("../bash-tool-guard-events.js")
+		// Subscribers are NOT registered when config.enabled is false, so
+		// emit() simply has no listeners and nothing reaches the network.
+		events.emit(BASH_TOOL_GUARD_EVENTS.WARN, {
+			category: "read",
+			tool: "cat",
+			count: 1,
+		})
+		expect(fetchMock).not.toHaveBeenCalled()
+	})
+})

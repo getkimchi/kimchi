@@ -33,11 +33,12 @@ describe("ferment tool scope", () => {
 		expect(pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash", "start_ferment_step"])
 	})
 
-	it("applies the idle profile as discovery-only ferment tools", () => {
+	it("applies the idle profile without ferment tools", () => {
 		const pi = createPi(
 			[
 				"read",
 				"bash",
+				"propose_ferment_scoping",
 				"scope_ferment",
 				"activate_ferment_phase",
 				"list_ferments",
@@ -47,6 +48,7 @@ describe("ferment tool scope", () => {
 			[
 				"read",
 				"bash",
+				"propose_ferment_scoping",
 				"scope_ferment",
 				"activate_ferment_phase",
 				"list_ferments",
@@ -57,12 +59,7 @@ describe("ferment tool scope", () => {
 
 		applyFermentToolProfile(pi, "idle")
 
-		expect(pi.setActiveTools).toHaveBeenLastCalledWith([
-			"read",
-			"bash",
-			FERMENT_TOOLS.LIST,
-			FERMENT_TOOLS.CONFIRM_COMPLETION_CRITERIA,
-		])
+		expect(pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash"])
 	})
 
 	it("keeps the existing-ferment lifecycle surface for an active planner profile", () => {

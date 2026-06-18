@@ -58,7 +58,7 @@ describe("parseModelRoles", () => {
 			planner: "anthropic/claude-sonnet-4-5",
 			builder: "anthropic/claude-sonnet-4-5",
 			reviewer: "openai/gpt-4o",
-			explorer: "kimchi-dev/nemotron-3-super-fp4",
+			explorer: "kimchi-dev/nemotron-3-ultra-fp4",
 			judge: "kimchi-dev/claude-opus-4-6",
 		}
 		const { roles } = parseModelRoles(custom)
@@ -143,13 +143,13 @@ describe("parseModelRoles", () => {
 			planner: "anthropic/claude-sonnet-4-5",
 			builder: null,
 			reviewer: 123,
-			explorer: "kimchi-dev/nemotron-3-super-fp4",
+			explorer: "kimchi-dev/nemotron-3-ultra-fp4",
 		})
 		expect(roles.orchestrator).toBe("anthropic/claude-opus-4-7")
 		expect(roles.planner).toBe("anthropic/claude-sonnet-4-5")
 		expect(roles.builder).toBe(DEFAULT_MODEL_ROLES.builder)
 		expect(roles.reviewer).toBe(DEFAULT_MODEL_ROLES.reviewer)
-		expect(roles.explorer).toBe("kimchi-dev/nemotron-3-super-fp4")
+		expect(roles.explorer).toBe("kimchi-dev/nemotron-3-ultra-fp4")
 		// null is skipped silently, number warns
 		expect(warnings).toHaveLength(1)
 		expect(warnings[0].role).toBe("reviewer")
@@ -207,7 +207,7 @@ describe("DEFAULT_MODEL_ROLES", () => {
 		const builders = normalizeRoleModels(DEFAULT_MODEL_ROLES.builder)
 		expect(builders).toContain("kimchi-dev/minimax-m2.7")
 		expect(builders).toContain("kimchi-dev/kimi-k2.6")
-		expect(builders).not.toContain("kimchi-dev/nemotron-3-super-fp4")
+		expect(builders).not.toContain("kimchi-dev/nemotron-3-ultra-fp4")
 	})
 
 	it("reviewer pool contains kimi-k2.6 and minimax", () => {
@@ -218,7 +218,7 @@ describe("DEFAULT_MODEL_ROLES", () => {
 
 	it("explorer pool contains nemotron", () => {
 		const explorers = normalizeRoleModels(DEFAULT_MODEL_ROLES.explorer)
-		expect(explorers).toContain("kimchi-dev/nemotron-3-super-fp4")
+		expect(explorers).toContain("kimchi-dev/nemotron-3-ultra-fp4")
 	})
 
 	it("planner pool contains kimi-k2.6", () => {
@@ -288,7 +288,7 @@ describe("saveModelRoles", () => {
 })
 
 describe("validateModelRoles", () => {
-	const available = new Set(["kimi-k2.6", "minimax-m2.7", "nemotron-3-super-fp4"])
+	const available = new Set(["kimi-k2.6", "minimax-m2.7", "nemotron-3-ultra-fp4"])
 
 	it("returns no unavailable roles when all defaults are available", () => {
 		const result = validateModelRoles(DEFAULT_MODEL_ROLES, available)
