@@ -271,7 +271,7 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).toContain("continue with direct targeted reads")
 			expect(out).toContain('otherwise become an "explore", "find the existing pattern"')
 			expect(out).toContain("The plan you propose should reflect the discovered files")
-			expect(out).toContain("all P1/P2/P3 gates")
+			expect(out).toContain("P1/P2/P3")
 		})
 
 		it("uses manual phase-boundary instructions under manual continuation policy", () => {
@@ -313,6 +313,33 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).not.toContain("minimax-m2.7")
 			expect(out).not.toContain("kimi-k2.5")
 			expect(out).not.toContain("worker_model")
+		})
+		// Regression: the scope_ferment rule must differ between interactive and one-shot.
+		it("tells interactive planners to avoid scope_ferment and use propose_ferment_scoping", () => {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime({ status: "running" })) ?? ""
+			expect(out).toContain("Do NOT call `scope_ferment` directly in the interactive flow")
+			expect(out).toContain("only `propose_ferment_scoping`")
+		})
+
+		it("tells one-shot planners to use scope_ferment directly and avoid propose_ferment_scoping", () => {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status: "running" })) ?? ""
+			expect(out).toContain("Call `scope_ferment` directly")
+			expect(out).toContain("do NOT use `propose_ferment_scoping`")
+			expect(out).not.toContain("Do NOT call `scope_ferment` directly in the interactive flow")
+		})
+
+		it("one-shot planner supplement still names the P1/P2/P3 gate requirement", () => {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status: "running" })) ?? ""
+			expect(out).toContain("P1/P2/P3")
+			expect(out).toMatch(/schema\s+hard-?rejects/i)
+		})
+
+		it("one-shot rule applies for status=draft, planned, and running", () => {
+			for (const status of ["draft", "planned", "running"] as const) {
+				const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status })) ?? ""
+				expect(out, `status=${status}`).toContain("Call `scope_ferment` directly")
+				expect(out, `status=${status}`).not.toContain("Do NOT call `scope_ferment` directly in the interactive flow")
+			}
 		})
 	})
 
