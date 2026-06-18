@@ -420,9 +420,10 @@ try {
 			explorationGuardExtension,
 			reviewWriteGuardExtension,
 			lspExtension,
-			...enabledExtensionFactories([
-				{ id: "extensions.bash-tool-guard", factory: bashToolGuardExtension },
-			] satisfies ManagedExtensionFactory[]),
+			// Always registered — the tool_call handler checks isResourceEnabled
+			// dynamically on every bash call, so enable/disable from /resources
+			// takes effect immediately without a process restart.
+			bashToolGuardExtension,
 			...enabledExtensionFactories([
 				{ id: "plugins.mcp-apps", factory: mcpAdapterExtension },
 			] satisfies ManagedExtensionFactory[]),

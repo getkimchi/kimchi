@@ -18,33 +18,33 @@ flagged because they discard or duplicate state rather than creating it.
 
 ## What it does NOT catch (intentional)
 
-- `grep`, `rg`, `ag` — legitimate uses outside code-search (log inspection, `/etc/`, one-off filtering)
-- `find` — already a dedicated tool, plus complex queries that the dedicated `find` tool can't replace
-- `ls` — already a dedicated tool
-- `git`, `pnpm`, `node`, `cargo`, etc. — execution tools with no dedicated non-shell alternative
-- All other shell commands — only the patterns above are guarded
+- `grep`, `rg`, `ag` - legitimate uses outside code-search (log inspection, `/etc/`, one-off filtering)
+- `find` - already a dedicated tool, plus complex queries that the dedicated `find` tool can't replace
+- `ls` - already a dedicated tool
+- `git`, `pnpm`, `node`, `cargo`, etc. - execution tools with no dedicated non-shell alternative
+- All other shell commands - only the patterns above are guarded
 
 ## Behaviour
 
-1. **First match per category in a session** — the LLM is steered (a
+1. **First match per category in a session** - the LLM is steered (a
    message is injected into the conversation) explaining the better tool.
    The bash call still executes.
-2. **Subsequent matches for the same category** — by default, the guard
+2. **Subsequent matches for the same category** - by default, the guard
    keeps steering on every occurrence (warn/steer-only). Hard blocking
    is opt-in: pass `blockOnThreshold: true` when registering the
    extension to refuse the bash call with a reason pointing at the
    right tool once the threshold is exceeded. Default is warn-only so
    adopting the guard never stalls a session if the replacement tool
    is unavailable or misconfigured in a given environment.
-3. **Per-category counters** — `cat` doesn't burn the budget for `sed -i`.
+3. **Per-category counters** - `cat` doesn't burn the budget for `sed -i`.
    A session can have one read warning, one edit warning, and one write
    warning independently.
-4. **Per-category thresholds** — read/edit/write can each have their own
+4. **Per-category thresholds** - read/edit/write can each have their own
    warn threshold. Default is 1 (warn once, then block when blocking is
    enabled). Set `warnThresholds: { read: 3 }` to be more lenient on reads.
-5. **Reset on each user prompt** — counters clear on `session_start` and
+5. **Reset on each user prompt** - counters clear on `session_start` and
    on every user `input` event so a fresh turn starts clean.
-6. **Disabled in plan mode** — same rationale as `exploration-guard`:
+6. **Disabled in plan mode** - same rationale as `exploration-guard`:
    plan mode is for inspection, not enforcement. Deep reads during
    scoping aren't blocked.
 
@@ -93,7 +93,7 @@ Write intent:
 - "please be careful" → still flags `sed -i '...' foo.ts` (no intent keyword)
 - "no changes needed" → still flags `echo 'x' > foo.ts` (no intent keyword)
 
-This is local in-memory matching — no extra LLM call, no extra context.
+This is local in-memory matching - no extra LLM call, no extra context.
 
 ## Telemetry events
 
@@ -105,8 +105,8 @@ The extension emits domain events via `pi.events` for telemetry to observe:
 | `bash_tool_guard:block` | `{ category, tool, count }` | Threshold exceeded (hard block; only fires when `blockOnThreshold: true`) |
 | `bash_tool_guard:allowed_by_user_request` | `{ category, tool }` | User explicitly asked for the bash tool |
 
-The payloads carry only structured fields — `category`, `tool`,
-`count` — so telemetry can aggregate without receiving raw command
+The payloads carry only structured fields - `category`, `tool`,
+`count` - so telemetry can aggregate without receiving raw command
 text. Anything that could include user data or secrets inline
 (heredocs, `echo "..." > file`, sed replacement strings) stays out
 of OTLP.
@@ -128,7 +128,7 @@ When the LLM uses the `read` tool instead:
 
 - The harness truncates intelligently, shows line numbers, can request
   specific offsets/limits.
-- LSP hooks fire on the file open — the next `lsp_hover` / `lsp_definition`
+- LSP hooks fire on the file open - the next `lsp_hover` / `lsp_definition`
   call returns rich type info without re-reading the file.
 - Future `edit` calls can verify the file hasn't changed (no race
   conditions vs. the model's mental model).
@@ -152,12 +152,11 @@ in `~/.config/kimchi/harness/settings.json`:
 }
 ```
 
-Or via the kimchi TUI's resource toggle. The toggle is dynamic — the
-`tool_call` handler consults `isResourceEnabled` on every bash call,
-so flipping it from `/resources` takes effect immediately without a
-process restart. Startup-time disablement is still handled by the
-extension filter (the extension isn't registered at all if disabled
-in `settings.json` before launch).
+Or via the kimchi TUI's resource toggle. The toggle is fully dynamic:
+the extension is always registered and the `tool_call` handler consults
+`isResourceEnabled` on every bash call, so flipping it from `/resources`
+takes effect immediately without a process restart — both for disabling
+and re-enabling.
 
 ### Custom thresholds
 
@@ -180,19 +179,19 @@ bashToolGuardExtension(pi, {
 
 ## Source
 
-`src/extensions/bash-tool-guard.ts` — exports:
+`src/extensions/bash-tool-guard.ts` - exports:
 
-- `classifyBashCommand(command: string): BashClassification | null` —
+- `classifyBashCommand(command: string): BashClassification | null` -
   pure function, used by tests and the guard class.
-- `BashToolGuard` — stateful class with per-category counters,
+- `BashToolGuard` - stateful class with per-category counters,
   per-category thresholds, and explicit-request detection (tool-name
   + semantic intent).
-- `bashToolGuardExtension(pi, options?)` — default export, registers
+- `bashToolGuardExtension(pi, options?)` - default export, registers
   `session_start`, `input`, and `tool_call` handlers.
-- `STEER_MESSAGE_TYPE = "bash-tool-guard-steer"` — custom message type
+- `STEER_MESSAGE_TYPE = "bash-tool-guard-steer"` - custom message type
   for the steer messages (used by tests and renderers).
 
-`src/extensions/bash-tool-guard-events.ts` — domain event channels:
+`src/extensions/bash-tool-guard-events.ts` - domain event channels:
 
 - `BASH_TOOL_GUARD_EVENTS.WARN`
 - `BASH_TOOL_GUARD_EVENTS.BLOCK`
@@ -200,13 +199,8 @@ bashToolGuardExtension(pi, {
 
 ## Tests
 
-- `src/extensions/bash-tool-guard.test.ts` — unit coverage of pattern
-  detection (read/edit/write categories), compound commands,
-  RTK-wrapped commands, per-category counters, threshold configuration,
-  explicit-request detection (tool-name + semantic intent),
-  word-boundary matching, and the opt-in blocking flag.
-- `src/extensions/bash-tool-guard.integration.test.ts` — integration
-  coverage of wiring, session_start reset, user-input reset, plan-mode
-  disable, explicit-request flow, compound commands, semantic intent
-  override, dynamic resource-toggle behaviour, and telemetry event
+- `src/extensions/bash-tool-guard.test.ts` - unit coverage of pattern
+  detection, counters, thresholds, and explicit-request handling.
+- `src/extensions/bash-tool-guard.integration.test.ts` - integration
+  coverage of extension wiring, lifecycle resets, and telemetry event
   emission.
