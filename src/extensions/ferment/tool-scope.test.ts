@@ -98,6 +98,7 @@ describe("planning profile", () => {
 			"confirm_ferment_completion_criteria",
 			"list_ferments",
 			"ask_user",
+			"activate_ferment_phase",
 			"bash",
 			"edit",
 			"write",
@@ -124,6 +125,19 @@ describe("planning profile", () => {
 
 		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
 		expect(lastCall).toEqual([])
+	})
+
+	// Regression: activate_ferment_phase is the transition trigger from planning
+	// to implementation. The prompt explicitly tells the planner to call it as
+	// the first lifecycle action, so it MUST be in the planning toolset or the
+	// transition is unreachable from the planning profile.
+	it("includes activate_ferment_phase so the planner can fire the planning → implementation transition", () => {
+		const pi = createPi([], ["activate_ferment_phase", "scope_ferment"])
+
+		applyFermentToolProfile(pi, "planning")
+
+		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
+		expect(lastCall).toContain("activate_ferment_phase")
 	})
 })
 

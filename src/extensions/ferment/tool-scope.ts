@@ -19,6 +19,12 @@ const IDLE_FERMENT_TOOL_NAMES = [
 /**
  * Tools available during the planning phase of a ferment lifecycle.
  * Includes read-only discovery tools, web search, and the ferment scoping surface.
+ *
+ * `activate_ferment_phase` is included here even though it transitions the
+ * ferment into the implementation phase — the prompt explicitly tells the
+ * planner to call it as the first lifecycle action. Without it, the planner
+ * has no way to fire the planning → implementation transition from within
+ * the planning profile.
  */
 export const PLANNING_TOOL_NAMES: ReadonlySet<string> = new Set([
 	// Read-only discovery tools
@@ -37,6 +43,9 @@ export const PLANNING_TOOL_NAMES: ReadonlySet<string> = new Set([
 	FERMENT_TOOLS.CONFIRM_COMPLETION_CRITERIA,
 	FERMENT_TOOLS.LIST,
 	FERMENT_TOOLS.ASK_USER,
+	// Transition trigger — must be callable while still in planning so the
+	// result can flip the profile on the next model turn.
+	FERMENT_TOOLS.ACTIVATE_PHASE,
 ])
 
 /**
