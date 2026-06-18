@@ -218,7 +218,7 @@ export function writeDirectToolsConfig(
 				servers[name] = { ...servers[name], directTools: value }
 			}
 
-			// Sync in-memory state so /mcp panel reflects changes on reopen without kimchi restart.
+			// Sync in-memory config so /mcp panel shows current state on reopen. Tool availability still requires restart.
 			fullConfig.mcpServers[name] = servers[name]
 		}
 
