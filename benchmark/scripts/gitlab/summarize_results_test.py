@@ -1,0 +1,248 @@
+#!/usr/bin/env python3
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+
+MODULE_PATH = Path(__file__).with_name("summarize_results.py")
+sys.dont_write_bytecode = True
+SPEC = importlib.util.spec_from_file_location("summarize_results", MODULE_PATH)
+assert SPEC is not None and SPEC.loader is not None
+summarize_results = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = summarize_results
+SPEC.loader.exec_module(summarize_results)
+
+
+BASE_RESULT = {
+    "trial_name": "sample-task__abc123",
+    "task_name": "terminal-bench/sample-task",
+    "config": {"agent": {"model_name": "kimchi-dev/kimi-k2.6"}},
+    "agent_execution": {
+        "started_at": "2026-06-18T12:00:00Z",
+        "finished_at": "2026-06-18T12:01:00Z",
+    },
+    "verifier": {
+        "started_at": "2026-06-18T12:01:01Z",
+        "finished_at": "2026-06-18T12:01:09Z",
+    },
+    "verifier_result": {"rewards": {"reward": 0}},
+}
+
+
+def write_json(path: Path, value: dict) -> None:
+    path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+
+
+def write_session(trial_dir: Path, text: str) -> None:
+    sessions_dir = trial_dir / "agent" / "sessions"
+    sessions_dir.mkdir(parents=True)
+    entry = {
+        "type": "message",
+        "message": {
+            "role": "toolResult",
+            "content": [{"type": "text", "text": text}],
+        },
+    }
+    (sessions_dir / "main.jsonl").write_text(json.dumps(entry) + "\n", encoding="utf-8")
+
+
+class SummarizeResultsClassificationTest(unittest.TestCase):
+    def summarize(self, result: dict, session_text: str | None = None, verifier_stdout: str | None = None):
+        with tempfile.TemporaryDirectory() as tmp:
+            trial_dir = Path(tmp) / "sample-task__abc123"
+            trial_dir.mkdir()
+            write_json(trial_dir / "result.json", result)
+            if session_text is not None:
+                write_session(trial_dir, session_text)
+            if verifier_stdout is not None:
+                verifier_dir = trial_dir / "verifier"
+                verifier_dir.mkdir()
+                (verifier_dir / "test-stdout.txt").write_text(verifier_stdout, encoding="utf-8")
+
+            warnings: list[str] = []
+            return summarize_results.summarize_trial(trial_dir, 1, warnings)
+
+    def result_with_exception(self, exception_type: str, message: str) -> dict:
+        result = json.loads(json.dumps(BASE_RESULT))
+        result["exception_info"] = {
+            "exception_type": exception_type,
+            "exception_message": message,
+            "exception_traceback": "Traceback omitted for test",
+            "occurred_at": "2026-06-18T12:00:59Z",
+        }
+        return result
+
+    def assert_error(self, result: dict, expected_type: str, expected_evidence: str, **kwargs) -> None:
+        summary = self.summarize(result, **kwargs)
+        data = summary.to_summary_json()
+        self.assertEqual(data["error"]["type"], expected_type)
+        self.assertIn(expected_evidence, data["error"]["message"])
+
+    def test_classifies_model_catalog_unavailable_from_real_cli_text(self) -> None:
+        message = """stdout: Could not load the model list right now (Failed to fetch models: The operation timed out.). Continuing; models will refresh once the service is reachable.
+No API key found for the selected model.
+
+Use /login to log into a provider via OAuth or API key."""
+        result = self.result_with_exception("NonZeroAgentExitCodeError", message)
+
+        self.assert_error(result, "agent_model_catalog_unavailable", "Could not load the model list")
+
+    def test_classifies_stale_extension_context_before_catalog_fallback(self) -> None:
+        message = """stdout: Could not load the model list right now (Failed to fetch models: The operation timed out.).
+No API key found for the selected model.
+error: This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload()."""
+        result = self.result_with_exception("NonZeroAgentExitCodeError", message)
+
+        self.assert_error(result, "agent_stale_extension_context", "extension ctx is stale")
+
+    def test_classifies_request_aborted(self) -> None:
+        message = "stdout: Request was aborted.\nstderr: None"
+        result = self.result_with_exception("NonZeroAgentExitCodeError", message)
+
+        self.assert_error(result, "agent_request_aborted", "Request was aborted")
+
+    def test_prefers_session_evidence_when_session_artifact_exists(self) -> None:
+        result = self.result_with_exception("NonZeroAgentExitCodeError", "stdout: Request was aborted.")
+
+        summary = self.summarize(result, session_text="error: Request was aborted.")
+        data = summary.to_summary_json()
+
+        self.assertEqual(data["error"]["type"], "agent_request_aborted")
+        self.assertEqual(data["error"]["message"], "error: Request was aborted.")
+
+    def test_prefers_matching_wrapper_evidence_over_generic_session_noise(self) -> None:
+        result = self.result_with_exception("NonZeroAgentExitCodeError", "stdout: Request was aborted.")
+
+        summary = self.summarize(result, session_text="Traceback (most recent call last):")
+        data = summary.to_summary_json()
+
+        self.assertEqual(data["error"]["type"], "agent_request_aborted")
+        self.assertEqual(data["error"]["message"], "stdout: Request was aborted.")
+
+    def test_classifies_agent_timeout(self) -> None:
+        message = "Agent execution timed out after 900.0 seconds"
+        result = self.result_with_exception("AgentTimeoutError", message)
+
+        self.assert_error(result, "agent_timeout", "timed out after 900.0 seconds")
+
+    def test_classifies_agent_transport_error(self) -> None:
+        message = "stdout: The socket connection was closed unexpectedly. For more information, pass `verbose: true`."
+        result = self.result_with_exception("NonZeroAgentExitCodeError", message)
+
+        self.assert_error(result, "agent_transport_error", "socket connection was closed unexpectedly")
+
+    def test_classifies_agent_transport_connection_reset(self) -> None:
+        message = (
+            "stdout: proxying request: Post http://localhost:10000/v1/chat/completions: "
+            "read tcp 127.0.0.1:44794->127.0.0.1:10000: read: connection reset by peer"
+        )
+        result = self.result_with_exception("NonZeroAgentExitCodeError", message)
+
+        self.assert_error(result, "agent_transport_error", "connection reset by peer")
+
+    def test_classifies_agent_upstream_error(self) -> None:
+        message = 'stdout: {"detail":"InternalServerError: Hosted_vllmException - Server disconnected"}'
+        result = self.result_with_exception("NonZeroAgentExitCodeError", message)
+
+        self.assert_error(result, "agent_upstream_error", "Hosted_vllmException")
+
+    def test_classifies_weighted_dispatch_upstream_error(self) -> None:
+        message = "stdout: weighted dispatch: organization ID not found in context"
+        result = self.result_with_exception("NonZeroAgentExitCodeError", message)
+
+        self.assert_error(result, "agent_upstream_error", "organization ID not found")
+
+    def test_classifies_agent_command_timeout(self) -> None:
+        message = "stdout: Command timed out after 300 seconds"
+        result = self.result_with_exception("NonZeroAgentExitCodeError", message)
+
+        self.assert_error(result, "agent_command_timeout", "Command timed out after")
+
+    def test_classifies_agent_process_killed(self) -> None:
+        message = "stdout: 50 Killed | /installed-agent/bin/kimchi --print --session /logs/agent/sessions/main.jsonl"
+        result = self.result_with_exception("NonZeroAgentExitCodeError", message)
+
+        self.assert_error(result, "agent_process_killed", "Killed")
+
+    def test_classifies_agent_process_exit_137_as_killed(self) -> None:
+        message = "Command failed (exit 137): /installed-agent/bin/kimchi --print\nstdout: None\nstderr: None"
+        result = self.result_with_exception("NonZeroAgentExitCodeError", message)
+
+        self.assert_error(result, "agent_process_killed", "exit 137")
+
+    def test_classifies_agent_environment_missing_system_user(self) -> None:
+        message = "stdout: /usr/lib/tmpfiles.d/systemd-network.conf:10: Failed to resolve user 'systemd-network': No such process"
+        result = self.result_with_exception("NonZeroAgentExitCodeError", message)
+
+        self.assert_error(result, "agent_environment_error", "Failed to resolve user")
+
+    def test_classifies_agent_environment_missing_linker_library(self) -> None:
+        message = "stdout: /usr/bin/ld: cannot find -llapack: No such file or directory"
+        result = self.result_with_exception("NonZeroAgentExitCodeError", message)
+
+        self.assert_error(result, "agent_environment_error", "cannot find -llapack")
+
+    def test_classifies_agent_exit_after_success(self) -> None:
+        result = self.result_with_exception(
+            "NonZeroAgentExitCodeError",
+            "stdout: The socket connection was closed unexpectedly.",
+        )
+        result["verifier_result"]["rewards"]["reward"] = 1
+
+        summary = self.summarize(result)
+        data = summary.to_summary_json()
+
+        self.assertEqual(data["status"], "passed")
+        self.assertEqual(data["error"]["type"], "agent_exit_after_success")
+        self.assertIn("socket connection was closed unexpectedly", data["error"]["message"])
+
+    def test_classifies_verifier_timeout_and_marks_verifier_timeout(self) -> None:
+        result = self.result_with_exception("VerifierTimeoutError", "Verifier execution timed out after 900.0 seconds")
+        result["exception_info"]["occurred_at"] = "2026-06-18T12:01:05Z"
+
+        summary = self.summarize(result)
+        data = summary.to_summary_json()
+
+        self.assertEqual(data["error"]["type"], "verifier_timeout")
+        self.assertIn("Verifier execution timed out", data["error"]["message"])
+        self.assertEqual(summarize_results.verifier_summary(result).status, "timeout")
+
+    def test_classifies_non_exception_zero_reward_as_verifier_failed_with_stdout_evidence(self) -> None:
+        result = json.loads(json.dumps(BASE_RESULT))
+
+        summary = self.summarize(
+            result,
+            verifier_stdout="FAILED tests/test_outputs.py::test_xss - AssertionError: alert did not trigger\n",
+        )
+        data = summary.to_summary_json()
+
+        self.assertEqual(data["status"], "failed")
+        self.assertEqual(data["error"]["type"], "verifier_failed")
+        self.assertIn("AssertionError", data["error"]["message"])
+        self.assertEqual(summarize_results.verifier_summary(result).status, "completed")
+
+    def test_tracks_verifier_not_started(self) -> None:
+        result = json.loads(json.dumps(BASE_RESULT))
+        result.pop("verifier")
+        result.pop("verifier_result")
+        result["exception_info"] = {
+            "exception_type": "NonZeroAgentExitCodeError",
+            "exception_message": "Command failed during agent setup",
+            "occurred_at": "2026-06-18T12:00:59Z",
+        }
+
+        summary = self.summarize(result)
+        data = summary.to_summary_json()
+
+        self.assertEqual(summarize_results.verifier_summary(result).status, "not_started")
+        self.assertEqual(data["error"]["type"], "agent_execution_failed")
+
+
+if __name__ == "__main__":
+    unittest.main()

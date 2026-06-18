@@ -16,6 +16,176 @@ from typing import Any
 PASS_REWARD = 1.0
 SUMMARY_SCHEMA_VERSION = "benchmark-summary/v1"
 KIMCHI_MODEL_PROVIDERS = frozenset({"kimchi-dev"})
+ERROR_EVIDENCE_LIMIT = 1_000
+
+
+@dataclass
+class ErrorEvidence:
+    text: str = ""
+    source: str = ""
+
+
+@dataclass
+class VerifierSummary:
+    status: str
+    started_at: str | None
+    finished_at: str | None
+
+    def to_summary_json(self) -> dict[str, Any]:
+        result: dict[str, Any] = {"status": self.status}
+        if self.started_at is not None:
+            result["started_at"] = self.started_at
+        if self.finished_at is not None:
+            result["finished_at"] = self.finished_at
+        duration_ms = seconds_between(self.started_at, self.finished_at)
+        if duration_ms is not None:
+            result["duration_ms"] = duration_ms * 1000
+        return result
+
+
+@dataclass(frozen=True)
+class ErrorClassification:
+    kind: str
+    evidence_markers: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class TrialErrorContext:
+    exception_type: str | None
+    reward: float | None
+    exception_text: str
+
+    @classmethod
+    def from_result(cls, result: dict[str, Any]) -> TrialErrorContext:
+        pieces = [
+            get_path(result, "exception_info", "exception_type"),
+            get_path(result, "exception_info", "exception_message"),
+            get_path(result, "exception_info", "exception_traceback"),
+        ]
+        return cls(
+            exception_type=string_or_none(get_path(result, "exception_info", "exception_type")),
+            reward=numeric_reward(get_path(result, "verifier_result", "rewards", "reward")),
+            exception_text="\n".join(str(piece) for piece in pieces if piece is not None).casefold(),
+        )
+
+    def contains_all(self, *needles: str) -> bool:
+        return all(needle in self.exception_text for needle in needles)
+
+
+@dataclass(frozen=True)
+class ErrorRule:
+    kind: str
+    evidence_markers: tuple[str, ...]
+    marker_groups: tuple[tuple[str, ...], ...] = ()
+    exception_types: tuple[str, ...] = ()
+
+    def matches(self, context: TrialErrorContext) -> bool:
+        if self.exception_types and context.exception_type in self.exception_types:
+            return True
+        return any(context.contains_all(*group) for group in self.marker_groups)
+
+    def classify(self) -> ErrorClassification:
+        return ErrorClassification(kind=self.kind, evidence_markers=self.evidence_markers)
+
+
+VERIFIER_FAILED_EVIDENCE_MARKERS = ("assertionerror", "failed", "failure", "error:")
+AGENT_EXIT_AFTER_SUCCESS_EVIDENCE_MARKERS = (
+    "socket connection was closed unexpectedly",
+    "command aborted",
+    "server disconnected",
+    "exit 1",
+)
+
+ERROR_RULES = (
+    ErrorRule(
+        kind="agent_timeout",
+        exception_types=("AgentTimeoutError",),
+        evidence_markers=("agent execution timed out", "timed out"),
+    ),
+    ErrorRule(
+        kind="verifier_timeout",
+        exception_types=("VerifierTimeoutError",),
+        evidence_markers=("verifier execution timed out", "timed out"),
+    ),
+    ErrorRule(
+        kind="agent_stale_extension_context",
+        marker_groups=(("extension ctx is stale",),),
+        evidence_markers=("extension ctx is stale",),
+    ),
+    ErrorRule(
+        kind="agent_model_catalog_unavailable",
+        marker_groups=(
+            ("kimchi_agent/gateway.py", "_fetch_model_metadata"),
+            ("model list", "fetch", "model"),
+            ("could not load the model list",),
+            ("failed to fetch models",),
+            ("models.json", "no models available"),
+        ),
+        evidence_markers=("could not load the model list", "failed to fetch models", "no models available"),
+    ),
+    ErrorRule(
+        kind="agent_missing_api_key",
+        marker_groups=(("no api key found",),),
+        evidence_markers=("no api key found",),
+    ),
+    ErrorRule(
+        kind="agent_request_aborted",
+        marker_groups=(("request was aborted",),),
+        evidence_markers=("request was aborted", "aborted"),
+    ),
+    ErrorRule(
+        kind="provider_api_timeout",
+        marker_groups=(("api error", "524"), ("origin_response_timeout",), ("cloudflare", "timeout")),
+        evidence_markers=("origin_response_timeout", "cloudflare", "524"),
+    ),
+    ErrorRule(
+        kind="agent_upstream_error",
+        marker_groups=(
+            ("hosted_vllmexception",),
+            ("internalservererror",),
+            ("weighted dispatch",),
+            ("organization id not found",),
+        ),
+        evidence_markers=(
+            "hosted_vllmexception",
+            "internalservererror",
+            "weighted dispatch",
+            "organization id not found",
+        ),
+    ),
+    ErrorRule(
+        kind="agent_transport_error",
+        marker_groups=(
+            ("socket connection was closed unexpectedly",),
+            ("connection reset by peer",),
+            ("server disconnected",),
+        ),
+        evidence_markers=(
+            "socket connection was closed unexpectedly",
+            "connection reset by peer",
+            "server disconnected",
+        ),
+    ),
+    ErrorRule(
+        kind="agent_command_timeout",
+        marker_groups=(("command timed out after",),),
+        evidence_markers=("command timed out after",),
+    ),
+    ErrorRule(
+        kind="agent_process_killed",
+        marker_groups=(
+            ("killed", "/installed-agent/bin/kimchi"),
+            ("command failed (exit 137)",),
+            ("command failed (exit 143)",),
+        ),
+        evidence_markers=("killed", "exit 137", "exit 143"),
+    ),
+    ErrorRule(
+        kind="agent_environment_error",
+        marker_groups=(("failed to resolve user",), ("cannot find -l",), ("no such file or directory",)),
+        evidence_markers=("failed to resolve user", "cannot find -l", "no such file or directory"),
+    ),
+)
 
 
 class TrialErrorClassifier:
@@ -24,15 +194,26 @@ class TrialErrorClassifier:
     def __init__(self, result: dict[str, Any]) -> None:
         self.result = result
 
-    def classify_kind(self) -> str | None:
-        if get_path(self.result, "exception_info", "exception_type") is None:
+    def classify(self) -> ErrorClassification | None:
+        context = TrialErrorContext.from_result(self.result)
+        if context.exception_type is None:
+            if context.reward is not None and context.reward != PASS_REWARD:
+                return ErrorClassification("verifier_failed", VERIFIER_FAILED_EVIDENCE_MARKERS)
             return None
 
-        phase = self._exception_phase()
-        if self._model_catalog_unavailable():
-            return "agent_model_catalog_unavailable"
+        if context.reward == PASS_REWARD:
+            return ErrorClassification("agent_exit_after_success", AGENT_EXIT_AFTER_SUCCESS_EVIDENCE_MARKERS)
 
-        return f"{phase}_failed" if phase in self.PHASES else "unknown"
+        for rule in ERROR_RULES:
+            if rule.matches(context):
+                return rule.classify()
+
+        phase = self._exception_phase()
+        return ErrorClassification(f"{phase}_failed" if phase in self.PHASES else "unknown")
+
+    def classify_kind(self) -> str | None:
+        classification = self.classify()
+        return classification.kind if classification is not None else None
 
     def _phase_contains_time(self, phase: str, timestamp: datetime) -> bool:
         start = parse_time(string_or_none(get_path(self.result, phase, "started_at")))
@@ -54,27 +235,6 @@ class TrialErrorClassifier:
         if self.result.get("verifier") is not None:
             return "verifier"
         return "unknown"
-
-    def _exception_text(self) -> str:
-        pieces = [
-            get_path(self.result, "exception_info", "exception_type"),
-            get_path(self.result, "exception_info", "exception_message"),
-            get_path(self.result, "exception_info", "exception_traceback"),
-        ]
-        return "\n".join(str(piece) for piece in pieces if piece is not None).casefold()
-
-    def _contains_all(self, *needles: str) -> bool:
-        text = self._exception_text()
-        return all(needle in text for needle in needles)
-
-    def _model_catalog_unavailable(self) -> bool:
-        # Covers both gateway metadata fetch failures and CLI fallback failures
-        # after the model catalog could not be loaded.
-        return (
-            self._contains_all("kimchi_agent/gateway.py", "_fetch_model_metadata")
-            or self._contains_all("model list", "fetch", "model")
-            or self._contains_all("models.json", "no models available")
-        )
 
 
 @dataclass
@@ -472,6 +632,165 @@ def trial_total_time(result: dict[str, Any], session_scan: SessionScan) -> int |
     return seconds_between(session_scan.start, session_scan.end)
 
 
+def verifier_summary(result: dict[str, Any]) -> VerifierSummary:
+    started_at = string_or_none(get_path(result, "verifier", "started_at"))
+    finished_at = string_or_none(get_path(result, "verifier", "finished_at"))
+    exception = string_or_none(get_path(result, "exception_info", "exception_type"))
+    if finished_at is not None:
+        status = "timeout" if exception == "VerifierTimeoutError" else "completed"
+    elif started_at is not None:
+        status = "started"
+    else:
+        status = "not_started"
+    return VerifierSummary(status=status, started_at=started_at, finished_at=finished_at)
+
+
+def file_excerpt(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def session_error_text(path: Path, warnings: list[str]) -> str:
+    pieces: list[str] = []
+    for entry in iter_jsonl(path, warnings):
+        if entry.get("customType") == "agent_terminated":
+            reason = get_path(entry, "data", "reason")
+            if reason:
+                pieces.append(f"agent terminated: {reason}")
+
+        message = entry.get("message")
+        if not isinstance(message, dict):
+            continue
+
+        if message.get("role") == "tool" or message.get("isError") is True:
+            for item in message_content_text(message.get("content")):
+                pieces.append(item)
+            continue
+
+        if message.get("role") != "toolResult":
+            continue
+        for item in message_content_text(message.get("content")):
+            pieces.append(item)
+    return "\n".join(pieces)
+
+
+def message_content_text(content: Any) -> list[str]:
+    if isinstance(content, str):
+        return [content]
+    if not isinstance(content, list):
+        return []
+    pieces: list[str] = []
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        text = item.get("text")
+        if isinstance(text, str):
+            pieces.append(text)
+    return pieces
+
+
+def error_marker_line(text: str, preferred_markers: tuple[str, ...] = ()) -> str:
+    for line in text.splitlines():
+        candidate = line.strip()
+        if not candidate:
+            continue
+        lowered = candidate.casefold()
+        if any(marker in lowered for marker in preferred_markers):
+            return candidate[:ERROR_EVIDENCE_LIMIT]
+    return ""
+
+
+def generic_error_marker_line(text: str) -> str:
+    markers = (
+        "error:",
+        "exception",
+        "traceback",
+        "failed",
+        "failure",
+        "timeout",
+        "timed out",
+        "aborted",
+        "no api key",
+        "stale",
+        "module not found",
+        "assertionerror",
+        "command failed",
+        "exit 1",
+        "no such file",
+    )
+    for line in text.splitlines():
+        candidate = line.strip()
+        if not candidate:
+            continue
+        lowered = candidate.casefold()
+        if any(marker in lowered for marker in markers):
+            return candidate[:ERROR_EVIDENCE_LIMIT]
+    return ""
+
+
+def first_nonempty_line(text: str) -> str:
+    for line in text.splitlines():
+        candidate = line.strip()
+        if candidate:
+            return candidate[:ERROR_EVIDENCE_LIMIT]
+    return ""
+
+
+def extract_error_evidence(
+    result: dict[str, Any],
+    trial_dir: Path,
+    session_files: list[Path],
+    warnings: list[str],
+    classification: ErrorClassification,
+) -> ErrorEvidence:
+    error_kind = classification.kind
+    sources: list[tuple[str, str]] = []
+    session_text = "\n".join(session_error_text(path, warnings) for path in session_files)
+    if session_text.strip():
+        sources.append(("agent/session", session_text))
+
+    verifier_stdout = file_excerpt(trial_dir / "verifier" / "test-stdout.txt")
+    if error_kind == "verifier_failed" and verifier_stdout.strip():
+        sources.append(("verifier/test-stdout.txt", verifier_stdout))
+
+    exception_text = string_or_none(get_path(result, "exception_info", "exception_message"))
+    if exception_text:
+        sources.append(("result.exception_info.exception_message", exception_text))
+
+    for relative in (Path("exception.txt"), Path("trial.log")):
+        text = file_excerpt(trial_dir / relative)
+        if text.strip():
+            sources.append((str(relative), text))
+
+    if error_kind != "verifier_failed" and verifier_stdout.strip():
+        sources.append(("verifier/test-stdout.txt", verifier_stdout))
+
+    preferred_markers = classification.evidence_markers
+    if preferred_markers:
+        for source, text in sources:
+            evidence = error_marker_line(text, preferred_markers)
+            if evidence:
+                return ErrorEvidence(text=evidence, source=source)
+
+    for source, text in sources:
+        evidence = generic_error_marker_line(text)
+        if evidence:
+            return ErrorEvidence(text=evidence, source=source)
+
+    for source, text in sources:
+        evidence = first_nonempty_line(text)
+        if evidence:
+            return ErrorEvidence(text=evidence, source=source)
+
+    reward = numeric_reward(get_path(result, "verifier_result", "rewards", "reward"))
+    if reward is not None and reward != PASS_REWARD:
+        return ErrorEvidence(text=f"Verifier reward was {reward}", source="verifier_result.rewards.reward")
+
+    return ErrorEvidence()
+
+
 def run_bounds(results_dir: Path, trials: list[TrialSummary]) -> tuple[str | None, str | None]:
     run_results: list[dict[str, Any]] = []
     warnings: list[str] = []
@@ -505,7 +824,15 @@ def summarize_trial(trial_dir: Path, attempt: int, warnings: list[str]) -> Trial
     reward = numeric_reward(get_path(result, "verifier_result", "rewards", "reward"))
     exception = string_or_none(get_path(result, "exception_info", "exception_type"))
     exception_message = string_or_none(get_path(result, "exception_info", "exception_message"))
-    error_kind = TrialErrorClassifier(result).classify_kind()
+    classifier = TrialErrorClassifier(result)
+    classification = classifier.classify()
+    error_kind = classification.kind if classification is not None else None
+    error_evidence = (
+        extract_error_evidence(result, trial_dir, session_files, warnings, classification)
+        if classification is not None
+        else ErrorEvidence()
+    )
+    error_message = error_evidence.text or exception_message
     total_time_seconds = trial_total_time(result, session_scan)
     task = trial_dir.name.split("__", 1)[0]
     return TrialSummary(
@@ -515,7 +842,7 @@ def summarize_trial(trial_dir: Path, attempt: int, warnings: list[str]) -> Trial
         solved=reward == PASS_REWARD,
         reward=reward,
         exception=exception,
-        exception_message=exception_message,
+        exception_message=error_message,
         error_kind=error_kind,
         total_time_seconds=total_time_seconds,
         models=[stats.to_summary_json() for stats in sorted(session_scan.models.values(), key=model_sort_key)],
