@@ -48,6 +48,7 @@ interface SpawnOptions {
 	onTurnEnd?: (turnCount: number) => void
 	onAssistantUsage?: (usage: LifetimeUsage) => void
 	onCompaction?: (info: CompactionInfo) => void
+	taskContext?: string
 }
 
 export class AgentManager {
@@ -148,6 +149,7 @@ export class AgentManager {
 			sessionFile: options.sessionFile,
 			sessionDir: options.sessionDir,
 			signal: record.abortController?.signal,
+			taskContext: options.taskContext,
 			onToolActivity: (activity) => {
 				if (activity.type === "end") record.toolUses++
 				options.onToolActivity?.(activity)

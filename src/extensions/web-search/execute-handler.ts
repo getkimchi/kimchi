@@ -10,9 +10,10 @@ import { readApiKeyFromConfigFile } from "../../config.js"
 
 export const SEARCH_ENDPOINT = "https://llm.kimchi.dev/v1/search"
 export const SEARCH_TIMEOUT_MS = 25_000
-export const DEFAULT_LIMIT = 8
+export const DEFAULT_LIMIT = 5
 export const DEFAULT_MAX_CONTENT_CHARS = 2000
 const MAX_LINES = 500
+const MAX_LINES_PER_RESULT = 60
 
 export type Recency = "day" | "week" | "month" | "year"
 export type SearchDepth = "basic" | "deep"
@@ -46,12 +47,26 @@ function countWords(text: string): number {
 
 export function formatForLLM(response: SearchResponse, maxContentChars = DEFAULT_MAX_CONTENT_CHARS): string {
 	const parts: string[] = []
+	const seenUrls = new Set<string>()
+	let resultIndex = 1
 
-	for (const [i, src] of response.sources.entries()) {
-		parts.push(`[${i + 1}] ${src.title}\n    ${src.url}`)
+	for (const src of response.sources) {
+		if (seenUrls.has(src.url)) continue
+		seenUrls.add(src.url)
+
+		const lines: string[] = [`[${resultIndex}] ${src.title}`, `    ${src.url}`]
 		if (src.snippet) {
-			parts.push(`    ${truncateLine(src.snippet, maxContentChars).text}`)
+			const snippet = truncateLine(src.snippet, maxContentChars).text
+			const snippetLines = snippet.split("\n").map((l) => `    ${l}`)
+			lines.push(...snippetLines)
 		}
+
+		const capped = lines.length > MAX_LINES_PER_RESULT ? lines.slice(0, MAX_LINES_PER_RESULT) : lines
+		if (lines.length > MAX_LINES_PER_RESULT) {
+			capped.push(`    [...${lines.length - MAX_LINES_PER_RESULT} more lines omitted]`)
+		}
+		parts.push(capped.join("\n"))
+		resultIndex++
 	}
 
 	return parts.join("\n")

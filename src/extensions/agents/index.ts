@@ -1148,6 +1148,7 @@ Model selection — YOU choose based on task complexity:
 							isBackground: true,
 							sessionFile: childSessionFile,
 							sessionDir: parentSessionDir,
+							taskContext: effectivePrompt,
 							...bgCallbacks,
 						})
 					} catch (err) {
@@ -1269,6 +1270,7 @@ Model selection — YOU choose based on task complexity:
 						sessionFile: childSessionFile,
 						sessionDir: parentSessionDir,
 						signal,
+						taskContext: effectivePrompt,
 						...fgCallbacks,
 					})
 				} catch (err) {

@@ -169,6 +169,11 @@ export interface RunOptions {
 	inactivityTimeout?: number
 	/** Maximum wall-clock duration in seconds. The agent is aborted when this limit is exceeded. */
 	maxDuration?: number
+	/**
+	 * The delegation prompt from the spawning orchestrator, surfaced in the system prompt
+	 * so the model anchors on known paths/conventions before its first tool call.
+	 */
+	taskContext?: string
 }
 
 export interface RunResult {
@@ -274,6 +279,7 @@ async function runAgentInner(
 	const extras: PromptExtras = {
 		contextFiles:
 			agentConfig?.includeContextFiles && !options.isolated ? loadProjectContextFiles(effectiveCwd) : undefined,
+		taskContext: options.taskContext,
 	}
 
 	if (Array.isArray(skills)) {
