@@ -122,7 +122,22 @@ async function fetchAvailableModels(apiKey: string, options: FetchModelsOptions 
 		}
 
 		if (response.ok) {
-			const body = (await response.json()) as ModelsMetadataResponse
+			let body: ModelsMetadataResponse
+			try {
+				body = (await response.json()) as ModelsMetadataResponse
+			} catch (err) {
+				// A 200 with a body that fails to parse (truncated/interrupted response, an
+				// HTML error page from an intermediary, etc.) is treated as a transient
+				// failure so it flows through the retry/cache logic instead of escaping
+				// as an uncaught rejection.
+				lastError = new ModelsFetchError(
+					`Failed to parse models response: ${err instanceof Error ? err.message : String(err)}`,
+					{ transient: true },
+				)
+				if (attempt === MAX_FETCH_ATTEMPTS) throw lastError
+				await sleep(retryDelayMs(response.headers?.get?.("retry-after"), attempt))
+				continue
+			}
 			if (!Array.isArray(body?.models)) {
 				throw new ModelsFetchError("Unexpected response shape from models API", { transient: false })
 			}
