@@ -21,7 +21,7 @@ describe("todo prompt block", () => {
 		expect(block).not.toContain("Current global todos:")
 	})
 
-	it("appends current global todos", () => {
+	it("keeps guidance stable when todos exist", () => {
 		applyWriteTodos({
 			todos: [
 				{ content: "alpha", status: "in_progress" },
@@ -29,9 +29,9 @@ describe("todo prompt block", () => {
 			],
 		})
 
-		expect(__test_renderTodoPromptBlock()).toContain(
-			"Current global todos:\n- #1 [in_progress] alpha\n- #2 [pending] bravo",
-		)
+		expect(__test_renderTodoPromptBlock()).not.toContain("Current global todos:")
+		expect(__test_renderTodoPromptBlock()).not.toContain("alpha")
+		expect(__test_renderTodoPromptBlock()).not.toContain("bravo")
 	})
 
 	it("appends guidance when the assembled system prompt missed the todo block", () => {

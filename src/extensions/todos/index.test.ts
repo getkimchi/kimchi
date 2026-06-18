@@ -2,7 +2,6 @@ import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-wor
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
 import todosExtension, { TODO_STEER_MESSAGE } from "./index.js"
-import { __test_renderTodoPromptBlock } from "./prompt-block.js"
 import { __resetTodoStore, applyWriteTodos, getTodosForScope } from "./store.js"
 import { TODO_TOOL_NAMES, UPDATE_TODOS_TOOL_NAME } from "./tool.js"
 import { TODO_TOOL_RESULT_SCHEMA_VERSION, type TodoStatus } from "./types.js"
@@ -134,8 +133,6 @@ describe("todos extension session state", () => {
 		)
 
 		expect(getTodosForScope().map((todo) => todo.content)).toEqual(["current resumed todo"])
-		expect(__test_renderTodoPromptBlock()).toContain("current resumed todo")
-		expect(__test_renderTodoPromptBlock()).not.toContain("stale previous session")
 	})
 
 	it("clears stale todos when the replacement session has no todo history", async () => {
@@ -145,7 +142,6 @@ describe("todos extension session state", () => {
 		await harness.fire("session_start", { reason: "fork" }, createContext("forked-session", []))
 
 		expect(getTodosForScope()).toEqual([])
-		expect(__test_renderTodoPromptBlock()).not.toContain("stale previous session")
 	})
 
 	it("replays todos when the active session tree branch changes", async () => {
@@ -165,8 +161,6 @@ describe("todos extension session state", () => {
 		)
 
 		expect(getTodosForScope().map((todo) => todo.content)).toEqual(["branch todo"])
-		expect(__test_renderTodoPromptBlock()).toContain("branch todo")
-		expect(__test_renderTodoPromptBlock()).not.toContain("root todo")
 	})
 
 	it("restores slash-command todo edits from custom entries", async () => {
@@ -179,7 +173,6 @@ describe("todos extension session state", () => {
 		)
 
 		expect(getTodosForScope().map((todo) => todo.content)).toEqual(["command todo"])
-		expect(__test_renderTodoPromptBlock()).toContain("command todo")
 	})
 
 	it("restores todos from every todo tool result", async () => {
