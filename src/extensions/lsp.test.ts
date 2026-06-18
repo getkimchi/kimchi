@@ -976,3 +976,74 @@ describe("lsp_rename", () => {
 		expect(editsMod.applyWorkspaceEdit).toHaveBeenCalledTimes(1)
 	})
 })
+
+// =============================================================================
+// 11. waitForDiagnostics (race-condition path)
+// =============================================================================
+//
+// The lsp/client.js module is fully mocked above. These tests use vi.importActual
+// to reach the real waitForDiagnostics implementation so we can verify the
+// early-return path that handles a publishDiagnostics arriving between
+// refreshFile() and waitForDiagnostics().
+describe("waitForDiagnostics", () => {
+	async function loadRealWaitForDiagnostics() {
+		const mod = await vi.importActual<typeof import("./lsp/client.js")>("./lsp/client.js")
+		return mod.waitForDiagnostics
+	}
+
+	function makeRealClient(version: number, hasPendingBaseline: boolean) {
+		const diagnosticsVersion = version
+		const diagnostics = new Map<string, { diagnostics: unknown[]; version: number | null }>()
+		const pendingDiagBaseline = new Map<string, number>()
+		const diagnosticWaiters = new Map<string, Set<{ snapshot: number; resolve: () => void }>>()
+		if (hasPendingBaseline) {
+			pendingDiagBaseline.set("file:///x.ts", 0)
+		}
+		diagnostics.set("file:///x.ts", { diagnostics: [{ message: "err" }], version: 1 })
+		return {
+			diagnostics,
+			diagnosticsVersion,
+			pendingDiagBaseline,
+			diagnosticWaiters,
+		}
+	}
+
+	it("resolves true immediately when a fresh publishDiagnostics already arrived between refreshFile() and waitForDiagnostics()", async () => {
+		const waitForDiagnostics = await loadRealWaitForDiagnostics()
+		const client = makeRealClient(5, true) as unknown as Parameters<typeof waitForDiagnostics>[0]
+		const start = Date.now()
+		const result = await waitForDiagnostics(client, "file:///x.ts", { timeoutMs: 60_000 })
+		const elapsed = Date.now() - start
+		expect(result).toBe(true)
+		// Must resolve without waiting for the 60s deadline — proves the early-return path.
+		expect(elapsed).toBeLessThan(50)
+	})
+
+	it("clears pendingDiagBaseline after the early-return so a later call does not see a stale baseline", async () => {
+		const waitForDiagnostics = await loadRealWaitForDiagnostics()
+		const client = makeRealClient(5, true) as unknown as Parameters<typeof waitForDiagnostics>[0]
+		expect(client.pendingDiagBaseline.has("file:///x.ts")).toBe(true)
+		await waitForDiagnostics(client, "file:///x.ts", { timeoutMs: 100 })
+		expect(client.pendingDiagBaseline.has("file:///x.ts")).toBe(false)
+	})
+
+	it("does not take the early-return when no refresh baseline exists (diagnosticsVersion check requires hasRefreshBaseline)", async () => {
+		const waitForDiagnostics = await loadRealWaitForDiagnostics()
+		const client = makeRealClient(5, false) as unknown as Parameters<typeof waitForDiagnostics>[0]
+		// Without a refresh baseline, waitForDiagnostics registers a waiter
+		// even if diagnosticsVersion > 0 and the URI has diagnostics.
+		const result = await waitForDiagnostics(client, "file:///x.ts", { timeoutMs: 20 })
+		expect(result).toBe(false)
+		// And the baseline map stays empty (no refresh baseline to clear).
+		expect(client.pendingDiagBaseline.size).toBe(0)
+	})
+
+	it("does not take the early-return when diagnosticsVersion has not advanced past the baseline", async () => {
+		const waitForDiagnostics = await loadRealWaitForDiagnostics()
+		const client = makeRealClient(0, true) as unknown as Parameters<typeof waitForDiagnostics>[0]
+		const result = await waitForDiagnostics(client, "file:///x.ts", { timeoutMs: 20 })
+		expect(result).toBe(false)
+		// Baseline cleared on timeout so a stale entry cannot leak.
+		expect(client.pendingDiagBaseline.has("file:///x.ts")).toBe(false)
+	})
+})

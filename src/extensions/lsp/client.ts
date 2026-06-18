@@ -435,8 +435,12 @@ export function getAllClients(): LspClient[] {
  *
  * The baseline is taken from `client.pendingDiagBaseline` when present (set by
  * `refreshFile` before it deletes the URI's diagnostics), otherwise from the
- * current `client.diagnosticsVersion`. This handles the race where a
- * publishDiagnostics arrives between `refreshFile` and this call.
+ * current `client.diagnosticsVersion`. If `publishDiagnostics` already arrived
+ * between `refreshFile()` and this call (so `diagnosticsVersion > baseline`
+ * and the URI has a fresh entry), we resolve immediately without registering
+ * a waiter or starting a timer. The baseline is cleared on every exit path
+ * (success, timeout, abort) so a stale entry can't make a later call look
+ * fresh.
  */
 export function waitForDiagnostics(
 	client: LspClient,
@@ -444,50 +448,47 @@ export function waitForDiagnostics(
 	options: { signal?: AbortSignal; timeoutMs: number },
 ): Promise<boolean> {
 	const { signal, timeoutMs } = options
-	const baseline = client.pendingDiagBaseline.get(uri) ?? client.diagnosticsVersion
+	const hasRefreshBaseline = client.pendingDiagBaseline.has(uri)
+	const baseline = hasRefreshBaseline ? (client.pendingDiagBaseline.get(uri) as number) : client.diagnosticsVersion
+
+	const clearBaseline = () => {
+		if (hasRefreshBaseline) client.pendingDiagBaseline.delete(uri)
+	}
+
+	// publishDiagnostics may have arrived after refreshFile() resolved but
+	// before this waiter was registered. Use the already-observed fresh
+	// diagnostics instead of waiting for another notification or the deadline.
+	if (hasRefreshBaseline && client.diagnosticsVersion > baseline && client.diagnostics.has(uri)) {
+		clearBaseline()
+		return Promise.resolve(true)
+	}
 
 	return new Promise<boolean>((resolve) => {
 		let settled = false
 		const waiter: DiagnosticWaiter = {
 			snapshot: baseline,
-			resolve: () => {
-				if (settled) return
-				settled = true
-				finish()
-				resolve(true)
-			},
+			resolve: () => finish(true),
 		}
+		const onAbort = () => finish(false)
+		const onTimeout = () => finish(false)
 
-		const onAbort = () => {
+		const finish = (result: boolean) => {
 			if (settled) return
 			settled = true
-			finish()
-			resolve(false)
-		}
-
-		const onTimeout = () => {
-			if (settled) return
-			settled = true
-			finish()
-			resolve(false)
-		}
-
-		const finish = () => {
 			clearTimeout(timer)
-			if (signal && onAbort) signal.removeEventListener("abort", onAbort)
+			signal?.removeEventListener("abort", onAbort)
+			clearBaseline()
 			const waiters = client.diagnosticWaiters.get(uri)
 			if (waiters) {
 				waiters.delete(waiter)
 				if (waiters.size === 0) client.diagnosticWaiters.delete(uri)
 			}
+			resolve(result)
 		}
 
 		const timer = setTimeout(onTimeout, timeoutMs)
 
-		if (signal?.aborted) {
-			onAbort()
-			return
-		}
+		if (signal?.aborted) return finish(false)
 		signal?.addEventListener("abort", onAbort, { once: true })
 
 		let waiters = client.diagnosticWaiters.get(uri)
