@@ -146,7 +146,7 @@ export function buildFermentPromptBlock(
 
 	switch (f.status) {
 		case "draft":
-			if (oneshot) return buildPlannerSupplement(f, runtime.getContinuationPolicy(), true).trim()
+			if (oneshot) return buildPlannerSupplement(f, runtime.getContinuationPolicy(), oneshot).trim()
 			return undefined
 		case "planned":
 		case "running":
