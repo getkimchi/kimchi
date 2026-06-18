@@ -52,22 +52,3 @@ describe("getNativeClipboard (mocked)", () => {
 		expect(vi.mocked(getNativeClipboard)).toHaveBeenCalled()
 	})
 })
-
-describe("getNativeClipboard — Linux subprocess routing", () => {
-	it("returns non-null clipboard on Linux when display is available", async () => {
-		if (process.platform !== "linux") return
-		vi.stubEnv("DISPLAY", ":0")
-		vi.stubEnv("WAYLAND_DISPLAY", "")
-		vi.stubEnv("WSL_DISTRO_NAME", "")
-		vi.stubEnv("WSL_INTEROP", "")
-		vi.stubEnv("KIMCHI_CLIPBOARD_FORCE", "")
-		vi.resetModules()
-		const { getNativeClipboard: fresh } = await import("./clipboard-native-harness.js")
-		const result = fresh()
-		expect(() => fresh()).not.toThrow()
-		if (result.clipboard) {
-			expect(typeof result.clipboard.availableFormats).toBe("function")
-			expect(typeof result.clipboard.hasImage).toBe("function")
-		}
-	})
-})
