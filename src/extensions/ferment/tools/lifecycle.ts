@@ -25,7 +25,6 @@ import {
 	type ScopingQuestion,
 	type ScopingQuestionType,
 } from "../../../ferment/types.js"
-import { isLaunchedWithYolo } from "../../permissions/index.js"
 import { YES_NO_OPTIONS } from "../../questionnaire-reducer.js"
 import {
 	type AskUserQuestion,
@@ -35,7 +34,6 @@ import {
 	toScopingQuestionType,
 } from "../ask-user.js"
 import { pr_bold, pr_dim } from "../colors.js"
-import { startFermentForIntent } from "../commands.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { renderGateGuidance } from "../gate-registry.js"
 import { assertGateFieldsPresent, validateGatesOrErr } from "../gate-validation.js"
@@ -47,7 +45,6 @@ import { readLatestPhaseReviews } from "../review-evidence.js"
 import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
 import { confirmPendingScope } from "../scoping-confirmation.js"
 import type { PendingScope } from "../scoping.js"
-import { hasActiveFerment } from "../state.js"
 import {
 	createApplyAndPersist,
 	failedToolResult,
@@ -66,7 +63,6 @@ import {
 	ScopeParams,
 	UpdateScopeFieldParams,
 } from "../tool-schemas.js"
-import type { FermentUiContext } from "../ui.js"
 
 type ScopeArgs = Static<typeof ScopeParams>
 type ProposeScopingArgs = Static<typeof ProposeScopingParams>
@@ -755,78 +751,8 @@ export async function completeFerment(runtime: FermentRuntime, params: CompleteF
 	)
 }
 
-function canAutoApproveFermentStart(): boolean {
-	return isLaunchedWithYolo() && !hasActiveFerment()
-}
-
-async function confirmFermentStart(ctx: unknown, title: string, intent: string): Promise<boolean | undefined> {
-	const hostCtx = ctx as
-		| {
-				hasUI?: boolean
-				ui?: { confirm?: (title: string, message?: string) => Promise<boolean> }
-		  }
-		| undefined
-	if (!hostCtx?.hasUI || !hostCtx.ui?.confirm) return undefined
-	return hostCtx.ui.confirm("Start Ferment Workflow", `Start a Ferment workflow for "${title}"?\n\n${intent}`)
-}
-
 export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime): void {
 	const applyAndPersist = createApplyAndPersist(runtime)
-
-	pi.registerTool({
-		name: FERMENT_TOOLS.REQUEST_WORKFLOW,
-		label: "Start Ferment Workflow",
-		description:
-			"Request the ferment workflow (interactive scoping -> planner) for substantive multi-step work. Provide a concise 3-5 word title and the full original user intent. The host asks the user for explicit confirmation before creating the draft; in yolo permissions mode, the host auto-approves. Refuses if another ferment is already running.",
-		parameters: Type.Object({
-			title: Type.String({
-				description: "Concise 3-5 word title for the new ferment (e.g. 'Rewrite login flow').",
-			}),
-			intent: Type.String({
-				description:
-					"Full original user request, preserving all constraints, scope details, and wording that the scoping turn needs.",
-			}),
-		}),
-		async execute(_id, params, _signal, _onUpdate, ctx) {
-			const title = typeof params.title === "string" ? params.title.trim() : ""
-			if (!title) return toolErr('Field "title" must be a non-empty string.')
-			const intent = typeof params.intent === "string" ? params.intent.trim() : ""
-			if (!intent) return toolErr('Field "intent" must be the full non-empty user request.')
-			if (hasActiveFerment()) {
-				return toolErr(
-					"request_ferment_workflow refused — another ferment appears to be active. Continue that ferment or ask the user before starting a separate workflow.",
-				)
-			}
-			if (!canAutoApproveFermentStart()) {
-				const approved = await confirmFermentStart(ctx, title, intent)
-				if (approved === undefined) {
-					return toolErr(
-						"request_ferment_workflow refused — interactive host approval is required before starting a ferment, but no confirmation UI is available. Ask the user directly whether they want a ferment workflow, then retry when interactive UI is available.",
-					)
-				}
-				if (!approved) {
-					return toolErr(
-						"request_ferment_workflow cancelled — the user declined starting a ferment. Continue inline or ask only decision-blocking clarification.",
-					)
-				}
-			}
-			const result = await startFermentForIntent({
-				pi,
-				ctx: ctx as unknown as FermentUiContext,
-				runtime,
-				rawIntent: intent,
-				title,
-			})
-			if (!result) {
-				return toolErr(
-					"Could not start ferment workflow. Another ferment may already be running, or the host UI refused. Tell the user to check /ferment list and try again.",
-				)
-			}
-			return toolOk(
-				`Ferment "${result.name}" created. Follow the scoping nudge instructions the host injects on this turn.`,
-			)
-		},
-	})
 
 	pi.registerTool({
 		name: FERMENT_TOOLS.PROPOSE_SCOPING,

@@ -303,22 +303,6 @@ describe("permissions plan-mode tool visibility", () => {
 		expect(harness.activeTools().sort()).toEqual(["bash", "grep", "read"])
 	})
 
-	it("hides and blocks request_ferment_workflow under explicit --plan", async () => {
-		const harness = createPermissionsHarness(["read", "bash", FERMENT_TOOLS.REQUEST_WORKFLOW], { plan: true })
-
-		await harness.fire("session_start", {}, createMockContext([]))
-
-		expect(harness.activeTools().sort()).toEqual(["bash", "read"])
-		const result = await harness.fire(
-			"tool_call",
-			{ toolName: FERMENT_TOOLS.REQUEST_WORKFLOW, input: { title: "Audit", intent: "Find improvements" } },
-			createMockContext([]),
-		)
-
-		expect(result).toEqual(expect.objectContaining({ block: true }))
-		expect(JSON.stringify(result)).toContain("Plan mode")
-	})
-
 	it("keeps write_todos visible and allowed under explicit --plan", async () => {
 		const harness = createPermissionsHarness(["read", "bash", TODO_TOOL_NAME], { plan: true })
 
@@ -332,23 +316,6 @@ describe("permissions plan-mode tool visibility", () => {
 				createMockContext([]),
 			),
 		).resolves.toBeUndefined()
-	})
-
-	it("allows request_ferment_workflow after runtime plan-mode questionnaire", async () => {
-		const harness = createPermissionsHarness(["read", "questionnaire", "bash", FERMENT_TOOLS.REQUEST_WORKFLOW])
-		await harness.fire("session_start", {}, createMockContext([]))
-
-		expect(
-			await harness.fire("tool_call", { toolName: "questionnaire", input: { questions: [] } }, createMockContext([])),
-		).toBeUndefined()
-		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "plan", source: "user" })
-
-		const result = await harness.fire(
-			"tool_call",
-			{ toolName: FERMENT_TOOLS.REQUEST_WORKFLOW, input: { title: "Audit", intent: "Find improvements" } },
-			createMockContext([]),
-		)
-		expect(result).toBeUndefined()
 	})
 
 	it("leaving plan mode does not restore tools hidden by another extension", async () => {
@@ -553,27 +520,21 @@ describe("plan mode assumption detection", () => {
 		expect(ctx.ui.select).toHaveBeenCalled()
 	})
 
-	it("converts plan to ferment when user chooses ferment menu", async () => {
-		const harness = createPermissionsHarness(["read", "bash", FERMENT_TOOLS.REQUEST_WORKFLOW], { plan: true })
+	it("review menu does not offer ferment conversion", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
 		await harness.fire("session_start", {}, createMockContext([]))
 
 		const planText =
 			"# Plan\n\n## Goal\nAdd caching layer.\n\n## Chunks\n- Chunk 1\nImplement cache.\n\n## Verification\nRun tests.\n\n<!-- PLAN_COMPLETE -->"
-		const ctx = createMockContext(["Convert to ferment workflow"])
+		const ctx = createMockContext(["Rework the plan"])
 		await fireTurnEnd(harness, planText, ctx)
 
-		expect(ctx.ui.select).toHaveBeenCalled()
-		expect(harness.pi.sendMessage).toHaveBeenCalledWith(
-			expect.objectContaining({
-				customType: "plan-execute",
-				content: expect.stringContaining("request_ferment_workflow"),
-				display: false,
-			}),
-			{ triggerTurn: true },
-		)
-
-		// Mode should have switched from plan to default (ferment tools unlocked)
-		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "default", source: "user" })
+		expect(ctx.ui.select).toHaveBeenCalledWith("Plan complete. How would you like to proceed?", [
+			"Execute the plan",
+			"Rework the plan",
+		])
+		expect(harness.pi.sendMessage).not.toHaveBeenCalled()
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "plan", source: "user" })
 	})
 })
 

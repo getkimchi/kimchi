@@ -195,17 +195,14 @@ export async function startInteractiveFerment({
 
 	// Echo the typed intent into the transcript before the host starts working.
 	// /ferment new "X" with an inline title skips this; the title was visible in
-	// the slash command itself. The tool path (request_ferment_workflow) also skips
-	// because its tool call serves the same purpose.
+	// the slash command itself.
 	sendFermentRequestMessage(pi, rawIntent)
 	await startFermentForIntent({ pi, ctx, runtime, rawIntent })
 }
 
 /**
  * Create a draft ferment and run the interactive scoping flow with a
- * pre-supplied intent. Shared between the slash command (after editor prompt)
- * and the `request_ferment_workflow` tool (after the agent confirms with the
- * user via questionnaire). Returns `undefined` when another ferment is already
+ * pre-supplied intent. Returns `undefined` when another ferment is already
  * running and the call is refused.
  */
 export async function startFermentForIntent({

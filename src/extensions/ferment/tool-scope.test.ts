@@ -38,7 +38,6 @@ describe("ferment tool scope", () => {
 			[
 				"read",
 				"bash",
-				"request_ferment_workflow",
 				"propose_ferment_scoping",
 				"scope_ferment",
 				"activate_ferment_phase",
@@ -49,7 +48,6 @@ describe("ferment tool scope", () => {
 			[
 				"read",
 				"bash",
-				"request_ferment_workflow",
 				"propose_ferment_scoping",
 				"scope_ferment",
 				"activate_ferment_phase",

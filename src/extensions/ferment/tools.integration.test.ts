@@ -18,7 +18,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { FermentStorage, clearFermentCache } from "../../ferment/store.js"
 import type { Ferment } from "../../ferment/types.js"
-import { PERMISSIONS_ENV_KEY } from "../permissions/constants.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
 import { clearAllPendingScopes, getPendingScope, setPendingScope } from "./scoping.js"
 import {
@@ -113,17 +112,6 @@ function createHarness(): Harness {
 	}
 
 	return { storage, runtime, tempDir, tools, pi, call }
-}
-
-function createWorkflowCtx(options: { confirm?: boolean } = {}) {
-	return {
-		hasUI: true,
-		ui: {
-			notify: vi.fn(),
-			setStatus: vi.fn(),
-			confirm: vi.fn(async () => options.confirm ?? false),
-		},
-	}
 }
 
 // Helpers for asserting on tool results.
@@ -240,84 +228,6 @@ function loadFerment(id: string): Ferment {
 	if (!f) throw new Error(`Ferment ${id} not found`)
 	return f
 }
-
-// ─── request_ferment_workflow ────────────────────────────────────────────────
-
-describe("request_ferment_workflow approval gate", () => {
-	const approvedIntent = "Find improvements to this extension, but do not implement anything until I approve the plan."
-	const requestWorkflow = (params: { title?: string; intent?: string }, ctx = createWorkflowCtx()) =>
-		h.call("request_ferment_workflow", { title: "Approved Ferment", intent: approvedIntent, ...params }, ctx)
-
-	it("asks the host for approval and refuses when the user declines", async () => {
-		const ctx = createWorkflowCtx({ confirm: false })
-		const text = err(
-			await requestWorkflow({ title: "No Consent", intent: "Find improvements to this extension." }, ctx),
-		)
-
-		expect(ctx.ui.confirm).toHaveBeenCalledWith(
-			"Start Ferment Workflow",
-			expect.stringContaining('Start a Ferment workflow for "No Consent"?'),
-		)
-		expect(text).toContain("request_ferment_workflow cancelled")
-		expect(text).toContain("user declined")
-		expect(getActive()).toBeUndefined()
-	})
-
-	it("starts after host approval", async () => {
-		const ctx = createWorkflowCtx({ confirm: true })
-
-		const text = ok(await requestWorkflow({}, ctx))
-
-		expect(text).toContain('Ferment "Approved Ferment" created')
-		expect(getActive()?.status).toBe("draft")
-		expect(getActive()?.description).toBe(
-			"Find improvements to this extension, but do not implement anything until I approve the plan.",
-		)
-		expect(getActiveFermentId()).toBe(getActive()?.id)
-	})
-
-	it("validates intent before asking for host approval", async () => {
-		const ctx = createWorkflowCtx({ confirm: true })
-
-		const first = err(await requestWorkflow({ intent: "  " }, ctx))
-		expect(first).toContain('Field "intent" must be the full non-empty user request')
-		expect(ctx.ui.confirm).not.toHaveBeenCalled()
-
-		const retry = ok(await requestWorkflow({ intent: "Find improvements to this extension." }, ctx))
-		expect(retry).toContain('Ferment "Approved Ferment" created')
-	})
-
-	it("bypasses the approval gate in yolo mode", async () => {
-		vi.stubEnv(PERMISSIONS_ENV_KEY, "yolo")
-		const ctx = createWorkflowCtx({ confirm: false })
-		const text = ok(
-			await requestWorkflow(
-				{
-					title: "Yolo Ferment",
-					intent: "Create a Go app with Gin and integrate Kimchi plugin logic.",
-				},
-				ctx,
-			),
-		)
-
-		expect(ctx.ui.confirm).not.toHaveBeenCalled()
-		expect(text).toContain('Ferment "Yolo Ferment" created')
-		expect(getActive()?.status).toBe("draft")
-		expect(getActive()?.description).toBe("Create a Go app with Gin and integrate Kimchi plugin logic.")
-	})
-
-	it("does not bypass approval when yolo came from an active ferment env", async () => {
-		vi.stubEnv(PERMISSIONS_ENV_KEY, "yolo")
-		vi.stubEnv("KIMCHI_ACTIVE_FERMENT", "existing-ferment")
-		const text = err(
-			await requestWorkflow({ title: "Blocked Ferment", intent: "Find improvements to this extension." }),
-		)
-
-		expect(text).toContain("request_ferment_workflow refused")
-		expect(text).toContain("another ferment appears to be active")
-		expect(getActive()).toBeUndefined()
-	})
-})
 
 // ─── list_ferments ────────────────────────────────────────────────────────────
 

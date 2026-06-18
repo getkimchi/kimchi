@@ -7,7 +7,7 @@ import { FERMENT_TOOLS, FERMENT_TOOL_NAMES, isFermentToolName } from "./tool-nam
 
 export type FermentToolProfile = "idle" | "planner-active" | "paused-terminal" | "worker" | "oneshot-planner"
 
-const PAUSED_TERMINAL_FERMENT_TOOL_NAMES = [FERMENT_TOOLS.LIST, FERMENT_TOOLS.REQUEST_WORKFLOW] as const
+const PAUSED_TERMINAL_FERMENT_TOOL_NAMES = [FERMENT_TOOLS.LIST] as const
 
 /**
  * Tools the planner is allowed to call directly in `ferment-oneshot` mode.
