@@ -183,7 +183,7 @@ describe("registerFermentEvents", () => {
 		expect(result?.systemPrompt).toBeUndefined()
 	})
 
-	it("applies the idle static profile on before_agent_start when flag is unset and no ferment is active", async () => {
+	it("applies the idle static profile without ferment tools when no ferment is active", async () => {
 		const runtime: FermentRuntime = { ...createDefaultFermentRuntime() }
 		const { handlers, pi } = createPi()
 		;(pi.getFlag as ReturnType<typeof vi.fn>).mockReturnValue(undefined)
@@ -203,7 +203,7 @@ describe("registerFermentEvents", () => {
 		await beforeAgentStart({ systemPrompt: "base" }, {})
 
 		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
-		expect(lastCall).toContain("list_ferments")
+		expect(lastCall).not.toContain("list_ferments")
 		expect(lastCall).not.toContain("scope_ferment")
 	})
 
