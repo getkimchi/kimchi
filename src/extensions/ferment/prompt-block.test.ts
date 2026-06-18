@@ -16,14 +16,19 @@ function makeMockCtx(): ExtensionContext {
 	return { sessionManager: { getSessionId: () => TEST_SESSION_ID } } as unknown as ExtensionContext
 }
 
-function makePi(oneshot: boolean): ExtensionAPI {
+function makePi(oneshot: boolean, idleNudge = false): ExtensionAPI {
 	return {
-		getFlag: (name: string) => (name === "ferment-oneshot" ? oneshot : undefined),
+		getFlag: (name: string) => {
+			if (name === "ferment-oneshot") return oneshot
+			if (name === "ferment-idle-nudge") return idleNudge
+			return undefined
+		},
 	} as unknown as ExtensionAPI
 }
 
 const PI_NORMAL = makePi(false)
 const PI_ONESHOT = makePi(true)
+const PI_IDLE_NUDGE = makePi(false, true)
 
 const NOW = "2026-01-01T00:00:00.000Z"
 
@@ -115,8 +120,13 @@ describe("buildFermentPromptBlock", () => {
 			})
 		}
 
-		it("returns idle hint when no ferment is active", () => {
+		it("does not inject the idle hint when no ferment is active", () => {
 			const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeNoActiveFermentRuntime())
+			expect(out).toBeUndefined()
+		})
+
+		it("returns idle hint when the ferment-idle-nudge flag is enabled", () => {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_IDLE_NUDGE, makeNoActiveFermentRuntime())
 			expect(out).toContain("Ferment Workflow")
 			expect(out).toContain("The tool asks the user for explicit host confirmation")
 			expect(out).toContain("In yolo permissions mode, the host auto-approves")
@@ -321,8 +331,8 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).not.toContain("worker_model")
 		})
 
-		it("keeps phase tagging out of the pre-ferment classification path", () => {
-			const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeNoActiveFermentRuntime()) ?? ""
+		it("keeps phase tagging out of the flagged idle-nudge classification path", () => {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_IDLE_NUDGE, makeNoActiveFermentRuntime()) ?? ""
 			expect(out).toContain("Do not call `set_phase`")
 			expect(out).toContain("*until* you have classified the request")
 			expect(out).toContain("called `request_ferment_workflow`")

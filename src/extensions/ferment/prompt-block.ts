@@ -118,9 +118,9 @@ Call \`request_ferment_workflow\` with a concise \`title\` and an \`intent\` con
  * - flag set: draft state still gets the planner supplement because the
  *   ferment-oneshot planner must scope autonomously from the bootstrap turn.
  *
- * Returns `undefined` only for terminal/draft states that already have their
- * own flow; idle (no ferment) renders a soft, optional hint that nudges the
- * agent to ask the user before starting substantial work, never to block.
+ * Returns `undefined` for terminal/draft states that already have their own
+ * flow. Idle sessions stay Ferment-free by default; `ferment-idle-nudge`
+ * keeps the old optional hint available for controlled experiments.
  */
 export function buildFermentPromptBlock(
 	ctx: ExtensionContext,
@@ -136,7 +136,9 @@ export function buildFermentPromptBlock(
 	if (getPermissionMode(sessionId)?.mode === "plan") return undefined
 
 	const f = runtime.getActive()
-	if (!f) return IDLE_FERMENT_HINT
+	if (!f) {
+		return pi.getFlag("ferment-idle-nudge") === true ? IDLE_FERMENT_HINT : undefined
+	}
 
 	const oneshot = pi.getFlag("ferment-oneshot") === true
 
