@@ -15,17 +15,24 @@ describe("reduceReplaceList", () => {
 		expect(() => reduceReplaceList(createEmptyTodosSliceState(), badParams)).toThrowError(/Unsupported todo action/)
 	})
 
-	it("drops empty todos and clamps invalid statuses to pending", () => {
+	it("drops empty todos and defaults missing statuses to pending", () => {
 		const result = reduceReplaceList(createEmptyTodosSliceState(), {
 			action: "replace-list",
 			scope: GLOBAL_SCOPE,
-			todos: [
-				{ content: "  ", status: "completed" },
-				{ content: " keep  me ", status: "not-real" },
-			] as unknown as WriteTodosParams["todos"],
+			todos: [{ content: "  " }, { content: " keep  me " }] as unknown as WriteTodosParams["todos"],
 		})
 
 		expect(result.details.todos).toEqual([{ id: 1, content: "keep me", status: "pending" }])
+	})
+
+	it("rejects invalid statuses", () => {
+		expect(() =>
+			reduceReplaceList(createEmptyTodosSliceState(), {
+				action: "replace-list",
+				scope: GLOBAL_SCOPE,
+				todos: [{ content: "keep me", status: "not-real" }] as unknown as WriteTodosParams["todos"],
+			}),
+		).toThrowError(/Invalid todo status/)
 	})
 
 	it("replaces list and preserves supplied IDs while assigning missing IDs deterministically", () => {

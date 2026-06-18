@@ -26,8 +26,10 @@ function normalizeText(value: unknown): string | undefined {
 }
 
 function normalizeStatus(value: unknown): TodoStatus {
+	if (value === undefined) return "pending"
 	const status = typeof value === "string" ? value.trim() : ""
-	return TODO_STATUSES.includes(status as TodoStatus) ? (status as TodoStatus) : "pending"
+	if (TODO_STATUSES.includes(status as TodoStatus)) return status as TodoStatus
+	throw new Error(`Invalid todo status '${String(value)}'`)
 }
 
 function normalizeTodoId(value: unknown): number | undefined {
