@@ -65,6 +65,7 @@ async function focusOption(terminal: Terminal, pattern: RegExp, maxDowns = 6): P
 	for (let i = 0; i <= maxDowns; i++) {
 		pattern.lastIndex = 0
 		if (pattern.test(fullText(terminal))) return
+		if (i === maxDowns) break
 		terminal.keyDown()
 		await new Promise((resolve) => setTimeout(resolve, 100))
 	}
