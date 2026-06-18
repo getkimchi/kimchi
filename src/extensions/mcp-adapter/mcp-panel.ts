@@ -334,7 +334,7 @@ class McpPanel {
 				// Commit saved values as the new baseline so dirty/unsaved clears.
 				this.servers.forEach((s) => s.tools.forEach((t) => { t.wasDirect = t.isDirect }))
 				this.updateDirty()
-				this.saveNotice = "Saved ✓"
+				this.saveNotice = "Saved ✓ — restart pi to apply"
 			}
 			this.tui.requestRender()
 			return
