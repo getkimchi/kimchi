@@ -1,31 +1,3 @@
-# Patch: kimchi-dev runtime extensions for pi-coding-agent
-#
-# Changes included:
-#   1. dist/cli/args.js         — expose KIMCHI_API_KEY in --help env-var block
-#   2. dist/core/extensions/runner.js — add emitBeforeProviderHeaders(headers) method,
-#                                       mirroring emitBeforeProviderRequest pattern
-#   3. dist/core/sdk.js         — call emitBeforeProviderHeaders in streamFn after
-#                                 static header assembly, so extensions can inject
-#                                 per-request dynamic headers (X-Session-Id, X-Turn-Index)
-#   5. dist/core/agent-session.js — set agent.prepareNextTurn to refresh context.tools
-#                                   from state.tools after each tool batch, enabling
-#                                   mid-run setActiveTools() calls to take effect on
-#                                   the next model response within the same agent run.
-#                                   Upstream tracking: file against pi-mono to add
-#                                   prepareNextTurn wiring in AgentSession directly.
-#   4. dist/core/model-registry.js, dist/core/tools/edit.js,
-#      dist/modes/interactive/  — miscellaneous upstream fixes bundled in this patch
-#
-# Tracking: open an upstream PR against pi-mono to ship before_provider_headers as
-# a first-class extension hook in ExtensionRunner and ExtensionAPI.
-# Issue: TODO — file against https://github.com/earendil-works/pi-mono once the
-# API design is confirmed stable.
-#
-# Removal criteria: Remove this patch (and the companion type augmentation in
-# src/types/pi-coding-agent-utils.d.ts) once upstream pi-coding-agent ships
-# BeforeProviderHeadersEvent + ExtensionAPI.on("before_provider_headers", ...) and
-# the fixed version is pinned in package.json.
-#
 diff --git a/dist/cli/args.js b/dist/cli/args.js
 index 47a360d2a6892aeab2e69cc1a15156ec8e933857..1c2a7f0e5363f73ce657e422751f524a567429bd 100644
 --- a/dist/cli/args.js
@@ -66,13 +38,37 @@ index 3f07d5dbfae0b4698cf76dd11d2fc8ff414ad88b..a5910375ed06a5a637a5da118999a585
 +                        stack: err instanceof Error ? err.stack : undefined,
 +                    });
 +                }
-+            }
-+        }
-+        return current;
-+    }
-     async emitBeforeAgentStart(prompt, images, systemPrompt, systemPromptOptions) {
-         let currentSystemPrompt = systemPrompt;
-         const ctx = Object.defineProperties({}, Object.getOwnPropertyDescriptors(this.createContext()));
++                // force=true: retry with keepRecentTokens=0 so even small sessions compact.
++                preparation = prepareCompaction(pathEntries, { ...settings, keepRecentTokens: 0 });
++                if (!preparation) {
++                    throw new Error("Nothing to compact (no valid cut point)");
++                }
+             }
+             let extensionCompaction;
+             let fromExtension = false;
+@@ -1789,7 +1811,7 @@ export class AgentSession {
+             compact: (options) => {
+                 void (async () => {
+                     try {
+-                        const result = await this.compact(options?.customInstructions);
++                        const result = await this.compact(options?.customInstructions, options?.force ?? false);
+                         options?.onComplete?.(result);
+                     }
+                     catch (error) {
+diff --git a/dist/core/extensions/types.d.ts b/dist/core/extensions/types.d.ts
+index f65b0bc520e4f15b85beb6ce767d0b34f05e4818..9659d6bf6378bcea3d1c125d6f16adcdc9c16012 100644
+--- a/dist/core/extensions/types.d.ts
++++ b/dist/core/extensions/types.d.ts
+@@ -198,6 +198,9 @@ export interface ContextUsage {
+ }
+ export interface CompactOptions {
+     customInstructions?: string;
++    /** When true, compact even if the session is below the normal size threshold.
++     *  Uses keepRecentTokens=0 so all history is eligible to be summarised. */
++    force?: boolean;
+     onComplete?: (result: CompactionResult) => void;
+     onError?: (error: Error) => void;
+ }
 diff --git a/dist/core/model-registry.js b/dist/core/model-registry.js
 index 41ffa679c862f6d0862f1ed07be45836046b97e4..dc6468f0627a2b85dac9abb08b5b424085c02217 100644
 --- a/dist/core/model-registry.js
@@ -390,28 +386,3 @@ index 0ab79928806ecd3fb84610447da4990e25047311..f400b9519304c909ee968c3dc12a5dfe
          const model = await this.findExactModelMatch(searchTerm);
          if (model) {
              try {
-
-diff --git a/dist/core/agent-session.js b/dist/core/agent-session.js
---- a/dist/core/agent-session.js
-+++ b/dist/core/agent-session.js
-@@ -195,6 +195,20 @@
-                 throw new Error(`Extension failed, blocking execution: ${String(err)}`);
-             }
-         };
-+        // Refresh context.tools from state.tools after every tool batch so that
-+        // mid-run setActiveTools() calls (e.g. the planning→implementation profile
-+        // transition fired by activate_ferment_phase) are visible to the next model
-+        // response within the same agent run. Without this, createContextSnapshot()
-+        // snaps tools once at prompt/continue time and the loop never updates them.
-+        this.agent.prepareNextTurn = async (_signal) => {
-+            return {
-+                context: {
-+                    systemPrompt: this.agent.state.systemPrompt,
-+                    messages: this.agent.state.messages.slice(),
-+                    tools: this.agent.state.tools.slice(),
-+                },
-+            };
-+        };
-         this.agent.afterToolCall = async ({ toolCall, args, result, isError }) => {
-             const runner = this._extensionRunner;
-             if (!runner.hasHandlers("tool_result")) {
