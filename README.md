@@ -364,14 +364,15 @@ See `docs/hooks.md` for the hook protocol and examples.
 
 ### Migrating from another coding agent
 
-On first run, kimchi looks for an existing **Claude Code** or **OpenCode** installation and offers to migrate its MCP servers. If anything is migratable you will see a one-shot prompt:
+On first run, kimchi looks for an existing **Claude Code**, **OpenCode**, or **Cursor** installation and offers to migrate its MCP servers. If anything is migratable you will see a one-shot prompt:
 
 ```
-+  Claude Code + OpenCode configuration found
++  Claude Code + OpenCode + Cursor configuration found
 |
 |  MCP servers: filesystem, github, ripgrep
 |  Claude Code skills: 4 in ~/.claude/skills
 |  OpenCode skills: 2 in ~/.config/opencode/skills
+|  Cursor skills: 3 in ~/.cursor/skills
 |
 *  Migrate MCP servers to Kimchi?
 |  * Migrate now
@@ -389,15 +390,16 @@ The prompt is only shown when something is actually worth migrating. If neither 
 |---|---|---|
 | Claude Code | `~/.claude.json` (top-level `mcpServers` + per-project `projects[*].mcpServers`) | `~/.claude/skills/` |
 | OpenCode | `$OPENCODE_CONFIG`, then `~/.config/opencode/opencode.json`, `opencode.jsonc`, `config.json`, `~/.opencode.json` | `~/.config/opencode/skills/` |
+| Cursor | `~/.cursor/mcp.json`, then `~/.config/cursor/mcp.json` | `.cursor/skills/`, then `~/.cursor/skills/` |
 
-For OpenCode, both the modern (`mcp` block) and legacy Go-binary (`mcpServers` block) schemas are supported. Servers with `enabled: false` are skipped.
+For OpenCode, both the modern (`mcp` block) and legacy Go-binary (`mcpServers` block) schemas are supported. Servers with `enabled: false` are skipped. For Cursor, servers with `disabled: true` are skipped.
 
 #### Conflict resolution
 
 When the same MCP server name appears in multiple sources:
 
-1. **Within one agent**: earlier files win; project-level entries win over top-level (Claude Code); modern `mcp` block wins over legacy `mcpServers` (OpenCode).
-2. **Across agents**: Claude Code wins over OpenCode.
+1. **Within one agent**: earlier files win; project-level entries win over top-level (Claude Code); modern `mcp` block wins over legacy `mcpServers` (OpenCode); `~/.cursor/mcp.json` wins over `~/.config/cursor/mcp.json` (Cursor).
+2. **Across agents**: Claude Code wins over OpenCode, which wins over Cursor.
 3. **Against existing Kimchi config**: your entries in `~/.config/kimchi/harness/mcp.json` always win.
 
 #### "Never ask again"

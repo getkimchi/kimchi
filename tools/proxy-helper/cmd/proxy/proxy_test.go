@@ -52,7 +52,7 @@ func newFakeBackend(t *testing.T) *fakeBackend {
 func (f *fakeBackend) handler() http.Handler {
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("/ai-optimizer/v1beta/api-keys:verify", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/ai-optimizer/v1beta/workspace-tokens:verifyKey", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method", http.StatusMethodNotAllowed)
 			return
