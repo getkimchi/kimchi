@@ -250,7 +250,6 @@ export default function uiExtension(pi: ExtensionAPI) {
 		stopWorkingAnimation?.()
 		stopWorkingAnimation = undefined
 		toolsInFlight = 0
-		thinkingInFlight = 0
 		userInputPending = 0
 		resetState()
 		currentCtx = ctx
@@ -470,13 +469,6 @@ export default function uiExtension(pi: ExtensionAPI) {
 
 	let stopWorkingAnimation: (() => void) | undefined
 	let toolsInFlight = 0
-	/** Number of reasoning blocks currently streaming inside the active assistant message.
-	 *  Tracked like toolsInFlight so the cooking animation stays visible while the
-	 *  model thinks. Incremented on `message_update(thinking_start)`, decremented on
-	 *  `message_update(thinking_end)`. message_start's kill condition checks both
-	 *  counters together; thinking_start brings the spinner back if it was torn down.
-	 */
-	let thinkingInFlight = 0
 	/** Tracks whether a tool-executed block is awaiting user input at the TUI.
 	 *  Incremented when toolsInFlight hits 0 and the UI may be blocking (e.g. questionnaire).
 	 *  Decremented when the user actually types a response (input event).
@@ -517,7 +509,6 @@ export default function uiExtension(pi: ExtensionAPI) {
 		workedForTimer = undefined
 		currentCtx = ctx
 		toolsInFlight = 0
-		thinkingInFlight = 0
 		userInputPending = 0
 		turnStartMs = Date.now()
 		thinkingStatus = null
@@ -530,12 +521,9 @@ export default function uiExtension(pi: ExtensionAPI) {
 		if (evt.type === "thinking_start") {
 			thinkingStartMs = Date.now()
 			thinkingStatus = "thinking"
-			thinkingInFlight++
-			// If the spinner was torn down at message_start but the model is now
-			// reasoning, bring it back so the user sees the cooking animation
-			// throughout the (potentially long) reasoning window. The upstream TUI
-			// coalesces consecutive requestRender() calls, so the brief off-then-on
-			// at message_start → thinking_start isn't user-visible.
+			// Reasoning is in flight. If the spinner isn't running (e.g. because the
+			// TUI was blocking on a permission prompt) and no suppression is active,
+			// start it so the cooking animation covers the reasoning window.
 			if (ctx && userInputPending === 0) {
 				startIndicator(ctx)
 			}
@@ -544,25 +532,32 @@ export default function uiExtension(pi: ExtensionAPI) {
 				const duration = Date.now() - thinkingStartMs
 				thinkingStatus = duration > 100 ? duration : null
 			}
-			thinkingInFlight = Math.max(0, thinkingInFlight - 1)
+		} else if (evt.type === "text_start" && ctx) {
+			// Text content is about to stream. Stop the cooking animation so the
+			// status bar doesn't show a stale message while the response renders.
+			// (The spinner lives in statusContainer and text in chatContainer, so
+			// they don't visually overlap — but the spinner message would be
+			// misleading once visible text starts flowing.)
+			stopIndicator(ctx)
 		}
 	})
 	pi.on("message_start", (event, ctx) => {
 		if (event.message.role !== "assistant") return
-		// Stop the spinner only when nothing is keeping it alive: no tools and no
-		// reasoning blocks in flight, and no user-input prompt pending. When the
-		// model starts reasoning (the common case for thinking-enabled models),
-		// the message_update(thinking_start) handler re-arms the spinner so the
-		// cooking animation runs throughout reasoning.
-		if (toolsInFlight + thinkingInFlight === 0) {
-			if (userInputPending > 0) {
-				// Still waiting for user input — suppress spinner restart; decrement so
-				// it re-arms for the next message_start if no user input arrives (e.g.
-				// turn ends without a response).
-				userInputPending--
-				return
-			}
-			stopIndicator(ctx)
+		// The spinner is intentionally kept alive through message_start so the
+		// cooking animation is visible during the gap before the first content
+		// event arrives — text_start for non-thinking models, thinking_start for
+		// thinking models. For models with significant prefill/reasoning-setup
+		// time, this gap can be tens of seconds; killing the spinner here would
+		// leave the user staring at a blank TUI with no feedback.
+		//
+		// text_start and message_end are responsible for stopping the spinner
+		// once content is visible or the assistant finishes.
+		//
+		// We still decrement userInputPending here — it was incremented by
+		// tool_execution_end when the TUI may be blocking on a prompt — so the
+		// suppression is lifted for the next thinking_start or text_start.
+		if (userInputPending > 0) {
+			userInputPending--
 		}
 	})
 	pi.on("message_end", (event, ctx) => {
@@ -603,7 +598,6 @@ export default function uiExtension(pi: ExtensionAPI) {
 		clearTimeout(workedForTimer)
 		workedForTimer = undefined
 		toolsInFlight = 0
-		thinkingInFlight = 0
 		userInputPending = 0
 		thinkingStatus = null
 		thinkingStartMs = 0
