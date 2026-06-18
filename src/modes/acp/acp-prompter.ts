@@ -1,11 +1,7 @@
-import type {
-	AgentSideConnection,
-	PermissionOption,
-	RequestPermissionResponse,
-	ToolCallUpdate,
-} from "@agentclientprotocol/sdk"
+import type { AgentSideConnection, PermissionOption, ToolCallUpdate } from "@agentclientprotocol/sdk"
 import type { PermissionChoice, ToolPermissionPrompter } from "../../extensions/permissions/prompter.js"
 import type { ApprovalOutcome } from "../../extensions/permissions/prompts.js"
+import { requestWithAbort } from "./utils.js"
 
 export type ToolCallUpdateBuilder = (
 	toolCallId: string,
@@ -59,18 +55,4 @@ export function createAcpPermissionPrompter(
 			}
 		},
 	}
-}
-
-function requestWithAbort(
-	request: Promise<RequestPermissionResponse>,
-	signal: AbortSignal | undefined,
-): Promise<RequestPermissionResponse | "aborted"> {
-	if (!signal) return request
-	if (signal.aborted) return Promise.resolve("aborted")
-
-	return new Promise((resolve, reject) => {
-		const onAbort = () => resolve("aborted")
-		signal.addEventListener("abort", onAbort, { once: true })
-		request.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort))
-	})
 }

@@ -1,5 +1,5 @@
 // ACP (Agent Client Protocol) mode: JSON-RPC 2.0 over stdio using
-// @agentclientprotocol/sdk. Lets Zed / openclaw drive kimchi in-process.
+// @agentclientprotocol/sdk. Lets IDE extensions, Zed, openclaw drive kimchi in-process.
 
 import { closeSync, openSync, readFileSync, readSync, readdirSync } from "node:fs"
 import { join } from "node:path"
@@ -11,6 +11,7 @@ import {
 	type AuthenticateRequest,
 	type AuthenticateResponse,
 	type CancelNotification,
+	type ClientCapabilities,
 	type CloseSessionRequest,
 	type CloseSessionResponse,
 	type ContentBlock,
@@ -42,7 +43,6 @@ import {
 import type { ImageContent } from "@earendil-works/pi-ai"
 import {
 	type AgentSession,
-	type AgentSessionEvent,
 	AuthStorage,
 	DefaultResourceLoader,
 	type ExtensionFactory,
@@ -54,6 +54,7 @@ import {
 	createAgentSession,
 	initTheme,
 } from "@earendil-works/pi-coding-agent"
+import type { AgentSessionEvent, ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 import { isHideThinkingEnabled } from "../../extensions/hide-thinking.js"
 import { loadConfig } from "../../extensions/permissions/config.js"
 import { PERMISSIONS_ENV_KEY } from "../../extensions/permissions/constants.js"
@@ -74,6 +75,9 @@ import {
 	type SessionPermissionFlagController,
 } from "../../extensions/permissions/types.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
+import { createAcpUIContext } from "./acp-ui-context.js"
+import { ADVERTISED_CAPABILITIES, CAPABILITIES_KEY } from "./capabilities.js"
+import { AVAILABLE_COMMANDS } from "./commands.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
 
 /**
@@ -137,6 +141,7 @@ export class KimchiAcpAgent implements Agent {
 	private readonly sessionLister: AcpSessionLister
 	private readonly sessionLoader: AcpSessionLoader
 	private readonly permissionsEnvFlag = process.env[PERMISSIONS_ENV_KEY]
+	private clientCapabilities: ClientCapabilities | undefined
 	// Track non-text prompt block types we've already warned about so a
 	// misbehaving client that sends 1000 image blocks doesn't flood stderr.
 	private warnedBlockTypes = new Set<string>()
@@ -174,7 +179,9 @@ export class KimchiAcpAgent implements Agent {
 		this.sessionLoader = options.sessionLoader ?? defaultSessionLoader(options)
 	}
 
-	async initialize(_: InitializeRequest): Promise<InitializeResponse> {
+	async initialize(request: InitializeRequest): Promise<InitializeResponse> {
+		this.clientCapabilities = request.clientCapabilities
+
 		const authStorage = AuthStorage.create(join(this.agentDir, "auth.json"))
 		const modelRegistry = ModelRegistry.create(authStorage, join(this.agentDir, "models.json"))
 		const supportsImages = modelRegistry.getAvailable().some((m) => m.input?.includes("image"))
@@ -188,6 +195,8 @@ export class KimchiAcpAgent implements Agent {
 				// the spec hasn't unified it under sessionCapabilities yet.
 				sessionCapabilities: { list: {}, close: {} },
 				promptCapabilities: { image: supportsImages, audio: false, embeddedContext: false },
+				// Extended capabilities
+				_meta: { [CAPABILITIES_KEY]: ADVERTISED_CAPABILITIES },
 			},
 			authMethods: [],
 		}
@@ -249,14 +258,16 @@ export class KimchiAcpAgent implements Agent {
 				this.send(params),
 			)
 
-			await bindAcpExtensions(session)
+			await bindAcpExtensions(session, this.buildUiContext(sessionId))
+
 			const unsubscribe = session.subscribe((event) => this.onSessionEvent(sessionId, event))
 			this.sessions.set(sessionId, { session, unsubscribe })
 
-			const models = buildSessionModelState(session)
+			this.sendAvailableCommandsUpdate(sessionId)
+
 			return {
 				sessionId,
-				models,
+				models: buildSessionModelState(session),
 				configOptions: [buildPermissionsConfigOption(permissionFlagController.getMode()?.mode)],
 			}
 		} catch (err) {
@@ -267,6 +278,15 @@ export class KimchiAcpAgent implements Agent {
 			session.dispose()
 			throw err
 		}
+	}
+
+	/**
+	 * Build the ExtensionUIContext that pi's runner routes `ctx.ui.*` calls
+	 * through. Bound to a single session for its lifetime — the connection,
+	 * capabilities, and `send` callback are all session-scoped state.
+	 */
+	private buildUiContext(sessionId: string): ExtensionUIContext {
+		return createAcpUIContext(this.conn, sessionId, this.clientCapabilities, (params) => this.send(params))
 	}
 
 	async unstable_setSessionModel(params: SetSessionModelRequest): Promise<SetSessionModelResponse> {
@@ -328,34 +348,32 @@ export class KimchiAcpAgent implements Agent {
 				"mcpServers is not supported; configure MCP servers via kimchi config",
 			)
 		}
-		const existing = this.sessions.get(params.sessionId)
+		const sessionId = params.sessionId
+		const existing = this.sessions.get(sessionId)
 		if (existing) {
 			if (existing.turn) {
-				throw RequestError.invalidRequest(
-					undefined,
-					`session ${params.sessionId} has a turn in progress; cancel it first`,
-				)
+				throw RequestError.invalidRequest(undefined, `session ${sessionId} has a turn in progress; cancel it first`)
 			}
 			this.replayTranscript(existing.session)
+			this.sendAvailableCommandsUpdate(sessionId)
+
 			return {
 				models: this.modelStateForSession(existing.session),
 				configOptions: [
-					buildPermissionsConfigOption(
-						getPermissionMode(params.sessionId)?.mode ?? this.resolveInitialMode(params.cwd),
-					),
+					buildPermissionsConfigOption(getPermissionMode(sessionId)?.mode ?? this.resolveInitialMode(params.cwd)),
 				],
 			}
 		}
-		const loading = this.loadingSessions.get(params.sessionId)
+		const loading = this.loadingSessions.get(sessionId)
 		if (loading) return loading
 
 		const loadingPromise = this.loadSessionFresh(params)
-		this.loadingSessions.set(params.sessionId, loadingPromise)
+		this.loadingSessions.set(sessionId, loadingPromise)
 		try {
 			return await loadingPromise
 		} finally {
-			if (this.loadingSessions.get(params.sessionId) === loadingPromise) {
-				this.loadingSessions.delete(params.sessionId)
+			if (this.loadingSessions.get(sessionId) === loadingPromise) {
+				this.loadingSessions.delete(sessionId)
 			}
 		}
 	}
@@ -391,15 +409,18 @@ export class KimchiAcpAgent implements Agent {
 
 			const permissionFlagController = registerPermissionFlagController(sid, initialMode, (params) => this.send(params))
 
-			await bindAcpExtensions(session)
+			await bindAcpExtensions(session, this.buildUiContext(sid))
+
 			const unsubscribe = session.subscribe((event) => this.onSessionEvent(sid, event))
 			this.sessions.set(sid, { session, unsubscribe })
 
-			// Replay BEFORE the response resolves so Zed sees a coherent transcript
+			// Replay BEFORE the response resolves so client sees a coherent transcript
 			// when the loadSession promise settles. No turn context is created, so a
 			// concurrent session/cancel during replay is a no-op — a turn must not
 			// be considered active during replay.
 			this.replayTranscript(session)
+			this.sendAvailableCommandsUpdate(sid)
+
 			return {
 				models: this.modelStateForSession(session),
 				configOptions: [buildPermissionsConfigOption(permissionFlagController.getMode()?.mode)],
@@ -674,6 +695,13 @@ export class KimchiAcpAgent implements Agent {
 				})
 				return
 			}
+			// `extension_ui_request` is NOT a member of pi's AgentSessionEvent
+			// union — that event is only emitted by the standalone rpc-mode
+			// subprocess. In library mode, extension UI calls flow through
+			// ExtensionRunner.setUIContext(), which bindAcpExtensions() wires
+			// up before the session is subscribed. If pi ever adds the event
+			// to the library union, the switch above will fail to typecheck
+			// and we'll know to handle it here.
 			case "agent_end": {
 				// If no turn is active, this is a late agent_end after the prompt
 				// handler already synthesized end_turn (short-circuit path that
@@ -850,6 +878,16 @@ export class KimchiAcpAgent implements Agent {
 		})
 	}
 
+	private sendAvailableCommandsUpdate(sessionId: string): void {
+		this.send({
+			sessionId,
+			update: {
+				sessionUpdate: "available_commands_update",
+				availableCommands: AVAILABLE_COMMANDS,
+			},
+		})
+	}
+
 	private finalizeTurn(entry: SessionRecord, stopReason: PromptResponse["stopReason"]): void {
 		const turn = entry.turn
 		if (!turn) return
@@ -942,7 +980,14 @@ export function initializeHeadlessTheme(settingsManager: Pick<SettingsManager, "
 	initTheme(settingsManager.getTheme(), false)
 }
 
-async function bindAcpExtensions(session: AgentSession): Promise<void> {
+async function bindAcpExtensions(session: AgentSession, ui: ExtensionUIContext): Promise<void> {
+	// setUIContext must run before any extension handler fires — the runner
+	// resolves ctx.ui at handler-dispatch time, so a default no-op context
+	// would silently swallow dialogs during the gap between bindExtensions()
+	// resolving and the first prompt arriving. We attach it before binding
+	// extensions because bindExtensions() itself fires session_start, which
+	// is the first event any extension sees.
+	session.extensionRunner.setUIContext(ui)
 	await session.bindExtensions({
 		onError: (err) => {
 			process.stderr.write(`acp ext error [${err.extensionPath}] ${err.event}: ${err.error}\n`)
@@ -1423,7 +1468,7 @@ export async function runAcpMode(options: RunAcpOptions): Promise<void> {
 	const stream = ndJsonStream(writable, readable)
 
 	let agentInstance: KimchiAcpAgent | undefined
-	const conn = new AgentSideConnection((c: AgentSideConnection) => {
+	const conn = new AgentSideConnection((c) => {
 		agentInstance = new KimchiAcpAgent(c, options)
 		return agentInstance
 	}, stream)

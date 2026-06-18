@@ -223,9 +223,25 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 				)
 			}
 
-			const result = await ctx.ui.custom<QuestionnaireResult>((tui, theme, _kb, done) =>
-				createQuestionForm(tui, theme, questions, { title: params.header }, done),
-			)
+			let result: QuestionnaireResult
+			if (ctx.mode === "rpc") {
+				const answers: QuestionnaireResult["answers"] = []
+				let cancelled = true
+				for (const question of questions) {
+					let response = await ctx.ui.select(
+						question.label,
+						question.options.map((item) => item.label),
+					)
+					cancelled = cancelled && response === undefined
+					response = response ?? "User did not answer."
+					answers.push({ id: question.id, value: response, label: response, wasCustom: false })
+				}
+				result = { questions, answers, cancelled }
+			} else {
+				result = await ctx.ui.custom<QuestionnaireResult>((tui, theme, _kb, done) =>
+					createQuestionForm(tui, theme, questions, { title: params.header }, done),
+				)
+			}
 
 			if (result.cancelled) {
 				return {
