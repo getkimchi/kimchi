@@ -39,13 +39,9 @@ function buildPlannerSupplement(f: Ferment, continuationPolicy: ContinuationPoli
 			: "Automated continuation policy is active: do not ask the user to confirm phase advancement or step results. Continue through all stages until the ferment is complete, blocked, or paused."
 	const delegationCheckpoint =
 		"For broad existing-codebase scoping requests, follow the shared discovery guidance in the Upfront Contract before drafting recommendations."
-	// In one-shot mode the interactive gate (markScopingInteractive) is never
-	// armed, so scope_ferment is a perfectly legal tool — the bootstrap nudge
-	// (`oneshot.ts`) tells the model to call it. The interactive flow still
-	// routes through propose_ferment_scoping, so we keep that rule there and
-	// soften it here. Either way, every call must carry the P1/P2/P3 gates.
+	// One-shot uses scope_ferment directly; interactive routes through propose_ferment_scoping.
 	const scopeFermentDirectCallRule = isOneshot
-		? "Either `scope_ferment` or `propose_ferment_scoping` is fine; pick whichever matches the shape of your plan. Either call must include the full P1/P2/P3 plan-scope gate verdicts in the `gates` array — the schema hard-rejects calls missing this array."
+		? "Call `scope_ferment` directly — do NOT use `propose_ferment_scoping` (that tool is for the interactive TUI flow, which is not active in one-shot mode). The call must include the full P1/P2/P3 plan-scope gate verdicts in the `gates` array — the schema hard-rejects calls missing this array."
 		: "Do NOT call `scope_ferment` directly in the interactive flow — only `propose_ferment_scoping`. If a tool call fails (e.g. missing gate verdicts or invalid step shape), re-emit the FULL payload INCLUDING the questions you drafted and all P1/P2/P3 gates — never silently drop them on retry."
 	const upfrontContract = `\n\n## Upfront Contract\nTreat the Ferment Specification (goal, success criteria, constraints, assumptions) as the agreed plan. ${phaseAdvancementContract} Proceed with your highest-confidence interpretation and capture uncertainty via \`add_ferment_decision\` (architectural pivots) or \`add_ferment_memory\` (gotchas/conventions). Surface blockers only when you cannot proceed without human input.
 

@@ -331,22 +331,17 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).toContain("the host handles confirmation and queues scoping")
 		})
 
-		// Regression for Bug 2: prompt-block.ts:81 told every planner (including
-		// one-shot) to "Do NOT call scope_ferment directly — only propose_ferment_scoping".
-		// In one-shot mode `markScopingInteractive` is never armed
-		// (events.ts:341-343 / scoping.ts:165 / resume.ts:99), so the hard gate at
-		// tools/lifecycle.ts:586-587 is bypassed and scope_ferment is legal. The
-		// bootstrap nudge (oneshot.ts) tells the model to call it — the supplement
-		// must not contradict that.
+		// Regression: the scope_ferment rule must differ between interactive and one-shot.
 		it("tells interactive planners to avoid scope_ferment and use propose_ferment_scoping", () => {
 			const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime({ status: "running" })) ?? ""
 			expect(out).toContain("Do NOT call `scope_ferment` directly in the interactive flow")
 			expect(out).toContain("only `propose_ferment_scoping`")
 		})
 
-		it("tells one-shot planners that scope_ferment and propose_ferment_scoping are both valid", () => {
+		it("tells one-shot planners to use scope_ferment directly and avoid propose_ferment_scoping", () => {
 			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status: "running" })) ?? ""
-			expect(out).toContain("`scope_ferment` or `propose_ferment_scoping` is fine")
+			expect(out).toContain("Call `scope_ferment` directly")
+			expect(out).toContain("do NOT use `propose_ferment_scoping`")
 			expect(out).not.toContain("Do NOT call `scope_ferment` directly in the interactive flow")
 		})
 
@@ -357,11 +352,9 @@ describe("buildFermentPromptBlock", () => {
 		})
 
 		it("one-shot rule applies for status=draft, planned, and running", () => {
-			// The ferment lifecycle in one-shot mode walks draft → planned → running,
-			// so the supplement must use the one-shot wording for all three states.
 			for (const status of ["draft", "planned", "running"] as const) {
 				const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status })) ?? ""
-				expect(out, `status=${status}`).toContain("`scope_ferment` or `propose_ferment_scoping` is fine")
+				expect(out, `status=${status}`).toContain("Call `scope_ferment` directly")
 				expect(out, `status=${status}`).not.toContain("Do NOT call `scope_ferment` directly in the interactive flow")
 			}
 		})
