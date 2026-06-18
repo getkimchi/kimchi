@@ -204,6 +204,26 @@ describe("fetchWithRetry", () => {
 		expect(fetchImpl).toHaveBeenCalledTimes(1)
 	})
 
+	it("aborts during retry delay when signal is triggered", async () => {
+		const fetchImpl = vi.fn().mockResolvedValueOnce(makeResponse(500)).mockResolvedValueOnce(makeResponse(200))
+		const controller = new AbortController()
+
+		const promise = fetchWithRetry("https://example.com", undefined, {
+			fetchImpl,
+			signal: controller.signal,
+			retry: { maxRetries: 3 },
+		})
+
+		// Let the first attempt complete and enter retry delay
+		await vi.advanceTimersByTimeAsync(0)
+		// Abort during the delay
+		controller.abort()
+
+		await expect(promise).rejects.toThrow()
+		// Should NOT have made a second attempt
+		expect(fetchImpl).toHaveBeenCalledTimes(1)
+	})
+
 	// -------------------------------------------------------------------------
 	// Timeout via AbortController
 	// -------------------------------------------------------------------------

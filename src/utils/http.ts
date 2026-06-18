@@ -36,6 +36,24 @@ function parseRetryAfterMs(response: Response): number | null {
 	return null
 }
 
+function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
+	return new Promise((resolve, reject) => {
+		if (signal?.aborted) {
+			reject(signal.reason)
+			return
+		}
+		const timer = setTimeout(resolve, ms)
+		signal?.addEventListener(
+			"abort",
+			() => {
+				clearTimeout(timer)
+				reject(signal.reason)
+			},
+			{ once: true },
+		)
+	})
+}
+
 export async function fetchWithRetry(
 	url: string,
 	init?: RequestInit,
@@ -68,7 +86,7 @@ export async function fetchWithRetry(
 			const retryAfterMs = parseRetryAfterMs(response)
 			const computedDelay = computeRetryDelayMs(attempt)
 			const delay = retryAfterMs !== null ? Math.max(computedDelay, retryAfterMs) : computedDelay
-			await new Promise((resolve) => setTimeout(resolve, delay))
+			await abortableDelay(delay, options?.signal)
 		} catch (error) {
 			clearTimeout(timer)
 
@@ -80,7 +98,7 @@ export async function fetchWithRetry(
 			lastError = error
 
 			const delay = computeRetryDelayMs(attempt)
-			await new Promise((resolve) => setTimeout(resolve, delay))
+			await abortableDelay(delay, options?.signal)
 		}
 	}
 
