@@ -78,7 +78,7 @@ describe("registerFermentEvents", () => {
 		expect(pi.appendEntry).not.toHaveBeenCalled()
 	})
 
-	it("stages oneshot planner mode during session_start and applies tools before first agent run", async () => {
+	it("stages one-shot mode during session_start and applies runtime-derived idle profile before first agent run", async () => {
 		const storage = { list: vi.fn(() => []) } as unknown as FermentEventStore
 		const runtime: FermentRuntime = {
 			...createDefaultFermentRuntime(),
@@ -116,19 +116,32 @@ describe("registerFermentEvents", () => {
 
 		await beforeAgentStart({ systemPrompt: "base" }, {})
 
+		// Unified profile model: one-shot and interactive share the same derivation.
+		// With no active ferment in the runtime, profileForFerment returns "idle"
+		// and the toolset is the 4 discovery tools.
 		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
+		expect(lastCall).toContain("list_ferments")
+		expect(lastCall).toContain("request_ferment_workflow")
+		expect(lastCall).toContain("confirm_ferment_completion_criteria")
+		expect(lastCall).toContain("propose_ferment_scoping")
 		expect(lastCall).not.toContain("bash")
-		expect(lastCall).toContain("read")
-		expect(lastCall).toContain("Agent")
-		expect(lastCall).toContain("get_subagent_result")
-		expect(lastCall).toContain("set_phase")
-		expect(lastCall).toContain("scope_ferment")
-		expect(lastCall).toContain("start_ferment_step")
+		expect(lastCall).not.toContain("read")
+		expect(lastCall).not.toContain("Agent")
+		expect(lastCall).not.toContain("scope_ferment")
+		expect(lastCall).not.toContain("start_ferment_step")
 	})
 
-	it("restricts planner tools to the oneshot allowlist on before_agent_start when flag is set", async () => {
+	it("applies runtime-derived implementation profile on before_agent_start in one-shot mode when ferment has activated phase", async () => {
 		const runtime: FermentRuntime = {
 			...createDefaultFermentRuntime(),
+			getActive: vi.fn(
+				() =>
+					({
+						id: "ferment-oneshot-1",
+						status: "running",
+						phases: [{ id: "phase-1", status: "active", steps: [] }],
+					}) as never,
+			),
 		}
 		const { handlers, pi } = createPi()
 		;(pi.getFlag as ReturnType<typeof vi.fn>).mockImplementation((name: string) =>
@@ -151,11 +164,15 @@ describe("registerFermentEvents", () => {
 
 		await beforeAgentStart({ systemPrompt: "base" }, {})
 
+		// Unified profile model: the ferment-oneshot flag does NOT trigger a
+		// separate allowlist. The runtime's active ferment with an activated
+		// phase drives the implementation profile, which includes bash, edit,
+		// Agent, and the ferment lifecycle tools.
 		const setActive = pi.setActiveTools as ReturnType<typeof vi.fn>
 		const lastCall = setActive.mock.calls[setActive.mock.calls.length - 1][0] as string[]
-		expect(lastCall).not.toContain("bash")
-		expect(lastCall).not.toContain("edit")
-		expect(lastCall).not.toContain("web_search")
+		expect(lastCall).toContain("bash")
+		expect(lastCall).toContain("edit")
+		expect(lastCall).toContain("web_search")
 		expect(lastCall).toContain("read")
 		expect(lastCall).toContain("Agent")
 		expect(lastCall).toContain("get_subagent_result")

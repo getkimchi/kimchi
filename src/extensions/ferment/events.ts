@@ -421,10 +421,9 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 			applyFermentToolProfile(pi, "worker")
 			return {}
 		}
-		if (pi.getFlag("ferment-oneshot") === true) {
-			applyFermentToolProfile(pi, "oneshot-planner")
-			return {}
-		}
+		// One-shot and interactive flows share the unified profile model: derive
+		// the profile from the active ferment's lifecycle state (planning vs.
+		// implementation). Both modes drive off the same runtime.
 		applyFermentRuntimeToolProfile(pi, runtime)
 		return {}
 	})
