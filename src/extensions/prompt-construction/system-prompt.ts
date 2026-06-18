@@ -68,7 +68,7 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 	const projectContext = formatProjectContext(contextFiles)
 	const skillsSection = formatSkills(skills)
 
-	const orchestrationSection = resolveOrchestrationInstructions({
+	const { teamSection, instructionsSection: orchestrationSection } = resolveOrchestrationInstructions({
 		currentModelId,
 		registry,
 		mode,
@@ -85,6 +85,7 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 
 	return buildPrompt({
 		mode,
+		teamSection,
 		toolsSection,
 		environmentSection,
 		projectContext,
@@ -102,6 +103,7 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 
 interface PromptParts {
 	mode: PromptMode
+	teamSection: string
 	toolsSection: string
 	environmentSection: string
 	projectContext: string
@@ -141,13 +143,33 @@ const FACTUAL_ACCURACY = `
 function buildPrompt(parts: PromptParts): string {
 	const sections: string[] = []
 
+	// 1. Intro
 	const intro = parts.mode === "orchestrator" ? ORCHESTRATOR_INTRO : SINGLE_INTRO
 	sections.push(intro)
 
-	sections.push(`## Documents\n\n${DOCUMENTS_SECTION}`)
+	// 2. Your Team + Your Capabilities
+	if (parts.teamSection) {
+		sections.push(parts.teamSection)
+	}
+
+	// 3. Orchestration instructions (DOs/DONTs, budgets, agent management)
+	if (!parts.suppressed.has("orchestration") && parts.orchestrationSection) {
+		sections.push(parts.orchestrationSection)
+	}
+
+	// 4. Guidelines
 	sections.push(`## Guidelines\n\n${CORE_GUIDELINES}`)
 	sections.push(`## Factual Accuracy\n\n${FACTUAL_ACCURACY}`)
 
+	// 5. Phase guidelines
+	if (!parts.suppressed.has("phase-guidelines") && parts.phaseSection) {
+		sections.push(parts.phaseSection)
+	}
+
+	// 6. Documents
+	sections.push(`## Documents\n\n${DOCUMENTS_SECTION}`)
+
+	// 7. Rest: system prompt blocks, tools, skills, environment, project context
 	if (parts.systemPromptBlocks) {
 		sections.push(parts.systemPromptBlocks)
 	}
@@ -156,14 +178,6 @@ function buildPrompt(parts: PromptParts): string {
 
 	if (!parts.suppressed.has("skills") && parts.skillsSection) {
 		sections.push(parts.skillsSection)
-	}
-
-	if (!parts.suppressed.has("orchestration") && parts.orchestrationSection) {
-		sections.push(parts.orchestrationSection)
-	}
-
-	if (!parts.suppressed.has("phase-guidelines") && parts.phaseSection) {
-		sections.push(parts.phaseSection)
 	}
 
 	sections.push(parts.environmentSection)

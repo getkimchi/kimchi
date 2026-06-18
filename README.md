@@ -74,14 +74,15 @@ Use `/multi-model` in the interactive CLI to toggle models on/off per role, or e
 
 Defaults are hardcoded in `DEFAULT_MODEL_ROLES`. Roles accept any `provider/model-id` string or an array of strings. Only non-default values need to be specified; missing keys fall back to defaults.
 
-#### How model selection works
+#### How delegation works
 
-The orchestrator sees each role's model pool with tier and description. It picks the model whose description best matches the task:
+The orchestrator receives explicit per-phase directives generated from the role configuration. For each pipeline phase (plan, build, review, explore, research), the system prompt tells the orchestrator exactly what to do:
 
-- **Simple build chunk** (CRUD, parsers, CLI): picks standard-tier builder
-- **Complex build chunk** (concurrency, graph algorithms): picks the heaviest model whose description confirms correctness reasoning
-- **Code review**: picks the strongest reviewer by tier — fresh Agent context provides independence
-- **Exploration**: picks a light model for broad file reading, heavy for deep analysis
+- **Roles it owns** (its model ID appears in the role pool): "DO perform this work yourself."
+- **Roles it does not own**: "DO NOT perform this work yourself. Delegate to Agent(type: X, model: Y)." — with the concrete model IDs from the pool.
+- **Review is always delegated**, even when the orchestrator has the reviewer role, to ensure independence via a fresh context.
+
+When a role pool has multiple models, the orchestrator picks the lightest-tier model that fits the task and escalates to heavy-tier only for complex work (concurrency, algorithms) or as a retry after a standard-tier model has failed.
 
 Built-in models (kimchi-dev) have tier and description baked in. External models need metadata — see below.
 
