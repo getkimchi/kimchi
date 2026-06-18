@@ -7,6 +7,7 @@ import { parseStatsArgs } from "./index.js"
 import type { GenerateAnalyticsResponse } from "./types.js"
 import {
 	type SortBy,
+	aggregateTokens,
 	formatAnalyticsVisual,
 	formatCurrency,
 	getProviderDisplayName,
@@ -402,6 +403,56 @@ describe("formatAnalyticsVisual", () => {
 
 		expect(joined).toContain("500")
 	})
+
+	it("coerces string int64 token values from protobuf JSON encoding", () => {
+		// Protobuf JSON encodes int64 as strings (e.g. "9007199254740991",
+		// i.e. Number.MAX_SAFE_INTEGER) because JavaScript Number can't safely
+		// represent integers > 2^53. The formatter must parse these strings
+		// before aggregating.
+		const data: GenerateAnalyticsResponse = {
+			stepDuration: "0s",
+			tokens: {
+				items: [
+					{
+						executionTime: "2026-06-09T09:00:00Z",
+						models: [
+							makeModelTokenStat({
+								model: "gpt-4",
+								providerName: "pi-otel",
+								inputTokens: "1000",
+								outputTokens: "500",
+							}),
+							makeModelTokenStat({
+								model: "claude-3",
+								providerName: "pi-otel",
+								inputTokens: "2000",
+								outputTokens: "1000",
+							}),
+						],
+					},
+				],
+			},
+		}
+
+		const lines = formatAnalyticsVisual(data, mockTheme)
+		const joined = lines.join("\n")
+
+		// Total input across all models: 3000, output: 1500
+		expect(joined).toContain("4.5k")
+		expect(joined).toContain("3.0k")
+		expect(joined).toContain("1.5k")
+
+		// Pin down the numeric aggregation directly so a regression that
+		// breaks per-row totals (but still renders valid k/M suffixes) is
+		// caught here too, not just the totals row.
+		const aggregated = aggregateTokens(data)
+		expect(aggregated.totals.totalInput).toBe(3000)
+		expect(aggregated.totals.totalOutput).toBe(1500)
+		expect(aggregated.perModel.get("gpt-4\tKimchi")?.inputTokens).toBe(1000)
+		expect(aggregated.perModel.get("gpt-4\tKimchi")?.outputTokens).toBe(500)
+		expect(aggregated.perModel.get("claude-3\tKimchi")?.inputTokens).toBe(2000)
+		expect(aggregated.perModel.get("claude-3\tKimchi")?.outputTokens).toBe(1000)
+	})
 })
 
 describe("formatAnalyticsSummary", () => {
@@ -452,5 +503,45 @@ describe("formatAnalyticsSummary", () => {
 		expect(joined).toContain("4.5k")
 		expect(joined).toContain("3.0k")
 		expect(joined).toContain("1.5k")
+	})
+
+	it("coerces string int64 token values from protobuf JSON encoding", () => {
+		// Protobuf JSON encodes int64 as strings (e.g. "9007199254740991",
+		// i.e. Number.MAX_SAFE_INTEGER) because JavaScript Number can't safely
+		// represent integers > 2^53. The formatter must parse these strings
+		// before aggregating.
+		const data: GenerateAnalyticsResponse = {
+			stepDuration: "0s",
+			tokens: {
+				items: [
+					{
+						executionTime: "2026-06-09T09:00:00Z",
+						models: [
+							makeModelTokenStat({
+								model: "gpt-4",
+								providerName: "pi-otel",
+								inputTokens: "3000",
+								outputTokens: "1500",
+							}),
+						],
+					},
+				],
+			},
+		}
+
+		const lines = formatAnalyticsSummary(data, mockTheme)
+		const joined = lines.join("\n")
+
+		expect(joined).toContain("4.5k")
+		expect(joined).toContain("3.0k")
+		expect(joined).toContain("1.5k")
+
+		// Pin down the numeric aggregation directly so a regression in the
+		// aggregation loop is caught by the helper, not just the rendered row.
+		const aggregated = aggregateTokens(data)
+		expect(aggregated.totals.totalInput).toBe(3000)
+		expect(aggregated.totals.totalOutput).toBe(1500)
+		expect(aggregated.perModel.get("gpt-4\tKimchi")?.inputTokens).toBe(3000)
+		expect(aggregated.perModel.get("gpt-4\tKimchi")?.outputTokens).toBe(1500)
 	})
 })

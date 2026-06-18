@@ -1,27 +1,52 @@
-name: Bug Report
-description: Report an issue with the kimchi coding harness
-labels: ["bug"]
+name: Bug report
+description: Something isn't working as expected
+labels: ["bug", "needs-triage"]
 body:
   - type: markdown
     attributes:
       value: |
-        See [Troubleshooting Guide](../../docs/troubleshooting.md) for useful debugging commands.
+        Before filing, please check existing issues to avoid duplicates.
 
         **Tip:** Before submitting, check that your report doesn't include any sensitive information (API keys, credentials, proprietary code).
-
+  - type: input
+    id: version
+    attributes:
+      label: Kimchi version
+      description: Output of `kimchi --version`
+      placeholder: "e.g. v0.0.84"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS and architecture
+      placeholder: "e.g. macOS 14, arm64"
+    validations:
+      required: true
   - type: textarea
     id: description
     attributes:
       label: What happened?
-      description: Describe what you observed and what you expected instead.
-      placeholder: |
-        **Actual:** The agent failed to edit the file and returned an empty response.
-        **Expected:** The agent should have replaced "foo" with "bar" in config.ts.
+      description: A clear description of the bug.
     validations:
       required: true
-
   - type: textarea
-    id: reproduction
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run `kimchi ...`
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction-command
     attributes:
       label: Reproduction command
       description: |
@@ -31,16 +56,6 @@ body:
       render: shell
     validations:
       required: true
-
-  - type: input
-    id: version
-    attributes:
-      label: Harness version
-      description: Output of `kimchi --version`
-      placeholder: "0.5.0"
-    validations:
-      required: true
-
   - type: textarea
     id: session-file
     attributes:
@@ -50,7 +65,6 @@ body:
       placeholder: ~/.config/kimchi/harness/sessions/--path--/session.jsonl
     validations:
       required: false
-
   - type: textarea
     id: json-event-stream
     attributes:
@@ -64,3 +78,8 @@ body:
       render: json
     validations:
       required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or output
+      render: shell
