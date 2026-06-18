@@ -53,6 +53,59 @@ export function getSourceName(providerName: string): string {
 	return mapping[providerName] || "Proxy"
 }
 
+export interface TokenTotals {
+	totalInput: number
+	totalOutput: number
+}
+
+export interface PerModelTokenStats {
+	model: string
+	source: string
+	inputTokens: number
+	outputTokens: number
+}
+
+/**
+ * Aggregates token counts from `data.tokens.items[].models[]`, coercing
+ * string-encoded int64 values (protobuf JSON) to numbers. Returns both
+ * the grand totals and a per-model+source breakdown so callers can do
+ * numeric aggregation without re-parsing the raw API payload. Exposed
+ * for direct testing of the aggregation in isolation from formatting.
+ */
+export function aggregateTokens(data: GenerateAnalyticsResponse): {
+	totals: TokenTotals
+	perModel: Map<string, PerModelTokenStats>
+} {
+	const totals: TokenTotals = { totalInput: 0, totalOutput: 0 }
+	const perModel = new Map<string, PerModelTokenStats>()
+
+	if (!data.tokens?.items) return { totals, perModel }
+
+	for (const item of data.tokens.items) {
+		if (!item.models) continue
+		for (const model of item.models) {
+			const input = Number(model.inputTokens) || 0
+			const output = Number(model.outputTokens) || 0
+			totals.totalInput += input
+			totals.totalOutput += output
+
+			const source = getSourceName(model.providerName)
+			const key = `${model.model}\t${source}`
+			const existing = perModel.get(key) || {
+				model: model.model,
+				source,
+				inputTokens: 0,
+				outputTokens: 0,
+			}
+			existing.inputTokens += input
+			existing.outputTokens += output
+			perModel.set(key, existing)
+		}
+	}
+
+	return { totals, perModel }
+}
+
 export type SortBy = "cost" | "tokens" | "model" | "source"
 
 type SortStats = {
@@ -141,25 +194,20 @@ export function formatAnalyticsVisual(
 	}
 
 	if (data.tokens?.items) {
-		for (const item of data.tokens.items) {
-			if (item.models) {
-				for (const model of item.models) {
-					const source = getSourceName(model.providerName)
-					const key = `${model.model}\t${source}`
-					const stats = modelStats.get(key) || {
-						modelName: model.model,
-						source,
-						cost: 0,
-						inputTokens: 0,
-						outputTokens: 0,
-						inputCost: 0,
-						outputCost: 0,
-					}
-					stats.inputTokens += model.inputTokens || 0
-					stats.outputTokens += model.outputTokens || 0
-					modelStats.set(key, stats)
-				}
+		const { perModel } = aggregateTokens(data)
+		for (const [key, tokens] of perModel) {
+			const stats = modelStats.get(key) || {
+				modelName: tokens.model,
+				source: tokens.source,
+				cost: 0,
+				inputTokens: 0,
+				outputTokens: 0,
+				inputCost: 0,
+				outputCost: 0,
 			}
+			stats.inputTokens += tokens.inputTokens
+			stats.outputTokens += tokens.outputTokens
+			modelStats.set(key, stats)
 		}
 	}
 

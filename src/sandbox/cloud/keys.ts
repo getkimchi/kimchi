@@ -6,7 +6,7 @@ export async function verifyApiKey(apiKey: string, options?: AuthenticateOptions
 	const endpoint = resolveEndpoint(options)
 	const fetchImpl = options?.fetch ?? globalThis.fetch
 
-	const url = `${endpoint}/ai-optimizer/v1beta/api-keys:verify`
+	const url = `${endpoint}/ai-optimizer/v1beta/workspace-tokens:verifyKey`
 	const resp = await fetchWithTimeout(
 		url,
 		{

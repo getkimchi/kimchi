@@ -362,3 +362,15 @@ describe("mcpCallLabelAndSummary", () => {
 		expect(result.summary).toContain(longVal)
 	})
 })
+
+describe("set_phase tool summary", () => {
+	it("summarizes set_phase calls with the phase value", () => {
+		const summary = summarizeOpenAiToolCall("set_phase", { phase: "plan" }, plainTheme, (path) => path)
+		expect(summary).toBe("plan")
+	})
+
+	it("summarizes set_phase calls with unknown phase fallback", () => {
+		const summary = summarizeOpenAiToolCall("set_phase", {}, plainTheme, (path) => path)
+		expect(summary).toBe("set phase")
+	})
+})

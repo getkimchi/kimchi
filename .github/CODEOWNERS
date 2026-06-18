@@ -1,0 +1,16 @@
+# Global fallback — all PRs require at least one maintainer review
+* @getkimchi/core
+
+# Ferment subsystem
+src/extensions/ferment/ @getkimchi/core
+src/ferment/ @getkimchi/core
+
+# Teleport subsystem
+src/modes/teleport/ @getkimchi/core
+
+# CI and repo config
+.github/ @getkimchi/core
+
+# Docs
+docs/ @getkimchi/core
+*.md @getkimchi/core

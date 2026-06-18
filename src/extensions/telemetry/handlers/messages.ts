@@ -1,6 +1,7 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import { getAvailableModels } from "../../../startup-context.js"
 import type { SessionContext } from "../session-context.js"
+import { handleTransportError } from "./transport-errors.js"
 
 /** Maps OAuth provider IDs to canonical names accepted by the telemetry backend. */
 const PROVIDER_TELEMETRY_MAP: Record<string, string> = {
@@ -64,6 +65,9 @@ export async function handleMessageEnd(
 			cost_usd: costTotal,
 			duration_ms: durationMs,
 		})
+
+		// Detect and emit transport errors (socket closed, connection reset, etc.)
+		handleTransportError(ctx, { message: assistant })
 
 		// Accumulate tokens/cost for cumulative metrics
 		if (!ctx.cumulative.tokensByModel[model]) {

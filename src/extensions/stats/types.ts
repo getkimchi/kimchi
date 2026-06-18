@@ -65,11 +65,11 @@ export interface ModelTokenStat {
 	provider: string
 	castaiApiKey: string
 	providerName: string
-	inputTokens: number
-	outputTokens: number
-	totalTokens: number
-	cacheReadTokens: number
-	cacheWriteTokens: number
+	inputTokens: number | string
+	outputTokens: number | string
+	totalTokens: number | string
+	cacheReadTokens: number | string
+	cacheWriteTokens: number | string
 	castaiApiKeyMetadata: CastAiApiKeyMetadata
 }
 
@@ -130,7 +130,7 @@ export interface ModelStatItem {
 	provider: string
 	castaiApiKey: string
 	providerName: string
-	totalCount: number
+	totalCount: number | string
 	castaiApiKeyMetadata: CastAiApiKeyMetadata
 }
 

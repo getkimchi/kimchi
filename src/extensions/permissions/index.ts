@@ -6,7 +6,7 @@ import { getAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import { hasActiveFerment, notifyFermentActive, onActiveFermentChange } from "../ferment/state.js"
-import { FERMENT_TOOLS, isFermentToolName, isUserFacingFermentToolName } from "../ferment/tool-names.js"
+import { isFermentToolName, isUserFacingFermentToolName } from "../ferment/tool-names.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import { type ToolVisibilityAPI, createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
@@ -273,7 +273,6 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	}
 
 	function isPlanModeTool(name: string): boolean {
-		if (name === FERMENT_TOOLS.REQUEST_WORKFLOW) return cliMode !== "plan"
 		return PLAN_MODE_TOOL_SET.has(name) || isReadOnlyTool(name)
 	}
 
@@ -303,16 +302,9 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		if (!ctx.hasUI) return
 		const { mode } = getRuntimePermissionMode()
 		const active = MODES.find((m) => m.mode === mode) ?? MODES[0]
-		// Filled dot + active label hardcode kimchi palette so the cue stays legible
-		// under kimchi-minimal; unfilled dots + hint use the "text" token to match
-		// editor input/cwd chrome.
-		const text = (s: string): string => ctx.ui.theme.fg("text", s)
-		const dots = MODES.map((m) =>
-			m.mode === mode ? `${resolvedSemanticFg(ctx.ui.theme, m.color)}●${RST_FG}` : text("○"),
-		).join(" ")
 		const name = `${resolvedSemanticFg(ctx.ui.theme, active.color)}${active.label}${RST_FG}`
-		const hint = text("→ shift+tab")
-		ctx.ui.setStatus("permissions-mode", `${dots} ${name} ${hint}`)
+		const hint = ctx.ui.theme.fg("dim", "→ shift+tab")
+		ctx.ui.setStatus("permissions-mode", `${name} ${hint}`)
 	}
 
 	function maybeShowYoloWarning(ctx: ExtensionContext) {
@@ -399,47 +391,6 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			{
 				customType: "plan-execute",
 				content: `The user approved the plan. Execute it now.${planRef}\n\n---\n\n${planText}`,
-				display: false,
-			},
-			{ triggerTurn: true },
-		)
-	}
-
-	function executeFermentPlan(planText: string): void {
-		// Extract a title from the plan text: first non-empty line after a Goal heading,
-		// or failing that the first heading text.
-		const lines = planText.split(/\r?\n/)
-		const goalIdx = lines.findIndex((l) => /^#+\s*Goal\b/i.test(l))
-		let title = ""
-		if (goalIdx >= 0) {
-			for (let i = goalIdx + 1; i < lines.length; i++) {
-				const trimmed = lines[i].trim()
-				if (trimmed.length > 0 && !/^#/.test(trimmed)) {
-					title = trimmed.slice(0, 80).trim()
-					break
-				}
-			}
-		}
-		if (!title) {
-			title =
-				lines[0]
-					?.replace(/^#+\s*/, "")
-					.trim()
-					.slice(0, 80) ?? "Plan"
-		}
-		pi.sendMessage(
-			{
-				customType: "plan-execute",
-				content: `The user approved the plan and wants to run it as a ferment workflow. You MUST call \`request_ferment_workflow\` now — do not describe it, do not ask for confirmation, just call it immediately.
-
-Use these exact values:
-- title: "${title}"
-- intent: the full plan text below (copy it verbatim as the intent)
-
-The plan text:
-\`\`\`
-${planText}
-\`\`\``,
 				display: false,
 			},
 			{ triggerTurn: true },
@@ -541,11 +492,10 @@ ${planText}
 		if (!text.includes("<!-- PLAN_COMPLETE -->") && !text.includes("<done>")) return
 
 		const EXECUTE = "Execute the plan"
-		const FERMENT = "Convert to ferment workflow"
 		const DECLINE = "Rework the plan"
 
 		const choice = await withWorkingHidden(ctx, () =>
-			ctx.ui.select("Plan complete. How would you like to proceed?", [EXECUTE, FERMENT, DECLINE]),
+			ctx.ui.select("Plan complete. How would you like to proceed?", [EXECUTE, DECLINE]),
 		)
 
 		if (choice === EXECUTE) {
@@ -557,11 +507,6 @@ ${planText}
 			}
 			changeMode(ctx, "plan", "auto", "user")
 			executePlan(planPath, text)
-		} else if (choice === FERMENT) {
-			// Switch to default mode so ferment tools become available, then ask
-			// the agent to call request_ferment_workflow with the plan as intent.
-			changeMode(ctx, "plan", "default", "user")
-			executeFermentPlan(text)
 		}
 		// Decline or escape: stay in plan mode.
 	})
