@@ -1,20 +1,27 @@
 import { describe, expect, it, vi } from "vitest"
 import { validateApiKey } from "./validator.js"
 
+type FetchWithRetryOptions = {
+	fetchImpl?: typeof fetch
+	timeoutMs?: number
+	signal?: AbortSignal
+	retry?: { maxRetries?: number }
+}
+
+const fetchWithRetrySpy = vi.fn((url: string, init?: RequestInit, options?: FetchWithRetryOptions) => {
+	const fetchFn = options?.fetchImpl ?? globalThis.fetch
+	const ctrl = new AbortController()
+	if (options?.timeoutMs) {
+		setTimeout(() => ctrl.abort(), options.timeoutMs)
+	}
+	const signals = [ctrl.signal, options?.signal, init?.signal].filter(Boolean) as AbortSignal[]
+	const signal = signals.length > 1 ? AbortSignal.any(signals) : signals[0]
+	return fetchFn(url, { ...init, signal })
+})
+
 vi.mock("../utils/http.js", () => ({
-	fetchWithRetry: (
-		url: string,
-		init?: RequestInit,
-		options?: { fetchImpl?: typeof fetch; timeoutMs?: number; signal?: AbortSignal },
-	) => {
-		const fetchFn = options?.fetchImpl ?? globalThis.fetch
-		const ctrl = new AbortController()
-		if (options?.timeoutMs) {
-			setTimeout(() => ctrl.abort(), options.timeoutMs)
-		}
-		const signals = [ctrl.signal, options?.signal, init?.signal].filter(Boolean) as AbortSignal[]
-		const signal = signals.length > 1 ? AbortSignal.any(signals) : signals[0]
-		return fetchFn(url, { ...init, signal })
+	get fetchWithRetry() {
+		return fetchWithRetrySpy
 	},
 }))
 
@@ -83,6 +90,17 @@ describe("validateApiKey", () => {
 			expect.objectContaining({
 				headers: expect.objectContaining({ Authorization: "Bearer my-key" }),
 			}),
+		)
+	})
+
+	it("passes retry maxRetries: 1 to limit retries in interactive flows", async () => {
+		fetchWithRetrySpy.mockClear()
+		const fetchSpy = vi.fn(async () => new Response(null, { status: 200 }))
+		await validateApiKey("k", { fetch: fetchSpy as unknown as typeof globalThis.fetch })
+		expect(fetchWithRetrySpy).toHaveBeenCalledWith(
+			expect.any(String),
+			expect.any(Object),
+			expect.objectContaining({ retry: { maxRetries: 1 } }),
 		)
 	})
 })

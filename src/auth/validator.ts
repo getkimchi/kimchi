@@ -53,7 +53,7 @@ export async function validateApiKey(apiKey: string, options: ValidatorOptions =
 					Accept: "application/json",
 				},
 			},
-			{ timeoutMs, fetchImpl },
+			{ timeoutMs, fetchImpl, retry: { maxRetries: 1 } },
 		)
 	} catch {
 		return {
