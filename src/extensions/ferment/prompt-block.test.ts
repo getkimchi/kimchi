@@ -16,19 +16,14 @@ function makeMockCtx(): ExtensionContext {
 	return { sessionManager: { getSessionId: () => TEST_SESSION_ID } } as unknown as ExtensionContext
 }
 
-function makePi(oneshot: boolean, idleNudge = false): ExtensionAPI {
+function makePi(oneshot: boolean): ExtensionAPI {
 	return {
-		getFlag: (name: string) => {
-			if (name === "ferment-oneshot") return oneshot
-			if (name === "ferment-idle-nudge") return idleNudge
-			return undefined
-		},
+		getFlag: (name: string) => (name === "ferment-oneshot" ? oneshot : undefined),
 	} as unknown as ExtensionAPI
 }
 
 const PI_NORMAL = makePi(false)
 const PI_ONESHOT = makePi(true)
-const PI_IDLE_NUDGE = makePi(false, true)
 
 const NOW = "2026-01-01T00:00:00.000Z"
 
@@ -123,17 +118,6 @@ describe("buildFermentPromptBlock", () => {
 		it("does not inject the idle hint when no ferment is active", () => {
 			const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeNoActiveFermentRuntime())
 			expect(out).toBeUndefined()
-		})
-
-		it("returns idle hint when the ferment-idle-nudge flag is enabled", () => {
-			const out = buildFermentPromptBlock(makeMockCtx(), PI_IDLE_NUDGE, makeNoActiveFermentRuntime())
-			expect(out).toContain("Ferment Workflow")
-			expect(out).toContain("The tool asks the user for explicit host confirmation")
-			expect(out).toContain("In yolo permissions mode, the host auto-approves")
-			expect(out).not.toContain("questionnaire")
-			expect(out).not.toContain("ferment_start_approval")
-			expect(out).toContain("`intent` containing the full original user request")
-			expect(out).toContain("Never block")
 		})
 	})
 
@@ -329,16 +313,6 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).not.toContain("minimax-m2.7")
 			expect(out).not.toContain("kimi-k2.5")
 			expect(out).not.toContain("worker_model")
-		})
-
-		it("keeps phase tagging out of the flagged idle-nudge classification path", () => {
-			const out = buildFermentPromptBlock(makeMockCtx(), PI_IDLE_NUDGE, makeNoActiveFermentRuntime()) ?? ""
-			expect(out).toContain("Do not call `set_phase`")
-			expect(out).toContain("*until* you have classified the request")
-			expect(out).toContain("called `request_ferment_workflow`")
-			expect(out).toContain("open-ended analysis of an existing app")
-			expect(out).toContain("request the ferment workflow before analysis, file reads, or phase tagging")
-			expect(out).toContain("the host handles confirmation and queues scoping")
 		})
 	})
 
