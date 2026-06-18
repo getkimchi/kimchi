@@ -96,10 +96,10 @@ export async function executeWebFetch(params: WebFetchParams, signal?: AbortSign
 		...(result.finalURL !== params.url ? [`Final URL: ${result.finalURL}`] : []),
 		`Content-Type: ${result.contentType}`,
 		`Format: ${format}`,
-		`Characters: ${totalChars.toLocaleString()}`,
+		`Characters: ${totalChars.toLocaleString("en-US")}`,
 		...(truncated
 			? [
-					`Truncated: content truncated to ${MAX_OUTPUT_CHARS.toLocaleString()} of ${totalChars.toLocaleString()} characters`,
+					`Truncated: content truncated to ${MAX_OUTPUT_CHARS.toLocaleString("en-US")} of ${totalChars.toLocaleString("en-US")} characters`,
 				]
 			: []),
 		"Cache: miss",
@@ -107,7 +107,7 @@ export async function executeWebFetch(params: WebFetchParams, signal?: AbortSign
 	]
 
 	const truncationNotice = truncated
-		? `\n\n[Content truncated: showing ${MAX_OUTPUT_CHARS.toLocaleString()} of ${totalChars.toLocaleString()} characters]`
+		? `\n\n[Content truncated: showing ${MAX_OUTPUT_CHARS.toLocaleString("en-US")} of ${totalChars.toLocaleString("en-US")} characters]`
 		: ""
 	const output = buildOutput(lines, content, truncationNotice)
 

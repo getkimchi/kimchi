@@ -1,9 +1,10 @@
 import { execFileSync } from "node:child_process"
-import { readTelemetryConfig } from "../config.js"
+import { THIRD_PARTY_MAX_RETRIES, readTelemetryConfig } from "../config.js"
 import { readJson, writeJson } from "../config/json.js"
 import type { ConfigScope } from "../config/scope.js"
 import { resolveScopePath } from "../config/scope.js"
 import type { ModelMetadata } from "../models.js"
+import { fetchWithRetry } from "../utils/http.js"
 import {
 	NPM_REGISTRY_BASE_URL,
 	OPENCODE_PLUGIN_ARRAY_MIN_VERSION,
@@ -82,7 +83,10 @@ export function compareSemverGte(a: string | null, b: string): boolean {
 export async function getLatestNpmVersion(packageName: string): Promise<string | null> {
 	const url = `${NPM_REGISTRY_BASE_URL}/${packageName}/latest`
 	try {
-		const res = await fetch(url, { signal: AbortSignal.timeout(NPM_REQUEST_TIMEOUT_MS) })
+		const res = await fetchWithRetry(url, undefined, {
+			timeoutMs: NPM_REQUEST_TIMEOUT_MS,
+			retry: { maxRetries: THIRD_PARTY_MAX_RETRIES },
+		})
 		if (!res.ok) return null
 		const body = (await res.json()) as { version?: unknown }
 		return typeof body.version === "string" && body.version.length > 0 ? body.version : null

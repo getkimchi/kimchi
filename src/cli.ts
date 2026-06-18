@@ -290,6 +290,18 @@ try {
 			}
 		}
 
+		// Sync retry config to SDK settings so both systems use the same value
+		try {
+			const existing = JSON.parse(readFileSync(settingsPath, "utf-8"))
+			const sdkRetry = existing.retry
+			if (!sdkRetry || sdkRetry.maxRetries !== config.retry.maxRetries) {
+				existing.retry = { ...sdkRetry, maxRetries: config.retry.maxRetries }
+				writeFileSync(settingsPath, `${JSON.stringify(existing, null, 2)}\n`)
+			}
+		} catch {
+			/* retry sync is best-effort */
+		}
+
 		// Bundled themes are write-through cache — owned by the package, not the user.
 		// Source edits propagate so packaged upgrades pick up new defaults. Users
 		// wanting custom colors should clone+rename (e.g. `my-kimchi.json`), which

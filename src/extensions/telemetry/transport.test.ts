@@ -3,6 +3,10 @@ import type { TelemetryConfig } from "../../config.js"
 import { buildLogRecord, sendLog, sendLogBatch, sendMetrics } from "./transport.js"
 import type { MetricData } from "./transport.js"
 
+vi.mock("../../utils/http.js", () => ({
+	fetchWithRetry: (url: string, init?: RequestInit) => globalThis.fetch(url, init),
+}))
+
 const BASE_NS = String(new Date("2026-06-02T10:00:00.000Z").getTime() * 1_000_000)
 
 function makeConfig(overrides: Partial<TelemetryConfig> = {}): TelemetryConfig {

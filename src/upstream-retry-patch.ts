@@ -9,16 +9,22 @@ type PatchableAgentSession = {
 	}
 }
 
-const CLOUDFLARE_524_RE = /\b524\b|cloudflare.*timeout|timeout.*cloudflare/i
+// Covers Cloudflare 524 timeouts and Node fetch connection-level failures that
+// warrant a retry (socket closed mid-stream, pipe broken, connection reset, etc.)
+const RETRYABLE_NETWORK_ERROR_RE =
+	/\b524\b|cloudflare.*timeout|timeout.*cloudflare|socket connection was closed|unexpectedly|EPIPE|ERR_SOCKET_CLOSED|ERR_STREAM_PREMATURE_CLOSE|ECONNRESET|connection reset/i
 
-export function isCloudflare524Retryable(message: RetryableMessage): boolean {
-	return message.stopReason === "error" && !!message.errorMessage && CLOUDFLARE_524_RE.test(message.errorMessage)
+export function isNetworkErrorRetryable(message: RetryableMessage): boolean {
+	return (
+		message.stopReason === "error" && !!message.errorMessage && RETRYABLE_NETWORK_ERROR_RE.test(message.errorMessage)
+	)
 }
 
 /**
  * Temporary adapter for pi-coding-agent@0.74.0. Upstream retries 429/500/502/503/504
  * but not Cloudflare's 524 timeout, which kimchi-dev's gateway can return for a
- * long planner call. Remove once upstream's retry classifier covers 524.
+ * long planner call, nor Node fetch connection errors (ECONNRESET, EPIPE, etc.).
+ * Remove once upstream's retry classifier covers these cases.
  */
 export function installCloudflare524RetryPatch(
 	sessionClass: PatchableAgentSession = AgentSession as unknown as PatchableAgentSession,
@@ -29,7 +35,7 @@ export function installCloudflare524RetryPatch(
 	if (!original) return
 
 	proto._isRetryableError = function patchedIsRetryableError(message: RetryableMessage): boolean {
-		return original.call(this, message) || isCloudflare524Retryable(message)
+		return original.call(this, message) || isNetworkErrorRetryable(message)
 	}
 	proto._kimchiCloudflare524RetryPatch = true
 }

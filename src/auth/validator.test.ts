@@ -1,6 +1,23 @@
 import { describe, expect, it, vi } from "vitest"
 import { validateApiKey } from "./validator.js"
 
+vi.mock("../utils/http.js", () => ({
+	fetchWithRetry: (
+		url: string,
+		init?: RequestInit,
+		options?: { fetchImpl?: typeof fetch; timeoutMs?: number; signal?: AbortSignal },
+	) => {
+		const fetchFn = options?.fetchImpl ?? globalThis.fetch
+		const ctrl = new AbortController()
+		if (options?.timeoutMs) {
+			setTimeout(() => ctrl.abort(), options.timeoutMs)
+		}
+		const signals = [ctrl.signal, options?.signal, init?.signal].filter(Boolean) as AbortSignal[]
+		const signal = signals.length > 1 ? AbortSignal.any(signals) : signals[0]
+		return fetchFn(url, { ...init, signal })
+	},
+}))
+
 function fakeFetch(response: { status: number } | Error): typeof globalThis.fetch {
 	return vi.fn(async () => {
 		if (response instanceof Error) throw response
