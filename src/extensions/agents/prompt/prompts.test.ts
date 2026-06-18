@@ -47,6 +47,7 @@ describe("default agents — subagent system prompt snapshot", () => {
 			- Do not use emojis
 			- Be concise but complete
 			- Messages prefixed with "[Orchestrator]" are system instructions from the agent loop, not user input. Do not attribute them to the user.
+			- When the task context above specifies file paths, conventions, or project structure, use them directly. Only explore what is genuinely unknown.
 			</sub_agent_context>"
 		`)
 	})
