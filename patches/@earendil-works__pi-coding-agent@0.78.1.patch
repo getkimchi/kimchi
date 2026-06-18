@@ -7,6 +7,12 @@
 #   3. dist/core/sdk.js         — call emitBeforeProviderHeaders in streamFn after
 #                                 static header assembly, so extensions can inject
 #                                 per-request dynamic headers (X-Session-Id, X-Turn-Index)
+#   5. dist/core/agent-session.js — set agent.prepareNextTurn to refresh context.tools
+#                                   from state.tools after each tool batch, enabling
+#                                   mid-run setActiveTools() calls to take effect on
+#                                   the next model response within the same agent run.
+#                                   Upstream tracking: file against pi-mono to add
+#                                   prepareNextTurn wiring in AgentSession directly.
 #   4. dist/core/model-registry.js, dist/core/tools/edit.js,
 #      dist/modes/interactive/  — miscellaneous upstream fixes bundled in this patch
 #
@@ -384,3 +390,28 @@ index 0ab79928806ecd3fb84610447da4990e25047311..f400b9519304c909ee968c3dc12a5dfe
          const model = await this.findExactModelMatch(searchTerm);
          if (model) {
              try {
+
+diff --git a/dist/core/agent-session.js b/dist/core/agent-session.js
+--- a/dist/core/agent-session.js
++++ b/dist/core/agent-session.js
+@@ -195,6 +195,20 @@
+                 throw new Error(`Extension failed, blocking execution: ${String(err)}`);
+             }
+         };
++        // Refresh context.tools from state.tools after every tool batch so that
++        // mid-run setActiveTools() calls (e.g. the planning→implementation profile
++        // transition fired by activate_ferment_phase) are visible to the next model
++        // response within the same agent run. Without this, createContextSnapshot()
++        // snaps tools once at prompt/continue time and the loop never updates them.
++        this.agent.prepareNextTurn = async (_signal) => {
++            return {
++                context: {
++                    systemPrompt: this.agent.state.systemPrompt,
++                    messages: this.agent.state.messages.slice(),
++                    tools: this.agent.state.tools.slice(),
++                },
++            };
++        };
+         this.agent.afterToolCall = async ({ toolCall, args, result, isError }) => {
+             const runner = this._extensionRunner;
+             if (!runner.hasHandlers("tool_result")) {

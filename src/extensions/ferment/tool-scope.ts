@@ -43,8 +43,11 @@ export const PLANNING_TOOL_NAMES: ReadonlySet<string> = new Set([
 	FERMENT_TOOLS.CONFIRM_COMPLETION_CRITERIA,
 	FERMENT_TOOLS.LIST,
 	FERMENT_TOOLS.ASK_USER,
-	// Transition trigger — must be callable while still in planning so the
-	// result can flip the profile on the next model turn.
+	// activate_ferment_phase fires the planning → implementation transition.
+	// start_ferment_step and the rest of the implementation lifecycle tools are
+	// NOT listed here — they become available on the turn after activation via
+	// agent.prepareNextTurn refreshing context.tools from state.tools
+	// (see patches/@earendil-works__pi-coding-agent.patch).
 	FERMENT_TOOLS.ACTIVATE_PHASE,
 ])
 
