@@ -311,6 +311,43 @@ describe("updateModelsConfig", () => {
 		expect(result.models.map((m) => m.slug)).toEqual(["kimi-k2.5"])
 	})
 
+	it("retries a 200 response with an unparseable body and succeeds on a later attempt", async () => {
+		vi.mocked(fetch)
+			.mockResolvedValueOnce({
+				ok: true,
+				headers: { get: () => null },
+				json: async () => {
+					throw new SyntaxError("Unexpected token < in JSON at position 0")
+				},
+			} as unknown as Response)
+			.mockResolvedValueOnce({
+				ok: true,
+				json: async () => ({ models: [KIMI] }),
+			} as Response)
+
+		const result = await updateModelsConfig(modelsJsonPath, "test-key", { sleep: async () => {} })
+
+		expect(fetch).toHaveBeenCalledTimes(2)
+		expect(result.models.map((m) => m.slug)).toEqual(["kimi-k2.5"])
+	})
+
+	it("classifies a persistent unparseable body as transient after exhausting retries", async () => {
+		vi.mocked(fetch).mockResolvedValue({
+			ok: true,
+			headers: { get: () => null },
+			json: async () => {
+				throw new SyntaxError("Unexpected end of JSON input")
+			},
+		} as unknown as Response)
+
+		const error = await updateModelsConfig(modelsJsonPath, "test-key", { sleep: async () => {} }).catch((e) => e)
+
+		expect(error).toBeInstanceOf(ModelsFetchError)
+		expect(isTransientModelsError(error)).toBe(true)
+		expect((error as Error).message).toContain("Failed to parse models response")
+		expect(fetch).toHaveBeenCalledTimes(3)
+	})
+
 	it("throws on non-ok response when no cached config exists", async () => {
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: false,
