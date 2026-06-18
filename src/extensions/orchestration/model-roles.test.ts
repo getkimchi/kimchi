@@ -67,6 +67,7 @@ describe("parseModelRoles", () => {
 			builder: "anthropic/claude-sonnet-4-5",
 			reviewer: "openai/gpt-4o",
 			explorer: "kimchi-dev/nemotron-3-ultra-fp4",
+			researcher: "kimchi-dev/nemotron-3-ultra-fp4",
 			judge: "kimchi-dev/claude-opus-4-6",
 		}
 		const { roles } = parseModelRoles(custom)
@@ -321,6 +322,7 @@ describe("validateModelRoles", () => {
 			builder: "anthropic/claude-sonnet-4-5",
 			reviewer: "kimchi-dev/minimax-m2.7",
 			explorer: "google/gemini-pro",
+			researcher: "kimchi-dev/nemotron-3-ultra-fp4",
 			judge: "kimchi-dev/kimi-k2.6",
 		}
 		const result = validateModelRoles(roles, available)
@@ -346,7 +348,9 @@ describe("validateModelRoles", () => {
 		const result = validateModelRoles(DEFAULT_MODEL_ROLES, new Set())
 		expect(result.unavailable.length).toBeGreaterThanOrEqual(5)
 		const flaggedRoles = new Set(result.unavailable.map((u) => u.role))
-		expect(flaggedRoles).toEqual(new Set(["orchestrator", "planner", "builder", "reviewer", "explorer", "judge"]))
+		expect(flaggedRoles).toEqual(
+			new Set(["orchestrator", "planner", "builder", "reviewer", "explorer", "researcher", "judge"]),
+		)
 	})
 })
 

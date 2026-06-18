@@ -116,7 +116,6 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 		"kimi-k2.6",
 		{
 			vision: true,
-			roles: ["research", "plan", "build", "review"],
 			tier: "heavy",
 			description: KIMI_K26_DESCRIPTION,
 			guidelines: guidelinesMap({
@@ -137,7 +136,6 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 		"minimax-m2.7",
 		{
 			vision: false,
-			roles: ["build", "review"],
 			tier: "standard",
 			description: MINIMAX_M27_DESCRIPTION,
 			guidelines: guidelinesMap({
@@ -155,7 +153,6 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 		"nemotron-3-ultra-fp4",
 		{
 			vision: false,
-			roles: ["explore", "research"],
 			tier: "light",
 			description: NEMOTRON_3_ULTRA_DESCRIPTION,
 			guidelines: guidelinesMap({

@@ -55,7 +55,7 @@ describe("resolveOrchestrationInstructions", () => {
 			roles: DEFAULT_MODEL_ROLES,
 		})
 		expect(result).toContain("## Your Capabilities")
-		expect(result).toContain("Roles: research, plan, build, review")
+		expect(result).toContain("Roles: orchestrator, planner, builder, reviewer, researcher")
 	})
 
 	it("uses role-based delegation rules in Step 3", () => {
@@ -95,6 +95,7 @@ describe("resolveOrchestrationInstructions", () => {
 				builder: "anthropic/claude-sonnet-4-5",
 				reviewer: "openai/gpt-4o",
 				explorer: "kimchi-dev/nemotron-3-ultra-fp4",
+				researcher: "kimchi-dev/nemotron-3-ultra-fp4",
 				judge: "kimchi-dev/claude-opus-4-6",
 			},
 		})
@@ -283,6 +284,7 @@ describe("resolveOrchestrationInstructions", () => {
 				builder: ["kimchi-dev/minimax-m2.7", "kimchi-dev/kimi-k2.6"],
 				reviewer: ["kimchi-dev/kimi-k2.6", "kimchi-dev/minimax-m2.7"],
 				explorer: "kimchi-dev/nemotron-3-ultra-fp4",
+				researcher: "kimchi-dev/nemotron-3-ultra-fp4",
 				judge: "kimchi-dev/kimi-k2.6",
 			},
 		})
@@ -312,6 +314,7 @@ describe("resolveOrchestrationInstructions with custom configs", () => {
 				builder: "anthropic/external-model",
 				reviewer: "kimchi-dev/minimax-m2.7",
 				explorer: "kimchi-dev/nemotron-3-super-fp4",
+				researcher: "kimchi-dev/nemotron-3-super-fp4",
 				judge: "kimchi-dev/kimi-k2.6",
 			},
 			customConfigs,
@@ -335,6 +338,7 @@ describe("resolveOrchestrationInstructions with custom configs", () => {
 				builder: "kimchi-dev/minimax-m2.7",
 				reviewer: "kimchi-dev/minimax-m2.7",
 				explorer: "kimchi-dev/nemotron-3-super-fp4",
+				researcher: "kimchi-dev/nemotron-3-super-fp4",
 				judge: "external-orchestrator",
 			},
 			customConfigs,
@@ -352,6 +356,7 @@ describe("resolveOrchestrationInstructions with custom configs", () => {
 			builder: "unknown-model",
 			reviewer: "kimchi-dev/minimax-m2.7",
 			explorer: "kimchi-dev/nemotron-3-super-fp4",
+			researcher: "kimchi-dev/nemotron-3-super-fp4",
 			judge: "kimchi-dev/kimi-k2.6",
 		}
 		const result = resolveOrchestrationInstructions({
@@ -375,6 +380,7 @@ describe("resolveOrchestrationInstructions with custom configs", () => {
 			builder: "bare-external/model",
 			reviewer: "kimchi-dev/minimax-m2.7",
 			explorer: "kimchi-dev/nemotron-3-super-fp4",
+			researcher: "kimchi-dev/nemotron-3-super-fp4",
 			judge: "kimchi-dev/kimi-k2.6",
 		}
 		const result = resolveOrchestrationInstructions({
@@ -399,6 +405,7 @@ describe("resolveOrchestrationInstructions with custom configs", () => {
 			builder: "kimchi-dev/minimax-m2.7",
 			reviewer: "kimchi-dev/minimax-m2.7",
 			explorer: "kimchi-dev/nemotron-3-super-fp4",
+			researcher: "kimchi-dev/nemotron-3-super-fp4",
 			judge: "external-orchestrator",
 		}
 		const result = resolveOrchestrationInstructions({
@@ -421,6 +428,7 @@ describe("resolveOrchestrationInstructions with custom configs", () => {
 			builder: "multi-role/model",
 			reviewer: "multi-role/model",
 			explorer: "kimchi-dev/nemotron-3-super-fp4",
+			researcher: "kimchi-dev/nemotron-3-super-fp4",
 			judge: "kimchi-dev/kimi-k2.6",
 		}
 		const result = resolveOrchestrationInstructions({

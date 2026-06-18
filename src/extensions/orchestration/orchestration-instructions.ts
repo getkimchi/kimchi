@@ -272,6 +272,10 @@ function resolveDescriptor(ref: string, registry?: ModelRegistry): Orchestration
 	return registry?.getModelById(modelId)
 }
 
+function matchesRef(candidate: string, refs: string[]): boolean {
+	return refs.some((r) => r === candidate || modelIdFromRef(r) === candidate)
+}
+
 function resolveModelRoleNames(ref: string, roles?: ModelRoles): string[] {
 	if (!roles) return []
 	const assigned: string[] = []
@@ -280,13 +284,14 @@ function resolveModelRoleNames(ref: string, roles?: ModelRoles): string[] {
 		builder: roles.builder,
 		reviewer: roles.reviewer,
 		explorer: roles.explorer,
+		researcher: roles.researcher,
 	}
 	for (const [roleName, assignment] of Object.entries(roleMap)) {
-		if (normalizeRoleModels(assignment).includes(ref)) {
+		if (matchesRef(ref, normalizeRoleModels(assignment))) {
 			assigned.push(roleName)
 		}
 	}
-	if (roles.orchestrator === ref) {
+	if (roles.orchestrator === ref || modelIdFromRef(roles.orchestrator) === ref) {
 		assigned.unshift("orchestrator")
 	}
 	return assigned
@@ -355,19 +360,6 @@ function formatRoleSection(
 	return `### ${roleName}\n${entries.join("\n\n")}`
 }
 
-function deriveRolesFromTier(tier: ModelTier | undefined): string {
-	switch (tier) {
-		case "heavy":
-			return "plan, build, review"
-		case "standard":
-			return "build, review"
-		case "light":
-			return "explore"
-		default:
-			return "build"
-	}
-}
-
 function formatCurrentModelCapabilities(
 	currentModelId: string,
 	registry?: ModelRegistry,
@@ -375,16 +367,8 @@ function formatCurrentModelCapabilities(
 	roles?: ModelRoles,
 ): string {
 	const meta = resolveModelMeta(currentModelId, registry, customConfigs, roles)
-	const descriptor = resolveDescriptor(currentModelId, registry)
-	const custom = customConfigs?.get(currentModelId)
-
 	const roleNames = resolveModelRoleNames(currentModelId, roles)
-	const capRoles =
-		custom || !descriptor
-			? roleNames.length > 0
-				? roleNames.join(", ")
-				: deriveRolesFromTier(meta.tier)
-			: descriptor.capabilities.roles.join(", ")
+	const capRoles = roleNames.length > 0 ? roleNames.join(", ") : "none"
 
 	return `Tier: ${meta.tier} | Roles: ${capRoles} | Vision: ${meta.vision ? "yes" : "no"}\n${meta.description}`
 }
@@ -406,6 +390,7 @@ function buildRoleAssignmentsSection(
 	sections.push(formatRoleSection("Builder", roles.builder, registry, customConfigs, roles))
 	sections.push(formatRoleSection("Reviewer", roles.reviewer, registry, customConfigs, roles))
 	sections.push(formatRoleSection("Explorer", roles.explorer, registry, customConfigs, roles))
+	sections.push(formatRoleSection("Researcher", roles.researcher, registry, customConfigs, roles))
 
 	const capabilitiesSection = currentModelId
 		? formatCurrentModelCapabilities(currentModelId, registry, customConfigs, roles)

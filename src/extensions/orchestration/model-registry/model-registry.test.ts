@@ -2,10 +2,9 @@ import { describe, expect, it } from "vitest"
 import type { ModelMetadata } from "../../../models.js"
 import { MODEL_CAPABILITIES } from "./builtin-models.js"
 import { ModelRegistry } from "./model-registry.js"
-import type { ModelRole, ModelTier } from "./types.js"
+import type { ModelTier } from "./types.js"
 
 const ALLOWED_TIERS: ModelTier[] = ["light", "standard", "heavy"]
-const ALLOWED_ROLES: ModelRole[] = ["build", "explore", "plan", "review", "research"]
 
 const LIVE_ENTRIES = Object.entries(Object.fromEntries(MODEL_CAPABILITIES)).filter(
 	([, value]) => value !== "ignored",
@@ -19,14 +18,6 @@ describe("MODEL_CAPABILITIES completeness invariants", () => {
 
 	it.each(LIVE_ENTRIES)("%s — tier is one of light | standard | heavy", (_id, cap) => {
 		expect(ALLOWED_TIERS).toContain(cap.tier)
-	})
-
-	it.each(LIVE_ENTRIES)("%s — roles is a non-empty array of valid ModelRole values", (_id, cap) => {
-		expect(Array.isArray(cap.roles)).toBe(true)
-		expect(cap.roles.length).toBeGreaterThanOrEqual(1)
-		for (const s of cap.roles) {
-			expect(ALLOWED_ROLES).toContain(s)
-		}
 	})
 
 	it.each(LIVE_ENTRIES)("%s — orchestrationGuidelines is a non-empty string", (_id, cap) => {

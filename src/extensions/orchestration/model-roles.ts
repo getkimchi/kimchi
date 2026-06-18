@@ -1,12 +1,13 @@
 /**
  * Role-based model configuration for multi-model orchestration.
  *
- * Six roles:
+ * Seven roles:
  *   - orchestrator: runs the main loop, delegates work (single model)
  *   - planner: designs the approach, writes specs
  *   - builder: code implementation
  *   - reviewer: code review
  *   - explorer: codebase exploration, reading files, tracing architecture
+ *   - researcher: research beyond codebase — web search, documentation lookup
  *   - judge: ferment verification and final grading calls
  *
  * Delegable roles (planner, builder, reviewer, explorer) accept either a
@@ -17,8 +18,7 @@
  * Model metadata (tier, description, vision) is stored separately in the
  * "modelMetadata" key of settings.json — see model-metadata.ts.
  *
- * Defaults are derived from MODEL_CAPABILITIES — each model's `roles` field
- * determines which role pools it belongs to.
+ * Defaults are hardcoded in DEFAULT_MODEL_ROLES.
  *
  * Users can override in ~/.config/kimchi/harness/settings.json under the
  * "modelRoles" key. Supports any provider/model-id string.
@@ -48,8 +48,9 @@ import {
 } from "./model-metadata.js"
 export { modelIdFromRef, splitModelRef } from "./model-ref-utils.js"
 import { modelIdFromRef } from "./model-ref-utils.js"
-import { MODEL_CAPABILITIES } from "./model-registry/builtin-models.js"
-import { KIMCHI_DEV_PROVIDER } from "./model-registry/model-registry.js"
+
+/** Task-type affinity tag used to match an agent persona to a model role. */
+export type ModelRole = "review" | "build" | "plan" | "explore" | "research"
 
 /** Model assignment for a role: single model ref or ordered list of candidates. */
 export type RoleModelAssignment = string | string[]
@@ -65,6 +66,8 @@ export interface ModelRoles {
 	reviewer: RoleModelAssignment
 	/** Codebase exploration model(s). */
 	explorer: RoleModelAssignment
+	/** Research model(s): research beyond codebase — web search, documentation lookup, external sources. */
+	researcher: RoleModelAssignment
 	/** Ferment judge model(s): verification triage and final grading calls. */
 	judge: RoleModelAssignment
 }
@@ -74,60 +77,23 @@ const DELEGABLE_ROLE_KEYS: readonly (keyof Omit<ModelRoles, "orchestrator">)[] =
 	"builder",
 	"reviewer",
 	"explorer",
+	"researcher",
 	"judge",
 ]
 const ROLE_KEYS: readonly (keyof ModelRoles)[] = ["orchestrator", ...DELEGABLE_ROLE_KEYS]
 
 const HARNESS_SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "settings.json")
 
-/**
- * Build default model roles by scanning MODEL_CAPABILITIES.
- *
- * Each non-ignored model is placed into role pools matching its `roles` field.
- * The orchestrator is the heaviest model with the "plan" role.
- */
-export function buildDefaultModelRoles(): ModelRoles {
-	const planners: string[] = []
-	const builders: string[] = []
-	const reviewers: string[] = []
-	const explorers: string[] = []
-
-	let orchestrator: string | undefined
-
-	for (const [id, entry] of MODEL_CAPABILITIES.entries()) {
-		if (entry === "ignored") continue
-		const ref = `${KIMCHI_DEV_PROVIDER}/${id}`
-
-		if (entry.roles.includes("plan")) {
-			planners.push(ref)
-			if (entry.tier === "heavy" && !orchestrator) {
-				orchestrator = ref
-			}
-		}
-		if (entry.roles.includes("build")) builders.push(ref)
-		if (entry.roles.includes("review")) reviewers.push(ref)
-		if (entry.roles.includes("explore") || entry.roles.includes("research")) {
-			if (!explorers.includes(ref)) explorers.push(ref)
-		}
-	}
-
-	const orch = orchestrator ?? `${KIMCHI_DEV_PROVIDER}/kimi-k2.6`
-
-	const toAssignment = (arr: string[], fallback: string): RoleModelAssignment =>
-		arr.length === 1 ? arr[0] : arr.length > 0 ? arr : fallback
-
-	return {
-		orchestrator: orch,
-		planner: toAssignment(planners, orch),
-		builder: toAssignment(builders, orch),
-		reviewer: toAssignment(reviewers, orch),
-		explorer: toAssignment(explorers, orch),
-		judge: orch,
-	}
+/** Hardcoded default model-to-role assignment. Users override via /multi-model. */
+export const DEFAULT_MODEL_ROLES: Readonly<ModelRoles> = {
+	orchestrator: "kimchi-dev/kimi-k2.6",
+	planner: "kimchi-dev/kimi-k2.6",
+	builder: ["kimchi-dev/kimi-k2.6", "kimchi-dev/minimax-m2.7"],
+	reviewer: ["kimchi-dev/kimi-k2.6", "kimchi-dev/minimax-m2.7"],
+	explorer: "kimchi-dev/nemotron-3-ultra-fp4",
+	researcher: "kimchi-dev/kimi-k2.6",
+	judge: "kimchi-dev/kimi-k2.6",
 }
-
-/** Default roles derived from MODEL_CAPABILITIES. */
-export const DEFAULT_MODEL_ROLES: Readonly<ModelRoles> = buildDefaultModelRoles()
 
 export interface ModelRolesWarning {
 	role: keyof ModelRoles

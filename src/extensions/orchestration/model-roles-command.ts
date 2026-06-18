@@ -42,11 +42,12 @@ const ROLE_LABELS: Record<keyof ModelRoles, { label: string; description: string
 	planner: { label: "Planner", description: "designs the approach, writes specs" },
 	builder: { label: "Builder", description: "code implementation" },
 	reviewer: { label: "Reviewer", description: "code review" },
-	explorer: { label: "Explorer", description: "codebase exploration, research" },
+	explorer: { label: "Explorer", description: "codebase exploration" },
+	researcher: { label: "Researcher", description: "research beyond codebase, web search" },
 	judge: { label: "Judge", description: "ferment verification and grading" },
 }
 
-const DELEGABLE_KEYS: (keyof ModelRoles)[] = ["planner", "builder", "reviewer", "explorer", "judge"]
+const DELEGABLE_KEYS: (keyof ModelRoles)[] = ["planner", "builder", "reviewer", "explorer", "researcher", "judge"]
 
 const ROLE_KEYS: (keyof ModelRoles)[] = ["orchestrator", ...DELEGABLE_KEYS]
 
@@ -285,7 +286,7 @@ function createToggleSelect(
 
 export function registerModelRolesCommand(pi: ExtensionAPI): void {
 	pi.registerCommand("multi-model", {
-		description: "Configure model roles (orchestrator, planner, builder, reviewer, explorer, judge)",
+		description: "Configure model roles (orchestrator, planner, builder, reviewer, explorer, researcher, judge)",
 		async handler(_args, ctx) {
 			if (!ctx.hasUI) {
 				ctx.ui.notify("Model roles configuration requires an interactive session.", "warning")

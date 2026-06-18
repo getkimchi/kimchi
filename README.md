@@ -69,9 +69,10 @@ Use `/multi-model` in the interactive CLI to toggle models on/off per role, or e
 | **planner** | `kimi-k2.6` | Designs the approach, writes specs. When same as orchestrator, planning is done in-process. |
 | **builder** | `kimi-k2.6`, `minimax-m2.7` | Code implementation. For complex tasks the orchestrator may pick a heavier model from the pool. |
 | **reviewer** | `kimi-k2.6`, `minimax-m2.7` | Code review. Orchestrator picks the strongest by tier for initial review. |
-| **explorer** | `kimi-k2.6`, `nemotron-3-ultra-fp4` | Codebase exploration, research. Light models for broad scans, heavy for deep analysis. |
+| **explorer** | `nemotron-3-ultra-fp4` | Codebase exploration — navigating files, reading code, tracing architecture. |
+| **researcher** | `kimi-k2.6` | Research beyond the codebase — web search, documentation lookup, external sources. |
 
-Defaults are derived from model capabilities in `MODEL_CAPABILITIES`. Roles accept any `provider/model-id` string or an array of strings. Only non-default values need to be specified; missing keys fall back to defaults.
+Defaults are hardcoded in `DEFAULT_MODEL_ROLES`. Roles accept any `provider/model-id` string or an array of strings. Only non-default values need to be specified; missing keys fall back to defaults.
 
 #### How model selection works
 
