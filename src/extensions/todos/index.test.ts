@@ -274,6 +274,28 @@ describe("todos extension session state", () => {
 		expect(harness.sendMessage).toHaveBeenCalledTimes(1)
 	})
 
+	it("resets the missing-todos steer after user input", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [userEntry("user", "Review the todo extension for regressions.")])
+
+		await harness.fire("tool_call", toolCall("bash"), ctx)
+		await harness.fire("input", { source: "user", text: "now review the widget" }, ctx)
+		await harness.fire("tool_call", toolCall("read"), ctx)
+
+		expect(harness.sendMessage).toHaveBeenCalledTimes(2)
+	})
+
+	it("resets the missing-todos steer on session start", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [userEntry("user", "Review the todo extension for regressions.")])
+
+		await harness.fire("tool_call", toolCall("bash"), ctx)
+		await harness.fire("session_start", { reason: "new" }, createContext("new-session", []))
+		await harness.fire("tool_call", toolCall("read"), ctx)
+
+		expect(harness.sendMessage).toHaveBeenCalledTimes(2)
+	})
+
 	it("does not steer for infrastructure tools", async () => {
 		const harness = createTodosHarness()
 		const result = await harness.fire(

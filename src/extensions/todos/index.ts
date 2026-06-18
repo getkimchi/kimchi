@@ -86,6 +86,11 @@ export default function todosExtension(pi: ExtensionAPI): void {
 
 	let missingTodoSteerSent = false
 
+	pi.on("input", (event) => {
+		if (event.source === "extension") return
+		missingTodoSteerSent = false
+	})
+
 	pi.on("tool_call", (event) => {
 		if (!event.toolName) return { block: false }
 		if (!shouldSteerForMissingTodos(event.toolName)) {
@@ -120,6 +125,7 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	}
 
 	pi.on("session_start", (_event, ctx) => {
+		missingTodoSteerSent = false
 		resetTodoWidgetState()
 		ensureTodoWidget(ctx)
 		unsubscribeTodoStore?.()
