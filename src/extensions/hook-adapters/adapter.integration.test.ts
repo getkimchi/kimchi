@@ -116,6 +116,10 @@ function fakePi() {
 			handlers[event] ??= []
 			handlers[event].push(handler)
 		}),
+		events: {
+			emit: vi.fn(),
+			on: vi.fn(() => () => {}),
+		},
 		sendMessage: vi.fn(),
 		sendUserMessage: vi.fn(),
 	}
