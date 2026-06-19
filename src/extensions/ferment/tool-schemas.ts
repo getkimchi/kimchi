@@ -250,6 +250,12 @@ export const CompleteStepParams = Type.Object({
 	ferment_id: Type.String(),
 	phase_id: Type.String(),
 	step_id: Type.String(),
+	worker_agent_id: Type.Optional(
+		Type.String({
+			description:
+				"Agent ID returned by the worker spawned for this step. Required when the step was delegated through Agent; the linked Agent must have task_ref matching this ferment step and outcome completed.",
+		}),
+	),
 	summary: Type.Optional(Type.String()),
 	gates: Type.Array(GateVerdictSchema, {
 		description:

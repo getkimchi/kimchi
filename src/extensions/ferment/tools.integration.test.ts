@@ -47,6 +47,11 @@ vi.mock("./judge.js", async () => {
 		})),
 	}
 })
+
+const mockAgentRecords = vi.hoisted(() => new Map<string, unknown>())
+vi.mock("../agents/index.js", () => ({
+	getAgentRecordForTaskValidation: vi.fn((id: string) => mockAgentRecords.get(id)),
+}))
 import { pr_dim } from "./colors.js"
 import { clearAllPendingPlanReviews, getPendingPlanReview } from "./plan-review.js"
 import { registerKnowledgeTools } from "./tools/knowledge.js"
@@ -140,6 +145,7 @@ beforeEach(() => {
 	clearAllScopingGates()
 	clearAllPendingScopes()
 	clearAllPendingPlanReviews()
+	mockAgentRecords.clear()
 	setActive(undefined)
 })
 
@@ -150,6 +156,7 @@ afterEach(() => {
 	clearAllScopingGates()
 	clearAllPendingScopes()
 	clearAllPendingPlanReviews()
+	mockAgentRecords.clear()
 	setActive(undefined)
 })
 
@@ -166,6 +173,31 @@ const passingStepGates = () => [
 	{ id: "S2", verdict: "pass" as const, rationale: "ok", evidence: "n/a" },
 	{ id: "S3", verdict: "pass" as const, rationale: "ok", evidence: "n/a" },
 ]
+
+function linkedWorker(
+	fermentId: string,
+	phaseId: string,
+	stepId: string,
+	outcome: "completed" | "budget_exhausted" | "failed" | "stopped" = "completed",
+): string {
+	const id = `agent-${mockAgentRecords.size + 1}`
+	mockAgentRecords.set(id, {
+		id,
+		visibility: "user",
+		taskRef: { kind: "ferment_step", ferment_id: fermentId, phase_id: phaseId, step_id: stepId },
+		latestOutcome: {
+			agent_id: id,
+			status: outcome === "completed" ? "completed" : outcome === "stopped" ? "stopped" : "aborted",
+			outcome,
+			reason: outcome === "budget_exhausted" ? "max_turns" : undefined,
+			resumable: outcome === "budget_exhausted",
+			token_usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			duration_ms: 1,
+			resume_attempts: 0,
+		},
+	})
+	return id
+}
 const passingPhaseGates = () => [
 	{ id: "F1", verdict: "pass" as const, rationale: "ok", evidence: "n/a" },
 	{ id: "F2", verdict: "pass" as const, rationale: "ok", evidence: "n/a" },
@@ -590,6 +622,7 @@ describe("complete_ferment_step", () => {
 				ferment_id: id,
 				phase_id: "phase-1",
 				step_id: "step-1",
+				worker_agent_id: linkedWorker(id, "phase-1", "step-1"),
 				summary: "did it",
 				gates: passingStepGates(),
 			}),
@@ -603,6 +636,7 @@ describe("complete_ferment_step", () => {
 			ferment_id: id,
 			phase_id: "phase-1",
 			step_id: "step-1",
+			worker_agent_id: linkedWorker(id, "phase-1", "step-1"),
 			summary: "summary text",
 			gates: passingStepGates(),
 		})
@@ -610,6 +644,63 @@ describe("complete_ferment_step", () => {
 		// so step.grade is undefined; the summary itself is what we verify here.
 		const step = loadFerment(id).phases[0].steps[0]
 		expect(step.summary).toBe("summary text")
+	})
+
+	it("rejects completion without worker_agent_id", async () => {
+		const id = await setupRunningStep()
+		const result = await h.call("complete_ferment_step", {
+			ferment_id: id,
+			phase_id: "phase-1",
+			step_id: "step-1",
+			summary: "summary text",
+			gates: passingStepGates(),
+		})
+		expect(err(result)).toContain("worker_agent_id")
+		expect(loadFerment(id).phases[0].steps[0].status).toBe("running")
+	})
+
+	it("rejects a worker linked to a different step", async () => {
+		const id = await setupRunningStep()
+		const result = await h.call("complete_ferment_step", {
+			ferment_id: id,
+			phase_id: "phase-1",
+			step_id: "step-1",
+			worker_agent_id: linkedWorker(id, "phase-1", "step-2"),
+			summary: "summary text",
+			gates: passingStepGates(),
+		})
+		expect(err(result)).toContain("not linked")
+		expect(loadFerment(id).phases[0].steps[0].status).toBe("running")
+	})
+
+	it("rejects a budget-exhausted linked worker with resume guidance", async () => {
+		const id = await setupRunningStep()
+		const result = await h.call("complete_ferment_step", {
+			ferment_id: id,
+			phase_id: "phase-1",
+			step_id: "step-1",
+			worker_agent_id: linkedWorker(id, "phase-1", "step-1", "budget_exhausted"),
+			summary: "summary text",
+			gates: passingStepGates(),
+		})
+		const text = err(result)
+		expect(text).toContain("exhausted")
+		expect(text).toContain("Resume this agent")
+		expect(loadFerment(id).phases[0].steps[0].status).toBe("running")
+	})
+
+	it.each(["failed", "stopped"] as const)("rejects a %s linked worker", async (outcome) => {
+		const id = await setupRunningStep()
+		const result = await h.call("complete_ferment_step", {
+			ferment_id: id,
+			phase_id: "phase-1",
+			step_id: "step-1",
+			worker_agent_id: linkedWorker(id, "phase-1", "step-1", outcome),
+			summary: "summary text",
+			gates: passingStepGates(),
+		})
+		expect(err(result)).toContain(`outcome is ${outcome}`)
+		expect(loadFerment(id).phases[0].steps[0].status).toBe("running")
 	})
 
 	it("rejects when step does not exist", async () => {
@@ -671,6 +762,7 @@ describe("complete_ferment_phase", () => {
 				ferment_id: id,
 				phase_id: "phase-1",
 				step_id: "step-1",
+				worker_agent_id: linkedWorker(id, "phase-1", "step-1"),
 				summary: "done",
 				gates: passingStepGates(),
 			}),
@@ -681,6 +773,7 @@ describe("complete_ferment_phase", () => {
 				ferment_id: id,
 				phase_id: "phase-1",
 				step_id: "step-2",
+				worker_agent_id: linkedWorker(id, "phase-1", "step-2"),
 				summary: "done",
 				gates: passingStepGates(),
 			}),

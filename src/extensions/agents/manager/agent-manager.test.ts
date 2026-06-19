@@ -7,9 +7,10 @@ vi.mock("./agent-runner.js", () => ({
 
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { AgentManager } from "./agent-manager.js"
-import { runAgent } from "./agent-runner.js"
+import { resumeAgent, runAgent } from "./agent-runner.js"
 
 const mockRunAgent = vi.mocked(runAgent)
+const mockResumeAgent = vi.mocked(resumeAgent)
 
 function fakePi(): ExtensionAPI {
 	return {} as ExtensionAPI
@@ -45,6 +46,78 @@ describe("AgentManager", () => {
 		expect(record.status).toBe("aborted")
 		expect(record.abortReason).toBe("token_budget")
 		expect(record.result).toBe("partial output")
+		expect(record.latestOutcome).toMatchObject({
+			agent_id: record.id,
+			status: "aborted",
+			outcome: "budget_exhausted",
+			reason: "token_budget",
+			resumable: true,
+		})
+	})
+
+	it("threads task_ref and max_turns into the structured outcome", async () => {
+		mockRunAgent.mockResolvedValueOnce({
+			responseText: "done",
+			session: { dispose: vi.fn() } as unknown as AgentSession,
+			aborted: false,
+			steered: false,
+			turnsUsed: 3,
+			maxTurns: 5,
+		})
+		manager = new AgentManager()
+
+		const taskRef = { kind: "ferment_step" as const, ferment_id: "f1", phase_id: "phase-1", step_id: "step-1" }
+		const record = await manager.spawnAndWait(fakePi(), fakeCtx(), "Explore", "inspect", {
+			description: "inspect",
+			maxTurns: 5,
+			taskRef,
+		})
+
+		expect(record.latestOutcome).toMatchObject({
+			outcome: "completed",
+			turns_used: 3,
+			max_turns: 5,
+			task_ref: taskRef,
+		})
+	})
+
+	it("resumes the same session with a fresh max_turns window and records budget exhaustion", async () => {
+		const session = { dispose: vi.fn() } as unknown as AgentSession
+		mockRunAgent.mockResolvedValueOnce({
+			responseText: "checkpoint",
+			session,
+			aborted: true,
+			abortReason: "max_turns",
+			steered: false,
+			turnsUsed: 2,
+			maxTurns: 2,
+		})
+		mockResumeAgent.mockResolvedValueOnce({
+			responseText: "still partial",
+			session,
+			aborted: true,
+			abortReason: "max_turns",
+			steered: false,
+			turnsUsed: 1,
+			maxTurns: 1,
+		})
+		manager = new AgentManager()
+		const record = await manager.spawnAndWait(fakePi(), fakeCtx(), "Explore", "inspect", {
+			description: "inspect",
+			maxTurns: 2,
+		})
+
+		const resumed = await manager.resume(record.id, "finish", { maxTurns: 1, tokenBudget: 2048 })
+
+		expect(resumed?.session).toBe(session)
+		expect(mockResumeAgent).toHaveBeenCalledWith(session, "finish", expect.objectContaining({ maxTurns: 1 }))
+		expect(resumed?.resumeAttempts).toHaveLength(1)
+		expect(resumed?.latestOutcome).toMatchObject({
+			outcome: "budget_exhausted",
+			reason: "max_turns",
+			turns_used: 1,
+			max_turns: 1,
+		})
 	})
 })
 

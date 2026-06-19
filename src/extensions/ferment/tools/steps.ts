@@ -9,6 +9,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Static } from "typebox"
 import type { StepResult } from "../../../ferment/types.js"
+import { getAgentRecordForTaskValidation } from "../../agents/index.js"
 import { askUser } from "../ask-user.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { renderGateGuidance } from "../gate-registry.js"
@@ -103,6 +104,35 @@ const validateFsmTransition = (
 	event: Parameters<typeof validateFsmTransitionWithFerment>[1],
 	params?: Parameters<typeof validateFsmTransitionWithFerment>[2],
 ): string | null => validateFsmTransitionWithFerment(f, event, params).error ?? null
+
+function validateLinkedWorker(params: CompleteStepArgs): string | null {
+	if (!params.worker_agent_id) {
+		return "complete_ferment_step requires worker_agent_id. Use the Agent ID returned by the linked worker for this step."
+	}
+	const record = getAgentRecordForTaskValidation(params.worker_agent_id)
+	if (!record) {
+		return `Worker Agent "${params.worker_agent_id}" was not found. Spawn a linked Agent with task_ref for this ferment step, or retrieve the correct background Agent ID.`
+	}
+	const ref = record.taskRef
+	if (
+		!ref ||
+		ref.kind !== "ferment_step" ||
+		ref.ferment_id !== params.ferment_id ||
+		ref.phase_id !== params.phase_id ||
+		ref.step_id !== params.step_id
+	) {
+		return `Worker Agent "${params.worker_agent_id}" is not linked to this Ferment step. Spawn a new Agent with task_ref { kind: "ferment_step", ferment_id: "${params.ferment_id}", phase_id: "${params.phase_id}", step_id: "${params.step_id}" }.`
+	}
+	const latest = record.latestOutcome
+	if (!latest) {
+		return `Worker Agent "${params.worker_agent_id}" has no recorded outcome yet. Use get_subagent_result with wait: true, then retry complete_ferment_step.`
+	}
+	if (latest.outcome === "completed") return null
+	if (latest.outcome === "budget_exhausted") {
+		return `Worker Agent "${params.worker_agent_id}" exhausted its budget (${latest.reason ?? "budget"}). Do not complete this step from an aborted result. Resume this agent with a fresh bounded max_turns allocation, or spawn a new linked Agent scoped only to the remaining work. If you believe it actually finished, run a short bounded resume/finalizer pass and complete from that completed outcome.`
+	}
+	return `Worker Agent "${params.worker_agent_id}" outcome is ${latest.outcome}${latest.reason ? ` (${latest.reason})` : ""}. Complete requires a linked worker whose latest outcome is completed. Spawn a corrected linked replacement Agent or stop and report the failure.`
+}
 
 async function runVerificationCommand({
 	command,
@@ -257,10 +287,16 @@ Do NOT call start_ferment_step again without user input.`,
 	const workerContext =
 		freshPhase && freshStep ? services.buildWorkerContext(outcome.ferment, freshPhase, freshStep) : ""
 	const contextBlock = workerContext ? `\n\nWorker context (pass to subagent verbatim):\n${workerContext}` : ""
+	const taskRef = {
+		kind: "ferment_step" as const,
+		ferment_id: outcome.ferment.id,
+		phase_id: phase.id,
+		step_id: step.id,
+	}
 
 	return toolOk(
 		withNextActionHint(
-			`Step ${step.index}: "${step.description}" started. Spawn a subagent with the persona that matches this step's intent. When it returns, call complete_ferment_step with its summary.${lowGradeCaution}${parallelNote}${contextBlock}`,
+			`Step ${step.index}: "${step.description}" started. Spawn a subagent with the persona that matches this step's intent. Pass task_ref: ${JSON.stringify(taskRef)} and a max_turns budget. Instruct the worker to produce a checkpoint with remaining-work guidance if it nears the limit. When it returns with agent_outcome.outcome "completed", call complete_ferment_step with worker_agent_id and its summary.${lowGradeCaution}${parallelNote}${contextBlock}`,
 			outcome.ferment,
 		),
 	)
@@ -284,6 +320,9 @@ export async function completeStep(
 
 	const fsmError = validateFsmTransition(f, "COMPLETE_STEP", { phaseId: phase.id, stepId: step.id })
 	if (fsmError) return toolErrWithNextAction(fsmError, f)
+
+	const workerError = validateLinkedWorker(params)
+	if (workerError) return toolErrWithNextAction(workerError, f)
 
 	// Gate validation runs BEFORE any state mutation. Step-level flags don't
 	// feed the phase retry/escalation pipeline — they just refuse this single

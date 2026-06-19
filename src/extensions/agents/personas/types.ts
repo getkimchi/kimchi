@@ -10,6 +10,40 @@ import type { LifetimeUsage } from "../manager/usage.js"
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh"
 
 export type AgentAbortReason = "max_turns" | "token_budget" | "inactivity" | "max_duration"
+export type AgentOutcomeKind = "completed" | "budget_exhausted" | "failed" | "stopped"
+
+export interface AgentTaskRef {
+	kind: "ferment_step"
+	ferment_id: string
+	phase_id: string
+	step_id: string
+}
+
+export interface AgentResumeAttempt {
+	startedAt: number
+	completedAt?: number
+	maxTurns?: number
+	tokenBudget?: number
+	outcome?: AgentOutcomeKind
+	reason?: AgentAbortReason | "error"
+}
+
+export interface AgentOutcome {
+	agent_id: string
+	status: AgentRecord["status"]
+	outcome: AgentOutcomeKind
+	reason?: AgentAbortReason | "error"
+	resumable: boolean
+	turns_used?: number
+	max_turns?: number
+	token_usage: LifetimeUsage
+	duration_ms: number
+	summary?: string
+	checkpoint?: string
+	remaining_work?: string
+	task_ref?: AgentTaskRef
+	resume_attempts: number
+}
 
 /** Agent type: any string name (built-in defaults or user-defined). */
 export type SubagentType = string
@@ -109,6 +143,11 @@ export interface AgentRecord {
 	status: "queued" | "running" | "completed" | "steered" | "aborted" | "stopped" | "error"
 	modelId?: string
 	abortReason?: AgentAbortReason
+	taskRef?: AgentTaskRef
+	latestOutcome?: AgentOutcome
+	resumeAttempts?: AgentResumeAttempt[]
+	lastTurnCount?: number
+	maxTurns?: number
 	result?: string
 	error?: string
 	toolUses: number

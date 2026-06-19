@@ -182,6 +182,8 @@ export interface RunResult {
 	abortReason?: AgentAbortReason
 	/** True if the agent was steered to wrap up (hit soft turn limit) but finished in time. */
 	steered: boolean
+	turnsUsed?: number
+	maxTurns?: number
 }
 
 function collectResponseText(session: AgentSession) {
@@ -634,7 +636,15 @@ async function runAgentInner(
 	}
 
 	const responseText = collector.getText().trim() || getLastAssistantText(session)
-	return { responseText, session, aborted: aborted || budgetAborted, abortReason, steered: softLimitReached }
+	return {
+		responseText,
+		session,
+		aborted: aborted || budgetAborted,
+		abortReason,
+		steered: softLimitReached,
+		turnsUsed: turnCount,
+		maxTurns: effectiveMaxTurns,
+	}
 }
 
 /**
@@ -645,22 +655,54 @@ export async function resumeAgent(
 	prompt: string,
 	options: {
 		onToolActivity?: (activity: ToolActivity) => void
+		onTurnEnd?: (turnCount: number) => void
 		onAssistantUsage?: (usage: LifetimeUsage) => void
 		onCompaction?: (info: { reason: "manual" | "threshold" | "overflow"; tokensBefore: number }) => void
 		signal?: AbortSignal
+		maxTurns?: number
+		tokenBudget?: number
 		inactivityTimeout?: number
+		maxDuration?: number
 	} = {},
-): Promise<string> {
+): Promise<RunResult> {
 	const collector = collectResponseText(session)
 	const cleanupAbort = forwardAbortSignal(session, options.signal)
 
 	const resumeInactivity = { lastActivityAt: Date.now(), steered: false }
 	const resumeInactivityTimeout = options.inactivityTimeout ?? DEFAULT_INACTIVITY_TIMEOUT
+	const effectiveMaxTurns = normalizeMaxTurns(options.maxTurns)
+	const MIN_TOKEN_BUDGET = 1024
+	const effectiveTokenBudget = options.tokenBudget != null ? Math.max(options.tokenBudget, MIN_TOKEN_BUDGET) : undefined
+	const effectiveMaxDuration = options.maxDuration ?? DEFAULT_MAX_DURATION
+	let turnCount = 0
+	let cumulativeTokens = 0
+	let softLimitReached = false
+	let tokenSoftLimitSteered = false
+	let aborted = false
+	let budgetAborted = false
+	let abortReason: AgentAbortReason | undefined
 
 	const unsubEvents = session.subscribe((event: AgentSessionEvent) => {
 		resumeInactivity.lastActivityAt = Date.now()
 		if (resumeInactivity.steered) resumeInactivity.steered = false
 
+		if (event.type === "turn_end") {
+			turnCount++
+			options.onTurnEnd?.(turnCount)
+			if (effectiveMaxTurns != null) {
+				if (!softLimitReached && turnCount >= effectiveMaxTurns) {
+					softLimitReached = true
+					steerAsOrchestrator(
+						session,
+						"You have reached this resume's turn limit. Stop exploring. Complete your current edit, ensure file syntax is valid, and summarize progress plus remaining work for the orchestrator. Do not start new edits.",
+					)
+				} else if (softLimitReached && turnCount >= effectiveMaxTurns + graceTurns) {
+					aborted = true
+					abortReason = "max_turns"
+					session.abort()
+				}
+			}
+		}
 		if (event.type === "tool_execution_start") options.onToolActivity?.({ type: "start", toolName: event.toolName })
 		if (event.type === "tool_execution_end") options.onToolActivity?.({ type: "end", toolName: event.toolName })
 		if (event.type === "message_end" && event.message.role === "assistant") {
@@ -669,13 +711,29 @@ export async function resumeAgent(
 					usage?: { input: number; output: number; cacheRead: number; cacheWrite: number }
 				}
 			).usage
-			if (u)
-				options.onAssistantUsage?.({
+			if (u) {
+				const usage = {
 					input: u.input ?? 0,
 					output: u.output ?? 0,
 					cacheRead: u.cacheRead ?? 0,
 					cacheWrite: u.cacheWrite ?? 0,
-				})
+				}
+				cumulativeTokens += getOutputTotal(usage)
+				options.onAssistantUsage?.(usage)
+				if (effectiveTokenBudget != null && !budgetAborted) {
+					if (cumulativeTokens > effectiveTokenBudget) {
+						budgetAborted = true
+						abortReason = "token_budget"
+						session.abort()
+					} else if (!tokenSoftLimitSteered && cumulativeTokens >= effectiveTokenBudget * 0.8) {
+						tokenSoftLimitSteered = true
+						steerAsOrchestrator(
+							session,
+							"You are approaching this resume's output token limit. Wrap up current work and summarize remaining tasks.",
+						)
+					}
+				}
+			}
 		}
 		if (event.type === "compaction_end" && !event.aborted && event.result) {
 			options.onCompaction?.({ reason: event.reason, tokensBefore: event.result.tokensBefore })
@@ -685,23 +743,42 @@ export async function resumeAgent(
 	const resumeInactivityInterval = setInterval(() => {
 		const elapsed = Date.now() - resumeInactivity.lastActivityAt
 		if (resumeInactivity.steered && elapsed >= resumeInactivityTimeout) {
+			aborted = true
+			abortReason = "inactivity"
 			session.abort()
 		} else if (!resumeInactivity.steered && elapsed >= resumeInactivityTimeout) {
 			resumeInactivity.steered = true
 			steerAsOrchestrator(session, "You appear to be stalled. Resume work immediately or summarize your progress.")
 		}
 	}, INACTIVITY_CHECK_INTERVAL)
+	const durationTimer = effectiveMaxDuration
+		? setTimeout(() => {
+				aborted = true
+				abortReason = "max_duration"
+				session.abort()
+			}, effectiveMaxDuration * 1000)
+		: undefined
 
 	try {
 		await session.prompt(prompt)
 	} finally {
 		clearInterval(resumeInactivityInterval)
+		if (durationTimer) clearTimeout(durationTimer)
 		collector.unsubscribe()
 		unsubEvents()
 		cleanupAbort()
 	}
 
-	return collector.getText().trim() || getLastAssistantText(session)
+	const responseText = collector.getText().trim() || getLastAssistantText(session)
+	return {
+		responseText,
+		session,
+		aborted: aborted || budgetAborted,
+		abortReason,
+		steered: softLimitReached,
+		turnsUsed: turnCount,
+		maxTurns: effectiveMaxTurns,
+	}
 }
 
 /**

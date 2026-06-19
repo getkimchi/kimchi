@@ -7,6 +7,12 @@ import { FermentEventStore } from "../../../ferment/event-store.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "../runtime.js"
 import { clearAllStepStarts } from "../state.js"
 import { createApplyAndPersist } from "../tool-helpers.js"
+
+const mockAgentRecords = vi.hoisted(() => new Map<string, unknown>())
+vi.mock("../../agents/index.js", () => ({
+	getAgentRecordForTaskValidation: vi.fn((id: string) => mockAgentRecords.get(id)),
+}))
+
 import {
 	type StepHandlerServices,
 	type VerificationResult,
@@ -93,8 +99,28 @@ const passingStepGates = () => [
 	{ id: "S3", verdict: "pass" as const, rationale: "Empty input handled.", evidence: "throws TypeError; covered" },
 ]
 
+function linkedWorker(fermentId: string, phaseId = "phase-1", stepId = "step-1"): string {
+	const id = `agent-${mockAgentRecords.size + 1}`
+	mockAgentRecords.set(id, {
+		id,
+		visibility: "user",
+		taskRef: { kind: "ferment_step", ferment_id: fermentId, phase_id: phaseId, step_id: stepId },
+		latestOutcome: {
+			agent_id: id,
+			status: "completed",
+			outcome: "completed",
+			resumable: false,
+			token_usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			duration_ms: 1,
+			resume_attempts: 0,
+		},
+	})
+	return id
+}
+
 beforeEach(() => {
 	clearAllStepStarts()
+	mockAgentRecords.clear()
 	vi.restoreAllMocks()
 })
 
@@ -245,6 +271,7 @@ describe("completeStep", () => {
 				ferment_id: h.fermentId,
 				phase_id: "phase-1",
 				step_id: "step-1",
+				worker_agent_id: linkedWorker(h.fermentId),
 				summary: "done",
 				gates: passingStepGates(),
 			},
@@ -272,6 +299,7 @@ describe("completeStep", () => {
 				ferment_id: h.fermentId,
 				phase_id: "phase-1",
 				step_id: "step-1",
+				worker_agent_id: linkedWorker(h.fermentId),
 				summary: "done",
 				gates: passingStepGates(),
 			},
@@ -305,7 +333,14 @@ describe("completeStep", () => {
 
 		const result = await completeStep(
 			h.runtime,
-			{ ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1", summary: "done", gates: flaggedGates },
+			{
+				ferment_id: h.fermentId,
+				phase_id: "phase-1",
+				step_id: "step-1",
+				worker_agent_id: linkedWorker(h.fermentId),
+				summary: "done",
+				gates: flaggedGates,
+			},
 			{ pi: h.pi },
 			services,
 		)
@@ -328,7 +363,14 @@ describe("completeStep", () => {
 
 		const result = await completeStep(
 			h.runtime,
-			{ ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1", summary: "done", gates: incomplete },
+			{
+				ferment_id: h.fermentId,
+				phase_id: "phase-1",
+				step_id: "step-1",
+				worker_agent_id: linkedWorker(h.fermentId),
+				summary: "done",
+				gates: incomplete,
+			},
 			{ pi: h.pi },
 			services,
 		)
@@ -354,6 +396,7 @@ describe("completeStep", () => {
 				ferment_id: h.fermentId,
 				phase_id: "phase-1",
 				step_id: "step-1",
+				worker_agent_id: linkedWorker(h.fermentId),
 				summary: "done",
 				gates: passingStepGates(),
 			},
@@ -381,6 +424,7 @@ describe("completeStep", () => {
 					ferment_id: h.fermentId,
 					phase_id: "phase-1",
 					step_id: "step-1",
+					worker_agent_id: linkedWorker(h.fermentId),
 					summary: "done",
 					gates: passingStepGates(),
 				},
@@ -405,6 +449,7 @@ describe("completeStep", () => {
 				ferment_id: h.fermentId,
 				phase_id: "phase-1",
 				step_id: "step-1",
+				worker_agent_id: linkedWorker(h.fermentId),
 				summary: "done",
 				gates: passingStepGates(),
 			},

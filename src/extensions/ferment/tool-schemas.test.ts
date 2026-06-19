@@ -431,10 +431,27 @@ describe("CompleteStepParams schema", () => {
 			ferment_id: "f-123",
 			phase_id: "phase-1",
 			step_id: "step-1",
+			worker_agent_id: "agent-123",
 			summary: "done",
 			gates: [
 				{ id: "S1", verdict: "pass", rationale: "ok", evidence: "n/a" },
 				{ id: "S2", verdict: "smoke", rationale: "ran a smoke check", evidence: "browser run" },
+				{ id: "S3", verdict: "pass", rationale: "ok", evidence: "n/a" },
+			],
+		}
+
+		expect(Value.Check(CompleteStepParams, payload)).toBe(true)
+	})
+
+	it("accepts worker_agent_id as optional schema input for legacy retries", () => {
+		const payload = {
+			ferment_id: "f-123",
+			phase_id: "phase-1",
+			step_id: "step-1",
+			summary: "done",
+			gates: [
+				{ id: "S1", verdict: "pass", rationale: "ok", evidence: "n/a" },
+				{ id: "S2", verdict: "pass", rationale: "ok", evidence: "n/a" },
 				{ id: "S3", verdict: "pass", rationale: "ok", evidence: "n/a" },
 			],
 		}

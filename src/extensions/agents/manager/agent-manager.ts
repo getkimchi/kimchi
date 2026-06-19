@@ -1,7 +1,16 @@
 import { randomUUID } from "node:crypto"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import type { AgentRecord, AgentVisibility, IsolationMode, SubagentType, ThinkingLevel } from "../personas/types.js"
+import type {
+	AgentOutcome,
+	AgentRecord,
+	AgentResumeAttempt,
+	AgentTaskRef,
+	AgentVisibility,
+	IsolationMode,
+	SubagentType,
+	ThinkingLevel,
+} from "../personas/types.js"
 import { type ToolActivity, resumeAgent, runAgent } from "./agent-runner.js"
 import { type LifetimeUsage, addUsage } from "./usage.js"
 
@@ -12,6 +21,7 @@ export type CompactionInfo = { reason: "manual" | "threshold" | "overflow"; toke
 
 /** Default max concurrent background agents. */
 const DEFAULT_MAX_CONCURRENT = 4
+const DEFAULT_MAX_RESUMES = 2
 
 interface SpawnArgs {
 	pi: ExtensionAPI
@@ -40,6 +50,7 @@ interface SpawnOptions {
 	sessionDir?: string
 	signal?: AbortSignal
 	tokenBudget?: number
+	taskRef?: AgentTaskRef
 	inactivityTimeout?: number
 	maxDuration?: number
 	onToolActivity?: (activity: ToolActivity) => void
@@ -97,6 +108,9 @@ export class AgentManager {
 			startedAt: Date.now(),
 			abortController,
 			sessionFile: options.sessionFile,
+			taskRef: options.taskRef,
+			maxTurns: options.maxTurns,
+			resumeAttempts: [],
 			lifetimeUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			compactionCount: 0,
 		}
@@ -152,7 +166,10 @@ export class AgentManager {
 				if (activity.type === "end") record.toolUses++
 				options.onToolActivity?.(activity)
 			},
-			onTurnEnd: options.onTurnEnd,
+			onTurnEnd: (turnCount) => {
+				record.lastTurnCount = turnCount
+				options.onTurnEnd?.(turnCount)
+			},
 			onTextDelta: options.onTextDelta,
 			onAssistantUsage: (usage) => {
 				addUsage(record.lifetimeUsage, usage)
@@ -174,14 +191,17 @@ export class AgentManager {
 				options.onSessionCreated?.(session)
 			},
 		})
-			.then(({ responseText, session, aborted, abortReason, steered }) => {
+			.then(({ responseText, session, aborted, abortReason, steered, turnsUsed, maxTurns }) => {
 				if (record.status !== "stopped") {
 					record.status = aborted ? "aborted" : steered ? "steered" : "completed"
 				}
 				record.abortReason = abortReason
 				record.result = responseText
 				record.session = session
+				record.lastTurnCount = turnsUsed
+				record.maxTurns = maxTurns ?? options.maxTurns
 				record.completedAt ??= Date.now()
+				record.latestOutcome = buildAgentOutcome(record)
 
 				detach()
 
@@ -207,6 +227,7 @@ export class AgentManager {
 				}
 				record.error = err instanceof Error ? err.message : String(err)
 				record.completedAt ??= Date.now()
+				record.latestOutcome = buildAgentOutcome(record)
 
 				detach()
 
@@ -268,9 +289,26 @@ export class AgentManager {
 		return record
 	}
 
-	async resume(id: string, prompt: string, signal?: AbortSignal): Promise<AgentRecord | undefined> {
+	async resume(
+		id: string,
+		prompt: string,
+		options: {
+			signal?: AbortSignal
+			maxTurns?: number
+			tokenBudget?: number
+			inactivityTimeout?: number
+			maxDuration?: number
+		} = {},
+	): Promise<AgentRecord | undefined> {
 		const record = this.agents.get(id)
 		if (!record?.session) return undefined
+		if ((record.resumeAttempts?.length ?? 0) >= DEFAULT_MAX_RESUMES) {
+			record.status = "error"
+			record.error = `Agent "${id}" has already used the default resume limit (${DEFAULT_MAX_RESUMES}). Spawn a new linked worker for remaining work unless the user explicitly authorizes more resumes.`
+			record.completedAt = Date.now()
+			record.latestOutcome = buildAgentOutcome(record)
+			return record
+		}
 
 		record.status = "running"
 		record.startedAt = Date.now()
@@ -278,11 +316,23 @@ export class AgentManager {
 		record.result = undefined
 		record.error = undefined
 		record.abortReason = undefined
+		record.maxTurns = options.maxTurns
+		record.lastTurnCount = 0
+		const attempt: AgentResumeAttempt = {
+			startedAt: record.startedAt,
+			maxTurns: options.maxTurns,
+			tokenBudget: options.tokenBudget,
+		}
+		record.resumeAttempts ??= []
+		record.resumeAttempts.push(attempt)
 
 		try {
-			const responseText = await resumeAgent(record.session, prompt, {
+			const result = await resumeAgent(record.session, prompt, {
 				onToolActivity: (activity) => {
 					if (activity.type === "end") record.toolUses++
+				},
+				onTurnEnd: (turnCount) => {
+					record.lastTurnCount = turnCount
 				},
 				onAssistantUsage: (usage) => {
 					addUsage(record.lifetimeUsage, usage)
@@ -291,16 +341,27 @@ export class AgentManager {
 					record.compactionCount++
 					this.onCompact?.(record, info)
 				},
-				signal,
+				signal: options.signal,
+				maxTurns: options.maxTurns,
+				tokenBudget: options.tokenBudget,
+				inactivityTimeout: options.inactivityTimeout,
+				maxDuration: options.maxDuration,
 			})
-			record.status = "completed"
-			record.result = responseText
+			record.status = result.aborted ? "aborted" : result.steered ? "steered" : "completed"
+			record.abortReason = result.abortReason
+			record.result = result.responseText
+			record.lastTurnCount = result.turnsUsed
+			record.maxTurns = result.maxTurns ?? options.maxTurns
 			record.completedAt = Date.now()
 		} catch (err) {
 			record.status = "error"
 			record.error = err instanceof Error ? err.message : String(err)
 			record.completedAt = Date.now()
 		}
+		attempt.completedAt = record.completedAt
+		attempt.outcome = classifyAgentOutcome(record)
+		attempt.reason = record.status === "error" ? "error" : record.abortReason
+		record.latestOutcome = buildAgentOutcome(record)
 
 		return record
 	}
@@ -406,5 +467,48 @@ export class AgentManager {
 			record.session?.dispose()
 		}
 		this.agents.clear()
+	}
+}
+
+export function classifyAgentOutcome(record: Pick<AgentRecord, "status" | "abortReason">): AgentOutcome["outcome"] {
+	if (record.status === "completed" || record.status === "steered") return "completed"
+	if (record.status === "stopped") return "stopped"
+	if (record.status === "aborted" && (record.abortReason === "max_turns" || record.abortReason === "token_budget")) {
+		return "budget_exhausted"
+	}
+	return "failed"
+}
+
+export function buildAgentOutcome(record: AgentRecord): AgentOutcome {
+	const outcome = classifyAgentOutcome(record)
+	const reason = record.status === "error" ? "error" : record.abortReason
+	const durationMs = (record.completedAt ?? Date.now()) - record.startedAt
+	const text = record.result?.trim() || record.error?.trim()
+	const resumable =
+		record.session != null &&
+		outcome !== "completed" &&
+		outcome !== "stopped" &&
+		(record.resumeAttempts?.length ?? 0) < DEFAULT_MAX_RESUMES
+	const remainingWork =
+		outcome === "budget_exhausted"
+			? "Resume this agent with a fresh bounded max_turns allocation, or spawn a new linked Agent scoped only to the remaining work."
+			: outcome === "failed"
+				? "Inspect the failure and either spawn a corrected replacement Agent or stop and report the failure."
+				: undefined
+	return {
+		agent_id: record.id,
+		status: record.status,
+		outcome,
+		reason,
+		resumable,
+		turns_used: record.lastTurnCount,
+		max_turns: record.maxTurns,
+		token_usage: { ...record.lifetimeUsage },
+		duration_ms: durationMs,
+		summary: text,
+		checkpoint: text,
+		remaining_work: remainingWork,
+		task_ref: record.taskRef,
+		resume_attempts: record.resumeAttempts?.length ?? 0,
 	}
 }
