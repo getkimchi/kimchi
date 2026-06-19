@@ -1,33 +1,35 @@
-// ACP-side ExtensionUIContext.
+// ACP-side ExtensionUIContext. pi routes every `ctx.ui.*` call from extensions
+// through whatever object was last passed to
+// `session.bindExtensions({ uiContext, mode })`.
 //
-// pi-coding-agent, when embedded as a library, routes every `ctx.ui.*` call
-// from extensions through whatever object was last passed to
-// `session.extensionRunner.setUIContext(...)`. The default is a no-op context;
-// we replace it with this one so that dialogs and fire-and-forget UI calls
-// become JSON-RPC requests/notifications over ACP.
+// `setTitle` deliberately uses ACP-native `session_info_update` instead of the
+// extension namespace — every ACP client renders it without a custom handler.
 //
-// Wire envelope mirrors pi's own `extension_ui_request` / `extension_ui_response`
-// schema (see pi's modes/rpc/rpc-types.ts):
-//   request:  extMethod(<method>, { type: "extension_ui_request", id, sessionId, ...payload })
-//   response: { type: "extension_ui_response", id, value | confirmed | cancelled }
-// Fire-and-forget notifications use extNotification with the same envelope,
-// minus the response promise.
-//
-// The deliberate exception is `setTitle`: pi's rpc-mode emits it via
-// `extension_ui_request`, but ACP has a native `session_info_update`
-// notification that every ACP client understands. Routing setTitle through
-// the native channel means clients don't need a custom RPC to render a
-// session title.
-//
-// Client capability gating is keyed off `clientCapabilities._meta["kimchi.dev"].pi`
-// — a client that didn't advertise `pi: true` gets a graceful no-op (confirm
-// resolves false, dialogs resolve undefined, etc.) instead of a
-// method-not-found round-trip.
+// When a method isn't supported by the client, `warnUnsupportedMethod` emits
+// one `agent_message_chunk` per (method, session) so the user sees the dropped
+// call instead of getting a method-not-found round-trip. Dedup matters because
+// extensions probe `setStatus`/`setWidget` on every model token.
 
 import { randomUUID } from "node:crypto"
-import type { AgentSideConnection, ClientCapabilities, SessionNotification } from "@agentclientprotocol/sdk"
+import type {
+	AgentSideConnection,
+	ClientCapabilities,
+	CreateElicitationRequest,
+	CreateElicitationResponse,
+	ElicitationAcceptAction,
+	ElicitationSchema,
+	PermissionOption,
+	RequestPermissionRequest,
+	SessionNotification,
+	ToolCallUpdate,
+} from "@agentclientprotocol/sdk"
 import type { ExtensionUIContext, Theme as ThemeType } from "@earendil-works/pi-coding-agent"
-import { AVAILABLE_METHODS, getClientSupportsUiMethods } from "./capabilities.js"
+import {
+	AVAILABLE_METHODS,
+	type PiMethod,
+	getClientSupportsElicitation,
+	getClientSupportsMethod,
+} from "./capabilities.js"
 import { requestWithAbort } from "./utils.js"
 
 type DialogResponse = {
@@ -38,23 +40,17 @@ type DialogResponse = {
 
 const REQUEST_TYPE = "extension_ui_request"
 
-const METHODS = AVAILABLE_METHODS.pi
-
 const NOOP_THEME = createNoopTheme()
 
-type MethodType = (typeof METHODS)[keyof typeof METHODS]
+type MethodType = PiMethod
 
 /**
  * Build an `ExtensionUIContext` that proxies all interaction through the ACP
- * connection. The returned object is bound to a single session for its
- * lifetime; do not share it across sessions.
+ * connection. Bound to a single session — do not share across sessions.
  *
- * Fire-and-forget methods (notify/setStatus/setWidget/setEditorText/setTitle)
- * swallow errors and log to stderr — they cannot meaningfully surface
- * failure to the extension that initiated them. Dialog methods translate ACP
- * errors into the same default return values a real TUI dialog would emit
- * on dismiss/abort, so extensions never see a rejected promise from UI
- * calls (matches pi's interactive TUI semantics).
+ * Dialog errors (method-not-supported, transport failure, bad shape) resolve
+ * to the default TUI value instead of rejecting — matches pi's interactive
+ * semantics where a closed/dismissed dialog never throws.
  */
 export function createAcpUIContext(
 	conn: AgentSideConnection,
@@ -62,10 +58,8 @@ export function createAcpUIContext(
 	clientCapabilities: ClientCapabilities | undefined,
 	send: (params: SessionNotification) => void,
 ): ExtensionUIContext {
-	// `clientCapabilities` is fixed at ACP initialize time and never changes
-	// for the connection's lifetime, so compute the support flag once instead
-	// of checking on every UI call.
-	const supportsUi = getClientSupportsUiMethods(clientCapabilities)
+	const supportsElicitation = getClientSupportsElicitation(clientCapabilities)
+	const supportsMethod = (method: PiMethod) => getClientSupportsMethod(clientCapabilities, method)
 
 	async function requestDialog<T extends DialogResponse>(
 		method: MethodType,
@@ -74,102 +68,258 @@ export function createAcpUIContext(
 	): Promise<T | "aborted"> {
 		try {
 			return await requestWithAbort(
-				conn.extMethod(method, {
+				conn.extMethod(AVAILABLE_METHODS[method], {
 					type: REQUEST_TYPE,
 					id: randomUUID(),
-					sessionId,
 					...payload,
 				}) as Promise<T>,
 				signal,
 			)
 		} catch (err) {
-			// Treat client-side errors (method not supported, transport failure,
-			// invalid response shape) as a cancellation — matches pi's TUI
-			// semantics where a closed/dismissed dialog resolves to the default
-			// value rather than rejecting the extension's promise.
-			logError(method, err)
+			logError(AVAILABLE_METHODS[method], err)
 			return { cancelled: true } as T
 		}
 	}
 
 	function notify(method: MethodType, payload: Record<string, unknown>): void {
-		// Fire-and-forget: notify rejections must never surface to extensions
-		// (no return value), but should be visible during development.
+		// Rejections are logged but never surface — `notify` returns void.
+		// No `sessionId` in payload: the envelope matches pi's rpc-mode
+		// `RpcExtensionUIRequest` exactly so clients with existing handlers
+		// can reuse them. Session routing uses the response `id`.
+		const wire = AVAILABLE_METHODS[method]
 		conn
-			.extNotification(method, {
+			.extNotification(wire, {
 				type: REQUEST_TYPE,
 				id: randomUUID(),
-				sessionId,
 				...payload,
 			})
-			.catch((err) => logError(method, err))
+			.catch((err) => logError(wire, err))
 	}
 
-	// TUI-only surface (footer/header/widget-component/custom): no ACP
-	// equivalent. Stubs below satisfy the type contract without doing
-	// anything. Note `setWidget` does support the string[] branch — it
-	// forwards to the client as a real notification, matching pi's rpc-mode.
-	// Theme is exposed as a Proxy so the getter never throws; the public
-	// pi-coding-agent index doesn't re-export the theme singleton and the
-	// Theme constructor needs full color records we don't have access to.
+	// One warning per method per session — extensions probe setStatus/setWidget
+	// on every model token and we don't want to spam agent_message_chunk.
+	const unsupportedMethodsWarned = new Set<string>()
+
+	function warnUnsupportedMethod(method: string, summary: string): void {
+		if (unsupportedMethodsWarned.has(method)) return
+		unsupportedMethodsWarned.add(method)
+		send({
+			sessionId,
+			update: {
+				sessionUpdate: "agent_message_chunk",
+				content: { type: "text", text: `[ACP] ${method}: ${summary}` },
+			},
+		})
+	}
+
+	// Returns the content on `accept`, undefined on `decline`/`cancel`,
+	// `"aborted"` if the caller's signal fires or the transport rejects.
+	async function elicitForm(
+		message: string,
+		requestedSchema: ElicitationSchema,
+		signal: AbortSignal | undefined,
+	): Promise<NonNullable<ElicitationAcceptAction["content"]> | "aborted" | undefined> {
+		const params: CreateElicitationRequest = {
+			requestId: randomUUID(),
+			mode: "form" as const,
+			message,
+			requestedSchema,
+		}
+		try {
+			const response = await requestWithAbort<CreateElicitationResponse>(
+				conn.unstable_createElicitation(params),
+				signal,
+			)
+			if (response === "aborted") {
+				throw Error("aborted")
+			}
+			if (response.action !== "accept") return undefined
+			return response.content ?? undefined
+		} catch (err) {
+			logError("elicitation/create", err)
+			return "aborted"
+		}
+	}
+
+	// `request_permission` is tool-call-coupled, so we wrap the choice in a
+	// synthetic ToolCallUpdate — the client renders it as a permission dialog
+	// with the options we provide.
+	async function requestPermissionFallback(
+		kind: "confirm" | "select",
+		title: string,
+		message: string | undefined,
+		options: PermissionOption[],
+		signal: AbortSignal | undefined,
+	): Promise<{ outcome: "selected" | "cancelled"; optionId?: string }> {
+		const toolCall: ToolCallUpdate = {
+			toolCallId: `pi-ui-${kind}-${randomUUID()}`,
+			title,
+			kind: "other",
+			status: "pending",
+			rawInput: message !== undefined ? { message } : undefined,
+		}
+		const params: RequestPermissionRequest = {
+			sessionId,
+			toolCall,
+			options,
+		}
+		try {
+			const response = await requestWithAbort(conn.requestPermission(params), signal)
+			if (response === "aborted" || response.outcome.outcome === "cancelled") {
+				return { outcome: "cancelled" }
+			}
+			return { outcome: "selected", optionId: response.outcome.optionId }
+		} catch (err) {
+			logError(`request_permission(${kind})`, err)
+			return { outcome: "cancelled" }
+		}
+	}
+
 	const ui: ExtensionUIContext = {
 		async select(title, options, opts) {
-			if (!supportsUi) return undefined
-			const response = await requestDialog(
-				METHODS.select,
-				{ method: "select", title, options, timeout: opts?.timeout },
+			if (options.length === 0) return undefined
+
+			if (supportsElicitation) {
+				const schema: ElicitationSchema = {
+					type: "object",
+					title,
+					properties: {
+						value: {
+							type: "string",
+							title,
+							oneOf: options.map((opt) => ({ const: opt, title: opt })),
+							default: options[0],
+						},
+					},
+					required: ["value"],
+				}
+				const response = await elicitForm(title, schema, opts?.signal)
+				if (response === "aborted" || response === undefined) return undefined
+				const value = response.value
+				return typeof value === "string" ? value : undefined
+			}
+
+			const result = await requestPermissionFallback(
+				"select",
+				title,
+				undefined,
+				options.map((name, i) => ({
+					optionId: `choice-${i}`,
+					name,
+					kind: "allow_once",
+				})),
 				opts?.signal,
 			)
-			if (response === "aborted" || response.cancelled) return undefined
-			return typeof response.value === "string" ? response.value : undefined
+			if (result.outcome !== "selected") return undefined
+			const idx = Number.parseInt(result.optionId?.replace("choice-", "") ?? "", 10)
+			return Number.isFinite(idx) ? options[idx] : undefined
 		},
 
 		async confirm(title, message, opts) {
-			if (!supportsUi) return false
-			const response = await requestDialog(
-				METHODS.confirm,
-				{ method: "confirm", title, message, timeout: opts?.timeout },
+			if (supportsElicitation) {
+				const schema: ElicitationSchema = {
+					type: "object",
+					title,
+					properties: {
+						confirmed: {
+							type: "boolean",
+							title,
+							description: message,
+							default: false,
+						},
+					},
+					required: ["confirmed"],
+				}
+				const response = await elicitForm(message ?? title, schema, opts?.signal)
+				if (response === "aborted" || response === undefined) return false
+				return response.confirmed === true
+			}
+
+			const result = await requestPermissionFallback(
+				"confirm",
+				title,
+				message,
+				[
+					{ optionId: "yes", name: "Yes", kind: "allow_once" },
+					{ optionId: "no", name: "No", kind: "reject_once" },
+				],
 				opts?.signal,
 			)
-			if (response === "aborted" || response.cancelled) return false
-			// rpc-mode uses `confirmed`; some clients may use `value` for
-			// symmetry with select/input. Accept either.
-			if (typeof response.value === "boolean") return response.value
-			return response.confirmed === true
+			return result.outcome === "selected" && result.optionId === "yes"
 		},
 
 		async input(title, placeholder, opts) {
-			if (!supportsUi) return undefined
-			const response = await requestDialog(
-				METHODS.input,
-				{ method: "input", title, placeholder, timeout: opts?.timeout },
-				opts?.signal,
-			)
-			if (response === "aborted" || response.cancelled) return undefined
-			return typeof response.value === "string" ? response.value : undefined
+			if (!supportsElicitation) {
+				if (supportsMethod("pi_notify")) {
+					// No permission-equivalent for free text — notify and resolve undefined.
+					ui.notify(`Input requested: "${title}" (not supported by this client)`, "warning")
+				} else {
+					warnUnsupportedMethod(
+						"input",
+						`Extension requested free-text input "${title}" but the client supports neither form elicitation nor notifications. The call was dropped.`,
+					)
+				}
+				return undefined
+			}
+
+			const schema: ElicitationSchema = {
+				type: "object",
+				title,
+				properties: {
+					value: {
+						type: "string",
+						title,
+						description: placeholder,
+					},
+				},
+				required: ["value"],
+			}
+			const response = await elicitForm(title, schema, opts?.signal)
+			if (response === "aborted" || response === undefined) return undefined
+			const value = response.value
+			return typeof value === "string" ? value : undefined
 		},
 
 		async editor(title, prefill) {
-			if (!supportsUi) return undefined
-			const response = await requestDialog(METHODS.editor, { method: "editor", title, prefill }, undefined)
+			// Stays on extMethod — restricted JSON Schema has no multi-line text primitive.
+			if (!supportsMethod("pi_editor")) {
+				warnUnsupportedMethod(
+					"editor",
+					`Extension requested an editor ("${title}") but the client doesn't advertise the _kimchi.dev/pi_editor capability. The request was dropped.`,
+				)
+				return undefined
+			}
+			const response = await requestDialog("pi_editor", { method: "editor", title, prefill }, undefined)
 			if (response === "aborted" || response.cancelled) return undefined
 			return typeof response.value === "string" ? response.value : undefined
 		},
 
 		notify(message, type) {
-			notify(METHODS.notify, { method: "notify", message, notifyType: type })
+			if (!supportsMethod("pi_notify")) {
+				warnUnsupportedMethod(
+					"notify",
+					`Extension notification dropped (client doesn't advertise _kimchi.dev/pi_notify): ${message}`,
+				)
+				return undefined
+			}
+			notify("pi_notify", { method: "notify", message, notifyType: type })
 		},
 
-		// TUI-only methods below this line — kept as honest no-op stubs so
-		// extensions that probe ctx.ui.* in conditional branches don't crash.
+		// TUI-only stubs below — extensions probe these in conditional branches.
 
 		onTerminalInput(_handler) {
 			return () => {}
 		},
 
 		setStatus(key, text) {
-			if (!supportsUi) return
-			notify(METHODS.setStatus, {
+			if (!supportsMethod("pi_setStatus")) {
+				warnUnsupportedMethod(
+					"setStatus",
+					`Extension tried to set status "${key}" but the client doesn't advertise _kimchi.dev/pi_setStatus. The update was dropped.`,
+				)
+				return
+			}
+			notify("pi_setStatus", {
 				method: "setStatus",
 				statusKey: key,
 				statusText: text,
@@ -177,28 +327,26 @@ export function createAcpUIContext(
 		},
 
 		setWorkingMessage(_message) {
-			// TUI streaming indicator — pi emits its own progress notifications
-			// over ACP (message_update), which the client renders.
+			// TUI streaming indicator — pi emits its own progress over ACP.
 		},
 
-		setWorkingVisible(_visible) {
-			// See setWorkingMessage.
-		},
+		setWorkingVisible(_visible) {},
 
-		setWorkingIndicator(_options) {
-			// See setWorkingMessage.
-		},
+		setWorkingIndicator(_options) {},
 
-		setHiddenThinkingLabel(_label) {
-			// TUI-only label override; not surfaced over ACP.
-		},
+		setHiddenThinkingLabel(_label) {},
 
 		setWidget: (key, content, options) => {
-			// The non-function branch forwards to the client via the notifier;
-			// component factories are silently dropped (no ACP equivalent).
-			if (!supportsUi) return
+			// Component factories are silently dropped — no ACP equivalent for TUI trees.
+			if (!supportsMethod("pi_setWidget")) {
+				warnUnsupportedMethod(
+					"setWidget",
+					`Extension tried to set widget "${key}" but the client doesn't advertise _kimchi.dev/pi_setWidget. The widget was dropped.`,
+				)
+				return
+			}
 			if (typeof content !== "function") {
-				notify(METHODS.setWidget, {
+				notify("pi_setWidget", {
 					method: "setWidget",
 					widgetKey: key,
 					widgetLines: content,
@@ -208,21 +356,14 @@ export function createAcpUIContext(
 		},
 
 		setFooter(factory) {
-			// TUI footer component — no ACP surface.
 			void factory
 		},
 
 		setHeader(factory) {
-			// TUI header component — no ACP surface.
 			void factory
 		},
 
 		setTitle(title) {
-			// Deliberate divergence from pi's rpc-mode: ACP has a native
-			// session_info_update notification that every ACP client renders,
-			// so we use that instead of a parallel extension_ui_request. The
-			// rpc-mode approach exists because rpc-mode has no native
-			// session-title channel.
 			send({
 				sessionId,
 				update: { sessionUpdate: "session_info_update", title },
@@ -230,10 +371,6 @@ export function createAcpUIContext(
 		},
 
 		custom<T>(_factory: unknown, _options: unknown): Promise<T> {
-			// Interactive-mode-only overlays. TUI rendering isn't a thing over
-			// ACP; resolve undefined so callers that ignore the return value
-			// aren't broken, but extensions that rely on overlays cannot work
-			// in ACP mode regardless.
 			return Promise.resolve(undefined as T)
 		},
 
@@ -242,8 +379,14 @@ export function createAcpUIContext(
 		},
 
 		setEditorText(text) {
-			if (!supportsUi) return
-			notify(METHODS.set_editor_text, { method: "set_editor_text", text })
+			if (!supportsMethod("pi_set_editor_text")) {
+				warnUnsupportedMethod(
+					"setEditorText",
+					`Extension tried to set editor text but the client doesn't advertise _kimchi.dev/pi_set_editor_text. The update was dropped.`,
+				)
+				return
+			}
+			notify("pi_set_editor_text", { method: "set_editor_text", text })
 		},
 
 		getEditorText() {
@@ -251,12 +394,10 @@ export function createAcpUIContext(
 		},
 
 		addAutocompleteProvider(_factory) {
-			// TUI-only behaviour.
 			void _factory
 		},
 
 		setEditorComponent(_factory) {
-			// TUI-only behaviour.
 			void _factory
 		},
 
@@ -280,9 +421,7 @@ export function createAcpUIContext(
 			return false
 		},
 
-		setToolsExpanded(_expanded) {
-			// TUI-only state.
-		},
+		setToolsExpanded(_expanded) {},
 
 		get theme() {
 			return NOOP_THEME
@@ -292,16 +431,10 @@ export function createAcpUIContext(
 	return ui
 }
 
-/**
- * Build a Theme-shaped object whose every property access is a no-op. Used
- * to satisfy `ctx.ui.theme` without dragging in pi's full color machinery —
- * extensions that read this in ACP mode are reading into a black hole anyway.
- */
+/** Theme-shaped object whose every property access is a no-op. */
 function createNoopTheme(): ThemeType {
 	return new Proxy({} as ThemeType, {
 		get(_target, prop) {
-			// Methods return undefined; data accesses return empty strings so
-			// template-literal concatenation doesn't blow up.
 			if (prop === "then" || prop === "catch") return undefined
 			return () => undefined
 		},
