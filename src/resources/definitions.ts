@@ -53,6 +53,22 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		restartRequired: true,
 	},
 	{
+		id: "extensions.todos",
+		kind: "extensions",
+		label: "Todos",
+		description: "Enable tactical todo tracking with a live overlay.",
+		defaultEnabled: true,
+		restartRequired: true,
+	},
+	{
+		id: "extensions.bash-tool-guard",
+		kind: "extensions",
+		label: "Bash-tool guard",
+		description:
+			"Steer the LLM away from using `bash` (cat/sed/echo) for tasks that have a dedicated read/edit/write tool. Catches read/edit/write anti-patterns and suggests the right tool.",
+		defaultEnabled: true,
+	},
+	{
 		id: "extensions.claude-code-hook-adapter",
 		kind: "extensions",
 		label: "Claude Code hook adapter",

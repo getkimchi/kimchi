@@ -40,6 +40,7 @@ export const HELP_ROWS: HelpRow[] = [
 	{ kind: "spacer" },
 	{ kind: "heading", text: "Kimchi" },
 	{ kind: "entry", key: "/ferment", desc: "Run task in background" },
+	{ kind: "entry", key: "/todos", desc: "Open todo overlay / manage short-lived todo items" },
 	{ kind: "entry", key: "/agents", desc: "Manage background agents" },
 	{ kind: "entry", key: "/permissions", desc: "View or change permission mode and rules" },
 	{ kind: "entry", key: "/phase", desc: "Show or change the current work phase" },

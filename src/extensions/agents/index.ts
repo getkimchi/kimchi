@@ -774,6 +774,7 @@ export default function (pi: ExtensionAPI) {
 			...(customDescs.length > 0 ? ["", "Custom agents:", ...customDescs] : []),
 			"",
 			`Custom agents can be defined in .kimchi/agents/<name>.md (project) or ${getAgentDir()}/agents/<name>.md (global) — they are picked up automatically. Project-level agents override global ones. Creating a .md file with the same name as a default agent overrides it.`,
+			`Global user instructions (applied to every session) can be placed in the global ${getAgentDir()}/AGENTS.md. Project-level AGENTS.md or CLAUDE.md files in the working directory tree are combined with it.`,
 		].join("\n")
 	}
 
@@ -827,10 +828,9 @@ Guidelines:
 - Use inherit_context if the agent needs the parent conversation history.
 
 Model selection — YOU choose based on task complexity:
-- Each agent type's listing above shows the set of models it can use. The list order has no semantics — it is not a tier ranking.
-- Assess the task (single lookup vs. multi-step refactor vs. deep architectural analysis) and pick the model whose capabilities (tier, roles) best match. Refer to your knowledge of the kimchi-dev models or to your initial system-prompt model section.
-- Pass \`model\` only when the user explicitly asks for a specific model or the profile does not lock model selection.
-- If \`model\` is omitted, the runtime uses the persona's profile model. Profiles with locked model selection ignore caller model overrides.`,
+- Refer to the **Your Team** section in your system prompt for all available models with their tiers, roles, and descriptions.
+- YOU MUST always pass \`model\` with a concrete model ID from **Your Team**. Match the model's tier and description to the task complexity.
+- Use standard-tier models for well-scoped tasks (CRUD, straightforward tests, mechanical fixes). Use heavy-tier models for complex concurrency, algorithms, or architectural reasoning. Use light-tier models for simple exploration or verification.`,
 			parameters: Type.Object({
 				prompt: Type.String({
 					description: "The task for the agent to perform.",
@@ -844,7 +844,7 @@ Model selection — YOU choose based on task complexity:
 				model: Type.Optional(
 					Type.String({
 						description:
-							'Model to use for this spawn — YOU pick based on task complexity. Each agent type advertises a set of models it may use; the list order is not a ranking. Match the task to the model\'s tier/roles. Format "provider/modelId" (e.g. "kimchi-dev/minimax-m2.7") or fuzzy ("kimi", "minimax", "nemotron"). Omit to use the persona\'s default or let the orchestrator auto-pick based on persona roles.',
+							'Model to use for this agent. Pick from the models listed in Your Team based on task complexity. Format "provider/modelId" (e.g. "kimchi-dev/minimax-m2.7") or fuzzy name ("kimi", "minimax", "nemotron"). In orchestration mode you MUST always specify this.',
 					}),
 				),
 				thinking: Type.Optional(

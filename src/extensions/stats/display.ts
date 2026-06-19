@@ -5,6 +5,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent"
 import { formatCount } from "../format.js"
 import type { GenerateAnalyticsResponse, GetProductivityMetricsResponse } from "./types.js"
+import { aggregateTokens } from "./visual.js"
 
 function formatCurrency(amount: string | number): string {
 	const num = typeof amount === "string" ? Number.parseFloat(amount) : amount
@@ -38,29 +39,9 @@ export function formatAnalyticsSummary(data: GenerateAnalyticsResponse, theme: T
 	lines.push(theme.bold(theme.fg("accent", "📊 Analytics (Last 30 Days)")))
 
 	// Token usage section
-	let totalInput = 0
-	let totalOutput = 0
-
-	if (data.inputTokens?.items) {
-		for (const item of data.inputTokens.items) {
-			if (item.models) {
-				for (const model of item.models) {
-					totalInput += model.totalCount || 0
-				}
-			}
-		}
-	}
-
-	if (data.outputTokens?.items) {
-		for (const item of data.outputTokens.items) {
-			if (item.models) {
-				for (const model of item.models) {
-					totalOutput += model.totalCount || 0
-				}
-			}
-		}
-	}
-
+	const { totals } = aggregateTokens(data)
+	const totalInput = totals.totalInput
+	const totalOutput = totals.totalOutput
 	const total = totalInput + totalOutput
 
 	// Cost section
@@ -100,11 +81,8 @@ export function formatAnalyticsSummary(data: GenerateAnalyticsResponse, theme: T
 
 	// Change indicators line
 	const changeParts: string[] = []
-	if (data.comparison?.inputTokens?.changePercentage !== undefined) {
-		changeParts.push(`in: ${formatChangeIndicator(data.comparison.inputTokens.changePercentage, theme)}`)
-	}
-	if (data.comparison?.outputTokens?.changePercentage !== undefined) {
-		changeParts.push(`out: ${formatChangeIndicator(data.comparison.outputTokens.changePercentage, theme)}`)
+	if (data.comparison?.tokens?.changePercentage !== undefined) {
+		changeParts.push(`tokens: ${formatChangeIndicator(data.comparison.tokens.changePercentage, theme)}`)
 	}
 	if (data.comparison?.cost?.changePercentage !== undefined) {
 		changeParts.push(`cost: ${formatChangeIndicator(data.comparison.cost.changePercentage, theme)}`)

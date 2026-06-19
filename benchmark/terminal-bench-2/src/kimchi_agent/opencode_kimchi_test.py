@@ -11,6 +11,7 @@ from harbor.models.agent.context import AgentContext
 from harbor.models.task.config import MCPServerConfig
 
 from kimchi_agent.gateway import (
+    FETCH_TIMEOUT_SEC,
     KIMCHI_MODELS_METADATA_URL,
     KIMCHI_OPENAI_BASE_URL,
     KimchiModelMetadata,
@@ -299,7 +300,7 @@ class OpenCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
 
         http_get.assert_called_once()
         self.assertEqual(http_get.call_args.kwargs["headers"], {"Authorization": "Bearer test-key"})
-        self.assertEqual(http_get.call_args.kwargs["timeout"], 5)
+        self.assertEqual(http_get.call_args.kwargs["timeout"], FETCH_TIMEOUT_SEC)
         self.assertEqual(http_get.call_args.args, (KIMCHI_MODELS_METADATA_URL,))
 
 

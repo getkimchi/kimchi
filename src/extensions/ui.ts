@@ -1,11 +1,10 @@
 import { spawn } from "node:child_process"
-import { existsSync, readFileSync, writeFileSync } from "node:fs"
+import { readFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { join, resolve } from "node:path"
+import { join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { isEditToolResult, isWriteToolResult } from "@earendil-works/pi-coding-agent"
-import { Box, Text } from "@earendil-works/pi-tui"
 import { Key, isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import type { Component, TUI } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedAccentFg } from "../ansi.js"
@@ -33,26 +32,12 @@ import {
 } from "./shared-footer.js"
 import { isRawInputCaptureActive } from "./shared-input.js"
 import { createWorkingAnimator } from "./spinner.js"
-import { getKittyKeyboardSupport } from "./terminal-compat/keyboard-capability.js"
 import { createBranchPoller } from "./ui-branch-poll.js"
 
 export { requestSharedFooterRender, setSessionModeOnboardingFooterSuppressed } from "./shared-footer.js"
 
 function modelsAreEqual(a: Model<Api>, b: Model<Api>): boolean {
 	return a.provider === b.provider && a.id === b.id
-}
-
-// True when `data` is a terminal *response* to a query rather than a user
-// keypress: OSC color reports (ESC ] … BEL/ST), DCS replies (ESC P … ST),
-// primary device-attributes / kitty-keyboard replies (ESC [ ? … c|u), and
-// cursor-position reports (ESC [ row;col R). Terminals such as iTerm2 and
-// Ghostty emit these unbidden right after startup (answering our OSC 10/11
-// background/foreground probes), so any "dismiss on any key" handler must skip
-// them or it fires before the user ever sees the prompt.
-// biome-ignore lint/suspicious/noControlCharactersInRegex: matching raw terminal escape sequences
-const TERMINAL_RESPONSE_RE = /^\x1b(?:[\]P]|\[\?[0-9;]*[cu]|\[[0-9;]*R)/
-function isTerminalResponse(data: string): boolean {
-	return TERMINAL_RESPONSE_RE.test(data)
 }
 
 /** Reason a model was skipped during ctrl+p cycle. */
@@ -241,7 +226,6 @@ export default function uiExtension(pi: ExtensionAPI) {
 	let turnStartMs = 0
 	let linesAdded = 0
 	let linesRemoved = 0
-	let newlineHintHandle: { hide(): void } | null = null
 	let thinkingStatus: "thinking" | number | null = null
 	let thinkingStartMs = 0
 	let workedForTimer: ReturnType<typeof setTimeout> | undefined
@@ -322,101 +306,6 @@ export default function uiExtension(pi: ExtensionAPI) {
 			)
 			return new SuppressibleFooter(scriptFooter, tui)
 		})
-
-		// Surface the Ctrl+J newline tip inside the TUI for terminals that don't
-		// support the Kitty keyboard protocol (the real root-cause behind Shift+Enter
-		// not working). The startup console warning is easy to miss (nag-throttled
-		// and swallowed by TUI init), so a persistent per-session widget is more
-		// visible than a one-time notification.
-		if (getKittyKeyboardSupport() === false && ctx.hasUI) {
-			const agentDir = process.env.KIMCHI_CODING_AGENT_DIR
-			if (agentDir) {
-				try {
-					const kbPath = resolve(agentDir, "keybindings.json")
-					if (existsSync(kbPath)) {
-						const kb = JSON.parse(readFileSync(kbPath, "utf-8"))
-						const nl = kb["tui.input.newLine"]
-						const settingsPath = resolve(agentDir, "settings.json")
-						let settingsData: Record<string, unknown> = {}
-						if (existsSync(settingsPath)) {
-							try {
-								settingsData = JSON.parse(readFileSync(settingsPath, "utf-8"))
-							} catch {}
-						}
-						const nlHasCtrlJ =
-							(typeof nl === "string" && nl.includes("ctrl+j")) ||
-							(Array.isArray(nl) && nl.some((k: unknown) => typeof k === "string" && k.includes("ctrl+j")))
-						if (!settingsData.newlineHintDismissed && nlHasCtrlJ) {
-							ctx.ui.custom(
-								(_tui, theme, _kb, done) => {
-									const settingsFile = settingsPath
-									const dismiss = () => {
-										_tui.setShowHardwareCursor(true)
-										done(undefined)
-									}
-									return {
-										render(width: number): string[] {
-											_tui.setShowHardwareCursor(false)
-											const accent = theme.getFgAnsi("accent")
-											const reset = "\x1b[0m"
-											const box = new Box(2, 1)
-											box.addChild(new Text(theme.inverse("  ⚠  Shift+Enter doesn't work in this terminal  ")))
-											box.addChild(new Text(""))
-											box.addChild(new Text(`Ctrl+J${" ".padEnd(13)}→  insert a newline`))
-											box.addChild(new Text(`\\ + Enter${" ".padEnd(10)}→  insert a newline`))
-											box.addChild(new Text(""))
-											box.addChild(new Text(`Any key${" ".padEnd(12)}→  dismiss`))
-											box.addChild(new Text(`${accent}d${" ".padEnd(18)}→  don't remind again${reset}`))
-											const hbar = "─"
-											const inner = width - 2
-											const lines = box.render(inner)
-											const bordered = lines.map((l: string, i: number) => {
-												if (i === 0) return `${accent}┌${hbar.repeat(inner)}┐${reset}`
-												if (i === lines.length - 1) return `${accent}└${hbar.repeat(inner)}┘${reset}`
-												return `${accent}│${reset}${l}${accent}│${reset}`
-											})
-											return bordered
-										},
-										invalidate() {},
-										handleInput(data: string): void {
-											// Ignore terminal query responses (OSC color reports, DCS, primary
-											// device-attributes, kitty-keyboard and cursor-position replies). These
-											// arrive on stdin moments after the overlay opens — e.g. iTerm/Ghostty
-											// answering kimchi's OSC 10/11 color probe — and must NOT count as the
-											// "any key" dismissal, or the hint is torn down before it ever renders.
-											if (isTerminalResponse(data)) return
-											if (data === "d") {
-												try {
-													const s: Record<string, unknown> = {}
-													if (existsSync(settingsFile)) {
-														try {
-															Object.assign(s, JSON.parse(readFileSync(settingsFile, "utf-8")))
-														} catch {}
-													}
-													s.newlineHintDismissed = true
-													writeFileSync(settingsFile, JSON.stringify(s, null, 2))
-												} catch {}
-											}
-											dismiss()
-										},
-										wantsKeyRelease: false,
-									}
-								},
-								{
-									overlay: true,
-									overlayOptions: { anchor: "center" },
-									onHandle: (handle) => {
-										newlineHintHandle = handle
-									},
-								},
-							)
-						}
-					}
-				} catch {
-					// best-effort; don't break startup if keybindings are unreadable
-				}
-			}
-		}
 
 		ctx.ui.setEditorComponent((tui, editorTheme, keybindings) => {
 			tui.setShowHardwareCursor(true)
@@ -577,11 +466,6 @@ export default function uiExtension(pi: ExtensionAPI) {
 		// User typed something — clear any pending-user-input state so the spinner
 		// does not stay suppressed on the next assistant message that follows.
 		userInputPending = Math.max(0, userInputPending - 1)
-
-		if (newlineHintHandle) {
-			newlineHintHandle.hide()
-			newlineHintHandle = null
-		}
 	})
 
 	let stopWorkingAnimation: (() => void) | undefined

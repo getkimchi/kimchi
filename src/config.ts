@@ -119,6 +119,16 @@ export interface PreferencesConfig {
 	hideTips?: boolean
 }
 
+export interface RetryConfig {
+	maxRetries: number
+}
+
+export const RETRY_DEFAULTS: RetryConfig = {
+	maxRetries: 10,
+}
+
+export const THIRD_PARTY_MAX_RETRIES = 4
+
 export const SEARCH_STRATEGY_DEFAULTS: SearchStrategyConfig = {
 	strategy: "bm25",
 	bm25K1: 1.2,
@@ -137,6 +147,7 @@ export interface KimchiConfig {
 	maxToolResultChars: number
 	mcpSearchLimit: number
 	mcpSearch: SearchStrategyConfig
+	retry: RetryConfig
 	skillPaths?: string[]
 	migrationState?: MigrationState
 	onboarding: OnboardingConfig
@@ -169,6 +180,7 @@ function readConfigExtras(configPath: string): {
 	maxToolResultChars?: number
 	mcpSearchLimit?: number
 	mcpSearch?: Partial<SearchStrategyConfig>
+	retry?: Partial<RetryConfig>
 	skillPaths?: string[]
 	migrationState?: MigrationState
 	onboarding?: OnboardingConfig
@@ -211,6 +223,13 @@ function readConfigExtras(configPath: string): {
 					: {}),
 			}
 		}
+		let retry: Partial<RetryConfig> | undefined
+		const r = parsed.retry
+		if (r && typeof r === "object") {
+			retry = {
+				...(typeof r.maxRetries === "number" && r.maxRetries > 0 ? { maxRetries: r.maxRetries } : {}),
+			}
+		}
 		const skillPaths =
 			Array.isArray(parsed.skillPaths) && parsed.skillPaths.every((p: unknown) => typeof p === "string")
 				? (parsed.skillPaths as string[])
@@ -245,6 +264,7 @@ function readConfigExtras(configPath: string): {
 			maxToolResultChars,
 			mcpSearchLimit,
 			mcpSearch,
+			retry,
 			skillPaths,
 			migrationState,
 			onboarding,
@@ -388,13 +408,14 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 	const projectPath = resolve(options?.cwd ?? process.cwd(), ".kimchi", "config.json")
 	const projectExtras = readConfigExtras(projectPath)
 
-	// Merge: project wins for scalars; shallow merge for mcpSearch
+	// Merge: project wins for scalars; shallow merge for mcpSearch and retry
 	const extras = {
 		apiKey: projectExtras.apiKey ?? globalExtras.apiKey,
 		llmEndpoint: projectExtras.llmEndpoint ?? globalExtras.llmEndpoint,
 		maxToolResultChars: projectExtras.maxToolResultChars ?? globalExtras.maxToolResultChars,
 		mcpSearchLimit: projectExtras.mcpSearchLimit ?? globalExtras.mcpSearchLimit,
 		mcpSearch: { ...globalExtras.mcpSearch, ...projectExtras.mcpSearch },
+		retry: { ...globalExtras.retry, ...projectExtras.retry },
 		skillPaths: projectExtras.skillPaths ?? globalExtras.skillPaths,
 		migrationState: projectExtras.migrationState ?? globalExtras.migrationState,
 		onboarding: globalExtras.onboarding,
@@ -409,6 +430,7 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		maxToolResultChars: extras.maxToolResultChars ?? 10_000,
 		mcpSearchLimit: extras.mcpSearchLimit ?? 5,
 		mcpSearch: { ...SEARCH_STRATEGY_DEFAULTS, ...extras.mcpSearch },
+		retry: { ...RETRY_DEFAULTS, ...extras.retry },
 		skillPaths: extras.skillPaths,
 		migrationState: extras.migrationState,
 		onboarding: extras.onboarding ?? {},

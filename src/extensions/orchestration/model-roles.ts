@@ -27,7 +27,7 @@
  *     "orchestrator": "anthropic/claude-sonnet-4-5",
  *     "builder": ["anthropic/claude-sonnet-4-5", "openai/gpt-4o"],
  *     "reviewer": "kimchi-dev/minimax-m2.7",
- *     "explorer": "kimchi-dev/nemotron-3-super-fp4",
+ *     "explorer": "kimchi-dev/nemotron-3-ultra-fp4",
  *     "judge": "kimchi-dev/kimi-k2.6"
  *   }
  * }
@@ -95,7 +95,6 @@ export function buildDefaultModelRoles(): ModelRoles {
 			}
 		}
 		if (entry.roles.includes("build")) builders.push(ref)
-		if (entry.tier === "heavy" && !builders.includes(ref)) builders.push(ref)
 		if (entry.roles.includes("review")) reviewers.push(ref)
 		if (entry.roles.includes("explore") || entry.roles.includes("research")) {
 			if (!explorers.includes(ref)) explorers.push(ref)

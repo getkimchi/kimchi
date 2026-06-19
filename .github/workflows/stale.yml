@@ -1,0 +1,32 @@
+name: Stale issues and PRs
+
+on:
+  schedule:
+    - cron: '0 8 * * 1'  # Every Monday at 08:00 UTC
+  workflow_dispatch:
+
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/stale@v9
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          days-before-issue-stale: 30
+          days-before-issue-close: 14
+          days-before-pr-stale: 21
+          days-before-pr-close: 14
+          stale-issue-label: stale
+          stale-pr-label: stale
+          stale-issue-message: >
+            This issue has had no activity for 30 days. It will be closed in 14 days
+            unless there is new activity or a maintainer removes the `stale` label.
+          stale-pr-message: >
+            This PR has had no activity for 21 days. It will be closed in 14 days
+            unless there is new activity or a maintainer removes the `stale` label.
+          close-issue-message: >
+            Closing due to inactivity. Feel free to reopen if this is still relevant.
+          close-pr-message: >
+            Closing due to inactivity. Feel free to reopen if this is still relevant.
+          exempt-issue-labels: 'pinned,help wanted,good first issue'
+          exempt-pr-labels: 'pinned'

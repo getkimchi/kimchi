@@ -12,7 +12,7 @@ import type { StepResult } from "../../../ferment/types.js"
 import { askUser } from "../ask-user.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { renderGateGuidance } from "../gate-registry.js"
-import { validateGatesOrErr } from "../gate-validation.js"
+import { assertGateFieldsPresent, validateGatesOrErr } from "../gate-validation.js"
 import { type JudgeVerdict, judgeStepVerification } from "../judge.js"
 import { onStepCompleted } from "../nudge.js"
 import { type PhaseEvidence, captureGitHead, gatherPhaseEvidence } from "../phase-evidence.js"
@@ -260,7 +260,7 @@ Do NOT call start_ferment_step again without user input.`,
 
 	return toolOk(
 		withNextActionHint(
-			`Step ${step.index}: "${step.description}" started. Spawn a subagent with subagent_type "general-purpose". When it returns, call complete_ferment_step with its summary.${lowGradeCaution}${parallelNote}${contextBlock}`,
+			`Step ${step.index}: "${step.description}" started. Spawn a subagent with the persona that matches this step's intent. When it returns, call complete_ferment_step with its summary.${lowGradeCaution}${parallelNote}${contextBlock}`,
 			outcome.ferment,
 		),
 	)
@@ -309,6 +309,13 @@ export async function completeStep(
 		if (!completeOutcome.ok) return failedToolResult(completeOutcome.error, f)
 		runtime.clearStepStart(f.id, phase.id, step.id)
 		runtime.bumpStepCompleteAttempt(f.id, phase.id, step.id)
+		runtime.setPendingCompaction(f.id, {
+			kind: "step",
+			fermentId: f.id,
+			phaseId: phase.id,
+			stepId: step.id,
+			completedAt: runtime.nowIso(),
+		})
 		services.onStepCompleted(runtime)
 		sendStepBreadcrumb(pi, `Step ${step.index} ✓ ${step.description}`)
 		return toolOk(
@@ -346,6 +353,13 @@ export async function completeStep(
 	if (exitCode === 0) {
 		// Verification passed + all gates pass → silent advance. No LLM call.
 		runtime.bumpStepCompleteAttempt(f.id, phase.id, step.id)
+		runtime.setPendingCompaction(f.id, {
+			kind: "step",
+			fermentId: f.id,
+			phaseId: phase.id,
+			stepId: step.id,
+			completedAt: runtime.nowIso(),
+		})
 		services.onStepCompleted(runtime)
 		sendStepBreadcrumb(pi, `Step ${step.index} ✓ verified — ${step.description}`)
 		return toolOk(
@@ -368,6 +382,13 @@ export async function completeStep(
 		// is acceptable (e.g. linter noise on an unrelated file). Gate
 		// verdicts already passed above, so advance.
 		runtime.bumpStepCompleteAttempt(f.id, phase.id, step.id)
+		runtime.setPendingCompaction(f.id, {
+			kind: "step",
+			fermentId: f.id,
+			phaseId: phase.id,
+			stepId: step.id,
+			completedAt: runtime.nowIso(),
+		})
 		services.onStepCompleted(runtime)
 		sendStepBreadcrumb(pi, `Step ${step.index} ✓  Judge passed: ${judgeVerdict.reason}`)
 		return toolOk(
@@ -502,6 +523,7 @@ export function registerStepTools(pi: ExtensionAPI, runtime: FermentRuntime = de
 
 ${renderGateGuidance("complete_ferment_step")}`,
 		parameters: CompleteStepParams,
+		prepareArguments: assertGateFieldsPresent,
 		async execute(_, params, signal, onUpdate, ctx) {
 			return completeStep(runtime, params, { pi, ctx, signal, onUpdate }, stepServices)
 		},

@@ -9,30 +9,78 @@
  */
 import fs from "node:fs"
 import path from "node:path"
-import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent"
+import { isEditToolResult, isReadToolResult, isWriteToolResult } from "@earendil-works/pi-coding-agent"
 import { Container, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
-import { ensureFileOpen, getOrCreateClient, refreshFile, sendRequest, shutdownAll } from "./lsp/client.js"
+import {
+	ensureFileOpen,
+	getOrCreateClient,
+	refreshFile,
+	sendRequest,
+	shutdownAll,
+	waitForDiagnostics,
+} from "./lsp/client.js"
 import { applyWorkspaceEdit } from "./lsp/edits.js"
 import { detectServers, findRoot, serverForFile } from "./lsp/servers.js"
 import type { Hover, Location, LocationLink, TextDocumentEdit, WorkspaceEdit } from "./lsp/types.js"
 import { fileToUri, formatDiagnostic, uriToFile } from "./lsp/utils.js"
+import { createSystemPromptBlocks } from "./prompt-construction/index.js"
 
 export function clientCwd(filePath: string, sessionCwd: string): string {
 	if (filePath.startsWith(sessionCwd + path.sep) || filePath === sessionCwd) return sessionCwd
 	return path.dirname(filePath)
 }
 
+const LSP_DIAGNOSTICS_CUSTOM_TYPE = "lsp_diagnostics"
+const DIAG_WAIT_TIMEOUT_MS = 2000
+
+const LSP_SYSTEM_PROMPT = `## Language Server Protocol (LSP)
+
+LSP tools provide type-aware code intelligence. Prefer them over text-based alternatives:
+- Use \`lsp_diagnostics\` after editing a file to check for type errors — more precise than running the compiler manually.
+- Use \`lsp_hover\` to inspect types and documentation — faster than reading source.
+- Use \`lsp_definition\` to navigate to symbol definitions — more accurate than grep.
+- Use \`lsp_references\` before renaming or deleting a symbol to understand full impact.
+- Use \`lsp_rename\` for atomic cross-file renames — safer than find-and-replace.
+
+LSP tools are available when language servers are detected on PATH (currently TypeScript and Go).`
+
 export default function (pi: ExtensionAPI) {
 	let cwd = ""
 	let activeServers: ReturnType<typeof detectServers> = []
+	let ui: ExtensionUIContext | undefined
+	// Tracks the pending diagnostic wait so a newer edit can cancel the previous
+	// one (avoiding stale status-bar updates) and so session_shutdown can
+	// abort any leftover waiter before tearing down clients. The local
+	// controller is combined with ctx.signal so user/session aborts also unwind
+	// the wait, but we never abort ctx.signal ourselves.
+	let pendingRefresh: { abort: AbortController } | undefined
+
+	function cancelPendingRefresh(): void {
+		if (!pendingRefresh) return
+		pendingRefresh.abort.abort()
+		pendingRefresh = undefined
+	}
+
+	createSystemPromptBlocks(pi, "lsp").register({
+		id: "lsp-tools",
+		render: () => LSP_SYSTEM_PROMPT,
+	})
 
 	// ── Session start: detect servers, hook file sync, shutdown on exit ─────────
 
 	pi.on("session_start", async (_event, ctx) => {
 		cwd = ctx.cwd
+		ui = ctx.hasUI ? ctx.ui : undefined
 		activeServers = detectServers(cwd)
 		if (activeServers.length === 0) return
+
+		// Update status bar with detected server names
+		if (ui) {
+			const names = activeServers.map((s) => s.name).join(", ")
+			ui.setStatus("lsp", `LSP: ${names}`)
+		}
 
 		// Eagerly start servers that have a project marker directly in sessionCwd
 		const goMarkers = ["go.mod"]
@@ -45,30 +93,89 @@ export default function (pi: ExtensionAPI) {
 	})
 
 	pi.on("session_shutdown", async () => {
+		cancelPendingRefresh()
+		if (ui) {
+			ui.setStatus("lsp", undefined)
+			ui = undefined
+		}
 		shutdownAll()
 	})
 
 	// ── File sync: refresh LSP after agent edits files ───────────────────────────
 
-	pi.on("tool_result", async (event) => {
-		if (!("toolName" in event)) return
-		if (event.toolName !== "edit" && event.toolName !== "write") return
+	pi.on("tool_result", async (event, ctx) => {
+		// Only react to read/edit/write tool results. The upstream guards narrow
+		// `event` to one of these three result events so the toolName check is
+		// removed; `event.input` is still `Record<string, unknown>` on result
+		// events, so we narrow the path field with a runtime check.
+		if (!isReadToolResult(event) && !isEditToolResult(event) && !isWriteToolResult(event)) return
 		if (event.isError) return
+		if (typeof event.input !== "object" || event.input === null) return
 
-		// Extract the file path from the tool input
-		const input = event.input as Record<string, unknown>
-		const filePath = (input.file_path ?? input.path) as string | undefined
-		if (!filePath) return
+		const filePath = event.input.path
+		if (typeof filePath !== "string") return
 
 		const resolved = path.isAbsolute(filePath) ? filePath : path.join(cwd, filePath)
 		const server = serverForFile(resolved, activeServers)
 		if (!server) return
 
+		const effectiveUi = ui ?? ctx.ui
+
+		// Supersede any previous diagnostic wait for this handler. The local
+		// controller is combined with ctx.signal so the wait also unwinds on
+		// harness-level aborts.
+		cancelPendingRefresh()
+		const refreshController = new AbortController()
+		pendingRefresh = { abort: refreshController }
+		const combinedSignal = ctx.signal
+			? AbortSignal.any([ctx.signal, refreshController.signal])
+			: refreshController.signal
+
 		try {
 			const client = await getOrCreateClient(server, cwd)
-			await refreshFile(client, resolved)
-		} catch {
-			// Non-fatal: LSP sync failure doesn't break the agent
+			if (isReadToolResult(event)) {
+				// File was only read, not modified — just ensure LSP has it open
+				await ensureFileOpen(client, resolved)
+			} else {
+				await refreshFile(client, resolved)
+				// Wait for diagnostics to arrive via the LSP publishDiagnostics
+				// notification, with a deadline fallback. Resolves false on
+				// timeout/abort so we don't block forever on a slow server.
+				const uri = fileToUri(resolved)
+				const gotDiagnostics = await waitForDiagnostics(client, uri, {
+					signal: combinedSignal,
+					timeoutMs: DIAG_WAIT_TIMEOUT_MS,
+				})
+				if (gotDiagnostics) {
+					const entry = client.diagnostics.get(uri)
+					const diags = entry?.diagnostics ?? []
+					if (diags.length > 0) {
+						const lines = diags.map((d) => formatDiagnostic(d))
+						const relativePath = path.relative(cwd, resolved)
+						// Inject diagnostics as a hidden custom message so the model
+						// sees them as context (not as a visible user turn). Plain
+						// text — no terminal coloring, since this is model-facing.
+						const content = `[LSP diagnostics for ${relativePath}]\n${lines.join("\n")}`
+						pi.sendMessage({ customType: LSP_DIAGNOSTICS_CUSTOM_TYPE, content, display: false }, { deliverAs: "steer" })
+					}
+				}
+
+				// Update status bar with total diagnostic count across open files
+				if (effectiveUi) {
+					const totalDiags = [...client.diagnostics.values()].reduce((sum, entry) => sum + entry.diagnostics.length, 0)
+					const names = activeServers.map((s) => s.name).join(", ")
+					const diagPart = totalDiags > 0 ? ` (${totalDiags} diag${totalDiags === 1 ? "" : "s"})` : ""
+					effectiveUi.setStatus("lsp", `LSP: ${names}${diagPart}`)
+				}
+			}
+		} catch (err) {
+			// Non-fatal: LSP sync failure doesn't break the agent, but log it so
+			// production debugging is possible.
+			console.error("LSP file sync failed:", err)
+		} finally {
+			if (pendingRefresh?.abort === refreshController) {
+				pendingRefresh = undefined
+			}
 		}
 	})
 

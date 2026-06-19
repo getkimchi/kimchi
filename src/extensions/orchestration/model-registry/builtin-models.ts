@@ -7,6 +7,7 @@ import {
 	DEFAULT_REVIEW_GUIDELINES,
 } from "./guidelines/default-phase-guidelines.js"
 import {
+	KIMI_FAMILY_BUILD,
 	KIMI_FAMILY_ORCHESTRATION,
 	KIMI_FAMILY_PLAN,
 	KIMI_FAMILY_RESEARCH,
@@ -23,16 +24,16 @@ import {
 	MINIMAX_M27_REVIEW,
 } from "./guidelines/minimax-family.js"
 import {
-	NEMOTRON_3_SUPER_BUILD,
-	NEMOTRON_3_SUPER_EXPLORE,
-	NEMOTRON_3_SUPER_ORCHESTRATION,
-	NEMOTRON_3_SUPER_RESEARCH,
+	NEMOTRON_3_ULTRA_BUILD,
+	NEMOTRON_3_ULTRA_EXPLORE,
+	NEMOTRON_3_ULTRA_ORCHESTRATION,
+	NEMOTRON_3_ULTRA_RESEARCH,
 	NEMOTRON_FAMILY_BUILD,
 	NEMOTRON_FAMILY_EXPLORE,
 	NEMOTRON_FAMILY_ORCHESTRATION,
 	NEMOTRON_FAMILY_RESEARCH,
 } from "./guidelines/nemotron-family.js"
-import type { ModelCapabilities } from "./types.js"
+import type { ModelCapabilities, Phase } from "./types.js"
 
 /**
  * This map is a local capability knowledge-base keyed by model ID. It acts
@@ -47,10 +48,13 @@ import type { ModelCapabilities } from "./types.js"
 const KIMI_K26_DESCRIPTION = `\
 Flagship Kimi model with vision support — the key model for complex planning decisions, \
 deep research, and correctness-critical tasks. Handles images, screenshots, and visual input. \
-Best for: architectural planning, initial code review of complex projects, plan verification \
-involving concurrency or algorithmic design, and building chunks that require correctness \
-reasoning (graph algorithms, concurrent state machines, synchronization logic). \
-Use this model when getting it right the first time matters more than cost.`
+Best for: orchestration, architectural planning, plan verification involving concurrency \
+or algorithmic design. \
+WARNING — subagent reliability: This model is 2-3x slower than standard-tier models. \
+As a build subagent it frequently times out before completing, even with 1.5x duration \
+scaling. Prefer minimax-m2.7 for build subagents — it is faster and completes reliably \
+within standard budgets. Use kimi-k2.6 as a build subagent ONLY as a retry after \
+minimax has already failed on the same chunk.`
 
 const MINIMAX_M27_DESCRIPTION = `\
 The strongest coding model in the pool. \
@@ -60,7 +64,7 @@ and mechanical code review of straightforward code. \
 Not reliable for algorithm-correctness tasks (graph algorithms, topological sort, complex data \
 structure invariants) — use a heavy-tier model for those.`
 
-const NEMOTRON_3_SUPER_DESCRIPTION = `\
+const NEMOTRON_3_ULTRA_DESCRIPTION = `\
 Cheapest and fastest. 1M token context window with near-perfect retrieval — \
 can ingest entire large codebases in a single pass. \
 Best for: codebase exploration, research, and trivial re-verification (confirming tests pass \
@@ -84,6 +88,16 @@ function optionalGuidelines(...layers: string[]): string | undefined {
 	return concatGuidelines(...layers) || undefined
 }
 
+/** Build a guidelines record, omitting entries where all layers are empty. */
+function guidelinesMap(entries: Record<string, string[]>): Partial<Readonly<Record<Phase, string>>> | undefined {
+	const result: Record<string, string> = {}
+	for (const [phase, layers] of Object.entries(entries)) {
+		const value = concatGuidelines(...layers)
+		if (value) result[phase] = value
+	}
+	return Object.keys(result).length > 0 ? result : undefined
+}
+
 // TODO: these capabilities could be returned by our models metadata API.
 /**
  * Capability knowledge-base keyed by model ID. Used to enrich the dynamic
@@ -102,14 +116,15 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 		"kimi-k2.6",
 		{
 			vision: true,
-			roles: ["research", "plan", "review"],
+			roles: ["research", "plan", "build", "review"],
 			tier: "heavy",
 			description: KIMI_K26_DESCRIPTION,
-			guidelines: {
-				research: concatGuidelines(DEFAULT_RESEARCH_GUIDELINES, KIMI_FAMILY_RESEARCH),
-				plan: concatGuidelines(DEFAULT_PLAN_GUIDELINES, KIMI_FAMILY_PLAN, KIMI_K26_PLAN),
-				review: concatGuidelines(DEFAULT_REVIEW_GUIDELINES, KIMI_FAMILY_REVIEW),
-			},
+			guidelines: guidelinesMap({
+				research: [DEFAULT_RESEARCH_GUIDELINES, KIMI_FAMILY_RESEARCH],
+				plan: [DEFAULT_PLAN_GUIDELINES, KIMI_FAMILY_PLAN, KIMI_K26_PLAN],
+				build: [DEFAULT_BUILD_GUIDELINES, KIMI_FAMILY_BUILD],
+				review: [DEFAULT_REVIEW_GUIDELINES, KIMI_FAMILY_REVIEW],
+			}),
 			orchestrationGuidelines: optionalGuidelines(
 				DEFAULT_ORCHESTRATION_GUIDELINES,
 				KIMI_FAMILY_ORCHESTRATION,
@@ -125,10 +140,10 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 			roles: ["build", "review"],
 			tier: "standard",
 			description: MINIMAX_M27_DESCRIPTION,
-			guidelines: {
-				build: concatGuidelines(DEFAULT_BUILD_GUIDELINES, MINIMAX_FAMILY_BUILD, MINIMAX_M27_BUILD),
-				review: concatGuidelines(DEFAULT_REVIEW_GUIDELINES, MINIMAX_FAMILY_REVIEW, MINIMAX_M27_REVIEW),
-			},
+			guidelines: guidelinesMap({
+				build: [DEFAULT_BUILD_GUIDELINES, MINIMAX_FAMILY_BUILD, MINIMAX_M27_BUILD],
+				review: [DEFAULT_REVIEW_GUIDELINES, MINIMAX_FAMILY_REVIEW, MINIMAX_M27_REVIEW],
+			}),
 			orchestrationGuidelines: optionalGuidelines(
 				DEFAULT_ORCHESTRATION_GUIDELINES,
 				MINIMAX_FAMILY_ORCHESTRATION,
@@ -137,21 +152,21 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 		},
 	],
 	[
-		"nemotron-3-super-fp4",
+		"nemotron-3-ultra-fp4",
 		{
 			vision: false,
 			roles: ["explore", "research"],
 			tier: "light",
-			description: NEMOTRON_3_SUPER_DESCRIPTION,
-			guidelines: {
-				build: concatGuidelines(DEFAULT_BUILD_GUIDELINES, NEMOTRON_FAMILY_BUILD, NEMOTRON_3_SUPER_BUILD),
-				research: concatGuidelines(DEFAULT_RESEARCH_GUIDELINES, NEMOTRON_FAMILY_RESEARCH, NEMOTRON_3_SUPER_RESEARCH),
-				explore: concatGuidelines(DEFAULT_EXPLORE_GUIDELINES, NEMOTRON_FAMILY_EXPLORE, NEMOTRON_3_SUPER_EXPLORE),
-			},
+			description: NEMOTRON_3_ULTRA_DESCRIPTION,
+			guidelines: guidelinesMap({
+				build: [DEFAULT_BUILD_GUIDELINES, NEMOTRON_FAMILY_BUILD, NEMOTRON_3_ULTRA_BUILD],
+				research: [DEFAULT_RESEARCH_GUIDELINES, NEMOTRON_FAMILY_RESEARCH, NEMOTRON_3_ULTRA_RESEARCH],
+				explore: [DEFAULT_EXPLORE_GUIDELINES, NEMOTRON_FAMILY_EXPLORE, NEMOTRON_3_ULTRA_EXPLORE],
+			}),
 			orchestrationGuidelines: optionalGuidelines(
 				DEFAULT_ORCHESTRATION_GUIDELINES,
 				NEMOTRON_FAMILY_ORCHESTRATION,
-				NEMOTRON_3_SUPER_ORCHESTRATION,
+				NEMOTRON_3_ULTRA_ORCHESTRATION,
 			),
 		},
 	],

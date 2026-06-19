@@ -135,7 +135,7 @@ describe("listWorkspaces", () => {
 
 	it("stops after the hard page cap even if cursor keeps coming back", async () => {
 		const mockFetch = vi.fn().mockImplementation((url: string) => {
-			if (typeof url === "string" && url.endsWith("/api-keys:verify")) {
+			if (typeof url === "string" && url.endsWith("/workspace-tokens:verifyKey")) {
 				return Promise.resolve(verifyResponse())
 			}
 			return Promise.resolve(

@@ -14,11 +14,13 @@ import { clearAllPendingPlanReviews, getPendingPlanReview, setPendingPlanReview 
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
 import {
 	clearActiveFermentId,
+	clearPendingCompaction,
 	getActive,
 	getActiveFermentId,
 	isAutomatedContinuationEnabled,
 	setActive,
 	setContinuationPolicy,
+	setPendingCompaction,
 } from "./state.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
 import { completeFerment, scopeFerment } from "./tools/lifecycle.js"
@@ -85,7 +87,15 @@ function registerFermentExtension(runtime?: FermentRuntime, flagValues: Record<s
 	} as unknown as ExtensionAPI
 
 	fermentExtension(pi, runtime)
-	return { commands, handlers, pi, shortcuts }
+
+	/** Fire all registered handlers for an event (mirrors pi-mono broadcast). */
+	const fireAll = async (event: string, eventPayload: unknown, ctx: unknown) => {
+		for (const handler of allHandlers.get(event) ?? []) {
+			await handler(eventPayload, ctx)
+		}
+	}
+
+	return { commands, handlers, allHandlers, pi, shortcuts, fireAll }
 }
 
 afterEach(() => {
@@ -194,11 +204,9 @@ describe("fermentExtension stop-policy shortcut", () => {
 describe("fermentExtension session resume", () => {
 	it("clears stale active ferment env when resume id no longer exists", async () => {
 		vi.stubEnv("KIMCHI_ACTIVE_FERMENT", "missing-ferment-id")
-		const { handlers } = registerFermentExtension()
-		const sessionStart = handlers.get("session_start")
-		if (!sessionStart) throw new Error("session_start handler was not registered")
+		const { fireAll } = registerFermentExtension()
 
-		await sessionStart({}, { hasUI: false })
+		await fireAll("session_start", {}, { hasUI: false })
 
 		expect(getActive()).toBeUndefined()
 		expect(getActiveFermentId()).toBeUndefined()
@@ -240,11 +248,9 @@ describe("fermentExtension session resume", () => {
 		if ("isError" in completed && completed.isError) throw new Error(completed.content[0].text)
 
 		vi.stubEnv("KIMCHI_ACTIVE_FERMENT", draft.id)
-		const { handlers, pi } = registerFermentExtension(runtime)
-		const sessionStart = handlers.get("session_start")
-		if (!sessionStart) throw new Error("session_start handler was not registered")
+		const { fireAll, pi } = registerFermentExtension(runtime)
 
-		await sessionStart({}, { hasUI: false })
+		await fireAll("session_start", {}, { hasUI: false })
 
 		expect(storage.get(draft.id)?.status).toBe("complete")
 		expect(getActiveFermentId()).toBeUndefined()
@@ -258,13 +264,11 @@ describe("fermentExtension session resume", () => {
 
 describe("fermentExtension one-shot bootstrap", () => {
 	it("creates an automated one-shot ferment and rewrites the initial message into a nudge", async () => {
-		const { handlers, pi } = registerFermentExtension(undefined, { "ferment-oneshot": true })
-		const sessionStart = handlers.get("session_start")
+		const { handlers, fireAll, pi } = registerFermentExtension(undefined, { "ferment-oneshot": true })
 		const input = handlers.get("input")
-		if (!sessionStart) throw new Error("session_start handler was not registered")
 		if (!input) throw new Error("input handler was not registered")
 
-		await sessionStart({}, { hasUI: false })
+		await fireAll("session_start", {}, { hasUI: false })
 
 		expect(pi.registerFlag).toHaveBeenCalledWith("ferment-oneshot", expect.objectContaining({ type: "boolean" }))
 		expect(getActive()).toBeUndefined()
@@ -303,13 +307,11 @@ describe("fermentExtension one-shot bootstrap", () => {
 				throw new Error("storage unavailable")
 			}),
 		}
-		const { handlers, pi } = registerFermentExtension(runtime, { "ferment-oneshot": true })
-		const sessionStart = handlers.get("session_start")
+		const { handlers, fireAll, pi } = registerFermentExtension(runtime, { "ferment-oneshot": true })
 		const input = handlers.get("input")
-		if (!sessionStart) throw new Error("session_start handler was not registered")
 		if (!input) throw new Error("input handler was not registered")
 
-		await sessionStart({}, { hasUI: false })
+		await fireAll("session_start", {}, { hasUI: false })
 		const result = await input({ type: "input", text: "Fix the task", source: "interactive" }, {})
 
 		expect(result).toBeUndefined()
@@ -324,13 +326,11 @@ describe("fermentExtension one-shot bootstrap", () => {
 
 	it("prefers active-ferment resume over the one-shot flag", async () => {
 		vi.stubEnv("KIMCHI_ACTIVE_FERMENT", "missing-id")
-		const { handlers } = registerFermentExtension(undefined, { "ferment-oneshot": true })
-		const sessionStart = handlers.get("session_start")
+		const { handlers, fireAll } = registerFermentExtension(undefined, { "ferment-oneshot": true })
 		const input = handlers.get("input")
-		if (!sessionStart) throw new Error("session_start handler was not registered")
 		if (!input) throw new Error("input handler was not registered")
 
-		await sessionStart({}, { hasUI: false })
+		await fireAll("session_start", {}, { hasUI: false })
 
 		expect(getActiveFermentId()).toBeUndefined()
 
@@ -342,13 +342,11 @@ describe("fermentExtension one-shot bootstrap", () => {
 
 	it("skips bootstrap inside a subagent process", async () => {
 		process.env.KIMCHI_SUBAGENT = "1"
-		const { handlers } = registerFermentExtension(undefined, { "ferment-oneshot": true })
-		const sessionStart = handlers.get("session_start")
+		const { handlers, fireAll } = registerFermentExtension(undefined, { "ferment-oneshot": true })
 		const input = handlers.get("input")
-		if (!sessionStart) throw new Error("session_start handler was not registered")
 		if (!input) throw new Error("input handler was not registered")
 
-		await sessionStart({}, { hasUI: false })
+		await fireAll("session_start", {}, { hasUI: false })
 
 		// Subagent short-circuits session_start, so the input handler will not
 		// perform a bootstrap (pendingOneshot stays false).
@@ -1237,5 +1235,78 @@ Does this plan look right?`,
 
 		expect(ctx.ui.select).not.toHaveBeenCalled()
 		expect(pi.sendUserMessage).not.toHaveBeenCalled()
+	})
+
+	describe("auto-compaction on agent_end", () => {
+		const NOW = "2026-01-01T00:00:00.000Z"
+
+		afterEach(() => {
+			vi.restoreAllMocks()
+		})
+
+		it("calls ctx.compact() when a pending compaction exists for the active ferment", async () => {
+			const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-compaction-trigger-test-")))
+			const runtime: FermentRuntime = {
+				...createDefaultFermentRuntime(),
+				getStorage: () => storage,
+			}
+			const draft = storage.create("Compaction Trigger Test")
+			runtime.setActive(draft)
+			setPendingCompaction(draft.id, {
+				kind: "step",
+				fermentId: draft.id,
+				phaseId: "phase-1",
+				stepId: "step-1",
+				completedAt: NOW,
+			})
+
+			const { handlers } = registerFermentExtension(runtime)
+			const agentEnd = handlers.get("agent_end")
+			if (!agentEnd) throw new Error("agent_end handler was not registered")
+
+			const compact = vi.fn()
+			const notify = vi.fn()
+			const ctx = {
+				compact,
+				ui: { notify },
+			}
+
+			await agentEnd({ type: "agent_end" }, ctx)
+
+			expect(compact).toHaveBeenCalledTimes(1)
+			expect(compact).toHaveBeenCalledWith(
+				expect.objectContaining({
+					customInstructions: expect.stringContaining("Compaction Trigger Test"),
+				}),
+			)
+
+			clearPendingCompaction(draft.id)
+		})
+
+		it("does not call ctx.compact() when no pending compaction exists", async () => {
+			const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-no-compaction-test-")))
+			const runtime: FermentRuntime = {
+				...createDefaultFermentRuntime(),
+				getStorage: () => storage,
+			}
+			const draft = storage.create("No Compaction Test")
+			runtime.setActive(draft)
+			// Intentionally do NOT set a pending compaction
+
+			const { handlers } = registerFermentExtension(runtime)
+			const agentEnd = handlers.get("agent_end")
+			if (!agentEnd) throw new Error("agent_end handler was not registered")
+
+			const compact = vi.fn()
+			const notify = vi.fn()
+			const ctx = {
+				compact,
+				ui: { notify },
+			}
+
+			await agentEnd({ type: "agent_end" }, ctx)
+
+			expect(compact).not.toHaveBeenCalled()
+		})
 	})
 })

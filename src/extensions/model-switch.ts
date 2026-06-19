@@ -1,7 +1,6 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
-import { isRestoringModel } from "./ferment/state.js"
 import {
 	contextFitsModel,
 	getLatestMessages,
@@ -203,8 +202,6 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 		if (suppressModelSelectGuard) return
 		// cycle and restore are handled by ctrl+p / session recovery already
 		if (event.source === "cycle" || event.source === "restore") return
-		// Skip if ferment is reverting (its own rollback path)
-		if (isRestoringModel()) return
 
 		// Flush the multi-model flag that the harness /models UI sets via
 		// process.__kimchiMultiModelEnabled.  getMultiModelEnabled() detects a

@@ -19,6 +19,7 @@ import type { Ferment } from "../../ferment/types.js"
 import { decideContinuation } from "./continuation.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { scheduleNextFermentAction } from "./scheduler.js"
+import { MAX_SCOPING_EXPLORE_TURNS, bumpScopingExploreTurns, resetScopingExploreTurns } from "./state.js"
 
 export function appendRefEntry(pi: ExtensionAPI, fermentId: string): void {
 	void pi.sendMessage({
@@ -99,4 +100,65 @@ export function onPhaseCompleted(runtime: FermentRuntime = defaultFermentRuntime
 	// behind the agent's back and caused every subsequent agent-initiated
 	// activate_ferment_phase to be rejected.
 	refreshActiveFermentFromStorage(runtime)
+}
+
+// ─── Scoping exploration progress nudge ───────────────────────────────────────
+// During draft scoping, detects when the model has spent too many turns on
+// read-like exploration without progressing through the scoping steps
+// (ask_user, confirm_ferment_completion_criteria, propose_ferment_scoping).
+// Unlike the reactive continuation nudge (which only fires on text-only turns),
+// this fires even when the model IS making tool calls — just the wrong kind.
+
+/** Tool names that indicate the model is making scoping progress, not just exploring. */
+const SCOPING_PROGRESS_TOOLS = new Set([
+	"ask_user",
+	"confirm_ferment_completion_criteria",
+	"propose_ferment_scoping",
+	"Agent",
+])
+
+/** Check if any tool call in the turn was a scoping-progress tool. */
+export function hasScopingProgressTool(toolNames: string[]): boolean {
+	return toolNames.some((name) => SCOPING_PROGRESS_TOOLS.has(name))
+}
+
+/**
+ * Called from turn_end when a draft ferment's scoping is interactive.
+ * If the model made tool calls but none were scoping-progress tools,
+ * bump the exploration turn counter and inject a nudge after the threshold.
+ *
+ * Returns true if a nudge was injected.
+ */
+export function maybeInjectScopingProgressNudge(pi: ExtensionAPI, fermentId: string, toolNames: string[]): boolean {
+	if (hasScopingProgressTool(toolNames)) {
+		resetScopingExploreTurns(fermentId)
+		return false
+	}
+
+	const count = bumpScopingExploreTurns(fermentId)
+	if (count < MAX_SCOPING_EXPLORE_TURNS) return false
+
+	// Reset after nudge so we don't spam every turn
+	resetScopingExploreTurns(fermentId)
+
+	void pi.sendMessage(
+		{
+			customType: "ferment_scoping_progress_nudge",
+			content: [
+				{
+					type: "text",
+					text: `SCOPING PROGRESS CHECK: You have spent ${count} turns reading files without advancing through the scoping steps. Stop exploring and move to the next scoping step NOW.
+
+- If you haven't asked the user any questions yet, call ask_user with your interview questions (Step 2).
+- If you've completed the interview, call confirm_ferment_completion_criteria to confirm success criteria (Step 3).
+- If criteria are confirmed, call propose_ferment_scoping with the full plan (Step 5).
+- Do NOT continue reading more files. You have enough context to proceed.`,
+				},
+			],
+			display: false,
+			details: undefined,
+		},
+		{ triggerTurn: true },
+	)
+	return true
 }

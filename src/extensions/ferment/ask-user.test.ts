@@ -488,7 +488,7 @@ describe("askJudge", () => {
 					prompt: "Do these completion criteria look right?",
 					options: [{ id: "yes", label: "Yes, looks good" }],
 					allowOther: true,
-					otherLabel: "No, enter what is wrong",
+					otherLabel: "No (input what is wrong)",
 				},
 			],
 			makeFerment(),
@@ -498,7 +498,7 @@ describe("askJudge", () => {
 		expect(result.failed).toBeFalsy()
 		if (result.failed) return
 		expect(userMsg).toContain('option id="yes" label="Yes, looks good"')
-		expect(userMsg).toContain('custom label="No, enter what is wrong" value="<free-form text>"')
+		expect(userMsg).toContain('custom label="No (input what is wrong)" value="<free-form text>"')
 		expect(result.answers).toEqual([
 			{
 				id: "criteria_ok",

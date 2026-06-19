@@ -28,8 +28,8 @@ export const TEST_MODELS: readonly ModelMetadata[] = [
 		limits: { context_window: 262_144, max_output_tokens: 32_768 },
 	},
 	{
-		slug: "nemotron-3-super-fp4",
-		display_name: "Nemotron 3 Super FP4",
+		slug: "nemotron-3-ultra-fp4",
+		display_name: "Nemotron 3 Ultra FP4",
 		provider: "ai-enabler",
 		reasoning: true,
 		input_modalities: ["text"],

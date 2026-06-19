@@ -288,4 +288,47 @@ describe("parseClassifierOutput", () => {
 		const r = parseClassifierOutput(`{"verdict":"safe"}`)
 		expect(r.reason).toBe("no reason provided")
 	})
+
+	it("strips <think>…</think> and parses JSON after", () => {
+		const raw = `<think>The user is editing a test file, this is safe.</think>\n{"verdict":"safe","reason":"test file edit"}`
+		const r = parseClassifierOutput(raw)
+		expect(r.ok).toBe(true)
+		expect(r.verdict).toBe("safe")
+		expect(r.reason).toBe("test file edit")
+	})
+
+	it("strips <thinking>…</thinking> (alternate delimiter)", () => {
+		const raw = `<thinking>checking blast radius</thinking>\n{"verdict":"requires-confirmation","reason":"writes outside cwd"}`
+		const r = parseClassifierOutput(raw)
+		expect(r.ok).toBe(true)
+		expect(r.verdict).toBe("requires-confirmation")
+	})
+
+	it("ignores braces inside thinking block (the minimax-m2.7 bug)", () => {
+		// Model thinks aloud about the JSON shape, including example braces,
+		// then emits the real JSON after the closing tag. The naive
+		// indexOf('{') / lastIndexOf('}') approach latches onto braces
+		// inside the thinking text and returns null.
+		const raw = `<think>The answer should look like {verdict: safe, reason: ...} so I'll output it now.</think>\n{"verdict":"safe","reason":"file edit"}`
+		const r = parseClassifierOutput(raw)
+		expect(r.ok).toBe(true)
+		expect(r.verdict).toBe("safe")
+		expect(r.reason).toBe("file edit")
+	})
+
+	it("returns unparseable when <think> is unclosed and no JSON follows", () => {
+		const raw = "<think>The model burned its tokens reasoning and never produced a verdict."
+		const r = parseClassifierOutput(raw)
+		expect(r.ok).toBe(false)
+		expect(r.verdict).toBe("requires-confirmation")
+		expect(r.reason).toContain("unparseable")
+	})
+
+	it("strips <mm:think>…</mm:think> (minimax-m3 delimiter)", () => {
+		const raw = `<mm:think>The answer should look like {verdict: safe} so I'll respond now.</mm:think>
+{"verdict":"safe","reason":"file edit"}`
+		const r = parseClassifierOutput(raw)
+		expect(r.ok).toBe(true)
+		expect(r.verdict).toBe("safe")
+	})
 })

@@ -35,10 +35,12 @@ export const GateVerdictSchema = Type.Object({
 		},
 	),
 	rationale: Type.String({
-		description: "One sentence justifying the verdict. Required for every verdict including 'pass' and 'omitted'.",
+		description:
+			"One sentence justifying the verdict. Required for every verdict including 'pass' and 'omitted'. Example: \"All phases have a bash verify command\" or \"Single phase, no ordering concerns\".",
 	}),
 	evidence: Type.String({
-		description: "File:line, quoted diff line, command output, or 'n/a' for omitted gates. Empty evidence is rejected.",
+		description:
+			'File:line, quoted diff line, command output, or \'n/a\' for omitted gates. Empty evidence is rejected. Example: "src/foo.ts:42" or "pnpm test output" or "n/a".',
 	}),
 })
 
@@ -106,7 +108,7 @@ export const ScopeParams = Type.Object({
 	phases: Type.Optional(Type.Array(PhaseProposalSchema)),
 	gates: Type.Array(GateVerdictSchema, {
 		description:
-			"Plan-scope gate verdicts. Required ids: P1, P2, P3. See tool description for each gate's question and what counts as 'pass' vs 'flag'.",
+			'Plan-scope gate verdicts. Required ids: P1, P2, P3. See tool description for each gate\'s question and what counts as \'pass\' vs \'flag\'. Example: [{"id":"P1","verdict":"pass","rationale":"Every step has a verify command","evidence":"Step 1: pnpm test passes"}, {"id":"P2","verdict":"omitted","rationale":"Single phase, no ordering concerns","evidence":"n/a"}, {"id":"P3","verdict":"pass","rationale":"C3 will check test output and file existence","evidence":"Tests run via pnpm run test"}]',
 	}),
 })
 
@@ -199,7 +201,7 @@ export const ProposeScopingParams = Type.Object({
 	),
 	gates: Type.Array(GateVerdictSchema, {
 		description:
-			"Plan-scope gate verdicts. Required ids: P1, P2, P3. See tool description for each gate's question and what counts as 'pass' vs 'flag'.",
+			'Plan-scope gate verdicts. Required ids: P1, P2, P3. See tool description for each gate\'s question and what counts as \'pass\' vs \'flag\'. Example: [{"id":"P1","verdict":"pass","rationale":"Every step has a verify command","evidence":"Step 1: pnpm test passes"}, {"id":"P2","verdict":"omitted","rationale":"Single phase, no ordering concerns","evidence":"n/a"}, {"id":"P3","verdict":"pass","rationale":"C3 will check test output and file existence","evidence":"Tests run via pnpm run test"}]',
 	}),
 })
 
@@ -251,7 +253,7 @@ export const CompleteStepParams = Type.Object({
 	summary: Type.Optional(Type.String()),
 	gates: Type.Array(GateVerdictSchema, {
 		description:
-			"Step-scope gate verdicts. Required ids: S1 (summary matches diff), S2 (verify command honesty), S3 (edge case awareness). A 'flag' verdict blocks step completion.",
+			'Step-scope gate verdicts. Required ids: S1 (summary matches diff), S2 (verify command honesty), S3 (edge case awareness). A \'flag\' verdict blocks step completion. Example: [{"id":"S1","verdict":"pass","rationale":"Summary cites file paths and functions from the diff","evidence":"src/foo.ts:42"}, {"id":"S2","verdict":"pass","rationale":"Verify command is a real test, not just grep","evidence":"pnpm test -- src/foo.test.ts"}, {"id":"S3","verdict":"pass","rationale":"Handles empty input gracefully","evidence":"Tested with empty string; returns early"}]',
 	}),
 })
 
@@ -272,7 +274,7 @@ export const CompletePhaseParams = Type.Object({
 	summary: Type.String(),
 	gates: Type.Array(GateVerdictSchema, {
 		description:
-			"Phase-scope gate verdicts. Required ids: F1 (real verification vs proxies), F2 (combined output meets phase goal), F3 (what was deferred). A 'flag' verdict refuses phase advancement and feeds the retry/escalation pipeline.",
+			'Phase-scope gate verdicts. Required ids: F1 (real verification vs proxies), F2 (combined output meets phase goal), F3 (what was deferred). A \'flag\' verdict refuses phase advancement and feeds the retry/escalation pipeline. Example: [{"id":"F1","verdict":"pass","rationale":"Mixed verification is acceptable; load-bearing steps use real tests","evidence":"Step 2 uses pnpm test; Step 1 is proxy but non-critical"}, {"id":"F2","verdict":"pass","rationale":"All steps together produced the expected artifact","evidence":"src/new-feature.ts created and compiled"}, {"id":"F3","verdict":"pass","rationale":"Nothing deferred; all planned work completed","evidence":"n/a"}]',
 	}),
 })
 
@@ -288,7 +290,7 @@ export const CompleteFermentParams = Type.Object({
 	gates: Type.Optional(
 		Type.Array(GateVerdictSchema, {
 			description:
-				"Ferment-scope gate verdicts. Required ids: C1 (every plan success criterion satisfied with evidence), C2 (no unresolved F3 deferrals), C3 (real verification actually executed the artifact). A 'flag' verdict refuses ship. May be omitted only when checking an already-complete ferment.",
+				'Ferment-scope gate verdicts. Required ids: C1 (every plan success criterion satisfied with evidence), C2 (no unresolved F3 deferrals), C3 (real verification actually executed the artifact). A \'flag\' verdict refuses ship. May be omitted only when checking an already-complete ferment. Example: [{"id":"C1","verdict":"pass","rationale":"All 4 success criteria are met with file/test evidence","evidence":"src/foo.ts exists; pnpm test passes"}, {"id":"C2","verdict":"pass","rationale":"No unresolved F3 items from any phase","evidence":"Phase 1 F3 was pass; Phase 2 F3 was pass"}, {"id":"C3","verdict":"pass","rationale":"At least one step used smoke or test verification","evidence":"Step 2 ran pnpm test -- src/foo.test.ts"}]',
 		}),
 	),
 })
@@ -418,7 +420,7 @@ export const ConfirmCompletionCriteriaParams = Type.Object({
 		{
 			minItems: 1,
 			description:
-				"Draft completion criteria to present for confirmation. The host asks one combined prompt with a Yes selection and an inline free-form 'No, enter what is wrong' path.",
+				"Draft completion criteria to present for confirmation. The host asks one combined prompt with a Yes selection and an inline free-form 'No (input what is wrong)' path.",
 		},
 	),
 })

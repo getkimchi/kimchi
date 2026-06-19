@@ -54,7 +54,7 @@ describe("resolveOrchestrationInstructions", () => {
 			roles: DEFAULT_MODEL_ROLES,
 		})
 		expect(result).toContain("## Your Capabilities")
-		expect(result).toContain("Roles: research, plan, review")
+		expect(result).toContain("Roles: research, plan, build, review")
 	})
 
 	it("uses role-based delegation rules in Step 3", () => {
@@ -69,14 +69,18 @@ describe("resolveOrchestrationInstructions", () => {
 		expect(result).toContain("delegate it to a model from the matching role pool")
 	})
 
-	it("instructs to always use General-Purpose subagent type", () => {
+	it("instructs to use matching persona for each step", () => {
 		const result = resolveOrchestrationInstructions({
 			currentModelId: "kimi-k2.6",
 			registry,
 			mode: "orchestrator",
 			roles: DEFAULT_MODEL_ROLES,
 		})
-		expect(result).toContain('subagent_type: "General-Purpose"')
+		expect(result).toContain('Agent(type: "Builder"')
+		expect(result).toContain('Agent(type: "Reviewer"')
+		expect(result).toContain('Agent(type: "Fixer"')
+		expect(result).toContain('Agent(type: "Explore"')
+		expect(result).toContain('Agent(type: "Plan"')
 	})
 
 	it("shows model IDs from the roles config", () => {
@@ -89,13 +93,13 @@ describe("resolveOrchestrationInstructions", () => {
 				planner: "anthropic/claude-opus-4-7",
 				builder: "anthropic/claude-sonnet-4-5",
 				reviewer: "openai/gpt-4o",
-				explorer: "kimchi-dev/nemotron-3-super-fp4",
+				explorer: "kimchi-dev/nemotron-3-ultra-fp4",
 				judge: "kimchi-dev/claude-opus-4-6",
 			},
 		})
 		expect(result).toContain("anthropic/claude-sonnet-4-5")
 		expect(result).toContain("openai/gpt-4o")
-		expect(result).toContain("kimchi-dev/nemotron-3-super-fp4")
+		expect(result).toContain("kimchi-dev/nemotron-3-ultra-fp4")
 	})
 
 	it("omits Planner section when planner equals orchestrator", () => {
@@ -174,7 +178,7 @@ describe("resolveOrchestrationInstructions", () => {
 		expect(result).toContain("complexity")
 		expect(result).toContain("`simple`")
 		expect(result).toContain("`complex`")
-		expect(result).toContain("Match the Builder model to the chunk's complexity classification")
+		expect(result).toContain("Complex chunks get the multi-file-package token budget")
 	})
 
 	it("includes complex chunk spec detail requirements", () => {
@@ -277,7 +281,7 @@ describe("resolveOrchestrationInstructions", () => {
 				planner: "kimchi-dev/kimi-k2.6",
 				builder: ["kimchi-dev/minimax-m2.7", "kimchi-dev/kimi-k2.6"],
 				reviewer: ["kimchi-dev/kimi-k2.6", "kimchi-dev/minimax-m2.7"],
-				explorer: "kimchi-dev/nemotron-3-super-fp4",
+				explorer: "kimchi-dev/nemotron-3-ultra-fp4",
 				judge: "kimchi-dev/kimi-k2.6",
 			},
 		})

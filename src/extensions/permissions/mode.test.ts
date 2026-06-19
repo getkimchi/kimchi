@@ -28,28 +28,23 @@ describe("parseModeString", () => {
 })
 
 describe("resolveMode", () => {
-	it("runtime wins over everything", () => {
-		const r = resolveMode({ runtime: "plan", flag: "auto", env: "default", config: "default" })
-		expect(r).toEqual({ mode: "plan", source: "runtime" })
-	})
-
 	it("flag beats env and config", () => {
-		const r = resolveMode({ runtime: undefined, flag: "auto", env: "plan", config: "default" })
+		const r = resolveMode({ flag: "auto", env: "plan", config: "default" })
 		expect(r).toEqual({ mode: "auto", source: "flag" })
 	})
 
 	it("env beats config", () => {
-		const r = resolveMode({ runtime: undefined, flag: undefined, env: "plan", config: "default" })
+		const r = resolveMode({ flag: undefined, env: "plan", config: "default" })
 		expect(r).toEqual({ mode: "plan", source: "env" })
 	})
 
 	it("config is the floor", () => {
-		const r = resolveMode({ runtime: undefined, flag: undefined, env: undefined, config: "auto" })
+		const r = resolveMode({ flag: undefined, env: undefined, config: "auto" })
 		expect(r).toEqual({ mode: "auto", source: "config" })
 	})
 
 	it("invalid env string is ignored", () => {
-		const r = resolveMode({ runtime: undefined, flag: undefined, env: "garbage", config: "default" })
+		const r = resolveMode({ flag: undefined, env: "garbage", config: "default" })
 		expect(r.mode).toBe("default")
 		expect(r.source).toBe("config")
 	})

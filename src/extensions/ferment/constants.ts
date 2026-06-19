@@ -1,18 +1,22 @@
 export const SCOPING_EXPLORE_TOKEN_BUDGET = 120_000
 
 export const SCOPING_DISCOVERY_GUIDANCE = `<scoping_sequence required="true">
-Scoping follows five steps. Work through them IN ORDER.
+Scoping follows five steps. Work through them IN ORDER. Do NOT get stuck on any step.
+The host monitors your progress and will intervene if you spend too many turns exploring
+without advancing. Your goal is to reach propose_ferment_scoping, not to understand
+every file in the project.
 
-STEP 1 — ORIENT (lightweight research)
-Read the user's intent. Before asking anything, build context:
-- Do a quick project scan: file listing, README, package/config files, and short
-  entrypoint snippets (at most ~60 lines each). For files >120 lines, read only
-  the first 60 lines or use a targeted search — do not read them end-to-end yet.
-- Form an initial mental model: what kind of task is this? What technology, patterns,
-  and constraints does the codebase already use?
-- Identify your unknowns: what assumptions are you making? What could you be wrong about?
-  What decisions can only the user make?
-- If the project is greenfield (no existing codebase), note that and move on.
+STEP 1 — ORIENT (lightweight research, MAX 2 TURNS)
+Read the user's intent. Before asking anything, build MINIMAL context:
+- Do a quick project scan: file listing, README, package/config files (1-2 tool calls).
+- Form an initial mental model: what kind of task is this? What technology and patterns?
+- Identify your unknowns: what assumptions are you making? What decisions can only the user make?
+- If the project is greenfield (no existing codebase), note that and move on immediately.
+
+Default budget: spend about 1-2 turns on Orient and aim for 3-5 targeted files. Exceed this only
+for a specific unknown that would materially change the interview questions or plan. Do NOT read
+implementation files line by line — save that for Step 4 (Deep Exploration) which happens AFTER
+the interview and criteria confirmation. After your initial scan, immediately move to Step 2.
 
 This step is about YOUR understanding, not the user's. Do not ask questions yet.
 
@@ -54,7 +58,7 @@ Draft concrete completion criteria and validation steps, then confirm with the u
 - Include the verification method for each criterion (test command, manual check, linter, etc.).
 - Use confirm_ferment_completion_criteria to present the criteria. Do not hand-build
   this with ask_user — the host asks one question with two options:
-  "Yes, looks good" and "No, enter what is wrong", where "No" includes the
+  "Yes, looks good" and "No (input what is wrong)", where "No" includes the
   inline free-form explanation path.
 - Proceed only when the tool returns Confirmed: yes and Changes: (none). Otherwise
   revise the criteria and ask again with confirm_ferment_completion_criteria.
@@ -62,21 +66,21 @@ Draft concrete completion criteria and validation steps, then confirm with the u
   rather than rephrasing. Don't over-formalize obvious criteria.
 - Confirm criteria with the user before proceeding to exploration.
 
-STEP 4 — DEEP EXPLORATION (targeted, not broad)
+STEP 4 — DEEP EXPLORATION (targeted, not broad, MAX 2 TURNS of direct reads)
 Now investigate the codebase for implementation-specific details.
-- Focus on the unknowns that remain after the interview — don't re-explore what you
+- Focus ONLY on unknowns that remain after the interview — don't re-explore what you
   already learned in Step 1.
-- For deeper investigation, spawn 1-4 narrow Explore subagents for independent areas.
+- Prefer spawning Explore subagents over reading files yourself:
   • subagent_type: "Explore" (or closest available)
   • token_budget: ${SCOPING_EXPLORE_TOKEN_BUDGET}
   • run_in_background: true when multiple independent unknowns exist
   • Prefer several narrow probes over one broad "understand everything" scan
-- Do not read entire implementation files during the direct scan.
-  First get the file's line count or tool-reported length, then read at most ~60 lines
-  unless a targeted search points to a narrow range. If a file is >120 lines, delegate
-  to an Explore subagent.
+- If you read files directly, limit to at most 2 turns of reads. Do not read
+  entire implementation files line by line. Use targeted search to find the
+  specific lines you need.
 - Wait for subagent results before proceeding.
 - Skip this step for greenfield tasks with no existing codebase; record why in assumptions.
+- If you have enough context from Steps 1-3 to write a plan, skip this step entirely.
 
 STEP 5 — PLAN
 Synthesize everything — orient findings, interview answers, confirmed criteria,

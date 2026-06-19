@@ -10,12 +10,22 @@ import { getActiveAgentCount } from "../extensions/agents/index.js"
 import { formatFermentFooterDisplay } from "../extensions/ferment/footer-status.js"
 import { getActiveFerment, getFermentContinuationPolicy } from "../extensions/ferment/index.js"
 import { formatCount } from "../extensions/format.js"
-import { getCurrentPermissionsMode } from "../extensions/permissions/index.js"
+import { getDisplayPermissionMode } from "../extensions/permissions/index.js"
 import { getMultiModelEnabled } from "../extensions/prompt-construction/prompt-enrichment.js"
 import { getActiveTags, getCurrentPhase, parseTag } from "../extensions/tags.js"
 
 /** Stable identifier used by compaction steps to find segments. */
-type SegmentId = "permissions" | "model" | "ferment" | "agents" | "context" | "usage" | "phase" | "tags" | "team"
+type SegmentId =
+	| "permissions"
+	| "model"
+	| "ferment"
+	| "agents"
+	| "context"
+	| "usage"
+	| "phase"
+	| "tags"
+	| "team"
+	| "lsp"
 
 /** Raw inputs preserved on segments that have compact forms, so compaction
  *  steps can rebuild the colorized text without round-tripping through ANSI.
@@ -135,7 +145,7 @@ export function buildScriptPayload(
 		},
 		exceeds_200k_tokens: (usage?.tokens ?? 0) > 200_000,
 		permissions: {
-			mode: getCurrentPermissionsMode(),
+			mode: getDisplayPermissionMode(),
 		},
 		multi_model: {
 			enabled: getMultiModelEnabled(),
@@ -433,6 +443,20 @@ export class StatsFooter implements Component {
 		return { id: "permissions", text: mode, width: visibleWidth(mode) }
 	}
 
+	private lspSegment(): Segment | null {
+		const lspStatus = this.footerData.getExtensionStatuses().get("lsp")
+		if (!lspStatus) return null
+		// Style "LSP:" as dimmed label, server names as accent. Preserve the
+		// space after the colon so the label and value don't render run-together
+		// (e.g. "LSP:typescript-language-server" instead of "LSP: typescript-language-server").
+		const colonIdx = lspStatus.indexOf(":")
+		if (colonIdx === -1) return { id: "lsp", text: this.accent(lspStatus), width: visibleWidth(lspStatus) }
+		const label = this.dim(lspStatus.slice(0, colonIdx + 1))
+		const value = lspStatus.slice(colonIdx + 1).trimStart()
+		const text = value.length > 0 ? `${label} ${this.accent(value)}` : label
+		return { id: "lsp", text, width: visibleWidth(text) }
+	}
+
 	private subagentSegment(): Segment | null {
 		const count = getActiveAgentCount()
 		if (count === 0) return null
@@ -486,6 +510,7 @@ export class StatsFooter implements Component {
 			this.phaseSegment(),
 			this.tagsSegment(tags),
 			this.teamSegment(tags),
+			this.lspSegment(),
 		].filter((s): s is Segment => s !== null)
 
 		const sep = ` ${this.dim("·")} `

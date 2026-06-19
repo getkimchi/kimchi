@@ -12,11 +12,12 @@ import {
 	createAgentSession,
 	getAgentDir,
 } from "@earendil-works/pi-coding-agent"
-import { readTelemetryConfig } from "../../../config.js"
+import { loadConfig, readTelemetryConfig } from "../../../config.js"
 import { getAvailableModels } from "../../../startup-context.js"
 import { runAsAgentWorker } from "../../agent-worker-context.js"
 import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
+import type { Phase } from "../../orchestration/model-registry/types.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
 import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import telemetryExtension from "../../telemetry/index.js"
@@ -40,6 +41,7 @@ import {
 import { buildParentContext, extractText } from "../prompt/context.js"
 import { type PromptExtras, buildAgentPrompt, formatTokenBudget } from "../prompt/prompts.js"
 import { preloadSkills } from "../prompt/skill-loader.js"
+import { PARENT_SESSION_ID_ENV_KEY } from "./constants.js"
 import { type LifetimeUsage, addUsage, getLifetimeTotal, getOutputTotal, getSessionUsage } from "./usage.js"
 
 /** Names of tools registered by this extension that subagents must NOT inherit. */
@@ -52,6 +54,9 @@ const ORCHESTRATOR_PREFIX = "[Orchestrator — automated system instruction, not
 function steerAsOrchestrator(session: AgentSession, message: string): Promise<void> {
 	return session.steer(ORCHESTRATOR_PREFIX + message)
 }
+
+/** Cached kimchi config — loaded once per process to avoid repeated disk reads per agent spawn. */
+const kimchiConfig = loadConfig()
 
 /** Default max turns. undefined = unlimited (no turn limit). */
 let defaultMaxTurns: number | undefined = 30
@@ -227,13 +232,28 @@ function forwardAbortSignal(session: AgentSession, signal?: AbortSignal): () => 
 	return () => signal.removeEventListener("abort", onAbort)
 }
 
+async function withParentSessionEnv<T>(ctx: ExtensionContext, fn: () => Promise<T>): Promise<T> {
+	const prevParentSessionId = process.env[PARENT_SESSION_ID_ENV_KEY]
+	process.env[PARENT_SESSION_ID_ENV_KEY] = ctx.sessionManager.getSessionId()
+
+	try {
+		return await fn()
+	} finally {
+		if (prevParentSessionId === undefined) {
+			delete process.env[PARENT_SESSION_ID_ENV_KEY]
+		} else {
+			process.env[PARENT_SESSION_ID_ENV_KEY] = prevParentSessionId
+		}
+	}
+}
+
 export async function runAgent(
 	ctx: ExtensionContext,
 	type: SubagentType,
 	prompt: string,
 	options: RunOptions,
 ): Promise<RunResult> {
-	return runAsAgentWorker(() => runAgentInner(ctx, type, prompt, options))
+	return runAsAgentWorker(() => withParentSessionEnv(ctx, () => runAgentInner(ctx, type, prompt, options)))
 }
 
 async function runAgentInner(
@@ -286,7 +306,8 @@ async function runAgentInner(
 	}
 
 	const modelId = (options.model as { id?: string } | undefined)?.id
-	const guidelinesBlock = buildPhaseGuidelinesSection(modelId, getCurrentPhase(), getGuidelinesRegistry())
+	const guidelinePhase = agentConfig?.roles?.[0] as Phase | undefined
+	const guidelinesBlock = buildPhaseGuidelinesSection(modelId, guidelinePhase, getGuidelinesRegistry())
 	if (guidelinesBlock) extras.guidelinesBlock = guidelinesBlock
 
 	const effectiveMaxTurns = normalizeMaxTurns(options.maxTurns ?? agentConfig?.maxTurns ?? defaultMaxTurns)
@@ -349,13 +370,16 @@ async function runAgentInner(
 
 	const thinkingLevel = options.thinkingLevel ?? agentConfig?.thinking
 
+	const settingsManager = SettingsManager.create(effectiveCwd, agentDir)
+	settingsManager.applyOverrides({ retry: { maxRetries: kimchiConfig.retry.maxRetries } })
+
 	const sessionOpts: Parameters<typeof createAgentSession>[0] = {
 		cwd: effectiveCwd,
 		agentDir,
 		sessionManager: options.sessionFile
 			? SessionManager.open(options.sessionFile, options.sessionDir, effectiveCwd)
 			: SessionManager.inMemory(effectiveCwd),
-		settingsManager: SettingsManager.create(effectiveCwd, agentDir),
+		settingsManager,
 		modelRegistry: ctx.modelRegistry,
 		model,
 		resourceLoader: loader,
@@ -582,8 +606,8 @@ async function runAgentInner(
 		// Emit session_shutdown so extensions (e.g. telemetry) can flush and
 		// clear timers. Mirrors the ACP server pattern in modes/acp/server.ts.
 		await session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" })
-		// Restore persona env — important for sequential runs in the same process.
 		if (agentConfig?.name) {
+			// Restore persona env — important for sequential runs in the same process.
 			if (prevPersona === undefined) {
 				// biome-ignore lint/performance/noDelete: must remove not set to undefined
 				delete process.env.KIMCHI_AGENT_PERSONA

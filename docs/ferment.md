@@ -81,7 +81,7 @@ boundaries.
 | Policy | Behavior |
 |--------|----------|
 | **manual** | Ask before moving to the next phase. Work inside the current phase can continue autonomously. |
-| **automated** | Keep going until the ferment is complete, blocked, paused, or needs user input. |
+| **automated** | Keep going through all stages without asking until the ferment is complete, blocked, or paused. |
 
 Switch continuation policy at any time:
 ```

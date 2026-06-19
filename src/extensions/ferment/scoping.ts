@@ -209,7 +209,13 @@ Planning policy:
 
 Output contract:
 Call propose_ferment_scoping with ferment_id "${f.id}" and a complete payload: title, goal, success_criteria, constraints, assumptions, 1-7 phases, questions, and gates. title is required; set it to a concise 3-5 word Ferment name.
-The gates array is required and must contain exactly P1, P2, and P3. Every gate object must include id, verdict, rationale, and evidence. Never emit a partial gates array.`,
+The gates array is required and must contain exactly P1, P2, and P3. Every gate object must include id, verdict, rationale, and evidence. Never emit a partial gates array.
+
+Example gates array:
+gates: [
+  { id: "P1", verdict: "pass", rationale: "Every step has a verify command or test assertion", evidence: "Step 1: grep passes; Step 2: pnpm test passes" },
+  { id: "P2", verdict: "omitted", rationale: "Single phase, no ordering concerns", evidence: "n/a" }
+]`,
 				},
 			],
 			display: false,

@@ -11,7 +11,7 @@ describe("HELP_ROWS", () => {
 	})
 
 	it("lists Kimchi-only commands that were previously missing", () => {
-		for (const key of ["/teleport", "/clear", "/mcp-auth", "/thinking-steps", "/hooks", "/plugins"]) {
+		for (const key of ["/teleport", "/clear", "/mcp-auth", "/thinking-steps", "/hooks", "/plugins", "/todos"]) {
 			expect(commandKeys, key).toContain(key)
 		}
 	})

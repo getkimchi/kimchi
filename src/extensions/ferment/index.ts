@@ -16,6 +16,7 @@ import type { Step } from "../../ferment/types.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import { requestSharedFooterRender } from "../shared-footer.js"
 import { registerTipProvider } from "../tips/registry.js"
+import { maybeTriggerFermentCompaction } from "./auto-compaction.js"
 import { fermentBreadcrumbRenderer } from "./breadcrumb-renderer.js"
 import { registerFermentCommands } from "./commands.js"
 import { registerFermentEvents } from "./events.js"
@@ -121,6 +122,8 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	const unregisterFermentTips = registerTipProvider(createFermentTipProvider(runtime))
 	let planReviewTimer: ReturnType<typeof setTimeout> | undefined
 	let planReviewRunning = false
+	// ExtensionContext is populated on session start
+	let ctx: ExtensionContext | undefined
 
 	const clearPlanReviewTimer = () => {
 		if (planReviewTimer) {
@@ -179,6 +182,10 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 		}
 	}
 
+	pi.on("session_start", (_event, _ctx) => {
+		ctx = _ctx
+	})
+
 	pi.on("session_shutdown", () => {
 		clearPlanReviewTimer()
 		runtime.clearAllPendingPlanReviews()
@@ -187,12 +194,18 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 
 	pi.on("agent_end", (_event, ctx) => {
 		const review = runtime.getCurrentPendingPlanReview()
-		if (planReviewRunning || !review) return
-		clearPlanReviewTimer()
-		planReviewTimer = setTimeout(() => {
-			planReviewTimer = undefined
-			void runPendingPlanReview(ctx, review)
-		}, 0)
+		if (!planReviewRunning && review) {
+			clearPlanReviewTimer()
+			planReviewTimer = setTimeout(() => {
+				planReviewTimer = undefined
+				void runPendingPlanReview(ctx, review)
+			}, 0)
+		}
+
+		// Drain any remaining pending compactions at agent_end (catches the case
+		// where the ferment completes within a single agent run and the turn_end
+		// handler already cleared most pending entries).
+		maybeTriggerFermentCompaction(pi, ctx, runtime)
 	})
 
 	pi.registerMessageRenderer(FERMENT_REQUEST_MESSAGE_TYPE, fermentRequestRenderer)
@@ -208,7 +221,10 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 
 	createSystemPromptBlocks(pi, "ferment").register({
 		id: "ferment-supplement",
-		render: () => buildFermentPromptBlock(pi, runtime),
+		render: () => {
+			if (!ctx) return undefined
+			return buildFermentPromptBlock(ctx, pi, runtime)
+		},
 	})
 
 	// ─── Tool registrations ───────────────────────────────────────────────────

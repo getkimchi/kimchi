@@ -20,9 +20,9 @@ describe("postProcessJsonlExport", () => {
 		}
 	})
 
-	it("injects appVersion into the header line", () => {
+	it("injects appVersion into the session header line", () => {
 		const lines = [
-			JSON.stringify({ type: "header", version: 3, id: "s1" }),
+			JSON.stringify({ type: "session", version: 3, id: "s1" }),
 			JSON.stringify({ type: "message", id: "e1", parentId: null, message: { role: "user", content: "hello" } }),
 		]
 		const filePath = join(tmpDir, "export.jsonl")
@@ -34,13 +34,13 @@ describe("postProcessJsonlExport", () => {
 			.split("\n")
 			.filter((l) => l.trim().length > 0)
 		const header = JSON.parse(result[0])
-		expect(header.type).toBe("header")
+		expect(header.type).toBe("session")
 		expect(header.appVersion).toBeDefined()
 	})
 
 	it("preserves trace ID injection", () => {
 		const lines = [
-			JSON.stringify({ type: "header", version: 3, id: "s1" }),
+			JSON.stringify({ type: "session", version: 3, id: "s1" }),
 			JSON.stringify({ type: "message", id: "e1", parentId: null, message: { role: "user", content: "hello" } }),
 			JSON.stringify({ type: "message", id: "e2", parentId: "e1", message: { role: "assistant", content: "hi" } }),
 			JSON.stringify({
@@ -64,7 +64,7 @@ describe("postProcessJsonlExport", () => {
 	})
 
 	it("is idempotent when run twice", () => {
-		const lines = [JSON.stringify({ type: "header", version: 3, id: "s1" })]
+		const lines = [JSON.stringify({ type: "session", version: 3, id: "s1" })]
 		const filePath = join(tmpDir, "export-idempotent.jsonl")
 		writeFileSync(filePath, `${lines.join("\n")}\n`, "utf-8")
 
@@ -79,7 +79,7 @@ describe("postProcessJsonlExport", () => {
 		expect(header.appVersion).toBeDefined()
 	})
 
-	it("does not inject appVersion when the first line is not a header", () => {
+	it("does not inject appVersion when the first line is not a session header", () => {
 		const lines = [
 			JSON.stringify({ type: "message", id: "e1", parentId: null, message: { role: "user", content: "hello" } }),
 		]

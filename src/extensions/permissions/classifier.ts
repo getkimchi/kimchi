@@ -150,7 +150,7 @@ function buildUserPrompt(call: ClassifyInput): string {
 }
 
 export function parseClassifierOutput(raw: string): ClassifierResult {
-	const json = extractJsonObject(raw)
+	const json = extractJsonObject(stripThinking(raw))
 	if (!json) return unavailable("classifier returned unparseable output")
 
 	const verdict = normalizeVerdict(json.verdict)
@@ -158,6 +158,30 @@ export function parseClassifierOutput(raw: string): ClassifierResult {
 
 	const reason = typeof json.reason === "string" && json.reason.trim() ? json.reason.trim() : "no reason provided"
 	return { verdict, reason, ok: true }
+}
+
+/**
+ * Strip `<think>…</think>` / `<thinking>…</thinking>` / `<mm:think>…</mm:think>`
+ * blocks from the raw model output. Reasoning models inline their thinking
+ * prose into the text content using these tags, and that prose routinely
+ * contains brace characters when the model reasons about the JSON shape
+ * it's about to emit. The naive `indexOf('{')` / `lastIndexOf('}')`
+ * extractor then latches onto braces inside the thinking text and returns
+ * null.
+ *
+ * If a thinking tag is opened but never closed (truncated by stopReason =
+ * length), the model burned its tokens reasoning and produced no verdict;
+ * return empty string so the existing unparseable → requires-confirmation
+ * fallback still fires.
+ */
+export function stripThinking(raw: string): string {
+	const closed = raw
+		.replace(/<mm:think>[\s\S]*?<\/mm:think>/gi, "")
+		.replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, "")
+	if (/<(?:mm_?)?think(?:ing)?>/i.test(closed) && !/<\/(?:mm_?)?think(?:ing)?>/i.test(closed)) {
+		return ""
+	}
+	return closed
 }
 
 function unavailable(reason: string): InternalResult {

@@ -1,6 +1,30 @@
 import { describe, expect, it, vi } from "vitest"
 import { validateApiKey } from "./validator.js"
 
+type FetchWithRetryOptions = {
+	fetchImpl?: typeof fetch
+	timeoutMs?: number
+	signal?: AbortSignal
+	retry?: { maxRetries?: number }
+}
+
+const fetchWithRetrySpy = vi.fn((url: string, init?: RequestInit, options?: FetchWithRetryOptions) => {
+	const fetchFn = options?.fetchImpl ?? globalThis.fetch
+	const ctrl = new AbortController()
+	if (options?.timeoutMs) {
+		setTimeout(() => ctrl.abort(), options.timeoutMs)
+	}
+	const signals = [ctrl.signal, options?.signal, init?.signal].filter(Boolean) as AbortSignal[]
+	const signal = signals.length > 1 ? AbortSignal.any(signals) : signals[0]
+	return fetchFn(url, { ...init, signal })
+})
+
+vi.mock("../utils/http.js", () => ({
+	get fetchWithRetry() {
+		return fetchWithRetrySpy
+	},
+}))
+
 function fakeFetch(response: { status: number } | Error): typeof globalThis.fetch {
 	return vi.fn(async () => {
 		if (response instanceof Error) throw response
@@ -66,6 +90,17 @@ describe("validateApiKey", () => {
 			expect.objectContaining({
 				headers: expect.objectContaining({ Authorization: "Bearer my-key" }),
 			}),
+		)
+	})
+
+	it("passes retry maxRetries: 1 to limit retries in interactive flows", async () => {
+		fetchWithRetrySpy.mockClear()
+		const fetchSpy = vi.fn(async () => new Response(null, { status: 200 }))
+		await validateApiKey("k", { fetch: fetchSpy as unknown as typeof globalThis.fetch })
+		expect(fetchWithRetrySpy).toHaveBeenCalledWith(
+			expect.any(String),
+			expect.any(Object),
+			expect.objectContaining({ retry: { maxRetries: 1 } }),
 		)
 	})
 })

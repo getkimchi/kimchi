@@ -58,7 +58,7 @@ Use `/multi-model` in the interactive CLI to toggle models on/off per role, or e
     "orchestrator": "kimchi-dev/kimi-k2.6",
     "builder": ["kimchi-dev/minimax-m2.7", "anthropic/claude-sonnet-4-5"],
     "reviewer": "anthropic/claude-sonnet-4-5",
-    "explorer": "kimchi-dev/nemotron-3-super-fp4"
+    "explorer": "kimchi-dev/nemotron-3-ultra-fp4"
   }
 }
 ```
@@ -69,7 +69,7 @@ Use `/multi-model` in the interactive CLI to toggle models on/off per role, or e
 | **planner** | `kimi-k2.6` | Designs the approach, writes specs. When same as orchestrator, planning is done in-process. |
 | **builder** | `minimax-m2.7` | Code implementation. For complex tasks the orchestrator may pick a heavier model from the pool. |
 | **reviewer** | `kimi-k2.6`, `minimax-m2.7` | Code review. Orchestrator picks the strongest by tier for initial review. |
-| **explorer** | `kimi-k2.6`, `nemotron-3-super-fp4` | Codebase exploration, research. Light models for broad scans, heavy for deep analysis. |
+| **explorer** | `kimi-k2.6`, `nemotron-3-ultra-fp4` | Codebase exploration, research. Light models for broad scans, heavy for deep analysis. |
 
 Defaults are derived from model capabilities in `MODEL_CAPABILITIES`. Roles accept any `provider/model-id` string or an array of strings. Only non-default values need to be specified; missing keys fall back to defaults.
 
@@ -254,6 +254,35 @@ Every mutation is persisted as an append-only event with pre/post state hashes, 
 
 For full documentation see `docs/ferment.md` and `docs/ferment-storage-schema.md`.
 
+## LSP Integration
+
+kimchi ships with built-in Language Server Protocol (LSP) support, giving the agent type-aware code intelligence. The extension loads by default — no configuration required.
+
+### Supported languages
+
+| Language | Server | Install |
+|---|---|---|
+| TypeScript / JavaScript | `typescript-language-server` | `npm i -g typescript-language-server typescript` |
+| Go | `gopls` | `go install golang.org/x/tools/gopls@latest` |
+
+Servers are auto-detected via `which` on `PATH`. If a server binary is not found, the corresponding tools are silently unavailable.
+
+### Tools
+
+| Tool | Description |
+|---|---|
+| `lsp_diagnostics` | Get type errors, warnings, and linter diagnostics for a file |
+| `lsp_hover` | Get type information and documentation for a symbol at a position |
+| `lsp_definition` | Navigate to the definition of a symbol (supports `typeDefinition` and `implementation` variants) |
+| `lsp_references` | Find all references to a symbol across the codebase |
+| `lsp_rename` | Atomically rename a symbol across all files |
+
+The agent is prompted to prefer LSP tools over text-based alternatives (e.g., `lsp_definition` over `grep` for navigating to definitions). File changes made via `edit`, `write`, or `read` are automatically synced to the language server.
+
+### Status bar
+
+When LSP servers are active, the status bar shows the server name(s) and current diagnostic error count (e.g., `LSP: typescript-language-server (3 diags)`).
+
 ## Remote teleport (preview)
 
 Launch with `kimchi --teleport` to enable session-multiplex commands. The local TUI stays the home base; remote workers are spawned, detached, and re-attached without restarting kimchi.
@@ -292,6 +321,29 @@ Kimchi stores its configuration (settings, sessions, models) under:
 ```
 ~/.config/kimchi/harness/
 ```
+
+### Context files
+
+You can provide custom instructions that are injected into the system prompt on every session. Kimchi discovers two kinds of context files:
+
+**Global** — applied to every session, regardless of project:
+
+```
+~/.config/kimchi/harness/AGENTS.md
+```
+
+Place rules that apply everywhere (e.g., your name, code style preferences, or global tool defaults) in this file. It is loaded before any project-level files.
+
+**Project-level** — applied when working in a specific directory tree. Kimchi walks from the working directory up to the filesystem root and collects one context file per directory:
+
+```
+AGENTS.md
+CLAUDE.md
+```
+
+Per directory, `AGENTS.md` takes priority over `CLAUDE.md`. A `.local.md` variant (e.g. `AGENTS.local.md`) is appended to its primary file for user-specific, gitignored overrides.
+
+When both global and project files exist, global instructions appear first in the prompt, followed by ancestor directories, and finally the working directory. This means project-level rules can refine or override global ones.
 
 ### Packages
 
@@ -341,14 +393,15 @@ See `docs/hooks.md` for the hook protocol and examples.
 
 ### Migrating from another coding agent
 
-On first run, kimchi looks for an existing **Claude Code** or **OpenCode** installation and offers to migrate its MCP servers. If anything is migratable you will see a one-shot prompt:
+On first run, kimchi looks for an existing **Claude Code**, **OpenCode**, or **Cursor** installation and offers to migrate its MCP servers. If anything is migratable you will see a one-shot prompt:
 
 ```
-+  Claude Code + OpenCode configuration found
++  Claude Code + OpenCode + Cursor configuration found
 |
 |  MCP servers: filesystem, github, ripgrep
 |  Claude Code skills: 4 in ~/.claude/skills
 |  OpenCode skills: 2 in ~/.config/opencode/skills
+|  Cursor skills: 3 in ~/.cursor/skills
 |
 *  Migrate MCP servers to Kimchi?
 |  * Migrate now
@@ -366,15 +419,16 @@ The prompt is only shown when something is actually worth migrating. If neither 
 |---|---|---|
 | Claude Code | `~/.claude.json` (top-level `mcpServers` + per-project `projects[*].mcpServers`) | `~/.claude/skills/` |
 | OpenCode | `$OPENCODE_CONFIG`, then `~/.config/opencode/opencode.json`, `opencode.jsonc`, `config.json`, `~/.opencode.json` | `~/.config/opencode/skills/` |
+| Cursor | `~/.cursor/mcp.json`, then `~/.config/cursor/mcp.json` | `.cursor/skills/`, then `~/.cursor/skills/` |
 
-For OpenCode, both the modern (`mcp` block) and legacy Go-binary (`mcpServers` block) schemas are supported. Servers with `enabled: false` are skipped.
+For OpenCode, both the modern (`mcp` block) and legacy Go-binary (`mcpServers` block) schemas are supported. Servers with `enabled: false` are skipped. For Cursor, servers with `disabled: true` are skipped.
 
 #### Conflict resolution
 
 When the same MCP server name appears in multiple sources:
 
-1. **Within one agent**: earlier files win; project-level entries win over top-level (Claude Code); modern `mcp` block wins over legacy `mcpServers` (OpenCode).
-2. **Across agents**: Claude Code wins over OpenCode.
+1. **Within one agent**: earlier files win; project-level entries win over top-level (Claude Code); modern `mcp` block wins over legacy `mcpServers` (OpenCode); `~/.cursor/mcp.json` wins over `~/.config/cursor/mcp.json` (Cursor).
+2. **Across agents**: Claude Code wins over OpenCode, which wins over Cursor.
 3. **Against existing Kimchi config**: your entries in `~/.config/kimchi/harness/mcp.json` always win.
 
 #### "Never ask again"

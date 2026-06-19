@@ -10,7 +10,7 @@ vi.mock("@earendil-works/pi-coding-agent", async () => {
 			open: vi.fn().mockReturnValue({}),
 		},
 		SettingsManager: {
-			create: vi.fn().mockReturnValue({}),
+			create: vi.fn().mockReturnValue({ applyOverrides: vi.fn() }),
 		},
 		createAgentSession: vi.fn(),
 		getAgentDir: vi.fn().mockReturnValue("/fake-agent-dir"),
@@ -92,6 +92,7 @@ vi.mock("../../telemetry/index.js", () => ({
 }))
 
 vi.mock("../../../config.js", () => ({
+	loadConfig: vi.fn().mockReturnValue({ retry: { maxRetries: 10 } }),
 	readTelemetryConfig: vi.fn().mockReturnValue({
 		enabled: true,
 		endpoint: "https://test/logs",
@@ -101,13 +102,24 @@ vi.mock("../../../config.js", () => ({
 	}),
 }))
 
-import { type AgentSession, DefaultResourceLoader, createAgentSession } from "@earendil-works/pi-coding-agent"
+vi.mock("../../orchestration/model-registry/guidelines/guidelines-resolver.js", () => ({
+	buildPhaseGuidelinesSection: vi.fn().mockReturnValue(""),
+}))
+
+import {
+	type AgentSession,
+	type CreateAgentSessionResult,
+	DefaultResourceLoader,
+	createAgentSession,
+} from "@earendil-works/pi-coding-agent"
 import { readTelemetryConfig } from "../../../config.js"
+import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
 import telemetryExtension from "../../telemetry/index.js"
 import { getAgentConfig, getConfig, getToolNamesForType } from "../personas/agent-types.js"
 import { buildAgentPrompt } from "../prompt/prompts.js"
 import { type RunOptions, runAgent } from "./agent-runner.js"
+import { PARENT_SESSION_ID_ENV_KEY } from "./constants.js"
 
 const mockCreateAgentSession = vi.mocked(createAgentSession)
 const mockGetConfig = vi.mocked(getConfig)
@@ -115,6 +127,7 @@ const mockGetAgentConfig = vi.mocked(getAgentConfig)
 const mockGetToolNamesForType = vi.mocked(getToolNamesForType)
 const mockLoadProjectContextFiles = vi.mocked(loadProjectContextFiles)
 const mockBuildAgentPrompt = vi.mocked(buildAgentPrompt)
+const mockBuildPhaseGuidelinesSection = vi.mocked(buildPhaseGuidelinesSection)
 const mockDefaultResourceLoader = vi.mocked(DefaultResourceLoader)
 const mockTelemetryExtension = vi.mocked(telemetryExtension)
 const mockReadTelemetryConfig = vi.mocked(readTelemetryConfig)
@@ -222,6 +235,7 @@ function makeFakeCtx() {
 		},
 		getSystemPrompt: vi.fn().mockReturnValue(""),
 		sessionManager: {
+			getSessionId: vi.fn().mockReturnValue("session-1"),
 			getSessionDir: vi.fn().mockReturnValue(undefined),
 			getSessionFile: vi.fn().mockReturnValue(undefined),
 		},
@@ -1037,6 +1051,211 @@ describe("runAgent — includeContextFiles", () => {
 		expect(mockLoadProjectContextFiles).not.toHaveBeenCalled()
 		const extras = mockBuildAgentPrompt.mock.calls[0]?.[4]
 		expect(extras?.contextFiles).toBeUndefined()
+	})
+
+	it("resolves guidelines from agent persona role, not orchestrator phase", async () => {
+		mockGetAgentConfig.mockReturnValue(
+			makeAgentConfig({ name: "Builder", description: "Build agent", roles: ["build"] }),
+		)
+		mockBuildPhaseGuidelinesSection.mockReturnValue("## Model Guidelines\n\nBuilder guideline")
+
+		mockCreateAgentSession.mockResolvedValue({
+			session: makeFakeSession() as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Builder", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		expect(mockBuildPhaseGuidelinesSection).toHaveBeenCalledWith(undefined, "build", expect.anything())
+		const extras = mockBuildAgentPrompt.mock.calls[0]?.[4]
+		expect(extras?.guidelinesBlock).toContain("Builder guideline")
+	})
+
+	it("omits guidelines when agent has no persona role", async () => {
+		mockGetAgentConfig.mockReturnValue(makeAgentConfig({ name: "General-Purpose" }))
+		mockBuildPhaseGuidelinesSection.mockReturnValue("")
+
+		mockCreateAgentSession.mockResolvedValue({
+			session: makeFakeSession() as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		expect(mockBuildPhaseGuidelinesSection).toHaveBeenCalledWith(undefined, undefined, expect.anything())
+	})
+})
+
+// Regression test: PARENT_SESSION_ID_ENV_KEY must be set BEFORE the resource loader
+// is created and extensions are bound. This ensures child agents inherit the parent
+// session's permission mode correctly.
+describe("runAgent — parent session ID env ordering", () => {
+	let ctx: ReturnType<typeof makeFakeCtx>
+	let pi: ReturnType<typeof makeFakePi>
+
+	beforeEach(() => {
+		ctx = makeFakeCtx()
+		pi = makeFakePi()
+		mockCreateAgentSession.mockReset()
+		mockDefaultResourceLoader.mockClear()
+		mockGetConfig.mockReturnValue(makeTypeConfig({ extensions: false, skills: false }))
+		mockGetAgentConfig.mockReturnValue(makeAgentConfig())
+		mockGetToolNamesForType.mockReturnValue([])
+		// Clean up env
+		delete process.env[PARENT_SESSION_ID_ENV_KEY]
+	})
+
+	afterEach(() => {
+		vi.clearAllMocks()
+		delete process.env[PARENT_SESSION_ID_ENV_KEY]
+	})
+
+	it("sets parent session ID env BEFORE resource loader is created", async () => {
+		const envSnapshots: Array<{ phase: string; value: string | undefined }> = []
+
+		// Capture env when DefaultResourceLoader is instantiated
+		mockDefaultResourceLoader.mockImplementation(() => {
+			envSnapshots.push({
+				phase: "resource-loader-created",
+				value: process.env[PARENT_SESSION_ID_ENV_KEY],
+			})
+			return {
+				reload: vi.fn().mockResolvedValue(undefined),
+			} as unknown as DefaultResourceLoader
+		})
+
+		const session = makeFakeSession({})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		// Env should be set when resource loader is created
+		const loaderSnapshot = envSnapshots.find((s) => s.phase === "resource-loader-created")
+		expect(loaderSnapshot).toBeDefined()
+		expect(loaderSnapshot?.value).toBe("session-1") // ctx.sessionManager.getSessionId() returns "session-1"
+	})
+
+	it("sets parent session ID env BEFORE session is created", async () => {
+		const envSnapshots: Array<{ phase: string; value: string | undefined }> = []
+
+		// Capture env when createAgentSession is called
+		mockCreateAgentSession.mockImplementation(async () => {
+			envSnapshots.push({
+				phase: "session-created",
+				value: process.env[PARENT_SESSION_ID_ENV_KEY],
+			})
+			return {
+				session: makeFakeSession({}) as unknown as AgentSession,
+				extensionsResult: { extensions: [], tools: [] },
+			} as unknown as CreateAgentSessionResult
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		// Env should be set when session is created
+		const sessionSnapshot = envSnapshots.find((s) => s.phase === "session-created")
+		expect(sessionSnapshot).toBeDefined()
+		expect(sessionSnapshot?.value).toBe("session-1")
+	})
+
+	it("makes parent session ID available during extension binding", async () => {
+		const envDuringBind: (string | undefined)[] = []
+
+		const session = makeFakeSession({})
+		// Capture env when bindExtensions is called
+		session.bindExtensions = vi.fn().mockImplementation(async () => {
+			envDuringBind.push(process.env[PARENT_SESSION_ID_ENV_KEY])
+		})
+
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		// bindExtensions should have been called with the env var set
+		expect(session.bindExtensions).toHaveBeenCalled()
+		expect(envDuringBind).toEqual(["session-1"])
+	})
+
+	it("restores previous parent session ID after run completes", async () => {
+		// Set an initial value
+		process.env[PARENT_SESSION_ID_ENV_KEY] = "previous-session"
+
+		const session = makeFakeSession({})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		// Original value should be restored
+		expect(process.env[PARENT_SESSION_ID_ENV_KEY]).toBe("previous-session")
+	})
+
+	it("restores previous parent session ID even when run throws", async () => {
+		// Set an initial value
+		process.env[PARENT_SESSION_ID_ENV_KEY] = "previous-session"
+
+		// Make session creation fail
+		mockCreateAgentSession.mockRejectedValue(new Error("session creation failed"))
+
+		await expect(
+			runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+				pi: pi as unknown as RunOptions["pi"],
+			}),
+		).rejects.toThrow("session creation failed")
+
+		// Original value should still be restored
+		expect(process.env[PARENT_SESSION_ID_ENV_KEY]).toBe("previous-session")
+	})
+
+	it("clears parent session ID after run if it was not previously set", async () => {
+		// Ensure no initial value
+		delete process.env[PARENT_SESSION_ID_ENV_KEY]
+
+		const session = makeFakeSession({})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		// Should be cleaned up (deleted, not just undefined)
+		expect(process.env[PARENT_SESSION_ID_ENV_KEY]).toBeUndefined()
+		expect(Object.prototype.hasOwnProperty.call(process.env, PARENT_SESSION_ID_ENV_KEY)).toBe(false)
 	})
 })
 

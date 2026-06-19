@@ -60,10 +60,24 @@ export function emitFermentDomainEvent(events: EventBus, cmd: Command, post: Fer
 		}
 
 		case "abandon": {
+			const completedPhases = post.phases.filter((p) => p.status === "completed").length
+			const totalPhases = post.phases.length
+			const lastActivePhase = post.phases.find((p) => p.id === post.activePhaseId)
+			const stepFailureCount = post.phases.reduce((n, p) => n + p.steps.filter((s) => s.status === "failed").length, 0)
+			const createdMs = post.createdAt ? Date.parse(post.createdAt) : Number.NaN
+			const durationMs = Number.isFinite(createdMs) ? Date.now() - createdMs : 0
 			const payload: FermentAbandonedPayload = {
 				fermentId: post.id,
 				name: post.name,
 				reason: cmd.reason,
+				lifecycleStage: post.status,
+				scopingComplete: !!(post.scoping?.goal?.confirmedAt && post.scoping?.criteria?.confirmedAt),
+				completedPhases,
+				totalPhases,
+				phaseCompletionRatio: totalPhases > 0 ? completedPhases / totalPhases : 0,
+				lastActivePhaseIndex: lastActivePhase?.index,
+				stepFailureCount,
+				durationMs,
 			}
 			events.emit(FERMENT_EVENTS.ABANDONED, payload)
 			return

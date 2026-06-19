@@ -241,6 +241,36 @@ describe("telemetryExtension integration", () => {
 
 		expect(dismissedAttrs.survey_id).toBe("019e87cc-5033-0000-d9bd-5e6501640b6e")
 	})
+
+	it("turn_start event updates ctx.turnIndex", async () => {
+		const { handlers, api } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, { model: { id: "claude-opus-4-6" } })
+
+		await getHandler(handlers, "turn_start")({ turnIndex: 3 })
+
+		const { default: _ext, ...rest } = await import("./index.js")
+		// Verify via before_provider_headers which exposes ctx.turnIndex
+		const result = getHandler(handlers, "before_provider_headers")({ headers: {} })
+		expect((result as unknown as Record<string, string>)["X-Turn-Index"]).toBe("3")
+	})
+
+	it("before_provider_headers injects X-Session-Id and X-Turn-Index", async () => {
+		const { handlers, api } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, { model: { id: "claude-opus-4-6" } })
+
+		// Set a known turn index via the turn_start handler
+		await getHandler(handlers, "turn_start")({ turnIndex: 4 })
+
+		const result = getHandler(handlers, "before_provider_headers")({ headers: { "User-Agent": "kimchi/1.0" } })
+		const headers = result as unknown as Record<string, string>
+
+		expect(headers["User-Agent"]).toBe("kimchi/1.0")
+		expect(typeof headers["X-Session-Id"]).toBe("string")
+		expect(headers["X-Session-Id"]).toMatch(/^[0-9a-f-]{36}$/)
+		expect(headers["X-Turn-Index"]).toBe("4")
+	})
 })
 
 // ---------------------------------------------------------------------------
@@ -358,11 +388,27 @@ describe("ferment lifecycle telemetry via pi.events", () => {
 		expect((rec as NonNullable<typeof rec>).attributes.map((a) => a.key)).not.toContain("grade")
 	})
 
-	it("ferment:abandoned → ferment.abandoned with reason", async () => {
+	it("ferment:abandoned → ferment.abandoned with all new diagnostic fields", async () => {
 		const { handlers, events } = await setup()
 		const { FERMENT_EVENTS } = await import("../ferment/domain-events.js")
 
-		events.emit(FERMENT_EVENTS.ABANDONED, { fermentId: "f-004", name: "Aborted", reason: "judge failed" })
+		// Emit a steering event first so steering_count is tracked.
+		events.emit(FERMENT_EVENTS.STARTED, { fermentId: "f-004", name: "Aborted", phaseCount: 3 })
+		events.emit(FERMENT_EVENTS.STEERING, { fermentId: "f-004" })
+		events.emit(FERMENT_EVENTS.STEERING, { fermentId: "f-004" })
+		events.emit(FERMENT_EVENTS.ABANDONED, {
+			fermentId: "f-004",
+			name: "Aborted",
+			reason: "judge failed",
+			lifecycleStage: "running",
+			scopingComplete: true,
+			completedPhases: 1,
+			totalPhases: 3,
+			phaseCompletionRatio: 1 / 3,
+			lastActivePhaseIndex: 2,
+			stepFailureCount: 1,
+			durationMs: 12345,
+		})
 		await getHandler(handlers, "session_shutdown")({ reason: "test" })
 
 		const rec = extractRecords().find((r) => r.eventName === "ferment.abandoned")
@@ -371,6 +417,103 @@ describe("ferment lifecycle telemetry via pi.events", () => {
 		expect(attrs.ferment_id).toBe("f-004")
 		expect(attrs.reason).toBe("judge failed")
 		expect(attrs.model).toBe("claude-sonnet-4-6")
+		// New diagnostic fields
+		expect(attrs.lifecycle_stage).toBe("running")
+		expect(attrs.scoping_complete).toBe("true")
+		expect(attrs.completed_phases).toBe("1")
+		expect(attrs.total_phases).toBe("3")
+		expect(Number(attrs.phase_completion_ratio)).toBeCloseTo(1 / 3)
+		expect(attrs.last_active_phase_index).toBe("2")
+		expect(attrs.step_failure_count).toBe("1")
+		expect(attrs.duration_ms).toBe("12345")
+		expect(attrs.steering_count).toBe("2")
+	})
+
+	it("ferment:abandoned → ferment.abandoned omits last_active_phase_index when undefined", async () => {
+		const { handlers, events } = await setup()
+		const { FERMENT_EVENTS } = await import("../ferment/domain-events.js")
+
+		events.emit(FERMENT_EVENTS.ABANDONED, {
+			fermentId: "f-004b",
+			name: "Draft Aborted",
+			lifecycleStage: "draft",
+			scopingComplete: false,
+			completedPhases: 0,
+			totalPhases: 0,
+			phaseCompletionRatio: 0,
+			lastActivePhaseIndex: undefined,
+			stepFailureCount: 0,
+			durationMs: 500,
+		})
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const rec = extractRecords().find((r) => r.eventName === "ferment.abandoned")
+		expect(rec).toBeDefined()
+		const attrs = attrsOf(rec as NonNullable<typeof rec>)
+		expect(attrs.lifecycle_stage).toBe("draft")
+		expect(attrs.scoping_complete).toBe("false")
+		expect(attrs.completed_phases).toBe("0")
+		expect(attrs.total_phases).toBe("0")
+		expect(attrs.phase_completion_ratio).toBe("0")
+		expect(attrs.duration_ms).toBe("500")
+		expect(attrs.steering_count).toBe("0")
+		// Optional field must be absent when undefined
+		expect((rec as NonNullable<typeof rec>).attributes.map((a) => a.key)).not.toContain("last_active_phase_index")
+	})
+
+	it("ferment:stalled → ferment.stalled event emitted for Leave paused path", async () => {
+		const { handlers, events } = await setup()
+		const { FERMENT_EVENTS } = await import("../ferment/domain-events.js")
+
+		events.emit(FERMENT_EVENTS.STALLED, {
+			fermentId: "f-stall-1",
+			name: "Stalled Ferment",
+			lifecycleStage: "paused",
+			idleDurationMs: 86400000, // 24 hours
+			completedPhases: 2,
+			totalPhases: 4,
+			phaseCompletionRatio: 0.5,
+		})
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const rec = extractRecords().find((r) => r.eventName === "ferment.stalled")
+		expect(rec).toBeDefined()
+		const attrs = attrsOf(rec as NonNullable<typeof rec>)
+		expect(attrs.ferment_id).toBe("f-stall-1")
+		expect(attrs.ferment_name).toBe("Stalled Ferment")
+		expect(attrs.lifecycle_stage).toBe("paused")
+		expect(attrs.idle_duration_ms).toBe("86400000")
+		expect(attrs.completed_phases).toBe("2")
+		expect(attrs.total_phases).toBe("4")
+		expect(attrs.phase_completion_ratio).toBe("0.5")
+		expect(attrs.model).toBe("claude-sonnet-4-6")
+	})
+
+	it("ferment:stalled → ferment.stalled event emitted for crash-recovery path", async () => {
+		const { handlers, events } = await setup()
+		const { FERMENT_EVENTS } = await import("../ferment/domain-events.js")
+
+		events.emit(FERMENT_EVENTS.STALLED, {
+			fermentId: "f-stall-crash",
+			name: "Crashed Ferment",
+			lifecycleStage: "running",
+			idleDurationMs: 3600000, // 1 hour
+			completedPhases: 0,
+			totalPhases: 2,
+			phaseCompletionRatio: 0,
+		})
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const rec = extractRecords().find((r) => r.eventName === "ferment.stalled")
+		expect(rec).toBeDefined()
+		const attrs = attrsOf(rec as NonNullable<typeof rec>)
+		expect(attrs.ferment_id).toBe("f-stall-crash")
+		expect(attrs.ferment_name).toBe("Crashed Ferment")
+		expect(attrs.lifecycle_stage).toBe("running")
+		expect(attrs.idle_duration_ms).toBe("3600000")
+		expect(attrs.completed_phases).toBe("0")
+		expect(attrs.total_phases).toBe("2")
+		expect(attrs.phase_completion_ratio).toBe("0")
 	})
 
 	it("ferment:phase_started → ferment.phase.started with phase_id", async () => {
@@ -828,5 +971,135 @@ describe("token accounting regression tests", () => {
 			(rec as NonNullable<typeof rec>).attributes.map((a) => [a.key, a.value.stringValue]),
 		)
 		expect(attrs.session_type).toBe("ferment")
+	})
+})
+
+// ---------------------------------------------------------------------------
+// Bash-tool-guard domain event → OTLP log record tests
+// ---------------------------------------------------------------------------
+
+describe("bash-tool-guard telemetry via pi.events", () => {
+	let fetchMock: ReturnType<typeof vi.fn>
+	let originalFetch: typeof globalThis.fetch
+
+	beforeEach(() => {
+		fetchMock = vi.fn().mockResolvedValue({ ok: true, text: async () => "" })
+		originalFetch = globalThis.fetch
+		// biome-ignore lint/suspicious/noExplicitAny: test mock
+		globalThis.fetch = fetchMock as any
+	})
+
+	afterEach(async () => {
+		globalThis.fetch = originalFetch
+		_resetSharedAccumulators()
+		const { _resetFermentTrackingState, _getBashGuardCounts } = await import("./index.js")
+		_resetFermentTrackingState()
+		// Reset bash-guard counters by emitting zeros via the reset hook
+		// (the counters reset on session_start; calling it clears state).
+		vi.restoreAllMocks()
+		// Force fresh state for next test by clearing module-level accumulators.
+		// Direct access is not exposed; reset via the public reset path.
+		expect(_getBashGuardCounts()).toBeDefined()
+	})
+
+	async function setup() {
+		const { handlers, events, api } = createMockApi()
+		const { default: ext } = await import("./index.js")
+		ext(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, { model: { id: "claude-sonnet-4-6" } })
+		return { handlers, events }
+	}
+
+	function extractRecords() {
+		const logCalls = fetchMock.mock.calls.filter(([url]: unknown[]) => String(url).includes("/logs"))
+		return logCalls.flatMap(([, opts]: unknown[]) => {
+			const body = JSON.parse((opts as { body: string }).body)
+			return body.resourceLogs[0].scopeLogs[0].logRecords as Array<{
+				eventName: string
+				attributes: Array<{ key: string; value: { stringValue: string } }>
+			}>
+		})
+	}
+
+	function attrsOf(rec: { attributes: Array<{ key: string; value: { stringValue: string } }> }) {
+		return Object.fromEntries(rec.attributes.map((a) => [a.key, a.value.stringValue]))
+	}
+
+	it("bash_tool_guard:warn → bash_tool_guard.warn OTLP record with category, tool, count", async () => {
+		const { handlers, events } = await setup()
+		const { BASH_TOOL_GUARD_EVENTS } = await import("../bash-tool-guard-events.js")
+
+		events.emit(BASH_TOOL_GUARD_EVENTS.WARN, {
+			category: "read",
+			tool: "cat",
+			count: 1,
+		})
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const rec = extractRecords().find((r) => r.eventName === "bash_tool_guard.warn")
+		expect(rec).toBeDefined()
+		const attrs = attrsOf(rec as NonNullable<typeof rec>)
+		expect(attrs.category).toBe("read")
+		expect(attrs.tool).toBe("cat")
+		expect(attrs.count).toBe("1")
+		// Raw command text must not leak into OTLP — only structured fields.
+		expect(attrs.segment_preview).toBeUndefined()
+		expect(attrs.matchedSegment).toBeUndefined()
+		expect(attrs.model).toBe("claude-sonnet-4-6")
+	})
+
+	it("bash_tool_guard:block → bash_tool_guard.block OTLP record with tool", async () => {
+		const { handlers, events } = await setup()
+		const { BASH_TOOL_GUARD_EVENTS } = await import("../bash-tool-guard-events.js")
+
+		events.emit(BASH_TOOL_GUARD_EVENTS.BLOCK, {
+			category: "edit",
+			tool: "sed",
+			count: 2,
+		})
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const rec = extractRecords().find((r) => r.eventName === "bash_tool_guard.block")
+		expect(rec).toBeDefined()
+		const attrs = attrsOf(rec as NonNullable<typeof rec>)
+		expect(attrs.category).toBe("edit")
+		expect(attrs.tool).toBe("sed")
+		expect(attrs.count).toBe("2")
+		// Raw command text must not leak into OTLP — only structured fields.
+		expect(attrs.segment_preview).toBeUndefined()
+		expect(attrs.matchedSegment).toBeUndefined()
+	})
+
+	it("bash_tool_guard:allowed_by_user_request → OTLP record with tool", async () => {
+		const { handlers, events } = await setup()
+		const { BASH_TOOL_GUARD_EVENTS } = await import("../bash-tool-guard-events.js")
+
+		events.emit(BASH_TOOL_GUARD_EVENTS.ALLOWED_BY_USER_REQUEST, {
+			category: "read",
+			tool: "cat",
+		})
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const rec = extractRecords().find((r) => r.eventName === "bash_tool_guard.allowed_by_user_request")
+		expect(rec).toBeDefined()
+		const attrs = attrsOf(rec as NonNullable<typeof rec>)
+		expect(attrs.category).toBe("read")
+		expect(attrs.tool).toBe("cat")
+	})
+
+	it("does NOT emit OTLP records when telemetry is disabled", async () => {
+		const { handlers, events } = createMockApi()
+		const { default: ext } = await import("./index.js")
+		ext(makeConfig({ enabled: false }))(handlers as unknown as ExtensionAPI)
+		// Telemetry disabled → no OTLP fetch should occur when events fire.
+		const { BASH_TOOL_GUARD_EVENTS } = await import("../bash-tool-guard-events.js")
+		// Subscribers are NOT registered when config.enabled is false, so
+		// emit() simply has no listeners and nothing reaches the network.
+		events.emit(BASH_TOOL_GUARD_EVENTS.WARN, {
+			category: "read",
+			tool: "cat",
+			count: 1,
+		})
+		expect(fetchMock).not.toHaveBeenCalled()
 	})
 })

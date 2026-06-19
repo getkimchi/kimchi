@@ -108,19 +108,6 @@ export function markHumanInput(): void {
 	lastHumanInputAt = new Date()
 }
 
-// ─── Model-switch suppression ─────────────────────────────────────────────────
-// Used by model_select handler to prevent infinite recursion when reverting.
-
-let restoringModel = false
-
-export function isRestoringModel(): boolean {
-	return restoringModel
-}
-
-export function setRestoringModel(v: boolean): void {
-	restoringModel = v
-}
-
 // ─── Judge model handles (captured opportunistically from ctx) ────────────────
 
 let judgeModel: Model<Api> | undefined
@@ -239,6 +226,67 @@ export function consumeScopingGate(fermentId: string): void {
 export function clearAllScopingGates(): void {
 	scopingInteractive.clear()
 	scopingConfirmed.clear()
+}
+
+// ─── Pending compaction requests (transient) ─────────────────────────────────
+// Recorded on successful complete_ferment_step / complete_ferment_phase so the
+// agent_end hook can auto-compact the session context. Cleared when the
+// compaction fires. Not persisted — single-session handoff only.
+
+export interface PendingCompaction {
+	kind: "step" | "phase"
+	fermentId: string
+	phaseId: string
+	stepId?: string
+	completedAt: string
+}
+
+const pendingCompactions = new Map<string, PendingCompaction>()
+/** Ferment IDs whose compaction is currently in-flight. Kept in state so it
+ *  resets with clearFermentState and doesn't leak across test runtimes. */
+const compactionInFlight = new Set<string>()
+
+export function setPendingCompaction(fermentId: string, pending: PendingCompaction): void {
+	pendingCompactions.set(fermentId, pending)
+}
+
+export function getPendingCompaction(fermentId: string): PendingCompaction | undefined {
+	return pendingCompactions.get(fermentId)
+}
+
+export function clearPendingCompaction(fermentId: string): void {
+	pendingCompactions.delete(fermentId)
+}
+
+/** Drain pending compactions that are NOT currently in-flight.
+ *  Items for in-flight ferments are left in the map so the next
+ *  turn_end / agent_end can retry them once the current compaction finishes. */
+export function drainPendingCompactions(): PendingCompaction[] {
+	const ready: PendingCompaction[] = []
+	for (const [fermentId, pending] of pendingCompactions) {
+		if (!compactionInFlight.has(fermentId)) {
+			ready.push(pending)
+			pendingCompactions.delete(fermentId)
+		}
+	}
+	return ready
+}
+
+export function markCompactionInFlight(fermentId: string): void {
+	compactionInFlight.add(fermentId)
+}
+
+export function clearCompactionInFlight(fermentId: string): void {
+	compactionInFlight.delete(fermentId)
+}
+
+export function isCompactionInFlight(fermentId: string): boolean {
+	return compactionInFlight.has(fermentId)
+}
+
+export function clearAllPendingCompactions(): void {
+	pendingCompactions.clear()
+	compactionInFlight.clear()
 }
 
 // ─── Block-retry counter (per phase) ─────────────────────────────────────────
@@ -430,12 +478,39 @@ function persistFerment(fermentId: string): void {
 	})
 }
 
+// ─── Scoping exploration turn counter ─────────────────────────────────────────
+// Tracks consecutive turns during draft scoping where the model only called
+// read-like tools (read, grep, ls, find, bash, web_search, web_fetch, set_phase)
+// without calling any scoping-progression tool (ask_user,
+// confirm_ferment_completion_criteria, propose_ferment_scoping, Agent).
+// After MAX_SCOPING_EXPLORE_TURNS, the turn_end handler injects a nudge
+// telling the model to stop exploring and advance to the next scoping step.
+
+const scopingExploreTurns = new Map<string, number>()
+
+export const MAX_SCOPING_EXPLORE_TURNS = 4
+
+export function bumpScopingExploreTurns(fermentId: string): number {
+	const next = (scopingExploreTurns.get(fermentId) ?? 0) + 1
+	scopingExploreTurns.set(fermentId, next)
+	return next
+}
+
+export function getScopingExploreTurns(fermentId: string): number {
+	return scopingExploreTurns.get(fermentId) ?? 0
+}
+
+export function resetScopingExploreTurns(fermentId: string): void {
+	scopingExploreTurns.delete(fermentId)
+}
+
 // ─── Per-ferment cleanup ──────────────────────────────────────────────────────
 
 /** Clear all in-memory state scoped to a specific ferment. Called on abandon/delete/complete. */
 export function clearFermentState(fermentId: string): void {
 	scopingInteractive.delete(fermentId)
 	scopingConfirmed.delete(fermentId)
+	scopingExploreTurns.delete(fermentId)
 	const prefix = `${fermentId}:`
 	stepStartCounts.clearByPrefix(prefix)
 	blockRetryCounts.clearByPrefix(prefix)
@@ -450,6 +525,12 @@ export function clearFermentState(fermentId: string): void {
 		if (key.startsWith(prefix)) stepStartRefs.delete(key)
 	}
 	hydratedFerments.delete(fermentId)
+	// Per-ferment compaction state: a pending request left in the map for a
+	// completed/abandoned/deleted ferment will never be drained, and an
+	// in-flight marker that outlives the ferment blocks future compactions
+	// for the same id (key collisions are vanishingly unlikely but cheap to avoid).
+	pendingCompactions.delete(fermentId)
+	compactionInFlight.delete(fermentId)
 	deleteRuntimeState(fermentId, runtimeStatePersistRoot)
 }
 

@@ -1,0 +1,16 @@
+name: Question
+description: Ask a question about usage or behavior
+labels: ["question", "needs-triage"]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: What have you already tried?
+    validations:
+      required: false

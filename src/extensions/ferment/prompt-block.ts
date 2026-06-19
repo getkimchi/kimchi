@@ -1,7 +1,8 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import type { Ferment } from "../../ferment/types.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { getAgentConfig, getDefaultAgentNames } from "../agents/personas/agent-types.js"
+import { getPermissionMode } from "../permissions/mode-controller.js"
 import { SCOPING_DISCOVERY_GUIDANCE, SCOPING_EXPLORE_TOKEN_BUDGET } from "./constants.js"
 import { formatDecisionsAndMemories, formatScopingContext } from "./format.js"
 import type { FermentRuntime } from "./runtime.js"
@@ -23,7 +24,7 @@ function buildAgentsSection(): string {
 	return `\n\n**Available subagent types (pick one per start_ferment_step by step intent):**\n${lines.join("\n")}`
 }
 
-function buildPlannerSupplement(f: Ferment, continuationPolicy: ContinuationPolicy): string {
+function buildPlannerSupplement(f: Ferment, continuationPolicy: ContinuationPolicy, isOneshot = false): string {
 	const dm = formatDecisionsAndMemories(f)
 	const dmSection = dm ? `\n\n${dm}` : ""
 	const sc = formatScopingContext(f)
@@ -35,9 +36,13 @@ function buildPlannerSupplement(f: Ferment, continuationPolicy: ContinuationPoli
 	const phaseAdvancementContract =
 		continuationPolicy === "manual"
 			? "Manual continuation policy is active: work autonomously inside the current phase, but stop at phase boundaries and ask the user before activating the next phase. If the user says continue, call `activate_ferment_phase` for the next phase. Do not ask the user to confirm step results."
-			: "Automated continuation policy is active: do not ask the user to confirm phase advancement or step results. Continue across phases until the ferment is complete, blocked, paused, or needs user input."
+			: "Automated continuation policy is active: do not ask the user to confirm phase advancement or step results. Continue through all stages until the ferment is complete, blocked, or paused."
 	const delegationCheckpoint =
 		"For broad existing-codebase scoping requests, follow the shared discovery guidance in the Upfront Contract before drafting recommendations."
+	// One-shot uses scope_ferment directly; interactive routes through propose_ferment_scoping.
+	const scopeFermentDirectCallRule = isOneshot
+		? "Call `scope_ferment` directly — do NOT use `propose_ferment_scoping` (that tool is for the interactive TUI flow, which is not active in one-shot mode). The call must include the full P1/P2/P3 plan-scope gate verdicts in the `gates` array — the schema hard-rejects calls missing this array."
+		: "Do NOT call `scope_ferment` directly in the interactive flow — only `propose_ferment_scoping`. If a tool call fails (e.g. missing gate verdicts or invalid step shape), re-emit the FULL payload INCLUDING the questions you drafted and all P1/P2/P3 gates — never silently drop them on retry."
 	const upfrontContract = `\n\n## Upfront Contract\nTreat the Ferment Specification (goal, success criteria, constraints, assumptions) as the agreed plan. ${phaseAdvancementContract} Proceed with your highest-confidence interpretation and capture uncertainty via \`add_ferment_decision\` (architectural pivots) or \`add_ferment_memory\` (gotchas/conventions). Surface blockers only when you cannot proceed without human input.
 
 ${SCOPING_DISCOVERY_GUIDANCE}
@@ -77,7 +82,7 @@ Phases are executable implementation slices after answers are incorporated. Do n
 
 Every \`propose_ferment_scoping\` call must include the full \`gates\` array for plan review: exactly P1, P2, and P3. Each gate object must include \`id\`, \`verdict\`, \`rationale\`, and \`evidence\`. Never emit a partial gates array, never include only P1, and never omit \`rationale\` or \`evidence\`.
 
-Do NOT call \`scope_ferment\` directly in the interactive flow — only \`propose_ferment_scoping\`. If a tool call fails (e.g. missing gate verdicts or invalid step shape), re-emit the FULL payload INCLUDING the questions you drafted and all P1/P2/P3 gates — never silently drop them on retry.
+${scopeFermentDirectCallRule}
 
 After \`propose_ferment_scoping\` returns "Plan ready for review", the host will collect the user's review after your turn ends. Do not call \`propose_ferment_scoping\` again, do not summarize the plan in chat, and do not tell the user to wait for the TUI.
 
@@ -92,19 +97,6 @@ function buildPausedWarning(f: Ferment): string {
 	return `\n\n## Ferment Paused\n\nFerment "${f.name}" is paused by the user. Do NOT call any ferment tools (activate_ferment_phase, start_ferment_step, complete_ferment_step, etc.) — they will be rejected. Acknowledge any pending question briefly and wait for the user to resume with /ferment resume.`
 }
 
-const IDLE_FERMENT_HINT = `## Ferment Workflow (optional)
-
-Ferment is a host-owned plan → build → review workflow. Start it only with \`request_ferment_workflow\`; never create or edit \`.kimchi/\` files yourself. The tool asks the user for explicit host confirmation before creating the workflow. In yolo permissions mode, the host auto-approves.
-
-Before exploration, classify the user's text only:
-- Clear small task: handle inline.
-- Substantive, multi-step, broad discovery, or explicit ferment/planning request: call \`request_ferment_workflow\` first.
-- Vague non-ferment request: ask only decision-blocking clarification, then act inline.
-Do not call \`set_phase\` or discovery tools *until* you have classified the request and either called \`request_ferment_workflow\`, chosen inline work, or asked necessary non-ferment clarification.
-Treat open-ended analysis of an existing app as substantive: request the ferment workflow before analysis, file reads, or phase tagging.
-
-Call \`request_ferment_workflow\` with a concise \`title\` and an \`intent\` containing the full original user request, then stop; the host handles confirmation and queues scoping. If the user declines, continue inline. Never block on this.`
-
 /**
  * Renders the ferment-specific system-prompt block. Registered as a
  * `SystemPromptBlock` from index.ts and assembled into the system prompt by
@@ -117,29 +109,34 @@ Call \`request_ferment_workflow\` with a concise \`title\` and an \`intent\` con
  * - flag set: draft state still gets the planner supplement because the
  *   ferment-oneshot planner must scope autonomously from the bootstrap turn.
  *
- * Returns `undefined` only for terminal/draft states that already have their
- * own flow; idle (no ferment) renders a soft, optional hint that nudges the
- * agent to ask the user before starting substantial work, never to block.
+ * Returns `undefined` for terminal/draft states that already have their own
+ * flow. Idle sessions stay Ferment-free.
  */
-export function buildFermentPromptBlock(pi: ExtensionAPI, runtime: FermentRuntime): string | undefined {
+export function buildFermentPromptBlock(
+	ctx: ExtensionContext,
+	pi: ExtensionAPI,
+	runtime: FermentRuntime,
+): string | undefined {
 	if (isAgentWorker()) return undefined
+
+	const sessionId = ctx.sessionManager.getSessionId()
 
 	// Plan mode is a separate lightweight planning path; suppress the ferment
 	// idle hint so the agent does not conflate it with the ferment workflow.
-	if (process.env.KIMCHI_PERMISSIONS === "plan") return undefined
+	if (getPermissionMode(sessionId)?.mode === "plan") return undefined
 
 	const f = runtime.getActive()
-	if (!f) return IDLE_FERMENT_HINT
+	if (!f) return undefined
 
 	const oneshot = pi.getFlag("ferment-oneshot") === true
 
 	switch (f.status) {
 		case "draft":
-			if (oneshot) return buildPlannerSupplement(f, runtime.getContinuationPolicy()).trim()
+			if (oneshot) return buildPlannerSupplement(f, runtime.getContinuationPolicy(), oneshot).trim()
 			return undefined
 		case "planned":
 		case "running":
-			return buildPlannerSupplement(f, runtime.getContinuationPolicy()).trim()
+			return buildPlannerSupplement(f, runtime.getContinuationPolicy(), oneshot).trim()
 		case "paused":
 			return buildPausedWarning(f).trim()
 		case "complete":

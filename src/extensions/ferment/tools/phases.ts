@@ -17,7 +17,7 @@ import { decideContinuation } from "../continuation.js"
 import { formatDecisionsAndMemories } from "../format.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { flaggedVerdicts, renderGateGuidance } from "../gate-registry.js"
-import { validateGatesOrErr } from "../gate-validation.js"
+import { assertGateFieldsPresent, validateGatesOrErr } from "../gate-validation.js"
 import type { JudgeFlag } from "../judge.js"
 import { onPhaseCompleted } from "../nudge.js"
 import { type PhaseEvidence, captureGitHead, gatherPhaseEvidence } from "../phase-evidence.js"
@@ -438,6 +438,14 @@ export async function completePhase(
 	services.onPhaseCompleted(runtime)
 	const fresh = completeOutcome.ferment
 
+	// Record pending phase-compaction request for agent_end to drain.
+	runtime.setPendingCompaction(params.ferment_id, {
+		kind: "phase",
+		fermentId: params.ferment_id,
+		phaseId: phase.id,
+		completedAt: runtime.nowIso(),
+	})
+
 	// Visual ack mirrors the step ✓ breadcrumb in steps.ts. The grade letter is
 	// the deterministic derivedGrade (A/B/F) from gate verdicts + project
 	// checks (post-#230 no LLM judge per phase), colorized via gradeColor for
@@ -642,6 +650,7 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 
 ${renderGateGuidance("complete_ferment_phase")}`,
 		parameters: CompletePhaseParams,
+		prepareArguments: assertGateFieldsPresent,
 		renderResult(result) {
 			const text = result.content[0]?.type === "text" ? result.content[0].text : ""
 			return new Markdown(text, 1, 0, getMarkdownTheme())

@@ -137,12 +137,21 @@ Supported events:
 
 - `PreToolUse`
 - `PostToolUse`
+- `PostToolUseFail` — runs only when a tool result is an error (`PostToolUse` still runs for all results)
+- `PostToolBatch` — synthesized once per turn after all tool executions in that turn finish
 - `SessionStart`
 - `PreCompact`
 - `PostCompact`
 - `UserPromptSubmit`
-- `Stop`
+- `Stop` — fires once when the agent finishes responding (pi `agent_end`); a `{"decision":"block","reason":"..."}` result continues the run, with `stop_hook_active` set on re-entry. Payload includes `stop_reason` and `error_message` from the final assistant message
+- `StopFail` — fires in addition to `Stop` only when the run ends with `stop_reason` `error` or `aborted` (`Stop` still fires for all runs). Same payload and block/continuation semantics as `Stop`, plus `is_error: true`; use `stop_reason` to distinguish provider errors from user aborts
+- `TaskCompleted` — fires at the end of each turn (pi `turn_end`); observer-only, block decisions are ignored. ⚠️ Note: this diverges from Claude Code, where `TaskCompleted` fires when a task-list item is marked completed (via the `TaskUpdate` tool) and can block; kimchi has no task-list tool, so this name is bound to per-turn semantics instead
+- `TurnStart`, `MessageStart`, `MessageEnd`, `ModelSelect`, `UserBash` — kimchi-specific observer hooks for pi events with no Claude Code equivalent
+- `SubagentStart` — fires when an `Agent` tool subagent spawns (kimchi `subagents:started` bus event); observer-only. Payload adds `subagent_id`, `subagent_type`, `description`, `visibility`
+- `SubagentStop` — fires when a subagent completes or fails (`subagents:completed` / `subagents:failed`); observer-only. Payload adds the `SubagentStart` fields plus `status`, `result`, `error`, `abort_reason`, `duration_ms`, `tool_uses`, `tokens`, and `is_error` (`true` on the failed path: status `error`, `stopped`, or `aborted`). Both hooks also fire for `visibility: "system"` agents, which are hidden from the subagent widget for UI reasons only — filter on the `visibility` field if you want user-visible agents only
 - `SessionEnd`
+
+Plugin packages installed via `kimchi install` may ship a `hooks/hooks.json` (or `.claude-plugin/hooks/hooks.json`). Those hooks honor the same full event set as the adapter above; `SessionStart` context from packages is injected into the system prompt.
 
 Example:
 

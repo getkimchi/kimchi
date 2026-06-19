@@ -29,6 +29,7 @@ import { isBunBinary } from "./env.js"
 import activityExtension from "./extensions/activity.js"
 import agentsExtension from "./extensions/agents/index.js"
 import assistantPrefixExtension from "./extensions/assistant-prefix.js"
+import bashToolGuardExtension from "./extensions/bash-tool-guard.js"
 import behavioursExtension from "./extensions/behaviours/index.js"
 import claudeCodeHooksAdapter from "./extensions/claude-code-hook-adapter/index.js"
 import claudeCodeSkillsExtension from "./extensions/claude-code-skills/index.js"
@@ -59,6 +60,7 @@ import questionnaireExtension from "./extensions/questionnaire.js"
 import reportBugExtension from "./extensions/report-bug.js"
 import reviewWriteGuardExtension from "./extensions/review-write-guard.js"
 import rtkRewriteExtension from "./extensions/rtk-rewrite.js"
+import sessionNameExtension from "./extensions/session-name.js"
 import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
@@ -74,6 +76,7 @@ import { probeKittyKeyboardSupport } from "./extensions/terminal-compat/keyboard
 import { emitTerminalCompatWarning } from "./extensions/terminal-compat/startup-warning.js"
 import thinkingStepsExtension from "./extensions/thinking-steps/index.js"
 import tipsExtension from "./extensions/tips/index.js"
+import todosExtension from "./extensions/todos/index.js"
 import toolGroupingExtension from "./extensions/tool-grouping.js"
 import toolRenderingExtension from "./extensions/tool-rendering.js"
 import traceIdExtension from "./extensions/trace-id.js"
@@ -288,6 +291,18 @@ try {
 			}
 		}
 
+		// Sync retry config to SDK settings so both systems use the same value
+		try {
+			const existing = JSON.parse(readFileSync(settingsPath, "utf-8"))
+			const sdkRetry = existing.retry
+			if (!sdkRetry || sdkRetry.maxRetries !== config.retry.maxRetries) {
+				existing.retry = { ...sdkRetry, maxRetries: config.retry.maxRetries }
+				writeFileSync(settingsPath, `${JSON.stringify(existing, null, 2)}\n`)
+			}
+		} catch {
+			/* retry sync is best-effort */
+		}
+
 		// Bundled themes are write-through cache — owned by the package, not the user.
 		// Source edits propagate so packaged upgrades pick up new defaults. Users
 		// wanting custom colors should clone+rename (e.g. `my-kimchi.json`), which
@@ -407,6 +422,7 @@ try {
 		const extensionFactories = [
 			startupUpdateExtension,
 			superpowersExtension,
+			sessionNameExtension(),
 			shutdownMarkerExtension,
 			statsExtension,
 			...terminalUiExtensionFactories,
@@ -416,6 +432,10 @@ try {
 			explorationGuardExtension,
 			reviewWriteGuardExtension,
 			lspExtension,
+			// Always registered — the tool_call handler checks isResourceEnabled
+			// dynamically on every bash call, so enable/disable from /resources
+			// takes effect immediately without a process restart.
+			bashToolGuardExtension,
 			...enabledExtensionFactories([
 				{ id: "plugins.mcp-apps", factory: mcpAdapterExtension },
 			] satisfies ManagedExtensionFactory[]),
@@ -442,6 +462,9 @@ try {
 			resourceToolBlockerExtension,
 			behavioursExtension,
 			promptSummaryExtension,
+			...enabledExtensionFactories([
+				{ id: "extensions.todos", factory: todosExtension },
+			] satisfies ManagedExtensionFactory[]),
 			hideThinkingExtension,
 			thinkingStepsExtension,
 			assistantPrefixExtension,
