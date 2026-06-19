@@ -1,7 +1,13 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
-import { type ExtensionAPI, type ToolDefinition, loadSkillsFromDir } from "@earendil-works/pi-coding-agent"
+import {
+	type ExtensionAPI,
+	type ToolDefinition,
+	getAgentDir,
+	loadSkills,
+	loadSkillsFromDir,
+} from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import claudeCodeSkillsExtension from "./index.js"
 
@@ -162,6 +168,37 @@ describe("Claude Code skills extension", () => {
 		})
 
 		expect(result).toBeUndefined()
+	})
+
+	it("keeps unique Claude Code resources when another Claude skill duplicates a native skill", async () => {
+		const cwd = join(dir, "project")
+		const nativeSkills = join(cwd, ".agents", "skills")
+		writeSkill(join(nativeSkills, "playwright-cli", "SKILL.md"), "Native Playwright CLI skill.")
+		writeSkill(join(cwd, ".claude", "skills", "playwright-cli", "SKILL.md"), "Duplicate Claude Playwright CLI skill.")
+		writeRawSkill(join(cwd, ".claude", "skills", "unique-claude", "SKILL.md"), "Unique Claude skill.\n")
+		const { handlers } = registerExtension()
+
+		const result = await handlers.resources_discover?.({
+			type: "resources_discover",
+			cwd,
+			reason: "startup",
+		})
+		const skillPaths = (result as { skillPaths?: string[] } | undefined)?.skillPaths ?? []
+
+		expect(skillPaths).toHaveLength(1)
+		expect(readSkill(skillPaths[0] ?? "")).toContain("Unique Claude skill.")
+		expect(readSkill(skillPaths[0] ?? "")).not.toContain("Duplicate Claude Playwright CLI skill.")
+
+		const loaded = loadSkills({
+			cwd,
+			agentDir: getAgentDir(),
+			skillPaths: [nativeSkills, ...skillPaths],
+			includeDefaults: false,
+		})
+		const diagnostics = loaded.diagnostics.map((diagnostic) => diagnostic.message)
+		expect(diagnostics.filter((message) => /collision|conflict|Skill conflicts/i.test(message))).toEqual([])
+		expect(diagnostics).not.toContain("description is required")
+		expect(loaded.skills.map((skill) => skill.name).sort()).toEqual(["playwright-cli", "unique-claude"])
 	})
 
 	it("skips startup Claude Code resources that duplicate configured native skills", async () => {
