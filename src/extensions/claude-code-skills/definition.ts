@@ -169,6 +169,12 @@ function collectNativeSkillNames(paths: string[]): Set<string> {
 	const names = new Set<string>()
 	for (const path of paths) {
 		if (isClaudeCodeSkillPath(path)) continue
+		if (extname(path) === ".md") {
+			if (!existsSync(path)) continue
+			const fallbackName = basename(path) === "SKILL.md" ? basename(dirname(path)) : basename(path, ".md")
+			names.add(readSkillNameFromFile(path, fallbackName))
+			continue
+		}
 		for (const skillDir of walkSkillDirs(path)) {
 			names.add(readSkillName(skillDir))
 		}

@@ -210,6 +210,16 @@ describe("Claude Code skill discovery", () => {
 			'---\nname: typescript-safety\ndescription: "Claude Code skill: typescript-safety."\n---\nUse generated types.\n',
 		)
 	})
+
+	it("keeps a configured native skill file ahead of a matching Claude Code skill", () => {
+		const cwd = join(dir, "project")
+		const claudeSkills = join(cwd, ".claude", "skills")
+		const nativeSkill = join(cwd, ".agents", "skills", "typescript-safety", "SKILL.md")
+		writeSkill(join(claudeSkills, "typescript-safety", "SKILL.md"))
+		writeSkill(nativeSkill)
+
+		expect(getConfiguredSkillResourcePaths(cwd, [claudeSkills, nativeSkill])).toEqual([nativeSkill])
+	})
 })
 
 function writeSkill(path: string, content = "---\ndescription: Test skill.\n---\n# Skill\n"): void {
