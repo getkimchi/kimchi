@@ -2,7 +2,12 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { discoverClaudeCodeSkillDirs, getClaudeCodeSkillResourcePaths, sanitizeSkillMarkdown } from "./definition.js"
+import {
+	discoverClaudeCodeSkillDirs,
+	getClaudeCodeSkillResourcePaths,
+	getConfiguredSkillResourcePaths,
+	sanitizeSkillMarkdown,
+} from "./definition.js"
 
 let dir: string
 let oldHome: string | undefined
@@ -190,6 +195,19 @@ describe("Claude Code skill discovery", () => {
 		expect(paths[0]).toContain("kimchi-claude-code-skills-")
 		expect(readFileSync(join(paths[0], "SKILL.md"), "utf-8")).toBe(
 			'---\nname: "typescript-safety"\ndescription: "Use: generated API types"\n---\n# Skill\n',
+		)
+	})
+
+	it("materializes configured Claude Code skill files through the sanitized cache", () => {
+		const cwd = join(dir, "project")
+		writeSkill(join(cwd, ".claude", "skills", "typescript-safety", "SKILL.md"), "Use generated types.\n")
+
+		const paths = getConfiguredSkillResourcePaths(cwd, [".claude/skills/typescript-safety/SKILL.md"])
+
+		expect(paths).toHaveLength(1)
+		expect(paths[0]).toContain("kimchi-claude-code-skills-")
+		expect(readFileSync(join(paths[0], "SKILL.md"), "utf-8")).toBe(
+			'---\nname: typescript-safety\ndescription: "Claude Code skill: typescript-safety."\n---\nUse generated types.\n',
 		)
 	})
 })

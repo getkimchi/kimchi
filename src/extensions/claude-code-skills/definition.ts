@@ -2,7 +2,7 @@ import { createHash } from "node:crypto"
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import type { Dirent } from "node:fs"
 import { homedir, tmpdir } from "node:os"
-import { basename, isAbsolute, join, normalize, relative, resolve } from "node:path"
+import { basename, dirname, extname, isAbsolute, join, normalize, relative, resolve } from "node:path"
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml"
 import { z } from "zod"
 
@@ -59,7 +59,9 @@ export function getConfiguredSkillResourcePaths(cwd: string, configuredSkillPath
 	const expandedPaths = expandConfiguredSkillPaths(configuredSkillPaths, cwd)
 	const nativeSkillNames = collectNativeSkillNames(expandedPaths)
 	return expandedPaths.flatMap((path) =>
-		isClaudeCodeSkillPath(path) ? materializeClaudeCodeSkillDir(path, { excludeSkillNames: nativeSkillNames }) : [path],
+		isClaudeCodeSkillPath(path)
+			? materializeClaudeCodeSkillPath(path, { excludeSkillNames: nativeSkillNames })
+			: [path],
 	)
 }
 
@@ -93,6 +95,25 @@ function walkSkillDirs(dir: string): string[] {
 	const results: string[] = []
 	walkSkillDirsInto(dir, results)
 	return results
+}
+
+function materializeClaudeCodeSkillPath(
+	path: string,
+	options: Pick<ClaudeCodeSkillResourceOptions, "excludeSkillNames"> = {},
+): string[] {
+	if (extname(path) === ".md") {
+		const fallbackName = basename(path) === "SKILL.md" ? basename(dirname(path)) : basename(path, ".md")
+		const excludedSkillNames = new Set(options.excludeSkillNames ?? [])
+		if (excludedSkillNames.has(readSkillNameFromFile(path, fallbackName))) return []
+
+		const cacheSkillPath = join(getClaudeCodeSkillsCacheDir(), hash(path), slugPath(fallbackName))
+		try {
+			return [copyAndSanitizeSkillFile(path, cacheSkillPath, fallbackName)]
+		} catch {
+			return []
+		}
+	}
+	return materializeClaudeCodeSkillDir(path, options)
 }
 
 function materializeClaudeCodeSkillDir(
@@ -189,6 +210,17 @@ function copyAndSanitizeSkillDir(skillDir: string, cacheSkillPath: string): stri
 		)
 	}
 
+	return cacheSkillPath
+}
+
+function copyAndSanitizeSkillFile(skillFilePath: string, cacheSkillPath: string, fallbackName: string): string {
+	rmSync(cacheSkillPath, { recursive: true, force: true })
+	mkdirSync(cacheSkillPath, { recursive: true })
+	writeFileSync(
+		join(cacheSkillPath, "SKILL.md"),
+		sanitizeSkillMarkdown(readFileSync(skillFilePath, "utf-8"), fallbackName),
+		"utf-8",
+	)
 	return cacheSkillPath
 }
 
@@ -404,6 +436,17 @@ function readSkillName(skillDir: string): string {
 	const fallbackName = basename(skillDir)
 	try {
 		const content = readFileSync(join(skillDir, "SKILL.md"), "utf-8")
+		const markdown = extractSkillMarkdown(content)
+		const name = markdown ? readSkillFrontmatterName(markdown.frontmatter) : undefined
+		return normalizeSkillName(name ?? fallbackName, fallbackName)
+	} catch {
+		return normalizeSkillName(fallbackName)
+	}
+}
+
+function readSkillNameFromFile(skillFilePath: string, fallbackName: string): string {
+	try {
+		const content = readFileSync(skillFilePath, "utf-8")
 		const markdown = extractSkillMarkdown(content)
 		const name = markdown ? readSkillFrontmatterName(markdown.frontmatter) : undefined
 		return normalizeSkillName(name ?? fallbackName, fallbackName)
