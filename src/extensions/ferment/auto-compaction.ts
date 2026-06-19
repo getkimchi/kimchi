@@ -196,6 +196,8 @@ export function buildHandoffDetails(
  * @param runtime - FermentRuntime (for storage, active-id, pending-compaction state)
  */
 export function maybeTriggerFermentCompaction(pi: ExtensionAPI, ctx: ExtensionContext, runtime: FermentRuntime): void {
+	if (pi.getFlag?.("ferment-oneshot") === true) return
+
 	// drainPendingCompactions() skips in-flight ferments — their entries stay in
 	// the map for the next turn_end / agent_end to pick up.
 	const ready = runtime.drainPendingCompactions()

@@ -1,5 +1,4 @@
 export const FERMENT_TOOLS = {
-	REQUEST_WORKFLOW: "request_ferment_workflow",
 	PROPOSE_SCOPING: "propose_ferment_scoping",
 	LIST: "list_ferments",
 	SCOPE: "scope_ferment",
@@ -24,7 +23,7 @@ export const FERMENT_TOOLS = {
 export const FERMENT_TOOL_NAMES = Object.freeze(Object.values(FERMENT_TOOLS))
 
 const FERMENT_TOOL_NAME_SET = new Set<string>(FERMENT_TOOL_NAMES)
-const NON_PLANNER_FERMENT_TOOL_NAMES = new Set<string>([FERMENT_TOOLS.LIST, FERMENT_TOOLS.REQUEST_WORKFLOW])
+const NON_PLANNER_FERMENT_TOOL_NAMES = new Set<string>([FERMENT_TOOLS.LIST])
 const PLANNER_ONLY_FERMENT_TOOL_NAMES = new Set<string>([
 	FERMENT_TOOLS.PROPOSE_SCOPING,
 	FERMENT_TOOLS.SCOPE,

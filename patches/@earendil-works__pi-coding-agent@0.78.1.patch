@@ -21,7 +21,7 @@
 # the fixed version is pinned in package.json.
 #
 diff --git a/dist/cli/args.js b/dist/cli/args.js
-index a15ca52038d6ad71737fca0a3a99d5a62eaa8a0b..f4ed40d3ae21f4b296cc95ecdb7ffdbd7be3bc76 100644
+index 47a360d2a6892aeab2e69cc1a15156ec8e933857..1c2a7f0e5363f73ce657e422751f524a567429bd 100644
 --- a/dist/cli/args.js
 +++ b/dist/cli/args.js
 @@ -313,6 +313,7 @@ ${chalk.bold("Examples:")}
@@ -31,12 +31,12 @@ index a15ca52038d6ad71737fca0a3a99d5a62eaa8a0b..f4ed40d3ae21f4b296cc95ecdb7ffdbd
 +  KIMCHI_API_KEY                   - Kimchi API key (auto-login when not already configured)
    ANTHROPIC_API_KEY                - Anthropic Claude API key
    ANTHROPIC_OAUTH_TOKEN            - Anthropic OAuth token (alternative to API key)
-   OPENAI_API_KEY                   - OpenAI GPT API key
+   ANT_LING_API_KEY                 - Ant Ling API key
 diff --git a/dist/core/extensions/runner.js b/dist/core/extensions/runner.js
-index 60dbdae6192943bbc085c596aa6af563014a1eb4..ebbe8fce28074b5dec61fd63544eeb71cfcb84e6 100644
+index 3f07d5dbfae0b4698cf76dd11d2fc8ff414ad88b..a5910375ed06a5a637a5da118999a5855b19028c 100644
 --- a/dist/core/extensions/runner.js
 +++ b/dist/core/extensions/runner.js
-@@ -697,6 +697,30 @@ export class ExtensionRunner {
+@@ -709,6 +709,30 @@ export class ExtensionRunner {
          }
          return currentPayload;
      }
@@ -82,10 +82,10 @@ index 41ffa679c862f6d0862f1ed07be45836046b97e4..dc6468f0627a2b85dac9abb08b5b4240
              const providerOverride = overrides.get(provider);
              const perModelOverrides = modelOverrides.get(provider);
 diff --git a/dist/core/model-resolver.js b/dist/core/model-resolver.js
-index 21f0270f903b0461a2fa1ef8cb53ffdad4f5894d..041ead7eeddc216065864ac0725c3eb82afd3712 100644
+index 99ad9878a521add2acac6570de66028a816a70bb..e417f738e5401665cddff53bb66467c3229c19df 100644
 --- a/dist/core/model-resolver.js
 +++ b/dist/core/model-resolver.js
-@@ -34,6 +34,7 @@ export const defaultModelPerProvider = {
+@@ -37,6 +37,7 @@ export const defaultModelPerProvider = {
      opencode: "kimi-k2.6",
      "opencode-go": "kimi-k2.6",
      "kimi-coding": "kimi-for-coding",
@@ -94,16 +94,14 @@ index 21f0270f903b0461a2fa1ef8cb53ffdad4f5894d..041ead7eeddc216065864ac0725c3eb8
      "cloudflare-ai-gateway": "workers-ai/@cf/moonshotai/kimi-k2.6",
      xiaomi: "mimo-v2.5-pro",
 diff --git a/dist/core/sdk.js b/dist/core/sdk.js
-index 6f56e8568e7be821a8a17c71a5e1a9fbf4665a8a..fa9e4869016b1aecba1880ee9b455be26999e4ba 100644
+index 5120dbb4866430f52565fee173fa2de6cfeb4d51..0db40c762c3359243e3006386d1df62e5fac305a 100644
 --- a/dist/core/sdk.js
 +++ b/dist/core/sdk.js
-@@ -209,6 +209,14 @@ export async function createAgentSession(options = {}) {
-                 (model.api === "openai-codex-responses" ? settingsManager.getHttpIdleTimeoutMs() : undefined);
+@@ -185,6 +185,12 @@ export async function createAgentSession(options = {}) {
+             const effectiveTimeoutMs = httpIdleTimeoutMs === 0 ? 2147483647 : httpIdleTimeoutMs;
+             const timeoutMs = options?.timeoutMs ?? providerRetrySettings.timeoutMs ?? effectiveTimeoutMs;
              const websocketConnectTimeoutMs = options?.websocketConnectTimeoutMs ?? settingsManager.getWebSocketConnectTimeoutMs();
-             const attributionHeaders = getAttributionHeaders(model, settingsManager, options?.sessionId);
-+            let headers = attributionHeaders || auth.headers || options?.headers
-+                ? { ...attributionHeaders, ...auth.headers, ...options?.headers }
-+                : undefined;
++            let headers = mergeProviderAttributionHeaders(model, settingsManager, options?.sessionId, auth.headers, options?.headers);
 +            // Let extensions inject per-request dynamic headers (e.g. X-Session-Id, X-Turn-Index)
 +            const runner = extensionRunnerRef.current;
 +            if (runner?.hasHandlers("before_provider_headers")) {
@@ -112,13 +110,11 @@ index 6f56e8568e7be821a8a17c71a5e1a9fbf4665a8a..fa9e4869016b1aecba1880ee9b455be2
              return streamSimple(model, context, {
                  ...options,
                  apiKey: auth.apiKey,
-@@ -216,9 +224,7 @@ export async function createAgentSession(options = {}) {
+@@ -192,7 +198,7 @@ export async function createAgentSession(options = {}) {
                  websocketConnectTimeoutMs,
                  maxRetries: options?.maxRetries ?? providerRetrySettings.maxRetries,
                  maxRetryDelayMs: options?.maxRetryDelayMs ?? providerRetrySettings.maxRetryDelayMs,
--                headers: attributionHeaders || auth.headers || options?.headers
--                    ? { ...attributionHeaders, ...auth.headers, ...options?.headers }
--                    : undefined,
+-                headers: mergeProviderAttributionHeaders(model, settingsManager, options?.sessionId, auth.headers, options?.headers),
 +                headers,
              });
          },
@@ -304,7 +300,7 @@ index 561f3d2540db0a8d934bc2bbecb097aaa7c88458..da4601b0aa0ea1145505300ba77485cf
          this.markdownTheme = markdownTheme;
          this.updateDisplay();
 diff --git a/dist/modes/interactive/components/tool-execution.js b/dist/modes/interactive/components/tool-execution.js
-index e099877c0c53ea52f26eb1034ef7cd631371603f..69bf8eedf74f7f241b0136e844dad8a5144bc451 100644
+index 3f93cc6c5665f603d29b3d6ac3dabfa560d6bb32..a0b9d9a89b5f2e6384d4b909a949794e20587ae4 100644
 --- a/dist/modes/interactive/components/tool-execution.js
 +++ b/dist/modes/interactive/components/tool-execution.js
 @@ -43,8 +43,8 @@ export class ToolExecutionComponent extends Container {
@@ -318,7 +314,7 @@ index e099877c0c53ea52f26eb1034ef7cd631371603f..69bf8eedf74f7f241b0136e844dad8a5
          this.selfRenderContainer = new Container();
          if (this.hasRendererDefinition()) {
              this.addChild(this.getRenderShell() === "self" ? this.selfRenderContainer : this.contentBox);
-@@ -182,10 +182,10 @@ export class ToolExecutionComponent extends Container {
+@@ -204,10 +204,10 @@ export class ToolExecutionComponent extends Container {
      }
      updateDisplay() {
          const bgFn = this.isPartial
@@ -346,10 +342,10 @@ index 0e85e9006835b754e38a7af725b4f1ca18eb3a61..94ea3d983a2abe039a7729d452f60c32
              color: (content) => theme.fg("userMessageText", content),
          }, { preserveOrderedListMarkers: true }));
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index 3f7bfee32e1aad19be55097c2b8577d6380779ab..4e264c42a2407fbf618760612a1d65a7e1ce0781 100644
+index 0ab79928806ecd3fb84610447da4990e25047311..f400b9519304c909ee968c3dc12a5dfe4b9e0cb8 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
-@@ -1575,7 +1575,7 @@ export class InteractiveMode {
+@@ -1577,7 +1577,7 @@ export class InteractiveMode {
              setHeader: (factory) => this.setExtensionHeader(factory),
              setTitle: (title) => this.ui.terminal.setTitle(title),
              custom: (factory, options) => this.showExtensionCustom(factory, options),
@@ -358,7 +354,7 @@ index 3f7bfee32e1aad19be55097c2b8577d6380779ab..4e264c42a2407fbf618760612a1d65a7
              setEditorText: (text) => this.editor.setText(text),
              getEditorText: () => this.editor.getExpandedText?.() ?? this.editor.getText(),
              editor: (title, prefill) => this.showExtensionEditor(title, prefill),
-@@ -3381,6 +3381,29 @@ export class InteractiveMode {
+@@ -3383,6 +3383,29 @@ export class InteractiveMode {
              this.showModelSelector();
              return;
          }

@@ -15,17 +15,24 @@ describe("reduceReplaceList", () => {
 		expect(() => reduceReplaceList(createEmptyTodosSliceState(), badParams)).toThrowError(/Unsupported todo action/)
 	})
 
-	it("drops empty todos and clamps invalid statuses to pending", () => {
+	it("drops empty todos and defaults missing statuses to pending", () => {
 		const result = reduceReplaceList(createEmptyTodosSliceState(), {
 			action: "replace-list",
 			scope: GLOBAL_SCOPE,
-			todos: [
-				{ content: "  ", status: "completed" },
-				{ content: " keep  me ", status: "not-real" },
-			] as unknown as WriteTodosParams["todos"],
+			todos: [{ content: "  " }, { content: " keep  me " }] as unknown as WriteTodosParams["todos"],
 		})
 
 		expect(result.details.todos).toEqual([{ id: 1, content: "keep me", status: "pending" }])
+	})
+
+	it("rejects invalid statuses", () => {
+		expect(() =>
+			reduceReplaceList(createEmptyTodosSliceState(), {
+				action: "replace-list",
+				scope: GLOBAL_SCOPE,
+				todos: [{ content: "keep me", status: "not-real" }] as unknown as WriteTodosParams["todos"],
+			}),
+		).toThrowError(/Invalid todo status/)
 	})
 
 	it("replaces list and preserves supplied IDs while assigning missing IDs deterministically", () => {
@@ -42,8 +49,8 @@ describe("reduceReplaceList", () => {
 		const scopeKey = getTodoScopeKey(GLOBAL_SCOPE)
 		expect(state.byScope[scopeKey].todos).toEqual([
 			{ id: 1, content: "alpha", status: "pending" },
-			{ id: 4, content: "charlie", status: "pending" },
 			{ id: 3, content: "bravo", status: "completed" },
+			{ id: 4, content: "charlie", status: "pending" },
 		])
 
 		const secondState = reduceReplaceList(state, {
@@ -55,12 +62,12 @@ describe("reduceReplaceList", () => {
 			],
 		}).state
 		expect(secondState.byScope[scopeKey].todos).toEqual([
-			{ id: 5, content: "delta", status: "pending" },
 			{ id: 3, content: "bravo updated", status: "completed" },
+			{ id: 5, content: "delta", status: "pending" },
 		])
 	})
 
-	it("sorts active statuses before completed todos", () => {
+	it("keeps todos in creation order when statuses change", () => {
 		const state = reduceReplaceList(createEmptyTodosSliceState(), {
 			action: "replace-list",
 			scope: GLOBAL_SCOPE,
@@ -73,10 +80,10 @@ describe("reduceReplaceList", () => {
 		}).state
 
 		expect(state.byScope[getTodoScopeKey(GLOBAL_SCOPE)].todos.map((todo) => todo.content)).toEqual([
-			"active",
+			"done",
 			"blocked",
 			"pending",
-			"done",
+			"active",
 		])
 	})
 

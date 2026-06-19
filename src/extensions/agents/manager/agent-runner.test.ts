@@ -10,7 +10,7 @@ vi.mock("@earendil-works/pi-coding-agent", async () => {
 			open: vi.fn().mockReturnValue({}),
 		},
 		SettingsManager: {
-			create: vi.fn().mockReturnValue({}),
+			create: vi.fn().mockReturnValue({ applyOverrides: vi.fn() }),
 		},
 		createAgentSession: vi.fn(),
 		getAgentDir: vi.fn().mockReturnValue("/fake-agent-dir"),
@@ -92,6 +92,7 @@ vi.mock("../../telemetry/index.js", () => ({
 }))
 
 vi.mock("../../../config.js", () => ({
+	loadConfig: vi.fn().mockReturnValue({ retry: { maxRetries: 10 } }),
 	readTelemetryConfig: vi.fn().mockReturnValue({
 		enabled: true,
 		endpoint: "https://test/logs",

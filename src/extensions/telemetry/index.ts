@@ -2,6 +2,12 @@ import type { ExtensionAPI, TurnStartEvent } from "@earendil-works/pi-coding-age
 import type { TelemetryConfig } from "../../config.js"
 import { onBeforeProviderHeaders } from "../../types/before-provider-headers.js"
 import {
+	BASH_TOOL_GUARD_EVENTS,
+	type BashToolGuardAllowedByUserRequestPayload,
+	type BashToolGuardBlockPayload,
+	type BashToolGuardWarnPayload,
+} from "../bash-tool-guard-events.js"
+import {
 	FERMENT_EVENTS,
 	type FermentAbandonedPayload,
 	type FermentCompletedPayload,
@@ -80,6 +86,11 @@ export function _resetFermentTrackingState(): void {
 	phaseStartTimes.clear()
 	stepStartTimes.clear()
 	fermentSteeringCounts.clear()
+}
+
+/** @internal — exposed for testing only */
+export function _getBashGuardCounts(): { warn: number; block: number; allowedByUserRequest: number } {
+	return { ...bashGuardCounts }
 }
 
 // ---------------------------------------------------------------------------
@@ -402,6 +413,68 @@ function onFermentSteering(raw: unknown): void {
 }
 
 // ---------------------------------------------------------------------------
+// Bash-tool-guard domain event handlers
+// ---------------------------------------------------------------------------
+
+/** Module-level accumulators for bash-tool-guard counters. Per-session. */
+const bashGuardCounts = {
+	warn: 0,
+	block: 0,
+	allowedByUserRequest: 0,
+}
+
+function resetBashGuardCounts(): void {
+	bashGuardCounts.warn = 0
+	bashGuardCounts.block = 0
+	bashGuardCounts.allowedByUserRequest = 0
+}
+
+function onBashGuardWarn(raw: unknown): void {
+	bashGuardCounts.warn++
+	if (!isEnabled()) return
+	const ctx = _ctx
+	if (!ctx) return
+	const payload = raw as BashToolGuardWarnPayload
+	// Only structured fields land in OTLP. Raw command text is
+	// intentionally NOT emitted to avoid leaking user data or secrets
+	// that may appear inside heredocs, echo payloads, or sed/awk
+	// replacement strings. Aggregation is done by category + tool.
+	ctx.emit("bash_tool_guard.warn", {
+		model: ctx.currentModel,
+		category: payload.category,
+		tool: payload.tool,
+		count: payload.count,
+	})
+}
+
+function onBashGuardBlock(raw: unknown): void {
+	bashGuardCounts.block++
+	if (!isEnabled()) return
+	const ctx = _ctx
+	if (!ctx) return
+	const payload = raw as BashToolGuardBlockPayload
+	ctx.emit("bash_tool_guard.block", {
+		model: ctx.currentModel,
+		category: payload.category,
+		tool: payload.tool,
+		count: payload.count,
+	})
+}
+
+function onBashGuardAllowedByUserRequest(raw: unknown): void {
+	bashGuardCounts.allowedByUserRequest++
+	if (!isEnabled()) return
+	const ctx = _ctx
+	if (!ctx) return
+	const payload = raw as BashToolGuardAllowedByUserRequestPayload
+	ctx.emit("bash_tool_guard.allowed_by_user_request", {
+		model: ctx.currentModel,
+		category: payload.category,
+		tool: payload.tool,
+	})
+}
+
+// ---------------------------------------------------------------------------
 // Extension factory
 // ---------------------------------------------------------------------------
 
@@ -427,7 +500,14 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		pi.events.on(FERMENT_EVENTS.STEP_FAILED, onStepFailed)
 		pi.events.on(FERMENT_EVENTS.STEERING, onFermentSteering)
 
+		// Subscribe to bash-tool-guard domain events. The guard publishes
+		// facts; telemetry translates them into OTLP records for analytics.
+		pi.events.on(BASH_TOOL_GUARD_EVENTS.WARN, onBashGuardWarn)
+		pi.events.on(BASH_TOOL_GUARD_EVENTS.BLOCK, onBashGuardBlock)
+		pi.events.on(BASH_TOOL_GUARD_EVENTS.ALLOWED_BY_USER_REQUEST, onBashGuardAllowedByUserRequest)
+
 		pi.on("session_start", async (_event, extCtx) => {
+			resetBashGuardCounts()
 			const modelId = (extCtx as { model?: { id?: string } } | undefined)?.model?.id
 			handleSessionInitialized(ctx, modelId)
 		})

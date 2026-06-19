@@ -133,7 +133,7 @@ describe("default agents — subagent system prompt snapshot", () => {
 			# Planning Process
 
 			1. **Decide whether to explore first.** Only read files if the task is about code or software. If the task is NOT about code (writing, strategy, general planning), skip exploration entirely and go straight to clarifying questions.
-			2. **Draft the plan directly.** Do NOT use \`request_ferment_workflow\`, ferment tools, or any workflow-starting mechanism.
+			2. **Draft the plan directly.** Do NOT use any workflow-starting mechanism.
 			3. Understand requirements — ask clarifying questions via \`questionnaire\` before committing to an approach.
 			4. If code-related: explore relevant files, understand architecture, identify patterns.
 			5. Identify ambiguities and resolve them with the user before proceeding.

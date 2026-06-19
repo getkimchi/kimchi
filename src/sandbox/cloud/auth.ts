@@ -55,7 +55,7 @@ export async function createOrUpdateWorkspace(
 	const endpoint = resolveEndpoint(options)
 	const fetchImpl = options?.fetch ?? globalThis.fetch
 
-	const url = `${endpoint}/ai-optimizer/v1beta/organizations/${encodeURIComponent(orgId)}/sessions/${encodeURIComponent(workspaceId)}`
+	const url = `${endpoint}/ai-optimizer/v1beta/organizations/${encodeURIComponent(orgId)}/workspaces/${encodeURIComponent(workspaceId)}`
 	const resp = await fetchWithTimeout(
 		url,
 		{

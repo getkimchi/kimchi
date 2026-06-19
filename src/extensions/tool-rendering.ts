@@ -53,7 +53,7 @@ const TOOL_RENDER_CACHE = Symbol.for("pi-claude-style-tools:tool-render-cache")
 const TOOL_CACHE_PATCH_FLAG = Symbol.for("pi-claude-style-tools:patched-tool-cache-invalidation")
 const TOOL_IMAGE_EXPAND_PATCH_FLAG = Symbol.for("pi-claude-style-tools:patched-read-image-expansion")
 const USER_MESSAGE_PATCH_FLAG = Symbol.for("pi-claude-style-tools:patched-user-message-render")
-const HIDDEN_TOOL_BLOCK_NAMES = new Set(["write_todos"])
+const HIDDEN_TOOL_BLOCK_NAMES = new Set(["write_todos", "update_todos", "add_todo", "mark_todo", "clear_todos"])
 const WRAP_MARK = "\uE000"
 const KITTY_IMAGE_PREFIX = "\x1b_G"
 const ITERM2_IMAGE_PREFIX = "\x1b]1337;File="
@@ -2546,7 +2546,7 @@ function getMode<T extends string>(value: unknown, allowed: readonly T[], fallba
 	return typeof value === "string" && (allowed as readonly string[]).includes(value) ? (value as T) : fallback
 }
 
-const CORE_TOOL_OVERRIDES = new Set(["read", "bash", "grep", "find", "ls", "write", "edit"])
+const CORE_TOOL_OVERRIDES = new Set(["read", "bash", "grep", "find", "ls", "write", "edit", "set_phase"])
 
 const OPENAI_STYLE_TOOL_NAMES = new Set([
 	"apply_patch",
@@ -3380,6 +3380,8 @@ export function summarizeOpenAiToolCall(name: string, args: any, theme: Theme, s
 			return theme.fg("muted", "enable read-only planning")
 		case "ExitPlanMode":
 			return theme.fg("muted", "present plan")
+		case "set_phase":
+			return getStringArg(args, "phase") || theme.fg("muted", "set phase")
 		case "Agent":
 			return summarizeText(getStringArg(args, "description", "prompt") || "launch agent", 72)
 		case "get_subagent_result":

@@ -12,7 +12,7 @@ import {
 	createAgentSession,
 	getAgentDir,
 } from "@earendil-works/pi-coding-agent"
-import { readTelemetryConfig } from "../../../config.js"
+import { loadConfig, readTelemetryConfig } from "../../../config.js"
 import { getAvailableModels } from "../../../startup-context.js"
 import { runAsAgentWorker } from "../../agent-worker-context.js"
 import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
@@ -54,6 +54,9 @@ const ORCHESTRATOR_PREFIX = "[Orchestrator — automated system instruction, not
 function steerAsOrchestrator(session: AgentSession, message: string): Promise<void> {
 	return session.steer(ORCHESTRATOR_PREFIX + message)
 }
+
+/** Cached kimchi config — loaded once per process to avoid repeated disk reads per agent spawn. */
+const kimchiConfig = loadConfig()
 
 /** Default max turns. undefined = unlimited (no turn limit). */
 let defaultMaxTurns: number | undefined = 30
@@ -367,13 +370,16 @@ async function runAgentInner(
 
 	const thinkingLevel = options.thinkingLevel ?? agentConfig?.thinking
 
+	const settingsManager = SettingsManager.create(effectiveCwd, agentDir)
+	settingsManager.applyOverrides({ retry: { maxRetries: kimchiConfig.retry.maxRetries } })
+
 	const sessionOpts: Parameters<typeof createAgentSession>[0] = {
 		cwd: effectiveCwd,
 		agentDir,
 		sessionManager: options.sessionFile
 			? SessionManager.open(options.sessionFile, options.sessionDir, effectiveCwd)
 			: SessionManager.inMemory(effectiveCwd),
-		settingsManager: SettingsManager.create(effectiveCwd, agentDir),
+		settingsManager,
 		modelRegistry: ctx.modelRegistry,
 		model,
 		resourceLoader: loader,

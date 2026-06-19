@@ -92,8 +92,8 @@ describe("orchestration guideline resolution", () => {
 		expect(result).toBe("")
 	})
 
-	it("returns composed orchestration guideline for nemotron-3-super-fp4", () => {
-		const result = resolveOrchestrationGuideline("nemotron-3-super-fp4", registry)
+	it("returns composed orchestration guideline for nemotron-3-ultra-fp4", () => {
+		const result = resolveOrchestrationGuideline("nemotron-3-ultra-fp4", registry)
 		expect(result).toContain("Nemotron family")
 		expect(result).toContain("long context window")
 	})
@@ -174,8 +174,8 @@ describe("builtin-model guideline content", () => {
 		expect(result).toContain("inappropriate concurrency")
 	})
 
-	it("nemotron-3-super-fp4 explore: contains per-model layer", () => {
-		const result = resolvePhaseGuideline("explore", "nemotron-3-super-fp4", registry)
+	it("nemotron-3-ultra-fp4 explore: contains per-model layer", () => {
+		const result = resolvePhaseGuideline("explore", "nemotron-3-ultra-fp4", registry)
 		expect(result).toContain("1M token context window")
 	})
 

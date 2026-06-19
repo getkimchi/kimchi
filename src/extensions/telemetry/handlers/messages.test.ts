@@ -268,6 +268,34 @@ describe("handleMessageEnd", () => {
 
 		expect(emitSpy).not.toHaveBeenCalled()
 	})
+
+	it("emits transport_error when stopReason is error and message matches a transport pattern", async () => {
+		const ctx = makeCtx()
+		const emitSpy = vi.spyOn(ctx, "emit")
+
+		await handleMessageEnd(ctx, {
+			message: {
+				role: "assistant",
+				model: "kimi-k2.6",
+				provider: "kimchi-dev",
+				stopReason: "error",
+				errorMessage:
+					"The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()",
+				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } },
+				timestamp: BASE_TS,
+				responseId: "chatcmpl-transport-test",
+			},
+		})
+
+		expect(emitSpy).toHaveBeenCalledWith(
+			"error",
+			expect.objectContaining({
+				model: "kimi-k2.6",
+				error_type: "transport_error",
+				error_message: expect.stringContaining("socket connection was closed unexpectedly"),
+			}),
+		)
+	})
 })
 
 describe("handleBeforeAgentStart", () => {
