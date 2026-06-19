@@ -10,24 +10,33 @@ export function buildOneshotNudge(ferment: Ferment, intent: string): string {
 
 User intent: "${intent}"
 
-Your task — execute ALL of the following steps WITHOUT pausing to ask the user:
-1. Call scope_ferment with:
-   - ferment_id: "${ferment.id}"
-   - title: concise 3-5 word Ferment name derived from the task
-   - goal: derived from the user intent
-   - success_criteria: what observable outcome proves the goal
-   - constraints: any technical constraints implied by the intent
-   - phases: the smallest useful ordered plan, usually 2–4 phases with 1–3 concrete steps each
-   - every step must include a specific verify bash command when the task allows it
-   - gates: full plan-scope gate verdicts — exactly P1 (verifiable success signals per phase), P2 (phase ordering), P3 (complete_ferment checklist). Each gate: {id, verdict: "pass", rationale, evidence}. The schema hard-rejects scope_ferment calls missing this array, so include it on the first attempt.
-2. For each phase in order: call activate_ferment_phase, then refine_ferment_phase (if steps not pre-set), then for each step: start_ferment_step → (delegate to Agent worker) → complete_ferment_step
-3. Only mark a step complete after its implementation and verification have been attempted, and include verification results in the completion summary
-4. When all phases are done and the final relevant verification passes or the remaining blocker is explicit: call complete_ferment
+## Your job
 
-CRITICAL: Do NOT ask for confirmation, do not narrate progress to the user, and do not create extra process work. Scope from the provided task, delegate implementation to workers, verify with the cheapest task-relevant commands, and execute autonomously until complete_ferment is called. After complete_ferment returns, produce one concise final assistant message with no tool calls.
+Execute ALL of the following steps in order WITHOUT pausing to ask the user, read files, or orient yourself first. Call scope_ferment as your VERY FIRST tool call on this turn.
+
+1. **Call scope_ferment immediately** (ferment_id: "${ferment.id}") with:
+   - title: concise 3-5 word name derived from the task
+   - goal: what the task asks for, in one sentence
+   - success_criteria: observable, verifiable outcomes
+   - constraints: technical constraints implied by the intent
+   - phases: the smallest useful ordered plan — usually 1–3 phases with 1–4 steps each; every step must have a description and, where possible, a verify bash command
+   - gates: exactly P1, P2, P3 — each with id, verdict, rationale, evidence. The schema hard-rejects calls missing this array.
+
+2. **For each phase**, call activate_ferment_phase, then for each step:
+   - call start_ferment_step
+   - spawn an Agent worker to do the implementation
+   - call complete_ferment_step with the worker's results
+
+3. **When all phases are done**, call complete_ferment.
+
+## Turn discipline
+
+Every turn MUST end with a ferment lifecycle tool call or an Agent spawn. Do not produce a summary and stop — that leaves the ferment stalled. The only permitted text-only turn is the single final message after complete_ferment returns.
+
+## Toolset
 
 Toolset follows the ferment lifecycle:
 - During the planning phase (before the first successful \`activate_ferment_phase\`), only read-only research tools and the ferment planning tools are available: \`read\`, \`grep\`, \`find\`, \`ls\`, \`web_fetch\`, \`web_search\`, \`set_phase\`, plus \`scope_ferment\`, \`update_ferment_scope_field\`, \`confirm_ferment_completion_criteria\`, \`list_ferments\`, \`ask_user\`. Use these to draft the plan.
-- Once \`activate_ferment_phase\` returns success (typically the first call in step 2 of the task list above), the implementation toolset unlocks on the NEXT model turn: \`bash\`, \`edit\`, \`write\`, \`Agent\`, \`get_subagent_result\`, and the remaining ferment lifecycle tools (\`refine_ferment_phase\`, \`complete_ferment_phase\`, \`start_ferment_step\`, \`complete_ferment_step\`, \`verify_ferment_step\`, etc.). Launch an \`Agent\` worker for any implementation or verification work — workers keep their full toolset regardless of the planner profile.
+- Once \`activate_ferment_phase\` returns success, the implementation toolset unlocks on the NEXT model turn: \`bash\`, \`edit\`, \`write\`, \`Agent\`, \`get_subagent_result\`, and the remaining ferment lifecycle tools (\`refine_ferment_phase\`, \`complete_ferment_phase\`, \`start_ferment_step\`, \`complete_ferment_step\`, \`verify_ferment_step\`, etc.). Launch an \`Agent\` worker for any implementation or verification work — workers keep their full toolset regardless of the planner profile.
 - Do not start another ferment in this one-shot run. Use \`get_subagent_result\` to collect background Agent results. There is no shell CLI for ferment phase or step transitions; use the ferment tools directly.`
 }

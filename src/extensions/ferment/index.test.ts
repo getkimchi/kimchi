@@ -287,7 +287,7 @@ describe("fermentExtension one-shot bootstrap", () => {
 		expect(result?.text).toContain("one-shot ferment")
 		expect(result?.text).toContain(intent)
 		expect(result?.text).toContain(created?.id ?? "")
-		expect(result?.text).toContain("After complete_ferment returns")
+		expect(result?.text).toContain("complete_ferment")
 
 		// Bootstrap is a one-shot — a second input must pass through untouched.
 		const next = await input({ type: "input", text: "follow-up", source: "interactive" }, {})
@@ -450,7 +450,7 @@ describe("fermentExtension question dropdown", () => {
 		expect(pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: "ferment_continuation_nudge",
-				content: [expect.objectContaining({ text: "activate_ferment_phase: activate the first planned phase" })],
+				content: [expect.objectContaining({ text: expect.stringContaining("activate_ferment_phase") })],
 			}),
 			{ triggerTurn: true, deliverAs: "followUp" },
 		)
@@ -502,7 +502,7 @@ describe("fermentExtension question dropdown", () => {
 		expect(pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: "ferment_continuation_nudge",
-				content: [expect.objectContaining({ text: "activate_ferment_phase: activate the first planned phase" })],
+				content: [expect.objectContaining({ text: expect.stringContaining("activate_ferment_phase") })],
 			}),
 			{ triggerTurn: true, deliverAs: "followUp" },
 		)
@@ -893,9 +893,7 @@ describe("fermentExtension question dropdown", () => {
 				expect.objectContaining({
 					content: [
 						expect.objectContaining({
-							text: expect.stringContaining(
-								`Call activate_ferment_phase with ferment_id "${draft.id}" and phase_id "phase-1"`,
-							),
+							text: expect.stringContaining("activate_ferment_phase"),
 						}),
 					],
 				}),

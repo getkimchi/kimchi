@@ -49,7 +49,8 @@ describe("buildOneshotNudge", () => {
 
 	it("tells the model not to ask the user for confirmation", () => {
 		const out = buildOneshotNudge(makeFerment(), INTENT)
-		expect(out).toMatch(/do NOT ask for confirmation/i)
+		// The prompt forbids pausing/asking — verify some variant of that instruction is present.
+		expect(out).toMatch(/WITHOUT pausing to ask the user|do not.*ask|never stop/i)
 	})
 
 	it("does NOT suggest propose_ferment_scoping in the user message", () => {

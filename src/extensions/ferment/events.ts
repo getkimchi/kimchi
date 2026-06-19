@@ -13,8 +13,10 @@ import { FERMENT_EVENTS, type FermentStalledPayload } from "./domain-events.js"
 import { autoInitFromEnv, ensureGitRepo } from "./git-init.js"
 import {
 	appendRefEntry,
+	maybeInjectFermentStopNudge,
 	maybeInjectReactiveContinuationNudge,
 	maybeInjectScopingProgressNudge,
+	onFermentToolCallSeen,
 	resetReactiveContinuationNudgeCount,
 } from "./nudge.js"
 import { buildOneshotNudge } from "./oneshot.js"
@@ -449,7 +451,10 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		const content = getAssistantContentParts(event.message.content)
 		const activeId = runtime.getActiveId()
 		const toolCallSeen = hasAnyToolCall(content)
-		if (toolCallSeen && activeId) resetReactiveContinuationNudgeCount(activeId)
+		if (toolCallSeen && activeId) {
+			resetReactiveContinuationNudgeCount(activeId)
+			onFermentToolCallSeen(activeId)
+		}
 
 		const f = runtime.getActive()
 		if (!f) return
@@ -464,7 +469,16 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 
 		const userInputHandled = await maybeRunUserInputDropdown(pi, ctx, content, f, runtime)
 		if (userInputHandled) return
-		if (!toolCallSeen) maybeInjectReactiveContinuationNudge(pi, runtime)
+		if (!toolCallSeen) {
+			maybeInjectReactiveContinuationNudge(pi, runtime)
+		} else {
+			// The model made tool calls this turn but ended with stopReason "stop"
+			// while the ferment still requires action (e.g. completed a step then
+			// wrote a summary and quit without advancing the lifecycle). Nudge it
+			// to call the next ferment tool rather than leaving the run stalled.
+			const stopReason = (event.message as { stopReason?: string }).stopReason
+			if (stopReason === "stop") maybeInjectFermentStopNudge(pi, runtime)
+		}
 
 		// Trigger compaction after any turn that completed a step or phase.
 		// Fires between turns in automated-continuation mode, so the next
