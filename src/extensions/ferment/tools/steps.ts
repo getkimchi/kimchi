@@ -127,9 +127,17 @@ function validateLinkedWorker(params: CompleteStepArgs): string | null {
 	if (!latest) {
 		return `Worker Agent "${params.worker_agent_id}" has no recorded outcome yet. Use get_subagent_result with wait: true, then retry complete_ferment_step.`
 	}
-	if (latest.outcome === "completed") return null
+	if (latest.outcome === "completed") {
+		if (!latest.report) {
+			return `Worker Agent "${params.worker_agent_id}" completed without submit_agent_report. Resume it with max_turns: 1 and instruct it not to do more task work; it must call submit_agent_report from its current state before this step can complete.`
+		}
+		if (latest.report.status !== "completed") {
+			return `Worker Agent "${params.worker_agent_id}" outcome is completed, but submit_agent_report status is "${latest.report.status}". Complete requires report.status "completed"; inspect remaining_steps and resume, spawn a linked replacement, or stop/report.`
+		}
+		return null
+	}
 	if (latest.outcome === "budget_exhausted") {
-		return `Worker Agent "${params.worker_agent_id}" exhausted its budget (${latest.reason ?? "budget"}). Do not complete this step from an aborted result. Inspect the checkpoint first: resume this same Agent with a bounded steering prompt when the remaining work is a direct continuation; use a changed-approach resume when the same thread still matters but the prior approach stalled; spawn a new linked Agent when the remaining work has a clean narrower task boundary; run a short bounded finalizer resume if it appears finished; or stop/report if blocked. Complete only from a linked worker whose latest outcome is completed.`
+		return `Worker Agent "${params.worker_agent_id}" exhausted its budget (${latest.reason ?? "budget"}). Do not complete this step from an aborted result. Inspect agent_outcome.report first: resume this same Agent with a bounded steering prompt when remaining_steps are a direct continuation; use a changed-approach resume when the same thread still matters but the prior approach stalled; spawn a new linked Agent when remaining_steps have a clean narrower task boundary; run a short bounded finalizer resume to collect submit_agent_report if the report is missing; or stop/report if blocked. Complete only from a linked worker whose latest outcome and report.status are completed.`
 	}
 	return `Worker Agent "${params.worker_agent_id}" outcome is ${latest.outcome}${latest.reason ? ` (${latest.reason})` : ""}. Complete requires a linked worker whose latest outcome is completed. Spawn a corrected linked replacement Agent or stop and report the failure.`
 }
@@ -296,7 +304,7 @@ Do NOT call start_ferment_step again without user input.`,
 
 	return toolOk(
 		withNextActionHint(
-			`Step ${step.index}: "${step.description}" started. Spawn a subagent with the persona that matches this step's intent. Pass task_ref: ${JSON.stringify(taskRef)} and a max_turns budget. Instruct the worker to produce a checkpoint with remaining-work guidance if it nears the limit. When it returns with agent_outcome.outcome "completed", call complete_ferment_step with worker_agent_id and its summary.${lowGradeCaution}${parallelNote}${contextBlock}`,
+			`Step ${step.index}: "${step.description}" started. Spawn a subagent with the persona that matches this step's intent. Pass task_ref: ${JSON.stringify(taskRef)} and a max_turns budget. The worker will receive its Agent ID and must call submit_agent_report before its final answer. When it returns with agent_outcome.outcome "completed" and agent_outcome.report.status "completed", call complete_ferment_step with worker_agent_id and the report summary.${lowGradeCaution}${parallelNote}${contextBlock}`,
 			outcome.ferment,
 		),
 	)

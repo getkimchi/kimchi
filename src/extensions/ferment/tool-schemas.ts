@@ -253,7 +253,7 @@ export const CompleteStepParams = Type.Object({
 	worker_agent_id: Type.Optional(
 		Type.String({
 			description:
-				"Agent ID returned by the worker spawned for this step. Required when the step was delegated through Agent; the linked Agent must have task_ref matching this ferment step and outcome completed.",
+				"Agent ID returned by the worker spawned for this step. Required when the step was delegated through Agent; the linked Agent must have task_ref matching this ferment step, outcome completed, and submit_agent_report status completed.",
 		}),
 	),
 	summary: Type.Optional(Type.String()),

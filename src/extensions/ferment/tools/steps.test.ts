@@ -112,6 +112,13 @@ function linkedWorker(fermentId: string, phaseId = "phase-1", stepId = "step-1")
 			resumable: false,
 			token_usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			duration_ms: 1,
+			report: {
+				status: "completed",
+				summary: "done",
+				steps_completed: ["done"],
+				remaining_steps: [],
+				submitted_at: 1,
+			},
 			resume_attempts: 0,
 		},
 	})

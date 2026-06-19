@@ -193,6 +193,24 @@ function linkedWorker(
 			resumable: outcome === "budget_exhausted",
 			token_usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			duration_ms: 1,
+			report:
+				outcome === "completed"
+					? {
+							status: "completed",
+							summary: "done",
+							steps_completed: ["done"],
+							remaining_steps: [],
+							submitted_at: 1,
+						}
+					: outcome === "budget_exhausted"
+						? {
+								status: "partial",
+								summary: "partial",
+								steps_completed: ["started"],
+								remaining_steps: ["finish"],
+								submitted_at: 1,
+							}
+						: undefined,
 			resume_attempts: 0,
 		},
 	})
@@ -670,6 +688,25 @@ describe("complete_ferment_step", () => {
 			gates: passingStepGates(),
 		})
 		expect(err(result)).toContain("not linked")
+		expect(loadFerment(id).phases[0].steps[0].status).toBe("running")
+	})
+
+	it("rejects a completed linked worker without submit_agent_report", async () => {
+		const id = await setupRunningStep()
+		const workerId = linkedWorker(id, "phase-1", "step-1")
+		const record = mockAgentRecords.get(workerId) as { latestOutcome?: { report?: unknown } }
+		if (record.latestOutcome) record.latestOutcome.report = undefined
+		const result = await h.call("complete_ferment_step", {
+			ferment_id: id,
+			phase_id: "phase-1",
+			step_id: "step-1",
+			worker_agent_id: workerId,
+			summary: "summary text",
+			gates: passingStepGates(),
+		})
+		const text = err(result)
+		expect(text).toContain("completed without submit_agent_report")
+		expect(text).toContain("max_turns: 1")
 		expect(loadFerment(id).phases[0].steps[0].status).toBe("running")
 	})
 

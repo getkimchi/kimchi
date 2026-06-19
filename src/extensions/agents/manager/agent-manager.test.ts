@@ -53,8 +53,8 @@ describe("AgentManager", () => {
 			reason: "token_budget",
 			resumable: true,
 		})
-		expect(record.latestOutcome?.remaining_work).toContain("direct continuation")
-		expect(record.latestOutcome?.remaining_work).toContain("clean narrower task boundary")
+		expect(record.latestOutcome?.recovery_guidance).toContain("direct continuation")
+		expect(record.latestOutcome?.recovery_guidance).toContain("clean narrower task boundary")
 	})
 
 	it("threads task_ref and max_turns into the structured outcome", async () => {
@@ -81,6 +81,44 @@ describe("AgentManager", () => {
 			max_turns: 5,
 			task_ref: taskRef,
 		})
+		expect(mockRunAgent).toHaveBeenCalledWith(
+			expect.anything(),
+			"Explore",
+			expect.stringContaining(`Agent ID: ${record.id}`),
+			expect.anything(),
+		)
+	})
+
+	it("stores submitted reports on the structured outcome", async () => {
+		mockRunAgent.mockResolvedValueOnce({
+			responseText: "done",
+			session: { dispose: vi.fn() } as unknown as AgentSession,
+			aborted: false,
+			steered: false,
+		})
+		manager = new AgentManager()
+		const taskRef = { kind: "ferment_step" as const, ferment_id: "f1", phase_id: "phase-1", step_id: "step-1" }
+		const record = await manager.spawnAndWait(fakePi(), fakeCtx(), "Explore", "inspect", {
+			description: "inspect",
+			taskRef,
+		})
+
+		manager.submitReport(record.id, {
+			status: "completed",
+			summary: "implemented step",
+			steps_completed: ["implemented"],
+			remaining_steps: [],
+			submitted_at: 10,
+		})
+
+		expect(record.latestOutcome).toMatchObject({
+			report: {
+				status: "completed",
+				summary: "implemented step",
+				remaining_steps: [],
+			},
+		})
+		expect(record.latestOutcome?.summary).toBeUndefined()
 	})
 
 	it("resumes the same session with a fresh max_turns window and records budget exhaustion", async () => {
@@ -141,8 +179,8 @@ describe("AgentManager", () => {
 
 		expect(outcome.outcome).toBe("failed")
 		expect(outcome.reason).toBe("max_duration")
-		expect(outcome.remaining_work).toContain("stalled operation")
-		expect(outcome.remaining_work).toContain("narrower linked replacement")
+		expect(outcome.recovery_guidance).toContain("stalled operation")
+		expect(outcome.recovery_guidance).toContain("narrower linked replacement")
 	})
 })
 

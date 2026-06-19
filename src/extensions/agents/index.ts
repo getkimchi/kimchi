@@ -63,6 +63,7 @@ import {
 	type AgentConfig,
 	type AgentOutcome,
 	type AgentRecord,
+	type AgentReport,
 	type AgentTaskRef,
 	type AgentVisibility,
 	type JoinMode,
@@ -307,16 +308,16 @@ function getStatusNote(status: string, abortReason?: AgentAbortReason): string {
 
 function getStatusInstruction(status: string, abortReason?: AgentAbortReason): string {
 	if (status === "aborted" && abortReason === "token_budget") {
-		return "\nThe agent ran out of its token budget. Inspect the checkpoint before acting. Resume this same agent with a bounded steering prompt when the remaining work is a direct continuation; spawn a narrower replacement Agent when the remaining work has a clean task boundary; use a short finalizer resume if it appears finished; or stop/report if blocked. Do not blindly retry the same prompt."
+		return "\nThe agent ran out of its token budget. Inspect the worker report before acting. Resume this same agent with a bounded steering prompt when remaining_steps are a direct continuation; spawn a narrower replacement Agent when remaining_steps have a clean task boundary; use a short finalizer resume to collect submit_agent_report if the report is missing; or stop/report if blocked. Do not blindly retry the same prompt."
 	}
 	if (status === "aborted" && abortReason === "inactivity") {
-		return "\nThe agent stopped producing output and was terminated. Inspect the checkpoint before acting; this may indicate a stall. Resume only with a steering prompt that continues the same thread while avoiding the stalled operation, or spawn a narrower replacement Agent if the remaining work has a clean task boundary."
+		return "\nThe agent stopped producing output and was terminated. Inspect the worker report before acting; this may indicate a stall. Resume only with a steering prompt that continues the same thread while avoiding the stalled operation, or spawn a narrower replacement Agent if remaining_steps have a clean task boundary."
 	}
 	if (status === "aborted" && abortReason === "max_duration") {
-		return "\nThe agent exceeded its maximum allowed wall-clock duration and was terminated. Inspect the checkpoint before acting; this may indicate a hang or blocked command. Resume only with a bounded steering prompt that avoids the stalled operation and directly continues the same thread, or spawn a follow-up Agent scoped to a narrower task boundary. Do NOT implement the remaining work yourself — the orchestrator must delegate, not build."
+		return "\nThe agent exceeded its maximum allowed wall-clock duration and was terminated. Inspect the worker report before acting; this may indicate a hang or blocked command. Resume only with a bounded steering prompt that avoids the stalled operation and directly continues the same thread, or spawn a follow-up Agent scoped to a narrower task boundary. Do NOT implement the remaining work yourself — the orchestrator must delegate, not build."
 	}
 	if (status === "aborted" && abortReason === "max_turns") {
-		return "\nThe agent exhausted its turn budget. Do not mark delegated work complete from an aborted result. Inspect the checkpoint first: resume this same agent with a bounded steering prompt when the remaining work is a direct continuation; spawn a narrower linked replacement Agent when the remaining work has a clean task boundary; use a short finalizer resume if it appears finished; or stop/report if blocked. Do NOT implement the remaining work yourself — the orchestrator must delegate, not build."
+		return "\nThe agent exhausted its turn budget. Do not mark delegated work complete from an aborted result. Inspect the worker report first: resume this same agent with a bounded steering prompt when remaining_steps are a direct continuation; spawn a narrower linked replacement Agent when remaining_steps have a clean task boundary; use a short finalizer resume to collect submit_agent_report if the report is missing; or stop/report if blocked. Do NOT implement the remaining work yourself — the orchestrator must delegate, not build."
 	}
 	return ""
 }
@@ -356,18 +357,7 @@ function formatTaskNotification(record: AgentRecord, resultMaxLen: number): stri
 
 function buildDetails(
 	base: Pick<AgentDetails, "displayName" | "description" | "subagentType" | "modelName" | "tags" | "visibility">,
-	record: {
-		toolUses: number
-		startedAt: number
-		completedAt?: number
-		status: string
-		abortReason?: AgentAbortReason
-		error?: string
-		id?: string
-		sessionFile?: string
-		session?: unknown
-		lifetimeUsage: LifetimeUsage
-	},
+	record: AgentRecord,
 	activity?: AgentActivity,
 	overrides?: Partial<AgentDetails>,
 ): AgentDetails {
@@ -389,7 +379,7 @@ function buildDetails(
 		sessionFile: record.sessionFile,
 		error: record.error,
 		abortReason: record.abortReason,
-		agentOutcome: (record as { latestOutcome?: AgentOutcome }).latestOutcome,
+		agentOutcome: record.latestOutcome,
 		...overrides,
 	}
 }
@@ -446,8 +436,25 @@ export function getActiveAgentModelIds(): string[] {
 export function getAgentRecordForTaskValidation(id: string): AgentRecord | undefined {
 	const record = activeManager?.getRecord(id)
 	if (!record || record.visibility === "system") return undefined
-	record.latestOutcome ??= buildAgentOutcome(record)
-	return record
+	return { ...record, latestOutcome: record.latestOutcome ?? buildAgentOutcome(record) }
+}
+
+function readAgentTaskRef(params: Record<string, unknown>): AgentTaskRef | undefined {
+	const ref = params.task_ref as Partial<AgentTaskRef> | undefined
+	if (
+		ref?.kind === "ferment_step" &&
+		typeof ref.ferment_id === "string" &&
+		typeof ref.phase_id === "string" &&
+		typeof ref.step_id === "string"
+	) {
+		return {
+			kind: "ferment_step",
+			ferment_id: ref.ferment_id,
+			phase_id: ref.phase_id,
+			step_id: ref.step_id,
+		}
+	}
+	return undefined
 }
 
 export default function (pi: ExtensionAPI) {
@@ -815,6 +822,83 @@ export default function (pi: ExtensionAPI) {
 		(event, payload) => pi.events.emit(event, payload),
 	)
 
+	// ---- Ferment worker report tool ----
+
+	pi.registerTool(
+		defineTool({
+			name: "submit_agent_report",
+			label: "Submit Agent Report",
+			description:
+				"Submit a structured progress report for a Ferment-linked Agent worker. Use this before the worker's final answer when task_ref is kind ferment_step.",
+			parameters: Type.Object({
+				agent_id: Type.String({
+					description: "The Agent ID shown in this worker's prompt.",
+				}),
+				status: Type.Union([Type.Literal("completed"), Type.Literal("partial"), Type.Literal("blocked")], {
+					description:
+						"completed when the assigned work is done, partial when useful work remains, blocked when progress is blocked.",
+				}),
+				summary: Type.String({
+					description: "Concise factual summary of what this worker did.",
+				}),
+				steps_completed: Type.Array(Type.String(), {
+					description: "Concrete steps completed by this worker.",
+				}),
+				remaining_steps: Type.Array(Type.String(), {
+					description: "Concrete steps still remaining. Use [] only when status is completed.",
+				}),
+				files_touched: Type.Optional(
+					Type.Array(Type.String(), {
+						description: "Files or artifacts touched or created by this worker.",
+					}),
+				),
+				verification: Type.Optional(
+					Type.Array(Type.String(), {
+						description: "Verification commands, checks, or evidence collected by this worker.",
+					}),
+				),
+				blockers: Type.Optional(
+					Type.Array(Type.String(), {
+						description: "Specific blockers preventing progress, if any.",
+					}),
+				),
+				notes: Type.Optional(
+					Type.String({
+						description: "Short additional factual context. Do not recommend resume or replacement decisions here.",
+					}),
+				),
+			}),
+			execute: async (_toolCallId, params) => {
+				const agentId = params.agent_id as string
+				const record = activeManager?.getRecord(agentId)
+				if (!record || record.visibility === "system") {
+					return textResult(`Unknown Agent ID "${agentId}". Use the Agent ID injected into this worker prompt.`)
+				}
+				if (record.taskRef?.kind !== "ferment_step") {
+					return textResult("submit_agent_report is only accepted for Ferment-linked worker Agents.")
+				}
+				const reportStatus = params.status as AgentReport["status"]
+				const remainingSteps = params.remaining_steps as string[]
+				if (reportStatus === "completed" && remainingSteps.length > 0) {
+					return textResult('A completed report must use remaining_steps: []. Use status "partial" if work remains.')
+				}
+				const report: AgentReport = {
+					status: reportStatus,
+					summary: params.summary as string,
+					steps_completed: params.steps_completed as string[],
+					remaining_steps: remainingSteps,
+					files_touched: params.files_touched as string[] | undefined,
+					verification: params.verification as string[] | undefined,
+					blockers: params.blockers as string[] | undefined,
+					notes: params.notes as string | undefined,
+					submitted_at: Date.now(),
+				}
+				activeManager?.submitReport(agentId, report)
+				return textResult("Agent report recorded.")
+			},
+		}),
+	)
+
 	// ---- Agent tool ----
 
 	pi.registerTool(
@@ -838,11 +922,11 @@ Guidelines:
 - Provide clear, detailed prompts so the agent can work autonomously.
 - Agent results are returned as text — summarize them for the user.
 - Use run_in_background for work you don't need immediately. You will be notified when it completes.
-- Use resume with an agent ID to continue a previous agent's work. Do not repeat the original prompt; write a steering prompt from the checkpoint. Resume the same agent when the remaining work is a direct continuation, use a changed-approach resume when the same thread matters but the prior approach stalled, and use a short finalizer resume when work appears done but did not return completed.
+- Use resume with an agent ID to continue a previous agent's work. Do not repeat the original prompt; write a steering prompt from the worker report. Resume the same agent when remaining_steps are a direct continuation, use a changed-approach resume when the same thread matters but the prior approach stalled, and use a short finalizer resume when the report is missing or work appears done but did not return completed.
 - Use steer_subagent to send mid-run messages to a running background agent.
 - Use thinking to request an extended thinking level when the selected agent profile does not fix one.
 - Use token_budget to cap the agent's cumulative output token usage when the task scope is small or bounded. Only output tokens (tokens generated by the agent) count toward the budget; input tokens do not.
-- Treat budgets as hard caller constraints. If an agent aborts because of max_turns or token_budget, inspect agent_outcome, checkpoint, remaining_work, and resume_attempts before acting. Resume with a fresh max_turns allocation only for direct continuation; spawn a narrower replacement worker when the remaining work has a clean task boundary; stop/skip when blocked or unclear.
+- Treat budgets as hard caller constraints. If an agent aborts because of max_turns or token_budget, inspect agent_outcome.report, recovery_guidance, and resume_attempts before acting. Resume with a fresh max_turns allocation only for direct continuation; spawn a narrower replacement worker when remaining_steps have a clean task boundary; stop/skip when blocked or unclear.
 - Use max_duration for long-running agents that might hang or run indefinitely (e.g., build tasks with many test iterations, background tasks with unpredictable completion times). Timeouts protect against stalled work without relying on token budgets. Short-lived agents (single queries, simple edits) typically do not need a duration limit.
 - Use inherit_context if the agent needs the parent conversation history.
 
@@ -1173,7 +1257,7 @@ Model selection — YOU choose based on task complexity:
 							model: model as Parameters<typeof manager.spawn>[4]["model"],
 							maxTurns: effectiveMaxTurns,
 							tokenBudget: resolvedConfig.tokenBudget,
-							taskRef: (params as { task_ref?: AgentTaskRef }).task_ref,
+							taskRef: readAgentTaskRef(params),
 							maxDuration: resolvedConfig.maxDuration,
 							isolated,
 							inheritContext,
@@ -1295,7 +1379,7 @@ Model selection — YOU choose based on task complexity:
 						model: model as Parameters<typeof manager.spawnAndWait>[4]["model"],
 						maxTurns: effectiveMaxTurns,
 						tokenBudget: resolvedConfig.tokenBudget,
-						taskRef: (params as { task_ref?: AgentTaskRef }).task_ref,
+						taskRef: readAgentTaskRef(params),
 						maxDuration: resolvedConfig.maxDuration,
 						isolated,
 						inheritContext,

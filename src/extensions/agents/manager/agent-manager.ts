@@ -4,6 +4,7 @@ import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-wor
 import type {
 	AgentOutcome,
 	AgentRecord,
+	AgentReport,
 	AgentResumeAttempt,
 	AgentTaskRef,
 	AgentVisibility,
@@ -61,6 +62,30 @@ interface SpawnOptions {
 	onCompaction?: (info: CompactionInfo) => void
 }
 
+function formatTaskRef(ref: AgentTaskRef): string {
+	return JSON.stringify(ref)
+}
+
+function withAgentReportProtocol(id: string, prompt: string, taskRef: AgentTaskRef | undefined): string {
+	if (!taskRef) return prompt
+	return `You are a Ferment-linked worker Agent.
+
+Agent ID: ${id}
+Task ref: ${formatTaskRef(taskRef)}
+
+Before your final answer, call submit_agent_report with this Agent ID. Report factual progress only:
+- status "completed" when the assigned work is complete
+- status "partial" when useful work remains
+- status "blocked" when external input or an unresolved blocker prevents progress
+- steps_completed: concrete steps you finished
+- remaining_steps: concrete work still left, or [] when complete
+- blockers: blockers only, not generic uncertainty
+
+If you reach a budget warning, call submit_agent_report immediately with your current state before summarizing.
+
+${prompt}`
+}
+
 export class AgentManager {
 	private agents = new Map<string, AgentRecord>()
 	private cleanupInterval: ReturnType<typeof setInterval>
@@ -116,7 +141,7 @@ export class AgentManager {
 		}
 		this.agents.set(id, record)
 
-		const args: SpawnArgs = { pi, ctx, type, prompt, options }
+		const args: SpawnArgs = { pi, ctx, type, prompt: withAgentReportProtocol(id, prompt, options.taskRef), options }
 
 		if (options.isBackground && !options.bypassQueue && this.runningBackground >= this.maxConcurrent) {
 			this.queue.push({ id, args })
@@ -199,6 +224,7 @@ export class AgentManager {
 				record.result = responseText
 				record.session = session
 				record.lastTurnCount = turnsUsed
+				// Preserve the effective, normalized turn cap returned by the runner.
 				record.maxTurns = maxTurns ?? options.maxTurns
 				record.completedAt ??= Date.now()
 				record.latestOutcome = buildAgentOutcome(record)
@@ -311,15 +337,16 @@ export class AgentManager {
 		}
 
 		record.status = "running"
-		record.startedAt = Date.now()
 		record.completedAt = undefined
 		record.result = undefined
 		record.error = undefined
 		record.abortReason = undefined
 		record.maxTurns = options.maxTurns
 		record.lastTurnCount = 0
+		record.agentReport = undefined
+		const attemptStartedAt = Date.now()
 		const attempt: AgentResumeAttempt = {
-			startedAt: record.startedAt,
+			startedAt: attemptStartedAt,
 			maxTurns: options.maxTurns,
 			tokenBudget: options.tokenBudget,
 		}
@@ -327,7 +354,7 @@ export class AgentManager {
 		record.resumeAttempts.push(attempt)
 
 		try {
-			const result = await resumeAgent(record.session, prompt, {
+			const result = await resumeAgent(record.session, withAgentReportProtocol(id, prompt, record.taskRef), {
 				onToolActivity: (activity) => {
 					if (activity.type === "end") record.toolUses++
 				},
@@ -363,6 +390,14 @@ export class AgentManager {
 		attempt.reason = record.status === "error" ? "error" : record.abortReason
 		record.latestOutcome = buildAgentOutcome(record)
 
+		return record
+	}
+
+	submitReport(agentId: string, report: AgentReport): AgentRecord | undefined {
+		const record = this.agents.get(agentId)
+		if (!record || record.visibility === "system") return undefined
+		record.agentReport = report
+		record.latestOutcome = buildAgentOutcome(record)
 		return record
 	}
 
@@ -484,13 +519,13 @@ function buildRemainingWorkGuidance(
 	reason: AgentOutcome["reason"],
 ): string | undefined {
 	if (outcome === "budget_exhausted") {
-		return "Inspect the checkpoint before acting. Resume this same Agent with a bounded steering prompt when the remaining work is a direct continuation and preserving session context is valuable. Use a changed-approach resume when the same thread is still useful but the prior approach stalled. Spawn a new linked Agent when the remaining work has a clean narrower task boundary. If the worker appears finished, run a short bounded finalizer resume and complete only from that completed outcome. Stop/report if the checkpoint is unclear or blocked."
+		return "Inspect the worker report before acting. Resume this same Agent with a bounded steering prompt when remaining_steps are a direct continuation and preserving session context is valuable. Use a changed-approach resume when the same thread is still useful but the prior approach stalled. Spawn a new linked Agent when remaining_steps have a clean narrower task boundary. If the report is missing, run a short bounded finalizer resume to collect submit_agent_report before deciding."
 	}
 	if (outcome === "failed" && (reason === "max_duration" || reason === "inactivity")) {
-		return "Inspect the checkpoint before acting; this may indicate a hang, blocked command, or stalled investigation. Resume only with a steering prompt that avoids the stalled operation and continues the same thread. Otherwise spawn a narrower linked replacement Agent, or stop/report the blocker."
+		return "Inspect the worker report before acting; this may indicate a hang, blocked command, or stalled investigation. Resume only with a steering prompt that avoids the stalled operation and continues the same thread. Otherwise spawn a narrower linked replacement Agent, or stop/report the blocker."
 	}
 	if (outcome === "failed") {
-		return "Inspect the failure and checkpoint before acting. Spawn a corrected replacement Agent when the remaining work has a clear task boundary, or stop/report if the failure is not recoverable through bounded delegation."
+		return "Inspect the failure and worker report before acting. Spawn a corrected replacement Agent when remaining_steps have a clear task boundary, or stop/report if the failure is not recoverable through bounded delegation."
 	}
 	return undefined
 }
@@ -505,7 +540,7 @@ export function buildAgentOutcome(record: AgentRecord): AgentOutcome {
 		outcome !== "completed" &&
 		outcome !== "stopped" &&
 		(record.resumeAttempts?.length ?? 0) < DEFAULT_MAX_RESUMES
-	const remainingWork = buildRemainingWorkGuidance(outcome, reason)
+	const recoveryGuidance = buildRemainingWorkGuidance(outcome, reason)
 	return {
 		agent_id: record.id,
 		status: record.status,
@@ -516,9 +551,9 @@ export function buildAgentOutcome(record: AgentRecord): AgentOutcome {
 		max_turns: record.maxTurns,
 		token_usage: { ...record.lifetimeUsage },
 		duration_ms: durationMs,
-		summary: text,
-		checkpoint: text,
-		remaining_work: remainingWork,
+		report: record.agentReport,
+		summary: record.agentReport ? undefined : text,
+		recovery_guidance: recoveryGuidance,
 		task_ref: record.taskRef,
 		resume_attempts: record.resumeAttempts?.length ?? 0,
 	}

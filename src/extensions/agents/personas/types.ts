@@ -28,9 +28,23 @@ export interface AgentResumeAttempt {
 	reason?: AgentAbortReason | "error"
 }
 
+export interface AgentReport {
+	status: "completed" | "partial" | "blocked"
+	summary: string
+	steps_completed: string[]
+	remaining_steps: string[]
+	files_touched?: string[]
+	verification?: string[]
+	blockers?: string[]
+	notes?: string
+	submitted_at: number
+}
+
 export interface AgentOutcome {
 	agent_id: string
+	/** Raw runtime status kept for UI/backward debugging; use outcome for orchestration decisions. */
 	status: AgentRecord["status"]
+	/** Stable classified result for model/orchestrator recovery decisions. */
 	outcome: AgentOutcomeKind
 	reason?: AgentAbortReason | "error"
 	resumable: boolean
@@ -38,9 +52,9 @@ export interface AgentOutcome {
 	max_turns?: number
 	token_usage: LifetimeUsage
 	duration_ms: number
+	report?: AgentReport
 	summary?: string
-	checkpoint?: string
-	remaining_work?: string
+	recovery_guidance?: string
 	task_ref?: AgentTaskRef
 	resume_attempts: number
 }
@@ -144,6 +158,7 @@ export interface AgentRecord {
 	modelId?: string
 	abortReason?: AgentAbortReason
 	taskRef?: AgentTaskRef
+	agentReport?: AgentReport
 	latestOutcome?: AgentOutcome
 	resumeAttempts?: AgentResumeAttempt[]
 	lastTurnCount?: number
