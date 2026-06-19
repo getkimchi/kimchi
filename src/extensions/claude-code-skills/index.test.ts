@@ -87,7 +87,7 @@ describe("Claude Code skills extension", () => {
 		expect(textResult(result)).not.toContain("Project-native skill instructions.")
 	})
 
-	it("loads Claude Code skills instead of native skills with the same name", async () => {
+	it("does not implicitly load a Claude Code skill that duplicates a native skill", async () => {
 		writeSkill(
 			join(dir, "project", ".kimchi", "skills", "best-practices", "SKILL.md"),
 			"Kimchi project skill instructions.",
@@ -99,6 +99,33 @@ describe("Claude Code skills extension", () => {
 			cwd: join(dir, "project"),
 			sessionManager: { getSessionId: () => "session-1" },
 		} as never)
+
+		expect(textResult(result)).toBe(
+			'Claude Code skill "best-practices" duplicates a native skill. Pass source: "claude" to load the Claude Code version explicitly.',
+		)
+		expect(textResult(result)).not.toContain("Kimchi project skill instructions.")
+		expect(textResult(result)).not.toContain("Claude skill instructions.")
+		expect(result.details).toMatchObject({ success: false, name: "best-practices" })
+	})
+
+	it("loads a duplicate Claude Code skill when source is explicit", async () => {
+		writeSkill(
+			join(dir, "project", ".kimchi", "skills", "best-practices", "SKILL.md"),
+			"Kimchi project skill instructions.",
+		)
+		writeSkill(join(dir, "project", ".claude", "skills", "best-practices", "SKILL.md"), "Claude skill instructions.")
+		const { tools } = registerExtension()
+
+		const result = await tools[0].execute(
+			"call-1",
+			{ skill: "best-practices", source: "claude" },
+			undefined,
+			undefined,
+			{
+				cwd: join(dir, "project"),
+				sessionManager: { getSessionId: () => "session-1" },
+			} as never,
+		)
 
 		expect(textResult(result)).toContain("Claude skill instructions.")
 		expect(textResult(result)).not.toContain("Kimchi project skill instructions.")
