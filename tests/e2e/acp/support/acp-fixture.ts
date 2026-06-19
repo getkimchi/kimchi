@@ -58,9 +58,8 @@ export interface AcpFixtureOptions {
 	 */
 	clientCapabilities?: acp.ClientCapabilities
 	/**
-	 * Override the `_meta` object advertised by the client. Use this for
-	 * `_meta["kimchi.dev"].pi = true` to opt into the `_kimchi.dev/pi/*`
-	 * extension namespace.
+	 * Override the `_meta` object advertised by the client. Use this to opt
+	 * into the `_kimchi.dev/pi_*` extension namespace via per-method flags.
 	 */
 	clientMeta?: Record<string, unknown>
 }
