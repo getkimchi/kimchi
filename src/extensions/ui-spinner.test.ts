@@ -5,27 +5,36 @@
  * message: turn_start → message_start → message_update(thinking_start/_delta/_end
  * | text_start) → message_end → turn_end. This file exercises that lifecycle
  * end-to-end through the real `uiExtension` default export, asserting on the
- * mock UI's `setWorkingVisible` call sequence.
+ * mock UI's `setWorkingVisible` call sequence and the (thinking…)/(thought for
+ * Ns) suffix that the spinner message renders.
  *
- * `createWorkingAnimator` is replaced with a stub that tracks which animator
- * instances had their cleanup invoked before being overwritten — that's the
- * leak-safety contract enforced by `startIndicator`'s
- * `stopWorkingAnimation?.()` call.
+ * `createWorkingAnimator` is replaced with a stub that:
+ *  - tracks which animator instances had their cleanup invoked before being
+ *    overwritten (the leak-safety contract enforced by `startIndicator`'s
+ *    `stopWorkingAnimation?.()` call), and
+ *  - captures the onUpdate callback so tests can manually drive the rendering
+ *    loop without real timers firing.
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 // Per-animator cleanup tracking. Each entry is true iff that animator's cleanup
 // was invoked (either by startIndicator's overwrite or by an explicit stop).
 const animatorCleanupCalled: boolean[] = vi.hoisted(() => [])
 
+// Captured onUpdate callbacks. animatorCallbacks[N-1] is the N-th animator's
+// callback. Tests invoke `tickLatestAnimator()` to simulate the animator's
+// render() call against the current thinkingStatus / ctx state.
+const animatorCallbacks: Array<(char: string, message: string) => void> = vi.hoisted(() => [])
+
 vi.mock("./spinner.js", async () => {
 	const actual = await vi.importActual<typeof import("./spinner.js")>("./spinner.js")
 	return {
 		...actual,
-		createWorkingAnimator: (_onUpdate: (char: string, message: string) => void) => {
+		createWorkingAnimator: (onUpdate: (char: string, message: string) => void) => {
 			const id = animatorCleanupCalled.length
 			animatorCleanupCalled.push(false)
+			animatorCallbacks.push(onUpdate)
 			return () => {
 				animatorCleanupCalled[id] = true
 			}
@@ -50,8 +59,13 @@ interface MockUi {
 	onTerminalInput: ReturnType<typeof vi.fn>
 }
 
+interface MockTheme {
+	fg: (color: string, text: string) => string
+	getFgAnsi: (color: string) => string
+}
+
 interface MockCtx {
-	ui: MockUi
+	ui: MockUi & { theme: MockTheme }
 	hasUI: boolean
 	cwd: string
 	model: undefined
@@ -59,6 +73,7 @@ interface MockCtx {
 	getContextUsage: ReturnType<typeof vi.fn>
 	isIdle: ReturnType<typeof vi.fn>
 	abort: ReturnType<typeof vi.fn>
+	shutdown: ReturnType<typeof vi.fn>
 }
 
 function createMockUi(): MockUi {
@@ -75,9 +90,17 @@ function createMockUi(): MockUi {
 	}
 }
 
+function createMockTheme(): MockTheme {
+	return {
+		fg: (_color: string, text: string) => `<${text}>`,
+		// Return something other than RST_FG so resolvedAccentFg doesn't fall back.
+		getFgAnsi: (_color: string) => "\\x1b[38;2;138;190;183m",
+	}
+}
+
 function createMockCtx(ui: MockUi = createMockUi()): MockCtx {
 	return {
-		ui,
+		ui: { ...ui, theme: createMockTheme() },
 		hasUI: true,
 		cwd: "/tmp/test",
 		model: undefined,
@@ -85,6 +108,7 @@ function createMockCtx(ui: MockUi = createMockUi()): MockCtx {
 		getContextUsage: vi.fn(() => undefined),
 		isIdle: vi.fn(() => true),
 		abort: vi.fn(),
+		shutdown: vi.fn(),
 	}
 }
 
@@ -112,6 +136,9 @@ interface SpinnerHandlers {
 	messageEnd: Handler
 	toolExecutionStart: Handler
 	toolExecutionEnd: Handler
+	turnEnd: Handler
+	input: Handler
+	sessionStart: Handler
 	agentEnd: Handler
 }
 
@@ -121,10 +148,6 @@ interface Setup {
 	ui: MockUi
 	/** Asserts every animator except possibly the last was cleaned up before being overwritten. */
 	assertCleanupsBeforeOverwrite: () => void
-}
-
-function callsTo(ui: MockUi): boolean[] {
-	return ui.setWorkingVisible.mock.calls.map((args) => args[0] as boolean)
 }
 
 function setupExtension(): Setup {
@@ -140,13 +163,13 @@ function setupExtension(): Setup {
 		messageEnd: getHandler(handlers, "message_end"),
 		toolExecutionStart: getHandler(handlers, "tool_execution_start"),
 		toolExecutionEnd: getHandler(handlers, "tool_execution_end"),
+		turnEnd: getHandler(handlers, "turn_end"),
+		input: getHandler(handlers, "input"),
+		sessionStart: getHandler(handlers, "session_start"),
 		agentEnd: getHandler(handlers, "agent_end"),
 	}
 
 	const assertCleanupsBeforeOverwrite = () => {
-		// Every animator except the last must have been cleaned before being overwritten.
-		// The last may or may not be cleaned depending on whether an explicit stop
-		// happened after it was created (e.g. message_end, agent_end, text_start).
 		for (let i = 0; i < animatorCleanupCalled.length - 1; i++) {
 			expect(animatorCleanupCalled[i], `Animator #${i} was not cleaned up before animator #${i + 1} was created`).toBe(
 				true,
@@ -159,7 +182,23 @@ function setupExtension(): Setup {
 
 beforeEach(() => {
 	animatorCleanupCalled.length = 0
+	animatorCallbacks.length = 0
 })
+
+function callsTo(ui: MockUi): boolean[] {
+	return ui.setWorkingVisible.mock.calls.map((args) => args[0] as boolean)
+}
+
+/**
+ * Drive the most recently created animator's onUpdate callback as the
+ * animator's internal render() loop would. Lets us assert on the rendered
+ * spinner message without dealing with real timers.
+ */
+function tickLatestAnimator(char = "|", message = "Chopping"): void {
+	const cb = animatorCallbacks[animatorCallbacks.length - 1]
+	if (!cb) throw new Error("No animator captured — call turn_start (or another start) first")
+	cb(char, message)
+}
 
 const assistantMessage = { role: "assistant" as const, content: [] }
 
@@ -171,11 +210,16 @@ function messageUpdate(type: string) {
 	}
 }
 
+const turnEndEvent = {
+	type: "turn_end",
+	turnIndex: 0,
+	message: assistantMessage,
+	toolResults: [],
+}
+
 describe("uiExtension spinner lifecycle", () => {
 	describe("the core bug fix — spinner survives message_start", () => {
 		it("keeps the spinner on through the gap before the first content event", () => {
-			// Regression test for the user-reported bug. Before the fix, message_start
-			// killed the spinner, leaving a blank TUI for the entire reasoning window.
 			const { handlers, ctx, ui } = setupExtension()
 
 			handlers.turnStart({}, ctx)
@@ -195,7 +239,6 @@ describe("uiExtension spinner lifecycle", () => {
 			handlers.messageEnd({ type: "message_end", message: assistantMessage }, ctx)
 
 			// ON (turn_start) → ON (thinking_start, restarts animator) → OFF (message_end).
-			// message_start is a no-op. text_start never fires for a pure-thinking turn.
 			expect(callsTo(ui)).toEqual([true, true, false])
 
 			assertCleanupsBeforeOverwrite()
@@ -212,7 +255,6 @@ describe("uiExtension spinner lifecycle", () => {
 			handlers.messageUpdate(messageUpdate("text_delta"), ctx)
 			handlers.messageEnd({ type: "message_end", message: assistantMessage }, ctx)
 
-			// ON (turn_start) → OFF (text_start) → OFF (message_end, no-op since already off).
 			expect(callsTo(ui)).toEqual([true, false, false])
 
 			assertCleanupsBeforeOverwrite()
@@ -231,7 +273,6 @@ describe("uiExtension spinner lifecycle", () => {
 			handlers.messageUpdate(messageUpdate("text_start"), ctx)
 			handlers.messageEnd({ type: "message_end", message: assistantMessage }, ctx)
 
-			// ON (turn_start) → ON (thinking_start, restarts) → OFF (text_start) → OFF (message_end, no-op).
 			expect(callsTo(ui)).toEqual([true, true, false, false])
 
 			assertCleanupsBeforeOverwrite()
@@ -251,9 +292,6 @@ describe("uiExtension spinner lifecycle", () => {
 			handlers.toolExecutionEnd({ type: "tool_execution_end", toolCallId: "t1" }, ctx)
 			handlers.toolExecutionEnd({ type: "tool_execution_end", toolCallId: "t2" }, ctx)
 
-			// ON (turn_start) → OFF (text_start) → OFF (message_end, no-op) → ON (tool_execution_start #1)
-			// → ON (tool_execution_start #2, restarts) → OFF (tool_execution_end #2, the last).
-			// tool_execution_end #1 doesn't stop the spinner because toolsInFlight is still 1.
 			expect(callsTo(ui)).toEqual([true, false, false, true, true, false])
 
 			assertCleanupsBeforeOverwrite()
@@ -262,9 +300,6 @@ describe("uiExtension spinner lifecycle", () => {
 
 	describe("userInputPending suppression", () => {
 		it("keeps the spinner off between tool_execution_end and the next message_start", () => {
-			// When the last tool finishes, the TUI may be about to block on a prompt.
-			// The spinner is killed at tool_execution_end and must stay off through
-			// message_start — message_start just decrements the counter, no UI change.
 			const { handlers, ctx, ui, assertCleanupsBeforeOverwrite } = setupExtension()
 
 			handlers.turnStart({}, ctx)
@@ -272,16 +307,12 @@ describe("uiExtension spinner lifecycle", () => {
 			handlers.toolExecutionEnd({ type: "tool_execution_end", toolCallId: "t1" }, ctx)
 			handlers.messageStart({ type: "message_start", message: assistantMessage }, ctx)
 
-			// turn_start ON, tool_execution_start ON, tool_execution_end OFF.
-			// message_start is a no-op (userInputPending decremented, no setWorkingVisible call).
 			expect(callsTo(ui)).toEqual([true, true, false])
 
 			assertCleanupsBeforeOverwrite()
 		})
 
 		it("allows thinking_start to start the spinner after message_start lifts the suppression", () => {
-			// Counter is decremented at message_start. By the time thinking_start fires,
-			// userInputPending is 0, so the spinner re-arms.
 			const { handlers, ctx, ui, assertCleanupsBeforeOverwrite } = setupExtension()
 
 			handlers.turnStart({}, ctx)
@@ -290,9 +321,27 @@ describe("uiExtension spinner lifecycle", () => {
 			handlers.messageStart({ type: "message_start", message: assistantMessage }, ctx)
 			handlers.messageUpdate(messageUpdate("thinking_start"), ctx)
 
-			// turn_start ON, tool_execution_start ON, tool_execution_end OFF, message_start NO-OP,
-			// thinking_start ON.
 			expect(callsTo(ui)).toEqual([true, true, false, true])
+
+			assertCleanupsBeforeOverwrite()
+		})
+
+		it("suppresses thinking_start while userInputPending is still set (between tool and message_start)", () => {
+			// The "suppression lifted at message_start" tests above rely on
+			// message_start decrementing the counter first. This test exercises the
+			// other branch: when message_start hasn't fired yet (or fired with a
+			// non-assistant role), thinking_start must NOT start the spinner.
+			const { handlers, ctx, ui, assertCleanupsBeforeOverwrite } = setupExtension()
+
+			handlers.turnStart({}, ctx)
+			handlers.toolExecutionStart({ type: "tool_execution_start", toolCallId: "t1", toolName: "read" }, ctx)
+			handlers.toolExecutionEnd({ type: "tool_execution_end", toolCallId: "t1" }, ctx)
+			// Skip message_start — the suppression must hold.
+			handlers.messageUpdate(messageUpdate("thinking_start"), ctx)
+
+			// turn_start ON, tool_execution_start ON, tool_execution_end OFF.
+			// thinking_start is suppressed — no setWorkingVisible(true) call.
+			expect(callsTo(ui)).toEqual([true, true, false])
 
 			assertCleanupsBeforeOverwrite()
 		})
@@ -307,7 +356,6 @@ describe("uiExtension spinner lifecycle", () => {
 			// Don't end the tool — simulate the agent ending mid-tool.
 			handlers.agentEnd({ type: "agent_end", messages: [] }, ctx)
 
-			// turn_start ON, tool_execution_start ON, agent_end OFF.
 			expect(callsTo(ui)).toEqual([true, true, false])
 
 			assertCleanupsBeforeOverwrite()
@@ -316,26 +364,213 @@ describe("uiExtension spinner lifecycle", () => {
 
 	describe("leak safety", () => {
 		it("calls the previous animator cleanup before overwriting stopWorkingAnimation", () => {
-			// Specifically guards against timer leaks: if startIndicator ever forgets
-			// the `stopWorkingAnimation?.()` call before assigning, the previous
-			// animator's timers would never be cleared.
 			const { handlers, ctx, assertCleanupsBeforeOverwrite } = setupExtension()
 
-			handlers.turnStart({}, ctx) // animator #0
+			handlers.turnStart({}, ctx)
 			handlers.messageStart({ type: "message_start", message: assistantMessage }, ctx)
-			// thinking_start triggers a re-arm — animator #1
 			handlers.messageUpdate(messageUpdate("thinking_start"), ctx)
 			handlers.messageUpdate(messageUpdate("thinking_end"), ctx)
-			// text_start triggers a stop + no new animator
 			handlers.messageUpdate(messageUpdate("text_start"), ctx)
 
 			expect(animatorCleanupCalled.length).toBe(2)
-			// animator #0 was overwritten by #1 — must have been cleaned up
 			expect(animatorCleanupCalled[0]).toBe(true)
-			// animator #1 is the last and was stopped by text_start
 			expect(animatorCleanupCalled[1]).toBe(true)
 
 			assertCleanupsBeforeOverwrite()
+		})
+	})
+
+	describe("thinkingStatus suffix rendering", () => {
+		// The onUpdate callback captures `thinkingStatus` from its enclosing
+		// scope. We set it via message_update(thinking_start/_end) then drive the
+		// callback via tickLatestAnimator() to assert what setWorkingMessage
+		// receives — the actual user-visible spinner text.
+
+		it("renders no suffix when no thinking has happened", () => {
+			const { handlers, ctx, ui } = setupExtension()
+
+			handlers.turnStart({}, ctx)
+			tickLatestAnimator()
+
+			expect(ui.setWorkingMessage).toHaveBeenLastCalledWith(expect.stringContaining("Chopping"))
+			expect(ui.setWorkingMessage).toHaveBeenLastCalledWith(expect.not.stringContaining("(thinking"))
+			expect(ui.setWorkingMessage).toHaveBeenLastCalledWith(expect.not.stringContaining("(thought"))
+		})
+
+		it("renders the '(thinking…)' suffix while reasoning is in flight", () => {
+			const { handlers, ctx, ui } = setupExtension()
+
+			handlers.turnStart({}, ctx)
+			handlers.messageUpdate(messageUpdate("thinking_start"), ctx)
+			tickLatestAnimator()
+
+			expect(ui.setWorkingMessage).toHaveBeenLastCalledWith(expect.stringContaining("Chopping"))
+			expect(ui.setWorkingMessage).toHaveBeenLastCalledWith(expect.stringContaining("(thinking…)"))
+		})
+
+		it("renders the '(thought for Ns)' suffix after reasoning ends with duration > 100ms", () => {
+			vi.useFakeTimers()
+			try {
+				vi.setSystemTime(1_000_000)
+				const { handlers, ctx, ui } = setupExtension()
+
+				handlers.turnStart({}, ctx)
+				vi.setSystemTime(1_000_500) // +500ms: turn_start to thinking_start
+				handlers.messageUpdate(messageUpdate("thinking_start"), ctx)
+				vi.setSystemTime(1_003_500) // +3s: total thinking duration
+				handlers.messageUpdate(messageUpdate("thinking_end"), ctx)
+				tickLatestAnimator()
+
+				expect(ui.setWorkingMessage).toHaveBeenLastCalledWith(expect.stringContaining("(thought for 3s)"))
+				expect(ui.setWorkingMessage).toHaveBeenLastCalledWith(expect.not.stringContaining("(thinking…)"))
+			} finally {
+				vi.useRealTimers()
+			}
+		})
+
+		it("clears the suffix when reasoning was shorter than 100ms", () => {
+			vi.useFakeTimers()
+			try {
+				vi.setSystemTime(1_000_000)
+				const { handlers, ctx, ui } = setupExtension()
+
+				handlers.turnStart({}, ctx)
+				vi.setSystemTime(1_000_010)
+				handlers.messageUpdate(messageUpdate("thinking_start"), ctx)
+				vi.setSystemTime(1_000_020) // 10ms total — under the 100ms threshold
+				handlers.messageUpdate(messageUpdate("thinking_end"), ctx)
+				tickLatestAnimator()
+
+				expect(ui.setWorkingMessage).toHaveBeenLastCalledWith(expect.stringContaining("Chopping"))
+				expect(ui.setWorkingMessage).toHaveBeenLastCalledWith(expect.not.stringContaining("(thinking"))
+				expect(ui.setWorkingMessage).toHaveBeenLastCalledWith(expect.not.stringContaining("(thought"))
+			} finally {
+				vi.useRealTimers()
+			}
+		})
+
+		it("records the duration of the most recent reasoning block", () => {
+			// Two thinking blocks in one message: the second one's duration wins.
+			vi.useFakeTimers()
+			try {
+				vi.setSystemTime(1_000_000)
+				const { handlers, ctx, ui } = setupExtension()
+
+				handlers.turnStart({}, ctx)
+				vi.setSystemTime(1_000_500)
+				handlers.messageUpdate(messageUpdate("thinking_start"), ctx)
+				vi.setSystemTime(1_001_000) // 500ms
+				handlers.messageUpdate(messageUpdate("thinking_end"), ctx)
+				vi.setSystemTime(1_002_000)
+				handlers.messageUpdate(messageUpdate("thinking_start"), ctx)
+				vi.setSystemTime(1_005_000) // 3s
+				handlers.messageUpdate(messageUpdate("thinking_end"), ctx)
+				tickLatestAnimator()
+
+				expect(ui.setWorkingMessage).toHaveBeenLastCalledWith(expect.stringContaining("(thought for 3s)"))
+			} finally {
+				vi.useRealTimers()
+			}
+		})
+	})
+
+	describe("turn_end 'Worked for Xs' display", () => {
+		beforeEach(() => {
+			vi.useFakeTimers()
+		})
+		afterEach(() => {
+			vi.useRealTimers()
+		})
+
+		it("shows 'Worked for Xs' and hides after 2.5s", () => {
+			const { handlers, ctx, ui } = setupExtension()
+
+			vi.setSystemTime(1_000_000)
+			handlers.turnStart({}, ctx)
+			vi.advanceTimersByTime(1_500) // simulate 1.5s of work
+			handlers.turnEnd(turnEndEvent, ctx)
+
+			// "Worked for 2s" or "1s" depending on duration formatter — accept either
+			// word boundary; just assert "Worked for" is present.
+			expect(ui.setWorkingVisible).toHaveBeenLastCalledWith(true)
+			expect(ui.setWorkingMessage).toHaveBeenLastCalledWith(expect.stringContaining("Worked for"))
+
+			// Just before 2.5s — still visible.
+			vi.advanceTimersByTime(2_400)
+			expect(ui.setWorkingVisible).toHaveBeenLastCalledWith(true)
+
+			// Past 2.5s — auto-hide fires.
+			vi.advanceTimersByTime(200)
+			expect(ui.setWorkingVisible).toHaveBeenLastCalledWith(false)
+		})
+
+		it("cancels a pending auto-hide timer if turn_end fires again", () => {
+			const { handlers, ctx, ui } = setupExtension()
+
+			vi.setSystemTime(1_000_000)
+			handlers.turnStart({}, ctx)
+			handlers.turnEnd(turnEndEvent, ctx)
+			// First auto-hide timer is set. Fire turn_end again before 2.5s elapses.
+			vi.advanceTimersByTime(1_000)
+			handlers.turnEnd(turnEndEvent, ctx)
+			// Now advance past the first timer (which should have been cancelled)
+			// but not past the second.
+			vi.advanceTimersByTime(1_400)
+			expect(ui.setWorkingVisible).toHaveBeenLastCalledWith(true)
+			vi.advanceTimersByTime(1_200)
+			expect(ui.setWorkingVisible).toHaveBeenLastCalledWith(false)
+		})
+	})
+
+	describe("input handler", () => {
+		it("calls ctx.shutdown when the user types bare 'exit'", () => {
+			const { handlers, ctx } = setupExtension()
+
+			handlers.input({ type: "input", text: "exit" }, ctx)
+			expect(ctx.shutdown).toHaveBeenCalledTimes(1)
+		})
+
+		it("calls ctx.shutdown for 'exit' with surrounding whitespace", () => {
+			const { handlers, ctx } = setupExtension()
+
+			handlers.input({ type: "input", text: "  exit  " }, ctx)
+			expect(ctx.shutdown).toHaveBeenCalledTimes(1)
+		})
+
+		it("does not call ctx.shutdown for /exit (slash command)", () => {
+			const { handlers, ctx } = setupExtension()
+
+			handlers.input({ type: "input", text: "/exit" }, ctx)
+			expect(ctx.shutdown).not.toHaveBeenCalled()
+		})
+
+		it("does not call ctx.shutdown for regular text", () => {
+			const { handlers, ctx } = setupExtension()
+
+			handlers.input({ type: "input", text: "hello world" }, ctx)
+			expect(ctx.shutdown).not.toHaveBeenCalled()
+		})
+	})
+
+	describe("message_start role guard", () => {
+		it("does not touch the spinner or userInputPending when the role is non-assistant", () => {
+			// A tool-result message_start must be a no-op — it shouldn't touch the
+			// spinner and it must not decrement userInputPending (the latter is
+			// critical: the next assistant message_start needs to consume that
+			// counter so a thinking_start after a tool → questionnaire flow can
+			// re-arm the spinner).
+			const { handlers, ctx, ui } = setupExtension()
+
+			handlers.turnStart({}, ctx)
+			expect(callsTo(ui)).toEqual([true])
+
+			// Non-assistant message_start: must not call setWorkingVisible at all.
+			handlers.messageStart({ type: "message_start", message: { role: "toolResult", content: [] } }, ctx)
+			expect(callsTo(ui)).toEqual([true])
+
+			// User message_start: same, must not touch the spinner either.
+			handlers.messageStart({ type: "message_start", message: { role: "user", content: [] } }, ctx)
+			expect(callsTo(ui)).toEqual([true])
 		})
 	})
 })
