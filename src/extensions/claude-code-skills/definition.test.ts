@@ -4,7 +4,6 @@ import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import {
 	discoverClaudeCodeSkillDirs,
-	expandConfiguredSkillPaths,
 	getClaudeCodeSkillResourcePaths,
 	getConfiguredSkillResourcePaths,
 	sanitizeSkillMarkdown,
@@ -12,15 +11,12 @@ import {
 
 let dir: string
 let oldHome: string | undefined
-let oldXdgCacheHome: string | undefined
 
 describe("Claude Code skill discovery", () => {
 	beforeEach(() => {
 		dir = mkdtempSync(join(tmpdir(), "kimchi-claude-code-skills-"))
 		oldHome = process.env.HOME
-		oldXdgCacheHome = process.env.XDG_CACHE_HOME
 		process.env.HOME = join(dir, "home")
-		process.env.XDG_CACHE_HOME = join(dir, "cache")
 	})
 
 	afterEach(() => {
@@ -29,12 +25,6 @@ describe("Claude Code skill discovery", () => {
 			delete process.env.HOME
 		} else {
 			process.env.HOME = oldHome
-		}
-		if (oldXdgCacheHome === undefined) {
-			// biome-ignore lint/performance/noDelete: process.env requires delete to truly unset.
-			delete process.env.XDG_CACHE_HOME
-		} else {
-			process.env.XDG_CACHE_HOME = oldXdgCacheHome
 		}
 		rmSync(dir, { recursive: true, force: true })
 	})
@@ -72,7 +62,7 @@ describe("Claude Code skill discovery", () => {
 		const paths = getClaudeCodeSkillResourcePaths(join(dir, "project"))
 
 		expect(paths).toHaveLength(1)
-		expect(paths[0]).toContain(join(dir, "cache", "kimchi", "claude-code-skills"))
+		expect(paths[0]).toContain("kimchi-claude-code-skills-")
 		expect(readFileSync(join(paths[0], "SKILL.md"), "utf-8")).toBe(
 			'---\nname: "typescript-safety"\ndescription: "Use: generated API types"\n---\n# Body\n',
 		)
@@ -176,73 +166,59 @@ describe("Claude Code skill discovery", () => {
 		).toBe('---\ndescription: "Use: colons safely"\nname: "my-skill"\n---\nBody\n')
 	})
 
-	it("does not materialize Claude Code skills already present in native project skills", () => {
+	it("materializes Claude Code skills even when native project skills use the same name", () => {
 		const cwd = join(dir, "project")
 		writeSkill(join(cwd, ".agents", "skills", "typescript-safety", "SKILL.md"))
 		writeSkill(join(cwd, ".claude", "skills", "typescript-safety", "SKILL.md"))
 
-		expect(getClaudeCodeSkillResourcePaths(cwd)).toEqual([])
+		expect(getClaudeCodeSkillResourcePaths(cwd)).toHaveLength(1)
 	})
 
 	it("does not materialize Claude Code skills from an ancestor .claude directory", () => {
 		const project = join(dir, "project")
 		const cwd = join(project, "src", "feature")
-		writeSkill(join(project, ".agents", "skills", "typescript-safety", "SKILL.md"))
 		writeSkill(join(project, ".claude", "skills", "typescript-safety", "SKILL.md"))
 
 		expect(getClaudeCodeSkillResourcePaths(cwd)).toEqual([])
 	})
 
-	it("does not materialize Claude Code skills already present in configured skill paths", () => {
-		const cwd = join(dir, "project")
-		writeSkill(join(cwd, ".custom", "skills", "typescript-safety", "SKILL.md"))
-		writeSkill(join(cwd, ".claude", "skills", "typescript-safety", "SKILL.md"))
-
-		expect(getClaudeCodeSkillResourcePaths(cwd, { excludeSkillPaths: [".custom/skills"] })).toEqual([])
-	})
-
-	it("materializes configured Claude Code skill paths instead of excluding them as native", () => {
-		const cwd = join(dir, "project")
-		writeSkill(join(cwd, ".claude", "custom-skills", "typescript-safety", "SKILL.md"), "# Skill\n")
-
-		const paths = getConfiguredSkillResourcePaths(cwd, [".claude/custom-skills"])
-
-		expect(paths).toHaveLength(1)
-		expect(paths[0]).toContain(join(dir, "cache", "kimchi", "claude-code-skills"))
-		expect(readFileSync(join(paths[0], "SKILL.md"), "utf-8")).toBe(
-			'---\nname: typescript-safety\ndescription: "Claude Code skill: typescript-safety."\n---\n# Skill\n',
-		)
-	})
-
-	it("materializes configured Claude Code skill paths through the sanitized cache", () => {
+	it("materializes Claude Code skill paths through the sanitized cache", () => {
 		const cwd = join(dir, "project")
 		writeSkill(
 			join(cwd, ".claude", "skills", "typescript-safety", "SKILL.md"),
 			"---\ndescription: Use: generated API types\ntools: Read, Write\n---\n# Skill\n",
 		)
 
-		const paths = getClaudeCodeSkillResourcePaths(cwd, { excludeSkillPaths: [".claude/skills"] })
+		const paths = getClaudeCodeSkillResourcePaths(cwd)
 
 		expect(paths).toHaveLength(1)
-		expect(paths[0]).toContain(join(dir, "cache", "kimchi", "claude-code-skills"))
+		expect(paths[0]).toContain("kimchi-claude-code-skills-")
 		expect(readFileSync(join(paths[0], "SKILL.md"), "utf-8")).toBe(
 			'---\nname: "typescript-safety"\ndescription: "Use: generated API types"\n---\n# Skill\n',
 		)
 	})
 
-	it("keeps relative configured skill paths inside home and cwd", () => {
+	it("materializes configured Claude Code skill files through the sanitized cache", () => {
 		const cwd = join(dir, "project")
+		writeSkill(join(cwd, ".claude", "skills", "typescript-safety", "SKILL.md"), "Use generated types.\n")
 
-		expect(expandConfiguredSkillPaths(["../../outside", ".claude/skills"], cwd)).toEqual([
-			join(dir, "home", ".claude", "skills"),
-			join(cwd, ".claude", "skills"),
-		])
+		const paths = getConfiguredSkillResourcePaths(cwd, [".claude/skills/typescript-safety/SKILL.md"])
+
+		expect(paths).toHaveLength(1)
+		expect(paths[0]).toContain("kimchi-claude-code-skills-")
+		expect(readFileSync(join(paths[0], "SKILL.md"), "utf-8")).toBe(
+			'---\nname: typescript-safety\ndescription: "Claude Code skill: typescript-safety."\n---\nUse generated types.\n',
+		)
 	})
 
-	it("normalizes absolute configured skill paths", () => {
-		expect(expandConfiguredSkillPaths([`${join(dir, "project")}/../skills`], join(dir, "project"))).toEqual([
-			join(dir, "skills"),
-		])
+	it("keeps a configured native skill file ahead of a matching Claude Code skill", () => {
+		const cwd = join(dir, "project")
+		const claudeSkills = join(cwd, ".claude", "skills")
+		const nativeSkill = join(cwd, ".agents", "skills", "typescript-safety", "SKILL.md")
+		writeSkill(join(claudeSkills, "typescript-safety", "SKILL.md"))
+		writeSkill(nativeSkill)
+
+		expect(getConfiguredSkillResourcePaths(cwd, [claudeSkills, nativeSkill])).toEqual([nativeSkill])
 	})
 })
 

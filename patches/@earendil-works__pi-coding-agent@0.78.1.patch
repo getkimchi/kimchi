@@ -7,24 +7,26 @@
 #   3. dist/core/sdk.js         — call emitBeforeProviderHeaders in streamFn after
 #                                 static header assembly, so extensions can inject
 #                                 per-request dynamic headers (X-Session-Id, X-Turn-Index)
-#   4. dist/core/model-registry.js, dist/core/tools/edit.js,
-#      dist/modes/interactive/  — miscellaneous upstream fixes bundled in this patch
+#   4. dist/core/agent-session.js — set agent.prepareNextTurn to refresh context.tools
+#                                   from state.tools after each tool batch, enabling
+#                                   mid-run setActiveTools() calls to take effect on
+#                                   the next model response within the same agent run.
+#   5. dist/modes/interactive/  — miscellaneous upstream UI fixes bundled in this patch
 #
-# Tracking: open an upstream PR against pi-mono to ship before_provider_headers as
-# a first-class extension hook in ExtensionRunner and ExtensionAPI.
-# Issue: TODO — file against https://github.com/earendil-works/pi-mono once the
-# API design is confirmed stable.
-#
-# Removal criteria: Remove this patch (and the companion type augmentation in
-# src/types/pi-coding-agent-utils.d.ts) once upstream pi-coding-agent ships
-# BeforeProviderHeadersEvent + ExtensionAPI.on("before_provider_headers", ...) and
-# the fixed version is pinned in package.json.
+# Removal criteria:
+#   - Items 1-3 (before_provider_headers): upstream pi-mono ships BeforeProviderHeadersEvent
+#     and ExtensionAPI.on("before_provider_headers", ...) as a first-class hook, and
+#     the fixed version is pinned in package.json.
+#   - Item 4 (prepareNextTurn): upstream pi-mono wires agent.prepareNextTurn in
+#     AgentSession._installAgentToolHooks() so context.tools refreshes after each tool
+#     batch without a patch.
+#   - Item 5: individual fixes land upstream and the patched version is updated.
 #
 diff --git a/dist/cli/args.js b/dist/cli/args.js
 index 47a360d2a6892aeab2e69cc1a15156ec8e933857..1c2a7f0e5363f73ce657e422751f524a567429bd 100644
 --- a/dist/cli/args.js
 +++ b/dist/cli/args.js
-@@ -313,6 +313,7 @@ ${chalk.bold("Examples:")}
+@@ -313,6 +313,7 @@
    ${APP_NAME} --export session.jsonl output.html
  
  ${chalk.bold("Environment Variables:")}
@@ -32,11 +34,80 @@ index 47a360d2a6892aeab2e69cc1a15156ec8e933857..1c2a7f0e5363f73ce657e422751f524a
    ANTHROPIC_API_KEY                - Anthropic Claude API key
    ANTHROPIC_OAUTH_TOKEN            - Anthropic OAuth token (alternative to API key)
    ANT_LING_API_KEY                 - Ant Ling API key
+diff --git a/dist/core/agent-session.js b/dist/core/agent-session.js
+index fd8a0390b64e6ccebbd0d04b40a051c73d76404a..9c12dbd0254504fe66fd980efef99c0af4d8b71f 100644
+--- a/dist/core/agent-session.js
++++ b/dist/core/agent-session.js
+@@ -196,6 +196,20 @@
+                 throw new Error(`Extension failed, blocking execution: ${String(err)}`);
+             }
+         };
++        // Refresh context.tools from state.tools after every tool batch so that
++        // mid-run setActiveTools() calls (e.g. the planning→implementation profile
++        // transition fired by activate_ferment_phase) are visible to the next model
++        // response within the same agent run. Without this, createContextSnapshot()
++        // snaps tools once at prompt/continue time and the loop never updates them.
++        this.agent.prepareNextTurn = async (_signal) => {
++            return {
++                context: {
++                    systemPrompt: this.agent.state.systemPrompt,
++                    messages: this.agent.state.messages.slice(),
++                    tools: this.agent.state.tools.slice(),
++                },
++            };
++        };
+         this.agent.afterToolCall = async ({ toolCall, args, result, isError }) => {
+             const runner = this._extensionRunner;
+             if (!runner.hasHandlers("tool_result")) {
+@@ -1259,8 +1273,9 @@
+      * Manually compact the session context.
+      * Aborts current agent operation first.
+      * @param customInstructions Optional instructions for the compaction summary
++     * @param force If true, compact even when the session is below the normal size threshold
+      */
+-    async compact(customInstructions) {
++    async compact(customInstructions, force = false) {
+         this._disconnectFromAgent();
+         await this.abort();
+         this._compactionAbortController = new AbortController();
+@@ -1272,14 +1287,21 @@
+             const { apiKey, headers } = await this._getCompactionRequestAuth(this.model);
+             const pathEntries = this.sessionManager.getBranch();
+             const settings = this.settingsManager.getCompactionSettings();
+-            const preparation = prepareCompaction(pathEntries, settings);
++            let preparation = prepareCompaction(pathEntries, settings);
+             if (!preparation) {
+                 // Check why we can't compact
+                 const lastEntry = pathEntries[pathEntries.length - 1];
+                 if (lastEntry?.type === "compaction") {
+                     throw new Error("Already compacted");
+                 }
+-                throw new Error("Nothing to compact (session too small)");
++                if (!force) {
++                    throw new Error("Nothing to compact (session too small)");
++                }
++                // force=true: retry with keepRecentTokens=0 so even small sessions compact.
++                preparation = prepareCompaction(pathEntries, { ...settings, keepRecentTokens: 0 });
++                if (!preparation) {
++                    throw new Error("Nothing to compact (no valid cut point)");
++                }
+             }
+             let extensionCompaction;
+             let fromExtension = false;
+@@ -1793,7 +1815,7 @@
+             compact: (options) => {
+                 void (async () => {
+                     try {
+-                        const result = await this.compact(options?.customInstructions);
++                        const result = await this.compact(options?.customInstructions, options?.force ?? false);
+                         options?.onComplete?.(result);
+                     }
+                     catch (error) {
 diff --git a/dist/core/extensions/runner.js b/dist/core/extensions/runner.js
 index 3f07d5dbfae0b4698cf76dd11d2fc8ff414ad88b..a5910375ed06a5a637a5da118999a5855b19028c 100644
 --- a/dist/core/extensions/runner.js
 +++ b/dist/core/extensions/runner.js
-@@ -709,6 +709,30 @@ export class ExtensionRunner {
+@@ -709,6 +709,30 @@
          }
          return currentPayload;
      }
@@ -67,11 +138,25 @@ index 3f07d5dbfae0b4698cf76dd11d2fc8ff414ad88b..a5910375ed06a5a637a5da118999a585
      async emitBeforeAgentStart(prompt, images, systemPrompt, systemPromptOptions) {
          let currentSystemPrompt = systemPrompt;
          const ctx = Object.defineProperties({}, Object.getOwnPropertyDescriptors(this.createContext()));
+diff --git a/dist/core/extensions/types.d.ts b/dist/core/extensions/types.d.ts
+index 73cde5050da3b436b71de1b467a2d8d503e36273..aad2ed2569c36dad0f3d2ac5607e312dd61275dd 100644
+--- a/dist/core/extensions/types.d.ts
++++ b/dist/core/extensions/types.d.ts
+@@ -198,6 +198,9 @@
+ }
+ export interface CompactOptions {
+     customInstructions?: string;
++    /** When true, compact even if the session is below the normal size threshold.
++     *  Uses keepRecentTokens=0 so all history is eligible to be summarised. */
++    force?: boolean;
+     onComplete?: (result: CompactionResult) => void;
+     onError?: (error: Error) => void;
+ }
 diff --git a/dist/core/model-registry.js b/dist/core/model-registry.js
 index 41ffa679c862f6d0862f1ed07be45836046b97e4..dc6468f0627a2b85dac9abb08b5b424085c02217 100644
 --- a/dist/core/model-registry.js
 +++ b/dist/core/model-registry.js
-@@ -343,7 +343,8 @@ export class ModelRegistry {
+@@ -343,7 +343,8 @@
      }
      /** Load built-in models and apply provider/model overrides */
      loadBuiltInModels(overrides, modelOverrides) {
@@ -85,7 +170,7 @@ diff --git a/dist/core/model-resolver.js b/dist/core/model-resolver.js
 index 99ad9878a521add2acac6570de66028a816a70bb..e417f738e5401665cddff53bb66467c3229c19df 100644
 --- a/dist/core/model-resolver.js
 +++ b/dist/core/model-resolver.js
-@@ -37,6 +37,7 @@ export const defaultModelPerProvider = {
+@@ -37,6 +37,7 @@
      opencode: "kimi-k2.6",
      "opencode-go": "kimi-k2.6",
      "kimi-coding": "kimi-for-coding",
@@ -97,7 +182,7 @@ diff --git a/dist/core/sdk.js b/dist/core/sdk.js
 index 5120dbb4866430f52565fee173fa2de6cfeb4d51..0db40c762c3359243e3006386d1df62e5fac305a 100644
 --- a/dist/core/sdk.js
 +++ b/dist/core/sdk.js
-@@ -185,6 +185,12 @@ export async function createAgentSession(options = {}) {
+@@ -185,6 +185,12 @@
              const effectiveTimeoutMs = httpIdleTimeoutMs === 0 ? 2147483647 : httpIdleTimeoutMs;
              const timeoutMs = options?.timeoutMs ?? providerRetrySettings.timeoutMs ?? effectiveTimeoutMs;
              const websocketConnectTimeoutMs = options?.websocketConnectTimeoutMs ?? settingsManager.getWebSocketConnectTimeoutMs();
@@ -110,7 +195,7 @@ index 5120dbb4866430f52565fee173fa2de6cfeb4d51..0db40c762c3359243e3006386d1df62e
              return streamSimple(model, context, {
                  ...options,
                  apiKey: auth.apiKey,
-@@ -192,7 +198,7 @@ export async function createAgentSession(options = {}) {
+@@ -192,7 +198,7 @@
                  websocketConnectTimeoutMs,
                  maxRetries: options?.maxRetries ?? providerRetrySettings.maxRetries,
                  maxRetryDelayMs: options?.maxRetryDelayMs ?? providerRetrySettings.maxRetryDelayMs,
@@ -123,7 +208,7 @@ diff --git a/dist/core/tools/edit.js b/dist/core/tools/edit.js
 index bf8a79ebfdbe23415cd1effdd3db0b9ebfd804bc..f69116ceafe8ee7f1e2dbfeaa37f60c5d97aa84c 100644
 --- a/dist/core/tools/edit.js
 +++ b/dist/core/tools/edit.js
-@@ -55,7 +55,7 @@ function validateEditInput(input) {
+@@ -55,7 +55,7 @@
      return { path: input.path, edits: input.edits };
  }
  function createEditCallRenderComponent() {
@@ -132,7 +217,7 @@ index bf8a79ebfdbe23415cd1effdd3db0b9ebfd804bc..f69116ceafe8ee7f1e2dbfeaa37f60c5
          preview: undefined,
          previewArgsKey: undefined,
          previewPending: false,
-@@ -120,14 +120,14 @@ function formatEditResult(args, preview, result, theme, isError) {
+@@ -120,14 +120,14 @@
  function getEditHeaderBg(preview, settledError, theme) {
      if (preview) {
          if ("error" in preview) {
@@ -155,7 +240,7 @@ diff --git a/dist/modes/interactive/components/branch-summary-message.js b/dist/
 index e23ca6db02a29814112dd4945bd868604eb6676f..d0f6fd7aeb79c6a20655805152a30970f1b4cc2a 100644
 --- a/dist/modes/interactive/components/branch-summary-message.js
 +++ b/dist/modes/interactive/components/branch-summary-message.js
-@@ -10,7 +10,7 @@ export class BranchSummaryMessageComponent extends Box {
+@@ -10,7 +10,7 @@
      message;
      markdownTheme;
      constructor(message, markdownTheme = getMarkdownTheme()) {
@@ -168,7 +253,7 @@ diff --git a/dist/modes/interactive/components/compaction-summary-message.js b/d
 index 48c22718e1dff7cf4faa4cc09b8a917301b0d892..93b59defc4ecc9caf7faf907230260a1a3f7c477 100644
 --- a/dist/modes/interactive/components/compaction-summary-message.js
 +++ b/dist/modes/interactive/components/compaction-summary-message.js
-@@ -10,7 +10,7 @@ export class CompactionSummaryMessageComponent extends Box {
+@@ -10,7 +10,7 @@
      message;
      markdownTheme;
      constructor(message, markdownTheme = getMarkdownTheme()) {
@@ -181,7 +266,7 @@ diff --git a/dist/modes/interactive/components/custom-message.js b/dist/modes/in
 index 2d54902da1800044206eb1f00ca07501a7310145..44daf4982a5ab6f671f5bce373a94a310a52fc73 100644
 --- a/dist/modes/interactive/components/custom-message.js
 +++ b/dist/modes/interactive/components/custom-message.js
-@@ -18,7 +18,7 @@ export class CustomMessageComponent extends Container {
+@@ -18,7 +18,7 @@
          this.markdownTheme = markdownTheme;
          this.addChild(new Spacer(1));
          // Create box with purple background (used for default rendering)
@@ -203,7 +288,7 @@ index 8220e06bc1e2b136c4b84c4af3cd29fd21b98a9f..b213a26c7ac002776850a59d7cafce4c
  import { theme } from "../theme/theme.js";
  import { CountdownTimer } from "./countdown-timer.js";
  import { DynamicBorder } from "./dynamic-border.js";
-@@ -75,6 +75,16 @@ export class ExtensionSelectorComponent extends Container {
+@@ -75,6 +75,16 @@
          else if (kb.matches(keyData, "tui.select.cancel")) {
              this.onCancelCallback();
          }
@@ -224,7 +309,7 @@ diff --git a/dist/modes/interactive/components/model-selector.js b/dist/modes/in
 index 879b90f6c1f150a30d05af9f09455b93b5dd15f0..ee23106b19e169807cbd001372180573f43bfb1e 100644
 --- a/dist/modes/interactive/components/model-selector.js
 +++ b/dist/modes/interactive/components/model-selector.js
-@@ -117,6 +117,13 @@ export class ModelSelectorComponent extends Container {
+@@ -117,6 +117,13 @@
              return;
          }
          this.allModels = this.sortModels(models);
@@ -238,7 +323,7 @@ index 879b90f6c1f150a30d05af9f09455b93b5dd15f0..ee23106b19e169807cbd001372180573
          this.scopedModels = this.scopedModels.map((scoped) => {
              const refreshed = this.modelRegistry.find(scoped.model.provider, scoped.model.id);
              return refreshed ? { ...scoped, model: refreshed } : scoped;
-@@ -126,6 +133,13 @@ export class ModelSelectorComponent extends Container {
+@@ -126,6 +133,13 @@
              id: scoped.model.id,
              model: scoped.model,
          }));
@@ -252,7 +337,7 @@ index 879b90f6c1f150a30d05af9f09455b93b5dd15f0..ee23106b19e169807cbd001372180573
          this.activeModels = this.scope === "scoped" ? this.scopedModelItems : this.allModels;
          this.filteredModels = this.activeModels;
          const currentIndex = this.filteredModels.findIndex((item) => modelsAreEqual(this.currentModel, item.model));
-@@ -184,17 +198,21 @@ export class ModelSelectorComponent extends Container {
+@@ -184,17 +198,21 @@
              if (!item)
                  continue;
              const isSelected = i === this.selectedIndex;
@@ -277,7 +362,7 @@ index 879b90f6c1f150a30d05af9f09455b93b5dd15f0..ee23106b19e169807cbd001372180573
                  const providerBadge = theme.fg("muted", `[${item.provider}]`);
                  const checkmark = isCurrent ? theme.fg("success", " ✓") : "";
                  line = `${modelText} ${providerBadge}${checkmark}`;
-@@ -267,6 +285,8 @@ export class ModelSelectorComponent extends Container {
+@@ -267,6 +285,8 @@
          }
      }
      handleSelect(model) {
@@ -290,7 +375,7 @@ diff --git a/dist/modes/interactive/components/skill-invocation-message.js b/dis
 index 561f3d2540db0a8d934bc2bbecb097aaa7c88458..da4601b0aa0ea1145505300ba77485cfc5c48bb0 100644
 --- a/dist/modes/interactive/components/skill-invocation-message.js
 +++ b/dist/modes/interactive/components/skill-invocation-message.js
-@@ -11,7 +11,7 @@ export class SkillInvocationMessageComponent extends Box {
+@@ -11,7 +11,7 @@
      skillBlock;
      markdownTheme;
      constructor(skillBlock, markdownTheme = getMarkdownTheme()) {
@@ -303,7 +388,7 @@ diff --git a/dist/modes/interactive/components/tool-execution.js b/dist/modes/in
 index 3f93cc6c5665f603d29b3d6ac3dabfa560d6bb32..a0b9d9a89b5f2e6384d4b909a949794e20587ae4 100644
 --- a/dist/modes/interactive/components/tool-execution.js
 +++ b/dist/modes/interactive/components/tool-execution.js
-@@ -43,8 +43,8 @@ export class ToolExecutionComponent extends Container {
+@@ -43,8 +43,8 @@
          // Always create all shell variants. contentBox is used for default renderer-based composition.
          // selfRenderContainer is used when the tool renders its own framing.
          // contentText is reserved for generic fallback rendering when no tool definition exists.
@@ -314,7 +399,7 @@ index 3f93cc6c5665f603d29b3d6ac3dabfa560d6bb32..a0b9d9a89b5f2e6384d4b909a949794e
          this.selfRenderContainer = new Container();
          if (this.hasRendererDefinition()) {
              this.addChild(this.getRenderShell() === "self" ? this.selfRenderContainer : this.contentBox);
-@@ -204,10 +204,10 @@ export class ToolExecutionComponent extends Container {
+@@ -204,10 +204,10 @@
      }
      updateDisplay() {
          const bgFn = this.isPartial
@@ -332,7 +417,7 @@ diff --git a/dist/modes/interactive/components/user-message.js b/dist/modes/inte
 index 0e85e9006835b754e38a7af725b4f1ca18eb3a61..94ea3d983a2abe039a7729d452f60c32457a6638 100644
 --- a/dist/modes/interactive/components/user-message.js
 +++ b/dist/modes/interactive/components/user-message.js
-@@ -10,7 +10,7 @@ export class UserMessageComponent extends Container {
+@@ -10,7 +10,7 @@
      contentBox;
      constructor(text, markdownTheme = getMarkdownTheme()) {
          super();
@@ -345,7 +430,7 @@ diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive
 index 0ab79928806ecd3fb84610447da4990e25047311..f400b9519304c909ee968c3dc12a5dfe4b9e0cb8 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
-@@ -1577,7 +1577,7 @@ export class InteractiveMode {
+@@ -1577,7 +1577,7 @@
              setHeader: (factory) => this.setExtensionHeader(factory),
              setTitle: (title) => this.ui.terminal.setTitle(title),
              custom: (factory, options) => this.showExtensionCustom(factory, options),
@@ -354,7 +439,7 @@ index 0ab79928806ecd3fb84610447da4990e25047311..f400b9519304c909ee968c3dc12a5dfe
              setEditorText: (text) => this.editor.setText(text),
              getEditorText: () => this.editor.getExpandedText?.() ?? this.editor.getText(),
              editor: (title, prefill) => this.showExtensionEditor(title, prefill),
-@@ -3383,6 +3383,29 @@ export class InteractiveMode {
+@@ -3383,6 +3383,29 @@
              this.showModelSelector();
              return;
          }

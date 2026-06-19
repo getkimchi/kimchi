@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { type ExtensionAPI, type ToolDefinition, loadSkillsFromDir } from "@earendil-works/pi-coding-agent"
@@ -7,15 +7,12 @@ import claudeCodeSkillsExtension from "./index.js"
 
 let dir: string
 let oldHome: string | undefined
-let oldXdgCacheHome: string | undefined
 
 describe("Claude Code skills extension", () => {
 	beforeEach(() => {
 		dir = mkdtempSync(join(tmpdir(), "kimchi-claude-code-skill-tool-"))
 		oldHome = process.env.HOME
-		oldXdgCacheHome = process.env.XDG_CACHE_HOME
 		process.env.HOME = join(dir, "home")
-		process.env.XDG_CACHE_HOME = join(dir, "cache")
 	})
 
 	afterEach(() => {
@@ -24,12 +21,6 @@ describe("Claude Code skills extension", () => {
 			delete process.env.HOME
 		} else {
 			process.env.HOME = oldHome
-		}
-		if (oldXdgCacheHome === undefined) {
-			// biome-ignore lint/performance/noDelete: process.env requires delete to truly unset.
-			delete process.env.XDG_CACHE_HOME
-		} else {
-			process.env.XDG_CACHE_HOME = oldXdgCacheHome
 		}
 		rmSync(dir, { recursive: true, force: true })
 	})
@@ -65,10 +56,36 @@ describe("Claude Code skills extension", () => {
 		expect(result.details).not.toEqual({ success: true, name: "typescript-safety", filePath: skillPath })
 	})
 
-	it("loads native project skills before user or Claude copies", async () => {
-		const projectSkillPath = join(dir, "project", ".agents", "skills", "best-practices", "SKILL.md")
-		writeSkill(projectSkillPath, "Project-native skill instructions.")
-		writeSkill(join(dir, "home", ".agents", "skills", "best-practices", "SKILL.md"), "User-native skill instructions.")
+	it("does not load native skills through the Claude-compatible Skill tool", async () => {
+		writeSkill(
+			join(dir, "project", ".kimchi", "skills", "best-practices", "SKILL.md"),
+			"Kimchi project skill instructions.",
+		)
+		writeSkill(
+			join(dir, "project", ".agents", "skills", "best-practices", "SKILL.md"),
+			"Project-native skill instructions.",
+		)
+		const { tools } = registerExtension()
+
+		const result = await tools[0].execute("call-1", { skill: "best-practices" }, undefined, undefined, {
+			cwd: join(dir, "project", "src", "feature"),
+			sessionManager: { getSessionId: () => "session-1" },
+		} as never)
+
+		expect(result.details).toEqual({
+			success: false,
+			name: "best-practices",
+			error: 'Claude Code skill "best-practices" was not found.',
+		})
+		expect(textResult(result)).not.toContain("Kimchi project skill instructions.")
+		expect(textResult(result)).not.toContain("Project-native skill instructions.")
+	})
+
+	it("loads Claude Code skills instead of native skills with the same name", async () => {
+		writeSkill(
+			join(dir, "project", ".kimchi", "skills", "best-practices", "SKILL.md"),
+			"Kimchi project skill instructions.",
+		)
 		writeSkill(join(dir, "project", ".claude", "skills", "best-practices", "SKILL.md"), "Claude skill instructions.")
 		const { tools } = registerExtension()
 
@@ -77,28 +94,9 @@ describe("Claude Code skills extension", () => {
 			sessionManager: { getSessionId: () => "session-1" },
 		} as never)
 
-		expect(textResult(result)).toContain("Project-native skill instructions.")
-		expect(textResult(result)).not.toContain("User-native skill instructions.")
-		expect(textResult(result)).not.toContain("Claude skill instructions.")
-		expect(result.details).toEqual({ success: true, name: "best-practices", filePath: projectSkillPath })
-	})
-
-	it("loads ancestor native project skills from subdirectories before user or Claude copies", async () => {
-		const projectSkillPath = join(dir, "project", ".agents", "skills", "best-practices", "SKILL.md")
-		writeSkill(projectSkillPath, "Project-native skill instructions.")
-		writeSkill(join(dir, "home", ".agents", "skills", "best-practices", "SKILL.md"), "User-native skill instructions.")
-		writeSkill(join(dir, "project", ".claude", "skills", "best-practices", "SKILL.md"), "Claude skill instructions.")
-		const { tools } = registerExtension()
-
-		const result = await tools[0].execute("call-1", { skill: "best-practices" }, undefined, undefined, {
-			cwd: join(dir, "project", "src", "feature"),
-			sessionManager: { getSessionId: () => "session-1" },
-		} as never)
-
-		expect(textResult(result)).toContain("Project-native skill instructions.")
-		expect(textResult(result)).not.toContain("User-native skill instructions.")
-		expect(textResult(result)).not.toContain("Claude skill instructions.")
-		expect(result.details).toEqual({ success: true, name: "best-practices", filePath: projectSkillPath })
+		expect(textResult(result)).toContain("Claude skill instructions.")
+		expect(textResult(result)).not.toContain("Kimchi project skill instructions.")
+		expect(result.details).toMatchObject({ success: true, name: "best-practices" })
 	})
 
 	it("returns an error when the skill is missing", async () => {
@@ -129,7 +127,7 @@ describe("Claude Code skills extension", () => {
 		const skillPaths = (result as { skillPaths?: string[] } | undefined)?.skillPaths ?? []
 
 		expect(result).toMatchObject({
-			skillPaths: [expect.stringContaining(join(dir, "cache", "kimchi", "claude-code-skills"))],
+			skillPaths: [expect.stringContaining("kimchi-claude-code-skills-")],
 		})
 		const loaded = loadSkillsFromDir({ dir: skillPaths[0] ?? "", source: "path" })
 		expect(loaded.skills).toMatchObject([
@@ -138,10 +136,28 @@ describe("Claude Code skills extension", () => {
 		expect(loaded.diagnostics.map((diagnostic) => diagnostic.message)).not.toContain("description is required")
 	})
 
-	it("does not contribute Claude Code skill resources that duplicate native project skills", async () => {
+	it("contributes Claude Code skill resources even when native project skills use the same name", async () => {
 		writeSkill(join(dir, "project", ".agents", "skills", "typescript-safety", "SKILL.md"), "Use generated types.")
-		writeSkill(join(dir, "project", ".claude", "skills", "typescript-safety", "SKILL.md"), "Use generated types.")
+		writeSkill(join(dir, "project", ".claude", "skills", "typescript-safety", "SKILL.md"), "Use Claude skills.")
 		const { handlers } = registerExtension()
+
+		const result = await handlers.resources_discover?.({
+			type: "resources_discover",
+			cwd: join(dir, "project"),
+			reason: "startup",
+		})
+		const skillPaths = (result as { skillPaths?: string[] } | undefined)?.skillPaths ?? []
+
+		expect(skillPaths).toHaveLength(1)
+		const loaded = loadSkillsFromDir({ dir: skillPaths[0] ?? "", source: "path" })
+		expect(loaded.skills).toMatchObject([{ name: "typescript-safety" }])
+		expect(readSkill(skillPaths[0] ?? "")).toContain("Use Claude skills.")
+	})
+
+	it("skips startup Claude Code resources that duplicate configured native skills", async () => {
+		writeSkill(join(dir, "project", ".agents", "skills", "best-practices", "SKILL.md"), "Native skill.")
+		writeSkill(join(dir, "project", ".claude", "skills", "best-practices", "SKILL.md"), "Claude skill.")
+		const { handlers } = registerExtension([".agents/skills"])
 
 		const result = await handlers.resources_discover?.({
 			type: "resources_discover",
@@ -151,21 +167,43 @@ describe("Claude Code skills extension", () => {
 
 		expect(result).toBeUndefined()
 	})
+
+	it("contributes startup temp copies for configured Claude Code skills", async () => {
+		writeRawSkill(join(dir, "project", ".claude", "skills", "best-practices", "SKILL.md"), "Claude skill.\n")
+		const { handlers } = registerExtension([".claude/skills"])
+
+		const result = await handlers.resources_discover?.({
+			type: "resources_discover",
+			cwd: join(dir, "project"),
+			reason: "startup",
+		})
+		const skillPaths = (result as { skillPaths?: string[] } | undefined)?.skillPaths ?? []
+
+		expect(skillPaths).toHaveLength(1)
+		const loaded = loadSkillsFromDir({ dir: skillPaths[0] ?? "", source: "path" })
+		expect(loaded.skills).toMatchObject([{ name: "best-practices", description: "Claude Code skill: best-practices." }])
+	})
 })
 
 type RegisteredHandlers = {
 	resources_discover?: (event: { type: "resources_discover"; cwd: string; reason: string }) => unknown
 }
 
-function registerExtension(): { tools: ToolDefinition[]; handlers: RegisteredHandlers } {
+function registerExtension(configuredSkillPaths: string[] = []): {
+	tools: ToolDefinition[]
+	handlers: RegisteredHandlers
+} {
 	const tools: ToolDefinition[] = []
 	const handlers: RegisteredHandlers = {}
-	claudeCodeSkillsExtension({
-		registerTool: (tool: ToolDefinition) => tools.push(tool),
-		on: (event: keyof RegisteredHandlers, handler: RegisteredHandlers[keyof RegisteredHandlers]) => {
-			handlers[event] = handler
-		},
-	} as unknown as ExtensionAPI)
+	claudeCodeSkillsExtension(
+		{
+			registerTool: (tool: ToolDefinition) => tools.push(tool),
+			on: (event: keyof RegisteredHandlers, handler: RegisteredHandlers[keyof RegisteredHandlers]) => {
+				handlers[event] = handler
+			},
+		} as unknown as ExtensionAPI,
+		configuredSkillPaths,
+	)
 	return { tools, handlers }
 }
 
@@ -182,4 +220,8 @@ function writeSkill(path: string, body: string): void {
 function writeRawSkill(path: string, content: string): void {
 	mkdirSync(dirname(path), { recursive: true })
 	writeFileSync(path, content, "utf-8")
+}
+
+function readSkill(skillDir: string): string {
+	return readFileSync(join(skillDir, "SKILL.md"), "utf-8")
 }

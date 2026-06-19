@@ -1,10 +1,16 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
+import type { Ferment, Phase } from "../../ferment/types.js"
 import { FERMENT_TOOLS, FERMENT_TOOL_NAMES } from "./tool-names.js"
-import { applyFermentToolProfile, applyPlannerOneshotAllowlist, profileForFerment } from "./tool-scope.js"
+import {
+	IMPLEMENTATION_TOOL_NAMES,
+	PLANNING_TOOL_NAMES,
+	applyFermentToolProfile,
+	profileForFerment,
+} from "./tool-scope.js"
 
-function createPi(activeTools: string[], allTools: string[]) {
-	let active = [...activeTools]
+function createPi(initialActive: string[], allTools: string[]) {
+	let active = [...initialActive]
 	const pi = {
 		getActiveTools: vi.fn(() => active),
 		getAllTools: vi.fn(() => allTools.map((name) => ({ name }))),
@@ -16,160 +22,250 @@ function createPi(activeTools: string[], allTools: string[]) {
 	return pi
 }
 
-describe("ferment tool scope", () => {
-	it("applies the worker profile by removing ferment tools from the active set", () => {
+function buildFerment(phaseStatus: Phase["status"] | undefined): Ferment {
+	// Helper: builds a minimal Ferment with the given phase status (or no phases).
+	const phases: Phase[] = phaseStatus
+		? [{ id: "phase-1", index: 1, name: "Build", goal: "Implement feature", status: phaseStatus, steps: [] }]
+		: []
+	return {
+		id: "ferment-1",
+		name: "Test Ferment",
+		status: "running",
+		worktree: { path: "/tmp" },
+		scoping: {},
+		phases,
+		decisions: [],
+		memories: [],
+		createdAt: new Date().toISOString(),
+		updatedAt: new Date().toISOString(),
+	}
+}
+
+describe("profileForFerment", () => {
+	it("returns idle when ferment is undefined", () => {
+		expect(profileForFerment(undefined)).toBe("idle")
+	})
+
+	it("returns planning when ferment has no phases (defensive against missing phases)", () => {
+		expect(profileForFerment(buildFerment(undefined))).toBe("planning")
+	})
+
+	it("returns planning when all phases are still planned", () => {
+		expect(profileForFerment(buildFerment("planned"))).toBe("planning")
+	})
+
+	it("returns implementation when any phase has been activated", () => {
+		expect(profileForFerment(buildFerment("active"))).toBe("implementation")
+	})
+
+	it("returns implementation when a phase has been completed", () => {
+		// Ferment freezes at implementation once any phase was activated, even if all phases are now complete.
+		expect(profileForFerment(buildFerment("completed"))).toBe("implementation")
+	})
+
+	it("returns implementation when a phase has failed", () => {
+		expect(profileForFerment(buildFerment("failed"))).toBe("implementation")
+	})
+
+	it("returns implementation when a phase has been skipped", () => {
+		expect(profileForFerment(buildFerment("skipped"))).toBe("implementation")
+	})
+})
+
+describe("planning profile", () => {
+	it("when allTools contains only planning tools, result is the registered subset", () => {
+		const planningTools = [...PLANNING_TOOL_NAMES]
+		const pi = createPi([], planningTools)
+
+		applyFermentToolProfile(pi, "planning")
+
+		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
+		expect(lastCall).toEqual(planningTools)
+	})
+
+	it("when allTools contains extra non-planning tools, they are excluded (intersection)", () => {
+		const allTools = [
+			"read",
+			"grep",
+			"find",
+			"ls",
+			"web_fetch",
+			"web_search",
+			"set_phase",
+			"propose_ferment_scoping",
+			"scope_ferment",
+			"update_ferment_scope_field",
+			"confirm_ferment_completion_criteria",
+			"list_ferments",
+			"ask_user",
+			"activate_ferment_phase",
+			"bash",
+			"edit",
+			"write",
+			"Agent",
+		]
+		const pi = createPi([], allTools)
+
+		applyFermentToolProfile(pi, "planning")
+
+		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
+		expect(lastCall).not.toContain("bash")
+		expect(lastCall).not.toContain("edit")
+		expect(lastCall).not.toContain("write")
+		expect(lastCall).not.toContain("Agent")
+		for (const name of PLANNING_TOOL_NAMES) {
+			expect(lastCall).toContain(name)
+		}
+	})
+
+	it("when allTools returns ZERO ferment tools, result is empty (defensive)", () => {
+		const pi = createPi([], ["bash", "edit"])
+
+		applyFermentToolProfile(pi, "planning")
+
+		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
+		expect(lastCall).toEqual([])
+	})
+
+	// Regression: activate_ferment_phase is the transition trigger from planning
+	// to implementation. The prompt explicitly tells the planner to call it as
+	// the first lifecycle action, so it MUST be in the planning toolset or the
+	// transition is unreachable from the planning profile.
+	it("includes activate_ferment_phase so the planner can fire the planning → implementation transition", () => {
+		const pi = createPi([], ["activate_ferment_phase", "scope_ferment"])
+
+		applyFermentToolProfile(pi, "planning")
+
+		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
+		expect(lastCall).toContain("activate_ferment_phase")
+	})
+})
+
+describe("implementation profile", () => {
+	it("when allTools contains full standard toolset plus ferment tools, result contains ALL of them", () => {
+		const allTools = [
+			"read",
+			"grep",
+			"find",
+			"ls",
+			"web_fetch",
+			"web_search",
+			"bash",
+			"edit",
+			"write",
+			"Agent",
+			"get_subagent_result",
+			"set_phase",
+			...FERMENT_TOOL_NAMES,
+		]
+		const pi = createPi([], allTools)
+
+		applyFermentToolProfile(pi, "implementation")
+
+		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
+		expect(lastCall).toContain("bash")
+		expect(lastCall).toContain("edit")
+		expect(lastCall).toContain("write")
+		expect(lastCall).toContain("Agent")
+		expect(lastCall).toContain("get_subagent_result")
+		expect(lastCall).toContain("activate_ferment_phase")
+		expect(lastCall).toContain("refine_ferment_phase")
+		expect(lastCall).toContain("start_ferment_step")
+		expect(lastCall).toContain("complete_ferment_step")
+		expect(lastCall).toContain("verify_ferment_step")
+		expect(lastCall).toContain("complete_ferment")
+		for (const name of FERMENT_TOOL_NAMES) {
+			expect(lastCall).toContain(name)
+		}
+	})
+
+	it("when allTools is missing some required tools, result STILL includes them (defensive union)", () => {
+		// Simulate a case where bash is not registered in pi, but implementation profile adds it.
+		const pi = createPi([], ["read", "grep"])
+
+		applyFermentToolProfile(pi, "implementation")
+
+		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
+		expect(lastCall).toContain("bash")
+		expect(lastCall).toContain("edit")
+		expect(lastCall).toContain("write")
+		expect(lastCall).toContain("Agent")
+	})
+})
+
+describe("worker profile", () => {
+	it("applies empty toolset for workers (managed by agents manager, not ferment)", () => {
 		const pi = createPi(["read", "bash", "start_ferment_step"], ["read", "bash", "start_ferment_step"])
 
 		applyFermentToolProfile(pi, "worker")
 
-		expect(pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash"])
+		expect(pi.setActiveTools).toHaveBeenLastCalledWith([])
 	})
+})
 
-	it("applies the planner-active profile", () => {
-		const pi = createPi(["read", "bash"], ["read", "bash", "start_ferment_step"])
-
-		applyFermentToolProfile(pi, "planner-active")
-
-		expect(pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash", "start_ferment_step"])
-	})
-
-	it("applies the idle profile without ferment tools", () => {
-		const pi = createPi(
-			[
-				"read",
-				"bash",
-				"propose_ferment_scoping",
-				"scope_ferment",
-				"activate_ferment_phase",
-				"list_ferments",
-				"confirm_ferment_completion_criteria",
-				"ask_user",
-			],
-			[
-				"read",
-				"bash",
-				"propose_ferment_scoping",
-				"scope_ferment",
-				"activate_ferment_phase",
-				"list_ferments",
-				"confirm_ferment_completion_criteria",
-				"ask_user",
-			],
-		)
+describe("idle profile", () => {
+	it("includes non-ferment tools and discovery tools but strips ferment-only tools", () => {
+		// Idle = normal chat or post-ferment. Non-ferment tools (read, bash, etc.)
+		// and discovery tools (list_ferments, request_ferment_workflow) stay.
+		// Ferment-only lifecycle/planning tools are hidden.
+		const allTools = [
+			"read",
+			"bash",
+			"list_ferments",
+			"request_ferment_workflow",
+			"propose_ferment_scoping", // ferment-only: should be hidden
+			"start_ferment_step", // ferment-only: should be hidden
+			"activate_ferment_phase", // ferment-only: should be hidden
+		]
+		const pi = createPi([], allTools)
 
 		applyFermentToolProfile(pi, "idle")
 
-		expect(pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash"])
-	})
-
-	it("keeps the existing-ferment lifecycle surface for an active planner profile", () => {
-		const allTools = ["read", "bash", ...FERMENT_TOOL_NAMES]
-		const pi = createPi(["read", "bash"], allTools)
-
-		applyFermentToolProfile(pi, "planner-active")
-
 		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
-		for (const name of FERMENT_TOOL_NAMES) {
-			expect(lastCall).toContain(name)
-		}
-		expect(lastCall).not.toContain("set_ferment_mode")
-	})
-
-	it("keeps only non-mutating ferment discovery while paused or terminal", () => {
-		const pi = createPi(
-			["read", "bash", "list_ferments", "complete_ferment", "ask_user"],
-			["read", "bash", "list_ferments", "complete_ferment", "ask_user"],
-		)
-
-		applyFermentToolProfile(pi, "paused-terminal")
-
-		expect(pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash", FERMENT_TOOLS.LIST])
-	})
-
-	it("selects session profiles from ferment role and status", () => {
-		expect(profileForFerment(undefined)).toBe("idle")
-		expect(profileForFerment({ status: "draft" } as never)).toBe("planner-active")
-		expect(profileForFerment({ status: "planned" } as never)).toBe("planner-active")
-		expect(profileForFerment({ status: "running" } as never)).toBe("planner-active")
-		expect(profileForFerment({ status: "paused" } as never)).toBe("paused-terminal")
-		expect(profileForFerment({ status: "complete" } as never)).toBe("paused-terminal")
-		expect(profileForFerment({ status: "abandoned" } as never)).toBe("paused-terminal")
+		expect(lastCall).toContain("read")
+		expect(lastCall).toContain("bash")
+		expect(lastCall).toContain("list_ferments")
+		expect(lastCall).toContain("request_ferment_workflow")
+		expect(lastCall).not.toContain("propose_ferment_scoping")
+		expect(lastCall).not.toContain("start_ferment_step")
+		expect(lastCall).not.toContain("activate_ferment_phase")
 	})
 })
 
-describe("applyPlannerOneshotAllowlist", () => {
-	it("strips inline implementation tools, keeping orchestration tools", () => {
-		const allTools = [
-			"bash",
-			"edit",
-			"write",
-			"python-edit",
-			"web_search",
-			"web_fetch",
-			"grep",
-			"ls",
-			"read",
-			"Agent",
-			"get_subagent_result",
-			"set_phase",
-			"scope_ferment",
-			"activate_ferment_phase",
-			"start_ferment_step",
-			"complete_ferment_step",
-			"complete_ferment",
-		]
-		const pi = createPi(allTools, allTools)
-
-		applyPlannerOneshotAllowlist(pi)
-
-		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
-		expect(pi.setActiveTools).toHaveBeenLastCalledWith([
-			"read",
-			"Agent",
-			"get_subagent_result",
-			"set_phase",
-			"scope_ferment",
-			"activate_ferment_phase",
-			"start_ferment_step",
-			"complete_ferment_step",
-			"complete_ferment",
-		])
+describe("planning → implementation transition", () => {
+	it("profileForFerment returns planning when all phases are planned", () => {
+		const ferment = buildFerment("planned")
+		expect(profileForFerment(ferment)).toBe("planning")
 	})
 
-	it("only keeps tools that are actually registered", () => {
-		const pi = createPi(["read", "bash"], ["read", "bash"])
-
-		applyPlannerOneshotAllowlist(pi)
-
-		expect(pi.setActiveTools).toHaveBeenLastCalledWith(["read"])
+	it("profileForFerment returns implementation after activate_ferment_phase transitions phase to active", () => {
+		// Simulate the result of activate_ferment_phase returning success.
+		const ferment = buildFerment("active")
+		expect(profileForFerment(ferment)).toBe("implementation")
 	})
 
-	it("oneshot planner profile includes registered existing-ferment lifecycle tools", () => {
-		const allTools = ["bash", "edit", "read", "Agent", "get_subagent_result", "set_phase", ...FERMENT_TOOL_NAMES]
-		const pi = createPi(allTools, allTools)
-
-		applyFermentToolProfile(pi, "oneshot-planner")
-
-		expect(pi.setActiveTools).toHaveBeenCalledTimes(1)
-		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
-		expect(lastCall).not.toContain("bash")
-		expect(lastCall).not.toContain("edit")
-		for (const name of FERMENT_TOOL_NAMES) {
-			expect(lastCall).toContain(name)
-		}
+	it("scope_ferment returning success does NOT change the profile (phase status stays planned)", () => {
+		// scope_ferment populates the phases but does not activate them.
+		const ferment = buildFerment("planned")
+		// The profile remains planning because the phase is still "planned".
+		expect(profileForFerment(ferment)).toBe("planning")
+		// After activate_ferment_phase succeeds, the phase becomes "active" and profile becomes implementation.
+		const activatedFerment = buildFerment("active")
+		expect(profileForFerment(activatedFerment)).toBe("implementation")
 	})
 })
 
-describe("pi-mono run snapshot regression", () => {
-	it("requires lifecycle tools in the initial run snapshot", () => {
-		const initialRunSnapshot = new Set(["scope_ferment"])
-		const callFromSnapshot = (toolName: string) =>
-			initialRunSnapshot.has(toolName) ? `called ${toolName}` : `Tool ${toolName} not found`
-		const pi = createPi(["scope_ferment"], ["scope_ferment", "activate_ferment_phase"])
+describe("normal vs one-shot parity", () => {
+	it("profileForFerment returns planning for both normal and one-shot when phases are planned", () => {
+		// Both normal interactive mode and one-shot mode use the same profile model.
+		const ferment = buildFerment("planned")
+		expect(profileForFerment(ferment)).toBe("planning")
+	})
 
-		applyFermentToolProfile(pi, "planner-active")
-
-		expect((pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0]).toContain("activate_ferment_phase")
-		expect(callFromSnapshot("activate_ferment_phase")).toBe("Tool activate_ferment_phase not found")
+	it("profileForFerment returns implementation for both normal and one-shot when a phase is active", () => {
+		// The difference between normal and one-shot is the continuation policy (auto vs manual),
+		// NOT the toolset.
+		const ferment = buildFerment("active")
+		expect(profileForFerment(ferment)).toBe("implementation")
 	})
 })

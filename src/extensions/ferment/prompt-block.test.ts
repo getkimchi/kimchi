@@ -81,7 +81,11 @@ function makeNoActiveFermentRuntime(): FermentRuntime {
 	}
 }
 
-const STATE_MACHINE_HEADER = "**State machine:**"
+// Step 5 of the unify-ferment-tool-modes ferment rewrote the State machine
+// header to describe the lifecycle-driven toolset transition (planning phase →
+// implementation phase). Match the new prefix (em-dash, no closing `**`) so
+// all rule-survival tests still recognise the planner supplement.
+const STATE_MACHINE_HEADER = "**State machine —"
 const KNOWLEDGE_HEADER = "**Knowledge capture:**"
 const FILE_RULE = "NEVER write, edit, or read files yourself"
 const CREATE_GUARD = "There is no `create_ferment` tool"
@@ -383,5 +387,22 @@ describe("buildFermentPromptBlock", () => {
 				expect(oneshotText, `ferment-oneshot=true missing: ${sub}`).toContain(sub)
 			}
 		})
+	})
+
+	// Step 5 of the unify-ferment-tool-modes ferment rewrote the State machine
+	// bullets in buildFermentPromptBlock to describe the planning → implementation
+	// toolset transition explicitly. Verify the supplement carries both phases
+	// and the activation trigger, and no longer carries the "does not narrow"
+	// wording from the pre-unified model.
+	it("planner supplement describes the planning → implementation lifecycle transition", () => {
+		const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime({ status: "running" })) ?? ""
+
+		// The supplement must describe BOTH phases of the toolset.
+		expect(out).toContain("Planning phase")
+		expect(out).toContain("Implementation phase")
+		// It must reference the activation trigger.
+		expect(out).toContain("activate_ferment_phase")
+		// It must NOT contain the old "does not narrow" text.
+		expect(out).not.toContain("does not narrow")
 	})
 })

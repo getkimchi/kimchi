@@ -1,97 +1,143 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Ferment } from "../../ferment/types.js"
 import { isAgentWorker } from "../agent-worker-context.js"
-import { type ToolVisibilityAPI, createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import type { FermentRuntime } from "./runtime.js"
-import { FERMENT_TOOLS, FERMENT_TOOL_NAMES, isFermentToolName } from "./tool-names.js"
-
-export type FermentToolProfile = "idle" | "planner-active" | "paused-terminal" | "worker" | "oneshot-planner"
-
-const PAUSED_TERMINAL_FERMENT_TOOL_NAMES = [FERMENT_TOOLS.LIST] as const
+import { FERMENT_TOOLS, isFermentOnlyToolName } from "./tool-names.js"
 
 /**
- * Tools the planner is allowed to call directly in `ferment-oneshot` mode.
- * Everything else (bash, edit, write, web_search, grep, …) must be delegated
- * to a subagent worker — the whole point of one-shot orchestration is that
- * the planner orchestrates and workers execute.
+ * Tools available during the planning phase of a ferment lifecycle.
+ * Includes read-only discovery tools, web search, and the ferment scoping surface.
  *
- * `read` stays available so `complete_ferment_step` can sanity-check a worker's diff
- * without spawning a verification subagent.
- * `get_subagent_result` is required for background Agent calls.
- * The ferment lifecycle surface itself is the same existing-ferment surface
- * used by normal active planners; creation is host-owned before either run starts.
+ * `activate_ferment_phase` is included here even though it transitions the
+ * ferment into the implementation phase — the prompt explicitly tells the
+ * planner to call it as the first lifecycle action. Without it, the planner
+ * has no way to fire the planning → implementation transition from within
+ * the planning profile.
  */
-export const PLANNER_ONESHOT_ALLOWLIST = new Set<string>([
-	...FERMENT_TOOL_NAMES,
-	// Delegation tool: the higher-level persona-based `Agent`
-	// (`src/extensions/agents/index.ts:590`). The orchestrator picks the
-	// worker model from its registry; ferment no longer prescribes it.
-	// `Agent` persists child sessions through the agents manager, so bench
-	// session-linkage and token aggregation remain intact.
-	"Agent",
-	"get_subagent_result",
+export const PLANNING_TOOL_NAMES: ReadonlySet<string> = new Set([
+	// Read-only discovery tools
 	"read",
-	// Metadata-only phase tracker injected by the ferment planner supplement
-	// when a ferment is active.
-	// Taxonomy classifies it as readOnly (`taxonomy.ts`) — no side effects.
+	"grep",
+	"find",
+	"ls",
+	"web_fetch",
+	"web_search",
+	// Phase tracker injected by the ferment planner supplement
 	"set_phase",
+	// Ferment planning tools
+	FERMENT_TOOLS.PROPOSE_SCOPING,
+	FERMENT_TOOLS.SCOPE,
+	FERMENT_TOOLS.UPDATE_SCOPE_FIELD,
+	FERMENT_TOOLS.CONFIRM_COMPLETION_CRITERIA,
+	FERMENT_TOOLS.LIST,
+	FERMENT_TOOLS.ASK_USER,
+	// activate_ferment_phase fires the planning → implementation transition.
+	// start_ferment_step and the rest of the implementation lifecycle tools are
+	// NOT listed here — they become available on the turn after activation via
+	// agent.prepareNextTurn refreshing context.tools from state.tools
+	// (see patches/@earendil-works__pi-coding-agent.patch).
+	FERMENT_TOOLS.ACTIVATE_PHASE,
 ])
 
-function registeredFermentToolNames(pi: ExtensionAPI): string[] {
-	return pi
-		.getAllTools()
-		.map((tool) => tool.name)
-		.filter((name) => isFermentToolName(name))
-}
+/**
+ * Tools available during the implementation phase of a ferment lifecycle.
+ * Includes all planning tools plus the full execution surface (bash, edit, write, Agent, etc.).
+ */
+export const IMPLEMENTATION_TOOL_NAMES: ReadonlySet<string> = new Set([
+	...PLANNING_TOOL_NAMES,
+	// Execution tools
+	"bash",
+	"edit",
+	"write",
+	// Delegation tool: the higher-level persona-based `Agent`
+	"Agent",
+	"get_subagent_result",
+	// Ferment lifecycle tools
+	FERMENT_TOOLS.ACTIVATE_PHASE,
+	FERMENT_TOOLS.REFINE_PHASE,
+	FERMENT_TOOLS.COMPLETE_PHASE,
+	FERMENT_TOOLS.SKIP_PHASE,
+	FERMENT_TOOLS.FAIL_PHASE,
+	FERMENT_TOOLS.START_STEP,
+	FERMENT_TOOLS.COMPLETE_STEP,
+	FERMENT_TOOLS.VERIFY_STEP,
+	FERMENT_TOOLS.SKIP_STEP,
+	FERMENT_TOOLS.FAIL_STEP,
+	FERMENT_TOOLS.ADD_DECISION,
+	FERMENT_TOOLS.ADD_MEMORY,
+	FERMENT_TOOLS.COMPLETE,
+])
 
-function allowedFermentToolNamesForProfile(profile: FermentToolProfile): readonly string[] {
-	switch (profile) {
-		case "idle":
-			return []
-		case "planner-active":
-			return FERMENT_TOOL_NAMES
-		case "oneshot-planner":
-			return FERMENT_TOOL_NAMES
-		case "paused-terminal":
-			return PAUSED_TERMINAL_FERMENT_TOOL_NAMES
-		case "worker":
-			return []
-	}
-}
+/**
+ * Profile applied to the planner's active tool list. Keyed on ferment
+ * lifecycle state:
+ *   - `idle`: no active ferment; all non-ferment tools + ferment discovery
+ *             tools only (`list_ferments`, `request_ferment_workflow`). All
+ *             ferment-only lifecycle/planning tools are hidden.
+ *   - `worker`: subagent worker context (`KIMCHI_SUBAGENT=1`); empty toolset,
+ *               managed externally by the agents manager
+ *   - `planning`: ferment exists, no phase activated yet; read-only research
+ *                 set + ferment planning tools
+ *   - `implementation`: ferment has at least one activated phase; full toolset
+ *                       (planning tools + bash, edit, write, Agent, etc.)
+ *
+ * The transition from `planning` to `implementation` fires on the first
+ * successful `activate_ferment_phase` call. Paused, complete, and abandoned
+ * ferments keep the profile they last had.
+ */
+export type FermentToolProfile = "idle" | "worker" | "planning" | "implementation"
 
 export function profileForFerment(ferment: Ferment | undefined): FermentToolProfile {
 	if (isAgentWorker()) return "worker"
 	if (!ferment) return "idle"
-	if (ferment.status === "paused" || ferment.status === "complete" || ferment.status === "abandoned") {
-		return "paused-terminal"
-	}
-	return "planner-active"
+	// A phase has been activated once its status is no longer "planned".
+	// If any phase has been activated, the ferment is in implementation phase.
+	// Otherwise it is in planning phase. Defensive against partial Ferment
+	// objects (e.g. a draft ferment before phases are populated) where
+	// ferment.phases may be undefined.
+	const phases = ferment.phases ?? []
+	const hasActivatedPhase = phases.some((phase) => phase.status !== "planned")
+	return hasActivatedPhase ? "implementation" : "planning"
 }
 
 export class FermentToolScope {
-	private readonly visibility: ToolVisibilityAPI
-
-	constructor(private readonly pi: ExtensionAPI) {
-		this.visibility = createToolVisibility(pi)
-	}
+	constructor(private readonly pi: ExtensionAPI) {}
 
 	applyProfile(profile: FermentToolProfile): void {
-		if (profile === "oneshot-planner") {
-			// One-shot is an intentionally session-static allowlist that also
-			// curates non-ferment tools. Treat it as the master profile instead
-			// of mixing direct allowlist writes with cooperative ferment votes.
-			applyPlannerOneshotAllowlist(this.pi)
-			return
+		switch (profile) {
+			case "idle": {
+				// Normal chat / post-ferment state: show all non-ferment tools plus
+				// the two ferment discovery tools (list_ferments, request_ferment_workflow).
+				// All ferment-only lifecycle and planning tools are hidden so they
+				// don't clutter the model's tool list outside an active ferment.
+				const idle = this.pi
+					.getAllTools()
+					.map((t) => t.name)
+					.filter((name) => !isFermentOnlyToolName(name))
+				this.pi.setActiveTools(idle)
+				break
+			}
+			case "planning": {
+				// Intersection: only tools that are BOTH registered AND explicitly listed for planning.
+				const allTools = this.pi.getAllTools().map((tool) => tool.name)
+				const allowed = allTools.filter((name) => PLANNING_TOOL_NAMES.has(name))
+				this.pi.setActiveTools(allowed)
+				break
+			}
+			case "implementation": {
+				// Full toolset from registration, with guaranteed tools added defensively.
+				const allTools = this.pi.getAllTools().map((tool) => tool.name)
+				const allowed = new Set<string>(allTools)
+				for (const required of IMPLEMENTATION_TOOL_NAMES) {
+					allowed.add(required)
+				}
+				this.pi.setActiveTools([...allowed])
+				break
+			}
+			case "worker":
+				this.pi.setActiveTools([])
+				break
 		}
-
-		const registered = registeredFermentToolNames(this.pi)
-		const allowed = new Set(allowedFermentToolNamesForProfile(profile))
-		const allowedRegistered = registered.filter((name) => allowed.has(name))
-
-		// Ferment owns only its own tools. Static profiles are applied before a
-		// run starts; pi-mono will snapshot the resulting tool list for that run.
-		this.visibility.disable(registered)
-		this.visibility.enable(allowedRegistered)
 	}
 }
 
@@ -121,22 +167,4 @@ export function setActiveFermentAndApplyProfile(
 ): void {
 	runtime.setActive(ferment)
 	applyFermentToolProfile(pi, profileForFerment(ferment))
-}
-
-/**
- * In `ferment-oneshot` mode, restrict the planner's active tools to the
- * allowlist. Removes inline implementation tools (bash, edit, write,
- * web_search, grep, …) so the planner is structurally forced to delegate
- * via `Agent` instead of doing the work itself.
- *
- * Must be called after ferment tools are enabled (the allowlist includes
- * them) and only in the planner process — Agent workers need the full toolset
- * to do the actual work.
- */
-export function applyPlannerOneshotAllowlist(pi: ExtensionAPI): void {
-	const allowed = pi
-		.getAllTools()
-		.map((tool) => tool.name)
-		.filter((name) => PLANNER_ONESHOT_ALLOWLIST.has(name))
-	pi.setActiveTools(allowed)
 }

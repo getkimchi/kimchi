@@ -56,4 +56,22 @@ describe("buildOneshotNudge", () => {
 		const out = buildOneshotNudge(makeFerment(), INTENT)
 		expect(out).not.toContain("propose_ferment_scoping")
 	})
+
+	// Step 5 of the unify-ferment-tool-modes ferment: the one-shot envelope
+	// describes the lifecycle-driven toolset transition (planning phase →
+	// implementation toolset unlocks on activate_ferment_phase) rather than
+	// the static curated allowlist from the pre-unified model.
+	it("envelope describes the lifecycle-driven toolset transition", () => {
+		const out = buildOneshotNudge(makeFerment(), INTENT)
+		// Must describe both phases of the toolset.
+		expect(out).toContain("planning phase")
+		expect(out).toContain("implementation toolset unlocks")
+		// Must reference the activation trigger.
+		expect(out).toContain("activate_ferment_phase")
+		// Must NOT contain the old static curated allowlist phrasing.
+		// The old phrasing had quoted tool names like "Agent", "get_subagent_result", "read".
+		expect(out).not.toContain('"Agent"')
+		expect(out).not.toContain('"get_subagent_result"')
+		expect(out).not.toContain('"read"')
+	})
 })
