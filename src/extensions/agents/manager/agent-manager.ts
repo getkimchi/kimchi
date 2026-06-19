@@ -66,14 +66,20 @@ function formatTaskRef(ref: AgentTaskRef): string {
 	return JSON.stringify(ref)
 }
 
-function withAgentReportProtocol(id: string, prompt: string, taskRef: AgentTaskRef | undefined): string {
+function withAgentReportProtocol(
+	id: string,
+	prompt: string,
+	taskRef: AgentTaskRef | undefined,
+	reportNonce: string | undefined,
+): string {
 	if (!taskRef) return prompt
 	return `You are a Ferment-linked worker Agent.
 
 Agent ID: ${id}
+Report token: ${reportNonce}
 Task ref: ${formatTaskRef(taskRef)}
 
-Before your final answer, call submit_agent_report with this Agent ID. Report factual progress only:
+Before your final answer, call submit_agent_report with this Agent ID and report token. Report factual progress only:
 - status "completed" when the assigned work is complete
 - status "partial" when useful work remains
 - status "blocked" when external input or an unresolved blocker prevents progress
@@ -121,6 +127,7 @@ export class AgentManager {
 
 	spawn(pi: ExtensionAPI, ctx: ExtensionContext, type: SubagentType, prompt: string, options: SpawnOptions): string {
 		const id = randomUUID().slice(0, 17)
+		const reportNonce = options.taskRef ? randomUUID() : undefined
 		const abortController = new AbortController()
 		const record: AgentRecord = {
 			id,
@@ -134,6 +141,7 @@ export class AgentManager {
 			abortController,
 			sessionFile: options.sessionFile,
 			taskRef: options.taskRef,
+			reportNonce,
 			maxTurns: options.maxTurns,
 			resumeAttempts: [],
 			lifetimeUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -141,7 +149,13 @@ export class AgentManager {
 		}
 		this.agents.set(id, record)
 
-		const args: SpawnArgs = { pi, ctx, type, prompt: withAgentReportProtocol(id, prompt, options.taskRef), options }
+		const args: SpawnArgs = {
+			pi,
+			ctx,
+			type,
+			prompt: withAgentReportProtocol(id, prompt, options.taskRef, reportNonce),
+			options,
+		}
 
 		if (options.isBackground && !options.bypassQueue && this.runningBackground >= this.maxConcurrent) {
 			this.queue.push({ id, args })
@@ -354,26 +368,30 @@ export class AgentManager {
 		record.resumeAttempts.push(attempt)
 
 		try {
-			const result = await resumeAgent(record.session, withAgentReportProtocol(id, prompt, record.taskRef), {
-				onToolActivity: (activity) => {
-					if (activity.type === "end") record.toolUses++
+			const result = await resumeAgent(
+				record.session,
+				withAgentReportProtocol(id, prompt, record.taskRef, record.reportNonce),
+				{
+					onToolActivity: (activity) => {
+						if (activity.type === "end") record.toolUses++
+					},
+					onTurnEnd: (turnCount) => {
+						record.lastTurnCount = turnCount
+					},
+					onAssistantUsage: (usage) => {
+						addUsage(record.lifetimeUsage, usage)
+					},
+					onCompaction: (info) => {
+						record.compactionCount++
+						this.onCompact?.(record, info)
+					},
+					signal: options.signal,
+					maxTurns: options.maxTurns,
+					tokenBudget: options.tokenBudget,
+					inactivityTimeout: options.inactivityTimeout,
+					maxDuration: options.maxDuration,
 				},
-				onTurnEnd: (turnCount) => {
-					record.lastTurnCount = turnCount
-				},
-				onAssistantUsage: (usage) => {
-					addUsage(record.lifetimeUsage, usage)
-				},
-				onCompaction: (info) => {
-					record.compactionCount++
-					this.onCompact?.(record, info)
-				},
-				signal: options.signal,
-				maxTurns: options.maxTurns,
-				tokenBudget: options.tokenBudget,
-				inactivityTimeout: options.inactivityTimeout,
-				maxDuration: options.maxDuration,
-			})
+			)
 			record.status = result.aborted ? "aborted" : result.steered ? "steered" : "completed"
 			record.abortReason = result.abortReason
 			record.result = result.responseText

@@ -81,10 +81,17 @@ describe("AgentManager", () => {
 			max_turns: 5,
 			task_ref: taskRef,
 		})
+		expect(record.reportNonce).toEqual(expect.any(String))
 		expect(mockRunAgent).toHaveBeenCalledWith(
 			expect.anything(),
 			"Explore",
 			expect.stringContaining(`Agent ID: ${record.id}`),
+			expect.anything(),
+		)
+		expect(mockRunAgent).toHaveBeenCalledWith(
+			expect.anything(),
+			"Explore",
+			expect.stringContaining(`Report token: ${record.reportNonce}`),
 			expect.anything(),
 		)
 	})

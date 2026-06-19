@@ -443,7 +443,7 @@ describe("CompleteStepParams schema", () => {
 		expect(Value.Check(CompleteStepParams, payload)).toBe(true)
 	})
 
-	it("accepts worker_agent_id as optional schema input for legacy retries", () => {
+	it("requires worker_agent_id because completion validates the linked worker report", () => {
 		const payload = {
 			ferment_id: "f-123",
 			phase_id: "phase-1",
@@ -456,7 +456,7 @@ describe("CompleteStepParams schema", () => {
 			],
 		}
 
-		expect(Value.Check(CompleteStepParams, payload)).toBe(true)
+		expect(Value.Check(CompleteStepParams, payload)).toBe(false)
 	})
 })
 

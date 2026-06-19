@@ -834,6 +834,9 @@ export default function (pi: ExtensionAPI) {
 				agent_id: Type.String({
 					description: "The Agent ID shown in this worker's prompt.",
 				}),
+				report_token: Type.String({
+					description: "The report token shown in this worker's prompt.",
+				}),
 				status: Type.Union([Type.Literal("completed"), Type.Literal("partial"), Type.Literal("blocked")], {
 					description:
 						"completed when the assigned work is done, partial when useful work remains, blocked when progress is blocked.",
@@ -876,6 +879,11 @@ export default function (pi: ExtensionAPI) {
 				}
 				if (record.taskRef?.kind !== "ferment_step") {
 					return textResult("submit_agent_report is only accepted for Ferment-linked worker Agents.")
+				}
+				if (!record.reportNonce || params.report_token !== record.reportNonce) {
+					return textResult(
+						"Invalid report_token for this Agent. Use the report token injected into this worker prompt.",
+					)
 				}
 				const reportStatus = params.status as AgentReport["status"]
 				const remainingSteps = params.remaining_steps as string[]

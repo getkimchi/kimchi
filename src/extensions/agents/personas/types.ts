@@ -158,6 +158,7 @@ export interface AgentRecord {
 	modelId?: string
 	abortReason?: AgentAbortReason
 	taskRef?: AgentTaskRef
+	reportNonce?: string
 	agentReport?: AgentReport
 	latestOutcome?: AgentOutcome
 	resumeAttempts?: AgentResumeAttempt[]
