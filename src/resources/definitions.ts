@@ -1,3 +1,4 @@
+import { DEFAULT_BASH_TIMEOUT_SECONDS } from "../extensions/bash-default-timeout.js"
 import { CLAUDE_CODE_SKILLS_RESOURCE_ID } from "../extensions/claude-code-skills/definition.js"
 import { PI_PACKAGE_LOOKUP_RESOURCE_ID } from "../extensions/pi-package-lookup/index.js"
 import { discoverBashHookResources } from "./bash-hook-discovery.js"
@@ -72,8 +73,7 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		id: "extensions.bash-default-timeout",
 		kind: "extensions",
 		label: "Bash default timeout",
-		description:
-			"Apply a 120s default timeout to every bash command when none is supplied, so misbehaving commands cannot hang a session indefinitely.",
+		description: `Apply a ${DEFAULT_BASH_TIMEOUT_SECONDS}s default timeout to every bash command when none is supplied, so misbehaving commands cannot hang a session indefinitely.`,
 		defaultEnabled: true,
 	},
 	{

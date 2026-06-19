@@ -64,11 +64,10 @@ export default function bashDefaultTimeoutExtension(pi: ExtensionAPI): void {
 		if (!isResourceEnabled(BASH_DEFAULT_TIMEOUT_RESOURCE_ID)) return
 
 		const bashEvent = event as BashToolCallEvent
-		// Only mutate when the caller did not supply a timeout. An
-		// explicit value (including 0, which means "no timeout"
-		// upstream) is preserved as-is.
-		if (bashEvent.input.timeout === undefined || bashEvent.input.timeout === null) {
-			bashEvent.input.timeout = DEFAULT_BASH_TIMEOUT_SECONDS
-		}
+		// Delegate to the pure helper so the "not set" rules (undefined
+		// / null) and the default value live in one place. An explicit
+		// value (including 0, which upstream treats as "no timeout")
+		// is preserved as-is.
+		bashEvent.input.timeout = resolveBashTimeout(bashEvent.input)
 	})
 }
