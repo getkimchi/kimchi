@@ -1,17 +1,15 @@
 import { createHash } from "node:crypto"
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import type { Dirent } from "node:fs"
-import { homedir } from "node:os"
-import { basename, dirname, isAbsolute, join, normalize, relative, resolve } from "node:path"
+import { homedir, tmpdir } from "node:os"
+import { basename, join, relative, resolve } from "node:path"
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml"
 import { z } from "zod"
 
 export const CLAUDE_CODE_SKILLS_RESOURCE_ID = "extensions.claude-code-skills"
 
 interface ClaudeCodeSkillResourceOptions {
-	excludeNativeSkillNames?: boolean
 	excludeSkillNames?: Iterable<string>
-	excludeSkillPaths?: string[]
 }
 
 const SkillFrontmatterSchema = z
@@ -22,6 +20,8 @@ const SkillFrontmatterSchema = z
 	.catchall(z.unknown())
 
 type SkillFrontmatter = z.infer<typeof SkillFrontmatterSchema>
+
+let claudeCodeSkillsCacheDir: string | undefined
 
 export function discoverClaudeCodeSkillDirs(cwd = process.cwd()): string[] {
 	const projectDir = resolve(cwd)
@@ -48,12 +48,6 @@ export function getClaudeCodeSkillResourcePaths(
 	options: ClaudeCodeSkillResourceOptions = {},
 ): string[] {
 	const excludedSkillNames = new Set(options.excludeSkillNames ?? [])
-	if (options.excludeNativeSkillNames !== false) {
-		for (const name of getNativeSkillNames(cwd, options.excludeSkillPaths ?? [])) {
-			excludedSkillNames.add(name)
-		}
-	}
-
 	const paths: string[] = []
 	for (const dir of discoverClaudeCodeSkillDirs(cwd)) {
 		paths.push(...materializeClaudeCodeSkillDir(dir, { excludeSkillNames: excludedSkillNames }))
@@ -61,14 +55,35 @@ export function getClaudeCodeSkillResourcePaths(
 	return paths
 }
 
-export function getConfiguredSkillResourcePaths(cwd: string, configuredSkillPaths: string[]): string[] {
-	return [
-		...getConfiguredNativeSkillPaths(cwd, configuredSkillPaths),
-		...getConfiguredClaudeCodeSkillResourcePaths(cwd, configuredSkillPaths),
-	]
+export function sanitizeSkillMarkdown(content: string, fallbackName: string): string {
+	const markdown = extractSkillMarkdown(content)
+	if (markdown === undefined) {
+		const name = normalizeSkillName(fallbackName)
+		return ["---", stringifyFallbackSkillFrontmatter(name), "---", content].join("\n")
+	}
+
+	return ["---", sanitizeFrontmatter(markdown.frontmatter, fallbackName), "---", markdown.body.replace(/^\n/, "")].join(
+		"\n",
+	)
 }
 
-export function materializeClaudeCodeSkillDir(
+function getClaudeCodeSkillsCacheDir(): string {
+	if (claudeCodeSkillsCacheDir === undefined) {
+		claudeCodeSkillsCacheDir = mkdtempSync(join(tmpdir(), "kimchi-claude-code-skills-"))
+		process.once("exit", () => {
+			if (claudeCodeSkillsCacheDir) rmSync(claudeCodeSkillsCacheDir, { recursive: true, force: true })
+		})
+	}
+	return claudeCodeSkillsCacheDir
+}
+
+function walkSkillDirs(dir: string): string[] {
+	const results: string[] = []
+	walkSkillDirsInto(dir, results)
+	return results
+}
+
+function materializeClaudeCodeSkillDir(
 	skillsDir: string,
 	options: Pick<ClaudeCodeSkillResourceOptions, "excludeSkillNames"> = {},
 ): string[] {
@@ -87,28 +102,6 @@ export function materializeClaudeCodeSkillDir(
 		} catch {}
 	}
 	return paths
-}
-
-export function sanitizeSkillMarkdown(content: string, fallbackName: string): string {
-	const markdown = extractSkillMarkdown(content)
-	if (markdown === undefined) {
-		const name = normalizeSkillName(fallbackName)
-		return ["---", stringifyFallbackSkillFrontmatter(name), "---", content].join("\n")
-	}
-
-	return ["---", sanitizeFrontmatter(markdown.frontmatter, fallbackName), "---", markdown.body.replace(/^\n/, "")].join(
-		"\n",
-	)
-}
-
-function getClaudeCodeSkillsCacheDir(): string {
-	return join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), "kimchi", "claude-code-skills")
-}
-
-function walkSkillDirs(dir: string): string[] {
-	const results: string[] = []
-	walkSkillDirsInto(dir, results)
-	return results
 }
 
 function walkSkillDirsInto(dir: string, results: string[]): void {
@@ -356,108 +349,6 @@ function hash(value: string): string {
 	return createHash("sha256").update(value).digest("hex").slice(0, 12)
 }
 
-function getNativeSkillNames(cwd: string, configuredSkillPaths: string[]): Set<string> {
-	return collectSkillNames([
-		...discoverNativeSkillDirs(cwd),
-		...getConfiguredNativeSkillPaths(cwd, configuredSkillPaths),
-	])
-}
-
-function isSameOrDescendant(path: string, parent: string): boolean {
-	const relativePath = relative(parent, path)
-	return relativePath === "" || (!relativePath.startsWith("..") && !isAbsolute(relativePath))
-}
-
-function discoverNativeSkillDirs(cwd: string): string[] {
-	const ancestorAgentsSkills = findNearestAncestorSkillDir(cwd, join(".agents", "skills"))
-	const dirs = [
-		resolve(cwd, ".pi", "skills"),
-		...(ancestorAgentsSkills ? [ancestorAgentsSkills] : []),
-		join(homedir(), ".config", "kimchi", "harness", "skills"),
-		join(homedir(), ".pi", "agent", "skills"),
-		join(homedir(), ".agents", "skills"),
-	]
-
-	const seen = new Set<string>()
-	const result: string[] = []
-	for (const dir of dirs) {
-		const resolved = resolve(dir)
-		if (seen.has(resolved) || !existsSync(resolved)) continue
-		seen.add(resolved)
-		result.push(resolved)
-	}
-	return result
-}
-
-export function findNearestAncestorSkillDir(cwd: string, relativeSkillDir: string): string | undefined {
-	let dir = resolve(cwd)
-	while (true) {
-		const skillDir = join(dir, relativeSkillDir)
-		if (existsSync(skillDir)) return skillDir
-		const parent = dirname(dir)
-		if (parent === dir) return undefined
-		dir = parent
-	}
-}
-
-export function expandConfiguredSkillPaths(paths: string[], cwd: string): string[] {
-	const home = resolve(homedir())
-	const projectDir = resolve(cwd)
-	const expanded: string[] = []
-	for (const path of paths) {
-		if (isAbsolute(path)) {
-			expanded.push(normalize(path))
-		} else if (path.startsWith("~/")) {
-			expanded.push(resolve(home, path.slice(2)))
-		} else {
-			const fromHome = resolve(home, path)
-			const fromCwd = resolve(projectDir, path)
-			if (isSameOrDescendant(fromHome, home)) expanded.push(fromHome)
-			if (isSameOrDescendant(fromCwd, projectDir)) expanded.push(fromCwd)
-		}
-	}
-	return expanded
-}
-
-function collectSkillNames(paths: string[]): Set<string> {
-	const names = new Set<string>()
-	const seen = new Set<string>()
-
-	for (const path of paths) {
-		const resolved = resolve(path)
-		if (seen.has(resolved) || !existsSync(resolved)) continue
-		seen.add(resolved)
-
-		if (isSkillMarkdownFile(resolved)) {
-			names.add(readSkillName(dirname(resolved)))
-			continue
-		}
-
-		if (!isDirectory(resolved)) continue
-		for (const skillDir of walkSkillDirs(resolved)) {
-			names.add(readSkillName(skillDir))
-		}
-	}
-
-	return names
-}
-
-function isSkillMarkdownFile(path: string): boolean {
-	try {
-		return basename(path) === "SKILL.md" && statSync(path).isFile()
-	} catch {
-		return false
-	}
-}
-
-function isDirectory(path: string): boolean {
-	try {
-		return statSync(path).isDirectory()
-	} catch {
-		return false
-	}
-}
-
 function readSkillName(skillDir: string): string {
 	const fallbackName = basename(skillDir)
 	try {
@@ -468,45 +359,6 @@ function readSkillName(skillDir: string): string {
 	} catch {
 		return normalizeSkillName(fallbackName)
 	}
-}
-
-function getConfiguredNativeSkillPaths(cwd: string, configuredSkillPaths: string[]): string[] {
-	return dedupePaths(
-		expandConfiguredSkillPaths(configuredSkillPaths, cwd).filter((path) => !isClaudeCodeSkillPath(path)),
-	)
-}
-
-function getConfiguredClaudeCodeSkillResourcePaths(cwd: string, configuredSkillPaths: string[]): string[] {
-	const excludedSkillNames = getNativeSkillNames(cwd, configuredSkillPaths)
-	const paths: string[] = []
-	for (const dir of getConfiguredClaudeCodeSkillDirs(cwd, configuredSkillPaths)) {
-		paths.push(...materializeClaudeCodeSkillDir(dir, { excludeSkillNames: excludedSkillNames }))
-	}
-	return paths
-}
-
-function getConfiguredClaudeCodeSkillDirs(cwd: string, configuredSkillPaths: string[]): string[] {
-	return dedupePaths(
-		expandConfiguredSkillPaths(configuredSkillPaths, cwd)
-			.filter(isClaudeCodeSkillPath)
-			.map((path) => (isSkillMarkdownFile(path) ? dirname(path) : path)),
-	)
-}
-
-function isClaudeCodeSkillPath(path: string): boolean {
-	return path.split(/[\\/]+/).includes(".claude")
-}
-
-function dedupePaths(paths: string[]): string[] {
-	const seen = new Set<string>()
-	const result: string[] = []
-	for (const path of paths) {
-		const resolved = resolve(path)
-		if (seen.has(resolved)) continue
-		seen.add(resolved)
-		result.push(resolved)
-	}
-	return result
 }
 
 function readSkillFrontmatterName(frontmatter: string): string | undefined {

@@ -1,16 +1,9 @@
 import { readFileSync } from "node:fs"
-import { homedir } from "node:os"
-import { join, resolve } from "node:path"
 import type { ExtensionAPI, Skill } from "@earendil-works/pi-coding-agent"
-import { getAgentDir, loadSkills, loadSkillsFromDir } from "@earendil-works/pi-coding-agent"
+import { loadSkillsFromDir } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
 import type { Static } from "typebox"
-import { loadConfig } from "../../config.js"
-import {
-	expandConfiguredSkillPaths,
-	findNearestAncestorSkillDir,
-	getClaudeCodeSkillResourcePaths,
-} from "./definition.js"
+import { getClaudeCodeSkillResourcePaths } from "./definition.js"
 
 interface SkillToolDetails {
 	success: boolean
@@ -28,9 +21,7 @@ type SkillToolArgs = Static<typeof SkillToolSchema>
 
 export default function claudeCodeSkillsExtension(pi: ExtensionAPI): void {
 	pi.on("resources_discover", (event) => {
-		const skillPaths = getClaudeCodeSkillResourcePaths(event.cwd, {
-			excludeSkillPaths: loadConfig({ cwd: event.cwd }).skillPaths ?? [],
-		})
+		const skillPaths = getClaudeCodeSkillResourcePaths(event.cwd)
 		if (skillPaths.length === 0) return undefined
 		return { skillPaths }
 	})
@@ -90,10 +81,7 @@ export default function claudeCodeSkillsExtension(pi: ExtensionAPI): void {
 }
 
 function findClaudeCodeSkill(cwd: string, name: string): Skill | undefined {
-	const nativeSkill = findNativeSkill(cwd, name)
-	if (nativeSkill) return nativeSkill
-
-	for (const dir of getClaudeCodeSkillResourcePaths(cwd, { excludeNativeSkillNames: false })) {
+	for (const dir of getClaudeCodeSkillResourcePaths(cwd)) {
 		let result: ReturnType<typeof loadSkillsFromDir>
 		try {
 			result = loadSkillsFromDir({ dir, source: dir })
@@ -104,43 +92,6 @@ function findClaudeCodeSkill(cwd: string, name: string): Skill | undefined {
 		if (skill) return skill
 	}
 	return undefined
-}
-
-function findNativeSkill(cwd: string, name: string): Skill | undefined {
-	const config = loadConfig({ cwd })
-	const result = loadSkills({
-		cwd,
-		agentDir: getAgentDir(),
-		skillPaths: getNativeSkillSearchPaths(cwd, config.skillPaths ?? []),
-		includeDefaults: false,
-	})
-	return result.skills.find((skill) => skill.name === name)
-}
-
-function getNativeSkillSearchPaths(cwd: string, configuredSkillPaths: string[]): string[] {
-	const ancestorAgentsSkills = findNearestAncestorSkillDir(cwd, join(".agents", "skills"))
-	const paths = [
-		resolve(cwd, ".pi", "skills"),
-		...(ancestorAgentsSkills ? [ancestorAgentsSkills] : []),
-		...expandConfiguredSkillPaths(configuredSkillPaths, cwd).filter((path) => !isClaudeSkillPath(path)),
-		join(homedir(), ".config", "kimchi", "harness", "skills"),
-		join(homedir(), ".pi", "agent", "skills"),
-		join(homedir(), ".agents", "skills"),
-	]
-
-	const seen = new Set<string>()
-	const result: string[] = []
-	for (const path of paths) {
-		const resolved = resolve(path)
-		if (seen.has(resolved)) continue
-		seen.add(resolved)
-		result.push(resolved)
-	}
-	return result
-}
-
-function isClaudeSkillPath(path: string): boolean {
-	return path.split(/[\\/]+/).includes(".claude")
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
