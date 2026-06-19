@@ -386,6 +386,13 @@ describe("FermentCommandController", () => {
 		expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining('Exited Ferment mode for "Draft Exit"'))
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
+				customType: "ferment_breadcrumb",
+				content: [expect.objectContaining({ text: 'Command /ferment exit requested for "Draft Exit" [draft].' })],
+			}),
+			{ triggerTurn: false },
+		)
+		expect(h.pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
 				customType: "ferment_ack",
 				display: true,
 				content: [expect.objectContaining({ text: expect.stringContaining('Exited Ferment mode for "Draft Exit"') })],
@@ -430,6 +437,37 @@ describe("FermentCommandController", () => {
 		expect(h.runtime.setActive).toHaveBeenCalledWith(expect.objectContaining({ status: "paused" }))
 		expect(h.runtime.setActive).toHaveBeenLastCalledWith(undefined)
 		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash"])
+	})
+
+	it("/ferment exit reconciles stale paused active cache with running storage", async () => {
+		const h = createHarness()
+		const controller = new FermentCommandController()
+		const running = createRunningFerment(h, "Stale Exit")
+		h.runtime.setActive({ ...running, status: "paused" })
+
+		const result = await controller.execute({ type: "exit" }, { raw: "exit", pi: h.pi, ctx: h.ctx, runtime: h.runtime })
+
+		expect(result).toEqual({ handled: true })
+		expect(h.storage.get(running.id)?.status).toBe("paused")
+		expect(h.runtime.getActive()).toBeUndefined()
+		expect(h.pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_breadcrumb",
+				content: [expect.objectContaining({ text: 'Command /ferment exit requested for "Stale Exit" [running].' })],
+			}),
+			{ triggerTurn: false },
+		)
+		expect(h.pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_ack",
+				content: [
+					expect.objectContaining({
+						text: 'Exited Ferment mode for "Stale Exit". It is paused and can be selected later from /ferment list or /ferment switch.',
+					}),
+				],
+			}),
+			{ triggerTurn: false },
+		)
 	})
 
 	it("/ferment exit leaves paused ferments paused while clearing active mode", async () => {
@@ -1197,6 +1235,23 @@ describe("registerFermentCommands", () => {
 		expect(h.runtime.getContinuationPolicy()).toBe("automated")
 		expect(active.status).toBe("paused")
 		expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Paused"))
+		expect(h.pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_breadcrumb",
+				content: [
+					expect.objectContaining({ text: 'Command /ferment pause requested for "Running Ferment" [running].' }),
+				],
+			}),
+			{ triggerTurn: false },
+		)
+		expect(h.pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_breadcrumb",
+				details: expect.objectContaining({ variant: "ack" }),
+				content: [expect.objectContaining({ text: 'Paused "Running Ferment". Type /ferment resume to resume.' })],
+			}),
+			{ triggerTurn: false },
+		)
 		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(
 			expect.arrayContaining([
 				"read",
@@ -1250,6 +1305,71 @@ describe("registerFermentCommands", () => {
 		expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("already paused"))
 		expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("/ferment resume"))
 		expect(h.ctx.abort).not.toHaveBeenCalled()
+	})
+
+	it("/ferment pause reconciles stale paused active cache with running storage", async () => {
+		const h = createHarness()
+		const running = createRunningFerment(h, "Stale Active Pause")
+		h.runtime.setActive({ ...running, status: "paused" })
+
+		const commands = new Map<string, RegisteredCommand>()
+		const pi = {
+			...h.pi,
+			registerCommand: (name: string, command: RegisteredCommand) => {
+				commands.set(name, command)
+			},
+		} as unknown as ExtensionAPI
+		registerFermentCommands(pi, h.runtime)
+
+		const fermentCommand = commands.get("ferment")
+		if (!fermentCommand) throw new Error("ferment command was not registered")
+		await fermentCommand.handler("pause", h.ctx)
+
+		expect(h.storage.get(running.id)?.status).toBe("paused")
+		expect(h.runtime.getActive()?.status).toBe("paused")
+		expect(h.ctx.ui.notify).toHaveBeenCalledWith('Paused "Stale Active Pause". Type /ferment resume to resume.')
+		expect(h.pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_breadcrumb",
+				content: [
+					expect.objectContaining({ text: 'Command /ferment pause requested for "Stale Active Pause" [running].' }),
+				],
+			}),
+			{ triggerTurn: false },
+		)
+	})
+
+	it("/ferment resume reconciles stale paused active cache with running storage", async () => {
+		const h = createHarness()
+		const running = createRunningFerment(h, "Stale Active Resume")
+		h.runtime.setActive({ ...running, status: "paused" })
+
+		const commands = new Map<string, RegisteredCommand>()
+		const pi = {
+			...h.pi,
+			registerCommand: (name: string, command: RegisteredCommand) => {
+				commands.set(name, command)
+			},
+		} as unknown as ExtensionAPI
+		registerFermentCommands(pi, h.runtime)
+
+		const fermentCommand = commands.get("ferment")
+		if (!fermentCommand) throw new Error("ferment command was not registered")
+		await fermentCommand.handler("resume", h.ctx)
+
+		expect(h.ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("Failed to resume"))
+		expect(h.ctx.ui.notify).toHaveBeenCalledWith('"Stale Active Resume" is running; continuing from current state.')
+		expect(h.runtime.getActive()?.status).toBe("running")
+		expect(h.storage.get(running.id)?.status).toBe("running")
+		expect(h.pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_breadcrumb",
+				content: [
+					expect.objectContaining({ text: 'Command /ferment resume requested for "Stale Active Resume" [running].' }),
+				],
+			}),
+			{ triggerTurn: false },
+		)
 	})
 
 	it("implements pause → /ferment auto → /ferment resume with policy separated from lifecycle", async () => {
@@ -1369,6 +1489,27 @@ describe("registerFermentCommands", () => {
 		expect(h.runtime.getContinuationPolicy()).toBe("manual")
 		expect(active.status).toBe("running")
 		expect(active.phases[0].status).toBe("active")
+		expect(h.pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_breadcrumb",
+				content: [
+					expect.objectContaining({ text: 'Command /ferment resume requested for "Manual Resume Ferment" [paused].' }),
+				],
+			}),
+			{ triggerTurn: false },
+		)
+		expect(h.pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_breadcrumb",
+				details: expect.objectContaining({ variant: "ack" }),
+				content: [
+					expect.objectContaining({
+						text: 'Resumed "Manual Resume Ferment". Continuation policy: manual.',
+					}),
+				],
+			}),
+			{ triggerTurn: false },
+		)
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: "ferment_continuation_nudge",
