@@ -245,7 +245,7 @@ export function isSubagent(): boolean {
 	return isAgentWorker()
 }
 
-export default function (_skillPaths: string[]) {
+export default function (skillPaths: string[]) {
 	return (pi: ExtensionAPI) => {
 		const subagentMode = isSubagent()
 
@@ -469,6 +469,7 @@ export default function (_skillPaths: string[]) {
 				const allSkillPaths = Array.from(
 					new Set([
 						...getKimchiProjectSkillPaths(ctx.cwd),
+						...skillPaths,
 						...(isResourceEnabled(CLAUDE_CODE_SKILLS_RESOURCE_ID) ? getClaudeCodeSkillResourcePaths(ctx.cwd) : []),
 						...getInstalledPackageResourceDirs(ctx.cwd, "skills"),
 					]),

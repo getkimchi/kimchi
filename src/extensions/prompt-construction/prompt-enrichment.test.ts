@@ -350,6 +350,25 @@ describe("prompt enrichment Claude Code skills", () => {
 		expect(result.systemPrompt).toContain("Use Kimchi project TypeScript patterns")
 	})
 
+	it("keeps configured skill paths in the prompt", async () => {
+		const cwd = join(dir, "project")
+		const configuredSkills = join(dir, "configured", "skills")
+		writeSkill(join(configuredSkills, "typescript-safety", "SKILL.md"), {
+			description: "Use configured TypeScript patterns.",
+		})
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers([configuredSkills])
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		const result = (await beforeAgentStart(
+			{},
+			{ cwd, model: undefined, hasUI: false, sessionManager: { getSessionId: () => "session-1" } },
+		)) as { systemPrompt: string }
+
+		expect(result.systemPrompt).toContain("<available_skills>")
+		expect(result.systemPrompt).toContain("<name>typescript-safety</name>")
+		expect(result.systemPrompt).toContain("Use configured TypeScript patterns")
+	})
+
 	it("does not inject ancestor Claude Code skills without cwd .claude", async () => {
 		const project = join(dir, "project")
 		const cwd = join(project, "src")
