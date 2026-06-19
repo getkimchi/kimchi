@@ -9,6 +9,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs"
+import { debuglog } from "node:util"
 
 import type { ModelRoles, RoleModelAssignment } from "./extensions/orchestration/model-roles.js"
 import { normalizeRoleModels } from "./extensions/orchestration/model-roles.js"
@@ -18,6 +19,33 @@ const DEFAULT_OLLAMA_HOST = "http://localhost:11434"
 const DEFAULT_TIMEOUT_MS = 2000
 const DEFAULT_CONTEXT_WINDOW = 32768
 const DEFAULT_MAX_TOKENS = 8192
+/** Concurrency cap for parallel /api/show enrichment during a probe.
+ *  Sequential was N × RTT; with limit=4 a 10-model probe is ~2.5 × RTT instead. */
+const PROBE_CONCURRENCY = 4
+
+/** Silent debug logger — only emits when NODE_DEBUG matches the namespace.
+ *  Used inside catch blocks so failures are observable when debugging without
+ *  producing default-on noise (spec criterion #6). */
+const debugOllama = debuglog("kimi:ollama")
+
+/** Run an array of async thunks with at most `limit` in flight at once.
+ *  Preserves input order in the returned array (i.e. output[i] corresponds to
+ *  the thunk at items[i]). No new runtime dependency. */
+async function mapWithConcurrency<T>(items: Array<() => Promise<T>>, limit: number): Promise<T[]> {
+	if (items.length === 0) return []
+	const results: T[] = new Array(items.length)
+	let nextIndex = 0
+	const worker = async (): Promise<void> => {
+		while (true) {
+			const i = nextIndex++
+			if (i >= items.length) return
+			results[i] = await items[i]()
+		}
+	}
+	const workerCount = Math.max(1, Math.min(limit, items.length))
+	await Promise.all(Array.from({ length: workerCount }, () => worker()))
+	return results
+}
 
 /** Heavy tier threshold (parameter count in billions). */
 const TIER_HEAVY_MIN_B = 30
@@ -129,12 +157,10 @@ function extractContextWindow(modelInfo: Record<string, unknown> | undefined): n
 
 /** Convert an Ollama capabilities array into our input modalities + reasoning
  *  flag. `text` is always present; `image` is added when "vision" appears.
- *  Reasoning is set when "thinking" appears. Tools are noted but not exposed on
- *  PiModelConfig. */
+ *  Reasoning is set when "thinking" appears. */
 function deriveFromCapabilities(capabilities: readonly string[] | undefined): {
 	inputModalities: ("text" | "image")[]
 	reasoning: boolean
-	hasTools: boolean
 } {
 	const caps = new Set(capabilities ?? [])
 	const inputModalities: ("text" | "image")[] = ["text"]
@@ -142,7 +168,6 @@ function deriveFromCapabilities(capabilities: readonly string[] | undefined): {
 	return {
 		inputModalities,
 		reasoning: caps.has("thinking"),
-		hasTools: caps.has("tools"),
 	}
 }
 
@@ -235,30 +260,29 @@ export async function probeOllamaModels(host: string, options: OllamaProbeOption
 	}
 
 	const rawEntries = Array.isArray(payload.models) ? payload.models : []
-	const out: OllamaModel[] = []
 
-	for (const entry of rawEntries) {
-		const ref = modelRefFromTagsEntry(entry)
-		if (!ref) continue
+	const enriched = await mapWithConcurrency(
+		rawEntries.map((entry) => async () => {
+			const ref = modelRefFromTagsEntry(entry)
+			if (!ref) return null
+			const details = entry.details ?? {}
+			const parameterSize = parseParameterSize(details.parameter_size)
+			const fallbackContext = DEFAULT_CONTEXT_WINDOW
+			const show = await enrichFromShow(normalizedHost, ref, fallbackContext, entry.capabilities, options)
+			return {
+				name: ref,
+				parameterSize,
+				contextWindow: show.contextWindow,
+				inputModalities: show.inputModalities,
+				reasoning: show.reasoning,
+				family: typeof details.family === "string" ? details.family : "",
+				quantization: typeof details.quantization_level === "string" ? details.quantization_level : "",
+			}
+		}),
+		PROBE_CONCURRENCY,
+	)
 
-		const details = entry.details ?? {}
-		const parameterSize = parseParameterSize(details.parameter_size)
-		const fallbackContext = DEFAULT_CONTEXT_WINDOW
-
-		const enriched = await enrichFromShow(normalizedHost, ref, fallbackContext, entry.capabilities, options)
-
-		out.push({
-			name: ref,
-			parameterSize,
-			contextWindow: enriched.contextWindow,
-			inputModalities: enriched.inputModalities,
-			reasoning: enriched.reasoning,
-			family: typeof details.family === "string" ? details.family : "",
-			quantization: typeof details.quantization_level === "string" ? details.quantization_level : "",
-		})
-	}
-
-	return out
+	return enriched.filter((m): m is OllamaModel => m !== null)
 }
 
 /** Classify an OllamaModel into a tier based on its parameter size. Unknown
@@ -367,8 +391,13 @@ export async function injectOllamaProvider(
 			},
 		}
 		writeFileSync(modelsJsonPath, JSON.stringify(merged, null, "\t"), "utf-8")
-	} catch {
-		// Silent by design — startup must never be blocked by Ollama.
+	} catch (error) {
+		// Spec criterion #6: silent by default — startup must never be blocked
+		// by Ollama. `debuglog` is OFF unless the user opts in via
+		// NODE_DEBUG=kimi:ollama (or includes 'kimi:*'), so this satisfies the
+		// "no warning noise" criterion while still giving disk-full /
+		// permission errors an observable trail when debugging.
+		debugOllama("injectOllamaProvider failed: %s", error instanceof Error ? error.message : String(error))
 	}
 }
 
@@ -383,7 +412,14 @@ export function readOllamaModelsFromConfig(modelsJsonPath: string): PiModelConfi
 		const parsed = JSON.parse(raw)
 		const models = parsed?.providers?.[OLLAMA_PROVIDER_ID]?.models
 		if (!Array.isArray(models)) return []
-		return models as PiModelConfig[]
+		// Defensive runtime guard: a hand-edited or corrupted models.json could
+		// contain null / primitives / objects missing the required `id`. Filter
+		// to entries that look like a real PiModelConfig before they reach
+		// `augmentModelRolesWithOllama` (which would otherwise produce
+		// `ollama/undefined` refs in the role pools).
+		return models.filter(
+			(m): m is PiModelConfig => !!m && typeof m === "object" && typeof (m as { id?: unknown }).id === "string",
+		) as PiModelConfig[]
 	} catch {
 		return []
 	}

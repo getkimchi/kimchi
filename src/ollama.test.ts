@@ -805,6 +805,61 @@ describe("readOllamaModelsFromConfig + readOllamaModelMetadata", () => {
 		const metadata = readOllamaModelMetadata(modelsJsonPath)
 		expect(metadata[0].provider).toBe("ollama")
 	})
+
+	it("filters out non-object and id-less entries from a hand-edited models.json", () => {
+		// A hand-edited / corrupted models.json might mix valid PiModelConfig
+		// entries with nulls, primitives, or objects missing `id`. The defensive
+		// type guard in readOllamaModelsFromConfig must drop every entry that
+		// does not look like a real PiModelConfig (which would otherwise surface
+		// as `ollama/undefined` in the role pools).
+		writeFileSync(
+			modelsJsonPath,
+			JSON.stringify({
+				providers: {
+					ollama: {
+						api: "openai-completions",
+						baseUrl: "http://localhost:11434/v1",
+						apiKey: "ollama-no-key-needed",
+						models: [
+							{
+								id: "valid:1",
+								name: "valid:1",
+								reasoning: false,
+								input: ["text"],
+								contextWindow: 4096,
+								maxTokens: 4096,
+								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+								provider: "ollama",
+							},
+							null,
+							"string-entry",
+							42,
+							{ name: "no-id", reasoning: false },
+							{
+								id: "valid:2",
+								name: "valid:2",
+								reasoning: false,
+								input: ["text"],
+								contextWindow: 8192,
+								maxTokens: 8192,
+								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+								provider: "ollama",
+							},
+						],
+					},
+				},
+			}),
+			"utf-8",
+		)
+		const configs = readOllamaModelsFromConfig(modelsJsonPath)
+		expect(configs).toHaveLength(2)
+		expect(configs.map((c) => c.id)).toEqual(["valid:1", "valid:2"])
+		// And the downstream metadata mapping must not produce `undefined` slugs
+		const metadata = readOllamaModelMetadata(modelsJsonPath)
+		expect(metadata).toHaveLength(2)
+		expect(metadata.map((m) => m.slug)).toEqual(["valid:1", "valid:2"])
+		expect(metadata.every((m) => typeof m.slug === "string" && m.slug.length > 0)).toBe(true)
+	})
 })
 
 /* -------------------------------------------------------------------------- */
@@ -1054,6 +1109,48 @@ describe("probeOllamaModels — heterogeneous multi-model probe", () => {
 		expect(models).toHaveLength(1)
 		expect(models[0].inputModalities).toEqual(["text", "image"])
 		expect(models[0].contextWindow).toBe(32768) // DEFAULT_CONTEXT_WINDOW fallback
+	})
+
+	it("runs /api/show enrichment concurrently (not sequentially) within the probe", async () => {
+		// Three models with a 200ms simulated /api/show latency. Sequential
+		// execution would take ≥600ms; with concurrency=4 they should all
+		// overlap and the whole probe should finish in well under 500ms.
+		// We also assert insertion order is preserved (the existing
+		// "preserving order" test covers single-threaded behavior; this one
+		// proves concurrency without losing order).
+		const LATENCY_MS = 200
+		const tagsEntries = [
+			makeTagsEntry({ name: "alpha:7b", details: { parameter_size: "7B", family: "llama" } }),
+			makeTagsEntry({ name: "bravo:7b", details: { parameter_size: "7B", family: "llama" } }),
+			makeTagsEntry({ name: "charlie:7b", details: { parameter_size: "7B", family: "llama" } }),
+		]
+		let inFlight = 0
+		let maxInFlight = 0
+		const fetchImpl = makeFetchMock([
+			(url) => (url.endsWith("/api/tags") ? makeTagsResponse(tagsEntries) : null),
+			async (url, init) => {
+				if (!url.endsWith("/api/show")) return null
+				inFlight++
+				if (inFlight > maxInFlight) maxInFlight = inFlight
+				await new Promise((resolve) => setTimeout(resolve, LATENCY_MS))
+				inFlight--
+				const body = init?.body ? (JSON.parse(init.body as string) as { name?: string }) : {}
+				return makeShowResponse({ "llama.context_length": 4096 })
+			},
+		])
+
+		const start = Date.now()
+		const models = await probeOllamaModels("http://localhost:11434", { fetch: fetchImpl })
+		const elapsed = Date.now() - start
+
+		expect(models.map((m) => m.name)).toEqual(["alpha:7b", "bravo:7b", "charlie:7b"])
+		// Sequential = ≥600ms; concurrent with limit=4 should be ≤~250ms.
+		// 500ms is comfortably below 600ms but well above any realistic
+		// single-flight time (~210ms).
+		expect(elapsed).toBeLessThan(500)
+		// Concurrency proof: at least 2 /api/show requests were in flight at
+		// the same time. (3 is the theoretical max for this test.)
+		expect(maxInFlight).toBeGreaterThanOrEqual(2)
 	})
 })
 
