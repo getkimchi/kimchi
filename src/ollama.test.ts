@@ -966,3 +966,405 @@ describe("resolveOllamaHost — environment variable precedence", () => {
 		expect(resolveOllamaHost()).toBe("http://localhost:11434")
 	})
 })
+
+/* -------------------------------------------------------------------------- */
+/*  probeOllamaModels — heterogeneous multi-model probe (coverage gap)        */
+/* -------------------------------------------------------------------------- */
+
+describe("probeOllamaModels — heterogeneous multi-model probe", () => {
+	// Three real Ollama model archetypes exercising every branch of the parser:
+	//  - llava:13b     → vision capability, llama.* arch key
+	//  - qwen2.5:14b   → reasoning (thinking) + tools, qwen2.* arch key
+	//  - mistral:7b    → plain text only, mistral.* arch key (a third arch)
+	it("returns ordered entries with capabilities and tiers mapped per model", async () => {
+		const tagsEntries = [
+			makeTagsEntry({
+				name: "llava:13b",
+				details: { parameter_size: "13B", family: "llama", quantization_level: "Q4_K_M" },
+				capabilities: ["completion", "vision"],
+			}),
+			makeTagsEntry({
+				name: "qwen2.5:14b",
+				details: { parameter_size: "14B", family: "qwen2", quantization_level: "Q4_K_M" },
+				capabilities: ["completion", "tools", "thinking"],
+			}),
+			makeTagsEntry({
+				name: "mistral:7b",
+				details: { parameter_size: "7B", family: "mistral", quantization_level: "Q4_K_M" },
+				capabilities: ["completion"],
+			}),
+		]
+
+		// /api/show responder switches on the requested model name (carried in
+		// the POST body) so each model sees a different `model_info` blob.
+		const fetchImpl = makeFetchMock([
+			(url) => (url.endsWith("/api/tags") ? makeTagsResponse(tagsEntries) : null),
+			(url, init) => {
+				if (!url.endsWith("/api/show")) return null
+				const body = init?.body ? (JSON.parse(init.body as string) as { name?: string }) : {}
+				const name = body.name
+				if (name === "llava:13b") return makeShowResponse({ "llama.context_length": 4096 })
+				if (name === "qwen2.5:14b") return makeShowResponse({ "qwen2.context_length": 32768 })
+				if (name === "mistral:7b") return makeShowResponse({ "mistral.context_length": 8192 })
+				return notFoundJson()
+			},
+		])
+
+		const models = await probeOllamaModels("http://localhost:11434", { fetch: fetchImpl })
+
+		// Order is preserved from /api/tags
+		expect(models.map((m) => m.name)).toEqual(["llava:13b", "qwen2.5:14b", "mistral:7b"])
+
+		// Each model extracted the context window from its OWN arch-specific key
+		expect(models[0].contextWindow).toBe(4096)
+		expect(models[1].contextWindow).toBe(32768)
+		expect(models[2].contextWindow).toBe(8192)
+
+		// Capability mapping per model
+		expect(models[0].inputModalities).toEqual(["text", "image"]) // vision
+		expect(models[0].reasoning).toBe(false)
+
+		expect(models[1].inputModalities).toEqual(["text"]) // tools does NOT add image
+		expect(models[1].reasoning).toBe(true) // thinking → reasoning
+
+		expect(models[2].inputModalities).toEqual(["text"]) // plain text, nothing added
+		expect(models[2].reasoning).toBe(false)
+
+		// Tier classification per model parameter size
+		expect(ollamaModelTier(models[0])).toBe("standard") // 13B → standard
+		expect(ollamaModelTier(models[1])).toBe("standard") // 14B → standard
+		expect(ollamaModelTier(models[2])).toBe("light") // 7B  → light
+	})
+
+	it("falls back to tags-level capabilities when /api/show 404s but tags has the info", async () => {
+		const tagsEntries = [
+			makeTagsEntry({
+				name: "vision-only:8b",
+				details: { parameter_size: "8B", family: "llama" },
+				capabilities: ["completion", "vision"],
+			}),
+		]
+		const fetchImpl = makeFetchMock([
+			(url) => (url.endsWith("/api/tags") ? makeTagsResponse(tagsEntries) : null),
+			// /api/show 404 for all models → fall back to tags-level capabilities
+			(url) => (url.endsWith("/api/show") ? notFoundJson() : null),
+		])
+
+		const models = await probeOllamaModels("http://localhost:11434", { fetch: fetchImpl })
+		expect(models).toHaveLength(1)
+		expect(models[0].inputModalities).toEqual(["text", "image"])
+		expect(models[0].contextWindow).toBe(32768) // DEFAULT_CONTEXT_WINDOW fallback
+	})
+})
+
+/* -------------------------------------------------------------------------- */
+/*  readOllamaModelsFromConfig — defensive reads against malformed JSON       */
+/* -------------------------------------------------------------------------- */
+
+describe("readOllamaModelsFromConfig — defensive reads against malformed models.json", () => {
+	let tmpDir: string
+	let modelsJsonPath: string
+
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "kimchi-ollama-defensive-"))
+		modelsJsonPath = join(tmpDir, "models.json")
+	})
+
+	afterEach(() => {
+		rmSync(tmpDir, { recursive: true, force: true })
+	})
+
+	it("returns [] when the file has no `providers` key at all", () => {
+		writeFileSync(modelsJsonPath, JSON.stringify({}), "utf-8")
+		expect(readOllamaModelsFromConfig(modelsJsonPath)).toEqual([])
+	})
+
+	it("returns [] when `providers` is explicitly null", () => {
+		writeFileSync(modelsJsonPath, JSON.stringify({ providers: null }), "utf-8")
+		expect(readOllamaModelsFromConfig(modelsJsonPath)).toEqual([])
+	})
+
+	it("returns [] when the ollama provider block has no `models` array", () => {
+		// Provider block with no `models` field — the read path must treat this
+		// as "no models configured" instead of crashing on a missing array.
+		writeFileSync(
+			modelsJsonPath,
+			JSON.stringify({
+				providers: {
+					ollama: {
+						api: "openai-completions",
+						baseUrl: "http://localhost:11434/v1",
+						apiKey: "ollama-no-key-needed",
+					},
+				},
+			}),
+			"utf-8",
+		)
+		expect(readOllamaModelsFromConfig(modelsJsonPath)).toEqual([])
+	})
+
+	it("returns [] when the ollama provider block has `models: null`", () => {
+		writeFileSync(
+			modelsJsonPath,
+			JSON.stringify({
+				providers: {
+					ollama: {
+						api: "openai-completions",
+						baseUrl: "http://localhost:11434/v1",
+						apiKey: "ollama-no-key-needed",
+						models: null,
+					},
+				},
+			}),
+			"utf-8",
+		)
+		expect(readOllamaModelsFromConfig(modelsJsonPath)).toEqual([])
+	})
+
+	it('returns [] when the ollama provider block has `models: "not-an-array"`', () => {
+		// Non-array values must be rejected, not blindly iterated.
+		writeFileSync(
+			modelsJsonPath,
+			JSON.stringify({
+				providers: {
+					ollama: {
+						api: "openai-completions",
+						baseUrl: "http://localhost:11434/v1",
+						apiKey: "ollama-no-key-needed",
+						models: "this should not be here",
+					},
+				},
+			}),
+			"utf-8",
+		)
+		expect(readOllamaModelsFromConfig(modelsJsonPath)).toEqual([])
+	})
+
+	it("returns [] when the file contains an unrelated provider but not ollama", () => {
+		// Sanity check: the read path must NOT accidentally surface models
+		// from a different provider's `models` array.
+		writeFileSync(
+			modelsJsonPath,
+			JSON.stringify({
+				providers: {
+					"kimchi-dev": { models: [{ id: "should-not-leak" }] },
+				},
+			}),
+			"utf-8",
+		)
+		expect(readOllamaModelsFromConfig(modelsJsonPath)).toEqual([])
+	})
+})
+
+/* -------------------------------------------------------------------------- */
+/*  pi-mono ModelRegistry integration — load-bearing coverage                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Why this block exists:
+ *   src/modes/acp/server.ts:179 constructs `ModelRegistry.create(authStorage,
+ *   join(agentDir, "models.json"))` from the persisted models.json that
+ *   `injectOllamaProvider` writes. Every other test in this file proves only
+ *   that OUR code round-trips its own data — but the real failure mode we need
+ *   to defend against is "we wrote a models.json block that pi-mono's registry
+ *   silently drops, misreads, or refuses to register".
+ *
+ *   Approach chosen: use `ModelRegistry.create(authStorage, modelsJsonPath)`
+ *   directly — the same call site that `modes/acp/server.ts` uses. This
+ *   drives the full load path (built-in model merging + custom-provider merge
+ *   + per-model validation) that `--list-models` and the model picker share.
+ *   We assert:
+ *     - the ollama provider is registered
+ *     - all discovered models appear in `getAll()` with provider="ollama"
+ *     - reasoning/inputs/contextWindow/maxTokens round-trip exactly
+ *     - the API key fallback resolver returns our sentinel for Ollama
+ *
+ *   AuthStorage.inMemory() is used so no auth.json file is required.
+ */
+describe("pi-mono ModelRegistry integration — persisted ollama block is accepted", () => {
+	let tmpDir: string
+	let modelsJsonPath: string
+
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "kimchi-ollama-registry-"))
+		modelsJsonPath = join(tmpDir, "models.json")
+	})
+
+	afterEach(() => {
+		rmSync(tmpDir, { recursive: true, force: true })
+	})
+
+	function probeFetch(): typeof fetch {
+		const tagsEntries = [
+			makeTagsEntry({
+				name: "llava:13b",
+				details: { parameter_size: "13B", family: "llama", quantization_level: "Q4_K_M" },
+				capabilities: ["completion", "vision"],
+			}),
+			makeTagsEntry({
+				name: "qwen2.5:14b",
+				details: { parameter_size: "14B", family: "qwen2", quantization_level: "Q4_K_M" },
+				capabilities: ["completion", "tools", "thinking"],
+			}),
+			makeTagsEntry({
+				name: "mistral:7b",
+				details: { parameter_size: "7B", family: "mistral", quantization_level: "Q4_K_M" },
+				capabilities: ["completion"],
+			}),
+		]
+		return makeFetchMock([
+			(url) => (url.endsWith("/api/tags") ? makeTagsResponse(tagsEntries) : null),
+			(url, init) => {
+				if (!url.endsWith("/api/show")) return null
+				const body = init?.body ? (JSON.parse(init.body as string) as { name?: string }) : {}
+				const name = body.name
+				if (name === "llava:13b") return makeShowResponse({ "llama.context_length": 4096 })
+				if (name === "qwen2.5:14b") return makeShowResponse({ "qwen2.context_length": 32768 })
+				if (name === "mistral:7b") return makeShowResponse({ "mistral.context_length": 8192 })
+				return notFoundJson()
+			},
+		])
+	}
+
+	it("registers the ollama provider and lists all discovered models", async () => {
+		// Start with a minimal models.json so `injectOllamaProvider` has a
+		// baseline to merge into — mirrors what cli.ts does in production.
+		writeFileSync(
+			modelsJsonPath,
+			JSON.stringify({
+				providers: {
+					"kimchi-dev": {
+						api: "openai-completions",
+						baseUrl: "https://llm.kimchi.dev/openai/v1",
+						apiKey: "$KIMCHI_API_KEY",
+						models: [],
+					},
+				},
+			}),
+			"utf-8",
+		)
+
+		await injectOllamaProvider(modelsJsonPath, "http://localhost:11434", { fetch: probeFetch() })
+
+		// Now drive the SAME constructor the production ACP server uses.
+		const { AuthStorage, ModelRegistry } = await import("@earendil-works/pi-coding-agent")
+		const authStorage = AuthStorage.inMemory()
+		const registry = ModelRegistry.create(authStorage, modelsJsonPath)
+
+		const allModels = registry.getAll()
+		const ollamaModels = allModels.filter((m) => m.provider === "ollama")
+
+		// Every discovered Ollama model must show up under provider="ollama"
+		expect(ollamaModels.map((m) => m.id).sort()).toEqual(["llava:13b", "mistral:7b", "qwen2.5:14b"])
+
+		// No load errors from pi-mono's validator
+		expect(registry.getError()).toBeUndefined()
+	})
+
+	it("preserves reasoning, input modalities, contextWindow, and maxTokens on round-trip", async () => {
+		writeFileSync(
+			modelsJsonPath,
+			JSON.stringify({
+				providers: {
+					"kimchi-dev": {
+						api: "openai-completions",
+						baseUrl: "https://llm.kimchi.dev/openai/v1",
+						apiKey: "$KIMCHI_API_KEY",
+						models: [],
+					},
+				},
+			}),
+			"utf-8",
+		)
+		await injectOllamaProvider(modelsJsonPath, "http://localhost:11434", { fetch: probeFetch() })
+
+		const { AuthStorage, ModelRegistry } = await import("@earendil-works/pi-coding-agent")
+		const registry = ModelRegistry.create(AuthStorage.inMemory(), modelsJsonPath)
+
+		const llava = registry.find("ollama", "llava:13b")
+		const qwen = registry.find("ollama", "qwen2.5:14b")
+		const mistral = registry.find("ollama", "mistral:7b")
+
+		expect(llava).toBeDefined()
+		expect(qwen).toBeDefined()
+		expect(mistral).toBeDefined()
+
+		// llava: vision capability → image in inputs; no reasoning
+		expect(llava?.input).toEqual(["text", "image"])
+		expect(llava?.reasoning).toBe(false)
+		expect(llava?.contextWindow).toBe(4096)
+		expect(llava?.maxTokens).toBe(4096) // capped at min(contextWindow, DEFAULT_MAX_TOKENS=8192)
+
+		// qwen2.5: thinking → reasoning; tools does NOT add image
+		expect(qwen?.input).toEqual(["text"])
+		expect(qwen?.reasoning).toBe(true)
+		expect(qwen?.contextWindow).toBe(32768)
+		expect(qwen?.maxTokens).toBe(8192)
+
+		// mistral: plain text only
+		expect(mistral?.input).toEqual(["text"])
+		expect(mistral?.reasoning).toBe(false)
+		expect(mistral?.contextWindow).toBe(8192)
+		expect(mistral?.maxTokens).toBe(8192)
+	})
+
+	it("sets baseUrl to the Ollama /v1 endpoint and reports auth as configured", async () => {
+		writeFileSync(
+			modelsJsonPath,
+			JSON.stringify({
+				providers: {
+					"kimchi-dev": {
+						api: "openai-completions",
+						baseUrl: "https://llm.kimchi.dev/openai/v1",
+						apiKey: "$KIMCHI_API_KEY",
+						models: [],
+					},
+				},
+			}),
+			"utf-8",
+		)
+		await injectOllamaProvider(modelsJsonPath, "http://localhost:11434", { fetch: probeFetch() })
+
+		const { AuthStorage, ModelRegistry } = await import("@earendil-works/pi-coding-agent")
+		const registry = ModelRegistry.create(AuthStorage.inMemory(), modelsJsonPath)
+
+		const llava = registry.find("ollama", "llava:13b")
+		expect(llava?.baseUrl).toBe("http://localhost:11434/v1")
+		expect(llava?.api).toBe("openai-completions")
+
+		// The sentinel apiKey satisfies pi-mono's "non-empty apiKey" contract,
+		// so the registry should report Ollama as having auth configured.
+		expect(llava).toBeDefined()
+		expect(registry.hasConfiguredAuth(llava as Parameters<typeof registry.hasConfiguredAuth>[0])).toBe(true)
+	})
+
+	it("re-loads cleanly after offline-probe strips the ollama block", async () => {
+		// First write a populated ollama block, then re-inject with an empty
+		// probe (simulating Ollama going offline between runs) — the registry
+		// built from the resulting file must NOT crash and must NOT list ollama.
+		writeFileSync(
+			modelsJsonPath,
+			JSON.stringify({
+				providers: {
+					"kimchi-dev": {
+						api: "openai-completions",
+						baseUrl: "https://llm.kimchi.dev/openai/v1",
+						apiKey: "$KIMCHI_API_KEY",
+						models: [],
+					},
+				},
+			}),
+			"utf-8",
+		)
+		await injectOllamaProvider(modelsJsonPath, "http://localhost:11434", { fetch: probeFetch() })
+
+		const emptyFetch = makeFetchMock([(url) => (url.endsWith("/api/tags") ? okJson({ models: [] }) : null)])
+		await injectOllamaProvider(modelsJsonPath, "http://localhost:11434", { fetch: emptyFetch })
+
+		const { AuthStorage, ModelRegistry } = await import("@earendil-works/pi-coding-agent")
+		const registry = ModelRegistry.create(AuthStorage.inMemory(), modelsJsonPath)
+
+		const ollamaModels = registry.getAll().filter((m) => m.provider === "ollama")
+		expect(ollamaModels).toEqual([])
+	})
+})
