@@ -40,13 +40,26 @@ async function probeReadyOnce(opts: {
 	probeTimeoutMs: number
 	signal?: AbortSignal
 }): Promise<{ ready: boolean; error?: string }> {
+	let timer: ReturnType<typeof setTimeout> | undefined
 	try {
 		const baseUrl = deriveBaseUrl(opts.wsUrl)
 		const url = `${baseUrl}/readyz`
 
 		const ctrl = new AbortController()
-		const timer = setTimeout(() => ctrl.abort(), opts.probeTimeoutMs)
-		const signal = opts.signal ? AbortSignal.any([ctrl.signal, opts.signal]) : ctrl.signal
+		timer = setTimeout(() => ctrl.abort(), opts.probeTimeoutMs)
+
+		let signal: AbortSignal
+		if (opts.signal) {
+			if (typeof AbortSignal.any === "function") {
+				signal = AbortSignal.any([ctrl.signal, opts.signal])
+			} else {
+				opts.signal.addEventListener("abort", () => ctrl.abort(), { once: true })
+				if (opts.signal.aborted) ctrl.abort()
+				signal = ctrl.signal
+			}
+		} else {
+			signal = ctrl.signal
+		}
 
 		const resp = await fetch(url, {
 			method: "GET",
@@ -56,8 +69,6 @@ async function probeReadyOnce(opts: {
 			signal,
 		})
 
-		clearTimeout(timer)
-
 		if (resp.ok) {
 			return { ready: true }
 		}
@@ -65,6 +76,8 @@ async function probeReadyOnce(opts: {
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err)
 		return { ready: false, error: msg }
+	} finally {
+		if (timer) clearTimeout(timer)
 	}
 }
 
