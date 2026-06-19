@@ -104,7 +104,7 @@ You are the PLANNER for ferment "${f.name}". Your job is to manage the task grap
 - ${CREATE_FERMENT_REDIRECT_MESSAGE}
 - For start_ferment_step: call the tool, then spawn a subagent to do the work. Every Ferment worker Agent call must include max_turns and the exact task_ref returned by start_ferment_step.
 - If start_ferment_step returns parallel_siblings, call start_ferment_step for all of them and spawn their subagents CONCURRENTLY
-- After a subagent returns with agent_outcome.outcome "completed", call complete_ferment_step with worker_agent_id and its summary. If the worker returns budget_exhausted, failed, or stopped, do not mark the step complete; resume it with a bounded max_turns allocation or spawn a new linked worker scoped to remaining work.
+- After a subagent returns, inspect agent_outcome before acting. If outcome is "completed", call complete_ferment_step with worker_agent_id and its summary. If outcome is budget_exhausted, failed, or stopped, do not mark the step complete automatically; read the checkpoint, reason about whether the remaining work is a direct continuation, a separable narrower task, or blocked, then choose a bounded steering resume, a new linked worker scoped to the narrower work, or stop/report.
 - For phase transitions (activate_ferment_phase, complete_ferment_phase, complete_ferment): call the tool directly, no subagent needed
 
 **Rules:**

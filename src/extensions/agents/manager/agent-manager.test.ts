@@ -6,7 +6,7 @@ vi.mock("./agent-runner.js", () => ({
 }))
 
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { AgentManager } from "./agent-manager.js"
+import { AgentManager, buildAgentOutcome } from "./agent-manager.js"
 import { resumeAgent, runAgent } from "./agent-runner.js"
 
 const mockRunAgent = vi.mocked(runAgent)
@@ -53,6 +53,8 @@ describe("AgentManager", () => {
 			reason: "token_budget",
 			resumable: true,
 		})
+		expect(record.latestOutcome?.remaining_work).toContain("direct continuation")
+		expect(record.latestOutcome?.remaining_work).toContain("clean narrower task boundary")
 	})
 
 	it("threads task_ref and max_turns into the structured outcome", async () => {
@@ -118,6 +120,29 @@ describe("AgentManager", () => {
 			turns_used: 1,
 			max_turns: 1,
 		})
+	})
+
+	it("describes max_duration failures as stalled work instead of budget exhaustion", () => {
+		const outcome = buildAgentOutcome({
+			id: "agent-1",
+			type: "Explore",
+			description: "inspect",
+			visibility: "user",
+			status: "aborted",
+			abortReason: "max_duration",
+			startedAt: 1,
+			completedAt: 2,
+			result: "partial checkpoint",
+			toolUses: 0,
+			lifetimeUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			compactionCount: 0,
+			resumeAttempts: [],
+		})
+
+		expect(outcome.outcome).toBe("failed")
+		expect(outcome.reason).toBe("max_duration")
+		expect(outcome.remaining_work).toContain("stalled operation")
+		expect(outcome.remaining_work).toContain("narrower linked replacement")
 	})
 })
 

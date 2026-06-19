@@ -685,7 +685,9 @@ describe("complete_ferment_step", () => {
 		})
 		const text = err(result)
 		expect(text).toContain("exhausted")
-		expect(text).toContain("Resume this agent")
+		expect(text).toContain("direct continuation")
+		expect(text).toContain("clean narrower task boundary")
+		expect(text).toContain("finalizer resume")
 		expect(loadFerment(id).phases[0].steps[0].status).toBe("running")
 	})
 

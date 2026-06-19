@@ -129,7 +129,7 @@ function validateLinkedWorker(params: CompleteStepArgs): string | null {
 	}
 	if (latest.outcome === "completed") return null
 	if (latest.outcome === "budget_exhausted") {
-		return `Worker Agent "${params.worker_agent_id}" exhausted its budget (${latest.reason ?? "budget"}). Do not complete this step from an aborted result. Resume this agent with a fresh bounded max_turns allocation, or spawn a new linked Agent scoped only to the remaining work. If you believe it actually finished, run a short bounded resume/finalizer pass and complete from that completed outcome.`
+		return `Worker Agent "${params.worker_agent_id}" exhausted its budget (${latest.reason ?? "budget"}). Do not complete this step from an aborted result. Inspect the checkpoint first: resume this same Agent with a bounded steering prompt when the remaining work is a direct continuation; use a changed-approach resume when the same thread still matters but the prior approach stalled; spawn a new linked Agent when the remaining work has a clean narrower task boundary; run a short bounded finalizer resume if it appears finished; or stop/report if blocked. Complete only from a linked worker whose latest outcome is completed.`
 	}
 	return `Worker Agent "${params.worker_agent_id}" outcome is ${latest.outcome}${latest.reason ? ` (${latest.reason})` : ""}. Complete requires a linked worker whose latest outcome is completed. Spawn a corrected linked replacement Agent or stop and report the failure.`
 }

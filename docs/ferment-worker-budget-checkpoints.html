@@ -1,0 +1,878 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>Ferment Worker Budget Checkpoints</title>
+		<style>
+			:root {
+				color-scheme: light;
+				--bg: #f7f8fb;
+				--panel: #ffffff;
+				--ink: #1d2433;
+				--muted: #5f6b7a;
+				--line: #d9dee7;
+				--accent: #1f6feb;
+				--accent-soft: #eaf2ff;
+				--warn: #9a6700;
+				--warn-soft: #fff5d6;
+				--bad: #b42318;
+				--bad-soft: #fff0ee;
+				--good: #16794c;
+				--good-soft: #e9f7ef;
+				--code: #111827;
+			}
+
+			* {
+				box-sizing: border-box;
+			}
+
+			body {
+				margin: 0;
+				background: var(--bg);
+				color: var(--ink);
+				font: 16px/1.55 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+			}
+
+			header {
+				background: #172033;
+				color: white;
+				padding: 48px 24px 40px;
+			}
+
+			header .wrap,
+			main {
+				max-width: 1120px;
+				margin: 0 auto;
+			}
+
+			h1 {
+				margin: 0 0 12px;
+				font-size: clamp(2rem, 5vw, 4rem);
+				line-height: 1.02;
+				letter-spacing: 0;
+			}
+
+			header p {
+				max-width: 820px;
+				margin: 0;
+				color: #d9e3f5;
+				font-size: 1.1rem;
+			}
+
+			main {
+				padding: 28px 24px 64px;
+			}
+
+			section {
+				margin: 24px 0;
+				background: var(--panel);
+				border: 1px solid var(--line);
+				border-radius: 8px;
+				padding: 24px;
+			}
+
+			h2 {
+				margin: 0 0 14px;
+				font-size: 1.45rem;
+				letter-spacing: 0;
+			}
+
+			h3 {
+				margin: 22px 0 8px;
+				font-size: 1.08rem;
+			}
+
+			p,
+			ul,
+			ol {
+				margin-top: 0;
+			}
+
+			ul,
+			ol {
+				padding-left: 22px;
+			}
+
+			li {
+				margin: 7px 0;
+			}
+
+			code {
+				font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+				font-size: 0.92em;
+				color: var(--code);
+				background: #eef1f6;
+				border: 1px solid #dfe3eb;
+				border-radius: 4px;
+				padding: 1px 4px;
+			}
+
+			pre {
+				overflow-x: auto;
+				background: #111827;
+				color: #e5e7eb;
+				border-radius: 8px;
+				padding: 16px;
+				font-size: 0.9rem;
+				line-height: 1.45;
+			}
+
+			pre code {
+				background: transparent;
+				border: 0;
+				color: inherit;
+				padding: 0;
+			}
+
+			table {
+				width: 100%;
+				border-collapse: collapse;
+				margin: 12px 0;
+				font-size: 0.95rem;
+			}
+
+			th,
+			td {
+				text-align: left;
+				vertical-align: top;
+				border: 1px solid var(--line);
+				padding: 10px 12px;
+			}
+
+			th {
+				background: #f1f4f9;
+			}
+
+			.grid {
+				display: grid;
+				grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+				gap: 14px;
+			}
+
+			.card {
+				border: 1px solid var(--line);
+				border-radius: 8px;
+				padding: 16px;
+				background: #fbfcfe;
+			}
+
+			.callout {
+				border: 1px solid var(--line);
+				border-left: 5px solid var(--accent);
+				background: var(--accent-soft);
+				border-radius: 8px;
+				padding: 14px 16px;
+				margin: 16px 0;
+			}
+
+			.callout.warn {
+				border-left-color: var(--warn);
+				background: var(--warn-soft);
+			}
+
+			.callout.bad {
+				border-left-color: var(--bad);
+				background: var(--bad-soft);
+			}
+
+			.callout.good {
+				border-left-color: var(--good);
+				background: var(--good-soft);
+			}
+
+			.flow {
+				display: grid;
+				grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+				gap: 12px;
+				margin-top: 12px;
+			}
+
+			.step {
+				background: #fbfcfe;
+				border: 1px solid var(--line);
+				border-radius: 8px;
+				padding: 14px;
+				min-height: 112px;
+			}
+
+			.step strong {
+				display: block;
+				margin-bottom: 6px;
+			}
+
+			.badge {
+				display: inline-block;
+				border-radius: 999px;
+				padding: 2px 9px;
+				font-size: 0.78rem;
+				font-weight: 700;
+				background: #eef1f6;
+				color: #394559;
+			}
+
+			.badge.good {
+				background: var(--good-soft);
+				color: var(--good);
+			}
+
+			.badge.warn {
+				background: var(--warn-soft);
+				color: var(--warn);
+			}
+
+			.badge.bad {
+				background: var(--bad-soft);
+				color: var(--bad);
+			}
+
+			.small {
+				color: var(--muted);
+				font-size: 0.92rem;
+			}
+
+			.diagram {
+				margin: 18px 0;
+				border: 1px solid var(--line);
+				border-radius: 8px;
+				background: #fbfcfe;
+				padding: 16px;
+			}
+
+			.diagram-title {
+				margin: 0 0 12px;
+				color: var(--muted);
+				font-weight: 700;
+				font-size: 0.9rem;
+				text-transform: uppercase;
+			}
+
+			.system-map {
+				display: grid;
+				grid-template-columns: 1fr auto 1fr auto 1fr;
+				gap: 10px;
+				align-items: center;
+			}
+
+			.node {
+				border: 1px solid var(--line);
+				border-radius: 8px;
+				background: white;
+				padding: 14px;
+				min-height: 104px;
+			}
+
+			.node strong {
+				display: block;
+				margin-bottom: 6px;
+			}
+
+			.arrow {
+				color: var(--accent);
+				font-size: 1.5rem;
+				font-weight: 800;
+				text-align: center;
+			}
+
+			.compare {
+				display: grid;
+				grid-template-columns: 1fr 1fr;
+				gap: 14px;
+			}
+
+			.swimlane {
+				border: 1px solid var(--line);
+				border-radius: 8px;
+				background: white;
+				padding: 14px;
+			}
+
+			.swimlane h3 {
+				margin-top: 0;
+			}
+
+			.chain {
+				display: grid;
+				gap: 8px;
+			}
+
+			.chain .box {
+				border: 1px solid var(--line);
+				border-radius: 8px;
+				padding: 10px;
+				background: #f7f9fc;
+			}
+
+			.chain .box.good {
+				border-color: #a6d8bd;
+				background: var(--good-soft);
+			}
+
+			.chain .box.warn {
+				border-color: #e7c55f;
+				background: var(--warn-soft);
+			}
+
+			.chain .box.bad {
+				border-color: #e9aaa4;
+				background: var(--bad-soft);
+			}
+
+			.down {
+				color: var(--accent);
+				font-weight: 800;
+				text-align: center;
+			}
+
+			.decision {
+				display: grid;
+				grid-template-columns: minmax(190px, 0.9fr) minmax(240px, 1.1fr);
+				gap: 14px;
+				align-items: start;
+			}
+
+			.decision-start {
+				border: 2px solid var(--accent);
+				border-radius: 8px;
+				background: var(--accent-soft);
+				padding: 14px;
+				font-weight: 700;
+			}
+
+			.branch {
+				display: grid;
+				gap: 8px;
+			}
+
+			.branch-row {
+				display: grid;
+				grid-template-columns: minmax(150px, 0.7fr) minmax(170px, 1fr);
+				gap: 8px;
+				align-items: stretch;
+			}
+
+			.branch-row div {
+				border: 1px solid var(--line);
+				border-radius: 8px;
+				background: white;
+				padding: 10px;
+			}
+
+			@media (max-width: 640px) {
+				header {
+					padding: 36px 18px 30px;
+				}
+
+				main {
+					padding: 18px;
+				}
+
+				section {
+					padding: 18px;
+				}
+
+				.system-map,
+				.compare,
+				.decision,
+				.branch-row {
+					grid-template-columns: 1fr;
+				}
+
+				.arrow {
+					transform: rotate(90deg);
+				}
+			}
+		</style>
+	</head>
+	<body>
+		<header>
+			<div class="wrap">
+				<h1>Ferment Worker Budget Checkpoints</h1>
+				<p>
+					This document explains how Kimchi's Ferment planner and Agent workers interacted before the budget
+					checkpoint change, how they interact now, and why the new contract prevents incomplete worker output from
+					being treated as completed Ferment step work.
+				</p>
+			</div>
+		</header>
+
+		<main>
+			<section>
+				<h2>Audience And Mental Model</h2>
+				<p>
+					Kimchi extends the Pi coding agent with local extension code. The upstream agent loop still lives in
+					<code>@earendil-works/pi-coding-agent</code>. The code described here is Kimchi-owned extension behavior in
+					<code>src/extensions/agents/</code>, <code>src/extensions/ferment/</code>, and
+					<code>src/extensions/orchestration/</code>.
+				</p>
+				<div class="grid">
+					<div class="card">
+						<h3>Agent</h3>
+						<p>
+							The <code>Agent</code> tool starts a child coding session. It can run foreground or background, use a
+							specialized persona, and enforce budgets such as <code>max_turns</code>, <code>token_budget</code>,
+							<code>max_duration</code>, and inactivity timeout.
+						</p>
+					</div>
+					<div class="card">
+						<h3>Ferment</h3>
+						<p>
+							Ferment is a task workflow engine. A Ferment has phases and steps. The planner is supposed to manage
+							the state machine, while implementation work for each step is delegated to Agent workers.
+						</p>
+					</div>
+					<div class="card">
+						<h3>Orchestrator</h3>
+						<p>
+							The primary model session coordinates work. It calls Ferment tools, starts Agent workers, waits for
+							results, and decides whether to complete, resume, replace, skip, or stop a step.
+						</p>
+					</div>
+				</div>
+				<div class="diagram">
+					<p class="diagram-title">System map</p>
+					<div class="system-map">
+						<div class="node">
+							<strong>Orchestrator</strong>
+							<p class="small">
+								The main model turn. It decides when to start Ferment steps, spawn Agents, resume workers, and
+								complete or stop work.
+							</p>
+						</div>
+						<div class="arrow">-&gt;</div>
+						<div class="node">
+							<strong>Ferment state machine</strong>
+							<p class="small">
+								Owns phases, steps, legal transitions, gates, and the rule that a step can advance only with valid
+								evidence.
+							</p>
+						</div>
+						<div class="arrow">-&gt;</div>
+						<div class="node">
+							<strong>Agent worker</strong>
+							<p class="small">
+								Executes delegated work in a child session, enforces budgets, and reports an
+								<code>agent_outcome</code>.
+							</p>
+						</div>
+					</div>
+				</div>
+			</section>
+
+			<section>
+				<h2>Important Files</h2>
+				<table>
+					<thead>
+						<tr>
+							<th>File</th>
+							<th>Role</th>
+						</tr>
+					</thead>
+					<tbody>
+						<tr>
+							<td><code>src/extensions/agents/index.ts</code></td>
+							<td>Registers the public <code>Agent</code>, <code>get_subagent_result</code>, and <code>steer_subagent</code> tools.</td>
+						</tr>
+						<tr>
+							<td><code>src/extensions/agents/manager/agent-manager.ts</code></td>
+							<td>Tracks Agent records, run completion, resume attempts, and structured Agent outcomes.</td>
+						</tr>
+						<tr>
+							<td><code>src/extensions/agents/manager/agent-runner.ts</code></td>
+							<td>Creates child agent sessions and enforces turn, token, duration, and inactivity limits.</td>
+						</tr>
+						<tr>
+							<td><code>src/extensions/agents/personas/types.ts</code></td>
+							<td>Defines <code>AgentRecord</code>, <code>AgentOutcome</code>, <code>AgentTaskRef</code>, and related types.</td>
+						</tr>
+						<tr>
+							<td><code>src/extensions/ferment/tools/steps.ts</code></td>
+							<td>Implements <code>start_ferment_step</code> and <code>complete_ferment_step</code>, including linked-worker validation.</td>
+						</tr>
+						<tr>
+							<td><code>src/extensions/ferment/tool-schemas.ts</code></td>
+							<td>Defines the model-visible Ferment tool schemas, including <code>worker_agent_id</code>.</td>
+						</tr>
+						<tr>
+							<td><code>src/extensions/ferment/prompt-block.ts</code></td>
+							<td>Builds Ferment planner guidance about spawning workers with <code>task_ref</code> and <code>max_turns</code>.</td>
+						</tr>
+						<tr>
+							<td><code>src/extensions/orchestration/orchestration-instructions.ts</code></td>
+							<td>Explains general Agent delegation policy, budget tables, and budget-exhaustion recovery.</td>
+						</tr>
+					</tbody>
+				</table>
+			</section>
+
+			<section>
+				<h2>Previous Behavior</h2>
+				<p>
+					Before this change, Ferment and Agent both existed, but their contract was loose. Agent knew whether a worker
+					stopped because of a budget or timeout. Ferment knew which step was running. The missing piece was a stable,
+					machine-checkable link between "this worker" and "this Ferment step", plus a model-visible distinction between
+					successful completion and budget exhaustion.
+				</p>
+				<div class="flow">
+					<div class="step">
+						<strong>1. Start step</strong>
+						<code>start_ferment_step</code> marked the step as running and told the planner to spawn a subagent.
+					</div>
+					<div class="step">
+						<strong>2. Spawn worker</strong>
+						The planner called <code>Agent</code>. Budgets could be supplied, but the Ferment step was not formally linked
+						to the Agent record.
+					</div>
+					<div class="step">
+						<strong>3. Read result</strong>
+						The Agent result was mostly free-form text plus legacy runtime status fields. Budget exhaustion looked like a
+						kind of aborted textual result.
+					</div>
+					<div class="step">
+						<strong>4. Complete step</strong>
+						The planner could call <code>complete_ferment_step</code> with a summary and gates. Ferment did not verify that
+						the claimed worker was linked, completed, or even present.
+					</div>
+				</div>
+				<div class="callout bad">
+					<strong>Main failure mode:</strong> if a worker hit <code>max_turns</code> or <code>token_budget</code>, the
+					orchestrator might still interpret its partial checkpoint text as enough evidence and complete the Ferment step.
+					That made budget exhaustion look too much like normal completion.
+				</div>
+				<div class="diagram">
+					<p class="diagram-title">Previous flow</p>
+					<div class="chain">
+						<div class="box">start_ferment_step marks the step running</div>
+						<div class="down">v</div>
+						<div class="box">Planner spawns Agent, usually with a free-form prompt</div>
+						<div class="down">v</div>
+						<div class="box warn">Agent returns text; budget exhaustion can be buried in the prose</div>
+						<div class="down">v</div>
+						<div class="box bad">Planner may call complete_ferment_step even though worker did not truly complete</div>
+					</div>
+				</div>
+			</section>
+
+			<section>
+				<h2>Current Behavior</h2>
+				<p>
+					The current design makes Agent outcomes structured and resumable, then makes Ferment step completion depend on a
+					completed linked worker. Budget exhaustion is now an explicit checkpoint, not a successful result.
+				</p>
+				<div class="flow">
+					<div class="step">
+						<strong>1. Start step</strong>
+						<code>start_ferment_step</code> returns the exact <code>task_ref</code> the planner must pass to the worker.
+					</div>
+					<div class="step">
+						<strong>2. Spawn worker</strong>
+						The planner calls <code>Agent</code> with <code>max_turns</code> and <code>task_ref</code>. The worker is told
+						to produce a checkpoint if it nears the limit.
+					</div>
+					<div class="step">
+						<strong>3. Agent records outcome</strong>
+						Agent stores <code>latestOutcome</code> on the <code>AgentRecord</code> and exposes an
+						<code>agent_outcome</code> JSON block in foreground and background results.
+					</div>
+					<div class="step">
+						<strong>4. Complete step</strong>
+						<code>complete_ferment_step</code> requires <code>worker_agent_id</code> and accepts only linked workers whose
+						latest outcome is <code>completed</code>.
+					</div>
+				</div>
+				<div class="diagram">
+					<p class="diagram-title">Current flow</p>
+					<div class="compare">
+						<div class="swimlane">
+							<h3>Accepted path</h3>
+							<div class="chain">
+								<div class="box">start_ferment_step returns task_ref</div>
+								<div class="down">v</div>
+								<div class="box">Agent runs with task_ref + max_turns</div>
+								<div class="down">v</div>
+								<div class="box good">agent_outcome.outcome = completed</div>
+								<div class="down">v</div>
+								<div class="box good">complete_ferment_step accepts worker_agent_id, then gates run</div>
+							</div>
+						</div>
+						<div class="swimlane">
+							<h3>Checkpoint path</h3>
+							<div class="chain">
+								<div class="box">start_ferment_step returns task_ref</div>
+								<div class="down">v</div>
+								<div class="box">Agent reaches max_turns or token_budget</div>
+								<div class="down">v</div>
+								<div class="box warn">agent_outcome.outcome = budget_exhausted</div>
+								<div class="down">v</div>
+								<div class="box bad">complete_ferment_step rejects; planner must resume or replace worker</div>
+							</div>
+						</div>
+					</div>
+				</div>
+			</section>
+
+			<section>
+				<h2>The Agent Outcome Contract</h2>
+				<p>
+					Agent keeps old <code>status</code> values for UI and backward compatibility, but adds a more specific
+					<code>outcome</code> value for orchestration decisions.
+				</p>
+				<table>
+					<thead>
+						<tr>
+							<th>Runtime status</th>
+							<th>New outcome</th>
+							<th>Meaning for Ferment</th>
+						</tr>
+					</thead>
+					<tbody>
+						<tr>
+							<td><code>completed</code> or <code>steered</code></td>
+							<td><span class="badge good">completed</span></td>
+							<td>The worker finished acceptably. Ferment may complete the linked step if gates also pass.</td>
+						</tr>
+						<tr>
+							<td><code>aborted</code> with <code>max_turns</code> or <code>token_budget</code></td>
+							<td><span class="badge warn">budget_exhausted</span></td>
+							<td>The worker produced a checkpoint, not a completion. Resume or replace it before completing the step.</td>
+						</tr>
+						<tr>
+							<td><code>error</code> or other failed abort reasons</td>
+							<td><span class="badge bad">failed</span></td>
+							<td>The worker failed. Spawn a corrected replacement or stop and report the failure.</td>
+						</tr>
+						<tr>
+							<td><code>stopped</code></td>
+							<td><span class="badge">stopped</span></td>
+							<td>The worker was stopped. It is not valid completion evidence.</td>
+						</tr>
+					</tbody>
+				</table>
+				<pre><code>{
+  "agent_id": "abc123",
+  "status": "aborted",
+  "outcome": "budget_exhausted",
+  "reason": "max_turns",
+  "resumable": true,
+  "turns_used": 12,
+  "max_turns": 12,
+  "token_usage": {
+    "input": 0,
+    "output": 18420,
+    "cacheRead": 0,
+    "cacheWrite": 0
+  },
+  "duration_ms": 184000,
+  "summary": "Partial checkpoint text from the worker",
+  "checkpoint": "Partial checkpoint text from the worker",
+  "remaining_work": "Resume this agent with a fresh bounded max_turns allocation, or spawn a new linked Agent scoped only to the remaining work.",
+  "task_ref": {
+    "kind": "ferment_step",
+    "ferment_id": "ferment-1",
+    "phase_id": "phase-1",
+    "step_id": "step-1"
+  },
+  "resume_attempts": 0
+}</code></pre>
+			</section>
+
+			<section>
+				<h2>Task References</h2>
+				<p>
+					A <code>task_ref</code> is a lightweight link from an Agent worker back to the Ferment step it is working on.
+					It is not a general task graph. It is just enough identity for Ferment to answer: "Does this Agent belong to
+					the step that is being completed?"
+				</p>
+				<pre><code>{
+  "kind": "ferment_step",
+  "ferment_id": "019edefb-da33-70ce-8a80-7a8b5e94088d",
+  "phase_id": "phase-1",
+  "step_id": "step-1"
+}</code></pre>
+				<p>
+					<code>start_ferment_step</code> now includes this object in its next-action hint. The planner should pass it
+					unchanged into the <code>Agent</code> call.
+				</p>
+				<pre><code>Agent({
+  subagent_type: "Builder",
+  model: "provider/model-id",
+  description: "implement step",
+  max_turns: 12,
+  task_ref: {
+    kind: "ferment_step",
+    ferment_id: "019edefb-da33-70ce-8a80-7a8b5e94088d",
+    phase_id: "phase-1",
+    step_id: "step-1"
+  },
+  prompt: "Implement this Ferment step. If you approach max_turns, produce a checkpoint..."
+})</code></pre>
+			</section>
+
+			<section>
+				<h2>Completion Validation</h2>
+				<p>
+					<code>complete_ferment_step</code> now performs worker validation before gate validation or any state mutation.
+					This order prevents a bad worker result from changing Ferment state.
+				</p>
+				<div class="diagram">
+					<p class="diagram-title">complete_ferment_step decision tree</p>
+					<div class="decision">
+						<div class="decision-start">Planner calls complete_ferment_step with worker_agent_id</div>
+						<div class="branch">
+							<div class="branch-row">
+								<div>Missing or unknown worker?</div>
+								<div><span class="badge bad">Reject</span> provide or retrieve the correct Agent ID.</div>
+							</div>
+							<div class="branch-row">
+								<div>task_ref mismatches this Ferment step?</div>
+								<div><span class="badge bad">Reject</span> spawn a worker linked to this exact step.</div>
+							</div>
+							<div class="branch-row">
+								<div>No latest outcome yet?</div>
+								<div><span class="badge warn">Wait</span> use get_subagent_result, then retry completion.</div>
+							</div>
+							<div class="branch-row">
+								<div>outcome = budget_exhausted?</div>
+								<div><span class="badge warn">Checkpoint</span> bounded resume or narrower replacement worker.</div>
+							</div>
+							<div class="branch-row">
+								<div>outcome = failed or stopped?</div>
+								<div><span class="badge bad">Reject</span> corrected replacement or report failure.</div>
+							</div>
+							<div class="branch-row">
+								<div>outcome = completed?</div>
+								<div><span class="badge good">Continue</span> run gate validation and verification.</div>
+							</div>
+						</div>
+					</div>
+				</div>
+				<table>
+					<thead>
+						<tr>
+							<th>Input to <code>complete_ferment_step</code></th>
+							<th>Result</th>
+						</tr>
+					</thead>
+					<tbody>
+						<tr>
+							<td>No <code>worker_agent_id</code></td>
+							<td>Rejected. The planner must provide the Agent ID returned by the worker.</td>
+						</tr>
+						<tr>
+							<td>Unknown Agent ID</td>
+							<td>Rejected. The planner should retrieve the correct background worker or spawn a linked worker.</td>
+						</tr>
+						<tr>
+							<td>Agent exists but <code>task_ref</code> does not match the Ferment step</td>
+							<td>Rejected. The planner must not use another step's worker as evidence.</td>
+						</tr>
+						<tr>
+							<td>Linked Agent has no recorded outcome</td>
+							<td>Rejected. The planner should wait for the worker result, usually via <code>get_subagent_result</code>.</td>
+						</tr>
+						<tr>
+							<td>Linked Agent outcome is <code>budget_exhausted</code></td>
+							<td>Rejected with guidance to resume the same Agent or spawn a narrower linked replacement worker.</td>
+						</tr>
+						<tr>
+							<td>Linked Agent outcome is <code>failed</code> or <code>stopped</code></td>
+							<td>Rejected. The planner should spawn a corrected replacement worker or report the failure.</td>
+						</tr>
+						<tr>
+							<td>Linked Agent outcome is <code>completed</code></td>
+							<td>Accepted, then normal Ferment gates and verification run.</td>
+						</tr>
+					</tbody>
+				</table>
+				<pre><code>complete_ferment_step({
+  ferment_id: "019edefb-da33-70ce-8a80-7a8b5e94088d",
+  phase_id: "phase-1",
+  step_id: "step-1",
+  worker_agent_id: "abc123",
+  summary: "Worker completed the implementation and verification.",
+  gates: [
+    { "id": "S1", "verdict": "pass", "rationale": "...", "evidence": "..." },
+    { "id": "S2", "verdict": "pass", "rationale": "...", "evidence": "..." },
+    { "id": "S3", "verdict": "pass", "rationale": "...", "evidence": "..." }
+  ]
+})</code></pre>
+			</section>
+
+			<section>
+				<h2>Resume Semantics</h2>
+				<p>
+					<code>Agent({ resume: "&lt;agent_id&gt;", prompt, max_turns })</code> continues the same child session with a
+					fresh per-resume turn allocation. It does not erase the old session. It records a resume attempt on the same
+					<code>AgentRecord</code>.
+				</p>
+				<div class="diagram">
+					<p class="diagram-title">Resume cycle</p>
+					<div class="chain">
+						<div class="box warn">Worker returns budget_exhausted with checkpoint and remaining_work</div>
+						<div class="down">v</div>
+						<div class="box">Orchestrator chooses bounded resume or narrower replacement worker</div>
+						<div class="down">v</div>
+						<div class="box">Resume uses same Agent session plus fresh max_turns window</div>
+						<div class="down">v</div>
+						<div class="box good">If resumed outcome is completed, Ferment can complete the linked step</div>
+					</div>
+				</div>
+				<ul>
+					<li><code>max_turns</code> is the primary Ferment worker budget.</li>
+					<li><code>max_duration</code> remains a safety guard for hangs and blocking operations.</li>
+					<li><code>token_budget</code> is optional and caller-specific.</li>
+					<li>By default, an Agent record allows at most two bounded resumes.</li>
+					<li>A resume returns the same structured <code>agent_outcome</code> shape as a fresh run.</li>
+				</ul>
+				<div class="callout warn">
+					<strong>Important:</strong> resuming is allowed, but blind retry is not. The resume prompt should use the
+					checkpoint and ask for only the remaining work or a finalizer pass.
+				</div>
+			</section>
+
+			<section>
+				<h2>What The Orchestrator Should Do Now</h2>
+				<ol>
+					<li>Call <code>start_ferment_step</code>.</li>
+					<li>Copy the returned <code>task_ref</code>.</li>
+					<li>Start an <code>Agent</code> with <code>task_ref</code> and a task-sized <code>max_turns</code>.</li>
+					<li>Wait for or retrieve the worker result.</li>
+					<li>Inspect <code>agent_outcome.outcome</code>.</li>
+					<li>If it is <code>completed</code>, call <code>complete_ferment_step</code> with <code>worker_agent_id</code>.</li>
+					<li>
+						If it is <code>budget_exhausted</code>, resume the same worker with a bounded turn allocation, or spawn a new
+						linked worker scoped to remaining work.
+					</li>
+					<li>If it is <code>failed</code> or <code>stopped</code>, spawn a corrected replacement or report the failure.</li>
+				</ol>
+			</section>
+
+			<section>
+				<h2>Why This Is Local Extension Code</h2>
+				<p>
+					The underlying Pi agent loop already provides session execution, extension hooks, and tool runtime behavior.
+					This change is Kimchi-specific orchestration policy: how Ferment planners should treat Agent worker budgets,
+					how workers are linked to Ferment steps, and when a Ferment step is allowed to advance. That makes it a local
+					extension-layer behavior rather than an upstream patch.
+				</p>
+			</section>
+
+			<section>
+				<h2>Quick Debug Checklist</h2>
+				<ul>
+					<li>If <code>complete_ferment_step</code> says <code>worker_agent_id</code> is missing, pass the Agent ID from the worker result.</li>
+					<li>If it says the worker is not linked, check that <code>task_ref</code> matches the exact Ferment, phase, and step IDs.</li>
+					<li>If it says the worker exhausted budget, use the checkpoint and resume or replace the worker.</li>
+					<li>If the worker finished in the background, use <code>get_subagent_result</code> before completing the step.</li>
+					<li>If tests call <code>completeStep</code> directly, they need a fake linked Agent record or must assert the missing-worker error.</li>
+				</ul>
+				<p class="small">
+					Related tests: <code>src/extensions/agents/manager/agent-manager.test.ts</code>,
+					<code>src/extensions/ferment/tools/steps.test.ts</code>,
+					<code>src/extensions/ferment/tools.integration.test.ts</code>, and
+					<code>src/extensions/ferment/tool-schemas.test.ts</code>.
+				</p>
+			</section>
+		</main>
+	</body>
+</html>

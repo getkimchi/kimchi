@@ -479,6 +479,22 @@ export function classifyAgentOutcome(record: Pick<AgentRecord, "status" | "abort
 	return "failed"
 }
 
+function buildRemainingWorkGuidance(
+	outcome: AgentOutcome["outcome"],
+	reason: AgentOutcome["reason"],
+): string | undefined {
+	if (outcome === "budget_exhausted") {
+		return "Inspect the checkpoint before acting. Resume this same Agent with a bounded steering prompt when the remaining work is a direct continuation and preserving session context is valuable. Use a changed-approach resume when the same thread is still useful but the prior approach stalled. Spawn a new linked Agent when the remaining work has a clean narrower task boundary. If the worker appears finished, run a short bounded finalizer resume and complete only from that completed outcome. Stop/report if the checkpoint is unclear or blocked."
+	}
+	if (outcome === "failed" && (reason === "max_duration" || reason === "inactivity")) {
+		return "Inspect the checkpoint before acting; this may indicate a hang, blocked command, or stalled investigation. Resume only with a steering prompt that avoids the stalled operation and continues the same thread. Otherwise spawn a narrower linked replacement Agent, or stop/report the blocker."
+	}
+	if (outcome === "failed") {
+		return "Inspect the failure and checkpoint before acting. Spawn a corrected replacement Agent when the remaining work has a clear task boundary, or stop/report if the failure is not recoverable through bounded delegation."
+	}
+	return undefined
+}
+
 export function buildAgentOutcome(record: AgentRecord): AgentOutcome {
 	const outcome = classifyAgentOutcome(record)
 	const reason = record.status === "error" ? "error" : record.abortReason
@@ -489,12 +505,7 @@ export function buildAgentOutcome(record: AgentRecord): AgentOutcome {
 		outcome !== "completed" &&
 		outcome !== "stopped" &&
 		(record.resumeAttempts?.length ?? 0) < DEFAULT_MAX_RESUMES
-	const remainingWork =
-		outcome === "budget_exhausted"
-			? "Resume this agent with a fresh bounded max_turns allocation, or spawn a new linked Agent scoped only to the remaining work."
-			: outcome === "failed"
-				? "Inspect the failure and either spawn a corrected replacement Agent or stop and report the failure."
-				: undefined
+	const remainingWork = buildRemainingWorkGuidance(outcome, reason)
 	return {
 		agent_id: record.id,
 		status: record.status,
