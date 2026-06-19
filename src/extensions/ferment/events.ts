@@ -421,6 +421,13 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 			applyFermentToolProfile(pi, "worker")
 			return {}
 		}
+		// Only apply a ferment profile when a ferment is active. In normal chat
+		// mode (no active ferment) leave the toolset untouched so the user gets
+		// the full tool set. The idle profile (discovery-only) is applied by
+		// command handlers when entering/exiting ferment mode, not here.
+		if (!runtime.getActive()) {
+			return {}
+		}
 		// One-shot and interactive flows share the unified profile model: derive
 		// the profile from the active ferment's lifecycle state (planning vs.
 		// implementation). Both modes drive off the same runtime.

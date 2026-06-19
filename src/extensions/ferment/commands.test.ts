@@ -381,7 +381,12 @@ describe("FermentCommandController", () => {
 		expect(h.storage.get(ferment.id)?.status).toBe("draft")
 		expect(h.runtime.getActive()).toBeUndefined()
 		expect(h.runtime.setActive).toHaveBeenLastCalledWith(undefined)
-		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash"])
+		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith([
+			"read",
+			"bash",
+			"propose_ferment_scoping",
+			"start_ferment_step",
+		])
 		expect(h.runtime.getContinuationPolicy()).toBe("manual")
 		expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining('Exited Ferment mode for "Draft Exit"'))
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
@@ -411,7 +416,12 @@ describe("FermentCommandController", () => {
 		expect(h.runtime.getActive()).toBeUndefined()
 		expect(h.runtime.setActive).toHaveBeenCalledWith(expect.objectContaining({ status: "paused" }))
 		expect(h.runtime.setActive).toHaveBeenLastCalledWith(undefined)
-		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash"])
+		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith([
+			"read",
+			"bash",
+			"propose_ferment_scoping",
+			"start_ferment_step",
+		])
 		expect(h.runtime.getContinuationPolicy()).toBe("automated")
 	})
 
@@ -429,7 +439,12 @@ describe("FermentCommandController", () => {
 		expect(h.runtime.getActive()).toBeUndefined()
 		expect(h.runtime.setActive).toHaveBeenCalledWith(expect.objectContaining({ status: "paused" }))
 		expect(h.runtime.setActive).toHaveBeenLastCalledWith(undefined)
-		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash"])
+		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith([
+			"read",
+			"bash",
+			"propose_ferment_scoping",
+			"start_ferment_step",
+		])
 	})
 
 	it("/ferment exit leaves paused ferments paused while clearing active mode", async () => {
@@ -446,7 +461,12 @@ describe("FermentCommandController", () => {
 		expect(h.runtime.getActive()).toBeUndefined()
 		expect(h.runtime.setActive).toHaveBeenCalledTimes(1)
 		expect(h.runtime.setActive).toHaveBeenLastCalledWith(undefined)
-		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash"])
+		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith([
+			"read",
+			"bash",
+			"propose_ferment_scoping",
+			"start_ferment_step",
+		])
 	})
 
 	it("/ferment exit detaches terminal ferments without mutating lifecycle", async () => {
@@ -463,7 +483,12 @@ describe("FermentCommandController", () => {
 		expect(h.runtime.getActive()).toBeUndefined()
 		expect(h.runtime.setActive).toHaveBeenCalledTimes(1)
 		expect(h.runtime.setActive).toHaveBeenLastCalledWith(undefined)
-		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash"])
+		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith([
+			"read",
+			"bash",
+			"propose_ferment_scoping",
+			"start_ferment_step",
+		])
 		expect(h.ctx.ui.notify).toHaveBeenCalledWith(
 			'Exited Ferment mode for "Complete Exit". It remains complete and is still available from /ferment list.',
 		)

@@ -204,39 +204,17 @@ describe("worker profile", () => {
 })
 
 describe("idle profile", () => {
-	it("applies the idle profile without ferment-only tools", () => {
-		const pi = createPi(
-			[
-				"read",
-				"bash",
-				"propose_ferment_scoping",
-				"scope_ferment",
-				"activate_ferment_phase",
-				"list_ferments",
-				"confirm_ferment_completion_criteria",
-				"ask_user",
-			],
-			[
-				"read",
-				"bash",
-				"propose_ferment_scoping",
-				"scope_ferment",
-				"activate_ferment_phase",
-				"list_ferments",
-				"confirm_ferment_completion_criteria",
-				"ask_user",
-			],
-		)
+	it("restores the full registered toolset so normal chat is unrestricted", () => {
+		// Idle means no active ferment (e.g. after /ferment exit). We restore
+		// all registered tools so the user gets the complete toolset back.
+		const allTools = ["read", "bash", "edit", "list_ferments", "request_ferment_workflow"]
+		const pi = createPi([], allTools)
 
 		applyFermentToolProfile(pi, "idle")
 
 
 		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
-		// IDLE_FERMENT_TOOL_NAMES = [LIST, REQUEST_WORKFLOW, CONFIRM_COMPLETION_CRITERIA, PROPOSE_SCOPING]
-		expect(lastCall).toContain(FERMENT_TOOLS.LIST)
-		expect(lastCall).toContain(FERMENT_TOOLS.CONFIRM_COMPLETION_CRITERIA)
-		expect(lastCall).toContain(FERMENT_TOOLS.REQUEST_WORKFLOW)
-		expect(lastCall).toContain(FERMENT_TOOLS.PROPOSE_SCOPING)
+		expect(lastCall).toEqual(allTools)
 	})
 })
 

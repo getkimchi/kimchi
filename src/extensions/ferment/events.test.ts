@@ -116,19 +116,9 @@ describe("registerFermentEvents", () => {
 
 		await beforeAgentStart({ systemPrompt: "base" }, {})
 
-		// Unified profile model: one-shot and interactive share the same derivation.
-		// With no active ferment in the runtime, profileForFerment returns "idle"
-		// and the toolset is the 4 discovery tools.
-		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
-		expect(lastCall).toContain("list_ferments")
-		expect(lastCall).toContain("request_ferment_workflow")
-		expect(lastCall).toContain("confirm_ferment_completion_criteria")
-		expect(lastCall).toContain("propose_ferment_scoping")
-		expect(lastCall).not.toContain("bash")
-		expect(lastCall).not.toContain("read")
-		expect(lastCall).not.toContain("Agent")
-		expect(lastCall).not.toContain("scope_ferment")
-		expect(lastCall).not.toContain("start_ferment_step")
+		// With no active ferment, before_agent_start must NOT call setActiveTools.
+		// Normal chat mode is unrestricted — the toolset stays as-is.
+		expect(pi.setActiveTools).not.toHaveBeenCalled()
 	})
 
 	it("applies runtime-derived implementation profile on before_agent_start in one-shot mode when ferment has activated phase", async () => {
@@ -202,18 +192,12 @@ describe("registerFermentEvents", () => {
 		expect(result?.systemPrompt).toBeUndefined()
 	})
 
-	it("applies the idle static profile without ferment tools when no ferment is active", async () => {
+	it("does not call setActiveTools in normal chat mode (no active ferment)", async () => {
+		// When no ferment is active, before_agent_start must leave the toolset
+		// untouched so the user gets the full unrestricted tool set.
 		const runtime: FermentRuntime = { ...createDefaultFermentRuntime() }
 		const { handlers, pi } = createPi()
 		;(pi.getFlag as ReturnType<typeof vi.fn>).mockReturnValue(undefined)
-		;(pi.getAllTools as ReturnType<typeof vi.fn>).mockReturnValue([
-			{ name: "bash" },
-			{ name: "edit" },
-			{ name: "read" },
-			{ name: "Agent" },
-			{ name: "list_ferments" },
-			{ name: "scope_ferment" },
-		])
 
 		registerFermentEvents(pi, runtime)
 		const beforeAgentStart = handlers.get("before_agent_start")
@@ -221,9 +205,7 @@ describe("registerFermentEvents", () => {
 
 		await beforeAgentStart({ systemPrompt: "base" }, {})
 
-		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
-		expect(lastCall).not.toContain("list_ferments")
-		expect(lastCall).not.toContain("scope_ferment")
+		expect(pi.setActiveTools).not.toHaveBeenCalled()
 	})
 
 	it("active planner first snapshot includes existing-ferment lifecycle tools", async () => {

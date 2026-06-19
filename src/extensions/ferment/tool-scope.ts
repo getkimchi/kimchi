@@ -116,7 +116,11 @@ export class FermentToolScope {
 	applyProfile(profile: FermentToolProfile): void {
 		switch (profile) {
 			case "idle":
-				this.pi.setActiveTools([...IDLE_FERMENT_TOOL_NAMES])
+				// Restore the full registered toolset so normal chat mode is
+				// unrestricted. The idle ferment discovery tools (list_ferments,
+				// request_ferment_workflow, etc.) are always registered and will
+				// be included in getAllTools() without needing explicit activation.
+				this.pi.setActiveTools(this.pi.getAllTools().map((t) => t.name))
 				break
 			case "planning": {
 				// Intersection: only tools that are BOTH registered AND explicitly listed for planning.
