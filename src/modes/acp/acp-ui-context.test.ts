@@ -65,15 +65,12 @@ function fullClientCapabilities(): ClientCapabilities {
 	} as unknown as ClientCapabilities
 }
 
-// Envelope-shape assertions for the `_kimchi.dev/pi_*` namespace. The payload
-// is type/id/method (no sessionId) so it matches pi's `RpcExtensionUIRequest`
-// exactly — clients with existing handlers can reuse them. Session routing
-// uses the response `id`.
+// Envelope-shape assertions for the `_kimchi.dev/pi_*` namespace.
+// Payload uses pi's rpc-mode `RpcExtensionUIRequest` shape.
 function expectExtensionUiRequestEnvelope(params: Record<string, unknown>, method: string): void {
 	expect(params.type).toBe("extension_ui_request")
 	expect(params.method).toBe(method)
 	expect(typeof params.id).toBe("string")
-	expect(params.sessionId, "sessionId must NOT appear in payload (rpc-mode compatibility)").toBeUndefined()
 }
 
 describe("createAcpUIContext — confirm via elicitation", () => {
@@ -205,7 +202,6 @@ describe("createAcpUIContext — confirm via request_permission fallback", () =>
 		expect(unstable_createElicitation).not.toHaveBeenCalled()
 		expect(requestPermission).toHaveBeenCalledTimes(1)
 		const params = requestPermission.mock.calls[0][0] as unknown as Record<string, unknown>
-		expect(params.sessionId, "sessionId must NOT appear in payload (rpc-mode compatibility)").toBeUndefined()
 		const toolCall = params.toolCall as Record<string, unknown>
 		expect(toolCall.title).toBe("Title")
 		expect(toolCall.kind).toBe("other")

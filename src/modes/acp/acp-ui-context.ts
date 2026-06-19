@@ -83,9 +83,6 @@ export function createAcpUIContext(
 
 	function notify(method: MethodType, payload: Record<string, unknown>): void {
 		// Rejections are logged but never surface — `notify` returns void.
-		// No `sessionId` in payload: the envelope matches pi's rpc-mode
-		// `RpcExtensionUIRequest` exactly so clients with existing handlers
-		// can reuse them. Session routing uses the response `id`.
 		const wire = AVAILABLE_METHODS[method]
 		conn
 			.extNotification(wire, {
