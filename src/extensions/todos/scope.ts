@@ -1,4 +1,4 @@
-import type { TodoScope } from "./types.js"
+import type { TodoScope, TodoScopeFerment, TodoScopeFermentStep } from "./types.js"
 
 export type { TodoScope }
 
@@ -36,6 +36,40 @@ registerTodoScopeKind({
 	normalize: normalizeGlobalScope,
 	toKey: () => "global",
 	fromKey: (parts) => (parts.length === 0 ? { kind: "global" } : undefined),
+})
+
+registerTodoScopeKind({
+	kind: "ferment",
+	normalize: (raw) => {
+		const phaseId = typeof raw.phaseId === "string" ? raw.phaseId.trim() : ""
+		return phaseId ? { kind: "ferment", phaseId } : undefined
+	},
+	toKey: (scope) => {
+		const f = scope as TodoScopeFerment
+		return `ferment:${encodeURIComponent(f.phaseId)}`
+	},
+	fromKey: (parts) => {
+		const phaseId = parts[0] ? decodeURIComponent(parts[0]) : ""
+		return phaseId ? { kind: "ferment", phaseId } : undefined
+	},
+})
+
+registerTodoScopeKind({
+	kind: "ferment-step",
+	normalize: (raw) => {
+		const phaseId = typeof raw.phaseId === "string" ? raw.phaseId.trim() : ""
+		const stepId = typeof raw.stepId === "string" ? raw.stepId.trim() : ""
+		return phaseId && stepId ? { kind: "ferment-step", phaseId, stepId } : undefined
+	},
+	toKey: (scope) => {
+		const s = scope as TodoScopeFermentStep
+		return `ferment-step:${encodeURIComponent(s.phaseId)}:${encodeURIComponent(s.stepId)}`
+	},
+	fromKey: (parts) => {
+		const phaseId = parts[0] ? decodeURIComponent(parts[0]) : ""
+		const stepId = parts[1] ? decodeURIComponent(parts[1]) : ""
+		return phaseId && stepId ? { kind: "ferment-step", phaseId, stepId } : undefined
+	},
 })
 
 export function normalizeTodoScope(rawScope: unknown): TodoScope {

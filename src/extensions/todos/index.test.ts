@@ -16,6 +16,7 @@ function createTodosHarness() {
 		registerShortcut: vi.fn(),
 		appendEntry: vi.fn(),
 		sendMessage: vi.fn(),
+		getActiveTools: vi.fn(() => [...TODO_TOOL_NAMES]),
 		on: vi.fn((event: string, handler: ExtensionHandler) => {
 			const list = handlers.get(event) ?? []
 			list.push(handler)

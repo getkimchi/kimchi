@@ -475,3 +475,79 @@ describe("suggestWorkerLimits", () => {
 		expect(lower.maxTurns).toBe(80)
 	})
 })
+
+describe("start_ferment_step plan-first preamble", () => {
+	it("contains both inline-plan and update_todos instructions", async () => {
+		const h = createHarness()
+		const services = createServices()
+
+		const result = await startStep(
+			h.runtime,
+			{ ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1" },
+			{ pi: h.pi },
+			services,
+		)
+
+		const text = okText(result)
+		expect(text).toContain("inline plan")
+		expect(text).toContain("update_todos")
+	})
+
+	it.each([1, 2])("preamble appears on call %i without completion", async (callNumber) => {
+		const h = createHarness()
+		const services = createServices()
+
+		for (let i = 0; i < callNumber - 1; i++) {
+			h.runtime.bumpStepStart(h.fermentId, "phase-1", "step-1")
+		}
+
+		const result = await startStep(
+			h.runtime,
+			{ ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1" },
+			{ pi: h.pi },
+			services,
+		)
+
+		const text = okText(result)
+		expect(text).toContain("Plan first")
+		expect(text).toContain("update_todos")
+	})
+
+	it("instructs orchestrator to embed plan in worker Agent prompt", async () => {
+		const h = createHarness()
+		const services = createServices()
+
+		const result = await startStep(
+			h.runtime,
+			{ ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1" },
+			{ pi: h.pi },
+			services,
+		)
+
+		const text = okText(result)
+		expect(text).toContain("Embed")
+		expect(text).toContain("plan")
+		expect(text).toContain("Agent")
+	})
+
+	it("stuck-loop guard triggers on 3rd consecutive start — no plan-first preamble", async () => {
+		const h = createHarness()
+		const services = createServices()
+
+		h.runtime.bumpStepStart(h.fermentId, "phase-1", "step-1")
+		h.runtime.bumpStepStart(h.fermentId, "phase-1", "step-1")
+
+		const result = await startStep(
+			h.runtime,
+			{ ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1" },
+			{ pi: h.pi },
+			services,
+		)
+
+		const text = errText(result)
+		expect(text).toContain("Stuck loop detected")
+		expect(text).not.toContain("Plan first")
+		expect(text).not.toContain("update_todos")
+		expect(h.storage.get(h.fermentId)?.phases[0].steps[0].status).toBe("pending")
+	})
+})

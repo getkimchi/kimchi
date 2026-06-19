@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent"
 import { Key, isKeyRelease, matchesKey, truncateToWidth } from "@earendil-works/pi-tui"
-import { GLOBAL_TODO_SCOPE, getTodoCountsForScope, getTodosForScope } from "./store.js"
-import type { TodoCounts, TodoItem, TodoStatus } from "./types.js"
+import { GLOBAL_TODO_SCOPE, getTodoCountsForScope, getTodosForScope, resolveTodoScope } from "./store.js"
+import type { TodoCounts, TodoItem, TodoScope, TodoStatus } from "./types.js"
 
 export const TODO_SHORTCUT = Key.f7
 export const TODO_SHORTCUT_HINT = "F7"
@@ -64,9 +64,40 @@ export function summarizeTodos(): string {
 	return summarizeTodoCounts(getTodoCountsForScope(GLOBAL_TODO_SCOPE))
 }
 
-function todoLine(todo: TodoItem, displayIndex: number, theme: Theme): string {
+function isFermentTodo(todo: TodoItem): boolean {
+	return todo.content.startsWith("↳ ") || todo.content.startsWith("[Phase ")
+}
+
+function todoLine(todo: TodoItem, displayIndex: number, theme: Theme, scope: TodoScope): string {
 	const index = `${displayIndex + 1}`.padStart(2)
 	const symbol = TODO_SYMBOL[todo.status]
+	const isFerment = scope.kind === "ferment" || isFermentTodo(todo)
+
+	// Phase header — bold accent
+	if (isFerment && todo.content.startsWith("[Phase ")) {
+		if (todo.status === "completed") {
+			return ` ${index}.  ${theme.fg("success", symbol)} ${theme.fg("dim", todo.content)}`
+		}
+		return ` ${index}.  ${theme.fg("accent", symbol)} ${theme.fg("accent", theme.bold(todo.activeForm ?? todo.content))}`
+	}
+
+	// Ferment step — dim the prefix arrow, normal for rest
+	if (isFerment && todo.content.startsWith("↳ ")) {
+		const arrow = "↳ "
+		const text = todo.content.slice(arrow.length)
+		if (todo.status === "completed") {
+			return ` ${index}.  ${theme.fg("success", symbol)} ${theme.fg("dim", arrow)}${theme.fg("dim", text)}`
+		}
+		if (todo.status === "blocked") {
+			return ` ${index}.  ${theme.fg("warning", symbol)} ${theme.fg("dim", arrow)}${theme.fg("warning", text)}`
+		}
+		if (todo.status === "in_progress") {
+			return ` ${index}.  ${theme.fg("accent", symbol)} ${theme.fg("dim", arrow)}${theme.fg("accent", todo.activeForm ?? text)}`
+		}
+		return ` ${index}.  ${theme.fg("dim", symbol)} ${theme.fg("dim", arrow)}${text}`
+	}
+
+	// Global todos — original behavior
 	if (todo.status === "completed") return ` ${index}.  ${theme.fg("success", symbol)} ${theme.fg("dim", todo.content)}`
 	if (todo.status === "blocked")
 		return ` ${index}.  ${theme.fg("warning", symbol)} ${theme.fg("warning", todo.content)}`
@@ -76,18 +107,30 @@ function todoLine(todo: TodoItem, displayIndex: number, theme: Theme): string {
 	return ` ${index}.  ${theme.fg("dim", symbol)} ${todo.content}`
 }
 
+function formatScopeHeader(scope: TodoScope): string {
+	if (scope.kind === "ferment") {
+		return `Todos · Ferment (${scope.phaseId})`
+	}
+	return "Todos · Global"
+}
+
+function summarizeTodosForScope(scope: TodoScope): string {
+	return summarizeTodoCounts(getTodoCountsForScope(scope))
+}
+
 export function buildTodoLines(theme: Theme): string[] {
-	const todos = getTodosForScope(GLOBAL_TODO_SCOPE)
-	const lines: string[] = [theme.fg("accent", "Todos · Global"), ""]
+	const scope = resolveTodoScope()
+	const todos = getTodosForScope(scope)
+	const lines: string[] = [theme.fg("accent", formatScopeHeader(scope)), ""]
 
 	if (todos.length === 0) {
 		lines.push(theme.fg("dim", "No todos yet. Add one with `/todos add <text>`."))
 		return lines
 	}
 
-	lines.push(theme.fg("dim", summarizeTodos()))
+	lines.push(theme.fg("dim", summarizeTodosForScope(scope)))
 	lines.push("")
-	lines.push(...todos.map((todo, index) => todoLine(todo, index, theme)))
+	lines.push(...todos.map((todo, index) => todoLine(todo, index, theme, scope)))
 	return lines
 }
 
@@ -105,7 +148,8 @@ function requestTodoRender(ctx: ExtensionContext): void {
 
 export function setTodosStatus(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return
-	const counts = getTodoCountsForScope(GLOBAL_TODO_SCOPE)
+	const scope = resolveTodoScope()
+	const counts = getTodoCountsForScope(scope)
 	ctx.ui.setStatus(
 		TODO_STATUS_KEY,
 		hasActiveTodos(counts) ? `${counts.completed}/${counts.total} todos -> F7` : undefined,
@@ -188,7 +232,8 @@ export function toggleTodoWidget(ctx: ExtensionContext): void {
 
 export function syncTodoWidget(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return
-	const counts = getTodoCountsForScope(GLOBAL_TODO_SCOPE)
+	const scope = resolveTodoScope()
+	const counts = getTodoCountsForScope(scope)
 	const state = getTodoWidgetState(ctx)
 	if (!state.collapsed && hasActiveTodos(counts)) openTodoWidget(ctx)
 	else clearTodoWidget(ctx)

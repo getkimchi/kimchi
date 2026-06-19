@@ -41,6 +41,7 @@ function isWriteTodosDetails(value: unknown): value is WriteTodosDetails {
 
 const TODO_REPLAY_TOOL_NAME_SET = new Set<string>([...TODO_TOOL_NAMES, "write_todos"])
 
+
 function getWriteTodosDetails(entry: SessionEntry): WriteTodosDetails | undefined {
 	if (entry.type === "custom" && entry.customType === TODO_CUSTOM_ENTRY_TYPE) {
 		return isWriteTodosDetails(entry.data) ? entry.data : undefined
@@ -75,6 +76,7 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	})
 
 	if (isAgentWorker()) return
+
 
 	let latestCtx: ExtensionContext | undefined
 	let unsubscribeTodoStore: (() => void) | undefined

@@ -7,8 +7,19 @@ export interface TodoScopeGlobal {
 	kind: "global"
 }
 
-// Part 1 has one scope. Later parts widen this union explicitly.
-export type TodoScope = TodoScopeGlobal
+export interface TodoScopeFerment {
+	kind: "ferment"
+	phaseId: string
+}
+
+export interface TodoScopeFermentStep {
+	kind: "ferment-step"
+	phaseId: string
+	stepId: string
+}
+
+// Part 1 had one scope. Part 2 adds ferment scope. Further parts may widen this union.
+export type TodoScope = TodoScopeGlobal | TodoScopeFerment | TodoScopeFermentStep
 
 export interface TodoDraft {
 	id?: number

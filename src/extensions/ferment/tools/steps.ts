@@ -299,9 +299,16 @@ Do NOT call start_ferment_step again without user input.`,
 	const workerLimits = suggestWorkerLimits(step.description, step.verification?.command)
 	const limitsHint = `\n\nSuggested worker limits (set both on the Agent call): max_turns=${workerLimits.maxTurns}, max_duration=${workerLimits.maxDuration}s. Adjust up for more complex work, down for simpler. When the worker exhausts its budget, call complete_ferment_step with whatever it produced and spawn a scoped follow-up for remaining work — do NOT raise the budget and retry the same broad task.`
 
+	const stepScope = JSON.stringify({ kind: "ferment-step", phaseId: phase.id, stepId: step.id })
+	const planFirstPreamble = `📋 Plan first (every start of this step):
+• Write a brief 2-4 bullet inline plan for this step's work.
+• Call update_todos with scope ${stepScope} to record each plan bullet as a scoped todo item for this step.
+• Embed the plan in the worker Agent's prompt at dispatch time.
+• After calling complete_ferment_step, call update_todos with scope ${stepScope} and mark all todos completed.`
+
 	return toolOk(
 		withNextActionHint(
-			`Step ${step.index}: "${step.description}" started. Spawn a subagent with the persona that matches this step's intent. When it returns, call complete_ferment_step with its summary.${lowGradeCaution}${parallelNote}${limitsHint}${contextBlock}`,
+			`${planFirstPreamble}\n\nStep ${step.index}: "${step.description}" started. Spawn a subagent with the persona that matches this step's intent. When it returns, call complete_ferment_step with its summary.${lowGradeCaution}${parallelNote}${limitsHint}${contextBlock}`,
 			outcome.ferment,
 		),
 	)
