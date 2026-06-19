@@ -418,7 +418,10 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		// only run-static profiles here; lifecycle tools remain visible for the
 		// whole active planner run and invalid transitions are rejected by tools.
 		if (isAgentWorker()) {
-			applyFermentToolProfile(pi, "worker")
+			// Subagent workers get their toolset from the agents manager at session
+			// init (agent-runner.ts setActiveToolsByName). Do NOT call setActiveTools
+			// here — the worker profile used to call setActiveTools([]) which would
+			// strip all tools from the subagent on the first turn.
 			return {}
 		}
 		// Only apply a ferment profile when a ferment is active. In normal chat

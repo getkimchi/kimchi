@@ -243,19 +243,13 @@ describe("registerFermentEvents", () => {
 		expect(lastCall).toContain("bash")
 	})
 
-	it("hides ferment tools in subagent processes (KIMCHI_SUBAGENT=1)", async () => {
+	it("does not call setActiveTools in subagent processes (KIMCHI_SUBAGENT=1)", async () => {
+		// Ferment tool exclusion for subagents is handled at session init by
+		// agent-runner.ts (EXCLUDED_TOOL_NAMES includes all FERMENT_TOOL_NAMES).
+		// before_agent_start must be a no-op for workers so it doesn't override
+		// the tool set established by the agents manager.
 		const runtime: FermentRuntime = { ...createDefaultFermentRuntime() }
 		const { handlers, pi } = createPi()
-		;(pi.getFlag as ReturnType<typeof vi.fn>).mockImplementation((name: string) =>
-			name === "ferment-oneshot" ? true : undefined,
-		)
-		;(pi.getAllTools as ReturnType<typeof vi.fn>).mockReturnValue([
-			{ name: "bash" },
-			{ name: "read" },
-			{ name: "Agent" },
-			{ name: "scope_ferment" },
-			{ name: "start_ferment_step" },
-		])
 		process.env.KIMCHI_SUBAGENT = "1"
 
 		registerFermentEvents(pi, runtime)
@@ -264,9 +258,7 @@ describe("registerFermentEvents", () => {
 
 		try {
 			await beforeAgentStart({ systemPrompt: "base" }, {})
-			const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
-			expect(lastCall).not.toContain("scope_ferment")
-			expect(lastCall).not.toContain("start_ferment_step")
+			expect(pi.setActiveTools).not.toHaveBeenCalled()
 		} finally {
 			Reflect.deleteProperty(process.env, "KIMCHI_SUBAGENT")
 		}
