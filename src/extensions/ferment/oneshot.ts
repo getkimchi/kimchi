@@ -24,7 +24,7 @@ Execute ALL of the following steps in order WITHOUT pausing to ask the user, rea
 
 2. **For each phase**, call activate_ferment_phase, then for each step:
    - call start_ferment_step
-   - spawn an Agent worker to do the implementation
+   - spawn an Agent worker with explicit max_turns and max_duration — always set both. Calibrate to step complexity: simple edits 20–30 turns / 300s, typical implementation steps 40–60 turns / 600s, heavy compilation or iterative debugging up to 80 turns / 900s. If a worker exhausts its budget, call complete_ferment_step with what it produced, then spawn a scoped follow-up for remaining work.
    - call complete_ferment_step with the worker's results
 
 3. **When all phases are done**, call complete_ferment.
