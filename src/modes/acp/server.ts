@@ -705,13 +705,6 @@ export class KimchiAcpAgent implements Agent {
 				})
 				return
 			}
-			// `extension_ui_request` is NOT a member of pi's AgentSessionEvent
-			// union — that event is only emitted by the standalone rpc-mode
-			// subprocess. In library mode, extension UI calls flow through
-			// ExtensionRunner.setUIContext(), which bindAcpExtensions() wires
-			// up before the session is subscribed. If pi ever adds the event
-			// to the library union, the switch above will fail to typecheck
-			// and we'll know to handle it here.
 			case "agent_end": {
 				// If no turn is active, this is a late agent_end after the prompt
 				// handler already synthesized end_turn (short-circuit path that
@@ -988,20 +981,6 @@ export function assertSessionHasModel(session: Pick<AgentSession, "model">): voi
 
 export function initializeHeadlessTheme(settingsManager: Pick<SettingsManager, "getTheme">): void {
 	initTheme(settingsManager.getTheme(), false)
-}
-
-async function bindAcpExtensions(session: AgentSession, ui: ExtensionUIContext): Promise<void> {
-	// Mode is "rpc" so extensions can branch on `ctx.mode === "rpc"` to detect
-	// this transport (added in pi-coding-agent 0.78.1). `ctx.hasUI` is derived
-	// from the uiContext by the runner, so extensions that only check the
-	// legacy boolean keep working too.
-	await session.bindExtensions({
-		uiContext: ui,
-		mode: "rpc",
-		onError: (err) => {
-			process.stderr.write(`acp ext error [${err.extensionPath}] ${err.event}: ${err.error}\n`)
-		},
-	})
 }
 
 function registerPermissionFlagController(
