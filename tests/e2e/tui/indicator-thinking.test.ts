@@ -25,6 +25,12 @@ test("cooking animation stays visible during reasoning and clears when text star
 		terminal,
 		{
 			artifactName: "indicator-thinking",
+			// Opt into a reasoning-capable fake model so the test exercises the
+			// actual reasoning code path (rather than relying on the fake server
+			// emitting reasoning_content chunks that the upstream provider
+			// would, on a non-reasoning model, be free to ignore).
+			models: [{ slug: "thinking-model", displayName: "Fake Thinking", reasoning: true }],
+			extraArgs: ["--model", "thinking-model"],
 			responses: [
 				{
 					// 5 reasoning chunks spaced 250ms apart → ~1s of visible thinking.
@@ -81,6 +87,8 @@ test("cooking animation is visible during the gap between message_start and the 
 		terminal,
 		{
 			artifactName: "indicator-thinking-gap",
+			models: [{ slug: "thinking-model", displayName: "Fake Thinking", reasoning: true }],
+			extraArgs: ["--model", "thinking-model"],
 			responses: [
 				{
 					// Long delay before the first thinking chunk to widen the
