@@ -219,7 +219,7 @@ const turnEndEvent = {
 }
 
 describe("uiExtension spinner lifecycle", () => {
-	describe("the core bug fix — spinner survives message_start", () => {
+	describe("the core behavior — spinner survives message_start", () => {
 		it("keeps the spinner on through the gap before the first content event", () => {
 			const { handlers, ctx, ui } = setupExtension()
 
@@ -596,7 +596,7 @@ describe("uiExtension spinner lifecycle", () => {
 			// toolResult message_start must NOT have touched userInputPending.
 
 			handlers.messageUpdate(messageUpdateEvent("thinking_start"), ctx)
-			// If toolResult had decremented (the bug), userInputPending would be 0 and
+			// If toolResult had decremented, userInputPending would be 0 and
 			// thinking_start would call startIndicator → setWorkingVisible(true).
 			// Since toolResult is a no-op, userInputPending stays 1, thinking_start is
 			// suppressed, and no extra setWorkingVisible call happens.

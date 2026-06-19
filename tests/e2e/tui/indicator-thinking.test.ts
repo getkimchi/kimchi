@@ -5,11 +5,10 @@ import { TUI_TEST_CONFIG, runKimchiSession } from "./support/kimchi-fixture.js"
 test.use(TUI_TEST_CONFIG)
 
 /**
- * E2E coverage for the cooking-animation fix:
+ * E2E coverage for the cooking animation's behavior across an assistant
+ * turn:
  *
- *  - The spinner must remain visible during the reasoning phase (the bug was
- *    that `message_start` killed the spinner, leaving a blank TUI for the
- *    duration of thinking).
+ *  - The spinner must remain visible during the reasoning phase.
  *  - The "(thinking…)" suffix must be rendered while reasoning deltas arrive.
  *  - When text content starts streaming, the spinner must switch off so the
  *    status bar doesn't show a stale cooking message while the response
@@ -44,9 +43,7 @@ test("cooking animation stays visible during reasoning and clears when text star
 			trace.step("submitted prompt")
 
 			// The spinner message (a cooking frame + the "(thinking…)" suffix) must
-			// appear after the first reasoning chunk arrives. If the bug were
-			// regressed, this wait would time out because the spinner would never
-			// show the suffix.
+			// appear after the first reasoning chunk arrives.
 			await waitForText(terminal, "(thinking…)", { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("spinner shows (thinking…) suffix during reasoning")
 
@@ -69,16 +66,13 @@ test("cooking animation stays visible during reasoning and clears when text star
 })
 
 /**
- * Regression for the pre-fix bug: between `turn_start` (which starts the
- * spinner) and the first `message_update` (which arrives only after the LLM
- * stream produces its first content/reasoning delta), there was a window
- * where the spinner was torn down at `message_start`. If the model's
- * reasoning-setup time exceeds a few hundred milliseconds — common for
- * Sonnet/Opus high thinking, GPT-5 reasoning effort, Kimi K2.5 thinking —
- * that gap is user-visible as a blank TUI.
- *
- * With the fix, the spinner survives `message_start` and is re-armed (or
- * simply never torn down) until text actually starts streaming.
+ * Covers the pre-first-reasoning-delta gap: between `turn_start` (which
+ * starts the spinner) and the first `message_update` (which arrives only
+ * after the LLM stream produces its first content/reasoning delta). If
+ * the model's reasoning-setup time exceeds a few hundred milliseconds —
+ * common for Sonnet/Opus high thinking, GPT-5 reasoning effort, Kimi K2.5
+ * thinking — the spinner must stay visible during that gap so the user
+ * isn't staring at a blank TUI.
  */
 test("cooking animation is visible during the gap between message_start and the first reasoning delta", async ({
 	terminal,
