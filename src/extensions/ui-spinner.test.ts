@@ -239,8 +239,9 @@ describe("uiExtension spinner lifecycle", () => {
 			handlers.messageUpdate(messageUpdateEvent("thinking_end"), ctx)
 			handlers.messageEnd({ type: "message_end", message: assistantMessage }, ctx)
 
-			// ON (turn_start) → ON (thinking_start, restarts animator) → OFF (message_end).
-			expect(callsTo(ui)).toEqual([true, true, false])
+			// ON (turn_start) → ON (message_start, re-arms for loader creation)
+			// → ON (thinking_start, restarts animator) → OFF (message_end).
+			expect(callsTo(ui)).toEqual([true, true, true, false])
 
 			assertCleanupsBeforeOverwrite()
 		})
@@ -256,7 +257,7 @@ describe("uiExtension spinner lifecycle", () => {
 			handlers.messageUpdate(messageUpdateEvent("text_delta"), ctx)
 			handlers.messageEnd({ type: "message_end", message: assistantMessage }, ctx)
 
-			expect(callsTo(ui)).toEqual([true, false, false])
+			expect(callsTo(ui)).toEqual([true, true, false, false])
 
 			assertCleanupsBeforeOverwrite()
 		})
@@ -274,7 +275,7 @@ describe("uiExtension spinner lifecycle", () => {
 			handlers.messageUpdate(messageUpdateEvent("text_start"), ctx)
 			handlers.messageEnd({ type: "message_end", message: assistantMessage }, ctx)
 
-			expect(callsTo(ui)).toEqual([true, true, false, false])
+			expect(callsTo(ui)).toEqual([true, true, true, false, false])
 
 			assertCleanupsBeforeOverwrite()
 		})
@@ -293,7 +294,7 @@ describe("uiExtension spinner lifecycle", () => {
 			handlers.toolExecutionEnd({ type: "tool_execution_end", toolCallId: "t1" }, ctx)
 			handlers.toolExecutionEnd({ type: "tool_execution_end", toolCallId: "t2" }, ctx)
 
-			expect(callsTo(ui)).toEqual([true, false, false, true, true, false])
+			expect(callsTo(ui)).toEqual([true, true, false, false, true, true, false])
 
 			assertCleanupsBeforeOverwrite()
 		})

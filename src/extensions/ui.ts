@@ -550,6 +550,13 @@ export default function uiExtension(pi: ExtensionAPI) {
 		// time, this gap can be tens of seconds; killing the spinner here would
 		// leave the user staring at a blank TUI with no feedback.
 		//
+		// We also re-arm the spinner here: the upstream TUI only creates the
+		// loader when session.isStreaming is true (which becomes true around
+		// message_start). The setWorkingVisible(true) call at turn_start was a
+		// no-op for rendering; this one triggers loader creation so the cooking
+		// animation is visible during the message_start → first_content_event
+		// gap, not just once thinking_start fires.
+		//
 		// text_start and message_end are responsible for stopping the spinner
 		// once content is visible or the assistant finishes.
 		//
@@ -558,6 +565,8 @@ export default function uiExtension(pi: ExtensionAPI) {
 		// suppression is lifted for the next thinking_start or text_start.
 		if (userInputPending > 0) {
 			userInputPending--
+		} else {
+			ctx.ui.setWorkingVisible(true)
 		}
 	})
 	pi.on("message_end", (event, ctx) => {
