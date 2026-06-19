@@ -2,19 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Ferment } from "../../ferment/types.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import type { FermentRuntime } from "./runtime.js"
-import { FERMENT_TOOLS } from "./tool-names.js"
-
-// Idle includes `propose_ferment_scoping` so it lives in the LLM's tool snapshot from
-// the very first turn. When `request_ferment_workflow` creates a draft mid-turn, the
-// LLM can immediately call `propose_ferment_scoping` without waiting for a new turn
-// snapshot (pi-mono snapshots active tools at turn start; mid-turn profile changes
-// don't reach the running turn).
-const IDLE_FERMENT_TOOL_NAMES = [
-	FERMENT_TOOLS.LIST,
-	FERMENT_TOOLS.REQUEST_WORKFLOW,
-	FERMENT_TOOLS.CONFIRM_COMPLETION_CRITERIA,
-	FERMENT_TOOLS.PROPOSE_SCOPING,
-] as const
+import { FERMENT_TOOLS, isFermentOnlyToolName } from "./tool-names.js"
 
 /**
  * Tools available during the planning phase of a ferment lifecycle.
@@ -83,7 +71,9 @@ export const IMPLEMENTATION_TOOL_NAMES: ReadonlySet<string> = new Set([
 /**
  * Profile applied to the planner's active tool list. Keyed on ferment
  * lifecycle state:
- *   - `idle`: no active ferment; discovery tools only
+ *   - `idle`: no active ferment; all non-ferment tools + ferment discovery
+ *             tools only (`list_ferments`, `request_ferment_workflow`). All
+ *             ferment-only lifecycle/planning tools are hidden.
  *   - `worker`: subagent worker context (`KIMCHI_SUBAGENT=1`); empty toolset,
  *               managed externally by the agents manager
  *   - `planning`: ferment exists, no phase activated yet; read-only research
@@ -115,13 +105,18 @@ export class FermentToolScope {
 
 	applyProfile(profile: FermentToolProfile): void {
 		switch (profile) {
-			case "idle":
-				// Restore the full registered toolset so normal chat mode is
-				// unrestricted. The idle ferment discovery tools (list_ferments,
-				// request_ferment_workflow, etc.) are always registered and will
-				// be included in getAllTools() without needing explicit activation.
-				this.pi.setActiveTools(this.pi.getAllTools().map((t) => t.name))
+			case "idle": {
+				// Normal chat / post-ferment state: show all non-ferment tools plus
+				// the two ferment discovery tools (list_ferments, request_ferment_workflow).
+				// All ferment-only lifecycle and planning tools are hidden so they
+				// don't clutter the model's tool list outside an active ferment.
+				const idle = this.pi
+					.getAllTools()
+					.map((t) => t.name)
+					.filter((name) => !isFermentOnlyToolName(name))
+				this.pi.setActiveTools(idle)
 				break
+			}
 			case "planning": {
 				// Intersection: only tools that are BOTH registered AND explicitly listed for planning.
 				const allTools = this.pi.getAllTools().map((tool) => tool.name)
