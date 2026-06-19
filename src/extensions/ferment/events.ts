@@ -451,9 +451,15 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		const content = getAssistantContentParts(event.message.content)
 		const activeId = runtime.getActiveId()
 		const toolCallSeen = hasAnyToolCall(content)
+		const stopReason = (event.message as { stopReason?: string }).stopReason
 		if (toolCallSeen && activeId) {
 			resetReactiveContinuationNudgeCount(activeId)
-			onFermentToolCallSeen(activeId)
+			// A normal tool-use turn means the model is still progressing, so reset
+			// the stop-nudge budget. A tool-use turn that ended with "stop" is exactly
+			// what the stop-nudge counter is tracking, so do not reset it here.
+			if (stopReason !== "stop") {
+				onFermentToolCallSeen(activeId)
+			}
 		}
 
 		const f = runtime.getActive()
@@ -471,13 +477,12 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		if (userInputHandled) return
 		if (!toolCallSeen) {
 			maybeInjectReactiveContinuationNudge(pi, runtime)
-		} else {
+		} else if (stopReason === "stop") {
 			// The model made tool calls this turn but ended with stopReason "stop"
 			// while the ferment still requires action (e.g. completed a step then
 			// wrote a summary and quit without advancing the lifecycle). Nudge it
 			// to call the next ferment tool rather than leaving the run stalled.
-			const stopReason = (event.message as { stopReason?: string }).stopReason
-			if (stopReason === "stop") maybeInjectFermentStopNudge(pi, runtime)
+			maybeInjectFermentStopNudge(pi, runtime)
 		}
 
 		// Trigger compaction after any turn that completed a step or phase.

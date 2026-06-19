@@ -137,7 +137,14 @@ export function maybeInjectFermentStopNudge(
 		return false
 	}
 
-	const decision = decideContinuation(fresh, runtime.getContinuationPolicy())
+	// Treat complete_ferment as continuable here: after the last phase all
+	// phases can be terminal and the engine returns a complete_ferment action,
+	// but the ferment is not yet status:"complete" until the tool is actually
+	// called. Without this flag the stop-nudge path would return idle and fail
+	// to recover the final lifecycle step.
+	const decision = decideContinuation(fresh, runtime.getContinuationPolicy(), {
+		treatCompleteFermentAsContinue: true,
+	})
 	if (decision.type !== "continue") return false
 
 	const count = stopNudgeCounts.get(fresh.id) ?? 0
@@ -159,6 +166,7 @@ export function maybeInjectFermentStopNudge(
 	scheduleNextFermentAction(pi, fresh, runtime, {
 		tag: "Ferment stop nudge",
 		deliverAsFollowUp: true,
+		treatCompleteFermentAsContinue: true,
 	})
 	return true
 }

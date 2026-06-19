@@ -15,7 +15,7 @@ const IDLE_ACTION_KINDS = new Set<DeclarativeAction["kind"]>(["pause", "complete
 export function decideContinuation(
 	ferment: Ferment,
 	policy: ContinuationPolicy,
-	opts: { allowManualPhaseBoundary?: boolean } = {},
+	opts: { allowManualPhaseBoundary?: boolean; treatCompleteFermentAsContinue?: boolean } = {},
 ): ContinuationDecision {
 	const action = determineNextAction(ferment)
 
@@ -27,7 +27,11 @@ export function decideContinuation(
 		return { type: "idle" }
 	}
 
-	if (IDLE_ACTION_KINDS.has(action.kind)) {
+	const idleKinds = opts.treatCompleteFermentAsContinue
+		? new Set([...IDLE_ACTION_KINDS].filter((k) => k !== "complete_ferment"))
+		: IDLE_ACTION_KINDS
+
+	if (idleKinds.has(action.kind)) {
 		return { type: "idle", action }
 	}
 

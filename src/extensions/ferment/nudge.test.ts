@@ -483,9 +483,11 @@ describe("maybeInjectFermentStopNudge", () => {
 		expect(pi.sendMessage).not.toHaveBeenCalled()
 	})
 
-	it("does not nudge when continuation decision is idle (nothing to do)", () => {
+	it("nudges when all phases are complete but complete_ferment has not been called yet", () => {
 		const pi = createPi()
-		// A completed ferment still in "planned" status but all phases done → idle decision
+		// All phases terminal → engine returns complete_ferment action.
+		// The stop-nudge path must treat this as continuable so the final
+		// lifecycle step is not left unfinished.
 		const ferment = makeRunningFerment({
 			status: "planned",
 			phases: [{ id: "phase-1", index: 1, name: "Phase", goal: "Build", status: "completed", steps: [] }],
@@ -494,8 +496,8 @@ describe("maybeInjectFermentStopNudge", () => {
 
 		const nudged = maybeInjectFermentStopNudge(pi, runtime)
 
-		expect(nudged).toBe(false)
-		expect(pi.sendMessage).not.toHaveBeenCalled()
+		expect(nudged).toBe(true)
+		expect(pi.sendMessage).toHaveBeenCalled()
 	})
 
 	it("suppresses after reaching the consecutive stop-nudge cap", () => {

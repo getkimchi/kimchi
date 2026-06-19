@@ -8,6 +8,7 @@ import type { FermentRuntime } from "./runtime.js"
 
 export interface ScheduleNextFermentActionOptions {
 	allowManualPhaseBoundary?: boolean
+	treatCompleteFermentAsContinue?: boolean
 	tag?: string
 	deliverAsFollowUp?: boolean
 }
@@ -125,7 +126,7 @@ export function buildContextualNudge(ferment: Ferment, action: DeclarativeAction
 
 		case "recover_phase": {
 			const { phaseLabel } = phaseContext(ferment, action.phaseId)
-			return `Ferment "${fname}" has a failed phase — diagnose and recover ${phaseLabel}.\n  ferment_id: "${fid}"\n  phase_id:   "${action.phaseId}"\n  Use fail_ferment_phase to abandon or retry the phase steps.`
+			return `Ferment "${fname}" has a failed phase — diagnose and recover ${phaseLabel}.\n  ferment_id: "${fid}"\n  phase_id:   "${action.phaseId}"\n  Use activate_ferment_phase to retry the failed phase, skip_ferment_phase to bypass it, or ask the user to run /ferment abandon if the ferment should stop.`
 		}
 
 		default:
