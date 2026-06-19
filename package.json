@@ -101,8 +101,17 @@
 	},
 	"packageManager": "pnpm@10.8.1",
 	"pnpm": {
-		"onlyBuiltDependencies": ["@biomejs/biome", "esbuild", "koffi", "node-pty", "protobufjs"],
-		"ignoredOptionalDependencies": ["cpu-features", "nan"],
+		"onlyBuiltDependencies": [
+			"@biomejs/biome",
+			"esbuild",
+			"koffi",
+			"node-pty",
+			"protobufjs"
+		],
+		"ignoredOptionalDependencies": [
+			"cpu-features",
+			"nan"
+		],
 		"patchedDependencies": {
 			"@earendil-works/pi-tui": "patches/@earendil-works__pi-tui.patch",
 			"playwright-core@1.59.1": "patches/playwright-core@1.59.1.patch",

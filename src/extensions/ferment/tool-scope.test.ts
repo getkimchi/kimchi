@@ -221,7 +221,6 @@ describe("idle profile", () => {
 
 		applyFermentToolProfile(pi, "idle")
 
-
 		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
 		expect(lastCall).toContain("read")
 		expect(lastCall).toContain("bash")
