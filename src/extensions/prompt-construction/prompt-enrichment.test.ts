@@ -388,6 +388,22 @@ describe("prompt enrichment Claude Code skills", () => {
 		expect(result.systemPrompt).toContain("Use home configured TypeScript patterns")
 	})
 
+	it("sanitizes configured Claude Code skill paths before injecting them", async () => {
+		const cwd = join(dir, "project")
+		writeRawSkill(join(cwd, ".claude", "skills", "typescript-safety", "SKILL.md"), "Use generated types.\n")
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers([".claude/skills"])
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		const result = (await beforeAgentStart(
+			{},
+			{ cwd, model: undefined, hasUI: false, sessionManager: { getSessionId: () => "session-1" } },
+		)) as { systemPrompt: string }
+
+		expect(result.systemPrompt).toContain("<available_skills>")
+		expect(result.systemPrompt).toContain("<name>typescript-safety</name>")
+		expect(result.systemPrompt).toContain("<description>Claude Code skill: typescript-safety.</description>")
+	})
+
 	it("does not inject ancestor Claude Code skills without cwd .claude", async () => {
 		const project = join(dir, "project")
 		const cwd = join(project, "src")

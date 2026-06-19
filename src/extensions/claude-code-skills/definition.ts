@@ -2,7 +2,7 @@ import { createHash } from "node:crypto"
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import type { Dirent } from "node:fs"
 import { homedir, tmpdir } from "node:os"
-import { basename, join, relative, resolve } from "node:path"
+import { basename, isAbsolute, join, normalize, relative, resolve } from "node:path"
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml"
 import { z } from "zod"
 
@@ -55,6 +55,18 @@ export function getClaudeCodeSkillResourcePaths(
 	return paths
 }
 
+export function getConfiguredSkillResourcePaths(cwd: string, configuredSkillPaths: string[]): string[] {
+	const expandedPaths = expandConfiguredSkillPaths(configuredSkillPaths, cwd)
+	const nativeSkillNames = collectNativeSkillNames(expandedPaths)
+	return expandedPaths.flatMap((path) =>
+		isClaudeCodeSkillPath(path) ? materializeClaudeCodeSkillDir(path, { excludeSkillNames: nativeSkillNames }) : [path],
+	)
+}
+
+export function getConfiguredNativeSkillNames(cwd: string, configuredSkillPaths: string[]): string[] {
+	return [...collectNativeSkillNames(expandConfiguredSkillPaths(configuredSkillPaths, cwd))]
+}
+
 export function sanitizeSkillMarkdown(content: string, fallbackName: string): string {
 	const markdown = extractSkillMarkdown(content)
 	if (markdown === undefined) {
@@ -102,6 +114,45 @@ function materializeClaudeCodeSkillDir(
 		} catch {}
 	}
 	return paths
+}
+
+function expandConfiguredSkillPaths(paths: string[], cwd: string): string[] {
+	const home = resolve(homedir())
+	const projectDir = resolve(cwd)
+	const expanded: string[] = []
+	for (const path of paths) {
+		if (isAbsolute(path)) {
+			expanded.push(normalize(path))
+		} else if (path.startsWith("~/")) {
+			expanded.push(resolve(home, path.slice(2)))
+		} else {
+			const fromHome = resolve(home, path)
+			const fromCwd = resolve(projectDir, path)
+			if (isSameOrDescendant(fromHome, home)) expanded.push(fromHome)
+			if (isSameOrDescendant(fromCwd, projectDir)) expanded.push(fromCwd)
+		}
+	}
+	return expanded
+}
+
+function isSameOrDescendant(path: string, parent: string): boolean {
+	const relativePath = relative(parent, path)
+	return relativePath === "" || (!relativePath.startsWith("..") && !isAbsolute(relativePath))
+}
+
+function isClaudeCodeSkillPath(path: string): boolean {
+	return path.split(/[\\/]+/).includes(".claude")
+}
+
+function collectNativeSkillNames(paths: string[]): Set<string> {
+	const names = new Set<string>()
+	for (const path of paths) {
+		if (isClaudeCodeSkillPath(path)) continue
+		for (const skillDir of walkSkillDirs(path)) {
+			names.add(readSkillName(skillDir))
+		}
+	}
+	return names
 }
 
 function walkSkillDirsInto(dir: string, results: string[]): void {

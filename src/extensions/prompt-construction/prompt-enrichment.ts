@@ -24,7 +24,7 @@ import { execSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir, platform, userInfo } from "node:os"
-import { isAbsolute, join, normalize, relative, resolve } from "node:path"
+import { join } from "node:path"
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import { type ExtensionAPI, type Skill, getAgentDir, loadSkills } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
@@ -34,7 +34,12 @@ import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { getInstalledPackageResourceDirs } from "../agents/package-resources.js"
-import { CLAUDE_CODE_SKILLS_RESOURCE_ID, getClaudeCodeSkillResourcePaths } from "../claude-code-skills/definition.js"
+import {
+	CLAUDE_CODE_SKILLS_RESOURCE_ID,
+	getClaudeCodeSkillResourcePaths,
+	getConfiguredNativeSkillNames,
+	getConfiguredSkillResourcePaths,
+} from "../claude-code-skills/definition.js"
 import {
 	getProcessMultiModelEnabled,
 	setProcessMultiModelEnabled,
@@ -74,30 +79,6 @@ function readGitRemote(cwd: string): string | undefined {
 	} catch {
 		return undefined
 	}
-}
-
-function isSameOrDescendant(path: string, parent: string): boolean {
-	const relativePath = relative(parent, path)
-	return relativePath === "" || (!relativePath.startsWith("..") && !isAbsolute(relativePath))
-}
-
-function expandConfiguredSkillPaths(paths: string[], cwd: string): string[] {
-	const home = resolve(homedir())
-	const projectDir = resolve(cwd)
-	const expanded: string[] = []
-	for (const path of paths) {
-		if (isAbsolute(path)) {
-			expanded.push(normalize(path))
-		} else if (path.startsWith("~/")) {
-			expanded.push(resolve(home, path.slice(2)))
-		} else {
-			const fromHome = resolve(home, path)
-			const fromCwd = resolve(projectDir, path)
-			if (isSameOrDescendant(fromHome, home)) expanded.push(fromHome)
-			if (isSameOrDescendant(fromCwd, projectDir)) expanded.push(fromCwd)
-		}
-	}
-	return expanded
 }
 
 const HARNESS_SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "settings.json")
@@ -490,11 +471,14 @@ export default function (skillPaths: string[]) {
 			const tools = pi.getAllTools().filter((tool) => activeToolNames.has(tool.name))
 			cachedContextFiles ??= [...loadGlobalContextFiles(), ...loadProjectContextFiles(ctx.cwd)]
 			if (cachedSkills === undefined) {
+				const configuredNativeSkillNames = getConfiguredNativeSkillNames(ctx.cwd, skillPaths)
 				const allSkillPaths = Array.from(
 					new Set([
 						...getKimchiProjectSkillPaths(ctx.cwd),
-						...expandConfiguredSkillPaths(skillPaths, ctx.cwd),
-						...(isResourceEnabled(CLAUDE_CODE_SKILLS_RESOURCE_ID) ? getClaudeCodeSkillResourcePaths(ctx.cwd) : []),
+						...getConfiguredSkillResourcePaths(ctx.cwd, skillPaths),
+						...(isResourceEnabled(CLAUDE_CODE_SKILLS_RESOURCE_ID)
+							? getClaudeCodeSkillResourcePaths(ctx.cwd, { excludeSkillNames: configuredNativeSkillNames })
+							: []),
 						...getInstalledPackageResourceDirs(ctx.cwd, "skills"),
 					]),
 				)

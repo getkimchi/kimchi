@@ -407,6 +407,7 @@ try {
 		const terminalUiExtensionFactories = isTerminalUiMode(rawArgs, terminalIo)
 			? [terminalColorsExtension, kimchiMinimalTintsExtension, uiExtension]
 			: []
+		const effectiveSkillPaths = [...new Set([...skillPaths, ...getActiveVendorSkillPaths()])]
 		const extensionFactories = [
 			startupUpdateExtension,
 			superpowersExtension,
@@ -434,9 +435,9 @@ try {
 			] satisfies ManagedExtensionFactory[]),
 			questionnaireExtension,
 			...enabledExtensionFactories([
-				{ id: "extensions.claude-code-skills", factory: claudeCodeSkillsExtension },
+				{ id: "extensions.claude-code-skills", factory: (pi) => claudeCodeSkillsExtension(pi, effectiveSkillPaths) },
 			] satisfies ManagedExtensionFactory[]),
-			promptEnrichmentExtension([...new Set([...skillPaths, ...getActiveVendorSkillPaths()])]),
+			promptEnrichmentExtension(effectiveSkillPaths),
 			rtkRewriteExtension,
 			...enabledExtensionFactories([
 				{ id: "extensions.claude-code-hook-adapter", factory: claudeCodeHooksAdapter },

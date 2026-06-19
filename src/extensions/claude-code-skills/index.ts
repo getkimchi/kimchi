@@ -3,7 +3,7 @@ import type { ExtensionAPI, Skill } from "@earendil-works/pi-coding-agent"
 import { loadSkillsFromDir } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
 import type { Static } from "typebox"
-import { getClaudeCodeSkillResourcePaths } from "./definition.js"
+import { getClaudeCodeSkillResourcePaths, getConfiguredNativeSkillNames } from "./definition.js"
 
 interface SkillToolDetails {
 	success: boolean
@@ -19,9 +19,11 @@ const SkillToolSchema = Type.Object({
 
 type SkillToolArgs = Static<typeof SkillToolSchema>
 
-export default function claudeCodeSkillsExtension(pi: ExtensionAPI): void {
+export default function claudeCodeSkillsExtension(pi: ExtensionAPI, configuredSkillPaths: string[] = []): void {
 	pi.on("resources_discover", (event) => {
-		const skillPaths = getClaudeCodeSkillResourcePaths(event.cwd)
+		const skillPaths = getClaudeCodeSkillResourcePaths(event.cwd, {
+			excludeSkillNames: getConfiguredNativeSkillNames(event.cwd, configuredSkillPaths),
+		})
 		if (skillPaths.length === 0) return undefined
 		return { skillPaths }
 	})

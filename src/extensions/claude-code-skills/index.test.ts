@@ -153,21 +153,57 @@ describe("Claude Code skills extension", () => {
 		expect(loaded.skills).toMatchObject([{ name: "typescript-safety" }])
 		expect(readSkill(skillPaths[0] ?? "")).toContain("Use Claude skills.")
 	})
+
+	it("skips startup Claude Code resources that duplicate configured native skills", async () => {
+		writeSkill(join(dir, "project", ".agents", "skills", "best-practices", "SKILL.md"), "Native skill.")
+		writeSkill(join(dir, "project", ".claude", "skills", "best-practices", "SKILL.md"), "Claude skill.")
+		const { handlers } = registerExtension([".agents/skills"])
+
+		const result = await handlers.resources_discover?.({
+			type: "resources_discover",
+			cwd: join(dir, "project"),
+			reason: "startup",
+		})
+
+		expect(result).toBeUndefined()
+	})
+
+	it("contributes startup temp copies for configured Claude Code skills", async () => {
+		writeRawSkill(join(dir, "project", ".claude", "skills", "best-practices", "SKILL.md"), "Claude skill.\n")
+		const { handlers } = registerExtension([".claude/skills"])
+
+		const result = await handlers.resources_discover?.({
+			type: "resources_discover",
+			cwd: join(dir, "project"),
+			reason: "startup",
+		})
+		const skillPaths = (result as { skillPaths?: string[] } | undefined)?.skillPaths ?? []
+
+		expect(skillPaths).toHaveLength(1)
+		const loaded = loadSkillsFromDir({ dir: skillPaths[0] ?? "", source: "path" })
+		expect(loaded.skills).toMatchObject([{ name: "best-practices", description: "Claude Code skill: best-practices." }])
+	})
 })
 
 type RegisteredHandlers = {
 	resources_discover?: (event: { type: "resources_discover"; cwd: string; reason: string }) => unknown
 }
 
-function registerExtension(): { tools: ToolDefinition[]; handlers: RegisteredHandlers } {
+function registerExtension(configuredSkillPaths: string[] = []): {
+	tools: ToolDefinition[]
+	handlers: RegisteredHandlers
+} {
 	const tools: ToolDefinition[] = []
 	const handlers: RegisteredHandlers = {}
-	claudeCodeSkillsExtension({
-		registerTool: (tool: ToolDefinition) => tools.push(tool),
-		on: (event: keyof RegisteredHandlers, handler: RegisteredHandlers[keyof RegisteredHandlers]) => {
-			handlers[event] = handler
-		},
-	} as unknown as ExtensionAPI)
+	claudeCodeSkillsExtension(
+		{
+			registerTool: (tool: ToolDefinition) => tools.push(tool),
+			on: (event: keyof RegisteredHandlers, handler: RegisteredHandlers[keyof RegisteredHandlers]) => {
+				handlers[event] = handler
+			},
+		} as unknown as ExtensionAPI,
+		configuredSkillPaths,
+	)
 	return { tools, handlers }
 }
 
