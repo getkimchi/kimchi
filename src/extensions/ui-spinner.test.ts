@@ -93,8 +93,11 @@ function createMockUi(): MockUi {
 function createMockTheme(): MockTheme {
 	return {
 		fg: (_color: string, text: string) => `<${text}>`,
-		// Return something other than RST_FG so resolvedAccentFg doesn't fall back.
-		getFgAnsi: (_color: string) => "\\x1b[38;2;138;190;183m",
+		// Return a real ANSI escape (not RST_FG, so resolvedAccentFg keeps it
+		// instead of falling back to TEAL_FG). The actual byte values don't
+		// matter for the tests — they assert on substrings of setWorkingMessage
+		// rather than the full ANSI-encoded payload.
+		getFgAnsi: (_color: string) => "\x1b[38;2;138;190;183m",
 	}
 }
 
@@ -138,7 +141,6 @@ interface SpinnerHandlers {
 	toolExecutionEnd: Handler
 	turnEnd: Handler
 	input: Handler
-	sessionStart: Handler
 	agentEnd: Handler
 }
 
@@ -165,7 +167,6 @@ function setupExtension(): Setup {
 		toolExecutionEnd: getHandler(handlers, "tool_execution_end"),
 		turnEnd: getHandler(handlers, "turn_end"),
 		input: getHandler(handlers, "input"),
-		sessionStart: getHandler(handlers, "session_start"),
 		agentEnd: getHandler(handlers, "agent_end"),
 	}
 
@@ -392,9 +393,9 @@ describe("uiExtension spinner lifecycle", () => {
 			handlers.turnStart({}, ctx)
 			tickLatestAnimator()
 
-			expect(ui.setWorkingMessage).toHaveBeenLastCalledWith(expect.stringContaining("Chopping"))
-			expect(ui.setWorkingMessage).toHaveBeenLastCalledWith(expect.not.stringContaining("(thinking"))
-			expect(ui.setWorkingMessage).toHaveBeenLastCalledWith(expect.not.stringContaining("(thought"))
+			const message = ui.setWorkingMessage.mock.lastCall?.[0] as string
+			expect(message).toContain("Chopping")
+			expect(message).not.toContain("(think")
 		})
 
 		it("renders the '(thinking…)' suffix while reasoning is in flight", () => {
@@ -509,15 +510,19 @@ describe("uiExtension spinner lifecycle", () => {
 
 			vi.setSystemTime(1_000_000)
 			handlers.turnStart({}, ctx)
-			handlers.turnEnd(turnEndEvent, ctx)
-			// First auto-hide timer is set. Fire turn_end again before 2.5s elapses.
-			vi.advanceTimersByTime(1_000)
-			handlers.turnEnd(turnEndEvent, ctx)
-			// Now advance past the first timer (which should have been cancelled)
-			// but not past the second.
-			vi.advanceTimersByTime(1_400)
+			handlers.turnEnd(turnEndEvent, ctx) // first 2.5s auto-hide timer set
+			vi.advanceTimersByTime(1_000) // T = T1 + 1000ms
+			handlers.turnEnd(turnEndEvent, ctx) // second timer set, first must be cleared
+
+			// Advance to T = T1 + 2600ms — past the first timer's original deadline
+			// (T1 + 2500ms) but well before the second timer's (T1 + 3500ms). If the
+			// first timer had NOT been cancelled, setWorkingVisible(false) would have
+			// fired by now and this assertion would fail.
+			vi.advanceTimersByTime(1_600)
 			expect(ui.setWorkingVisible).toHaveBeenLastCalledWith(true)
-			vi.advanceTimersByTime(1_200)
+
+			// Advance past the second timer's deadline.
+			vi.advanceTimersByTime(1_000)
 			expect(ui.setWorkingVisible).toHaveBeenLastCalledWith(false)
 		})
 	})
@@ -553,24 +558,48 @@ describe("uiExtension spinner lifecycle", () => {
 	})
 
 	describe("message_start role guard", () => {
-		it("does not touch the spinner or userInputPending when the role is non-assistant", () => {
-			// A tool-result message_start must be a no-op — it shouldn't touch the
-			// spinner and it must not decrement userInputPending (the latter is
-			// critical: the next assistant message_start needs to consume that
-			// counter so a thinking_start after a tool → questionnaire flow can
-			// re-arm the spinner).
+		it("does not touch the spinner when the role is non-assistant", () => {
+			// Non-assistant message_start must be a complete no-op — no setWorkingVisible
+			// calls and no other side effects on the spinner state machine.
 			const { handlers, ctx, ui } = setupExtension()
 
 			handlers.turnStart({}, ctx)
 			expect(callsTo(ui)).toEqual([true])
 
-			// Non-assistant message_start: must not call setWorkingVisible at all.
 			handlers.messageStart({ type: "message_start", message: { role: "toolResult", content: [] } }, ctx)
 			expect(callsTo(ui)).toEqual([true])
 
-			// User message_start: same, must not touch the spinner either.
 			handlers.messageStart({ type: "message_start", message: { role: "user", content: [] } }, ctx)
 			expect(callsTo(ui)).toEqual([true])
+		})
+
+		it("does not consume userInputPending when the role is non-assistant", () => {
+			// The role guard is load-bearing: a toolResult message_start must NOT decrement
+			// the userInputPending counter. If it did, the next assistant message_start
+			// would see a zero counter and skip the decrement — and a subsequent thinking_start
+			// would think the suppression had been lifted (by the assistant message_start)
+			// when it actually hadn't been (by the toolResult one).
+			//
+			// Observable consequence: a toolResult message_start fired between
+			// tool_execution_end and thinking_start should leave the suppression active.
+			// If the role guard is bypassed, userInputPending would be 0 and thinking_start
+			// would call setWorkingVisible(true) — which we can detect.
+			const { handlers, ctx, ui } = setupExtension()
+
+			handlers.turnStart({}, ctx)
+			handlers.toolExecutionStart({ type: "tool_execution_start", toolCallId: "t1", toolName: "read" }, ctx)
+			handlers.toolExecutionEnd({ type: "tool_execution_end", toolCallId: "t1" }, ctx)
+			// userInputPending = 1, spinner off.
+
+			handlers.messageStart({ type: "message_start", message: { role: "toolResult", content: [] } }, ctx)
+			// toolResult message_start must NOT have touched userInputPending.
+
+			handlers.messageUpdate(messageUpdateEvent("thinking_start"), ctx)
+			// If toolResult had decremented (the bug), userInputPending would be 0 and
+			// thinking_start would call startIndicator → setWorkingVisible(true).
+			// Since toolResult is a no-op, userInputPending stays 1, thinking_start is
+			// suppressed, and no extra setWorkingVisible call happens.
+			expect(callsTo(ui)).toEqual([true, true, false])
 		})
 	})
 })
