@@ -120,6 +120,11 @@ test("cooking animation is visible during the gap between message_start and the 
 
 			await waitForText(terminal, "Done.", { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("response rendered")
+
+			// After text starts, the spinner suffix must be gone — `text_start`
+			// killed it via stopIndicator. Allow a brief render tick before asserting.
+			await new Promise((resolve) => setTimeout(resolve, 300))
+			expect(viewText(terminal)).not.toContain("(thinking…)")
 		},
 	)
 })
