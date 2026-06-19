@@ -24,7 +24,7 @@ import { execSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir, platform, userInfo } from "node:os"
-import { join } from "node:path"
+import { isAbsolute, join, normalize, relative, resolve } from "node:path"
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import { type ExtensionAPI, type Skill, getAgentDir, loadSkills } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
@@ -74,6 +74,30 @@ function readGitRemote(cwd: string): string | undefined {
 	} catch {
 		return undefined
 	}
+}
+
+function isSameOrDescendant(path: string, parent: string): boolean {
+	const relativePath = relative(parent, path)
+	return relativePath === "" || (!relativePath.startsWith("..") && !isAbsolute(relativePath))
+}
+
+function expandConfiguredSkillPaths(paths: string[], cwd: string): string[] {
+	const home = resolve(homedir())
+	const projectDir = resolve(cwd)
+	const expanded: string[] = []
+	for (const path of paths) {
+		if (isAbsolute(path)) {
+			expanded.push(normalize(path))
+		} else if (path.startsWith("~/")) {
+			expanded.push(resolve(home, path.slice(2)))
+		} else {
+			const fromHome = resolve(home, path)
+			const fromCwd = resolve(projectDir, path)
+			if (isSameOrDescendant(fromHome, home)) expanded.push(fromHome)
+			if (isSameOrDescendant(fromCwd, projectDir)) expanded.push(fromCwd)
+		}
+	}
+	return expanded
 }
 
 const HARNESS_SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "settings.json")
@@ -469,7 +493,7 @@ export default function (skillPaths: string[]) {
 				const allSkillPaths = Array.from(
 					new Set([
 						...getKimchiProjectSkillPaths(ctx.cwd),
-						...skillPaths,
+						...expandConfiguredSkillPaths(skillPaths, ctx.cwd),
 						...(isResourceEnabled(CLAUDE_CODE_SKILLS_RESOURCE_ID) ? getClaudeCodeSkillResourcePaths(ctx.cwd) : []),
 						...getInstalledPackageResourceDirs(ctx.cwd, "skills"),
 					]),
