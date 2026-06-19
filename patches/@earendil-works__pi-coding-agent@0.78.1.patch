@@ -178,6 +178,32 @@ index 99ad9878a521add2acac6570de66028a816a70bb..e417f738e5401665cddff53bb66467c3
      "cloudflare-workers-ai": "@cf/moonshotai/kimi-k2.6",
      "cloudflare-ai-gateway": "workers-ai/@cf/moonshotai/kimi-k2.6",
      xiaomi: "mimo-v2.5-pro",
+diff --git a/dist/core/sdk.js b/dist/core/sdk.js
+index 5120dbb4866430f52565fee173fa2de6cfeb4d51..0db40c762c3359243e3006386d1df62e5fac305a 100644
+--- a/dist/core/sdk.js
++++ b/dist/core/sdk.js
+@@ -185,6 +185,12 @@
+             const effectiveTimeoutMs = httpIdleTimeoutMs === 0 ? 2147483647 : httpIdleTimeoutMs;
+             const timeoutMs = options?.timeoutMs ?? providerRetrySettings.timeoutMs ?? effectiveTimeoutMs;
+             const websocketConnectTimeoutMs = options?.websocketConnectTimeoutMs ?? settingsManager.getWebSocketConnectTimeoutMs();
++            let headers = mergeProviderAttributionHeaders(model, settingsManager, options?.sessionId, auth.headers, options?.headers);
++            // Let extensions inject per-request dynamic headers (e.g. X-Session-Id, X-Turn-Index)
++            const runner = extensionRunnerRef.current;
++            if (runner?.hasHandlers("before_provider_headers")) {
++                headers = await runner.emitBeforeProviderHeaders(headers ?? {});
++            }
+             return streamSimple(model, context, {
+                 ...options,
+                 apiKey: auth.apiKey,
+@@ -192,7 +198,7 @@
+                 websocketConnectTimeoutMs,
+                 maxRetries: options?.maxRetries ?? providerRetrySettings.maxRetries,
+                 maxRetryDelayMs: options?.maxRetryDelayMs ?? providerRetrySettings.maxRetryDelayMs,
+-                headers: mergeProviderAttributionHeaders(model, settingsManager, options?.sessionId, auth.headers, options?.headers),
++                headers,
+             });
+         },
+         onPayload: async (payload, _model) => {
 diff --git a/dist/core/tools/edit.js b/dist/core/tools/edit.js
 index bf8a79ebfdbe23415cd1effdd3db0b9ebfd804bc..f69116ceafe8ee7f1e2dbfeaa37f60c5d97aa84c 100644
 --- a/dist/core/tools/edit.js
