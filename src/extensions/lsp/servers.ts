@@ -1,4 +1,5 @@
 // extensions/lsp/servers.ts
+import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
 import type { ServerConfig } from "./types.js"
@@ -19,10 +20,20 @@ const SERVERS: ServerConfig[] = [
 ]
 
 function exists(cmd: string): boolean {
+	// Try Bun first (dev mode), fall back to Node child_process (production build)
 	try {
 		// biome-ignore lint/suspicious/noExplicitAny: Bun not typed without @types/bun
-		const result = (globalThis as any).Bun.spawnSync(["which", cmd], { stdout: "pipe", stderr: "pipe" })
-		return result.exitCode === 0
+		const Bun = (globalThis as any).Bun
+		if (Bun?.spawnSync) {
+			const result = Bun.spawnSync(["which", cmd], { stdout: "pipe", stderr: "pipe" })
+			return result.exitCode === 0
+		}
+	} catch {
+		// ignore, try Node fallback
+	}
+	try {
+		const result = spawnSync("which", [cmd], { stdio: "pipe" })
+		return result.status === 0
 	} catch {
 		return false
 	}

@@ -418,13 +418,22 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		// only run-static profiles here; lifecycle tools remain visible for the
 		// whole active planner run and invalid transitions are rejected by tools.
 		if (isAgentWorker()) {
-			applyFermentToolProfile(pi, "worker")
+			// Subagent workers get their toolset from the agents manager at session
+			// init (agent-runner.ts setActiveToolsByName). Do NOT call setActiveTools
+			// here — the worker profile used to call setActiveTools([]) which would
+			// strip all tools from the subagent on the first turn.
 			return {}
 		}
-		if (pi.getFlag("ferment-oneshot") === true) {
-			applyFermentToolProfile(pi, "oneshot-planner")
+		// Only apply a ferment profile when a ferment is active. In normal chat
+		// mode (no active ferment) leave the toolset untouched so the user gets
+		// the full tool set. The idle profile (discovery-only) is applied by
+		// command handlers when entering/exiting ferment mode, not here.
+		if (!runtime.getActive()) {
 			return {}
 		}
+		// One-shot and interactive flows share the unified profile model: derive
+		// the profile from the active ferment's lifecycle state (planning vs.
+		// implementation). Both modes drive off the same runtime.
 		applyFermentRuntimeToolProfile(pi, runtime)
 		return {}
 	})

@@ -1,5 +1,4 @@
 export const FERMENT_TOOLS = {
-	REQUEST_WORKFLOW: "request_ferment_workflow",
 	PROPOSE_SCOPING: "propose_ferment_scoping",
 	LIST: "list_ferments",
 	SCOPE: "scope_ferment",
@@ -24,7 +23,7 @@ export const FERMENT_TOOLS = {
 export const FERMENT_TOOL_NAMES = Object.freeze(Object.values(FERMENT_TOOLS))
 
 const FERMENT_TOOL_NAME_SET = new Set<string>(FERMENT_TOOL_NAMES)
-const NON_PLANNER_FERMENT_TOOL_NAMES = new Set<string>([FERMENT_TOOLS.LIST, FERMENT_TOOLS.REQUEST_WORKFLOW])
+const NON_PLANNER_FERMENT_TOOL_NAMES = new Set<string>([FERMENT_TOOLS.LIST])
 const PLANNER_ONLY_FERMENT_TOOL_NAMES = new Set<string>([
 	FERMENT_TOOLS.PROPOSE_SCOPING,
 	FERMENT_TOOLS.SCOPE,
@@ -55,6 +54,16 @@ const USER_FACING_FERMENT_TOOL_NAMES = new Set<string>([
 
 export function isFermentToolName(name: string): boolean {
 	return FERMENT_TOOL_NAME_SET.has(name)
+}
+
+/**
+ * Returns true for ferment tools that should only be visible during an active
+ * ferment (planning or implementation). The discovery tools — `list_ferments`
+ * and `request_ferment_workflow` — are excluded so they remain visible in
+ * normal chat and idle mode.
+ */
+export function isFermentOnlyToolName(name: string): boolean {
+	return PLANNER_ONLY_FERMENT_TOOL_NAMES.has(name)
 }
 
 export function isUserFacingFermentToolName(name: string): boolean {

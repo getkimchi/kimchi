@@ -3,6 +3,9 @@ import * as config from "../../config.js"
 import { DEFAULT_LIMIT, SEARCH_ENDPOINT, type SearchResponse, executeWebSearch } from "./execute-handler.js"
 
 vi.mock("../../config.js", () => ({ readApiKeyFromConfigFile: vi.fn() }))
+vi.mock("../../utils/http.js", () => ({
+	fetchWithRetry: (url: string, init?: RequestInit) => globalThis.fetch(url, init),
+}))
 
 function mockFetch(status: number, body: unknown, headers: Record<string, string> = {}): void {
 	vi.stubGlobal(
@@ -132,27 +135,11 @@ describe("executeWebSearch", () => {
 			await expect(executeWebSearch({ query: "test" })).rejects.toThrow("Web search failed with status 500")
 		})
 
-		it("throws rate limit error for 429 without Retry-After", async () => {
+		it("throws rate limit error for 429 after retries exhausted", async () => {
 			mockFetch(429, {})
 
 			await expect(executeWebSearch({ query: "test" })).rejects.toThrow(
-				"Web search rate limited. Try again in a moment.",
-			)
-		})
-
-		it("includes Retry-After seconds in 429 error when header is a number", async () => {
-			mockFetch(429, {}, { "Retry-After": "30" })
-
-			await expect(executeWebSearch({ query: "test" })).rejects.toThrow(
-				"Web search rate limited. Retry after 30 seconds.",
-			)
-		})
-
-		it("includes Retry-After date in 429 error when header is an HTTP date", async () => {
-			mockFetch(429, {}, { "Retry-After": "Wed, 21 Oct 2025 07:28:00 GMT" })
-
-			await expect(executeWebSearch({ query: "test" })).rejects.toThrow(
-				"Web search rate limited. Retry after Wed, 21 Oct 2025 07:28:00 GMT.",
+				"Web search rate limited. Retries exhausted, please try again later.",
 			)
 		})
 	})

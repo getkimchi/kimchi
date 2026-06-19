@@ -58,6 +58,12 @@ interface CreateKimchiFixtureOptions {
 	responses: FakeResponseScript[]
 	/** `git init` the work dir so repo-checking flows (e.g. ferment) don't prompt to init one. */
 	gitInit?: boolean
+	/**
+	 * Extra args appended to the binary command line after `--provider`/`--model`.
+	 * Use for test-only flags like `--extension <path>` to load a custom extension
+	 * without having to commit fixture data alongside the harness.
+	 */
+	extraArgs?: string[]
 }
 
 export async function createKimchiFixture(options: CreateKimchiFixtureOptions): Promise<KimchiFixture> {
@@ -108,7 +114,7 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 	}
 }
 
-export function launchKimchi(terminal: Terminal, fixture: KimchiFixture): void {
+export function launchKimchi(terminal: Terminal, fixture: KimchiFixture, extraArgs: string[] = []): void {
 	terminal.submit(
 		[
 			`cd ${sh(fixture.workDir)} &&`,
@@ -119,6 +125,7 @@ export function launchKimchi(terminal: Terminal, fixture: KimchiFixture): void {
 			sh(BINARY_PATH),
 			`--provider ${FAKE_PROVIDER}`,
 			`--model ${DEFAULT_MODEL.slug}`,
+			...extraArgs,
 		].join(" "),
 	)
 }
@@ -148,7 +155,7 @@ export async function runKimchiSession(
 	}
 
 	try {
-		launchKimchi(terminal, fixture)
+		launchKimchi(terminal, fixture, fixtureOptions.extraArgs ?? [])
 		await waitForText(terminal, PROMPT_READY, { timeoutMs: STARTUP_TIMEOUT_MS })
 		trace.step("ready prompt visible")
 		await body(fixture, trace)

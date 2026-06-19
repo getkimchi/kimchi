@@ -7,6 +7,7 @@
 
 import { truncateHead, truncateLine } from "@earendil-works/pi-coding-agent"
 import { readApiKeyFromConfigFile } from "../../config.js"
+import { fetchWithRetry } from "../../utils/http.js"
 
 export const SEARCH_ENDPOINT = "https://llm.kimchi.dev/v1/search"
 export const SEARCH_TIMEOUT_MS = 25_000
@@ -57,18 +58,21 @@ export function formatForLLM(response: SearchResponse, maxContentChars = DEFAULT
 	return parts.join("\n")
 }
 
-async function fetchSearchResponse(body: object, apiKey: string, signal: AbortSignal): Promise<SearchResponse> {
+async function fetchSearchResponse(body: object, apiKey: string, signal?: AbortSignal): Promise<SearchResponse> {
 	let response: Response
 	try {
-		response = await fetch(SEARCH_ENDPOINT, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				Authorization: `Bearer ${apiKey}`,
+		response = await fetchWithRetry(
+			SEARCH_ENDPOINT,
+			{
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: `Bearer ${apiKey}`,
+				},
+				body: JSON.stringify(body),
 			},
-			body: JSON.stringify(body),
-			signal,
-		})
+			{ timeoutMs: SEARCH_TIMEOUT_MS, signal },
+		)
 	} catch (err) {
 		if (err instanceof Error && err.name === "AbortError") {
 			throw new Error("Web search timed out")
@@ -81,13 +85,7 @@ async function fetchSearchResponse(body: object, apiKey: string, signal: AbortSi
 			throw new Error(`Authentication failed (${response.status}). Check your API key.`)
 		}
 		if (response.status === 429) {
-			const retryAfter = response.headers.get("Retry-After")
-			let retryHint = " Try again in a moment."
-			if (retryAfter !== null) {
-				const seconds = Number(retryAfter)
-				retryHint = Number.isNaN(seconds) ? ` Retry after ${retryAfter}.` : ` Retry after ${seconds} seconds.`
-			}
-			throw new Error(`Web search rate limited.${retryHint}`)
+			throw new Error("Web search rate limited. Retries exhausted, please try again later.")
 		}
 		throw new Error(`Web search failed with status ${response.status}`)
 	}
@@ -117,31 +115,24 @@ export async function executeWebSearch(params: WebSearchParams, signal?: AbortSi
 		...(params.search_depth !== undefined ? { search_depth: params.search_depth } : {}),
 	}
 
-	const controller = new AbortController()
-	const timeout = setTimeout(() => controller.abort(), SEARCH_TIMEOUT_MS)
-	const combinedSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal
 	const startedAt = Date.now()
 
-	try {
-		const data = await fetchSearchResponse(body, apiKey, combinedSignal)
-		const raw = formatForLLM(data, maxContentChars)
-		const truncation = truncateHead(raw, { maxLines: MAX_LINES })
+	const data = await fetchSearchResponse(body, apiKey, signal)
+	const raw = formatForLLM(data, maxContentChars)
+	const truncation = truncateHead(raw, { maxLines: MAX_LINES })
 
-		let text = truncation.content || "No results found."
-		if (truncation.truncated) {
-			text += `\n\n[Output truncated: showing ${truncation.outputLines} of ${truncation.totalLines} lines]`
-		}
+	let text = truncation.content || "No results found."
+	if (truncation.truncated) {
+		text += `\n\n[Output truncated: showing ${truncation.outputLines} of ${truncation.totalLines} lines]`
+	}
 
-		return {
-			content: [{ type: "text" as const, text }],
-			details: {
-				sources: data.sources,
-				durationMs: Date.now() - startedAt,
-				chars: text.length,
-				words: countWords(text),
-			},
-		}
-	} finally {
-		clearTimeout(timeout)
+	return {
+		content: [{ type: "text" as const, text }],
+		details: {
+			sources: data.sources,
+			durationMs: Date.now() - startedAt,
+			chars: text.length,
+			words: countWords(text),
+		},
 	}
 }

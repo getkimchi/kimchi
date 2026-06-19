@@ -5,6 +5,8 @@
  * not installed, falls back to native fetch() with a warning.
  */
 
+import { THIRD_PARTY_MAX_RETRIES } from "../../config.js"
+import { fetchWithRetry } from "../../utils/http.js"
 import { getBrowser } from "./browser-pool.js"
 
 /** Maximum raw response size in bytes (5 MB). */
@@ -259,21 +261,20 @@ const FALLBACK_WARNING =
 
 async function fetchWithNative(url: string, options?: FetchOptions): Promise<FetchResult> {
 	const timeoutMs = (options?.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS) * 1000
-	const controller = new AbortController()
-	const timer = setTimeout(() => controller.abort(), timeoutMs)
-	const signal = options?.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal
 
 	let response: Response
 	try {
-		response = await fetch(url, {
-			signal,
-			redirect: "follow",
-			headers: {
-				Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+		response = await fetchWithRetry(
+			url,
+			{
+				redirect: "follow",
+				headers: {
+					Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+				},
 			},
-		})
+			{ timeoutMs, signal: options?.signal, retry: { maxRetries: THIRD_PARTY_MAX_RETRIES } },
+		)
 	} catch (err: unknown) {
-		clearTimeout(timer)
 		if (err instanceof DOMException && err.name === "AbortError") {
 			if (options?.signal?.aborted) {
 				throw new FetchError(`Fetch of "${url}" was cancelled`, "cancelled")
@@ -294,8 +295,6 @@ async function fetchWithNative(url: string, options?: FetchOptions): Promise<Fet
 			throw new FetchError(`Connection reset while fetching "${url}"`, "network")
 		}
 		throw new FetchError(`Network error fetching "${url}": ${message}`, "network")
-	} finally {
-		clearTimeout(timer)
 	}
 
 	// HTTP errors
