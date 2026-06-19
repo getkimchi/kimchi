@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import {
 	discoverClaudeCodeSkillDirs,
 	getClaudeCodeSkillResourcePaths,
+	getConfiguredNativeSkillNames,
 	getConfiguredSkillResourcePaths,
 	sanitizeSkillMarkdown,
 } from "./definition.js"
@@ -166,12 +167,29 @@ describe("Claude Code skill discovery", () => {
 		).toBe('---\ndescription: "Use: colons safely"\nname: "my-skill"\n---\nBody\n')
 	})
 
-	it("materializes Claude Code skills even when native project skills use the same name", () => {
-		const cwd = join(dir, "project")
-		writeSkill(join(cwd, ".agents", "skills", "typescript-safety", "SKILL.md"))
+	it("skips Claude Code resources that duplicate ancestor agent skills", () => {
+		const project = join(dir, "project")
+		const cwd = join(project, "app")
+		writeSkill(join(project, ".agents", "skills", "typescript-safety", "SKILL.md"))
 		writeSkill(join(cwd, ".claude", "skills", "typescript-safety", "SKILL.md"))
 
-		expect(getClaudeCodeSkillResourcePaths(cwd)).toHaveLength(1)
+		expect(
+			getClaudeCodeSkillResourcePaths(cwd, {
+				excludeSkillNames: getConfiguredNativeSkillNames(cwd, []),
+			}),
+		).toEqual([])
+	})
+
+	it("skips Claude Code resources that duplicate Kimchi project skills", () => {
+		const cwd = join(dir, "project")
+		writeSkill(join(cwd, ".kimchi", "skills", "typescript-safety", "SKILL.md"))
+		writeSkill(join(cwd, ".claude", "skills", "typescript-safety", "SKILL.md"))
+
+		expect(
+			getClaudeCodeSkillResourcePaths(cwd, {
+				excludeSkillNames: getConfiguredNativeSkillNames(cwd, []),
+			}),
+		).toEqual([])
 	})
 
 	it("does not materialize Claude Code skills from an ancestor .claude directory", () => {
@@ -219,6 +237,15 @@ describe("Claude Code skill discovery", () => {
 		writeSkill(nativeSkill)
 
 		expect(getConfiguredSkillResourcePaths(cwd, [claudeSkills, nativeSkill])).toEqual([nativeSkill])
+	})
+
+	it("skips configured Claude Code paths that duplicate default native skills", () => {
+		const cwd = join(dir, "project")
+		const claudeSkills = join(cwd, ".claude", "skills")
+		writeSkill(join(cwd, ".agents", "skills", "typescript-safety", "SKILL.md"))
+		writeSkill(join(claudeSkills, "typescript-safety", "SKILL.md"))
+
+		expect(getConfiguredSkillResourcePaths(cwd, [claudeSkills])).toEqual([])
 	})
 })
 

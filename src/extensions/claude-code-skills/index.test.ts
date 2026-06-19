@@ -136,7 +136,7 @@ describe("Claude Code skills extension", () => {
 		expect(loaded.diagnostics.map((diagnostic) => diagnostic.message)).not.toContain("description is required")
 	})
 
-	it("contributes Claude Code skill resources even when native project skills use the same name", async () => {
+	it("skips startup Claude Code resources that duplicate ancestor agent skills", async () => {
 		writeSkill(join(dir, "project", ".agents", "skills", "typescript-safety", "SKILL.md"), "Use generated types.")
 		writeSkill(join(dir, "project", ".claude", "skills", "typescript-safety", "SKILL.md"), "Use Claude skills.")
 		const { handlers } = registerExtension()
@@ -146,12 +146,22 @@ describe("Claude Code skills extension", () => {
 			cwd: join(dir, "project"),
 			reason: "startup",
 		})
-		const skillPaths = (result as { skillPaths?: string[] } | undefined)?.skillPaths ?? []
 
-		expect(skillPaths).toHaveLength(1)
-		const loaded = loadSkillsFromDir({ dir: skillPaths[0] ?? "", source: "path" })
-		expect(loaded.skills).toMatchObject([{ name: "typescript-safety" }])
-		expect(readSkill(skillPaths[0] ?? "")).toContain("Use Claude skills.")
+		expect(result).toBeUndefined()
+	})
+
+	it("skips startup Claude Code resources that duplicate Kimchi project skills", async () => {
+		writeSkill(join(dir, "project", ".kimchi", "skills", "typescript-safety", "SKILL.md"), "Use generated types.")
+		writeSkill(join(dir, "project", ".claude", "skills", "typescript-safety", "SKILL.md"), "Use Claude skills.")
+		const { handlers } = registerExtension()
+
+		const result = await handlers.resources_discover?.({
+			type: "resources_discover",
+			cwd: join(dir, "project"),
+			reason: "startup",
+		})
+
+		expect(result).toBeUndefined()
 	})
 
 	it("skips startup Claude Code resources that duplicate configured native skills", async () => {

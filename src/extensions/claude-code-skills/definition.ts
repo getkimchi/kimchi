@@ -5,6 +5,7 @@ import { homedir, tmpdir } from "node:os"
 import { basename, dirname, extname, isAbsolute, join, normalize, relative, resolve } from "node:path"
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml"
 import { z } from "zod"
+import { findNearestAncestorSkillDir } from "../../skill-paths.js"
 
 export const CLAUDE_CODE_SKILLS_RESOURCE_ID = "extensions.claude-code-skills"
 
@@ -57,7 +58,7 @@ export function getClaudeCodeSkillResourcePaths(
 
 export function getConfiguredSkillResourcePaths(cwd: string, configuredSkillPaths: string[]): string[] {
 	const expandedPaths = expandConfiguredSkillPaths(configuredSkillPaths, cwd)
-	const nativeSkillNames = collectNativeSkillNames(expandedPaths)
+	const nativeSkillNames = collectNativeSkillNamesForExclusion(cwd, expandedPaths)
 	return expandedPaths.flatMap((path) =>
 		isClaudeCodeSkillPath(path)
 			? materializeClaudeCodeSkillPath(path, { excludeSkillNames: nativeSkillNames })
@@ -66,7 +67,7 @@ export function getConfiguredSkillResourcePaths(cwd: string, configuredSkillPath
 }
 
 export function getConfiguredNativeSkillNames(cwd: string, configuredSkillPaths: string[]): string[] {
-	return [...collectNativeSkillNames(expandConfiguredSkillPaths(configuredSkillPaths, cwd))]
+	return [...collectNativeSkillNamesForExclusion(cwd, expandConfiguredSkillPaths(configuredSkillPaths, cwd))]
 }
 
 export function sanitizeSkillMarkdown(content: string, fallbackName: string): string {
@@ -163,6 +164,24 @@ function isSameOrDescendant(path: string, parent: string): boolean {
 
 function isClaudeCodeSkillPath(path: string): boolean {
 	return path.split(/[\\/]+/).includes(".claude")
+}
+
+function collectNativeSkillNamesForExclusion(cwd: string, expandedConfiguredSkillPaths: string[]): Set<string> {
+	return collectNativeSkillNames([...expandedConfiguredSkillPaths, ...getDefaultNativeSkillPaths(cwd)])
+}
+
+function getDefaultNativeSkillPaths(cwd: string): string[] {
+	const projectDir = resolve(cwd)
+	const home = resolve(homedir())
+	const paths = [
+		findNearestAncestorSkillDir(projectDir, join(".kimchi", "skills")),
+		findNearestAncestorSkillDir(projectDir, join(".agents", "skills")),
+		join(projectDir, ".pi", "skills"),
+		join(home, ".config", "kimchi", "harness", "skills"),
+		join(home, ".pi", "agent", "skills"),
+		join(home, ".agents", "skills"),
+	]
+	return [...new Set(paths.filter((path): path is string => path !== undefined).map(normalize))]
 }
 
 function collectNativeSkillNames(paths: string[]): Set<string> {
