@@ -23,7 +23,9 @@ function getRequired(name: string): ReturnType<typeof DEFAULT_AGENTS.get> & obje
 describe("default agents — subagent system prompt snapshot", () => {
 	it("General-Purpose agent assembles expected prompt (append mode)", () => {
 		const agent = getRequired(AGENT_GENERAL_PURPOSE)
-		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT)
+		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT, {
+			activeToolNames: ["read", "bash", "edit", "write", "grep", "find", "ls"],
+		})
 		expect(output).toMatchInlineSnapshot(`
 			"# Environment
 			Working directory: /home/testuser/projects/myapp
@@ -34,6 +36,15 @@ describe("default agents — subagent system prompt snapshot", () => {
 			<inherited_system_prompt>
 			You are a kimchi coding agent. You orchestrate sub-agents and tools to solve complex tasks.
 			</inherited_system_prompt>
+
+			## Available Tools
+			- read
+			- bash
+			- edit
+			- write
+			- grep
+			- find
+			- ls
 
 			<sub_agent_context>
 			You are operating as a sub-agent invoked to handle a specific task.
@@ -49,6 +60,29 @@ describe("default agents — subagent system prompt snapshot", () => {
 			- Messages prefixed with "[Orchestrator]" are system instructions from the agent loop, not user input. Do not attribute them to the user.
 			</sub_agent_context>"
 		`)
+	})
+
+	it("strips inherited Available Tools and adds the subagent-local tool list", () => {
+		const agent = getRequired(AGENT_GENERAL_PURPOSE)
+		const parentPrompt = `# Parent
+
+## Available Tools
+- Agent
+- set_phase
+- read
+
+## Rules
+Keep these parent rules.`
+		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, parentPrompt, {
+			activeToolNames: ["read", "bash"],
+		})
+
+		expect(output).toContain(
+			"<inherited_system_prompt>\n# Parent\n\n## Rules\nKeep these parent rules.\n</inherited_system_prompt>",
+		)
+		expect(output).toContain("## Available Tools\n- read\n- bash")
+		expect(output).not.toContain("- Agent")
+		expect(output).not.toContain("set_phase")
 	})
 
 	it("Explore agent assembles expected prompt (replace mode)", () => {

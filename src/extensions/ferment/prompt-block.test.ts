@@ -123,6 +123,12 @@ describe("buildFermentPromptBlock", () => {
 			const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeNoActiveFermentRuntime())
 			expect(out).toBeUndefined()
 		})
+
+		it("advertises questionnaire in the planning toolset", () => {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime({ status: "planned" })) ?? ""
+			expect(out).toContain("`questionnaire`")
+			expect(out).not.toContain("`ask_user`")
+		})
 	})
 
 	describe("ferment-oneshot=true — injection set", () => {

@@ -194,7 +194,7 @@ Important constraints:
 - In Step 1 (Orient), only do lightweight reads: file listing, README, config, short snippets.
 - The interview in Step 2 is iterative — reflect after each round of answers before asking more.
 - Confirm completion criteria with confirm_ferment_completion_criteria before moving to exploration.
-- Use ask_user for Step 2 user interactions. In Step 3, use confirm_ferment_completion_criteria instead of ask_user.
+- Use questionnaire for Step 2 user interactions. In Step 3, use confirm_ferment_completion_criteria instead of questionnaire.
 
 Question policy (for propose_ferment_scoping.questions, used in Step 5 only):
 - After Steps 1-4, any remaining decision-blocking questions go in propose_ferment_scoping.questions.

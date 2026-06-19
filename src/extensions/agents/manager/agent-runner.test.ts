@@ -652,6 +652,26 @@ describe("runAgent — profile tool access", () => {
 		expect(session.setActiveToolsByName).toHaveBeenCalledWith(["read", "grep", "web_search"])
 	})
 
+	it("activates requested builtin tools even when the parent session did not have them active", async () => {
+		mockGetToolNamesForType.mockReturnValue(["read", "bash", "grep", "find", "ls"])
+		const session = makeFakeSession({
+			activeToolNames: ["read", "bash", "edit", "web_search", "Agent", "scope_ferment"],
+		})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Researcher", "research it", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		expect(session.setActiveToolsByName).toHaveBeenCalledWith(["read", "bash", "grep", "find", "ls", "web_search"])
+		expect(mockBuildAgentPrompt.mock.calls[0]?.[4]?.activeToolNames).toEqual(["read", "bash", "grep", "find", "ls"])
+	})
+
 	it("keeps only matching extension tools when profile names an extension allowlist", async () => {
 		mockGetConfig.mockReturnValue(
 			makeTypeConfig({

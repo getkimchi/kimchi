@@ -56,6 +56,33 @@ import { type LifetimeUsage, addUsage, getLifetimeTotal, getOutputTotal, getSess
  */
 const EXCLUDED_TOOL_NAMES = ["Agent", "get_subagent_result", "steer_subagent", ...FERMENT_TOOL_NAMES]
 
+function isExcludedSubagentToolName(name: string, disallowedSet?: Set<string>): boolean {
+	return EXCLUDED_TOOL_NAMES.includes(name) || disallowedSet?.has(name) === true
+}
+
+function getPromptToolNames(toolNames: string[], disallowedSet?: Set<string>): string[] {
+	return toolNames.filter((name) => !isExcludedSubagentToolName(name, disallowedSet))
+}
+
+function getActiveSubagentToolNames(
+	requestedToolNames: string[],
+	currentActiveToolNames: string[],
+	extensions: true | string[],
+	disallowedSet?: Set<string>,
+): string[] {
+	const requestedToolNameSet = new Set(requestedToolNames)
+	const allBuiltinToolNames = new Set(BUILTIN_TOOL_NAMES)
+	const candidates = new Set([...requestedToolNames, ...currentActiveToolNames])
+
+	return [...candidates].filter((name) => {
+		if (isExcludedSubagentToolName(name, disallowedSet)) return false
+		if (requestedToolNameSet.has(name)) return true
+		if (allBuiltinToolNames.has(name)) return false
+		if (Array.isArray(extensions)) return extensions.some((ext) => name.startsWith(ext) || name.includes(ext))
+		return true
+	})
+}
+
 /** Prefix applied to automated steering messages so the LLM does not attribute them to the user. */
 const ORCHESTRATOR_PREFIX = "[Orchestrator — automated system instruction, not a user message]\n\n"
 
@@ -314,6 +341,8 @@ async function runAgentInner(
 		}
 	}
 
+	const disallowedSet = agentConfig?.disallowedTools ? new Set(agentConfig.disallowedTools) : undefined
+
 	const modelId = (options.model as { id?: string } | undefined)?.id
 	const guidelinePhase = agentConfig?.roles?.[0] as Phase | undefined
 	const guidelinesBlock = buildPhaseGuidelinesSection(modelId, guidelinePhase, getGuidelinesRegistry())
@@ -326,6 +355,7 @@ async function runAgentInner(
 	if (effectiveMaxTurns != null || effectiveTokenBudget != null) {
 		extras.budget = { maxTurns: effectiveMaxTurns, tokenBudget: effectiveTokenBudget }
 	}
+	extras.activeToolNames = getPromptToolNames(toolNames, disallowedSet)
 
 	let systemPrompt: string
 	if (agentConfig) {
@@ -402,8 +432,6 @@ async function runAgentInner(
 
 	const { session } = await createAgentSession(sessionOpts)
 
-	const disallowedSet = agentConfig?.disallowedTools ? new Set(agentConfig.disallowedTools) : undefined
-
 	await session.bindExtensions({
 		onError: (err) => {
 			options.onToolActivity?.({
@@ -414,18 +442,7 @@ async function runAgentInner(
 	})
 
 	if (extensions !== false) {
-		const builtinToolNameSet = new Set(toolNames)
-		const allBuiltinToolNames = new Set(BUILTIN_TOOL_NAMES)
-		const activeTools = session.getActiveToolNames().filter((t) => {
-			if (EXCLUDED_TOOL_NAMES.includes(t)) return false
-			if (disallowedSet?.has(t)) return false
-			if (builtinToolNameSet.has(t)) return true
-			if (allBuiltinToolNames.has(t)) return false
-			if (Array.isArray(extensions)) {
-				return extensions.some((ext) => t.startsWith(ext) || t.includes(ext))
-			}
-			return true
-		})
+		const activeTools = getActiveSubagentToolNames(toolNames, session.getActiveToolNames(), extensions, disallowedSet)
 		session.setActiveToolsByName(activeTools)
 	} else if (disallowedSet) {
 		const activeTools = session.getActiveToolNames().filter((t) => !disallowedSet.has(t))
