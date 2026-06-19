@@ -224,7 +224,7 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 			}
 
 			let result: QuestionnaireResult
-			if (ctx.mode === "rpc") {
+			if (ctx.mode !== "tui") {
 				const answers: QuestionnaireResult["answers"] = []
 				let cancelled = true
 				for (const question of questions) {

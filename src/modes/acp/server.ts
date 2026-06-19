@@ -258,7 +258,7 @@ export class KimchiAcpAgent implements Agent {
 				this.send(params),
 			)
 
-			await bindAcpExtensions(session, this.buildUiContext(sessionId))
+			await this.bindAcpExtensions(session)
 
 			const unsubscribe = session.subscribe((event) => this.onSessionEvent(sessionId, event))
 			this.sessions.set(sessionId, { session, unsubscribe })
@@ -280,13 +280,23 @@ export class KimchiAcpAgent implements Agent {
 		}
 	}
 
-	/**
-	 * Build the ExtensionUIContext that pi's runner routes `ctx.ui.*` calls
-	 * through. Bound to a single session for its lifetime — the connection,
-	 * capabilities, and `send` callback are all session-scoped state.
-	 */
-	private buildUiContext(sessionId: string): ExtensionUIContext {
-		return createAcpUIContext(this.conn, sessionId, this.clientCapabilities, (params) => this.send(params))
+	private async bindAcpExtensions(session: AgentSession): Promise<void> {
+		await session.bindExtensions({
+			// Build the ExtensionUIContext that pi's runner routes `ctx.ui.*` calls
+			// through. Bound to a single session for its lifetime — the connection,
+			// capabilities, and `send` callback are all session-scoped state.
+			uiContext: createAcpUIContext(this.conn, session.sessionId, this.clientCapabilities, (params) =>
+				this.send(params),
+			),
+			// Mode is "rpc" so extensions can branch on `ctx.mode === "rpc"` to detect
+			// this transport (added in pi-coding-agent 0.78.1). `ctx.hasUI` is derived
+			// from the uiContext by the runner, so extensions that only check the
+			// legacy boolean keep working too.
+			mode: "rpc",
+			onError: (err) => {
+				process.stderr.write(`acp ext error [${err.extensionPath}] ${err.event}: ${err.error}\n`)
+			},
+		})
 	}
 
 	async unstable_setSessionModel(params: SetSessionModelRequest): Promise<SetSessionModelResponse> {
@@ -409,7 +419,7 @@ export class KimchiAcpAgent implements Agent {
 
 			const permissionFlagController = registerPermissionFlagController(sid, initialMode, (params) => this.send(params))
 
-			await bindAcpExtensions(session, this.buildUiContext(sid))
+			await this.bindAcpExtensions(session)
 
 			const unsubscribe = session.subscribe((event) => this.onSessionEvent(sid, event))
 			this.sessions.set(sid, { session, unsubscribe })
@@ -981,14 +991,13 @@ export function initializeHeadlessTheme(settingsManager: Pick<SettingsManager, "
 }
 
 async function bindAcpExtensions(session: AgentSession, ui: ExtensionUIContext): Promise<void> {
-	// setUIContext must run before any extension handler fires — the runner
-	// resolves ctx.ui at handler-dispatch time, so a default no-op context
-	// would silently swallow dialogs during the gap between bindExtensions()
-	// resolving and the first prompt arriving. We attach it before binding
-	// extensions because bindExtensions() itself fires session_start, which
-	// is the first event any extension sees.
-	session.extensionRunner.setUIContext(ui)
+	// Mode is "rpc" so extensions can branch on `ctx.mode === "rpc"` to detect
+	// this transport (added in pi-coding-agent 0.78.1). `ctx.hasUI` is derived
+	// from the uiContext by the runner, so extensions that only check the
+	// legacy boolean keep working too.
 	await session.bindExtensions({
+		uiContext: ui,
+		mode: "rpc",
 		onError: (err) => {
 			process.stderr.write(`acp ext error [${err.extensionPath}] ${err.event}: ${err.error}\n`)
 		},

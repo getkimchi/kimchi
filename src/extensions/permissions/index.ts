@@ -722,7 +722,7 @@ async function handleConfirm(
 		const prompter = resolvePrompter(opts.ctx)
 		if (!prompter) return { block: true, reason: "No UI to confirm permission" }
 
-		const input = event.input as Record<string, unknown>
+		const input = event.input
 		const outcome = await prompter.request({
 			toolCallId: event.toolCallId ?? `${event.toolName}-permission`,
 			toolName: event.toolName,
@@ -754,7 +754,7 @@ export async function handleCompoundConfirm(
 			// ACP v1 presents compound commands as one permission card. It does
 			// not offer TUI's per-subcommand picker, so remembered rules are scoped
 			// to the compound call's suggested scope rather than each segment.
-			const input = event.input as Record<string, unknown>
+			const input = event.input
 			const outcome = await prompter.request({
 				toolCallId: event.toolCallId ?? `${event.toolName}-permission`,
 				toolName: event.toolName,

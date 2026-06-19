@@ -34,7 +34,7 @@ export default function helpExtension(pi: ExtensionAPI) {
 	pi.registerCommand("help", {
 		description: "Show keyboard shortcuts and slash commands",
 		handler: async (_args, ctx) => {
-			if (!ctx.hasUI) {
+			if (ctx.mode !== "tui") {
 				const lines: string[] = []
 				for (const row of HELP_ROWS) {
 					if (row.kind === "heading") {
