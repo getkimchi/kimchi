@@ -145,6 +145,14 @@ export function registerTodoStateBlock(pi: ExtensionAPI): void {
 	})
 }
 
+/** Applies the full gate (currentSessionHasUI check) exactly as the registered
+ *  system-prompt block does. Use this in tests to validate the complete path
+ *  rather than calling the raw renderer directly. */
+export function renderTodoStateBlock(): string | undefined {
+	if (currentSessionHasUI) return undefined
+	return renderTodoStateMarkdown()
+}
+
 export {
 	renderTodoPromptBlock as __test_renderTodoPromptBlock,
 	renderTodoStateMarkdown as __test_renderTodoStateMarkdown,
