@@ -1,4 +1,5 @@
 import { expect, test } from "@microsoft/tui-test"
+import type { FakeResponseScript } from "./support/fake-openai-server.js"
 import { STREAM_TIMEOUT_MS, fullText, viewText, waitForText } from "./support/assertions.js"
 import { TUI_TEST_CONFIG, runKimchiSession } from "./support/kimchi-fixture.js"
 
@@ -22,12 +23,12 @@ async function runSession(
 	terminal: import("@microsoft/tui-test").Terminal,
 	options: {
 		artifactName: string
-		responses: unknown[]
+		responses: FakeResponseScript[]
 		useThinkingModel?: boolean
 	},
 	body: (trace: { step: (label: string) => void }) => Promise<void>,
 ): Promise<void> {
-	const baseOpts: { artifactName: string; responses: unknown[] } = {
+	const baseOpts: { artifactName: string; responses: FakeResponseScript[] } = {
 		artifactName: options.artifactName,
 		responses: options.responses,
 	}
@@ -38,9 +39,7 @@ async function runSession(
 				extraArgs: ["--model", "thinking-model"],
 			}
 		: baseOpts
-	await runKimchiSession(terminal, opts as Parameters<typeof runKimchiSession>[1], async (_fixture, trace) =>
-		body(trace),
-	)
+	await runKimchiSession(terminal, opts, async (_fixture, trace) => body(trace))
 }
 
 test("cooking animation stays visible during reasoning and clears when text starts", async ({ terminal }) => {
@@ -175,15 +174,14 @@ test("cooking animation restarts during tool execution and stops when the tool c
 			await waitForText(terminal, /(Stirring|Marinating|Chopping)/, { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("cooking animation visible during tool execution")
 
-			// Tool result comes back, the model produces the final text.
+			// Tool result comes back, the model produces the final text. That's
+			// the user-visible proof of success here — "Tool done." rendering
+			// confirms the tool-result round-trip worked. The spinner being
+			// gone is a consequence of text_start firing (covered precisely
+			// by the unit test); asserting it at e2e would need to enumerate
+			// all ~20 cooking frames and adds no real coverage.
 			await waitForText(terminal, "Tool done.", { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("tool result + final response rendered")
-
-			// Once text is rendering the spinner must be gone (text_start killed it).
-			await new Promise((resolve) => setTimeout(resolve, 300))
-			const view = viewText(terminal)
-			expect(view).not.toContain("(Stirring|Marinating|Chopping)")
-			trace.step("cooking animation gone after tool result + text")
 		},
 	)
 })
