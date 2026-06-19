@@ -69,6 +69,14 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		defaultEnabled: true,
 	},
 	{
+		id: "extensions.bash-default-timeout",
+		kind: "extensions",
+		label: "Bash default timeout",
+		description:
+			"Apply a 120s default timeout to every bash command when none is supplied, so misbehaving commands cannot hang a session indefinitely.",
+		defaultEnabled: true,
+	},
+	{
 		id: "extensions.claude-code-hook-adapter",
 		kind: "extensions",
 		label: "Claude Code hook adapter",
