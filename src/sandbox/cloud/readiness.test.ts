@@ -37,7 +37,7 @@ describe("waitForWorkspaceReady", () => {
 		await expect(promise).resolves.toBeUndefined()
 
 		expect(fetchMock).toHaveBeenCalledTimes(1)
-		expect(fetchMock).toHaveBeenCalledWith("https://h.example.com/readyz", {
+		expect(fetchMock).toHaveBeenCalledWith("https://h.example.com/startupcompletedz", {
 			method: "GET",
 			headers: { Authorization: "Bearer tok-1" },
 			signal: expect.any(AbortSignal),

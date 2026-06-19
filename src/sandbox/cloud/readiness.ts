@@ -31,7 +31,7 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 /**
- * Poll the /readyz endpoint once via HTTP. Resolves with `{ ready: true }` if
+ * Poll the /startupcompletedz endpoint once via HTTP. Resolves with `{ ready: true }` if
  * the response is 2xx, `{ ready: false, error }` otherwise. Never throws.
  */
 async function probeReadyOnce(opts: {
@@ -43,7 +43,7 @@ async function probeReadyOnce(opts: {
 	let timer: ReturnType<typeof setTimeout> | undefined
 	try {
 		const baseUrl = deriveBaseUrl(opts.wsUrl)
-		const url = `${baseUrl}/readyz`
+		const url = `${baseUrl}/startupcompletedz`
 
 		const ctrl = new AbortController()
 		timer = setTimeout(() => ctrl.abort(), opts.probeTimeoutMs)
@@ -82,7 +82,7 @@ async function probeReadyOnce(opts: {
 }
 
 /**
- * Poll HTTP GET /readyz until it returns 2xx, which signals that the
+ * Poll HTTP GET /startupcompletedz until it returns 2xx, which signals that the
  * agentgateway has attached the workspace policy and traffic is routable.
  */
 export async function waitForWorkspaceReady(options: WaitForWorkspaceReadyOptions): Promise<void> {
