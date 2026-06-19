@@ -25,6 +25,7 @@ import {
 	type ScopingQuestion,
 	type ScopingQuestionType,
 } from "../../../ferment/types.js"
+import { createToolVisibility } from "../../prompt-construction/tool-visibility.js"
 import { YES_NO_OPTIONS } from "../../questionnaire-reducer.js"
 import {
 	type AskUserQuestion,
@@ -1132,6 +1133,22 @@ ${renderGateGuidance("complete_ferment")}`,
 		async execute(_, params) {
 			return completeFerment(runtime, params)
 		},
+	})
+
+	// confirm_ferment_completion_criteria and ask_user both render interactive
+	// TUI forms via ctx.ui.custom(). Hide them from the system prompt when no
+	// UI is attached and the ferment-oneshot judge fallback is not engaged,
+	// so the LLM does not call a tool that cannot succeed.
+	const interactiveVisibility = createToolVisibility(pi)
+	pi.on("session_start", (_event, ctx) => {
+		const judgeFallback = pi.getFlag?.("ferment-oneshot") === true
+		const hideInteractiveTools = !ctx.hasUI && !judgeFallback
+		const interactiveTools = [FERMENT_TOOLS.CONFIRM_COMPLETION_CRITERIA, FERMENT_TOOLS.ASK_USER]
+		if (hideInteractiveTools) {
+			interactiveVisibility.disable(interactiveTools)
+		} else {
+			interactiveVisibility.enable(interactiveTools)
+		}
 	})
 
 	pi.registerTool({

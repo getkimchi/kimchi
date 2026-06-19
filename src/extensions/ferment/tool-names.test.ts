@@ -18,6 +18,10 @@ function collectRegisteredToolNames(): string[] {
 		registerTool: (tool: { name: string }) => {
 			names.push(tool.name)
 		},
+		on: () => {},
+		getActiveTools: () => [],
+		setActiveTools: () => {},
+		getFlag: () => undefined,
 	} as unknown as ExtensionAPI
 
 	registerLifecycleTools(pi)
