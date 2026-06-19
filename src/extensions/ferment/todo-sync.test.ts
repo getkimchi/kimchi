@@ -490,4 +490,316 @@ describe("todo-sync bridge", () => {
 		expect(updatedTodos[1].id).toBe(step1IdBefore)
 		expect(updatedTodos[2].id).toBe(step2IdBefore)
 	})
+
+	it("ignores PHASE_COMPLETED events from a different ferment (stale-event guard)", () => {
+		const { pi, emit } = createFakePI()
+		const activeFerment = createTestFerment("phase-1", 2)
+		setActive(activeFerment)
+
+		unsubscribe = registerFermentTodoSync(pi)
+
+		// Set up todos for the active ferment
+		emit(FERMENT_EVENTS.PHASE_STARTED, {
+			fermentId: activeFerment.id,
+			phaseId: "phase-1",
+			phaseIndex: 1,
+			phaseName: "Active Phase",
+		})
+
+		const initialTodos = getTodosForScope({ kind: "ferment", phaseId: "phase-1" })
+		expect(initialTodos).toHaveLength(3) // header + 2 steps
+		expect(initialTodos[0].status).toBe("in_progress")
+		expect(initialTodos[1].status).toBe("pending")
+		expect(initialTodos[2].status).toBe("pending")
+
+		// Simulate a stale PHASE_COMPLETED arriving from a previous ferment that
+		// happens to share the same phaseId. The guard must reject it.
+		emit(FERMENT_EVENTS.PHASE_COMPLETED, {
+			fermentId: "different-ferment-id",
+			phaseId: "phase-1",
+			phaseIndex: 1,
+			phaseName: "Stale Phase",
+			durationMs: 1000,
+			deltaInputTokens: 0,
+			deltaOutputTokens: 0,
+			blockRetries: 0,
+		})
+
+		// Assert: todos for the active ferment are untouched
+		const afterStaleEvent = getTodosForScope({ kind: "ferment", phaseId: "phase-1" })
+		expect(afterStaleEvent).toHaveLength(3)
+		expect(afterStaleEvent[0].status).toBe("in_progress")
+		expect(afterStaleEvent[1].status).toBe("pending")
+		expect(afterStaleEvent[2].status).toBe("pending")
+	})
+
+	it("ignores PHASE_COMPLETED events when no ferment is active", () => {
+		const { pi, emit } = createFakePI()
+		setActive(undefined)
+
+		unsubscribe = registerFermentTodoSync(pi)
+
+		// Should not throw even though there's no active ferment and no todos.
+		expect(() =>
+			emit(FERMENT_EVENTS.PHASE_COMPLETED, {
+				fermentId: "any-ferment",
+				phaseId: "phase-1",
+				phaseIndex: 1,
+				phaseName: "Orphan Phase",
+				durationMs: 0,
+				deltaInputTokens: 0,
+				deltaOutputTokens: 0,
+				blockRetries: 0,
+			}),
+		).not.toThrow()
+	})
+
+	it("preserves stable IDs even when the store reorders written todos", () => {
+		const { pi, emit } = createFakePI()
+		const ferment = createTestFerment("phase-1", 3)
+		setActive(ferment)
+
+		unsubscribe = registerFermentTodoSync(pi)
+
+		emit(FERMENT_EVENTS.PHASE_STARTED, {
+			fermentId: ferment.id,
+			phaseId: "phase-1",
+			phaseIndex: 1,
+			phaseName: "Test Phase",
+		})
+
+		const initialTodos = getTodosForScope({ kind: "ferment", phaseId: "phase-1" })
+		const headerIdBefore = initialTodos[0].id
+		const step1IdBefore = initialTodos[1].id
+		const step3IdBefore = initialTodos[3].id
+
+		// Interleave a step completion between two non-adjacent steps.
+		// Content-based correlation should still match step-3 correctly.
+		emit(FERMENT_EVENTS.STEP_COMPLETED, {
+			fermentId: ferment.id,
+			phaseId: "phase-1",
+			stepId: "step-3",
+			stepIndex: 3,
+			durationMs: 1000,
+			success: true,
+		})
+
+		const updatedTodos = getTodosForScope({ kind: "ferment", phaseId: "phase-1" })
+		expect(updatedTodos[0].id).toBe(headerIdBefore)
+		expect(updatedTodos[1].id).toBe(step1IdBefore)
+		expect(updatedTodos[3].id).toBe(step3IdBefore)
+		expect(updatedTodos[3].status).toBe("completed")
+	})
+
+	// ─── Suspend / resume / finish ─────────────────────────────────────────────
+
+	it("FERMENT_SUSPENDED clears all ferment-scoped todos and preserves global scope", () => {
+		const { pi, emit } = createFakePI()
+		const ferment = createTestFerment("phase-1", 2)
+		setActive(ferment)
+
+		// Mix global and ferment todos before suspension
+		applyWriteTodos({
+			scope: { kind: "global" },
+			todos: [{ content: "User todo", status: "pending" }],
+		})
+
+		unsubscribe = registerFermentTodoSync(pi)
+
+		emit(FERMENT_EVENTS.PHASE_STARTED, {
+			fermentId: ferment.id,
+			phaseId: "phase-1",
+			phaseIndex: 1,
+			phaseName: "Test Phase",
+		})
+		// Add a ferment-step scoped todo (agent-written plan bullet)
+		applyWriteTodos({
+			scope: { kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" },
+			todos: [{ content: "plan bullet", status: "in_progress" }],
+		})
+
+		// Sanity: ferment scope has 3 todos, ferment-step scope has 1, global has 1
+		expect(getTodosForScope({ kind: "ferment", phaseId: "phase-1" })).toHaveLength(3)
+		expect(getTodosForScope({ kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" })).toHaveLength(1)
+		expect(getTodosForScope({ kind: "global" })).toHaveLength(1)
+
+		emit(FERMENT_EVENTS.SUSPENDED, { fermentId: ferment.id })
+
+		// Ferment-scoped todos are cleared
+		expect(getTodosForScope({ kind: "ferment", phaseId: "phase-1" })).toHaveLength(0)
+		expect(getTodosForScope({ kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" })).toHaveLength(0)
+		// Global scope is untouched
+		expect(getTodosForScope({ kind: "global" })).toHaveLength(1)
+		expect(getTodosForScope({ kind: "global" })[0].content).toBe("User todo")
+	})
+
+	it("FERMENT_RESUMED restores the snapshot taken at suspension time", () => {
+		const { pi, emit } = createFakePI()
+		const ferment = createTestFerment("phase-1", 2)
+		setActive(ferment)
+
+		unsubscribe = registerFermentTodoSync(pi)
+
+		emit(FERMENT_EVENTS.PHASE_STARTED, {
+			fermentId: ferment.id,
+			phaseId: "phase-1",
+			phaseIndex: 1,
+			phaseName: "Test Phase",
+		})
+		emit(FERMENT_EVENTS.STEP_COMPLETED, {
+			fermentId: ferment.id,
+			phaseId: "phase-1",
+			stepId: "step-1",
+			stepIndex: 1,
+			durationMs: 1000,
+			success: true,
+		})
+
+		const beforeSuspend = getTodosForScope({ kind: "ferment", phaseId: "phase-1" })
+		expect(beforeSuspend).toHaveLength(3)
+		const phaseHeaderContent = beforeSuspend[0].content
+		const step1Content = beforeSuspend[1].content
+		const step1Status = beforeSuspend[1].status
+
+		emit(FERMENT_EVENTS.SUSPENDED, { fermentId: ferment.id })
+		expect(getTodosForScope({ kind: "ferment", phaseId: "phase-1" })).toHaveLength(0)
+
+		emit(FERMENT_EVENTS.RESUMED, { fermentId: ferment.id })
+
+		const afterResume = getTodosForScope({ kind: "ferment", phaseId: "phase-1" })
+		expect(afterResume).toHaveLength(3)
+		expect(afterResume[0].content).toBe(phaseHeaderContent)
+		expect(afterResume[1].content).toBe(step1Content)
+		expect(afterResume[1].status).toBe(step1Status)
+	})
+
+	it("FERMENT_RESUMED without a prior snapshot is a no-op", () => {
+		const { pi, emit } = createFakePI()
+		const ferment = createTestFerment("phase-1", 2)
+		setActive(ferment)
+
+		unsubscribe = registerFermentTodoSync(pi)
+
+		emit(FERMENT_EVENTS.PHASE_STARTED, {
+			fermentId: ferment.id,
+			phaseId: "phase-1",
+			phaseIndex: 1,
+			phaseName: "Test Phase",
+		})
+
+		expect(() => emit(FERMENT_EVENTS.RESUMED, { fermentId: ferment.id })).not.toThrow()
+
+		// Phase scope is still populated from PHASE_STARTED — RESUMED did nothing
+		const todos = getTodosForScope({ kind: "ferment", phaseId: "phase-1" })
+		expect(todos).toHaveLength(3)
+	})
+
+	it("FERMENT_COMPLETED clears all ferment-scoped todos and discards any pending snapshot", () => {
+		const { pi, emit } = createFakePI()
+		const ferment = createTestFerment("phase-1", 2)
+		setActive(ferment)
+
+		applyWriteTodos({
+			scope: { kind: "global" },
+			todos: [{ content: "User todo", status: "pending" }],
+		})
+
+		unsubscribe = registerFermentTodoSync(pi)
+
+		emit(FERMENT_EVENTS.PHASE_STARTED, {
+			fermentId: ferment.id,
+			phaseId: "phase-1",
+			phaseIndex: 1,
+			phaseName: "Test Phase",
+		})
+		emit(FERMENT_EVENTS.SUSPENDED, { fermentId: ferment.id })
+		expect(getTodosForScope({ kind: "ferment", phaseId: "phase-1" })).toHaveLength(0)
+
+		emit(FERMENT_EVENTS.COMPLETED, {
+			fermentId: ferment.id,
+			name: "Test Ferment",
+			phaseCount: 1,
+			durationMs: 5000,
+			totalInputTokens: 0,
+			totalOutputTokens: 0,
+			steeringCount: 0,
+			blockRetries: 0,
+		})
+
+		expect(getTodosForScope({ kind: "ferment", phaseId: "phase-1" })).toHaveLength(0)
+		expect(getTodosForScope({ kind: "global" })).toHaveLength(1)
+
+		// Subsequent RESUMED for the same ferment should be a no-op (snapshot
+		// was discarded by COMPLETED).
+		emit(FERMENT_EVENTS.RESUMED, { fermentId: ferment.id })
+		expect(getTodosForScope({ kind: "ferment", phaseId: "phase-1" })).toHaveLength(0)
+	})
+
+	it("suspend/resume cycle preserves stable behavior across multiple cycles", () => {
+		const { pi, emit } = createFakePI()
+		const ferment = createTestFerment("phase-1", 2)
+		setActive(ferment)
+
+		unsubscribe = registerFermentTodoSync(pi)
+
+		emit(FERMENT_EVENTS.PHASE_STARTED, {
+			fermentId: ferment.id,
+			phaseId: "phase-1",
+			phaseIndex: 1,
+			phaseName: "Test Phase",
+		})
+		const initialContent = getTodosForScope({ kind: "ferment", phaseId: "phase-1" }).map((t) => t.content)
+
+		// First suspend/resume cycle
+		emit(FERMENT_EVENTS.SUSPENDED, { fermentId: ferment.id })
+		expect(getTodosForScope({ kind: "ferment", phaseId: "phase-1" })).toHaveLength(0)
+		emit(FERMENT_EVENTS.RESUMED, { fermentId: ferment.id })
+		expect(getTodosForScope({ kind: "ferment", phaseId: "phase-1" }).map((t) => t.content)).toEqual(initialContent)
+
+		// Second suspend/resume cycle
+		emit(FERMENT_EVENTS.SUSPENDED, { fermentId: ferment.id })
+		expect(getTodosForScope({ kind: "ferment", phaseId: "phase-1" })).toHaveLength(0)
+		emit(FERMENT_EVENTS.RESUMED, { fermentId: ferment.id })
+		expect(getTodosForScope({ kind: "ferment", phaseId: "phase-1" }).map((t) => t.content)).toEqual(initialContent)
+	})
+
+	it("ignores FERMENT_SUSPENDED / RESUMED / COMPLETED events for a different ferment", () => {
+		const { pi, emit } = createFakePI()
+		const activeFerment = createTestFerment("phase-1", 2)
+		setActive(activeFerment)
+
+		applyWriteTodos({
+			scope: { kind: "global" },
+			todos: [{ content: "User todo", status: "pending" }],
+		})
+
+		unsubscribe = registerFermentTodoSync(pi)
+
+		emit(FERMENT_EVENTS.PHASE_STARTED, {
+			fermentId: activeFerment.id,
+			phaseId: "phase-1",
+			phaseIndex: 1,
+			phaseName: "Active Phase",
+		})
+		expect(getTodosForScope({ kind: "ferment", phaseId: "phase-1" })).toHaveLength(3)
+
+		// Stale events from another ferment must not affect the active one
+		emit(FERMENT_EVENTS.SUSPENDED, { fermentId: "different-ferment" })
+		expect(getTodosForScope({ kind: "ferment", phaseId: "phase-1" })).toHaveLength(3)
+
+		emit(FERMENT_EVENTS.COMPLETED, {
+			fermentId: "different-ferment",
+			name: "Different",
+			phaseCount: 1,
+			durationMs: 0,
+			totalInputTokens: 0,
+			totalOutputTokens: 0,
+			steeringCount: 0,
+			blockRetries: 0,
+		})
+		expect(getTodosForScope({ kind: "ferment", phaseId: "phase-1" })).toHaveLength(3)
+
+		emit(FERMENT_EVENTS.RESUMED, { fermentId: "different-ferment" })
+		expect(getTodosForScope({ kind: "ferment", phaseId: "phase-1" })).toHaveLength(3)
+	})
 })

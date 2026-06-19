@@ -12,18 +12,25 @@
  *   - PHASE_STARTED → populate initial todo list for the phase
  *   - STEP_COMPLETED / STEP_FAILED → update the corresponding step todo
  *   - PHASE_COMPLETED → mark any remaining todos as completed, cleanup
+ *   - FERMENT_SUSPENDED → snapshot all ferment-scoped todos, then clear them
+ *   - FERMENT_RESUMED → restore the snapshot taken at suspension time
+ *   - FERMENT_COMPLETED → clear all ferment-scoped todos (no restore)
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import type { Phase, Step, StepStatus } from "../../ferment/types.js"
-import { applyWriteTodos, getTodosForScope } from "../todos/store.js"
-import type { TodoDraft, TodoItem, TodoStatus } from "../todos/types.js"
+import type { Phase, StepStatus } from "../../ferment/types.js"
+import { parseTodoScopeKey } from "../todos/scope.js"
+import { applyWriteTodos, getTodoState, getTodosForScope } from "../todos/store.js"
+import type { TodoDraft, TodoItem, TodoScope, TodoStatus } from "../todos/types.js"
 import {
 	FERMENT_EVENTS,
+	type FermentCompletedPayload,
 	type FermentPhaseCompletedPayload,
 	type FermentPhaseStartedPayload,
+	type FermentResumedPayload,
 	type FermentStepCompletedPayload,
 	type FermentStepFailedPayload,
+	type FermentSuspendedPayload,
 } from "./domain-events.js"
 import { getActive } from "./state.js"
 
@@ -48,6 +55,65 @@ function clearIdMap(fermentId: string, phaseId: string): void {
 	todoIdMaps.delete(key)
 }
 
+// ─── Suspend / resume snapshot ──────────────────────────────────────────────
+// When a ferment is suspended we snapshot every ferment-scoped todo list
+// (both `ferment` and `ferment-step` scopes whose phaseId belongs to the
+// ferment) and clear them. On resume we restore the snapshot, then drop it.
+
+interface ScopeSnapshot {
+	scope: TodoScope
+	todos: TodoItem[]
+}
+
+const suspendedSnapshots = new Map<string, ScopeSnapshot[]>()
+
+function clearSnapshot(fermentId: string): void {
+	suspendedSnapshots.delete(fermentId)
+}
+
+/** Find every todo scope (in the current store) whose phaseId matches one of
+ *  the given phase IDs and whose kind is ferment-scoped. Global scope is
+ *  excluded — it belongs to the user, not the ferment. */
+function findFermentScopes(phaseIds: ReadonlySet<string>): ScopeSnapshot[] {
+	if (phaseIds.size === 0) return []
+	const state = getTodoState()
+	const found: ScopeSnapshot[] = []
+	for (const scopeKey of Object.keys(state.byScope)) {
+		let scope: TodoScope
+		try {
+			scope = parseTodoScopeKey(scopeKey)
+		} catch {
+			continue
+		}
+		if (scope.kind !== "ferment" && scope.kind !== "ferment-step") continue
+		const scopePhaseId = (scope as { phaseId?: string }).phaseId
+		if (!scopePhaseId || !phaseIds.has(scopePhaseId)) continue
+		const scopeState = state.byScope[scopeKey]
+		if (!scopeState) continue
+		found.push({ scope, todos: [...scopeState.todos] })
+	}
+	return found
+}
+
+function clearScopeTodos(snapshots: ScopeSnapshot[]): void {
+	for (const { scope } of snapshots) {
+		applyWriteTodos({ scope, todos: [] })
+	}
+}
+
+function restoreScopeTodos(snapshots: ScopeSnapshot[]): void {
+	for (const { scope, todos } of snapshots) {
+		// Re-emit as drafts so the store assigns fresh IDs in the new lifecycle.
+		const drafts: TodoDraft[] = todos.map((todo) => ({
+			content: todo.content,
+			status: todo.status,
+			activeForm: todo.activeForm,
+			note: todo.note,
+		}))
+		applyWriteTodos({ scope, todos: drafts })
+	}
+}
+
 // ─── Status mapping ──────────────────────────────────────────────────────────
 
 function stepStatusToTodoStatus(stepStatus: StepStatus): TodoStatus {
@@ -69,61 +135,64 @@ function stepStatusToTodoStatus(stepStatus: StepStatus): TodoStatus {
 
 // ─── Todo list builders ──────────────────────────────────────────────────────
 
-function buildPhaseTodos(phase: Phase, fermentId: string): TodoDraft[] {
+/** Correlation map linking written todo content back to its ferment-internal
+ *  key (step ID, or the synthetic "header" key for the phase header row).
+ *  Built alongside the TodoDraft list so we can match store-assigned IDs back
+ *  to ferment entities deterministically — no reliance on input order. */
+type ContentSyncMap = Map<string, string>
+
+function buildPhaseTodos(
+	phase: Phase,
+	fermentId: string,
+): {
+	todos: TodoDraft[]
+	contentSyncMap: ContentSyncMap
+} {
 	const idMap = getOrCreateIdMap(fermentId, phase.id)
+	const contentSyncMap: ContentSyncMap = new Map()
 	const todos: TodoDraft[] = []
 
 	// Phase header — use phase.name as the content, status is always in_progress
 	// until the phase is marked complete (handled by PHASE_COMPLETED).
 	const headerContent = `[Phase ${phase.index}] ${phase.name}`
-	const headerId = idMap.get("header")
+	contentSyncMap.set(headerContent, "header")
 	todos.push({
-		id: headerId,
+		id: idMap.get("header"),
 		content: headerContent,
 		status: "in_progress",
 		activeForm: phase.name,
 	})
-	if (headerId === undefined) {
-		// First write — auto-assign ID 1 for header. TodoStore will assign it
-		// and we'll capture it on the next read cycle. For now, leave undefined.
-		// We rely on the fact that the store assigns IDs sequentially starting
-		// from nextId, so the header gets the first ID and steps get subsequent IDs.
-	}
 
 	// Steps — indented with "↳ " prefix to nest visually under the phase header
 	for (const step of phase.steps) {
-		const stepId = idMap.get(step.id)
-		const status = stepStatusToTodoStatus(step.status)
+		const content = `↳ ${step.description}`
+		contentSyncMap.set(content, step.id)
 		todos.push({
-			id: stepId,
-			content: `↳ ${step.description}`,
-			status,
+			id: idMap.get(step.id),
+			content,
+			status: stepStatusToTodoStatus(step.status),
 		})
 	}
 
-	return todos
+	return { todos, contentSyncMap }
 }
 
-function syncTodoIds(fermentId: string, phaseId: string, writtenTodos: TodoItem[]): void {
+function syncTodoIds(
+	fermentId: string,
+	phaseId: string,
+	writtenTodos: TodoItem[],
+	contentSyncMap: ContentSyncMap,
+): void {
 	const idMap = getOrCreateIdMap(fermentId, phaseId)
-	// After writing, the store has assigned stable IDs. Re-sync our map
-	// so subsequent updates can reference the same IDs.
-	//
-	// writtenTodos[0] is always the header, writtenTodos[1..] are steps.
-	// We derive the step list from the active ferment to map indices correctly.
-	const ferment = getActive()
-	if (!ferment) return
-	const phase = ferment.phases.find((p) => p.id === phaseId)
-	if (!phase) return
-
-	if (writtenTodos.length > 0) {
-		idMap.set("header", writtenTodos[0].id)
-	}
-
-	for (let i = 0; i < phase.steps.length && i + 1 < writtenTodos.length; i++) {
-		const step = phase.steps[i]
-		const todo = writtenTodos[i + 1]
-		idMap.set(step.id, todo.id)
+	// Match written todos back to ferment entities by content. Content is
+	// deterministic per phase (the header is `[Phase N] name`, each step is
+	// `↳ description`), so this stays correct regardless of how the store
+	// reorders, filters, or reassigns IDs internally.
+	for (const todo of writtenTodos) {
+		const syncKey = contentSyncMap.get(todo.content)
+		if (syncKey !== undefined) {
+			idMap.set(syncKey, todo.id)
+		}
 	}
 }
 
@@ -146,11 +215,11 @@ function handlePhaseStarted(raw: unknown): void {
 		return
 	}
 
-	const todos = buildPhaseTodos(phase, ferment.id)
+	const { todos, contentSyncMap } = buildPhaseTodos(phase, ferment.id)
 	const details = applyWriteTodos({ scope: { kind: "ferment", phaseId: payload.phaseId }, todos })
 
 	// Capture the assigned IDs for future updates
-	syncTodoIds(ferment.id, payload.phaseId, details.todos)
+	syncTodoIds(ferment.id, payload.phaseId, details.todos, contentSyncMap)
 }
 
 function handleStepCompleted(raw: unknown): void {
@@ -229,6 +298,13 @@ function handleStepFailed(raw: unknown): void {
 
 function handlePhaseCompleted(raw: unknown): void {
 	const payload = raw as FermentPhaseCompletedPayload
+
+	// Guard: ignore stale PHASE_COMPLETED events from ferments other than the
+	// currently active one. Without this guard, a late event could mutate the
+	// new ferment's todos (if phaseId collides) and drop its sync state.
+	const ferment = getActive()
+	if (!ferment || ferment.id !== payload.fermentId) return
+
 	const currentTodos = getTodosForScope({ kind: "ferment", phaseId: payload.phaseId })
 	if (currentTodos.length === 0) {
 		// No todos written for this phase (edge case: phase with zero steps that
@@ -252,6 +328,66 @@ function handlePhaseCompleted(raw: unknown): void {
 	clearIdMap(payload.fermentId, payload.phaseId)
 }
 
+function handleFermentSuspended(raw: unknown): void {
+	const payload = raw as FermentSuspendedPayload
+
+	// Active-ferment guard: stale or cross-ferment pause events must not touch
+	// the current ferment's todo state.
+	const ferment = getActive()
+	if (!ferment || ferment.id !== payload.fermentId) return
+
+	const phaseIds = new Set(ferment.phases.map((p) => p.id))
+	const snapshots = findFermentScopes(phaseIds)
+	if (snapshots.length === 0) {
+		// Nothing to snapshot — make sure no stale snapshot from a prior cycle
+		// leaks into a future resume.
+		clearSnapshot(ferment.id)
+		return
+	}
+
+	suspendedSnapshots.set(ferment.id, snapshots)
+	clearScopeTodos(snapshots)
+}
+
+function handleFermentResumed(raw: unknown): void {
+	const payload = raw as FermentResumedPayload
+
+	// Active-ferment guard: stale resume events for a different ferment must
+	// not restore snapshot state into the current ferment's scopes.
+	const ferment = getActive()
+	if (!ferment || ferment.id !== payload.fermentId) return
+
+	const snapshots = suspendedSnapshots.get(ferment.id)
+	if (!snapshots) return // RESUMED without prior SUSPENDED — no-op
+	suspendedSnapshots.delete(ferment.id)
+
+	// Only restore scopes that still belong to this ferment. If phases were
+	// added/removed between suspend and resume, stale scopes are skipped.
+	const phaseIds = new Set(ferment.phases.map((p) => p.id))
+	const liveSnapshots = snapshots.filter((snapshot) => {
+		const scopePhaseId = (snapshot.scope as { phaseId?: string }).phaseId
+		return scopePhaseId !== undefined && phaseIds.has(scopePhaseId)
+	})
+	restoreScopeTodos(liveSnapshots)
+}
+
+function handleFermentCompleted(raw: unknown): void {
+	const payload = raw as FermentCompletedPayload
+
+	// Active-ferment guard.
+	const ferment = getActive()
+	if (!ferment || ferment.id !== payload.fermentId) return
+
+	const phaseIds = new Set(ferment.phases.map((p) => p.id))
+	const snapshots = findFermentScopes(phaseIds)
+	if (snapshots.length > 0) {
+		clearScopeTodos(snapshots)
+	}
+	// Drop any snapshot left behind by a prior SUSPENDED that was never
+	// resumed (e.g. ferment was abandoned mid-suspend). Nothing to restore.
+	clearSnapshot(ferment.id)
+}
+
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 /**
@@ -266,12 +402,16 @@ export function registerFermentTodoSync(pi: ExtensionAPI): () => void {
 	unsubscribes.push(pi.events.on(FERMENT_EVENTS.STEP_COMPLETED, handleStepCompleted))
 	unsubscribes.push(pi.events.on(FERMENT_EVENTS.STEP_FAILED, handleStepFailed))
 	unsubscribes.push(pi.events.on(FERMENT_EVENTS.PHASE_COMPLETED, handlePhaseCompleted))
+	unsubscribes.push(pi.events.on(FERMENT_EVENTS.SUSPENDED, handleFermentSuspended))
+	unsubscribes.push(pi.events.on(FERMENT_EVENTS.RESUMED, handleFermentResumed))
+	unsubscribes.push(pi.events.on(FERMENT_EVENTS.COMPLETED, handleFermentCompleted))
 
 	return () => {
 		for (const unsub of unsubscribes) {
 			unsub()
 		}
-		// Clear all ID maps on unsubscribe to avoid memory leaks
+		// Clear all in-memory state on unsubscribe to avoid memory leaks.
 		todoIdMaps.clear()
+		suspendedSnapshots.clear()
 	}
 }
