@@ -202,7 +202,7 @@ function tickLatestAnimator(char = "|", message = "Chopping"): void {
 
 const assistantMessage = { role: "assistant" as const, content: [] }
 
-function messageUpdate(type: string) {
+function messageUpdateEvent(type: string) {
 	return {
 		type: "message_update",
 		message: assistantMessage,
@@ -233,9 +233,9 @@ describe("uiExtension spinner lifecycle", () => {
 
 			handlers.turnStart({}, ctx)
 			handlers.messageStart({ type: "message_start", message: assistantMessage }, ctx)
-			handlers.messageUpdate(messageUpdate("thinking_start"), ctx)
-			handlers.messageUpdate(messageUpdate("thinking_delta"), ctx)
-			handlers.messageUpdate(messageUpdate("thinking_end"), ctx)
+			handlers.messageUpdate(messageUpdateEvent("thinking_start"), ctx)
+			handlers.messageUpdate(messageUpdateEvent("thinking_delta"), ctx)
+			handlers.messageUpdate(messageUpdateEvent("thinking_end"), ctx)
 			handlers.messageEnd({ type: "message_end", message: assistantMessage }, ctx)
 
 			// ON (turn_start) → ON (thinking_start, restarts animator) → OFF (message_end).
@@ -251,8 +251,8 @@ describe("uiExtension spinner lifecycle", () => {
 
 			handlers.turnStart({}, ctx)
 			handlers.messageStart({ type: "message_start", message: assistantMessage }, ctx)
-			handlers.messageUpdate(messageUpdate("text_start"), ctx)
-			handlers.messageUpdate(messageUpdate("text_delta"), ctx)
+			handlers.messageUpdate(messageUpdateEvent("text_start"), ctx)
+			handlers.messageUpdate(messageUpdateEvent("text_delta"), ctx)
 			handlers.messageEnd({ type: "message_end", message: assistantMessage }, ctx)
 
 			expect(callsTo(ui)).toEqual([true, false, false])
@@ -267,10 +267,10 @@ describe("uiExtension spinner lifecycle", () => {
 
 			handlers.turnStart({}, ctx)
 			handlers.messageStart({ type: "message_start", message: assistantMessage }, ctx)
-			handlers.messageUpdate(messageUpdate("thinking_start"), ctx)
-			handlers.messageUpdate(messageUpdate("thinking_delta"), ctx)
-			handlers.messageUpdate(messageUpdate("thinking_end"), ctx)
-			handlers.messageUpdate(messageUpdate("text_start"), ctx)
+			handlers.messageUpdate(messageUpdateEvent("thinking_start"), ctx)
+			handlers.messageUpdate(messageUpdateEvent("thinking_delta"), ctx)
+			handlers.messageUpdate(messageUpdateEvent("thinking_end"), ctx)
+			handlers.messageUpdate(messageUpdateEvent("text_start"), ctx)
 			handlers.messageEnd({ type: "message_end", message: assistantMessage }, ctx)
 
 			expect(callsTo(ui)).toEqual([true, true, false, false])
@@ -285,7 +285,7 @@ describe("uiExtension spinner lifecycle", () => {
 
 			handlers.turnStart({}, ctx)
 			handlers.messageStart({ type: "message_start", message: assistantMessage }, ctx)
-			handlers.messageUpdate(messageUpdate("text_start"), ctx)
+			handlers.messageUpdate(messageUpdateEvent("text_start"), ctx)
 			handlers.messageEnd({ type: "message_end", message: assistantMessage }, ctx)
 			handlers.toolExecutionStart({ type: "tool_execution_start", toolCallId: "t1", toolName: "read" }, ctx)
 			handlers.toolExecutionStart({ type: "tool_execution_start", toolCallId: "t2", toolName: "bash" }, ctx)
@@ -319,7 +319,7 @@ describe("uiExtension spinner lifecycle", () => {
 			handlers.toolExecutionStart({ type: "tool_execution_start", toolCallId: "t1", toolName: "read" }, ctx)
 			handlers.toolExecutionEnd({ type: "tool_execution_end", toolCallId: "t1" }, ctx)
 			handlers.messageStart({ type: "message_start", message: assistantMessage }, ctx)
-			handlers.messageUpdate(messageUpdate("thinking_start"), ctx)
+			handlers.messageUpdate(messageUpdateEvent("thinking_start"), ctx)
 
 			expect(callsTo(ui)).toEqual([true, true, false, true])
 
@@ -337,7 +337,7 @@ describe("uiExtension spinner lifecycle", () => {
 			handlers.toolExecutionStart({ type: "tool_execution_start", toolCallId: "t1", toolName: "read" }, ctx)
 			handlers.toolExecutionEnd({ type: "tool_execution_end", toolCallId: "t1" }, ctx)
 			// Skip message_start — the suppression must hold.
-			handlers.messageUpdate(messageUpdate("thinking_start"), ctx)
+			handlers.messageUpdate(messageUpdateEvent("thinking_start"), ctx)
 
 			// turn_start ON, tool_execution_start ON, tool_execution_end OFF.
 			// thinking_start is suppressed — no setWorkingVisible(true) call.
@@ -368,9 +368,9 @@ describe("uiExtension spinner lifecycle", () => {
 
 			handlers.turnStart({}, ctx)
 			handlers.messageStart({ type: "message_start", message: assistantMessage }, ctx)
-			handlers.messageUpdate(messageUpdate("thinking_start"), ctx)
-			handlers.messageUpdate(messageUpdate("thinking_end"), ctx)
-			handlers.messageUpdate(messageUpdate("text_start"), ctx)
+			handlers.messageUpdate(messageUpdateEvent("thinking_start"), ctx)
+			handlers.messageUpdate(messageUpdateEvent("thinking_end"), ctx)
+			handlers.messageUpdate(messageUpdateEvent("text_start"), ctx)
 
 			expect(animatorCleanupCalled.length).toBe(2)
 			expect(animatorCleanupCalled[0]).toBe(true)
@@ -401,7 +401,7 @@ describe("uiExtension spinner lifecycle", () => {
 			const { handlers, ctx, ui } = setupExtension()
 
 			handlers.turnStart({}, ctx)
-			handlers.messageUpdate(messageUpdate("thinking_start"), ctx)
+			handlers.messageUpdate(messageUpdateEvent("thinking_start"), ctx)
 			tickLatestAnimator()
 
 			expect(ui.setWorkingMessage).toHaveBeenLastCalledWith(expect.stringContaining("Chopping"))
@@ -416,9 +416,9 @@ describe("uiExtension spinner lifecycle", () => {
 
 				handlers.turnStart({}, ctx)
 				vi.setSystemTime(1_000_500) // +500ms: turn_start to thinking_start
-				handlers.messageUpdate(messageUpdate("thinking_start"), ctx)
+				handlers.messageUpdate(messageUpdateEvent("thinking_start"), ctx)
 				vi.setSystemTime(1_003_500) // +3s: total thinking duration
-				handlers.messageUpdate(messageUpdate("thinking_end"), ctx)
+				handlers.messageUpdate(messageUpdateEvent("thinking_end"), ctx)
 				tickLatestAnimator()
 
 				expect(ui.setWorkingMessage).toHaveBeenLastCalledWith(expect.stringContaining("(thought for 3s)"))
@@ -436,9 +436,9 @@ describe("uiExtension spinner lifecycle", () => {
 
 				handlers.turnStart({}, ctx)
 				vi.setSystemTime(1_000_010)
-				handlers.messageUpdate(messageUpdate("thinking_start"), ctx)
+				handlers.messageUpdate(messageUpdateEvent("thinking_start"), ctx)
 				vi.setSystemTime(1_000_020) // 10ms total — under the 100ms threshold
-				handlers.messageUpdate(messageUpdate("thinking_end"), ctx)
+				handlers.messageUpdate(messageUpdateEvent("thinking_end"), ctx)
 				tickLatestAnimator()
 
 				expect(ui.setWorkingMessage).toHaveBeenLastCalledWith(expect.stringContaining("Chopping"))
@@ -458,13 +458,13 @@ describe("uiExtension spinner lifecycle", () => {
 
 				handlers.turnStart({}, ctx)
 				vi.setSystemTime(1_000_500)
-				handlers.messageUpdate(messageUpdate("thinking_start"), ctx)
+				handlers.messageUpdate(messageUpdateEvent("thinking_start"), ctx)
 				vi.setSystemTime(1_001_000) // 500ms
-				handlers.messageUpdate(messageUpdate("thinking_end"), ctx)
+				handlers.messageUpdate(messageUpdateEvent("thinking_end"), ctx)
 				vi.setSystemTime(1_002_000)
-				handlers.messageUpdate(messageUpdate("thinking_start"), ctx)
+				handlers.messageUpdate(messageUpdateEvent("thinking_start"), ctx)
 				vi.setSystemTime(1_005_000) // 3s
-				handlers.messageUpdate(messageUpdate("thinking_end"), ctx)
+				handlers.messageUpdate(messageUpdateEvent("thinking_end"), ctx)
 				tickLatestAnimator()
 
 				expect(ui.setWorkingMessage).toHaveBeenLastCalledWith(expect.stringContaining("(thought for 3s)"))
