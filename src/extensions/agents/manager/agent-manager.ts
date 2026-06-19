@@ -328,9 +328,9 @@ export class AgentManager {
 	): Promise<AgentRecord | undefined> {
 		const record = this.agents.get(id)
 		if (!record?.session) return undefined
-		if ((record.resumeAttempts?.length ?? 0) >= DEFAULT_MAX_RESUMES) {
+		if (record.taskRef?.kind === "ferment_step" && (record.resumeAttempts?.length ?? 0) >= DEFAULT_MAX_RESUMES) {
 			record.status = "error"
-			record.error = `Agent "${id}" has already used the default resume limit (${DEFAULT_MAX_RESUMES}). Spawn a new linked worker for remaining work unless the user explicitly authorizes more resumes.`
+			record.error = `Agent "${id}" has already used the Ferment worker resume limit (${DEFAULT_MAX_RESUMES}). Spawn a new linked worker for remaining work.`
 			record.completedAt = Date.now()
 			record.latestOutcome = buildAgentOutcome(record)
 			return record

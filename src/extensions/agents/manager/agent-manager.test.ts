@@ -160,6 +160,57 @@ describe("AgentManager", () => {
 		})
 	})
 
+	it("does not apply the Ferment resume cap to ordinary agents", async () => {
+		const session = { dispose: vi.fn() } as unknown as AgentSession
+		mockRunAgent.mockResolvedValueOnce({
+			responseText: "checkpoint",
+			session,
+			aborted: false,
+			steered: false,
+		})
+		mockResumeAgent.mockResolvedValueOnce({
+			responseText: "continued",
+			session,
+			aborted: false,
+			steered: false,
+			turnsUsed: 1,
+			maxTurns: 1,
+		})
+		manager = new AgentManager()
+		const record = await manager.spawnAndWait(fakePi(), fakeCtx(), "Explore", "inspect", {
+			description: "inspect",
+		})
+		record.resumeAttempts = [{ startedAt: 1 }, { startedAt: 2 }]
+
+		const resumed = await manager.resume(record.id, "continue", { maxTurns: 1 })
+
+		expect(mockResumeAgent).toHaveBeenCalled()
+		expect(resumed?.status).toBe("completed")
+	})
+
+	it("caps Ferment-linked worker resumes", async () => {
+		const session = { dispose: vi.fn() } as unknown as AgentSession
+		mockRunAgent.mockResolvedValueOnce({
+			responseText: "checkpoint",
+			session,
+			aborted: false,
+			steered: false,
+		})
+		manager = new AgentManager()
+		const taskRef = { kind: "ferment_step" as const, ferment_id: "f1", phase_id: "phase-1", step_id: "step-1" }
+		const record = await manager.spawnAndWait(fakePi(), fakeCtx(), "Explore", "inspect", {
+			description: "inspect",
+			taskRef,
+		})
+		record.resumeAttempts = [{ startedAt: 1 }, { startedAt: 2 }]
+
+		const resumed = await manager.resume(record.id, "continue", { maxTurns: 1 })
+
+		expect(mockResumeAgent).not.toHaveBeenCalled()
+		expect(resumed?.status).toBe("error")
+		expect(resumed?.error).toContain("Ferment worker resume limit")
+	})
+
 	it("describes max_duration failures as stalled work instead of budget exhaustion", () => {
 		const outcome = buildAgentOutcome({
 			id: "agent-1",

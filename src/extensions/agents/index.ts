@@ -1152,6 +1152,12 @@ Model selection — YOU choose based on task complexity:
 				const thinking = resolvedConfig.thinking
 				const inheritContext = resolvedConfig.inheritContext
 				const isolated = resolvedConfig.isolated
+				const taskRef = readAgentTaskRef(params)
+				if (taskRef && isolated) {
+					return textResult(
+						"Agent task_ref cannot be used with isolated: true. Ferment-linked workers must have extension tools enabled so they can call submit_agent_report.",
+					)
+				}
 				// The `visibility` field is intentionally NOT exposed in this tool's public schema —
 				// LLMs and personas cannot create hidden agents. Internal kimchi callers (e.g. permission
 				// classifiers, future MCP adapters) spawn hidden agents directly via `AgentManager.spawn(..., { visibility: "system" })`,
@@ -1257,7 +1263,7 @@ Model selection — YOU choose based on task complexity:
 							model: model as Parameters<typeof manager.spawn>[4]["model"],
 							maxTurns: effectiveMaxTurns,
 							tokenBudget: resolvedConfig.tokenBudget,
-							taskRef: readAgentTaskRef(params),
+							taskRef,
 							maxDuration: resolvedConfig.maxDuration,
 							isolated,
 							inheritContext,
@@ -1379,7 +1385,7 @@ Model selection — YOU choose based on task complexity:
 						model: model as Parameters<typeof manager.spawnAndWait>[4]["model"],
 						maxTurns: effectiveMaxTurns,
 						tokenBudget: resolvedConfig.tokenBudget,
-						taskRef: readAgentTaskRef(params),
+						taskRef,
 						maxDuration: resolvedConfig.maxDuration,
 						isolated,
 						inheritContext,
