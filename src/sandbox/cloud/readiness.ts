@@ -1,11 +1,10 @@
-import { WebSocket } from "ws"
+import { deriveBaseUrl } from "../worker/client.js"
 import type { WaitForWorkspaceReadyOptions } from "./types.js"
 import { RemoteNetworkError } from "./types.js"
 
 const DEFAULT_READY_TIMEOUT_MS = 90_000
 const DEFAULT_POLL_INTERVAL_MS = 1_500
 const DEFAULT_PROBE_TIMEOUT_MS = 5_000
-const DEFAULT_WS_PATH = "/connect"
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 	return new Promise((resolve, reject) => {
@@ -32,83 +31,65 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 /**
- * Probe the WS endpoint once. Resolves with `{ ready: true }` if the upgrade
- * completes, `{ ready: false, error }` otherwise. Never throws.
+ * Poll the /startupcompletedz endpoint once via HTTP. Resolves with `{ ready: true }` if
+ * the response is 2xx, `{ ready: false, error }` otherwise. Never throws.
  */
-function probeWorkspaceWsOnce(opts: {
+async function probeReadyOnce(opts: {
 	connectToken: string
-	wsURL: string
-	wsPath: string
+	wsUrl: string
 	probeTimeoutMs: number
 	signal?: AbortSignal
-	// biome-ignore lint/suspicious/noExplicitAny: injectable WebSocket constructor
-	WS: any
 }): Promise<{ ready: boolean; error?: string }> {
-	return new Promise((resolve) => {
-		let settled = false
-		const settle = (result: { ready: boolean; error?: string }) => {
-			if (settled) return
-			settled = true
-			cleanup()
-			try {
-				ws.close()
-			} catch {
-				// ignore
+	let timer: ReturnType<typeof setTimeout> | undefined
+	try {
+		const baseUrl = deriveBaseUrl(opts.wsUrl)
+		const url = `${baseUrl}/startupcompletedz`
+
+		const ctrl = new AbortController()
+		timer = setTimeout(() => ctrl.abort(), opts.probeTimeoutMs)
+
+		let signal: AbortSignal
+		if (opts.signal) {
+			if (typeof AbortSignal.any === "function") {
+				signal = AbortSignal.any([ctrl.signal, opts.signal])
+			} else {
+				opts.signal.addEventListener("abort", () => ctrl.abort(), { once: true })
+				if (opts.signal.aborted) ctrl.abort()
+				signal = ctrl.signal
 			}
-			resolve(result)
+		} else {
+			signal = ctrl.signal
 		}
 
-		const url = `${opts.wsURL}${opts.wsPath}`
-		const headers = { Authorization: `Bearer ${opts.connectToken}` }
-		let ws: { close(): void; addEventListener: (t: string, cb: (e: unknown) => void) => void }
-		try {
-			ws = new opts.WS(url, { headers })
-		} catch (err) {
-			resolve({ ready: false, error: err instanceof Error ? err.message : String(err) })
-			return
-		}
-
-		const timer = setTimeout(() => settle({ ready: false, error: "probe timeout" }), opts.probeTimeoutMs)
-		const onAbort = () => settle({ ready: false, error: "aborted" })
-		const cleanup = () => {
-			clearTimeout(timer)
-			opts.signal?.removeEventListener("abort", onAbort)
-		}
-
-		if (opts.signal?.aborted) {
-			settle({ ready: false, error: "aborted" })
-			return
-		}
-		opts.signal?.addEventListener("abort", onAbort, { once: true })
-
-		ws.addEventListener("open", () => settle({ ready: true }))
-		ws.addEventListener("error", (e: unknown) => {
-			const msg = (e as { message?: string })?.message ?? "websocket error"
-			settle({ ready: false, error: msg })
+		const resp = await fetch(url, {
+			method: "GET",
+			headers: {
+				Authorization: `Bearer ${opts.connectToken}`,
+			},
+			signal,
 		})
-		ws.addEventListener("close", (e: unknown) => {
-			const code = (e as { code?: number })?.code
-			const reason = (e as { reason?: string })?.reason
-			settle({ ready: false, error: code ? `closed code=${code}${reason ? ` reason=${reason}` : ""}` : "closed" })
-		})
-	})
+
+		if (resp.ok) {
+			return { ready: true }
+		}
+		return { ready: false, error: `HTTP ${resp.status}` }
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err)
+		return { ready: false, error: msg }
+	} finally {
+		if (timer) clearTimeout(timer)
+	}
 }
 
 /**
- * Poll a WebSocket probe to `wss://<host>:<port>/connect` until the upgrade
- * succeeds, which signals that the agentgateway has attached the workspace
- * policy and traffic is routable.
+ * Poll HTTP GET /startupcompletedz until it returns 2xx, which signals that the
+ * agentgateway has attached the workspace policy and traffic is routable.
  */
 export async function waitForWorkspaceReady(options: WaitForWorkspaceReadyOptions): Promise<void> {
 	const signal = options.signal
 	const timeoutMs = options.timeoutMs ?? DEFAULT_READY_TIMEOUT_MS
 	const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
 	const probeTimeoutMs = options.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS
-	const wsPath = options.wsPath ?? DEFAULT_WS_PATH
-	const WS = "_WebSocket" in options ? options._WebSocket : WebSocket
-	if (!WS) {
-		throw new RemoteNetworkError("WebSocket is not available in this environment")
-	}
 
 	const startedAt = Date.now()
 	let lastError: string | undefined
@@ -124,13 +105,11 @@ export async function waitForWorkspaceReady(options: WaitForWorkspaceReadyOption
 			)
 		}
 
-		const probe = await probeWorkspaceWsOnce({
+		const probe = await probeReadyOnce({
 			connectToken: options.connectToken,
-			wsURL: options.wsUrl,
-			wsPath,
+			wsUrl: options.wsUrl,
 			probeTimeoutMs,
 			signal,
-			WS,
 		})
 
 		options.onTick?.({ elapsedMs, lastError: probe.error })

@@ -53,20 +53,34 @@ draft/planned/running/paused/complete → abandoned
 
 **Step status:** `pending → running → done / skipped / verified / failed` (`failed` steps can be recovered by starting them again)
 
-### Tool visibility
+### Tool profiles
 
 Ferment follows pi-mono's run-level tool snapshot model: active tools are chosen
 before an agent run starts and stay fixed for that run. Kimchi therefore uses
-static session profiles instead of changing lifecycle tool visibility after
-each FSM transition.
+**session profiles** keyed on ferment lifecycle state rather than swapping tool
+visibility after each FSM transition.
 
-- Idle sessions expose discovery tools (`list_ferments`).
-- Active planner sessions expose the current-ferment lifecycle tool surface;
-  tool handlers and result text decide which transition is legal now.
-- Paused or terminal ferments hide mutating lifecycle tools.
-- Worker subagents (`KIMCHI_SUBAGENT=1`) receive no ferment lifecycle tools.
-- One-shot planners use a static allowlist containing current-ferment lifecycle
-  tools plus delegation tools (`Agent`, `get_subagent_result`) and `read`.
+| Profile | Active ferment state | Toolset |
+|---------|----------------------|---------|
+| `idle` | No active ferment | All non-ferment tools + `list_ferments` + `request_ferment_workflow`. All ferment-only lifecycle and planning tools are hidden so the model isn't prompted to start a ferment or mutate ferment state during normal chat. |
+| `planning` | Ferment exists; all phases in `"planned"` status (no `activate_ferment_phase` yet) | Research set + ferment planning tools: `read`, `grep`, `find`, `ls`, `web_fetch`, `web_search`, `set_phase`, `propose_ferment_scoping`, `scope_ferment`, `update_ferment_scope_field`, `confirm_ferment_completion_criteria`, `list_ferments`, `ask_user` |
+| `implementation` | At least one phase activated (status `!== "planned"`) | Full toolset: union of all registered tools with `IMPLEMENTATION_TOOL_NAMES` — adds `bash`, `edit`, `write`, `Agent`, `get_subagent_result` + ferment lifecycle tools (`activate_ferment_phase`, `refine_ferment_phase`, `complete_ferment_phase`, `start_ferment_step`, `complete_ferment_step`, `verify_ferment_step`, `complete_ferment`, etc.) |
+| `worker` | Subagent worker context (`KIMCHI_SUBAGENT=1`) | Empty — workers get their toolset from the agents manager, not from ferment |
+
+**Transition:** `planning` → `implementation` on the first successful
+`activate_ferment_phase` call. Because pi-mono snapshots tools at turn start,
+the new toolset unlocks on the NEXT model turn after the activation result.
+
+**Frozen states:** Paused, complete, and abandoned ferments keep the profile
+they last had. A paused ferment that was never activated stays in `planning`;
+a paused ferment that was running before pause stays in `implementation`.
+
+**One-shot parity:** Normal interactive and one-shot ferments run through the
+same `profileForFerment` function. The only difference between the two modes
+is the continuation policy (auto vs manual), not the toolset. One-shot
+orchestrators have full access to `bash`, `edit`, `write`, and `Agent` once
+implementation unlocks — they can run subagent workers directly rather than
+delegating via the `Agent` tool.
 
 There is no shell CLI for phase or step transitions. Planners should call the
 ferment tools directly and follow each tool result's `Next action:` hint.
@@ -506,7 +520,7 @@ state service would consume the same module.
 |------|------|
 | `src/extensions/ferment/index.ts` | Extension entrypoint — event handlers, slash commands |
 | `src/extensions/ferment/tools/*.ts` | Tool registrations (lifecycle, phases, steps, knowledge) |
-| `src/extensions/ferment/tool-scope.ts` | Static session profiles for ferment tool visibility |
+| `src/extensions/ferment/tool-scope.ts` | Lifecycle-keyed tool profiles (`planning` / `implementation`) via `pi.setActiveTools()` |
 | `src/extensions/ferment/tool-helpers.ts` | `applyAndPersist` bridge + result builders |
 | `src/ferment/state-machine.ts` | Pure transitions: (ferment, command) → next ferment |
 | `src/ferment/engine.ts` | Forward state machine: ferment → next action (`whatNext`) |

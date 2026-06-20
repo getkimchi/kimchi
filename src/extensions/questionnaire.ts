@@ -15,10 +15,11 @@
  * harness tool for plan mode and general agent interaction.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { Text, truncateToWidth } from "@earendil-works/pi-tui"
 import { type Static, Type } from "typebox"
 
+import { createToolVisibility } from "./prompt-construction/tool-visibility.js"
 import { createQuestionForm } from "./questionnaire-form.js"
 import { type Answer, type Question, type QuestionType, YES_NO_OPTIONS } from "./questionnaire-reducer.js"
 
@@ -175,6 +176,20 @@ export function formatAnswerText(questions: Question[], answers: Answer[]): stri
 // ─── Extension ────────────────────────────────────────────────────────────────
 
 export default function questionnaireExtension(pi: ExtensionAPI): void {
+	// The questionnaire tool drives a multi-question TUI form. When no UI is
+	// attached the execute body would return an error — worse, the model can
+	// retry the same call because the tool stays visible. Hide it from the
+	// system prompt as soon as we know there is no UI so the LLM never picks
+	// it. The execute body keeps the runtime check as defense-in-depth.
+	const visibility = createToolVisibility(pi)
+	pi.on("session_start", (_event, ctx: ExtensionContext) => {
+		if (ctx.hasUI) {
+			visibility.enable(["questionnaire"])
+		} else {
+			visibility.disable(["questionnaire"])
+		}
+	})
+
 	pi.registerTool({
 		name: "questionnaire",
 		label: "Questionnaire",
@@ -199,8 +214,12 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 			}
 
 			if (!ctx.hasUI) {
+				// Defense-in-depth: the session_start handler should have hidden
+				// the tool from the system prompt already. If we got here anyway
+				// (tool hidden mid-session, or schema leaked) make the failure
+				// an explicit "do not retry" steer so the model doesn't loop on it.
 				return errorResult(
-					"Error: questionnaire requires interactive mode (no UI available). Rephrase your questions as text in your response instead.",
+					"questionnaire is unavailable in this session: it requires an interactive UI and none is attached (the harness is running in a non-interactive mode such as --print, --mode json|rpc|acp, or a headless subprocess). Do NOT call questionnaire again in this session. Ask the user clarifying questions as plain text in your reply instead.",
 				)
 			}
 

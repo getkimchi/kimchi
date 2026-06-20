@@ -113,6 +113,7 @@ import {
 	createAgentSession,
 } from "@earendil-works/pi-coding-agent"
 import { readTelemetryConfig } from "../../../config.js"
+import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
 import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
 import telemetryExtension from "../../telemetry/index.js"
@@ -673,6 +674,40 @@ describe("runAgent — profile tool access", () => {
 		})
 
 		expect(session.setActiveToolsByName).toHaveBeenCalledWith(["read", "grep", "web_search"])
+	})
+
+	it("strips all ferment tools from subagents regardless of registered extensions", async () => {
+		// Subagents must not mutate ferment state (lifecycle, planning, discovery).
+		// All ferment tool names are in EXCLUDED_TOOL_NAMES so they are filtered
+		// out at session init regardless of which extensions are loaded.
+		const fermentToolsInSession = [
+			"scope_ferment",
+			"activate_ferment_phase",
+			"start_ferment_step",
+			"list_ferments",
+			"request_ferment_workflow",
+		]
+		const session = makeFakeSession({
+			activeToolNames: ["read", "grep", "web_search", ...fermentToolsInSession],
+		})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Researcher", "research it", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		const calledWith = (session.setActiveToolsByName as ReturnType<typeof vi.fn>).mock.calls[0][0] as string[]
+		for (const name of FERMENT_TOOL_NAMES) {
+			expect(calledWith, `ferment tool "${name}" must be excluded from subagents`).not.toContain(name)
+		}
+		expect(calledWith).toContain("read")
+		expect(calledWith).toContain("grep")
+		expect(calledWith).toContain("web_search")
 	})
 })
 

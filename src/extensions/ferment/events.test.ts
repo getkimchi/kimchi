@@ -5,11 +5,13 @@ import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
+import type { Ferment, Phase } from "../../ferment/types.js"
 import { registerFermentEvents } from "./events.js"
 import type { FermentRuntime } from "./runtime.js"
 import { createDefaultFermentRuntime } from "./runtime.js"
 import { clearActiveFermentId } from "./state.js"
 import { FERMENT_TOOL_NAMES } from "./tool-names.js"
+import { applyFermentToolProfile, profileForFerment } from "./tool-scope.js"
 
 type EventHandler = (event: unknown, ctx: unknown) => Promise<unknown> | unknown
 
@@ -76,7 +78,7 @@ describe("registerFermentEvents", () => {
 		expect(pi.appendEntry).not.toHaveBeenCalled()
 	})
 
-	it("stages oneshot planner mode during session_start and applies tools before first agent run", async () => {
+	it("stages one-shot mode during session_start and applies runtime-derived idle profile before first agent run", async () => {
 		const storage = { list: vi.fn(() => []) } as unknown as FermentEventStore
 		const runtime: FermentRuntime = {
 			...createDefaultFermentRuntime(),
@@ -114,19 +116,22 @@ describe("registerFermentEvents", () => {
 
 		await beforeAgentStart({ systemPrompt: "base" }, {})
 
-		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
-		expect(lastCall).not.toContain("bash")
-		expect(lastCall).toContain("read")
-		expect(lastCall).toContain("Agent")
-		expect(lastCall).toContain("get_subagent_result")
-		expect(lastCall).toContain("set_phase")
-		expect(lastCall).toContain("scope_ferment")
-		expect(lastCall).toContain("start_ferment_step")
+		// With no active ferment, before_agent_start must NOT call setActiveTools.
+		// Normal chat mode is unrestricted — the toolset stays as-is.
+		expect(pi.setActiveTools).not.toHaveBeenCalled()
 	})
 
-	it("restricts planner tools to the oneshot allowlist on before_agent_start when flag is set", async () => {
+	it("applies runtime-derived implementation profile on before_agent_start in one-shot mode when ferment has activated phase", async () => {
 		const runtime: FermentRuntime = {
 			...createDefaultFermentRuntime(),
+			getActive: vi.fn(
+				() =>
+					({
+						id: "ferment-oneshot-1",
+						status: "running",
+						phases: [{ id: "phase-1", status: "active", steps: [] }],
+					}) as never,
+			),
 		}
 		const { handlers, pi } = createPi()
 		;(pi.getFlag as ReturnType<typeof vi.fn>).mockImplementation((name: string) =>
@@ -149,11 +154,15 @@ describe("registerFermentEvents", () => {
 
 		await beforeAgentStart({ systemPrompt: "base" }, {})
 
+		// Unified profile model: the ferment-oneshot flag does NOT trigger a
+		// separate allowlist. The runtime's active ferment with an activated
+		// phase drives the implementation profile, which includes bash, edit,
+		// Agent, and the ferment lifecycle tools.
 		const setActive = pi.setActiveTools as ReturnType<typeof vi.fn>
 		const lastCall = setActive.mock.calls[setActive.mock.calls.length - 1][0] as string[]
-		expect(lastCall).not.toContain("bash")
-		expect(lastCall).not.toContain("edit")
-		expect(lastCall).not.toContain("web_search")
+		expect(lastCall).toContain("bash")
+		expect(lastCall).toContain("edit")
+		expect(lastCall).toContain("web_search")
 		expect(lastCall).toContain("read")
 		expect(lastCall).toContain("Agent")
 		expect(lastCall).toContain("get_subagent_result")
@@ -183,18 +192,12 @@ describe("registerFermentEvents", () => {
 		expect(result?.systemPrompt).toBeUndefined()
 	})
 
-	it("applies the idle static profile without ferment tools when no ferment is active", async () => {
+	it("does not call setActiveTools in normal chat mode (no active ferment)", async () => {
+		// When no ferment is active, before_agent_start must leave the toolset
+		// untouched so the user gets the full unrestricted tool set.
 		const runtime: FermentRuntime = { ...createDefaultFermentRuntime() }
 		const { handlers, pi } = createPi()
 		;(pi.getFlag as ReturnType<typeof vi.fn>).mockReturnValue(undefined)
-		;(pi.getAllTools as ReturnType<typeof vi.fn>).mockReturnValue([
-			{ name: "bash" },
-			{ name: "edit" },
-			{ name: "read" },
-			{ name: "Agent" },
-			{ name: "list_ferments" },
-			{ name: "scope_ferment" },
-		])
 
 		registerFermentEvents(pi, runtime)
 		const beforeAgentStart = handlers.get("before_agent_start")
@@ -202,9 +205,7 @@ describe("registerFermentEvents", () => {
 
 		await beforeAgentStart({ systemPrompt: "base" }, {})
 
-		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
-		expect(lastCall).not.toContain("list_ferments")
-		expect(lastCall).not.toContain("scope_ferment")
+		expect(pi.setActiveTools).not.toHaveBeenCalled()
 	})
 
 	it("active planner first snapshot includes existing-ferment lifecycle tools", async () => {
@@ -214,7 +215,8 @@ describe("registerFermentEvents", () => {
 				() =>
 					({
 						id: "ferment-1",
-						status: "planned",
+						status: "active",
+						phases: [{ id: "phase-1", status: "active", steps: [] }],
 					}) as never,
 			),
 		}
@@ -233,24 +235,21 @@ describe("registerFermentEvents", () => {
 		await beforeAgentStart({ systemPrompt: "base" }, {})
 
 		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
+		// Active ferment with an activated phase is in implementation profile:
+		// every ferment tool (and any registered user tool like "bash") must be present.
 		for (const name of FERMENT_TOOL_NAMES) {
 			expect(lastCall).toContain(name)
 		}
+		expect(lastCall).toContain("bash")
 	})
 
-	it("hides ferment tools in subagent processes (KIMCHI_SUBAGENT=1)", async () => {
+	it("does not call setActiveTools in subagent processes (KIMCHI_SUBAGENT=1)", async () => {
+		// Ferment tool exclusion for subagents is handled at session init by
+		// agent-runner.ts (EXCLUDED_TOOL_NAMES includes all FERMENT_TOOL_NAMES).
+		// before_agent_start must be a no-op for workers so it doesn't override
+		// the tool set established by the agents manager.
 		const runtime: FermentRuntime = { ...createDefaultFermentRuntime() }
 		const { handlers, pi } = createPi()
-		;(pi.getFlag as ReturnType<typeof vi.fn>).mockImplementation((name: string) =>
-			name === "ferment-oneshot" ? true : undefined,
-		)
-		;(pi.getAllTools as ReturnType<typeof vi.fn>).mockReturnValue([
-			{ name: "bash" },
-			{ name: "read" },
-			{ name: "Agent" },
-			{ name: "scope_ferment" },
-			{ name: "start_ferment_step" },
-		])
 		process.env.KIMCHI_SUBAGENT = "1"
 
 		registerFermentEvents(pi, runtime)
@@ -259,9 +258,7 @@ describe("registerFermentEvents", () => {
 
 		try {
 			await beforeAgentStart({ systemPrompt: "base" }, {})
-			const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
-			expect(lastCall).not.toContain("scope_ferment")
-			expect(lastCall).not.toContain("start_ferment_step")
+			expect(pi.setActiveTools).not.toHaveBeenCalled()
 		} finally {
 			Reflect.deleteProperty(process.env, "KIMCHI_SUBAGENT")
 		}
@@ -339,5 +336,85 @@ describe("registerFermentEvents", () => {
 		handler({ model: newModel, previousModel }, ctx)
 
 		expect(captureJudgeContext).toHaveBeenCalledWith(newModel, modelRegistry)
+	})
+
+	it("transitions profile from planning to implementation when activate_ferment_phase succeeds", async () => {
+		// Build a Ferment with all phases in "planned" status.
+		const basePhase: Phase = {
+			id: "phase-1",
+			index: 1,
+			name: "Build",
+			goal: "Implement feature",
+			status: "planned",
+			steps: [],
+		}
+		const plannedFerment: Ferment = {
+			id: "ferment-1",
+			name: "Test Ferment",
+			status: "planned",
+			worktree: { path: "/tmp" },
+			scoping: {},
+			phases: [basePhase],
+			decisions: [],
+			memories: [],
+			createdAt: new Date().toISOString(),
+			updatedAt: new Date().toISOString(),
+		}
+
+		// After scope_ferment, phases are still all "planned" → profile should be "planning".
+		// We simulate this by checking profileForFerment directly.
+		expect(profileForFerment(plannedFerment)).toBe("planning")
+
+		// Simulate "scoped" ferment: still all planned (scope_ferment doesn't change phase status).
+		const scopedFerment: Ferment = {
+			...plannedFerment,
+			phases: [{ ...basePhase }],
+		}
+		expect(profileForFerment(scopedFerment)).toBe("planning")
+
+		// Simulate "activated" ferment: one phase has status "active" → profile should be "implementation".
+		const activatedFerment: Ferment = {
+			...plannedFerment,
+			phases: [{ ...basePhase, status: "active" }],
+		}
+		expect(profileForFerment(activatedFerment)).toBe("implementation")
+
+		// Create runtime with the activated ferment as active.
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getActive: vi.fn(() => activatedFerment),
+		}
+
+		const { handlers, pi } = createPi()
+		;(pi.getFlag as ReturnType<typeof vi.fn>).mockReturnValue(undefined)
+		;(pi.getAllTools as ReturnType<typeof vi.fn>).mockReturnValue([
+			{ name: "read" },
+			{ name: "bash" },
+			{ name: "edit" },
+			{ name: "write" },
+			{ name: "Agent" },
+			{ name: "get_subagent_result" },
+			{ name: "list_ferments" },
+			{ name: "scope_ferment" },
+			{ name: "activate_ferment_phase" },
+			{ name: "start_ferment_step" },
+		])
+
+		registerFermentEvents(pi, runtime)
+
+		// Simulate before_agent_start: this is where the implicit transition happens.
+		const beforeAgentStart = handlers.get("before_agent_start")
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		await beforeAgentStart({ systemPrompt: "base" }, {})
+
+		// With an activated ferment (implementation phase), pi.setActiveTools should have
+		// been called with the full toolset (implementation profile).
+		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
+		expect(lastCall).toContain("bash")
+		expect(lastCall).toContain("edit")
+		expect(lastCall).toContain("write")
+		expect(lastCall).toContain("Agent")
+		expect(lastCall).toContain("activate_ferment_phase")
 	})
 })

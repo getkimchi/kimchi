@@ -318,6 +318,92 @@ describe("prompt enrichment Claude Code skills", () => {
 		expect(result.systemPrompt).toContain("Use safe TypeScript patterns")
 	})
 
+	it("contributes Kimchi project skills through resources_discover", async () => {
+		const cwd = join(dir, "project", "src")
+		const projectSkillPath = join(dir, "project", ".kimchi", "skills")
+		writeSkill(join(projectSkillPath, "typescript-safety", "SKILL.md"), {
+			description: "Use Kimchi project TypeScript patterns.",
+		})
+		const { resourcesDiscover } = buildPromptExtensionWithHandlers()
+		if (!resourcesDiscover) throw new Error("resources_discover handler was not registered")
+
+		const result = resourcesDiscover({ type: "resources_discover", cwd, reason: "startup" }, undefined)
+
+		expect(result).toEqual({ skillPaths: [projectSkillPath] })
+	})
+
+	it("injects Kimchi project skills without configured paths", async () => {
+		const cwd = join(dir, "project", "src")
+		writeSkill(join(dir, "project", ".kimchi", "skills", "typescript-safety", "SKILL.md"), {
+			description: "Use Kimchi project TypeScript patterns.",
+		})
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers([])
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		const result = (await beforeAgentStart(
+			{},
+			{ cwd, model: undefined, hasUI: false, sessionManager: { getSessionId: () => "session-1" } },
+		)) as { systemPrompt: string }
+
+		expect(result.systemPrompt).toContain("<available_skills>")
+		expect(result.systemPrompt).toContain("<name>typescript-safety</name>")
+		expect(result.systemPrompt).toContain("Use Kimchi project TypeScript patterns")
+	})
+
+	it("keeps configured skill paths in the prompt", async () => {
+		const cwd = join(dir, "project")
+		const configuredSkills = join(dir, "configured", "skills")
+		writeSkill(join(configuredSkills, "typescript-safety", "SKILL.md"), {
+			description: "Use configured TypeScript patterns.",
+		})
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers([configuredSkills])
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		const result = (await beforeAgentStart(
+			{},
+			{ cwd, model: undefined, hasUI: false, sessionManager: { getSessionId: () => "session-1" } },
+		)) as { systemPrompt: string }
+
+		expect(result.systemPrompt).toContain("<available_skills>")
+		expect(result.systemPrompt).toContain("<name>typescript-safety</name>")
+		expect(result.systemPrompt).toContain("Use configured TypeScript patterns")
+	})
+
+	it("keeps home-relative configured skill paths in the prompt", async () => {
+		const cwd = join(dir, "project")
+		const configuredSkills = ".config/kimchi/harness/skills"
+		writeSkill(join(dir, "home", configuredSkills, "typescript-safety", "SKILL.md"), {
+			description: "Use home configured TypeScript patterns.",
+		})
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers([configuredSkills])
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		const result = (await beforeAgentStart(
+			{},
+			{ cwd, model: undefined, hasUI: false, sessionManager: { getSessionId: () => "session-1" } },
+		)) as { systemPrompt: string }
+
+		expect(result.systemPrompt).toContain("<available_skills>")
+		expect(result.systemPrompt).toContain("<name>typescript-safety</name>")
+		expect(result.systemPrompt).toContain("Use home configured TypeScript patterns")
+	})
+
+	it("sanitizes configured Claude Code skill paths before injecting them", async () => {
+		const cwd = join(dir, "project")
+		writeRawSkill(join(cwd, ".claude", "skills", "typescript-safety", "SKILL.md"), "Use generated types.\n")
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers([".claude/skills"])
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		const result = (await beforeAgentStart(
+			{},
+			{ cwd, model: undefined, hasUI: false, sessionManager: { getSessionId: () => "session-1" } },
+		)) as { systemPrompt: string }
+
+		expect(result.systemPrompt).toContain("<available_skills>")
+		expect(result.systemPrompt).toContain("<name>typescript-safety</name>")
+		expect(result.systemPrompt).toContain("<description>Claude Code skill: typescript-safety.</description>")
+	})
+
 	it("does not inject ancestor Claude Code skills without cwd .claude", async () => {
 		const project = join(dir, "project")
 		const cwd = join(project, "src")
@@ -337,13 +423,13 @@ describe("prompt enrichment Claude Code skills", () => {
 		expect(result.systemPrompt).not.toContain("typescript-safety")
 	})
 
-	it("injects sanitized Claude Code skills when .claude/skills is configured", async () => {
+	it("injects sanitized Claude Code skills when the extension is enabled", async () => {
 		const cwd = join(dir, "project")
 		writeSkill(join(cwd, ".claude", "skills", "typescript-safety", "SKILL.md"), {
 			description: "Use: generated API types",
 		})
 		setResourceOverride(CLAUDE_CODE_SKILLS_RESOURCE_ID, true)
-		const { beforeAgentStart } = buildPromptExtensionWithHandlers([".claude/skills"])
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
 		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
 
 		const result = (await beforeAgentStart(
@@ -356,10 +442,11 @@ describe("prompt enrichment Claude Code skills", () => {
 		expect(result.systemPrompt).toContain("Use: generated API types")
 	})
 
-	it("injects configured Claude Code skills without descriptions through the sanitized cache", async () => {
+	it("injects Claude Code skills without descriptions through the sanitized cache", async () => {
 		const cwd = join(dir, "project")
 		writeRawSkill(join(cwd, ".claude", "skills", "typescript-safety", "SKILL.md"), "Use generated types.\n")
-		const { beforeAgentStart } = buildPromptExtensionWithHandlers([".claude/skills"])
+		setResourceOverride(CLAUDE_CODE_SKILLS_RESOURCE_ID, true)
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
 		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
 
 		const result = (await beforeAgentStart(
@@ -558,6 +645,7 @@ function buildPromptExtensionWithHandlers(skillPaths: string[] = []) {
 	promptEnrichmentExtension(skillPaths)(pi)
 	return {
 		handlers,
+		resourcesDiscover: handlers.get("resources_discover"),
 		beforeAgentStart: handlers.get("before_agent_start"),
 	}
 }

@@ -29,6 +29,7 @@ import type { AssistantMessage } from "@earendil-works/pi-ai"
 import { type ExtensionAPI, type Skill, getAgentDir, loadSkills } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
 import { isResourceEnabled } from "../../resources/store.js"
+import { getKimchiProjectSkillPaths } from "../../skill-paths.js"
 import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
 import { isAgentWorker } from "../agent-worker-context.js"
@@ -36,6 +37,7 @@ import { getInstalledPackageResourceDirs } from "../agents/package-resources.js"
 import {
 	CLAUDE_CODE_SKILLS_RESOURCE_ID,
 	getClaudeCodeSkillResourcePaths,
+	getConfiguredNativeSkillNames,
 	getConfiguredSkillResourcePaths,
 } from "../claude-code-skills/definition.js"
 import {
@@ -458,16 +460,24 @@ export default function (skillPaths: string[]) {
 		let cachedSkills: Skill[] | undefined
 		let cachedGitRemote: string | undefined | null = null
 
+		pi.on("resources_discover", (event) => {
+			const skillPaths = getKimchiProjectSkillPaths(event.cwd)
+			if (skillPaths.length === 0) return undefined
+			return { skillPaths }
+		})
+
 		pi.on("before_agent_start", async (event, ctx) => {
 			const activeToolNames = new Set(pi.getActiveTools())
 			const tools = pi.getAllTools().filter((tool) => activeToolNames.has(tool.name))
 			cachedContextFiles ??= [...loadGlobalContextFiles(), ...loadProjectContextFiles(ctx.cwd)]
 			if (cachedSkills === undefined) {
+				const configuredNativeSkillNames = getConfiguredNativeSkillNames(ctx.cwd, skillPaths)
 				const allSkillPaths = Array.from(
 					new Set([
+						...getKimchiProjectSkillPaths(ctx.cwd),
 						...getConfiguredSkillResourcePaths(ctx.cwd, skillPaths),
 						...(isResourceEnabled(CLAUDE_CODE_SKILLS_RESOURCE_ID)
-							? getClaudeCodeSkillResourcePaths(ctx.cwd, { excludeSkillPaths: skillPaths })
+							? getClaudeCodeSkillResourcePaths(ctx.cwd, { excludeSkillNames: configuredNativeSkillNames })
 							: []),
 						...getInstalledPackageResourceDirs(ctx.cwd, "skills"),
 					]),
