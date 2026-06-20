@@ -153,6 +153,131 @@ describe("ferment → todo → headless prompt wiring", () => {
 		}
 	})
 
+	it("start_step event seeds the ferment-step scope with the step description", () => {
+		const ferment = makeFerment({
+			phases: [
+				{
+					id: "phase-1",
+					index: 1,
+					name: "Implementation",
+					goal: "do the work",
+					status: "active",
+					steps: [
+						{ id: "step-1", index: 1, description: "Write the code", status: "running" },
+						{ id: "step-2", index: 2, description: "Run the tests", status: "pending" },
+					],
+				},
+			],
+		})
+		setActive(ferment)
+		const { pi, unsubscribe } = makePiWithRealEventBus()
+
+		try {
+			emitFermentDomainEvent(pi.events, { type: "activate_phase", phaseId: "phase-1" }, ferment)
+			emitFermentDomainEvent(pi.events, { type: "start_step", phaseId: "phase-1", stepId: "step-1" }, ferment)
+
+			const stepTodos = getTodosForScope({ kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" })
+			expect(stepTodos).toHaveLength(1)
+			expect(stepTodos[0].content).toBe("Write the code")
+			expect(stepTodos[0].status).toBe("in_progress")
+		} finally {
+			unsubscribe()
+		}
+	})
+
+	it("complete_step event clears the ferment-step scope", () => {
+		const ferment = makeFerment({
+			phases: [
+				{
+					id: "phase-1",
+					index: 1,
+					name: "Implementation",
+					goal: "do the work",
+					status: "active",
+					steps: [
+						{ id: "step-1", index: 1, description: "Write the code", status: "running" },
+						{ id: "step-2", index: 2, description: "Run the tests", status: "pending" },
+					],
+				},
+			],
+		})
+		setActive(ferment)
+		const { pi, unsubscribe } = makePiWithRealEventBus()
+
+		try {
+			emitFermentDomainEvent(pi.events, { type: "activate_phase", phaseId: "phase-1" }, ferment)
+			emitFermentDomainEvent(pi.events, { type: "start_step", phaseId: "phase-1", stepId: "step-1" }, ferment)
+
+			// Step todos should exist
+			expect(getTodosForScope({ kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" })).toHaveLength(1)
+
+			// Complete the step
+			const completedFerment: Ferment = {
+				...ferment,
+				phases: ferment.phases.map((p) => ({
+					...p,
+					steps: p.steps.map((s) => (s.id === "step-1" ? { ...s, status: "done" as const } : s)),
+				})),
+			}
+			setActive(completedFerment)
+			emitFermentDomainEvent(
+				pi.events,
+				{ type: "complete_step", phaseId: "phase-1", stepId: "step-1" },
+				completedFerment,
+			)
+
+			// Step-level todos should be cleared
+			expect(getTodosForScope({ kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" })).toHaveLength(0)
+		} finally {
+			unsubscribe()
+		}
+	})
+
+	it("fail_step event clears the ferment-step scope", () => {
+		const ferment = makeFerment({
+			phases: [
+				{
+					id: "phase-1",
+					index: 1,
+					name: "Implementation",
+					goal: "do the work",
+					status: "active",
+					steps: [
+						{ id: "step-1", index: 1, description: "Write the code", status: "running" },
+						{ id: "step-2", index: 2, description: "Run the tests", status: "pending" },
+					],
+				},
+			],
+		})
+		setActive(ferment)
+		const { pi, unsubscribe } = makePiWithRealEventBus()
+
+		try {
+			emitFermentDomainEvent(pi.events, { type: "activate_phase", phaseId: "phase-1" }, ferment)
+			emitFermentDomainEvent(pi.events, { type: "start_step", phaseId: "phase-1", stepId: "step-1" }, ferment)
+
+			expect(getTodosForScope({ kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" })).toHaveLength(1)
+
+			const failedFerment: Ferment = {
+				...ferment,
+				phases: ferment.phases.map((p) => ({
+					...p,
+					steps: p.steps.map((s) => (s.id === "step-1" ? { ...s, status: "failed" as const } : s)),
+				})),
+			}
+			setActive(failedFerment)
+			emitFermentDomainEvent(
+				pi.events,
+				{ type: "fail_step", phaseId: "phase-1", stepId: "step-1", error: "oops" },
+				failedFerment,
+			)
+
+			expect(getTodosForScope({ kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" })).toHaveLength(0)
+		} finally {
+			unsubscribe()
+		}
+	})
+
 	it("complete_step event updates the step todo status in the block", () => {
 		const ferment = makeFerment()
 		setActive(ferment)

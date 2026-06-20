@@ -30,6 +30,7 @@ import {
 	type FermentResumedPayload,
 	type FermentStepCompletedPayload,
 	type FermentStepFailedPayload,
+	type FermentStepStartedPayload,
 	type FermentSuspendedPayload,
 } from "./domain-events.js"
 import { getActive } from "./state.js"
@@ -222,6 +223,32 @@ function handlePhaseStarted(raw: unknown): void {
 	syncTodoIds(ferment.id, payload.phaseId, details.todos, contentSyncMap)
 }
 
+function handleStepStarted(raw: unknown): void {
+	const payload = raw as FermentStepStartedPayload
+	const ferment = getActive()
+	if (!ferment || ferment.id !== payload.fermentId) return
+
+	const phase = ferment.phases.find((p) => p.id === payload.phaseId)
+	if (!phase) return
+
+	const step = phase.steps.find((s) => s.id === payload.stepId)
+	if (!step) return
+
+	// Seed the ferment-step scope with the step description so the model
+	// has a starting point to expand into a detailed implementation plan.
+	applyWriteTodos({
+		scope: { kind: "ferment-step", phaseId: payload.phaseId, stepId: payload.stepId },
+		todos: [{ content: step.description, status: "in_progress" }],
+	})
+}
+
+function clearStepTodos(phaseId: string, stepId: string): void {
+	applyWriteTodos({
+		scope: { kind: "ferment-step", phaseId, stepId },
+		todos: [],
+	})
+}
+
 function handleStepCompleted(raw: unknown): void {
 	const payload = raw as FermentStepCompletedPayload
 	const ferment = getActive()
@@ -240,6 +267,9 @@ function handleStepCompleted(raw: unknown): void {
 		console.warn(`[todo-sync] STEP_COMPLETED for unknown step ${payload.stepId} in phase ${payload.phaseId}. Skipping.`)
 		return
 	}
+
+	// Clear the step-level implementation todos — they're done.
+	clearStepTodos(payload.phaseId, payload.stepId)
 
 	const idMap = getOrCreateIdMap(ferment.id, payload.phaseId)
 	const stepTodoId = idMap.get(payload.stepId)
@@ -277,6 +307,9 @@ function handleStepFailed(raw: unknown): void {
 		console.warn(`[todo-sync] STEP_FAILED for unknown step ${payload.stepId} in phase ${payload.phaseId}. Skipping.`)
 		return
 	}
+
+	// Clear the step-level implementation todos — the step failed.
+	clearStepTodos(payload.phaseId, payload.stepId)
 
 	const idMap = getOrCreateIdMap(ferment.id, payload.phaseId)
 	const stepTodoId = idMap.get(payload.stepId)
@@ -399,6 +432,7 @@ export function registerFermentTodoSync(pi: ExtensionAPI): () => void {
 	const unsubscribes: Array<() => void> = []
 
 	unsubscribes.push(pi.events.on(FERMENT_EVENTS.PHASE_STARTED, handlePhaseStarted))
+	unsubscribes.push(pi.events.on(FERMENT_EVENTS.STEP_STARTED, handleStepStarted))
 	unsubscribes.push(pi.events.on(FERMENT_EVENTS.STEP_COMPLETED, handleStepCompleted))
 	unsubscribes.push(pi.events.on(FERMENT_EVENTS.STEP_FAILED, handleStepFailed))
 	unsubscribes.push(pi.events.on(FERMENT_EVENTS.PHASE_COMPLETED, handlePhaseCompleted))

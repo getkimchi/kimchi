@@ -1,13 +1,19 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { getActive } from "../ferment/state.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import { parseTodoScopeKey } from "./scope.js"
-import { getTodoState } from "./store.js"
+import { getTodoState, getTodosForScope } from "./store.js"
 import type { TodoItem, TodoScope, TodoStatus } from "./types.js"
 
 const TODO_GUIDANCE =
 	"## Todos\nFor any non-trivial task, maintain a todo list. This includes code changes, debugging, reviews, investigations, multi-file reads, or anything with more than one meaningful step. Skip todos only for a single straightforward answer or a purely conversational task. Using todo tools is for tracking your work in the session; it is different from leaving TODO comments/placeholders in code, which you must not do unless explicitly requested. Use add_todo for one missing item, mark_todo for one status change, update_todos for batch replacement, and clear_todos only when the work is done or obsolete. Keep the list tactical and update it after meaningful progress, before switching to the next item, and before your final response. Keep at most one item in_progress when possible; when a current list is visible, continue the in_progress item before starting pending work. When updating an existing list, preserve user-created todos and existing ids unless the user asked to remove or rewrite them; append new todos after existing todos."
 
+const FERMENT_TODO_GUIDANCE =
+	"\n\nWhen working inside a ferment step, break the step into concrete sub-tasks using add_todo before writing code. Each sub-task should be a specific verifiable action (run a command, write a file, check an output). Mark each sub-task as you complete it rather than batch-replacing the entire list at the end."
+
 export function renderTodoPromptBlock(): string {
+	const ferment = getActive()
+	if (ferment) return TODO_GUIDANCE + FERMENT_TODO_GUIDANCE
 	return TODO_GUIDANCE
 }
 
@@ -124,6 +130,29 @@ export function renderTodoStateMarkdown(): string | undefined {
 		lines.push(`**Step ${stepScope.phaseId}/${stepScope.stepId}**`)
 		for (const todo of stepScope.todos) lines.push(formatTodoLine(todo))
 		lines.push("")
+	}
+
+	// Nudge: if a ferment step is running and the model hasn't expanded
+	// the seed todo into a real implementation plan, prompt it to do so.
+	const ferment = getActive()
+	if (ferment && ferment.status === "running") {
+		const activePhase = ferment.phases.find((p) => p.status === "active")
+		if (activePhase) {
+			const runningStep = activePhase.steps.find((s) => s.status === "running")
+			if (runningStep) {
+				const stepTodos = getTodosForScope({
+					kind: "ferment-step",
+					phaseId: activePhase.id,
+					stepId: runningStep.id,
+				})
+				if (stepTodos.length <= 1) {
+					lines.push("")
+					lines.push(
+						"\u26a0 No implementation plan for the current step. Use add_todo to break down the work before writing code.",
+					)
+				}
+			}
+		}
 	}
 
 	// Trim trailing blank line for cleanliness.
