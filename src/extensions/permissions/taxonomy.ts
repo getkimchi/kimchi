@@ -305,11 +305,54 @@ export function splitCompoundCommand(command: string): string[] | null {
 	return segments.filter((s) => s.length > 0)
 }
 
-export function extractBashProgram(command: string): { program: string; subcommand: string | undefined } {
-	// See through the RTK wrapper so callers get the real program/subcommand.
+// Canonical first-segment tokens with the rtk wrapper removed. parseCommandSegments
+// already strips leading FOO=bar assignments, shell-tokenizes (dropping quotes), and
+// collapses whitespace; we additionally see through the rtk wrapper. Env-STRIPPING:
+// used by extractBashProgram and the hard-block / read-only / bare-rule-auto-rewrite
+// callers, where env-transparency is correct. The remembered-rule scope/match pair
+// uses rememberedScopeTokens instead, which PRESERVES env.
+export function bashCommandTokens(command: string): string[] {
 	const raw = firstSegmentTokens(command)
-	const tokens = raw[0] === "rtk" ? raw.slice(1) : raw
+	return raw[0] === "rtk" ? raw.slice(1) : raw
+}
+
+export function extractBashProgram(command: string): { program: string; subcommand: string | undefined } {
+	const tokens = bashCommandTokens(command)
 	return { program: tokens[0] ?? "", subcommand: tokens[1] }
+}
+
+// One leading `KEY=value` assignment (value may be double/single-quoted or a
+// bareword) plus its trailing whitespace. Capture group 1 is the assignment.
+const LEADING_ENV_ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S*))\s+/
+
+// Split a command into its leading `KEY=value` env assignments (verbatim, value
+// included) and the remainder. The shell applies these assignments at execution,
+// so for remembered-rule scope/matching they are part of what was approved and
+// are preserved (unlike parseCommandSegments, which strips them).
+export function splitLeadingEnv(command: string): { env: string[]; rest: string } {
+	let rest = command.trim()
+	const env: string[] = []
+	let match = rest.match(LEADING_ENV_ASSIGNMENT)
+	while (match) {
+		env.push(match[1])
+		rest = rest.slice(match[0].length)
+		match = rest.match(LEADING_ENV_ASSIGNMENT)
+	}
+	return { env, rest }
+}
+
+// Normalized first-segment tokens for remembered-rule scope and matching: leading
+// env assignments are PRESERVED (key and value), the rtk transparent wrapper is
+// stripped, and quotes/whitespace are normalized via parseCommandSegments. Returns
+// [] when there is no program token (empty, bare rtk, env-only, or backtick-
+// poisoned). Distinct from bashCommandTokens, which strips env for hard-block /
+// read-only / auto-rewrite callers where env-transparency is correct.
+export function rememberedScopeTokens(command: string): string[] {
+	const { env, rest } = splitLeadingEnv(command)
+	const tokens = parseCommandSegments(rest)[0]?.tokens ?? []
+	const prog = tokens[0] === "rtk" ? tokens.slice(1) : tokens
+	if (prog.length === 0) return []
+	return [...env, ...prog]
 }
 
 export function isReadOnlyBashCommand(command: string): boolean {

@@ -1,5 +1,5 @@
 import micromatch from "micromatch"
-import { FILE_TOOLS, extractBashProgram } from "./taxonomy.js"
+import { FILE_TOOLS, extractBashProgram, parseCommandSegments, rememberedScopeTokens } from "./taxonomy.js"
 import type { Rule, RuleBehavior, RuleSource } from "./types.js"
 
 // Rule syntax: `toolname` or `toolname(content)`. Tool names are case-
@@ -56,19 +56,59 @@ export function matchRule(rule: Rule, toolName: string, input: Record<string, un
 // Bash content matching: `prefix:*` (legacy prefix), `*` wildcard (escape with
 // `\*`), or exact. Trailing ` *` makes arguments optional so `git *` matches
 // bare `git`. Anchored, case-sensitive.
+//
+// Matches a remembered rule against a command. The canonical form
+// (rememberedScopeTokens: leading env assignments PRESERVED, rtk wrapper
+// stripped, quotes/whitespace normalized, first segment only) lets a rule match
+// the command that produced it — `suggestScope` derives scopes from the same
+// normalization — while never authorizing a wider command than was approved.
+//
+// SECURITY: `canonicalMatchForm` returns null for a multi-segment command (a
+// `| && || ;` tail runs too) or an empty canonical (bare rtk / env-only /
+// backtick). Broad-scope rules (legacy `prefix:*` and any wildcard) must NOT
+// fall back to a raw `startsWith`/regex match when the canonical form is null —
+// otherwise `go test:*` (or `go *`) would match `go test | sh`, because the raw
+// command starts with `go test `. So those rules require a non-null canonical
+// up front. Only an exact literal rule may match the raw command directly: that
+// is precise (the user allowed exactly that string), and an anchored regex can
+// never match a longer piped/chained command unless the rule literally contains
+// the tail.
 export function matchBashRule(pattern: string, command: string): boolean {
 	const pat = pattern.trim()
-	const cmd = command.trim()
+	const raw = command.trim()
+	const canonical = canonicalMatchForm(command)
 
-	// Legacy prefix syntax: "prefix:*"
+	// Legacy prefix syntax: "prefix:*" — broad scope, so gate on the canonical form.
 	const prefixMatch = pat.match(/^(.+):\*$/)
 	if (prefixMatch) {
+		if (canonical === null) return false
 		const prefix = prefixMatch[1]
-		if (cmd === prefix) return true
-		return cmd.startsWith(`${prefix} `) || cmd.startsWith(`${prefix}\t`)
+		const hits = (c: string) => c === prefix || c.startsWith(`${prefix} `) || c.startsWith(`${prefix}\t`)
+		return hits(raw) || hits(canonical)
 	}
 
-	return regexFromWildcard(pat).test(cmd)
+	const re = regexFromWildcard(pat)
+
+	// Wildcard patterns can match a broad remembered scope, so do not let a raw
+	// match bypass the canonical single-segment gate (e.g. `go *` vs `go test | sh`).
+	if (pat.includes("*")) {
+		return canonical !== null && (re.test(raw) || re.test(canonical))
+	}
+
+	// Exact literal rules: a raw exact match is precise, so keep it. The canonical
+	// fallback (quote/whitespace/rtk/env normalization) stays gated to single-segment.
+	if (re.test(raw)) return true
+	return canonical !== null && re.test(canonical)
+}
+
+// Canonical command form for a match, or `null` when there is none — multi-segment
+// (a `|`/`&&`/`||`/`;` tail runs but is invisible here), empty, bare rtk, env-only,
+// or backtick. Env is preserved, so an env-injected variant of an approved command
+// does not match. See `rememberedScopeTokens` for the normalization.
+function canonicalMatchForm(command: string): string | null {
+	if (parseCommandSegments(command).length !== 1) return null
+	const tokens = rememberedScopeTokens(command)
+	return tokens.length ? tokens.join(" ") : null
 }
 
 const REGEX_META = /[.+?^${}()|[\]\\'"]/g

@@ -1,4 +1,4 @@
-import { FILE_TOOLS, extractBashProgram } from "./taxonomy.js"
+import { FILE_TOOLS, extractBashProgram, splitLeadingEnv } from "./taxonomy.js"
 import type { Rule } from "./types.js"
 
 export interface Scope {
@@ -61,11 +61,19 @@ export function suggestScope(toolName: string, input: Record<string, unknown>): 
 	return { toolName: lower, content: undefined, label: lower }
 }
 
+// Verbatim leading env prefix (e.g. "GOWORK=off ") or "" — preserved in remembered
+// scopes because the shell applies it at execution, so it is part of what was approved.
+function envPrefix(command: string): string {
+	const { env } = splitLeadingEnv(command)
+	return env.length ? `${env.join(" ")} ` : ""
+}
+
 function bashProgramOnly(command: string): string {
 	const trimmed = command.trim()
 	if (!trimmed) return ""
 	const { program } = extractBashProgram(trimmed)
-	return program
+	if (!program) return ""
+	return `${envPrefix(trimmed)}${program}`
 }
 
 function bashPrefixScope(command: string): string | null {
@@ -74,8 +82,8 @@ function bashPrefixScope(command: string): string | null {
 
 	const { program, subcommand } = extractBashProgram(trimmed)
 	if (!program) return null
-	if (!subcommand || subcommand.startsWith("-")) return program
-	return `${program} ${subcommand}`
+	const base = !subcommand || subcommand.startsWith("-") ? program : `${program} ${subcommand}`
+	return `${envPrefix(trimmed)}${base}`
 }
 
 function dirGlob(path: string): string | null {
