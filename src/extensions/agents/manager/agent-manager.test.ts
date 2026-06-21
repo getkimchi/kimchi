@@ -59,7 +59,7 @@ describe("AgentManager", () => {
 		expect(record.latestOutcome?.recovery_guidance).toContain("explicit new instructions")
 		expect(record.latestOutcome?.recovery_guidance).toContain("separate, narrower task")
 		expect(record.latestOutcome?.recovery_guidance).toContain("going in the wrong direction")
-		expect(record.latestOutcome?.recovery_guidance).toContain("short finalizer resume")
+		expect(record.latestOutcome?.recovery_guidance).toContain("resume_subagent with purpose finalize_report")
 	})
 
 	it("threads task_ref and max_turns into the structured outcome", async () => {
@@ -86,17 +86,10 @@ describe("AgentManager", () => {
 			max_turns: 5,
 			task_ref: taskRef,
 		})
-		expect(record.reportNonce).toEqual(expect.any(String))
 		expect(mockRunAgent).toHaveBeenCalledWith(
 			expect.anything(),
 			"Explore",
-			expect.stringContaining(`Agent ID: ${record.id}`),
-			expect.anything(),
-		)
-		expect(mockRunAgent).toHaveBeenCalledWith(
-			expect.anything(),
-			"Explore",
-			expect.stringContaining(`Report token: ${record.reportNonce}`),
+			expect.not.stringContaining("Report token:"),
 			expect.anything(),
 		)
 		expect(mockRunAgent).toHaveBeenCalledWith(
@@ -105,6 +98,7 @@ describe("AgentManager", () => {
 			expect.stringContaining("Call submit_agent_report alone as your final action"),
 			expect.anything(),
 		)
+		expect(mockRunAgent.mock.calls[0]?.[3].workerReport).toBeDefined()
 	})
 
 	it("stores submitted reports on the structured outcome", async () => {
@@ -126,7 +120,6 @@ describe("AgentManager", () => {
 			summary: "implemented step",
 			steps_completed: ["implemented"],
 			remaining_steps: [],
-			submitted_at: 10,
 		})
 
 		expect(record.latestOutcome).toMatchObject({
@@ -198,7 +191,10 @@ describe("AgentManager", () => {
 		const record = await manager.spawnAndWait(fakePi(), fakeCtx(), "Explore", "inspect", {
 			description: "inspect",
 		})
-		record.resumeAttempts = [{ startedAt: 1 }, { startedAt: 2 }]
+		record.resumeAttempts = [
+			{ attempt_id: 1, purpose: "continuation", startedAt: 1 },
+			{ attempt_id: 2, purpose: "continuation", startedAt: 2 },
+		]
 
 		const resumed = await manager.resume(record.id, "continue", { maxTurns: 1 })
 
@@ -263,13 +259,84 @@ describe("AgentManager", () => {
 			description: "inspect",
 			taskRef,
 		})
-		record.resumeAttempts = [{ startedAt: 1 }, { startedAt: 2 }]
+		record.resumeAttempts = [
+			{ attempt_id: 1, purpose: "continuation", startedAt: 1 },
+			{ attempt_id: 2, purpose: "continuation", startedAt: 2 },
+		]
 
 		const resumed = await manager.resume(record.id, "continue", { maxTurns: 1 })
 
 		expect(mockResumeAgent).not.toHaveBeenCalled()
 		expect(resumed?.status).toBe("error")
-		expect(resumed?.error).toContain("Ferment worker resume limit")
+		expect(resumed?.error).toContain("Ferment worker continuation resume limit")
+	})
+
+	it("does not charge report finalization against the continuation resume quota", async () => {
+		const session = { dispose: vi.fn() } as unknown as AgentSession
+		mockRunAgent.mockResolvedValueOnce({ responseText: "done", session, aborted: false, steered: false })
+		mockResumeAgent.mockResolvedValueOnce({ responseText: "reported", session, aborted: false, steered: false })
+		manager = new AgentManager()
+		const record = await manager.spawnAndWait(fakePi(), fakeCtx(), "Explore", "inspect", {
+			description: "inspect",
+			taskRef: { kind: "ferment_step", ferment_id: "f1", phase_id: "p1", step_id: "s1" },
+		})
+		record.resumeAttempts = [
+			{ attempt_id: 1, purpose: "continuation", startedAt: 1 },
+			{ attempt_id: 2, purpose: "continuation", startedAt: 2 },
+		]
+
+		const resumed = await manager.resume(record.id, "submit the report", {
+			maxTurns: 1,
+			maxDuration: 30,
+			purpose: "finalize_report",
+		})
+
+		expect(mockResumeAgent).toHaveBeenCalledOnce()
+		expect(resumed?.status).toBe("completed")
+		expect(resumed?.resumeAttempts?.at(-1)?.purpose).toBe("finalize_report")
+	})
+
+	it("clears stale reports when a new execution attempt starts", async () => {
+		const session = { dispose: vi.fn() } as unknown as AgentSession
+		mockRunAgent.mockResolvedValueOnce({ responseText: "done", session, aborted: false, steered: false })
+		mockResumeAgent.mockResolvedValueOnce({ responseText: "continued", session, aborted: false, steered: false })
+		manager = new AgentManager()
+		const record = await manager.spawnAndWait(fakePi(), fakeCtx(), "Explore", "inspect", {
+			description: "inspect",
+			taskRef: { kind: "ferment_step", ferment_id: "f1", phase_id: "p1", step_id: "s1" },
+		})
+		manager.submitReport(record.id, {
+			status: "completed",
+			summary: "old attempt",
+			steps_completed: ["old work"],
+			remaining_steps: [],
+		})
+
+		const resumed = await manager.resume(record.id, "continue", { maxTurns: 1, maxDuration: 30 })
+
+		expect(resumed?.currentAttemptId).toBe(1)
+		expect(resumed?.agentReport).toBeUndefined()
+		expect(resumed?.latestOutcome?.report).toBeUndefined()
+	})
+
+	it("stops a resumed worker through its fresh attempt controller", async () => {
+		const session = { dispose: vi.fn() } as unknown as AgentSession
+		mockRunAgent.mockResolvedValueOnce({ responseText: "checkpoint", session, aborted: false, steered: false })
+		mockResumeAgent.mockImplementationOnce(async (_session, _prompt, options) => {
+			const attemptSignal = options?.signal
+			if (!attemptSignal) throw new Error("expected resume abort signal")
+			await new Promise<void>((resolve) => attemptSignal.addEventListener("abort", () => resolve(), { once: true }))
+			return { responseText: "stopped", session, aborted: false, steered: false }
+		})
+		manager = new AgentManager()
+		const record = await manager.spawnAndWait(fakePi(), fakeCtx(), "Explore", "inspect", { description: "inspect" })
+
+		const resumePromise = manager.resume(record.id, "continue", { maxTurns: 2, maxDuration: 30 })
+		await vi.waitFor(() => expect(mockResumeAgent).toHaveBeenCalledOnce())
+		expect(manager.abort(record.id)).toBe(true)
+		const resumed = await resumePromise
+
+		expect(resumed?.status).toBe("stopped")
 	})
 
 	describe("submitReport", () => {
@@ -281,7 +348,6 @@ describe("AgentManager", () => {
 				summary: "done",
 				steps_completed: ["step1"],
 				remaining_steps: [],
-				submitted_at: Date.now(),
 			})
 
 			expect(result).toBeUndefined()
@@ -305,7 +371,6 @@ describe("AgentManager", () => {
 				summary: "done",
 				steps_completed: ["step1"],
 				remaining_steps: [],
-				submitted_at: Date.now(),
 			})
 
 			expect(result).toBeUndefined()
@@ -331,13 +396,12 @@ describe("AgentManager", () => {
 				summary: "implemented feature",
 				steps_completed: ["wrote code", "ran tests"],
 				remaining_steps: [],
-				submitted_at: Date.now(),
 			}
 			const result = manager.submitReport(record.id, report)
 
 			expect(result).toBe(record)
-			expect(record.agentReport).toEqual(report)
-			expect(record.latestOutcome?.report).toEqual(report)
+			expect(record.agentReport).toMatchObject({ ...report, attempt_id: 0 })
+			expect(record.latestOutcome?.report).toMatchObject({ ...report, attempt_id: 0 })
 			expect(record.latestOutcome?.summary).toBeUndefined()
 		})
 
@@ -360,22 +424,20 @@ describe("AgentManager", () => {
 				summary: "halfway there",
 				steps_completed: ["step1"],
 				remaining_steps: ["step2"],
-				submitted_at: 100,
 			}
 			const secondReport = {
 				status: "completed" as const,
 				summary: "all done",
 				steps_completed: ["step1", "step2"],
 				remaining_steps: [],
-				submitted_at: 200,
 			}
 
 			manager.submitReport(record.id, firstReport)
 			const result = manager.submitReport(record.id, secondReport)
 
 			expect(result).toBe(record)
-			expect(record.agentReport).toEqual(secondReport)
-			expect(record.latestOutcome?.report).toEqual(secondReport)
+			expect(record.agentReport).toMatchObject({ ...secondReport, attempt_id: 0 })
+			expect(record.latestOutcome?.report).toMatchObject({ ...secondReport, attempt_id: 0 })
 			expect(record.agentReport?.status).toBe("completed")
 			expect(record.agentReport?.summary).toBe("all done")
 		})
@@ -396,6 +458,7 @@ describe("AgentManager", () => {
 			lifetimeUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			compactionCount: 0,
 			resumeAttempts: [],
+			currentAttemptId: 0,
 		})
 
 		expect(outcome.outcome).toBe("failed")

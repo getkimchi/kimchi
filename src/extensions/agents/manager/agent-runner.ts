@@ -42,6 +42,7 @@ import {
 import { buildParentContext, extractText } from "../prompt/context.js"
 import { type PromptExtras, buildAgentPrompt, formatTokenBudget } from "../prompt/prompts.js"
 import { preloadSkills } from "../prompt/skill-loader.js"
+import { WORKER_REPORT_TOOL_NAME, type WorkerReportCapability, createWorkerReportExtension } from "../worker-report.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "./constants.js"
 import { type LifetimeUsage, addUsage, getLifetimeTotal, getOutputTotal, getSessionUsage } from "./usage.js"
 
@@ -54,7 +55,7 @@ import { type LifetimeUsage, addUsage, getLifetimeTotal, getOutputTotal, getSess
  *   ferment state. The discovery tool (list_ferments)
  *   are also excluded — they are only meaningful to the top-level planner.
  */
-const EXCLUDED_TOOL_NAMES = ["Agent", "get_subagent_result", "steer_subagent", ...FERMENT_TOOL_NAMES]
+const EXCLUDED_TOOL_NAMES = ["Agent", "resume_subagent", "get_subagent_result", "steer_subagent", ...FERMENT_TOOL_NAMES]
 
 /** Prefix applied to automated steering messages so the LLM does not attribute them to the user. */
 const ORCHESTRATOR_PREFIX = "[Orchestrator — automated system instruction, not a user message]\n\n"
@@ -181,6 +182,10 @@ export interface RunOptions {
 	inactivityTimeout?: number
 	/** Maximum wall-clock duration in seconds. The agent is aborted when this limit is exceeded. */
 	maxDuration?: number
+	/** Host-bound report capability. Present only for Ferment-linked workers. */
+	workerReport?: WorkerReportCapability
+	/** Enforce maxTurns as a hard cap instead of allowing ordinary-agent grace turns. */
+	hardTurnLimit?: boolean
 }
 
 export interface RunResult {
@@ -283,6 +288,7 @@ async function runAgentInner(
 	const parentSystemPrompt = ctx.getSystemPrompt()
 
 	const extensions = options.isolated ? false : config.extensions
+	const effectiveExtensions = options.workerReport && extensions === false ? [] : extensions
 	const skills = options.isolated ? false : config.skills
 
 	const extras: PromptExtras = {
@@ -354,17 +360,21 @@ async function runAgentInner(
 
 	const agentDir = getAgentDir()
 
+	const extensionFactories = [telemetryExtension(readTelemetryConfig())]
+	if (options.workerReport) {
+		extensionFactories.push(createWorkerReportExtension(options.workerReport))
+	}
 	const loader = new DefaultResourceLoader({
 		cwd: effectiveCwd,
 		agentDir,
-		noExtensions: extensions === false,
+		noExtensions: effectiveExtensions === false,
 		noSkills,
 		noPromptTemplates: true,
 		noThemes: true,
 		noContextFiles: true,
 		systemPromptOverride: () => systemPrompt,
 		appendSystemPromptOverride: () => [],
-		extensionFactories: [telemetryExtension(readTelemetryConfig())],
+		extensionFactories,
 	})
 	await loader.reload()
 
@@ -395,7 +405,7 @@ async function runAgentInner(
 		model,
 		resourceLoader: loader,
 	}
-	if (extensions === false) {
+	if (effectiveExtensions === false) {
 		sessionOpts.tools = toolNames
 	}
 	if (thinkingLevel) {
@@ -415,16 +425,17 @@ async function runAgentInner(
 		},
 	})
 
-	if (extensions !== false) {
+	if (effectiveExtensions !== false) {
 		const builtinToolNameSet = new Set(toolNames)
 		const allBuiltinToolNames = new Set(BUILTIN_TOOL_NAMES)
 		const activeTools = session.getActiveToolNames().filter((t) => {
 			if (EXCLUDED_TOOL_NAMES.includes(t)) return false
+			if (t === WORKER_REPORT_TOOL_NAME && options.workerReport) return true
 			if (disallowedSet?.has(t)) return false
 			if (builtinToolNameSet.has(t)) return true
 			if (allBuiltinToolNames.has(t)) return false
-			if (Array.isArray(extensions)) {
-				return extensions.some((ext) => t.startsWith(ext) || t.includes(ext))
+			if (Array.isArray(effectiveExtensions)) {
+				return effectiveExtensions.some((ext) => t.startsWith(ext) || t.includes(ext))
 			}
 			return true
 		})
@@ -488,7 +499,11 @@ async function runAgentInner(
 			turnCount++
 			options.onTurnEnd?.(turnCount)
 			if (effectiveMaxTurns != null) {
-				if (!softLimitReached && turnCount >= effectiveMaxTurns) {
+				if (options.hardTurnLimit && turnCount >= effectiveMaxTurns) {
+					aborted = true
+					abortReason = "max_turns"
+					session.abort()
+				} else if (!softLimitReached && turnCount >= effectiveMaxTurns) {
 					softLimitReached = true
 					steerAsOrchestrator(
 						session,
@@ -519,6 +534,9 @@ async function runAgentInner(
 		}
 		if (event.type === "tool_execution_end") {
 			options.onToolActivity?.({ type: "end", toolName: event.toolName })
+			if (event.toolName === WORKER_REPORT_TOOL_NAME && options.workerReport?.isAccepted()) {
+				queueMicrotask(() => session.abort())
+			}
 		}
 		if (event.type === "message_end" && event.message.role === "assistant") {
 			const u = (
@@ -672,6 +690,8 @@ export async function resumeAgent(
 		tokenBudget?: number
 		inactivityTimeout?: number
 		maxDuration?: number
+		hardTurnLimit?: boolean
+		shouldTerminateAfterTool?: (toolName: string) => boolean
 	} = {},
 ): Promise<RunResult> {
 	const collector = collectResponseText(session)
@@ -699,7 +719,11 @@ export async function resumeAgent(
 			turnCount++
 			options.onTurnEnd?.(turnCount)
 			if (effectiveMaxTurns != null) {
-				if (!softLimitReached && turnCount >= effectiveMaxTurns) {
+				if (options.hardTurnLimit && turnCount >= effectiveMaxTurns) {
+					aborted = true
+					abortReason = "max_turns"
+					session.abort()
+				} else if (!softLimitReached && turnCount >= effectiveMaxTurns) {
 					softLimitReached = true
 					steerAsOrchestrator(
 						session,
@@ -713,7 +737,10 @@ export async function resumeAgent(
 			}
 		}
 		if (event.type === "tool_execution_start") options.onToolActivity?.({ type: "start", toolName: event.toolName })
-		if (event.type === "tool_execution_end") options.onToolActivity?.({ type: "end", toolName: event.toolName })
+		if (event.type === "tool_execution_end") {
+			options.onToolActivity?.({ type: "end", toolName: event.toolName })
+			if (options.shouldTerminateAfterTool?.(event.toolName)) queueMicrotask(() => session.abort())
+		}
 		if (event.type === "message_end" && event.message.role === "assistant") {
 			const u = (
 				event.message as unknown as {

@@ -10,6 +10,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Static } from "typebox"
 import type { StepResult } from "../../../ferment/types.js"
 import { getAgentRecordForTaskValidation } from "../../agents/index.js"
+import { AGENT_WORKER_BUDGETS } from "../../agents/worker-budget-policy.js"
 import { askUser } from "../ask-user.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { renderGateGuidance } from "../gate-registry.js"
@@ -129,7 +130,7 @@ function validateLinkedWorker(params: CompleteStepArgs): string | null {
 	}
 	if (latest.outcome === "completed") {
 		if (!latest.report) {
-			return `Worker Agent "${params.worker_agent_id}" completed without submit_agent_report. Resume it with max_turns: 1 and instruct it not to do more task work; it must call submit_agent_report from its current state before this step can complete.`
+			return `Worker Agent "${params.worker_agent_id}" completed without submit_agent_report. Call resume_subagent with purpose "finalize_report", max_turns: 1, and a short max_duration; instruct it not to do more task work.`
 		}
 		if (latest.report.status !== "completed") {
 			return `Worker Agent "${params.worker_agent_id}" outcome is completed, but submit_agent_report status is "${latest.report.status}". Complete requires report.status "completed"; inspect remaining_steps and resume, spawn a linked replacement, or stop/report.`
@@ -137,7 +138,7 @@ function validateLinkedWorker(params: CompleteStepArgs): string | null {
 		return null
 	}
 	if (latest.outcome === "budget_exhausted") {
-		return `Worker Agent "${params.worker_agent_id}" exhausted its budget (${latest.reason ?? "budget"}). Do not complete this step from an aborted result. Inspect agent_outcome.report first: resume this same Agent with a bounded steering prompt when remaining_steps are a direct continuation; use a changed-approach resume when the same thread still matters but the prior approach stalled; spawn a new linked Agent when remaining_steps have a clean narrower task boundary; run a short bounded finalizer resume to collect submit_agent_report if the report is missing; or stop/report if blocked. Complete only from a linked worker whose latest outcome and report.status are completed.`
+		return `Worker Agent "${params.worker_agent_id}" exhausted its budget (${latest.reason ?? "budget"}). Do not complete this step from an aborted result. Inspect agent_outcome.report first: call resume_subagent with a bounded steering prompt when remaining_steps are a direct continuation; use a changed-approach continuation when the same thread still matters but the prior approach stalled; spawn a new linked Agent when remaining_steps have a clean narrower task boundary; use purpose "finalize_report" if the report is missing; or stop/report if blocked. Complete only from a linked worker whose latest outcome and report.status are completed.`
 	}
 	return `Worker Agent "${params.worker_agent_id}" outcome is ${latest.outcome}${latest.reason ? ` (${latest.reason})` : ""}. Complete requires a linked worker whose latest outcome is completed. Spawn a corrected linked replacement Agent or stop and report the failure.`
 }
@@ -174,46 +175,12 @@ async function runVerificationCommand({
 	return { exitCode, stdout, stderr }
 }
 
-/**
- * Heuristic worker limits for a ferment step.
- *
- * The returned values are *suggestions* embedded in the start_step tool result.
- * The orchestrator is expected to adjust them based on its judgment of the
- * actual work involved — these defaults prevent runaway workers without
- * requiring the model to reason about limits from scratch each time.
- *
- * Tiers:
- *  - heavy: compilation, multi-file rewrites, iterative debugging — 80 turns / 900s
- *  - standard: typical implementation steps — 50 turns / 600s
- *  - light: single-file edits, config changes, research — 25 turns / 300s
- */
+/** Shared conservative default; callers may select another centralized tier. */
 export function suggestWorkerLimits(
-	description: string,
-	verifyCommand?: string,
-): { maxTurns: number; maxDuration: number } {
-	const desc = description.toLowerCase()
-	const verify = (verifyCommand ?? "").toLowerCase()
-
-	// Heavy indicators: compile, build, install, train, boot, migration
-	// Use prefix matching (no trailing \b) so "compile", "compilation", "building" all match.
-	// Note: "make" is excluded (too common as English verb); cmake/makefile are kept.
-	const heavyPattern =
-		/\b(compil|build|install|train|boot|qemu|docker|cmake|makefile|cargo|mvn|gradle|bazel|webpack|migrat|setup|configur)/
-	if (heavyPattern.test(desc) || heavyPattern.test(verify)) {
-		return { maxTurns: 80, maxDuration: 900 }
-	}
-
-	// Light indicators: read-only tasks, simple checks, config updates, renames.
-	// Use word-boundary on both sides to avoid false positives on compound words
-	// (e.g. "checkout", "readme"). Stems that are also full words (read, check,
-	// lint, format, comment) match directly; stems that need prefix matching
-	// (verify/verification, rename/renamed) use a trailing \w* before \b.
-	const lightPattern = /\b(read|check|verif\w*|renam\w*|config|lint|format|comment|document)\b/
-	if (lightPattern.test(desc) && !verify.includes("test")) {
-		return { maxTurns: 25, maxDuration: 300 }
-	}
-
-	return { maxTurns: 50, maxDuration: 600 }
+	_description: string,
+	_verifyCommand?: string,
+): { maxTurns: number; maxDuration: number; tokenBudget: number } {
+	return { ...AGENT_WORKER_BUDGETS.fermentStep }
 }
 
 export async function startStep(
@@ -345,7 +312,7 @@ Do NOT call start_ferment_step again without user input.`,
 	}
 
 	const workerLimits = suggestWorkerLimits(step.description, step.verification?.command)
-	const limitsHint = `\n\nSuggested worker limits (set both on the Agent call): max_turns=${workerLimits.maxTurns}, max_duration=${workerLimits.maxDuration}s. Adjust only when step complexity clearly requires it. Do not complete the step from an exhausted worker. Inspect its structured report, then use a bounded steering resume for a direct continuation, spawn a narrower linked replacement for separable remaining work, or stop/report when blocked. Do not raise the limits and retry the same broad task.`
+	const limitsHint = `\n\nSuggested worker budget (set all three on the Agent call): max_turns=${workerLimits.maxTurns}, max_duration=${workerLimits.maxDuration}s, token_budget=${workerLimits.tokenBudget}. Select a different centralized budget tier only when the scoped step clearly requires it. Do not complete the step from an exhausted worker. Inspect its structured report, then use resume_subagent for a bounded direct continuation, spawn a narrower linked replacement for separable remaining work, or stop/report when blocked. Do not raise the limits and retry the same broad task.`
 
 	return toolOk(
 		withNextActionHint(

@@ -12,6 +12,8 @@ import type {
 	SubagentType,
 	ThinkingLevel,
 } from "../personas/types.js"
+import { MAX_FERMENT_WORKER_OUTPUT_TOKENS } from "../worker-budget-policy.js"
+import type { WorkerReportSubmission } from "../worker-report.js"
 import { type ToolActivity, resumeAgent, runAgent } from "./agent-runner.js"
 import { type LifetimeUsage, addUsage } from "./usage.js"
 
@@ -22,7 +24,8 @@ export type CompactionInfo = { reason: "manual" | "threshold" | "overflow"; toke
 
 /** Default max concurrent background agents. */
 const DEFAULT_MAX_CONCURRENT = 4
-const DEFAULT_MAX_RESUMES = 2
+const DEFAULT_MAX_CONTINUATION_RESUMES = 2
+const DEFAULT_MAX_REPORT_FINALIZERS = 1
 
 interface SpawnArgs {
 	pi: ExtensionAPI
@@ -66,20 +69,13 @@ function formatTaskRef(ref: AgentTaskRef): string {
 	return JSON.stringify(ref)
 }
 
-function withAgentReportProtocol(
-	id: string,
-	prompt: string,
-	taskRef: AgentTaskRef | undefined,
-	reportNonce: string | undefined,
-): string {
+function withAgentReportProtocol(prompt: string, taskRef: AgentTaskRef | undefined): string {
 	if (!taskRef) return prompt
 	return `You are a Ferment-linked worker Agent.
 
-Agent ID: ${id}
-Report token: ${reportNonce}
 Task ref: ${formatTaskRef(taskRef)}
 
-Call submit_agent_report alone as your final action with this Agent ID and report token. A successful submission ends your worker run immediately, so finish all intended edits and verification before calling it. Report factual progress only:
+Call submit_agent_report alone as your final action. The host binds the report to this worker and ends the run after accepting it, so finish all intended edits and verification before calling it. Report factual progress only:
 - status "completed" when the assigned work is complete
 - status "partial" when useful work remains
 - status "blocked" when external input or an unresolved blocker prevents progress
@@ -127,7 +123,6 @@ export class AgentManager {
 
 	spawn(pi: ExtensionAPI, ctx: ExtensionContext, type: SubagentType, prompt: string, options: SpawnOptions): string {
 		const id = randomUUID().slice(0, 17)
-		const reportNonce = options.taskRef ? randomUUID() : undefined
 		const abortController = new AbortController()
 		const record: AgentRecord = {
 			id,
@@ -141,7 +136,7 @@ export class AgentManager {
 			abortController,
 			sessionFile: options.sessionFile,
 			taskRef: options.taskRef,
-			reportNonce,
+			currentAttemptId: 0,
 			maxTurns: options.maxTurns,
 			resumeAttempts: [],
 			lifetimeUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -153,7 +148,7 @@ export class AgentManager {
 			pi,
 			ctx,
 			type,
-			prompt: withAgentReportProtocol(id, prompt, options.taskRef, reportNonce),
+			prompt: withAgentReportProtocol(prompt, options.taskRef),
 			options,
 		}
 
@@ -188,13 +183,31 @@ export class AgentManager {
 			detachParentSignal = undefined
 		}
 
+		const initialTokenBudget = record.taskRef
+			? Math.min(options.tokenBudget ?? MAX_FERMENT_WORKER_OUTPUT_TOKENS, MAX_FERMENT_WORKER_OUTPUT_TOKENS)
+			: options.tokenBudget
 		const promise = runAgent(ctx, type, prompt, {
 			pi,
 			model: options.model,
 			maxTurns: options.maxTurns,
-			tokenBudget: options.tokenBudget,
+			tokenBudget: initialTokenBudget,
 			inactivityTimeout: options.inactivityTimeout,
 			maxDuration: options.maxDuration,
+			workerReport: record.taskRef
+				? {
+						isAccepted: () => record.agentReport?.attempt_id === record.currentAttemptId,
+						submit: (report) => {
+							const accepted = this.submitReport(id, report) != null
+							return {
+								accepted,
+								message: accepted
+									? "Agent report recorded. Worker run complete."
+									: "Agent report rejected because this worker is no longer active.",
+							}
+						},
+					}
+				: undefined,
+			hardTurnLimit: record.taskRef?.kind === "ferment_step",
 			isolated: options.isolated,
 			inheritContext: options.inheritContext,
 			thinkingLevel: options.thinkingLevel,
@@ -338,17 +351,36 @@ export class AgentManager {
 			tokenBudget?: number
 			inactivityTimeout?: number
 			maxDuration?: number
+			purpose?: "continuation" | "finalize_report"
 		} = {},
 	): Promise<AgentRecord | undefined> {
 		const record = this.agents.get(id)
 		if (!record?.session) return undefined
-		if (record.taskRef?.kind === "ferment_step" && (record.resumeAttempts?.length ?? 0) >= DEFAULT_MAX_RESUMES) {
+		const purpose = options.purpose ?? "continuation"
+		const attemptsForPurpose = record.resumeAttempts?.filter((attempt) => attempt.purpose === purpose).length ?? 0
+		const attemptLimit =
+			purpose === "finalize_report" ? DEFAULT_MAX_REPORT_FINALIZERS : DEFAULT_MAX_CONTINUATION_RESUMES
+		if (record.taskRef?.kind === "ferment_step" && attemptsForPurpose >= attemptLimit) {
 			record.status = "error"
-			record.error = `Agent "${id}" has already used the Ferment worker resume limit (${DEFAULT_MAX_RESUMES}). Spawn a new linked worker for remaining work.`
+			record.error = `Agent "${id}" has already used the Ferment worker ${purpose} resume limit (${attemptLimit}). Spawn a new linked worker for remaining work.`
 			record.completedAt = Date.now()
 			record.latestOutcome = buildAgentOutcome(record)
 			return record
 		}
+		const remainingTokenBudget = record.taskRef
+			? MAX_FERMENT_WORKER_OUTPUT_TOKENS - record.lifetimeUsage.output
+			: undefined
+		if (remainingTokenBudget != null && remainingTokenBudget <= 0) {
+			record.status = "error"
+			record.error = `Agent "${id}" exhausted the cumulative Ferment worker output budget (${MAX_FERMENT_WORKER_OUTPUT_TOKENS}).`
+			record.completedAt = Date.now()
+			record.latestOutcome = buildAgentOutcome(record)
+			return record
+		}
+		const attemptTokenBudget =
+			remainingTokenBudget == null
+				? options.tokenBudget
+				: Math.min(options.tokenBudget ?? remainingTokenBudget, remainingTokenBudget)
 
 		record.status = "running"
 		record.completedAt = undefined
@@ -357,41 +389,51 @@ export class AgentManager {
 		record.abortReason = undefined
 		record.maxTurns = options.maxTurns
 		record.lastTurnCount = 0
+		record.currentAttemptId++
+		record.agentReport = undefined
 		const attemptStartedAt = Date.now()
 		const attempt: AgentResumeAttempt = {
+			attempt_id: record.currentAttemptId,
+			purpose,
 			startedAt: attemptStartedAt,
 			maxTurns: options.maxTurns,
-			tokenBudget: options.tokenBudget,
+			tokenBudget: attemptTokenBudget,
 		}
 		record.resumeAttempts ??= []
 		record.resumeAttempts.push(attempt)
+		const abortController = new AbortController()
+		record.abortController = abortController
+		const onCallerAbort = () => abortController.abort()
+		if (options.signal?.aborted) abortController.abort()
+		else options.signal?.addEventListener("abort", onCallerAbort, { once: true })
 
 		try {
-			const result = await resumeAgent(
-				record.session,
-				withAgentReportProtocol(id, prompt, record.taskRef, record.reportNonce),
-				{
-					onToolActivity: (activity) => {
-						if (activity.type === "end") record.toolUses++
-					},
-					onTurnEnd: (turnCount) => {
-						record.lastTurnCount = turnCount
-					},
-					onAssistantUsage: (usage) => {
-						addUsage(record.lifetimeUsage, usage)
-					},
-					onCompaction: (info) => {
-						record.compactionCount++
-						this.onCompact?.(record, info)
-					},
-					signal: options.signal,
-					maxTurns: options.maxTurns,
-					tokenBudget: options.tokenBudget,
-					inactivityTimeout: options.inactivityTimeout,
-					maxDuration: options.maxDuration,
+			const result = await resumeAgent(record.session, withAgentReportProtocol(prompt, record.taskRef), {
+				onToolActivity: (activity) => {
+					if (activity.type === "end") record.toolUses++
 				},
-			)
-			record.status = result.aborted ? "aborted" : result.steered ? "steered" : "completed"
+				onTurnEnd: (turnCount) => {
+					record.lastTurnCount = turnCount
+				},
+				onAssistantUsage: (usage) => {
+					addUsage(record.lifetimeUsage, usage)
+				},
+				onCompaction: (info) => {
+					record.compactionCount++
+					this.onCompact?.(record, info)
+				},
+				signal: abortController.signal,
+				maxTurns: options.maxTurns,
+				tokenBudget: attemptTokenBudget,
+				inactivityTimeout: options.inactivityTimeout,
+				maxDuration: options.maxDuration,
+				hardTurnLimit: record.taskRef?.kind === "ferment_step",
+				shouldTerminateAfterTool: (toolName) =>
+					toolName === "submit_agent_report" && record.agentReport?.attempt_id === record.currentAttemptId,
+			})
+			if ((record.status as AgentRecord["status"]) !== "stopped") {
+				record.status = result.aborted ? "aborted" : result.steered ? "steered" : "completed"
+			}
 			record.abortReason = result.abortReason
 			record.result = result.responseText
 			record.lastTurnCount = result.turnsUsed
@@ -401,6 +443,8 @@ export class AgentManager {
 			record.status = "error"
 			record.error = err instanceof Error ? err.message : String(err)
 			record.completedAt = Date.now()
+		} finally {
+			options.signal?.removeEventListener("abort", onCallerAbort)
 		}
 		attempt.completedAt = record.completedAt
 		attempt.outcome = classifyAgentOutcome(record)
@@ -410,10 +454,14 @@ export class AgentManager {
 		return record
 	}
 
-	submitReport(agentId: string, report: AgentReport): AgentRecord | undefined {
+	submitReport(agentId: string, report: WorkerReportSubmission): AgentRecord | undefined {
 		const record = this.agents.get(agentId)
-		if (!record || record.visibility === "system") return undefined
-		record.agentReport = report
+		if (!record || record.visibility === "system" || record.taskRef?.kind !== "ferment_step") return undefined
+		record.agentReport = {
+			...report,
+			attempt_id: record.currentAttemptId,
+			submitted_at: Date.now(),
+		}
 		record.latestOutcome = buildAgentOutcome(record)
 		return record
 	}
@@ -537,11 +585,11 @@ function buildRemainingWorkGuidance(
 ): string | undefined {
 	if (outcome === "budget_exhausted") {
 		return `Inspect the worker report before deciding what to do. Do not assume that steps_completed is correct or that remaining_steps is necessary. Compare both with the assigned step, success criteria, files touched, and verification evidence. Then choose:
-- Resume the same Agent with a fresh, bounded budget if it only needs to continue valid work using the same approach.
-- Resume the same Agent once with a fresh, bounded budget and explicit new instructions if its approach was wrong but its context is still useful.
+- Call resume_subagent with a fresh, bounded budget if it only needs to continue valid work using the same approach.
+- Call resume_subagent once with explicit new instructions if its approach was wrong but its context is still useful.
 - Spawn a new linked Agent if the necessary remaining work is a separate, narrower task.
 - Stop and report if the work is unnecessary, out of scope, or going in the wrong direction.
-If the report is missing, run a short finalizer resume to collect it before deciding.`
+If the report is missing, call resume_subagent with purpose finalize_report before deciding.`
 	}
 	if (outcome === "failed" && (reason === "max_duration" || reason === "inactivity")) {
 		return "Inspect the worker report before acting; this may indicate a hang, blocked command, or stalled investigation. Resume only with a steering prompt that avoids the stalled operation and continues the same thread. Otherwise spawn a narrower linked replacement Agent, or stop/report the blocker."
@@ -561,7 +609,9 @@ export function buildAgentOutcome(record: AgentRecord): AgentOutcome {
 		record.session != null &&
 		outcome !== "completed" &&
 		outcome !== "stopped" &&
-		(record.taskRef?.kind !== "ferment_step" || (record.resumeAttempts?.length ?? 0) < DEFAULT_MAX_RESUMES)
+		(record.taskRef?.kind !== "ferment_step" ||
+			(record.resumeAttempts?.filter((attempt) => attempt.purpose === "continuation").length ?? 0) <
+				DEFAULT_MAX_CONTINUATION_RESUMES)
 	const recoveryGuidance = buildRemainingWorkGuidance(outcome, reason)
 	return {
 		agent_id: record.id,
@@ -573,8 +623,8 @@ export function buildAgentOutcome(record: AgentRecord): AgentOutcome {
 		max_turns: record.maxTurns,
 		token_usage: { ...record.lifetimeUsage },
 		duration_ms: durationMs,
-		report: record.agentReport,
-		summary: record.agentReport ? undefined : text,
+		report: record.agentReport?.attempt_id === record.currentAttemptId ? record.agentReport : undefined,
+		summary: record.agentReport?.attempt_id === record.currentAttemptId ? undefined : text,
 		recovery_guidance: recoveryGuidance,
 		task_ref: record.taskRef,
 		resume_attempts: record.resumeAttempts?.length ?? 0,

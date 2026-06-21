@@ -52,6 +52,7 @@ export const IMPLEMENTATION_TOOL_NAMES: ReadonlySet<string> = new Set([
 	"write",
 	// Delegation tool: the higher-level persona-based `Agent`
 	"Agent",
+	"resume_subagent",
 	"get_subagent_result",
 	// Ferment lifecycle tools
 	FERMENT_TOOLS.ACTIVATE_PHASE,

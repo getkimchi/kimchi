@@ -20,6 +20,8 @@ export interface AgentTaskRef {
 }
 
 export interface AgentResumeAttempt {
+	attempt_id: number
+	purpose: "continuation" | "finalize_report"
 	startedAt: number
 	completedAt?: number
 	maxTurns?: number
@@ -29,6 +31,8 @@ export interface AgentResumeAttempt {
 }
 
 export interface AgentReport {
+	/** Host-assigned execution attempt. Workers cannot choose this value. */
+	attempt_id: number
 	status: "completed" | "partial" | "blocked"
 	summary: string
 	steps_completed: string[]
@@ -159,7 +163,7 @@ export interface AgentRecord {
 	modelId?: string
 	abortReason?: AgentAbortReason
 	taskRef?: AgentTaskRef
-	reportNonce?: string
+	currentAttemptId: number
 	agentReport?: AgentReport
 	latestOutcome?: AgentOutcome
 	resumeAttempts?: AgentResumeAttempt[]

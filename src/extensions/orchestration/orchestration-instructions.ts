@@ -6,6 +6,7 @@
  * - Single-model: empty (no orchestration content)
  */
 
+import { renderAgentWorkerBudgetTable } from "../agents/worker-budget-policy.js"
 import type { PromptMode } from "../prompt-construction/system-prompt.js"
 import { buildOrchestrationGuidelinesSection } from "./model-registry/guidelines/guidelines-resolver.js"
 import type { ModelRegistry } from "./model-registry/index.js"
@@ -204,13 +205,7 @@ Include a \`max_turns\` for every Agent call. Use \`token_budget\` when the call
 Match the budget to the **delegated task scope**, not the overall project complexity:
 If the user explicitly asks for the Agent tool with a specific \`token_budget\`, make that Agent call once with the requested value. Do not ask to increase the budget or substitute a larger budget before the tool runs.
 
-| Agent task scope | max_turns | max_duration | optional token_budget |
-|---|---|---|---|
-| Single file (one module, one test file, one doc) | 12 | 300s | 50000 |
-| Multi-file package (concurrent logic, worker pools, complex state) | 30 | 600s | 150000 |
-| Review (read code + write findings report) | 20 | 600s | 100000 |
-| Full project or large codebase exploration | 25 | 300s | 100000 |
-| Plan or research document (writing, not coding) | 10 | 180s | 60000 |
+${renderAgentWorkerBudgetTable()}
 
 **Always set \`max_duration\`** on every Agent call. Subagents can hang on blocking operations (deadlocked tests, infinite loops, stuck network calls) where token budget and turn limits do not trigger. The duration cap is the last line of defence against runaway agents.
 
@@ -223,9 +218,9 @@ The turn cap is the primary delegated-worker budget. If an Agent returns \`agent
 | Signal | Action |
 |---|---|
 | Completed outcome + report.status completed | Use the result or complete the linked Ferment step. |
-| Missing report | Resume the same Agent with \`max_turns: 1\` and instruct it to call \`submit_agent_report\` without doing more task work. |
-| Budget exhausted + direct continuation in remaining_steps | Resume the same Agent with a bounded fresh \`max_turns\` allocation and a steering prompt. |
-| Budget exhausted + same thread but stalled approach | Resume the same Agent once with a changed-approach steering prompt. |
+| Missing report | Call \`resume_subagent\` with purpose \`finalize_report\`, \`max_turns: 1\`, and a short duration. |
+| Budget exhausted + direct continuation in remaining_steps | Call \`resume_subagent\` with a bounded fresh budget and steering prompt. |
+| Budget exhausted + same thread but stalled approach | Call \`resume_subagent\` once with a changed-approach steering prompt. |
 | Budget exhausted + separable remaining_steps | Spawn a narrower linked replacement Agent for the clean task boundary. |
 | Budget exhausted + appears finished | Run a short finalizer resume, then complete only from a completed outcome. |
 | Max duration or inactivity | Assume a possible hang or blocked operation; resume only if the steering prompt avoids the stall, otherwise spawn a narrower replacement or stop/report. |
