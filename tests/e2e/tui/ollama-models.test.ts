@@ -7,8 +7,10 @@
  * chat-history area to render the echoed user message, and assert the fake
  * server saw zero chat-completion requests during the round-trip.
  *
- * Skipped when no Ollama is reachable — the test is for environments where a
- * developer (or CI runner with Ollama sidecar) has `ollama serve` running.
+ * Uses tests/e2e/tui/support/fake-ollama-server.ts — a mock that mirrors the
+ * real Ollama endpoints (/api/tags, /api/show, /v1/chat/completions). The
+ * fixture (kimchi-fixture.ts) starts the mock and injects OLLAMA_HOST into the
+ * launch env so the test is fully self-contained — no `ollama serve` required.
  *
  * What this test does NOT cover (and why):
  *
@@ -35,134 +37,107 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 
-import { test } from "@microsoft/tui-test"
+import { expect, test } from "@microsoft/tui-test"
 import { STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
 import {
-	BINARY_PATH,
-	PACKAGE_DIR,
 	PROMPT_READY,
 	TUI_TEST_CONFIG,
 	createKimchiFixture,
-	sh,
+	launchKimchi,
 	stopKimchi,
 } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
-interface OllamaPreflight {
-	reachable: boolean
-	host: string
-	firstModelId: string | undefined
-}
-
-/** Resolve $OLLAMA_HOST → default, then probe /api/tags. Returns the first discovered model. */
-async function probeOllama(): Promise<OllamaPreflight> {
-	const rawHost = process.env.OLLAMA_HOST ?? "http://localhost:11434"
-	const host = rawHost.replace(/\/+$/, "")
-	try {
-		const controller = new AbortController()
-		const timeout = setTimeout(() => controller.abort(), 2000)
-		const response = await fetch(`${host}/api/tags`, { signal: controller.signal })
-		clearTimeout(timeout)
-		if (!response.ok) return { reachable: false, host, firstModelId: undefined }
-		const body = (await response.json()) as { models?: Array<{ name?: string }> }
-		const firstModelId = body.models?.[0]?.name
-		return { reachable: true, host, firstModelId }
-	} catch {
-		return { reachable: false, host, firstModelId: undefined }
-	}
-}
-
-/** Launch kimchi with the given provider/model overrides (instead of the fake default). */
-function launchKimchiAs(
-	terminal: Parameters<typeof createKimchiFixture>[0] extends never
-		? never
-		: import("@microsoft/tui-test/lib/terminal/term.js").Terminal,
-	fixture: Awaited<ReturnType<typeof createKimchiFixture>>,
-	provider: string,
-	model: string,
-): void {
-	terminal.submit(
-		[
-			`cd ${sh(fixture.workDir)} &&`,
-			"env",
-			`HOME=${sh(fixture.homeDir)}`,
-			`PI_PACKAGE_DIR=${sh(PACKAGE_DIR)}`,
-			"TERM=xterm-256color",
-			sh(BINARY_PATH),
-			`--provider ${provider}`,
-			`--model ${model}`,
-		].join(" "),
-	)
-}
-
 test("chat round-trips through ollama when launched with --provider ollama", async ({ terminal }) => {
-	const probe = await probeOllama()
-	test.skip(!probe.reachable || !probe.firstModelId, `Ollama not reachable at ${probe.host} (or no models installed)`)
-	const discoveredId = probe.firstModelId as string
-
 	const fixture = await createKimchiFixture({
-		// One scripted response in case any chat request slips through to the fake
-		// server before the orchestrator switches to ollama. Should never be used.
-		responses: [{ stream: ["should", " not", " appear"] }],
+		ollama: {
+			models: [
+				{
+					name: "llava:13b",
+					parameter_size: "13B",
+					family: "llama",
+					capabilities: ["completion", "vision"],
+					context_length: 4096,
+					quantization_level: "Q4_K_M",
+				},
+				{
+					name: "qwen2.5:14b",
+					parameter_size: "14B",
+					family: "qwen2",
+					capabilities: ["completion", "thinking"],
+					context_length: 32768,
+					quantization_level: "Q4_K_M",
+				},
+				{
+					name: "mistral:7b",
+					parameter_size: "7B",
+					family: "mistral",
+					capabilities: ["completion"],
+					context_length: 8192,
+					quantization_level: "Q4_K_M",
+				},
+			],
+			// Scripted chat-completion responses: each request shifts one entry.
+			// "Reply with the single word PONG" should trigger one chat request.
+			chatResponses: [{ stream: ["PONG"] }],
+		},
+		// The openai fake server is still started (as a fallback). We assert
+		// that ZERO chat-completion requests hit it during this test.
+		responses: [],
 	})
 
 	try {
-		// Launch directly with the ollama provider active. Bypasses the picker so
-		// the test is deterministic — no async picker-loading race to fight.
-		launchKimchiAs(terminal, fixture, "ollama", discoveredId)
+		// Launch kimchi with --provider ollama --model <first-ollama-model>
+		launchKimchi(terminal, fixture, ["--provider", "ollama", "--model", "ollama/llava:13b"])
 		await waitForText(terminal, PROMPT_READY, { timeoutMs: STARTUP_TIMEOUT_MS })
 
-		// Snapshot fake server's chat-completion request count BEFORE sending any prompt.
+		// Snapshot fake server's chat-completion request count BEFORE any prompt.
 		const fakeChatRequestsBefore = fixture.fake.requests.filter((request) =>
 			request.url.startsWith("/openai/v1/chat/completions"),
 		).length
 
+		// Also snapshot the number of ollama discovery + chat requests BEFORE the prompt.
+		const ollamaRequestsBefore = fixture.ollama ? fixture.ollama.requests.length : 0
+
 		terminal.submit("Reply with the single word PONG")
-		// Wait for the chat-history area to render the echoed user message. This
-		// proves kimchi accepted the submit and dispatched the request. We do NOT
-		// wait for Ollama's response content (non-deterministic) — the load-bearing
-		// assertion is on the fake server's request count below.
+		// Wait for the echoed user prompt (proves the message was accepted).
 		await waitForText(terminal, /PONG/i, { timeoutMs: STREAM_TIMEOUT_MS })
 
-		// Load-bearing assertion: the fake server must NOT have seen a
-		// chat-completion request. If it did, the orchestrator routed the prompt
-		// to the wrong provider and the integration is broken.
+		// Load-bearing assertion #1: the openai fake must NOT have seen a new
+		// chat-completion request — routing is correct.
 		const fakeChatRequestsAfter = fixture.fake.requests.filter((request) =>
 			request.url.startsWith("/openai/v1/chat/completions"),
 		).length
-		if (fakeChatRequestsAfter !== fakeChatRequestsBefore) {
-			throw new Error(
-				`Expected zero new chat-completion requests to the fake server when launched with --provider ollama; fake went from ${fakeChatRequestsBefore} to ${fakeChatRequestsAfter}. Latest fake body: ${JSON.stringify(fixture.fake.requests.at(-1)?.body)}`,
-			)
-		}
+		expect(fakeChatRequestsAfter).toBe(fakeChatRequestsBefore)
 
-		// Also verify models.json contains the ollama provider — proves the
-		// startup probe ran end-to-end and would survive subsequent kimchi-dev
-		// metadata refreshes (success criterion #2).
+		// Load-bearing assertion #2: the ollama fake was probed for models.
+		// At minimum there should be a GET /api/tags and 3× POST /api/show.
+		// (The TUI startup probe calls probeOllamaModels which enriches all models.)
+		const ollamaRequestsAfter = fixture.ollama ? fixture.ollama.requests.length : 0
+		expect(ollamaRequestsAfter).toBeGreaterThan(ollamaRequestsBefore)
+
+		// Load-bearing assertion #3: models.json contains the ollama provider.
 		const modelsJsonPath = join(fixture.agentDir, "models.json")
 		const persisted = JSON.parse(readFileSync(modelsJsonPath, "utf-8")) as {
 			providers?: Record<string, { models?: Array<{ id?: string }> }>
 		}
-		if (!persisted.providers?.ollama) {
-			throw new Error(
-				`models.json at ${modelsJsonPath} has no "ollama" provider after startup — startup probe did not run or failed.`,
-			)
-		}
-		const ollamaIds = (persisted.providers.ollama.models ?? []).map((model) => model.id).filter(Boolean)
-		if (!ollamaIds.includes(discoveredId)) {
-			throw new Error(`models.json ollama provider does not contain ${discoveredId}; got ${JSON.stringify(ollamaIds)}`)
-		}
+		expect(persisted.providers).toBeDefined()
+		expect(persisted.providers!.ollama).toBeDefined()
+		const ollamaIds = (persisted.providers!.ollama.models ?? []).map((model) => model.id).filter(Boolean)
+		expect(ollamaIds).toContain("llava:13b")
+		expect(ollamaIds).toContain("qwen2.5:14b")
+		expect(ollamaIds).toContain("mistral:7b")
 	} finally {
 		try {
 			await stopKimchi(terminal)
 		} catch {
-			// best-effort teardown
+			/* best-effort */
 		}
 		try {
 			await fixture.stop()
 		} catch {
-			// best-effort teardown
+			/* best-effort */
 		}
 	}
 })
