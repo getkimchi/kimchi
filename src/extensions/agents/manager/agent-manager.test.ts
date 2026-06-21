@@ -53,8 +53,13 @@ describe("AgentManager", () => {
 			reason: "token_budget",
 			resumable: true,
 		})
-		expect(record.latestOutcome?.recovery_guidance).toContain("direct continuation")
-		expect(record.latestOutcome?.recovery_guidance).toContain("clean narrower task boundary")
+		expect(record.latestOutcome?.recovery_guidance).toContain("Do not assume that steps_completed is correct")
+		expect(record.latestOutcome?.recovery_guidance).toContain("remaining_steps is necessary")
+		expect(record.latestOutcome?.recovery_guidance).toContain("fresh, bounded budget")
+		expect(record.latestOutcome?.recovery_guidance).toContain("explicit new instructions")
+		expect(record.latestOutcome?.recovery_guidance).toContain("separate, narrower task")
+		expect(record.latestOutcome?.recovery_guidance).toContain("going in the wrong direction")
+		expect(record.latestOutcome?.recovery_guidance).toContain("short finalizer resume")
 	})
 
 	it("threads task_ref and max_turns into the structured outcome", async () => {
@@ -201,6 +206,49 @@ describe("AgentManager", () => {
 		expect(resumed?.status).toBe("completed")
 	})
 
+	it("non-Ferment agent resumed 2+ times still has resumable === true in latestOutcome", async () => {
+		const session = { dispose: vi.fn() } as unknown as AgentSession
+		mockRunAgent.mockResolvedValueOnce({
+			responseText: "checkpoint",
+			session,
+			aborted: true,
+			abortReason: "max_turns",
+			steered: false,
+			turnsUsed: 2,
+			maxTurns: 2,
+		})
+		mockResumeAgent
+			.mockResolvedValueOnce({
+				responseText: "partial-1",
+				session,
+				aborted: true,
+				abortReason: "max_turns",
+				steered: false,
+				turnsUsed: 1,
+				maxTurns: 1,
+			})
+			.mockResolvedValueOnce({
+				responseText: "partial-2",
+				session,
+				aborted: true,
+				abortReason: "max_turns",
+				steered: false,
+				turnsUsed: 1,
+				maxTurns: 1,
+			})
+		manager = new AgentManager()
+		const record = await manager.spawnAndWait(fakePi(), fakeCtx(), "Explore", "inspect", {
+			description: "inspect",
+			maxTurns: 2,
+		})
+
+		await manager.resume(record.id, "continue-1", { maxTurns: 1 })
+		const resumed = await manager.resume(record.id, "continue-2", { maxTurns: 1 })
+
+		expect(resumed?.resumeAttempts).toHaveLength(2)
+		expect(resumed?.latestOutcome?.resumable).toBe(true)
+	})
+
 	it("caps Ferment-linked worker resumes", async () => {
 		const session = { dispose: vi.fn() } as unknown as AgentSession
 		mockRunAgent.mockResolvedValueOnce({
@@ -222,6 +270,115 @@ describe("AgentManager", () => {
 		expect(mockResumeAgent).not.toHaveBeenCalled()
 		expect(resumed?.status).toBe("error")
 		expect(resumed?.error).toContain("Ferment worker resume limit")
+	})
+
+	describe("submitReport", () => {
+		it("returns undefined for unknown agent ID", async () => {
+			manager = new AgentManager()
+
+			const result = manager.submitReport("nonexistent-id", {
+				status: "completed",
+				summary: "done",
+				steps_completed: ["step1"],
+				remaining_steps: [],
+				submitted_at: Date.now(),
+			})
+
+			expect(result).toBeUndefined()
+		})
+
+		it("returns undefined for system-visibility agents", async () => {
+			mockRunAgent.mockResolvedValueOnce({
+				responseText: "done",
+				session: { dispose: vi.fn() } as unknown as AgentSession,
+				aborted: false,
+				steered: false,
+			})
+			manager = new AgentManager()
+			const record = await manager.spawnAndWait(fakePi(), fakeCtx(), "Explore", "inspect", {
+				description: "system agent",
+				visibility: "system",
+			})
+
+			const result = manager.submitReport(record.id, {
+				status: "completed",
+				summary: "done",
+				steps_completed: ["step1"],
+				remaining_steps: [],
+				submitted_at: Date.now(),
+			})
+
+			expect(result).toBeUndefined()
+			expect(record.agentReport).toBeUndefined()
+		})
+
+		it("stores report on record and returns the record", async () => {
+			mockRunAgent.mockResolvedValueOnce({
+				responseText: "done",
+				session: { dispose: vi.fn() } as unknown as AgentSession,
+				aborted: false,
+				steered: false,
+			})
+			manager = new AgentManager()
+			const taskRef = { kind: "ferment_step" as const, ferment_id: "f1", phase_id: "p1", step_id: "s1" }
+			const record = await manager.spawnAndWait(fakePi(), fakeCtx(), "Explore", "inspect", {
+				description: "inspect",
+				taskRef,
+			})
+
+			const report = {
+				status: "completed" as const,
+				summary: "implemented feature",
+				steps_completed: ["wrote code", "ran tests"],
+				remaining_steps: [],
+				submitted_at: Date.now(),
+			}
+			const result = manager.submitReport(record.id, report)
+
+			expect(result).toBe(record)
+			expect(record.agentReport).toEqual(report)
+			expect(record.latestOutcome?.report).toEqual(report)
+			expect(record.latestOutcome?.summary).toBeUndefined()
+		})
+
+		it("second submission overwrites the first report", async () => {
+			mockRunAgent.mockResolvedValueOnce({
+				responseText: "done",
+				session: { dispose: vi.fn() } as unknown as AgentSession,
+				aborted: false,
+				steered: false,
+			})
+			manager = new AgentManager()
+			const taskRef = { kind: "ferment_step" as const, ferment_id: "f1", phase_id: "p1", step_id: "s1" }
+			const record = await manager.spawnAndWait(fakePi(), fakeCtx(), "Explore", "inspect", {
+				description: "inspect",
+				taskRef,
+			})
+
+			const firstReport = {
+				status: "partial" as const,
+				summary: "halfway there",
+				steps_completed: ["step1"],
+				remaining_steps: ["step2"],
+				submitted_at: 100,
+			}
+			const secondReport = {
+				status: "completed" as const,
+				summary: "all done",
+				steps_completed: ["step1", "step2"],
+				remaining_steps: [],
+				submitted_at: 200,
+			}
+
+			manager.submitReport(record.id, firstReport)
+			const result = manager.submitReport(record.id, secondReport)
+
+			expect(result).toBe(record)
+			expect(record.agentReport).toEqual(secondReport)
+			expect(record.latestOutcome?.report).toEqual(secondReport)
+			expect(record.agentReport?.status).toBe("completed")
+			expect(record.agentReport?.summary).toBe("all done")
+		})
 	})
 
 	it("describes max_duration failures as stalled work instead of budget exhaustion", () => {

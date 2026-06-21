@@ -537,7 +537,12 @@ function buildRemainingWorkGuidance(
 	reason: AgentOutcome["reason"],
 ): string | undefined {
 	if (outcome === "budget_exhausted") {
-		return "Inspect the worker report before acting. Resume this same Agent with a bounded steering prompt when remaining_steps are a direct continuation and preserving session context is valuable. Use a changed-approach resume when the same thread is still useful but the prior approach stalled. Spawn a new linked Agent when remaining_steps have a clean narrower task boundary. If the report is missing, run a short bounded finalizer resume to collect submit_agent_report before deciding."
+		return `Inspect the worker report before deciding what to do. Do not assume that steps_completed is correct or that remaining_steps is necessary. Compare both with the assigned step, success criteria, files touched, and verification evidence. Then choose:
+- Resume the same Agent with a fresh, bounded budget if it only needs to continue valid work using the same approach.
+- Resume the same Agent once with a fresh, bounded budget and explicit new instructions if its approach was wrong but its context is still useful.
+- Spawn a new linked Agent if the necessary remaining work is a separate, narrower task.
+- Stop and report if the work is unnecessary, out of scope, or going in the wrong direction.
+If the report is missing, run a short finalizer resume to collect it before deciding.`
 	}
 	if (outcome === "failed" && (reason === "max_duration" || reason === "inactivity")) {
 		return "Inspect the worker report before acting; this may indicate a hang, blocked command, or stalled investigation. Resume only with a steering prompt that avoids the stalled operation and continues the same thread. Otherwise spawn a narrower linked replacement Agent, or stop/report the blocker."
@@ -557,7 +562,7 @@ export function buildAgentOutcome(record: AgentRecord): AgentOutcome {
 		record.session != null &&
 		outcome !== "completed" &&
 		outcome !== "stopped" &&
-		(record.resumeAttempts?.length ?? 0) < DEFAULT_MAX_RESUMES
+		(record.taskRef?.kind !== "ferment_step" || (record.resumeAttempts?.length ?? 0) < DEFAULT_MAX_RESUMES)
 	const recoveryGuidance = buildRemainingWorkGuidance(outcome, reason)
 	return {
 		agent_id: record.id,

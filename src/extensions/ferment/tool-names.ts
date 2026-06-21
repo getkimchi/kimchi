@@ -58,9 +58,8 @@ export function isFermentToolName(name: string): boolean {
 
 /**
  * Returns true for ferment tools that should only be visible during an active
- * ferment (planning or implementation). The discovery tools — `list_ferments`
- * and `request_ferment_workflow` — are excluded so they remain visible in
- * normal chat and idle mode.
+ * ferment (planning or implementation). The discovery tool `list_ferments`
+ * is excluded so it remains visible in normal chat and idle mode.
  */
 export function isFermentOnlyToolName(name: string): boolean {
 	return PLANNER_ONLY_FERMENT_TOOL_NAMES.has(name)

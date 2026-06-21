@@ -207,13 +207,12 @@ describe("worker profile", () => {
 describe("idle profile", () => {
 	it("includes non-ferment tools and discovery tools but strips ferment-only tools", () => {
 		// Idle = normal chat or post-ferment. Non-ferment tools (read, bash, etc.)
-		// and discovery tools (list_ferments, request_ferment_workflow) stay.
+		// and the discovery tool (list_ferments) stay.
 		// Ferment-only lifecycle/planning tools are hidden.
 		const allTools = [
 			"read",
 			"bash",
 			"list_ferments",
-			"request_ferment_workflow",
 			"propose_ferment_scoping", // ferment-only: should be hidden
 			"start_ferment_step", // ferment-only: should be hidden
 			"activate_ferment_phase", // ferment-only: should be hidden
@@ -226,7 +225,6 @@ describe("idle profile", () => {
 		expect(lastCall).toContain("read")
 		expect(lastCall).toContain("bash")
 		expect(lastCall).toContain("list_ferments")
-		expect(lastCall).toContain("request_ferment_workflow")
 		expect(lastCall).not.toContain("propose_ferment_scoping")
 		expect(lastCall).not.toContain("start_ferment_step")
 		expect(lastCall).not.toContain("activate_ferment_phase")

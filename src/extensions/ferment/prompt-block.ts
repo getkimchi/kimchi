@@ -97,7 +97,7 @@ After \`propose_ferment_scoping\` returns "Plan saved", the host confirmation al
 You are the PLANNER for ferment "${f.name}". Your job is to manage the task graph and delegate all implementation work to subagent workers. ${delegationCheckpoint}
 
 **State machine — toolset follows the ferment lifecycle:**
-- **Planning phase** (no phase activated yet): your toolset is the read-only research set — \`read\`, \`grep\`, \`find\`, \`ls\`, \`web_fetch\`, \`web_search\`, \`set_phase\` — plus the ferment planning tools (\`propose_ferment_scoping\`, \`scope_ferment\`, \`update_ferment_scope_field\`, \`confirm_ferment_completion_criteria\`, \`list_ferments\`, \`ask_user\`). Use these to draft the plan and call \`scope_ferment\`.
+- **Planning phase** (no phase activated yet): your toolset is the read-only research set — \`read\`, \`grep\`, \`find\`, \`ls\`, \`web_fetch\`, \`web_search\`, \`set_phase\` — plus the ferment planning tools (\`propose_ferment_scoping\`, ${isOneshot ? "`scope_ferment`, " : ""}\`update_ferment_scope_field\`, \`confirm_ferment_completion_criteria\`, \`list_ferments\`, \`ask_user\`). Use these to draft the plan${isOneshot ? " and call \\`scope_ferment\\`" : ""}.
 - **Implementation phase** (after \`activate_ferment_phase\` returns success): the full toolset unlocks — \`bash\`, \`edit\`, \`write\`, \`Agent\`, \`get_subagent_result\`, and the ferment lifecycle tools (\`refine_ferment_phase\`, \`complete_ferment_phase\`, \`start_ferment_step\`, \`complete_ferment_step\`, \`verify_ferment_step\`, \`skip_ferment_step\`, \`fail_ferment_step\`, \`add_ferment_decision\`, \`add_ferment_memory\`, \`complete_ferment\`, etc.). pi-mono snapshots the active tool list at the start of each agent run, so the transition is visible on the turn AFTER the first successful \`activate_ferment_phase\`.
 - Every tool result ends with a "Next action:" line — execute that action immediately in the same turn, do not defer it${stateMachineContinuationRule}
 - There is no shell CLI for ferment phase or step transitions; use the ferment tools only
@@ -113,13 +113,17 @@ You are the PLANNER for ferment "${f.name}". Your job is to manage the task grap
 - Spawn a subagent for every step regardless of whether you already know the answer — the subagent exists to produce verifiable evidence, not just to do work. No-op or trivially-known steps still require a subagent run.
 - Ferment workers must call submit_agent_report before their final answer. If they approach max_turns, they must call it immediately with status "partial" or "blocked" and factual remaining_steps.
 - If the current action is complete_ferment_step: this is a SUGGESTION — the LLM decides when the step is done based on subagent results
-- If the specification names a fixed output path or fixed runtime interface, the worker directive must keep it fixed; do not turn it into an extra CLI argument, config option, or flexible interface unless the user explicitly requested that${agentsSection}
+- If the specification names a fixed output path or fixed runtime interface, the worker directive must keep it fixed; do not turn it into an extra CLI argument, config option, or flexible interface unless the user explicitly requested that${agentsSection}${
+		continuationPolicy === "automated"
+			? `
 
 **Turn discipline (automated ferment):**
 - Every turn MUST end with a ferment lifecycle tool call or an Agent spawn — do NOT produce a narrative summary and stop.
 - After any tool result that includes a "Next action:" line, execute that action in the same turn. Do not defer it to a future turn.
 - The only permitted text-only response is the single final message after \`complete_ferment\` returns.
-- Writing a step summary then stopping leaves the ferment stalled — always follow the summary with the next lifecycle tool call (for example, \`complete_ferment_step\`, \`start_ferment_step\`, or \`complete_ferment_phase\`).
+- Writing a step summary then stopping leaves the ferment stalled — always follow the summary with the next lifecycle tool call (for example, \`complete_ferment_step\`, \`start_ferment_step\`, or \`complete_ferment_phase\`).`
+			: ""
+	}
 
 **Phase tracking (advisory):**
 - Phase tags feed two consumers: analytics for per-phase cost attribution, and the orchestrator's per-phase guideline selection

@@ -94,6 +94,15 @@ function textResult<T = AgentDetails>(msg: string, details?: T) {
 	return { content: [{ type: "text" as const, text: msg }], details: details as unknown }
 }
 
+/**
+ * Build tool result for submit_agent_report.
+ *
+ * The `terminate` flag is a forward-looking field: it signals that the worker
+ * should stop after this tool result. Currently the pi-mono framework does
+ * not consume this property — worker termination relies on the LLM reading
+ * the "Worker run complete" text and choosing to stop. If/when the framework
+ * adds explicit tool-level termination, this field will be the hook.
+ */
 export function buildAgentReportToolResult(message: string, terminate = false) {
 	return {
 		...textResult(message),
@@ -440,7 +449,13 @@ export function getActiveAgentModelIds(): string[] {
 		.filter((id): id is string => id != null)
 }
 
-export function getAgentRecordForTaskValidation(id: string): AgentRecord | undefined {
+/**
+ * Returns a read-only snapshot of the agent record for task validation.
+ * The returned object is a shallow copy — nested objects (session, lifetimeUsage,
+ * etc.) are shared references. Callers MUST NOT mutate nested properties;
+ * doing so would corrupt the live agent’s state in the manager.
+ */
+export function getAgentRecordForTaskValidation(id: string): Readonly<AgentRecord> | undefined {
 	const record = activeManager?.getRecord(id)
 	if (!record || record.visibility === "system") return undefined
 	return { ...record, latestOutcome: record.latestOutcome ?? buildAgentOutcome(record) }

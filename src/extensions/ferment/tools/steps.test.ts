@@ -486,6 +486,244 @@ describe("completeStep", () => {
 		expect(okText(result)).toContain("verified")
 		expect(services.judgeStepVerification).not.toHaveBeenCalled()
 	})
+
+	describe("validateLinkedWorker rejection paths", () => {
+		it("rejects when worker_agent_id is omitted", async () => {
+			const h = createHarness()
+			h.applyAndPersist(h.fermentId, { type: "start_step", phaseId: "phase-1", stepId: "step-1" })
+
+			const result = await completeStep(
+				h.runtime,
+				{
+					ferment_id: h.fermentId,
+					phase_id: "phase-1",
+					step_id: "step-1",
+					summary: "done",
+					gates: passingStepGates(),
+					// Cast: this test intentionally omits `worker_agent_id` to verify
+					// runtime validation rejects the missing field. TS would otherwise
+					// flag the call because the field is required by CompleteStepParams.
+				} as unknown as Parameters<typeof completeStep>[1],
+				{ pi: h.pi },
+				createServices(),
+			)
+
+			expect(errText(result)).toContain("requires worker_agent_id")
+		})
+
+		it("rejects when the agent record is not found", async () => {
+			const h = createHarness()
+			h.applyAndPersist(h.fermentId, { type: "start_step", phaseId: "phase-1", stepId: "step-1" })
+
+			const result = await completeStep(
+				h.runtime,
+				{
+					ferment_id: h.fermentId,
+					phase_id: "phase-1",
+					step_id: "step-1",
+					worker_agent_id: "agent-nonexistent",
+					summary: "done",
+					gates: passingStepGates(),
+				},
+				{ pi: h.pi },
+				createServices(),
+			)
+
+			expect(errText(result)).toContain("was not found")
+		})
+
+		it("rejects when the task ref does not match the ferment step", async () => {
+			const h = createHarness()
+			h.applyAndPersist(h.fermentId, { type: "start_step", phaseId: "phase-1", stepId: "step-1" })
+
+			mockAgentRecords.set("agent-mismatch", {
+				id: "agent-mismatch",
+				visibility: "user",
+				taskRef: { kind: "ferment_step", ferment_id: "other-ferment", phase_id: "phase-1", step_id: "step-1" },
+				latestOutcome: {
+					agent_id: "agent-mismatch",
+					status: "completed",
+					outcome: "completed",
+					resumable: false,
+					token_usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					duration_ms: 1,
+					report: {
+						status: "completed",
+						summary: "done",
+						steps_completed: [],
+						remaining_steps: [],
+						submitted_at: 1,
+					},
+					resume_attempts: 0,
+				},
+			})
+
+			const result = await completeStep(
+				h.runtime,
+				{
+					ferment_id: h.fermentId,
+					phase_id: "phase-1",
+					step_id: "step-1",
+					worker_agent_id: "agent-mismatch",
+					summary: "done",
+					gates: passingStepGates(),
+				},
+				{ pi: h.pi },
+				createServices(),
+			)
+
+			expect(errText(result)).toContain("is not linked to this Ferment step")
+		})
+
+		it("rejects when the agent has no recorded outcome", async () => {
+			const h = createHarness()
+			h.applyAndPersist(h.fermentId, { type: "start_step", phaseId: "phase-1", stepId: "step-1" })
+
+			mockAgentRecords.set("agent-no-outcome", {
+				id: "agent-no-outcome",
+				visibility: "user",
+				taskRef: { kind: "ferment_step", ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1" },
+			})
+
+			const result = await completeStep(
+				h.runtime,
+				{
+					ferment_id: h.fermentId,
+					phase_id: "phase-1",
+					step_id: "step-1",
+					worker_agent_id: "agent-no-outcome",
+					summary: "done",
+					gates: passingStepGates(),
+				},
+				{ pi: h.pi },
+				createServices(),
+			)
+
+			expect(errText(result)).toContain("has no recorded outcome")
+		})
+
+		it("rejects when the agent completed without submit_agent_report", async () => {
+			const h = createHarness()
+			h.applyAndPersist(h.fermentId, { type: "start_step", phaseId: "phase-1", stepId: "step-1" })
+
+			mockAgentRecords.set("agent-no-report", {
+				id: "agent-no-report",
+				visibility: "user",
+				taskRef: { kind: "ferment_step", ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1" },
+				latestOutcome: {
+					agent_id: "agent-no-report",
+					status: "completed",
+					outcome: "completed",
+					resumable: false,
+					token_usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					duration_ms: 1,
+					resume_attempts: 0,
+				},
+			})
+
+			const result = await completeStep(
+				h.runtime,
+				{
+					ferment_id: h.fermentId,
+					phase_id: "phase-1",
+					step_id: "step-1",
+					worker_agent_id: "agent-no-report",
+					summary: "done",
+					gates: passingStepGates(),
+				},
+				{ pi: h.pi },
+				createServices(),
+			)
+
+			expect(errText(result)).toContain("completed without submit_agent_report")
+		})
+
+		it("rejects when report status is not completed", async () => {
+			const h = createHarness()
+			h.applyAndPersist(h.fermentId, { type: "start_step", phaseId: "phase-1", stepId: "step-1" })
+
+			mockAgentRecords.set("agent-partial", {
+				id: "agent-partial",
+				visibility: "user",
+				taskRef: { kind: "ferment_step", ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1" },
+				latestOutcome: {
+					agent_id: "agent-partial",
+					status: "completed",
+					outcome: "completed",
+					resumable: false,
+					token_usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					duration_ms: 1,
+					report: {
+						status: "partial",
+						summary: "half done",
+						steps_completed: [],
+						remaining_steps: ["rest"],
+						submitted_at: 1,
+					},
+					resume_attempts: 0,
+				},
+			})
+
+			const result = await completeStep(
+				h.runtime,
+				{
+					ferment_id: h.fermentId,
+					phase_id: "phase-1",
+					step_id: "step-1",
+					worker_agent_id: "agent-partial",
+					summary: "done",
+					gates: passingStepGates(),
+				},
+				{ pi: h.pi },
+				createServices(),
+			)
+
+			expect(errText(result)).toContain('report status is "partial"')
+		})
+
+		it("rejects when the agent exhausted its budget", async () => {
+			const h = createHarness()
+			h.applyAndPersist(h.fermentId, { type: "start_step", phaseId: "phase-1", stepId: "step-1" })
+
+			mockAgentRecords.set("agent-exhausted", {
+				id: "agent-exhausted",
+				visibility: "user",
+				taskRef: { kind: "ferment_step", ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1" },
+				latestOutcome: {
+					agent_id: "agent-exhausted",
+					status: "completed",
+					outcome: "budget_exhausted",
+					resumable: true,
+					token_usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					duration_ms: 1,
+					report: {
+						status: "partial",
+						summary: "ran out",
+						steps_completed: [],
+						remaining_steps: ["more"],
+						submitted_at: 1,
+					},
+					resume_attempts: 0,
+				},
+			})
+
+			const result = await completeStep(
+				h.runtime,
+				{
+					ferment_id: h.fermentId,
+					phase_id: "phase-1",
+					step_id: "step-1",
+					worker_agent_id: "agent-exhausted",
+					summary: "done",
+					gates: passingStepGates(),
+				},
+				{ pi: h.pi },
+				createServices(),
+			)
+
+			expect(errText(result)).toContain("exhausted its budget")
+		})
+	})
 })
 
 describe("suggestWorkerLimits", () => {

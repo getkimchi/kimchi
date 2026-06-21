@@ -73,8 +73,8 @@ export const IMPLEMENTATION_TOOL_NAMES: ReadonlySet<string> = new Set([
  * Profile applied to the planner's active tool list. Keyed on ferment
  * lifecycle state:
  *   - `idle`: no active ferment; all non-ferment tools + ferment discovery
- *             tools only (`list_ferments`, `request_ferment_workflow`). All
- *             ferment-only lifecycle/planning tools are hidden.
+ *             tool only (`list_ferments`). All ferment-only lifecycle/planning
+ *             tools are hidden.
  *   - `worker`: subagent worker context (`KIMCHI_SUBAGENT=1`); empty toolset,
  *               managed externally by the agents manager
  *   - `planning`: ferment exists, no phase activated yet; read-only research
@@ -114,9 +114,9 @@ export class FermentToolScope {
 		switch (profile) {
 			case "idle": {
 				// Normal chat / post-ferment state: show all non-ferment tools plus
-				// the two ferment discovery tools (list_ferments, request_ferment_workflow).
-				// All ferment-only lifecycle and planning tools are hidden so they
-				// don't clutter the model's tool list outside an active ferment.
+				// the ferment discovery tool (list_ferments). All ferment-only
+				// lifecycle and planning tools are hidden so they don't clutter
+				// the model's tool list outside an active ferment.
 				const idle = this.pi
 					.getAllTools()
 					.map((t) => t.name)

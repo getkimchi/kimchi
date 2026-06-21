@@ -286,6 +286,19 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).not.toContain("do not ask the user to confirm phase advancement")
 		})
 
+		it("omits turn discipline section under manual continuation policy", () => {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime({ status: "running" }, "manual")) ?? ""
+			expect(out).not.toContain("Turn discipline (automated ferment)")
+			expect(out).not.toContain("Every turn MUST end with a ferment lifecycle tool call")
+		})
+
+		it("includes turn discipline section under automated continuation policy", () => {
+			const out =
+				buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime({ status: "running" }, "automated")) ?? ""
+			expect(out).toContain("Turn discipline (automated ferment)")
+			expect(out).toContain("Every turn MUST end with a ferment lifecycle tool call")
+		})
+
 		it("uses automated cross-phase instructions under automated continuation policy", () => {
 			const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime({}, "automated")) ?? ""
 			expect(out).toContain("Automated continuation policy is active")
@@ -407,7 +420,7 @@ describe("buildFermentPromptBlock", () => {
 	})
 
 	it("combines bounded worker limits with report-aware exhaustion recovery", () => {
-		const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime({ status: "running" })) ?? ""
+		const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime({ status: "running" }, "automated")) ?? ""
 
 		expect(out).toContain("max_turns")
 		expect(out).toContain("max_duration")

@@ -51,6 +51,7 @@ export interface AgentOutcome {
 	turns_used?: number
 	max_turns?: number
 	token_usage: LifetimeUsage
+	/** Total agent lifetime in milliseconds (completedAt - startedAt), NOT per-resume duration. Per-attempt timing is tracked in AgentResumeAttempt. */
 	duration_ms: number
 	report?: AgentReport
 	summary?: string
