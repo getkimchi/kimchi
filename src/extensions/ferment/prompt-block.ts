@@ -32,11 +32,11 @@ function buildPlannerSupplement(f: Ferment, continuationPolicy: ContinuationPoli
 	const stateMachineContinuationRule =
 		continuationPolicy === "manual"
 			? "\n- Manual continuation policy: if `complete_ferment_phase` returns a phase-boundary wait, ask the user whether to continue and do not call `activate_ferment_phase` until they say continue"
-			: "\n- Automated continuation policy: continue across phase boundaries whenever the next-action hint names another lifecycle tool"
+			: "\n- Automated continuation policy: continue across phase boundaries without pausing. Every turn must end with a ferment tool call or Agent spawn until complete_ferment is called."
 	const phaseAdvancementContract =
 		continuationPolicy === "manual"
 			? "Manual continuation policy is active: work autonomously inside the current phase, but stop at phase boundaries and ask the user before activating the next phase. If the user says continue, call `activate_ferment_phase` for the next phase. Do not ask the user to confirm step results."
-			: "Automated continuation policy is active: do not ask the user to confirm phase advancement or step results. Continue through all stages until the ferment is complete, blocked, or paused."
+			: "Automated continuation policy is active: do not ask the user to confirm phase advancement or step results. Continue calling ferment lifecycle tools and spawning Agent workers turn after turn until complete_ferment is called. Never stop between steps or phases to summarize — call the next tool first, then include any summary in that tool call's arguments."
 	const delegationCheckpoint =
 		"For broad existing-codebase scoping requests, follow the shared discovery guidance in the Upfront Contract before drafting recommendations."
 	// One-shot uses scope_ferment directly; interactive routes through propose_ferment_scoping.
@@ -99,12 +99,12 @@ You are the PLANNER for ferment "${f.name}". Your job is to manage the task grap
 **State machine — toolset follows the ferment lifecycle:**
 - **Planning phase** (no phase activated yet): your toolset is the read-only research set — \`read\`, \`grep\`, \`find\`, \`ls\`, \`web_fetch\`, \`web_search\`, \`set_phase\` — plus the ferment planning tools (\`propose_ferment_scoping\`, \`scope_ferment\`, \`update_ferment_scope_field\`, \`confirm_ferment_completion_criteria\`, \`list_ferments\`, \`ask_user\`). Use these to draft the plan and call \`scope_ferment\`.
 - **Implementation phase** (after \`activate_ferment_phase\` returns success): the full toolset unlocks — \`bash\`, \`edit\`, \`write\`, \`Agent\`, \`get_subagent_result\`, and the ferment lifecycle tools (\`refine_ferment_phase\`, \`complete_ferment_phase\`, \`start_ferment_step\`, \`complete_ferment_step\`, \`verify_ferment_step\`, \`skip_ferment_step\`, \`fail_ferment_step\`, \`add_ferment_decision\`, \`add_ferment_memory\`, \`complete_ferment\`, etc.). pi-mono snapshots the active tool list at the start of each agent run, so the transition is visible on the turn AFTER the first successful \`activate_ferment_phase\`.
-- Read the next-action hint from each tool result, then execute that action directly${stateMachineContinuationRule}
+- Every tool result ends with a "Next action:" line — execute that action immediately in the same turn, do not defer it${stateMachineContinuationRule}
 - There is no shell CLI for ferment phase or step transitions; use the ferment tools only
 - ${CREATE_FERMENT_REDIRECT_MESSAGE}
-- For start_ferment_step: call the tool, then spawn a subagent to do the work. Every Ferment worker Agent call must include max_turns and the exact task_ref returned by start_ferment_step.
+- For start_ferment_step: call the tool, then spawn a subagent to do the work. Every Ferment worker Agent call must include max_turns, max_duration, and the exact task_ref returned by start_ferment_step. Use the limits suggested by start_ferment_step as the default; adjust only when step complexity clearly requires it.
 - If start_ferment_step returns parallel_siblings, call start_ferment_step for all of them and spawn their subagents CONCURRENTLY
-- After a subagent returns, inspect agent_outcome before acting. If outcome is "completed" and agent_outcome.report.status is "completed", call complete_ferment_step with worker_agent_id and the report summary. If the report is missing, resume with max_turns: 1 and instruct the worker to call submit_agent_report without doing more task work. If outcome is budget_exhausted, failed, or stopped, do not mark the step complete automatically; read agent_outcome.report, reason about whether remaining_steps are a direct continuation, a separable narrower task, or blocked, then choose a bounded steering resume, a new linked worker scoped to the narrower work, or stop/report.
+- After a subagent returns, inspect agent_outcome before acting. If outcome is "completed" and agent_outcome.report.status is "completed", call complete_ferment_step with worker_agent_id and the report summary. If the report is missing, resume with max_turns: 1 and a short max_duration and instruct the worker to call submit_agent_report without doing more task work. If outcome is budget_exhausted, failed, or stopped, do not mark the step complete. Read agent_outcome.report, then use a bounded steering resume for a direct continuation, spawn a narrower linked replacement for a separable remaining task, or stop/report when blocked. Do not raise the limits and retry the same broad task.
 - For phase transitions (activate_ferment_phase, complete_ferment_phase, complete_ferment): call the tool directly, no subagent needed
 
 **Rules:**
@@ -114,6 +114,12 @@ You are the PLANNER for ferment "${f.name}". Your job is to manage the task grap
 - Ferment workers must call submit_agent_report before their final answer. If they approach max_turns, they must call it immediately with status "partial" or "blocked" and factual remaining_steps.
 - If the current action is complete_ferment_step: this is a SUGGESTION — the LLM decides when the step is done based on subagent results
 - If the specification names a fixed output path or fixed runtime interface, the worker directive must keep it fixed; do not turn it into an extra CLI argument, config option, or flexible interface unless the user explicitly requested that${agentsSection}
+
+**Turn discipline (automated ferment):**
+- Every turn MUST end with a ferment lifecycle tool call or an Agent spawn — do NOT produce a narrative summary and stop.
+- After any tool result that includes a "Next action:" line, execute that action in the same turn. Do not defer it to a future turn.
+- The only permitted text-only response is the single final message after \`complete_ferment\` returns.
+- Writing a step summary then stopping leaves the ferment stalled — always follow the summary with the next lifecycle tool call (for example, \`complete_ferment_step\`, \`start_ferment_step\`, or \`complete_ferment_phase\`).
 
 **Phase tracking (advisory):**
 - Phase tags feed two consumers: analytics for per-phase cost attribution, and the orchestrator's per-phase guideline selection

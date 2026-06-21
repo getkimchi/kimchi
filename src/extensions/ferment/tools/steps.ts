@@ -174,6 +174,44 @@ async function runVerificationCommand({
 	return { exitCode, stdout, stderr }
 }
 
+/**
+ * Heuristic worker limits for a ferment step.
+ *
+ * The returned values are *suggestions* embedded in the start_step tool result.
+ * The orchestrator is expected to adjust them based on its judgment of the
+ * actual work involved — these defaults prevent runaway workers without
+ * requiring the model to reason about limits from scratch each time.
+ *
+ * Tiers:
+ *  - heavy: compilation, multi-file rewrites, iterative debugging — 80 turns / 900s
+ *  - standard: typical implementation steps — 50 turns / 600s
+ *  - light: single-file edits, config changes, research — 25 turns / 300s
+ */
+export function suggestWorkerLimits(
+	description: string,
+	verifyCommand?: string,
+): { maxTurns: number; maxDuration: number } {
+	const desc = description.toLowerCase()
+	const verify = (verifyCommand ?? "").toLowerCase()
+
+	// Heavy indicators: compile, build, install, train, run, boot, migration
+	// Use prefix matching (no trailing \b) so "compile", "compilation", "building" all match.
+	const heavyPattern =
+		/\b(compil|build|install|train|boot|qemu|docker|make|cmake|cargo|mvn|gradle|bazel|webpack|migrat|setup|configur)/
+	if (heavyPattern.test(desc) || heavyPattern.test(verify)) {
+		return { maxTurns: 80, maxDuration: 900 }
+	}
+
+	// Light indicators: read, check, verify, update config, rename, add test
+	// Use prefix matching for consistency.
+	const lightPattern = /\b(read|check|verif|renam|config|lint|format|comment|document)/
+	if (lightPattern.test(desc) && !verify.includes("test")) {
+		return { maxTurns: 25, maxDuration: 300 }
+	}
+
+	return { maxTurns: 50, maxDuration: 600 }
+}
+
 export async function startStep(
 	runtime: FermentRuntime,
 	params: StepActionArgs,
@@ -302,9 +340,12 @@ Do NOT call start_ferment_step again without user input.`,
 		step_id: step.id,
 	}
 
+	const workerLimits = suggestWorkerLimits(step.description, step.verification?.command)
+	const limitsHint = `\n\nSuggested worker limits (set both on the Agent call): max_turns=${workerLimits.maxTurns}, max_duration=${workerLimits.maxDuration}s. Adjust only when step complexity clearly requires it. Do not complete the step from an exhausted worker. Inspect its structured report, then use a bounded steering resume for a direct continuation, spawn a narrower linked replacement for separable remaining work, or stop/report when blocked. Do not raise the limits and retry the same broad task.`
+
 	return toolOk(
 		withNextActionHint(
-			`Step ${step.index}: "${step.description}" started. Spawn a subagent with the persona that matches this step's intent. Pass task_ref: ${JSON.stringify(taskRef)} and a max_turns budget. The worker will receive its Agent ID and must call submit_agent_report before its final answer. When it returns with agent_outcome.outcome "completed" and agent_outcome.report.status "completed", call complete_ferment_step with worker_agent_id and the report summary.${lowGradeCaution}${parallelNote}${contextBlock}`,
+			`Step ${step.index}: "${step.description}" started. Spawn a subagent with the persona that matches this step's intent. Pass task_ref: ${JSON.stringify(taskRef)} and use both suggested limits. The worker will receive its Agent ID and must call submit_agent_report before its final answer. When it returns with agent_outcome.outcome "completed" and agent_outcome.report.status "completed", call complete_ferment_step with worker_agent_id and the report summary.${lowGradeCaution}${parallelNote}${limitsHint}${contextBlock}`,
 			outcome.ferment,
 		),
 	)

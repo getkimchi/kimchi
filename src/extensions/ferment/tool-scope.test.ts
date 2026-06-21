@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
 import type { Ferment, Phase } from "../../ferment/types.js"
+import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { FERMENT_TOOLS, FERMENT_TOOL_NAMES } from "./tool-names.js"
 import {
 	IMPLEMENTATION_TOOL_NAMES,
@@ -267,5 +268,77 @@ describe("normal vs one-shot parity", () => {
 		// NOT the toolset.
 		const ferment = buildFerment("active")
 		expect(profileForFerment(ferment)).toBe("implementation")
+	})
+})
+
+describe("visibility-layer interlock", () => {
+	// Regression: applyFermentRuntimeToolProfile called setActiveTools directly,
+	// bypassing the cooperative visibility layer. Tools hidden at session_start
+	// (e.g. ask_user / confirm_ferment_completion_criteria when hasUI=false) could
+	// be re-added by the ferment profile applied in before_agent_start.
+	// See: https://github.com/getkimchi/kimchi/pull/647
+
+	it("implementation profile does not re-add tools disabled via createToolVisibility", () => {
+		const allTools = ["bash", "edit", "ask_user", "confirm_ferment_completion_criteria", ...FERMENT_TOOL_NAMES]
+		const pi = createPi(allTools, allTools)
+
+		// Simulate session_start with hasUI=false: disable both interactive tools.
+		const visibility = createToolVisibility(pi)
+		visibility.disable(["ask_user", "confirm_ferment_completion_criteria"])
+
+		// Now simulate before_agent_start applying the implementation profile for an active ferment.
+		applyFermentToolProfile(pi, "implementation")
+
+		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
+		expect(lastCall).not.toContain("ask_user")
+		expect(lastCall).not.toContain("confirm_ferment_completion_criteria")
+	})
+
+	it("planning profile does not re-add tools disabled via createToolVisibility", () => {
+		const allTools = ["ask_user", "confirm_ferment_completion_criteria", "propose_ferment_scoping", "scope_ferment"]
+		const pi = createPi(allTools, allTools)
+
+		const visibility = createToolVisibility(pi)
+		visibility.disable(["ask_user", "confirm_ferment_completion_criteria"])
+
+		applyFermentToolProfile(pi, "planning")
+
+		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
+		expect(lastCall).not.toContain("ask_user")
+		expect(lastCall).not.toContain("confirm_ferment_completion_criteria")
+	})
+
+	it("idle profile does not re-add tools disabled via createToolVisibility", () => {
+		const allTools = ["bash", "ask_user", "confirm_ferment_completion_criteria"]
+		const pi = createPi(allTools, allTools)
+
+		const visibility = createToolVisibility(pi)
+		visibility.disable(["ask_user", "confirm_ferment_completion_criteria"])
+
+		applyFermentToolProfile(pi, "idle")
+
+		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
+		expect(lastCall).not.toContain("ask_user")
+		expect(lastCall).not.toContain("confirm_ferment_completion_criteria")
+		expect(lastCall).toContain("bash")
+	})
+
+	it("profile respects visibility votes only while votes are active — re-enabling restores the tool", () => {
+		const allTools = ["bash", "ask_user", ...FERMENT_TOOL_NAMES]
+		const pi = createPi(allTools, allTools)
+
+		const visibility = createToolVisibility(pi)
+		visibility.disable(["ask_user"])
+
+		// Vote is active: tool should be absent.
+		applyFermentToolProfile(pi, "implementation")
+		let lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
+		expect(lastCall).not.toContain("ask_user")
+
+		// Remove the vote: tool should return.
+		visibility.enable(["ask_user"])
+		applyFermentToolProfile(pi, "implementation")
+		lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
+		expect(lastCall).toContain("ask_user")
 	})
 })

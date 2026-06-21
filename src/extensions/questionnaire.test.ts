@@ -18,6 +18,9 @@ function registeredQuestionnaireTool() {
 		registerTool: vi.fn((registered) => {
 			tool = registered as typeof tool
 		}),
+		on: vi.fn(),
+		getActiveTools: vi.fn(() => []),
+		setActiveTools: vi.fn(),
 	} as unknown as ExtensionAPI
 	questionnaireExtension(pi)
 	if (!tool) throw new Error("questionnaire tool was not registered")
@@ -244,5 +247,77 @@ describe("formatAnswerText", () => {
 			},
 		]
 		expect(formatAnswerText(questions, answers)).toBe("Q1: user selected: A, B")
+	})
+})
+
+describe("questionnaire non-interactive visibility", () => {
+	interface FakePi {
+		registerTool: ReturnType<typeof vi.fn>
+		on: ReturnType<typeof vi.fn>
+		getActiveTools: ReturnType<typeof vi.fn>
+		setActiveTools: ReturnType<typeof vi.fn>
+		// Captures the registered session_start handler so tests can fire it.
+		_sessionStart: ((event: unknown, ctx: { hasUI: boolean }) => void) | null
+	}
+
+	function makePi(activeTools: string[] = ["questionnaire"]): FakePi {
+		const pi: FakePi = {
+			registerTool: vi.fn(),
+			on: vi.fn(),
+			getActiveTools: vi.fn(() => activeTools),
+			setActiveTools: vi.fn(),
+			_sessionStart: null,
+		}
+		pi.on.mockImplementation((event: string, handler: (e: unknown, ctx: { hasUI: boolean }) => void) => {
+			if (event === "session_start") pi._sessionStart = handler
+		})
+		return pi
+	}
+
+	it("disables the tool from the active set when session_start fires with no UI", () => {
+		const pi = makePi(["questionnaire", "read", "bash"])
+		questionnaireExtension(pi as unknown as ExtensionAPI)
+		expect(pi._sessionStart).toBeTypeOf("function")
+
+		pi._sessionStart?.({}, { hasUI: false })
+
+		expect(pi.setActiveTools).toHaveBeenCalledWith(["read", "bash"])
+	})
+
+	it("leaves the tool enabled when session_start fires with a UI attached", () => {
+		const pi = makePi(["questionnaire", "read", "bash"])
+		questionnaireExtension(pi as unknown as ExtensionAPI)
+		pi._sessionStart?.({}, { hasUI: true })
+		// disable/flip hasUI=false path calls setActiveTools; enable path doesn't,
+		// because the tool is already in the active set.
+		const writes = pi.setActiveTools.mock.calls
+		expect(writes).toEqual([])
+	})
+
+	it("execute returns a 'do not retry' steer when no UI is attached (defense-in-depth)", async () => {
+		const pi = makePi(["questionnaire"])
+		questionnaireExtension(pi as unknown as ExtensionAPI)
+		const tool = pi.registerTool.mock.calls[0]?.[0] as {
+			execute: (
+				toolCallId: string,
+				params: unknown,
+				signal: AbortSignal | undefined,
+				onUpdate: unknown,
+				ctx: unknown,
+			) => Promise<{ content: { text: string }[]; details: { cancelled: boolean } }>
+		}
+
+		const result = await tool.execute(
+			"call-1",
+			{ questions: [{ id: "ship", prompt: "Ship it?" }] },
+			undefined,
+			undefined,
+			{ hasUI: false, ui: { custom: vi.fn() } },
+		)
+
+		expect(result.details.cancelled).toBe(true)
+		const text = result.content[0]?.text ?? ""
+		expect(text).toContain("questionnaire is unavailable")
+		expect(text).toContain("Do NOT call questionnaire again")
 	})
 })

@@ -20,6 +20,7 @@ import {
 	defaultStepHandlerServices,
 	registerStepTools,
 	startStep,
+	suggestWorkerLimits,
 } from "./steps.js"
 
 interface RegisteredTool {
@@ -149,6 +150,24 @@ describe("startStep", () => {
 		expect(text).not.toMatch(/model "kimchi-dev/)
 		expect(h.storage.get(h.fermentId)?.phases[0].steps[0].status).toBe("running")
 		expect(h.runtime.getStepStartRef(h.fermentId, "phase-1", "step-1")).toBe("abc123")
+	})
+
+	it("returns bounded linked-worker instructions without completing exhausted work", async () => {
+		const h = createHarness()
+		const result = await startStep(
+			h.runtime,
+			{ ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1" },
+			{ pi: h.pi },
+			createServices(),
+		)
+
+		const text = okText(result)
+		expect(text).toContain('task_ref: {"kind":"ferment_step"')
+		expect(text).toContain("max_turns=50")
+		expect(text).toContain("max_duration=600s")
+		expect(text).toContain("submit_agent_report")
+		expect(text).toContain("Do not complete the step from an exhausted worker")
+		expect(text).not.toContain("call complete_ferment_step with whatever it produced")
 	})
 
 	it("includes fixed output paths from scoping in the worker prompt handoff", async () => {
@@ -466,5 +485,63 @@ describe("completeStep", () => {
 
 		expect(okText(result)).toContain("verified")
 		expect(services.judgeStepVerification).not.toHaveBeenCalled()
+	})
+})
+
+describe("suggestWorkerLimits", () => {
+	it("returns standard limits for a typical implementation step", () => {
+		const limits = suggestWorkerLimits("Implement the auth middleware")
+		expect(limits.maxTurns).toBe(50)
+		expect(limits.maxDuration).toBe(600)
+	})
+
+	it("returns heavy limits when description mentions compilation", () => {
+		const limits = suggestWorkerLimits("Compile the MIPS binary and link dependencies")
+		expect(limits.maxTurns).toBe(80)
+		expect(limits.maxDuration).toBe(900)
+	})
+
+	it("returns heavy limits when description mentions build", () => {
+		const limits = suggestWorkerLimits("Build and install the project dependencies")
+		expect(limits.maxTurns).toBe(80)
+		expect(limits.maxDuration).toBe(900)
+	})
+
+	it("returns heavy limits when verify command mentions make", () => {
+		const limits = suggestWorkerLimits("Run the build", "make -j4 && ./run_tests.sh")
+		expect(limits.maxTurns).toBe(80)
+		expect(limits.maxDuration).toBe(900)
+	})
+
+	it("returns light limits for a check/verify step without tests", () => {
+		const limits = suggestWorkerLimits("Verify the config file is correct")
+		expect(limits.maxTurns).toBe(25)
+		expect(limits.maxDuration).toBe(300)
+	})
+
+	it("returns light limits for a lint/format step", () => {
+		const limits = suggestWorkerLimits("Lint the source files and fix formatting")
+		expect(limits.maxTurns).toBe(25)
+		expect(limits.maxDuration).toBe(300)
+	})
+
+	it("returns standard limits when description mentions lint but verify runs tests", () => {
+		// verify contains 'test' so the light path is skipped
+		const limits = suggestWorkerLimits("Lint and add test coverage", "pnpm run test")
+		expect(limits.maxTurns).toBe(50)
+		expect(limits.maxDuration).toBe(600)
+	})
+
+	it("returns standard limits for a rename/config step that has a test verify command", () => {
+		const limits = suggestWorkerLimits("Rename the config fields", "pnpm test config")
+		expect(limits.maxTurns).toBe(50)
+		expect(limits.maxDuration).toBe(600)
+	})
+
+	it("is case-insensitive", () => {
+		const upper = suggestWorkerLimits("COMPILE the binary")
+		expect(upper.maxTurns).toBe(80)
+		const lower = suggestWorkerLimits("compile the binary")
+		expect(lower.maxTurns).toBe(80)
 	})
 })

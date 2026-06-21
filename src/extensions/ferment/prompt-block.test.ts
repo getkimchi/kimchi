@@ -405,4 +405,17 @@ describe("buildFermentPromptBlock", () => {
 		// It must NOT contain the old "does not narrow" text.
 		expect(out).not.toContain("does not narrow")
 	})
+
+	it("combines bounded worker limits with report-aware exhaustion recovery", () => {
+		const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime({ status: "running" })) ?? ""
+
+		expect(out).toContain("max_turns")
+		expect(out).toContain("max_duration")
+		expect(out).toContain("exact task_ref")
+		expect(out).toContain("submit_agent_report")
+		expect(out).toContain("do not mark the step complete")
+		expect(out).toContain("narrower linked replacement")
+		expect(out).toContain("Every turn MUST end with a ferment lifecycle tool call or an Agent spawn")
+		expect(out).not.toContain("call complete_ferment_step with whatever it produced")
+	})
 })
