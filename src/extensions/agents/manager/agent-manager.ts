@@ -79,7 +79,7 @@ Agent ID: ${id}
 Report token: ${reportNonce}
 Task ref: ${formatTaskRef(taskRef)}
 
-Before your final answer, call submit_agent_report with this Agent ID and report token. Report factual progress only:
+Call submit_agent_report alone as your final action with this Agent ID and report token. A successful submission ends your worker run immediately, so finish all intended edits and verification before calling it. Report factual progress only:
 - status "completed" when the assigned work is complete
 - status "partial" when useful work remains
 - status "blocked" when external input or an unresolved blocker prevents progress
@@ -87,7 +87,7 @@ Before your final answer, call submit_agent_report with this Agent ID and report
 - remaining_steps: concrete work still left, or [] when complete
 - blockers: blockers only, not generic uncertainty
 
-If you reach a budget warning, call submit_agent_report immediately with your current state before summarizing.
+If you receive a budget warning, use the remaining headroom deliberately. If there is enough room to safely finish and verify the current unit, do that first, then call submit_agent_report. If the budget is nearly exhausted or uncertain, stop work and submit your current state immediately.
 
 ${prompt}`
 }

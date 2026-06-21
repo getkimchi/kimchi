@@ -94,6 +94,12 @@ describe("AgentManager", () => {
 			expect.stringContaining(`Report token: ${record.reportNonce}`),
 			expect.anything(),
 		)
+		expect(mockRunAgent).toHaveBeenCalledWith(
+			expect.anything(),
+			"Explore",
+			expect.stringContaining("Call submit_agent_report alone as your final action"),
+			expect.anything(),
+		)
 	})
 
 	it("stores submitted reports on the structured outcome", async () => {

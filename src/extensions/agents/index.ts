@@ -94,6 +94,13 @@ function textResult<T = AgentDetails>(msg: string, details?: T) {
 	return { content: [{ type: "text" as const, text: msg }], details: details as unknown }
 }
 
+export function buildAgentReportToolResult(message: string, terminate = false) {
+	return {
+		...textResult(message),
+		...(terminate ? { terminate: true as const } : {}),
+	}
+}
+
 interface GetSubagentResultDetails {
 	agentId: string
 	displayName: string
@@ -829,7 +836,7 @@ export default function (pi: ExtensionAPI) {
 			name: "submit_agent_report",
 			label: "Submit Agent Report",
 			description:
-				"Submit a structured progress report for a Ferment-linked Agent worker. Use this before the worker's final answer when task_ref is kind ferment_step.",
+				"Submit the final structured progress report for a Ferment-linked Agent worker. Call this alone as the worker's final action when task_ref is kind ferment_step. An accepted report terminates the worker run.",
 			parameters: Type.Object({
 				agent_id: Type.String({
 					description: "The Agent ID shown in this worker's prompt.",
@@ -875,20 +882,24 @@ export default function (pi: ExtensionAPI) {
 				const agentId = params.agent_id as string
 				const record = activeManager?.getRecord(agentId)
 				if (!record || record.visibility === "system") {
-					return textResult(`Unknown Agent ID "${agentId}". Use the Agent ID injected into this worker prompt.`)
+					return buildAgentReportToolResult(
+						`Unknown Agent ID "${agentId}". Use the Agent ID injected into this worker prompt.`,
+					)
 				}
 				if (record.taskRef?.kind !== "ferment_step") {
-					return textResult("submit_agent_report is only accepted for Ferment-linked worker Agents.")
+					return buildAgentReportToolResult("submit_agent_report is only accepted for Ferment-linked worker Agents.")
 				}
 				if (!record.reportNonce || params.report_token !== record.reportNonce) {
-					return textResult(
+					return buildAgentReportToolResult(
 						"Invalid report_token for this Agent. Use the report token injected into this worker prompt.",
 					)
 				}
 				const reportStatus = params.status as AgentReport["status"]
 				const remainingSteps = params.remaining_steps as string[]
 				if (reportStatus === "completed" && remainingSteps.length > 0) {
-					return textResult('A completed report must use remaining_steps: []. Use status "partial" if work remains.')
+					return buildAgentReportToolResult(
+						'A completed report must use remaining_steps: []. Use status "partial" if work remains.',
+					)
 				}
 				const report: AgentReport = {
 					status: reportStatus,
@@ -902,7 +913,7 @@ export default function (pi: ExtensionAPI) {
 					submitted_at: Date.now(),
 				}
 				activeManager?.submitReport(agentId, report)
-				return textResult("Agent report recorded.")
+				return buildAgentReportToolResult("Agent report recorded. Worker run complete.", true)
 			},
 		}),
 	)
