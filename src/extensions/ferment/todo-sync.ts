@@ -20,7 +20,13 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Phase, StepStatus } from "../../ferment/types.js"
 import { parseTodoScopeKey } from "../todos/scope.js"
-import { applyWriteTodos, getTodoState, getTodosForScope, registerActiveTodoScopeProvider } from "../todos/store.js"
+import {
+	applyWriteTodos,
+	getTodoState,
+	getTodosForScope,
+	registerActiveTodoScopeProvider,
+	subscribeTodoStore,
+} from "../todos/store.js"
 import type { TodoDraft, TodoItem, TodoScope, TodoStatus } from "../todos/types.js"
 import {
 	FERMENT_EVENTS,
@@ -229,6 +235,28 @@ function handlePhaseStarted(raw: unknown): void {
 
 let currentRunningStep: { phaseId: string; stepId: string } | undefined
 
+/**
+ * Number of orchestrator turns since the step-scope todos were last written.
+ * Incremented by `bumpStallCounter()` (called from the turn_end handler in
+ * prompt-enrichment), reset to 0 whenever `applyWriteTodos` fires for the
+ * active ferment-step scope (via the store listener wired in
+ * `registerFermentTodoSync`).
+ */
+let turnsSinceStepTodoWrite = 0
+
+/** Call once per orchestrator turn_end to track how long the step scope
+ *  has been untouched. Only increments when a step is actually running. */
+export function bumpStallCounter(): void {
+	if (currentRunningStep) turnsSinceStepTodoWrite++
+}
+
+/** Returns the number of turns since the step-scope todos were last written,
+ *  or 0 when no step is running. */
+export function getTurnsSinceStepTodoWrite(): number {
+	if (!currentRunningStep) return 0
+	return turnsSinceStepTodoWrite
+}
+
 /** Exported for tests only. */
 export function __getCurrentRunningStep(): { phaseId: string; stepId: string } | undefined {
 	return currentRunningStep
@@ -241,6 +269,7 @@ function handleStepStarted(raw: unknown): void {
 
 	// Track the running step so the scope provider can auto-scope todo calls.
 	currentRunningStep = { phaseId: payload.phaseId, stepId: payload.stepId }
+	turnsSinceStepTodoWrite = 0
 }
 
 function clearStepTodos(phaseId: string, stepId: string): void {
@@ -446,6 +475,18 @@ export function registerFermentTodoSync(pi: ExtensionAPI): () => void {
 		}
 	})
 
+	// Reset the stall counter whenever the active step's todo scope is written to.
+	const unsubscribeTodoListener = subscribeTodoStore((details) => {
+		if (!currentRunningStep) return
+		if (
+			details.scope.kind === "ferment-step" &&
+			(details.scope as { phaseId: string; stepId: string }).phaseId === currentRunningStep.phaseId &&
+			(details.scope as { phaseId: string; stepId: string }).stepId === currentRunningStep.stepId
+		) {
+			turnsSinceStepTodoWrite = 0
+		}
+	})
+
 	unsubscribes.push(pi.events.on(FERMENT_EVENTS.PHASE_STARTED, handlePhaseStarted))
 	unsubscribes.push(pi.events.on(FERMENT_EVENTS.STEP_STARTED, handleStepStarted))
 	unsubscribes.push(pi.events.on(FERMENT_EVENTS.STEP_COMPLETED, handleStepCompleted))
@@ -460,7 +501,9 @@ export function registerFermentTodoSync(pi: ExtensionAPI): () => void {
 			unsub()
 		}
 		unregisterScope()
+		unsubscribeTodoListener()
 		currentRunningStep = undefined
+		turnsSinceStepTodoWrite = 0
 		// Clear all in-memory state on unsubscribe to avoid memory leaks.
 		todoIdMaps.clear()
 		suspendedSnapshots.clear()

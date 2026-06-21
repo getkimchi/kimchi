@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { getActive } from "../ferment/state.js"
+import { getTurnsSinceStepTodoWrite } from "../ferment/todo-sync.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import { parseTodoScopeKey } from "./scope.js"
 import { getTodoState } from "./store.js"
@@ -130,6 +131,16 @@ export function renderTodoStateMarkdown(): string | undefined {
 		lines.push(`**Step ${stepScope.phaseId}/${stepScope.stepId}**`)
 		for (const todo of stepScope.todos) lines.push(formatTodoLine(todo))
 		lines.push("")
+	}
+
+	// Stall detection: if a ferment step is running and the step-scope
+	// todos haven't been updated in several turns, nudge the model.
+	const staleTurns = getTurnsSinceStepTodoWrite()
+	if (staleTurns >= 5) {
+		lines.push("")
+		lines.push(
+			`\u26a0 Step todos have not been updated for ${staleTurns} turns. If you are iterating without progress, step back and reassess your approach. Update your todo plan with what you have tried and what to try next.`,
+		)
 	}
 
 	// Trim trailing blank line for cleanliness.

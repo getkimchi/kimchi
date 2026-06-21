@@ -40,6 +40,7 @@ import {
 	getConfiguredNativeSkillNames,
 	getConfiguredSkillResourcePaths,
 } from "../claude-code-skills/definition.js"
+import { bumpStallCounter } from "../ferment/todo-sync.js"
 import {
 	getProcessMultiModelEnabled,
 	setProcessMultiModelEnabled,
@@ -382,6 +383,10 @@ export default function (skillPaths: string[]) {
 				if (event.message.role !== "assistant") return
 				// Safe after the role guard: AgentMessage with role "assistant" is AssistantMessage.
 				const assistantMsg = event.message as AssistantMessage
+
+				// Track stall: increment counter each turn so the headless prompt
+				// block can detect when the orchestrator hasn't updated step todos.
+				bumpStallCounter()
 
 				// Mark each delegation tool call so the continuation nudge stays
 				// suppressed until all delegated-agent results have been received.

@@ -27,7 +27,7 @@ import {
 import { __resetTodoStore, applyWriteTodos, getTodosForScope, resolveTodoScope } from "../todos/store.js"
 import { emitFermentDomainEvent } from "./domain-events-emitter.js"
 import { setActive } from "./state.js"
-import { registerFermentTodoSync } from "./todo-sync.js"
+import { bumpStallCounter, getTurnsSinceStepTodoWrite, registerFermentTodoSync } from "./todo-sync.js"
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -373,5 +373,165 @@ describe("ferment → todo → headless prompt wiring", () => {
 		} finally {
 			unsubscribe()
 		}
+	})
+})
+
+describe("stall detection via step todo write tracking", () => {
+	beforeEach(() => {
+		__resetTodoStore()
+		setActive(undefined)
+		setCurrentSessionHasUI(false)
+	})
+
+	afterEach(() => {
+		setActive(undefined)
+		__resetTodoStore()
+		setCurrentSessionHasUI(true)
+	})
+
+	it("stall counter starts at 0 and increments with bumpStallCounter", () => {
+		const ferment = makeFerment({
+			phases: [
+				{
+					id: "phase-1",
+					index: 1,
+					name: "Build",
+					goal: "build it",
+					status: "active",
+					steps: [{ id: "step-1", index: 1, description: "Write code", status: "running" }],
+				},
+			],
+		})
+		setActive(ferment)
+		const { pi, unsubscribe } = makePiWithRealEventBus()
+
+		try {
+			emitFermentDomainEvent(pi.events, { type: "activate_phase", phaseId: "phase-1" }, ferment)
+			emitFermentDomainEvent(pi.events, { type: "start_step", phaseId: "phase-1", stepId: "step-1" }, ferment)
+
+			expect(getTurnsSinceStepTodoWrite()).toBe(0)
+			bumpStallCounter()
+			expect(getTurnsSinceStepTodoWrite()).toBe(1)
+			bumpStallCounter()
+			bumpStallCounter()
+			expect(getTurnsSinceStepTodoWrite()).toBe(3)
+		} finally {
+			unsubscribe()
+		}
+	})
+
+	it("stall counter resets when step-scope todos are written", () => {
+		const ferment = makeFerment({
+			phases: [
+				{
+					id: "phase-1",
+					index: 1,
+					name: "Build",
+					goal: "build it",
+					status: "active",
+					steps: [{ id: "step-1", index: 1, description: "Write code", status: "running" }],
+				},
+			],
+		})
+		setActive(ferment)
+		const { pi, unsubscribe } = makePiWithRealEventBus()
+
+		try {
+			emitFermentDomainEvent(pi.events, { type: "activate_phase", phaseId: "phase-1" }, ferment)
+			emitFermentDomainEvent(pi.events, { type: "start_step", phaseId: "phase-1", stepId: "step-1" }, ferment)
+
+			bumpStallCounter()
+			bumpStallCounter()
+			bumpStallCounter()
+			expect(getTurnsSinceStepTodoWrite()).toBe(3)
+
+			// Writing to the step scope resets the counter
+			applyWriteTodos({
+				scope: { kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" },
+				todos: [{ content: "plan item", status: "pending" }],
+			})
+			expect(getTurnsSinceStepTodoWrite()).toBe(0)
+		} finally {
+			unsubscribe()
+		}
+	})
+
+	it("stall warning appears in rendered markdown after threshold", () => {
+		const ferment = makeFerment({
+			phases: [
+				{
+					id: "phase-1",
+					index: 1,
+					name: "Build",
+					goal: "build it",
+					status: "active",
+					steps: [{ id: "step-1", index: 1, description: "Write code", status: "running" }],
+				},
+			],
+		})
+		setActive(ferment)
+		const { pi, unsubscribe } = makePiWithRealEventBus()
+
+		try {
+			emitFermentDomainEvent(pi.events, { type: "activate_phase", phaseId: "phase-1" }, ferment)
+			emitFermentDomainEvent(pi.events, { type: "start_step", phaseId: "phase-1", stepId: "step-1" }, ferment)
+
+			// Populate step todos so markdown renders
+			applyWriteTodos({
+				scope: { kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" },
+				todos: [{ content: "plan item", status: "in_progress" }],
+			})
+
+			// Bump past threshold (5 turns)
+			for (let i = 0; i < 6; i++) bumpStallCounter()
+
+			const md = __test_renderTodoStateMarkdown()
+			expect(md).toContain("\u26a0 Step todos have not been updated for 6 turns")
+			expect(md).toContain("reassess your approach")
+		} finally {
+			unsubscribe()
+		}
+	})
+
+	it("stall warning does NOT appear below threshold", () => {
+		const ferment = makeFerment({
+			phases: [
+				{
+					id: "phase-1",
+					index: 1,
+					name: "Build",
+					goal: "build it",
+					status: "active",
+					steps: [{ id: "step-1", index: 1, description: "Write code", status: "running" }],
+				},
+			],
+		})
+		setActive(ferment)
+		const { pi, unsubscribe } = makePiWithRealEventBus()
+
+		try {
+			emitFermentDomainEvent(pi.events, { type: "activate_phase", phaseId: "phase-1" }, ferment)
+			emitFermentDomainEvent(pi.events, { type: "start_step", phaseId: "phase-1", stepId: "step-1" }, ferment)
+
+			applyWriteTodos({
+				scope: { kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" },
+				todos: [{ content: "plan item", status: "in_progress" }],
+			})
+
+			// Only 3 turns — below threshold
+			for (let i = 0; i < 3; i++) bumpStallCounter()
+
+			const md = __test_renderTodoStateMarkdown()
+			expect(md).not.toContain("\u26a0 Step todos have not been updated")
+		} finally {
+			unsubscribe()
+		}
+	})
+
+	it("stall counter returns 0 when no step is running", () => {
+		// No step started — bumping should have no effect
+		bumpStallCounter()
+		bumpStallCounter()
+		expect(getTurnsSinceStepTodoWrite()).toBe(0)
 	})
 })
