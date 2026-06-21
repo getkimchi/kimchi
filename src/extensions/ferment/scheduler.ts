@@ -134,13 +134,6 @@ export function buildContextualNudge(ferment: Ferment, action: DeclarativeAction
 	}
 }
 
-/** @deprecated Use buildContextualNudge instead — kept for callers that have
- *  not yet been migrated. Produces bare tool-name + reason with no IDs or
- *  step description. */
-export function buildFermentWakeUpNudge(ferment: Ferment, action: DeclarativeAction): string {
-	return buildContextualNudge(ferment, action)
-}
-
 function freshFerment(runtime: FermentRuntime, fermentId?: string): Ferment | undefined {
 	const id = fermentId ?? runtime.getActiveId()
 	const cached = runtime.getActive()
@@ -224,7 +217,7 @@ export function scheduleFermentWakeUp(
 	void pi.sendMessage(
 		{
 			customType: "ferment_continuation_nudge",
-			content: [{ type: "text", text: buildFermentWakeUpNudge(ferment, decision.action) }],
+			content: [{ type: "text", text: buildContextualNudge(ferment, decision.action) }],
 			display: false,
 			details: { action: "wake_up", expectedAction: decision.action.kind },
 		},

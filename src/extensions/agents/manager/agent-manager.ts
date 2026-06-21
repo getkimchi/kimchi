@@ -357,7 +357,6 @@ export class AgentManager {
 		record.abortReason = undefined
 		record.maxTurns = options.maxTurns
 		record.lastTurnCount = 0
-		record.agentReport = undefined
 		const attemptStartedAt = Date.now()
 		const attempt: AgentResumeAttempt = {
 			startedAt: attemptStartedAt,

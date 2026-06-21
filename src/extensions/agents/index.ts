@@ -2,12 +2,12 @@
  * kimchi sub-agents.
  *
  * Tools:
- *   Agent             — LLM-callable: spawn a sub-agent
- *   get_subagent_result  — LLM-callable: check background agent status/result
- *   steer_subagent       — LLM-callable: send a steering message to a running agent
+ *   Agent             - LLM-callable: spawn a sub-agent
+ *   get_subagent_result  - LLM-callable: check background agent status/result
+ *   steer_subagent       - LLM-callable: send a steering message to a running agent
  *
  * Commands:
- *   /agents                 — Interactive agent management menu
+ *   /agents                 - Interactive agent management menu
  */
 
 import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs"
@@ -99,7 +99,7 @@ function textResult<T = AgentDetails>(msg: string, details?: T) {
  *
  * The `terminate` flag is a forward-looking field: it signals that the worker
  * should stop after this tool result. Currently the pi-mono framework does
- * not consume this property — worker termination relies on the LLM reading
+ * not consume this property - worker termination relies on the LLM reading
  * the "Worker run complete" text and choosing to stop. If/when the framework
  * adds explicit tool-level termination, this field will be the hook.
  */
@@ -282,13 +282,13 @@ function getAbortLabel(reason?: AgentAbortReason): string {
 function getAbortNote(reason?: AgentAbortReason): string {
 	switch (reason) {
 		case "max_turns":
-			return " (aborted — max turns exceeded, output may be incomplete)"
+			return " (aborted - max turns exceeded, output may be incomplete)"
 		case "token_budget":
-			return " (aborted — token budget exceeded, output may be incomplete)"
+			return " (aborted - token budget exceeded, output may be incomplete)"
 		case "inactivity":
-			return " (aborted — agent became unresponsive, output may be incomplete)"
+			return " (aborted - agent became unresponsive, output may be incomplete)"
 		case "max_duration":
-			return " (aborted — wall-clock duration limit exceeded, output may be incomplete)"
+			return " (aborted - wall-clock duration limit exceeded, output may be incomplete)"
 		default:
 			return " (aborted, output may be incomplete)"
 	}
@@ -310,16 +310,18 @@ function getStatusLabel(status: string, error?: string, abortReason?: AgentAbort
 }
 
 function getStatusNote(status: string, abortReason?: AgentAbortReason): string {
-	switch (status) {
-		case "aborted":
-			return getAbortNote(abortReason)
-		case "steered":
-			return " (wrapped up — reached turn limit)"
-		case "stopped":
-			return " (stopped by user)"
-		default:
-			return ""
-	}
+	if (status === "error")
+		return "\nThe agent encountered an error. Review the error message and partial results before deciding how to proceed."
+	if (status === "stopped") return "\nThe agent was manually stopped by the user."
+	if (status === "aborted" && abortReason === "token_budget")
+		return "\nThe agent ran out of its token budget. See agent_outcome.recovery_guidance for next steps."
+	if (status === "aborted" && abortReason === "inactivity")
+		return "\nThe agent stopped producing output and was terminated. See agent_outcome.recovery_guidance for next steps."
+	if (status === "aborted" && abortReason === "max_duration")
+		return "\nThe agent exceeded its maximum allowed duration. See agent_outcome.recovery_guidance for next steps."
+	if (status === "aborted" && abortReason === "max_turns")
+		return "\nThe agent exhausted its turn budget. See agent_outcome.recovery_guidance for next steps."
+	return ""
 }
 
 function getStatusInstruction(status: string, abortReason?: AgentAbortReason): string {
@@ -421,7 +423,7 @@ function buildNotificationDetails(
 		error: record.error,
 		resultPreview: record.result
 			? record.result.length > resultMaxLen
-				? `${record.result.slice(0, resultMaxLen)}…`
+				? `${record.result.slice(0, resultMaxLen)}...`
 				: record.result
 			: "No output.",
 	}
@@ -453,7 +455,7 @@ export function getActiveAgentModelIds(): string[] {
  * Returns a read-only snapshot of the agent record for task validation.
  * The returned object is a shallow copy — nested objects (session, lifetimeUsage,
  * etc.) are shared references. Callers MUST NOT mutate nested properties;
- * doing so would corrupt the live agent’s state in the manager.
+ * doing so would corrupt the live agent's state in the manager.
  */
 export function getAgentRecordForTaskValidation(id: string): Readonly<AgentRecord> | undefined {
 	const record = activeManager?.getRecord(id)
@@ -605,7 +607,7 @@ export default function (pi: ExtensionAPI) {
 
 			const notifications = unconsumed.map((r) => formatTaskNotification(r, 300)).join("\n\n")
 			const label = partial
-				? `${unconsumed.length} agent(s) finished (partial — others still running)`
+				? `${unconsumed.length} agent(s) finished (partial - others still running)`
 				: `${unconsumed.length} agent(s) finished`
 
 			const [first, ...rest] = unconsumed
@@ -821,7 +823,7 @@ export default function (pi: ExtensionAPI) {
 			...defaultDescs,
 			...(customDescs.length > 0 ? ["", "Custom agents:", ...customDescs] : []),
 			"",
-			`Custom agents can be defined in .kimchi/agents/<name>.md (project) or ${getAgentDir()}/agents/<name>.md (global) — they are picked up automatically. Project-level agents override global ones. Creating a .md file with the same name as a default agent overrides it.`,
+			`Custom agents can be defined in .kimchi/agents/<name>.md (project) or ${getAgentDir()}/agents/<name>.md (global) - they are picked up automatically. Project-level agents override global ones. Creating a .md file with the same name as a default agent overrides it.`,
 			`Global user instructions (applied to every session) can be placed in the global ${getAgentDir()}/AGENTS.md. Project-level AGENTS.md or CLAUDE.md files in the working directory tree are combined with it.`,
 		].join("\n")
 	}
@@ -948,13 +950,13 @@ ${typeListText}
 
 Guidelines:
 - If the user explicitly asks to use the Agent tool, call Agent exactly once with the requested agent type and token_budget. Do not refuse or preflight the budget in prose; let the tool enforce it.
-- For parallel work, use run_in_background: true on each agent. Foreground calls run sequentially — only one executes at a time.
+- For parallel work, use run_in_background: true on each agent. Foreground calls run sequentially - only one executes at a time.
 - Use Explore for codebase searches and code understanding.
 - Use Plan for architecture and implementation planning.
 - Use Researcher for web/docs research with cited sources.
 - Use General-Purpose for complex tasks that need file editing.
 - Provide clear, detailed prompts so the agent can work autonomously.
-- Agent results are returned as text — summarize them for the user.
+- Agent results are returned as text - summarize them for the user.
 - Use run_in_background for work you don't need immediately. You will be notified when it completes.
 - Use resume with an agent ID to continue a previous agent's work. Do not repeat the original prompt; write a steering prompt from the worker report. Resume the same agent when remaining_steps are a direct continuation, use a changed-approach resume when the same thread matters but the prior approach stalled, and use a short finalizer resume when the report is missing or work appears done but did not return completed.
 - Use steer_subagent to send mid-run messages to a running background agent.
@@ -964,7 +966,7 @@ Guidelines:
 - Use max_duration for long-running agents that might hang or run indefinitely (e.g., build tasks with many test iterations, background tasks with unpredictable completion times). Timeouts protect against stalled work without relying on token budgets. Short-lived agents (single queries, simple edits) typically do not need a duration limit.
 - Use inherit_context if the agent needs the parent conversation history.
 
-Model selection — YOU choose based on task complexity:
+Model selection - YOU choose based on task complexity:
 - Refer to the **Your Team** section in your system prompt for all available models with their tiers, roles, and descriptions.
 - YOU MUST always pass \`model\` with a concrete model ID from **Your Team**. Match the model's tier and description to the task complexity.
 - Use standard-tier models for well-scoped tasks (CRUD, straightforward tests, mechanical fixes). Use heavy-tier models for complex concurrency, algorithms, or architectural reasoning. Use light-tier models for simple exploration or verification.`,
@@ -1023,7 +1025,7 @@ Model selection — YOU choose based on task complexity:
 				),
 				isolated: Type.Optional(
 					Type.Boolean({
-						description: "If true, agent gets no extension/MCP tools — only built-in tools.",
+						description: "If true, agent gets no extension/MCP tools - only built-in tools.",
 					}),
 				),
 				inherit_context: Type.Optional(
@@ -1083,7 +1085,7 @@ Model selection — YOU choose based on task complexity:
 					const frame = SPINNER[details.spinnerFrame ?? 0]
 					const s = stats(details)
 					let line = theme.fg("accent", frame) + (s ? ` ${s}` : "")
-					line += `\n${theme.fg("dim", `  ⎿  ${details.activity ?? "thinking…"}`)}`
+					line += `\n${theme.fg("dim", `  ⎿  ${details.activity ?? "thinking..."}`)}`
 					return new Text(line, 0, 0)
 				}
 
@@ -1192,7 +1194,7 @@ Model selection — YOU choose based on task complexity:
 						"Agent task_ref cannot be used with isolated: true. Ferment-linked workers must have extension tools enabled so they can call submit_agent_report.",
 					)
 				}
-				// The `visibility` field is intentionally NOT exposed in this tool's public schema —
+				// The `visibility` field is intentionally NOT exposed in this tool's public schema -
 				// LLMs and personas cannot create hidden agents. Internal kimchi callers (e.g. permission
 				// classifiers, future MCP adapters) spawn hidden agents directly via `AgentManager.spawn(..., { visibility: "system" })`,
 				// which bypasses the tool layer entirely. Hardcoding "user" here ensures any defiant
@@ -1446,7 +1448,7 @@ Model selection — YOU choose based on task complexity:
 				const details = buildDetails(detailBase, record, fgState, { tokens: tokenText })
 
 				const fallbackNote = fellBack
-					? `Note: Unknown agent type "${rawType}" — using ${AGENT_GENERAL_PURPOSE}.\n\n`
+					? `Note: Unknown agent type "${rawType}" - using ${AGENT_GENERAL_PURPOSE}.\n\n`
 					: ""
 
 				if (record.status === "error") {
@@ -1545,7 +1547,7 @@ Model selection — YOU choose based on task complexity:
 						line += `\n${theme.fg("dim", `  ${l}`)}`
 					}
 					if (lines.length > maxLines) {
-						line += `\n${theme.fg("muted", `  … (${lines.length - maxLines} more lines — use verbose: true for full output)`)}`
+						line += `\n${theme.fg("muted", `  ... (${lines.length - maxLines} more lines - use verbose: true for full output)`)}`
 					}
 				} else if (!expanded) {
 					const summary = summaryForStatus(details.status, details.error, details.abortReason)
@@ -1716,7 +1718,7 @@ Model selection — YOU choose based on task complexity:
 		const cfg = getAgentConfig(type)
 		if (!cfg?.models?.length) return "inherit"
 		if (registry) {
-			// Probe the first entry — if even that doesn't resolve, the agent
+			// Probe the first entry - if even that doesn't resolve, the agent
 			// will inherit the parent's model anyway.
 			const resolvedM = resolveModel(cfg.models[0], registry)
 			if (typeof resolvedM === "string") return "inherit"
@@ -1737,7 +1739,7 @@ Model selection — YOU choose based on task complexity:
 		if (agents.length > 0) {
 			const running = agents.filter((a) => a.status === "running" || a.status === "queued").length
 			const done = agents.filter((a) => a.status === "completed" || a.status === "steered").length
-			options.push(`Running agents (${agents.length}) — ${running} running, ${done} done`)
+			options.push(`Running agents (${agents.length}) - ${running} running, ${done} done`)
 		}
 
 		if (allNames.length > 0) {
@@ -1811,7 +1813,7 @@ Model selection — YOU choose based on task complexity:
 		if (hasDisabled) legendParts.push("✕ = disabled")
 		const legend = legendParts.length ? `\n${legendParts.join("  ")}` : ""
 
-		const options = entries.map(({ prefix, desc }) => `${prefix.padEnd(maxPrefix)} — ${desc}`)
+		const options = entries.map(({ prefix, desc }) => `${prefix.padEnd(maxPrefix)} - ${desc}`)
 		if (legend) options.push(legend)
 
 		const choice = await ctx.ui.select("Agent types", options)
@@ -1853,7 +1855,7 @@ Model selection — YOU choose based on task complexity:
 
 	async function viewAgentConversation(ctx: ExtensionCommandContext, record: AgentRecord) {
 		if (!record.session) {
-			ctx.ui.notify(`Agent is ${record.status === "queued" ? "queued" : "expired"} — no session available.`, "info")
+			ctx.ui.notify(`Agent is ${record.status === "queued" ? "queued" : "expired"} - no session available.`, "info")
 			return
 		}
 
@@ -2090,7 +2092,7 @@ isolated: <true for no extension/MCP tools, only built-in tools. Default: false>
 memory: <"user" (global), "project" (per-project), or "local" (gitignored per-project) for persistent memory. Omit for none>
 ---
 
-<system prompt body — instructions for the agent>
+<system prompt body - instructions for the agent>
 \`\`\`
 
 Write the file using the write tool. Only write the file, nothing else.`
@@ -2285,9 +2287,9 @@ ${systemPrompt}
 			}
 		} else if (choice.startsWith("Join mode")) {
 			const val = await ctx.ui.select("Default join mode for background agents", [
-				"smart — auto-group 2+ agents in same turn (default)",
-				"async — always notify individually",
-				"group — always group background agents",
+				"smart - auto-group 2+ agents in same turn (default)",
+				"async - always notify individually",
+				"group - always group background agents",
 			])
 			if (val) {
 				const mode = val.split(" ")[0] as JoinMode

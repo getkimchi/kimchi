@@ -135,6 +135,11 @@ export class FermentToolScope {
 				// Full toolset from registration, with guaranteed tools added defensively.
 				const allTools = this.pi.getAllTools().map((tool) => tool.name)
 				const allowed = new Set<string>(allTools)
+				// Union semantics (intentional): add all implementation tool names even
+				// if not yet registered. Other extensions (e.g. agents, bash-tool-guard)
+				// may register tools after the ferment profile is first applied. Using
+				// union ensures they become active on the next turn's tool snapshot
+				// refresh, rather than being silently filtered out.
 				for (const required of IMPLEMENTATION_TOOL_NAMES) {
 					allowed.add(required)
 				}

@@ -51,7 +51,7 @@ import { type LifetimeUsage, addUsage, getLifetimeTotal, getOutputTotal, getSess
  * - Agent / get_subagent_result / steer_subagent: subagents must not spawn
  *   further nested subagents (the orchestrator owns delegation).
  * - All ferment lifecycle and planning tools: subagents must not mutate
- *   ferment state. The discovery tools (list_ferments, request_ferment_workflow)
+ *   ferment state. The discovery tool (list_ferments)
  *   are also excluded — they are only meaningful to the top-level planner.
  */
 const EXCLUDED_TOOL_NAMES = ["Agent", "get_subagent_result", "steer_subagent", ...FERMENT_TOOL_NAMES]

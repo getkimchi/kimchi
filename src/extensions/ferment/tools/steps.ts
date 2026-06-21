@@ -194,17 +194,21 @@ export function suggestWorkerLimits(
 	const desc = description.toLowerCase()
 	const verify = (verifyCommand ?? "").toLowerCase()
 
-	// Heavy indicators: compile, build, install, train, run, boot, migration
+	// Heavy indicators: compile, build, install, train, boot, migration
 	// Use prefix matching (no trailing \b) so "compile", "compilation", "building" all match.
+	// Note: "make" is excluded (too common as English verb); cmake/makefile are kept.
 	const heavyPattern =
-		/\b(compil|build|install|train|boot|qemu|docker|make|cmake|cargo|mvn|gradle|bazel|webpack|migrat|setup|configur)/
+		/\b(compil|build|install|train|boot|qemu|docker|cmake|makefile|cargo|mvn|gradle|bazel|webpack|migrat|setup|configur)/
 	if (heavyPattern.test(desc) || heavyPattern.test(verify)) {
 		return { maxTurns: 80, maxDuration: 900 }
 	}
 
-	// Light indicators: read, check, verify, update config, rename, add test
-	// Use prefix matching for consistency.
-	const lightPattern = /\b(read|check|verif|renam|config|lint|format|comment|document)/
+	// Light indicators: read-only tasks, simple checks, config updates, renames.
+	// Use word-boundary on both sides to avoid false positives on compound words
+	// (e.g. "checkout", "readme"). Stems that are also full words (read, check,
+	// lint, format, comment) match directly; stems that need prefix matching
+	// (verify/verification, rename/renamed) use a trailing \w* before \b.
+	const lightPattern = /\b(read|check|verif\w*|renam\w*|config|lint|format|comment|document)\b/
 	if (lightPattern.test(desc) && !verify.includes("test")) {
 		return { maxTurns: 25, maxDuration: 300 }
 	}
