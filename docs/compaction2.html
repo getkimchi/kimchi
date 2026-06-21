@@ -1,0 +1,840 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>Compaction in the Kimchi Harness</title>
+		<style>
+			:root {
+				--ink: #241a13;
+				--muted: #6e5a4b;
+				--paper: #fff8ed;
+				--panel: #fffdf7;
+				--line: #ead8bd;
+				--accent: #c85f2d;
+				--accent-2: #2d7f75;
+				--accent-3: #8c5a24;
+				--dark: #2d2118;
+				--code: #f3e4cc;
+				--ok: #1b7f57;
+				--warn: #b36b00;
+				--bad: #a63c2d;
+				--shadow: 0 18px 55px rgba(68, 38, 12, 0.12);
+			}
+
+			* {
+				box-sizing: border-box;
+			}
+
+			body {
+				margin: 0;
+				color: var(--ink);
+				background:
+					radial-gradient(circle at 10% 0%, rgba(200, 95, 45, 0.18), transparent 32rem),
+					radial-gradient(circle at 90% 10%, rgba(45, 127, 117, 0.14), transparent 28rem),
+					linear-gradient(135deg, #fff5e4 0%, #fbedd7 46%, #fffaf1 100%);
+				font-family:
+					Avenir Next,
+					Segoe UI,
+					Helvetica Neue,
+					sans-serif;
+				line-height: 1.55;
+			}
+
+			header {
+				padding: 4rem min(7vw, 5rem) 2rem;
+			}
+
+			main {
+				padding: 0 min(7vw, 5rem) 5rem;
+			}
+
+			h1,
+			h2,
+			h3 {
+				line-height: 1.12;
+				letter-spacing: -0.035em;
+			}
+
+			h1 {
+				max-width: 72rem;
+				margin: 0;
+				font-size: clamp(2.5rem, 6vw, 5.75rem);
+			}
+
+			h2 {
+				margin: 0 0 1rem;
+				font-size: clamp(1.8rem, 3.2vw, 3.15rem);
+			}
+
+			h3 {
+				margin: 1.7rem 0 0.55rem;
+				font-size: 1.25rem;
+			}
+
+			p {
+				margin: 0.65rem 0;
+			}
+
+			a {
+				color: var(--accent);
+				font-weight: 700;
+			}
+
+			code {
+				padding: 0.12rem 0.28rem;
+				border-radius: 0.28rem;
+				background: var(--code);
+				font-family:
+					SFMono-Regular,
+					Consolas,
+					Liberation Mono,
+					monospace;
+				font-size: 0.93em;
+			}
+
+			pre {
+				overflow: auto;
+				margin: 1rem 0;
+				padding: 1rem;
+				border: 1px solid var(--line);
+				border-radius: 1rem;
+				background: #2b2018;
+				color: #fff3df;
+				box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+			}
+
+			pre code {
+				padding: 0;
+				background: transparent;
+				color: inherit;
+			}
+
+			.lede {
+				max-width: 66rem;
+				margin: 1.2rem 0 0;
+				color: var(--muted);
+				font-size: clamp(1.05rem, 1.8vw, 1.35rem);
+			}
+
+			.grid {
+				display: grid;
+				grid-template-columns: repeat(12, minmax(0, 1fr));
+				gap: 1rem;
+				align-items: start;
+			}
+
+			.card {
+				border: 1px solid var(--line);
+				border-radius: 1.4rem;
+				background: rgba(255, 253, 247, 0.92);
+				box-shadow: var(--shadow);
+			}
+
+			.section {
+				margin: 1.25rem 0;
+				padding: clamp(1.2rem, 3vw, 2rem);
+			}
+
+			.span-4 {
+				grid-column: span 4;
+			}
+
+			.span-6 {
+				grid-column: span 6;
+			}
+
+			.span-7 {
+				grid-column: span 7;
+			}
+
+			.span-12 {
+				grid-column: span 12;
+			}
+
+			.kicker {
+				display: inline-flex;
+				gap: 0.45rem;
+				align-items: center;
+				margin-bottom: 0.8rem;
+				color: var(--accent-3);
+				font-weight: 800;
+				text-transform: uppercase;
+				letter-spacing: 0.08em;
+				font-size: 0.78rem;
+			}
+
+			.kicker::before {
+				content: "";
+				width: 0.7rem;
+				height: 0.7rem;
+				border-radius: 50%;
+				background: var(--accent);
+			}
+
+			.big-number {
+				display: block;
+				color: var(--accent);
+				font-size: 2.4rem;
+				font-weight: 900;
+				line-height: 1;
+			}
+
+			.flow {
+				display: grid;
+				grid-template-columns: repeat(5, minmax(0, 1fr));
+				gap: 0.75rem;
+				margin-top: 1rem;
+			}
+
+			.flow > div {
+				position: relative;
+				min-height: 8rem;
+				padding: 1rem;
+				border: 1px solid var(--line);
+				border-radius: 1rem;
+				background: #fffaf0;
+			}
+
+			.flow > div:not(:last-child)::after {
+				content: ">";
+				position: absolute;
+				right: -0.65rem;
+				top: 50%;
+				z-index: 1;
+				transform: translateY(-50%);
+				color: var(--accent);
+				font-weight: 900;
+			}
+
+			.flow strong {
+				display: block;
+				margin-bottom: 0.35rem;
+			}
+
+			.badge {
+				display: inline-block;
+				margin: 0.15rem 0.25rem 0.15rem 0;
+				padding: 0.16rem 0.48rem;
+				border-radius: 999px;
+				background: #f4dfbf;
+				color: #623d14;
+				font-size: 0.82rem;
+				font-weight: 700;
+			}
+
+			.table-wrap {
+				overflow-x: auto;
+				border: 1px solid var(--line);
+				border-radius: 1rem;
+			}
+
+			table {
+				width: 100%;
+				border-collapse: collapse;
+				background: var(--panel);
+			}
+
+			th,
+			td {
+				padding: 0.85rem 0.95rem;
+				border-bottom: 1px solid var(--line);
+				text-align: left;
+				vertical-align: top;
+			}
+
+			th {
+				background: #f3dfbd;
+				color: #4d311a;
+				font-size: 0.85rem;
+				text-transform: uppercase;
+				letter-spacing: 0.05em;
+			}
+
+			tr:last-child td {
+				border-bottom: 0;
+			}
+
+			.callout {
+				margin: 1rem 0;
+				padding: 1rem 1.1rem;
+				border-left: 0.35rem solid var(--accent-2);
+				border-radius: 0.8rem;
+				background: #eef9f3;
+			}
+
+			.warning {
+				border-left-color: var(--warn);
+				background: #fff4dc;
+			}
+
+			.danger {
+				border-left-color: var(--bad);
+				background: #fbe8e2;
+			}
+
+			.stack {
+				display: grid;
+				gap: 0.85rem;
+			}
+
+			.mini {
+				padding: 1rem;
+				border: 1px solid var(--line);
+				border-radius: 1rem;
+				background: #fffaf0;
+			}
+
+			.mini strong {
+				display: block;
+				margin-bottom: 0.25rem;
+			}
+
+			ul,
+			ol {
+				padding-left: 1.25rem;
+			}
+
+			li {
+				margin: 0.45rem 0;
+			}
+
+			.source-list li {
+				font-size: 0.95rem;
+			}
+
+			.diagram {
+				font-family:
+					SFMono-Regular,
+					Consolas,
+					Liberation Mono,
+					monospace;
+				white-space: pre;
+				overflow-x: auto;
+				padding: 1rem;
+				border: 1px solid var(--line);
+				border-radius: 1rem;
+				background: #2b2018;
+				color: #fff3df;
+				font-size: 0.82rem;
+				line-height: 1.45;
+			}
+
+			@media (max-width: 900px) {
+				.grid,
+				.flow {
+					grid-template-columns: 1fr;
+				}
+
+				.span-4,
+				.span-6,
+				.span-7,
+				.span-12 {
+					grid-column: auto;
+				}
+
+				.flow > div:not(:last-child)::after {
+					content: "v";
+					right: 1rem;
+					top: auto;
+					bottom: -0.9rem;
+					transform: none;
+				}
+			}
+		</style>
+	</head>
+	<body>
+		<header>
+			<div class="kicker">Kimchi internals</div>
+			<h1>How compaction works in the harness</h1>
+			<p class="lede">
+				Compaction is the mechanism that lets long sessions keep going past the model's
+				context window. The core logic lives upstream in
+				<code>@earendil-works/pi-coding-agent</code>; Kimchi mostly hooks into it and
+				re-exposes the events through its Claude Code hook adapter.
+			</p>
+		</header>
+		<main>
+			<section class="grid">
+				<div class="card section span-4">
+					<span class="big-number">3</span>
+					<h3>Triggers</h3>
+					<p>
+						Manual <code>/compact</code>, reactive overflow recovery, and a proactive
+						threshold check at the end of each turn. All three call the same internal
+						<code>_runAutoCompaction()</code> path.
+					</p>
+				</div>
+				<div class="card section span-4">
+					<span class="big-number">5</span>
+					<h3>Steps</h3>
+					<p>
+						<span class="badge">Prepare</span>
+						<span class="badge">Hook</span>
+						<span class="badge">Summarize</span>
+						<span class="badge">Append</span>
+						<span class="badge">Reload</span>
+					</p>
+					<p>
+						Session manager walks entries backward, fires
+						<code>session_before_compact</code>, asks the LLM for a structured summary,
+						then appends a <code>CompactionEntry</code> and reloads the session.
+					</p>
+				</div>
+				<div class="card section span-4">
+					<span class="big-number">2</span>
+					<h3>Kimchi's role</h3>
+					<p>
+						Kimchi does not change when or how compaction happens. It registers a
+						<code>/compact</code> slash-command entry and translates the upstream events
+						into Claude Code <code>PreCompact</code> / <code>PostCompact</code> hook
+						calls so user scripts can react.
+					</p>
+				</div>
+			</section>
+
+			<section class="card section">
+				<div class="kicker">Where it lives</div>
+				<h2>Who owns the loop, who hooks it</h2>
+				<p>
+					Compaction is part of the upstream <code>AgentSession</code> turn loop. Kimchi
+					extends the loop with extension factories and a hook adapter but does not
+					reimplement the trigger or summarization code.
+				</p>
+				<div class="table-wrap">
+					<table>
+						<thead>
+							<tr>
+								<th>Concern</th>
+								<th>Owner</th>
+								<th>Source</th>
+							</tr>
+						</thead>
+						<tbody>
+							<tr>
+								<td>Threshold check, cut-point search, LLM summary call</td>
+								<td>Upstream <code>pi-coding-agent</code></td>
+								<td><code>node_modules/@earendil-works/pi-coding-agent/dist/core/compaction/compaction.js</code></td>
+							</tr>
+							<tr>
+								<td>Session entry append, reload, branching</td>
+								<td>Upstream <code>AgentSession</code></td>
+								<td><code>node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.js</code> (<code>_runAutoCompaction</code>)</td>
+							</tr>
+							<tr>
+								<td>Slash command registration</td>
+								<td>Upstream</td>
+								<td>Kimchi only advertises it via <code>src/extensions/help.ts</code></td>
+							</tr>
+							<tr>
+								<td><code>PreCompact</code> / <code>PostCompact</code> hook delivery</td>
+								<td>Kimchi hook adapter</td>
+								<td><code>src/extensions/hook-adapters/adapter.ts</code></td>
+							</tr>
+							<tr>
+								<td>Settings (<code>reserveTokens</code>, <code>keepRecentTokens</code>)</td>
+								<td>Upstream reads <code>~/.pi/agent/settings.json</code> or <code>.pi/settings.json</code></td>
+								<td>Kimchi does not override these defaults</td>
+							</tr>
+						</tbody>
+					</table>
+				</div>
+				<div class="callout">
+					<p>
+						<strong>Bottom line.</strong> Kimchi sits on the side of the loop. The
+						decisions about <em>when</em> to compact and <em>what</em> the summary looks
+						like are made by the upstream package. Kimchi's job is to keep its own UI,
+						subagent bookkeeping, and Claude Code compatibility hooks consistent with
+						whatever upstream decides.
+					</p>
+				</div>
+			</section>
+
+			<section class="card section">
+				<div class="kicker">Triggers</div>
+				<h2>When does a session get compacted?</h2>
+				<p>
+					There are exactly three paths into compaction. They all converge on the same
+					internal helper, <code>AgentSession._runAutoCompaction(reason, willRetry)</code>.
+				</p>
+				<div class="flow">
+					<div>
+						<strong>1 · Manual</strong>
+						User types <code>/compact</code> (or <code>/compact &lt;instructions&gt;</code>) in the editor.
+						Upstream runs the command and enters the same compaction path with
+						<code>customInstructions</code> set.
+					</div>
+					<div>
+						<strong>2 · Threshold</strong>
+						After every turn, the session compares
+						<code>contextTokens &gt; contextWindow − reserveTokens</code>. If true, runs
+						<code>_runAutoCompaction("threshold", false)</code> before the next user prompt.
+					</div>
+					<div>
+						<strong>3 · Overflow</strong>
+						When the model returns a context-overflow error, the session removes the
+						failing assistant message and runs
+						<code>_runAutoCompaction("overflow", true)</code>, then retries the turn.
+					</div>
+					<div>
+						<strong>Hook veto</strong>
+						If an extension handler returns
+						<code>{ cancel: true }</code> from <code>session_before_compact</code>, the
+						run is aborted and the original turn / retry proceeds without compaction.
+					</div>
+					<div>
+						<strong>Hook override</strong>
+						Extensions may return a fully-formed
+						<code>{ compaction: { summary, firstKeptEntryId, tokensBefore, details } }</code>
+						to skip the LLM summary call and use their own summary instead.
+					</div>
+				</div>
+
+				<h3>Threshold math (verbatim from upstream)</h3>
+				<pre><code>// node_modules/@earendil-works/pi-coding-agent/dist/core/compaction/compaction.js
+export function shouldCompact(contextTokens, contextWindow, settings) {
+    if (!settings.enabled) return false;
+    return contextTokens > contextWindow - settings.reserveTokens;
+}</code></pre>
+				<div class="table-wrap">
+					<table>
+						<thead>
+							<tr>
+								<th>Setting</th>
+								<th>Default</th>
+								<th>Effect</th>
+								<th>Configured in</th>
+							</tr>
+						</thead>
+						<tbody>
+							<tr>
+								<td><code>compaction.enabled</code></td>
+								<td><code>true</code></td>
+								<td>Master switch. <code>false</code> disables both proactive threshold and overflow recovery; manual <code>/compact</code> still works.</td>
+								<td><code>~/.pi/agent/settings.json</code> or <code>.pi/settings.json</code></td>
+							</tr>
+							<tr>
+								<td><code>compaction.reserveTokens</code></td>
+								<td><code>16384</code></td>
+								<td>Headroom kept free for the LLM's next response. Trigger fires when <code>contextWindow − reserveTokens</code> is exceeded.</td>
+								<td>Same as above</td>
+							</tr>
+							<tr>
+								<td><code>compaction.keepRecentTokens</code></td>
+								<td><code>20000</code></td>
+								<td>How much of the recent tail is preserved verbatim. Anything older gets summarized.</td>
+								<td>Same as above</td>
+							</tr>
+						</tbody>
+					</table>
+				</div>
+				<div class="callout warning">
+					<p>
+						<strong>Kimchi does not override any of these.</strong>
+						<code>grep -r "reserveTokens\|keepRecentTokens\|compaction\.enabled"</code>
+						across <code>src/</code> returns no hits. To tune compaction, edit the
+						upstream settings file directly — Kimchi will pick up the same value.
+					</p>
+				</div>
+			</section>
+
+			<section class="card section">
+				<div class="kicker">Algorithm</div>
+				<h2>How the compaction is done</h2>
+				<p>
+					The implementation lives in
+					<code>@earendil-works/pi-coding-agent/dist/core/compaction/compaction.js</code>
+					(plus <code>utils.js</code> for serialization and
+					<code>agent-session.js</code> for orchestration). The pipeline has five stages.
+				</p>
+				<div class="flow">
+					<div>
+						<strong>Prepare</strong>
+						<code>prepareCompaction(pathEntries, settings)</code> walks entries from newest
+						to oldest, accumulating estimated tokens until
+						<code>keepRecentTokens</code> is reached. The cut lands on a valid boundary
+						(user, assistant, bash execution, or custom message — never a tool result).
+					</div>
+					<div>
+						<strong>Hook</strong>
+						<code>session_before_compact</code> is emitted with the preparation
+						(<code>messagesToSummarize</code>, <code>firstKeptEntryId</code>,
+						<code>tokensBefore</code>, <code>previousSummary</code>,
+						<code>fileOps</code>, <code>settings</code>). Extensions may cancel or supply
+						their own summary.
+					</div>
+					<div>
+						<strong>Summarize</strong>
+						If no override arrived, the session calls
+						<code>generateSummary()</code> with the structured summary prompt
+						(<em>Goal, Constraints &amp; Preferences, Progress, Key Decisions, Next Steps,
+						Critical Context</em>) and the previous summary when this is a re-compaction.
+					</div>
+					<div>
+						<strong>Append</strong>
+						A new <code>CompactionEntry</code> is appended to the JSONL session file.
+						It carries <code>summary</code>, <code>firstKeptEntryId</code>,
+						<code>tokensBefore</code>, and <code>details: { readFiles, modifiedFiles }</code>.
+					</div>
+					<div>
+						<strong>Reload</strong>
+						<code>session_compact</code> is emitted, the session rebuilds itself from
+						<code>firstKeptEntryId</code> onward, and the LLM next sees
+						<code>system + summary + recent tail</code> instead of the full history.
+					</div>
+				</div>
+
+				<h3>Before vs. after</h3>
+				<div class="diagram">Before compaction:
+
+  entry:  0     1     2     3      4     5     6      7      8     9
+        ┌─────┬─────┬─────┬─────┬──────┬─────┬─────┬──────┬──────┬─────┐
+        │ hdr │ usr │ ass │ tool │ usr │ ass │ tool │ tool │ ass │ tool│
+        └─────┴─────┴─────┴──────┴─────┴─────┴──────┴──────┴─────┴─────┘
+                └────────┬───────┘ └──────────────┬──────────────┘
+              messagesToSummarize           kept messages
+                                  ↑
+                          firstKeptEntryId (entry 4)
+
+After compaction (new entry appended):
+
+  entry:  0     1     2     3      4     5     6      7      8     9     10
+        ┌─────┬─────┬─────┬─────┬──────┬─────┬─────┬──────┬──────┬─────┬─────┐
+        │ hdr │ usr │ ass │ tool │ usr │ ass │ tool │ tool │ ass │ tool│ cmp │
+        └─────┴─────┴─────┴──────┴─────┴─────┴──────┴──────┴─────┴─────┴─────┘
+               └──────────┬──────┘ └──────────────────────┬───────────────────┘
+                 not sent to LLM                    sent to LLM
+                                                         ↑
+                                              starts from firstKeptEntryId</div>
+
+				<h3>Cut-point rules</h3>
+				<ul>
+					<li>Valid cut sites: user messages, assistant messages, bash executions, custom messages.</li>
+					<li>Tool results stay with their tool call — the cut never lands between them.</li>
+					<li>Turns start at user messages (or bash executions) and end at the next one.</li>
+					<li>Re-compaction walks back to the previous <code>CompactionEntry.firstKeptEntryId</code>, so messages that survived the earlier compaction are folded into the next summary.</li>
+				</ul>
+
+				<h3>Split turns</h3>
+				<p>
+					If a single turn alone exceeds <code>keepRecentTokens</code>, the cut lands mid-turn
+					on an assistant message. The summary is then generated in two pieces — a history
+					summary and a turn-prefix summary — and merged.
+				</p>
+				<div class="diagram">Split turn (one huge turn exceeds budget):
+
+  entry:  0     1     2      3     4      5      6     7      8
+        ┌─────┬─────┬─────┬──────┬─────┬──────┬──────┬─────┬──────┐
+        │ hdr │ usr │ ass │ tool │ ass │ tool │ tool │ ass │ tool │
+        └─────┴─────┴─────┴──────┴─────┴─────┴──────┴─────┴──────┘
+                ↑                                     ↑
+         turnStartIndex = 1                  firstKeptEntryId = 7
+                │                                     │
+                └──── turnPrefixMessages (1–6) ───────┘
+                                                      └── kept (7–8)</div>
+
+				<h3>Serialization before summary</h3>
+				<p>
+					Before the LLM is asked to summarize, messages are flattened to text with
+					<code>serializeConversation()</code>:
+				</p>
+				<pre><code>[User]: What they said
+[Assistant thinking]: Internal reasoning
+[Assistant]: Response text
+[Assistant tool calls]: read(path="foo.ts"); edit(path="bar.ts", ...)
+[Tool result]: Output from tool</code></pre>
+				<p>
+					Tool results are truncated to 2000 characters during serialization; anything
+					beyond that becomes a marker noting how many characters were dropped. This is what
+					keeps the summarization request itself from blowing the context window.
+				</p>
+			</section>
+
+			<section class="card section">
+				<div class="kicker">Summary format</div>
+				<h2>What the summary actually contains</h2>
+				<p>
+					The LLM is prompted to return the exact Markdown structure below. The harness
+					then writes it verbatim into <code>CompactionEntry.summary</code>.
+				</p>
+				<pre><code>## Goal
+[What the user is trying to accomplish]
+
+## Constraints &amp; Preferences
+- [Requirements mentioned by user]
+
+## Progress
+### Done
+- [x] [Completed tasks]
+
+### In Progress
+- [ ] [Current work]
+
+### Blocked
+- [Issues, if any]
+
+## Key Decisions
+- **[Decision]**: [Rationale]
+
+## Next Steps
+1. [What should happen next]
+
+## Critical Context
+- [Data needed to continue]
+
+&lt;read-files&gt;
+path/to/file1.ts
+path/to/file2.ts
+&lt;/read-files&gt;
+
+&lt;modified-files&gt;
+path/to/changed.ts
+&lt;/modified-files&gt;</code></pre>
+				<p>
+					The <code>&lt;read-files&gt;</code> and <code>&lt;modified-files&gt;</code> blocks
+					are extracted by <code>utils.js</code> and stored in
+					<code>CompactionEntry.details</code> so file tracking accumulates across
+					re-compaction. This is the same shape used for branch summaries.
+				</p>
+			</section>
+
+			<section class="card section">
+				<div class="kicker">Kimchi integration</div>
+				<h2>What Kimchi adds on top</h2>
+				<p>
+					Two integration points and one advertisement:
+				</p>
+				<div class="stack">
+					<div class="mini">
+						<strong>1 · Slash-command advertisement</strong>
+						<code>src/extensions/help.ts</code> lists <code>/compact</code> as
+						<code>{ kind: "entry", key: "/compact", desc: "Compact context window" }</code>.
+						The command itself is registered upstream; Kimchi only surfaces it in
+						<code>/help</code>.
+					</div>
+					<div class="mini">
+						<strong>2 · <code>PreCompact</code> hook delivery</strong>
+						Upstream fires <code>session_before_compact</code> with
+						<code>{ preparation, branchEntries, customInstructions, signal }</code>. In
+						<code>src/extensions/hook-adapters/adapter.ts</code> Kimchi's
+						<code>runPreCompact()</code> translates that into the Claude Code
+						<code>PreCompact</code> hook payload:
+						<pre><code>{
+  "trigger": "manual" | "auto",     // customInstructions ? manual : auto
+  "custom_instructions": string | undefined
+}</code></code></pre>
+						Any <code>additionalContext</code> returned by the hook is sent to the model
+						as a non-blocking steering message.
+					</div>
+					<div class="mini">
+						<strong>3 · <code>PostCompact</code> + session restart</strong>
+						After the summary is written, upstream fires <code>session_compact</code>.
+						Kimchi's <code>runPostCompact()</code> delivers <code>PostCompact</code> with
+						<code>{ trigger }</code> (<code>"manual"</code> if the summary came from an
+						extension, <code>"auto"</code> otherwise), then immediately fires
+						<code>SessionStart</code> with <code>source: "compact"</code> so the user's
+						Claude Code <code>SessionStart</code> scripts re-run on the rebuilt session.
+						Any returned <code>additionalContext</code> is queued as the first message of
+						the next turn via <code>deliverAs: "nextTurn"</code>.
+					</div>
+				</div>
+
+				<h3>Wiring (from <code>src/extensions/hook-adapters/adapter.ts</code>)</h3>
+				<pre><code>pi.on("session_before_compact", (event, ctx) =>
+    runPreCompact(definition, pi, event, ctx))
+
+pi.on("session_compact", async (event, ctx) => {
+    await runPostCompact(definition, pi, event, ctx)
+    await runSessionStart(
+        definition,
+        pi,
+        { ...event, type: "session_compact" },
+        ctx,
+        pendingSystemPrompt,
+    )
+})</code></pre>
+
+				<div class="callout">
+					<p>
+						<strong>For Claude Code compatibility.</strong> The
+						<code>extensions/claude-code-hook-adapter</code> resource reuses this same
+						plumbing to translate pi's <code>session_before_compact</code> /
+						<code>session_compact</code> events into Claude Code's
+						<code>PreCompact</code> / <code>PostCompact</code> shell hooks, so existing
+						Claude Code hook scripts work without changes.
+					</p>
+				</div>
+
+				<div class="callout warning">
+					<p>
+						<strong>Caveats observed in kimchi code.</strong>
+					</p>
+					<ul>
+						<li><code>src/extensions/model-guard.ts</code> falls back to local token estimation when <code>getContextUsage</code> returns <code>null</code>, which is exactly the post-compaction state — so the guard re-arms immediately after a compaction without a fresh API call.</li>
+						<li><code>benchmark/terminal-bench-2/src/kimchi_agent/claude_code_kimchi.py</code> sets <code>CLAUDE_CODE_AUTO_COMPACT_PERCENT = 85</code> when wrapping Claude Code in benchmark mode — that is a Claude Code-side override, not a kimchi CLI override, and only affects the benchmark harness.</li>
+					</ul>
+				</div>
+			</section>
+
+			<section class="card section">
+				<div class="kicker">Failure modes</div>
+				<h2>What can go wrong</h2>
+				<div class="table-wrap">
+					<table>
+						<thead>
+							<tr>
+								<th>Symptom</th>
+								<th>Cause</th>
+								<th>What happens</th>
+							</tr>
+						</thead>
+						<tbody>
+							<tr>
+								<td>Compaction never fires even on long sessions</td>
+								<td><code>compaction.enabled: false</code> in <code>settings.json</code></td>
+								<td><code>shouldCompact</code> short-circuits to <code>false</code>. Overflow recovery also returns early. Manual <code>/compact</code> still works.</td>
+							</tr>
+							<tr>
+								<td>Session still overflows mid-turn</td>
+								<td>Single turn larger than <code>keepRecentTokens</code> + reserve</td>
+								<td>The cut lands mid-turn, generating a split-turn summary. If the summary itself is too large, the next turn will retry through overflow recovery.</td>
+							</tr>
+							<tr>
+								<td>Summary is "wrong" / loses important context</td>
+								<td>Lossy summarization is by design</td>
+								<td>Full history stays in the JSONL session file. Use <code>/tree</code> or fork the session to revisit it.</td>
+							</tr>
+							<tr>
+								<td>Extension cancels <code>session_before_compact</code></td>
+								<td>Hook returned <code>{ cancel: true }</code></td>
+								<td>Compaction aborts. The proactive threshold will re-check on the next turn; overflow recovery will retry the failing turn without compaction.</td>
+							</tr>
+							<tr>
+								<td>Compaction runs but the next turn fails immediately</td>
+								<td>Summary itself is too large, or the LLM rejected the structured prompt</td>
+								<td>Treat as overflow — upstream will run overflow recovery on the next failing turn and may re-compact.</td>
+							</tr>
+						</tbody>
+					</table>
+				</div>
+			</section>
+
+			<section class="card section">
+				<div class="kicker">Source map</div>
+				<h2>Primary files referenced</h2>
+				<ul class="source-list">
+					<li><code>node_modules/@earendil-works/pi-coding-agent/dist/core/compaction/compaction.js</code> — threshold check, cut-point search, LLM summary call, split-turn handling.</li>
+					<li><code>node_modules/@earendil-works/pi-coding-agent/dist/core/compaction/utils.js</code> — <code>serializeConversation()</code>, file-operation extraction.</li>
+					<li><code>node_modules/@earendil-works/pi-coding-agent/dist/core/compaction/branch-summarization.js</code> — branch summary (related mechanism, different trigger).</li>
+					<li><code>node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.js</code> — <code>_runAutoCompaction()</code>, <code>session_before_compact</code> / <code>session_compact</code> event emission, reload from <code>firstKeptEntryId</code>.</li>
+					<li><code>src/extensions/hook-adapters/adapter.ts</code> — <code>runPreCompact()</code> and <code>runPostCompact()</code> translate upstream events into Claude Code hooks.</li>
+					<li><code>src/extensions/help.ts</code> — registers <code>/compact</code> in the help picker.</li>
+					<li><code>src/extensions/model-guard.ts</code> — token-usage fallback path used post-compaction.</li>
+					<li><code>extensions/claude-code-hook-adapter/definition.ts</code> — lists <code>PreCompact</code> and <code>PostCompact</code> as supported adapter events.</li>
+					<li><code>docs/hooks.md</code> — describes the Claude Code hook events that compaction triggers.</li>
+					<li><code>docs/harness-implementation.html</code> — companion doc on the wider harness architecture.</li>
+				</ul>
+			</section>
+		</main>
+	</body>
+</html>

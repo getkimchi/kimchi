@@ -1,0 +1,1037 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>Kimchi Coding Harness Implementation</title>
+		<style>
+			:root {
+				--ink: #241a13;
+				--muted: #6e5a4b;
+				--paper: #fff8ed;
+				--panel: #fffdf7;
+				--line: #ead8bd;
+				--accent: #c85f2d;
+				--accent-2: #2d7f75;
+				--accent-3: #8c5a24;
+				--dark: #2d2118;
+				--code: #f3e4cc;
+				--ok: #1b7f57;
+				--warn: #b36b00;
+				--bad: #a63c2d;
+				--shadow: 0 18px 55px rgba(68, 38, 12, 0.12);
+			}
+
+			* {
+				box-sizing: border-box;
+			}
+
+			body {
+				margin: 0;
+				color: var(--ink);
+				background:
+					radial-gradient(circle at 10% 0%, rgba(200, 95, 45, 0.18), transparent 32rem),
+					radial-gradient(circle at 90% 10%, rgba(45, 127, 117, 0.14), transparent 28rem),
+					linear-gradient(135deg, #fff5e4 0%, #fbedd7 46%, #fffaf1 100%);
+				font-family:
+					Avenir Next,
+					Segoe UI,
+					Helvetica Neue,
+					sans-serif;
+				line-height: 1.55;
+			}
+
+			header {
+				padding: 4rem min(7vw, 5rem) 2rem;
+			}
+
+			main {
+				padding: 0 min(7vw, 5rem) 5rem;
+			}
+
+			h1,
+			h2,
+			h3 {
+				line-height: 1.12;
+				letter-spacing: -0.035em;
+			}
+
+			h1 {
+				max-width: 72rem;
+				margin: 0;
+				font-size: clamp(2.5rem, 6vw, 5.75rem);
+			}
+
+			h2 {
+				margin: 0 0 1rem;
+				font-size: clamp(1.8rem, 3.2vw, 3.15rem);
+			}
+
+			h3 {
+				margin: 1.7rem 0 0.55rem;
+				font-size: 1.25rem;
+			}
+
+			p {
+				margin: 0.65rem 0;
+			}
+
+			a {
+				color: var(--accent);
+				font-weight: 700;
+			}
+
+			code {
+				padding: 0.12rem 0.28rem;
+				border-radius: 0.28rem;
+				background: var(--code);
+				font-family:
+					SFMono-Regular,
+					Consolas,
+					Liberation Mono,
+					monospace;
+				font-size: 0.93em;
+			}
+
+			pre {
+				overflow: auto;
+				margin: 1rem 0;
+				padding: 1rem;
+				border: 1px solid var(--line);
+				border-radius: 1rem;
+				background: #2b2018;
+				color: #fff3df;
+				box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+			}
+
+			pre code {
+				padding: 0;
+				background: transparent;
+				color: inherit;
+			}
+
+			.lede {
+				max-width: 66rem;
+				margin: 1.2rem 0 0;
+				color: var(--muted);
+				font-size: clamp(1.05rem, 1.8vw, 1.35rem);
+			}
+
+			.grid {
+				display: grid;
+				grid-template-columns: repeat(12, minmax(0, 1fr));
+				gap: 1rem;
+				align-items: start;
+			}
+
+			.card {
+				border: 1px solid var(--line);
+				border-radius: 1.4rem;
+				background: rgba(255, 253, 247, 0.92);
+				box-shadow: var(--shadow);
+			}
+
+			.section {
+				margin: 1.25rem 0;
+				padding: clamp(1.2rem, 3vw, 2rem);
+			}
+
+			.span-4 {
+				grid-column: span 4;
+			}
+
+			.span-6 {
+				grid-column: span 6;
+			}
+
+			.span-7 {
+				grid-column: span 7;
+			}
+
+			.span-12 {
+				grid-column: span 12;
+			}
+
+			.kicker {
+				display: inline-flex;
+				gap: 0.45rem;
+				align-items: center;
+				margin-bottom: 0.8rem;
+				color: var(--accent-3);
+				font-weight: 800;
+				text-transform: uppercase;
+				letter-spacing: 0.08em;
+				font-size: 0.78rem;
+			}
+
+			.kicker::before {
+				content: "";
+				width: 0.7rem;
+				height: 0.7rem;
+				border-radius: 50%;
+				background: var(--accent);
+			}
+
+			.big-number {
+				display: block;
+				color: var(--accent);
+				font-size: 2.4rem;
+				font-weight: 900;
+				line-height: 1;
+			}
+
+			.flow {
+				display: grid;
+				grid-template-columns: repeat(5, minmax(0, 1fr));
+				gap: 0.75rem;
+				margin-top: 1rem;
+			}
+
+			.flow > div {
+				position: relative;
+				min-height: 8rem;
+				padding: 1rem;
+				border: 1px solid var(--line);
+				border-radius: 1rem;
+				background: #fffaf0;
+			}
+
+			.flow > div:not(:last-child)::after {
+				content: ">";
+				position: absolute;
+				right: -0.65rem;
+				top: 50%;
+				z-index: 1;
+				transform: translateY(-50%);
+				color: var(--accent);
+				font-weight: 900;
+			}
+
+			.flow strong {
+				display: block;
+				margin-bottom: 0.35rem;
+			}
+
+			.badge {
+				display: inline-block;
+				margin: 0.15rem 0.25rem 0.15rem 0;
+				padding: 0.16rem 0.48rem;
+				border-radius: 999px;
+				background: #f4dfbf;
+				color: #623d14;
+				font-size: 0.82rem;
+				font-weight: 700;
+			}
+
+			.table-wrap {
+				overflow-x: auto;
+				border: 1px solid var(--line);
+				border-radius: 1rem;
+			}
+
+			table {
+				width: 100%;
+				border-collapse: collapse;
+				background: var(--panel);
+			}
+
+			th,
+			td {
+				padding: 0.85rem 0.95rem;
+				border-bottom: 1px solid var(--line);
+				text-align: left;
+				vertical-align: top;
+			}
+
+			th {
+				background: #f3dfbd;
+				color: #4d311a;
+				font-size: 0.85rem;
+				text-transform: uppercase;
+				letter-spacing: 0.05em;
+			}
+
+			tr:last-child td {
+				border-bottom: 0;
+			}
+
+			.callout {
+				margin: 1rem 0;
+				padding: 1rem 1.1rem;
+				border-left: 0.35rem solid var(--accent-2);
+				border-radius: 0.8rem;
+				background: #eef9f3;
+			}
+
+			.warning {
+				border-left-color: var(--warn);
+				background: #fff4dc;
+			}
+
+			.stack {
+				display: grid;
+				gap: 0.85rem;
+			}
+
+			.mini {
+				padding: 1rem;
+				border: 1px solid var(--line);
+				border-radius: 1rem;
+				background: #fffaf0;
+			}
+
+			.mini strong {
+				display: block;
+				margin-bottom: 0.25rem;
+			}
+
+			ul,
+			ol {
+				padding-left: 1.25rem;
+			}
+
+			li {
+				margin: 0.45rem 0;
+			}
+
+			.source-list li {
+				font-size: 0.95rem;
+			}
+
+			@media (max-width: 900px) {
+				.grid,
+				.flow {
+					grid-template-columns: 1fr;
+				}
+
+				.span-4,
+				.span-6,
+				.span-7,
+				.span-12 {
+					grid-column: auto;
+				}
+
+				.flow > div:not(:last-child)::after {
+					content: "v";
+					right: 1rem;
+					top: auto;
+					bottom: -0.9rem;
+					transform: none;
+				}
+			}
+		</style>
+	</head>
+	<body>
+		<header>
+			<div class="kicker">Kimchi internals</div>
+			<h1>How the coding harness turns LLM calls into an agent</h1>
+			<p class="lede">
+				Kimchi is not a full agent loop reimplementation. It is a harness around
+				<code>@earendil-works/pi-coding-agent</code> that changes startup configuration,
+				model routing, system prompts, tool visibility, permission gates, subagent execution,
+				and ferment project automation.
+			</p>
+		</header>
+
+		<main>
+			<section class="grid">
+				<div class="card section span-4">
+					<span class="big-number">1</span>
+					<h3>Upstream owns the loop</h3>
+					<p>
+						The upstream package creates sessions, builds provider calls, executes model
+						turns, streams assistant output, runs tools, compacts context, and persists
+						session history. Kimchi enters that loop by passing extension factories to
+						upstream <code>main()</code> or by creating child sessions for subagents.
+					</p>
+				</div>
+				<div class="card section span-4">
+					<span class="big-number">2</span>
+					<h3>Kimchi owns steering</h3>
+					<p>
+						Before each model run, Kimchi assembles a custom system prompt from live
+						environment data, project guidelines, skills, active tools, extension prompt
+						blocks, phase guidance, and mode-specific orchestration instructions.
+					</p>
+				</div>
+				<div class="card section span-4">
+					<span class="big-number">3</span>
+					<h3>Modes change the contract</h3>
+					<p>
+						Standard sessions handle user tasks directly. Multi-model sessions force a
+						configured orchestrator model and delegate explore, build, and review through
+						the Agent tool. Ferment sessions add a host-owned project state machine and
+						require step work to be performed by workers.
+					</p>
+				</div>
+			</section>
+
+			<section class="card section">
+				<div class="kicker">Boot sequence</div>
+				<h2>Startup path</h2>
+				<p>
+					The entry point is intentionally split. <code>src/entry.ts</code> has no
+					transitive pi-mono imports, so it can set environment variables before upstream
+					configuration is loaded. Only after the harness directory, package resources,
+					proxy handling, OAuth template path, title, and paste interceptor are installed
+					does it dynamically import <code>src/cli.ts</code>.
+				</p>
+
+				<div class="flow">
+					<div>
+						<strong>entry.ts</strong>
+						Sets <code>PI_PACKAGE_DIR</code>, redirects <code>PI_CODING_AGENT_DIR</code>
+						to <code>~/.config/kimchi/harness</code>, installs proxy and paste hooks.
+					</div>
+					<div>
+						<strong>cli.ts</strong>
+						Handles Kimchi subcommands, telemetry, setup, model metadata refresh, themes,
+						keybindings, and terminal probes.
+					</div>
+					<div>
+						<strong>extension stack</strong>
+						Builds the ordered list of Kimchi extensions: auth, permissions, prompt
+						enrichment, ferment, agents, MCP, web tools, telemetry, UI, and guards.
+					</div>
+					<div>
+						<strong>upstream main</strong>
+						Calls <code>@earendil-works/pi-coding-agent</code> <code>main()</code> with
+						Kimchi extensions, or <code>runAcpMode()</code> for IDE/ACP JSON-RPC mode.
+					</div>
+					<div>
+						<strong>session events</strong>
+						Extensions respond to <code>session_start</code>, <code>before_agent_start</code>,
+						<code>context</code>, <code>tool_call</code>, <code>turn_end</code>, and
+						<code>session_shutdown</code>.
+					</div>
+				</div>
+
+				<div class="callout">
+					<strong>Why this matters:</strong> most agent behavior is not encoded in one
+					loop. It emerges from extension hooks around upstream session execution. The
+					critical hook for LLM-call steering is <code>before_agent_start</code>, where
+					Kimchi returns a complete system prompt override.
+				</div>
+			</section>
+
+			<section class="grid">
+				<div class="card section span-7">
+					<div class="kicker">LLM call construction</div>
+					<h2>The system prompt pipeline</h2>
+					<p>
+						<code>prompt-enrichment.ts</code> registers a <code>before_agent_start</code>
+						handler. For every agent run it gathers active tools, project context files,
+						skills, git metadata, current date, current phase, model registry data, and
+						session-scoped prompt blocks. It then calls <code>buildSystemPrompt()</code>.
+					</p>
+					<pre><code>mode = subagent ? "subagent"
+     : multiModelEnabled ? "orchestrator"
+     : "single"
+
+systemPrompt = buildSystemPrompt({
+  tools: activeTools,
+  env: cwd / docs dir / git / date,
+  contextFiles: AGENTS.md and related context,
+  skills: loaded skills,
+  currentModelId,
+  currentPhase,
+  registry,
+  mode,
+  roles,
+  sessionId
+})</code></pre>
+					<p>
+						The prompt builder always starts with the Kimchi identity and environment,
+						then adds the Documents policy, core coding guidelines, factual accuracy
+						rules, orchestration instructions, per-model phase guidelines, project
+						guidelines, extension prompt blocks, available tools, and skills.
+					</p>
+					<p>
+						Subagents get the same general prompt construction machinery, but
+						<code>buildSystemPrompt()</code> filters out delegation tools such as
+						<code>Agent</code>, <code>get_subagent_result</code>, and
+						<code>steer_subagent</code>. That prevents recursive delegation loops in
+						worker sessions.
+					</p>
+				</div>
+
+				<div class="card section span-5">
+					<div class="kicker">Prompt ingredients</div>
+					<h2>Steering blocks</h2>
+					<div class="stack">
+						<div class="mini">
+							<strong>Base instructions</strong>
+							Defines Kimchi as a coding agent and tells the model to use only listed tools.
+						</div>
+						<div class="mini">
+							<strong>Documents policy</strong>
+							Directs plans, specs, research notes, and agent handoff files to
+							<code>.kimchi/docs</code>.
+						</div>
+						<div class="mini">
+							<strong>Mode instructions</strong>
+							Single-model, orchestrator, and subagent mode each receive different rules.
+						</div>
+						<div class="mini">
+							<strong>System prompt blocks</strong>
+							Extensions such as ferment and permissions register session-scoped blocks
+							that can inject or suppress sections.
+						</div>
+						<div class="mini">
+							<strong>Tools and skills</strong>
+							Only currently active tools are listed. Skills are loaded from configured
+							Kimchi, vendor, package, and project skill paths.
+						</div>
+					</div>
+				</div>
+			</section>
+
+			<section class="card section">
+				<div class="kicker">Modes</div>
+				<h2>Standard, single-model, multi-model, and ferment</h2>
+				<div class="table-wrap">
+					<table>
+						<thead>
+							<tr>
+								<th>Mode</th>
+								<th>How it starts</th>
+								<th>LLM contract</th>
+								<th>Tool behavior</th>
+							</tr>
+						</thead>
+						<tbody>
+							<tr>
+								<td><strong>Standard session</strong></td>
+								<td>Default harness path through upstream <code>main()</code>.</td>
+								<td>
+									Normal coding agent session. It may be single-model or multi-model,
+									depending on <code>settings.json</code> and explicit model flags.
+								</td>
+								<td>
+									Uses the full active tool surface, subject to permissions, resource toggles,
+									and model guards.
+								</td>
+							</tr>
+							<tr>
+								<td><strong>Single-model</strong></td>
+								<td>
+									Explicit <code>--model</code> at startup or <code>set_model</code> to a concrete
+									model disables multi-model.
+								</td>
+								<td>
+									The prompt says all work runs on the selected model. If subagents are used,
+									the model must pass its own model ID, not a different role model.
+								</td>
+								<td>
+									Delegation remains possible for parallelism or isolation, but not for
+									cross-model specialization.
+								</td>
+							</tr>
+							<tr>
+								<td><strong>Multi-model</strong></td>
+								<td>
+									Default when <code>multiModel</code> is true and no explicit model flag is set,
+									or via <code>set_model({ model: "multi-model" })</code>.
+								</td>
+								<td>
+									The main model becomes the orchestrator. It classifies the task, chooses
+									phases, and delegates explore/build/review according to configured role
+									models.
+								</td>
+								<td>
+									<code>session_start</code> force-switches the main session back to the
+									configured orchestrator model if the user selected another model.
+								</td>
+							</tr>
+							<tr>
+								<td><strong>Ferment</strong></td>
+								<td>
+									First-run session picker, <code>/ferment</code>, <code>/ferment new</code>, or
+									<code>/ferment one-shot</code>.
+								</td>
+								<td>
+									The main model acts as a ferment planner. It scopes a project, drives a
+									persistent FSM, and must delegate implementation steps to workers.
+								</td>
+								<td>
+									Ferment lifecycle tools become visible according to runtime profile. Active
+									ferment switches permissions toward autonomous execution unless a CLI mode
+									overrides it.
+								</td>
+							</tr>
+							<tr>
+								<td><strong>Plan permissions mode</strong></td>
+								<td><code>--plan</code>, <code>/permissions mode plan</code>, or questionnaire promotion.</td>
+								<td>
+									Not a model orchestration mode; it is a permission/tool mode. A prompt block
+									steers the model to plan and emit a completion marker.
+								</td>
+								<td>
+									Mutating tools are hidden or blocked. Read-only tools, web tools,
+									questionnaire, and read-only bash remain available.
+								</td>
+							</tr>
+						</tbody>
+					</table>
+				</div>
+			</section>
+
+			<section class="card section">
+				<div class="kicker">Multi-model orchestration</div>
+				<h2>Role-based model routing</h2>
+				<p>
+					<code>model-roles.ts</code> defines six roles: orchestrator, planner, builder,
+					reviewer, explorer, and judge. Defaults are OSS Kimchi models, but
+					<code>~/.config/kimchi/harness/settings.json</code> can override any role under
+					<code>modelRoles</code>.
+				</p>
+				<div class="table-wrap">
+					<table>
+						<thead>
+							<tr>
+								<th>Role</th>
+								<th>Default</th>
+								<th>Used for</th>
+							</tr>
+						</thead>
+						<tbody>
+							<tr>
+								<td><strong>orchestrator</strong></td>
+								<td><code>kimchi-dev/kimi-k2.6</code></td>
+								<td>Main loop. Classifies tasks, plans/delegates, coordinates results.</td>
+							</tr>
+							<tr>
+								<td><strong>planner</strong></td>
+								<td><code>kimchi-dev/kimi-k2.6</code></td>
+								<td>Writes specs when planner differs from orchestrator; otherwise orchestrator plans.</td>
+							</tr>
+							<tr>
+								<td><strong>builder</strong></td>
+								<td><code>kimchi-dev/minimax-m2.7</code></td>
+								<td>Implementation, code edits, refactoring, and build chunks.</td>
+							</tr>
+							<tr>
+								<td><strong>reviewer</strong></td>
+								<td><code>kimchi-dev/minimax-m2.7</code></td>
+								<td>Independent verification, lint/test checks, and review findings.</td>
+							</tr>
+							<tr>
+								<td><strong>explorer</strong></td>
+								<td><code>kimchi-dev/nemotron-3-super-fp4</code></td>
+								<td>Codebase exploration, architecture tracing, and broad research.</td>
+							</tr>
+							<tr>
+								<td><strong>judge</strong></td>
+								<td><code>kimchi-dev/kimi-k2.6</code></td>
+								<td>Ferment verification triage and final journey grading.</td>
+							</tr>
+						</tbody>
+					</table>
+				</div>
+				<p>
+					The orchestration prompt creates a <strong>Your Team</strong> section from
+					these roles. Each role line includes display name, provider/model ID, description,
+					and vision support when known. The model metadata comes from a Kimchi-specific
+					<code>ModelRegistry</code>, built by merging live API model metadata with local
+					capability metadata such as tier, strengths, vision, and description.
+				</p>
+				<div class="callout warning">
+					<strong>Important distinction:</strong> pi-mono's model registry handles provider
+					config, API keys, and actual <code>Model</code> objects. Kimchi's orchestration
+					registry is advisory metadata for routing and prompt generation.
+				</div>
+			</section>
+
+			<section class="grid">
+				<div class="card section span-6">
+					<div class="kicker">Orchestrator prompt</div>
+					<h2>What the main model is told to do</h2>
+					<p>
+						In multi-model mode, the orchestrator receives a strict phased pipeline. It
+						must classify the task as simple or complex, select required steps from
+						explore, research, plan, build, and review, and decide what it owns versus
+						what must be delegated.
+					</p>
+					<ul>
+						<li><strong>Explore:</strong> always delegated to the Explorer model.</li>
+						<li><strong>Build:</strong> always delegated to the Builder model.</li>
+						<li><strong>Review:</strong> always delegated to the Reviewer model.</li>
+						<li><strong>Research:</strong> direct for a single web-search answer, delegated for long or multi-source work.</li>
+						<li><strong>Plan:</strong> self-served when planner equals orchestrator; otherwise delegated to the Planner model.</li>
+					</ul>
+					<p>
+						For complex tasks the prompt requires a Markdown spec in the Documents
+						directory, self-validation, optional external plan verification, chunked
+						build delegation, and final independent review. It explicitly forbids the
+						orchestrator from editing implementation files after delegating.
+					</p>
+				</div>
+
+				<div class="card section span-6">
+					<div class="kicker">Subagent prompt</div>
+					<h2>What workers are told to return</h2>
+					<p>
+						Subagents are started through Kimchi's Agent extension. The generic
+						subagent mode prompt requires a final response that is exactly one JSON
+						object:
+					</p>
+					<pre><code>{"summary":"one paragraph","files":["/absolute/path/to/doc.md"]}</code></pre>
+					<p>
+						Substantive output such as specs, plans, research notes, and findings should
+						be written to files in the Documents directory, not embedded in the final
+						message. This keeps handoffs small and lets the orchestrator pass file paths
+						between workers instead of bloating the conversation context.
+					</p>
+					<p>
+						Agent personas can further override worker behavior: allowed tools, memory,
+						skills, extensions, model list, thinking level, max turns, token budget, and
+						prompt mode are resolved before the child session is created.
+					</p>
+				</div>
+			</section>
+
+			<section class="card section">
+				<div class="kicker">Agent tool implementation</div>
+				<h2>How subagents become additional LLM calls</h2>
+				<p>
+					Kimchi registers three LLM-callable delegation tools:
+					<code>Agent</code>, <code>get_subagent_result</code>, and
+					<code>steer_subagent</code>. The Agent tool does not call a remote service
+					directly. It asks <code>AgentManager</code> to start a child
+					<code>AgentSession</code> using upstream <code>createAgentSession()</code>.
+				</p>
+				<div class="flow">
+					<div>
+						<strong>Tool call</strong>
+						Model calls <code>Agent</code> with type, prompt, description, optional model,
+						background flag, budget, turns, isolation, and context inheritance.
+					</div>
+					<div>
+						<strong>Invocation config</strong>
+						Kimchi resolves persona settings, model choice, join mode, token budget,
+						max turns, visibility, and session file.
+					</div>
+					<div>
+						<strong>Child prompt</strong>
+						<code>runAgent()</code> builds the worker system prompt with parent context,
+						environment, memory block, skills, guidelines, and persona instructions.
+					</div>
+					<div>
+						<strong>Child session</strong>
+						Upstream <code>createAgentSession()</code> starts an in-memory or persisted
+						child session with selected model and filtered tools.
+					</div>
+					<div>
+						<strong>Lifecycle control</strong>
+						Kimchi tracks tool activity, streaming text, usage, compaction, turns,
+						inactivity, duration, and abort reasons.
+					</div>
+				</div>
+				<p>
+					Background agents enter a queue with a default concurrency limit of four.
+					The manager stores records with status, model ID, tool-use count, session,
+					output, error, usage, and abort reason. Completed background agents notify
+					the parent session, and the model can fetch full results later with
+					<code>get_subagent_result</code>.
+				</p>
+				<p>
+					Steering is implemented through upstream session steering. Kimchi prefixes
+					automated steering messages with an orchestrator marker so the worker does not
+					interpret them as user input. Progress steering fires at 50%, 75%, and 90% of
+					turn budget; hard aborts occur after grace turns, token budget overflow,
+					inactivity, or max duration.
+				</p>
+			</section>
+
+			<section class="grid">
+				<div class="card section span-6">
+					<div class="kicker">Tool surface</div>
+					<h2>Tools available to the model</h2>
+					<p>
+						The final prompt lists only active tools. Upstream provides core file and
+						shell tools, while Kimchi extends or wraps many of them.
+					</p>
+					<p>
+						<span class="badge">read</span>
+						<span class="badge">write</span>
+						<span class="badge">edit</span>
+						<span class="badge">bash</span>
+						<span class="badge">grep</span>
+						<span class="badge">find</span>
+						<span class="badge">ls</span>
+						<span class="badge">web_search</span>
+						<span class="badge">web_fetch</span>
+						<span class="badge">Agent</span>
+						<span class="badge">get_subagent_result</span>
+						<span class="badge">steer_subagent</span>
+						<span class="badge">set_model</span>
+						<span class="badge">set_phase</span>
+						<span class="badge">questionnaire</span>
+						<span class="badge">Skill</span>
+						<span class="badge">curator</span>
+						<span class="badge">MCP tools</span>
+						<span class="badge">ferment lifecycle tools</span>
+					</p>
+					<p>
+						MCP tools are registered through the MCP adapter when enabled. Tool
+						rendering/grouping extensions customize how calls appear in the TUI but do
+						not by themselves change model reasoning.
+					</p>
+				</div>
+
+				<div class="card section span-6">
+					<div class="kicker">Tool gating</div>
+					<h2>Permissions are part of orchestration</h2>
+					<p>
+						<code>permissions/index.ts</code> intercepts <code>tool_call</code> events.
+						It resolves mode from runtime override, CLI flags, environment, and config.
+						Then it applies tool visibility, built-in deny rules, user/project allow and
+						deny rules, read-only checks, classifier calls, and UI prompts.
+					</p>
+					<ul>
+						<li><strong>default:</strong> read-only tools pass; mutating or risky tools prompt when UI is available.</li>
+						<li><strong>plan:</strong> mutating tools are hidden or blocked; bash must be read-only.</li>
+						<li><strong>auto:</strong> non-read-only calls are classified by an LLM before approval or block.</li>
+						<li><strong>yolo:</strong> bypasses permission checks and is marked dangerous.</li>
+					</ul>
+					<p>
+						Active ferment can runtime-switch permissions toward yolo so lifecycle work
+						does not stall on repeated prompts. Explicit CLI flags still win.
+					</p>
+				</div>
+			</section>
+
+			<section class="card section">
+				<div class="kicker">Ferment</div>
+				<h2>Autonomous project execution mode</h2>
+				<p>
+					Ferment is a higher-level workflow around the same upstream agent machinery.
+					It stores a project plan in <code>.kimchi/ferments/&lt;uuid&gt;.json</code>,
+					uses a deterministic state machine for valid transitions, injects planner
+					instructions into the system prompt, and exposes lifecycle tools that the LLM
+					must call to advance the plan.
+				</p>
+				<div class="flow">
+					<div>
+						<strong>Request</strong>
+						The user starts ferment through the picker or slash commands. The host owns
+						creation; the model is told not to create <code>.kimchi</code> files manually.
+					</div>
+					<div>
+						<strong>Scoping</strong>
+						The planner calls <code>propose_ferment_scoping</code> with title, goal,
+						success criteria, assumptions, phases, questions, and P1/P2/P3 gates.
+					</div>
+					<div>
+						<strong>Plan review</strong>
+						The host displays a plan-review UI. Confirmation persists the plan and moves
+						the ferment to planned.
+					</div>
+					<div>
+						<strong>Execution</strong>
+						The planner activates/refines phases, starts steps, delegates each step to
+						subagents, then completes steps with gate evidence.
+					</div>
+					<div>
+						<strong>Completion</strong>
+						Phase and final completion tools validate gates, run project-check logic,
+						record evidence, apply continuation policy, and optionally grade the journey.
+					</div>
+				</div>
+
+				<h3>Ferment prompt supplement</h3>
+				<p>
+					When an active ferment exists, <code>buildFermentPromptBlock()</code> injects a
+					planner role into the system prompt. It tells the main model that it manages the
+					task graph and must delegate all implementation work. It lists available
+					subagent types, current scoping context, decisions, memories, manual/automated
+					continuation policy, and detailed rules for questions, phase design, parallel
+					steps, and gate payloads.
+				</p>
+
+				<h3>Ferment lifecycle tools</h3>
+				<p>
+					The planner-facing tool set is explicit:
+					<code>request_ferment_workflow</code>,
+					<code>propose_ferment_scoping</code>,
+					<code>list_ferments</code>,
+					<code>scope_ferment</code>,
+					<code>update_ferment_scope_field</code>,
+					<code>complete_ferment</code>,
+					<code>activate_ferment_phase</code>,
+					<code>refine_ferment_phase</code>,
+					<code>complete_ferment_phase</code>,
+					<code>skip_ferment_phase</code>,
+					<code>fail_ferment_phase</code>,
+					<code>start_ferment_step</code>,
+					<code>complete_ferment_step</code>,
+					<code>verify_ferment_step</code>,
+					<code>skip_ferment_step</code>,
+					<code>fail_ferment_step</code>,
+					<code>add_ferment_decision</code>,
+					<code>add_ferment_memory</code>, and <code>ask_user</code>.
+				</p>
+
+				<div class="callout">
+					<strong>Key design:</strong> the model is not trusted to mutate ferment state
+					directly. Tool handlers validate UI gates, call the deterministic state
+					machine, persist the result, run host-side side effects, and return the next
+					action hint that drives the following model turn.
+				</div>
+			</section>
+
+			<section class="grid">
+				<div class="card section span-6">
+					<div class="kicker">Ferment verification</div>
+					<h2>Gates, evidence, and judge calls</h2>
+					<p>
+						Ferment completion tools require structured gate verdicts. Each gate includes
+						an ID, verdict, rationale, and evidence. Validation enforces gate coverage and
+						rejects empty or malformed evidence. Gate flags become block flags that feed
+						retry and escalation logic.
+					</p>
+					<p>
+						The judge is intentionally narrow. Most grading was replaced by deterministic
+						gate validation. The surviving LLM judge calls are tactical: interpreting
+						non-zero step verification output and assigning a final journey grade after
+						final completion gates have already passed.
+					</p>
+					<p>
+						Judge model selection uses the configured <code>judge</code> role when
+						available, falling back to captured session model context.
+					</p>
+				</div>
+				<div class="card section span-6">
+					<div class="kicker">Continuation</div>
+					<h2>Manual vs automated ferment</h2>
+					<p>
+						Ferment has a continuation policy independent of standard permission mode.
+						In manual policy, phase boundaries pause and ask the user whether to proceed.
+						In automated policy, the planner continues across phase boundaries until the
+						ferment completes, blocks, pauses, or needs user input.
+					</p>
+					<p>
+						Events such as <code>turn_end</code>, <code>agent_end</code>, and scheduled
+						wake-ups deliver follow-up messages to keep the state machine moving without
+						the user typing another prompt. Stuck-loop counters block repeated starts or
+						repeated block hashes and redirect the planner toward recovery.
+					</p>
+				</div>
+			</section>
+
+			<section class="card section">
+				<div class="kicker">Runtime safeguards</div>
+				<h2>How Kimchi keeps LLM calls from drifting</h2>
+				<ul>
+					<li>
+						<strong>Continuation nudges:</strong> if the orchestrator announces delegation
+						but emits no tool call, hidden follow-up messages nudge it to continue instead
+						of ending the loop.
+					</li>
+					<li>
+						<strong>Empty-turn nudges:</strong> textless or malformed turns can be
+						recovered by a hidden message rather than waiting for the user.
+					</li>
+					<li>
+						<strong>Context cleanup:</strong> stale nudges, UI-only messages, and
+						empty-name tool calls are stripped from context before the next LLM call.
+					</li>
+					<li>
+						<strong>Model switching guard:</strong> model changes are rejected when the
+						current context exceeds the target model's safe context window.
+					</li>
+					<li>
+						<strong>Vision guard:</strong> sessions containing images cannot switch to a
+						non-vision model unless images are stripped or described.
+					</li>
+					<li>
+						<strong>Agent budgets:</strong> child agents can be limited by max turns,
+						output-token budget, inactivity timeout, and wall-clock duration.
+					</li>
+					<li>
+						<strong>Permission fail-closed behavior:</strong> when prompts or classifier
+						models are unavailable for risky calls, the tool call is blocked instead of
+						implicitly allowed.
+					</li>
+					<li>
+						<strong>Plan persona path scope:</strong> plan subagents may write only under
+						<code>.kimchi/plans/</code>.
+					</li>
+				</ul>
+			</section>
+
+			<section class="card section">
+				<div class="kicker">LLM call paths</div>
+				<h2>Where model calls happen</h2>
+				<div class="table-wrap">
+					<table>
+						<thead>
+							<tr>
+								<th>Path</th>
+								<th>Call owner</th>
+								<th>Prompt source</th>
+								<th>Purpose</th>
+							</tr>
+						</thead>
+						<tbody>
+							<tr>
+								<td>Main interactive turn</td>
+								<td>Upstream <code>AgentSession.prompt()</code></td>
+								<td>Kimchi <code>buildSystemPrompt()</code> override plus conversation context.</td>
+								<td>Standard coding agent behavior, orchestrator behavior, or ferment planner behavior.</td>
+							</tr>
+							<tr>
+								<td>Subagent turn</td>
+								<td>Kimchi <code>runAgent()</code> creates upstream child session.</td>
+								<td>Persona prompt from <code>buildAgentPrompt()</code> plus filtered tools and optional parent context.</td>
+								<td>Explorer, builder, reviewer, planner, or custom worker execution.</td>
+							</tr>
+							<tr>
+								<td>Permission classifier</td>
+								<td>Permissions extension.</td>
+								<td>Classifier prompt over tool name, input, and cwd.</td>
+								<td>Decide whether a risky tool call is safe, blocked, or requires human prompt.</td>
+							</tr>
+							<tr>
+								<td>Ferment judge</td>
+								<td>Ferment judge module via <code>complete()</code>.</td>
+								<td>Narrow JSON-only judge prompts for verification triage or final journey grade.</td>
+								<td>Interpret non-zero verification or grade completed ferment quality.</td>
+							</tr>
+							<tr>
+								<td>Web/search and MCP tools</td>
+								<td>Tool implementations, not the language model provider.</td>
+								<td>Tool-specific input schemas and handlers.</td>
+								<td>Fetch external context or call external MCP servers for resources/tools.</td>
+							</tr>
+						</tbody>
+					</table>
+				</div>
+			</section>
+
+			<section class="card section">
+				<div class="kicker">Source map</div>
+				<h2>Primary implementation files</h2>
+				<ul class="source-list">
+					<li><code>src/entry.ts</code> - early environment setup before pi-mono imports.</li>
+					<li><code>src/cli.ts</code> - subcommand dispatch, config/model setup, extension factory ordering, upstream main handoff.</li>
+					<li><code>src/extensions/prompt-construction/prompt-enrichment.ts</code> - mode detection, model-role validation, context cleanup, continuation nudges, and system prompt injection.</li>
+					<li><code>src/extensions/prompt-construction/system-prompt.ts</code> - final system prompt assembler.</li>
+					<li><code>src/extensions/orchestration/orchestration-instructions.ts</code> - single, orchestrator, and subagent mode instruction text.</li>
+					<li><code>src/extensions/orchestration/model-roles.ts</code> - role defaults, parsing, persistence, and validation.</li>
+					<li><code>src/extensions/orchestration/model-registry/*</code> - live model metadata plus curated strengths, tiers, vision, and guidelines.</li>
+					<li><code>src/extensions/agents/index.ts</code> - LLM-callable Agent tools and UI/command surface.</li>
+					<li><code>src/extensions/agents/manager/agent-manager.ts</code> - subagent records, background queue, concurrency, lifecycle status.</li>
+					<li><code>src/extensions/agents/manager/agent-runner.ts</code> - child session creation, worker prompt, tool filtering, usage, steering, budgets, and aborts.</li>
+					<li><code>src/extensions/permissions/index.ts</code> - permission modes, tool-call interception, classifier/prompt flow, plan mode.</li>
+					<li><code>src/extensions/model-switch.ts</code> and <code>src/extensions/model-guard.ts</code> - model selection, context-window checks, and vision compatibility.</li>
+					<li><code>src/extensions/ferment/index.ts</code> - ferment extension entry point, prompt block registration, commands, tools, and renderers.</li>
+					<li><code>src/extensions/ferment/prompt-block.ts</code> - ferment planner system prompt supplement.</li>
+					<li><code>src/extensions/ferment/tools/*</code> - lifecycle, phase, step, and knowledge tool handlers.</li>
+					<li><code>src/ferment/state-machine.ts</code>, <code>src/ferment/engine.ts</code>, and <code>src/ferment/store.ts</code> - deterministic ferment state transitions and persistence.</li>
+					<li><code>docs/ferment.md</code> - existing ferment user-facing documentation.</li>
+				</ul>
+			</section>
+		</main>
+	</body>
+</html>
