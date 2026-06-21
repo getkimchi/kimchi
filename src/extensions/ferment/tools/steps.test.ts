@@ -477,7 +477,7 @@ describe("suggestWorkerLimits", () => {
 })
 
 describe("start_ferment_step plan-first preamble", () => {
-	it("contains both inline-plan and update_todos instructions", async () => {
+	it("contains plan-first preamble with verification and cleanup hints", async () => {
 		const h = createHarness()
 		const services = createServices()
 
@@ -489,8 +489,9 @@ describe("start_ferment_step plan-first preamble", () => {
 		)
 
 		const text = okText(result)
-		expect(text).toContain("inline plan")
-		expect(text).toContain("update_todos")
+		expect(text).toContain("Plan first")
+		expect(text).toContain("verification sub-task")
+		expect(text).toContain("cleanup sub-task")
 	})
 
 	it.each([1, 2])("preamble appears on call %i without completion", async (callNumber) => {
@@ -510,7 +511,7 @@ describe("start_ferment_step plan-first preamble", () => {
 
 		const text = okText(result)
 		expect(text).toContain("Plan first")
-		expect(text).toContain("update_todos")
+		expect(text).toContain("verification sub-task")
 	})
 
 	it("instructs orchestrator to embed plan in worker Agent prompt", async () => {
@@ -530,7 +531,47 @@ describe("start_ferment_step plan-first preamble", () => {
 		expect(text).toContain("Agent")
 	})
 
-	it("stuck-loop guard triggers on 3rd consecutive start — no plan-first preamble", async () => {
+	it("includes prior step summaries in the plan-first preamble", async () => {
+		const h = createHarness()
+		const services = createServices()
+
+		// Start and complete step 1 with a summary
+		await startStep(
+			h.runtime,
+			{ ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1" },
+			{ pi: h.pi },
+			services,
+		)
+		const completeResult = await completeStep(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				phase_id: "phase-1",
+				step_id: "step-1",
+				summary: "Installed dependencies and verified config",
+				gates: passingStepGates(),
+			},
+			{ pi: h.pi },
+			services,
+		)
+		// Verify step-1 completed successfully
+		expect((completeResult as { isError?: boolean }).isError).toBeFalsy()
+		expect(h.storage.get(h.fermentId)?.phases[0].steps[0]?.status).toBe("done")
+
+		// Now start step 2 — should include prior step context
+		const result = await startStep(
+			h.runtime,
+			{ ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-2" },
+			{ pi: h.pi },
+			services,
+		)
+
+		const text = okText(result)
+		expect(text).toContain("Prior steps")
+		expect(text).toContain("First step")
+	})
+
+	it("stuck-loop guard triggers on 3rd consecutive start \u2014 no plan-first preamble", async () => {
 		const h = createHarness()
 		const services = createServices()
 
@@ -547,7 +588,7 @@ describe("start_ferment_step plan-first preamble", () => {
 		const text = errText(result)
 		expect(text).toContain("Stuck loop detected")
 		expect(text).not.toContain("Plan first")
-		expect(text).not.toContain("update_todos")
+		expect(text).not.toContain("verification sub-task")
 		expect(h.storage.get(h.fermentId)?.phases[0].steps[0].status).toBe("pending")
 	})
 })

@@ -183,27 +183,15 @@ describe("todo state block gating", () => {
 	})
 })
 
-describe("empty-plan nudge for ferment steps", () => {
-	function makeFermentWithRunningStep(): Ferment {
+describe("ferment-conditional todo guidance", () => {
+	function makeFerment(): Ferment {
 		return {
-			id: "f-nudge-test",
-			name: "Nudge Test",
+			id: "f-guidance-test",
+			name: "Guidance Test",
 			status: "running",
 			worktree: { path: "/tmp" },
 			scoping: {},
-			phases: [
-				{
-					id: "phase-1",
-					index: 1,
-					name: "Build",
-					goal: "build it",
-					status: "active",
-					steps: [
-						{ id: "step-1", index: 1, description: "Write the code", status: "running" },
-						{ id: "step-2", index: 2, description: "Test it", status: "pending" },
-					],
-				},
-			],
+			phases: [],
 			decisions: [],
 			memories: [],
 			createdAt: new Date().toISOString(),
@@ -211,87 +199,12 @@ describe("empty-plan nudge for ferment steps", () => {
 		}
 	}
 
-	beforeEach(() => {
-		__resetTodoStore()
-		setCurrentSessionHasUI(false)
-	})
-
 	afterEach(() => {
 		setActive(undefined)
-		__resetTodoStore()
-		setCurrentSessionHasUI(true)
-	})
-
-	it("shows warning when step is running with only the seed todo", () => {
-		setActive(makeFermentWithRunningStep())
-		// Seed todo (what todo-sync.ts would create on step start)
-		applyWriteTodos({
-			scope: { kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" },
-			todos: [{ content: "Write the code", status: "in_progress" }],
-		})
-
-		const md = __test_renderTodoStateMarkdown()
-		expect(md).toContain("\u26a0 No implementation plan for the current step")
-		expect(md).toContain("Use add_todo to break down the work")
-	})
-
-	it("shows warning when step is running with empty step scope", () => {
-		setActive(makeFermentWithRunningStep())
-		// No step todos at all — need some other scope populated so markdown renders
-		applyWriteTodos({
-			scope: { kind: "ferment", phaseId: "phase-1" },
-			todos: [
-				{ content: "[Phase 1] Build", status: "in_progress" },
-				{ content: "\u21b3 Write the code", status: "in_progress" },
-			],
-		})
-
-		const md = __test_renderTodoStateMarkdown()
-		expect(md).toContain("\u26a0 No implementation plan for the current step")
-	})
-
-	it("does NOT show warning when model has added sub-tasks", () => {
-		setActive(makeFermentWithRunningStep())
-		applyWriteTodos({
-			scope: { kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" },
-			todos: [
-				{ content: "Write the code", status: "in_progress" },
-				{ content: "Create helper function", status: "pending" },
-				{ content: "Add error handling", status: "pending" },
-			],
-		})
-
-		const md = __test_renderTodoStateMarkdown()
-		expect(md).not.toContain("\u26a0 No implementation plan")
-	})
-
-	it("does NOT show warning when no ferment is active", () => {
-		setActive(undefined)
-		applyWriteTodos({
-			scope: { kind: "global" },
-			todos: [{ content: "some global todo", status: "pending" }],
-		})
-
-		const md = __test_renderTodoStateMarkdown()
-		expect(md).not.toContain("\u26a0 No implementation plan")
-	})
-
-	it("does NOT show warning when no step is running", () => {
-		const ferment = makeFermentWithRunningStep()
-		// All steps pending, none running
-		ferment.phases[0].steps[0].status = "pending"
-		setActive(ferment)
-		applyWriteTodos({
-			scope: { kind: "ferment", phaseId: "phase-1" },
-			todos: [{ content: "[Phase 1] Build", status: "in_progress" }],
-		})
-
-		const md = __test_renderTodoStateMarkdown()
-		expect(md).not.toContain("\u26a0 No implementation plan")
 	})
 
 	it("renderTodoPromptBlock includes ferment guidance when ferment is active", () => {
-		setActive(makeFermentWithRunningStep())
+		setActive(makeFerment())
 		const block = __test_renderTodoPromptBlock()
 		expect(block).toContain("When working inside a ferment step")
 		expect(block).toContain("break the step into concrete sub-tasks")

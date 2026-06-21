@@ -24,7 +24,7 @@ import {
 	renderTodoStateBlock,
 	setCurrentSessionHasUI,
 } from "../todos/prompt-block.js"
-import { __resetTodoStore, getTodosForScope } from "../todos/store.js"
+import { __resetTodoStore, applyWriteTodos, getTodosForScope, resolveTodoScope } from "../todos/store.js"
 import { emitFermentDomainEvent } from "./domain-events-emitter.js"
 import { setActive } from "./state.js"
 import { registerFermentTodoSync } from "./todo-sync.js"
@@ -153,7 +153,7 @@ describe("ferment → todo → headless prompt wiring", () => {
 		}
 	})
 
-	it("start_step event seeds the ferment-step scope with the step description", () => {
+	it("start_step event auto-scopes subsequent todo calls to the ferment-step scope", () => {
 		const ferment = makeFerment({
 			phases: [
 				{
@@ -176,16 +176,34 @@ describe("ferment → todo → headless prompt wiring", () => {
 			emitFermentDomainEvent(pi.events, { type: "activate_phase", phaseId: "phase-1" }, ferment)
 			emitFermentDomainEvent(pi.events, { type: "start_step", phaseId: "phase-1", stepId: "step-1" }, ferment)
 
-			const stepTodos = getTodosForScope({ kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" })
-			expect(stepTodos).toHaveLength(1)
-			expect(stepTodos[0].content).toBe("Write the code")
-			expect(stepTodos[0].status).toBe("in_progress")
+			// Scope-less todo call should resolve to the running step's ferment-step scope
+			const resolved = resolveTodoScope(undefined)
+			expect(resolved).toEqual({ kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" })
+
+			// Writing without explicit scope should go to ferment-step
+			applyWriteTodos({ todos: [{ content: "do something", status: "pending" }] })
+			expect(getTodosForScope({ kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" })).toHaveLength(1)
+			expect(getTodosForScope({ kind: "global" })).toHaveLength(0)
 		} finally {
 			unsubscribe()
 		}
 	})
 
-	it("complete_step event clears the ferment-step scope", () => {
+	it("scope resolves to global when no step is running", () => {
+		const ferment = makeFerment()
+		setActive(ferment)
+		const { pi, unsubscribe } = makePiWithRealEventBus()
+
+		try {
+			// No step started — should resolve to global
+			const resolved = resolveTodoScope(undefined)
+			expect(resolved).toEqual({ kind: "global" })
+		} finally {
+			unsubscribe()
+		}
+	})
+
+	it("complete_step event clears the ferment-step scope and resets auto-scope to global", () => {
 		const ferment = makeFerment({
 			phases: [
 				{
@@ -208,7 +226,8 @@ describe("ferment → todo → headless prompt wiring", () => {
 			emitFermentDomainEvent(pi.events, { type: "activate_phase", phaseId: "phase-1" }, ferment)
 			emitFermentDomainEvent(pi.events, { type: "start_step", phaseId: "phase-1", stepId: "step-1" }, ferment)
 
-			// Step todos should exist
+			// Simulate model writing todos (without scope — auto-scoped)
+			applyWriteTodos({ todos: [{ content: "plan item", status: "in_progress" }] })
 			expect(getTodosForScope({ kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" })).toHaveLength(1)
 
 			// Complete the step
@@ -228,12 +247,14 @@ describe("ferment → todo → headless prompt wiring", () => {
 
 			// Step-level todos should be cleared
 			expect(getTodosForScope({ kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" })).toHaveLength(0)
+			// Scope should revert to global
+			expect(resolveTodoScope(undefined)).toEqual({ kind: "global" })
 		} finally {
 			unsubscribe()
 		}
 	})
 
-	it("fail_step event clears the ferment-step scope", () => {
+	it("fail_step event clears the ferment-step scope and resets auto-scope to global", () => {
 		const ferment = makeFerment({
 			phases: [
 				{
@@ -256,6 +277,7 @@ describe("ferment → todo → headless prompt wiring", () => {
 			emitFermentDomainEvent(pi.events, { type: "activate_phase", phaseId: "phase-1" }, ferment)
 			emitFermentDomainEvent(pi.events, { type: "start_step", phaseId: "phase-1", stepId: "step-1" }, ferment)
 
+			applyWriteTodos({ todos: [{ content: "plan item", status: "in_progress" }] })
 			expect(getTodosForScope({ kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" })).toHaveLength(1)
 
 			const failedFerment: Ferment = {
@@ -273,6 +295,7 @@ describe("ferment → todo → headless prompt wiring", () => {
 			)
 
 			expect(getTodosForScope({ kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" })).toHaveLength(0)
+			expect(resolveTodoScope(undefined)).toEqual({ kind: "global" })
 		} finally {
 			unsubscribe()
 		}

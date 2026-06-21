@@ -20,7 +20,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Phase, StepStatus } from "../../ferment/types.js"
 import { parseTodoScopeKey } from "../todos/scope.js"
-import { applyWriteTodos, getTodoState, getTodosForScope } from "../todos/store.js"
+import { applyWriteTodos, getTodoState, getTodosForScope, registerActiveTodoScopeProvider } from "../todos/store.js"
 import type { TodoDraft, TodoItem, TodoScope, TodoStatus } from "../todos/types.js"
 import {
 	FERMENT_EVENTS,
@@ -223,23 +223,24 @@ function handlePhaseStarted(raw: unknown): void {
 	syncTodoIds(ferment.id, payload.phaseId, details.todos, contentSyncMap)
 }
 
+// ─── Active step tracking for scope provider ────────────────────────────────
+// When a ferment step is running, scope-less todo calls (update_todos, add_todo)
+// automatically target the ferment-step scope instead of global.
+
+let currentRunningStep: { phaseId: string; stepId: string } | undefined
+
+/** Exported for tests only. */
+export function __getCurrentRunningStep(): { phaseId: string; stepId: string } | undefined {
+	return currentRunningStep
+}
+
 function handleStepStarted(raw: unknown): void {
 	const payload = raw as FermentStepStartedPayload
 	const ferment = getActive()
 	if (!ferment || ferment.id !== payload.fermentId) return
 
-	const phase = ferment.phases.find((p) => p.id === payload.phaseId)
-	if (!phase) return
-
-	const step = phase.steps.find((s) => s.id === payload.stepId)
-	if (!step) return
-
-	// Seed the ferment-step scope with the step description so the model
-	// has a starting point to expand into a detailed implementation plan.
-	applyWriteTodos({
-		scope: { kind: "ferment-step", phaseId: payload.phaseId, stepId: payload.stepId },
-		todos: [{ content: step.description, status: "in_progress" }],
-	})
+	// Track the running step so the scope provider can auto-scope todo calls.
+	currentRunningStep = { phaseId: payload.phaseId, stepId: payload.stepId }
 }
 
 function clearStepTodos(phaseId: string, stepId: string): void {
@@ -268,8 +269,9 @@ function handleStepCompleted(raw: unknown): void {
 		return
 	}
 
-	// Clear the step-level implementation todos — they're done.
+	// Clear the step-level implementation todos and stop tracking.
 	clearStepTodos(payload.phaseId, payload.stepId)
+	currentRunningStep = undefined
 
 	const idMap = getOrCreateIdMap(ferment.id, payload.phaseId)
 	const stepTodoId = idMap.get(payload.stepId)
@@ -308,8 +310,9 @@ function handleStepFailed(raw: unknown): void {
 		return
 	}
 
-	// Clear the step-level implementation todos — the step failed.
+	// Clear the step-level implementation todos and stop tracking.
 	clearStepTodos(payload.phaseId, payload.stepId)
+	currentRunningStep = undefined
 
 	const idMap = getOrCreateIdMap(ferment.id, payload.phaseId)
 	const stepTodoId = idMap.get(payload.stepId)
@@ -431,6 +434,18 @@ function handleFermentCompleted(raw: unknown): void {
 export function registerFermentTodoSync(pi: ExtensionAPI): () => void {
 	const unsubscribes: Array<() => void> = []
 
+	// Auto-scope: when a ferment step is running, scope-less todo calls
+	// (update_todos, add_todo without explicit scope) target the active
+	// step's ferment-step scope instead of global.
+	const unregisterScope = registerActiveTodoScopeProvider(() => {
+		if (!currentRunningStep) return undefined
+		return {
+			kind: "ferment-step" as const,
+			phaseId: currentRunningStep.phaseId,
+			stepId: currentRunningStep.stepId,
+		}
+	})
+
 	unsubscribes.push(pi.events.on(FERMENT_EVENTS.PHASE_STARTED, handlePhaseStarted))
 	unsubscribes.push(pi.events.on(FERMENT_EVENTS.STEP_STARTED, handleStepStarted))
 	unsubscribes.push(pi.events.on(FERMENT_EVENTS.STEP_COMPLETED, handleStepCompleted))
@@ -444,6 +459,8 @@ export function registerFermentTodoSync(pi: ExtensionAPI): () => void {
 		for (const unsub of unsubscribes) {
 			unsub()
 		}
+		unregisterScope()
+		currentRunningStep = undefined
 		// Clear all in-memory state on unsubscribe to avoid memory leaks.
 		todoIdMaps.clear()
 		suspendedSnapshots.clear()

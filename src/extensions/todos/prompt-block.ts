@@ -2,7 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { getActive } from "../ferment/state.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import { parseTodoScopeKey } from "./scope.js"
-import { getTodoState, getTodosForScope } from "./store.js"
+import { getTodoState } from "./store.js"
 import type { TodoItem, TodoScope, TodoStatus } from "./types.js"
 
 const TODO_GUIDANCE =
@@ -130,29 +130,6 @@ export function renderTodoStateMarkdown(): string | undefined {
 		lines.push(`**Step ${stepScope.phaseId}/${stepScope.stepId}**`)
 		for (const todo of stepScope.todos) lines.push(formatTodoLine(todo))
 		lines.push("")
-	}
-
-	// Nudge: if a ferment step is running and the model hasn't expanded
-	// the seed todo into a real implementation plan, prompt it to do so.
-	const ferment = getActive()
-	if (ferment && ferment.status === "running") {
-		const activePhase = ferment.phases.find((p) => p.status === "active")
-		if (activePhase) {
-			const runningStep = activePhase.steps.find((s) => s.status === "running")
-			if (runningStep) {
-				const stepTodos = getTodosForScope({
-					kind: "ferment-step",
-					phaseId: activePhase.id,
-					stepId: runningStep.id,
-				})
-				if (stepTodos.length <= 1) {
-					lines.push("")
-					lines.push(
-						"\u26a0 No implementation plan for the current step. Use add_todo to break down the work before writing code.",
-					)
-				}
-			}
-		}
 	}
 
 	// Trim trailing blank line for cleanliness.
