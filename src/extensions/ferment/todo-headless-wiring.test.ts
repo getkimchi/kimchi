@@ -27,7 +27,12 @@ import {
 import { __resetTodoStore, applyWriteTodos, getTodosForScope, resolveTodoScope } from "../todos/store.js"
 import { emitFermentDomainEvent } from "./domain-events-emitter.js"
 import { setActive } from "./state.js"
-import { bumpStallCounter, getTurnsSinceStepTodoWrite, registerFermentTodoSync } from "./todo-sync.js"
+import {
+	__getRunningSteps,
+	bumpStallCounter,
+	getTurnsSinceStepTodoWrite,
+	registerFermentTodoSync,
+} from "./todo-sync.js"
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -533,5 +538,104 @@ describe("stall detection via step todo write tracking", () => {
 		bumpStallCounter()
 		bumpStallCounter()
 		expect(getTurnsSinceStepTodoWrite()).toBe(0)
+	})
+})
+
+describe("parallel step tracking", () => {
+	beforeEach(() => {
+		__resetTodoStore()
+		setActive(undefined)
+		setCurrentSessionHasUI(false)
+	})
+
+	afterEach(() => {
+		setActive(undefined)
+		__resetTodoStore()
+		setCurrentSessionHasUI(true)
+	})
+
+	function makeParallelFerment(): Ferment {
+		return {
+			id: "f-parallel",
+			name: "Parallel Test",
+			status: "running",
+			worktree: { path: "/tmp" },
+			scoping: {},
+			phases: [
+				{
+					id: "phase-1",
+					index: 1,
+					name: "Parallel",
+					goal: "do things",
+					status: "active",
+					steps: [
+						{ id: "step-a", index: 1, description: "Branch A", status: "running", parallel: true, groupIndex: 1 },
+						{ id: "step-b", index: 2, description: "Branch B", status: "running", parallel: true, groupIndex: 1 },
+					],
+				},
+			],
+			decisions: [],
+			memories: [],
+			createdAt: new Date().toISOString(),
+			updatedAt: new Date().toISOString(),
+		}
+	}
+
+	it("tracks multiple parallel steps independently", () => {
+		const ferment = makeParallelFerment()
+		setActive(ferment)
+		const { pi, unsubscribe } = makePiWithRealEventBus()
+
+		try {
+			emitFermentDomainEvent(pi.events, { type: "activate_phase", phaseId: "phase-1" }, ferment)
+			emitFermentDomainEvent(pi.events, { type: "start_step", phaseId: "phase-1", stepId: "step-a" }, ferment)
+			emitFermentDomainEvent(pi.events, { type: "start_step", phaseId: "phase-1", stepId: "step-b" }, ferment)
+
+			const running = __getRunningSteps()
+			expect(running.size).toBe(2)
+			expect(running.has("phase-1/step-a")).toBe(true)
+			expect(running.has("phase-1/step-b")).toBe(true)
+		} finally {
+			unsubscribe()
+		}
+	})
+
+	it("completing one parallel step leaves the other running", () => {
+		const ferment = makeParallelFerment()
+		setActive(ferment)
+		const { pi, unsubscribe } = makePiWithRealEventBus()
+
+		try {
+			emitFermentDomainEvent(pi.events, { type: "activate_phase", phaseId: "phase-1" }, ferment)
+			emitFermentDomainEvent(pi.events, { type: "start_step", phaseId: "phase-1", stepId: "step-a" }, ferment)
+			emitFermentDomainEvent(pi.events, { type: "start_step", phaseId: "phase-1", stepId: "step-b" }, ferment)
+
+			// Complete step-a only
+			emitFermentDomainEvent(pi.events, { type: "complete_step", phaseId: "phase-1", stepId: "step-a" }, ferment)
+
+			const running = __getRunningSteps()
+			expect(running.size).toBe(1)
+			expect(running.has("phase-1/step-a")).toBe(false)
+			expect(running.has("phase-1/step-b")).toBe(true)
+		} finally {
+			unsubscribe()
+		}
+	})
+
+	it("scope provider returns undefined when multiple steps are active", () => {
+		const ferment = makeParallelFerment()
+		setActive(ferment)
+		const { pi, unsubscribe } = makePiWithRealEventBus()
+
+		try {
+			emitFermentDomainEvent(pi.events, { type: "activate_phase", phaseId: "phase-1" }, ferment)
+			emitFermentDomainEvent(pi.events, { type: "start_step", phaseId: "phase-1", stepId: "step-a" }, ferment)
+			emitFermentDomainEvent(pi.events, { type: "start_step", phaseId: "phase-1", stepId: "step-b" }, ferment)
+
+			// With two parallel steps active, auto-scope should refuse to guess.
+			expect(resolveTodoScope()).toEqual({ kind: "global" })
+		} finally {
+			unsubscribe()
+		}
 	})
 })

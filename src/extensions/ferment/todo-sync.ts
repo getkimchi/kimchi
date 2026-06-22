@@ -142,63 +142,56 @@ function stepStatusToTodoStatus(stepStatus: StepStatus): TodoStatus {
 
 // ─── Todo list builders ──────────────────────────────────────────────────────
 
-/** Correlation map linking written todo content back to its ferment-internal
- *  key (step ID, or the synthetic "header" key for the phase header row).
- *  Built alongside the TodoDraft list so we can match store-assigned IDs back
- *  to ferment entities deterministically — no reliance on input order. */
-type ContentSyncMap = Map<string, string>
-
+/**
+ * Build the initial todo list for a phase, tagging each draft with an internal
+ * `_syncKey` so `syncTodoIds` can map written items back to the originating
+ * ferment entity (phase header or specific step) without depending on the
+ * store's internal ordering or user-generated content.
+ */
 function buildPhaseTodos(
 	phase: Phase,
 	fermentId: string,
 ): {
 	todos: TodoDraft[]
-	contentSyncMap: ContentSyncMap
 } {
 	const idMap = getOrCreateIdMap(fermentId, phase.id)
-	const contentSyncMap: ContentSyncMap = new Map()
 	const todos: TodoDraft[] = []
 
 	// Phase header — use phase.name as the content, status is always in_progress
 	// until the phase is marked complete (handled by PHASE_COMPLETED).
 	const headerContent = `[Phase ${phase.index}] ${phase.name}`
-	contentSyncMap.set(headerContent, "header")
 	todos.push({
 		id: idMap.get("header"),
 		content: headerContent,
 		status: "in_progress",
 		activeForm: phase.name,
+		_syncKey: "header",
 	})
 
 	// Steps — indented with "↳ " prefix to nest visually under the phase header
 	for (const step of phase.steps) {
 		const content = `↳ ${step.description}`
-		contentSyncMap.set(content, step.id)
 		todos.push({
 			id: idMap.get(step.id),
 			content,
 			status: stepStatusToTodoStatus(step.status),
+			_syncKey: step.id,
 		})
 	}
 
-	return { todos, contentSyncMap }
+	return { todos }
 }
 
-function syncTodoIds(
-	fermentId: string,
-	phaseId: string,
-	writtenTodos: TodoItem[],
-	contentSyncMap: ContentSyncMap,
-): void {
+function syncTodoIds(fermentId: string, phaseId: string, writtenTodos: TodoItem[]): void {
 	const idMap = getOrCreateIdMap(fermentId, phaseId)
-	// Match written todos back to ferment entities by content. Content is
-	// deterministic per phase (the header is `[Phase N] name`, each step is
-	// `↳ description`), so this stays correct regardless of how the store
-	// reorders, filters, or reassigns IDs internally.
+	// Match written todos back to ferment entities via the internal _syncKey.
+	// This is deterministic regardless of how the store reorders, filters,
+	// or reassigns IDs, and avoids the fragility of correlating on user-
+	// generated content (where two steps can share the same description).
 	for (const todo of writtenTodos) {
-		const syncKey = contentSyncMap.get(todo.content)
-		if (syncKey !== undefined) {
-			idMap.set(syncKey, todo.id)
+		const key = todo._syncKey
+		if (key !== undefined) {
+			idMap.set(key, todo.id)
 		}
 	}
 }
@@ -222,44 +215,53 @@ function handlePhaseStarted(raw: unknown): void {
 		return
 	}
 
-	const { todos, contentSyncMap } = buildPhaseTodos(phase, ferment.id)
+	const { todos } = buildPhaseTodos(phase, ferment.id)
 	const details = applyWriteTodos({ scope: { kind: "ferment", phaseId: payload.phaseId }, todos })
 
 	// Capture the assigned IDs for future updates
-	syncTodoIds(ferment.id, payload.phaseId, details.todos, contentSyncMap)
+	syncTodoIds(ferment.id, payload.phaseId, details.todos)
 }
 
 // ─── Active step tracking for scope provider ────────────────────────────────
 // When a ferment step is running, scope-less todo calls (update_todos, add_todo)
 // automatically target the ferment-step scope instead of global.
+//
+// We track steps in a Map keyed by `phaseId/stepId` so parallel siblings don't
+// overwrite each other's state. When multiple steps are active simultaneously,
+// the scope provider returns undefined to force explicit scope on todo calls
+// (avoids the ambiguity of writing to whichever step finished last).
 
-let currentRunningStep: { phaseId: string; stepId: string } | undefined
+type RunningStep = { phaseId: string; stepId: string }
+
+const runningSteps = new Map<string, RunningStep>()
+
+function stepKey(phaseId: string, stepId: string): string {
+	return `${phaseId}/${stepId}`
+}
+
+/** Exported for tests only. */
+export function __getRunningSteps(): ReadonlyMap<string, RunningStep> {
+	return runningSteps
+}
 
 /**
- * Number of orchestrator turns since the step-scope todos were last written.
- * Incremented by `bumpStallCounter()` (called from the turn_end handler in
- * prompt-enrichment), reset to 0 whenever `applyWriteTodos` fires for the
- * active ferment-step scope (via the store listener wired in
- * `registerFermentTodoSync`).
+ * Number of orchestrator turns since any step-scope todos were last written.
+ * Increments only while at least one step is running; resets when any
+ * active step's scope is written to.
  */
 let turnsSinceStepTodoWrite = 0
 
 /** Call once per orchestrator turn_end to track how long the step scope
  *  has been untouched. Only increments when a step is actually running. */
 export function bumpStallCounter(): void {
-	if (currentRunningStep) turnsSinceStepTodoWrite++
+	if (runningSteps.size > 0) turnsSinceStepTodoWrite++
 }
 
-/** Returns the number of turns since the step-scope todos were last written,
+/** Returns the number of turns since any step-scope todos were last written,
  *  or 0 when no step is running. */
 export function getTurnsSinceStepTodoWrite(): number {
-	if (!currentRunningStep) return 0
+	if (runningSteps.size === 0) return 0
 	return turnsSinceStepTodoWrite
-}
-
-/** Exported for tests only. */
-export function __getCurrentRunningStep(): { phaseId: string; stepId: string } | undefined {
-	return currentRunningStep
 }
 
 function handleStepStarted(raw: unknown): void {
@@ -268,7 +270,12 @@ function handleStepStarted(raw: unknown): void {
 	if (!ferment || ferment.id !== payload.fermentId) return
 
 	// Track the running step so the scope provider can auto-scope todo calls.
-	currentRunningStep = { phaseId: payload.phaseId, stepId: payload.stepId }
+	// Multiple parallel siblings coexist in the map; the scope provider handles
+	// the ambiguity when more than one is active.
+	runningSteps.set(stepKey(payload.phaseId, payload.stepId), {
+		phaseId: payload.phaseId,
+		stepId: payload.stepId,
+	})
 	turnsSinceStepTodoWrite = 0
 }
 
@@ -298,9 +305,10 @@ function handleStepCompleted(raw: unknown): void {
 		return
 	}
 
-	// Clear the step-level implementation todos and stop tracking.
+	// Clear the step-level implementation todos and stop tracking this step
+	// (parallel siblings remain tracked in runningSteps).
 	clearStepTodos(payload.phaseId, payload.stepId)
-	currentRunningStep = undefined
+	runningSteps.delete(stepKey(payload.phaseId, payload.stepId))
 
 	const idMap = getOrCreateIdMap(ferment.id, payload.phaseId)
 	const stepTodoId = idMap.get(payload.stepId)
@@ -339,9 +347,10 @@ function handleStepFailed(raw: unknown): void {
 		return
 	}
 
-	// Clear the step-level implementation todos and stop tracking.
+	// Clear the step-level implementation todos and stop tracking this step
+	// (parallel siblings remain tracked in runningSteps).
 	clearStepTodos(payload.phaseId, payload.stepId)
-	currentRunningStep = undefined
+	runningSteps.delete(stepKey(payload.phaseId, payload.stepId))
 
 	const idMap = getOrCreateIdMap(ferment.id, payload.phaseId)
 	const stepTodoId = idMap.get(payload.stepId)
@@ -463,26 +472,26 @@ function handleFermentCompleted(raw: unknown): void {
 export function registerFermentTodoSync(pi: ExtensionAPI): () => void {
 	const unsubscribes: Array<() => void> = []
 
-	// Auto-scope: when a ferment step is running, scope-less todo calls
-	// (update_todos, add_todo without explicit scope) target the active
-	// step's ferment-step scope instead of global.
+	// Auto-scope: when exactly one ferment step is running, scope-less todo
+	// calls target that step's ferment-step scope. When multiple parallel
+	// steps are active, return undefined to force the caller to pass an
+	// explicit scope — avoids silently writing to the wrong step.
 	const unregisterScope = registerActiveTodoScopeProvider(() => {
-		if (!currentRunningStep) return undefined
+		if (runningSteps.size !== 1) return undefined
+		const [, step] = [...runningSteps.entries()][0]
 		return {
 			kind: "ferment-step" as const,
-			phaseId: currentRunningStep.phaseId,
-			stepId: currentRunningStep.stepId,
+			phaseId: step.phaseId,
+			stepId: step.stepId,
 		}
 	})
 
-	// Reset the stall counter whenever the active step's todo scope is written to.
+	// Reset the stall counter whenever ANY running step's todo scope is written to.
 	const unsubscribeTodoListener = subscribeTodoStore((details) => {
-		if (!currentRunningStep) return
-		if (
-			details.scope.kind === "ferment-step" &&
-			(details.scope as { phaseId: string; stepId: string }).phaseId === currentRunningStep.phaseId &&
-			(details.scope as { phaseId: string; stepId: string }).stepId === currentRunningStep.stepId
-		) {
+		if (runningSteps.size === 0) return
+		if (details.scope.kind !== "ferment-step") return
+		const scope = details.scope as { phaseId: string; stepId: string }
+		if (runningSteps.has(stepKey(scope.phaseId, scope.stepId))) {
 			turnsSinceStepTodoWrite = 0
 		}
 	})
@@ -502,7 +511,7 @@ export function registerFermentTodoSync(pi: ExtensionAPI): () => void {
 		}
 		unregisterScope()
 		unsubscribeTodoListener()
-		currentRunningStep = undefined
+		runningSteps.clear()
 		turnsSinceStepTodoWrite = 0
 		// Clear all in-memory state on unsubscribe to avoid memory leaks.
 		todoIdMaps.clear()

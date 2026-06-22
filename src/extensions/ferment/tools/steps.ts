@@ -297,14 +297,18 @@ Do NOT call start_ferment_step again without user input.`,
 	const contextBlock = workerContext ? `\n\nWorker context (pass to subagent verbatim):\n${workerContext}` : ""
 
 	const workerLimits = suggestWorkerLimits(step.description, step.verification?.command)
-	const limitsHint = `\n\nSuggested worker limits (set both on the Agent call): max_turns=${workerLimits.maxTurns}, max_duration=${workerLimits.maxDuration}s. Adjust up for more complex work, down for simpler. When the worker exhausts its budget, call complete_ferment_step with whatever it produced and spawn a scoped follow-up for remaining work - do NOT raise the budget and retry the same broad task.`
+	// Guidance only — don't quote exact numbers. Models interpret max_turns/max_duration
+	// literally and either exceed them trying to "finish" or hallucinate extra bullets to
+	// justify a different count. The exact values are still in the tool schema.
+	const limitsHint =
+		"\n\nSet sensible worker limits on the Agent call (use max_turns and max_duration, tuned to step complexity). When the worker exhausts its budget, call complete_ferment_step with whatever it produced and spawn a scoped follow-up for remaining work - do NOT raise the budget and retry the same broad task."
 
 	// Build a condensed summary of prior steps so the orchestrator's planning
 	// is informed by what previous steps completed.
 	const completedPriorSteps = (freshPhase?.steps ?? [])
 		.filter((s) => s.index < step.index && (s.status === "done" || s.status === "verified" || s.status === "skipped"))
 		.map((s) => {
-			const tag = s.status === "skipped" ? `⊘06${s.index}` : `✓${s.index}`
+			const tag = s.status === "skipped" ? `⊘${s.index}` : `✓${s.index}`
 			const summary = (s.summary ?? "").trim()
 			const detail = summary.length > 120 ? `${summary.slice(0, 120)}…` : summary
 			return detail ? `${tag} "${s.description}" — ${detail}` : `${tag} "${s.description}"`

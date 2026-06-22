@@ -21,12 +21,22 @@ export interface TodoScopeFermentStep {
 // Part 1 had one scope. Part 2 adds ferment scope. Further parts may widen this union.
 export type TodoScope = TodoScopeGlobal | TodoScopeFerment | TodoScopeFermentStep
 
+/**
+ * Internal correlation key set by the auto-sync bridge (todo-sync.ts) so it
+ * can map written todos back to ferment entities (phase header, specific
+ * step) without relying on fragile content matching. Stripped before display;
+ * never accepted from tool arguments.
+ */
+export type TodoSyncKey = string
+
 export interface TodoDraft {
 	id?: number
 	content: string
 	status: TodoStatus
 	activeForm?: string
 	note?: string
+	/** Internal: set by todo-sync.ts only. Not part of the tool schema. */
+	_syncKey?: TodoSyncKey
 }
 
 export interface TodoItem {
@@ -35,6 +45,8 @@ export interface TodoItem {
 	status: TodoStatus
 	activeForm?: string
 	note?: string
+	/** Internal: preserved across store writes for correlation by todo-sync.ts. */
+	_syncKey?: TodoSyncKey
 }
 
 export interface TodoScopeState {
