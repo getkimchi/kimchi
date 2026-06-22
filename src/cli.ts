@@ -32,6 +32,7 @@ import agentsExtension from "./extensions/agents/index.js"
 import assistantPrefixExtension from "./extensions/assistant-prefix.js"
 import bashDefaultTimeoutExtension from "./extensions/bash-default-timeout.js"
 import bashToolGuardExtension from "./extensions/bash-tool-guard.js"
+import bashToolPreferenceExtension from "./extensions/bash-tool-preference.js"
 import behavioursExtension from "./extensions/behaviours/index.js"
 import claudeCodeHooksAdapter from "./extensions/claude-code-hook-adapter/index.js"
 import claudeCodeSkillsExtension from "./extensions/claude-code-skills/index.js"
@@ -440,6 +441,7 @@ try {
 			// takes effect immediately without a process restart.
 			bashDefaultTimeoutExtension,
 			bashToolGuardExtension,
+			bashToolPreferenceExtension,
 			...enabledExtensionFactories([
 				{ id: "plugins.mcp-apps", factory: mcpAdapterExtension },
 			] satisfies ManagedExtensionFactory[]),
