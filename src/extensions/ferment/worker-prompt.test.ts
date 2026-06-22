@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import type { Decision, Ferment, Memory, Phase, Step } from "../../ferment/types.js"
+import { __resetTodoStore, applyWriteTodos } from "../todos/store.js"
 import { buildWorkerContext } from "./worker-prompt.js"
 
 function makeFerment(overrides: Partial<Ferment> = {}): Ferment {
@@ -230,5 +231,43 @@ describe("buildWorkerContext", () => {
 
 		const ctx = buildWorkerContext(f, phase, phase.steps[0], { includeDecisions: false })
 		expect(ctx).not.toContain("Decisions:")
+	})
+})
+
+describe("step todo forwarding", () => {
+	beforeEach(() => {
+		__resetTodoStore()
+	})
+
+	afterEach(() => {
+		__resetTodoStore()
+	})
+
+	it("includes step-scoped todos in the worker context as a Plan line", () => {
+		const phase = makePhase({ id: "phase-1", steps: [makeStep({ id: "step-1" })] })
+		const f = makeFerment({ phases: [phase] })
+
+		applyWriteTodos({
+			scope: { kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" },
+			todos: [
+				{ content: "Install dependencies", status: "completed" },
+				{ content: "Write main module", status: "in_progress" },
+				{ content: "Run tests", status: "pending" },
+			],
+		})
+
+		const ctx = buildWorkerContext(f, phase, phase.steps[0])
+		expect(ctx).toContain("Plan:")
+		expect(ctx).toContain("\u2713 Install dependencies")
+		expect(ctx).toContain("\u25b6 Write main module")
+		expect(ctx).toContain("\u25cb Run tests")
+	})
+
+	it("omits Plan line when no step todos exist", () => {
+		const phase = makePhase({ steps: [makeStep()] })
+		const f = makeFerment({ phases: [phase] })
+
+		const ctx = buildWorkerContext(f, phase, phase.steps[0])
+		expect(ctx).not.toContain("Plan:")
 	})
 })

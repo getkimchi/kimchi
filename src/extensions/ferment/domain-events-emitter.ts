@@ -16,10 +16,12 @@ import {
 	type FermentCompletedPayload,
 	type FermentPhaseCompletedPayload,
 	type FermentPhaseStartedPayload,
+	type FermentResumedPayload,
 	type FermentStartedPayload,
 	type FermentStepCompletedPayload,
 	type FermentStepFailedPayload,
 	type FermentStepStartedPayload,
+	type FermentSuspendedPayload,
 } from "./domain-events.js"
 
 /** Warn in non-production environments when a state-lookup fails, indicating
@@ -225,9 +227,25 @@ export function emitFermentDomainEvent(events: EventBus, cmd: Command, post: Fer
 			return
 		}
 
+		case "pause": {
+			const payload: FermentSuspendedPayload = {
+				fermentId: post.id,
+			}
+			events.emit(FERMENT_EVENTS.SUSPENDED, payload)
+			return
+		}
+
+		case "resume": {
+			const payload: FermentResumedPayload = {
+				fermentId: post.id,
+			}
+			events.emit(FERMENT_EVENTS.RESUMED, payload)
+			return
+		}
+
 		default:
-			// Other commands (pause, resume, refine, scope, etc.) don't need
-			// telemetry events — they don't represent lifecycle transitions.
+			// Other commands (refine, scope, etc.) don't need domain events —
+			// they don't represent lifecycle transitions.
 			return
 	}
 }
