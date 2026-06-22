@@ -71,6 +71,9 @@ describe("default agents — subagent system prompt snapshot", () => {
 - set_phase
 - read
 
+### Local Notes
+Keep this h3 section.
+
 ## Rules
 Keep these parent rules.`
 		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, parentPrompt, {
@@ -78,7 +81,7 @@ Keep these parent rules.`
 		})
 
 		expect(output).toContain(
-			"<inherited_system_prompt>\n# Parent\n\n## Rules\nKeep these parent rules.\n</inherited_system_prompt>",
+			"<inherited_system_prompt>\n# Parent\n\n### Local Notes\nKeep this h3 section.\n\n## Rules\nKeep these parent rules.\n</inherited_system_prompt>",
 		)
 		expect(output).toContain("## Available Tools\n- read\n- bash")
 		expect(output).not.toContain("- Agent")

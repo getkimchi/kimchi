@@ -146,7 +146,7 @@ function uniqueToolNames(toolNames?: string[]): string[] {
 
 function stripAvailableToolsSection(prompt: string): string {
 	return prompt
-		.replace(/(^|\n)## Available Tools\b[^\n]*\n[\s\S]*?(?=\n#{1,2} |\n*$)/g, "$1")
+		.replace(/(^|\n)## Available Tools\b[^\n]*\n[\s\S]*?(?=\n#+ |\n*$)/g, "$1")
 		.replace(/\n{3,}/g, "\n\n")
 		.trim()
 }
