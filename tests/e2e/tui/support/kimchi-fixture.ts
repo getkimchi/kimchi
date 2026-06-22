@@ -34,6 +34,7 @@ export const FAKE_PROVIDER = "fake"
 
 export const BINARY_PATH = resolve(REPO_ROOT, "dist/bin/kimchi")
 export const PACKAGE_DIR = resolve(REPO_ROOT, "dist/share/kimchi")
+const INITIAL_SURVEY_ID = "019e87cc-5033-0000-d9bd-5e6501640b6e"
 
 export interface KimchiFixture {
 	homeDir: string
@@ -86,6 +87,8 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 					skillPaths: [],
 					migrationState: "done",
 					onboarding: { hideSessionModeDialog: true },
+					// Keep workflow specs focused on the feature under test; survey UI has unit coverage.
+					surveys: { [INITIAL_SURVEY_ID]: { seenAt: "2026-01-01T00:00:00.000Z" } },
 				},
 				null,
 				"\t",
