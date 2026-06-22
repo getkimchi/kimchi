@@ -65,15 +65,6 @@ function fullClientCapabilities(): ClientCapabilities {
 	} as unknown as ClientCapabilities
 }
 
-// Envelope-shape assertions for the `_kimchi.dev/pi_*` namespace.
-// Payload uses pi's rpc-mode `RpcExtensionUIRequest` shape.
-function expectExtensionUiRequestEnvelope(params: Record<string, unknown>, method: string): void {
-	expect(params.type).toBe("extension_ui_request")
-	expect(params.method).toBe(method)
-	expect(typeof params.id).toBe("string")
-	expect(params.sessionId).toBe("sess-1")
-}
-
 describe("createAcpUIContext — confirm via elicitation", () => {
 	let elicit: ReturnType<typeof vi.fn>
 
@@ -98,21 +89,25 @@ describe("createAcpUIContext — confirm via elicitation", () => {
 
 		expect(unstable_createElicitation).toHaveBeenCalledTimes(1)
 		const params = unstable_createElicitation.mock.calls[0][0] as Record<string, unknown>
-		expect(params.sessionId).toBe("sess-1")
-		expect(params.mode).toBe("form")
-		expect(params.message).toBe("Body?") // message wins over title when both are passed
-		const schema = params.requestedSchema as Record<string, unknown>
-		expect(schema.type).toBe("object")
-		expect(schema.title).toBe("Title")
-		const properties = schema.properties as Record<string, Record<string, unknown>>
-		expect(properties.confirmed.type).toBe("boolean")
-		expect(properties.confirmed.title).toBe("Title")
-		expect(properties.confirmed.description).toBe("Body?")
-		expect(properties.confirmed.default).toBe(false)
-		expect(schema.required).toEqual(["confirmed"])
+		expect(params).toEqual({
+			message: "Title: Body?",
+			mode: "form",
+			requestId: expect.any(String),
+			sessionId: "sess-1",
+			requestedSchema: {
+				type: "object",
+				properties: {
+					confirmed: {
+						default: false,
+						type: "boolean",
+					},
+				},
+				required: ["confirmed"],
+			},
+		})
 	})
 
-	it("forwards an empty body verbatim (caller chose to pass an empty string)", async () => {
+	it("collapses to just the title when message is empty/undefined", async () => {
 		elicit.mockResolvedValueOnce({
 			action: "accept",
 			content: { confirmed: true },
@@ -123,7 +118,7 @@ describe("createAcpUIContext — confirm via elicitation", () => {
 		const real = createAcpUIContext(conn, "sess-1", elicitationClientCapabilities(), send)
 		await expect(real.confirm("Title-only", "")).resolves.toBe(true)
 		const params = unstable_createElicitation.mock.calls[0][0] as Record<string, unknown>
-		expect(params.message).toBe("")
+		expect(params.message).toBe("Title-only")
 	})
 
 	it("resolves false when the user accepts with confirmed: false (unchecked)", async () => {
@@ -202,25 +197,30 @@ describe("createAcpUIContext — confirm via request_permission fallback", () =>
 
 		expect(unstable_createElicitation).not.toHaveBeenCalled()
 		expect(requestPermission).toHaveBeenCalledTimes(1)
-		const params = requestPermission.mock.calls[0][0] as unknown as Record<string, unknown>
-		expect(params.sessionId).toBe("sess-1")
-		const toolCall = params.toolCall as Record<string, unknown>
-		expect(toolCall.title).toBe("Title")
-		expect(toolCall.kind).toBe("other")
-		expect(toolCall.status).toBe("pending")
-		expect(toolCall.rawInput).toEqual({ message: "Body?" })
-		expect(toolCall.toolCallId).toMatch(/^pi-ui-confirm-/)
-		const options = params.options as Array<Record<string, unknown>>
-		expect(options).toHaveLength(2)
-		expect(options[0]).toMatchObject({
-			optionId: "yes",
-			name: "Yes",
-			kind: "allow_once",
-		})
-		expect(options[1]).toMatchObject({
-			optionId: "no",
-			name: "No",
-			kind: "reject_once",
+		const params = requestPermission.mock.calls[0][0]
+		expect(params).toEqual({
+			sessionId: "sess-1",
+			toolCall: {
+				kind: "other",
+				rawInput: {
+					message: "Body?",
+				},
+				status: "pending",
+				title: "Title",
+				toolCallId: expect.any(String),
+			},
+			options: [
+				{
+					kind: "allow_once",
+					name: "Yes",
+					optionId: "yes",
+				},
+				{
+					kind: "reject_once",
+					name: "No",
+					optionId: "no",
+				},
+			],
 		})
 	})
 
@@ -289,18 +289,36 @@ describe("createAcpUIContext — select via elicitation", () => {
 		})
 		const real = createAcpUIContext(conn, "sess-1", elicitationClientCapabilities(), send)
 		await expect(real.select("Pick", ["a", "b", "c"])).resolves.toBe("b")
-
-		const params = unstable_createElicitation.mock.calls[0][0] as Record<string, unknown>
-		expect(params.sessionId).toBe("sess-1")
-		const schema = params.requestedSchema as Record<string, Record<string, unknown>>
-		const valueProp = (schema.properties as Record<string, Record<string, unknown>>).value
-		expect(valueProp.type).toBe("string")
-		expect(valueProp.oneOf).toEqual([
-			{ const: "a", title: "a" },
-			{ const: "b", title: "b" },
-			{ const: "c", title: "c" },
-		])
-		expect(schema.required).toEqual(["value"])
+		const params = unstable_createElicitation.mock.calls[0][0]
+		expect(params).toEqual({
+			message: "Pick",
+			mode: "form",
+			requestId: expect.any(String),
+			sessionId: "sess-1",
+			requestedSchema: {
+				properties: {
+					value: {
+						oneOf: [
+							{
+								const: "a",
+								title: "a",
+							},
+							{
+								const: "b",
+								title: "b",
+							},
+							{
+								const: "c",
+								title: "c",
+							},
+						],
+						type: "string",
+					},
+				},
+				required: ["value"],
+				type: "object",
+			},
+		})
 	})
 
 	it("resolves undefined when the user declines", async () => {
@@ -354,14 +372,34 @@ describe("createAcpUIContext — select via request_permission fallback", () => 
 		})
 		const real = createAcpUIContext(conn, "sess-1", uiMethodsClientCapabilities(), send)
 		await expect(real.select("Pick", ["a", "b", "c"])).resolves.toBe("b")
-
-		const params = requestPermission.mock.calls[0][0] as unknown as Record<string, unknown>
-		expect(params.sessionId).toBe("sess-1")
-		const options = params.options as Array<{ optionId: string; name: string }>
-		expect(options).toHaveLength(3)
-		expect(options[0]).toMatchObject({ optionId: "choice-0", name: "a" })
-		expect(options[1]).toMatchObject({ optionId: "choice-1", name: "b" })
-		expect(options[2]).toMatchObject({ optionId: "choice-2", name: "c" })
+		const params = requestPermission.mock.calls[0][0]
+		expect(params).toEqual({
+			sessionId: "sess-1",
+			toolCall: {
+				kind: "other",
+				rawInput: undefined,
+				status: "pending",
+				title: "Pick",
+				toolCallId: expect.any(String),
+			},
+			options: [
+				{
+					kind: "allow_once",
+					name: "a",
+					optionId: "choice-0",
+				},
+				{
+					kind: "allow_once",
+					name: "b",
+					optionId: "choice-1",
+				},
+				{
+					kind: "allow_once",
+					name: "c",
+					optionId: "choice-2",
+				},
+			],
+		})
 	})
 
 	it("resolves undefined when the outcome is cancelled", async () => {
@@ -408,15 +446,23 @@ describe("createAcpUIContext — input via elicitation", () => {
 		})
 		const real = createAcpUIContext(conn, "sess-1", elicitationClientCapabilities(), send)
 		await expect(real.input("Name", "Enter your name")).resolves.toBe("alice")
-
-		const params = unstable_createElicitation.mock.calls[0][0] as Record<string, unknown>
-		expect(params.sessionId).toBe("sess-1")
-		const schema = params.requestedSchema as Record<string, Record<string, unknown>>
-		const valueProp = (schema.properties as Record<string, Record<string, unknown>>).value
-		expect(valueProp.type).toBe("string")
-		expect(valueProp.title).toBe("Name")
-		expect(valueProp.description).toBe("Enter your name")
-		expect(schema.required).toEqual(["value"])
+		const params = unstable_createElicitation.mock.calls[0][0]
+		expect(params).toEqual({
+			message: "Name",
+			mode: "form",
+			requestId: expect.any(String),
+			sessionId: "sess-1",
+			requestedSchema: {
+				properties: {
+					value: {
+						description: "Enter your name",
+						type: "string",
+					},
+				},
+				required: ["value"],
+				type: "object",
+			},
+		})
 	})
 
 	it("resolves undefined on decline", async () => {
@@ -456,8 +502,14 @@ describe("createAcpUIContext — input via elicitation", () => {
 		expect(extNotification).toHaveBeenCalledTimes(1)
 		const [method, params] = extNotification.mock.calls[0]
 		expect(method).toBe("_kimchi.dev/pi_notify")
-		expect(params.message).toBe('Input requested: "Workspace name" (not supported by this client)')
-		expect(params.notifyType).toBe("warning")
+		expect(params).toEqual({
+			id: expect.any(String),
+			type: "extension_ui_request",
+			method: "notify",
+			sessionId: "sess-1",
+			message: 'Input requested: "Workspace name" (not supported by this client)',
+			notifyType: "warning",
+		})
 	})
 
 	it("emits an agent_message_chunk warning when the client supports neither elicitation nor notifications", async () => {
@@ -467,16 +519,16 @@ describe("createAcpUIContext — input via elicitation", () => {
 		expect(unstable_createElicitation).not.toHaveBeenCalled()
 		expect(send).toHaveBeenCalledTimes(1)
 		const params = send.mock.calls[0][0]
-		expect(params.sessionId).toBe("sess-1")
-		const update = params.update
-		expect(update.sessionUpdate).toBe("agent_message_chunk")
-		if (update.sessionUpdate === "agent_message_chunk") {
-			expect(update.content.type).toBe("text")
-			if (update.content.type === "text") {
-				expect(update.content.text).toContain("Workspace name")
-				expect(update.content.text).toContain("neither form elicitation nor notifications")
-			}
-		}
+		expect(params).toEqual({
+			sessionId: "sess-1",
+			update: {
+				content: {
+					text: '[ACP] input: Extension requested free-text input "Workspace name" but the client supports neither form elicitation nor notifications. The call was dropped.',
+					type: "text",
+				},
+				sessionUpdate: "agent_message_chunk",
+			},
+		})
 	})
 })
 
@@ -553,11 +605,16 @@ describe("createAcpUIContext — editor (still on _kimchi.dev/pi namespace)", ()
 		})
 		const real = createAcpUIContext(conn, "sess-1", fullClientCapabilities(), send)
 		await expect(real.editor("Edit", "starting point")).resolves.toBe("draft")
-		const params = extMethod.mock.calls[0][1]
-		expectExtensionUiRequestEnvelope(params, "editor")
-		expect(params.prefill).toBe("starting point")
-		// editor doesn't propagate timeout — matches pi's rpc-mode behaviour.
-		expect(params.timeout).toBeUndefined()
+		const [method, params] = extMethod.mock.calls[0]
+		expect(method).toBe("_kimchi.dev/pi_editor")
+		expect(params).toEqual({
+			id: expect.any(String),
+			type: "extension_ui_request",
+			method: "editor",
+			sessionId: "sess-1",
+			title: "Edit",
+			prefill: "starting point",
+		})
 	})
 
 	it("resolves undefined on cancellation", async () => {
@@ -576,14 +633,17 @@ describe("createAcpUIContext — editor (still on _kimchi.dev/pi namespace)", ()
 		await expect(real.editor("Edit", "starting")).resolves.toBeUndefined()
 		expect(m).not.toHaveBeenCalled()
 		expect(send).toHaveBeenCalledTimes(1)
-		const update = send.mock.calls[0][0].update
-		expect(update.sessionUpdate).toBe("agent_message_chunk")
-		if (update.sessionUpdate === "agent_message_chunk") {
-			expect(update.content.type).toBe("text")
-			if (update.content.type === "text") {
-				expect(update.content.text).toContain("editor")
-			}
-		}
+		const params = send.mock.calls[0][0]
+		expect(params).toEqual({
+			sessionId: "sess-1",
+			update: {
+				content: {
+					text: '[ACP] editor: Extension requested an editor ("Edit") but the client doesn\'t advertise the _kimchi.dev/pi_editor capability. The request was dropped.',
+					type: "text",
+				},
+				sessionUpdate: "agent_message_chunk",
+			},
+		})
 	})
 })
 
@@ -612,11 +672,16 @@ describe("createAcpUIContext — fire-and-forget notifications", () => {
 		expect(n).toHaveBeenCalledTimes(1)
 		const [method, params] = n.mock.calls[0]
 		expect(method).toBe("_kimchi.dev/pi_notify")
-		expectExtensionUiRequestEnvelope(params, "notify")
-		expect(params.message).toBe("hello")
-		// rpc-mode leaves notifyType undefined when the type argument is omitted;
-		// clients default to "info" themselves.
-		expect(params.notifyType).toBeUndefined()
+		expect(params).toEqual({
+			id: expect.any(String),
+			type: "extension_ui_request",
+			method: "notify",
+			sessionId: "sess-1",
+			message: "hello",
+			// rpc-mode leaves notifyType undefined when the type argument is omitted;
+			// clients default to "info" themselves.
+			notifyType: undefined,
+		})
 	})
 
 	it("notify forwards the notifyType when provided", async () => {
@@ -657,9 +722,14 @@ describe("createAcpUIContext — fire-and-forget notifications", () => {
 		expect(n).toHaveBeenCalledTimes(1)
 		const [method, params] = n.mock.calls[0]
 		expect(method).toBe("_kimchi.dev/pi_setStatus")
-		expectExtensionUiRequestEnvelope(params, "setStatus")
-		expect(params.statusKey).toBe("tokens")
-		expect(params.statusText).toBe("1.2k")
+		expect(params).toEqual({
+			id: expect.any(String),
+			type: "extension_ui_request",
+			method: "setStatus",
+			sessionId: "sess-1",
+			statusKey: "tokens",
+			statusText: "1.2k",
+		})
 	})
 
 	it("setStatus forwards undefined text (clear)", async () => {
@@ -688,14 +758,17 @@ describe("createAcpUIContext — fire-and-forget notifications", () => {
 		real.setStatus("k", "v")
 		expect(n).not.toHaveBeenCalled()
 		expect(send).toHaveBeenCalledTimes(1)
-		const update = send.mock.calls[0][0].update
-		expect(update.sessionUpdate).toBe("agent_message_chunk")
-		if (update.sessionUpdate === "agent_message_chunk") {
-			expect(update.content.type).toBe("text")
-			if (update.content.type === "text") {
-				expect(update.content.text).toContain('"k"')
-			}
-		}
+		const params = send.mock.calls[0][0]
+		expect(params).toEqual({
+			sessionId: "sess-1",
+			update: {
+				content: {
+					text: '[ACP] setStatus: Extension tried to set status "k" but the client doesn\'t advertise _kimchi.dev/pi_setStatus. The update was dropped.',
+					type: "text",
+				},
+				sessionUpdate: "agent_message_chunk",
+			},
+		})
 	})
 
 	it("setStatus warns only once per session (extensions often probe on every model token)", () => {
@@ -723,8 +796,13 @@ describe("createAcpUIContext — fire-and-forget notifications", () => {
 		expect(n).toHaveBeenCalledTimes(1)
 		const [method, params] = n.mock.calls[0]
 		expect(method).toBe("_kimchi.dev/pi_set_editor_text")
-		expectExtensionUiRequestEnvelope(params, "set_editor_text")
-		expect(params.text).toBe("draft message")
+		expect(params).toEqual({
+			id: expect.any(String),
+			type: "extension_ui_request",
+			method: "set_editor_text",
+			sessionId: "sess-1",
+			text: "draft message",
+		})
 	})
 
 	it("setEditorText warns via agent_message_chunk when the client doesn't advertise support", () => {
@@ -755,15 +833,17 @@ describe("createAcpUIContext — fire-and-forget notifications", () => {
 		real.notify("second try") // dedup: second call should not re-emit
 		expect(n).not.toHaveBeenCalled()
 		expect(send).toHaveBeenCalledTimes(1)
-		const update = send.mock.calls[0][0].update
-		expect(update.sessionUpdate).toBe("agent_message_chunk")
-		if (update.sessionUpdate === "agent_message_chunk") {
-			expect(update.content.type).toBe("text")
-			if (update.content.type === "text") {
-				expect(update.content.text).toContain("first try")
-				expect(update.content.text).not.toContain("second try") // dedup means we keep the FIRST message
-			}
-		}
+		const params = send.mock.calls[0][0]
+		expect(params).toEqual({
+			sessionId: "sess-1",
+			update: {
+				content: {
+					text: "[ACP] notify: Extension notification dropped (client doesn't advertise _kimchi.dev/pi_notify): first try",
+					type: "text",
+				},
+				sessionUpdate: "agent_message_chunk",
+			},
+		})
 	})
 
 	it("pasteToEditor delegates to setEditorText (rpc-mode parity)", async () => {
@@ -795,10 +875,15 @@ describe("createAcpUIContext — fire-and-forget notifications", () => {
 		expect(n).toHaveBeenCalledTimes(1)
 		const [method, params] = n.mock.calls[0]
 		expect(method).toBe("_kimchi.dev/pi_setWidget")
-		expectExtensionUiRequestEnvelope(params, "setWidget")
-		expect(params.widgetKey).toBe("todo")
-		expect(params.widgetLines).toEqual(["line 1", "line 2"])
-		expect(params.widgetPlacement).toBe("belowEditor")
+		expect(params).toEqual({
+			id: expect.any(String),
+			type: "extension_ui_request",
+			method: "setWidget",
+			sessionId: "sess-1",
+			widgetKey: "todo",
+			widgetLines: ["line 1", "line 2"],
+			widgetPlacement: "belowEditor",
+		})
 	})
 
 	it("setWidget (string[] undefined) forwards as clear", async () => {
@@ -850,14 +935,17 @@ describe("createAcpUIContext — fire-and-forget notifications", () => {
 		real.setWidget("todo", ["line 1", "line 2"])
 		expect(n).not.toHaveBeenCalled()
 		expect(send).toHaveBeenCalledTimes(1)
-		const update = send.mock.calls[0][0].update
-		expect(update.sessionUpdate).toBe("agent_message_chunk")
-		if (update.sessionUpdate === "agent_message_chunk") {
-			expect(update.content.type).toBe("text")
-			if (update.content.type === "text") {
-				expect(update.content.text).toContain('"todo"')
-			}
-		}
+		const params = send.mock.calls[0][0]
+		expect(params).toEqual({
+			sessionId: "sess-1",
+			update: {
+				content: {
+					text: '[ACP] setWidget: Extension tried to set widget "todo" but the client doesn\'t advertise _kimchi.dev/pi_setWidget. The widget was dropped.',
+					type: "text",
+				},
+				sessionUpdate: "agent_message_chunk",
+			},
+		})
 	})
 
 	it("setTitle emits a session_info_update via send (deliberate divergence from rpc-mode)", () => {
@@ -865,11 +953,14 @@ describe("createAcpUIContext — fire-and-forget notifications", () => {
 		const real = createAcpUIContext(conn, "sess-1", fullClientCapabilities(), send)
 		real.setTitle("My session")
 		expect(send).toHaveBeenCalledTimes(1)
-		const update = send.mock.calls[0][0].update
-		expect(update.sessionUpdate).toBe("session_info_update")
-		if (update.sessionUpdate === "session_info_update") {
-			expect(update.title).toBe("My session")
-		}
+		const params = send.mock.calls[0][0]
+		expect(params).toEqual({
+			sessionId: "sess-1",
+			update: {
+				sessionUpdate: "session_info_update",
+				title: "My session",
+			},
+		})
 	})
 })
 

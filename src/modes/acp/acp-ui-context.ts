@@ -115,7 +115,8 @@ export function createAcpUIContext(
 	// Returns the content on `accept`, undefined on `decline`/`cancel`,
 	// `"aborted"` if the caller's signal fires or the transport rejects.
 	async function elicitForm(
-		message: string,
+		title: string,
+		message: string | undefined,
 		requestedSchema: ElicitationSchema,
 		signal: AbortSignal | undefined,
 	): Promise<NonNullable<ElicitationAcceptAction["content"]> | "aborted" | undefined> {
@@ -123,7 +124,7 @@ export function createAcpUIContext(
 			requestId: randomUUID(),
 			sessionId,
 			mode: "form" as const,
-			message,
+			message: message ? `${title}: ${message}` : title,
 			requestedSchema,
 		}
 		try {
@@ -183,17 +184,15 @@ export function createAcpUIContext(
 			if (supportsElicitation) {
 				const schema: ElicitationSchema = {
 					type: "object",
-					title,
 					properties: {
 						value: {
 							type: "string",
-							title,
 							oneOf: options.map((opt) => ({ const: opt, title: opt })),
 						},
 					},
 					required: ["value"],
 				}
-				const response = await elicitForm(title, schema, opts?.signal)
+				const response = await elicitForm(title, undefined, schema, opts?.signal)
 				if (response === "aborted" || response === undefined) return undefined
 				const value = response.value
 				return typeof value === "string" ? value : undefined
@@ -219,12 +218,9 @@ export function createAcpUIContext(
 			if (supportsElicitation) {
 				const schema: ElicitationSchema = {
 					type: "object",
-					title,
 					properties: {
 						confirmed: {
 							type: "boolean",
-							title,
-							description: message,
 							// Default is always false as Pi has no way of distinguishing
 							// a confirm result as cancelled (e.g. user didn't select explicitly)
 							default: false,
@@ -232,7 +228,7 @@ export function createAcpUIContext(
 					},
 					required: ["confirmed"],
 				}
-				const response = await elicitForm(message ?? title, schema, opts?.signal)
+				const response = await elicitForm(title, message, schema, opts?.signal)
 				if (response === "aborted" || response === undefined) return false
 				return response.confirmed === true
 			}
@@ -266,17 +262,15 @@ export function createAcpUIContext(
 
 			const schema: ElicitationSchema = {
 				type: "object",
-				title,
 				properties: {
 					value: {
 						type: "string",
-						title,
 						description: placeholder,
 					},
 				},
 				required: ["value"],
 			}
-			const response = await elicitForm(title, schema, opts?.signal)
+			const response = await elicitForm(title, undefined, schema, opts?.signal)
 			if (response === "aborted" || response === undefined) return undefined
 			const value = response.value
 			return typeof value === "string" ? value : undefined
