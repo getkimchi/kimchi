@@ -1,8 +1,17 @@
 import { describe, expect, it } from "vitest"
 import type { ModelMetadata } from "../../models.js"
+import type { ModelCustomMetadata } from "./model-metadata.js"
 import { MODEL_CAPABILITIES, ModelRegistry } from "./model-registry/index.js"
 import { DEFAULT_MODEL_ROLES } from "./model-roles.js"
-import { resolveOrchestrationInstructions } from "./orchestration-instructions.js"
+import {
+	type OrchestrationInstructionsContext,
+	resolveOrchestrationInstructions,
+} from "./orchestration-instructions.js"
+
+function resolveAsString(ctx: OrchestrationInstructionsContext): string {
+	const { teamSection, instructionsSection } = resolveOrchestrationInstructions(ctx)
+	return [teamSection, instructionsSection].filter(Boolean).join("\n\n")
+}
 
 const ALL_KNOWN_IDS = [...MODEL_CAPABILITIES.keys()]
 
@@ -24,7 +33,7 @@ describe("resolveOrchestrationInstructions", () => {
 	const registry = new ModelRegistry(ALL_KNOWN_METADATA)
 
 	it("returns orchestration instructions in orchestrator mode", () => {
-		const result = resolveOrchestrationInstructions({
+		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
 			mode: "orchestrator",
@@ -34,7 +43,7 @@ describe("resolveOrchestrationInstructions", () => {
 	})
 
 	it("shows role assignments with Your Team section", () => {
-		const result = resolveOrchestrationInstructions({
+		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
 			mode: "orchestrator",
@@ -47,44 +56,47 @@ describe("resolveOrchestrationInstructions", () => {
 	})
 
 	it("shows Your Capabilities section with orchestrator roles", () => {
-		const result = resolveOrchestrationInstructions({
+		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
 			mode: "orchestrator",
 			roles: DEFAULT_MODEL_ROLES,
 		})
 		expect(result).toContain("## Your Capabilities")
-		expect(result).toContain("Roles: research, plan, build, review")
+		expect(result).toContain("You have these roles: **planner, builder, reviewer, researcher**")
 	})
 
-	it("uses role-based delegation rules in Step 3", () => {
-		const result = resolveOrchestrationInstructions({
+	it("uses DO/DONT directives in Step 3", () => {
+		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
 			mode: "orchestrator",
 			roles: DEFAULT_MODEL_ROLES,
 		})
-		expect(result).toContain("Your roles are the authoritative signal")
-		expect(result).toContain("If a step matches your roles")
-		expect(result).toContain("delegate it to a model from the matching role pool")
+		expect(result).toContain("Your responsibilities per phase")
+		expect(result).toContain("#### Plan phase")
+		expect(result).toContain("#### Build phase")
+		expect(result).toContain("#### Review phase")
+		expect(result).toContain("#### Explore phase")
+		expect(result).toContain("#### Research phase")
 	})
 
 	it("instructs to use matching persona for each step", () => {
-		const result = resolveOrchestrationInstructions({
+		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
 			mode: "orchestrator",
-			roles: DEFAULT_MODEL_ROLES,
+			roles: {
+				...DEFAULT_MODEL_ROLES,
+				planner: "some-other/model",
+			},
 		})
-		expect(result).toContain('Agent(type: "Builder"')
-		expect(result).toContain('Agent(type: "Reviewer"')
-		expect(result).toContain('Agent(type: "Fixer"')
-		expect(result).toContain('Agent(type: "Explore"')
 		expect(result).toContain('Agent(type: "Plan"')
+		expect(result).toContain("some-other/model")
 	})
 
 	it("shows model IDs from the roles config", () => {
-		const result = resolveOrchestrationInstructions({
+		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
 			mode: "orchestrator",
@@ -94,6 +106,7 @@ describe("resolveOrchestrationInstructions", () => {
 				builder: "anthropic/claude-sonnet-4-5",
 				reviewer: "openai/gpt-4o",
 				explorer: "kimchi-dev/nemotron-3-ultra-fp4",
+				researcher: "kimchi-dev/nemotron-3-ultra-fp4",
 				judge: "kimchi-dev/claude-opus-4-6",
 			},
 		})
@@ -102,19 +115,20 @@ describe("resolveOrchestrationInstructions", () => {
 		expect(result).toContain("kimchi-dev/nemotron-3-ultra-fp4")
 	})
 
-	it("omits Planner section when planner equals orchestrator", () => {
-		const result = resolveOrchestrationInstructions({
+	it("generates DO directive for plan when orchestrator is planner", () => {
+		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
 			mode: "orchestrator",
 			roles: DEFAULT_MODEL_ROLES,
 		})
 		expect(result).not.toContain("### Planner")
-		expect(result).toContain("you write the plan yourself in-process")
+		expect(result).toContain("DO write the plan yourself")
+		expect(result).not.toContain("DO NOT write the plan yourself")
 	})
 
-	it("shows Planner section when planner has multiple models or differs from orchestrator", () => {
-		const result = resolveOrchestrationInstructions({
+	it("generates DO NOT directive for plan when orchestrator is not planner", () => {
+		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
 			mode: "orchestrator",
@@ -125,10 +139,13 @@ describe("resolveOrchestrationInstructions", () => {
 		})
 		expect(result).toContain("### Planner")
 		expect(result).toContain("anthropic/claude-opus-4-7")
+		expect(result).toContain("DO NOT write the plan yourself")
+		expect(result).toContain('delegate planning to Agent(type: "Plan"')
+		expect(result).not.toContain("DO write the plan yourself")
 	})
 
 	it("renders tier and description for models in Your Team", () => {
-		const result = resolveOrchestrationInstructions({
+		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
 			mode: "orchestrator",
@@ -140,12 +157,11 @@ describe("resolveOrchestrationInstructions", () => {
 	})
 
 	it("still works without roles (no team section, instructions only)", () => {
-		const result = resolveOrchestrationInstructions({
+		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
 			mode: "orchestrator",
 		})
-		expect(result).toContain("Sharing context between agents")
 		expect(result).toContain("Orchestrate the work")
 		expect(result).toContain("Token budgets")
 		expect(result).toContain("token_budget")
@@ -158,7 +174,7 @@ describe("resolveOrchestrationInstructions", () => {
 	})
 
 	it("includes concurrency test mandate in plan checklist", () => {
-		const result = resolveOrchestrationInstructions({
+		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
 			mode: "orchestrator",
@@ -169,7 +185,7 @@ describe("resolveOrchestrationInstructions", () => {
 	})
 
 	it("includes chunk complexity classification in plan and build phases", () => {
-		const result = resolveOrchestrationInstructions({
+		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
 			mode: "orchestrator",
@@ -182,7 +198,7 @@ describe("resolveOrchestrationInstructions", () => {
 	})
 
 	it("includes complex chunk spec detail requirements", () => {
-		const result = resolveOrchestrationInstructions({
+		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
 			mode: "orchestrator",
@@ -195,7 +211,7 @@ describe("resolveOrchestrationInstructions", () => {
 	})
 
 	it("includes review row in budget table", () => {
-		const result = resolveOrchestrationInstructions({
+		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
 			mode: "orchestrator",
@@ -206,7 +222,7 @@ describe("resolveOrchestrationInstructions", () => {
 	})
 
 	it("does not include lightweight re-verification guidance", () => {
-		const result = resolveOrchestrationInstructions({
+		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
 			mode: "orchestrator",
@@ -216,7 +232,7 @@ describe("resolveOrchestrationInstructions", () => {
 	})
 
 	it("returns single-model instructions with model ID in single-model mode", () => {
-		const result = resolveOrchestrationInstructions({
+		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
 			mode: "single",
@@ -228,7 +244,7 @@ describe("resolveOrchestrationInstructions", () => {
 	})
 
 	it("returns subagent instructions in subagent mode", () => {
-		const result = resolveOrchestrationInstructions({
+		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
 			mode: "subagent",
@@ -239,7 +255,7 @@ describe("resolveOrchestrationInstructions", () => {
 	})
 
 	it("does not affect subagent mode even with roles", () => {
-		const result = resolveOrchestrationInstructions({
+		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
 			mode: "subagent",
@@ -250,7 +266,7 @@ describe("resolveOrchestrationInstructions", () => {
 	})
 
 	it("does not affect single-model mode even with roles", () => {
-		const result = resolveOrchestrationInstructions({
+		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
 			mode: "single",
@@ -261,7 +277,7 @@ describe("resolveOrchestrationInstructions", () => {
 	})
 
 	it("includes model-specific orchestration guidelines when provided", () => {
-		const result = resolveOrchestrationInstructions({
+		const result = resolveAsString({
 			currentModelId: "minimax-m2.7",
 			registry,
 			mode: "orchestrator",
@@ -272,7 +288,7 @@ describe("resolveOrchestrationInstructions", () => {
 	})
 
 	it("renders multiple models per role when configured as array", () => {
-		const result = resolveOrchestrationInstructions({
+		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
 			mode: "orchestrator",
@@ -282,11 +298,216 @@ describe("resolveOrchestrationInstructions", () => {
 				builder: ["kimchi-dev/minimax-m2.7", "kimchi-dev/kimi-k2.6"],
 				reviewer: ["kimchi-dev/kimi-k2.6", "kimchi-dev/minimax-m2.7"],
 				explorer: "kimchi-dev/nemotron-3-ultra-fp4",
+				researcher: "kimchi-dev/nemotron-3-ultra-fp4",
 				judge: "kimchi-dev/kimi-k2.6",
 			},
 		})
 		expect(result).toContain("### Builder")
 		expect(result).toContain("minimax-m2.7")
 		expect(result).toContain("### Reviewer")
+	})
+})
+
+describe("resolveOrchestrationInstructions with custom configs", () => {
+	const registry = new ModelRegistry(ALL_KNOWN_METADATA)
+
+	it("shows external model with custom config in Your Team with tier and description", () => {
+		const customConfigs = new Map<string, ModelCustomMetadata>([
+			[
+				"anthropic/external-model",
+				{ tier: "heavy", description: "Anthropic's flagship external model.", vision: false },
+			],
+		])
+		const result = resolveAsString({
+			currentModelId: "kimi-k2.6",
+			registry,
+			mode: "orchestrator",
+			roles: {
+				orchestrator: "kimchi-dev/kimi-k2.6",
+				planner: "kimchi-dev/kimi-k2.6",
+				builder: "anthropic/external-model",
+				reviewer: "kimchi-dev/minimax-m2.7",
+				explorer: "kimchi-dev/nemotron-3-super-fp4",
+				researcher: "kimchi-dev/nemotron-3-super-fp4",
+				judge: "kimchi-dev/kimi-k2.6",
+			},
+			customConfigs,
+		})
+		expect(result).toContain("anthropic/external-model")
+		expect(result).toContain("Tier: heavy")
+		expect(result).toContain("Anthropic's flagship external model.")
+	})
+
+	it("shows external orchestrator model with custom config in Your Capabilities using assigned roles", () => {
+		const customConfigs = new Map<string, ModelCustomMetadata>([
+			["external-orchestrator", { tier: "heavy", description: "External orchestrator model.", vision: true }],
+		])
+		const result = resolveAsString({
+			currentModelId: "external-orchestrator",
+			registry,
+			mode: "orchestrator",
+			roles: {
+				orchestrator: "external-orchestrator",
+				planner: "external-orchestrator",
+				builder: "kimchi-dev/minimax-m2.7",
+				reviewer: "kimchi-dev/minimax-m2.7",
+				explorer: "kimchi-dev/nemotron-3-super-fp4",
+				researcher: "kimchi-dev/nemotron-3-super-fp4",
+				judge: "external-orchestrator",
+			},
+			customConfigs,
+		})
+		expect(result).toContain("Tier: heavy")
+		expect(result).toContain("You have these roles: **planner**")
+		expect(result).toContain("Vision: yes")
+		expect(result).toContain("External orchestrator model.")
+	})
+
+	it("external model without custom config defaults to standard tier and vision no", () => {
+		const roles = {
+			orchestrator: "kimchi-dev/kimi-k2.6",
+			planner: "kimchi-dev/kimi-k2.6",
+			builder: "unknown-model",
+			reviewer: "kimchi-dev/minimax-m2.7",
+			explorer: "kimchi-dev/nemotron-3-super-fp4",
+			researcher: "kimchi-dev/nemotron-3-super-fp4",
+			judge: "kimchi-dev/kimi-k2.6",
+		}
+		const result = resolveAsString({
+			currentModelId: "unknown-model",
+			registry,
+			mode: "orchestrator",
+			roles,
+		})
+		expect(result).toContain("unknown-model")
+		expect(result).toContain("Tier: standard")
+		expect(result).toContain("Vision: no")
+		expect(result).toContain("This model was configured by the user to handle builder work.")
+		expect(result).not.toContain("Tier: undefined")
+	})
+
+	it("empty custom metadata defaults tier to standard and vision to no", () => {
+		const customConfigs = new Map<string, ModelCustomMetadata>([["bare-external/model", {}]])
+		const roles = {
+			orchestrator: "kimchi-dev/kimi-k2.6",
+			planner: "kimchi-dev/kimi-k2.6",
+			builder: "bare-external/model",
+			reviewer: "kimchi-dev/minimax-m2.7",
+			explorer: "kimchi-dev/nemotron-3-super-fp4",
+			researcher: "kimchi-dev/nemotron-3-super-fp4",
+			judge: "kimchi-dev/kimi-k2.6",
+		}
+		const result = resolveAsString({
+			currentModelId: "kimi-k2.6",
+			registry,
+			mode: "orchestrator",
+			roles,
+			customConfigs,
+		})
+		expect(result).toContain("bare-external/model")
+		expect(result).toContain("Tier: standard")
+		expect(result).toContain("Vision: no")
+		expect(result).toContain("This model was configured by the user to handle builder work.")
+		expect(result).not.toContain("Tier: undefined")
+		expect(result).not.toContain("Vision: undefined")
+	})
+
+	it("external orchestrator without custom config shows roles from config", () => {
+		const roles = {
+			orchestrator: "external-orchestrator",
+			planner: "external-orchestrator",
+			builder: "kimchi-dev/minimax-m2.7",
+			reviewer: "kimchi-dev/minimax-m2.7",
+			explorer: "kimchi-dev/nemotron-3-super-fp4",
+			researcher: "kimchi-dev/nemotron-3-super-fp4",
+			judge: "external-orchestrator",
+		}
+		const result = resolveAsString({
+			currentModelId: "external-orchestrator",
+			registry,
+			mode: "orchestrator",
+			roles,
+		})
+		expect(result).toContain("Tier: standard")
+		expect(result).toContain("You have these roles: **planner**")
+		expect(result).toContain("Vision: no")
+	})
+
+	it("orchestrator custom metadata is not dropped when currentModelId is a bare model id (no provider)", () => {
+		// Regression: prompt-enrichment.ts passes `getOrchestratorModelId()` (bare
+		// model id) as `currentModelId`, but `modelMetadata` in settings.json is
+		// keyed by full ref (`anthropic/claude-opus-4-6`). `resolveModelMeta` did
+		// `customConfigs?.get(ref)` directly, so the orchestrator's own custom
+		// tier/description/vision was silently dropped from "Your Capabilities".
+		const customConfigs = new Map<string, ModelCustomMetadata>([
+			[
+				"anthropic/claude-opus-4-6",
+				{ tier: "heavy", description: "Anthropic's flagship reasoning model.", vision: true },
+			],
+		])
+		const roles = {
+			orchestrator: "anthropic/claude-opus-4-6",
+			planner: "anthropic/claude-opus-4-6",
+			builder: "kimchi-dev/minimax-m2.7",
+			reviewer: "kimchi-dev/minimax-m2.7",
+			explorer: "kimchi-dev/nemotron-3-super-fp4",
+			researcher: "kimchi-dev/nemotron-3-super-fp4",
+			judge: "kimchi-dev/kimi-k2.6",
+		}
+		const result = resolveAsString({
+			currentModelId: "claude-opus-4-6",
+			registry,
+			mode: "orchestrator",
+			roles,
+			customConfigs,
+		})
+		expect(result).toContain("Tier: heavy")
+		expect(result).toContain("Vision: yes")
+		expect(result).toContain("Anthropic's flagship reasoning model.")
+	})
+
+	it("model assigned to multiple roles lists all roles in default description", () => {
+		const customConfigs = new Map<string, ModelCustomMetadata>([["multi-role/model", {}]])
+		const roles = {
+			orchestrator: "kimchi-dev/kimi-k2.6",
+			planner: "kimchi-dev/kimi-k2.6",
+			builder: "multi-role/model",
+			reviewer: "multi-role/model",
+			explorer: "kimchi-dev/nemotron-3-super-fp4",
+			researcher: "kimchi-dev/nemotron-3-super-fp4",
+			judge: "kimchi-dev/kimi-k2.6",
+		}
+		const result = resolveAsString({
+			currentModelId: "kimi-k2.6",
+			registry,
+			mode: "orchestrator",
+			roles,
+			customConfigs,
+		})
+		expect(result).toContain("This model was configured by the user to handle builder, reviewer work.")
+	})
+})
+
+describe("Build phase directive (complex-chunk tier routing)", () => {
+	const registry = new ModelRegistry(ALL_KNOWN_METADATA)
+
+	it("routes complex chunks to a heavy-tier Builder on first attempt, not as a retry", () => {
+		// Regression: the previous directive said "Use a standard-tier Builder by default.
+		// Use a heavy-tier Builder only as a retry when a standard-tier Builder has
+		// already failed." That contradicts the tier model elsewhere in the prompt,
+		// which says complex chunks (concurrency, state machines, algorithms) require
+		// a heavy-tier Builder. The new tier metadata would never actually route
+		// complex chunks to the heavy model on the first attempt.
+		const result = resolveAsString({
+			currentModelId: "kimi-k2.6",
+			registry,
+			mode: "orchestrator",
+			roles: DEFAULT_MODEL_ROLES,
+		})
+		expect(result).toContain("#### Build phase")
+		// The directive must explicitly call out heavy-tier for complex chunks on the first attempt.
+		expect(result).toMatch(/complex chunk.*heavy-tier Builder/s)
+		// And it must NOT tell the orchestrator to start with standard-tier and only escalate on retry.
+		expect(result).not.toMatch(/standard-tier Builder by default.*retry/s)
 	})
 })

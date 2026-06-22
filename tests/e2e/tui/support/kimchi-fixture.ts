@@ -11,9 +11,16 @@ import {
 	type FakeModel,
 	type FakeOpenAiServer,
 	type FakeResponseScript,
+	type RecordedRequest,
 	resolveModels,
 	startFakeOpenAiServer,
 } from "./fake-openai-server.js"
+import {
+	type FakeOllamaModel,
+	type FakeOllamaServer,
+	type StartFakeOllamaServerOptions,
+	startFakeOllamaServer,
+} from "./fake-ollama-server.js"
 
 /** Shared terminal geometry/shell for every TUI e2e test. */
 export const TUI_TEST_CONFIG = { shell: Shell.Bash, rows: 40, columns: 120 } as const
@@ -34,12 +41,14 @@ export const FAKE_PROVIDER = "fake"
 
 export const BINARY_PATH = resolve(REPO_ROOT, "dist/bin/kimchi")
 export const PACKAGE_DIR = resolve(REPO_ROOT, "dist/share/kimchi")
+const INITIAL_SURVEY_ID = "019e87cc-5033-0000-d9bd-5e6501640b6e"
 
 export interface KimchiFixture {
 	homeDir: string
 	workDir: string
 	agentDir: string
 	fake: FakeOpenAiServer
+	ollama?: { baseUrl: string; requests: RecordedRequest[] }
 	stop(): Promise<void>
 }
 
@@ -64,10 +73,16 @@ interface CreateKimchiFixtureOptions {
 	 * without having to commit fixture data alongside the harness.
 	 */
 	extraArgs?: string[]
+	/** When provided, start a fake Ollama server alongside the OpenAI fake. The
+	 *  server handles startup model discovery (/api/tags + /api/show) and chat
+	 *  completions (/v1/chat/completions) so the TUI E2E can run without a real
+	 *  `ollama serve` running. */
+	ollama?: StartFakeOllamaServerOptions
 }
 
 export async function createKimchiFixture(options: CreateKimchiFixtureOptions): Promise<KimchiFixture> {
 	const fake = await startFakeOpenAiServer(options)
+	const ollama = options.ollama ? await startFakeOllamaServer(options.ollama) : undefined
 	const homeDir = mkdtempSync(join(tmpdir(), "kimchi-tui-home-"))
 	const workDir = mkdtempSync(join(tmpdir(), "kimchi-tui-work-"))
 	// Tear down server + temp dirs if any setup step throws.
@@ -86,6 +101,8 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 					skillPaths: [],
 					migrationState: "done",
 					onboarding: { hideSessionModeDialog: true },
+					// Keep workflow specs focused on the feature under test; survey UI has unit coverage.
+					surveys: { [INITIAL_SURVEY_ID]: { seenAt: "2026-01-01T00:00:00.000Z" } },
 				},
 				null,
 				"\t",
@@ -100,14 +117,23 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 			workDir,
 			agentDir,
 			fake,
+			ollama: ollama ? { baseUrl: ollama.baseUrl, requests: ollama.requests } : undefined,
 			async stop() {
-				await fake.stop()
+				// Run both server stops even if one throws, so a failing OpenAI
+				// fake doesn't leak an Ollama fake listening on a port.
+				await fake.stop().catch(() => {})
+				if (ollama) {
+					await ollama.stop().catch(() => {})
+				}
 				rmSync(homeDir, { recursive: true, force: true })
 				rmSync(workDir, { recursive: true, force: true })
 			},
 		}
 	} catch (error) {
 		await fake.stop().catch(() => {})
+		if (ollama) {
+			await ollama.stop().catch(() => {})
+		}
 		rmSync(homeDir, { recursive: true, force: true })
 		rmSync(workDir, { recursive: true, force: true })
 		throw error
@@ -121,6 +147,7 @@ export function launchKimchi(terminal: Terminal, fixture: KimchiFixture, extraAr
 			"env",
 			`HOME=${sh(fixture.homeDir)}`,
 			`PI_PACKAGE_DIR=${sh(PACKAGE_DIR)}`,
+			...((fixture.ollama ? [`OLLAMA_HOST=${sh(fixture.ollama.baseUrl)}`] : []) as string[]),
 			"TERM=xterm-256color",
 			sh(BINARY_PATH),
 			`--provider ${FAKE_PROVIDER}`,

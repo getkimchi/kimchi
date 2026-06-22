@@ -23,7 +23,20 @@ export interface FakeToolCall {
 }
 
 export interface FakeResponseScript {
+	/** Text chunks emitted as `delta.content` (the visible assistant response). */
 	stream?: string[]
+	/**
+	 * Reasoning chunks emitted as `delta.reasoning_content` BEFORE `stream`.
+	 * The upstream `openai-completions` provider maps these to `thinking_start`
+	 * / `thinking_delta` / `thinking_end` events, which the UI surfaces as
+	 * the cooking-animation "thinking…" suffix.
+	 */
+	thinking?: string[]
+	/** Per-chunk delay for `stream` chunks. Defaults to `delayMs`. */
+	textDelayMs?: number
+	/** Per-chunk delay for `thinking` chunks. Defaults to `delayMs`. */
+	thinkingDelayMs?: number
+	/** Fallback delay applied to both `thinking` and `stream` chunks. */
 	delayMs?: number
 	toolCalls?: FakeToolCall[]
 	closeSocketAfterChunks?: number
@@ -211,8 +224,20 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 	let emitted = 0
 	chunk([{ index: 0, delta: { role: "assistant" }, finish_reason: null }])
 
+	for (const text of script.thinking ?? []) {
+		const delay = script.thinkingDelayMs ?? script.delayMs
+		if (delay) await sleep(delay)
+		chunk([{ index: 0, delta: { reasoning_content: text }, finish_reason: null }])
+		emitted += 1
+		if (script.closeSocketAfterChunks && emitted >= script.closeSocketAfterChunks) {
+			res.destroy()
+			return
+		}
+	}
+
 	for (const text of script.stream ?? []) {
-		if (script.delayMs) await sleep(script.delayMs)
+		const delay = script.textDelayMs ?? script.delayMs
+		if (delay) await sleep(delay)
 		chunk([{ index: 0, delta: { content: text }, finish_reason: null }])
 		emitted += 1
 		if (script.closeSocketAfterChunks && emitted >= script.closeSocketAfterChunks) {

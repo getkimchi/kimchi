@@ -295,6 +295,8 @@ If `start_ferment_step` is called on the same step 3 or more times without a `co
 
 The block stays active until the step is either completed (`complete_ferment_step`) or skipped (`skip_ferment_step`).
 
+**Plan-first preamble**: On every successful start (1st, 2nd, 3rd attempt), `start_ferment_step` emits a plan-first preamble before the "Step X started" message. The preamble includes an inline plan, references `applyWriteTodos` (the harness todo store at `src/extensions/todos/store.ts`) to generate actionable todo items, and embeds both into the spawned subagent's prompt. This happens on all starts — the stuck-loop guard and plan-first behavior coexist.
+
 ---
 
 ## Context budget
@@ -401,7 +403,7 @@ These tools are available to the agent during a ferment session. They are not me
 
 | Tool | Description |
 |------|-------------|
-| `start_ferment_step` | Mark step as running. Returns worker prompt context and any parallel siblings for concurrent dispatch. Blocks after 3 consecutive starts without a complete (stuck-loop guard). |
+| `start_ferment_step` | Mark step as running. Emits a plan-first preamble (inline plan + `applyWriteTodos` todos from `src/extensions/todos/store.ts` + embed in subagent prompt) on every start. Returns worker prompt context and any parallel siblings for concurrent dispatch. Blocks after 3 consecutive starts without a complete (stuck-loop guard). |
 | `complete_ferment_step` | Mark step as done. Runs verification command automatically if set. |
 | `verify_ferment_step` | Run the verification command manually and record the result. |
 | `skip_ferment_step` | Skip a step (counts as terminal) |

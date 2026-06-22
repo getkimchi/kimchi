@@ -13,6 +13,8 @@ export const FERMENT_EVENTS = {
 	STARTED: "ferment:started",
 	COMPLETED: "ferment:completed",
 	ABANDONED: "ferment:abandoned",
+	SUSPENDED: "ferment:suspended",
+	RESUMED: "ferment:resumed",
 	STALLED: "ferment:stalled",
 	PHASE_STARTED: "ferment:phase_started",
 	PHASE_COMPLETED: "ferment:phase_completed",
@@ -68,6 +70,14 @@ export interface FermentAbandonedPayload {
 	stepFailureCount: number
 	/** Wall-clock duration in ms from ferment creation to abandonment. */
 	durationMs: number
+}
+
+export interface FermentSuspendedPayload {
+	fermentId: string
+}
+
+export interface FermentResumedPayload {
+	fermentId: string
 }
 
 export interface FermentPhaseStartedPayload {

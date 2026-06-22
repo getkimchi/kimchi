@@ -1,7 +1,7 @@
 /**
  * Step tools: start_ferment_step, complete_ferment_step, verify_ferment_step, skip_ferment_step, fail_ferment_step.
  *
- * complete_ferment_step is the largest — it auto-runs the verification command (with
+ * complete_ferment_step is the largest - it auto-runs the verification command (with
  * a 60s timeout), routes non-zero exits through the judge for pass/retry/fail
  * classification, then grades the step.
  */
@@ -265,7 +265,7 @@ Do NOT call start_ferment_step again without user input.`,
 	if (!outcome.ok) {
 		if (outcome.error.code === "CONCURRENT_NON_PARALLEL_STEP") {
 			return toolErrWithNextAction(
-				`Cannot start step ${step.index} — step ${outcome.error.runningStepIndex} ("${outcome.error.runningDescription}") is already running and is not parallel-safe. Complete or skip it first.`,
+				`Cannot start step ${step.index} - step ${outcome.error.runningStepIndex} ("${outcome.error.runningDescription}") is already running and is not parallel-safe. Complete or skip it first.`,
 				f,
 			)
 		}
@@ -281,7 +281,7 @@ Do NOT call start_ferment_step again without user input.`,
 	const prevStep = freshPhase?.steps.find((st) => st.index === step.index - 1)
 	const lowGradeCaution =
 		prevStep?.grade && ["C", "D", "F"].includes(prevStep.grade.grade)
-			? `\n\n⚠️  Previous step (${prevStep.index}: "${prevStep.description}") received grade ${prevStep.grade.grade}: ${prevStep.grade.rationale}. Apply extra scrutiny to this step — verify edge cases, error handling, and completeness before reporting done.`
+			? `\n\n⚠️  Previous step (${prevStep.index}: "${prevStep.description}") received grade ${prevStep.grade.grade}: ${prevStep.grade.rationale}. Apply extra scrutiny to this step - verify edge cases, error handling, and completeness before reporting done.`
 			: ""
 
 	const parallelSiblings =
@@ -299,7 +299,7 @@ Do NOT call start_ferment_step again without user input.`,
 
 	const parallelNote =
 		parallelSiblings.length > 0
-			? `\nparallel_siblings: ${JSON.stringify(parallelSiblings)}\n\nThese steps are independent — call start_ferment_step for each one now and launch their Agents concurrently. Do not wait for one to finish before starting the next.`
+			? `\nparallel_siblings: ${JSON.stringify(parallelSiblings)}\n\nThese steps are independent - call start_ferment_step for each one now and launch their Agents concurrently. Do not wait for one to finish before starting the next.`
 			: ""
 
 	const workerContext =
@@ -316,9 +316,28 @@ Do NOT call start_ferment_step again without user input.`,
 	const workerLimits = suggestWorkerLimits(step.description, step.verification?.command, taskRef.budget_tier)
 	const limitsHint = `\n\nSelected worker budget: budget_tier=${taskRef.budget_tier}, max_turns=${workerLimits.maxTurns}, max_duration=${workerLimits.maxDuration}s, token_budget=${workerLimits.tokenBudget}, cumulative_token_budget=${workerLimits.cumulativeTokenBudget}. Set all three execution limits exactly on the Agent call. Select the tier explicitly on start_ferment_step from the scoped work shape; never infer it from description keywords. Do not complete the step from an exhausted worker. Inspect its structured report, then use resume_subagent for a bounded direct continuation, spawn a narrower linked replacement for separable remaining work, or stop/report when blocked. Do not raise the limits and retry the same broad task.`
 
+	// Build a condensed summary of prior steps so the orchestrator's planning
+	// is informed by what previous steps completed.
+	const completedPriorSteps = (freshPhase?.steps ?? [])
+		.filter((s) => s.index < step.index && (s.status === "done" || s.status === "verified" || s.status === "skipped"))
+		.map((s) => {
+			const tag = s.status === "skipped" ? `⊘${s.index}` : `✓${s.index}`
+			const summary = (s.summary ?? "").trim()
+			const detail = summary.length > 120 ? `${summary.slice(0, 120)}…` : summary
+			return detail ? `${tag} "${s.description}" — ${detail}` : `${tag} "${s.description}"`
+		})
+	const priorContext =
+		completedPriorSteps.length > 0 ? `\n• Prior steps: ${completedPriorSteps.join("; ")}. Build on their output.` : ""
+
+	const planFirstPreamble = `📋 Plan first (every start of this step):
+• Write a brief 2-4 bullet inline plan for this step's work.
+• Include a verification sub-task that checks exact expected output, not just substring grep. Match the verify command's precision.
+• If the step compiles or builds artifacts, include a cleanup sub-task to remove intermediate files from output directories.
+• Embed the plan in the worker Agent's prompt at dispatch time.${priorContext}`
+
 	return toolOk(
 		withNextActionHint(
-			`Step ${step.index}: "${step.description}" started. Spawn a subagent with the persona that matches this step's intent. Pass task_ref: ${JSON.stringify(taskRef)} and use the selected limits. The worker will receive its Agent ID and must call submit_agent_report before its final answer. When it returns with agent_outcome.outcome "completed" and agent_outcome.report.status "completed", call complete_ferment_step with worker_agent_id and the report summary.${lowGradeCaution}${parallelNote}${limitsHint}${contextBlock}`,
+			`${planFirstPreamble}\n\nStep ${step.index}: "${step.description}" started. Spawn a subagent with the persona that matches this step's intent. Pass task_ref: ${JSON.stringify(taskRef)} and use the selected limits. The worker will receive its Agent ID and must call submit_agent_report before its final answer. When it returns with agent_outcome.outcome "completed" and agent_outcome.report.status "completed", call complete_ferment_step with worker_agent_id and the report summary.${lowGradeCaution}${parallelNote}${limitsHint}${contextBlock}`,
 			outcome.ferment,
 		),
 	)
@@ -347,18 +366,18 @@ export async function completeStep(
 	if (workerError) return toolErrWithNextAction(workerError, f)
 
 	// Gate validation runs BEFORE any state mutation. Step-level flags don't
-	// feed the phase retry/escalation pipeline — they just refuse this single
+	// feed the phase retry/escalation pipeline - they just refuse this single
 	// call, and the agent has to fix the underlying issue and re-call.
 	const gateError = validateGatesOrErr(params.gates, {
 		turn: "complete_ferment_step",
 		flagPolicy: "block-on-flag",
 		renderFlagError: (count, lines) =>
-			`Step ${step.index}: "${step.description}" cannot complete — agent self-flagged on ${count} step gate(s):\n\n${lines}\n\nResolve the underlying issue and re-call complete_ferment_step with verdicts of 'pass' (or 'omitted' with rationale if a gate truly does not apply).`,
+			`Step ${step.index}: "${step.description}" cannot complete - agent self-flagged on ${count} step gate(s):\n\n${lines}\n\nResolve the underlying issue and re-call complete_ferment_step with verdicts of 'pass' (or 'omitted' with rationale if a gate truly does not apply).`,
 	})
 	if (gateError) return gateError
 
 	if (!step.verification) {
-		// No verification command — gate verdicts are the only signal. Trust
+		// No verification command - gate verdicts are the only signal. Trust
 		// them and advance. Phase-level F1 will catch the case where the
 		// whole phase was unverified.
 		const completeOutcome = applyAndPersist(params.ferment_id, {
@@ -422,14 +441,14 @@ export async function completeStep(
 			completedAt: runtime.nowIso(),
 		})
 		services.onStepCompleted(runtime)
-		sendStepBreadcrumb(pi, `Step ${step.index} ✓ verified — ${step.description}`)
+		sendStepBreadcrumb(pi, `Step ${step.index} ✓ verified - ${step.description}`)
 		return toolOk(
 			withNextActionHint(`Step ${step.index}: "${step.description}" done and verified ✓`, verifyOutcome.ferment),
 		)
 	}
 
 	// Non-zero verify exit. judgeStepVerification is tactical (pass/retry/fail
-	// classification of a failed command), not grading — it stays.
+	// classification of a failed command), not grading - it stays.
 	const judgeVerdict = await services.judgeStepVerification(
 		step.description,
 		step.verification.command,
@@ -468,7 +487,7 @@ export async function completeStep(
 	})
 	if (!failOutcome.ok) return failedToolResult(failOutcome.error, f)
 
-	sendStepBreadcrumb(pi, `Step ${step.index} ✗ failed verification — ${judgeVerdict.reason}`, "warning")
+	sendStepBreadcrumb(pi, `Step ${step.index} ✗ failed verification - ${judgeVerdict.reason}`, "warning")
 
 	// D19: surface a recovery dropdown so the user picks an action explicitly
 	// instead of leaving the planner guessing.
@@ -491,7 +510,7 @@ export async function completeStep(
 			if (!retryOut.ok) return failedToolResult(retryOut.error)
 			runtime.clearStepStart(f.id, phase.id, step.id)
 			return toolOk(
-				`Step ${step.index} reset to running at user request. Retry the work — spawn a worker and call complete_step when done.`,
+				`Step ${step.index} reset to running at user request. Retry the work - spawn a worker and call complete_step when done.`,
 			)
 		}
 
@@ -546,13 +565,13 @@ export async function completeStep(
 		// already in failed state from the fail_step above; preserve the phase
 		// and let the planner decide the next move.
 		return toolOk(
-			`Step ${step.index} remains failed. User dismissed the recovery dropdown without choosing an action — phase preserved.`,
+			`Step ${step.index} remains failed. User dismissed the recovery dropdown without choosing an action - phase preserved.`,
 		)
 	}
 
 	if (judgeVerdict.verdict === "retry") {
 		return toolErr(
-			`Step ${step.index} verification failed — retry suggested.\nExit: ${exitCode}\nJudge: ${judgeVerdict.reason}\nstdout: ${stdout.slice(0, 500)}\nstderr: ${stderr.slice(0, 500)}`,
+			`Step ${step.index} verification failed - retry suggested.\nExit: ${exitCode}\nJudge: ${judgeVerdict.reason}\nstdout: ${stdout.slice(0, 500)}\nstderr: ${stderr.slice(0, 500)}`,
 		)
 	}
 	return toolErr(
@@ -580,7 +599,7 @@ export function registerStepTools(pi: ExtensionAPI, runtime: FermentRuntime = de
 	pi.registerTool({
 		name: FERMENT_TOOLS.COMPLETE_STEP,
 		label: "Complete Step",
-		description: `Mark step as done. If the step has a verification command it runs automatically — no need to call verify_ferment_step separately. You must produce verdicts for the three step-scope gates below. A "flag" verdict blocks step completion.
+		description: `Mark step as done. If the step has a verification command it runs automatically - no need to call verify_ferment_step separately. You must produce verdicts for the three step-scope gates below. A "flag" verdict blocks step completion.
 
 ${renderGateGuidance("complete_ferment_step")}`,
 		parameters: CompleteStepParams,

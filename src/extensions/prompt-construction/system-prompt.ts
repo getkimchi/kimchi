@@ -9,6 +9,7 @@
  */
 
 import { type Skill, formatSkillsForPrompt } from "@earendil-works/pi-coding-agent"
+import type { ModelCustomMetadata } from "../orchestration/model-metadata.js"
 import { buildPhaseGuidelinesSection } from "../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import type { ModelRegistry } from "../orchestration/model-registry/index.js"
 import type { Phase } from "../orchestration/model-registry/types.js"
@@ -47,6 +48,8 @@ export interface SystemPromptBuildOptions {
 	mode: PromptMode
 	/** Role-based model assignments for orchestrator mode. */
 	roles?: ModelRoles
+	/** Custom model metadata for non-registry models. */
+	customConfigs?: ReadonlyMap<string, ModelCustomMetadata>
 	/** Session ID for the active pi-mono session. Used to scope extension prompt blocks
 	 *  to this session so an in-process subagent's blocks don't leak into the parent's
 	 *  prompt and vice versa. Omit only in unit tests or before any session has started. */
@@ -65,11 +68,12 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 	const projectContext = formatProjectContext(contextFiles)
 	const skillsSection = formatSkills(skills)
 
-	const orchestrationSection = resolveOrchestrationInstructions({
+	const { teamSection, instructionsSection: orchestrationSection } = resolveOrchestrationInstructions({
 		currentModelId,
 		registry,
 		mode,
 		roles,
+		customConfigs: options.customConfigs,
 	})
 
 	const phaseSection = buildPhaseGuidelinesSection(currentModelId, currentPhase, registry)
@@ -81,6 +85,7 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 
 	return buildPrompt({
 		mode,
+		teamSection,
 		toolsSection,
 		environmentSection,
 		projectContext,
@@ -98,6 +103,7 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 
 interface PromptParts {
 	mode: PromptMode
+	teamSection: string
 	toolsSection: string
 	environmentSection: string
 	projectContext: string
@@ -137,13 +143,33 @@ const FACTUAL_ACCURACY = `
 function buildPrompt(parts: PromptParts): string {
 	const sections: string[] = []
 
+	// 1. Intro
 	const intro = parts.mode === "orchestrator" ? ORCHESTRATOR_INTRO : SINGLE_INTRO
 	sections.push(intro)
 
-	sections.push(`## Documents\n\n${DOCUMENTS_SECTION}`)
+	// 2. Your Team + Your Capabilities
+	if (parts.teamSection) {
+		sections.push(parts.teamSection)
+	}
+
+	// 3. Orchestration instructions (DOs/DONTs, budgets, agent management)
+	if (!parts.suppressed.has("orchestration") && parts.orchestrationSection) {
+		sections.push(parts.orchestrationSection)
+	}
+
+	// 4. Guidelines
 	sections.push(`## Guidelines\n\n${CORE_GUIDELINES}`)
 	sections.push(`## Factual Accuracy\n\n${FACTUAL_ACCURACY}`)
 
+	// 5. Phase guidelines
+	if (!parts.suppressed.has("phase-guidelines") && parts.phaseSection) {
+		sections.push(parts.phaseSection)
+	}
+
+	// 6. Documents
+	sections.push(`## Documents\n\n${DOCUMENTS_SECTION}`)
+
+	// 7. Rest: system prompt blocks, tools, skills, environment, project context
 	if (parts.systemPromptBlocks) {
 		sections.push(parts.systemPromptBlocks)
 	}
@@ -152,14 +178,6 @@ function buildPrompt(parts: PromptParts): string {
 
 	if (!parts.suppressed.has("skills") && parts.skillsSection) {
 		sections.push(parts.skillsSection)
-	}
-
-	if (!parts.suppressed.has("orchestration") && parts.orchestrationSection) {
-		sections.push(parts.orchestrationSection)
-	}
-
-	if (!parts.suppressed.has("phase-guidelines") && parts.phaseSection) {
-		sections.push(parts.phaseSection)
 	}
 
 	sections.push(parts.environmentSection)

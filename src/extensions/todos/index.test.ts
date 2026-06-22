@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
-import todosExtension, { TODO_STEER_MESSAGE } from "./index.js"
+import todosExtension, { TODO_CLEANUP_MESSAGE } from "./index.js"
 import { __resetTodoStore, applyWriteTodos, getTodosForScope } from "./store.js"
 import { TODO_TOOL_NAMES, UPDATE_TODOS_TOOL_NAME } from "./tool.js"
 import { TODO_TOOL_RESULT_SCHEMA_VERSION, type TodoStatus } from "./types.js"
@@ -16,6 +16,7 @@ function createTodosHarness() {
 		registerShortcut: vi.fn(),
 		appendEntry: vi.fn(),
 		sendMessage: vi.fn(),
+		getActiveTools: vi.fn(() => [...TODO_TOOL_NAMES]),
 		on: vi.fn((event: string, handler: ExtensionHandler) => {
 			const list = handlers.get(event) ?? []
 			list.push(handler)
@@ -47,20 +48,6 @@ function createContext(sessionId: string, branch: SessionEntry[]): ExtensionCont
 			getBranch: () => branch,
 		},
 	} as unknown as ExtensionContext
-}
-
-function userEntry(id: string, text: string): SessionEntry {
-	return {
-		type: "message",
-		id,
-		parentId: null,
-		timestamp: "2026-01-01T00:00:00.000Z",
-		message: {
-			role: "user",
-			content: [{ type: "text", text }],
-			timestamp: 0,
-		},
-	} as unknown as SessionEntry
 }
 
 function toolCall(toolName: string): unknown {
@@ -215,128 +202,35 @@ describe("todos extension session state", () => {
 		expect(result.systemPrompt).toContain("## Todos")
 	})
 
-	it("steers before the first non-todo tool when no open todos exist", async () => {
+	it("does not inject hidden todo steers for non-todo tool calls", async () => {
 		const harness = createTodosHarness()
-		const result = (await harness.fire(
-			"tool_call",
-			toolCall("bash"),
-			createContext("session", [
-				userEntry(
-					"user",
-					"Review the todo extension for regressions after recent changes. Inspect prompt guidance and run the narrowest relevant tests.",
-				),
-			]),
-		)) as { block?: boolean; reason?: string }
+		const result = await harness.fire("tool_call", toolCall("bash"), createContext("session", []))
 
-		expect(result).toEqual({ block: false })
-		expect(getTodosForScope()).toEqual([])
+		expect(result).toBeUndefined()
 		expect(harness.appendEntry).not.toHaveBeenCalled()
+		expect(harness.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("queues one cleanup nudge when all todos are completed", async () => {
+		const harness = createTodosHarness()
+
+		applyWriteTodos({ todos: [{ content: "still active", status: "pending" }] })
+		await harness.fire("agent_end", {}, createContext("session", []))
+		expect(harness.sendMessage).not.toHaveBeenCalled()
+
+		applyWriteTodos({ todos: [{ id: 1, content: "still active", status: "completed" }] })
+		await harness.fire("agent_end", {}, createContext("session", []))
+		await harness.fire("agent_end", {}, createContext("session", []))
+
+		expect(harness.sendMessage).toHaveBeenCalledTimes(1)
 		expect(harness.sendMessage).toHaveBeenCalledWith(
 			{
 				customType: TODO_CUSTOM_ENTRY_TYPE,
-				content: [{ type: "text", text: TODO_STEER_MESSAGE }],
+				content: [{ type: "text", text: TODO_CLEANUP_MESSAGE }],
 				display: false,
-				details: { reason: "missing_todos" },
+				details: { reason: "completed_todos" },
 			},
-			{ deliverAs: "steer", triggerTurn: false },
+			{ deliverAs: "nextTurn" },
 		)
-	})
-
-	it("steers regardless of the request language", async () => {
-		const harness = createTodosHarness()
-		const result = (await harness.fire(
-			"tool_call",
-			toolCall("bash"),
-			createContext("session", [
-				userEntry("user", "Peržiūrėk todo plėtinį, patikrink įrankių pavadinimus ir paleisk testus."),
-			]),
-		)) as { block?: boolean; reason?: string }
-
-		expect(result).toEqual({ block: false })
-		expect(getTodosForScope()).toEqual([])
-		expect(harness.sendMessage).toHaveBeenCalled()
-	})
-
-	it("does not spam the missing-todos steer on repeated non-todo tools", async () => {
-		const harness = createTodosHarness()
-		const ctx = createContext("session", [userEntry("user", "Review the todo extension for regressions.")])
-
-		await harness.fire("tool_call", toolCall("bash"), ctx)
-		await harness.fire("tool_call", toolCall("read"), ctx)
-
-		expect(harness.sendMessage).toHaveBeenCalledTimes(1)
-	})
-
-	it("resets the missing-todos steer after user input", async () => {
-		const harness = createTodosHarness()
-		const ctx = createContext("session", [userEntry("user", "Review the todo extension for regressions.")])
-
-		await harness.fire("tool_call", toolCall("bash"), ctx)
-		await harness.fire("input", { source: "user", text: "now review the widget" }, ctx)
-		await harness.fire("tool_call", toolCall("read"), ctx)
-
-		expect(harness.sendMessage).toHaveBeenCalledTimes(2)
-	})
-
-	it("resets the missing-todos steer on session start", async () => {
-		const harness = createTodosHarness()
-		const ctx = createContext("session", [userEntry("user", "Review the todo extension for regressions.")])
-
-		await harness.fire("tool_call", toolCall("bash"), ctx)
-		await harness.fire("session_start", { reason: "new" }, createContext("new-session", []))
-		await harness.fire("tool_call", toolCall("read"), ctx)
-
-		expect(harness.sendMessage).toHaveBeenCalledTimes(2)
-	})
-
-	it("does not steer for infrastructure tools", async () => {
-		const harness = createTodosHarness()
-		const result = await harness.fire(
-			"tool_call",
-			toolCall("set_phase"),
-			createContext("session", [userEntry("user", "enter build phase")]),
-		)
-
-		expect(result).toEqual({ block: false })
-		expect(harness.sendMessage).not.toHaveBeenCalled()
-	})
-
-	it("allows todo tools to start the list when enforcement is active", async () => {
-		const harness = createTodosHarness()
-		const result = await harness.fire(
-			"tool_call",
-			toolCall("add_todo"),
-			createContext("session", [userEntry("user", "Review the todo extension for regressions after recent changes.")]),
-		)
-
-		expect(result).toEqual({ block: false })
-		expect(harness.sendMessage).not.toHaveBeenCalled()
-	})
-
-	it("allows non-todo tools after an open todo exists", async () => {
-		const harness = createTodosHarness()
-		applyWriteTodos({ todos: [{ content: "Inspect todo extension", status: "in_progress" }] })
-
-		const result = await harness.fire(
-			"tool_call",
-			toolCall("bash"),
-			createContext("session", [userEntry("user", "Review the todo extension for regressions after recent changes.")]),
-		)
-
-		expect(result).toEqual({ block: false })
-		expect(harness.sendMessage).not.toHaveBeenCalled()
-	})
-
-	it("steers for one-off tool lookups too because the tool call is the enforcement point", async () => {
-		const harness = createTodosHarness()
-		const result = await harness.fire(
-			"tool_call",
-			toolCall("bash"),
-			createContext("session", [userEntry("user", "what time is it?")]),
-		)
-
-		expect(result).toEqual({ block: false })
-		expect(getTodosForScope()).toEqual([])
-		expect(harness.sendMessage).toHaveBeenCalled()
 	})
 })

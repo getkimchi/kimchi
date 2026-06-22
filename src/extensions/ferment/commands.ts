@@ -55,6 +55,32 @@ function sendBreadcrumb(
 	)
 }
 
+function sendLifecycleCommandBreadcrumb(
+	pi: ExtensionAPI,
+	command: "pause" | "resume" | "exit",
+	active: ReturnType<FermentRuntime["getActive"]>,
+): void {
+	const target = active ? `"${active.name}" [${active.status}]` : "no active ferment"
+	sendBreadcrumb(pi, `Command /ferment ${command} requested for ${target}.`, "step")
+}
+
+function refreshActiveFermentForLifecycleCommand(
+	pi: ExtensionAPI,
+	runtime: FermentRuntime,
+): ReturnType<FermentRuntime["getActive"]> {
+	const active = runtime.getActive()
+	if (!active) return undefined
+	const fresh = runtime.getStorage().get(active.id)
+	if (!fresh) {
+		setActiveFermentAndApplyProfile(pi, runtime, undefined)
+		return undefined
+	}
+	if (fresh.status !== active.status || fresh.updatedAt !== active.updatedAt) {
+		setActiveFermentAndApplyProfile(pi, runtime, fresh)
+	}
+	return fresh
+}
+
 export type FermentCliCommand = FermentCommand
 
 interface FermentArgumentCompletion {
@@ -471,7 +497,8 @@ function exitFermentMode(
 	runtime: FermentRuntime,
 ): void {
 	const applyAndPersist = createApplyAndPersist(runtime)
-	const active = runtime.getActive()
+	const active = refreshActiveFermentForLifecycleCommand(pi, runtime)
+	sendLifecycleCommandBreadcrumb(pi, "exit", active)
 	if (!active) {
 		ctx.ui.notify("No active ferment to exit.")
 		return
@@ -481,7 +508,9 @@ function exitFermentMode(
 	if (active.status === "running" || active.status === "planned") {
 		const outcome = applyAndPersist(active.id, { type: "pause" })
 		if (!outcome.ok) {
-			ctx.ui.notify(`Failed to exit "${active.name}": ${outcome.error.message}`)
+			const message = `Failed to exit "${active.name}": ${outcome.error.message}`
+			sendBreadcrumb(pi, message, "warning")
+			ctx.ui.notify(message)
 			return
 		}
 		statusLabel = "paused"
@@ -609,7 +638,8 @@ export class FermentCommandController {
 		}
 
 		if (command.type === "pause-lifecycle") {
-			const active = runtime.getActive()
+			const active = refreshActiveFermentForLifecycleCommand(pi, runtime)
+			sendLifecycleCommandBreadcrumb(pi, "pause", active)
 			if (!active) {
 				ctx.ui.notify("No active ferment to pause.")
 				return { handled: true }
@@ -621,45 +651,64 @@ export class FermentCommandController {
 			}
 
 			if (active.status === "paused") {
-				ctx.ui.notify(`"${active.name}" is already paused. Type /ferment resume to resume.`)
+				const message = `"${active.name}" is already paused. Type /ferment resume to resume.`
+				sendBreadcrumb(pi, message, "ack")
+				ctx.ui.notify(message)
 				applyFermentRuntimeToolProfile(pi, runtime)
 				return { handled: true }
 			}
 
 			const outcome = applyAndPersist(active.id, { type: "pause" })
 			if (!outcome.ok) {
-				ctx.ui.notify(`Failed to pause: ${outcome.error.message}`)
+				const message = `Failed to pause: ${outcome.error.message}`
+				sendBreadcrumb(pi, message, "warning")
+				ctx.ui.notify(message)
 				return { handled: true }
 			}
 
 			setActiveFermentAndApplyProfile(pi, runtime, outcome.ferment)
 			runtime.clearPendingPlanReview(active.id)
-			ctx.ui.notify(`Paused "${outcome.ferment.name}". Type /ferment resume to resume.`)
+			const message = `Paused "${outcome.ferment.name}". Type /ferment resume to resume.`
+			sendBreadcrumb(pi, message, "ack")
+			ctx.ui.notify(message)
 			ctx.abort()
 			return { handled: true }
 		}
 
 		if (command.type === "resume-lifecycle") {
-			const active = runtime.getActive()
+			const active = refreshActiveFermentForLifecycleCommand(pi, runtime)
+			sendLifecycleCommandBreadcrumb(pi, "resume", active)
 			if (!active) {
 				ctx.ui.notify("No active ferment to resume.")
 				return { handled: true }
 			}
 
 			if (active.status !== "paused") {
-				ctx.ui.notify(`"${active.name}" is ${active.status}; nothing to resume.`)
+				const canContinue = active.status === "running" || active.status === "planned"
+				const message = canContinue
+					? `"${active.name}" is ${active.status}; continuing from current state.`
+					: `"${active.name}" is ${active.status}; nothing to resume.`
+				sendBreadcrumb(pi, message, "ack")
+				ctx.ui.notify(message)
 				applyFermentRuntimeToolProfile(pi, runtime)
+				if (canContinue) {
+					scheduleFermentWakeUp(pi, runtime, { fermentId: active.id, tag: "Resume wake-up" })
+				}
 				return { handled: true }
 			}
 
 			const outcome = applyAndPersist(active.id, { type: "resume" })
 			if (!outcome.ok) {
-				ctx.ui.notify(`Failed to resume: ${outcome.error.message}`)
+				const message = `Failed to resume: ${outcome.error.message}`
+				sendBreadcrumb(pi, message, "warning")
+				ctx.ui.notify(message)
 				return { handled: true }
 			}
 
 			setActiveFermentAndApplyProfile(pi, runtime, outcome.ferment)
-			ctx.ui.notify(`Resumed "${outcome.ferment.name}". Continuation policy: ${runtime.getContinuationPolicy()}.`)
+			const message = `Resumed "${outcome.ferment.name}". Continuation policy: ${runtime.getContinuationPolicy()}.`
+			sendBreadcrumb(pi, message, "ack")
+			ctx.ui.notify(message)
 			if (await confirmManualPhaseBoundaryForCommand(pi, ctx, runtime, outcome.ferment)) {
 				return { handled: true }
 			}
