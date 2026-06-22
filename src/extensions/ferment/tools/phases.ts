@@ -36,6 +36,7 @@ import {
 } from "../tool-helpers.js"
 import { FERMENT_TOOLS } from "../tool-names.js"
 import { ActivateParams, CompletePhaseParams, FailPhaseParams, RefineParams, SkipPhaseParams } from "../tool-schemas.js"
+import { applyFermentToolProfile, profileForFerment } from "../tool-scope.js"
 import type { FermentUi, FermentUiContext } from "../ui.js"
 
 function sendPhaseAck(pi: ExtensionAPI, text: string): void {
@@ -533,6 +534,17 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 				})
 				if (!outcome.ok) return failedToolResult(outcome.error, f)
 
+				// Hook: re-apply the profile based on the updated lifecycle state.
+				// pi-mono snapshots the active tool list at the start of each agent run,
+				// so this shapes the NEXT turn's toolset, not the current turn's.
+				// Wrapped in try/catch: phase activation is already committed to storage;
+				// a setActiveTools failure must not cause a retry of activate_ferment_phase.
+				try {
+					applyFermentToolProfile(pi, profileForFerment(outcome.ferment))
+				} catch (err) {
+					console.error("[ferment] applyFermentToolProfile failed after phase group activation", err)
+				}
+
 				// Capture git HEAD per phase so the grader can diff each one independently.
 				const headRef = phaseServices.captureGitHead()
 				if (headRef) {
@@ -566,6 +578,17 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 
 			const outcome = applyAndPersist(params.ferment_id, { type: "activate_phase", phaseId: target.id })
 			if (!outcome.ok) return failedToolResult(outcome.error, f)
+
+			// Hook: re-apply the profile based on the updated lifecycle state.
+			// pi-mono snapshots the active tool list at the start of each agent run,
+			// so this shapes the NEXT turn's toolset, not the current turn's.
+			// Wrapped in try/catch: phase activation is already committed to storage;
+			// a setActiveTools failure must not cause a retry of activate_ferment_phase.
+			try {
+				applyFermentToolProfile(pi, profileForFerment(outcome.ferment))
+			} catch (err) {
+				console.error("[ferment] applyFermentToolProfile failed after phase activation", err)
+			}
 
 			// Capture git HEAD so the phase grader can diff against it later.
 			const headRef = phaseServices.captureGitHead()

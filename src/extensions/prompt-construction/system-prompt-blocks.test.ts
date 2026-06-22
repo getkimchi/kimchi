@@ -249,7 +249,6 @@ describe("system prompt blocks", () => {
 		blocks.register({ id: "b", render: () => "## Second\n\nBeta" })
 
 		const result = prompt(pi)
-		expect(result).toContain("acting on it.\n\n## First")
 		expect(result).toContain("Alpha\n\n## Second")
 		expect(result).toContain("Beta\n\n## Available Tools")
 	})

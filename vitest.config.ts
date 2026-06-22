@@ -13,6 +13,9 @@ export default defineConfig({
 			PI_PACKAGE_DIR: fileURLToPath(
 				new URL("./node_modules/@earendil-works/pi-coding-agent", import.meta.url),
 			),
+			// Pin locale so toLocaleString() produces consistent comma-separated
+			// numbers across developer machines and CI regardless of system locale.
+			LANG: "en_US.UTF-8",
 		},
 		alias: {
 			// The deep-import path used in clipboard-read.ts is not in the package's

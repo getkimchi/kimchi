@@ -16,6 +16,20 @@ vi.mock("./url-validator.js", () => ({
 	},
 }))
 
+// Remove retry behaviour so 500s throw immediately and timeout tests aren't
+// affected by retry delays. Timeout behaviour is preserved via AbortController.
+vi.mock("../../utils/http.js", () => ({
+	fetchWithRetry: (url: string, init?: RequestInit, options?: Record<string, unknown>) => {
+		const fetchFn = (options?.fetchImpl as typeof fetch) ?? globalThis.fetch
+		const signal = options?.signal as AbortSignal | undefined
+		const timeoutMs = (options?.timeoutMs as number) ?? 30_000
+		const ctrl = new AbortController()
+		const timer = setTimeout(() => ctrl.abort(), timeoutMs)
+		const composedSignal = signal ? AbortSignal.any([ctrl.signal, signal]) : ctrl.signal
+		return fetchFn(url, { ...init, signal: composedSignal }).finally(() => clearTimeout(timer))
+	},
+}))
+
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import webFetchExtension from "./index.js"
 

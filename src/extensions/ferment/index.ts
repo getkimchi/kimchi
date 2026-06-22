@@ -13,6 +13,7 @@
 import type { ExtensionAPI, ExtensionContext, MessageRenderer } from "@earendil-works/pi-coding-agent"
 import { Container, Text } from "@earendil-works/pi-tui"
 import type { Step } from "../../ferment/types.js"
+import { isAgentWorker } from "../agent-worker-context.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import { requestSharedFooterRender } from "../shared-footer.js"
 import { registerTipProvider } from "../tips/registry.js"
@@ -29,6 +30,7 @@ import { confirmPendingScope } from "./scoping-confirmation.js"
 import { FERMENT_REQUEST_MESSAGE_TYPE, type FermentRequestMessageDetails } from "./scoping.js"
 import { getActive, getActiveId, getContinuationPolicy } from "./state.js"
 import { createFermentTipProvider } from "./tips.js"
+import { registerFermentTodoSync } from "./todo-sync.js"
 import { applyFermentRuntimeToolProfile } from "./tool-scope.js"
 import { registerKnowledgeTools } from "./tools/knowledge.js"
 import { buildFreeformScopingFeedbackMessage, registerLifecycleTools } from "./tools/lifecycle.js"
@@ -120,6 +122,10 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	runtime.events = pi.events
 
 	const unregisterFermentTips = registerTipProvider(createFermentTipProvider(runtime))
+	let unregisterFermentTodoSync: (() => void) | undefined
+	if (!isAgentWorker()) {
+		unregisterFermentTodoSync = registerFermentTodoSync(pi)
+	}
 	let planReviewTimer: ReturnType<typeof setTimeout> | undefined
 	let planReviewRunning = false
 	// ExtensionContext is populated on session start
@@ -190,6 +196,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 		clearPlanReviewTimer()
 		runtime.clearAllPendingPlanReviews()
 		unregisterFermentTips()
+		unregisterFermentTodoSync?.()
 	})
 
 	pi.on("agent_end", (_event, ctx) => {

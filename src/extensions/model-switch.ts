@@ -9,6 +9,12 @@ import {
 	resolveContextTokens,
 	sessionHasImages,
 } from "./model-guard.js"
+import {
+	type ModelCustomMetadata,
+	isModelMetadataMissing,
+	resolveModelMetadata,
+	saveModelMetadata,
+} from "./orchestration/model-metadata.js"
 import { MODEL_CAPABILITIES } from "./orchestration/model-registry/builtin-models.js"
 import type { ModelTier } from "./orchestration/model-registry/types.js"
 import { splitModelRef } from "./orchestration/model-roles.js"
@@ -22,13 +28,42 @@ import {
 /** Prevents model_select handler from re-checking what set_model tool already validated. */
 let suppressModelSelectGuard = false
 
+/** Suppress the model_select guard and metadata wizard temporarily.
+ *  Used by /multi-model which handles its own metadata prompts. */
+export function withSuppressedModelSelectGuard<T>(fn: () => Promise<T>): Promise<T> {
+	suppressModelSelectGuard = true
+	return fn().finally(() => {
+		suppressModelSelectGuard = false
+	})
+}
+
 /** Recursion guard — true while our own revert is in progress. */
 let isRevertingModel = false
+
+/** Models the user has skipped the metadata wizard for this session. */
+let sessionSkippedModels = new Set<string>()
+
+/** Models the user has permanently skipped the metadata wizard for. */
+let sessionWideSkippedModels: Set<string> | undefined
+
+function getSessionWideSkippedModels(): Set<string> {
+	if (sessionWideSkippedModels) return sessionWideSkippedModels
+	// No persistent skip list yet — could be added to settings.json later
+	sessionWideSkippedModels = new Set<string>()
+	return sessionWideSkippedModels
+}
+
+function shouldShowMetadataWizard(ref: string): boolean {
+	if (sessionSkippedModels.has(ref)) return false
+	if (getSessionWideSkippedModels().has(ref)) return false
+	return isModelMetadataMissing(ref)
+}
 
 /** Resets module state between tests. */
 export function __resetModelSwitchStateForTest(): void {
 	suppressModelSelectGuard = false
 	isRevertingModel = false
+	sessionSkippedModels = new Set<string>()
 }
 
 /**
@@ -43,6 +78,92 @@ export function getModelTier(
 	const caps = capsMap.get(model.id)
 	if (!caps || caps === "ignored") return undefined
 	return (caps as { tier: ModelTier }).tier
+}
+
+interface MetadataWizardUI {
+	select(label: string, options: string[]): Promise<string | undefined>
+	input(label: string, defaultValue?: string): Promise<string | undefined>
+	notify(message: string, type: "info" | "warning" | "error"): void
+}
+
+function asWizardUI(ctx: { ui?: Partial<MetadataWizardUI> }): MetadataWizardUI | undefined {
+	const ui = ctx.ui
+	if (!ui) return undefined
+	if (typeof ui.select !== "function" || typeof ui.input !== "function" || typeof ui.notify !== "function") {
+		return undefined
+	}
+	return ui as MetadataWizardUI
+}
+
+async function promptAndSaveMetadata(ref: string, ui: MetadataWizardUI): Promise<void> {
+	const wizardChoice = await ui.select(
+		`${ref}\nThis model has no metadata (tier, description, vision).\nSpecifying metadata will improve orchestration.`,
+		["Configure now", "Skip this time", "Skip for this session"],
+	)
+
+	if (wizardChoice === "Skip this time") {
+		sessionSkippedModels.add(ref)
+		return
+	}
+	if (wizardChoice === "Skip for this session") {
+		sessionSkippedModels.add(ref)
+		getSessionWideSkippedModels().add(ref)
+		return
+	}
+	if (wizardChoice !== "Configure now") return
+
+	const existing = resolveModelMetadata(ref)
+	const existingMeta: ModelCustomMetadata | undefined = existing
+		? { tier: existing.tier, description: existing.description, vision: existing.vision }
+		: undefined
+
+	const tierOptions = ["heavy", "standard", "light"]
+	if (existingMeta?.tier) {
+		tierOptions.push(`keep current (${existingMeta.tier})`)
+	} else {
+		tierOptions.push("skip")
+	}
+	const tierChoice = await ui.select(
+		`${ref}\nSpecifying metadata will improve orchestration.\nTier - what capability level is this model?`,
+		tierOptions,
+	)
+	if (!tierChoice) return
+	const tier = tierChoice.startsWith("keep current")
+		? existingMeta?.tier
+		: tierChoice === "skip"
+			? undefined
+			: (tierChoice as ModelTier)
+
+	const visionOptions = ["yes", "no"]
+	if (existingMeta?.vision !== undefined) {
+		visionOptions.push(`keep current (${existingMeta.vision ? "yes" : "no"})`)
+	} else {
+		visionOptions.push("skip")
+	}
+	const visionChoice = await ui.select(`${ref}\nVision support - can this model process images?`, visionOptions)
+	if (!visionChoice) return
+	const vision = visionChoice.startsWith("keep current")
+		? existingMeta?.vision
+		: visionChoice === "skip"
+			? undefined
+			: visionChoice === "yes"
+
+	const descDefault = existingMeta?.description ?? ""
+	const descInput = await ui.input(`${ref}\nDescription - when should this model be used? (optional):`, descDefault)
+	if (descInput === undefined) return
+	const description = descInput.trim() || existingMeta?.description || undefined
+
+	const config: ModelCustomMetadata = {}
+	if (tier !== undefined) config.tier = tier
+	if (vision !== undefined) config.vision = vision
+	if (description !== undefined) config.description = description
+
+	if (Object.keys(config).length > 0) {
+		const map = new Map<string, ModelCustomMetadata>()
+		map.set(ref, config)
+		saveModelMetadata(map)
+		ui.notify(`Metadata saved for ${ref}.`, "info")
+	}
 }
 
 export default function modelSwitchExtension(pi: ExtensionAPI) {
@@ -247,6 +368,17 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 			const selectedRef = `${event.model.provider}/${event.model.id}`
 			if (selectedRef !== orchRef) {
 				setMultiModelEnabled(false)
+			}
+		}
+
+		// Metadata wizard for models without tier/description/vision
+		if (event.source === "set" && event.model && ctx.hasUI) {
+			const wizardUI = asWizardUI(ctx)
+			if (wizardUI) {
+				const selectedRef = `${event.model.provider}/${event.model.id}`
+				if (shouldShowMetadataWizard(selectedRef)) {
+					await promptAndSaveMetadata(selectedRef, wizardUI)
+				}
 			}
 		}
 	})

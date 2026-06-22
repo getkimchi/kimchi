@@ -1,3 +1,4 @@
+import { DEFAULT_BASH_TIMEOUT_SECONDS } from "../extensions/bash-default-timeout.js"
 import { CLAUDE_CODE_SKILLS_RESOURCE_ID } from "../extensions/claude-code-skills/definition.js"
 import { PI_PACKAGE_LOOKUP_RESOURCE_ID } from "../extensions/pi-package-lookup/index.js"
 import { discoverBashHookResources } from "./bash-hook-discovery.js"
@@ -59,6 +60,21 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		description: "Enable tactical todo tracking with a live overlay.",
 		defaultEnabled: true,
 		restartRequired: true,
+	},
+	{
+		id: "extensions.bash-tool-guard",
+		kind: "extensions",
+		label: "Bash-tool guard",
+		description:
+			"Steer the LLM away from using `bash` (cat/sed/echo) for tasks that have a dedicated read/edit/write tool. Catches read/edit/write anti-patterns and suggests the right tool.",
+		defaultEnabled: true,
+	},
+	{
+		id: "extensions.bash-default-timeout",
+		kind: "extensions",
+		label: "Bash default timeout",
+		description: `Apply a ${DEFAULT_BASH_TIMEOUT_SECONDS}s default timeout to every bash command when none is supplied, so misbehaving commands cannot hang a session indefinitely.`,
+		defaultEnabled: true,
 	},
 	{
 		id: "extensions.claude-code-hook-adapter",

@@ -11,6 +11,7 @@
  */
 
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
+import { getTodosForScope } from "../todos/store.js"
 
 const PRIOR_STEP_SUMMARY_MAX_CHARS = 240
 const MAX_DECISIONS = 5
@@ -67,6 +68,17 @@ export function buildWorkerContext(ferment: Ferment, phase: Phase, step: Step, o
 	if (includeMemories && ferment.memories.length > 0) {
 		const recent = ferment.memories.slice(-MAX_MEMORIES)
 		lines.push(`Memories: ${recent.map((m) => `[${m.category}] ${m.content}`).join("; ")}`)
+	}
+
+	// Include the orchestrator's step-level implementation plan so the worker
+	// knows what sub-tasks were planned and can track progress against them.
+	const stepTodos = getTodosForScope({ kind: "ferment-step", phaseId: phase.id, stepId: step.id })
+	if (stepTodos.length > 0) {
+		const planItems = stepTodos.map((t) => {
+			const glyph = t.status === "completed" ? "\u2713" : t.status === "in_progress" ? "\u25b6" : "\u25cb"
+			return `${glyph} ${t.content}`
+		})
+		lines.push(`Plan: ${planItems.join("; ")}`)
 	}
 
 	return lines.join("\n")

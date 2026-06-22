@@ -69,9 +69,9 @@ describe("authenticateWorkspace", () => {
 		expect((result as unknown as { description?: string }).description).toBeUndefined()
 
 		expect(mockFetch).toHaveBeenCalledTimes(3)
-		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/ai-optimizer/v1beta/api-keys:verify`)
+		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/ai-optimizer/v1beta/workspace-tokens:verifyKey`)
 		expect(mockFetch.mock.calls[1][0]).toBe(
-			`${BASE}/ai-optimizer/v1beta/organizations/org-516442fe-054a-49e2-ac2d-9dc9b104c3d2/sessions/ws-123`,
+			`${BASE}/ai-optimizer/v1beta/organizations/org-516442fe-054a-49e2-ac2d-9dc9b104c3d2/workspaces/ws-123`,
 		)
 		expect(mockFetch.mock.calls[1][1]).toMatchObject({ method: "PUT" })
 		expect(mockFetch.mock.calls[2][0]).toBe(`${BASE}/ai-optimizer/v1beta/session-tokens:exchange`)

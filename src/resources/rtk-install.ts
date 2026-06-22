@@ -15,6 +15,8 @@ import {
 import { chmod, writeFile } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os"
 import { basename, delimiter, dirname, join } from "node:path"
+import { THIRD_PARTY_MAX_RETRIES } from "../config.js"
+import { fetchWithRetry } from "../utils/http.js"
 import { settingsPath } from "./store.js"
 
 const LATEST_RELEASE_URL = "https://api.github.com/repos/rtk-ai/rtk/releases/latest"
@@ -212,13 +214,21 @@ function assetName(): string {
 }
 
 async function fetchJson<T>(url: string): Promise<T> {
-	const res = await fetch(url, { headers: requestHeaders() })
+	const res = await fetchWithRetry(
+		url,
+		{ headers: requestHeaders() },
+		{ retry: { maxRetries: THIRD_PARTY_MAX_RETRIES } },
+	)
 	if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`)
 	return (await res.json()) as T
 }
 
 async function download(url: string): Promise<Buffer> {
-	const res = await fetch(url, { headers: requestHeaders() })
+	const res = await fetchWithRetry(
+		url,
+		{ headers: requestHeaders() },
+		{ timeoutMs: 60_000, retry: { maxRetries: THIRD_PARTY_MAX_RETRIES } },
+	)
 	if (!res.ok) throw new Error(`Failed to download ${basename(url)}: ${res.status}`)
 	return Buffer.from(await res.arrayBuffer())
 }

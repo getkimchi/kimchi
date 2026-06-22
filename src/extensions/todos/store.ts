@@ -14,8 +14,8 @@ export function getTodoState(): TodosSliceState {
 	return state
 }
 
-function resolveWriteTodoScope(params: WriteTodosParams): TodoScope {
-	if (params.scope !== undefined) return normalizeTodoScope(params.scope)
+export function resolveTodoScope(scopeInput?: unknown): TodoScope {
+	if (scopeInput !== undefined) return normalizeTodoScope(scopeInput)
 
 	for (const provider of activeScopeProviders) {
 		const scope = provider()
@@ -23,6 +23,10 @@ function resolveWriteTodoScope(params: WriteTodosParams): TodoScope {
 	}
 
 	return GLOBAL_TODO_SCOPE
+}
+
+function resolveWriteTodoScope(params: WriteTodosParams): TodoScope {
+	return resolveTodoScope(params.scope)
 }
 
 function notifyTodoStoreListeners(details: WriteTodosDetails): void {

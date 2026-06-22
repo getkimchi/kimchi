@@ -383,7 +383,7 @@ interface Segment {
 // `||`. Each segment carries its word tokens plus the operators (`>`, `>>`,
 // etc.) that appear within it. Backticks are pre-rejected because
 // shell-quote leaves them as opaque strings.
-function parseCommandSegments(command: string): Segment[] {
+export function parseCommandSegments(command: string): Segment[] {
 	// shell-quote does not recognize legacy backtick substitution; treat any
 	// backtick as a poison pill to avoid silently accepting embedded commands.
 	if (command.includes("`")) return [{ tokens: [], ops: [{ op: "(" }] }]

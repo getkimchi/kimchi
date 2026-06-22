@@ -1,13 +1,18 @@
-## Description
+## Linked issue
 
-<!-- What problem does this PR solve? What changes were made and why? -->
+Closes #
 
+<!-- Every PR must link to an existing issue. PRs without a linked issue will not be reviewed.
+     Use one of: Closes #N / Fixes #N / Resolves #N -->
 
-## Type of Change
+## What does this PR do?
 
-<!-- Select all that apply. -->
+<!-- Brief description of the change and why it's needed. -->
 
-- [ ] Bug fix
-- [ ] New feature
-- [ ] Breaking change
-- [ ] Documentation update
+## Checklist
+
+- [ ] I have read [CONTRIBUTING.md](../CONTRIBUTING.md) and agree to the CLA
+- [ ] This PR links to an open issue above
+- [ ] Tests pass locally (`pnpm run test`)
+- [ ] Lint passes (`pnpm run check`)
+- [ ] Documentation updated if behavior changed

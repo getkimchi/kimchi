@@ -16,6 +16,7 @@ import { dispatchSubcommand } from "./commands/dispatch.js"
 // IMPORTANT: must be first local import — patches InteractiveMode.prototype
 // before any module can construct an InteractiveMode instance.
 import "./login-command-patch.js"
+import "./paste-to-editor-patch.js"
 import {
 	DEFAULT_SKILL_PATHS,
 	getActiveVendorSkillPaths,
@@ -29,6 +30,8 @@ import { isBunBinary } from "./env.js"
 import activityExtension from "./extensions/activity.js"
 import agentsExtension from "./extensions/agents/index.js"
 import assistantPrefixExtension from "./extensions/assistant-prefix.js"
+import bashDefaultTimeoutExtension from "./extensions/bash-default-timeout.js"
+import bashToolGuardExtension from "./extensions/bash-tool-guard.js"
 import behavioursExtension from "./extensions/behaviours/index.js"
 import claudeCodeHooksAdapter from "./extensions/claude-code-hook-adapter/index.js"
 import claudeCodeSkillsExtension from "./extensions/claude-code-skills/index.js"
@@ -49,6 +52,7 @@ import mcpAdapterExtension from "./extensions/mcp-adapter/index.js"
 import modelGuardExtension from "./extensions/model-guard.js"
 import modelSwitchExtension from "./extensions/model-switch.js"
 import { createSessionModeOnboardingForStartup } from "./extensions/onboarding/session-mode-startup.js"
+import { applyRoleAugmentation } from "./extensions/orchestration/model-roles.js"
 import permissionsExtension from "./extensions/permissions/index.js"
 import { writeKimchiKeybindingDefaults } from "./extensions/permissions/keybindings.js"
 import { installPiNativeCompatibilityShim } from "./extensions/pi-package-lookup/native-compat.js"
@@ -88,6 +92,13 @@ import {
 	readExperimentalModels,
 	updateModelsConfig,
 } from "./models.js"
+import {
+	augmentModelRolesWithOllama,
+	injectOllamaProvider,
+	readOllamaModelMetadata,
+	readOllamaModelsFromConfig,
+	resolveOllamaHost,
+} from "./ollama.js"
 import resourcesExtension from "./resources/extension.js"
 import { type ManagedExtensionFactory, enabledExtensionFactories } from "./resources/filter.js"
 import resourceToolBlockerExtension from "./resources/tool-blocker.js"
@@ -237,6 +248,10 @@ try {
 				injectExperimentalProvider(modelsJsonPath, currentApiKey ?? "")
 				models = [...models, ...readExperimentalModels(modelsJsonPath)]
 			}
+			// Auto-discover a local Ollama server and merge its models into the
+			// registry. Probe is silent on failure — startup is never blocked.
+			await injectOllamaProvider(modelsJsonPath, resolveOllamaHost())
+			models = [...models, ...readOllamaModelMetadata(modelsJsonPath)]
 		} catch (err) {
 			const is401 = err instanceof Error && err.message.includes("401")
 			if (is401 && process.stdin.isTTY) {
@@ -257,6 +272,8 @@ try {
 					injectExperimentalProvider(modelsJsonPath, currentApiKey)
 					models = [...models, ...readExperimentalModels(modelsJsonPath)]
 				}
+				await injectOllamaProvider(modelsJsonPath, resolveOllamaHost())
+				models = [...models, ...readOllamaModelMetadata(modelsJsonPath)]
 			} else if (isTransientModelsError(err)) {
 				// Rate limit / gateway error with no cached models to fall back on.
 				// Don't crash startup over a transient condition — continue with an
@@ -278,6 +295,14 @@ try {
 		// prompt-enrichment reads this to build ModelRegistry with live model IDs.
 		setAvailableModels(models)
 
+		// Wire Ollama-discovered models into the explorer / reviewer / builder
+		// role pools. Runs after setAvailableModels so the resolved roles
+		// singleton reflects the same model list the picker exposes.
+		const ollamaModelsForRoles = readOllamaModelsFromConfig(modelsJsonPath)
+		if (ollamaModelsForRoles.length > 0) {
+			applyRoleAugmentation((roles) => augmentModelRolesWithOllama(roles, ollamaModelsForRoles))
+		}
+
 		// Write default settings on first run only — respect user's choices afterward
 		const settingsPath = resolve(agentDir, "settings.json")
 		try {
@@ -288,6 +313,18 @@ try {
 			} else {
 				console.error(`Warning: could not read ${settingsPath}: ${(err as Error).message}`)
 			}
+		}
+
+		// Sync retry config to SDK settings so both systems use the same value
+		try {
+			const existing = JSON.parse(readFileSync(settingsPath, "utf-8"))
+			const sdkRetry = existing.retry
+			if (!sdkRetry || sdkRetry.maxRetries !== config.retry.maxRetries) {
+				existing.retry = { ...sdkRetry, maxRetries: config.retry.maxRetries }
+				writeFileSync(settingsPath, `${JSON.stringify(existing, null, 2)}\n`)
+			}
+		} catch {
+			/* retry sync is best-effort */
 		}
 
 		// Bundled themes are write-through cache — owned by the package, not the user.
@@ -406,6 +443,7 @@ try {
 		const terminalUiExtensionFactories = isTerminalUiMode(rawArgs, terminalIo)
 			? [terminalColorsExtension, kimchiMinimalTintsExtension, uiExtension]
 			: []
+		const effectiveSkillPaths = [...new Set([...skillPaths, ...getActiveVendorSkillPaths()])]
 		const extensionFactories = [
 			startupUpdateExtension,
 			superpowersExtension,
@@ -419,6 +457,11 @@ try {
 			explorationGuardExtension,
 			reviewWriteGuardExtension,
 			lspExtension,
+			// Always registered — the tool_call handler checks isResourceEnabled
+			// dynamically on every bash call, so enable/disable from /resources
+			// takes effect immediately without a process restart.
+			bashDefaultTimeoutExtension,
+			bashToolGuardExtension,
 			...enabledExtensionFactories([
 				{ id: "plugins.mcp-apps", factory: mcpAdapterExtension },
 			] satisfies ManagedExtensionFactory[]),
@@ -429,9 +472,9 @@ try {
 			] satisfies ManagedExtensionFactory[]),
 			questionnaireExtension,
 			...enabledExtensionFactories([
-				{ id: "extensions.claude-code-skills", factory: claudeCodeSkillsExtension },
+				{ id: "extensions.claude-code-skills", factory: (pi) => claudeCodeSkillsExtension(pi, effectiveSkillPaths) },
 			] satisfies ManagedExtensionFactory[]),
-			promptEnrichmentExtension([...new Set([...skillPaths, ...getActiveVendorSkillPaths()])]),
+			promptEnrichmentExtension(effectiveSkillPaths),
 			rtkRewriteExtension,
 			...enabledExtensionFactories([
 				{ id: "extensions.claude-code-hook-adapter", factory: claudeCodeHooksAdapter },

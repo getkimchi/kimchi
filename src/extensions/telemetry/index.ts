@@ -2,11 +2,18 @@ import type { ExtensionAPI, TurnStartEvent } from "@earendil-works/pi-coding-age
 import type { TelemetryConfig } from "../../config.js"
 import { onBeforeProviderHeaders } from "../../types/before-provider-headers.js"
 import {
+	BASH_TOOL_GUARD_EVENTS,
+	type BashToolGuardAllowedByUserRequestPayload,
+	type BashToolGuardBlockPayload,
+	type BashToolGuardWarnPayload,
+} from "../bash-tool-guard-events.js"
+import {
 	FERMENT_EVENTS,
 	type FermentAbandonedPayload,
 	type FermentCompletedPayload,
 	type FermentPhaseCompletedPayload,
 	type FermentPhaseStartedPayload,
+	type FermentStalledPayload,
 	type FermentStartedPayload,
 	type FermentSteeringPayload,
 	type FermentStepCompletedPayload,
@@ -79,6 +86,11 @@ export function _resetFermentTrackingState(): void {
 	phaseStartTimes.clear()
 	stepStartTimes.clear()
 	fermentSteeringCounts.clear()
+}
+
+/** @internal — exposed for testing only */
+export function _getBashGuardCounts(): { warn: number; block: number; allowedByUserRequest: number } {
+	return { ...bashGuardCounts }
 }
 
 // ---------------------------------------------------------------------------
@@ -252,6 +264,8 @@ function onFermentCompleted(raw: unknown): void {
 
 function onFermentAbandoned(raw: unknown): void {
 	const payload = raw as FermentAbandonedPayload
+	// Read steering count BEFORE cleanup — cleanupFermentState deletes it.
+	const steeringCount = fermentSteeringCounts.get(payload.fermentId) ?? 0
 	// Clean up unconditionally — steering counts accumulate regardless of enabled state.
 	cleanupFermentState(payload.fermentId)
 	if (!isEnabled()) return
@@ -260,9 +274,36 @@ function onFermentAbandoned(raw: unknown): void {
 	const attrs: Record<string, string | number | boolean> = {
 		ferment_name: payload.name,
 		model: ctx.currentModel,
+		lifecycle_stage: payload.lifecycleStage,
+		scoping_complete: payload.scopingComplete,
+		completed_phases: payload.completedPhases,
+		total_phases: payload.totalPhases,
+		phase_completion_ratio: payload.phaseCompletionRatio,
+		step_failure_count: payload.stepFailureCount,
+		duration_ms: payload.durationMs,
+		steering_count: steeringCount,
 	}
 	if (payload.reason) attrs.reason = payload.reason
+	if (payload.lastActivePhaseIndex !== undefined) attrs.last_active_phase_index = payload.lastActivePhaseIndex
 	ctx.emitWithIds("ferment.abandoned", { ferment_id: payload.fermentId }, attrs)
+}
+
+function onFermentStalled(raw: unknown): void {
+	const payload = raw as FermentStalledPayload
+	// No per-ferment Maps to clean up for stalled — ferment remains accessible.
+	if (!isEnabled()) return
+	const ctx = _ctx
+	if (!ctx) return
+	const attrs: Record<string, string | number | boolean> = {
+		ferment_name: payload.name,
+		model: ctx.currentModel,
+		lifecycle_stage: payload.lifecycleStage,
+		idle_duration_ms: payload.idleDurationMs,
+		completed_phases: payload.completedPhases,
+		total_phases: payload.totalPhases,
+		phase_completion_ratio: payload.phaseCompletionRatio,
+	}
+	ctx.emitWithIds("ferment.stalled", { ferment_id: payload.fermentId }, attrs)
 }
 
 function onPhaseStarted(raw: unknown): void {
@@ -372,6 +413,68 @@ function onFermentSteering(raw: unknown): void {
 }
 
 // ---------------------------------------------------------------------------
+// Bash-tool-guard domain event handlers
+// ---------------------------------------------------------------------------
+
+/** Module-level accumulators for bash-tool-guard counters. Per-session. */
+const bashGuardCounts = {
+	warn: 0,
+	block: 0,
+	allowedByUserRequest: 0,
+}
+
+function resetBashGuardCounts(): void {
+	bashGuardCounts.warn = 0
+	bashGuardCounts.block = 0
+	bashGuardCounts.allowedByUserRequest = 0
+}
+
+function onBashGuardWarn(raw: unknown): void {
+	bashGuardCounts.warn++
+	if (!isEnabled()) return
+	const ctx = _ctx
+	if (!ctx) return
+	const payload = raw as BashToolGuardWarnPayload
+	// Only structured fields land in OTLP. Raw command text is
+	// intentionally NOT emitted to avoid leaking user data or secrets
+	// that may appear inside heredocs, echo payloads, or sed/awk
+	// replacement strings. Aggregation is done by category + tool.
+	ctx.emit("bash_tool_guard.warn", {
+		model: ctx.currentModel,
+		category: payload.category,
+		tool: payload.tool,
+		count: payload.count,
+	})
+}
+
+function onBashGuardBlock(raw: unknown): void {
+	bashGuardCounts.block++
+	if (!isEnabled()) return
+	const ctx = _ctx
+	if (!ctx) return
+	const payload = raw as BashToolGuardBlockPayload
+	ctx.emit("bash_tool_guard.block", {
+		model: ctx.currentModel,
+		category: payload.category,
+		tool: payload.tool,
+		count: payload.count,
+	})
+}
+
+function onBashGuardAllowedByUserRequest(raw: unknown): void {
+	bashGuardCounts.allowedByUserRequest++
+	if (!isEnabled()) return
+	const ctx = _ctx
+	if (!ctx) return
+	const payload = raw as BashToolGuardAllowedByUserRequestPayload
+	ctx.emit("bash_tool_guard.allowed_by_user_request", {
+		model: ctx.currentModel,
+		category: payload.category,
+		tool: payload.tool,
+	})
+}
+
+// ---------------------------------------------------------------------------
 // Extension factory
 // ---------------------------------------------------------------------------
 
@@ -389,6 +492,7 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		pi.events.on(FERMENT_EVENTS.STARTED, onFermentStarted)
 		pi.events.on(FERMENT_EVENTS.COMPLETED, onFermentCompleted)
 		pi.events.on(FERMENT_EVENTS.ABANDONED, onFermentAbandoned)
+		pi.events.on(FERMENT_EVENTS.STALLED, onFermentStalled)
 		pi.events.on(FERMENT_EVENTS.PHASE_STARTED, onPhaseStarted)
 		pi.events.on(FERMENT_EVENTS.PHASE_COMPLETED, onPhaseCompleted)
 		pi.events.on(FERMENT_EVENTS.STEP_STARTED, onStepStarted)
@@ -396,7 +500,14 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		pi.events.on(FERMENT_EVENTS.STEP_FAILED, onStepFailed)
 		pi.events.on(FERMENT_EVENTS.STEERING, onFermentSteering)
 
+		// Subscribe to bash-tool-guard domain events. The guard publishes
+		// facts; telemetry translates them into OTLP records for analytics.
+		pi.events.on(BASH_TOOL_GUARD_EVENTS.WARN, onBashGuardWarn)
+		pi.events.on(BASH_TOOL_GUARD_EVENTS.BLOCK, onBashGuardBlock)
+		pi.events.on(BASH_TOOL_GUARD_EVENTS.ALLOWED_BY_USER_REQUEST, onBashGuardAllowedByUserRequest)
+
 		pi.on("session_start", async (_event, extCtx) => {
+			resetBashGuardCounts()
 			const modelId = (extCtx as { model?: { id?: string } } | undefined)?.model?.id
 			handleSessionInitialized(ctx, modelId)
 		})

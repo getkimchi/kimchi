@@ -5,6 +5,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent"
 import { formatCount } from "../format.js"
 import type { GenerateAnalyticsResponse, GetProductivityMetricsResponse } from "./types.js"
+import { aggregateTokens } from "./visual.js"
 
 function formatCurrency(amount: string | number): string {
 	const num = typeof amount === "string" ? Number.parseFloat(amount) : amount
@@ -38,20 +39,9 @@ export function formatAnalyticsSummary(data: GenerateAnalyticsResponse, theme: T
 	lines.push(theme.bold(theme.fg("accent", "📊 Analytics (Last 30 Days)")))
 
 	// Token usage section
-	let totalInput = 0
-	let totalOutput = 0
-
-	if (data.tokens?.items) {
-		for (const item of data.tokens.items) {
-			if (item.models) {
-				for (const model of item.models) {
-					totalInput += model.inputTokens || 0
-					totalOutput += model.outputTokens || 0
-				}
-			}
-		}
-	}
-
+	const { totals } = aggregateTokens(data)
+	const totalInput = totals.totalInput
+	const totalOutput = totals.totalOutput
 	const total = totalInput + totalOutput
 
 	// Cost section

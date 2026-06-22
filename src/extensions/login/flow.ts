@@ -443,7 +443,7 @@ export function getSubscriptionProviderOptions(
 		.sort((a, b) => a.name.localeCompare(b.name))
 }
 
-class SwappableAuthComponent extends Container {
+export class SwappableAuthComponent extends Container {
 	private current: unknown
 	private _focused = false
 
@@ -469,8 +469,8 @@ class SwappableAuthComponent extends Container {
 	}
 
 	handleInput(data: string): void {
-		const inputHandler = (this.current as { handleInput?: (data: string) => void } | undefined)?.handleInput
-		inputHandler?.(data)
+		const child = this.current as { handleInput?: (data: string) => void } | undefined
+		child?.handleInput?.(data)
 	}
 
 	private setChildFocused(focused: boolean): void {

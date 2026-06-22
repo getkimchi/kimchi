@@ -1,12 +1,13 @@
 /**
  * Role-based model configuration for multi-model orchestration.
  *
- * Six roles:
+ * Seven roles:
  *   - orchestrator: runs the main loop, delegates work (single model)
  *   - planner: designs the approach, writes specs
  *   - builder: code implementation
  *   - reviewer: code review
  *   - explorer: codebase exploration, reading files, tracing architecture
+ *   - researcher: research beyond codebase — web search, documentation lookup
  *   - judge: ferment verification and final grading calls
  *
  * Delegable roles (planner, builder, reviewer, explorer) accept either a
@@ -14,8 +15,10 @@
  * assigned, the orchestrator selects the best fit based on tier and task
  * complexity.
  *
- * Defaults are derived from MODEL_CAPABILITIES — each model's `roles` field
- * determines which role pools it belongs to.
+ * Model metadata (tier, description, vision) is stored separately in the
+ * "modelMetadata" key of settings.json — see model-metadata.ts.
+ *
+ * Defaults are hardcoded in DEFAULT_MODEL_ROLES.
  *
  * Users can override in ~/.config/kimchi/harness/settings.json under the
  * "modelRoles" key. Supports any provider/model-id string.
@@ -27,7 +30,7 @@
  *     "orchestrator": "anthropic/claude-sonnet-4-5",
  *     "builder": ["anthropic/claude-sonnet-4-5", "openai/gpt-4o"],
  *     "reviewer": "kimchi-dev/minimax-m2.7",
- *     "explorer": "kimchi-dev/nemotron-3-super-fp4",
+ *     "explorer": "kimchi-dev/nemotron-3-ultra-fp4",
  *     "judge": "kimchi-dev/kimi-k2.6"
  *   }
  * }
@@ -38,10 +41,18 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 
-import { MODEL_CAPABILITIES } from "./model-registry/builtin-models.js"
-import { KIMCHI_DEV_PROVIDER } from "./model-registry/model-registry.js"
+import {
+	type ModelCustomMetadata,
+	getModelMetadata,
+	resetModelMetadataCache as resetMetadataCache,
+} from "./model-metadata.js"
+export { modelIdFromRef, splitModelRef } from "./model-ref-utils.js"
+import { modelIdFromRef } from "./model-ref-utils.js"
 
-/** Model assignment for a role: single model or ordered list of candidates. */
+/** Task-type affinity tag used to match an agent persona to a model role. */
+export type ModelRole = "review" | "build" | "plan" | "explore" | "research"
+
+/** Model assignment for a role: single model ref or ordered list of candidates. */
 export type RoleModelAssignment = string | string[]
 
 export interface ModelRoles {
@@ -55,6 +66,8 @@ export interface ModelRoles {
 	reviewer: RoleModelAssignment
 	/** Codebase exploration model(s). */
 	explorer: RoleModelAssignment
+	/** Research model(s): research beyond codebase — web search, documentation lookup, external sources. */
+	researcher: RoleModelAssignment
 	/** Ferment judge model(s): verification triage and final grading calls. */
 	judge: RoleModelAssignment
 }
@@ -64,60 +77,23 @@ const DELEGABLE_ROLE_KEYS: readonly (keyof Omit<ModelRoles, "orchestrator">)[] =
 	"builder",
 	"reviewer",
 	"explorer",
+	"researcher",
 	"judge",
 ]
 const ROLE_KEYS: readonly (keyof ModelRoles)[] = ["orchestrator", ...DELEGABLE_ROLE_KEYS]
 
 const HARNESS_SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "settings.json")
 
-/**
- * Build default model roles by scanning MODEL_CAPABILITIES.
- *
- * Each non-ignored model is placed into role pools matching its `roles` field.
- * The orchestrator is the heaviest model with the "plan" role.
- */
-export function buildDefaultModelRoles(): ModelRoles {
-	const planners: string[] = []
-	const builders: string[] = []
-	const reviewers: string[] = []
-	const explorers: string[] = []
-
-	let orchestrator: string | undefined
-
-	for (const [id, entry] of MODEL_CAPABILITIES.entries()) {
-		if (entry === "ignored") continue
-		const ref = `${KIMCHI_DEV_PROVIDER}/${id}`
-
-		if (entry.roles.includes("plan")) {
-			planners.push(ref)
-			if (entry.tier === "heavy" && !orchestrator) {
-				orchestrator = ref
-			}
-		}
-		if (entry.roles.includes("build")) builders.push(ref)
-		if (entry.roles.includes("review")) reviewers.push(ref)
-		if (entry.roles.includes("explore") || entry.roles.includes("research")) {
-			if (!explorers.includes(ref)) explorers.push(ref)
-		}
-	}
-
-	const orch = orchestrator ?? `${KIMCHI_DEV_PROVIDER}/kimi-k2.6`
-
-	const toAssignment = (arr: string[], fallback: string): string | string[] =>
-		arr.length === 1 ? arr[0] : arr.length > 0 ? arr : fallback
-
-	return {
-		orchestrator: orch,
-		planner: toAssignment(planners, orch),
-		builder: toAssignment(builders, orch),
-		reviewer: toAssignment(reviewers, orch),
-		explorer: toAssignment(explorers, orch),
-		judge: orch,
-	}
+/** Hardcoded default model-to-role assignment. Users override via /multi-model. */
+export const DEFAULT_MODEL_ROLES: Readonly<ModelRoles> = {
+	orchestrator: "kimchi-dev/kimi-k2.6",
+	planner: "kimchi-dev/kimi-k2.6",
+	builder: ["kimchi-dev/kimi-k2.6", "kimchi-dev/minimax-m2.7"],
+	reviewer: ["kimchi-dev/kimi-k2.6", "kimchi-dev/minimax-m2.7"],
+	explorer: "kimchi-dev/nemotron-3-ultra-fp4",
+	researcher: "kimchi-dev/kimi-k2.6",
+	judge: "kimchi-dev/kimi-k2.6",
 }
-
-/** Default roles derived from MODEL_CAPABILITIES. */
-export const DEFAULT_MODEL_ROLES: Readonly<ModelRoles> = buildDefaultModelRoles()
 
 export interface ModelRolesWarning {
 	role: keyof ModelRoles
@@ -127,21 +103,18 @@ export interface ModelRolesWarning {
 
 /** Normalize a role value to an array of model refs. */
 export function normalizeRoleModels(value: RoleModelAssignment): string[] {
-	return Array.isArray(value) ? value : [value]
+	if (Array.isArray(value)) return value
+	return [value]
 }
 
-function isValidRoleValue(value: unknown): value is string | string[] {
+function isValidRoleValue(value: unknown): value is RoleModelAssignment {
 	if (typeof value === "string" && value.trim().length > 0) return true
-	if (
-		Array.isArray(value) &&
-		value.length > 0 &&
-		value.every((v) => typeof v === "string" && (v as string).trim().length > 0)
-	)
+	if (Array.isArray(value) && value.length > 0 && value.every((v) => typeof v === "string" && v.trim().length > 0))
 		return true
 	return false
 }
 
-function trimRoleValue(value: string | string[]): string | string[] {
+function trimRoleValue(value: string | string[]): RoleModelAssignment {
 	if (typeof value === "string") return value.trim()
 	return value.map((v) => v.trim())
 }
@@ -210,9 +183,7 @@ export function resolveModelRoles(settingsPath?: string): { roles: ModelRoles; w
 
 function isEqualRoleValue(a: RoleModelAssignment, b: RoleModelAssignment): boolean {
 	if (typeof a === "string" && typeof b === "string") return a === b
-	const arrA = normalizeRoleModels(a)
-	const arrB = normalizeRoleModels(b)
-	return arrA.length === arrB.length && arrA.every((v, i) => v === arrB[i])
+	return JSON.stringify(a) === JSON.stringify(b)
 }
 
 /**
@@ -228,7 +199,7 @@ export function saveModelRoles(roles: ModelRoles, settingsPath?: string): void {
 		// absent or unreadable — start fresh
 	}
 
-	const rolesObj: Record<string, string | string[]> = {}
+	const rolesObj: Record<string, RoleModelAssignment> = {}
 	for (const key of ROLE_KEYS) {
 		if (!isEqualRoleValue(roles[key], DEFAULT_MODEL_ROLES[key])) {
 			rolesObj[key] = roles[key]
@@ -247,33 +218,19 @@ export function saveModelRoles(roles: ModelRoles, settingsPath?: string): void {
 	writeFileSync(path, `${JSON.stringify(existing, null, 2)}\n`)
 
 	resetModelRolesCache()
-}
-
-/**
- * Extract provider and model ID from a "provider/model-id" string.
- * Returns undefined if the string doesn't contain a slash.
- */
-export function splitModelRef(ref: string): { provider: string; modelId: string } | undefined {
-	const slashIdx = ref.indexOf("/")
-	if (slashIdx <= 0) return undefined
-	return {
-		provider: ref.slice(0, slashIdx),
-		modelId: ref.slice(slashIdx + 1),
-	}
-}
-
-/**
- * Extract just the model ID from a "provider/model-id" string.
- * Returns the full string if no slash is present.
- */
-export function modelIdFromRef(ref: string): string {
-	const slashIdx = ref.indexOf("/")
-	return slashIdx >= 0 ? ref.slice(slashIdx + 1) : ref
+	resetMetadataCache()
 }
 
 // ---------------------------------------------------------------------------
 // Validation against available models
 // ---------------------------------------------------------------------------
+
+export function extractCustomConfigs(
+	_roles: ModelRoles,
+	overrides?: ReadonlyMap<string, ModelCustomMetadata>,
+): ReadonlyMap<string, ModelCustomMetadata> {
+	return overrides ?? getModelMetadata()
+}
 
 export interface ModelRoleValidationResult {
 	/** Roles whose configured model is not available in the API. */
@@ -318,4 +275,28 @@ export function getModelRolesWarnings(): readonly ModelRolesWarning[] {
 
 export function resetModelRolesCache(): void {
 	_resolved = undefined
+}
+
+/** Apply a post-resolution transform to the model roles singleton.
+ *  If the cache is already populated, the transform runs against the cached
+ *  roles; otherwise it runs against a fresh `resolveModelRoles()` result and
+ *  the augmented value becomes the cached value. This is the hook extension
+ *  authors (e.g. Ollama auto-discovery) should use to add runtime-discovered
+ *  models to role pools without touching settings.json on disk.
+ *
+ *  The transform must be pure and idempotent — it may be called multiple
+ *  times across the lifetime of the process (e.g. after a cache reset). */
+export function applyRoleAugmentation(transform: (roles: ModelRoles) => ModelRoles): void {
+	const base = _resolved ?? resolveModelRoles()
+	const augmented = transform(base.roles)
+	if (!isEqualModelRoles(augmented, base.roles)) {
+		_resolved = { roles: augmented, warnings: base.warnings }
+	}
+}
+
+function isEqualModelRoles(a: ModelRoles, b: ModelRoles): boolean {
+	for (const key of ROLE_KEYS) {
+		if (!isEqualRoleValue(a[key], b[key])) return false
+	}
+	return true
 }

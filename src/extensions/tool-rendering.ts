@@ -53,7 +53,7 @@ const TOOL_RENDER_CACHE = Symbol.for("pi-claude-style-tools:tool-render-cache")
 const TOOL_CACHE_PATCH_FLAG = Symbol.for("pi-claude-style-tools:patched-tool-cache-invalidation")
 const TOOL_IMAGE_EXPAND_PATCH_FLAG = Symbol.for("pi-claude-style-tools:patched-read-image-expansion")
 const USER_MESSAGE_PATCH_FLAG = Symbol.for("pi-claude-style-tools:patched-user-message-render")
-const HIDDEN_TOOL_BLOCK_NAMES = new Set(["write_todos"])
+const HIDDEN_TOOL_BLOCK_NAMES = new Set(["write_todos", "update_todos", "add_todo", "mark_todo", "clear_todos"])
 const WRAP_MARK = "\uE000"
 const KITTY_IMAGE_PREFIX = "\x1b_G"
 const ITERM2_IMAGE_PREFIX = "\x1b]1337;File="
@@ -242,8 +242,8 @@ function patchGlobalToolBorders(): void {
 
 	const originalRender = proto.render
 	proto.render = function patchedContainerRender(width: number): string[] {
+		if (isToolExecutionLike(this) && HIDDEN_TOOL_BLOCK_NAMES.has(this.toolName.toLowerCase())) return []
 		if (isToolExecutionLike(this)) {
-			if (HIDDEN_TOOL_BLOCK_NAMES.has(this.toolName.toLowerCase())) return []
 			const cached = (this as any)[TOOL_RENDER_CACHE]
 			if (cached?.width === width && cached?.mode === toolBackgroundMode) {
 				return cached.lines
@@ -2546,7 +2546,7 @@ function getMode<T extends string>(value: unknown, allowed: readonly T[], fallba
 	return typeof value === "string" && (allowed as readonly string[]).includes(value) ? (value as T) : fallback
 }
 
-const CORE_TOOL_OVERRIDES = new Set(["read", "bash", "grep", "find", "ls", "write", "edit"])
+const CORE_TOOL_OVERRIDES = new Set(["read", "bash", "grep", "find", "ls", "write", "edit", "set_phase"])
 
 const OPENAI_STYLE_TOOL_NAMES = new Set([
 	"apply_patch",
@@ -3373,11 +3373,15 @@ export function summarizeOpenAiToolCall(name: string, args: any, theme: Theme, s
 		case "alpha_read_code":
 			return getStringArg(args, "githubUrl", "github_url") || theme.fg("muted", "repository")
 		case "Skill":
-			return getStringArg(args, "name") || theme.fg("muted", "run skill")
+			// SkillToolSchema accepts both 'skill' (primary) and 'name' (alias for Claude Code compat).
+			// The adapter passes 'skill'; direct tool calls may pass either. Check both before falling back.
+			return getStringArg(args, "skill") || getStringArg(args, "name") || theme.fg("muted", "run skill")
 		case "EnterPlanMode":
 			return theme.fg("muted", "enable read-only planning")
 		case "ExitPlanMode":
 			return theme.fg("muted", "present plan")
+		case "set_phase":
+			return getStringArg(args, "phase") || theme.fg("muted", "set phase")
 		case "Agent":
 			return summarizeText(getStringArg(args, "description", "prompt") || "launch agent", 72)
 		case "get_subagent_result":
@@ -3943,8 +3947,16 @@ export default function (pi: ExtensionAPI) {
 			return bashTool.execute(toolCallId, params, signal, onUpdate)
 		},
 		renderCall(args, theme, ctx) {
-			const summary = summarizeText(getBashCommandForDisplay(args.command) ?? args.command, 72)
+			const command = getBashCommandForDisplay(args.command) ?? args.command
 			const timer = formatToolTimer(getToolElapsedMs(ctx))
+			if (ctx.expanded && command) {
+				// Expanded: show the tool name + timer on line 1, then the full
+				// command (with real newlines) as a continued branch block below.
+				const hdr = toolHeader("Bash", "", theme, toolStatusDot(ctx, theme), timer)
+				const cmdBlock = withBranch(command.split("\n").map((l) => theme.fg("accent", l)).join("\n"), theme, false, true)
+				return makeText(ctx.lastComponent, `${hdr}\n${cmdBlock}`)
+			}
+			const summary = summarizeText(command, 72)
 			return makeText(ctx.lastComponent, toolHeader("Bash", summary, theme, toolStatusDot(ctx, theme), timer))
 		},
 		renderResult(result, { expanded, isPartial }, theme, ctx) {
@@ -3974,7 +3986,7 @@ export default function (pi: ExtensionAPI) {
 			const collapsed = bashCollapsedLimit()
 			text += `\n${buildPreviewText(
 				nonEmpty.map((line) => theme.fg("dim", line)),
-				false,
+				expanded,
 				theme,
 				collapsed,
 			)}`

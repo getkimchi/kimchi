@@ -66,7 +66,7 @@ Fired from `session-context.ts` via `ctx.emit()`. Batched (max 20) and flushed e
 | `file_written` | `write` tool succeeds | `model`, `language`, `file_hash`, `lines_added`, `duration_ms` |
 | `file_edited` | `edit` / `multiedit` / `patch` succeed | `model`, `language`, `file_hash`, `lines_added`, `lines_deleted`, `duration_ms` |
 | `command_executed` | `bash` tool runs | `model`, `command_type`, `exit_code`, `duration_ms` |
-| `error` | Agent or tool error | `model`, `error_type` (`agent_error` / `tool_failure`), `error_message` *(truncated to 300 chars)* |
+| `error` | Agent, tool, or transport error | `model`, `error_type` (`agent_error` / `tool_failure` / `transport_error`), `error_message` *(truncated to 300 chars)* |
 | `subagent.spawned` | Sub-agent created | `model`, `agent_type`, `reason` |
 
 ## Cumulative Metrics (OTLP Sum)

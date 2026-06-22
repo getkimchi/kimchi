@@ -6,6 +6,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { loadConfig } from "../config.js"
 import { deterministicFallback, extractFirstUserMessage, suggestSessionName } from "./session-name.js"
 
+vi.mock("../utils/http.js", () => ({
+	fetchWithRetry: (url: string, init?: RequestInit) => globalThis.fetch(url, init),
+}))
+
 vi.mock("../config.js")
 vi.mock("node:path", async () => {
 	const actual = await vi.importActual<typeof import("node:path")>("node:path")

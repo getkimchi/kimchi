@@ -223,7 +223,7 @@ func ResolveEndpoint() string {
 // VerifyAPIKey validates the given API key against the endpoint and returns
 // the organisation ID associated with it.
 func VerifyAPIKey(ctx context.Context, apiKey, endpoint string) (string, error) {
-	u := endpoint + "/ai-optimizer/v1beta/api-keys:verify"
+	u := endpoint + "/ai-optimizer/v1beta/workspace-tokens:verifyKey"
 	reqCtx, cancel := context.WithTimeout(ctx, httpTimeout)
 	defer cancel()
 	resp, err := doRequest(reqCtx, http.MethodPost, u, apiKey, nil)
@@ -236,6 +236,7 @@ func VerifyAPIKey(ctx context.Context, apiKey, endpoint string) (string, error) 
 	}
 	var data struct {
 		OrganizationID string `json:"organizationId"`
+		UserID string `json:"userID"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		return "", &RemoteNetworkError{Msg: fmt.Sprintf("Unexpected non-JSON response from %s", endpoint)}

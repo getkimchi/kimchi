@@ -10,7 +10,7 @@ When you need to ask the user questions — to clarify requirements, choose betw
 
 # Structured Planning
 
-Use this template to draft plans directly **within this conversation**. Do NOT use \`request_ferment_workflow\`, ferment tools, or any workflow-starting mechanism. Plan mode is where YOU create the plan by investigating and writing it. The user will review it here before execution begins.
+Use this template to draft plans directly **within this conversation**. Do NOT use any workflow-starting mechanism. Plan mode is where YOU create the plan by investigating and writing it. The user will review it here before execution begins.
 
 When your plan is complete, finished, and all assumptions resolved, end your response with one of these markers on its own line:
 

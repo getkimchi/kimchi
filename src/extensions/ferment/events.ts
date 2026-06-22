@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { clearFermentCache } from "../../ferment/store.js"
 import { deriveDraftFermentTitle } from "../../ferment/title.js"
+import type { Ferment } from "../../ferment/types.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { deferExtensionAction } from "../deferred-action.js"
 import { maybeTriggerFermentCompaction } from "./auto-compaction.js"
@@ -8,11 +9,14 @@ import { formatDuration } from "./colors.js"
 import { extractContextualOptions, extractTrailingQuestion } from "./contextual-options.js"
 import { decideContinuation } from "./continuation.js"
 import { emitFermentCreated } from "./domain-events-emitter.js"
+import { FERMENT_EVENTS, type FermentStalledPayload } from "./domain-events.js"
 import { autoInitFromEnv, ensureGitRepo } from "./git-init.js"
 import {
 	appendRefEntry,
+	maybeInjectFermentStopNudge,
 	maybeInjectReactiveContinuationNudge,
 	maybeInjectScopingProgressNudge,
+	onFermentToolCallSeen,
 	resetReactiveContinuationNudgeCount,
 } from "./nudge.js"
 import { buildOneshotNudge } from "./oneshot.js"
@@ -138,6 +142,28 @@ async function maybeRunManualBoundaryDropdown(
 	return true
 }
 
+/**
+ * Build the `FermentStalledPayload` for telemetry emission. Shared by
+ * the crash-recovery and user-decline stall paths so the two sites
+ * stay in sync as the payload evolves.
+ */
+function buildStalledPayload(ferment: Ferment, now: number): FermentStalledPayload {
+	const completedPhases = ferment.phases.filter((p) => p.status === "completed").length
+	const totalPhases = ferment.phases.length
+	const phaseCompletionRatio = totalPhases > 0 ? completedPhases / totalPhases : 0
+	const lastActiveMs = ferment.lastActiveAt ? Date.parse(ferment.lastActiveAt) : Number.NaN
+	const idleDurationMs = Number.isFinite(lastActiveMs) ? now - lastActiveMs : 0
+	return {
+		fermentId: ferment.id,
+		name: ferment.name,
+		lifecycleStage: ferment.status,
+		idleDurationMs,
+		completedPhases,
+		totalPhases,
+		phaseCompletionRatio,
+	}
+}
+
 async function maybeRunUserInputDropdown(
 	pi: ExtensionAPI,
 	ctx: TurnEndContext | undefined,
@@ -240,6 +266,13 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 					if (!outcome.ok) {
 						// eslint-disable-next-line no-console
 						console.error("RECOVER FAILED for", f.id, outcome.error)
+					} else {
+						// Emit stalled telemetry for crash-recovered ferments.
+						// Load the full Ferment to access phases and lastActiveAt.
+						const full = runtime.getStorage().get(f.id)
+						if (full) {
+							pi.events.emit(FERMENT_EVENTS.STALLED, buildStalledPayload(full, runtime.now().getTime()))
+						}
 					}
 				} catch (err) {
 					// eslint-disable-next-line no-console
@@ -298,6 +331,8 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 				if (choice === "Resume") {
 					deferExtensionAction(() => resumeFerment(pi, envId, ctx, runtime))
 				} else {
+					// User explicitly declined to resume — emit stalled telemetry.
+					pi.events.emit(FERMENT_EVENTS.STALLED, buildStalledPayload(ferment, runtime.now().getTime()))
 					deferExtensionAction(() => {
 						loadFermentSilently(pi, envId, runtime)
 					})
@@ -385,13 +420,22 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		// only run-static profiles here; lifecycle tools remain visible for the
 		// whole active planner run and invalid transitions are rejected by tools.
 		if (isAgentWorker()) {
-			applyFermentToolProfile(pi, "worker")
+			// Subagent workers get their toolset from the agents manager at session
+			// init (agent-runner.ts setActiveToolsByName). Do NOT call setActiveTools
+			// here — the worker profile used to call setActiveTools([]) which would
+			// strip all tools from the subagent on the first turn.
 			return {}
 		}
-		if (pi.getFlag("ferment-oneshot") === true) {
-			applyFermentToolProfile(pi, "oneshot-planner")
+		// Only apply a ferment profile when a ferment is active. In normal chat
+		// mode (no active ferment) leave the toolset untouched so the user gets
+		// the full tool set. The idle profile (discovery-only) is applied by
+		// command handlers when entering/exiting ferment mode, not here.
+		if (!runtime.getActive()) {
 			return {}
 		}
+		// One-shot and interactive flows share the unified profile model: derive
+		// the profile from the active ferment's lifecycle state (planning vs.
+		// implementation). Both modes drive off the same runtime.
 		applyFermentRuntimeToolProfile(pi, runtime)
 		return {}
 	})
@@ -407,7 +451,16 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		const content = getAssistantContentParts(event.message.content)
 		const activeId = runtime.getActiveId()
 		const toolCallSeen = hasAnyToolCall(content)
-		if (toolCallSeen && activeId) resetReactiveContinuationNudgeCount(activeId)
+		const stopReason = (event.message as { stopReason?: string }).stopReason
+		if (toolCallSeen && activeId) {
+			resetReactiveContinuationNudgeCount(activeId)
+			// A normal tool-use turn means the model is still progressing, so reset
+			// the stop-nudge budget. A tool-use turn that ended with "stop" is exactly
+			// what the stop-nudge counter is tracking, so do not reset it here.
+			if (stopReason !== "stop") {
+				onFermentToolCallSeen(activeId)
+			}
+		}
 
 		const f = runtime.getActive()
 		if (!f) return
@@ -422,7 +475,15 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 
 		const userInputHandled = await maybeRunUserInputDropdown(pi, ctx, content, f, runtime)
 		if (userInputHandled) return
-		if (!toolCallSeen) maybeInjectReactiveContinuationNudge(pi, runtime)
+		if (!toolCallSeen) {
+			maybeInjectReactiveContinuationNudge(pi, runtime)
+		} else if (stopReason === "stop") {
+			// The model made tool calls this turn but ended with stopReason "stop"
+			// while the ferment still requires action (e.g. completed a step then
+			// wrote a summary and quit without advancing the lifecycle). Nudge it
+			// to call the next ferment tool rather than leaving the run stalled.
+			maybeInjectFermentStopNudge(pi, runtime)
+		}
 
 		// Trigger compaction after any turn that completed a step or phase.
 		// Fires between turns in automated-continuation mode, so the next

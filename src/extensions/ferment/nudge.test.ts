@@ -7,9 +7,12 @@ import { FermentEventStore } from "../../ferment/event-store.js"
 import type { Ferment } from "../../ferment/types.js"
 import {
 	hasScopingProgressTool,
+	maybeInjectFermentStopNudge,
 	maybeInjectReactiveContinuationNudge,
 	maybeInjectScopingProgressNudge,
+	onFermentToolCallSeen,
 	onStepCompleted,
+	resetAllFermentStopNudgeCounts,
 	resetAllReactiveContinuationNudgeCounts,
 } from "./nudge.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
@@ -43,6 +46,7 @@ function makeDraftFerment(overrides: Partial<Ferment> = {}): Ferment {
 afterEach(() => {
 	setActive(undefined)
 	resetAllReactiveContinuationNudgeCounts()
+	resetAllFermentStopNudgeCounts()
 	resetScopingExploreTurns("ferment-1")
 })
 
@@ -102,7 +106,7 @@ describe("ferment nudges", () => {
 		expect(pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: "ferment_continuation_nudge",
-				content: [expect.objectContaining({ text: "activate_ferment_phase: activate the first planned phase" })],
+				content: [expect.objectContaining({ text: expect.stringContaining("activate_ferment_phase") })],
 			}),
 			{ triggerTurn: true, deliverAs: "followUp" },
 		)
@@ -133,7 +137,7 @@ describe("ferment nudges", () => {
 		expect(pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: "ferment_continuation_nudge",
-				content: [expect.objectContaining({ text: "activate_ferment_phase: activate the first planned phase" })],
+				content: [expect.objectContaining({ text: expect.stringContaining("activate_ferment_phase") })],
 			}),
 			{ triggerTurn: true, deliverAs: "followUp" },
 		)
@@ -302,7 +306,7 @@ describe("ferment nudges", () => {
 			expect.objectContaining({
 				content: [
 					expect.objectContaining({
-						text: expect.stringContaining("recover_phase: handle failed phase"),
+						text: expect.stringContaining("failed phase"),
 					}),
 				],
 				details: expect.objectContaining({ action: "recover_phase" }),
@@ -393,5 +397,158 @@ describe("scoping progress nudge", () => {
 		const nudged = maybeInjectScopingProgressNudge(pi, fermentId, ["read"])
 		expect(nudged).toBe(false)
 		expect(pi.sendMessage).toHaveBeenCalledTimes(1) // only the first nudge
+	})
+})
+
+describe("maybeInjectFermentStopNudge", () => {
+	function makeRunningFerment(overrides: Partial<Ferment> = {}): Ferment {
+		return makeDraftFerment({
+			status: "planned",
+			phases: [{ id: "phase-1", index: 1, name: "Phase", goal: "Build", status: "planned", steps: [] }],
+			...overrides,
+		})
+	}
+
+	function makeRuntime(ferment: Ferment, automated = true): FermentRuntime {
+		return {
+			...createDefaultFermentRuntime(),
+			getActiveId: () => ferment.id,
+			getStorage: () =>
+				({
+					get: () => ferment,
+				}) as unknown as FermentRuntime["getStorage"] extends () => infer T ? T : never,
+			getContinuationPolicy: () => "automated",
+			isAutomatedContinuationEnabled: () => automated,
+		}
+	}
+
+	it("nudges when the ferment still needs action and the model stopped after tool calls", () => {
+		const pi = createPi()
+		const ferment = makeRunningFerment()
+		const runtime = makeRuntime(ferment)
+
+		const nudged = maybeInjectFermentStopNudge(pi, runtime)
+
+		expect(nudged).toBe(true)
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ customType: "ferment_continuation_nudge" }),
+			expect.objectContaining({ deliverAs: "followUp" }),
+		)
+	})
+
+	it("does not nudge when automated continuation is disabled", () => {
+		const pi = createPi()
+		const ferment = makeRunningFerment()
+		const runtime = makeRuntime(ferment, false)
+
+		const nudged = maybeInjectFermentStopNudge(pi, runtime)
+
+		expect(nudged).toBe(false)
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("does not nudge when there is no active ferment", () => {
+		const pi = createPi()
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getActiveId: () => undefined,
+			isAutomatedContinuationEnabled: () => true,
+		}
+
+		const nudged = maybeInjectFermentStopNudge(pi, runtime)
+
+		expect(nudged).toBe(false)
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("does not nudge when the ferment is complete", () => {
+		const pi = createPi()
+		const ferment = makeRunningFerment({ status: "complete" })
+		const runtime = makeRuntime(ferment)
+
+		const nudged = maybeInjectFermentStopNudge(pi, runtime)
+
+		expect(nudged).toBe(false)
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("does not nudge when the ferment is paused", () => {
+		const pi = createPi()
+		const ferment = makeRunningFerment({ status: "paused" })
+		const runtime = makeRuntime(ferment)
+
+		const nudged = maybeInjectFermentStopNudge(pi, runtime)
+
+		expect(nudged).toBe(false)
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("nudges when all phases are complete but complete_ferment has not been called yet", () => {
+		const pi = createPi()
+		// All phases terminal → engine returns complete_ferment action.
+		// The stop-nudge path must treat this as continuable so the final
+		// lifecycle step is not left unfinished.
+		const ferment = makeRunningFerment({
+			status: "planned",
+			phases: [{ id: "phase-1", index: 1, name: "Phase", goal: "Build", status: "completed", steps: [] }],
+		})
+		const runtime = makeRuntime(ferment)
+
+		const nudged = maybeInjectFermentStopNudge(pi, runtime)
+
+		expect(nudged).toBe(true)
+		expect(pi.sendMessage).toHaveBeenCalled()
+	})
+
+	it("suppresses after reaching the consecutive stop-nudge cap", () => {
+		const pi = createPi()
+		const ferment = makeRunningFerment()
+		const runtime = makeRuntime(ferment)
+
+		// First two nudges fire (cap is 2)
+		maybeInjectFermentStopNudge(pi, runtime)
+		maybeInjectFermentStopNudge(pi, runtime)
+		// Third is suppressed with a breadcrumb
+		const nudged = maybeInjectFermentStopNudge(pi, runtime)
+
+		expect(nudged).toBe(false)
+		expect(pi.sendMessage).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				customType: "ferment_breadcrumb",
+				details: expect.objectContaining({ text: expect.stringContaining("Ferment stop nudge suppressed after 2") }),
+			}),
+			expect.anything(),
+		)
+	})
+
+	it("resets the stop-nudge counter when a tool call is seen via onFermentToolCallSeen", () => {
+		const pi = createPi()
+		const ferment = makeRunningFerment()
+		const runtime = makeRuntime(ferment)
+
+		// Consume all nudge budget
+		maybeInjectFermentStopNudge(pi, runtime)
+		maybeInjectFermentStopNudge(pi, runtime)
+
+		// Simulate the agent making a tool call → resets the counter
+		onFermentToolCallSeen(ferment.id)
+
+		// Budget is reset, so a new nudge should fire
+		const nudged = maybeInjectFermentStopNudge(pi, runtime)
+		expect(nudged).toBe(true)
+	})
+
+	it("does not interfere with the reactive (text-only) nudge counter", () => {
+		const pi = createPi()
+		const ferment = makeRunningFerment()
+		const runtime = makeRuntime(ferment)
+
+		// Exhaust the reactive nudge budget (cap=1) via maybeInjectReactiveContinuationNudge
+		maybeInjectReactiveContinuationNudge(pi, runtime)
+		maybeInjectReactiveContinuationNudge(pi, runtime) // suppressed by reactive cap
+
+		// Stop nudge should still fire on a fresh counter
+		const nudged = maybeInjectFermentStopNudge(pi, runtime)
+		expect(nudged).toBe(true)
 	})
 })

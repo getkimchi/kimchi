@@ -54,7 +54,15 @@ function errText(result: { content: { text: string }[]; isError?: boolean }): st
 function createHarness() {
 	const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-lifecycle-test-")))
 	const runtime: FermentRuntime = { ...createDefaultFermentRuntime(), getStorage: () => storage }
-	const pi = { sendMessage: vi.fn(), sendUserMessage: vi.fn(), appendEntry: vi.fn() } as unknown as ExtensionAPI
+	const pi = {
+		sendMessage: vi.fn(),
+		sendUserMessage: vi.fn(),
+		appendEntry: vi.fn(),
+		on: vi.fn(),
+		getFlag: vi.fn(() => undefined),
+		getActiveTools: vi.fn(() => []),
+		setActiveTools: vi.fn(),
+	} as unknown as ExtensionAPI
 	const ferment = storage.create("Lifecycle Test")
 	return { storage, runtime, pi, fermentId: ferment.id }
 }
@@ -688,6 +696,8 @@ describe("update_ferment_scope_field via registerLifecycleTools", () => {
 			},
 			sendMessage: vi.fn(),
 			appendEntry: vi.fn(),
+			on: vi.fn(),
+			getFlag: vi.fn(() => undefined),
 			getActiveTools: vi.fn(() => ["read", "bash"]),
 			getAllTools: vi.fn(() => [{ name: "read" }, { name: "bash" }]),
 			setActiveTools: vi.fn(),
@@ -888,5 +898,78 @@ describe("completeFerment", () => {
 		expect(okText(result)).toContain("Judge unreachable (no_registry)")
 		expect(h.storage.get(h.fermentId)?.status).toBe("complete")
 		expect(h.storage.get(h.fermentId)?.grade).toBeUndefined()
+	})
+})
+
+describe("interactive ferment tool visibility (registerLifecycleTools)", () => {
+	interface FakePi {
+		registerTool: (tool: { name: string }) => void
+		on: (event: string, handler: (e: unknown, ctx: { hasUI: boolean }) => void) => void
+		getActiveTools: () => string[]
+		setActiveTools: (names: string[]) => void
+		getFlag: (name: string) => boolean | undefined
+		_sessionStart: ((event: unknown, ctx: { hasUI: boolean }) => void) | null
+	}
+
+	function makePi(options: {
+		activeTools: string[]
+		oneShot?: boolean
+	}): FakePi & { setActiveCalls: string[][] } {
+		const pi: FakePi & { setActiveCalls: string[][] } = {
+			registerTool: () => {},
+			on: (_event, handler) => {
+				pi._sessionStart = handler
+			},
+			getActiveTools: () => options.activeTools,
+			setActiveTools: (names: string[]) => {
+				pi.setActiveCalls.push(names)
+			},
+			getFlag: (name: string) => (name === "ferment-oneshot" ? options.oneShot === true : undefined),
+			_sessionStart: null,
+			setActiveCalls: [],
+		}
+		return pi
+	}
+
+	function fireSessionStart(pi: FakePi, hasUI: boolean): void {
+		if (!pi._sessionStart) throw new Error("session_start handler not registered")
+		pi._sessionStart({}, { hasUI })
+	}
+
+	it("hides confirm_ferment_completion_criteria and ask_user when no UI and no oneShot", () => {
+		const pi = makePi({
+			activeTools: [FERMENT_TOOLS.CONFIRM_COMPLETION_CRITERIA, FERMENT_TOOLS.ASK_USER, "read", "bash"],
+		})
+		registerLifecycleTools(pi as unknown as ExtensionAPI)
+		fireSessionStart(pi, false)
+
+		// Last write should remove the two interactive tools from the active set.
+		const lastWrite = pi.setActiveCalls.at(-1) ?? []
+		expect(lastWrite).not.toContain(FERMENT_TOOLS.CONFIRM_COMPLETION_CRITERIA)
+		expect(lastWrite).not.toContain(FERMENT_TOOLS.ASK_USER)
+		expect(lastWrite).toContain("read")
+	})
+
+	it("keeps confirm_ferment_completion_criteria and ask_user visible when no UI but oneShot is set (judge fallback)", () => {
+		const pi = makePi({
+			activeTools: [FERMENT_TOOLS.CONFIRM_COMPLETION_CRITERIA, FERMENT_TOOLS.ASK_USER, "read"],
+			oneShot: true,
+		})
+		registerLifecycleTools(pi as unknown as ExtensionAPI)
+		fireSessionStart(pi, false)
+
+		// No disable writes — the tools stay visible because the judge can answer.
+		expect(pi.setActiveCalls).toEqual([])
+	})
+
+	it("keeps confirm_ferment_completion_criteria and ask_user visible when UI is attached", () => {
+		const pi = makePi({
+			activeTools: [FERMENT_TOOLS.CONFIRM_COMPLETION_CRITERIA, FERMENT_TOOLS.ASK_USER, "read"],
+		})
+		registerLifecycleTools(pi as unknown as ExtensionAPI)
+		fireSessionStart(pi, true)
+
+		// No disable writes — UI is attached, tools work normally.
+		expect(pi.setActiveCalls).toEqual([])
 	})
 })

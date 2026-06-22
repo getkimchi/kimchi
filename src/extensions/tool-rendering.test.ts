@@ -1,7 +1,7 @@
 import { type Theme, ToolExecutionComponent, UserMessageComponent, initTheme } from "@earendil-works/pi-coding-agent"
 import { visibleWidth } from "@earendil-works/pi-tui"
 import { beforeAll, describe, expect, it } from "vitest"
-import {
+import toolRenderingExtension, {
 	formatToolTimer,
 	getToolElapsedMs,
 	isMcpToolName,
@@ -59,6 +59,21 @@ describe("user message render patch", () => {
 		)
 
 		expect(summary).toBe("Which improvement areas should this ferment include?")
+	})
+
+	it("renders Skill tool with skill name when skill arg is provided", () => {
+		const summary = summarizeOpenAiToolCall("Skill", { skill: "writing-plans" }, plainTheme, (path) => path)
+		expect(summary).toBe("writing-plans")
+	})
+
+	it("renders Skill tool with name arg as primary", () => {
+		const summary = summarizeOpenAiToolCall("Skill", { name: "test-skill" }, plainTheme, (path) => path)
+		expect(summary).toBe("test-skill")
+	})
+
+	it("renders Skill tool with fallback when no name or skill arg", () => {
+		const summary = summarizeOpenAiToolCall("Skill", {}, plainTheme, (path) => path)
+		expect(summary).toBe("run skill")
 	})
 })
 
@@ -125,6 +140,31 @@ describe("execution timestamp tracking", () => {
 		component.updateResult({ content: [], isError: false }, true)
 		// biome-ignore lint/suspicious/noExplicitAny: mock property access
 		expect((component as any).rendererState._executionEndedAt).toBeUndefined()
+	})
+})
+
+describe("hidden tool block rendering", () => {
+	beforeAll(() => {
+		toolRenderingExtension({
+			registerCommand: () => {},
+			registerTool: () => {},
+			on: () => {},
+		} as never)
+	})
+
+	it("hides legacy write_todos tool results", () => {
+		const component = new ToolExecutionComponent(
+			"write_todos",
+			"tc-legacy",
+			{ todos: [{ content: "legacy", status: "pending" }] },
+			{},
+			undefined,
+			// biome-ignore lint/suspicious/noExplicitAny: minimal ExtensionAPI test double
+			{ requestRender: () => {} } as any,
+			"/tmp",
+		)
+
+		expect(component.render(80)).toEqual([])
 	})
 })
 
@@ -345,5 +385,17 @@ describe("mcpCallLabelAndSummary", () => {
 			true,
 		)
 		expect(result.summary).toContain(longVal)
+	})
+})
+
+describe("set_phase tool summary", () => {
+	it("summarizes set_phase calls with the phase value", () => {
+		const summary = summarizeOpenAiToolCall("set_phase", { phase: "plan" }, plainTheme, (path) => path)
+		expect(summary).toBe("plan")
+	})
+
+	it("summarizes set_phase calls with unknown phase fallback", () => {
+		const summary = summarizeOpenAiToolCall("set_phase", {}, plainTheme, (path) => path)
+		expect(summary).toBe("set phase")
 	})
 })
