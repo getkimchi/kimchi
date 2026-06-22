@@ -1,11 +1,10 @@
 /**
  * Generic system prompt assembler.
  *
- * Mode-agnostic: assembles intro + environment + documents +
- * guidelines + orchestration instructions + phase guidelines +
- * project context + tools + skills.
- *
- * All mode-specific content lives in orchestration-instructions.ts.
+ * Mode-aware: drives intro selection, tool filtering, and which mode-specific
+ * instruction payload to embed (orchestrator / subagent / single-model).
+ * Orchestration content lives in `orchestration/orchestration-instructions.ts`;
+ * subagent and single-model content lives in this file.
  */
 
 import { type Skill, formatSkillsForPrompt } from "@earendil-works/pi-coding-agent"
@@ -15,6 +14,7 @@ import type { ModelRegistry } from "../orchestration/model-registry/index.js"
 import type { Phase } from "../orchestration/model-registry/types.js"
 import type { ModelRoles } from "../orchestration/model-roles.js"
 import { resolveOrchestrationInstructions } from "../orchestration/orchestration-instructions.js"
+import type { OrchestrationInstructionsResult } from "../orchestration/orchestration-instructions.js"
 import type { ContextFile } from "./context-files.js"
 import { type SuppressibleSection, renderSystemPromptBlocks } from "./system-prompt-blocks.js"
 
@@ -68,10 +68,10 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 	const projectContext = formatProjectContext(contextFiles)
 	const skillsSection = formatSkills(skills)
 
-	const { teamSection, instructionsSection: orchestrationSection } = resolveOrchestrationInstructions({
+	const { teamSection, instructionsSection: orchestrationSection } = resolveModeInstructions({
+		mode,
 		currentModelId,
 		registry,
-		mode,
 		roles,
 		customConfigs: options.customConfigs,
 	})
@@ -120,6 +120,65 @@ const BASE_INSTRUCTIONS =
 const SINGLE_INTRO = BASE_INSTRUCTIONS
 
 const ORCHESTRATOR_INTRO = `${BASE_INSTRUCTIONS} As an orchestrator, you reason through the work, plan the approach, and coordinate a team of specialised subagents to execute it.`
+
+/**
+ * Resolve the mode-specific instruction payload for the system prompt.
+ *
+ * Only the orchestrator branch touches `roles`/`registry`/`customConfigs` —
+ * subagent and single-model payloads are mode-shaped but orchestration-free.
+ * Lives here (not in `orchestration-instructions.ts`) because mode selection
+ * is the assembler's concern.
+ */
+function resolveModeInstructions(args: {
+	mode: PromptMode
+	currentModelId?: string
+	registry?: ModelRegistry
+	roles?: ModelRoles
+	customConfigs?: ReadonlyMap<string, ModelCustomMetadata>
+}): OrchestrationInstructionsResult {
+	if (args.mode === "orchestrator") {
+		return resolveOrchestrationInstructions({
+			currentModelId: args.currentModelId,
+			registry: args.registry,
+			roles: args.roles,
+			customConfigs: args.customConfigs,
+		})
+	}
+	if (args.mode === "subagent") {
+		return { teamSection: "", instructionsSection: SUBAGENT_INSTRUCTIONS }
+	}
+	return { teamSection: "", instructionsSection: buildSingleModelInstructions(args.currentModelId) }
+}
+
+// ---------------------------------------------------------------------------
+// Subagent instructions
+// ---------------------------------------------------------------------------
+
+const SUBAGENT_INSTRUCTIONS = `## Subagent response protocol
+
+Your final response must be a single JSON object with no other text before or after it:
+
+\`\`\`
+{"summary": "...", "files": ["path1", "path2"]}
+\`\`\`
+
+- \`summary\`: one paragraph (at most 5 sentences) covering what was done, any critical decisions, and any blockers.
+- \`files\`: array of absolute paths to every file written to the Documents directory. Empty array if none.
+
+Write all substantive output (plans, specs, research notes, findings) to files in the Documents directory — never inline in the summary. Do NOT add any text before or after the JSON. Do NOT wrap it in a markdown code fence.`
+
+// ---------------------------------------------------------------------------
+// Single-model instructions
+// ---------------------------------------------------------------------------
+
+function buildSingleModelInstructions(currentModelId?: string): string {
+	const modelClause = currentModelId ? ` Your model ID is \`${currentModelId}\`.` : ""
+	return `## Single-Model Mode
+
+You are running in single-model mode.${modelClause} All work in this session runs on the currently selected model. Handle tasks directly yourself unless delegation is clearly beneficial.
+
+You may spawn subagents with the \`Agent\` tool for parallel work or to isolate long-running tasks. When you do, you MUST always pass your own model ID in the \`model\` parameter — never delegate to a different model.`
+}
 
 const DOCUMENTS_SECTION =
 	"The Documents directory is shown in the Environment section. Use it for **all** intermediate and output files: plans, specs, research notes, findings, or any file passed between agents. Never write working documents to the project directory or a temporary directory."

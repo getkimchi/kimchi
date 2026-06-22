@@ -1,12 +1,13 @@
 /**
- * Mode-specific prompt content for multi-model orchestration.
+ * Orchestrator-mode prompt content for multi-model orchestration.
  *
- * - Orchestrator: task approach, sharing context, Agent delegation rules, role-based model selection, budgets
- * - Subagent: response protocol, factual accuracy, tool discovery
- * - Single-model: empty (no orchestration content)
+ * Covers the orchestrator's team section (Your Team + Your Capabilities) and the
+ * per-phase DOs/DONTs, agent management rules, token budgets, and plan quality
+ * checklist. The subagent response protocol and single-model instructions live
+ * in `prompt-construction/system-prompt.ts` next to `buildSystemPrompt`, which
+ * is the module that knows about modes.
  */
 
-import type { PromptMode } from "../prompt-construction/system-prompt.js"
 import type { ModelCustomMetadata } from "./model-metadata.js"
 import { buildOrchestrationGuidelinesSection } from "./model-registry/guidelines/guidelines-resolver.js"
 import type { ModelRegistry } from "./model-registry/index.js"
@@ -17,7 +18,6 @@ import { modelIdFromRef, normalizeRoleModels, splitModelRef } from "./model-role
 export interface OrchestrationInstructionsContext {
 	currentModelId?: string
 	registry?: ModelRegistry
-	mode: PromptMode
 	/** Role-based model assignments for orchestrator mode. */
 	roles?: ModelRoles
 	/** Custom model metadata for non-registry models. */
@@ -32,16 +32,18 @@ export interface OrchestrationInstructionsResult {
 export function resolveOrchestrationInstructions(
 	ctx: OrchestrationInstructionsContext,
 ): OrchestrationInstructionsResult {
-	if (ctx.mode === "orchestrator") {
-		return resolveOrchestratorInstructions(ctx)
-	}
-	if (ctx.mode === "subagent") {
-		return { teamSection: "", instructionsSection: resolveSubagentInstructions() }
-	}
-	if (ctx.mode === "single") {
-		return { teamSection: "", instructionsSection: resolveSingleModelInstructions(ctx.currentModelId) }
-	}
-	return { teamSection: "", instructionsSection: "" }
+	const teamSection =
+		ctx.roles && ctx.registry
+			? buildRoleAssignmentsSection(ctx.roles, ctx.registry, ctx.currentModelId, ctx.customConfigs)
+			: ""
+
+	const instructionParts: string[] = []
+	instructionParts.push(buildOrchestratorInstructions(ctx.roles, ctx.currentModelId, ctx.registry, ctx.customConfigs))
+
+	const orchGuidelines = buildOrchestrationGuidelinesSection(ctx.currentModelId, ctx.registry)
+	if (orchGuidelines) instructionParts.push(orchGuidelines)
+
+	return { teamSection, instructionsSection: instructionParts.join("\n\n") }
 }
 
 // ---------------------------------------------------------------------------
@@ -387,21 +389,6 @@ When Step 1 classified the task as **complex**, you MUST execute it as a phased 
 	return parts.join("\n\n")
 }
 
-function resolveOrchestratorInstructions(ctx: OrchestrationInstructionsContext): OrchestrationInstructionsResult {
-	const teamSection =
-		ctx.roles && ctx.registry
-			? buildRoleAssignmentsSection(ctx.roles, ctx.registry, ctx.currentModelId, ctx.customConfigs)
-			: ""
-
-	const instructionParts: string[] = []
-	instructionParts.push(buildOrchestratorInstructions(ctx.roles, ctx.currentModelId, ctx.registry, ctx.customConfigs))
-
-	const orchGuidelines = buildOrchestrationGuidelinesSection(ctx.currentModelId, ctx.registry)
-	if (orchGuidelines) instructionParts.push(orchGuidelines)
-
-	return { teamSection, instructionsSection: instructionParts.join("\n\n") }
-}
-
 // ---------------------------------------------------------------------------
 // Role-based model assignments with tier + description
 // ---------------------------------------------------------------------------
@@ -613,38 +600,4 @@ function buildRoleAssignmentsSection(
 		: "No capability information available for this model."
 
 	return `## Your Team\n\n${sections.join("\n\n")}\n\n## Your Capabilities\n\n${capabilitiesSection}`
-}
-
-// ---------------------------------------------------------------------------
-// Single-Model Mode Instructions
-// ---------------------------------------------------------------------------
-
-function resolveSingleModelInstructions(currentModelId?: string): string {
-	const modelClause = currentModelId ? ` Your model ID is \`${currentModelId}\`.` : ""
-	return `## Single-Model Mode
-
-You are running in single-model mode.${modelClause} All work in this session runs on the currently selected model. Handle tasks directly yourself unless delegation is clearly beneficial.
-
-You may spawn subagents with the \`Agent\` tool for parallel work or to isolate long-running tasks. When you do, you MUST always pass your own model ID in the \`model\` parameter — never delegate to a different model.`
-}
-
-// ---------------------------------------------------------------------------
-// Subagent Mode Instructions
-// ---------------------------------------------------------------------------
-
-const SUBAGENT_RESPONSE_PROTOCOL = `## Subagent response protocol
-
-Your final response must be a single JSON object with no other text before or after it:
-
-\`\`\`
-{"summary": "...", "files": ["path1", "path2"]}
-\`\`\`
-
-- \`summary\`: one paragraph (at most 5 sentences) covering what was done, any critical decisions, and any blockers.
-- \`files\`: array of absolute paths to every file written to the Documents directory. Empty array if none.
-
-Write all substantive output (plans, specs, research notes, findings) to files in the Documents directory — never inline in the summary. Do NOT add any text before or after the JSON. Do NOT wrap it in a markdown code fence.`
-
-function resolveSubagentInstructions(): string {
-	return [SUBAGENT_RESPONSE_PROTOCOL].join("\n\n")
 }
