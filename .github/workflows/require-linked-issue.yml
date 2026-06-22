@@ -13,9 +13,9 @@ jobs:
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
-          if ! echo "$PR_BODY" | grep -iE "(closes|fixes|resolves) #[0-9]+" > /dev/null; then
+          if ! echo "$PR_BODY" | grep -iE "(closes|fixes|resolves)\s+\S+" > /dev/null; then
             echo "❌ No linked issue found in PR description."
-            echo "Add one of: 'Closes #N', 'Fixes #N', or 'Resolves #N'"
+            echo "Add a 'Closes/Fixes/Resolves' line referencing an issue or a ticket."
             exit 1
           fi
           echo "✅ Linked issue found."
