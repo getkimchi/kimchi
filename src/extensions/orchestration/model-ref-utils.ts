@@ -9,13 +9,14 @@ export function modelIdFromRef(ref: string): string {
 
 /**
  * Extract provider and model ID from a "provider/model-id" string.
- * Returns undefined if the string doesn't contain a slash.
+ * Returns undefined if the string doesn't contain a slash, or if either
+ * the provider or the model ID is empty / whitespace-only.
  */
 export function splitModelRef(ref: string): { provider: string; modelId: string } | undefined {
 	const slashIdx = ref.indexOf("/")
 	if (slashIdx <= 0) return undefined
-	return {
-		provider: ref.slice(0, slashIdx),
-		modelId: ref.slice(slashIdx + 1),
-	}
+	const provider = ref.slice(0, slashIdx)
+	const modelId = ref.slice(slashIdx + 1)
+	if (provider.trim().length === 0 || modelId.trim().length === 0) return undefined
+	return { provider, modelId }
 }

@@ -191,6 +191,14 @@ describe("splitModelRef", () => {
 	it("returns undefined for empty string", () => {
 		expect(splitModelRef("")).toBeUndefined()
 	})
+
+	it("returns undefined for empty model id after slash", () => {
+		expect(splitModelRef("provider/")).toBeUndefined()
+	})
+
+	it("returns undefined for whitespace-only model id after slash", () => {
+		expect(splitModelRef("provider/   ")).toBeUndefined()
+	})
 })
 
 describe("modelIdFromRef", () => {

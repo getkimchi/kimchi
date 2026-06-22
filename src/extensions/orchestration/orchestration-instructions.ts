@@ -262,7 +262,7 @@ function buildBuildPhaseDirectives(ctx: PhaseDirectiveContext): string {
 	lines.push("")
 	lines.push("- DO NOT build code yourself. Delegate one Agent call per chunk from the plan.")
 	lines.push(
-		`- DO delegate each chunk to Agent(type: "Builder", model: ${models}). Use a standard-tier Builder by default. Use a heavy-tier Builder only as a retry when a standard-tier Builder has already failed on the same chunk.`,
+		`- DO delegate each chunk to Agent(type: "Builder", model: ${models}). Simple chunks use a standard-tier Builder; complex chunks (concurrency, state machines, algorithms) require a heavy-tier Builder. Retries may escalate to a heavier tier when the first choice fails.`,
 	)
 	lines.push("- DO pass the spec file path and tell each agent which chunk to implement.")
 	lines.push(
@@ -460,6 +460,25 @@ interface ResolvedModelMeta {
 	description: string
 }
 
+/**
+ * Look up custom metadata by ref. Accepts either a full ref (`provider/model-id`)
+ * or a bare model id (`model-id`) — settings metadata is keyed by full ref, but
+ * the orchestrator current-model lookup sometimes has only the bare id.
+ */
+export function lookupCustomConfig(
+	ref: string,
+	customConfigs?: ReadonlyMap<string, ModelCustomMetadata>,
+): ModelCustomMetadata | undefined {
+	if (!customConfigs) return undefined
+	const direct = customConfigs.get(ref)
+	if (direct) return direct
+	// Fallback: ref might be the bare model id. Find the matching full-ref key.
+	for (const [key, value] of customConfigs) {
+		if (key !== ref && modelIdFromRef(key) === ref) return value
+	}
+	return undefined
+}
+
 function resolveModelMeta(
 	ref: string,
 	registry?: ModelRegistry,
@@ -467,7 +486,7 @@ function resolveModelMeta(
 	roles?: ModelRoles,
 ): ResolvedModelMeta {
 	const descriptor = resolveDescriptor(ref, registry)
-	const custom = customConfigs?.get(ref)
+	const custom = lookupCustomConfig(ref, customConfigs)
 	const roleNames = resolveModelRoleNames(ref, roles)
 
 	const tier = custom?.tier ?? descriptor?.capabilities.tier ?? "standard"

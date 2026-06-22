@@ -10,6 +10,7 @@ import {
 	formatRoleAssignment,
 	formatRoleDisplay,
 	formatRoleSummaryBlock,
+	hasMetadataContent,
 	isEqualAssignment,
 } from "./model-roles-command.js"
 import type { RoleModelAssignment } from "./model-roles.js"
@@ -165,9 +166,9 @@ describe("splitModelRef (from model-roles.ts)", () => {
 			input: "/",
 			expected: undefined,
 		},
-		"returns provider with empty modelId for trailing slash": {
+		"returns undefined for trailing slash with empty modelId": {
 			input: "provider/",
-			expected: { provider: "provider", modelId: "" },
+			expected: undefined,
 		},
 	}
 
@@ -253,5 +254,25 @@ describe("collectModelMetadata", () => {
 		expect(selectCalls[1][0]).toContain("custom/my-model")
 		const inputCalls = (ctx.ui.input as ReturnType<typeof vi.fn>).mock.calls
 		expect(inputCalls[0][0]).toContain("custom/my-model")
+	})
+})
+
+describe("hasMetadataContent", () => {
+	it("returns false for undefined (user cancelled)", () => {
+		expect(hasMetadataContent(undefined)).toBe(false)
+	})
+
+	it("returns false for empty object (user skipped all fields)", () => {
+		// Regression: collectModelMetadata() returns {} when the user completes the
+		// form while skipping every optional field. Saving this clutters settings.json
+		// with empty entries that resolveModelMetadata ignores anyway.
+		expect(hasMetadataContent({})).toBe(false)
+	})
+
+	it("returns true when at least one field is present", () => {
+		expect(hasMetadataContent({ tier: "heavy" })).toBe(true)
+		expect(hasMetadataContent({ vision: true })).toBe(true)
+		expect(hasMetadataContent({ description: "x" })).toBe(true)
+		expect(hasMetadataContent({ tier: "light", vision: false })).toBe(true)
 	})
 })

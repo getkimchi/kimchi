@@ -51,6 +51,17 @@ const DELEGABLE_KEYS: (keyof ModelRoles)[] = ["planner", "builder", "reviewer", 
 
 const ROLE_KEYS: (keyof ModelRoles)[] = ["orchestrator", ...DELEGABLE_KEYS]
 
+/**
+ * Whether `collectModelMetadata()` produced something worth persisting.
+ *
+ * Returns false for both `undefined` (user cancelled) and `{}` (user completed
+ * the form but skipped every optional field). Saving an empty entry would
+ * clutter settings.json with rows that `resolveModelMetadata()` ignores.
+ */
+export function hasMetadataContent(metadata: ModelCustomMetadata | undefined): metadata is ModelCustomMetadata {
+	return metadata !== undefined && Object.keys(metadata).length > 0
+}
+
 export function formatRoleAssignment(value: RoleModelAssignment): string {
 	const models = normalizeRoleModels(value)
 	return models.join(", ")
@@ -159,7 +170,7 @@ async function promptMetadataWizard(
 	}
 
 	const metadata = await collectModelMetadata(ref, resolveModelMetadata(ref) ?? undefined, ctx)
-	if (metadata && Object.keys(metadata).length > 0) {
+	if (hasMetadataContent(metadata)) {
 		const map = new Map<string, ModelCustomMetadata>()
 		map.set(ref, metadata)
 		saveModelMetadata(map)
@@ -570,7 +581,10 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 				}
 
 				const metadata = await collectModelMetadata(ref, existingMeta, ctx)
-				if (!metadata) return
+				if (!hasMetadataContent(metadata)) {
+					ctx.ui.notify(`No metadata saved for ${ref}.`, "info")
+					return
+				}
 
 				const map = new Map<string, ModelCustomMetadata>()
 				map.set(ref, metadata)

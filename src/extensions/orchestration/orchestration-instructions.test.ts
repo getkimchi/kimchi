@@ -433,6 +433,39 @@ describe("resolveOrchestrationInstructions with custom configs", () => {
 		expect(result).toContain("Vision: no")
 	})
 
+	it("orchestrator custom metadata is not dropped when currentModelId is a bare model id (no provider)", () => {
+		// Regression: prompt-enrichment.ts passes `getOrchestratorModelId()` (bare
+		// model id) as `currentModelId`, but `modelMetadata` in settings.json is
+		// keyed by full ref (`anthropic/claude-opus-4-6`). `resolveModelMeta` did
+		// `customConfigs?.get(ref)` directly, so the orchestrator's own custom
+		// tier/description/vision was silently dropped from "Your Capabilities".
+		const customConfigs = new Map<string, ModelCustomMetadata>([
+			[
+				"anthropic/claude-opus-4-6",
+				{ tier: "heavy", description: "Anthropic's flagship reasoning model.", vision: true },
+			],
+		])
+		const roles = {
+			orchestrator: "anthropic/claude-opus-4-6",
+			planner: "anthropic/claude-opus-4-6",
+			builder: "kimchi-dev/minimax-m2.7",
+			reviewer: "kimchi-dev/minimax-m2.7",
+			explorer: "kimchi-dev/nemotron-3-super-fp4",
+			researcher: "kimchi-dev/nemotron-3-super-fp4",
+			judge: "kimchi-dev/kimi-k2.6",
+		}
+		const result = resolveAsString({
+			currentModelId: "claude-opus-4-6",
+			registry,
+			mode: "orchestrator",
+			roles,
+			customConfigs,
+		})
+		expect(result).toContain("Tier: heavy")
+		expect(result).toContain("Vision: yes")
+		expect(result).toContain("Anthropic's flagship reasoning model.")
+	})
+
 	it("model assigned to multiple roles lists all roles in default description", () => {
 		const customConfigs = new Map<string, ModelCustomMetadata>([["multi-role/model", {}]])
 		const roles = {
@@ -452,5 +485,29 @@ describe("resolveOrchestrationInstructions with custom configs", () => {
 			customConfigs,
 		})
 		expect(result).toContain("This model was configured by the user to handle builder, reviewer work.")
+	})
+})
+
+describe("Build phase directive (complex-chunk tier routing)", () => {
+	const registry = new ModelRegistry(ALL_KNOWN_METADATA)
+
+	it("routes complex chunks to a heavy-tier Builder on first attempt, not as a retry", () => {
+		// Regression: the previous directive said "Use a standard-tier Builder by default.
+		// Use a heavy-tier Builder only as a retry when a standard-tier Builder has
+		// already failed." That contradicts the tier model elsewhere in the prompt,
+		// which says complex chunks (concurrency, state machines, algorithms) require
+		// a heavy-tier Builder. The new tier metadata would never actually route
+		// complex chunks to the heavy model on the first attempt.
+		const result = resolveAsString({
+			currentModelId: "kimi-k2.6",
+			registry,
+			mode: "orchestrator",
+			roles: DEFAULT_MODEL_ROLES,
+		})
+		expect(result).toContain("#### Build phase")
+		// The directive must explicitly call out heavy-tier for complex chunks on the first attempt.
+		expect(result).toMatch(/complex chunk.*heavy-tier Builder/s)
+		// And it must NOT tell the orchestrator to start with standard-tier and only escalate on retry.
+		expect(result).not.toMatch(/standard-tier Builder by default.*retry/s)
 	})
 })
