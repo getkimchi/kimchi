@@ -5,6 +5,7 @@
 import type { AgentSession } from "@earendil-works/pi-coding-agent"
 import type { ModelRole, ModelTier } from "../../orchestration/model-registry/types.js"
 import type { LifetimeUsage } from "../manager/usage.js"
+import type { FermentWorkerBudgetTier } from "../worker-budget-policy.js"
 
 /** Thinking/reasoning level for models that support it. */
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh"
@@ -17,6 +18,7 @@ export interface AgentTaskRef {
 	ferment_id: string
 	phase_id: string
 	step_id: string
+	budget_tier?: FermentWorkerBudgetTier
 }
 
 export interface AgentResumeAttempt {

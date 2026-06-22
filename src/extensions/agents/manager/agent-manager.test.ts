@@ -101,6 +101,38 @@ describe("AgentManager", () => {
 		expect(mockRunAgent.mock.calls[0]?.[3].workerReport).toBeDefined()
 	})
 
+	it("enforces the selected worker tier on the initial linked run", async () => {
+		mockRunAgent.mockResolvedValueOnce({
+			responseText: "done",
+			session: { dispose: vi.fn() } as unknown as AgentSession,
+			aborted: false,
+			steered: false,
+		})
+		manager = new AgentManager()
+
+		const record = await manager.spawnAndWait(fakePi(), fakeCtx(), "Explore", "inspect", {
+			description: "inspect",
+			maxTurns: 999,
+			maxDuration: 999,
+			tokenBudget: 999_999,
+			taskRef: {
+				kind: "ferment_step",
+				ferment_id: "f1",
+				phase_id: "p1",
+				step_id: "s1",
+				budget_tier: "narrow",
+			},
+		})
+
+		expect(record.maxTurns).toBe(10)
+		expect(mockRunAgent).toHaveBeenCalledWith(
+			expect.anything(),
+			"Explore",
+			expect.any(String),
+			expect.objectContaining({ maxTurns: 10, maxDuration: 180, tokenBudget: 50_000 }),
+		)
+	})
+
 	it("stores submitted reports on the structured outcome", async () => {
 		mockRunAgent.mockResolvedValueOnce({
 			responseText: "done",
@@ -130,6 +162,47 @@ describe("AgentManager", () => {
 			},
 		})
 		expect(record.latestOutcome?.summary).toBeUndefined()
+	})
+
+	it("does not resume a worker whose current attempt has an accepted completed report", async () => {
+		const session = { dispose: vi.fn() } as unknown as AgentSession
+		mockRunAgent.mockResolvedValueOnce({ responseText: "done", session, aborted: false, steered: false })
+		manager = new AgentManager()
+		const record = await manager.spawnAndWait(fakePi(), fakeCtx(), "Explore", "inspect", {
+			description: "inspect",
+			taskRef: { kind: "ferment_step", ferment_id: "f1", phase_id: "p1", step_id: "s1" },
+		})
+		manager.submitReport(record.id, {
+			status: "completed",
+			summary: "implemented step",
+			steps_completed: ["implemented"],
+			remaining_steps: [],
+		})
+		const snapshot = structuredClone({
+			status: record.status,
+			result: record.result,
+			error: record.error,
+			completedAt: record.completedAt,
+			currentAttemptId: record.currentAttemptId,
+			agentReport: record.agentReport,
+			latestOutcome: record.latestOutcome,
+			resumeAttempts: record.resumeAttempts,
+		})
+
+		const resumed = await manager.resume(record.id, "continue", { maxTurns: 1 })
+
+		expect(mockResumeAgent).not.toHaveBeenCalled()
+		expect(resumed).toBe(record)
+		expect({
+			status: record.status,
+			result: record.result,
+			error: record.error,
+			completedAt: record.completedAt,
+			currentAttemptId: record.currentAttemptId,
+			agentReport: record.agentReport,
+			latestOutcome: record.latestOutcome,
+			resumeAttempts: record.resumeAttempts,
+		}).toEqual(snapshot)
 	})
 
 	it("resumes the same session with a fresh max_turns window and records budget exhaustion", async () => {
@@ -202,6 +275,21 @@ describe("AgentManager", () => {
 		expect(resumed?.status).toBe("completed")
 	})
 
+	it("does not run report finalization for an ordinary agent", async () => {
+		const session = { dispose: vi.fn() } as unknown as AgentSession
+		mockRunAgent.mockResolvedValueOnce({ responseText: "done", session, aborted: false, steered: false })
+		manager = new AgentManager()
+		const record = await manager.spawnAndWait(fakePi(), fakeCtx(), "Explore", "inspect", {
+			description: "inspect",
+		})
+
+		const result = await manager.resume(record.id, undefined, { purpose: "finalize_report" })
+
+		expect(mockResumeAgent).not.toHaveBeenCalled()
+		expect(result).toBe(record)
+		expect(manager.getResumeBlockReason(record.id, "finalize_report")).toContain("not a Ferment-linked worker")
+	})
+
 	it("non-Ferment agent resumed 2+ times still has resumable === true in latestOutcome", async () => {
 		const session = { dispose: vi.fn() } as unknown as AgentSession
 		mockRunAgent.mockResolvedValueOnce({
@@ -263,12 +351,77 @@ describe("AgentManager", () => {
 			{ attempt_id: 1, purpose: "continuation", startedAt: 1 },
 			{ attempt_id: 2, purpose: "continuation", startedAt: 2 },
 		]
+		const previousStatus = record.status
+		const previousOutcome = record.latestOutcome
+		const previousCompletedAt = record.completedAt
 
 		const resumed = await manager.resume(record.id, "continue", { maxTurns: 1 })
 
 		expect(mockResumeAgent).not.toHaveBeenCalled()
-		expect(resumed?.status).toBe("error")
-		expect(resumed?.error).toContain("Ferment worker continuation resume limit")
+		expect(resumed?.status).toBe(previousStatus)
+		expect(resumed?.latestOutcome).toBe(previousOutcome)
+		expect(resumed?.completedAt).toBe(previousCompletedAt)
+		expect(resumed?.error).toBeUndefined()
+	})
+
+	it("preserves worker state when its tier cumulative output budget rejects a resume", async () => {
+		const session = { dispose: vi.fn() } as unknown as AgentSession
+		mockRunAgent.mockResolvedValueOnce({ responseText: "checkpoint", session, aborted: false, steered: false })
+		manager = new AgentManager()
+		const record = await manager.spawnAndWait(fakePi(), fakeCtx(), "Explore", "inspect", {
+			description: "inspect",
+			taskRef: {
+				kind: "ferment_step",
+				ferment_id: "f1",
+				phase_id: "p1",
+				step_id: "s1",
+				budget_tier: "narrow",
+			},
+		})
+		record.lifetimeUsage.output = 100_000
+		const previousOutcome = record.latestOutcome
+
+		const resumed = await manager.resume(record.id, "continue", { maxTurns: 1 })
+
+		expect(mockResumeAgent).not.toHaveBeenCalled()
+		expect(resumed?.status).toBe("completed")
+		expect(resumed?.latestOutcome).toBe(previousOutcome)
+		expect(resumed?.error).toBeUndefined()
+	})
+
+	it("enforces the selected worker tier on continuation attempts", async () => {
+		const session = { dispose: vi.fn() } as unknown as AgentSession
+		mockRunAgent.mockResolvedValueOnce({ responseText: "checkpoint", session, aborted: false, steered: false })
+		mockResumeAgent.mockResolvedValueOnce({
+			responseText: "continued",
+			session,
+			aborted: false,
+			steered: false,
+			maxTurns: 10,
+		})
+		manager = new AgentManager()
+		const record = await manager.spawnAndWait(fakePi(), fakeCtx(), "Explore", "inspect", {
+			description: "inspect",
+			taskRef: {
+				kind: "ferment_step",
+				ferment_id: "f1",
+				phase_id: "p1",
+				step_id: "s1",
+				budget_tier: "narrow",
+			},
+		})
+
+		await manager.resume(record.id, "continue", {
+			maxTurns: 999,
+			maxDuration: 999,
+			tokenBudget: 999_999,
+		})
+
+		expect(mockResumeAgent).toHaveBeenCalledWith(
+			session,
+			expect.any(String),
+			expect.objectContaining({ maxTurns: 10, maxDuration: 180, tokenBudget: 50_000 }),
+		)
 	})
 
 	it("does not charge report finalization against the continuation resume quota", async () => {
@@ -285,15 +438,17 @@ describe("AgentManager", () => {
 			{ attempt_id: 2, purpose: "continuation", startedAt: 2 },
 		]
 
-		const resumed = await manager.resume(record.id, "submit the report", {
-			maxTurns: 1,
-			maxDuration: 30,
-			purpose: "finalize_report",
-		})
+		const resumed = await manager.resume(record.id, undefined, { purpose: "finalize_report" })
 
 		expect(mockResumeAgent).toHaveBeenCalledOnce()
+		expect(mockResumeAgent).toHaveBeenCalledWith(
+			session,
+			expect.stringContaining("Do not perform more task work"),
+			expect.objectContaining({ maxTurns: 2, maxDuration: 30, tokenBudget: 8192 }),
+		)
 		expect(resumed?.status).toBe("completed")
 		expect(resumed?.resumeAttempts?.at(-1)?.purpose).toBe("finalize_report")
+		expect(resumed?.resumeAttempts?.at(-1)).toMatchObject({ maxTurns: 2, tokenBudget: 8192 })
 	})
 
 	it("clears stale reports when a new execution attempt starts", async () => {
@@ -305,8 +460,10 @@ describe("AgentManager", () => {
 			description: "inspect",
 			taskRef: { kind: "ferment_step", ferment_id: "f1", phase_id: "p1", step_id: "s1" },
 		})
+		// NB: status must be "partial" (not "completed") so this report doesn't trigger
+		// the "accepted completed report" resume guard added alongside tiered budgets.
 		manager.submitReport(record.id, {
-			status: "completed",
+			status: "partial",
 			summary: "old attempt",
 			steps_completed: ["old work"],
 			remaining_steps: [],

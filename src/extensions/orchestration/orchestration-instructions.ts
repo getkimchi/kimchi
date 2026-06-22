@@ -218,7 +218,7 @@ The turn cap is the primary delegated-worker budget. If an Agent returns \`agent
 | Signal | Action |
 |---|---|
 | Completed outcome + report.status completed | Use the result or complete the linked Ferment step. |
-| Missing report | Call \`resume_subagent\` with purpose \`finalize_report\`, \`max_turns: 1\`, and a short duration. |
+| Missing report | Call \`resume_subagent\` with only \`agent_id\` and purpose \`finalize_report\`; the host supplies fixed report-only limits. |
 | Budget exhausted + direct continuation in remaining_steps | Call \`resume_subagent\` with a bounded fresh budget and steering prompt. |
 | Budget exhausted + same thread but stalled approach | Call \`resume_subagent\` once with a changed-approach steering prompt. |
 | Budget exhausted + separable remaining_steps | Spawn a narrower linked replacement Agent for the clean task boundary. |

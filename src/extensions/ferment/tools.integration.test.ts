@@ -706,7 +706,7 @@ describe("complete_ferment_step", () => {
 		})
 		const text = err(result)
 		expect(text).toContain("completed without submit_agent_report")
-		expect(text).toContain("max_turns: 1")
+		expect(text).toContain('only agent_id and purpose "finalize_report"')
 		expect(loadFerment(id).phases[0].steps[0].status).toBe("running")
 	})
 

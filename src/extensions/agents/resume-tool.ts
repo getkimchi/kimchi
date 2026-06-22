@@ -9,12 +9,18 @@ export function registerResumeSubagentTool(pi: ExtensionAPI, manager: AgentManag
 			name: "resume_subagent",
 			label: "Resume Agent",
 			description:
-				"Continue an existing Agent session with a bounded steering prompt. Persona, model, description, and task linkage are inherited from the original Agent.",
+				"Continue an existing Agent session with a bounded steering prompt, or request host-bounded report finalization. Persona, model, description, and task linkage are inherited from the original Agent.",
 			parameters: Type.Object({
 				agent_id: Type.String({ description: "Agent ID returned by the original Agent call." }),
-				prompt: Type.String({ description: "New steering instructions based on the Agent's latest outcome." }),
-				max_turns: Type.Integer({ description: "Fresh turn allowance for this attempt.", minimum: 1 }),
-				max_duration: Type.Integer({ description: "Wall-clock limit in seconds for this attempt.", minimum: 1 }),
+				prompt: Type.Optional(
+					Type.String({ description: "Required for continuation; ignored for host-controlled report finalization." }),
+				),
+				max_turns: Type.Optional(
+					Type.Integer({ description: "Required fresh turn allowance for continuation.", minimum: 1 }),
+				),
+				max_duration: Type.Optional(
+					Type.Integer({ description: "Required wall-clock limit in seconds for continuation.", minimum: 1 }),
+				),
 				token_budget: Type.Optional(
 					Type.Integer({ description: "Maximum output tokens for this attempt.", minimum: 1024 }),
 				),
@@ -27,20 +33,37 @@ export function registerResumeSubagentTool(pi: ExtensionAPI, manager: AgentManag
 			}),
 			execute: async (_toolCallId, params, signal) => {
 				const agentId = params.agent_id as string
+				const purpose = (params.purpose as "continuation" | "finalize_report" | undefined) ?? "continuation"
 				const existing = manager.getRecord(agentId)
 				if (!existing) return textResult(`Agent not found: "${agentId}". It may have been cleaned up.`)
 				if (!existing.session) return textResult(`Agent "${agentId}" has no active session to resume.`)
 				if (existing.status === "running" || existing.status === "queued") {
 					return textResult(`Agent "${agentId}" is still ${existing.status}; steer it or wait for completion instead.`)
 				}
+				const blocked = manager.getResumeBlockReason(agentId, purpose)
+				if (blocked) return textResult(blocked)
+				if (purpose === "continuation") {
+					if (!(params.prompt as string | undefined)?.trim()) {
+						return textResult("Continuation requires a non-empty prompt based on the worker's latest outcome.")
+					}
+					if (params.max_turns == null || params.max_duration == null) {
+						return textResult("Continuation requires explicit max_turns and max_duration limits.")
+					}
+				}
 
-				const record = await manager.resume(agentId, params.prompt as string, {
-					signal,
-					maxTurns: params.max_turns as number,
-					tokenBudget: params.token_budget as number | undefined,
-					maxDuration: params.max_duration as number,
-					purpose: (params.purpose as "continuation" | "finalize_report" | undefined) ?? "continuation",
-				})
+				const record = await manager.resume(
+					agentId,
+					purpose === "finalize_report" ? undefined : (params.prompt as string),
+					purpose === "finalize_report"
+						? { signal, purpose }
+						: {
+								signal,
+								maxTurns: params.max_turns as number,
+								tokenBudget: params.token_budget as number | undefined,
+								maxDuration: params.max_duration as number,
+								purpose,
+							},
+				)
 				if (!record) return textResult(`Failed to resume agent "${agentId}".`)
 				const outcome = record.latestOutcome
 					? `\n\nagent_outcome:\n${JSON.stringify(record.latestOutcome, null, 2)}`

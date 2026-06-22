@@ -152,7 +152,7 @@ describe("startStep", () => {
 		expect(h.runtime.getStepStartRef(h.fermentId, "phase-1", "step-1")).toBe("abc123")
 	})
 
-	it("returns bounded linked-worker instructions without completing exhausted work", async () => {
+	it("defaults normal implementation work to the standard worker budget tier", async () => {
 		const h = createHarness()
 		const result = await startStep(
 			h.runtime,
@@ -163,12 +163,49 @@ describe("startStep", () => {
 
 		const text = okText(result)
 		expect(text).toContain('task_ref: {"kind":"ferment_step"')
-		expect(text).toContain("max_turns=15")
+		expect(text).toContain('"budget_tier":"standard"')
+		expect(text).toContain("budget_tier=standard")
+		expect(text).toContain("max_turns=25")
 		expect(text).toContain("max_duration=300s")
-		expect(text).toContain("token_budget=75000")
+		expect(text).toContain("token_budget=100000")
 		expect(text).toContain("submit_agent_report")
 		expect(text).toContain("Do not complete the step from an exhausted worker")
 		expect(text).not.toContain("call complete_ferment_step with whatever it produced")
+	})
+
+	it("uses the explicitly selected narrow worker budget tier", async () => {
+		const h = createHarness()
+		const result = await startStep(
+			h.runtime,
+			{ ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1", budget_tier: "narrow" },
+			{ pi: h.pi },
+			createServices(),
+		)
+
+		const text = okText(result)
+		expect(text).toContain('"budget_tier":"narrow"')
+		expect(text).toContain("budget_tier=narrow")
+		expect(text).toContain("max_turns=10")
+		expect(text).toContain("max_duration=180s")
+		expect(text).toContain("token_budget=50000")
+		expect(text).toContain("cumulative_token_budget=100000")
+	})
+
+	it("uses the explicitly selected complex worker budget tier", async () => {
+		const h = createHarness()
+		const result = await startStep(
+			h.runtime,
+			{ ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1", budget_tier: "complex" },
+			{ pi: h.pi },
+			createServices(),
+		)
+
+		const text = okText(result)
+		expect(text).toContain('"budget_tier":"complex"')
+		expect(text).toContain("max_turns=30")
+		expect(text).toContain("max_duration=600s")
+		expect(text).toContain("token_budget=150000")
+		expect(text).toContain("cumulative_token_budget=375000")
 	})
 
 	it("includes fixed output paths from scoping in the worker prompt handoff", async () => {
@@ -728,18 +765,33 @@ describe("completeStep", () => {
 })
 
 describe("suggestWorkerLimits", () => {
-	it("returns the centralized Ferment step budget", () => {
+	it("returns the standard Ferment step budget by default", () => {
 		const limits = suggestWorkerLimits("Implement the auth middleware")
-		expect(limits).toEqual({ maxTurns: 15, maxDuration: 300, tokenBudget: 75_000 })
+		expect(limits).toEqual({
+			maxTurns: 25,
+			maxDuration: 300,
+			tokenBudget: 100_000,
+			cumulativeTokenBudget: 250_000,
+		})
 	})
 
 	it("does not inflate budgets from model-authored keywords", () => {
 		const limits = suggestWorkerLimits("Compile the MIPS binary and link dependencies")
-		expect(limits).toEqual({ maxTurns: 15, maxDuration: 300, tokenBudget: 75_000 })
+		expect(limits).toEqual({
+			maxTurns: 25,
+			maxDuration: 300,
+			tokenBudget: 100_000,
+			cumulativeTokenBudget: 250_000,
+		})
 	})
 
 	it("does not inflate budgets from verification commands", () => {
 		const limits = suggestWorkerLimits("Run the build", "make -j4 && ./run_tests.sh")
-		expect(limits).toEqual({ maxTurns: 15, maxDuration: 300, tokenBudget: 75_000 })
+		expect(limits).toEqual({
+			maxTurns: 25,
+			maxDuration: 300,
+			tokenBudget: 100_000,
+			cumulativeTokenBudget: 250_000,
+		})
 	})
 })

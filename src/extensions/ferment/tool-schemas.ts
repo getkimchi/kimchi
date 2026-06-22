@@ -244,6 +244,12 @@ export const StepActionParams = Type.Object({
 		description:
 			"Step ID in format 'step-N', e.g. 'step-1'. Use the step_id returned by refine_ferment_phase or activate_ferment_phase.",
 	}),
+	budget_tier: Type.Optional(
+		Type.Union([Type.Literal("narrow"), Type.Literal("standard"), Type.Literal("complex")], {
+			description:
+				"Worker budget selected by scoped work shape: narrow for verification or one small edit; standard for normal implementation (default); complex for multi-file builds or iterative debugging.",
+		}),
+	),
 })
 
 export const CompleteStepParams = Type.Object({

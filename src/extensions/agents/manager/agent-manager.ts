@@ -12,7 +12,7 @@ import type {
 	SubagentType,
 	ThinkingLevel,
 } from "../personas/types.js"
-import { MAX_FERMENT_WORKER_OUTPUT_TOKENS } from "../worker-budget-policy.js"
+import { FERMENT_WORKER_BUDGETS } from "../worker-budget-policy.js"
 import type { WorkerReportSubmission } from "../worker-report.js"
 import { type ToolActivity, resumeAgent, runAgent } from "./agent-runner.js"
 import { type LifetimeUsage, addUsage } from "./usage.js"
@@ -26,6 +26,7 @@ export type CompactionInfo = { reason: "manual" | "threshold" | "overflow"; toke
 const DEFAULT_MAX_CONCURRENT = 4
 const DEFAULT_MAX_CONTINUATION_RESUMES = 2
 const DEFAULT_MAX_REPORT_FINALIZERS = 1
+const REPORT_FINALIZATION_LIMITS = { maxTurns: 2, maxDuration: 30, tokenBudget: 8192 } as const
 
 interface SpawnArgs {
 	pi: ExtensionAPI
@@ -69,6 +70,21 @@ function formatTaskRef(ref: AgentTaskRef): string {
 	return JSON.stringify(ref)
 }
 
+function cumulativeTokenBudget(taskRef: AgentTaskRef): number {
+	return FERMENT_WORKER_BUDGETS[taskRef.budget_tier ?? "standard"].cumulativeTokenBudget
+}
+
+function applyLinkedWorkerLimits(options: SpawnOptions): SpawnOptions {
+	if (!options.taskRef) return options
+	const budget = FERMENT_WORKER_BUDGETS[options.taskRef.budget_tier ?? "standard"]
+	return {
+		...options,
+		maxTurns: Math.min(options.maxTurns ?? budget.maxTurns, budget.maxTurns),
+		maxDuration: Math.min(options.maxDuration ?? budget.maxDuration, budget.maxDuration),
+		tokenBudget: Math.min(options.tokenBudget ?? budget.tokenBudget, budget.tokenBudget),
+	}
+}
+
 function withAgentReportProtocol(prompt: string, taskRef: AgentTaskRef | undefined): string {
 	if (!taskRef) return prompt
 	return `You are a Ferment-linked worker Agent.
@@ -86,6 +102,14 @@ Call submit_agent_report alone as your final action. The host binds the report t
 If you receive a budget warning, use the remaining headroom deliberately. If there is enough room to safely finish and verify the current unit, do that first, then call submit_agent_report. If the budget is nearly exhausted or uncertain, stop work and submit your current state immediately.
 
 ${prompt}`
+}
+
+function reportFinalizationPrompt(taskRef: AgentTaskRef): string {
+	return `You are finalizing the report for this Ferment-linked worker attempt.
+
+Task ref: ${formatTaskRef(taskRef)}
+
+Do not perform more task work, edit files, explore, or run verification. Based only on the work already present in this session, call submit_agent_report alone as your next and final action. Report factual progress. Use status "completed" only if the assigned work is complete; otherwise use "partial" or "blocked", with concrete remaining_steps or blockers.`
 }
 
 export class AgentManager {
@@ -122,22 +146,23 @@ export class AgentManager {
 	}
 
 	spawn(pi: ExtensionAPI, ctx: ExtensionContext, type: SubagentType, prompt: string, options: SpawnOptions): string {
+		const effectiveOptions = applyLinkedWorkerLimits(options)
 		const id = randomUUID().slice(0, 17)
 		const abortController = new AbortController()
 		const record: AgentRecord = {
 			id,
 			type,
-			description: options.description,
-			visibility: options.visibility ?? "user",
-			status: options.isBackground ? "queued" : "running",
-			modelId: (options.model as { id?: string } | undefined)?.id,
+			description: effectiveOptions.description,
+			visibility: effectiveOptions.visibility ?? "user",
+			status: effectiveOptions.isBackground ? "queued" : "running",
+			modelId: (effectiveOptions.model as { id?: string } | undefined)?.id,
 			toolUses: 0,
 			startedAt: Date.now(),
 			abortController,
-			sessionFile: options.sessionFile,
-			taskRef: options.taskRef,
+			sessionFile: effectiveOptions.sessionFile,
+			taskRef: effectiveOptions.taskRef,
 			currentAttemptId: 0,
-			maxTurns: options.maxTurns,
+			maxTurns: effectiveOptions.maxTurns,
 			resumeAttempts: [],
 			lifetimeUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			compactionCount: 0,
@@ -148,11 +173,15 @@ export class AgentManager {
 			pi,
 			ctx,
 			type,
-			prompt: withAgentReportProtocol(prompt, options.taskRef),
-			options,
+			prompt: withAgentReportProtocol(prompt, effectiveOptions.taskRef),
+			options: effectiveOptions,
 		}
 
-		if (options.isBackground && !options.bypassQueue && this.runningBackground >= this.maxConcurrent) {
+		if (
+			effectiveOptions.isBackground &&
+			!effectiveOptions.bypassQueue &&
+			this.runningBackground >= this.maxConcurrent
+		) {
 			this.queue.push({ id, args })
 			return id
 		}
@@ -183,14 +212,11 @@ export class AgentManager {
 			detachParentSignal = undefined
 		}
 
-		const initialTokenBudget = record.taskRef
-			? Math.min(options.tokenBudget ?? MAX_FERMENT_WORKER_OUTPUT_TOKENS, MAX_FERMENT_WORKER_OUTPUT_TOKENS)
-			: options.tokenBudget
 		const promise = runAgent(ctx, type, prompt, {
 			pi,
 			model: options.model,
 			maxTurns: options.maxTurns,
-			tokenBudget: initialTokenBudget,
+			tokenBudget: options.tokenBudget,
 			inactivityTimeout: options.inactivityTimeout,
 			maxDuration: options.maxDuration,
 			workerReport: record.taskRef
@@ -344,7 +370,7 @@ export class AgentManager {
 
 	async resume(
 		id: string,
-		prompt: string,
+		prompt: string | undefined,
 		options: {
 			signal?: AbortSignal
 			maxTurns?: number
@@ -357,37 +383,33 @@ export class AgentManager {
 		const record = this.agents.get(id)
 		if (!record?.session) return undefined
 		const purpose = options.purpose ?? "continuation"
-		const attemptsForPurpose = record.resumeAttempts?.filter((attempt) => attempt.purpose === purpose).length ?? 0
-		const attemptLimit =
-			purpose === "finalize_report" ? DEFAULT_MAX_REPORT_FINALIZERS : DEFAULT_MAX_CONTINUATION_RESUMES
-		if (record.taskRef?.kind === "ferment_step" && attemptsForPurpose >= attemptLimit) {
-			record.status = "error"
-			record.error = `Agent "${id}" has already used the Ferment worker ${purpose} resume limit (${attemptLimit}). Spawn a new linked worker for remaining work.`
-			record.completedAt = Date.now()
-			record.latestOutcome = buildAgentOutcome(record)
-			return record
-		}
+		if (this.getResumeBlockReason(id, purpose)) return record
+		const tierBudget = record.taskRef ? FERMENT_WORKER_BUDGETS[record.taskRef.budget_tier ?? "standard"] : undefined
+		const attemptLimits =
+			purpose === "finalize_report"
+				? REPORT_FINALIZATION_LIMITS
+				: tierBudget
+					? {
+							...options,
+							maxTurns: Math.min(options.maxTurns ?? tierBudget.maxTurns, tierBudget.maxTurns),
+							maxDuration: Math.min(options.maxDuration ?? tierBudget.maxDuration, tierBudget.maxDuration),
+							tokenBudget: Math.min(options.tokenBudget ?? tierBudget.tokenBudget, tierBudget.tokenBudget),
+						}
+					: options
 		const remainingTokenBudget = record.taskRef
-			? MAX_FERMENT_WORKER_OUTPUT_TOKENS - record.lifetimeUsage.output
+			? Math.max(0, cumulativeTokenBudget(record.taskRef) - record.lifetimeUsage.output)
 			: undefined
-		if (remainingTokenBudget != null && remainingTokenBudget <= 0) {
-			record.status = "error"
-			record.error = `Agent "${id}" exhausted the cumulative Ferment worker output budget (${MAX_FERMENT_WORKER_OUTPUT_TOKENS}).`
-			record.completedAt = Date.now()
-			record.latestOutcome = buildAgentOutcome(record)
-			return record
-		}
 		const attemptTokenBudget =
 			remainingTokenBudget == null
-				? options.tokenBudget
-				: Math.min(options.tokenBudget ?? remainingTokenBudget, remainingTokenBudget)
+				? attemptLimits.tokenBudget
+				: Math.min(attemptLimits.tokenBudget ?? remainingTokenBudget, remainingTokenBudget)
 
 		record.status = "running"
 		record.completedAt = undefined
 		record.result = undefined
 		record.error = undefined
 		record.abortReason = undefined
-		record.maxTurns = options.maxTurns
+		record.maxTurns = attemptLimits.maxTurns
 		record.lastTurnCount = 0
 		record.currentAttemptId++
 		record.agentReport = undefined
@@ -396,7 +418,7 @@ export class AgentManager {
 			attempt_id: record.currentAttemptId,
 			purpose,
 			startedAt: attemptStartedAt,
-			maxTurns: options.maxTurns,
+			maxTurns: attemptLimits.maxTurns,
 			tokenBudget: attemptTokenBudget,
 		}
 		record.resumeAttempts ??= []
@@ -408,7 +430,11 @@ export class AgentManager {
 		else options.signal?.addEventListener("abort", onCallerAbort, { once: true })
 
 		try {
-			const result = await resumeAgent(record.session, withAgentReportProtocol(prompt, record.taskRef), {
+			const attemptPrompt =
+				purpose === "finalize_report" && record.taskRef
+					? reportFinalizationPrompt(record.taskRef)
+					: withAgentReportProtocol(prompt ?? "", record.taskRef)
+			const result = await resumeAgent(record.session, attemptPrompt, {
 				onToolActivity: (activity) => {
 					if (activity.type === "end") record.toolUses++
 				},
@@ -423,10 +449,10 @@ export class AgentManager {
 					this.onCompact?.(record, info)
 				},
 				signal: abortController.signal,
-				maxTurns: options.maxTurns,
+				maxTurns: attemptLimits.maxTurns,
 				tokenBudget: attemptTokenBudget,
 				inactivityTimeout: options.inactivityTimeout,
-				maxDuration: options.maxDuration,
+				maxDuration: attemptLimits.maxDuration,
 				hardTurnLimit: record.taskRef?.kind === "ferment_step",
 				shouldTerminateAfterTool: (toolName) =>
 					toolName === "submit_agent_report" && record.agentReport?.attempt_id === record.currentAttemptId,
@@ -437,7 +463,7 @@ export class AgentManager {
 			record.abortReason = result.abortReason
 			record.result = result.responseText
 			record.lastTurnCount = result.turnsUsed
-			record.maxTurns = result.maxTurns ?? options.maxTurns
+			record.maxTurns = result.maxTurns ?? attemptLimits.maxTurns
 			record.completedAt = Date.now()
 		} catch (err) {
 			record.status = "error"
@@ -452,6 +478,27 @@ export class AgentManager {
 		record.latestOutcome = buildAgentOutcome(record)
 
 		return record
+	}
+
+	getResumeBlockReason(id: string, purpose: "continuation" | "finalize_report"): string | undefined {
+		const record = this.agents.get(id)
+		if (!record?.session) return `Agent "${id}" has no active session to resume.`
+		if (purpose === "finalize_report" && record.taskRef?.kind !== "ferment_step") {
+			return `Agent "${id}" is not a Ferment-linked worker and cannot finalize a worker report.`
+		}
+		if (record.agentReport?.attempt_id === record.currentAttemptId && record.agentReport.status === "completed") {
+			return `Agent "${id}" already has an accepted completed report for its current attempt.`
+		}
+		const attemptsForPurpose = record.resumeAttempts?.filter((attempt) => attempt.purpose === purpose).length ?? 0
+		const attemptLimit =
+			purpose === "finalize_report" ? DEFAULT_MAX_REPORT_FINALIZERS : DEFAULT_MAX_CONTINUATION_RESUMES
+		if (record.taskRef?.kind === "ferment_step" && attemptsForPurpose >= attemptLimit) {
+			return `Agent "${id}" has already used the Ferment worker ${purpose} resume limit (${attemptLimit}). Spawn a new linked worker for remaining work.`
+		}
+		if (record.taskRef && record.lifetimeUsage.output >= cumulativeTokenBudget(record.taskRef)) {
+			return `Agent "${id}" exhausted the cumulative ${record.taskRef.budget_tier ?? "standard"} Ferment worker output budget (${cumulativeTokenBudget(record.taskRef)} tokens).`
+		}
+		return undefined
 	}
 
 	submitReport(agentId: string, report: WorkerReportSubmission): AgentRecord | undefined {

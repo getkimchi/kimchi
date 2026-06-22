@@ -10,7 +10,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Static } from "typebox"
 import type { StepResult } from "../../../ferment/types.js"
 import { getAgentRecordForTaskValidation } from "../../agents/index.js"
-import { AGENT_WORKER_BUDGETS } from "../../agents/worker-budget-policy.js"
+import { FERMENT_WORKER_BUDGETS, type FermentWorkerBudgetTier } from "../../agents/worker-budget-policy.js"
 import { askUser } from "../ask-user.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { renderGateGuidance } from "../gate-registry.js"
@@ -130,7 +130,7 @@ function validateLinkedWorker(params: CompleteStepArgs): string | null {
 	}
 	if (latest.outcome === "completed") {
 		if (!latest.report) {
-			return `Worker Agent "${params.worker_agent_id}" completed without submit_agent_report. Call resume_subagent with purpose "finalize_report", max_turns: 1, and a short max_duration; instruct it not to do more task work.`
+			return `Worker Agent "${params.worker_agent_id}" completed without submit_agent_report. Call resume_subagent with only agent_id and purpose "finalize_report"; the host supplies its fixed report-only prompt and limits.`
 		}
 		if (latest.report.status !== "completed") {
 			return `Worker Agent "${params.worker_agent_id}" outcome is completed, but submit_agent_report status is "${latest.report.status}". Complete requires report.status "completed"; inspect remaining_steps and resume, spawn a linked replacement, or stop/report.`
@@ -179,8 +179,9 @@ async function runVerificationCommand({
 export function suggestWorkerLimits(
 	_description: string,
 	_verifyCommand?: string,
-): { maxTurns: number; maxDuration: number; tokenBudget: number } {
-	return { ...AGENT_WORKER_BUDGETS.fermentStep }
+	tier: FermentWorkerBudgetTier = "standard",
+) {
+	return { ...FERMENT_WORKER_BUDGETS[tier] }
 }
 
 export async function startStep(
@@ -309,14 +310,15 @@ Do NOT call start_ferment_step again without user input.`,
 		ferment_id: outcome.ferment.id,
 		phase_id: phase.id,
 		step_id: step.id,
+		budget_tier: params.budget_tier ?? "standard",
 	}
 
-	const workerLimits = suggestWorkerLimits(step.description, step.verification?.command)
-	const limitsHint = `\n\nSuggested worker budget (set all three on the Agent call): max_turns=${workerLimits.maxTurns}, max_duration=${workerLimits.maxDuration}s, token_budget=${workerLimits.tokenBudget}. Select a different centralized budget tier only when the scoped step clearly requires it. Do not complete the step from an exhausted worker. Inspect its structured report, then use resume_subagent for a bounded direct continuation, spawn a narrower linked replacement for separable remaining work, or stop/report when blocked. Do not raise the limits and retry the same broad task.`
+	const workerLimits = suggestWorkerLimits(step.description, step.verification?.command, taskRef.budget_tier)
+	const limitsHint = `\n\nSelected worker budget: budget_tier=${taskRef.budget_tier}, max_turns=${workerLimits.maxTurns}, max_duration=${workerLimits.maxDuration}s, token_budget=${workerLimits.tokenBudget}, cumulative_token_budget=${workerLimits.cumulativeTokenBudget}. Set all three execution limits exactly on the Agent call. Select the tier explicitly on start_ferment_step from the scoped work shape; never infer it from description keywords. Do not complete the step from an exhausted worker. Inspect its structured report, then use resume_subagent for a bounded direct continuation, spawn a narrower linked replacement for separable remaining work, or stop/report when blocked. Do not raise the limits and retry the same broad task.`
 
 	return toolOk(
 		withNextActionHint(
-			`Step ${step.index}: "${step.description}" started. Spawn a subagent with the persona that matches this step's intent. Pass task_ref: ${JSON.stringify(taskRef)} and use both suggested limits. The worker will receive its Agent ID and must call submit_agent_report before its final answer. When it returns with agent_outcome.outcome "completed" and agent_outcome.report.status "completed", call complete_ferment_step with worker_agent_id and the report summary.${lowGradeCaution}${parallelNote}${limitsHint}${contextBlock}`,
+			`Step ${step.index}: "${step.description}" started. Spawn a subagent with the persona that matches this step's intent. Pass task_ref: ${JSON.stringify(taskRef)} and use the selected limits. The worker will receive its Agent ID and must call submit_agent_report before its final answer. When it returns with agent_outcome.outcome "completed" and agent_outcome.report.status "completed", call complete_ferment_step with worker_agent_id and the report summary.${lowGradeCaution}${parallelNote}${limitsHint}${contextBlock}`,
 			outcome.ferment,
 		),
 	)

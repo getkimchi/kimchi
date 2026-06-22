@@ -935,6 +935,69 @@ describe("runAgent — budget awareness steers", () => {
 })
 
 describe("runAgent — linked worker hard turn limit", () => {
+	it("completes when the host accepts a report on the final allowed turn", async () => {
+		const abortSpy = vi.fn()
+		const session = makeFakeSession({
+			abortSpy,
+			emitUsage: false,
+			events: [{ type: "tool_execution_end", toolName: "submit_agent_report" }, { type: "turn_end" }],
+		})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+		mockGetConfig.mockReturnValue(makeTypeConfig({ extensions: true, skills: false }))
+		mockGetAgentConfig.mockReturnValue(makeAgentConfig())
+
+		const result = await runAgent(
+			makeFakeCtx() as unknown as Parameters<typeof runAgent>[0],
+			"General-Purpose",
+			"work",
+			{
+				pi: makeFakePi() as unknown as RunOptions["pi"],
+				maxTurns: 1,
+				hardTurnLimit: true,
+				workerReport: { submit: vi.fn(), isAccepted: vi.fn(() => true) },
+			},
+		)
+
+		expect(abortSpy).toHaveBeenCalledOnce()
+		expect(result).toMatchObject({ aborted: false, abortReason: undefined, turnsUsed: 1 })
+	})
+
+	it("does not apply token-budget handling after the host accepts a report", async () => {
+		const abortSpy = vi.fn()
+		const session = makeFakeSession({
+			abortSpy,
+			events: [{ type: "tool_execution_end", toolName: "submit_agent_report" }, ...turnEvents(2_000)],
+		})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+		mockGetConfig.mockReturnValue(makeTypeConfig({ extensions: true, skills: false }))
+		mockGetAgentConfig.mockReturnValue(makeAgentConfig())
+
+		const result = await runAgent(
+			makeFakeCtx() as unknown as Parameters<typeof runAgent>[0],
+			"General-Purpose",
+			"work",
+			{
+				pi: makeFakePi() as unknown as RunOptions["pi"],
+				tokenBudget: 1_024,
+				workerReport: { submit: vi.fn(), isAccepted: vi.fn(() => true) },
+			},
+		)
+
+		expect(abortSpy).toHaveBeenCalledOnce()
+		expect(session.steer).not.toHaveBeenCalledWith(expect.stringContaining("output token limit"))
+		expect(result).toMatchObject({ aborted: false, abortReason: undefined })
+	})
+
 	it("aborts a Ferment-linked worker at max_turns without grace turns", async () => {
 		const abortSpy = vi.fn()
 		const session = makeFakeSession({
@@ -1431,6 +1494,26 @@ describe("steerAgent — explicit steering", () => {
 })
 
 describe("resumeAgent — inactivity steering", () => {
+	it("completes after a report on the resume's final turn and token boundary", async () => {
+		const { resumeAgent } = await import("./agent-runner.js")
+		const abortSpy = vi.fn()
+		const session = makeFakeSession({
+			abortSpy,
+			events: [{ type: "tool_execution_end", toolName: "submit_agent_report" }, ...turnEvents(2_000)],
+		})
+
+		const result = await resumeAgent(session as unknown as AgentSession, "submit report", {
+			maxTurns: 1,
+			hardTurnLimit: true,
+			tokenBudget: 1_024,
+			shouldTerminateAfterTool: (toolName) => toolName === "submit_agent_report",
+		})
+
+		expect(abortSpy).toHaveBeenCalledOnce()
+		expect(session.steer).not.toHaveBeenCalledWith(expect.stringContaining("output token limit"))
+		expect(result).toMatchObject({ aborted: false, abortReason: undefined, turnsUsed: 1 })
+	})
+
 	it("stops a resumed worker after an accepted report", async () => {
 		const { resumeAgent } = await import("./agent-runner.js")
 		const abortSpy = vi.fn()

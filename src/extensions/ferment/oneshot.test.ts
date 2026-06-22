@@ -57,6 +57,7 @@ describe("buildOneshotNudge", () => {
 		const out = buildOneshotNudge(makeFerment(), INTENT)
 		expect(out).toContain("max_turns")
 		expect(out).toContain("max_duration")
+		expect(out).toContain("budget_tier")
 		expect(out).toContain("task_ref")
 		expect(out).toContain("submit_agent_report")
 		expect(out).toContain("do not mark the step complete")

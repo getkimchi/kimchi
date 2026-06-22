@@ -461,6 +461,9 @@ function readAgentTaskRef(params: Record<string, unknown>): AgentTaskRef | undef
 			ferment_id: ref.ferment_id,
 			phase_id: ref.phase_id,
 			step_id: ref.step_id,
+			...(ref.budget_tier === "narrow" || ref.budget_tier === "standard" || ref.budget_tier === "complex"
+				? { budget_tier: ref.budget_tier }
+				: {}),
 		}
 	}
 	return undefined
@@ -930,6 +933,9 @@ Model selection - YOU choose based on task complexity:
 						ferment_id: Type.String(),
 						phase_id: Type.String(),
 						step_id: Type.String(),
+						budget_tier: Type.Optional(
+							Type.Union([Type.Literal("narrow"), Type.Literal("standard"), Type.Literal("complex")]),
+						),
 					}),
 				),
 			}),

@@ -455,6 +455,7 @@ async function runAgentInner(
 	let aborted = false
 	let abortReason: AgentAbortReason | undefined
 	let budgetAborted = false
+	let reportAccepted = false
 
 	const inactivity = { lastActivityAt: Date.now(), steered: false }
 	const inactivityTimeout = options.inactivityTimeout ?? DEFAULT_INACTIVITY_TIMEOUT
@@ -498,7 +499,7 @@ async function runAgentInner(
 		if (event.type === "turn_end") {
 			turnCount++
 			options.onTurnEnd?.(turnCount)
-			if (effectiveMaxTurns != null) {
+			if (!reportAccepted && effectiveMaxTurns != null) {
 				if (options.hardTurnLimit && turnCount >= effectiveMaxTurns) {
 					aborted = true
 					abortReason = "max_turns"
@@ -535,6 +536,7 @@ async function runAgentInner(
 		if (event.type === "tool_execution_end") {
 			options.onToolActivity?.({ type: "end", toolName: event.toolName })
 			if (event.toolName === WORKER_REPORT_TOOL_NAME && options.workerReport?.isAccepted()) {
+				reportAccepted = true
 				queueMicrotask(() => session.abort())
 			}
 		}
@@ -554,7 +556,7 @@ async function runAgentInner(
 				addUsage(observedUsage, usage)
 				addUsage(windowObservedUsage, usage)
 				options.onAssistantUsage?.(usage)
-				if (effectiveTokenBudget != null && !budgetAborted) {
+				if (!reportAccepted && effectiveTokenBudget != null && !budgetAborted) {
 					cumulativeTokens += getOutputTotal(usage)
 					if (cumulativeTokens > effectiveTokenBudget) {
 						budgetAborted = true
@@ -657,7 +659,12 @@ async function runAgentInner(
 		options.onAssistantUsage?.(finalUsageDelta)
 	}
 
-	if (effectiveTokenBudget != null && !budgetAborted && getOutputTotal(observedUsage) > effectiveTokenBudget) {
+	if (
+		!reportAccepted &&
+		effectiveTokenBudget != null &&
+		!budgetAborted &&
+		getOutputTotal(observedUsage) > effectiveTokenBudget
+	) {
 		budgetAborted = true
 		abortReason = "token_budget"
 	}
@@ -666,8 +673,8 @@ async function runAgentInner(
 	return {
 		responseText,
 		session,
-		aborted: aborted || budgetAborted,
-		abortReason,
+		aborted: reportAccepted ? false : aborted || budgetAborted,
+		abortReason: reportAccepted ? undefined : abortReason,
 		steered: softLimitReached,
 		turnsUsed: turnCount,
 		maxTurns: effectiveMaxTurns,
@@ -710,6 +717,7 @@ export async function resumeAgent(
 	let aborted = false
 	let budgetAborted = false
 	let abortReason: AgentAbortReason | undefined
+	let terminationToolCompleted = false
 
 	const unsubEvents = session.subscribe((event: AgentSessionEvent) => {
 		resumeInactivity.lastActivityAt = Date.now()
@@ -718,7 +726,7 @@ export async function resumeAgent(
 		if (event.type === "turn_end") {
 			turnCount++
 			options.onTurnEnd?.(turnCount)
-			if (effectiveMaxTurns != null) {
+			if (!terminationToolCompleted && effectiveMaxTurns != null) {
 				if (options.hardTurnLimit && turnCount >= effectiveMaxTurns) {
 					aborted = true
 					abortReason = "max_turns"
@@ -739,7 +747,10 @@ export async function resumeAgent(
 		if (event.type === "tool_execution_start") options.onToolActivity?.({ type: "start", toolName: event.toolName })
 		if (event.type === "tool_execution_end") {
 			options.onToolActivity?.({ type: "end", toolName: event.toolName })
-			if (options.shouldTerminateAfterTool?.(event.toolName)) queueMicrotask(() => session.abort())
+			if (options.shouldTerminateAfterTool?.(event.toolName)) {
+				terminationToolCompleted = true
+				queueMicrotask(() => session.abort())
+			}
 		}
 		if (event.type === "message_end" && event.message.role === "assistant") {
 			const u = (
@@ -756,7 +767,7 @@ export async function resumeAgent(
 				}
 				cumulativeTokens += getOutputTotal(usage)
 				options.onAssistantUsage?.(usage)
-				if (effectiveTokenBudget != null && !budgetAborted) {
+				if (!terminationToolCompleted && effectiveTokenBudget != null && !budgetAborted) {
 					if (cumulativeTokens > effectiveTokenBudget) {
 						budgetAborted = true
 						abortReason = "token_budget"
@@ -809,8 +820,8 @@ export async function resumeAgent(
 	return {
 		responseText,
 		session,
-		aborted: aborted || budgetAborted,
-		abortReason,
+		aborted: terminationToolCompleted ? false : aborted || budgetAborted,
+		abortReason: terminationToolCompleted ? undefined : abortReason,
 		steered: softLimitReached,
 		turnsUsed: turnCount,
 		maxTurns: effectiveMaxTurns,

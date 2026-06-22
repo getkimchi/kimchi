@@ -23,8 +23,8 @@ Execute ALL of the following steps in order WITHOUT pausing to ask the user, rea
    - gates: exactly P1, P2, P3 — each with id, verdict, rationale, evidence. The schema hard-rejects calls missing this array.
 
 2. **For each phase**, call activate_ferment_phase, then for each step:
-   - call start_ferment_step
-   - spawn an Agent worker with the exact task_ref returned by start_ferment_step and explicit max_turns, max_duration, and token_budget — always set all three, using the suggested budget as the default
+   - call start_ferment_step with an explicit budget_tier chosen from the scoped work shape: narrow, standard (normal implementation default), or complex
+   - spawn an Agent worker with the exact task_ref returned by start_ferment_step and explicit max_turns, max_duration, and token_budget — always set all three to the selected limits returned by the tool
    - require the worker to call submit_agent_report before its final answer
    - inspect agent_outcome when the worker returns. Call complete_ferment_step with worker_agent_id and the report summary only when outcome is "completed" and report.status is "completed"
    - if the worker exhausts its budget, fails, or stops, do not mark the step complete. Inspect its report, then use resume_subagent for a bounded direct continuation, spawn a narrower linked replacement for separable remaining work, or stop/report when blocked. Do not raise the limits and retry the same broad task
