@@ -294,6 +294,60 @@ describe("contextFiles injection", () => {
 	})
 })
 
+describe("taskContext injection", () => {
+	it("includes <task_context> block when taskContext is provided", () => {
+		const agent = getRequired(AGENT_GENERAL_PURPOSE)
+		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT, {
+			taskContext: "Add a new endpoint at src/api/users.ts following REST conventions.",
+		})
+		expect(output).toContain("<task_context>")
+		expect(output).toContain("Add a new endpoint at src/api/users.ts following REST conventions.")
+		expect(output).toContain("Begin working from this directly")
+	})
+
+	it("does not include <task_context> block when taskContext is absent", () => {
+		const agent = getRequired(AGENT_GENERAL_PURPOSE)
+		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT)
+		expect(output).not.toContain("<task_context>")
+	})
+
+	it("does not include <task_context> block when taskContext is empty string", () => {
+		const agent = getRequired(AGENT_GENERAL_PURPOSE)
+		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT, {
+			taskContext: "",
+		})
+		expect(output).not.toContain("<task_context>")
+	})
+
+	it("does not include <task_context> block when taskContext is whitespace only", () => {
+		const agent = getRequired(AGENT_GENERAL_PURPOSE)
+		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT, {
+			taskContext: "   \n  ",
+		})
+		expect(output).not.toContain("<task_context>")
+	})
+
+	it("<task_context> appears after <sub_agent_context> in append mode", () => {
+		const agent = getRequired(AGENT_GENERAL_PURPOSE)
+		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT, {
+			taskContext: "Fix the bug in src/parser.ts.",
+		})
+		const subAgentPos = output.indexOf("</sub_agent_context>")
+		const taskContextPos = output.indexOf("<task_context>")
+		expect(subAgentPos).toBeGreaterThan(-1)
+		expect(taskContextPos).toBeGreaterThan(subAgentPos)
+	})
+
+	it("taskContext is not injected in replace mode", () => {
+		const agent = getRequired(AGENT_EXPLORE)
+		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT, {
+			taskContext: "Should not appear.",
+		})
+		expect(output).not.toContain("<task_context>")
+		expect(output).not.toContain("Should not appear.")
+	})
+})
+
 describe("formatTokenBudget", () => {
 	const cases: Record<string, { input: number; expected: string }> = {
 		"formats millions": { input: 1_500_000, expected: "1.5M" },
