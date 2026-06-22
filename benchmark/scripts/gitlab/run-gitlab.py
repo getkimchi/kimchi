@@ -15,6 +15,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from bench_config import DEFAULT_MODEL, ENV_MODEL
+
 PASS_REWARD = 1.0
 VALID_CODING_AGENTS = ("kimchi", "opencode", "claude-code")
 CLAUDE_CODE_ONLY_MODELS = frozenset({
@@ -540,7 +542,7 @@ def build_metadata(
 
 def main() -> int:
     dataset = getenv("DATASET", "terminal-bench/terminal-bench-2")
-    model = getenv("MODEL", "kimchi-dev/kimi-k2.6")
+    model = getenv(ENV_MODEL, DEFAULT_MODEL)
     kimchi_multi_model = parse_bool("KIMCHI_MULTI_MODEL", getenv("KIMCHI_MULTI_MODEL", "true"))
     kimchi_ferment_oneshot = parse_bool("KIMCHI_FERMENT_ONESHOT", getenv("KIMCHI_FERMENT_ONESHOT", "false"))
     parallelism = getenv("BENCH_PARALLELISM", "1")

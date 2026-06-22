@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -13,8 +14,15 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from classify import ERROR_RULES, ErrorRule  # noqa: F401 — ErrorRule re-exported for callers
+from outcome import Outcome
+
+# Lookup used by extract_error_evidence() to find evidence_markers by kind.
+_KIND_TO_RULE: dict[str, ErrorRule] = {r.kind: r for r in ERROR_RULES}
+
 PASS_REWARD = 1.0
-SUMMARY_SCHEMA_VERSION = "benchmark-summary/v1"
+SUMMARY_SCHEMA_VERSION = "benchmark-summary/v2"
+MAX_CHUNK_ATTEMPTS = 3  # 1 initial + 2 retries (matches YAML retry: 2)
 KIMCHI_MODEL_PROVIDERS = frozenset({"kimchi-dev"})
 ERROR_EVIDENCE_LIMIT = 1_000
 
@@ -42,199 +50,6 @@ class VerifierSummary:
             result["duration_ms"] = duration_ms * 1000
         return result
 
-
-@dataclass(frozen=True)
-class ErrorClassification:
-    kind: str
-    evidence_markers: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class TrialErrorContext:
-    exception_type: str | None
-    reward: float | None
-    exception_text: str
-
-    @classmethod
-    def from_result(cls, result: dict[str, Any]) -> TrialErrorContext:
-        pieces = [
-            get_path(result, "exception_info", "exception_type"),
-            get_path(result, "exception_info", "exception_message"),
-            get_path(result, "exception_info", "exception_traceback"),
-        ]
-        return cls(
-            exception_type=string_or_none(get_path(result, "exception_info", "exception_type")),
-            reward=numeric_reward(get_path(result, "verifier_result", "rewards", "reward")),
-            exception_text="\n".join(str(piece) for piece in pieces if piece is not None).casefold(),
-        )
-
-    def contains_all(self, *needles: str) -> bool:
-        return all(needle in self.exception_text for needle in needles)
-
-
-@dataclass(frozen=True)
-class ErrorRule:
-    kind: str
-    evidence_markers: tuple[str, ...]
-    marker_groups: tuple[tuple[str, ...], ...] = ()
-    exception_types: tuple[str, ...] = ()
-
-    def matches(self, context: TrialErrorContext) -> bool:
-        if self.exception_types and context.exception_type in self.exception_types:
-            return True
-        return any(context.contains_all(*group) for group in self.marker_groups)
-
-    def classify(self) -> ErrorClassification:
-        return ErrorClassification(kind=self.kind, evidence_markers=self.evidence_markers)
-
-
-VERIFIER_FAILED_EVIDENCE_MARKERS = ("assertionerror", "failed", "failure", "error:")
-AGENT_EXIT_AFTER_SUCCESS_EVIDENCE_MARKERS = (
-    "socket connection was closed unexpectedly",
-    "command aborted",
-    "server disconnected",
-    "exit 1",
-)
-
-ERROR_RULES = (
-    ErrorRule(
-        kind="agent_timeout",
-        exception_types=("AgentTimeoutError",),
-        evidence_markers=("agent execution timed out", "timed out"),
-    ),
-    ErrorRule(
-        kind="verifier_timeout",
-        exception_types=("VerifierTimeoutError",),
-        evidence_markers=("verifier execution timed out", "timed out"),
-    ),
-    ErrorRule(
-        kind="agent_stale_extension_context",
-        marker_groups=(("extension ctx is stale",),),
-        evidence_markers=("extension ctx is stale",),
-    ),
-    ErrorRule(
-        kind="agent_model_catalog_unavailable",
-        marker_groups=(
-            ("kimchi_agent/gateway.py", "_fetch_model_metadata"),
-            ("model list", "fetch", "model"),
-            ("could not load the model list",),
-            ("failed to fetch models",),
-            ("models.json", "no models available"),
-        ),
-        evidence_markers=("could not load the model list", "failed to fetch models", "no models available"),
-    ),
-    ErrorRule(
-        kind="agent_missing_api_key",
-        marker_groups=(("no api key found",),),
-        evidence_markers=("no api key found",),
-    ),
-    ErrorRule(
-        kind="agent_request_aborted",
-        marker_groups=(("request was aborted",),),
-        evidence_markers=("request was aborted", "aborted"),
-    ),
-    ErrorRule(
-        kind="provider_api_timeout",
-        marker_groups=(("api error", "524"), ("origin_response_timeout",), ("cloudflare", "timeout")),
-        evidence_markers=("origin_response_timeout", "cloudflare", "524"),
-    ),
-    ErrorRule(
-        kind="agent_upstream_error",
-        marker_groups=(
-            ("hosted_vllmexception",),
-            ("internalservererror",),
-            ("weighted dispatch",),
-            ("organization id not found",),
-        ),
-        evidence_markers=(
-            "hosted_vllmexception",
-            "internalservererror",
-            "weighted dispatch",
-            "organization id not found",
-        ),
-    ),
-    ErrorRule(
-        kind="agent_transport_error",
-        marker_groups=(
-            ("socket connection was closed unexpectedly",),
-            ("connection reset by peer",),
-            ("server disconnected",),
-        ),
-        evidence_markers=(
-            "socket connection was closed unexpectedly",
-            "connection reset by peer",
-            "server disconnected",
-        ),
-    ),
-    ErrorRule(
-        kind="agent_command_timeout",
-        marker_groups=(("command timed out after",),),
-        evidence_markers=("command timed out after",),
-    ),
-    ErrorRule(
-        kind="agent_process_killed",
-        marker_groups=(
-            ("killed", "/installed-agent/bin/kimchi"),
-            ("command failed (exit 137)",),
-            ("command failed (exit 143)",),
-        ),
-        evidence_markers=("killed", "exit 137", "exit 143"),
-    ),
-    ErrorRule(
-        kind="agent_environment_error",
-        marker_groups=(("failed to resolve user",), ("cannot find -l",), ("no such file or directory",)),
-        evidence_markers=("failed to resolve user", "cannot find -l", "no such file or directory"),
-    ),
-)
-
-
-class TrialErrorClassifier:
-    PHASES = ("environment_setup", "agent_setup", "agent_execution", "verifier")
-
-    def __init__(self, result: dict[str, Any]) -> None:
-        self.result = result
-
-    def classify(self) -> ErrorClassification | None:
-        context = TrialErrorContext.from_result(self.result)
-        if context.exception_type is None:
-            if context.reward is not None and context.reward != PASS_REWARD:
-                return ErrorClassification("verifier_failed", VERIFIER_FAILED_EVIDENCE_MARKERS)
-            return None
-
-        if context.reward == PASS_REWARD:
-            return ErrorClassification("agent_exit_after_success", AGENT_EXIT_AFTER_SUCCESS_EVIDENCE_MARKERS)
-
-        for rule in ERROR_RULES:
-            if rule.matches(context):
-                return rule.classify()
-
-        phase = self._exception_phase()
-        return ErrorClassification(f"{phase}_failed" if phase in self.PHASES else "unknown")
-
-    def classify_kind(self) -> str | None:
-        classification = self.classify()
-        return classification.kind if classification is not None else None
-
-    def _phase_contains_time(self, phase: str, timestamp: datetime) -> bool:
-        start = parse_time(string_or_none(get_path(self.result, phase, "started_at")))
-        end = parse_time(string_or_none(get_path(self.result, phase, "finished_at")))
-        return start is not None and end is not None and start <= timestamp <= end
-
-    def _exception_phase(self) -> str:
-        occurred_at = parse_time(string_or_none(get_path(self.result, "exception_info", "occurred_at")))
-        if occurred_at is not None:
-            for phase in self.PHASES:
-                if self._phase_contains_time(phase, occurred_at):
-                    return phase
-        if get_path(self.result, "agent_execution", "started_at") is not None:
-            return "agent_execution"
-        if get_path(self.result, "agent_setup", "started_at") is not None:
-            return "agent_setup"
-        if self.result.get("environment_setup") is not None:
-            return "environment_setup"
-        if self.result.get("verifier") is not None:
-            return "verifier"
-        return "unknown"
 
 
 @dataclass
@@ -290,26 +105,22 @@ class TrialSummary:
     reward: float | None
     exception: str | None
     exception_message: str | None
-    error_kind: str | None
     total_time_seconds: int | None
     models: list[dict[str, Any]]
     trial_dir: Path
     start: str | None
     end: str | None
+    error_category: str | None = None
+    error_subcategory: str | None = None
+    outcome: Outcome = Outcome.SCORED_FAIL
 
     def status(self) -> str:
-        if self.solved:
-            return "passed"
-        if self.exception is not None:
-            return "error"
-        return "failed"
+        return "passed" if self.outcome == Outcome.SCORED_PASS else "failed"
 
     def error(self) -> dict[str, str]:
-        error_type = self.error_kind or self.exception or ""
-        error_message = self.exception_message or self.exception or ""
         return {
-            "type": error_type,
-            "message": error_message,
+            "type": self.error_subcategory or self.exception or "",
+            "message": self.exception_message or self.exception or "",
         }
 
     def to_summary_json(self) -> dict[str, Any]:
@@ -324,6 +135,9 @@ class TrialSummary:
         }
         if self.total_time_seconds is not None:
             result["duration_ms"] = self.total_time_seconds * 1000
+        result["error_category"] = self.error_category
+        result["error_subcategory"] = self.error_subcategory
+        result["verdict"] = self.outcome
         return result
 
 
@@ -743,16 +557,15 @@ def extract_error_evidence(
     trial_dir: Path,
     session_files: list[Path],
     warnings: list[str],
-    classification: ErrorClassification,
+    kind: str | None,
 ) -> ErrorEvidence:
-    error_kind = classification.kind
     sources: list[tuple[str, str]] = []
     session_text = "\n".join(session_error_text(path, warnings) for path in session_files)
     if session_text.strip():
         sources.append(("agent/session", session_text))
 
     verifier_stdout = file_excerpt(trial_dir / "verifier" / "test-stdout.txt")
-    if error_kind == "verifier_failed" and verifier_stdout.strip():
+    if kind == "verifier_failed" and verifier_stdout.strip():
         sources.append(("verifier/test-stdout.txt", verifier_stdout))
 
     exception_text = string_or_none(get_path(result, "exception_info", "exception_message"))
@@ -764,10 +577,11 @@ def extract_error_evidence(
         if text.strip():
             sources.append((str(relative), text))
 
-    if error_kind != "verifier_failed" and verifier_stdout.strip():
+    if kind != "verifier_failed" and verifier_stdout.strip():
         sources.append(("verifier/test-stdout.txt", verifier_stdout))
 
-    preferred_markers = classification.evidence_markers
+    rule = _KIND_TO_RULE.get(kind or "")
+    preferred_markers = rule.evidence_markers if rule else ()
     if preferred_markers:
         for source, text in sources:
             evidence = error_marker_line(text, preferred_markers)
@@ -824,17 +638,22 @@ def summarize_trial(trial_dir: Path, attempt: int, warnings: list[str]) -> Trial
     reward = numeric_reward(get_path(result, "verifier_result", "rewards", "reward"))
     exception = string_or_none(get_path(result, "exception_info", "exception_type"))
     exception_message = string_or_none(get_path(result, "exception_info", "exception_message"))
-    classifier = TrialErrorClassifier(result)
-    classification = classifier.classify()
-    error_kind = classification.kind if classification is not None else None
-    error_evidence = (
-        extract_error_evidence(result, trial_dir, session_files, warnings, classification)
-        if classification is not None
-        else ErrorEvidence()
-    )
+
+    raw_outcome = result.get("outcome")
+    try:
+        outcome = Outcome(raw_outcome) if isinstance(raw_outcome, str) else (
+            Outcome.SCORED_PASS if reward == PASS_REWARD else Outcome.SCORED_FAIL
+        )
+    except ValueError:
+        outcome = Outcome.SCORED_FAIL
+    error_category = result.get("error_category") if isinstance(result.get("error_category"), str) else None
+    error_subcategory = result.get("error_subcategory") if isinstance(result.get("error_subcategory"), str) else None
+
+    error_evidence = extract_error_evidence(result, trial_dir, session_files, warnings, error_subcategory)
     error_message = error_evidence.text or exception_message
     total_time_seconds = trial_total_time(result, session_scan)
     task = trial_dir.name.split("__", 1)[0]
+
     return TrialSummary(
         task=task,
         trial_id=trial_dir.name,
@@ -843,7 +662,6 @@ def summarize_trial(trial_dir: Path, attempt: int, warnings: list[str]) -> Trial
         reward=reward,
         exception=exception,
         exception_message=error_message,
-        error_kind=error_kind,
         total_time_seconds=total_time_seconds,
         models=[stats.to_summary_json() for stats in sorted(session_scan.models.values(), key=model_sort_key)],
         trial_dir=trial_dir,
@@ -851,6 +669,9 @@ def summarize_trial(trial_dir: Path, attempt: int, warnings: list[str]) -> Trial
         end=string_or_none(get_path(result, "verifier", "finished_at"))
         or string_or_none(get_path(result, "agent_execution", "finished_at"))
         or session_scan.end,
+        outcome=outcome,
+        error_category=error_category,
+        error_subcategory=error_subcategory,
     )
 
 
@@ -891,17 +712,98 @@ def build_source(metadata: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def load_chunk_metas(results_dir: Path) -> dict[int, dict[str, Any]]:
+    """Read all chunk-meta JSON files. Returns {chunk_index: meta_dict_with_exhausted_flag}.
+
+    A chunk is 'exhausted' if its latest recorded attempt number is at MAX_CHUNK_ATTEMPTS
+    AND needs_retry is non-empty.
+    """
+    metas: dict[int, dict[str, Any]] = {}
+    meta_dir = results_dir / "chunk-meta"
+    if not meta_dir.is_dir():
+        return metas
+    for meta_path in sorted(meta_dir.glob("chunk-*.json")):
+        try:
+            data = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"Warning: skipping chunk-meta {meta_path}: {exc}", file=sys.stderr)
+            continue
+        if not isinstance(data, dict):
+            print(f"Warning: skipping chunk-meta {meta_path}: top-level JSON is not an object", file=sys.stderr)
+            continue
+        chunk_index = data.get("chunk_index")
+        if not isinstance(chunk_index, int):
+            print(f"Warning: skipping chunk-meta {meta_path}: missing or non-int 'chunk_index'", file=sys.stderr)
+            continue
+        attempt = data.get("chunk_attempt", 0)
+        needs = data.get("needs_retry", []) or []
+        data["exhausted"] = attempt >= MAX_CHUNK_ATTEMPTS and len(needs) > 0
+        metas[chunk_index] = data
+    return metas
+
+
+
 def build_summary(
     metadata: dict[str, Any],
     trials: list[TrialSummary],
     started_at: str | None,
     finished_at: str | None,
     generated_at: str,
+    results_dir: Path,
 ) -> dict[str, Any]:
+    chunk_metas = load_chunk_metas(results_dir)
+    chunks_exhausted = sorted(
+        idx for idx, meta in chunk_metas.items() if meta.get("exhausted")
+    )
+
+    def _is_retryable(t: TrialSummary) -> bool:
+        return t.outcome == Outcome.AGENT_TIMEOUT or (
+            t.outcome == Outcome.ERROR and t.error_category == "infra"
+        )
+
+    passed = sum(1 for t in trials if t.outcome == Outcome.SCORED_PASS)
+    # Exhausted tasks: chunks that ran out of retries and still had failures.
+    exhausted_tasks: set[str] = set()
+    for idx in chunks_exhausted:
+        exhausted_tasks.update(chunk_metas[idx].get("needs_retry", []))
+    # agent_timeout / error: tasks whose chunk exhausted retries, split by outcome.
+    timeout_count = sum(
+        1 for t in trials
+        if t.outcome == Outcome.AGENT_TIMEOUT and t.task in exhausted_tasks
+    )
+    infra_error_count = sum(
+        1 for t in trials
+        if t.outcome == Outcome.ERROR and t.task in exhausted_tasks
+    )
+    # no_verdict: exhausted tasks with no result.json at all (true unknown, not in trials).
+    trial_task_names = {t.task for t in trials}
+    no_verdict = sum(1 for task in exhausted_tasks if task not in trial_task_names)
+    # failed_quality: outcome is scored_fail (includes tasks still retrying)
+    failed_quality = sum(1 for t in trials if t.outcome == Outcome.SCORED_FAIL)
+    # infra_retries: count of tasks that hit a retryable outcome at least once
+    infra_retries = sum(1 for t in trials if _is_retryable(t))
+
     return {
         "schema_version": SUMMARY_SCHEMA_VERSION,
+        "classification": {
+            "classified_by": "classify.py@v1",
+            "pipeline_run_id": os.environ.get("CI_PIPELINE_ID", "unknown"),
+            "pipeline_url": os.environ.get("CI_PIPELINE_URL", ""),
+            "generated_at": generated_at,
+        },
+        "totals": {
+            "expected": len(trials),
+            "passed": passed,
+            "failed_quality": failed_quality,
+            "timeout": timeout_count,
+            "infra_error": infra_error_count,
+            "no_verdict": no_verdict,
+            "infra_retries": infra_retries,
+        },
+        "is_complete": no_verdict == 0 and timeout_count == 0 and infra_error_count == 0,
+        "chunks_exhausted_retries": [f"chunk-{idx}" for idx in chunks_exhausted],
         "run": build_run(metadata, started_at, finished_at, generated_at),
-        "trials": [trial.to_summary_json() for trial in trials],
+        "trials": [t.to_summary_json() for t in trials],
         "source": build_source(metadata),
     }
 
@@ -929,7 +831,7 @@ def write_summary(metadata_path: Path, output_path: Path, results_dir_override: 
 
     started_at, finished_at = run_bounds(results_dir, trials)
     generated_at = utc_now()
-    summary = build_summary(metadata, trials, started_at, finished_at, generated_at)
+    summary = build_summary(metadata, trials, started_at, finished_at, generated_at, results_dir)
     for warning in warnings:
         print(f"Warning: {warning}")
 

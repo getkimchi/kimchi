@@ -2,22 +2,12 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-
-MODULE_PATH = Path(__file__).with_name("summarize_results.py")
-sys.dont_write_bytecode = True
-SPEC = importlib.util.spec_from_file_location("summarize_results", MODULE_PATH)
-assert SPEC is not None and SPEC.loader is not None
-summarize_results = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = summarize_results
-SPEC.loader.exec_module(summarize_results)
-
+import summarize_results
 
 BASE_RESULT = {
     "trial_name": "sample-task__abc123",
@@ -54,6 +44,7 @@ def write_session(trial_dir: Path, text: str) -> None:
 
 class SummarizeResultsClassificationTest(unittest.TestCase):
     def summarize(self, result: dict, session_text: str | None = None, verifier_stdout: str | None = None):
+        from classify import classify as _classify
         with tempfile.TemporaryDirectory() as tmp:
             trial_dir = Path(tmp) / "sample-task__abc123"
             trial_dir.mkdir()
@@ -64,6 +55,15 @@ class SummarizeResultsClassificationTest(unittest.TestCase):
                 verifier_dir = trial_dir / "verifier"
                 verifier_dir.mkdir()
                 (verifier_dir / "test-stdout.txt").write_text(verifier_stdout, encoding="utf-8")
+
+            # Simulate chunk_runner.py: classify and enrich result.json before summarize_trial reads it.
+            verdict = _classify(trial_dir)
+            write_json(trial_dir / "result.json", {
+                **verdict.raw,
+                "outcome": verdict.outcome,
+                "error_category": verdict.error_category,
+                "error_subcategory": verdict.error_subcategory,
+            })
 
             warnings: list[str] = []
             return summarize_results.summarize_trial(trial_dir, 1, warnings)
@@ -85,18 +85,13 @@ class SummarizeResultsClassificationTest(unittest.TestCase):
         self.assertIn(expected_evidence, data["error"]["message"])
 
     def test_classifies_model_catalog_unavailable_from_real_cli_text(self) -> None:
-        message = """stdout: Could not load the model list right now (Failed to fetch models: The operation timed out.). Continuing; models will refresh once the service is reachable.
-No API key found for the selected model.
-
-Use /login to log into a provider via OAuth or API key."""
+        message = """stdout: Could not load the model list right now (Failed to fetch models: The operation timed out.). Continuing; models will refresh once the service is reachable.\nNo API key found for the selected model.\n\nUse /login to log into a provider via OAuth or API key."""  # noqa: E501
         result = self.result_with_exception("NonZeroAgentExitCodeError", message)
 
         self.assert_error(result, "agent_model_catalog_unavailable", "Could not load the model list")
 
     def test_classifies_stale_extension_context_before_catalog_fallback(self) -> None:
-        message = """stdout: Could not load the model list right now (Failed to fetch models: The operation timed out.).
-No API key found for the selected model.
-error: This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload()."""
+        message = """stdout: Could not load the model list right now (Failed to fetch models: The operation timed out.).\nNo API key found for the selected model.\nerror: This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload()."""  # noqa: E501
         result = self.result_with_exception("NonZeroAgentExitCodeError", message)
 
         self.assert_error(result, "agent_stale_extension_context", "extension ctx is stale")
@@ -129,7 +124,12 @@ error: This extension ctx is stale after session replacement or reload. Do not u
         message = "Agent execution timed out after 900.0 seconds"
         result = self.result_with_exception("AgentTimeoutError", message)
 
-        self.assert_error(result, "agent_timeout", "timed out after 900.0 seconds")
+        summary = self.summarize(result)
+        data = summary.to_summary_json()
+        # agent_timeout verdict is self-describing; error.type falls back to exception type
+        self.assertEqual(data["verdict"], "agent_timeout")
+        self.assertIsNone(data["error_category"])
+        self.assertIn("timed out after 900.0 seconds", data["error"]["message"])
 
     def test_classifies_agent_transport_error(self) -> None:
         message = "stdout: The socket connection was closed unexpectedly. For more information, pass `verbose: true`."
@@ -177,7 +177,7 @@ error: This extension ctx is stale after session replacement or reload. Do not u
         self.assert_error(result, "agent_process_killed", "exit 137")
 
     def test_classifies_agent_environment_missing_system_user(self) -> None:
-        message = "stdout: /usr/lib/tmpfiles.d/systemd-network.conf:10: Failed to resolve user 'systemd-network': No such process"
+        message = "stdout: /usr/lib/tmpfiles.d/systemd-network.conf:10: Failed to resolve user 'systemd-network': No such process"  # noqa: E501
         result = self.result_with_exception("NonZeroAgentExitCodeError", message)
 
         self.assert_error(result, "agent_environment_error", "Failed to resolve user")
@@ -198,9 +198,9 @@ error: This extension ctx is stale after session replacement or reload. Do not u
         summary = self.summarize(result)
         data = summary.to_summary_json()
 
+        # reward==1.0 → scored_pass regardless of the exception
         self.assertEqual(data["status"], "passed")
-        self.assertEqual(data["error"]["type"], "agent_exit_after_success")
-        self.assertIn("socket connection was closed unexpectedly", data["error"]["message"])
+        self.assertEqual(data["verdict"], "scored_pass")
 
     def test_classifies_verifier_timeout_and_marks_verifier_timeout(self) -> None:
         result = self.result_with_exception("VerifierTimeoutError", "Verifier execution timed out after 900.0 seconds")
@@ -213,7 +213,7 @@ error: This extension ctx is stale after session replacement or reload. Do not u
         self.assertIn("Verifier execution timed out", data["error"]["message"])
         self.assertEqual(summarize_results.verifier_summary(result).status, "timeout")
 
-    def test_classifies_non_exception_zero_reward_as_verifier_failed_with_stdout_evidence(self) -> None:
+    def test_scored_fail_when_verifier_ran_and_bad_score(self) -> None:
         result = json.loads(json.dumps(BASE_RESULT))
 
         summary = self.summarize(
@@ -222,9 +222,10 @@ error: This extension ctx is stale after session replacement or reload. Do not u
         )
         data = summary.to_summary_json()
 
+        # No exception + bad score → scored_fail; error.type is empty (verdict is self-describing)
         self.assertEqual(data["status"], "failed")
-        self.assertEqual(data["error"]["type"], "verifier_failed")
-        self.assertIn("AssertionError", data["error"]["message"])
+        self.assertEqual(data["verdict"], "scored_fail")
+        self.assertIsNone(data["error_category"])
         self.assertEqual(summarize_results.verifier_summary(result).status, "completed")
 
     def test_tracks_verifier_not_started(self) -> None:
@@ -242,6 +243,36 @@ error: This extension ctx is stale after session replacement or reload. Do not u
 
         self.assertEqual(summarize_results.verifier_summary(result).status, "not_started")
         self.assertEqual(data["error"]["type"], "agent_execution_failed")
+
+
+    def test_summarize_trial_reads_outcome_from_result_json(self) -> None:
+        result = json.loads(json.dumps(BASE_RESULT))
+        result["exception_info"] = {"exception_type": "AgentTimeoutError"}
+
+        summary = self.summarize(result)
+
+        self.assertEqual(summary.outcome, "agent_timeout")
+        self.assertIsNone(summary.error_category)
+        self.assertIsNone(summary.error_subcategory)
+
+        data = summary.to_summary_json()
+        self.assertEqual(data["verdict"], "agent_timeout")
+        self.assertIsNone(data["error_category"])
+        self.assertIsNone(data["error_subcategory"])
+
+    def test_status_is_only_passed_or_failed(self) -> None:
+        """status() must never return 'error' — two values only: passed or failed."""
+        scenarios = [
+            BASE_RESULT,
+            self.result_with_exception("AgentTimeoutError", "timed out"),
+            self.result_with_exception("ConnectionError", "network failure"),
+            self.result_with_exception("NonZeroAgentExitCodeError", "request was aborted"),
+            self.result_with_exception("AssertionError", "test failed"),
+        ]
+        for result in scenarios:
+            summary = self.summarize(result)
+            data = summary.to_summary_json()
+            self.assertIn(data["status"], ("passed", "failed"), f"Unexpected status for {result.get('exception_info')}")
 
 
 if __name__ == "__main__":

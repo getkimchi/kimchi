@@ -1,0 +1,865 @@
+"""Chunk runner — orchestrates one chunk's slice of the benchmark.
+
+Responsibilities:
+  1. Compute this chunk's task slice (using chunk_slicing).
+  2. On retry, restore the previous attempt's artifact from the GitLab API
+     (GitLab's `retry:` starts each attempt with a fresh workspace; the prior
+     artifact is downloadable but NOT auto-extracted).
+  3. Inspect the local job workspace for previously-completed trials.
+  4. For each task:
+       - If infra_error=False locally → skip (already final).
+       - If infra_error=True or missing → add to Harbor invocation list.
+  5. Invoke Harbor on the missing tasks.
+  6. Classify any newly written result.json files.
+  7. Write enriched verdicts to local workspace (artifact preserved on retry).
+  8. Upload non-infra verdicts to GCS incrementally.
+  9. Exit non-zero if any tasks need retry; GitLab handles retry/resume.
+
+GCS is write-only from this module. Resume state lives in the local artifact.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import signal
+import subprocess
+import sys
+import time
+import urllib.request
+import zipfile
+from pathlib import Path
+from typing import Protocol
+
+from bench_config import (
+    DEFAULT_BENCHMARK_NAME,
+    DEFAULT_BENCHMARK_RESULTS_DIR,
+    DEFAULT_BENCHMARK_RUN_METADATA,
+    DEFAULT_CODING_AGENT,
+    DEFAULT_KIMCHI_MULTI_MODEL,
+    DEFAULT_MODEL,
+    ENV_BENCHMARK_NAME,
+    ENV_BENCHMARK_RESULTS_DIR,
+    ENV_BENCHMARK_RUN_METADATA,
+    ENV_CODING_AGENT,
+    ENV_KIMCHI_FERMENT_ONESHOT,
+    ENV_KIMCHI_MULTI_MODEL,
+    ENV_MODEL,
+    parse_model,
+)
+from chunk_slicing import slice_tasks
+from classify import classify
+from harbor_runner import build_harbor_command, format_command_for_log, run_harbor
+from outcome import Outcome
+
+def _fetch_all_tasks(dataset: str, bench_dir: Path) -> list[str]:
+    """Fetch all task names from the Harbor dataset registry.
+
+    Exits non-zero if the dataset cannot be resolved — there is no safe
+    fallback when SELECTED_TASKS_JSON is unset and Harbor is the source of truth.
+    """
+    dataset_ref = dataset if "@" in dataset else f"{dataset}@latest"
+    script = (
+        "import asyncio, json, sys\n"
+        "from harbor.registry.client.package import PackageDatasetClient\n"
+        "async def main():\n"
+        "    meta = await PackageDatasetClient().get_dataset_metadata(sys.argv[1])\n"
+        "    print(json.dumps([t.get_name() for t in meta.task_ids]))\n"
+        "asyncio.run(main())\n"
+    )
+    result = subprocess.run(
+        [
+            "uv", "run", "--project", "benchmark/terminal-bench-2",
+            "--python", "3.14", "python", "-c", script, dataset_ref,
+        ],
+        cwd=str(bench_dir),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        print(
+            f"[chunk] failed to fetch task list from Harbor dataset {dataset_ref!r}",
+            file=sys.stderr,
+            flush=True,
+        )
+        if result.stderr.strip():
+            print(result.stderr.strip(), file=sys.stderr, flush=True)
+        raise SystemExit(1)
+    lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    if not lines:
+        print(
+            f"[chunk] Harbor dataset {dataset_ref!r} returned no output",
+            file=sys.stderr,
+            flush=True,
+        )
+        raise SystemExit(1)
+    # uv may emit progress lines; the JSON array is the last non-empty line
+    raw_names: list[str] = json.loads(lines[-1])
+    # get_name() returns "terminal-bench/make-mips-interpreter"; strip the namespace
+    return [name.rsplit("/", 1)[-1] for name in raw_names]
+
+
+def run_id_from_chunk_attempt(*, chunk_index: int, chunk_attempt: int) -> str:
+    """Build a deterministic per-attempt identifier used in summary.json."""
+    return f"chunk-{chunk_index}-attempt-{chunk_attempt}"
+
+
+def list_trial_dirs(results_dir: Path) -> list[Path]:
+    """Enumerate trial directories under results_dir/run-*/trial__attempt."""
+    if not results_dir.is_dir():
+        return []
+    out: list[Path] = []
+    for run_dir in sorted(p for p in results_dir.iterdir() if p.is_dir()):
+        out.extend(sorted(p for p in run_dir.iterdir() if p.is_dir() and "__" in p.name))
+    return out
+
+
+def _trial_dir_for_task(results_dir: Path, task_name: str) -> Path | None:
+    """Find the trial directory for a bare task name (e.g. 'task-a').
+
+    Searches all run subdirectories under results_dir and returns the most
+    recently created trial dir whose name starts with `{task_name}__`.
+    Returns None if no trial exists for this task.
+    """
+    if not results_dir.is_dir():
+        return None
+    prefix = f"{task_name}__"
+    matches: list[Path] = []
+    for run_dir in results_dir.iterdir():
+        if not run_dir.is_dir():
+            continue
+        for trial_dir in run_dir.iterdir():
+            if trial_dir.is_dir() and trial_dir.name.startswith(prefix):
+                matches.append(trial_dir)
+    if not matches:
+        return None
+    # If multiple attempts, prefer the highest-numbered attempt suffix
+    return sorted(matches, key=lambda p: p.name, reverse=True)[0]
+
+
+class GcsUploader(Protocol):
+    """Minimal interface for uploading enriched result.json to GCS.
+
+    Implementations return True on successful upload and False on failure
+    (rather than raising), so a transient GCS outage does not crash the
+    chunk and the local artifact remains the source of truth.
+    """
+
+    def upload(self, local_path: Path, gcs_key: str) -> bool: ...
+
+
+def process_trial_results(
+    *,
+    results_dir: Path,
+    expected_tasks: list[str],
+    chunk_attempt: int,
+    run_id: str,
+    gcs_uploader: GcsUploader,
+    is_final_attempt: bool = False,
+) -> list[str]:
+    """Classify each trial and write enriched results locally + to GCS.
+
+    `expected_tasks` is a list of BARE task names (e.g. ['task-a', 'task-b']).
+    Returns the list of tasks that need retry (infra_error=True or missing).
+
+    On the final attempt, infra verdicts are uploaded to GCS as terminal
+    failures so they remain visible (no further retries will overwrite them).
+    """
+    needs_retry: list[str] = []
+
+    for task_name in expected_tasks:
+        trial_dir = _trial_dir_for_task(results_dir, task_name)
+
+        if trial_dir is None:
+            needs_retry.append(task_name)
+            continue
+
+        verdict = classify(trial_dir)
+
+        # Always write enriched local artifact (so resume sees it).
+        # New v2 schema: outcome + error_category + error_subcategory.
+        error_category = verdict.error_category
+        error_subcategory = verdict.error_subcategory
+        enriched = {
+            **verdict.raw,
+            "outcome": verdict.outcome,
+            "error_category": error_category,
+            "error_subcategory": error_subcategory,
+        }
+        (trial_dir / "result.json").write_text(json.dumps(enriched, indent=2) + "\n")
+
+        should_retry = (
+            verdict.outcome == Outcome.AGENT_TIMEOUT
+            or (verdict.outcome == Outcome.ERROR and verdict.error_category == "infra")
+        )
+        if should_retry:
+            needs_retry.append(task_name)
+            if is_final_attempt:
+                # Last attempt: upload as terminal infra failure so the summary
+                # job sees it. No more retries will overwrite this verdict.
+                gcs_uploader.upload(trial_dir / "result.json", trial_dir.name)
+            continue
+
+        # Non-infra: upload to GCS. Key is the full path under the run prefix;
+        # caller is responsible for providing a uploader that knows the prefix.
+        # A failed upload means the summary job won't see this verdict, so the
+        # trial must be retried on the next attempt (per spec: "Incremental
+        # upload ensures only un-uploaded trials re-run"). The local enriched
+        # result.json is already persisted above, so re-upload is cheap.
+        if not gcs_uploader.upload(trial_dir / "result.json", trial_dir.name):
+            needs_retry.append(task_name)
+
+    return needs_retry
+
+
+__all__ = [
+    "GcsUploader",
+    "_fetch_all_tasks",
+    "_build_gcs_key_prefix",
+    "_detect_chunk_attempt",
+    "_expected_tasks_for_chunk",
+    "_make_gcs_uploader",
+    "_trial_dir_for_task",
+    "_write_chunk_meta",
+    "list_trial_dirs",
+    "main",
+    "process_trial_results",
+    "run_id_from_chunk_attempt",
+]
+
+
+def _expected_tasks_for_chunk(
+    selected_tasks: list[str],
+    chunk_index: int,
+    chunk_count: int,
+) -> list[str]:
+    """Compute this chunk's bare task names (no __attempt suffix)."""
+    return slice_tasks(selected_tasks, chunk_index=chunk_index, chunk_count=chunk_count)
+
+
+def _derive_configuration() -> str:
+    """Derive configuration label from agent/model flags, mirroring run-gitlab.py."""
+    coding_agent = os.environ.get(ENV_CODING_AGENT, DEFAULT_CODING_AGENT)
+    if coding_agent != "kimchi":
+        return "default"
+    segments = [_configuration_segment()]
+    if _env_bool(ENV_KIMCHI_FERMENT_ONESHOT, False):
+        segments.append("ferment")
+    return "-".join(segments)
+
+
+def _configuration_segment() -> str:
+    """Return 'multi-mode' or 'single-model' based on KIMCHI_MULTI_MODEL."""
+    raw = os.environ.get(ENV_KIMCHI_MULTI_MODEL, DEFAULT_KIMCHI_MULTI_MODEL).strip().lower()
+    return "single-model" if raw in ("0", "false", "no") else "multi-mode"
+
+
+def _build_gcs_key_prefix() -> str:
+    """Build the GCS key prefix for this run. Mirrors the legacy prefix structure."""
+    benchmark = os.environ.get(ENV_BENCHMARK_NAME, DEFAULT_BENCHMARK_NAME)
+    coding_agent = os.environ.get(ENV_CODING_AGENT, DEFAULT_CODING_AGENT)
+    model_provider, model_name = parse_model()
+
+    configuration = _derive_configuration()
+    date = time.strftime("%Y-%m-%d", time.gmtime())
+    pipeline_id = os.environ.get("CI_PIPELINE_ID", "unknown")
+    job_id = os.environ.get("CI_JOB_ID", "unknown")
+    run_id = f"gitlab-p{pipeline_id}-j{job_id}"
+
+    def sanitize(value: str) -> str:
+        out = re.sub(r"[^A-Za-z0-9._-]+", "-", value)
+        return out.strip("-") or "unknown"
+
+    return (
+        f"runs/"
+        f"benchmark={sanitize(benchmark)}/"
+        f"coding_agent={sanitize(coding_agent)}/"
+        f"model_provider={sanitize(model_provider)}/"
+        f"model={sanitize(model_name)}/"
+        f"configuration={sanitize(configuration)}/"
+        f"date={sanitize(date)}/"
+        f"run={sanitize(run_id)}"
+    )
+
+
+def _write_run_metadata(results_dir: Path, selected_tasks: list[str]) -> None:
+    """Write .benchmark/run-metadata.json if it doesn't already exist.
+
+    All chunks share the same pipeline-level values, so whichever chunk runs
+    first wins; subsequent chunks (and retries) skip idempotently.
+    """
+    metadata_path = Path(os.environ.get(ENV_BENCHMARK_RUN_METADATA, DEFAULT_BENCHMARK_RUN_METADATA))
+    if metadata_path.exists():
+        return
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+
+    model_provider, model_name = parse_model()
+    model = os.environ.get(ENV_MODEL, DEFAULT_MODEL)
+
+    pipeline_ref = os.environ.get("CI_COMMIT_REF_NAME", "")
+    pipeline_sha = os.environ.get("CI_COMMIT_SHA", "")
+    pipeline_id = os.environ.get("CI_PIPELINE_ID", "unknown")
+    job_id = os.environ.get("CI_JOB_ID", "unknown")
+    run_id = f"gitlab-p{pipeline_id}-j{job_id}"
+
+    metadata = {
+        "schema_version": 1,
+        "benchmark": os.environ.get(ENV_BENCHMARK_NAME, DEFAULT_BENCHMARK_NAME),
+        "coding_agent": os.environ.get(ENV_CODING_AGENT, DEFAULT_CODING_AGENT),
+        "model": model,
+        "model_provider": model_provider,
+        "model_name": model_name,
+        "configuration": _derive_configuration(),
+        "multi_mode": _env_bool("KIMCHI_MULTI_MODEL", True),
+        "ferment": _env_bool("KIMCHI_FERMENT_ONESHOT", False),
+        "selected_tasks": selected_tasks,
+        "parameters": {
+            "attempts": os.environ.get("BENCH_ATTEMPTS", "1"),
+            "parallelism": os.environ.get("BENCH_PARALLELISM", "1"),
+            "timeout_multiplier": os.environ.get("BENCH_TIMEOUT_MULTIPLIER", "1.0"),
+        },
+        "results_dir": str(results_dir),
+        "runner": {
+            "dataset": os.environ.get("DATASET", "terminal-bench/terminal-bench-2"),
+        },
+        "gcs": {
+            "date": time.strftime("%Y-%m-%d", time.gmtime()),
+            "run_id": run_id,
+            "prefix": _build_gcs_key_prefix(),
+        },
+        "gitlab": {
+            "project_path": os.environ.get("CI_PROJECT_PATH", ""),
+            "project_id": os.environ.get("CI_PROJECT_ID", ""),
+            "pipeline_id": pipeline_id,
+            "pipeline_url": os.environ.get("CI_PIPELINE_URL", ""),
+            "pipeline_source": os.environ.get("CI_PIPELINE_SOURCE", ""),
+            "job_id": job_id,
+            "job_url": os.environ.get("CI_JOB_URL", ""),
+            "ref": pipeline_ref,
+            "ref_slug": os.environ.get("CI_COMMIT_REF_SLUG", ""),
+            "commit_sha": pipeline_sha,
+            "commit_short_sha": os.environ.get("CI_COMMIT_SHORT_SHA", ""),
+            "target_ref": os.environ.get("BENCHMARK_TARGET_REF", pipeline_ref),
+            "target_commit_sha": os.environ.get("BENCHMARK_TARGET_SHA", pipeline_sha),
+        },
+    }
+    metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+    print(f"Wrote run metadata to {metadata_path}", flush=True)
+
+
+PASS_REWARD = 1.0
+_HEARTBEAT_INTERVAL = int(os.environ.get("BENCH_HEARTBEAT_INTERVAL_SECONDS", "60"))
+
+
+def _format_elapsed(seconds: int) -> str:
+    minutes, remainder = divmod(seconds, 60)
+    return f"{minutes}m{remainder:02d}s"
+
+
+def _get_exception_type(result_path: Path) -> str | None:
+    try:
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+        ei = result.get("exception_info") or {}
+        return ei.get("exception_type") or None
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return None
+
+
+def _trial_reward(result_path: Path) -> float | None:
+    try:
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+        vr = result.get("verifier_result") or {}
+        rewards = vr.get("rewards") or {}
+        value = rewards.get("reward")
+        if value is None or isinstance(value, bool):
+            return None
+        return float(value)
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+
+
+def _print_heartbeat(
+    results_dir: Path,
+    elapsed: int,
+    total: int,
+    reported: set[str],
+    chunk_index: int,
+) -> None:
+    trial_dirs = list_trial_dirs(results_dir)
+    completed = [(p, p / "result.json") for p in trial_dirs if (p / "result.json").is_file()]
+    running = sum(1 for p in trial_dirs if not (p / "result.json").is_file())
+    for trial_dir, result_path in completed:
+        if trial_dir.name not in reported:
+            reported.add(trial_dir.name)
+            reward = _trial_reward(result_path)
+            reward_text = "n/a" if reward is None else f"{reward:.3f}"
+            if reward == PASS_REWARD:
+                print(f"[chunk-{chunk_index}] trial={trial_dir.name} reward={reward_text} passed", flush=True)
+            else:
+                verdict = classify(trial_dir)
+                needs_retry_trial = (
+                    verdict.outcome == Outcome.AGENT_TIMEOUT
+                    or (verdict.outcome == Outcome.ERROR and verdict.error_category == "infra")
+                )
+                retry_label = f"will-retry({verdict.outcome})" if needs_retry_trial else "final"
+                cause = verdict.error_subcategory or _get_exception_type(result_path) or "verifier_failed"
+                print(
+                    f"[chunk-{chunk_index}] trial={trial_dir.name} reward={reward_text} FAILED"
+                    f" cause={cause} {retry_label}",
+                    flush=True,
+                )
+    rewards = [r for _, rp in completed if (r := _trial_reward(rp)) is not None]
+    passed = sum(1 for r in rewards if r == PASS_REWARD)
+    mean = f"{sum(rewards) / len(rewards):.3f}" if rewards else "n/a"
+    print(
+        f"[chunk-{chunk_index}] "
+        f"elapsed={_format_elapsed(elapsed)} "
+        f"total={total} "
+        f"running={running} "
+        f"completed={len(completed)} "
+        f"passed={passed} "
+        f"mean_reward={mean}",
+        flush=True,
+    )
+
+
+def _make_gcs_uploader(prefix: str) -> GcsUploader:
+    """Build a GcsUploader that prefixes all keys with `prefix` and shells out to gcloud.
+
+    Upload failures are reported via the return value rather than raised, so a
+    transient GCS outage doesn't crash the chunk. Callers should treat a False
+    return as "not yet uploaded" and trigger retry (per the chunk's spec:
+    "Incremental upload ensures only un-uploaded trials re-run").
+    """
+
+    class _GcloudUploader:
+        def upload(self, local_path: Path, gcs_key: str) -> bool:
+            bucket = os.environ.get("BENCHMARK_GCS_BUCKET", "")
+            if not bucket:
+                print(
+                    f"[chunk] GCS upload skipped: BENCHMARK_GCS_BUCKET not set (local_path={local_path})",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                return False
+            full_key = f"{prefix}/{gcs_key}/result.json"
+            result = subprocess.run(
+                ["gcloud", "storage", "cp", str(local_path), f"gs://{bucket}/{full_key}"],
+                check=False,
+                capture_output=True,
+            )
+            if result.returncode != 0:
+                print(
+                    f"[chunk] GCS upload failed for {gcs_key} (rc={result.returncode}); "
+                    f"local artifact preserved, will retry next attempt",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                return False
+            return True
+
+    return _GcloudUploader()
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, str(default))
+    return int(raw)
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name, str(default))
+    return float(raw)
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name, str(default)).strip().lower()
+    if raw in ("true", "1", "yes"):
+        return True
+    if raw in ("false", "0", "no"):
+        return False
+    return default
+
+
+def _agent_import_path(coding_agent: str) -> str:
+    match coding_agent:
+        case "kimchi":
+            return "kimchi_agent:Kimchi"
+        case "opencode":
+            return "kimchi_agent:OpenCodeKimchi"
+        case "claude-code":
+            return "kimchi_agent:ClaudeCodeKimchi"
+        case _:
+            raise SystemExit(f"Unknown CODING_AGENT: {coding_agent}")
+
+
+def _chunk_meta_path(results_dir: Path, chunk_index: int) -> Path:
+    """Path to the chunk-meta file for a given chunk index."""
+    return results_dir / "chunk-meta" / f"chunk-{chunk_index}.json"
+
+
+def _restore_prior_artifact(results_dir: Path, workspace: Path | None = None) -> bool:
+    """Download and extract the previous attempt's artifact if this is a retry.
+
+    GitLab's default `retry:` behavior starts each attempt with a fresh workspace;
+    the previous attempt's artifacts are stored as a downloadable archive but
+    are NOT auto-extracted into the new workspace. Without this restore, the
+    new attempt sees an empty results_dir, _detect_chunk_attempt returns 1, and
+    Harbor re-runs every task — including ones that already passed.
+
+    Args:
+        results_dir: The BENCHMARK_RESULTS_DIR path; used only as a sentinel
+            (skip the restore if chunk-meta already exists inside it).
+        workspace: Root of the extraction target. Defaults to Path.cwd(), which
+            is $CI_PROJECT_DIR in production. Parameterized for testability.
+
+    Returns True if a prior artifact was restored, False otherwise (first attempt,
+    API failure, missing CI vars, or artifact already present in the workspace).
+    """
+    workspace = workspace or Path.cwd()
+    token = os.environ.get("CI_JOB_TOKEN")
+    api_url = os.environ.get("CI_API_V4_URL", "https://gitlab.com/api/v4")
+    project_id = os.environ.get("CI_PROJECT_ID")
+    pipeline_id = os.environ.get("CI_PIPELINE_ID")
+    job_id_str = os.environ.get("CI_JOB_ID")
+    job_name = os.environ.get("CI_JOB_NAME")
+
+    if not all([token, project_id, pipeline_id, job_id_str, job_name]):
+        # Not running in CI (local dev) — nothing to restore.
+        return False
+    try:
+        current_job_id = int(job_id_str)
+    except ValueError:
+        return False
+
+    # Already-restored sentinel: if chunk-meta for ANY chunk already exists,
+    # the workspace is the prior attempt's artifact (or a fresh checkout that
+    # somehow has it). Skip the API call.
+    chunk_meta_dir = results_dir / "chunk-meta"
+    if chunk_meta_dir.is_dir() and any(chunk_meta_dir.glob("chunk-*.json")):
+        return False
+
+    headers = {"JOB-TOKEN": token, "Accept": "application/json"}
+
+    # Retry stays in the SAME pipeline. The default `GET /pipelines/:id/jobs`
+    # hides prior attempts of retried jobs — only the latest attempt of each
+    # name is returned. We must add `include_retried=true` to see the prior
+    # (failed/succeeded) attempt alongside the currently-running retry. Job
+    # IDs are monotonic, so the highest id < current_job_id is the most
+    # recent prior attempt of THIS matrix child.
+    list_url = f"{api_url}/projects/{project_id}/pipelines/{pipeline_id}/jobs?include_retried=true"
+    print(f"[chunk-restart] querying prior attempts: {list_url}", file=sys.stderr, flush=True)
+    try:
+        req = urllib.request.Request(list_url, headers=headers)
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            jobs = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError) as exc:
+        print(f"[chunk-restart] could not list pipeline jobs: {exc}", file=sys.stderr, flush=True)
+        return False
+    if not isinstance(jobs, list):
+        return False
+
+    # CI_JOB_NAME for parallel: matrix jobs includes the matrix suffix
+    # (e.g. 'terminal-bench-2-chunks: [1]'), as does the API response.
+    # Strip the suffix from both sides and compare bare base names, then
+    # independently verify the chunk index from the API name's suffix.
+    my_chunk = os.environ.get("BENCH_CHUNK_INDEX", "")
+    my_base = job_name.split(":", 1)[0].strip()
+
+    print(
+        f"[chunk-restart] got {len(jobs)} job(s) in pipeline {pipeline_id}; "
+        f"filtering for base_name={my_base!r} chunk={my_chunk!r} "
+        f"id < {current_job_id}",
+        file=sys.stderr,
+        flush=True,
+    )
+
+    def _matches_prior(job: dict) -> bool:
+        api_name = job.get("name", "")
+        if not isinstance(api_name, str):
+            return False
+        api_base = api_name.split(":", 1)[0].strip()
+        if api_base != my_base:
+            return False
+        m = re.match(r".*:\s*\[([^\]]+)\]\s*$", api_name)
+        chunk_value = m.group(1).strip() if m else None
+        if chunk_value != my_chunk:
+            return False
+        return job.get("id", 0) < current_job_id
+
+    prior = [j for j in jobs if isinstance(j, dict) and _matches_prior(j)]
+    if not prior:
+        # Log the names we saw so we can debug if the filter is wrong.
+        seen = sorted({j.get("name", "?") for j in jobs if isinstance(j, dict)})
+        print(
+            f"[chunk-restart] no prior attempts matched (current job id {current_job_id}, "
+            f"base_name={my_base!r}, chunk={my_chunk!r}); "
+            f"pipeline jobs by name: {seen}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return False
+
+    prior.sort(key=lambda j: j.get("id", 0), reverse=True)
+    prior_job_id = prior[0]["id"]
+    print(
+        f"[chunk-restart] found {len(prior)} prior attempt(s); restoring artifacts from job {prior_job_id}",
+        file=sys.stderr,
+        flush=True,
+    )
+
+    artifact_url = f"{api_url}/projects/{project_id}/jobs/{prior_job_id}/artifacts"
+    try:
+        req = urllib.request.Request(artifact_url, headers=headers)
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            archive_bytes = resp.read()
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
+        print(f"[chunk-restart] could not download artifact: {exc}", file=sys.stderr, flush=True)
+        return False
+
+    archive_path = Path("/tmp/prior_chunk_artifact.zip")
+    archive_path.write_bytes(archive_bytes)
+    # Extract to the workspace root. The artifact's internal layout mirrors the
+    # job workspace, so 'benchmark/terminal-bench-2/jobs/...' lands where
+    # chunk_runner expects to find it.
+    workspace_abs = workspace.resolve()
+    extracted: list[str] = []
+    try:
+        with zipfile.ZipFile(archive_path, "r") as zf:
+            for member in zf.namelist():
+                if member.endswith("/"):
+                    continue
+                target = workspace / member
+                # Block zip-slip: refuse to extract outside the workspace.
+                try:
+                    target.resolve().relative_to(workspace_abs)
+                except ValueError:
+                    print(f"[chunk-restart] skipping unsafe path in archive: {member}", file=sys.stderr, flush=True)
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with zf.open(member) as src, target.open("wb") as dst:
+                    dst.write(src.read())
+                extracted.append(member)
+    finally:
+        archive_path.unlink(missing_ok=True)
+
+    print(
+        f"[chunk-restart] restored {len(extracted)} file(s) from prior attempt",
+        file=sys.stderr,
+        flush=True,
+    )
+    return True
+
+
+def _detect_chunk_attempt(results_dir: Path, chunk_index: int) -> int | None:
+    """Read the most recent chunk-meta file for this chunk and return the NEXT attempt number.
+
+    On the first attempt, no chunk-meta exists and this returns None.
+    On retries, _restore_prior_artifact() has already extracted the previous
+    attempt's archive (containing chunk-meta/chunk-N.json) into the workspace,
+    so this returns previous_attempt + 1.
+    """
+    meta_path = _chunk_meta_path(results_dir, chunk_index)
+    if not meta_path.is_file():
+        return None
+    try:
+        data = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    attempt = data.get("chunk_attempt")
+    return int(attempt) + 1 if isinstance(attempt, int) else None
+
+
+def _write_chunk_meta(
+    *,
+    results_dir: Path,
+    chunk_index: int,
+    chunk_attempt: int,
+    exit_code: int,
+    needs_retry: list[str],
+) -> None:
+    """Write this chunk's attempt summary. Used by summary job to detect exhausted chunks."""
+    meta_path = _chunk_meta_path(results_dir, chunk_index)
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "chunk_index": chunk_index,
+        "chunk_attempt": chunk_attempt,
+        "exit_code": exit_code,
+        "needs_retry": sorted(needs_retry),
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    meta_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def main() -> int:
+    """Entry point for the chunk runner. Returns exit code for GitLab retry."""
+    chunk_index = _env_int("BENCH_CHUNK_INDEX", 0)
+    chunk_count = _env_int("BENCH_CHUNK_COUNT", 8)
+    job_retry_count = _env_int("CI_JOB_RETRY_COUNT", 0)
+    job_max_retries = _env_int("BENCH_JOB_MAX_RETRIES", 2)
+    is_final_attempt = job_retry_count >= job_max_retries
+    parallelism = _env_int("BENCH_PARALLELISM", 1)
+    attempts = _env_int("BENCH_ATTEMPTS", 1)
+    timeout_multiplier = _env_float("BENCH_TIMEOUT_MULTIPLIER", 1.0)
+    coding_agent = os.environ.get(ENV_CODING_AGENT, DEFAULT_CODING_AGENT)
+    model = os.environ.get(ENV_MODEL, DEFAULT_MODEL)
+    kimchi_multi_model = _env_bool(ENV_KIMCHI_MULTI_MODEL, True)
+    kimchi_ferment_oneshot = _env_bool(ENV_KIMCHI_FERMENT_ONESHOT, False)
+    dataset = os.environ.get("DATASET", "terminal-bench/terminal-bench-2")
+    api_key = os.environ.get("KIMCHI_API_KEY")
+    if not api_key:
+        print("KIMCHI_API_KEY is required", file=sys.stderr)
+        return 1
+
+    results_dir = Path(os.environ.get(ENV_BENCHMARK_RESULTS_DIR, DEFAULT_BENCHMARK_RESULTS_DIR))
+    if not results_dir.is_absolute():
+        results_dir = Path.cwd() / results_dir
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    # GitLab's `retry:` starts each attempt with a fresh workspace. Restore the
+    # previous attempt's artifact (results, chunk-meta) so we don't re-run tasks
+    # that already completed on a prior attempt. See _restore_prior_artifact().
+    _restore_prior_artifact(results_dir, workspace=Path.cwd())
+
+    raw_selected = os.environ.get("SELECTED_TASKS_JSON", "[]")
+    selected_tasks = json.loads(raw_selected)
+    if not selected_tasks:
+        selected_tasks = _fetch_all_tasks(dataset, bench_dir=Path.cwd())
+
+    _write_run_metadata(results_dir, selected_tasks)
+
+    expected = _expected_tasks_for_chunk(selected_tasks, chunk_index, chunk_count)
+
+    # Determine this chunk's chunk-attempt number (1-based) by inspecting the
+    # chunk-meta directory written by previous attempts. On the first attempt
+    # the directory is empty / missing, so this is 1.
+    chunk_attempt = _detect_chunk_attempt(results_dir, chunk_index) or 1
+
+    if not expected:
+        print(f"[chunk-{chunk_index}] empty slice, nothing to do", flush=True)
+        _write_chunk_meta(
+            results_dir=results_dir,
+            chunk_index=chunk_index,
+            chunk_attempt=chunk_attempt,
+            exit_code=0,
+            needs_retry=[],
+        )
+        return 0
+
+    run_id = run_id_from_chunk_attempt(chunk_index=chunk_index, chunk_attempt=chunk_attempt)
+    gcs_prefix = _build_gcs_key_prefix()
+    uploader = _make_gcs_uploader(gcs_prefix)
+
+    # First pass: classify what's already in the workspace
+    needs_retry = process_trial_results(
+        results_dir=results_dir,
+        expected_tasks=expected,
+        chunk_attempt=chunk_attempt,
+        run_id=run_id,
+        gcs_uploader=uploader,
+        is_final_attempt=is_final_attempt,
+    )
+
+    if not needs_retry:
+        print(f"[chunk-{chunk_index}] all {len(expected)} trials already final", flush=True)
+        _write_chunk_meta(
+            results_dir=results_dir,
+            chunk_index=chunk_index,
+            chunk_attempt=chunk_attempt,
+            exit_code=0,
+            needs_retry=[],
+        )
+        return 0
+
+    # Invoke Harbor on the missing/infra tasks
+    print(
+        f"[chunk-{chunk_index}/attempt-{chunk_attempt}] running Harbor on {len(needs_retry)} tasks: {needs_retry}",
+        flush=True,
+    )
+    cmd = build_harbor_command(
+        tasks=needs_retry,
+        agent_import_path=_agent_import_path(coding_agent),
+        model=model,
+        dataset=dataset,
+        parallelism=parallelism,
+        attempts=attempts,
+        timeout_multiplier=timeout_multiplier,
+        jobs_dir=results_dir,
+        kimchi_multi_model=kimchi_multi_model,
+        kimchi_ferment_oneshot=kimchi_ferment_oneshot,
+        coding_agent=coding_agent,
+    )
+    print(f"[chunk-{chunk_index}] command: {format_command_for_log(cmd)}", flush=True)
+
+    bench_dir = Path.cwd()
+    env = os.environ.copy()
+    proc = run_harbor(cmd=cmd, cwd=bench_dir, env=env)
+
+    reported_trials: set[str] = set()
+    _print_heartbeat(results_dir, 0, len(needs_retry), reported_trials, chunk_index)
+
+    received_signal: int | None = None
+
+    def _terminate(signum: int, _frame: object) -> None:
+        nonlocal received_signal
+        received_signal = signum
+        if proc.poll() is None:
+            proc.terminate()
+
+    prev_sigint = signal.signal(signal.SIGINT, _terminate)
+    prev_sigterm = signal.signal(signal.SIGTERM, _terminate)
+    started = time.monotonic()
+    next_heartbeat = started + _HEARTBEAT_INTERVAL
+    poll_interval = min(5, _HEARTBEAT_INTERVAL)
+
+    try:
+        while proc.poll() is None:
+            time.sleep(poll_interval)
+            now = time.monotonic()
+            if proc.poll() is None and now >= next_heartbeat:
+                _print_heartbeat(results_dir, int(now - started), len(needs_retry), reported_trials, chunk_index)
+                next_heartbeat = now + _HEARTBEAT_INTERVAL
+    finally:
+        signal.signal(signal.SIGINT, prev_sigint)
+        signal.signal(signal.SIGTERM, prev_sigterm)
+
+    harbor_status = proc.wait()
+    _print_heartbeat(results_dir, int(time.monotonic() - started), len(needs_retry), reported_trials, chunk_index)
+    print(f"[chunk-{chunk_index}] Harbor exited with status {harbor_status}", flush=True)
+
+    # Second pass: classify what Harbor produced
+    final_needs_retry = process_trial_results(
+        results_dir=results_dir,
+        expected_tasks=expected,
+        chunk_attempt=chunk_attempt,
+        run_id=run_id,
+        gcs_uploader=uploader,
+        is_final_attempt=is_final_attempt,
+    )
+
+    exit_code = 0 if not final_needs_retry else 1
+    _write_chunk_meta(
+        results_dir=results_dir,
+        chunk_index=chunk_index,
+        chunk_attempt=chunk_attempt,
+        exit_code=exit_code,
+        needs_retry=final_needs_retry,
+    )
+
+    if final_needs_retry:
+        print(
+            f"[chunk-{chunk_index}] {len(final_needs_retry)} tasks still need retry: {final_needs_retry}",
+            flush=True,
+        )
+        return 1
+
+    print(f"[chunk-{chunk_index}] all {len(expected)} trials complete", flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+

@@ -15,38 +15,61 @@ workflow:
     - if: '$CI_PIPELINE_SOURCE == "web"'
       variables:
         TERMINAL_BENCH_RESOURCE_GROUP: 'terminal-bench-2-$[[ inputs.agent ]]-$[[ inputs.target_ref ]]'
+    - if: '$CI_PIPELINE_SOURCE == "api"'
+      variables:
+        TERMINAL_BENCH_RESOURCE_GROUP: 'terminal-bench-2-$[[ inputs.agent ]]-$[[ inputs.target_ref ]]'
     - when: never
 
 stages:
+  - prepare
   - benchmark
   - postprocess
   - notify
 
 .gcloud-setup:
   script:
-    - |
-      echo -e "section_start:$(date +%s):gcloud_setup[collapsed=true]\r\e[0KInstall and authenticate gcloud"
-      curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg |
-        gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
-      echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" \
-        > /etc/apt/sources.list.d/google-cloud-sdk.list
-      apt-get update -qq
-      apt-get install -y --no-install-recommends google-cloud-cli
+    - benchmark/scripts/gitlab/install_gcloud.sh
 
-      gcloud auth login --cred-file="${GOOGLE_APPLICATION_CREDENTIALS}" --quiet
-      echo -e "section_end:$(date +%s):gcloud_setup\r\e[0K"
+.gcp-auth-vars:
+  variables: &gcp-auth-vars
+    GCP_SERVICE_ACCOUNT_EMAIL: cirunner@cicd-master-oxk5.iam.gserviceaccount.com
+    GCP_WORKLOAD_IDENTITY_PROVIDER: projects/865213359973/locations/global/workloadIdentityPools/castai-gitlab-wif-pool/providers/castai-kimchi-kimchi
 
-.redact-api-key:
-  script:
-    - |
-      if [ -d benchmark/terminal-bench-2/jobs ] && [ -n "${KIMCHI_API_KEY:-}" ]; then
-        find benchmark/terminal-bench-2/jobs -type f -print0 |
-          xargs -0 -r perl -0pi -e 's/\Q$ENV{KIMCHI_API_KEY}\E/[redacted]/g'
-      fi
-
-terminal-bench-2:
-  stage: benchmark
+setup-image:
+  stage: prepare
   image: mirror.gcr.io/library/node:22-bookworm
+  id_tokens: !reference [.auth-gcp-id-tokens, id_tokens]
+  services:
+    - name: mirror.gcr.io/library/docker:27.5.1-dind
+      alias: docker
+  tags:
+    - runner::dind
+  timeout: 30 min
+  interruptible: false
+  resource_group: "$TERMINAL_BENCH_RESOURCE_GROUP"
+  variables:
+    <<: *gcp-auth-vars
+    BENCHMARK_TARGET_REF: "$[[ inputs.target_ref ]]"
+    CODING_AGENT: "$[[ inputs.agent ]]"
+    DEBIAN_FRONTEND: noninteractive
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+  before_script:
+    - !reference [.auth-gcp-script]
+    - !reference [.gcloud-setup, script]
+  script:
+    - benchmark/scripts/gitlab/setup_image.sh
+  artifacts:
+    expire_in: 1 day
+    reports:
+      dotenv: bench.env
+
+.terminal-bench-2-chunk:
+  stage: benchmark
+  image: "$BENCH_IMAGE"
+  needs:
+    - job: setup-image
+      artifacts: true
   id_tokens: !reference [.auth-gcp-id-tokens, id_tokens]
   services:
     - name: mirror.gcr.io/library/docker:27.5.1-dind
@@ -55,208 +78,71 @@ terminal-bench-2:
   tags:
     - runner::dind
   timeout: 12 hours
-  resource_group: "$TERMINAL_BENCH_RESOURCE_GROUP"
+  retry: 2
+  allow_failure: true
   interruptible: false
   variables:
-    BENCH_ATTEMPTS: "$[[ inputs.attempts ]]"
+    <<: *gcp-auth-vars
     BENCH_PARALLELISM: "$[[ inputs.parallelism ]]"
+    BENCH_ATTEMPTS: "$[[ inputs.attempts ]]"
     BENCH_TIMEOUT_MULTIPLIER: "$[[ inputs.timeout_multiplier ]]"
-    DEBIAN_FRONTEND: noninteractive
-    DOCKER_DRIVER: overlay2
-    DOCKER_HOST: tcp://docker:2375
-    DOCKER_TLS_CERTDIR: ""
-    FF_TIMESTAMPS: "true"
     BENCHMARK_NAME: terminal-bench-2
     BENCHMARK_RESULTS_DIR: benchmark/terminal-bench-2/jobs
     BENCHMARK_TARGET_REF: "$[[ inputs.target_ref ]]"
     CODING_AGENT: "$[[ inputs.agent ]]"
-    GCP_SERVICE_ACCOUNT_EMAIL: cirunner@cicd-master-oxk5.iam.gserviceaccount.com
-    GCP_WORKLOAD_IDENTITY_PROVIDER: projects/865213359973/locations/global/workloadIdentityPools/castai-gitlab-wif-pool/providers/castai-kimchi-kimchi
+    MODEL: "$[[ inputs.model ]]"
     GCS_UPLOAD_REQUIRED: "true"
     KIMCHI_FERMENT_ONESHOT: "$[[ inputs.kimchi_ferment_oneshot ]]"
     KIMCHI_MULTI_MODEL: "$[[ inputs.kimchi_multi_model ]]"
-    MODEL: "$[[ inputs.model ]]"
-    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+    BENCH_CHUNK_INDEX: "$CHUNK"
+    BENCH_CHUNK_COUNT: 3
+    BENCH_JOB_MAX_RETRIES: 2
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
   before_script:
     - !reference [.auth-gcp-script]
-    - |
-      set -euo pipefail
-
-      echo -e "section_start:$(date +%s):base_packages[collapsed=true]\r\e[0KInstall base packages"
-      apt-get update -qq
-      apt-get install -y --no-install-recommends \
-        bash \
-        ca-certificates \
-        curl \
-        docker.io \
-        file \
-        git \
-        gnupg \
-        jq \
-        python3 \
-        xz-utils
-      echo -e "section_end:$(date +%s):base_packages\r\e[0K"
     - !reference [.gcloud-setup, script]
-    - |
-      echo -e "section_start:$(date +%s):toolchain[collapsed=true]\r\e[0KInstall benchmark toolchain"
-      curl -LsSf https://astral.sh/uv/install.sh | sh
-      export PATH="/usr/local/go/bin:$HOME/.bun/bin:$HOME/.local/bin:$PATH"
-
-      compose_version=v5.1.4
-      compose_arch="$(uname -m)"
-      compose_dir="${DOCKER_CONFIG:-$HOME/.docker}/cli-plugins"
-      mkdir -p "$compose_dir"
-      curl -fsSLo "$compose_dir/docker-compose" \
-        "https://github.com/docker/compose/releases/download/${compose_version}/docker-compose-linux-${compose_arch}"
-      chmod +x "$compose_dir/docker-compose"
-
-      # Go, bun, and pnpm are only needed to build the Kimchi binary.
-      if [ "$CODING_AGENT" = "kimchi" ]; then
-        apt-get install -y --no-install-recommends build-essential
-
-        go_version=1.25.5
-        curl -fsSLo /tmp/go.tgz "https://go.dev/dl/go${go_version}.linux-amd64.tar.gz"
-        rm -rf /usr/local/go
-        tar -C /usr/local -xzf /tmp/go.tgz
-
-        curl -fsSL https://bun.sh/install | bash
-
-        corepack enable
-        corepack prepare pnpm@10.8.1 --activate
-
-        go version
-        bun --version
-        pnpm --version
-      fi
-      echo -e "section_end:$(date +%s):toolchain\r\e[0K"
-
-      uv --version
-      docker compose version
-      gcloud --version
   script:
-    - |
-      set -euo pipefail
-
-      export PATH="/usr/local/go/bin:$HOME/.bun/bin:$HOME/.local/bin:$PATH"
-
-      : "${KIMCHI_API_KEY:?KIMCHI_API_KEY CI/CD variable is required}"
-
-      echo -e "section_start:$(date +%s):docker_info[collapsed=true]\r\e[0KDocker environment"
-      docker version
-      docker info
-      echo -e "section_end:$(date +%s):docker_info\r\e[0K"
-
-      # Preserve CI helpers from the pipeline ref before checking out the target ref.
-      # Mirrored target branches may not contain the current benchmark pipeline code.
-      benchmark_ci_scripts_dir="$CI_BUILDS_DIR/kimchi-benchmark-ci-scripts"
-      rm -rf "$benchmark_ci_scripts_dir"
-      mkdir -p "$benchmark_ci_scripts_dir/terminal-bench-2/scripts" "$benchmark_ci_scripts_dir/gitlab"
-      cp benchmark/terminal-bench-2/scripts/run-gitlab.py "$benchmark_ci_scripts_dir/terminal-bench-2/scripts/run-gitlab.py"
-      cp -R benchmark/scripts/gitlab/. "$benchmark_ci_scripts_dir/gitlab/"
-
-      if [ -n "${BENCHMARK_TARGET_REF:-}" ]; then
-        echo "Checking out benchmark target ref: $BENCHMARK_TARGET_REF"
-        if [ "${GIT_DEPTH:-20}" = "0" ]; then
-          git fetch origin "$BENCHMARK_TARGET_REF"
-        else
-          git fetch --depth="${GIT_DEPTH:-20}" origin "$BENCHMARK_TARGET_REF"
-        fi
-        git checkout --detach FETCH_HEAD
-      else
-        export BENCHMARK_TARGET_REF="$CI_COMMIT_REF_NAME"
-      fi
-      export BENCHMARK_TARGET_SHA="$(git rev-parse HEAD)"
-      export BENCHMARK_REPO_ROOT="$CI_PROJECT_DIR"
-      echo "Benchmark target: ${BENCHMARK_TARGET_REF}@${BENCHMARK_TARGET_SHA}"
-
-      if [ "$CODING_AGENT" = "kimchi" ]; then
-        echo -e "section_start:$(date +%s):kimchi_build[collapsed=true]\r\e[0KBuild Kimchi binary"
-        pnpm install --frozen-lockfile
-        GOOS=linux GOARCH=amd64 make -C tools/proxy-helper build
-        pnpm run build:binary-linux-x64
-        echo -e "section_end:$(date +%s):kimchi_build\r\e[0K"
-        export KIMCHI_CODE_BINARY="$CI_PROJECT_DIR/dist/bin/kimchi"
-      else
-        echo "Skipping Kimchi binary build for agent: $CODING_AGENT"
-      fi
-      export SELECTED_TASKS_JSON='$[[ inputs.tasks ]]'
-
-      set +e
-      python3 "$benchmark_ci_scripts_dir/terminal-bench-2/scripts/run-gitlab.py"
-      benchmark_status="$?"
-      set -e
-    - !reference [.redact-api-key, script]
-    - |
-      echo -e "section_start:$(date +%s):trial_results[collapsed=true]\r\e[0KRaw trial result.json contents"
-      find benchmark/terminal-bench-2/jobs -name result.json -type f -print -exec cat {} \; 2>/dev/null || true
-      echo -e "section_end:$(date +%s):trial_results\r\e[0K"
-
-      set +e
-      python3 "$benchmark_ci_scripts_dir/gitlab/upload_gcs.py"
-      upload_status="$?"
-      set -e
-
-      if [ "$benchmark_status" -ne 0 ]; then
-        echo "Benchmark failed with exit code $benchmark_status."
-      fi
-      if [ "$upload_status" -ne 0 ]; then
-        echo "GCS upload failed with exit code $upload_status."
-      fi
-
-      if [ "$benchmark_status" -ne 0 ]; then
-        exit "$benchmark_status"
-      fi
-      exit "$upload_status"
+    - export SELECTED_TASKS_JSON='$[[ inputs.tasks ]]'
+    - python3 benchmark/scripts/gitlab/chunk_runner.py
   after_script:
-    - set +e
-    - !reference [.redact-api-key, script]
+    - python3 benchmark/scripts/gitlab/upload_gcs.py
+    - python3 benchmark/scripts/gitlab/redact_api_key.py
   artifacts:
     when: always
     expire_in: 30 days
-    name: "terminal-bench-2-$CI_COMMIT_REF_SLUG-$CI_PIPELINE_ID"
     paths:
-      - .benchmark/run-metadata.json
       - benchmark/terminal-bench-2/jobs/
+      - .benchmark/run-metadata.json
+
+terminal-bench-2-chunks:
+  extends: .terminal-bench-2-chunk
+  parallel:
+    matrix:
+      - CHUNK: [0, 1, 2]
 
 terminal-bench-2-summary:
   stage: postprocess
+  when: always
   image: mirror.gcr.io/library/node:22-bookworm
   id_tokens: !reference [.auth-gcp-id-tokens, id_tokens]
   needs:
-    - job: terminal-bench-2
+    - job: terminal-bench-2-chunks
       artifacts: true
   tags:
     - runner::dind
   variables:
+    <<: *gcp-auth-vars
+    BENCHMARK_RESULTS_DIR: benchmark/terminal-bench-2/jobs
     DEBIAN_FRONTEND: noninteractive
     FF_TIMESTAMPS: "true"
-    GCP_SERVICE_ACCOUNT_EMAIL: cirunner@cicd-master-oxk5.iam.gserviceaccount.com
-    GCP_WORKLOAD_IDENTITY_PROVIDER: projects/865213359973/locations/global/workloadIdentityPools/castai-gitlab-wif-pool/providers/castai-kimchi-kimchi
     GCS_UPLOAD_REQUIRED: "true"
   before_script:
     - !reference [.auth-gcp-script]
-    - |
-      set -euo pipefail
-
-      echo -e "section_start:$(date +%s):base_packages[collapsed=true]\r\e[0KInstall base packages"
-      apt-get update -qq
-      apt-get install -y --no-install-recommends \
-        ca-certificates \
-        curl \
-        gnupg \
-        python3
-      echo -e "section_end:$(date +%s):base_packages\r\e[0K"
     - !reference [.gcloud-setup, script]
-    - |
-      python3 --version
-      gcloud --version
   script:
-    - |
-      set -euo pipefail
-
-      python3 benchmark/scripts/gitlab/summarize_results.py
-
-      python3 benchmark/scripts/gitlab/upload_summary_gcs.py
+    - python3 benchmark/scripts/gitlab/summarize_results.py
+    - python3 benchmark/scripts/gitlab/upload_summary_gcs.py
   artifacts:
     when: always
     expire_in: 30 days
@@ -265,8 +151,11 @@ terminal-bench-2-summary:
       - .benchmark/run-metadata.json
       - .benchmark/summary.json
 
+# TEMP: disabled until APA backend supports benchmark-summary/v2 schema
 terminal-bench-2-apa-notify:
   stage: notify
+  rules:
+    - when: never
   image: mirror.gcr.io/library/alpine:3.22
   needs:
     - job: terminal-bench-2-summary
@@ -276,9 +165,7 @@ terminal-bench-2-apa-notify:
   variables:
     APA_API_URL: "https://api.cast.ai"
   before_script:
-    - |
-      set -euo pipefail
-      apk add --no-cache curl jq
+    - apk add --no-cache curl jq
   script:
     - |
       set -euo pipefail
@@ -291,20 +178,18 @@ terminal-bench-2-apa-notify:
       test -f "$metadata_path"
       test -f "$summary_path"
 
-      gcs_prefix="$(jq -r '.gcs.prefix // empty' "$metadata_path")"
-      if [ -z "$gcs_prefix" ]; then
-        echo "No GCS prefix found in benchmark run metadata." >&2
-        exit 1
+      # Warn if incomplete
+      is_complete="$(jq -r '.is_complete // true' "$summary_path")"
+      if [ "$is_complete" = "false" ]; then
+        echo "WARNING: summary.json indicates incomplete run; importing partial results anyway"
       fi
 
+      gcs_prefix="$(jq -r '.gcs.prefix // empty' "$metadata_path")"
       artifact_uri="gs://${BENCHMARK_GCS_BUCKET}/${gcs_prefix}/summary.json"
       endpoint="${APA_API_URL%/}/application-automation/v1alpha/benchmarks/terminal-bench-2/runs:import"
       payload="$(mktemp)"
       response_body="$(mktemp)"
       jq -n --arg artifactUri "$artifact_uri" '{artifactUri: $artifactUri}' > "$payload"
-
-      echo "POST $endpoint"
-      echo "artifactUri=$artifact_uri"
 
       http_status="$(
         curl -sS -o "$response_body" -w "%{http_code}" \

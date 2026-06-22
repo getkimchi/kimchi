@@ -1,0 +1,18 @@
+[project]
+name = "kimchi-gitlab-scripts"
+version = "0.1.0"
+description = "GitLab CI orchestration scripts for terminal-bench-2."
+requires-python = ">=3.14"
+
+[tool.ruff]
+line-length = 120
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-ra"
+pythonpath = ["."]

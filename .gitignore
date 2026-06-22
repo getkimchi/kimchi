@@ -67,3 +67,8 @@ __pycache__/
 *.tfstate
 *.tfstate.*
 *.tfplan
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
