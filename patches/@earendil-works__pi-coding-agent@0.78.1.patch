@@ -12,6 +12,32 @@
 #                                   mid-run setActiveTools() calls to take effect on
 #                                   the next model response within the same agent run.
 #   5. dist/modes/interactive/  — miscellaneous upstream UI fixes bundled in this patch
+#   6. dist/modes/interactive/interactive-mode.js — add previewTheme(name) and
+#      dist/core/extensions/types.d.ts              showError(message) to createExtensionUIContext,
+#                                                   and their type declarations to ExtensionUIContext.
+#
+#                                 previewTheme applies a theme live by calling the internal
+#                                 setTheme() WITHOUT the subsequent settingsManager.setTheme()
+#                                 call that the public ui.setTheme() includes. This mirrors the
+#                                 internal onThemePreview callback used by /settings.
+#
+#                                 Why a patch is required: the public ExtensionUIContext conflates
+#                                 "change the rendered theme" and "persist to settingsManager" — the
+#                                 public ui.setTheme() always does both. previewTheme already exists
+#                                 inside InteractiveMode (used by /settings via a private callback);
+#                                 the patch simply promotes it to the extension API surface. There is
+#                                 no public-API-only workaround: the only alternative is ui.setTheme()
+#                                 on each arrow-key press, which writes to disk every keystroke and
+#                                 leaves a dirty settings state if the user cancels.
+#
+#                                 showError delegates to the inherited SessionMode.showError so
+#                                 extensions can surface error overlays (not toasts).
+#
+# Tracking: open an upstream PR against pi-mono to ship before_provider_headers as
+# a first-class extension hook in ExtensionRunner and ExtensionAPI. Also track a
+# separate PR to add previewTheme + showError to ExtensionUIContext.
+# Issue: TODO — file against https://github.com/earendil-works/pi-mono once the
+# API design is confirmed stable.
 #
 # Removal criteria:
 #   - Items 1-3 (before_provider_headers): upstream pi-mono ships BeforeProviderHeadersEvent
@@ -21,6 +47,8 @@
 #     AgentSession._installAgentToolHooks() so context.tools refreshes after each tool
 #     batch without a patch.
 #   - Item 5: individual fixes land upstream and the patched version is updated.
+#   - Item 6 (previewTheme + showError): upstream pi-coding-agent ships previewTheme
+#     and showError on ExtensionUIContext and the fixed version is pinned in package.json.
 #
 diff --git a/dist/cli/args.js b/dist/cli/args.js
 index 47a360d2a6892aeab2e69cc1a15156ec8e933857..1c2a7f0e5363f73ce657e422751f524a567429bd 100644
@@ -430,7 +458,11 @@ diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive
 index 0ab79928806ecd3fb84610447da4990e25047311..f400b9519304c909ee968c3dc12a5dfe4b9e0cb8 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
-@@ -1577,7 +1577,7 @@
+@@ -1561,2 +1561,3 @@ export class InteractiveMode {
+             notify: (message, type) => this.showExtensionNotify(message, type),
++            showError: (errorMessage) => this.showError(errorMessage),
+             onTerminalInput: (handler) => this.addExtensionTerminalInputListener(handler),
+@@ -1577,7 +1578,7 @@
              setHeader: (factory) => this.setExtensionHeader(factory),
              setTitle: (title) => this.ui.terminal.setTitle(title),
              custom: (factory, options) => this.showExtensionCustom(factory, options),
@@ -439,7 +471,19 @@ index 0ab79928806ecd3fb84610447da4990e25047311..f400b9519304c909ee968c3dc12a5dfe
              setEditorText: (text) => this.editor.setText(text),
              getEditorText: () => this.editor.getExpandedText?.() ?? this.editor.getText(),
              editor: (title, prefill) => this.showExtensionEditor(title, prefill),
-@@ -3383,6 +3383,29 @@
+@@ -1606,3 +1607,11 @@ export class InteractiveMode {
+                 return result;
+             },
++            previewTheme: (themeName) => {
++                const result = setTheme(themeName, true);
++                if (result.success) {
++                    this.ui.invalidate();
++                    this.ui.requestRender();
++                }
++                return result;
++            },
+             getToolsExpanded: () => this.toolOutputExpanded,
+@@ -3383,6 +3392,29 @@
              this.showModelSelector();
              return;
          }
@@ -469,3 +513,23 @@ index 0ab79928806ecd3fb84610447da4990e25047311..f400b9519304c909ee968c3dc12a5dfe
          const model = await this.findExactModelMatch(searchTerm);
          if (model) {
              try {
+diff --git a/dist/core/extensions/types.d.ts b/dist/core/extensions/types.d.ts
+index aad2ed2569c36dad0f3d2ac5607e312dd61275dd..e35532a3cf83023e5a2cdb12df8142013fbba326 100644
+--- a/dist/core/extensions/types.d.ts
++++ b/dist/core/extensions/types.d.ts
+@@ -187,5 +187,15 @@
+     /** Get current tool output expansion state. */
+     getToolsExpanded(): boolean;
+     /** Set tool output expansion state. */
+     setToolsExpanded(expanded: boolean): void;
++    /**
++     * Apply a theme live without persisting to settingsManager.
++     * Exposed by the kimchi-dev patch; matches the internal onThemePreview callback used by /settings.
++     */
++    previewTheme(name: string): { success: boolean; error?: string };
++    /**
++     * Show an error overlay (same surface as /settings failures).
++     * Exposed by the kimchi-dev patch; delegates to SessionMode.showError.
++     */
++    showError(errorMessage: string): void;
+ }
