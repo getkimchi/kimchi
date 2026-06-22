@@ -529,7 +529,7 @@ export class StatsFooter implements Component {
 		return this.theme.fg("warning", text)
 	}
 
-	private updateAvailableSegment(): text: string; width: number | null {
+	private updateAvailableSegment(): { text: string; width: number } | null {
 		// Info-line segment (rendered above the status line), NOT one of the
 		// status-line `Segment`s above — it has no SegmentId because it never
 		// participates in compaction.
@@ -541,7 +541,7 @@ export class StatsFooter implements Component {
 
 	render(width: number): string[] {
 		const config = readFooterConfig()
-		const pinnedSet = new Set(config.pinned)
+		const pinnedSet = new Set<SegmentId>(config.pinned)
 
 		const tags = getActiveTags()
 			.map(parseTag)
