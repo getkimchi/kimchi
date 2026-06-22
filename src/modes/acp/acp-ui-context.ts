@@ -301,6 +301,10 @@ export function createAcpUIContext(
 			notify("pi_notify", { method: "notify", message, notifyType: type })
 		},
 
+		showError(message) {
+			this.notify(message, "error")
+		},
+
 		// TUI-only stubs below — extensions probe these in conditional branches.
 
 		onTerminalInput(_handler) {
@@ -410,6 +414,10 @@ export function createAcpUIContext(
 		},
 
 		setTheme(_theme) {
+			return { success: false, error: "themes are not supported in ACP mode" }
+		},
+
+		previewTheme(_name) {
 			return { success: false, error: "themes are not supported in ACP mode" }
 		},
 

@@ -708,6 +708,40 @@ describe("createAcpUIContext — fire-and-forget notifications", () => {
 		await new Promise((r) => setImmediate(r))
 	})
 
+	it("showError forwards to notify with notifyType 'error'", async () => {
+		const {
+			conn,
+			extNotification: n,
+			send,
+		} = makeConn({
+			extNotification: extNotification as unknown as ExtNotification,
+		})
+		const real = createAcpUIContext(conn, "sess-1", fullClientCapabilities(), send)
+		real.showError("boom")
+		await new Promise((r) => setImmediate(r))
+		expect(n).toHaveBeenCalledTimes(1)
+		const [method, params] = n.mock.calls[0]
+		expect(method).toBe("_kimchi.dev/pi_notify")
+		expect(params).toEqual({
+			id: expect.any(String),
+			type: "extension_ui_request",
+			method: "notify",
+			sessionId: "sess-1",
+			message: "boom",
+			notifyType: "error",
+		})
+	})
+
+	it("showError swallows transport errors (no rejection visible to the caller)", async () => {
+		extNotification.mockRejectedValueOnce(new Error("socket closed"))
+		const { conn, send } = makeConn({
+			extNotification: extNotification as unknown as ExtNotification,
+		})
+		const real = createAcpUIContext(conn, "sess-1", fullClientCapabilities(), send)
+		expect(() => real.showError("boom")).not.toThrow()
+		await new Promise((r) => setImmediate(r))
+	})
+
 	it("setStatus sends _kimchi.dev/pi_setStatus via extNotification", async () => {
 		const {
 			conn,
@@ -995,6 +1029,10 @@ describe("createAcpUIContext — TUI-only no-op stubs", () => {
 		expect(real.getAllThemes()).toEqual([])
 		expect(real.getTheme("anything")).toBeUndefined()
 		expect(real.setTheme("anything")).toEqual({
+			success: false,
+			error: "themes are not supported in ACP mode",
+		})
+		expect(real.previewTheme("anything")).toEqual({
 			success: false,
 			error: "themes are not supported in ACP mode",
 		})
