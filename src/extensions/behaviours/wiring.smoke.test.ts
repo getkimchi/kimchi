@@ -137,6 +137,11 @@ afterEach(async () => {
 
 const testEnv: EnvironmentInfo = {
 	os: "Linux",
+	rawPlatform: "linux",
+	cpuArchitecture: "x64",
+	shell: "/bin/bash",
+	osRelease: "6.1.0-test",
+	osVersion: "#1 SMP PREEMPT_DYNAMIC Test",
 	username: "testuser",
 	homeDir: "/home/testuser",
 	cwd: "/home/testuser/project",

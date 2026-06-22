@@ -19,6 +19,11 @@ import { type SuppressibleSection, renderSystemPromptBlocks } from "./system-pro
 
 export interface EnvironmentInfo {
 	os: string
+	rawPlatform: string
+	cpuArchitecture: string
+	shell: string
+	osRelease: string
+	osVersion: string
 	username: string
 	homeDir: string
 	cwd: string
@@ -181,11 +186,19 @@ function formatToolsSection(tools: readonly ToolInfo[]): string {
 	return `## Available Tools\n\n<available_tools>\n${entries}\n</available_tools>`
 }
 
-function formatEnvironmentSection(env: EnvironmentInfo): string {
+export function formatEnvironmentSection(env: EnvironmentInfo): string {
+	const shellFamily = inferShellFamily(env)
 	const lines = [
 		"## Environment",
 		"",
 		`- OS: ${env.os}`,
+		`- OS release: ${env.osRelease}`,
+		`- OS version: ${env.osVersion}`,
+		`- Raw platform: ${env.rawPlatform}`,
+		`- CPU architecture: ${env.cpuArchitecture}`,
+		`- Shell: ${env.shell}`,
+		`- Shell family: ${shellFamily}`,
+		"- Command guidance: Use commands compatible with the shell family. Do not use PowerShell/cmd syntax in POSIX shells, and do not use POSIX-only syntax in PowerShell/cmd unless the shell is Git Bash or WSL. If shell/platform conflict or are unclear, check with a read-only command before running write/destructive commands.",
 		`- Username: ${env.username}`,
 		`- Home directory: "${env.homeDir}"`,
 		`- Working directory: "${env.cwd}"`,
@@ -196,6 +209,17 @@ function formatEnvironmentSection(env: EnvironmentInfo): string {
 	if (env.gitBranch !== undefined) lines.push(`- Git branch: ${env.gitBranch}`)
 	if (env.gitRemote !== undefined) lines.push(`- Git remote: ${env.gitRemote}`)
 	return lines.join("\n")
+}
+
+function inferShellFamily(env: EnvironmentInfo): string {
+	const shell = env.shell.toLowerCase()
+	const platform = env.rawPlatform.toLowerCase()
+	if (shell.includes("powershell") || shell.includes("pwsh")) return "powershell"
+	if (/(^|[/\\])cmd(\.exe)?$/.test(shell)) return "cmd"
+	if (shell.includes("bash") || shell.includes("zsh") || shell.includes("fish") || /(^|[/\\])sh$/.test(shell)) {
+		return platform === "win32" ? "posix-on-windows" : "posix"
+	}
+	return platform === "win32" ? "windows-unknown" : "posix-unknown"
 }
 
 function shiftHeadings(text: string): string {

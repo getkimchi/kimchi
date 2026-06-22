@@ -1,5 +1,5 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { arch, version as osVersion, platform, release, tmpdir } from "node:os"
 import { join } from "node:path"
 import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ToolInfo } from "@earendil-works/pi-coding-agent"
@@ -255,6 +255,41 @@ describe("prompt enrichment tool visibility", () => {
 
 		expect(result.systemPrompt).toContain('<tool name="read">')
 		expect(result.systemPrompt).not.toContain('<tool name="bash">')
+	})
+})
+
+describe("prompt enrichment environment context", () => {
+	beforeEach(() => {
+		vi.restoreAllMocks()
+		vi.spyOn(config, "loadConfig").mockReturnValue({ apiKey: "" } as ReturnType<typeof config.loadConfig>)
+		vi.spyOn(startupContext, "getAvailableModels").mockReturnValue([])
+	})
+
+	it("injects cheap platform and shell context into the system prompt", async () => {
+		const oldShell = process.env.SHELL
+		process.env.SHELL = "/bin/test-shell"
+		try {
+			const { beforeAgentStart } = buildPromptExtensionWithHandlers()
+			if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+			const result = (await beforeAgentStart(
+				{},
+				{ cwd: "/tmp", model: undefined, hasUI: false, sessionManager: { getSessionId: () => "session-1" } },
+			)) as { systemPrompt: string }
+
+			expect(result.systemPrompt).toContain(`- OS release: ${release()}`)
+			expect(result.systemPrompt).toContain(`- OS version: ${osVersion()}`)
+			expect(result.systemPrompt).toContain(`- Raw platform: ${platform()}`)
+			expect(result.systemPrompt).toContain(`- CPU architecture: ${arch()}`)
+			expect(result.systemPrompt).toContain("- Shell: /bin/test-shell")
+		} finally {
+			if (oldShell === undefined) {
+				// biome-ignore lint/performance/noDelete: process.env requires delete to truly unset.
+				delete process.env.SHELL
+			} else {
+				process.env.SHELL = oldShell
+			}
+		}
 	})
 })
 
