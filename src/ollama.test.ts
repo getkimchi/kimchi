@@ -871,6 +871,7 @@ describe("augmentModelRolesWithOllama — role pool augmentation", () => {
 		orchestrator: "anthropic/claude-opus-4",
 		planner: "anthropic/claude-sonnet-4",
 		judge: "anthropic/claude-sonnet-4",
+		researcher: "anthropic/claude-sonnet-4",
 		builder: ["anthropic/claude-sonnet-4", "openai/gpt-5"],
 		reviewer: "anthropic/claude-sonnet-4",
 		explorer: ["openai/gpt-5-mini"],
@@ -907,11 +908,12 @@ describe("augmentModelRolesWithOllama — role pool augmentation", () => {
 		expect(result.builder).toContain("ollama/qwen2:70b")
 	})
 
-	it("never touches orchestrator, planner, or judge", () => {
+	it("never touches orchestrator, planner, judge, or researcher", () => {
 		const result = augmentModelRolesWithOllama(baseRoles, ollamaModels)
 		expect(result.orchestrator).toBe("anthropic/claude-opus-4")
 		expect(result.planner).toBe("anthropic/claude-sonnet-4")
 		expect(result.judge).toBe("anthropic/claude-sonnet-4")
+		expect(result.researcher).toBe("anthropic/claude-sonnet-4")
 	})
 
 	it("does not mutate the input roles object", () => {
