@@ -6,6 +6,23 @@
  * cheaper (less output to land in context) and trigger LSP-aware tooling
  * (hover/definition) when reading or editing code.
  *
+ * Two layers of nudging:
+ *
+ *   1. **Preference (upstream).** A "Tool Preferences" block in the
+ *      system prompt (rendered right before "## Available Tools") plus an
+ *      override of the bash tool's description. The upstream snippet
+ *      "Execute bash commands (ls, grep, find, etc.)" tells the model
+ *      bash can do those things — exactly the substitution we steer
+ *      against. The override fixes the snippet, and the block makes
+ *      the substitution rules explicit. Goal: the model picks the
+ *      dedicated tool the first time, not after being told.
+ *
+ *   2. **Guard (downstream).** Inspects each bash call. If the command
+ *      is a file-reading / in-place-edit / file-writing pattern that
+ *      has a dedicated tool, emits a steer message pointing at the
+ *      dedicated tool. Hard-blocking is opt-in via
+ *      `blockOnThreshold: true`.
+ *
  * Three categories are detected:
  *   - read  — `cat <file>`, `head <file>`, `tail <file>`, `less <file>`,
  *             `bat <file>`, `sed -n '<range>p' <file>` (read-only sed).
@@ -47,6 +64,7 @@ import {
 } from "./bash-tool-guard-events.js"
 import { getPermissionMode } from "./permissions/mode-controller.js"
 import { parseCommandSegments } from "./permissions/taxonomy.js"
+import { createSystemPromptBlocks } from "./prompt-construction/system-prompt-blocks.js"
 
 const RESOURCE_ID = "extensions.bash-tool-guard"
 
@@ -124,6 +142,65 @@ const BLOCK_REASON_BASE =
 const READ_SUGGESTION = "Use the read tool with the file path (and offset/limit for head/tail)."
 const EDIT_SUGGESTION = "Use the edit tool with old_string/new_string."
 const WRITE_SUGGESTION = "Use the edit tool for targeted changes or the write tool for full-file replacements."
+
+/**
+ * Markdown block injected into the system prompt immediately before the
+ * "## Available Tools" section. Uses inline-code backticks so the model
+ * can easily match the substitutions. Lists what bash IS for so the
+ * model doesn't think bash is now useless — it just shouldn't be used
+ * for the operations with dedicated tools.
+ */
+export const TOOL_PREFERENCES_BLOCK = `
+## Tool Preferences
+
+Prefer dedicated tools over bash when possible:
+
+- Reading a file → use \`read\` (not \`cat\`, \`head\`, \`tail\`, \`sed -n\`)
+- Editing a file → use \`edit\` (not \`sed -i\`, \`perl -i\`)
+- Writing a file → use \`write\` (not \`>\`, \`>>\`, \`tee\`, heredoc)
+- Searching file contents → use \`grep\` (respects .gitignore, faster)
+- Finding files by pattern → use \`find\` (respects .gitignore)
+- Listing a directory → use \`ls\`
+
+Use bash only for: build commands, test runners, git, package managers, shell scripting, or system administration.
+`.trim()
+
+/**
+ * Replacement description for the bash tool. Keeps the original output
+ * truncation behaviour from upstream but explicitly excludes the
+ * file-operation substitutions and lists what bash IS for. Mutated
+ * onto the upstream tool object on `session_start` so the kimchi prompt
+ * builder picks up the new description when it renders the tool list.
+ */
+export const BASH_TOOL_DESCRIPTION = `
+Execute a bash command for operations without a dedicated tool: build commands, test runners, git, package managers, system administration, shell scripting.
+
+DO NOT use bash for: reading files (use \`read\`), editing files (use \`edit\`), writing files (use \`write\`), searching file contents (use \`grep\`), finding files by pattern (use \`find\`), or listing directories (use \`ls\`) — dedicated tools are faster and unlock LSP context.
+
+Returns stdout and stderr. Output is truncated to last 2000 lines or 50KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.
+`.trim()
+
+/**
+ * Pure helper: returns a description override for the given tool name, or
+ * `undefined` when no override applies. Kept as a pure function so tests
+ * can exercise it without a mock `pi` and so the override rules are
+ * visible at a glance.
+ */
+export function toolDescriptionOverride(name: string): string | undefined {
+	if (name !== "bash") return undefined
+	return BASH_TOOL_DESCRIPTION
+}
+
+/**
+ * Pure helper: applies the description override to a tool definition,
+ * returning a new tool definition. Always returns a new object (never
+ * the input) so callers can rely on immutability. Tools with no override
+ * get a shallow copy with the same description.
+ */
+export function applyDescriptionOverride<T extends { name: string; description: string }>(tool: T): T {
+	const override = toolDescriptionOverride(tool.name)
+	return { ...tool, description: override ?? tool.description }
+}
 
 /**
  * Pure classification of a bash command. Returns null when the command is
@@ -464,9 +541,30 @@ export default function bashToolGuardExtension(pi: ExtensionAPI, options?: BashG
 		}
 	}
 
+	// Preference (upstream of the guard): a system prompt block with
+	// explicit substitution rules. The block lands immediately before
+	// "## Available Tools" in the rendered prompt, so the model reads
+	// the preferences right when it sees the tool list.
+	const blocks = createSystemPromptBlocks(pi, "bash-tool-guard")
+	blocks.register({
+		id: "tool-preferences",
+		render: () => TOOL_PREFERENCES_BLOCK,
+	})
+
 	pi.on("session_start", (_event, _ctx) => {
 		ctx = _ctx
 		guard.reset()
+
+		// Override the bash tool's description in place. The kimchi
+		// prompt-enrichment handler reads pi.getAllTools() and passes
+		// the same object references to buildSystemPrompt, so the
+		// mutation propagates to the rendered prompt. If the tool
+		// objects are cloned elsewhere (e.g. tool discovery UI), the
+		// worst case is they show a more accurate description there too.
+		const bashTool = pi.getAllTools().find((t) => t.name === "bash")
+		if (bashTool) {
+			bashTool.description = BASH_TOOL_DESCRIPTION
+		}
 	})
 
 	pi.on("input", (event: InputEvent) => {
