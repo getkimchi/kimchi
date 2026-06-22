@@ -8,7 +8,7 @@ import {
 	registerTodoStateBlock,
 	setCurrentSessionHasUI,
 } from "./prompt-block.js"
-import { getTodosForScope, restoreTodoStoreFromDetails, subscribeTodoStore } from "./store.js"
+import { getTodosForScope, resolveTodoScope, restoreTodoStoreFromDetails, subscribeTodoStore } from "./store.js"
 import { TODO_TOOL_NAMES, registerTodosTool } from "./tool.js"
 import { TODO_TOOL_RESULT_SCHEMA_VERSION, type WriteTodosDetails } from "./types.js"
 import {
@@ -28,8 +28,10 @@ export * from "./widget.js"
 export * from "./command.js"
 export * from "./prompt-block.js"
 
-export const TODO_CLEANUP_MESSAGE =
-	"Your session todo list is complete but still open. If you are no longer working on these todos and everything is finished, call clear_todos to clear the list. If there is more to do, add the next items with add_todo instead. Do not leave a finished todo list lingering. This todo bookkeeping is internal; do not tell the user you are clearing or updating todos."
+export const TODO_RECONCILE_MESSAGE =
+	"Internal hidden todo checkpoint. You are about to stop while the session todo list still needs reconciliation. Before any user-facing wrap-up, use the todo tools to make the list match reality: if an item is done, mark it completed; if work remains, keep working or mark the real pending/blocked state; if the list is obsolete or fully done, clear it. Do not tell the user about this checkpoint or mention that you are clearing or updating todos."
+export const TODO_CHECKPOINT_MESSAGE =
+	"Internal hidden todo checkpoint. You changed state since the session todo list was last updated. Before switching tasks or answering finally, reconcile the todo list: completed work should be marked completed, remaining work should stay pending/in_progress/blocked with the real next step, and obsolete or fully done lists should be cleared. Do not tell the user about this checkpoint or mention that you are clearing or updating todos."
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object"
@@ -65,10 +67,41 @@ export function restoreTodoStoreFromSessionEntries(entries: readonly SessionEntr
 	restoreTodoStoreFromDetails(entries.map(getWriteTodosDetails).filter((details) => details !== undefined))
 }
 
-function completedTodosKey(): string | undefined {
-	const todos = getTodosForScope()
-	if (todos.length === 0 || todos.some((todo) => todo.status !== "completed")) return undefined
-	return todos.map((todo) => `${todo.id}:${todo.content}`).join("|")
+function currentTodoStateKey(): string | undefined {
+	const scope = resolveTodoScope()
+	const todos = getTodosForScope(scope)
+	if (todos.length === 0) return undefined
+	return JSON.stringify({ scope, todos: todos.map((todo) => [todo.id, todo.status, todo.content]) })
+}
+
+function currentTodoStateText(): string | undefined {
+	const scope = resolveTodoScope()
+	const todos = getTodosForScope(scope)
+	if (todos.length === 0) return undefined
+	const scopeText = scope.kind === "global" ? "global" : JSON.stringify(scope)
+	return [
+		`Current todos (${scopeText}):`,
+		...todos.map((todo) => `- #${todo.id} [${todo.status}] ${todo.content}`),
+	].join("\n")
+}
+
+function hiddenTodoMessage(reason: string, text: string) {
+	return {
+		customType: TODO_CUSTOM_ENTRY_TYPE,
+		content: [{ type: "text" as const, text }],
+		display: false,
+		details: { reason },
+	}
+}
+
+function isTerminalAssistantTurn(
+	event: { message: unknown; toolResults: readonly unknown[] },
+	ctx: ExtensionContext,
+): boolean {
+	if (event.toolResults.length > 0 || ctx.hasPendingMessages?.()) return false
+	const message = event.message
+	if (!isRecord(message) || message.role !== "assistant") return false
+	return message.stopReason !== "aborted" && message.stopReason !== "error"
 }
 
 export default function todosExtension(pi: ExtensionAPI): void {
@@ -83,25 +116,25 @@ export default function todosExtension(pi: ExtensionAPI): void {
 
 	let latestCtx: ExtensionContext | undefined
 	let unsubscribeTodoStore: (() => void) | undefined
-	let cleanupSteeredTodosKey: string | undefined
+	let workSinceTodoWrite = false
+	let reconcileSteeredTodosKey: string | undefined
 
-	const maybeSteerCompletedTodosCleanup = () => {
-		const key = completedTodosKey()
+	const resetTodoProcessState = () => {
+		workSinceTodoWrite = false
+		reconcileSteeredTodosKey = undefined
+	}
+
+	const maybeSteerTodoReconciliation = () => {
+		const key = currentTodoStateKey()
 		if (!key) {
-			cleanupSteeredTodosKey = undefined
+			resetTodoProcessState()
 			return
 		}
-		if (cleanupSteeredTodosKey === key) return
-		cleanupSteeredTodosKey = key
-		pi.sendMessage(
-			{
-				customType: TODO_CUSTOM_ENTRY_TYPE,
-				content: [{ type: "text", text: TODO_CLEANUP_MESSAGE }],
-				display: false,
-				details: { reason: "completed_todos" },
-			},
-			{ deliverAs: "nextTurn" },
-		)
+		if (reconcileSteeredTodosKey === key) return
+		reconcileSteeredTodosKey = key
+		const stateText = currentTodoStateText()
+		const message = stateText ? `${TODO_RECONCILE_MESSAGE}\n\n${stateText}` : TODO_RECONCILE_MESSAGE
+		pi.sendMessage(hiddenTodoMessage("reconcile_todos", message), { deliverAs: "followUp" })
 	}
 
 	registerTodosCommand(pi)
@@ -114,16 +147,19 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	const replayAndSync = (ctx: ExtensionContext) => {
 		latestCtx = ctx
 		restoreTodoStoreFromSessionEntries(ctx.sessionManager.getBranch())
+		resetTodoProcessState()
 		syncTodoWidget(ctx)
 	}
 
 	pi.on("session_start", (_event, ctx) => {
-		cleanupSteeredTodosKey = undefined
+		resetTodoProcessState()
 		resetTodoWidgetState()
 		ensureTodoWidget(ctx)
 		setCurrentSessionHasUI(ctx.hasUI)
 		unsubscribeTodoStore?.()
 		unsubscribeTodoStore = subscribeTodoStore(() => {
+			workSinceTodoWrite = false
+			reconcileSteeredTodosKey = undefined
 			if (!latestCtx?.hasUI) return
 			syncTodoWidget(latestCtx)
 		})
@@ -134,8 +170,33 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		replayAndSync(ctx)
 	})
 
-	pi.on("agent_end", () => {
-		maybeSteerCompletedTodosCleanup()
+	pi.on("tool_execution_end", (event) => {
+		if (event.isError || TODO_REPLAY_TOOL_NAME_SET.has(event.toolName)) return
+		if (currentTodoStateKey()) workSinceTodoWrite = true
+	})
+
+	pi.on("context", (event) => {
+		if (!workSinceTodoWrite) return undefined
+		const stateText = currentTodoStateText()
+		if (!stateText) {
+			workSinceTodoWrite = false
+			return undefined
+		}
+		return {
+			messages: [
+				...event.messages,
+				{
+					role: "custom" as const,
+					...hiddenTodoMessage("todo_checkpoint", `${TODO_CHECKPOINT_MESSAGE}\n\n${stateText}`),
+					timestamp: Date.now(),
+				},
+			],
+		}
+	})
+
+	pi.on("turn_end", (event, ctx) => {
+		if (!isTerminalAssistantTurn(event, ctx)) return
+		maybeSteerTodoReconciliation()
 	})
 
 	pi.on("session_shutdown", (_event, ctx) => {
