@@ -18,10 +18,9 @@ import {
 import {
 	MINIMAX_FAMILY_BUILD,
 	MINIMAX_FAMILY_ORCHESTRATION,
+	MINIMAX_FAMILY_PLAN,
+	MINIMAX_FAMILY_RESEARCH,
 	MINIMAX_FAMILY_REVIEW,
-	MINIMAX_M27_BUILD,
-	MINIMAX_M27_ORCHESTRATION,
-	MINIMAX_M27_REVIEW,
 } from "./guidelines/minimax-family.js"
 import {
 	NEMOTRON_3_ULTRA_BUILD,
@@ -56,13 +55,12 @@ scaling. Prefer minimax-m2.7 for build subagents — it is faster and completes 
 within standard budgets. Use kimi-k2.6 as a build subagent ONLY as a retry after \
 minimax has already failed on the same chunk.`
 
-const MINIMAX_M27_DESCRIPTION = `\
-The strongest coding model in the pool. \
-Best accuracy on multi-file bugs, complex refactors, and extended tool call chains. \
-Best for: well-scoped coding tasks (CRUD, parsers, handlers, CLI wiring, straightforward tests), \
-and mechanical code review of straightforward code. \
-Not reliable for algorithm-correctness tasks (graph algorithms, topological sort, complex data \
-structure invariants) — use a heavy-tier model for those.`
+const MINIMAX_M3_DESCRIPTION = `\
+Primary MiniMax model with vision support — the default for orchestration, deep research, \
+complex planning, and correctness-critical tasks. Handles images, screenshots, and visual input. \
+Best for: orchestration, architectural planning, plan verification involving concurrency or \
+algorithmic design, multi-step coding tasks, and any work requiring image understanding. \
+Replaces kimi-k2.6 (orchestrator) and minimax-m2.7 (builder/reviewer subagent).`
 
 const NEMOTRON_3_ULTRA_DESCRIPTION = `\
 Cheapest and fastest. 1M token context window with near-perfect retrieval — \
@@ -133,20 +131,18 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 	],
 	["kimi-k2.5", "ignored"],
 	[
-		"minimax-m2.7",
+		"minimax-m3",
 		{
-			vision: false,
-			tier: "standard",
-			description: MINIMAX_M27_DESCRIPTION,
+			vision: true,
+			tier: "heavy",
+			description: MINIMAX_M3_DESCRIPTION,
 			guidelines: guidelinesMap({
-				build: [DEFAULT_BUILD_GUIDELINES, MINIMAX_FAMILY_BUILD, MINIMAX_M27_BUILD],
-				review: [DEFAULT_REVIEW_GUIDELINES, MINIMAX_FAMILY_REVIEW, MINIMAX_M27_REVIEW],
+				research: [DEFAULT_RESEARCH_GUIDELINES, MINIMAX_FAMILY_RESEARCH],
+				plan: [DEFAULT_PLAN_GUIDELINES, MINIMAX_FAMILY_PLAN],
+				build: [DEFAULT_BUILD_GUIDELINES, MINIMAX_FAMILY_BUILD],
+				review: [DEFAULT_REVIEW_GUIDELINES, MINIMAX_FAMILY_REVIEW],
 			}),
-			orchestrationGuidelines: optionalGuidelines(
-				DEFAULT_ORCHESTRATION_GUIDELINES,
-				MINIMAX_FAMILY_ORCHESTRATION,
-				MINIMAX_M27_ORCHESTRATION,
-			),
+			orchestrationGuidelines: optionalGuidelines(DEFAULT_ORCHESTRATION_GUIDELINES, MINIMAX_FAMILY_ORCHESTRATION),
 		},
 	],
 	[
@@ -172,6 +168,7 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 	["claude-opus-4-6", "ignored"],
 	["glm-5-fp8", "ignored"],
 	["minimax-m2.5", "ignored"],
+	["minimax-m2.7", "ignored"],
 	["claude-opus-4-6-20250514", "ignored"],
 	["claude-sonnet-4-6", "ignored"],
 	["claude-sonnet-4-5", "ignored"],

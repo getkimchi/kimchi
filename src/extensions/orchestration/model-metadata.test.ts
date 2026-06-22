@@ -473,9 +473,9 @@ describe("resolveModelMetadata", () => {
 		expect(result).toEqual(expect.objectContaining({ source: "custom", tier: "light", description: "Custom override" }))
 	})
 
-	it("returns builtin for minimax-m2.7", () => {
-		const result = resolveModelMetadata("kimchi-dev/minimax-m2.7", testPath)
-		expect(result).toEqual(expect.objectContaining({ source: "builtin", tier: "standard", vision: false }))
+	it("returns builtin for minimax-m3", () => {
+		const result = resolveModelMetadata("kimchi-dev/minimax-m3", testPath)
+		expect(result).toEqual(expect.objectContaining({ source: "builtin", tier: "heavy", vision: true }))
 	})
 
 	it("returns builtin for nemotron-3-ultra-fp4", () => {
@@ -496,7 +496,7 @@ describe("isModelMetadataMissing", () => {
 
 	it("returns false for known builtin model", () => {
 		expect(isModelMetadataMissing("kimchi-dev/kimi-k2.6", testPath)).toBe(false)
-		expect(isModelMetadataMissing("kimchi-dev/minimax-m2.7", testPath)).toBe(false)
+		expect(isModelMetadataMissing("kimchi-dev/minimax-m3", testPath)).toBe(false)
 	})
 
 	it("returns true for completely unknown model with no custom metadata", () => {

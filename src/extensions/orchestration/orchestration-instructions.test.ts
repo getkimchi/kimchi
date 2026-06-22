@@ -57,7 +57,7 @@ describe("resolveOrchestrationInstructions", () => {
 
 	it("shows Your Capabilities section with orchestrator roles", () => {
 		const result = resolveAsString({
-			currentModelId: "kimi-k2.6",
+			currentModelId: "minimax-m3",
 			registry,
 			mode: "orchestrator",
 			roles: DEFAULT_MODEL_ROLES,
@@ -117,7 +117,7 @@ describe("resolveOrchestrationInstructions", () => {
 
 	it("generates DO directive for plan when orchestrator is planner", () => {
 		const result = resolveAsString({
-			currentModelId: "kimi-k2.6",
+			currentModelId: "minimax-m3",
 			registry,
 			mode: "orchestrator",
 			roles: DEFAULT_MODEL_ROLES,
@@ -146,12 +146,11 @@ describe("resolveOrchestrationInstructions", () => {
 
 	it("renders tier and description for models in Your Team", () => {
 		const result = resolveAsString({
-			currentModelId: "kimi-k2.6",
+			currentModelId: "minimax-m3",
 			registry,
 			mode: "orchestrator",
 			roles: DEFAULT_MODEL_ROLES,
 		})
-		expect(result).toContain("Tier: standard")
 		expect(result).toContain("Tier: heavy")
 		expect(result).toContain("Tier: light")
 	})
@@ -278,7 +277,7 @@ describe("resolveOrchestrationInstructions", () => {
 
 	it("includes model-specific orchestration guidelines when provided", () => {
 		const result = resolveAsString({
-			currentModelId: "minimax-m2.7",
+			currentModelId: "minimax-m3",
 			registry,
 			mode: "orchestrator",
 			roles: DEFAULT_MODEL_ROLES,

@@ -33,11 +33,10 @@ describe("phase guideline resolution", () => {
 	})
 
 	it("returns model-specific guideline when model has one", () => {
-		const result = resolvePhaseGuideline("build", "minimax-m2.7", registry)
+		const result = resolvePhaseGuideline("build", "minimax-m3", registry)
 		expect(result).toContain("MiniMax M2 family")
 		expect(result).toContain("Outline-then-diff")
-		expect(result).toContain("minimax-m2.7 specific")
-		expect(result).toContain("mutex-based concurrency")
+		expect(result).toContain("STAY IN SCOPE")
 	})
 
 	it("returns default guideline for phases with no model override", () => {
@@ -67,8 +66,8 @@ describe("orchestration guideline resolution", () => {
 		expect(result).toBe("")
 	})
 
-	it("returns composed orchestration guideline for minimax-m2.7", () => {
-		const result = resolveOrchestrationGuideline("minimax-m2.7", registry)
+	it("returns composed orchestration guideline for minimax-m3", () => {
+		const result = resolveOrchestrationGuideline("minimax-m3", registry)
 		expect(result).toContain("MiniMax M2 family")
 		expect(result).toContain("web_search")
 		expect(result).toContain("front-load")
@@ -108,7 +107,7 @@ describe("guideline section building", () => {
 	const registry = new ModelRegistry(ALL_KNOWN_METADATA)
 
 	it("builds orchestration guidelines section with content", () => {
-		const result = buildOrchestrationGuidelinesSection("minimax-m2.7", registry)
+		const result = buildOrchestrationGuidelinesSection("minimax-m3", registry)
 		expect(result).toContain("### Orchestration Guidelines")
 		expect(result).toContain("MiniMax M2 family")
 	})
@@ -119,7 +118,7 @@ describe("guideline section building", () => {
 	})
 
 	it("builds phase guidelines section with model content", () => {
-		const result = buildPhaseGuidelinesSection("minimax-m2.7", "build", registry)
+		const result = buildPhaseGuidelinesSection("minimax-m3", "build", registry)
 		expect(result).toContain("## Phase Guidelines (build)")
 		expect(result).toContain("Outline-then-diff")
 	})
@@ -161,17 +160,16 @@ describe("builtin-model guideline content", () => {
 		expect(result).toContain("per-chunk acceptance criteria")
 	})
 
-	it("minimax-m2.7 build: contains family and per-model layers", () => {
-		const result = resolvePhaseGuideline("build", "minimax-m2.7", registry)
+	it("minimax-m3 build: contains family layer", () => {
+		const result = resolvePhaseGuideline("build", "minimax-m3", registry)
 		expect(result).toContain("Outline-then-diff")
-		expect(result).toContain("mutex")
+		expect(result).toContain("STAY IN SCOPE")
 	})
 
-	it("minimax-m2.7 review: contains family and per-model layers", () => {
-		const result = resolvePhaseGuideline("review", "minimax-m2.7", registry)
+	it("minimax-m3 review: contains family layer", () => {
+		const result = resolvePhaseGuideline("review", "minimax-m3", registry)
 		expect(result).toContain("scope creep")
 		expect(result).toContain("hallucinated APIs")
-		expect(result).toContain("inappropriate concurrency")
 	})
 
 	it("nemotron-3-ultra-fp4 explore: contains per-model layer", () => {
