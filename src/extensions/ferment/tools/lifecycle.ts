@@ -1154,7 +1154,7 @@ ${renderGateGuidance("complete_ferment")}`,
 	pi.registerTool({
 		name: FERMENT_TOOLS.CONFIRM_COMPLETION_CRITERIA,
 		label: "Confirm Completion Criteria",
-		description: `Confirm drafted Ferment completion criteria with deterministic UI. Use this in Step 3 after drafting criteria; do not hand-build completion-criteria confirmation with questionnaire.
+		description: `Confirm drafted Ferment completion criteria with deterministic UI. Use this in Step 3 after drafting criteria; do not hand-build completion-criteria confirmation with ask_user.
 
 The host renders one question:
   - "Yes, looks good"

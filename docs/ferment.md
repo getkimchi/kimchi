@@ -63,7 +63,7 @@ visibility after each FSM transition.
 | Profile | Active ferment state | Toolset |
 |---------|----------------------|---------|
 | `idle` | No active ferment | All non-ferment tools + `list_ferments` + `request_ferment_workflow`. All ferment-only lifecycle and planning tools are hidden so the model isn't prompted to start a ferment or mutate ferment state during normal chat. |
-| `planning` | Ferment exists; all phases in `"planned"` status (no `activate_ferment_phase` yet) | Research set + ferment planning tools: `read`, `grep`, `find`, `ls`, `web_fetch`, `web_search`, `set_phase`, `propose_ferment_scoping`, `scope_ferment`, `update_ferment_scope_field`, `confirm_ferment_completion_criteria`, `list_ferments`, `questionnaire` |
+| `planning` | Ferment exists; all phases in `"planned"` status (no `activate_ferment_phase` yet) | Research set + ferment planning tools: `read`, `grep`, `find`, `ls`, `web_fetch`, `web_search`, `set_phase`, `propose_ferment_scoping`, `scope_ferment`, `update_ferment_scope_field`, `confirm_ferment_completion_criteria`, `list_ferments`, `ask_user` |
 | `implementation` | At least one phase activated (status `!== "planned"`) | Full toolset: union of all registered tools with `IMPLEMENTATION_TOOL_NAMES` — adds `bash`, `edit`, `write`, `Agent`, `get_subagent_result` + ferment lifecycle tools (`activate_ferment_phase`, `refine_ferment_phase`, `complete_ferment_phase`, `start_ferment_step`, `complete_ferment_step`, `verify_ferment_step`, `complete_ferment`, etc.) |
 | `worker` | Subagent worker context (`KIMCHI_SUBAGENT=1`) | Empty — workers get their toolset from the agents manager, not from ferment |
 

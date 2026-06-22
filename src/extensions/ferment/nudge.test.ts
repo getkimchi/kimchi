@@ -361,8 +361,8 @@ describe("scoping progress nudge", () => {
 		)
 		const sentMessage = vi.mocked(pi.sendMessage).mock.calls[0][0] as { content: Array<{ text?: string }> }
 		const nudgeText = sentMessage.content[0]?.text ?? ""
-		expect(nudgeText).toContain("call questionnaire")
-		expect(nudgeText).not.toContain("call ask_user")
+		expect(nudgeText).toContain("call ask_user")
+		expect(nudgeText).not.toContain("call questionnaire")
 	})
 
 	it("resets the counter when a scoping-progress tool is seen", () => {

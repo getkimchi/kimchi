@@ -240,7 +240,7 @@ export function maybeInjectScopingProgressNudge(pi: ExtensionAPI, fermentId: str
 					type: "text",
 					text: `SCOPING PROGRESS CHECK: You have spent ${count} turns reading files without advancing through the scoping steps. Stop exploring and move to the next scoping step NOW.
 
-- If you haven't asked the user any questions yet, call questionnaire with your interview questions (Step 2).
+- If you haven't asked the user any questions yet, call ask_user with your interview questions (Step 2).
 - If you've completed the interview, call confirm_ferment_completion_criteria to confirm success criteria (Step 3).
 - If criteria are confirmed, call propose_ferment_scoping with the full plan (Step 5).
 - Do NOT continue reading more files. You have enough context to proceed.`,

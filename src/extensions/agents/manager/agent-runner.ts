@@ -355,16 +355,16 @@ async function runAgentInner(
 	if (effectiveMaxTurns != null || effectiveTokenBudget != null) {
 		extras.budget = { maxTurns: effectiveMaxTurns, tokenBudget: effectiveTokenBudget }
 	}
-	extras.activeToolNames = getPromptToolNames(toolNames, disallowedSet)
 
-	let systemPrompt: string
-	if (agentConfig) {
-		systemPrompt = buildAgentPrompt(agentConfig, effectiveCwd, env, parentSystemPrompt, extras)
-	} else {
+	const buildSystemPrompt = (activeToolNames: string[]) => {
+		extras.activeToolNames = activeToolNames
+		if (agentConfig) return buildAgentPrompt(agentConfig, effectiveCwd, env, parentSystemPrompt, extras)
 		const fallback = DEFAULT_AGENTS.get(AGENT_GENERAL_PURPOSE)
 		if (!fallback) throw new Error(`No fallback config available for unknown type "${type}"`)
-		systemPrompt = buildAgentPrompt({ ...fallback, name: type }, effectiveCwd, env, parentSystemPrompt, extras)
+		return buildAgentPrompt({ ...fallback, name: type }, effectiveCwd, env, parentSystemPrompt, extras)
 	}
+
+	let systemPrompt = buildSystemPrompt(getPromptToolNames(toolNames, disallowedSet))
 
 	const debugSession = process.env.KIMCHI_DEBUG_SESSION
 	if (debugSession) {
@@ -443,9 +443,13 @@ async function runAgentInner(
 
 	if (extensions !== false) {
 		const activeTools = getActiveSubagentToolNames(toolNames, session.getActiveToolNames(), extensions, disallowedSet)
+		systemPrompt = buildSystemPrompt(activeTools)
+		await loader.reload()
 		session.setActiveToolsByName(activeTools)
 	} else if (disallowedSet) {
 		const activeTools = session.getActiveToolNames().filter((t) => !disallowedSet.has(t))
+		systemPrompt = buildSystemPrompt(activeTools)
+		await loader.reload()
 		session.setActiveToolsByName(activeTools)
 	}
 

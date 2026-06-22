@@ -124,10 +124,10 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).toBeUndefined()
 		})
 
-		it("advertises questionnaire in the planning toolset", () => {
+		it("advertises ask_user in the planning toolset", () => {
 			const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime({ status: "planned" })) ?? ""
-			expect(out).toContain("`questionnaire`")
-			expect(out).not.toContain("`ask_user`")
+			expect(out).toContain("`ask_user`")
+			expect(out).not.toContain("`questionnaire`")
 		})
 	})
 

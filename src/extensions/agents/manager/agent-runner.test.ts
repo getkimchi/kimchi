@@ -669,7 +669,14 @@ describe("runAgent — profile tool access", () => {
 		})
 
 		expect(session.setActiveToolsByName).toHaveBeenCalledWith(["read", "bash", "grep", "find", "ls", "web_search"])
-		expect(mockBuildAgentPrompt.mock.calls[0]?.[4]?.activeToolNames).toEqual(["read", "bash", "grep", "find", "ls"])
+		expect(mockBuildAgentPrompt.mock.calls.at(-1)?.[4]?.activeToolNames).toEqual([
+			"read",
+			"bash",
+			"grep",
+			"find",
+			"ls",
+			"web_search",
+		])
 	})
 
 	it("keeps only matching extension tools when profile names an extension allowlist", async () => {

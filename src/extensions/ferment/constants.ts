@@ -24,7 +24,7 @@ STEP 2 — INTERVIEW (iterative rounds)
 Ask the user about the unknowns you identified in Step 1. Run in rounds:
 
 Round structure:
-  a. Ask 1-3 focused questions via questionnaire.
+  a. Ask 1-3 focused questions via ask_user.
      When presenting options, set allowOther: true and include "None of the above"
      for predefined choices.
   b. When answers come back, REFLECT before continuing:
@@ -57,7 +57,7 @@ Draft concrete completion criteria and validation steps, then confirm with the u
 - State what "done" looks like in specific, testable terms.
 - Include the verification method for each criterion (test command, manual check, linter, etc.).
 - Use confirm_ferment_completion_criteria to present the criteria. Do not hand-build
-  this with questionnaire — the host asks one question with two options:
+  this with ask_user — the host asks one question with two options:
   "Yes, looks good" and "No (input what is wrong)", where "No" includes the
   inline free-form explanation path.
 - Proceed only when the tool returns Confirmed: yes and Changes: (none). Otherwise
