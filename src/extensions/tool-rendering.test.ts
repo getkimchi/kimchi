@@ -61,6 +61,28 @@ describe("user message render patch", () => {
 		expect(summary).toBe("Which improvement areas should this ferment include?")
 	})
 
+	it("summarizes ask_user shorthand calls from question", () => {
+		const summary = summarizeOpenAiToolCall(
+			"ask_user",
+			{ question: "Should the ferment revise the scope?" },
+			plainTheme,
+			(path) => path,
+		)
+
+		expect(summary).toBe("Should the ferment revise the scope?")
+	})
+
+	it("summarizes ask_user form calls from prompt fields", () => {
+		const summary = summarizeOpenAiToolCall(
+			"ask_user",
+			{ questions: [{ prompt: "Which criteria need tightening?" }, { prompt: "Anything else?" }] },
+			plainTheme,
+			(path) => path,
+		)
+
+		expect(summary).toBe("Which criteria need tightening? (+1 more)")
+	})
+
 	it("renders Skill tool with skill name when skill arg is provided", () => {
 		const summary = summarizeOpenAiToolCall("Skill", { skill: "writing-plans" }, plainTheme, (path) => path)
 		expect(summary).toBe("writing-plans")

@@ -46,16 +46,19 @@ const opts: AskUserOption[] = [
 describe("askUser routing", () => {
 	it("routes to TUI when interactive and a UI is attached", async () => {
 		const select = vi.fn(async () => "Pause")
+		const markHumanInput = vi.fn()
 		const result = await askUser("Continue?", opts, {
 			ferment: makeFerment(),
 			pi: makePi(),
 			ctx: { ui: { select } as never },
+			runtime: { markHumanInput } as never,
 		})
 		expect(result.failed).toBeFalsy()
 		if (result.failed) return
 		expect(result.choice).toBe("pause")
 		expect(result.answered_by).toBe("user")
 		expect(select).toHaveBeenCalledWith("Continue?", ["Proceed", "Pause", "Abandon"])
+		expect(markHumanInput).toHaveBeenCalledTimes(1)
 	})
 
 	it("returns user_cancelled when the TUI returns no selection", async () => {
@@ -106,6 +109,7 @@ describe("askUser routing", () => {
 
 	it("routes to the judge when ferment-oneshot flag is set, ignoring any TUI", async () => {
 		const select = vi.fn(async () => "Proceed")
+		const markHumanInput = vi.fn()
 		const fakeJudge = vi.fn(async () => ({
 			choice: "pause",
 			response_type: "single" as const,
@@ -119,10 +123,12 @@ describe("askUser routing", () => {
 				ferment: makeFerment(),
 				pi: makePi({ "ferment-oneshot": true }),
 				ctx: { ui: { select } as never },
+				runtime: { markHumanInput } as never,
 			},
 			{ askJudge: fakeJudge },
 		)
 		expect(select).not.toHaveBeenCalled()
+		expect(markHumanInput).not.toHaveBeenCalled()
 		expect(result.failed).toBeFalsy()
 		if (result.failed) return
 		expect(result.choice).toBe("pause")
@@ -233,6 +239,7 @@ describe("askUser routing", () => {
 
 	it("routes form questions through fallback UI when custom UI is unavailable", async () => {
 		const select = vi.fn(async () => "Type your own answer")
+		const markHumanInput = vi.fn()
 		const input = vi
 			.fn<() => Promise<string>>()
 			.mockResolvedValueOnce("custom answer")
@@ -261,6 +268,7 @@ describe("askUser routing", () => {
 				ferment: makeFerment(),
 				pi: makePi(),
 				ctx: { ui: { select, input } as never },
+				runtime: { markHumanInput } as never,
 			},
 		)
 		expect(result.failed).toBeFalsy()
@@ -278,6 +286,7 @@ describe("askUser routing", () => {
 				labels: ["Tests", "custom answer"],
 			},
 		])
+		expect(markHumanInput).toHaveBeenCalledTimes(1)
 	})
 })
 

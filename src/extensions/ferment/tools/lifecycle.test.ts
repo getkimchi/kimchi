@@ -683,6 +683,40 @@ describe("ask_user via registerLifecycleTools", () => {
 		expect(okText(result)).toContain("Choice: yes")
 		expect(select).toHaveBeenCalledWith("Sound right?", ["Yes", "No"])
 	})
+
+	it("allows structured questions[] through the registered ask_user tool", async () => {
+		const { h, execute } = createAskUserHarness()
+		const select = vi.fn(async () => "Tighten scope")
+
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				title: "Clarify scope",
+				questions: [
+					{
+						id: "scope_action",
+						type: "single",
+						prompt: "What should the planner do next?",
+						options: [
+							{ id: "tighten", label: "Tighten scope" },
+							{ id: "continue", label: "Continue" },
+						],
+						allowOther: false,
+					},
+				],
+			},
+			undefined,
+			undefined,
+			{ ui: { select } },
+		)
+
+		expect(okText(result)).toContain("- scope_action: tighten")
+		expect(select).toHaveBeenCalledWith(expect.stringContaining("What should the planner do next?"), [
+			"Tighten scope",
+			"Continue",
+		])
+	})
 })
 
 describe("update_ferment_scope_field via registerLifecycleTools", () => {
