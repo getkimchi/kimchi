@@ -459,8 +459,10 @@ function refForOllamaModel(model: PiModelConfig | OllamaModel): string {
 /**
  * Add discovered Ollama models to the explorer / reviewer / builder role pools.
  * Returns a fresh ModelRoles object — the input is not mutated. Orchestrator,
- * planner, and judge are intentionally left untouched so Ollama never displaces
- * the main agent loop.
+ * planner, judge, and researcher are intentionally left untouched so Ollama
+ * never displaces the main agent loop or the research role (research models
+ * tend to be proprietary web-search wrappers, not something a local Ollama
+ * instance should be augmenting).
  */
 export function augmentModelRolesWithOllama(
 	roles: ModelRoles,
@@ -472,6 +474,7 @@ export function augmentModelRolesWithOllama(
 		orchestrator: roles.orchestrator,
 		planner: roles.planner,
 		judge: roles.judge,
+		researcher: roles.researcher,
 		builder: roles.builder,
 		reviewer: roles.reviewer,
 		explorer: roles.explorer,
