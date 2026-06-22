@@ -43,7 +43,7 @@ export default function webSearchExtension(pi: ExtensionAPI): void {
 				Type.Integer({
 					minimum: 1,
 					maximum: 20,
-					description: "Maximum number of results to return (default: 8)",
+					description: "Maximum number of results to return (default: 5)",
 				}),
 			),
 			search_depth: Type.Optional(

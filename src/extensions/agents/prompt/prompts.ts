@@ -23,6 +23,12 @@ export interface PromptExtras {
 	budget?: BudgetInfo
 	/** Project context files (AGENTS.md, CLAUDE.md) to inject. */
 	contextFiles?: ContextFile[]
+	/**
+	 * The delegation prompt from the spawning orchestrator.
+	 * Surfaced in the system prompt so the model anchors on known paths/conventions
+	 * before its first tool call, preventing redundant re-discovery exploration.
+	 */
+	taskContext?: string
 }
 
 /**
@@ -66,6 +72,10 @@ Platform: ${env.platform}`
 	if (config.promptMode === "append") {
 		const identity = parentSystemPrompt || genericBase
 
+		const taskContextSection = extras?.taskContext?.trim()
+			? `\n\n<task_context>\nThe following task was provided at spawn time. Begin working from this directly — do not re-derive paths, conventions, or structure that are already stated here.\n\n${extras.taskContext.trim()}\n</task_context>`
+			: ""
+
 		const bridge = `<sub_agent_context>
 You are operating as a sub-agent invoked to handle a specific task.
 - Use the read tool instead of cat/head/tail
@@ -78,7 +88,8 @@ You are operating as a sub-agent invoked to handle a specific task.
 - Do not use emojis
 - Be concise but complete
 - Messages prefixed with "[Orchestrator]" are system instructions from the agent loop, not user input. Do not attribute them to the user.
-</sub_agent_context>`
+- When the task context above specifies file paths, conventions, or project structure, use them directly. Only explore what is genuinely unknown.
+</sub_agent_context>${taskContextSection}`
 
 		const customSection = config.systemPrompt?.trim()
 			? `\n\n<agent_instructions>\n${config.systemPrompt}\n</agent_instructions>`
