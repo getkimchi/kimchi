@@ -78,11 +78,18 @@ describe("Read-only turn counting", () => {
 		expect(guard.getConsecutiveReadOnlyTurns()).toBe(0)
 	})
 
-	it("resets streak on a no-tool turn", () => {
+	it("preserves the read-only streak across a no-tool turn (no-tool turns are neutral)", () => {
+		// Behavior change: previously a no-tool turn reset the read-only counter
+		// to 0. After the thinking-only detector was added, no-tool turns are
+		// neutral for the read-only streak — the model might alternate between
+		// exploration and reasoning, and resetting on each reasoning turn would
+		// hide the exploration stretch from the read-only detector.
 		const guard = createGuard()
 		for (let i = 0; i < 3; i++) simulateReadTurn(guard)
+		expect(guard.getConsecutiveReadOnlyTurns()).toBe(3)
 		simulateNoToolTurn(guard)
-		expect(guard.getConsecutiveReadOnlyTurns()).toBe(0)
+		expect(guard.getConsecutiveReadOnlyTurns()).toBe(3)
+		expect(guard.getConsecutiveNoToolTurns()).toBe(1)
 	})
 
 	it("resets streak on a mixed read+write turn", () => {
@@ -92,10 +99,12 @@ describe("Read-only turn counting", () => {
 		expect(guard.getConsecutiveReadOnlyTurns()).toBe(0)
 	})
 
-	it("does not increment on the first tool-less turn", () => {
+	it("does not increment the read-only counter on a tool-less turn", () => {
 		const guard = createGuard()
 		simulateNoToolTurn(guard)
 		expect(guard.getConsecutiveReadOnlyTurns()).toBe(0)
+		// But the no-tool counter itself has advanced.
+		expect(guard.getConsecutiveNoToolTurns()).toBe(1)
 	})
 
 	it("resets streak on a neutral tool turn", () => {
@@ -272,6 +281,214 @@ describe("Threshold triggers", () => {
 		}
 		expect(steers).toHaveLength(0) // streak only at 4, not yet at 5
 		expect(guard.getConsecutiveReadOnlyTurns()).toBe(4)
+	})
+})
+
+describe("No-tool turn detection (thinking-only detector)", () => {
+	it("increments the no-tool counter on consecutive no-tool turns", () => {
+		const guard = createGuard()
+		expect(guard.getConsecutiveNoToolTurns()).toBe(0)
+		simulateNoToolTurn(guard)
+		expect(guard.getConsecutiveNoToolTurns()).toBe(1)
+		simulateNoToolTurn(guard)
+		expect(guard.getConsecutiveNoToolTurns()).toBe(2)
+		simulateNoToolTurn(guard)
+		expect(guard.getConsecutiveNoToolTurns()).toBe(3)
+	})
+
+	it("emits a warning steer at the default no-tool threshold (3)", () => {
+		const guard = createGuard()
+		const steers: string[] = []
+		for (let i = 0; i < 2; i++) {
+			guard.turnStart()
+			guard.turnEnd((text) => steers.push(text))
+		}
+		expect(steers).toHaveLength(0)
+
+		// 3rd no-tool turn triggers warning
+		guard.turnStart()
+		guard.turnEnd((text) => steers.push(text))
+		expect(steers).toHaveLength(1)
+		expect(steers[0]).toContain("Exploration guard")
+		expect(steers[0]).toContain("3 consecutive turns with no tool calls")
+		expect(steers[0]).toContain("Reasoning without acting does not make progress")
+	})
+
+	it("emits a mandatory steer at the default no-tool threshold (5) and resets the counter", () => {
+		const guard = createGuard()
+		const steers: string[] = []
+		for (let i = 0; i < 5; i++) {
+			guard.turnStart()
+			guard.turnEnd((text) => steers.push(text))
+		}
+		expect(steers).toHaveLength(2)
+		expect(steers[0]).toContain("3 consecutive turns with no tool calls")
+		expect(steers[1]).toContain("5 consecutive turns with no tool calls")
+		expect(steers[1]).toContain("You must use a tool this turn")
+		// Counter resets after the mandatory steer so the model gets a fresh budget.
+		expect(guard.getConsecutiveNoToolTurns()).toBe(0)
+	})
+
+	it("uses custom no-tool thresholds", () => {
+		const guard = createGuard({ noToolWarnThreshold: 2, noToolSteerThreshold: 4 })
+		const steers: string[] = []
+
+		guard.turnStart()
+		guard.turnEnd((text) => steers.push(text))
+		expect(steers).toHaveLength(0)
+
+		guard.turnStart()
+		guard.turnEnd((text) => steers.push(text))
+		expect(steers).toHaveLength(1)
+		expect(steers[0]).toContain("2 consecutive turns with no tool calls")
+
+		guard.turnStart()
+		guard.turnEnd((text) => steers.push(text))
+		expect(steers).toHaveLength(1)
+
+		guard.turnStart()
+		guard.turnEnd((text) => steers.push(text))
+		expect(steers).toHaveLength(2)
+		expect(steers[1]).toContain("4 consecutive turns with no tool calls")
+	})
+
+	it("each threshold fires once per streak; mandatory steer resets the counter", () => {
+		// 3 turns → warning steer (no reset, counter stays at 3)
+		// 5 turns → mandatory steer + reset (counter back to 0)
+		// 3 more turns → warning steer again in the new streak
+		const guard = createGuard()
+		const steers: string[] = []
+		const noToolTurn = () => {
+			guard.turnStart()
+			guard.turnEnd((text) => steers.push(text))
+		}
+
+		for (let i = 0; i < 5; i++) noToolTurn()
+		expect(steers).toHaveLength(2)
+		expect(steers[0]).toContain("3 consecutive turns with no tool calls")
+		expect(steers[1]).toContain("5 consecutive turns with no tool calls")
+		expect(guard.getConsecutiveNoToolTurns()).toBe(0)
+
+		for (let i = 0; i < 3; i++) noToolTurn()
+		expect(steers).toHaveLength(3)
+		expect(steers[2]).toContain("3 consecutive turns with no tool calls")
+	})
+
+	it("a turn with any tool call resets the no-tool counter", () => {
+		const guard = createGuard()
+		simulateNoToolTurn(guard)
+		simulateNoToolTurn(guard)
+		expect(guard.getConsecutiveNoToolTurns()).toBe(2)
+
+		simulateReadTurn(guard)
+		expect(guard.getConsecutiveNoToolTurns()).toBe(0)
+
+		simulateNoToolTurn(guard)
+		expect(guard.getConsecutiveNoToolTurns()).toBe(1)
+	})
+
+	it("a write turn also resets the no-tool counter", () => {
+		const guard = createGuard()
+		simulateNoToolTurn(guard)
+		simulateNoToolTurn(guard)
+		expect(guard.getConsecutiveNoToolTurns()).toBe(2)
+
+		simulateWriteTurn(guard)
+		expect(guard.getConsecutiveNoToolTurns()).toBe(0)
+	})
+
+	it("a neutral-only turn also resets the no-tool counter", () => {
+		const guard = createGuard()
+		simulateNoToolTurn(guard)
+		simulateNoToolTurn(guard)
+		expect(guard.getConsecutiveNoToolTurns()).toBe(2)
+
+		simulateNeutralTurn(guard)
+		expect(guard.getConsecutiveNoToolTurns()).toBe(0)
+	})
+
+	it("does not trigger when isEnabled returns false", () => {
+		const guard = createGuard({ isEnabled: () => false })
+		const steers: string[] = []
+		for (let i = 0; i < 6; i++) {
+			guard.turnStart()
+			guard.turnEnd((text) => steers.push(text))
+		}
+		expect(steers).toHaveLength(0)
+		expect(guard.getConsecutiveNoToolTurns()).toBe(0)
+	})
+
+	it("resets the no-tool counter when isEnabled becomes false mid-streak", () => {
+		let enabled = true
+		const guard = createGuard({ isEnabled: () => enabled })
+
+		guard.turnStart()
+		guard.turnEnd(() => {})
+		guard.turnStart()
+		guard.turnEnd(() => {})
+		expect(guard.getConsecutiveNoToolTurns()).toBe(2)
+
+		enabled = false
+		guard.turnStart()
+		guard.turnEnd(() => {})
+		// The counter resets because the guard is disabled — so on re-enable
+		// the model doesn't immediately re-trigger.
+		expect(guard.getConsecutiveNoToolTurns()).toBe(0)
+
+		enabled = true
+		const steers: string[] = []
+		for (let i = 0; i < 3; i++) {
+			guard.turnStart()
+			guard.turnEnd((text) => steers.push(text))
+		}
+		// Should fire on the 3rd turn (fresh streak after re-enable).
+		expect(steers).toHaveLength(1)
+		expect(steers[0]).toContain("3 consecutive turns with no tool calls")
+	})
+
+	it("reset() zeros the no-tool counter", () => {
+		const guard = createGuard()
+		for (let i = 0; i < 3; i++) simulateNoToolTurn(guard)
+		expect(guard.getConsecutiveNoToolTurns()).toBe(3)
+		guard.reset()
+		expect(guard.getConsecutiveNoToolTurns()).toBe(0)
+	})
+
+	it("does not affect the read-only counter when no-tool steers fire", () => {
+		// Scenario: model alternates read-only turns and no-tool turns.
+		// Neither streak should interfere with the other.
+		const guard = createGuard()
+		const steers: string[] = []
+		const readOnlyTurn = () => {
+			guard.turnStart()
+			guard.recordToolCall("read")
+			guard.turnEnd((text) => steers.push(text))
+		}
+		const noToolTurn = () => {
+			guard.turnStart()
+			guard.turnEnd((text) => steers.push(text))
+		}
+
+		// 4 read-only turns, then a no-tool turn — read-only stays at 4.
+		for (let i = 0; i < 4; i++) readOnlyTurn()
+		expect(guard.getConsecutiveReadOnlyTurns()).toBe(4)
+		expect(guard.getConsecutiveNoToolTurns()).toBe(0)
+		noToolTurn()
+		expect(guard.getConsecutiveReadOnlyTurns()).toBe(4)
+		expect(guard.getConsecutiveNoToolTurns()).toBe(1)
+
+		// Another no-tool turn — read-only still at 4, no-tool at 2.
+		noToolTurn()
+		expect(guard.getConsecutiveReadOnlyTurns()).toBe(4)
+		expect(guard.getConsecutiveNoToolTurns()).toBe(2)
+
+		// Another read-only turn — read-only now at 5 (hypothesis threshold),
+		// no-tool resets to 0.
+		readOnlyTurn()
+		expect(steers).toHaveLength(1)
+		expect(steers[0]).toContain("5 consecutive read-only turns")
+		expect(guard.getConsecutiveReadOnlyTurns()).toBe(5)
+		expect(guard.getConsecutiveNoToolTurns()).toBe(0)
 	})
 })
 

@@ -33,6 +33,10 @@ export interface ExplorationGuardOptions {
 	hypothesisThreshold?: number
 	/** Number of consecutive read-only turns before a mandatory steer is injected. Default: 8 */
 	steerThreshold?: number
+	/** Number of consecutive no-tool turns before a warning steer. Default: 3 */
+	noToolWarnThreshold?: number
+	/** Number of consecutive no-tool turns before a mandatory steer. Default: 5 */
+	noToolSteerThreshold?: number
 	/** Optional predicate to temporarily disable the guard (e.g., during plan mode). */
 	isEnabled?: () => boolean
 }
@@ -43,6 +47,12 @@ const HYPOTHESIS_REMINDER_BASE =
 const MANDATORY_STEER_BASE =
 	"Exploration guard: %d consecutive read-only turns. You must take a concrete action this turn: run a targeted test, make an edit, write a plan, or ask the user a question. Do not read further without a clear reason."
 
+const NO_TOOL_WARNING_BASE =
+	"Exploration guard: %d consecutive turns with no tool calls. Take action: write code, run a command, or ask the user. Reasoning without acting does not make progress."
+
+const NO_TOOL_MANDATORY_BASE =
+	"Exploration guard: %d consecutive turns with no tool calls. You must use a tool this turn. Summarize your plan and take one concrete action."
+
 export const STEER_MESSAGE_TYPE = "exploration-guard-steer"
 
 export class ExplorationGuard {
@@ -50,9 +60,12 @@ export class ExplorationGuard {
 	private readonly writeTools: Set<string>
 	private readonly hypothesisThreshold: number
 	private readonly steerThreshold: number
+	private readonly noToolWarnThreshold: number
+	private readonly noToolSteerThreshold: number
 	private readonly isEnabled: () => boolean
 
 	private consecutiveReadOnlyTurns = 0
+	private consecutiveNoToolTurns = 0
 	private currentTurnHasWriteTool = false
 	private currentTurnHasAnyTool = false
 	private currentTurnHasReadTool = false
@@ -62,11 +75,14 @@ export class ExplorationGuard {
 		this.writeTools = options.writeTools ?? new Set(DEFAULT_WRITE_TOOLS)
 		this.hypothesisThreshold = options.hypothesisThreshold ?? 5
 		this.steerThreshold = options.steerThreshold ?? 8
+		this.noToolWarnThreshold = options.noToolWarnThreshold ?? 3
+		this.noToolSteerThreshold = options.noToolSteerThreshold ?? 5
 		this.isEnabled = options.isEnabled ?? (() => true)
 	}
 
 	reset(): void {
 		this.consecutiveReadOnlyTurns = 0
+		this.consecutiveNoToolTurns = 0
 		this.currentTurnHasWriteTool = false
 		this.currentTurnHasAnyTool = false
 		this.currentTurnHasReadTool = false
@@ -90,16 +106,42 @@ export class ExplorationGuard {
 
 	turnEnd(sendSteer: (text: string) => void): void {
 		if (!this.isEnabled()) {
-			// Reset the streak while the guard is suppressed so it doesn't
+			// Reset both streaks while the guard is suppressed so they don't
 			// fire immediately when it becomes re-enabled (e.g. after scoping).
 			this.consecutiveReadOnlyTurns = 0
+			this.consecutiveNoToolTurns = 0
 			return
 		}
 
+		// No-tool turn: the model produced a response without calling any tools.
+		// Track separately from the read-only streak. Do NOT reset
+		// consecutiveReadOnlyTurns — a no-tool turn is neutral for that counter
+		// and resetting it would hide long exploration stretches broken up by
+		// occasional reasoning-only turns (which the thinking-only detector
+		// would then miss).
+		if (!this.currentTurnHasAnyTool) {
+			this.consecutiveNoToolTurns++
+
+			if (this.consecutiveNoToolTurns === this.noToolSteerThreshold) {
+				sendSteer(NO_TOOL_MANDATORY_BASE.replace("%d", String(this.noToolSteerThreshold)))
+				// Reset after the mandatory steer so the model gets a fresh
+				// budget rather than immediately re-triggering on the next turn.
+				this.consecutiveNoToolTurns = 0
+			} else if (this.consecutiveNoToolTurns === this.noToolWarnThreshold) {
+				sendSteer(NO_TOOL_WARNING_BASE.replace("%d", String(this.noToolWarnThreshold)))
+				// Don't reset yet — the model gets a chance to course-correct
+				// before the mandatory steer fires at noToolSteerThreshold.
+			}
+			return
+		}
+
+		// A turn with at least one tool call resets the no-tool counter.
+		this.consecutiveNoToolTurns = 0
+
 		// A turn is read-only only if it contains at least one read tool and none
-		// of them are write tools. Turns with no tools, with write tools, or with
-		// only neutral tools reset the streak.
-		if (!this.currentTurnHasAnyTool || this.currentTurnHasWriteTool || !this.currentTurnHasReadTool) {
+		// of them are write tools. Turns with write tools or with only neutral
+		// tools reset the streak.
+		if (this.currentTurnHasWriteTool || !this.currentTurnHasReadTool) {
 			this.consecutiveReadOnlyTurns = 0
 			return
 		}
@@ -121,6 +163,10 @@ export class ExplorationGuard {
 
 	getConsecutiveReadOnlyTurns(): number {
 		return this.consecutiveReadOnlyTurns
+	}
+
+	getConsecutiveNoToolTurns(): number {
+		return this.consecutiveNoToolTurns
 	}
 }
 

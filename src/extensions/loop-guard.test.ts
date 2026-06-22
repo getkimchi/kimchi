@@ -425,3 +425,284 @@ describe("Edit-then-rerun cycle must NOT fire", () => {
 		expect(guard.isTriggered()).toBe(false)
 	})
 })
+
+describe("Edit-run cycle detector", () => {
+	// Helper that simulates the edit-run cycle with diagnostic calls interspersed.
+	// The diagnostic calls have varying args (read/grep with different paths) so
+	// the existing n-gram detectors do NOT fire. This isolates the edit-run
+	// detector, which tracks file path and bash prefix independently of the call
+	// order.
+	//
+	// Pattern per round is 3 records: edit + bash + read. 3 × 8 = 24 records
+	// stays within the 30-record sliding window, so no evictions occur before
+	// the edit-run detector can fire.
+	function feedEditRunRounds(guard: LoopGuard, rounds: number): void {
+		const file = "/app/main.c"
+		const bashPrefix = '{"command":"cd /app && make -j8 all 2>&1 | tail -20"}'
+		for (let i = 0; i < rounds; i++) {
+			guard.record({
+				toolName: "edit",
+				toolArgs: `{"path":"${file}","edits":[{"oldText":"x","newText":"v${i}"}]}`,
+				isError: false,
+				outputFingerprint: `edit-${i}`,
+			})
+			guard.record({
+				toolName: "bash",
+				toolArgs: bashPrefix,
+				isError: true,
+				outputFingerprint: `bash-${i}`,
+			})
+			guard.record({
+				toolName: "read",
+				toolArgs: `{"path":"/tmp/diag-${i}.txt"}`,
+				isError: false,
+				outputFingerprint: `read-${i}`,
+			})
+		}
+	}
+
+	// Helper to push exactly N records of a single round. Useful for stopping
+	// at the exact record that triggers warn vs. the one that triggers terminate.
+	function feedEditRunRecords(guard: LoopGuard, recordCount: number): void {
+		const file = "/app/main.c"
+		const bashPrefix = '{"command":"cd /app && make -j8 all 2>&1 | tail -20"}'
+		for (let i = 0; i < recordCount; i++) {
+			const pos = i % 3
+			const round = Math.floor(i / 3)
+			if (pos === 0) {
+				guard.record({
+					toolName: "edit",
+					toolArgs: `{"path":"${file}","edits":[{"oldText":"x","newText":"v${round}"}]}`,
+					isError: false,
+					outputFingerprint: `edit-${round}`,
+				})
+			} else if (pos === 1) {
+				guard.record({
+					toolName: "bash",
+					toolArgs: bashPrefix,
+					isError: true,
+					outputFingerprint: `bash-${round}`,
+				})
+			} else {
+				guard.record({
+					toolName: "read",
+					toolArgs: `{"path":"/tmp/diag-${round}.txt"}`,
+					isError: false,
+					outputFingerprint: `read-${round}`,
+				})
+			}
+		}
+	}
+
+	it("does not fire below threshold (7 rounds)", () => {
+		const guard = new LoopGuard()
+		feedEditRunRounds(guard, 7)
+		expect(guard.isWarned()).toBe(false)
+		expect(guard.isTriggered()).toBe(false)
+	})
+
+	it("warns at threshold (8 rounds)", () => {
+		const guard = new LoopGuard()
+		// Stop at exactly the bash call that triggers warn (record 23 of 24).
+		// The 24th record (read) would re-trigger the detector and bump to
+		// terminate — see the next test.
+		feedEditRunRecords(guard, 23)
+		expect(guard.isWarned()).toBe(true)
+		expect(guard.isTriggered()).toBe(false)
+	})
+
+	it("terminates on the next call after warn (counts remain at threshold)", () => {
+		const guard = new LoopGuard()
+		// 24 records: 8 full rounds. The 23rd record (bash(P) at end of round 8)
+		// triggers warn; the 24th record (read) re-triggers the edit-run
+		// detector and bumps the guard to terminate.
+		feedEditRunRecords(guard, 24)
+		expect(guard.isWarned()).toBe(true)
+		expect(guard.isTriggered()).toBe(true)
+	})
+
+	it("does not fire when edits target different files", () => {
+		const guard = new LoopGuard()
+		// 10 rounds, each editing a different file but with the same bash
+		// prefix. No single file crosses the threshold even though bash(P)
+		// repeats 10 times.
+		const bashPrefix = '{"command":"cd /app && make -j8 all 2>&1 | tail -20"}'
+		for (let i = 0; i < 10; i++) {
+			guard.record({
+				toolName: "edit",
+				toolArgs: `{"path":"/app/file${i}.c","edits":[{"oldText":"x","newText":"v${i}"}]}`,
+				isError: false,
+				outputFingerprint: `edit-${i}`,
+			})
+			guard.record({
+				toolName: "bash",
+				toolArgs: bashPrefix,
+				isError: true,
+				outputFingerprint: `bash-${i}`,
+			})
+			guard.record({
+				toolName: "read",
+				toolArgs: `{"path":"/tmp/diag-${i}.txt"}`,
+				isError: false,
+				outputFingerprint: `read-${i}`,
+			})
+		}
+		expect(guard.isWarned()).toBe(false)
+		expect(guard.isTriggered()).toBe(false)
+	})
+
+	it("does not fire when bash command prefix varies each round", () => {
+		const guard = new LoopGuard()
+		// 10 rounds, same file edited but each bash command has a different
+		// first 50 chars. No single bash prefix crosses the threshold.
+		for (let i = 0; i < 10; i++) {
+			guard.record({
+				toolName: "edit",
+				toolArgs: `{"path":"/app/main.c","edits":[{"oldText":"x","newText":"v${i}"}]}`,
+				isError: false,
+				outputFingerprint: `edit-${i}`,
+			})
+			guard.record({
+				toolName: "bash",
+				toolArgs: `{"command":"echo round-${i} of totally-different-cmd-prefix"}`,
+				isError: true,
+				outputFingerprint: `bash-${i}`,
+			})
+			guard.record({
+				toolName: "read",
+				toolArgs: `{"path":"/tmp/diag-${i}.txt"}`,
+				isError: false,
+				outputFingerprint: `read-${i}`,
+			})
+		}
+		expect(guard.isWarned()).toBe(false)
+		expect(guard.isTriggered()).toBe(false)
+	})
+
+	it("does not fire when a single edit targets one file but no bash repeats", () => {
+		const guard = new LoopGuard()
+		for (let i = 0; i < 10; i++) {
+			guard.record({
+				toolName: "edit",
+				toolArgs: `{"path":"/app/main.c","edits":[{"oldText":"x","newText":"v${i}"}]}`,
+				isError: false,
+				outputFingerprint: `edit-${i}`,
+			})
+			guard.record({
+				toolName: "bash",
+				toolArgs: `{"command":"echo unique-cmd-${i}-${Math.random()}"}`,
+				isError: true,
+				outputFingerprint: `bash-${i}`,
+			})
+			guard.record({
+				toolName: "read",
+				toolArgs: `{"path":"/tmp/diag-${i}.txt"}`,
+				isError: false,
+				outputFingerprint: `read-${i}`,
+			})
+		}
+		expect(guard.isWarned()).toBe(false)
+	})
+
+	it("detects simple edit+bash pattern at 8 rounds when interleaved with diagnostic reads", () => {
+		// The simplest case: same file, same bash prefix, but with diagnostic
+		// reads between every call. The reads have different args so the
+		// existing fuzzy n-gram detectors can't latch onto a repeating pattern.
+		const guard = new LoopGuard()
+		const file = "/app/vm.js"
+		const bashPrefix = '{"command":"node vm.js 2>&1 | head -20"}'
+		for (let i = 0; i < 8; i++) {
+			guard.record({
+				toolName: "read",
+				toolArgs: `{"path":"/tmp/probe-${i}.txt"}`,
+				isError: false,
+				outputFingerprint: `probe-${i}`,
+			})
+			guard.record({
+				toolName: "edit",
+				toolArgs: `{"path":"${file}","edits":[{"oldText":"x","newText":"v${i}"}]}`,
+				isError: false,
+				outputFingerprint: `edit-${i}`,
+			})
+			guard.record({
+				toolName: "bash",
+				toolArgs: bashPrefix,
+				isError: true,
+				outputFingerprint: `bash-${i}`,
+			})
+		}
+		expect(guard.isWarned()).toBe(true)
+	})
+
+	it("window eviction drops the edit and bash counts", () => {
+		const guard = new LoopGuard()
+		feedEditRunRounds(guard, 8)
+		expect(guard.isWarned()).toBe(true)
+
+		// Push 35 fresh records (each a unique bash command) to evict all the
+		// old edit-run signal from the window. After eviction the edit and
+		// bash counts should be back to 0.
+		for (let i = 0; i < 35; i++) {
+			guard.record(rec({ toolArgs: `{"command":"filler-${i}"}`, outputFingerprint: `f${i}` }))
+		}
+		// reset() clears the warn fuse. Replaying the same edit-run pattern
+		// at 7 rounds (below threshold) should not fire again.
+		guard.reset()
+		feedEditRunRounds(guard, 7)
+		expect(guard.isWarned()).toBe(false)
+	})
+
+	it("blockIfLoop predicts edit-run extension after warn", () => {
+		const guard = new LoopGuard()
+		feedEditRunRounds(guard, 8)
+		expect(guard.isWarned()).toBe(true)
+
+		// Predict that an edit to the same file would push the edit-run
+		// counter over the threshold again. blockIfLoop simulates adding the
+		// hypo record and re-running detectors.
+		const editArgs = '{"path":"/app/main.c","edits":[{"oldText":"x","newText":"next"}]}'
+		expect(guard.blockIfLoop({ toolName: "edit", toolArgs: editArgs })).toBe(true)
+		expect(guard.isTriggered()).toBe(true)
+	})
+
+	it("blockIfLoop does not block clearly different edit-run patterns", () => {
+		const guard = new LoopGuard()
+		feedEditRunRounds(guard, 8)
+		expect(guard.isWarned()).toBe(true)
+
+		// An edit to a completely different file shouldn't extend the loop
+		// — the edit-run detector requires the SAME file, not just any edit.
+		const editArgs = '{"path":"/app/completely/different.txt","edits":[{"oldText":"a","newText":"b"}]}'
+		expect(guard.blockIfLoop({ toolName: "edit", toolArgs: editArgs })).toBe(false)
+	})
+
+	it("does not fire on tool calls with malformed JSON args", () => {
+		// Records whose toolArgs don't parse as JSON should be skipped by the
+		// extract* helpers. They shouldn't crash and shouldn't count.
+		const guard = new LoopGuard()
+		for (let i = 0; i < 10; i++) {
+			guard.record({
+				toolName: "edit",
+				toolArgs: "not json",
+				isError: false,
+				outputFingerprint: `edit-${i}`,
+			})
+			guard.record({
+				toolName: "bash",
+				toolArgs: `{"command":"echo ${i}"}`,
+				isError: false,
+				outputFingerprint: `bash-${i}`,
+			})
+		}
+		expect(guard.isWarned()).toBe(false)
+	})
+
+	it("reset() clears the edit and bash counts", () => {
+		const guard = new LoopGuard()
+		feedEditRunRounds(guard, 8)
+		expect(guard.isWarned()).toBe(true)
+		guard.reset()
+		expect(guard.isWarned()).toBe(false)
+		expect(guard.isTriggered()).toBe(false)
+	})
+})

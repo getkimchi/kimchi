@@ -28,6 +28,8 @@ const FUZZY_2GRAM_THRESHOLD = 6 // 7× repeat of a 2-gram, output may vary
 const FUZZY_3GRAM_THRESHOLD = 4 // 5× repeat of a 3-gram, output may vary
 const EXACT_2GRAM_THRESHOLD = 5 // 6× repeat of a 2-gram with identical output
 const EXACT_3GRAM_THRESHOLD = 3 // 4× repeat of a 3-gram with identical output
+const EDIT_RUN_THRESHOLD = 8 // same file edited 8× AND same bash prefix 8× in window
+const BASH_PREFIX_LENGTH = 50 // normalize bash commands by this prefix
 const FINGERPRINT_TAIL_LINES = 20
 const REASON_ARG_PREVIEW = 80
 
@@ -38,7 +40,7 @@ const TERMINATION_MESSAGE =
 	"Loop guard halted tool use. Do not make any more tool calls. Respond with plain text only: summarize what was attempted, what failed, and what you would need to make progress."
 
 /**
- * Detects when an agent is stuck repeating itself across tool calls. Three
+ * Detects when an agent is stuck repeating itself across tool calls. Four
  * independent detectors run over a rolling window of the most recent records
  * and share a single warning fuse: the first detection from any detector
  * issues a warning; the next detection terminates tool use for the turn.
@@ -53,14 +55,22 @@ const TERMINATION_MESSAGE =
  *   3. Fuzzy n-gram repetition — same as exact, but matches only on tool
  *      name + args. Catches edit/rerun loops where the output keeps changing
  *      but the agent is invoking the same calls in the same order.
+ *   4. Edit-run cycle — a single file is edited repeatedly AND a single bash
+ *      command prefix is run repeatedly within the window (non-contiguous).
+ *      Catches the edit\u2192build\u2192run\u2192see-error\u2192edit cycle that detectors 1\u20133
+ *      miss because the edit args change every iteration.
  */
 export class LoopGuard {
 	private history: ToolHistoryRecord[] = []
+	private editCounts = new Map<string, number>()
+	private bashCounts = new Map<string, number>()
 	private warned = false
 	private triggered = false
 
 	reset(): void {
 		this.history = []
+		this.editCounts.clear()
+		this.bashCounts.clear()
 		this.warned = false
 		this.triggered = false
 	}
@@ -74,9 +84,23 @@ export class LoopGuard {
 	}
 
 	record(rec: ToolHistoryRecord): LoopGuardResult {
+		// Increment semantic counters for the new record before pushing.
+		const editTarget = extractEditTarget(rec)
+		if (editTarget) mapIncrement(this.editCounts, editTarget)
+		const bashPrefix = extractBashPrefix(rec)
+		if (bashPrefix) mapIncrement(this.bashCounts, bashPrefix)
+
 		this.history.push(rec)
 		if (this.history.length > WINDOW_SIZE) {
-			this.history.shift()
+			const evicted = this.history.shift()
+			if (evicted !== undefined) {
+				// Decrement semantic counters for the evicted record to keep them
+				// in sync with the sliding window.
+				const evictedEdit = extractEditTarget(evicted)
+				if (evictedEdit) mapDecrement(this.editCounts, evictedEdit)
+				const evictedBash = extractBashPrefix(evicted)
+				if (evictedBash) mapDecrement(this.bashCounts, evictedBash)
+			}
 		}
 
 		const reason = this.detect()
@@ -95,18 +119,56 @@ export class LoopGuard {
 
 	/**
 	 * Blocks `call` if executing it would extend an active loop. Only
-	 * meaningful after a warning has been issued. Detectors need an
-	 * isError flag and output fingerprint for the hypothetical record; we borrow
-	 * them from the most recent historical record with matching tool name +
-	 * args (so the hypo lands in the same slot of any repeating pattern).
-	 * If no such record exists, no detector can fire on a tail ending in
-	 * this hypo (any matching n-gram or consecutive run would require the
-	 * hypo's name + args to appear earlier), so we short-circuit. Sets
-	 * `triggered` when returning true so subsequent calls short-circuit
-	 * through `isTriggered`.
+	 * meaningful after a warning has been issued.
+	 *
+	 * Two checks run:
+	 *
+	 *   1. Edit-run extension — if the call targets the top edit file or uses
+	 *      the top bash prefix, it would extend the existing edit-run cycle.
+	 *      This check runs first and does not require a matching historical
+	 *      record (the edit-run detector uses window-level counts, not
+	 *      contiguity).
+	 *
+	 *   2. N-gram extension — if a historical record exists with matching tool
+	 *      name + args (a "proxy"), the hypo is inserted in that slot and the
+	 *      n-gram detectors are re-run. If no proxy exists, no n-gram can
+	 *      possibly fire on a tail ending in this hypo, so we short-circuit.
+	 *
+	 * The edit-run detector is intentionally excluded from check (2). It uses
+	 * aggregate window counts rather than contiguous patterns, so once the
+	 * window is at threshold it would always return a reason regardless of
+	 * what the new call does — that would over-block unrelated calls. Check
+	 * (1) handles the actual "would this extend the cycle?" question.
 	 */
 	blockIfLoop(call: { toolName: string; toolArgs: string }): boolean {
 		if (!this.warned || this.history.length === 0) return false
+
+		// Edit-run extension check. Cheap: just two map lookups.
+		const hypoForExtract: ToolHistoryRecord = {
+			toolName: call.toolName,
+			toolArgs: call.toolArgs,
+			isError: false,
+			outputFingerprint: "",
+		}
+		const callEditTarget = extractEditTarget(hypoForExtract)
+		const callBashPrefix = extractBashPrefix(hypoForExtract)
+		const topEdit = mapMax(this.editCounts)
+		const topBash = mapMax(this.bashCounts)
+		if (
+			(callEditTarget !== undefined &&
+				topEdit !== undefined &&
+				callEditTarget === topEdit[0] &&
+				topEdit[1] >= EDIT_RUN_THRESHOLD) ||
+			(callBashPrefix !== undefined &&
+				topBash !== undefined &&
+				callBashPrefix === topBash[0] &&
+				topBash[1] >= EDIT_RUN_THRESHOLD)
+		) {
+			this.triggered = true
+			return true
+		}
+
+		// N-gram extension check (existing logic).
 		let proxy: ToolHistoryRecord | undefined
 		for (let i = this.history.length - 1; i >= 0; i--) {
 			const r = this.history[i]
@@ -125,7 +187,7 @@ export class LoopGuard {
 		const saved = this.history
 		this.history = [...saved.slice(-(WINDOW_SIZE - 1)), hypo]
 		try {
-			if (this.detect() === undefined) return false
+			if (this.detectNgramOnly() === undefined) return false
 			this.triggered = true
 			return true
 		} finally {
@@ -134,6 +196,15 @@ export class LoopGuard {
 	}
 
 	private detect(): string | undefined {
+		return (
+			this.detectConsecutiveIdenticalCalls() ??
+			this.detectExactNgram() ??
+			this.detectFuzzyNgram() ??
+			this.detectEditRunCycle()
+		)
+	}
+
+	private detectNgramOnly(): string | undefined {
 		return this.detectConsecutiveIdenticalCalls() ?? this.detectExactNgram() ?? this.detectFuzzyNgram()
 	}
 
@@ -167,6 +238,18 @@ export class LoopGuard {
 		const r3 = countContiguousNgramReps(this.history, 3, fuzzyKey)
 		if (r3 > FUZZY_3GRAM_THRESHOLD) return formatLoopReason(this.history, 3, r3, "same arguments")
 		return undefined
+	}
+
+	private detectEditRunCycle(): string | undefined {
+		const topEdit = mapMax(this.editCounts)
+		const topBash = mapMax(this.bashCounts)
+		if (!topEdit || !topBash) return undefined
+		if (topEdit[1] < EDIT_RUN_THRESHOLD || topBash[1] < EDIT_RUN_THRESHOLD) return undefined
+		const editPreview =
+			topEdit[0].length > REASON_ARG_PREVIEW ? `${topEdit[0].slice(0, REASON_ARG_PREVIEW)}…` : topEdit[0]
+		const bashPreview =
+			topBash[0].length > REASON_ARG_PREVIEW ? `${topBash[0].slice(0, REASON_ARG_PREVIEW)}…` : topBash[0]
+		return `edit-run cycle: ${editPreview} edited ${topEdit[1]}× and bash "${bashPreview}" ran ${topBash[1]}× in last ${this.history.length} calls`
 	}
 }
 
@@ -258,6 +341,62 @@ function extractOutputText(content: ToolResultEvent["content"]): string {
 		if (item.type === "text") parts.push(item.text)
 	}
 	return parts.join("\n")
+}
+
+/**
+ * Extract the file path from an edit or write tool record. Returns undefined
+ * for other tools or when the path is missing or non-string.
+ *
+ * The toolArgs string is the stable-stringified JSON produced by the harness.
+ * JSON.parse round-trips it cleanly; the edit/write schemas both use a `path`
+ * string field.
+ */
+function extractEditTarget(rec: ToolHistoryRecord): string | undefined {
+	if (rec.toolName !== "edit" && rec.toolName !== "write") return undefined
+	try {
+		const args = JSON.parse(rec.toolArgs) as { path?: unknown }
+		return typeof args.path === "string" ? args.path : undefined
+	} catch {
+		return undefined
+	}
+}
+
+/**
+ * Extract a normalized command prefix from a bash tool record. Returns
+ * undefined for other tools or when the command is missing or non-string.
+ *
+ * The prefix length is intentionally short: it groups commands that share an
+ * invocation intent ("cd /app && make -j8 all 2>&1 | tail -20" matches
+ * "cd /app && make -j8 all 2>&1 | tail -60") while keeping distinct commands
+ * separate ("cd /app && make test" vs "cd /app && npm test").
+ */
+function extractBashPrefix(rec: ToolHistoryRecord): string | undefined {
+	if (rec.toolName !== "bash") return undefined
+	try {
+		const args = JSON.parse(rec.toolArgs) as { command?: unknown }
+		return typeof args.command === "string" ? args.command.slice(0, BASH_PREFIX_LENGTH) : undefined
+	} catch {
+		return undefined
+	}
+}
+
+function mapIncrement(map: Map<string, number>, key: string): void {
+	map.set(key, (map.get(key) ?? 0) + 1)
+}
+
+function mapDecrement(map: Map<string, number>, key: string): void {
+	const v = (map.get(key) ?? 0) - 1
+	if (v <= 0) map.delete(key)
+	else map.set(key, v)
+}
+
+/** Return the [key, value] pair with the highest count, or undefined if empty. */
+function mapMax(map: Map<string, number>): [string, number] | undefined {
+	let best: [string, number] | undefined
+	for (const [k, v] of map) {
+		if (!best || v > best[1]) best = [k, v]
+	}
+	return best
 }
 
 export default function loopGuardExtension(pi: ExtensionAPI) {
