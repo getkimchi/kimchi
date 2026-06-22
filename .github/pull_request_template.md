@@ -1,6 +1,6 @@
 ## Linked issue
 
-Closes #
+Closes
 
 <!-- Every PR must link to an existing issue or a ticket. PRs without a link will not be reviewed.
      Prefix with Closes / Fixes / Resolves and follow it with an issue or a ticket -->
