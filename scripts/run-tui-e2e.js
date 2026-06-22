@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process"
-import { existsSync, readFileSync, readdirSync } from "node:fs"
-import { basename, dirname, isAbsolute, resolve } from "node:path"
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs"
+import { basename, dirname, isAbsolute, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { inflateSync } from "node:zlib"
 import { SKIPPED_TUI_TESTS } from "../tests/e2e/tui/skip-list.js"
@@ -43,12 +43,37 @@ if (debugEnabled) {
 process.exit(status)
 
 function runTui(runArgs) {
-	const result = spawnSync(tuiTest, runArgs, { cwd: tuiCwd, stdio: "inherit", env })
-	if (result.error) {
-		console.error(result.error)
-		process.exit(1)
+	const isolated = process.env.KIMCHI_TUI_E2E_ISOLATED_CWD === "1"
+	const runCwd = isolated ? createIsolatedTuiCwd() : tuiCwd
+	const runEnv = {
+		...env,
+		...(isolated && !env.KIMCHI_TUI_LIVE_ARTIFACT_DIR
+			? { KIMCHI_TUI_LIVE_ARTIFACT_DIR: resolve(tuiCwd, ".kimchi/evals/tui-live") }
+			: {}),
 	}
-	return result.status ?? 1
+	try {
+		const result = spawnSync(tuiTest, runArgs, { cwd: runCwd, stdio: "inherit", env: runEnv })
+		if (result.error) {
+			console.error(result.error)
+			process.exit(1)
+		}
+		return result.status ?? 1
+	} finally {
+		if (isolated && process.env.KIMCHI_TUI_E2E_KEEP_ISOLATED_CWD !== "1") {
+			rmSync(runCwd, { recursive: true, force: true })
+		}
+	}
+}
+
+function createIsolatedTuiCwd() {
+	const root = resolve(repoRoot, ".kimchi/tui-e2e-isolated")
+	mkdirSync(root, { recursive: true })
+	const runCwd = mkdtempSync(join(root, "run-"))
+	cpSync(tuiCwd, runCwd, {
+		recursive: true,
+		filter: (src) => !src.includes(`${tuiCwd}/.kimchi`) && !src.includes(`${tuiCwd}/.tui-test`),
+	})
+	return runCwd
 }
 
 function runEach(stems) {
