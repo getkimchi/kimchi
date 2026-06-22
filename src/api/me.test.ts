@@ -1,6 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { getMe } from "./me.js"
 
+vi.mock("../utils/http.js", () => ({
+	fetchWithRetry: (
+		url: string,
+		init?: RequestInit,
+		options?: { fetchImpl?: typeof fetch; timeoutMs?: number; signal?: AbortSignal },
+	) => {
+		const fetchFn = options?.fetchImpl ?? globalThis.fetch
+		const signal = options?.signal ?? init?.signal
+		return fetchFn(url, signal ? { ...init, signal } : (init as RequestInit))
+	},
+}))
+
 describe("getMe", () => {
 	let originalFetch: typeof globalThis.fetch
 

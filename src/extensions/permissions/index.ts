@@ -88,7 +88,10 @@ const PLAN_MODE_TOOLS = [
 	"web_fetch",
 	"questionnaire",
 	"bash",
-	"write_todos",
+	"update_todos",
+	"add_todo",
+	"mark_todo",
+	"clear_todos",
 ]
 const PLAN_MODE_TOOL_SET = new Set<string>(PLAN_MODE_TOOLS)
 
@@ -99,7 +102,16 @@ const PLAN_MODE_TOOL_SET = new Set<string>(PLAN_MODE_TOOLS)
 //
 // Names are lowercased because the tool_call handler lowercases event.toolName
 // before comparing (see `const toolName = event.toolName.toLowerCase()` below).
-const BUILTIN_ALLOW_TOOL_NAMES = ["set_phase", "agent", "get_subagent_result", "steer_subagent", "write_todos"]
+const BUILTIN_ALLOW_TOOL_NAMES = [
+	"set_phase",
+	"agent",
+	"get_subagent_result",
+	"steer_subagent",
+	"update_todos",
+	"add_todo",
+	"mark_todo",
+	"clear_todos",
+]
 
 const MODES: Array<{
 	mode: PermissionMode

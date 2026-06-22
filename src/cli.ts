@@ -29,6 +29,7 @@ import { isBunBinary } from "./env.js"
 import activityExtension from "./extensions/activity.js"
 import agentsExtension from "./extensions/agents/index.js"
 import assistantPrefixExtension from "./extensions/assistant-prefix.js"
+import bashDefaultTimeoutExtension from "./extensions/bash-default-timeout.js"
 import bashToolGuardExtension from "./extensions/bash-tool-guard.js"
 import behavioursExtension from "./extensions/behaviours/index.js"
 import claudeCodeHooksAdapter from "./extensions/claude-code-hook-adapter/index.js"
@@ -291,6 +292,18 @@ try {
 			}
 		}
 
+		// Sync retry config to SDK settings so both systems use the same value
+		try {
+			const existing = JSON.parse(readFileSync(settingsPath, "utf-8"))
+			const sdkRetry = existing.retry
+			if (!sdkRetry || sdkRetry.maxRetries !== config.retry.maxRetries) {
+				existing.retry = { ...sdkRetry, maxRetries: config.retry.maxRetries }
+				writeFileSync(settingsPath, `${JSON.stringify(existing, null, 2)}\n`)
+			}
+		} catch {
+			/* retry sync is best-effort */
+		}
+
 		// Bundled themes are write-through cache — owned by the package, not the user.
 		// Source edits propagate so packaged upgrades pick up new defaults. Users
 		// wanting custom colors should clone+rename (e.g. `my-kimchi.json`), which
@@ -407,6 +420,7 @@ try {
 		const terminalUiExtensionFactories = isTerminalUiMode(rawArgs, terminalIo)
 			? [terminalColorsExtension, kimchiMinimalTintsExtension, uiExtension]
 			: []
+		const effectiveSkillPaths = [...new Set([...skillPaths, ...getActiveVendorSkillPaths()])]
 		const extensionFactories = [
 			startupUpdateExtension,
 			superpowersExtension,
@@ -423,6 +437,7 @@ try {
 			// Always registered — the tool_call handler checks isResourceEnabled
 			// dynamically on every bash call, so enable/disable from /resources
 			// takes effect immediately without a process restart.
+			bashDefaultTimeoutExtension,
 			bashToolGuardExtension,
 			...enabledExtensionFactories([
 				{ id: "plugins.mcp-apps", factory: mcpAdapterExtension },
@@ -434,9 +449,9 @@ try {
 			] satisfies ManagedExtensionFactory[]),
 			questionnaireExtension,
 			...enabledExtensionFactories([
-				{ id: "extensions.claude-code-skills", factory: claudeCodeSkillsExtension },
+				{ id: "extensions.claude-code-skills", factory: (pi) => claudeCodeSkillsExtension(pi, effectiveSkillPaths) },
 			] satisfies ManagedExtensionFactory[]),
-			promptEnrichmentExtension([...new Set([...skillPaths, ...getActiveVendorSkillPaths()])]),
+			promptEnrichmentExtension(effectiveSkillPaths),
 			rtkRewriteExtension,
 			...enabledExtensionFactories([
 				{ id: "extensions.claude-code-hook-adapter", factory: claudeCodeHooksAdapter },

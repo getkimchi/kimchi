@@ -12,9 +12,10 @@ import {
 	createAgentSession,
 	getAgentDir,
 } from "@earendil-works/pi-coding-agent"
-import { readTelemetryConfig } from "../../../config.js"
+import { loadConfig, readTelemetryConfig } from "../../../config.js"
 import { getAvailableModels } from "../../../startup-context.js"
 import { runAsAgentWorker } from "../../agent-worker-context.js"
+import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
 import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
 import type { Phase } from "../../orchestration/model-registry/types.js"
@@ -44,8 +45,16 @@ import { preloadSkills } from "../prompt/skill-loader.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "./constants.js"
 import { type LifetimeUsage, addUsage, getLifetimeTotal, getOutputTotal, getSessionUsage } from "./usage.js"
 
-/** Names of tools registered by this extension that subagents must NOT inherit. */
-const EXCLUDED_TOOL_NAMES = ["Agent", "get_subagent_result", "steer_subagent"]
+/**
+ * Names of tools that subagents must NOT inherit from the parent session.
+ *
+ * - Agent / get_subagent_result / steer_subagent: subagents must not spawn
+ *   further nested subagents (the orchestrator owns delegation).
+ * - All ferment lifecycle and planning tools: subagents must not mutate
+ *   ferment state. The discovery tools (list_ferments, request_ferment_workflow)
+ *   are also excluded — they are only meaningful to the top-level planner.
+ */
+const EXCLUDED_TOOL_NAMES = ["Agent", "get_subagent_result", "steer_subagent", ...FERMENT_TOOL_NAMES]
 
 /** Prefix applied to automated steering messages so the LLM does not attribute them to the user. */
 const ORCHESTRATOR_PREFIX = "[Orchestrator — automated system instruction, not a user message]\n\n"
@@ -54,6 +63,9 @@ const ORCHESTRATOR_PREFIX = "[Orchestrator — automated system instruction, not
 function steerAsOrchestrator(session: AgentSession, message: string): Promise<void> {
 	return session.steer(ORCHESTRATOR_PREFIX + message)
 }
+
+/** Cached kimchi config — loaded once per process to avoid repeated disk reads per agent spawn. */
+const kimchiConfig = loadConfig()
 
 /** Default max turns. undefined = unlimited (no turn limit). */
 let defaultMaxTurns: number | undefined = 30
@@ -373,13 +385,16 @@ async function runAgentInner(
 
 	const thinkingLevel = options.thinkingLevel ?? agentConfig?.thinking
 
+	const settingsManager = SettingsManager.create(effectiveCwd, agentDir)
+	settingsManager.applyOverrides({ retry: { maxRetries: kimchiConfig.retry.maxRetries } })
+
 	const sessionOpts: Parameters<typeof createAgentSession>[0] = {
 		cwd: effectiveCwd,
 		agentDir,
 		sessionManager: options.sessionFile
 			? SessionManager.open(options.sessionFile, options.sessionDir, effectiveCwd)
 			: SessionManager.inMemory(effectiveCwd),
-		settingsManager: SettingsManager.create(effectiveCwd, agentDir),
+		settingsManager,
 		modelRegistry: ctx.modelRegistry,
 		model,
 		resourceLoader: loader,

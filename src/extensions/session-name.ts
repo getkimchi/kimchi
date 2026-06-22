@@ -9,6 +9,7 @@
 import { basename } from "node:path"
 import type { ExtensionAPI, ExtensionContext, TurnEndEvent } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../config.js"
+import { fetchWithRetry } from "../utils/http.js"
 
 // System prompt for session name generation - keep it simple; cheap models choke
 // on negative constraints, formatting demands, and multi-step instructions.
@@ -143,15 +144,18 @@ export async function suggestSessionName(ctx: ExtensionContext, hint?: string, q
 		}
 		const body = JSON.stringify(payload)
 
-		const response = await fetch(`${config.llmEndpoint}/chat/completions`, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				Authorization: `Bearer ${apiKey}`,
+		const response = await fetchWithRetry(
+			`${config.llmEndpoint}/chat/completions`,
+			{
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: `Bearer ${apiKey}`,
+				},
+				body,
 			},
-			body,
-			signal: AbortSignal.timeout(10000),
-		})
+			{ timeoutMs: 10_000, retry: { maxRetries: 3 } },
+		)
 
 		if (!response.ok) {
 			const errorBody = await response.text().catch(() => "")

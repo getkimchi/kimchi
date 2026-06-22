@@ -14,6 +14,7 @@ import {
 	defaultStepHandlerServices,
 	registerStepTools,
 	startStep,
+	suggestWorkerLimits,
 } from "./steps.js"
 
 interface RegisteredTool {
@@ -414,5 +415,63 @@ describe("completeStep", () => {
 
 		expect(okText(result)).toContain("verified")
 		expect(services.judgeStepVerification).not.toHaveBeenCalled()
+	})
+})
+
+describe("suggestWorkerLimits", () => {
+	it("returns standard limits for a typical implementation step", () => {
+		const limits = suggestWorkerLimits("Implement the auth middleware")
+		expect(limits.maxTurns).toBe(50)
+		expect(limits.maxDuration).toBe(600)
+	})
+
+	it("returns heavy limits when description mentions compilation", () => {
+		const limits = suggestWorkerLimits("Compile the MIPS binary and link dependencies")
+		expect(limits.maxTurns).toBe(80)
+		expect(limits.maxDuration).toBe(900)
+	})
+
+	it("returns heavy limits when description mentions build", () => {
+		const limits = suggestWorkerLimits("Build and install the project dependencies")
+		expect(limits.maxTurns).toBe(80)
+		expect(limits.maxDuration).toBe(900)
+	})
+
+	it("returns heavy limits when verify command mentions make", () => {
+		const limits = suggestWorkerLimits("Run the build", "make -j4 && ./run_tests.sh")
+		expect(limits.maxTurns).toBe(80)
+		expect(limits.maxDuration).toBe(900)
+	})
+
+	it("returns light limits for a check/verify step without tests", () => {
+		const limits = suggestWorkerLimits("Verify the config file is correct")
+		expect(limits.maxTurns).toBe(25)
+		expect(limits.maxDuration).toBe(300)
+	})
+
+	it("returns light limits for a lint/format step", () => {
+		const limits = suggestWorkerLimits("Lint the source files and fix formatting")
+		expect(limits.maxTurns).toBe(25)
+		expect(limits.maxDuration).toBe(300)
+	})
+
+	it("returns standard limits when description mentions lint but verify runs tests", () => {
+		// verify contains 'test' so the light path is skipped
+		const limits = suggestWorkerLimits("Lint and add test coverage", "pnpm run test")
+		expect(limits.maxTurns).toBe(50)
+		expect(limits.maxDuration).toBe(600)
+	})
+
+	it("returns standard limits for a rename/config step that has a test verify command", () => {
+		const limits = suggestWorkerLimits("Rename the config fields", "pnpm test config")
+		expect(limits.maxTurns).toBe(50)
+		expect(limits.maxDuration).toBe(600)
+	})
+
+	it("is case-insensitive", () => {
+		const upper = suggestWorkerLimits("COMPILE the binary")
+		expect(upper.maxTurns).toBe(80)
+		const lower = suggestWorkerLimits("compile the binary")
+		expect(lower.maxTurns).toBe(80)
 	})
 })

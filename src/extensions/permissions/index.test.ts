@@ -6,7 +6,7 @@ import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import { FERMENT_TOOLS } from "../ferment/tool-names.js"
 import { type EnvironmentInfo, buildSystemPrompt } from "../prompt-construction/system-prompt.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
-import { TODO_TOOL_NAME } from "../todos/tool.js"
+import { TODO_TOOL_NAMES } from "../todos/tool.js"
 import { classifyToolCall } from "./classifier.js"
 import { PERMISSIONS_ENV_KEY } from "./constants.js"
 import permissionsExtension, {
@@ -303,19 +303,37 @@ describe("permissions plan-mode tool visibility", () => {
 		expect(harness.activeTools().sort()).toEqual(["bash", "grep", "read"])
 	})
 
-	it("keeps write_todos visible and allowed under explicit --plan", async () => {
-		const harness = createPermissionsHarness(["read", "bash", TODO_TOOL_NAME], { plan: true })
+	it("hides and blocks propose_ferment_scoping under explicit --plan", async () => {
+		const harness = createPermissionsHarness(["read", "bash", FERMENT_TOOLS.PROPOSE_SCOPING], { plan: true })
 
 		await harness.fire("session_start", {}, createMockContext([]))
 
-		expect(harness.activeTools().sort()).toEqual(["bash", "read", TODO_TOOL_NAME])
-		await expect(
-			harness.fire(
-				"tool_call",
-				{ toolName: TODO_TOOL_NAME, input: { todos: [{ content: "Plan task", status: "pending" }] } },
-				createMockContext([]),
-			),
-		).resolves.toBeUndefined()
+		expect(harness.activeTools().sort()).toEqual(["bash", "read"])
+		const result = await harness.fire(
+			"tool_call",
+			{ toolName: FERMENT_TOOLS.PROPOSE_SCOPING, input: { prompt: "plan it" } },
+			createMockContext([]),
+		)
+
+		expect(result).toEqual(expect.objectContaining({ block: true }))
+		expect(JSON.stringify(result)).toContain("Plan mode")
+	})
+
+	it("keeps todo tools visible and allowed under explicit --plan", async () => {
+		const harness = createPermissionsHarness(["read", "bash", ...TODO_TOOL_NAMES], { plan: true })
+
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		expect(harness.activeTools().sort()).toEqual(["bash", "read", ...TODO_TOOL_NAMES].sort())
+		for (const toolName of TODO_TOOL_NAMES) {
+			await expect(
+				harness.fire(
+					"tool_call",
+					{ toolName, input: { todos: [{ content: "Plan task", status: "pending" }] } },
+					createMockContext([]),
+				),
+			).resolves.toBeUndefined()
+		}
 	})
 
 	it("leaving plan mode does not restore tools hidden by another extension", async () => {

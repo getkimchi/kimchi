@@ -1,7 +1,7 @@
 import { type Theme, ToolExecutionComponent, UserMessageComponent, initTheme } from "@earendil-works/pi-coding-agent"
 import { visibleWidth } from "@earendil-works/pi-tui"
 import { beforeAll, describe, expect, it } from "vitest"
-import {
+import toolRenderingExtension, {
 	formatToolTimer,
 	getToolElapsedMs,
 	isMcpToolName,
@@ -140,6 +140,31 @@ describe("execution timestamp tracking", () => {
 		component.updateResult({ content: [], isError: false }, true)
 		// biome-ignore lint/suspicious/noExplicitAny: mock property access
 		expect((component as any).rendererState._executionEndedAt).toBeUndefined()
+	})
+})
+
+describe("hidden tool block rendering", () => {
+	beforeAll(() => {
+		toolRenderingExtension({
+			registerCommand: () => {},
+			registerTool: () => {},
+			on: () => {},
+		} as never)
+	})
+
+	it("hides legacy write_todos tool results", () => {
+		const component = new ToolExecutionComponent(
+			"write_todos",
+			"tc-legacy",
+			{ todos: [{ content: "legacy", status: "pending" }] },
+			{},
+			undefined,
+			// biome-ignore lint/suspicious/noExplicitAny: minimal ExtensionAPI test double
+			{ requestRender: () => {} } as any,
+			"/tmp",
+		)
+
+		expect(component.render(80)).toEqual([])
 	})
 })
 

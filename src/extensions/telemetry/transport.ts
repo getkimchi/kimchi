@@ -2,6 +2,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import type { TelemetryConfig } from "../../config.js"
 import { getVersion } from "../../utils.js"
+import { fetchWithRetry } from "../../utils/http.js"
 import { nowNano, strAttr } from "./helpers.js"
 
 // ---------------------------------------------------------------------------
@@ -119,11 +120,15 @@ export async function sendLogBatch(config: TelemetryConfig, records: LogRecord[]
 		logEventToFile(record.eventName, props)
 	}
 	try {
-		const response = await fetch(config.endpoint, {
-			method: "POST",
-			headers: { "Content-Type": "application/json", ...config.headers },
-			body: JSON.stringify(payload),
-		})
+		const response = await fetchWithRetry(
+			config.endpoint,
+			{
+				method: "POST",
+				headers: { "Content-Type": "application/json", ...config.headers },
+				body: JSON.stringify(payload),
+			},
+			{ timeoutMs: 10_000, retry: { maxRetries: 3 } },
+		)
 		if (!response.ok) {
 			logEventToFile("telemetry.response.error", {
 				endpoint: config.endpoint,
@@ -185,11 +190,15 @@ export async function sendMetrics(
 		logEventToFile(metric.name, { value: metric.value, ...metric.attrs })
 	}
 	try {
-		const response = await fetch(config.metricsEndpoint, {
-			method: "POST",
-			headers: { "Content-Type": "application/json", ...config.headers },
-			body: JSON.stringify(payload),
-		})
+		const response = await fetchWithRetry(
+			config.metricsEndpoint,
+			{
+				method: "POST",
+				headers: { "Content-Type": "application/json", ...config.headers },
+				body: JSON.stringify(payload),
+			},
+			{ timeoutMs: 10_000, retry: { maxRetries: 3 } },
+		)
 		if (!response.ok) {
 			logEventToFile("telemetry.response.error", {
 				endpoint: config.metricsEndpoint,
