@@ -28,7 +28,6 @@ export const KIMCHI_DEV_PROVIDER = "kimchi-dev"
 
 const GENERIC_CAPABILITIES: ModelCapabilities = {
 	vision: false,
-	roles: ["build"],
 	tier: "standard",
 	description: "No capability information available for this model.",
 }

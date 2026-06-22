@@ -477,15 +477,22 @@ describe("modelSwitchExtension", () => {
 				getContextUsage: () => { tokens: number }
 				modelId: string
 				modelProvider: string
-				ui: { notify: (...args: unknown[]) => unknown }
+				hasUI: boolean
+				ui: {
+					notify: (...args: unknown[]) => unknown
+					select?: (...args: unknown[]) => unknown
+					input?: (...args: unknown[]) => unknown
+				}
 			}> = {},
 		) => {
 			const tokens = overrides.tokens ?? 10_000
+			const hasUI = overrides.hasUI ?? false
 			return {
 				model: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
 				modelRegistry: { getAvailable: () => MODELS },
 				getContextUsage: () => ({ tokens }),
-				ui: { notify: vi.fn() },
+				hasUI,
+				ui: { notify: vi.fn(), select: vi.fn(), input: vi.fn(), ...overrides.ui },
 				...overrides,
 			} as unknown as never
 		}

@@ -16,6 +16,7 @@ import { dispatchSubcommand } from "./commands/dispatch.js"
 // IMPORTANT: must be first local import — patches InteractiveMode.prototype
 // before any module can construct an InteractiveMode instance.
 import "./login-command-patch.js"
+import "./paste-to-editor-patch.js"
 import {
 	DEFAULT_SKILL_PATHS,
 	getActiveVendorSkillPaths,
@@ -51,6 +52,7 @@ import mcpAdapterExtension from "./extensions/mcp-adapter/index.js"
 import modelGuardExtension from "./extensions/model-guard.js"
 import modelSwitchExtension from "./extensions/model-switch.js"
 import { createSessionModeOnboardingForStartup } from "./extensions/onboarding/session-mode-startup.js"
+import { applyRoleAugmentation } from "./extensions/orchestration/model-roles.js"
 import permissionsExtension from "./extensions/permissions/index.js"
 import { writeKimchiKeybindingDefaults } from "./extensions/permissions/keybindings.js"
 import { installPiNativeCompatibilityShim } from "./extensions/pi-package-lookup/native-compat.js"
@@ -75,6 +77,7 @@ import teleportExtension from "./extensions/teleport/index.js"
 import terminalColorsExtension from "./extensions/terminal-colors.js"
 import { probeKittyKeyboardSupport } from "./extensions/terminal-compat/keyboard-capability.js"
 import { emitTerminalCompatWarning } from "./extensions/terminal-compat/startup-warning.js"
+import themeSelectorExtension from "./extensions/theme-selector.js"
 import thinkingStepsExtension from "./extensions/thinking-steps/index.js"
 import tipsExtension from "./extensions/tips/index.js"
 import todosExtension from "./extensions/todos/index.js"
@@ -90,6 +93,13 @@ import {
 	readExperimentalModels,
 	updateModelsConfig,
 } from "./models.js"
+import {
+	augmentModelRolesWithOllama,
+	injectOllamaProvider,
+	readOllamaModelMetadata,
+	readOllamaModelsFromConfig,
+	resolveOllamaHost,
+} from "./ollama.js"
 import resourcesExtension from "./resources/extension.js"
 import { type ManagedExtensionFactory, enabledExtensionFactories } from "./resources/filter.js"
 import resourceToolBlockerExtension from "./resources/tool-blocker.js"
@@ -239,6 +249,10 @@ try {
 				injectExperimentalProvider(modelsJsonPath, currentApiKey ?? "")
 				models = [...models, ...readExperimentalModels(modelsJsonPath)]
 			}
+			// Auto-discover a local Ollama server and merge its models into the
+			// registry. Probe is silent on failure — startup is never blocked.
+			await injectOllamaProvider(modelsJsonPath, resolveOllamaHost())
+			models = [...models, ...readOllamaModelMetadata(modelsJsonPath)]
 		} catch (err) {
 			const is401 = err instanceof Error && err.message.includes("401")
 			if (is401 && process.stdin.isTTY) {
@@ -259,6 +273,8 @@ try {
 					injectExperimentalProvider(modelsJsonPath, currentApiKey)
 					models = [...models, ...readExperimentalModels(modelsJsonPath)]
 				}
+				await injectOllamaProvider(modelsJsonPath, resolveOllamaHost())
+				models = [...models, ...readOllamaModelMetadata(modelsJsonPath)]
 			} else if (isTransientModelsError(err)) {
 				// Rate limit / gateway error with no cached models to fall back on.
 				// Don't crash startup over a transient condition — continue with an
@@ -279,6 +295,14 @@ try {
 		// Share the discovered model metadata with extensions before main() runs.
 		// prompt-enrichment reads this to build ModelRegistry with live model IDs.
 		setAvailableModels(models)
+
+		// Wire Ollama-discovered models into the explorer / reviewer / builder
+		// role pools. Runs after setAvailableModels so the resolved roles
+		// singleton reflects the same model list the picker exposes.
+		const ollamaModelsForRoles = readOllamaModelsFromConfig(modelsJsonPath)
+		if (ollamaModelsForRoles.length > 0) {
+			applyRoleAugmentation((roles) => augmentModelRolesWithOllama(roles, ollamaModelsForRoles))
+		}
 
 		// Write default settings on first run only — respect user's choices afterward
 		const settingsPath = resolve(agentDir, "settings.json")
@@ -478,6 +502,7 @@ try {
 				{ id: "extensions.agents", factory: agentsExtension },
 			] satisfies ManagedExtensionFactory[]),
 			helpExtension,
+			themeSelectorExtension,
 			inputHistoryExtension,
 			reportBugExtension,
 			tagsExtension,
