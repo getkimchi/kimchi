@@ -71,6 +71,7 @@ function expectExtensionUiRequestEnvelope(params: Record<string, unknown>, metho
 	expect(params.type).toBe("extension_ui_request")
 	expect(params.method).toBe(method)
 	expect(typeof params.id).toBe("string")
+	expect(params.sessionId).toBe("sess-1")
 }
 
 describe("createAcpUIContext — confirm via elicitation", () => {
@@ -97,7 +98,7 @@ describe("createAcpUIContext — confirm via elicitation", () => {
 
 		expect(unstable_createElicitation).toHaveBeenCalledTimes(1)
 		const params = unstable_createElicitation.mock.calls[0][0] as Record<string, unknown>
-		expect(params.sessionId, "sessionId must NOT appear in payload (rpc-mode compatibility)").toBeUndefined()
+		expect(params.sessionId).toBe("sess-1")
 		expect(params.mode).toBe("form")
 		expect(params.message).toBe("Body?") // message wins over title when both are passed
 		const schema = params.requestedSchema as Record<string, unknown>
@@ -202,6 +203,7 @@ describe("createAcpUIContext — confirm via request_permission fallback", () =>
 		expect(unstable_createElicitation).not.toHaveBeenCalled()
 		expect(requestPermission).toHaveBeenCalledTimes(1)
 		const params = requestPermission.mock.calls[0][0] as unknown as Record<string, unknown>
+		expect(params.sessionId).toBe("sess-1")
 		const toolCall = params.toolCall as Record<string, unknown>
 		expect(toolCall.title).toBe("Title")
 		expect(toolCall.kind).toBe("other")
@@ -289,6 +291,7 @@ describe("createAcpUIContext — select via elicitation", () => {
 		await expect(real.select("Pick", ["a", "b", "c"])).resolves.toBe("b")
 
 		const params = unstable_createElicitation.mock.calls[0][0] as Record<string, unknown>
+		expect(params.sessionId).toBe("sess-1")
 		const schema = params.requestedSchema as Record<string, Record<string, unknown>>
 		const valueProp = (schema.properties as Record<string, Record<string, unknown>>).value
 		expect(valueProp.type).toBe("string")
@@ -297,7 +300,6 @@ describe("createAcpUIContext — select via elicitation", () => {
 			{ const: "b", title: "b" },
 			{ const: "c", title: "c" },
 		])
-		expect(valueProp.default).toBe("a")
 		expect(schema.required).toEqual(["value"])
 	})
 
@@ -354,6 +356,7 @@ describe("createAcpUIContext — select via request_permission fallback", () => 
 		await expect(real.select("Pick", ["a", "b", "c"])).resolves.toBe("b")
 
 		const params = requestPermission.mock.calls[0][0] as unknown as Record<string, unknown>
+		expect(params.sessionId).toBe("sess-1")
 		const options = params.options as Array<{ optionId: string; name: string }>
 		expect(options).toHaveLength(3)
 		expect(options[0]).toMatchObject({ optionId: "choice-0", name: "a" })
@@ -407,6 +410,7 @@ describe("createAcpUIContext — input via elicitation", () => {
 		await expect(real.input("Name", "Enter your name")).resolves.toBe("alice")
 
 		const params = unstable_createElicitation.mock.calls[0][0] as Record<string, unknown>
+		expect(params.sessionId).toBe("sess-1")
 		const schema = params.requestedSchema as Record<string, Record<string, unknown>>
 		const valueProp = (schema.properties as Record<string, Record<string, unknown>>).value
 		expect(valueProp.type).toBe("string")
@@ -462,7 +466,9 @@ describe("createAcpUIContext — input via elicitation", () => {
 		await expect(real.input("Workspace name", "type a name")).resolves.toBeUndefined()
 		expect(unstable_createElicitation).not.toHaveBeenCalled()
 		expect(send).toHaveBeenCalledTimes(1)
-		const update = send.mock.calls[0][0].update
+		const params = send.mock.calls[0][0]
+		expect(params.sessionId).toBe("sess-1")
+		const update = params.update
 		expect(update.sessionUpdate).toBe("agent_message_chunk")
 		if (update.sessionUpdate === "agent_message_chunk") {
 			expect(update.content.type).toBe("text")

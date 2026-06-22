@@ -141,14 +141,22 @@ export { notifyFermentActive }
 
 function canPrompt(ctx: ExtensionContext): boolean {
 	if (isAgentWorker()) return false
+
+	const acpPrompter = getAcpPrompter(ctx.sessionManager.getSessionId())
+	if (ctx.mode === "rpc") return acpPrompter !== undefined
+
 	if (ctx.hasUI) return true
-	return getAcpPrompter(ctx.sessionManager.getSessionId()) !== undefined
+	return acpPrompter !== undefined
 }
 
 function resolvePrompter(ctx: ExtensionContext): ToolPermissionPrompter | undefined {
 	if (isAgentWorker()) return undefined
+
+	const acpPrompter = getAcpPrompter(ctx.sessionManager.getSessionId())
+	if (ctx.mode === "rpc" && acpPrompter) return acpPrompter
+
 	if (ctx.hasUI) return terminalPrompter(ctx)
-	return getAcpPrompter(ctx.sessionManager.getSessionId())
+	return acpPrompter
 }
 
 export default function permissionsExtension(pi: ExtensionAPI): void {

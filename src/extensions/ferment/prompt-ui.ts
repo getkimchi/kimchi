@@ -1,8 +1,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent"
 import type { Component, TUI } from "@earendil-works/pi-tui"
 import type { ScopingQuestionType } from "../../ferment/types.js"
-import { createQuestionForm } from "../questionnaire-form.js"
-import type { Answer, Question, QuestionType } from "../questionnaire-reducer.js"
+import { type Answer, type Question, type QuestionType, createQuestionForm } from "../questionnaire/index.js"
 import { setTipWidgetLocation } from "../tips/index.js"
 import type { FermentUi } from "./ui.js"
 

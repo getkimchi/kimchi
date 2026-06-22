@@ -19,6 +19,7 @@ import type {
 	ElicitationAcceptAction,
 	ElicitationSchema,
 	PermissionOption,
+	RequestPermissionOutcome,
 	RequestPermissionRequest,
 	SessionNotification,
 	ToolCallUpdate,
@@ -71,6 +72,7 @@ export function createAcpUIContext(
 				conn.extMethod(AVAILABLE_METHODS[method], {
 					type: REQUEST_TYPE,
 					id: randomUUID(),
+					sessionId,
 					...payload,
 				}) as Promise<T>,
 				signal,
@@ -88,6 +90,7 @@ export function createAcpUIContext(
 			.extNotification(wire, {
 				type: REQUEST_TYPE,
 				id: randomUUID(),
+				sessionId,
 				...payload,
 			})
 			.catch((err) => logError(wire, err))
@@ -118,6 +121,7 @@ export function createAcpUIContext(
 	): Promise<NonNullable<ElicitationAcceptAction["content"]> | "aborted" | undefined> {
 		const params: CreateElicitationRequest = {
 			requestId: randomUUID(),
+			sessionId,
 			mode: "form" as const,
 			message,
 			requestedSchema,
@@ -147,7 +151,7 @@ export function createAcpUIContext(
 		message: string | undefined,
 		options: PermissionOption[],
 		signal: AbortSignal | undefined,
-	): Promise<{ outcome: "selected" | "cancelled"; optionId?: string }> {
+	): Promise<RequestPermissionOutcome> {
 		const toolCall: ToolCallUpdate = {
 			toolCallId: `pi-ui-${kind}-${randomUUID()}`,
 			title,
@@ -185,7 +189,6 @@ export function createAcpUIContext(
 							type: "string",
 							title,
 							oneOf: options.map((opt) => ({ const: opt, title: opt })),
-							default: options[0],
 						},
 					},
 					required: ["value"],
@@ -222,6 +225,8 @@ export function createAcpUIContext(
 							type: "boolean",
 							title,
 							description: message,
+							// Default is always false as Pi has no way of distinguishing
+							// a confirm result as cancelled (e.g. user didn't select explicitly)
 							default: false,
 						},
 					},

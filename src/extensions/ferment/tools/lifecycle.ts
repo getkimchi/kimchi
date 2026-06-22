@@ -26,7 +26,7 @@ import {
 	type ScopingQuestionType,
 } from "../../../ferment/types.js"
 import { createToolVisibility } from "../../prompt-construction/tool-visibility.js"
-import { YES_NO_OPTIONS } from "../../questionnaire-reducer.js"
+import { YES_NO_OPTIONS } from "../../questionnaire/index.js"
 import {
 	type AskUserQuestion,
 	askUser,
