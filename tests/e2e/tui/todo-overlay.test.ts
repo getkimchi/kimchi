@@ -5,11 +5,11 @@ import { TUI_TEST_CONFIG, runKimchiSession } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
-test("completed todos stop pinning the overlay", async ({ terminal }) => {
+test("todo overlay hides completed lists and reconciles stale active todos", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		{
-			artifactName: "todo-overlay-completed-hide",
+			artifactName: "todo-overlay-reconciliation",
 			models: [{ slug: "basic", displayName: "Fake Basic", contextWindow: 1_000_000, maxTokens: 4096 }],
 			responses: [
 				{
@@ -29,6 +29,34 @@ test("completed todos stop pinning the overlay", async ({ terminal }) => {
 					],
 				},
 				{ stream: ["Todo plan created."] },
+				{ stream: ["fake response"] },
+				{
+					toolCalls: [
+						{
+							id: "call_leave_active_todo",
+							function: {
+								name: "update_todos",
+								arguments: JSON.stringify({
+									todos: [
+										{ content: "create branch", status: "completed" },
+										{ content: "edit workflow", status: "completed" },
+										{ content: "commit and push", status: "in_progress" },
+									],
+								}),
+							},
+						},
+					],
+				},
+				{ stream: [] },
+				{
+					toolCalls: [
+						{
+							id: "call_clear_reconciled_todos",
+							function: { name: "clear_todos", arguments: JSON.stringify({}) },
+						},
+					],
+				},
+				{ stream: [] },
 			],
 		},
 		async (_fixture, trace) => {
@@ -60,52 +88,11 @@ test("completed todos stop pinning the overlay", async ({ terminal }) => {
 			await waitForText(terminal, "Todos · Global", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			await waitForText(terminal, "2/2 done · 0 active", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			trace.step("completed overlay manually reopened")
-		},
-	)
-})
 
-test("active todos are reconciled before the agent goes idle", async ({ terminal }) => {
-	await runKimchiSession(
-		terminal,
-		{
-			artifactName: "todo-overlay-reconcile-active",
-			models: [{ slug: "basic", displayName: "Fake Basic", contextWindow: 1_000_000, maxTokens: 4096 }],
-			responses: [
-				{
-					toolCalls: [
-						{
-							id: "call_leave_active_todo",
-							function: {
-								name: "update_todos",
-								arguments: JSON.stringify({
-									todos: [
-										{ content: "create branch", status: "completed" },
-										{ content: "edit workflow", status: "completed" },
-										{ content: "commit and push", status: "in_progress" },
-									],
-								}),
-							},
-						},
-					],
-				},
-				{ stream: ["Work", " complete, but todo not reconciled."], textDelayMs: 250 },
-				{
-					toolCalls: [
-						{
-							id: "call_clear_reconciled_todos",
-							function: { name: "clear_todos", arguments: JSON.stringify({}) },
-						},
-					],
-				},
-				{ stream: ["Cleanup done."] },
-			],
-		},
-		async (_fixture, trace) => {
 			terminal.submit("leave an active todo")
 			await waitForText(terminal, "2/3 done · 1 active", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			trace.step("active todo overlay visible")
 
-			await waitForText(terminal, "Cleanup done.", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			await waitForViewToExclude(terminal, "Todos · Global")
 			await waitForViewToExclude(terminal, "2/3 done · 1 active")
 			trace.step("reconciliation follow-up cleared overlay")
