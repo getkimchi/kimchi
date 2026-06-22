@@ -56,6 +56,10 @@ export function summarizeTodoCounts(counts: TodoCounts): string {
 	return `${counts.completed}/${counts.total} done · ${active} active${blocked}`
 }
 
+function hasActiveTodos(counts: TodoCounts): boolean {
+	return counts.pending + counts.inProgress + counts.blocked > 0
+}
+
 export function summarizeTodos(): string {
 	return summarizeTodoCounts(getTodoCountsForScope(GLOBAL_TODO_SCOPE))
 }
@@ -102,7 +106,10 @@ function requestTodoRender(ctx: ExtensionContext): void {
 export function setTodosStatus(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return
 	const counts = getTodoCountsForScope(GLOBAL_TODO_SCOPE)
-	ctx.ui.setStatus(TODO_STATUS_KEY, counts.total === 0 ? undefined : `${counts.completed}/${counts.total} todos -> F7`)
+	ctx.ui.setStatus(
+		TODO_STATUS_KEY,
+		hasActiveTodos(counts) ? `${counts.completed}/${counts.total} todos -> F7` : undefined,
+	)
 }
 
 export function ensureTodoWidget(ctx: ExtensionContext): void {
@@ -183,7 +190,7 @@ export function syncTodoWidget(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return
 	const counts = getTodoCountsForScope(GLOBAL_TODO_SCOPE)
 	const state = getTodoWidgetState(ctx)
-	if (!state.collapsed && counts.total > 0) openTodoWidget(ctx)
+	if (!state.collapsed && hasActiveTodos(counts)) openTodoWidget(ctx)
 	else clearTodoWidget(ctx)
 	setTodosStatus(ctx)
 }

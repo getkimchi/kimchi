@@ -1,7 +1,20 @@
-import type { Theme } from "@earendil-works/pi-coding-agent"
+import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { __resetTodoStore, applyWriteTodos } from "./store.js"
-import { __test_buildTodoLines, __test_summarizeTodos, openTodoWidget, resetTodoWidgetState } from "./widget.js"
+import {
+	__test_buildTodoLines,
+	__test_summarizeTodos,
+	openTodoWidget,
+	resetTodoWidgetState,
+	syncTodoWidget,
+} from "./widget.js"
+
+type TestUiContext = ExtensionContext & {
+	ui: ExtensionContext["ui"] & {
+		setWidget: ReturnType<typeof vi.fn>
+		setStatus: ReturnType<typeof vi.fn>
+	}
+}
 
 const theme = {
 	fg: (_color: string, text: string) => text,
@@ -40,6 +53,50 @@ describe("todo widget helpers", () => {
 		])
 	})
 
+	it("auto-opens while active todos exist", () => {
+		const setWidget = vi.fn()
+		const ctx = createUiContext("session", setWidget)
+		applyWriteTodos({ todos: [{ content: "pending", status: "pending" }] })
+
+		syncTodoWidget(ctx)
+
+		const component = setWidget.mock.calls[0][1]
+		const instance = component({ requestRender: vi.fn() }, theme)
+		expect(instance.render(80)).toContain("Todos · Global")
+		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("todos", "0/1 todos -> F7")
+	})
+
+	it("auto-hides when all todos are completed", () => {
+		const setWidget = vi.fn()
+		const ctx = createUiContext("session", setWidget)
+		const tui = { requestRender: vi.fn() }
+		applyWriteTodos({ todos: [{ content: "finish", status: "pending" }] })
+		syncTodoWidget(ctx)
+		const component = setWidget.mock.calls[0][1]
+		const instance = component(tui, theme)
+
+		applyWriteTodos({ todos: [{ id: 1, content: "finish", status: "completed" }] })
+		syncTodoWidget(ctx)
+
+		expect(instance.render(80)).toEqual([])
+		expect(tui.requestRender).toHaveBeenCalled()
+		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("todos", undefined)
+	})
+
+	it("manual open still renders completed todos", () => {
+		const setWidget = vi.fn()
+		const ctx = createUiContext("session", setWidget)
+		applyWriteTodos({ todos: [{ content: "done", status: "completed" }] })
+
+		openTodoWidget(ctx)
+
+		const component = setWidget.mock.calls[0][1]
+		const instance = component({ requestRender: vi.fn() }, theme)
+		expect(instance.render(80)).toContain("1/1 done · 0 active")
+		expect(instance.render(80)).toContain("  1.  ✓ done")
+		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("todos", undefined)
+	})
+
 	it("re-registers the widget for a new context and ignores stale invalidations", () => {
 		const firstSetWidget = vi.fn()
 		const secondSetWidget = vi.fn()
@@ -63,7 +120,7 @@ describe("todo widget helpers", () => {
 	})
 })
 
-function createUiContext(sessionId: string, setWidget: ReturnType<typeof vi.fn>) {
+function createUiContext(sessionId: string, setWidget: ReturnType<typeof vi.fn>): TestUiContext {
 	return {
 		hasUI: true,
 		sessionManager: { getSessionId: () => sessionId },
@@ -72,5 +129,5 @@ function createUiContext(sessionId: string, setWidget: ReturnType<typeof vi.fn>)
 			setWidget,
 			setStatus: vi.fn(),
 		},
-	} as never
+	} as TestUiContext
 }
