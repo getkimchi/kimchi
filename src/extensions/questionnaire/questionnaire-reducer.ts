@@ -49,15 +49,14 @@ export interface Answer {
 	wasCustom: boolean
 	/**
 	 * 1-based position of the selected option in the rendered option list.
-	 * Absent for free-text answers (wasCustom === true): there is no option
-	 * position to report. Display code (formatAnswerText, renderResult)
-	 * short-circuits on wasCustom before reading this field, so consumers
-	 * never need to guess.
 	 */
 	index?: number
 	// multi-select fields
 	values?: string[]
 	labels?: string[]
+	/**
+	 * 1-based positions of the selected options (if multiple) in the rendered option list.
+	 */
 	indices?: number[]
 }
 
