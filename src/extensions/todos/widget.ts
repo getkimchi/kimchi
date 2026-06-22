@@ -164,6 +164,13 @@ export function ensureTodoWidget(ctx: ExtensionContext): void {
 
 	const registrationId = state.registrationId + 1
 	state.registrationId = registrationId
+	const unregister = () => {
+		if (state.registrationId !== registrationId) return
+		state.registered = false
+		state.tui = undefined
+		state.ctx = undefined
+		if (activeTodoWidgetSessionId === sessionId) activeTodoWidgetSessionId = undefined
+	}
 	const component = (tui: unknown, theme: Theme) => {
 		state.tui = tui as { requestRender?: (force?: boolean) => void }
 		return {
@@ -180,13 +187,8 @@ export function ensureTodoWidget(ctx: ExtensionContext): void {
 						: withHint
 				return visibleLines.map((line) => truncateToWidth(line, Math.max(20, width - 4)))
 			},
-			invalidate() {
-				if (state.registrationId !== registrationId) return
-				state.registered = false
-				state.tui = undefined
-				state.ctx = undefined
-				if (activeTodoWidgetSessionId === sessionId) activeTodoWidgetSessionId = undefined
-			},
+			invalidate: unregister,
+			dispose: unregister,
 			handleInput(data: string): void {
 				if (isKeyRelease(data)) return
 				if (matchesKey(data, Key.escape) || matchesKey(data, Key.enter) || matchesKey(data, "return") || data === "q") {

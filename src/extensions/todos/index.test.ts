@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext, SessionEntry, Theme } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
 import todosExtension, { TODO_CHECKPOINT_MESSAGE, TODO_RECONCILE_MESSAGE } from "./index.js"
@@ -7,6 +7,11 @@ import { TODO_TOOL_NAMES, UPDATE_TODOS_TOOL_NAME } from "./tool.js"
 import { TODO_TOOL_RESULT_SCHEMA_VERSION, type TodoStatus } from "./types.js"
 
 type ExtensionHandler = (event: unknown, ctx: ExtensionContext) => unknown | Promise<unknown>
+
+const theme = {
+	fg: (_color: string, text: string) => text,
+	bold: (text: string) => text,
+} as Theme
 
 function createTodosHarness() {
 	const handlers = new Map<string, ExtensionHandler[]>()
@@ -42,11 +47,12 @@ function createTodosHarness() {
 function createContext(
 	sessionId: string,
 	branch: SessionEntry[],
-	options: { hasPendingMessages?: boolean } = {},
+	options: { hasPendingMessages?: boolean; hasUI?: boolean; ui?: ExtensionContext["ui"] } = {},
 ): ExtensionContext {
 	return {
-		hasUI: false,
+		hasUI: options.hasUI ?? false,
 		cwd: "/test",
+		ui: options.ui,
 		hasPendingMessages: () => options.hasPendingMessages ?? false,
 		sessionManager: {
 			getSessionId: () => sessionId,
@@ -257,6 +263,7 @@ describe("todos extension session state", () => {
 		await harness.fire("session_start", { reason: "new" }, ctx)
 
 		applyWriteTodos({ todos: [{ content: "still active", status: "in_progress" }] })
+		await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
 		await harness.fire("turn_end", terminalTurn(), ctx)
 		await harness.fire("turn_end", terminalTurn(), ctx)
 
@@ -278,7 +285,38 @@ describe("todos extension session state", () => {
 
 		applyWriteTodos({ todos: [{ id: 1, content: "still active", status: "completed" }] })
 		await harness.fire("turn_end", terminalTurn(), ctx)
-		expect(harness.sendMessage).toHaveBeenCalledTimes(2)
+		expect(harness.sendMessage).toHaveBeenCalledTimes(1)
+	})
+
+	it("does not reconcile immediately after only writing todos", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+
+		applyWriteTodos({ todos: [{ content: "new plan", status: "pending" }] })
+		await harness.fire("turn_end", terminalTurn(), ctx)
+
+		expect(harness.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("resyncs the active todo widget on terminal turns after the TUI clears widgets", async () => {
+		const harness = createTodosHarness()
+		const setWidget = vi.fn()
+		const ctx = createContext("session", [], {
+			hasUI: true,
+			ui: { theme, setWidget, setStatus: vi.fn() } as unknown as ExtensionContext["ui"],
+		})
+		await harness.fire("session_start", { reason: "new" }, ctx)
+
+		applyWriteTodos({ todos: [{ content: "visible active todo", status: "in_progress" }] })
+		const component = setWidget.mock.calls[0][1]
+		const instance = component({ requestRender: vi.fn() }, theme)
+		instance.dispose()
+
+		await harness.fire("turn_end", terminalTurn(), ctx)
+
+		expect(setWidget).toHaveBeenCalledTimes(2)
+		expect(harness.sendMessage).not.toHaveBeenCalled()
 	})
 
 	it("does not reconcile on non-terminal turns", async () => {
@@ -286,6 +324,7 @@ describe("todos extension session state", () => {
 		const ctx = createContext("session", [])
 		await harness.fire("session_start", { reason: "new" }, ctx)
 		applyWriteTodos({ todos: [{ content: "still active", status: "in_progress" }] })
+		await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
 
 		await harness.fire("turn_end", { message: { role: "assistant", stopReason: "aborted" }, toolResults: [] }, ctx)
 		await harness.fire("turn_end", { message: { role: "assistant" }, toolResults: [{}] }, ctx)

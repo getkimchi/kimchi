@@ -125,6 +125,7 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	}
 
 	const maybeSteerTodoReconciliation = () => {
+		if (!workSinceTodoWrite) return
 		const key = currentTodoStateKey()
 		if (!key) {
 			resetTodoProcessState()
@@ -196,6 +197,7 @@ export default function todosExtension(pi: ExtensionAPI): void {
 
 	pi.on("turn_end", (event, ctx) => {
 		if (!isTerminalAssistantTurn(event, ctx)) return
+		syncTodoWidget(ctx)
 		maybeSteerTodoReconciliation()
 	})
 

@@ -121,6 +121,20 @@ describe("todo widget helpers", () => {
 		expect(secondTui.requestRender).toHaveBeenCalled()
 	})
 
+	it("re-registers after the TUI disposes extension widgets", () => {
+		const setWidget = vi.fn()
+		const ctx = createUiContext("session", setWidget)
+
+		openTodoWidget(ctx)
+		const component = setWidget.mock.calls[0][1]
+		const instance = component({ requestRender: vi.fn() }, theme)
+
+		instance.dispose()
+		openTodoWidget(ctx)
+
+		expect(setWidget).toHaveBeenCalledTimes(2)
+	})
+
 	it("visually distinguishes ferment todos from global todos", () => {
 		// Global scope todos - default behavior
 		applyWriteTodos({
