@@ -47,11 +47,20 @@ jobs:
         run: pnpm run test:smoke
 
   master-checks:
-    if: github.event_name == 'push'
+    # Run on both push-to-master and pull_request so PR CI exercises the same
+    # post-merge checks (e.g. `make build` + `pnpm run test` without the
+    # `KIMCHI_PROXY_HELPER` env var) that will run after merge. Without this,
+    # a PR based on a stale base ref can pass `pr-checks` and only fail at the
+    # post-merge `master-checks` step, leaving master red until a follow-up
+    # lands (see #657 for the original incident).
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
-      group: ci-master
+      # Single shared group for master pushes (only one build at a time, cancel
+      # stale ones). Per-PR groups for pull requests so concurrent PRs don't
+      # cancel each other's checks.
+      group: ${{ github.event_name == 'push' && 'ci-master' || format('ci-pr-master-checks-{0}', github.head_ref) }}
       cancel-in-progress: true
 
     steps:
