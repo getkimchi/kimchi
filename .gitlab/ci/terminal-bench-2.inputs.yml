@@ -12,9 +12,9 @@ inputs:
     type: string
     default: "master"
   tasks:
-    description: "Terminal Bench tasks to run. Leave empty to run the full benchmark."
+    description: "Terminal Bench tasks to run. Defaults to a faster subset chosen as the most informative tasks (explaining ~96% of variance in total score). Leave empty to run the full benchmark."
     type: array
-    default: []
+    default: [hf-model-inference, fix-code-vulnerability, build-cython-ext, bn-fit-modify, fix-git, mteb-leaderboard, cobol-modernization, merge-diff-arc-agi-task, extract-elf, pytorch-model-recovery]
     options:
       - adaptive-rejection-sampler
       - bn-fit-modify
