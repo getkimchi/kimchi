@@ -89,7 +89,9 @@ function optionalGuidelines(...layers: string[]): string | undefined {
 }
 
 /** Build a guidelines record, omitting entries where all layers are empty. */
-function guidelinesMap(entries: Record<string, string[]>): Partial<Readonly<Record<Phase, string>>> | undefined {
+function guidelinesMap(
+	entries: Partial<Record<Phase, string[]>>,
+): Partial<Readonly<Record<Phase, string>>> | undefined {
 	const result: Record<string, string> = {}
 	for (const [phase, layers] of Object.entries(entries)) {
 		const value = concatGuidelines(...layers)

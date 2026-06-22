@@ -111,8 +111,12 @@ export function saveModelMetadata(metadata: Map<string, ModelCustomMetadata>, se
 	let existing: Record<string, unknown> = {}
 	try {
 		existing = JSON.parse(readFileSync(path, "utf-8"))
-	} catch {
-		// absent or unreadable — start fresh
+	} catch (err) {
+		// Missing file is fine — start fresh. Anything else (corrupted JSON, read
+		// error) is destructive to overwrite silently, so rethrow so the caller
+		// can decide whether to surface the corruption instead of wiping the
+		// user's other settings.
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err
 	}
 
 	// Merge with existing modelMetadata so we don't wipe out other models
