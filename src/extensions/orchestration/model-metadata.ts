@@ -12,64 +12,94 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 
+import { type Static, Type } from "typebox"
+import { Value } from "typebox/value"
+
 import { modelIdFromRef } from "./model-ref-utils.js"
 import { MODEL_CAPABILITIES } from "./model-registry/builtin-models.js"
 import type { ModelTier } from "./model-registry/types.js"
 
-export interface ModelCustomMetadata {
-	tier?: ModelTier
-	description?: string
-	vision?: boolean
-}
+/**
+ * TypeBox schema for the on-disk shape of a `modelMetadata` entry.
+ *
+ * All three fields are optional; an entry with none of them set is still
+ * "shape-valid" but is dropped by {@link loadModelMetadata} (the whole entry
+ * would carry no signal). `Value.Check` rejects entries whose fields have the
+ * wrong runtime type — e.g. `tier: "mega"` — and the rejection is recorded as
+ * a warning via {@link getModelMetadataWarnings}.
+ */
+const ModelTierSchema = Type.Union([Type.Literal("light"), Type.Literal("standard"), Type.Literal("heavy")])
+
+const ModelCustomMetadataSchema = Type.Object({
+	tier: Type.Optional(ModelTierSchema),
+	description: Type.Optional(Type.String()),
+	vision: Type.Optional(Type.Boolean()),
+})
+
+export type ModelCustomMetadata = Static<typeof ModelCustomMetadataSchema>
 
 const HARNESS_SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "settings.json")
 
 /**
  * Load metadata from settings.json "modelMetadata" key.
- * Returns an empty map if the file is absent or the key is missing.
- * Entries with no valid fields are ignored.
+ *
+ * Returns the loaded map plus a list of warnings for entries that failed
+ * TypeBox validation (wrong field types, unrecognised tier, etc.). The caller
+ * decides what to do with the warnings — the public API exposes them via
+ * {@link getModelMetadataWarnings}. Returns an empty map + empty warnings when
+ * the file is absent or the key is missing. Entries with no defined fields
+ * after validation are silently dropped.
  */
-export function loadModelMetadata(settingsPath?: string): Map<string, ModelCustomMetadata> {
+export function loadModelMetadata(settingsPath?: string): {
+	metadata: Map<string, ModelCustomMetadata>
+	warnings: Array<{ ref: string; message: string }>
+} {
 	const path = settingsPath ?? HARNESS_SETTINGS_PATH
-	const result = new Map<string, ModelCustomMetadata>()
+	const metadata = new Map<string, ModelCustomMetadata>()
+	const warnings: Array<{ ref: string; message: string }> = []
 
 	try {
 		const raw = readFileSync(path, "utf-8")
 		const parsed = JSON.parse(raw)
-		if (!parsed || typeof parsed !== "object") return result
+		if (!parsed || typeof parsed !== "object") return { metadata, warnings }
 		const meta = parsed.modelMetadata
-		if (!meta || typeof meta !== "object" || Array.isArray(meta)) return result
+		if (!meta || typeof meta !== "object" || Array.isArray(meta)) return { metadata, warnings }
 
 		for (const [ref, value] of Object.entries(meta)) {
 			if (typeof ref !== "string" || !ref.trim()) continue
+			const trimmed = ref.trim()
 			const entry = validateMetadataEntry(value)
-			if (entry) result.set(ref.trim(), entry)
+			if (entry) {
+				metadata.set(trimmed, entry)
+				continue
+			}
+			// Only record a warning if the entry looked like an object but failed
+			// validation — nulls and primitives are silently ignored (they cannot
+			// arise from well-behaved callers and would just be noise).
+			if (value && typeof value === "object" && !Array.isArray(value)) {
+				const errors = Value.Errors(ModelCustomMetadataSchema, value)
+				const detail = errors.length > 0 ? `: ${errors[0].message}` : ""
+				warnings.push({ ref: trimmed, message: `entry failed validation${detail}` })
+			}
 		}
 	} catch {
-		// settings.json absent or unreadable — return empty map
+		// settings.json absent or unreadable — return empty result
 	}
 
-	return result
-}
-
-function isModelTier(value: unknown): value is ModelTier {
-	return value === "light" || value === "standard" || value === "heavy"
+	return { metadata, warnings }
 }
 
 function validateMetadataEntry(value: unknown): ModelCustomMetadata | undefined {
 	if (!value || typeof value !== "object") return undefined
-	const obj = value as Record<string, unknown>
-
-	const tier = obj.tier !== undefined && isModelTier(obj.tier) ? obj.tier : undefined
-	const description = typeof obj.description === "string" ? obj.description : undefined
-	const vision = typeof obj.vision === "boolean" ? obj.vision : undefined
-
-	// Entry must have at least one valid field
-	if (tier === undefined && description === undefined && vision === undefined) {
+	if (!Value.Check(ModelCustomMetadataSchema, value)) return undefined
+	const entry = value as ModelCustomMetadata
+	// Entry must carry at least one defined field; otherwise it has no signal
+	// and would clutter settings.json with empty rows that resolveModelMetadata
+	// would ignore anyway.
+	if (entry.tier === undefined && entry.description === undefined && entry.vision === undefined) {
 		return undefined
 	}
-
-	return { tier, description, vision }
+	return entry
 }
 
 /**
@@ -195,7 +225,9 @@ let _cachedPath: string | undefined
 export function getModelMetadata(settingsPath?: string): ReadonlyMap<string, ModelCustomMetadata> {
 	const path = settingsPath ?? HARNESS_SETTINGS_PATH
 	if (_cachedPath !== path) {
-		_cached = loadModelMetadata(path)
+		const loaded = loadModelMetadata(path)
+		_cached = loaded.metadata
+		_warnings = loaded.warnings
 		_cachedPath = path
 	}
 	// _cached is always set after the branch above (either previously or just now)
@@ -203,8 +235,6 @@ export function getModelMetadata(settingsPath?: string): ReadonlyMap<string, Mod
 }
 
 export function getModelMetadataWarnings(): ReadonlyArray<{ ref: string; message: string }> {
-	// Currently no warnings are generated during load, but the API exists
-	// for future validation (e.g., unknown fields, type mismatches)
 	_warnings ??= []
 	return _warnings
 }

@@ -1,9 +1,11 @@
-import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
+import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent"
 /**
  * Tests for the pure helper functions in model-roles-command.ts.
- * Interactive CLI flows (select/input UI) are not tested here —
- * they require a full mock UI harness and are covered by manual smoke tests.
+ * Interactive CLI flows are tested via a mock ui.custom that returns a
+ * canned QuestionFormResult, so the user-completion contract of
+ * `collectModelMetadata` is exercised without booting the real TUI.
  */
+import type { Component, TUI } from "@earendil-works/pi-tui"
 import { describe, expect, it, vi } from "vitest"
 import {
 	collectModelMetadata,
@@ -25,16 +27,63 @@ vi.mock("./model-metadata.js", () => ({
 	getModelMetadata: vi.fn(() => new Map()),
 }))
 
-const createMockCtx = (responses: { selects?: (string | undefined)[]; inputs?: (string | undefined)[] } = {}) => {
-	let selectIdx = 0
-	let inputIdx = 0
+// Spy on the shared form factory so we can assert what questions / header
+// were rendered without booting the real TUI. The factory itself is loaded
+// for real so its reducer wiring is exercised end-to-end.
+import * as questionnaireForm from "../questionnaire-form.js"
+import type { QuestionFormResult } from "../questionnaire-form.js"
+import type { Answer, Question } from "../questionnaire-reducer.js"
+
+vi.mock("../questionnaire-form.js", async () => {
+	const actual = await vi.importActual<typeof questionnaireForm>("../questionnaire-form.js")
 	return {
+		...actual,
+		createQuestionForm: vi.fn(actual.createQuestionForm),
+	}
+})
+
+function singleAnswer(id: string, value: string): Answer {
+	return { id, value, label: value, wasCustom: false, index: 1 }
+}
+
+function textAnswer(id: string, value: string): Answer {
+	return { id, value, label: value, wasCustom: true }
+}
+
+const createMockCtx = (
+	answers: Answer[] = [],
+	cancelled = false,
+): {
+	ctx: ExtensionCommandContext
+	factoryArgs: { questions: Question[]; header: { title?: string; description?: string } }
+} => {
+	const factoryArgs = { questions: [] as Question[], header: {} as { title?: string; description?: string } }
+	const ctx = {
 		ui: {
-			select: vi.fn(async () => responses.selects?.[selectIdx++]),
-			input: vi.fn(async () => responses.inputs?.[inputIdx++]),
+			custom: vi.fn(async <T>(factory: (...args: unknown[]) => Component | Promise<Component>) => {
+				const fakeTui = {} as TUI
+				const fakeTheme = { fg: (s: string) => s, bold: (s: string) => s } as unknown as Theme
+				const fakeDone = (_r: T) => {}
+				// Wire a wrapper around createQuestionForm so we can capture the
+				// questions + header that the caller passed to it.
+				const original = vi.mocked(questionnaireForm.createQuestionForm)
+				original.mockImplementationOnce((_tui, _theme, questions, header, done) => {
+					factoryArgs.questions = questions
+					factoryArgs.header = header
+					return {
+						render: () => [],
+						handleInput: () => {},
+						invalidate: () => {},
+					} as Component
+				})
+				factory(fakeTui, fakeTheme, {} as never, fakeDone as never)
+				const result: QuestionFormResult = { questions: factoryArgs.questions, answers, cancelled }
+				return result as T
+			}),
 			notify: vi.fn(),
 		},
 	} as unknown as ExtensionCommandContext
+	return { ctx, factoryArgs }
 }
 
 describe("formatRoleAssignment", () => {
@@ -184,17 +233,18 @@ describe("splitModelRef (from model-roles.ts)", () => {
 })
 
 describe("collectModelMetadata", () => {
-	it("returns undefined when user cancels tier selection (select returns undefined)", async () => {
-		const ctx = createMockCtx({ selects: [undefined] })
+	it("returns undefined when the user cancels the form", async () => {
+		const { ctx } = createMockCtx([], true)
 		const result = await collectModelMetadata("custom/model", undefined, ctx)
 		expect(result).toBeUndefined()
 	})
 
-	it("returns config with all fields when user provides tier, vision=yes, description", async () => {
-		const ctx = createMockCtx({
-			selects: ["heavy", "yes"],
-			inputs: ["A powerful model good at reasoning"],
-		})
+	it("returns config with all fields when user picks tier, vision=yes, and a description", async () => {
+		const { ctx } = createMockCtx([
+			singleAnswer("tier", "heavy"),
+			singleAnswer("vision", "yes"),
+			textAnswer("description", "A powerful model good at reasoning"),
+		])
 		const result = await collectModelMetadata("custom/model", undefined, ctx)
 		expect(result).toEqual({
 			tier: "heavy",
@@ -203,24 +253,24 @@ describe("collectModelMetadata", () => {
 		})
 	})
 
-	it("returns config with only provided fields, skips undefined ones (user selects skip for vision, empty description)", async () => {
-		const ctx = createMockCtx({
-			selects: ["standard", "skip"],
-			inputs: [""],
-		})
+	it("drops unselected fields when user picks skip / leaves them blank", async () => {
+		const { ctx } = createMockCtx([
+			singleAnswer("tier", "standard"),
+			singleAnswer("vision", "__keep__"), // "skip" since no existing vision
+			textAnswer("description", "(no response)"), // empty editor submit
+		])
 		const result = await collectModelMetadata("custom/model", undefined, ctx)
-		expect(result).toEqual({
-			tier: "standard",
-		})
+		expect(result).toEqual({ tier: "standard" })
 		expect(result).not.toHaveProperty("vision")
 		expect(result).not.toHaveProperty("description")
 	})
 
-	it("preserves existing fields when user selects keep current", async () => {
-		const ctx = createMockCtx({
-			selects: ["keep current (standard)", "keep current (yes)"],
-			inputs: ["Existing description"],
-		})
+	it("preserves existing fields when user picks keep current for each", async () => {
+		const { ctx } = createMockCtx([
+			singleAnswer("tier", "__keep__"),
+			singleAnswer("vision", "__keep__"),
+			textAnswer("description", "Existing description"),
+		])
 		const existing = { tier: "standard" as const, description: "Old desc", vision: true as const }
 		const result = await collectModelMetadata("custom/model", existing, ctx)
 		expect(result).toEqual({
@@ -230,30 +280,70 @@ describe("collectModelMetadata", () => {
 		})
 	})
 
-	it("does not include vision when user selects skip and no existing vision", async () => {
-		const ctx = createMockCtx({
-			selects: ["light", "skip"],
-			inputs: ["A light model"],
-		})
-		const result = await collectModelMetadata("custom/model", undefined, ctx)
+	it("keeps existing description when user submits empty text", async () => {
+		const { ctx } = createMockCtx([
+			singleAnswer("tier", "heavy"),
+			singleAnswer("vision", "no"),
+			textAnswer("description", "(no response)"),
+		])
+		const existing = { description: "Pre-existing description" }
+		const result = await collectModelMetadata("custom/model", existing, ctx)
 		expect(result).toEqual({
-			tier: "light",
-			description: "A light model",
+			tier: "heavy",
+			vision: false,
+			description: "Pre-existing description",
 		})
-		expect(result).not.toHaveProperty("vision")
 	})
 
-	it("includes model ref in select prompts", async () => {
-		const ctx = createMockCtx({
-			selects: ["heavy", "yes"],
-			inputs: ["test"],
-		})
+	it("keeps existing description when user navigates past the description question", async () => {
+		// No description answer recorded at all — form treats it as "skip".
+		const { ctx } = createMockCtx([singleAnswer("tier", "light"), singleAnswer("vision", "no")])
+		const existing = { description: "Pre-existing description" }
+		const result = await collectModelMetadata("custom/model", existing, ctx)
+		expect(result).toEqual({ tier: "light", vision: false, description: "Pre-existing description" })
+	})
+
+	it("labels the skip option as 'keep current (X)' when an existing value is present", async () => {
+		const { ctx, factoryArgs } = createMockCtx([singleAnswer("tier", "__keep__")])
+		await collectModelMetadata("custom/model", { tier: "heavy" }, ctx)
+		const tierQuestion = factoryArgs.questions.find((q) => q.id === "tier")
+		expect(tierQuestion).toBeDefined()
+		const keepOption = tierQuestion?.options.find((o) => o.id === "__keep__")
+		expect(keepOption?.label).toBe("keep current (heavy)")
+	})
+
+	it("labels the skip option as 'skip' when no existing value is present", async () => {
+		const { ctx, factoryArgs } = createMockCtx([singleAnswer("tier", "__keep__")])
+		await collectModelMetadata("custom/model", undefined, ctx)
+		const tierQuestion = factoryArgs.questions.find((q) => q.id === "tier")
+		const keepOption = tierQuestion?.options.find((o) => o.id === "__keep__")
+		expect(keepOption?.label).toBe("skip")
+	})
+
+	it("includes model ref in question prompts and form title", async () => {
+		const { ctx, factoryArgs } = createMockCtx([singleAnswer("tier", "heavy")])
 		await collectModelMetadata("custom/my-model", undefined, ctx)
-		const selectCalls = (ctx.ui.select as ReturnType<typeof vi.fn>).mock.calls
-		expect(selectCalls[0][0]).toContain("custom/my-model")
-		expect(selectCalls[1][0]).toContain("custom/my-model")
-		const inputCalls = (ctx.ui.input as ReturnType<typeof vi.fn>).mock.calls
-		expect(inputCalls[0][0]).toContain("custom/my-model")
+		expect(factoryArgs.header.title).toBe("custom/my-model")
+		for (const q of factoryArgs.questions) {
+			expect(q.prompt).toContain("custom/my-model")
+		}
+	})
+
+	it("uses three questions (tier, vision, description)", async () => {
+		const { ctx, factoryArgs } = createMockCtx([singleAnswer("tier", "heavy")])
+		await collectModelMetadata("custom/model", undefined, ctx)
+		expect(factoryArgs.questions.map((q) => q.id)).toEqual(["tier", "vision", "description"])
+	})
+
+	it("uses YES_NO_OPTIONS plus a keep-current option for vision", async () => {
+		const { ctx, factoryArgs } = createMockCtx([singleAnswer("tier", "heavy")])
+		await collectModelMetadata("custom/model", undefined, ctx)
+		const visionQuestion = factoryArgs.questions.find((q) => q.id === "vision")
+		expect(visionQuestion).toBeDefined()
+		const optionIds = visionQuestion?.options.map((o) => o.id)
+		expect(optionIds).toContain("yes")
+		expect(optionIds).toContain("no")
+		expect(optionIds).toContain("__keep__")
 	})
 })
 

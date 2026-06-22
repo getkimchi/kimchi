@@ -30,7 +30,8 @@ describe("loadModelMetadata", () => {
 
 	it("returns empty map when settings file absent", () => {
 		const result = loadModelMetadata(testPath)
-		expect(result.size).toBe(0)
+		expect(result.metadata.size).toBe(0)
+		expect(result.warnings).toEqual([])
 	})
 
 	it("reads metadata from settings.json", () => {
@@ -50,13 +51,14 @@ describe("loadModelMetadata", () => {
 		)
 
 		const result = loadModelMetadata(testPath)
-		expect(result.size).toBe(2)
-		expect(result.get("custom/model-1")).toEqual({
+		expect(result.metadata.size).toBe(2)
+		expect(result.metadata.get("custom/model-1")).toEqual({
 			tier: "heavy",
 			description: "A heavy model",
 			vision: true,
 		})
-		expect(result.get("custom/model-2")).toEqual({ tier: "light" })
+		expect(result.metadata.get("custom/model-2")).toEqual({ tier: "light" })
+		expect(result.warnings).toEqual([])
 	})
 
 	it("ignores entries with no valid fields", () => {
@@ -78,11 +80,11 @@ describe("loadModelMetadata", () => {
 		)
 
 		const result = loadModelMetadata(testPath)
-		expect(result.size).toBe(1)
-		expect(result.has("valid/model")).toBe(true)
-		expect(result.has("empty/model")).toBe(false)
-		expect(result.has("invalid/model")).toBe(false)
-		expect(result.has("null/model")).toBe(false)
+		expect(result.metadata.size).toBe(1)
+		expect(result.metadata.has("valid/model")).toBe(true)
+		expect(result.metadata.has("empty/model")).toBe(false)
+		expect(result.metadata.has("invalid/model")).toBe(false)
+		expect(result.metadata.has("null/model")).toBe(false)
 	})
 
 	it("ignores non-object modelMetadata value", () => {
@@ -90,7 +92,7 @@ describe("loadModelMetadata", () => {
 		writeFileSync(testPath, JSON.stringify({ modelMetadata: "not an object" }, null, 2))
 
 		const result = loadModelMetadata(testPath)
-		expect(result.size).toBe(0)
+		expect(result.metadata.size).toBe(0)
 	})
 
 	it("ignores array modelMetadata value", () => {
@@ -98,7 +100,7 @@ describe("loadModelMetadata", () => {
 		writeFileSync(testPath, JSON.stringify({ modelMetadata: [] }, null, 2))
 
 		const result = loadModelMetadata(testPath)
-		expect(result.size).toBe(0)
+		expect(result.metadata.size).toBe(0)
 	})
 
 	it("trims whitespace from ref keys", () => {
@@ -118,10 +120,10 @@ describe("loadModelMetadata", () => {
 		)
 
 		const result = loadModelMetadata(testPath)
-		expect(result.get("custom/model-1")).toEqual({ tier: "heavy" })
+		expect(result.metadata.get("custom/model-1")).toEqual({ tier: "heavy" })
 		// Note: whitespace trimming happens on the key itself, not the value
 		// So "  custom/model-1  " becomes "custom/model-1" (trims leading/trailing)
-		expect(result.has("  custom/model-1  ")).toBe(false)
+		expect(result.metadata.has("  custom/model-1  ")).toBe(false)
 	})
 
 	it("validates tier values strictly", () => {
@@ -141,8 +143,54 @@ describe("loadModelMetadata", () => {
 		)
 
 		const result = loadModelMetadata(testPath)
-		expect(result.get("valid/model")?.tier).toBe("standard")
-		expect(result.get("invalid/tier")?.tier).toBeUndefined()
+		expect(result.metadata.get("valid/model")?.tier).toBe("standard")
+		// Invalid tier now drops the entire entry (and surfaces a warning),
+		// rather than silently dropping just the tier field. Either way the
+		// resolved tier is undefined — the contract tests assert.
+		expect(result.metadata.get("invalid/tier")?.tier).toBeUndefined()
+	})
+
+	it("emits warnings for entries that fail TypeBox validation", () => {
+		mkdirSync(testDir, { recursive: true })
+		writeFileSync(
+			testPath,
+			JSON.stringify(
+				{
+					modelMetadata: {
+						"bad/tier": { tier: "not-a-tier" },
+						"bad/description": { description: 123 },
+						"bad/vision": { vision: "yes" },
+					},
+				},
+				null,
+				2,
+			),
+		)
+
+		const result = loadModelMetadata(testPath)
+		expect(result.metadata.size).toBe(0)
+		const refs = result.warnings.map((w) => w.ref).sort()
+		expect(refs).toEqual(["bad/description", "bad/tier", "bad/vision"])
+		for (const w of result.warnings) {
+			expect(w.message).toMatch(/entry failed validation/)
+		}
+	})
+
+	it("does not warn for null/non-object entries (cannot arise from well-behaved callers)", () => {
+		mkdirSync(testDir, { recursive: true })
+		writeFileSync(
+			testPath,
+			JSON.stringify({
+				modelMetadata: {
+					"null/model": null,
+					"string/model": "not-an-object",
+					"array/model": [],
+				},
+			}),
+		)
+
+		const result = loadModelMetadata(testPath)
+		expect(result.warnings).toEqual([])
 	})
 })
 
@@ -386,7 +434,7 @@ describe("resolveModelMetadata", () => {
 		)
 
 		const loaded = loadModelMetadata(testPath)
-		expect(loaded.get("custom/my-model")).toEqual({
+		expect(loaded.metadata.get("custom/my-model")).toEqual({
 			tier: "standard",
 			description: "My custom model",
 			vision: false,
@@ -597,11 +645,11 @@ describe("Integration: saveModelMetadata and loadModelMetadata round-trip", () =
 		saveModelMetadata(original, testPath)
 		const loaded = loadModelMetadata(testPath)
 
-		expect(loaded.size).toBe(4)
-		expect(loaded.get("custom/model-1")).toEqual({ tier: "heavy", description: "Heavy model", vision: true })
-		expect(loaded.get("custom/model-2")).toEqual({ tier: "light" })
-		expect(loaded.get("custom/model-3")).toEqual({ description: "Description only" })
-		expect(loaded.get("custom/model-4")).toEqual({ vision: false })
+		expect(loaded.metadata.size).toBe(4)
+		expect(loaded.metadata.get("custom/model-1")).toEqual({ tier: "heavy", description: "Heavy model", vision: true })
+		expect(loaded.metadata.get("custom/model-2")).toEqual({ tier: "light" })
+		expect(loaded.metadata.get("custom/model-3")).toEqual({ description: "Description only" })
+		expect(loaded.metadata.get("custom/model-4")).toEqual({ vision: false })
 	})
 
 	it("empty map removes modelMetadata from settings", () => {

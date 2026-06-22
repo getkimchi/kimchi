@@ -13,6 +13,8 @@ import { getAvailableModels } from "../../startup-context.js"
 import { setProcessOrchestratorRef } from "../kimchi-process.js"
 import { withSuppressedModelSelectGuard } from "../model-switch.js"
 import { getMultiModelEnabled } from "../prompt-construction/prompt-enrichment.js"
+import { type QuestionFormResult, createQuestionForm } from "../questionnaire-form.js"
+import { type Question, YES_NO_OPTIONS } from "../questionnaire-reducer.js"
 import {
 	type ModelCustomMetadata,
 	deleteModelMetadata,
@@ -110,46 +112,91 @@ export async function collectModelMetadata(
 	existing: ModelCustomMetadata | undefined,
 	ctx: ExtensionCommandContext,
 ): Promise<ModelCustomMetadata | undefined> {
-	const tierOptions = ["heavy", "standard", "light"]
-	if (existing?.tier) {
-		tierOptions.push(`keep current (${existing.tier})`)
-	} else {
-		tierOptions.push("skip")
-	}
-	const tierChoice = await ctx.ui.select(
-		`${ref}\nSpecifying metadata will improve orchestration.\nTier - what capability level is this model?`,
-		tierOptions,
+	// Sentinel option id for "leave this field as it currently is". When no
+	// `existing` value is present the label collapses to plain "skip" so the
+	// option reads naturally in both edit and create flows. A user picking
+	// this option preserves whatever value is already in settings.json (or
+	// leaves the field unset for create flows).
+	const keepTierLabel = existing?.tier ? `keep current (${existing.tier})` : "skip"
+	const keepVisionLabel = existing?.vision !== undefined ? `keep current (${existing.vision ? "yes" : "no"})` : "skip"
+
+	const questions: Question[] = [
+		{
+			id: "tier",
+			label: "Tier",
+			prompt: `${ref}\nTier — what capability level is this model?`,
+			type: "single",
+			options: [
+				{ id: "heavy", label: "heavy" },
+				{ id: "standard", label: "standard" },
+				{ id: "light", label: "light" },
+				{ id: "__keep__", label: keepTierLabel },
+			],
+			allowOther: false,
+			required: false,
+		},
+		{
+			id: "vision",
+			label: "Vision",
+			prompt: `${ref}\nVision support — can this model process images?`,
+			type: "single",
+			options: [
+				...YES_NO_OPTIONS.map((o) => ({ id: o.id, label: o.label })),
+				{ id: "__keep__", label: keepVisionLabel },
+			],
+			allowOther: false,
+			required: false,
+		},
+		{
+			id: "description",
+			label: "Description",
+			prompt: `${ref}\nDescription — when should this model be used? (optional, leave blank to keep current)`,
+			type: "text",
+			options: [],
+			allowOther: false,
+			required: false,
+		},
+	]
+
+	const result = await ctx.ui.custom<QuestionFormResult>((tui, theme, _kb, done) =>
+		createQuestionForm(tui, theme, questions, { title: ref }, done),
 	)
-	if (!tierChoice) return undefined
-	const tier = tierChoice.startsWith("keep current")
-		? existing?.tier
-		: tierChoice === "skip"
-			? undefined
-			: (tierChoice as "heavy" | "standard" | "light")
+	if (result.cancelled) return undefined
 
-	const visionOptions = ["yes", "no"]
-	if (existing?.vision !== undefined) {
-		visionOptions.push(`keep current (${existing.vision ? "yes" : "no"})`)
-	} else {
-		visionOptions.push("skip")
-	}
-	const visionChoice = await ctx.ui.select(`${ref}\nVision support - can this model process images?`, visionOptions)
-	if (!visionChoice) return undefined
-	const vision = visionChoice.startsWith("keep current")
-		? existing?.vision
-		: visionChoice === "skip"
-			? undefined
-			: visionChoice === "yes"
-
-	const descDefault = existing?.description ?? ""
-	const descInput = await ctx.ui.input(`${ref}\nDescription - when should this model be used? (optional):`, descDefault)
-	if (descInput === undefined) return undefined
-	const description = descInput.trim() || existing?.description || undefined
-
+	const byId = new Map(result.answers.map((a) => [a.id, a]))
 	const config: ModelCustomMetadata = {}
-	if (tier !== undefined) config.tier = tier
-	if (vision !== undefined) config.vision = vision
-	if (description !== undefined) config.description = description
+
+	const tierAnswer = byId.get("tier")
+	if (tierAnswer) {
+		if (tierAnswer.value === "__keep__") {
+			// User picked "keep current" / "skip" — only carry the existing tier
+			// forward if there is one to carry.
+			if (existing?.tier !== undefined) config.tier = existing.tier
+		} else {
+			config.tier = tierAnswer.value as "heavy" | "standard" | "light"
+		}
+	}
+
+	const visionAnswer = byId.get("vision")
+	if (visionAnswer) {
+		if (visionAnswer.value === "__keep__") {
+			if (existing?.vision !== undefined) config.vision = existing.vision
+		} else {
+			config.vision = visionAnswer.value === "yes"
+		}
+	}
+
+	const descAnswer = byId.get("description")
+	// The text-question reducer records "(no response)" when the user submits
+	// an empty editor; treat that the same as "no answer recorded" so an
+	// existing description is preserved unless the user types a replacement.
+	const explicitDescription = descAnswer?.value && descAnswer.value !== "(no response)" ? descAnswer.value : undefined
+	if (explicitDescription !== undefined) {
+		config.description = explicitDescription
+	} else if (existing?.description) {
+		config.description = existing.description
+	}
+
 	return config
 }
 
