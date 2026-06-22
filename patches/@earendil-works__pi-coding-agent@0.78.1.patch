@@ -13,12 +13,25 @@
 #                                   the next model response within the same agent run.
 #   5. dist/modes/interactive/  — miscellaneous upstream UI fixes bundled in this patch
 #   6. dist/modes/interactive/interactive-mode.js — add previewTheme(name) and
-#                                 showError(message) to createExtensionUIContext.
-#                                 previewTheme applies a theme live without writing
-#                                 to settingsManager, mirroring the internal
-#                                 onThemePreview callback used by /settings. showError
-#                                 delegates to the inherited SessionMode.showError
-#                                 so extensions can surface error overlays (not toasts).
+#      dist/core/extensions/types.d.ts              showError(message) to createExtensionUIContext,
+#                                                   and their type declarations to ExtensionUIContext.
+#
+#                                 previewTheme applies a theme live by calling the internal
+#                                 setTheme() WITHOUT the subsequent settingsManager.setTheme()
+#                                 call that the public ui.setTheme() includes. This mirrors the
+#                                 internal onThemePreview callback used by /settings.
+#
+#                                 Why a patch is required: the public ExtensionUIContext conflates
+#                                 "change the rendered theme" and "persist to settingsManager" — the
+#                                 public ui.setTheme() always does both. previewTheme already exists
+#                                 inside InteractiveMode (used by /settings via a private callback);
+#                                 the patch simply promotes it to the extension API surface. There is
+#                                 no public-API-only workaround: the only alternative is ui.setTheme()
+#                                 on each arrow-key press, which writes to disk every keystroke and
+#                                 leaves a dirty settings state if the user cancels.
+#
+#                                 showError delegates to the inherited SessionMode.showError so
+#                                 extensions can surface error overlays (not toasts).
 #
 # Tracking: open an upstream PR against pi-mono to ship before_provider_headers as
 # a first-class extension hook in ExtensionRunner and ExtensionAPI. Also track a
@@ -500,3 +513,23 @@ index 0ab79928806ecd3fb84610447da4990e25047311..f400b9519304c909ee968c3dc12a5dfe
          const model = await this.findExactModelMatch(searchTerm);
          if (model) {
              try {
+diff --git a/dist/core/extensions/types.d.ts b/dist/core/extensions/types.d.ts
+index aad2ed2569c36dad0f3d2ac5607e312dd61275dd..e35532a3cf83023e5a2cdb12df8142013fbba326 100644
+--- a/dist/core/extensions/types.d.ts
++++ b/dist/core/extensions/types.d.ts
+@@ -187,5 +187,15 @@
+     /** Get current tool output expansion state. */
+     getToolsExpanded(): boolean;
+     /** Set tool output expansion state. */
+     setToolsExpanded(expanded: boolean): void;
++    /**
++     * Apply a theme live without persisting to settingsManager.
++     * Exposed by the kimchi-dev patch; matches the internal onThemePreview callback used by /settings.
++     */
++    previewTheme(name: string): { success: boolean; error?: string };
++    /**
++     * Show an error overlay (same surface as /settings failures).
++     * Exposed by the kimchi-dev patch; delegates to SessionMode.showError.
++     */
++    showError(errorMessage: string): void;
+ }

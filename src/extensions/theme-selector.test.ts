@@ -122,7 +122,7 @@ function makeCtx(
 		showError: vi.fn(),
 		theme: { name: currentThemeName },
 	}
-	const ctx = { ui } as unknown as ExtensionCommandContext
+	const ctx = { ui, mode: "tui" } as unknown as ExtensionCommandContext
 	return { ctx, ui }
 }
 
@@ -242,10 +242,8 @@ describe("theme-selector extension", () => {
 		const { selectList } = await runCommandAndCaptureFactory(pi, commands, ctx, ui)
 
 		expect(selectList.onSelectionChange).toBeDefined()
-		;(selectList.onSelectionChange as (item: { value: string; label: string }) => void)({
-			value: "dark",
-			label: "dark",
-		})
+		const onSelectionChange = selectList.onSelectionChange as (item: { value: string; label: string }) => void
+		onSelectionChange({ value: "dark", label: "dark" })
 		expect(ui.previewTheme).toHaveBeenCalledWith("dark")
 		// Critical: preview must NOT call setTheme (which would persist).
 		expect(ui.setTheme).not.toHaveBeenCalled()
@@ -256,7 +254,8 @@ describe("theme-selector extension", () => {
 		const { ctx, ui } = makeCtx([{ name: "light" }, { name: "dark" }], "light", { success: true })
 		themeSelectorExtension(pi)
 		const { selectList } = await runCommandAndCaptureFactory(pi, commands, ctx, ui)
-		;(selectList.onSelect as (item: { value: string; label: string }) => void)({ value: "dark", label: "dark" })
+		const onSelect = selectList.onSelect as (item: { value: string; label: string }) => void
+		onSelect({ value: "dark", label: "dark" })
 		expect(ui.setTheme).toHaveBeenCalledWith("dark")
 		expect(ui.showError).not.toHaveBeenCalled()
 	})
@@ -266,10 +265,8 @@ describe("theme-selector extension", () => {
 		const { ctx, ui } = makeCtx([{ name: "broken" }], "light", { success: false, error: "bad json" })
 		themeSelectorExtension(pi)
 		const { selectList } = await runCommandAndCaptureFactory(pi, commands, ctx, ui)
-		;(selectList.onSelect as (item: { value: string; label: string }) => void)({
-			value: "broken",
-			label: "broken",
-		})
+		const onSelect = selectList.onSelect as (item: { value: string; label: string }) => void
+		onSelect({ value: "broken", label: "broken" })
 		expect(ui.setTheme).toHaveBeenCalledWith("broken")
 		expect(ui.showError).toHaveBeenCalledWith('Failed to load theme "broken": bad json\nFell back to dark theme.')
 	})
@@ -279,7 +276,8 @@ describe("theme-selector extension", () => {
 		const { ctx, ui } = makeCtx([{ name: "light" }, { name: "dark" }], "light", { success: true })
 		themeSelectorExtension(pi)
 		const { selectList } = await runCommandAndCaptureFactory(pi, commands, ctx, ui)
-		;(selectList.onSelect as (item: { value: string; label: string }) => void)({ value: "dark", label: "dark" })
+		const onSelect = selectList.onSelect as (item: { value: string; label: string }) => void
+		onSelect({ value: "dark", label: "dark" })
 		expect(ui.showError).not.toHaveBeenCalled()
 	})
 
@@ -290,7 +288,8 @@ describe("theme-selector extension", () => {
 		const { selectList } = await runCommandAndCaptureFactory(pi, commands, ctx, ui)
 
 		expect(selectList.onCancel).toBeDefined()
-		;(selectList.onCancel as () => void)()
+		const onCancel = selectList.onCancel as () => void
+		onCancel()
 		expect(ui.previewTheme).toHaveBeenCalledWith("solarized")
 		// Critical: cancel must NOT persist via setTheme.
 		expect(ui.setTheme).not.toHaveBeenCalled()

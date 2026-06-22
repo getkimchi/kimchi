@@ -47,24 +47,12 @@ class DynamicBorder {
 	}
 }
 
-// Typed view over the runtime extension UI surface. The patched
-// pi-coding-agent runtime (patches/@earendil-works__pi-coding-agent.patch)
-// adds previewTheme and showError to createExtensionUIContext, but the
-// published TypeScript types do not yet expose them. Mirrors the
-// `as unknown as ...` pattern used by `onBeforeProviderHeaders` in
-// src/types/before-provider-headers.ts.
-type ThemeSelectorUi = ExtensionCommandContext["ui"] & {
-	/** Apply a theme live without writing to settingsManager. */
-	previewTheme(name: string): { success: boolean; error?: string }
-	/** Show an error overlay (same surface as /settings failures). */
-	showError(errorMessage: string): void
-}
-
 export default function themeSelectorExtension(pi: ExtensionAPI) {
 	pi.registerCommand("theme", {
 		description: "Select color theme",
 		handler: async (_args, ctx) => {
-			const ui = ctx.ui as unknown as ThemeSelectorUi
+			if (ctx.mode !== "tui") return
+			const ui = ctx.ui
 			const themes = ui.getAllThemes()
 			const currentThemeName = ui.theme.name
 
