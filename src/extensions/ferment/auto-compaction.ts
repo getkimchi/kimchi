@@ -267,7 +267,7 @@ function triggerCompactionForPending(
 					runtime.setActive(freshFerment)
 					scheduleNextFermentAction(pi, freshFerment, runtime, {
 						tag: "Auto-compaction continuation",
-						deliverAsFollowUp: true,
+						deliverAs: "followUp",
 					})
 				}
 			} catch {

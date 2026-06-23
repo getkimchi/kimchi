@@ -10,12 +10,12 @@ export interface ScheduleNextFermentActionOptions {
 	allowManualPhaseBoundary?: boolean
 	treatCompleteFermentAsContinue?: boolean
 	tag?: string
-	deliverAsFollowUp?: boolean
+	deliverAs?: "steer" | "followUp"
 }
 
 export interface ScheduleFermentWakeUpOptions {
 	allowManualPhaseBoundary?: boolean
-	deliverAsFollowUp?: boolean
+	deliverAs?: "followUp"
 	fermentId?: string
 	tag?: string
 }
@@ -190,7 +190,7 @@ export function scheduleNextFermentAction(
 			display: false,
 			details: { action: action.kind },
 		},
-		opts.deliverAsFollowUp ? { triggerTurn: true, deliverAs: "followUp" } : { triggerTurn: true },
+		opts.deliverAs ? { triggerTurn: true, deliverAs: opts.deliverAs } : { triggerTurn: true },
 	)
 }
 
@@ -221,6 +221,6 @@ export function scheduleFermentWakeUp(
 			display: false,
 			details: { action: "wake_up", expectedAction: decision.action.kind },
 		},
-		opts.deliverAsFollowUp ? { triggerTurn: true, deliverAs: "followUp" } : { triggerTurn: true },
+		opts.deliverAs ? { triggerTurn: true, deliverAs: opts.deliverAs } : { triggerTurn: true },
 	)
 }

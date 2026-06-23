@@ -428,6 +428,8 @@ describe("buildFermentPromptBlock", () => {
 		expect(out).toContain("narrow | standard | complex")
 		expect(out).toContain("exact task_ref")
 		expect(out).toContain("submit_agent_report")
+		expect(out).toContain("complete_ferment_step automatically runs the scoped verification command")
+		expect(out).toContain("Do not rerun it with bash")
 		expect(out).toContain("do not mark the step complete")
 		expect(out).toContain("narrower linked replacement")
 		expect(out).toContain("Every turn MUST end with a ferment lifecycle tool call or an Agent spawn")

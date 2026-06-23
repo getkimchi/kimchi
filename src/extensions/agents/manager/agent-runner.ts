@@ -15,6 +15,7 @@ import {
 import { loadConfig, readTelemetryConfig } from "../../../config.js"
 import { getAvailableModels } from "../../../startup-context.js"
 import { runAsAgentWorker } from "../../agent-worker-context.js"
+import bashDefaultTimeoutExtension from "../../bash-default-timeout.js"
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
 import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
@@ -360,7 +361,10 @@ async function runAgentInner(
 
 	const agentDir = getAgentDir()
 
-	const extensionFactories = [telemetryExtension(readTelemetryConfig())]
+	// Repo-native extensions registered directly by the Kimchi CLI are not
+	// discovered by a child session's DefaultResourceLoader. Register this
+	// safety hook explicitly so worker bash calls get the same default timeout.
+	const extensionFactories = [telemetryExtension(readTelemetryConfig()), bashDefaultTimeoutExtension]
 	if (options.workerReport) {
 		extensionFactories.push(createWorkerReportExtension(options.workerReport))
 	}

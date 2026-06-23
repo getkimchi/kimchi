@@ -114,6 +114,7 @@ import {
 	createAgentSession,
 } from "@earendil-works/pi-coding-agent"
 import { readTelemetryConfig } from "../../../config.js"
+import { DEFAULT_BASH_TIMEOUT_SECONDS } from "../../bash-default-timeout.js"
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
 import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
@@ -327,9 +328,38 @@ describe("runAgent — telemetry extension", () => {
 		const ctorArg = mockDefaultResourceLoader.mock.calls[0]?.[0]
 		expect(ctorArg).toHaveProperty("extensionFactories")
 		expect(Array.isArray(ctorArg?.extensionFactories)).toBe(true)
-		expect(ctorArg?.extensionFactories).toHaveLength(1)
+		expect(ctorArg?.extensionFactories).toHaveLength(2)
 		expect(mockReadTelemetryConfig).toHaveBeenCalled()
 		expect(mockTelemetryExtension).toHaveBeenCalledWith(mockReadTelemetryConfig.mock.results[0]?.value)
+	})
+
+	it("applies Kimchi's default bash timeout to subagent tool calls", async () => {
+		const session = makeFakeSession({})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "run a command", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		const workerFactories = mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories ?? []
+		const toolCallHandlers: Array<(event: unknown) => void> = []
+		for (const factory of workerFactories) {
+			factory({
+				on: (event: string, handler: (event: unknown) => void) => {
+					if (event === "tool_call") toolCallHandlers.push(handler)
+				},
+			} as never)
+		}
+
+		const event = { toolName: "bash", input: { command: "sleep 480" } }
+		for (const handler of toolCallHandlers) handler(event)
+
+		expect(event.input).toHaveProperty("timeout", DEFAULT_BASH_TIMEOUT_SECONDS)
 	})
 
 	it("adds a worker report capability only for Ferment-linked sessions", async () => {
@@ -360,8 +390,8 @@ describe("runAgent — telemetry extension", () => {
 
 		const linkedLoaderOptions = mockDefaultResourceLoader.mock.calls[0]?.[0]
 		const ordinaryLoaderOptions = mockDefaultResourceLoader.mock.calls[1]?.[0]
-		expect(linkedLoaderOptions?.extensionFactories).toHaveLength(2)
-		expect(ordinaryLoaderOptions?.extensionFactories).toHaveLength(1)
+		expect(linkedLoaderOptions?.extensionFactories).toHaveLength(3)
+		expect(ordinaryLoaderOptions?.extensionFactories).toHaveLength(2)
 		expect(linkedSession.setActiveToolsByName).toHaveBeenCalledWith(["submit_agent_report"])
 		expect(ordinarySession.setActiveToolsByName).toHaveBeenCalledWith([])
 	})
@@ -377,7 +407,7 @@ describe("runAgent — telemetry extension", () => {
 			abortSpy,
 			emitUsage: false,
 			promptAction: async (emit) => {
-				const factory = mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories?.[1]
+				const factory = mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories?.[2]
 				const registerTool = vi.fn()
 				factory?.({ registerTool } as never)
 				const tool = registerTool.mock.calls[0]?.[0]
