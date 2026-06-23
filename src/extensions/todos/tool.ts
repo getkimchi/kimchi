@@ -4,10 +4,12 @@ import { applyWriteTodos, getTodosForScope, resolveTodoScope } from "./store.js"
 import { TODO_STATUSES, type TodoDraft, type TodoItem, type TodoStatus, type WriteTodosParams } from "./types.js"
 
 export const UPDATE_TODOS_TOOL_NAME = "update_todos"
+export const CREATE_TODOS_TOOL_NAME = "create_todos"
 export const ADD_TODO_TOOL_NAME = "add_todo"
 export const MARK_TODO_TOOL_NAME = "mark_todo"
 export const CLEAR_TODOS_TOOL_NAME = "clear_todos"
 export const TODO_TOOL_NAMES = [
+	CREATE_TODOS_TOOL_NAME,
 	UPDATE_TODOS_TOOL_NAME,
 	ADD_TODO_TOOL_NAME,
 	MARK_TODO_TOOL_NAME,
@@ -190,6 +192,16 @@ async function executeClearTodos(_toolCallId: string, params: ClearTodosParams) 
 }
 
 export function registerTodosTool(pi: ExtensionAPI): void {
+	pi.registerTool({
+		name: CREATE_TODOS_TOOL_NAME,
+		label: "Create Todos",
+		description:
+			"Create the initial todo list for non-trivial work. Use before starting multi-step tasks, when the user asks you to track work, or when there is no current todo list.",
+		promptSnippet: "Create the initial todo list before multi-step work",
+		parameters: TODO_TOOL_PARAMETERS,
+		execute: executeWriteTodos,
+	})
+
 	pi.registerTool({
 		name: UPDATE_TODOS_TOOL_NAME,
 		label: "Update Todos",

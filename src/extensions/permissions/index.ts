@@ -10,6 +10,7 @@ import { isFermentToolName, isUserFacingFermentToolName } from "../ferment/tool-
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import { type ToolVisibilityAPI, createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
+import { TODO_TOOL_NAMES } from "../todos/tool.js"
 import { resolveClassifierModels } from "./classifier-model.js"
 import { classifyToolCall } from "./classifier.js"
 import { registerCommands } from "./commands.js"
@@ -88,10 +89,7 @@ const PLAN_MODE_TOOLS = [
 	"web_fetch",
 	"questionnaire",
 	"bash",
-	"update_todos",
-	"add_todo",
-	"mark_todo",
-	"clear_todos",
+	...TODO_TOOL_NAMES,
 ]
 const PLAN_MODE_TOOL_SET = new Set<string>(PLAN_MODE_TOOLS)
 
@@ -102,16 +100,7 @@ const PLAN_MODE_TOOL_SET = new Set<string>(PLAN_MODE_TOOLS)
 //
 // Names are lowercased because the tool_call handler lowercases event.toolName
 // before comparing (see `const toolName = event.toolName.toLowerCase()` below).
-const BUILTIN_ALLOW_TOOL_NAMES = [
-	"set_phase",
-	"agent",
-	"get_subagent_result",
-	"steer_subagent",
-	"update_todos",
-	"add_todo",
-	"mark_todo",
-	"clear_todos",
-]
+const BUILTIN_ALLOW_TOOL_NAMES = ["set_phase", "agent", "get_subagent_result", "steer_subagent", ...TODO_TOOL_NAMES]
 
 const MODES: Array<{
 	mode: PermissionMode

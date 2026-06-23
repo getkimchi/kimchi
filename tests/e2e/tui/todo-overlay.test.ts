@@ -17,7 +17,7 @@ test("todo overlay hides completed lists", async ({ terminal }) => {
 						{
 							id: "call_create_todos",
 							function: {
-								name: "update_todos",
+								name: "create_todos",
 								arguments: JSON.stringify({
 									todos: [
 										{ content: "sticky panel", status: "pending" },
@@ -70,7 +70,7 @@ test("todo overlay reconciles stale active todos after non-todo work", async ({ 
 						{
 							id: "call_leave_active_todo",
 							function: {
-								name: "update_todos",
+								name: "create_todos",
 								arguments: JSON.stringify({
 									todos: [
 										{ content: "create branch", status: "completed" },

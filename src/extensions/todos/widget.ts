@@ -68,8 +68,8 @@ function isFermentTodo(todo: TodoItem): boolean {
 	return todo.content.startsWith("↳ ") || todo.content.startsWith("[Phase ")
 }
 
-function todoLine(todo: TodoItem, displayIndex: number, theme: Theme, scope: TodoScope): string {
-	const index = `${displayIndex + 1}`.padStart(2)
+function todoLine(todo: TodoItem, _displayIndex: number, theme: Theme, scope: TodoScope): string {
+	const index = `${todo.id}`.padStart(2)
 	const symbol = TODO_SYMBOL[todo.status]
 	const isFerment = scope.kind === "ferment" || isFermentTodo(todo)
 

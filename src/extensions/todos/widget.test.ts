@@ -55,6 +55,20 @@ describe("todo widget helpers", () => {
 		])
 	})
 
+	it("renders stored todo ids instead of list positions", () => {
+		applyWriteTodos({
+			todos: [
+				{ id: 6, content: "trace-visible id", status: "in_progress" },
+				{ id: 10, content: "later id", status: "pending" },
+			],
+		})
+
+		const lines = __test_buildTodoLines(theme)
+		expect(lines).toContain("  6.  ▶ trace-visible id")
+		expect(lines).toContain(" 10.  ○ later id")
+		expect(lines).not.toContain("  1.  ▶ trace-visible id")
+	})
+
 	it("auto-opens while active todos exist", () => {
 		const setWidget = vi.fn()
 		const ctx = createUiContext("session", setWidget)
