@@ -20,7 +20,6 @@ import { splitModelRef } from "./model-roles.js"
 
 // Mock model-metadata module
 vi.mock("./model-metadata.js", () => ({
-	isModelMetadataMissing: vi.fn(),
 	loadModelMetadata: vi.fn(),
 	resolveModelMetadata: vi.fn(),
 	saveModelMetadata: vi.fn(),
