@@ -14,6 +14,8 @@
  * `tui`/`editor`/`done` references.
  */
 
+import { CUSTOM_OPTION_ID, CUSTOM_OPTION_LABEL } from "./constants.js"
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type QuestionType = "single" | "multi" | "text" | "confirm"
@@ -129,7 +131,7 @@ export function currentOptions(state: QuestionnaireState): RenderOption[] {
 	if (!q || q.type === "text") return []
 	const opts: RenderOption[] = [...q.options]
 	if (q.allowOther) {
-		opts.push({ id: "__other__", label: q.otherLabel ?? "Type your own answer", isOther: true })
+		opts.push({ id: CUSTOM_OPTION_ID, label: q.otherLabel ?? CUSTOM_OPTION_LABEL, isOther: true })
 	}
 	return opts
 }
@@ -203,7 +205,7 @@ function mutableCurrentOptions(s: MutableState): RenderOption[] {
 	if (!q || q.type === "text") return []
 	const opts: RenderOption[] = [...q.options]
 	if (q.allowOther) {
-		opts.push({ id: "__other__", label: q.otherLabel ?? "Type your own answer", isOther: true })
+		opts.push({ id: CUSTOM_OPTION_ID, label: q.otherLabel ?? CUSTOM_OPTION_LABEL, isOther: true })
 	}
 	return opts
 }

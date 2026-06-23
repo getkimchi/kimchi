@@ -1,4 +1,5 @@
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent"
+import { CUSTOM_OPTION_ID, CUSTOM_OPTION_LABEL } from "./constants.js"
 import type { Answer, Question, QuestionOption } from "./questionnaire-reducer.js"
 
 export interface QuestionnaireResult {
@@ -62,14 +63,14 @@ function parseLabelInput(trimmed: string, options: QuestionOption[], otherIndex:
 	const parts = splitParts(trimmed)
 
 	const selected = options.flatMap((option, i): ParsedChoice[] => {
-		if (option.id === "__other__") return []
+		if (option.id === CUSTOM_OPTION_ID) return []
 		return parts.some((part) => matchesLabel(part, option)) ? [{ type: "selected", index: i + 1 }] : []
 	})
 
 	if (otherIndex === -1) return selected
 
 	const customValues = parts
-		.filter((part) => !options.some((o) => o.id !== "__other__" && matchesLabel(part, o)))
+		.filter((part) => !options.some((o) => o.id !== CUSTOM_OPTION_ID && matchesLabel(part, o)))
 		.map(
 			(value): ParsedChoice => ({
 				type: "custom",
@@ -88,7 +89,7 @@ export function parseMultipleChoiceInput(input: string, options: QuestionOption[
 	const trimmed = input.trim()
 	if (!trimmed) return []
 
-	const otherIndex = options.findIndex((o) => o.id === "__other__")
+	const otherIndex = options.findIndex((o) => o.id === CUSTOM_OPTION_ID)
 
 	return parseNumberedInput(trimmed, options, otherIndex) ?? parseLabelInput(trimmed, options, otherIndex)
 }
@@ -131,8 +132,8 @@ export async function promptQuestionnaireFallback(
 				const options = [...question.options]
 				if (question.allowOther) {
 					options.push({
-						id: "__other__",
-						label: question.otherLabel ?? "Type your own answer",
+						id: CUSTOM_OPTION_ID,
+						label: question.otherLabel ?? CUSTOM_OPTION_LABEL,
 					})
 				}
 				const selected = await ui.select(
@@ -146,7 +147,7 @@ export async function promptQuestionnaireFallback(
 				const index = options.findIndex((o) => o.label === selected)
 				const option = options[index]
 				if (!option) continue
-				if (option.id === "__other__") {
+				if (option.id === CUSTOM_OPTION_ID) {
 					const custom = await ui.input(`${questionText}\n\nYour answer:`)
 					if (!custom && question.required) return { questions, answers, cancelled: true }
 					if (custom)
@@ -173,8 +174,8 @@ export async function promptQuestionnaireFallback(
 				const options = [...question.options]
 				if (question.allowOther) {
 					customOption = {
-						id: "__other__",
-						label: question.otherLabel ?? "Type your own answer",
+						id: CUSTOM_OPTION_ID,
+						label: question.otherLabel ?? CUSTOM_OPTION_LABEL,
 					}
 					options.push(customOption)
 				}
@@ -216,7 +217,7 @@ export async function promptQuestionnaireFallback(
 					label: choices.map((item) => item.label).join(", "),
 					labels: choices.map((item) => item.label),
 					indices: choices.map((item) => item.index),
-					wasCustom: choices.some((item) => item.id === "__other__"),
+					wasCustom: choices.some((item) => item.id === CUSTOM_OPTION_ID),
 				})
 				continue
 			}
