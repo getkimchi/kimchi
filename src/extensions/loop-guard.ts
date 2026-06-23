@@ -29,6 +29,7 @@ const FUZZY_3GRAM_THRESHOLD = 4 // 5× repeat of a 3-gram, output may vary
 const EXACT_2GRAM_THRESHOLD = 5 // 6× repeat of a 2-gram with identical output
 const EXACT_3GRAM_THRESHOLD = 3 // 4× repeat of a 3-gram with identical output
 const EDIT_RUN_THRESHOLD = 8 // same file edited 8× AND same bash prefix 8× in window
+const EDIT_RUN_TOTAL_THRESHOLD = 12 // same file 12× AND same bash prefix 12× over the whole task
 const BASH_PREFIX_LENGTH = 50 // normalize bash commands by this prefix
 const FINGERPRINT_TAIL_LINES = 20
 const REASON_ARG_PREVIEW = 80
@@ -64,6 +65,13 @@ export class LoopGuard {
 	private history: ToolHistoryRecord[] = []
 	private editCounts = new Map<string, number>()
 	private bashCounts = new Map<string, number>()
+	/** Cumulative counts for the whole task. Incremented on every record,
+	 *  never decremented on eviction — catches interleaved edit-run cycles
+	 *  that the 30-record window misses (e.g. when read/grep/ls calls are
+	 *  interleaved with edits and the window count stays below 8). Cleared
+	 *  on session_start / user input via `reset()`. */
+	private editCountsTotal = new Map<string, number>()
+	private bashCountsTotal = new Map<string, number>()
 	private warned = false
 	private triggered = false
 
@@ -71,6 +79,8 @@ export class LoopGuard {
 		this.history = []
 		this.editCounts.clear()
 		this.bashCounts.clear()
+		this.editCountsTotal.clear()
+		this.bashCountsTotal.clear()
 		this.warned = false
 		this.triggered = false
 	}
@@ -86,9 +96,15 @@ export class LoopGuard {
 	record(rec: ToolHistoryRecord): LoopGuardResult {
 		// Increment semantic counters for the new record before pushing.
 		const editTarget = extractEditTarget(rec)
-		if (editTarget) mapIncrement(this.editCounts, editTarget)
+		if (editTarget) {
+			mapIncrement(this.editCounts, editTarget)
+			mapIncrement(this.editCountsTotal, editTarget)
+		}
 		const bashPrefix = extractBashPrefix(rec)
-		if (bashPrefix) mapIncrement(this.bashCounts, bashPrefix)
+		if (bashPrefix) {
+			mapIncrement(this.bashCounts, bashPrefix)
+			mapIncrement(this.bashCountsTotal, bashPrefix)
+		}
 
 		this.history.push(rec)
 		if (this.history.length > WINDOW_SIZE) {
@@ -143,7 +159,10 @@ export class LoopGuard {
 	blockIfLoop(call: { toolName: string; toolArgs: string }): boolean {
 		if (!this.warned || this.history.length === 0) return false
 
-		// Edit-run extension check. Cheap: just two map lookups.
+		// Edit-run extension check. Cheap: just four map lookups.
+		// The window check catches concentrated cycles; the task-total check
+		// catches interleaved ones where the same edit/bash pattern is
+		// spread across many other tool calls.
 		const hypoForExtract: ToolHistoryRecord = {
 			toolName: call.toolName,
 			toolArgs: call.toolArgs,
@@ -154,7 +173,9 @@ export class LoopGuard {
 		const callBashPrefix = extractBashPrefix(hypoForExtract)
 		const topEdit = mapMax(this.editCounts)
 		const topBash = mapMax(this.bashCounts)
-		if (
+		const topEditTotal = mapMax(this.editCountsTotal)
+		const topBashTotal = mapMax(this.bashCountsTotal)
+		const extendsWindowCycle =
 			(callEditTarget !== undefined &&
 				topEdit !== undefined &&
 				callEditTarget === topEdit[0] &&
@@ -163,7 +184,16 @@ export class LoopGuard {
 				topBash !== undefined &&
 				callBashPrefix === topBash[0] &&
 				topBash[1] >= EDIT_RUN_THRESHOLD)
-		) {
+		const extendsTotalCycle =
+			(callEditTarget !== undefined &&
+				topEditTotal !== undefined &&
+				callEditTarget === topEditTotal[0] &&
+				topEditTotal[1] >= EDIT_RUN_TOTAL_THRESHOLD) ||
+			(callBashPrefix !== undefined &&
+				topBashTotal !== undefined &&
+				callBashPrefix === topBashTotal[0] &&
+				topBashTotal[1] >= EDIT_RUN_TOTAL_THRESHOLD)
+		if (extendsWindowCycle || extendsTotalCycle) {
 			this.triggered = true
 			return true
 		}
@@ -200,7 +230,8 @@ export class LoopGuard {
 			this.detectConsecutiveIdenticalCalls() ??
 			this.detectExactNgram() ??
 			this.detectFuzzyNgram() ??
-			this.detectEditRunCycle()
+			this.detectEditRunCycle() ??
+			this.detectEditRunCycleTotal()
 		)
 	}
 
@@ -250,6 +281,23 @@ export class LoopGuard {
 		const bashPreview =
 			topBash[0].length > REASON_ARG_PREVIEW ? `${topBash[0].slice(0, REASON_ARG_PREVIEW)}…` : topBash[0]
 		return `edit-run cycle: ${editPreview} edited ${topEdit[1]}× and bash "${bashPreview}" ran ${topBash[1]}× in last ${this.history.length} calls`
+	}
+
+	private detectEditRunCycleTotal(): string | undefined {
+		// Task-total counts catch interleaved loops that the 30-record
+		// window misses. Window-based detection is still preferred because
+		// it's sensitive to recent behaviour; this is a backstop for the
+		// case where the model spreads the same edit/bash pattern over
+		// 100+ rounds with other work interleaved (e.g. read/grep/ls).
+		const topEdit = mapMax(this.editCountsTotal)
+		const topBash = mapMax(this.bashCountsTotal)
+		if (!topEdit || !topBash) return undefined
+		if (topEdit[1] < EDIT_RUN_TOTAL_THRESHOLD || topBash[1] < EDIT_RUN_TOTAL_THRESHOLD) return undefined
+		const editPreview =
+			topEdit[0].length > REASON_ARG_PREVIEW ? `${topEdit[0].slice(0, REASON_ARG_PREVIEW)}…` : topEdit[0]
+		const bashPreview =
+			topBash[0].length > REASON_ARG_PREVIEW ? `${topBash[0].slice(0, REASON_ARG_PREVIEW)}…` : topBash[0]
+		return `edit-run cycle (task-total): ${editPreview} edited ${topEdit[1]}× and bash "${bashPreview}" ran ${topBash[1]}× across the task`
 	}
 }
 

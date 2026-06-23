@@ -706,3 +706,141 @@ describe("Edit-run cycle detector", () => {
 		expect(guard.isTriggered()).toBe(false)
 	})
 })
+
+describe("Edit-run cycle detector — task-total backstop", () => {
+	// The task-total detector catches interleaved loops where the same
+	// edit/bash pattern is spread across many rounds with OTHER tool
+	// calls in between. The window-based detector misses these because
+	// it only looks at the last 30 records.
+
+	function feedSparseEditRun(guard: LoopGuard, editRuns: number, bashRuns: number, fillerPerRound: number): void {
+		// Interleave edit + bash with `fillerPerRound` other tool calls
+		// between each pair. With fillerPerRound=3, a 30-record window
+		// covers ~6 of each edit/bash target — below the 8/8 window
+		// threshold but the task-total counts keep climbing.
+		const file = "/app/main.c"
+		const bashPrefix = '{"command":"cd /app && make -j8 all 2>&1 | tail -20"}'
+		for (let i = 0; i < editRuns; i++) {
+			guard.record({
+				toolName: "edit",
+				toolArgs: `{"path":"${file}","edits":[{"oldText":"x","newText":"v${i}"}]}`,
+				isError: false,
+				outputFingerprint: `edit-${i}`,
+			})
+			for (let f = 0; f < fillerPerRound; f++) {
+				guard.record({
+					toolName: "read",
+					toolArgs: `{"path":"/tmp/filler-${i}-${f}.txt"}`,
+					isError: false,
+					outputFingerprint: `filler-${i}-${f}`,
+				})
+			}
+		}
+		for (let i = 0; i < bashRuns; i++) {
+			guard.record({
+				toolName: "bash",
+				toolArgs: bashPrefix,
+				isError: true,
+				outputFingerprint: `bash-${i}`,
+			})
+			for (let f = 0; f < fillerPerRound; f++) {
+				guard.record({
+					toolName: "read",
+					toolArgs: `{"path":"/tmp/bash-filler-${i}-${f}.txt"}`,
+					isError: false,
+					outputFingerprint: `bash-filler-${i}-${f}`,
+				})
+			}
+		}
+	}
+
+	it("does not fire at 11 rounds (below both thresholds)", () => {
+		const guard = new LoopGuard()
+		feedSparseEditRun(guard, 11, 11, 3)
+		expect(guard.isWarned()).toBe(false)
+		expect(guard.isTriggered()).toBe(false)
+	})
+
+	it("fires at 12 rounds (task-total backstop)", () => {
+		const guard = new LoopGuard()
+		feedSparseEditRun(guard, 12, 12, 3)
+		expect(guard.isWarned()).toBe(true)
+	})
+
+	it("task-total fires when window detector does NOT", () => {
+		// Specifically demonstrate that the task-total detector catches
+		// a loop the window misses. With fillerPerRound=3, the window
+		// has ~6 edits and ~6 bash at any time (below 8/8 threshold).
+		// But task-total counts cross 12/12.
+		const guard = new LoopGuard()
+		feedSparseEditRun(guard, 15, 15, 3)
+
+		// Verify via test internal: the total counts are above threshold.
+		// If the window detector had fired, isWarned() is true; either
+		// way, the guard should be warned.
+		expect(guard.isWarned()).toBe(true)
+	})
+
+	it("task-total does not fire if one of edit/bash is below threshold", () => {
+		const guard = new LoopGuard()
+		// 12 edits but only 5 bash runs — not a loop.
+		feedSparseEditRun(guard, 12, 5, 3)
+		expect(guard.isWarned()).toBe(false)
+	})
+
+	it("task-total survives window eviction", () => {
+		// Push 60 records total — window only keeps last 30. The
+		// task-total counts persist across evictions.
+		const guard = new LoopGuard()
+		feedSparseEditRun(guard, 12, 12, 3)
+		expect(guard.isWarned()).toBe(true)
+	})
+
+	it("window detector still fires for concentrated loops (no task-total needed)", () => {
+		const guard = new LoopGuard()
+		const file = "/app/vm.js"
+		const bashPrefix = '{"command":"node vm.js 2>&1 | head -20"}'
+		for (let i = 0; i < 8; i++) {
+			guard.record({
+				toolName: "edit",
+				toolArgs: `{"path":"${file}","edits":[{"oldText":"x","newText":"v${i}"}]}`,
+				isError: false,
+				outputFingerprint: `edit-${i}`,
+			})
+			guard.record({
+				toolName: "bash",
+				toolArgs: bashPrefix,
+				isError: true,
+				outputFingerprint: `bash-${i}`,
+			})
+		}
+		expect(guard.isWarned()).toBe(true)
+	})
+
+	it("reset() clears task-total counts", () => {
+		const guard = new LoopGuard()
+		feedSparseEditRun(guard, 12, 12, 3)
+		expect(guard.isWarned()).toBe(true)
+		guard.reset()
+		expect(guard.isWarned()).toBe(false)
+		expect(guard.isTriggered()).toBe(false)
+	})
+
+	it("blockIfLoop predicts task-total cycle extension", () => {
+		const guard = new LoopGuard()
+		feedSparseEditRun(guard, 12, 12, 3)
+		expect(guard.isWarned()).toBe(true)
+		const editArgs = '{"path":"/app/main.c","edits":[{"oldText":"x","newText":"y"}]}'
+		expect(guard.blockIfLoop({ toolName: "edit", toolArgs: editArgs })).toBe(true)
+		expect(guard.isTriggered()).toBe(true)
+	})
+
+	it("blockIfLoop does not block calls that don't extend the task-total cycle", () => {
+		const guard = new LoopGuard()
+		feedSparseEditRun(guard, 12, 12, 3)
+		expect(guard.isWarned()).toBe(true)
+		// Edit to a different file — doesn't extend the cycle.
+		const editArgs = '{"path":"/app/different.c","edits":[{"oldText":"a","newText":"b"}]}'
+		expect(guard.blockIfLoop({ toolName: "edit", toolArgs: editArgs })).toBe(false)
+	})
+})

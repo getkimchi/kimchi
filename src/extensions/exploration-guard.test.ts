@@ -323,8 +323,8 @@ describe("No-tool turn detection (thinking-only detector)", () => {
 		}
 		expect(steers).toHaveLength(2)
 		expect(steers[0]).toContain("3 consecutive turns with no tool calls")
-		expect(steers[1]).toContain("5 consecutive turns with no tool calls")
-		expect(steers[1]).toContain("You must use a tool this turn")
+		expect(steers[1]).toContain("turn 5 with no tool calls")
+		expect(steers[1]).toContain("respond with plain text")
 		// Counter resets after the mandatory steer so the model gets a fresh budget.
 		expect(guard.getConsecutiveNoToolTurns()).toBe(0)
 	})
@@ -349,7 +349,7 @@ describe("No-tool turn detection (thinking-only detector)", () => {
 		guard.turnStart()
 		guard.turnEnd((text) => steers.push(text))
 		expect(steers).toHaveLength(2)
-		expect(steers[1]).toContain("4 consecutive turns with no tool calls")
+		expect(steers[1]).toContain("turn 4 with no tool calls")
 	})
 
 	it("each threshold fires once per streak; mandatory steer resets the counter", () => {
@@ -366,7 +366,7 @@ describe("No-tool turn detection (thinking-only detector)", () => {
 		for (let i = 0; i < 5; i++) noToolTurn()
 		expect(steers).toHaveLength(2)
 		expect(steers[0]).toContain("3 consecutive turns with no tool calls")
-		expect(steers[1]).toContain("5 consecutive turns with no tool calls")
+		expect(steers[1]).toContain("turn 5 with no tool calls")
 		expect(guard.getConsecutiveNoToolTurns()).toBe(0)
 
 		for (let i = 0; i < 3; i++) noToolTurn()
@@ -556,5 +556,85 @@ describe("bash tool classification", () => {
 describe("STEER_MESSAGE_TYPE", () => {
 	it("has a stable custom type string", () => {
 		expect(STEER_MESSAGE_TYPE).toBe("exploration-guard-steer")
+	})
+})
+
+describe("Subagent terminate behavior", () => {
+	// In subagent mode, the guard does two things differently:
+	//   1. The mandatory steer is always the strong wording (regardless of
+	//      subagent status) — subagents AND main agents get the new message.
+	//   2. After the mandatory steer, the guard sets subagentStuck=true so
+	//      the next tool_call can be blocked, forcing a text response.
+	// Main agents keep the steer-only behaviour (subagentStuck is never set).
+
+	it("isSubagentStuck() returns false by default (main agent)", () => {
+		const guard = createGuard()
+		expect(guard.isSubagentStuck()).toBe(false)
+	})
+
+	it("isSubagentStuck() stays false for main agent after mandatory threshold", () => {
+		const guard = createGuard()
+		for (let i = 0; i < 5; i++) {
+			guard.turnStart()
+			guard.turnEnd(() => {})
+		}
+		expect(guard.isSubagentStuck()).toBe(false)
+	})
+
+	it("isSubagentStuck() flips true after mandatory threshold for subagents", () => {
+		const guard = createGuard({ isSubagent: () => true })
+		for (let i = 0; i < 5; i++) {
+			guard.turnStart()
+			guard.turnEnd(() => {})
+		}
+		expect(guard.isSubagentStuck()).toBe(true)
+	})
+
+	it("isSubagentStuck() is evaluated per-event (not cached at construction)", () => {
+		let isSub = false
+		const guard = createGuard({ isSubagent: () => isSub })
+		for (let i = 0; i < 5; i++) {
+			guard.turnStart()
+			guard.turnEnd(() => {})
+		}
+		expect(guard.isSubagentStuck()).toBe(false)
+
+		isSub = true
+		for (let i = 0; i < 5; i++) {
+			guard.turnStart()
+			guard.turnEnd(() => {})
+		}
+		expect(guard.isSubagentStuck()).toBe(true)
+	})
+
+	it("reset() clears subagentStuck", () => {
+		const guard = createGuard({ isSubagent: () => true })
+		for (let i = 0; i < 5; i++) {
+			guard.turnStart()
+			guard.turnEnd(() => {})
+		}
+		expect(guard.isSubagentStuck()).toBe(true)
+		guard.reset()
+		expect(guard.isSubagentStuck()).toBe(false)
+	})
+
+	it("subagent mandatory steer uses the strong wording (same as main agent)", () => {
+		// The mandatory steer wording was strengthened for both modes —
+		// main agents get the strong wording but stay steer-only.
+		const subGuard = createGuard({ isSubagent: () => true })
+		const mainGuard = createGuard()
+		const subSteers: string[] = []
+		const mainSteers: string[] = []
+		for (let i = 0; i < 5; i++) {
+			subGuard.turnStart()
+			subGuard.turnEnd((t) => subSteers.push(t))
+			mainGuard.turnStart()
+			mainGuard.turnEnd((t) => mainSteers.push(t))
+		}
+		// Both should contain the strong-wording fragments.
+		expect(subSteers[1]).toContain("respond with plain text")
+		expect(subSteers[1]).toContain("terminated")
+		expect(mainSteers[1]).toContain("respond with plain text")
+		expect(mainSteers[1]).toContain("terminated")
 	})
 })

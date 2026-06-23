@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext, InputEvent } from "@earendil-works/pi-coding-agent"
+import { isAgentWorker } from "./agent-worker-context.js"
 import { getPermissionMode } from "./permissions/mode-controller.js"
 
 export const DEFAULT_READ_TOOLS = new Set([
@@ -39,6 +40,12 @@ export interface ExplorationGuardOptions {
 	noToolSteerThreshold?: number
 	/** Optional predicate to temporarily disable the guard (e.g., during plan mode). */
 	isEnabled?: () => boolean
+	/** Predicate evaluated at event time to determine whether the agent
+	 *  is a subagent. Subagents terminate (block tool calls) after the
+	 *  no-tool mandatory threshold; main agents keep steer-only behaviour.
+	 *  Called per-event so AsyncLocalStorage context is respected.
+	 *  Default: always false. */
+	isSubagent?: () => boolean
 }
 
 const HYPOTHESIS_REMINDER_BASE =
@@ -53,6 +60,12 @@ const NO_TOOL_WARNING_BASE =
 const NO_TOOL_MANDATORY_BASE =
 	"Exploration guard: %d consecutive turns with no tool calls. You must use a tool this turn. Summarize your plan and take one concrete action."
 
+/** Stronger message for the mandatory steer — used both for subagents (where
+ *  the next tool call will be blocked) and for main agents (where the
+ *  previous wording was being ignored indefinitely on stuck tasks). */
+const NO_TOOL_MANDATORY_STRONG_BASE =
+	"Exploration guard (turn %d with no tool calls): you are stuck in a thinking loop. Further reasoning without action will not produce a different result — either call a tool this turn or respond with plain text explaining what you are doing. If the next turn also has no tool calls the conversation will be terminated."
+
 export const STEER_MESSAGE_TYPE = "exploration-guard-steer"
 
 export class ExplorationGuard {
@@ -63,12 +76,16 @@ export class ExplorationGuard {
 	private readonly noToolWarnThreshold: number
 	private readonly noToolSteerThreshold: number
 	private readonly isEnabled: () => boolean
+	private readonly isSubagent: () => boolean
 
 	private consecutiveReadOnlyTurns = 0
 	private consecutiveNoToolTurns = 0
 	private currentTurnHasWriteTool = false
 	private currentTurnHasAnyTool = false
 	private currentTurnHasReadTool = false
+	/** When true (subagent only), the next tool_call should be blocked.
+	 *  Set when the mandatory no-tool steer fires; cleared on user input. */
+	private subagentStuck = false
 
 	constructor(options: ExplorationGuardOptions = {}) {
 		this.readTools = options.readTools ?? new Set(DEFAULT_READ_TOOLS)
@@ -78,6 +95,7 @@ export class ExplorationGuard {
 		this.noToolWarnThreshold = options.noToolWarnThreshold ?? 3
 		this.noToolSteerThreshold = options.noToolSteerThreshold ?? 5
 		this.isEnabled = options.isEnabled ?? (() => true)
+		this.isSubagent = options.isSubagent ?? (() => false)
 	}
 
 	reset(): void {
@@ -86,6 +104,7 @@ export class ExplorationGuard {
 		this.currentTurnHasWriteTool = false
 		this.currentTurnHasAnyTool = false
 		this.currentTurnHasReadTool = false
+		this.subagentStuck = false
 	}
 
 	turnStart(): void {
@@ -123,7 +142,14 @@ export class ExplorationGuard {
 			this.consecutiveNoToolTurns++
 
 			if (this.consecutiveNoToolTurns === this.noToolSteerThreshold) {
-				sendSteer(NO_TOOL_MANDATORY_BASE.replace("%d", String(this.noToolSteerThreshold)))
+				// Stronger wording (mandatory steer). Subagents also set a
+				// flag so the next tool_call is blocked — see the tool_call
+				// hook below. Main agents keep the steer-only behaviour; the
+				// wording is stronger but the agent can still ignore it.
+				sendSteer(NO_TOOL_MANDATORY_STRONG_BASE.replace("%d", String(this.noToolSteerThreshold)))
+				if (this.isSubagent()) {
+					this.subagentStuck = true
+				}
 				// Reset after the mandatory steer so the model gets a fresh
 				// budget rather than immediately re-triggering on the next turn.
 				this.consecutiveNoToolTurns = 0
@@ -168,6 +194,13 @@ export class ExplorationGuard {
 	getConsecutiveNoToolTurns(): number {
 		return this.consecutiveNoToolTurns
 	}
+
+	/** True when the guard has decided the agent (subagent) is stuck and
+	 *  the next tool call should be blocked to force a text response.
+	 *  Always false for main agents. Cleared on user input via reset(). */
+	isSubagentStuck(): boolean {
+		return this.subagentStuck
+	}
 }
 
 export default function explorationGuardExtension(pi: ExtensionAPI, options?: ExplorationGuardOptions): void {
@@ -195,6 +228,11 @@ export default function explorationGuardExtension(pi: ExtensionAPI, options?: Ex
 			}
 			return true
 		},
+		// Subagent terminate: call isAgentWorker() per-event so the
+		// AsyncLocalStorage context is respected (each tool call / turn
+		// end fires inside the worker context when a subagent is active).
+		// The caller can override via `options.isSubagent`.
+		isSubagent: options?.isSubagent ?? (() => isAgentWorker()),
 	})
 
 	pi.on("session_start", (_event, _ctx) => {
@@ -205,6 +243,8 @@ export default function explorationGuardExtension(pi: ExtensionAPI, options?: Ex
 	pi.on("input", (event: InputEvent) => {
 		// User input breaks the exploration streak.
 		if (event.source === "extension") return
+		// The reset() call clears subagentStuck as well, so a fresh user
+		// prompt un-sticks the subagent even if the previous turn was blocked.
 		guard.reset()
 	})
 
@@ -215,6 +255,18 @@ export default function explorationGuardExtension(pi: ExtensionAPI, options?: Ex
 	pi.on("tool_call", (event) => {
 		if (!event.toolName) return
 		guard.recordToolCall(event.toolName)
+		// Subagent terminate: after the no-tool mandatory threshold fires,
+		// block the next tool call so the model is forced to respond with
+		// plain text. Without this, the steer is just another text injection
+		// the model ignores indefinitely (observed: 377 fires on a single task).
+		if (guard.isSubagentStuck()) {
+			return {
+				block: true,
+				reason:
+					"Exploration guard: subagent has had multiple consecutive no-tool turns. " +
+					"Respond with plain text (no tool call) explaining your plan or conclusion.",
+			}
+		}
 		return { block: false }
 	})
 
