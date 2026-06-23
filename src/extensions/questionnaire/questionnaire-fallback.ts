@@ -104,13 +104,13 @@ export async function promptQuestionnaireFallback(
 
 		switch (question.type) {
 			case "text": {
-				const value = await ui.input(questionText)
-				if (!value && question.required) return { questions, answers, cancelled: true }
-				if (value)
+				const text = await ui.input(questionText)
+				if (!text && question.required) return { questions, answers, cancelled: true }
+				if (text)
 					answers.push({
 						id: question.id,
-						value,
-						label: value,
+						value: text,
+						label: text,
 						wasCustom: true,
 					})
 				continue
@@ -153,7 +153,7 @@ export async function promptQuestionnaireFallback(
 						answers.push({
 							id: question.id,
 							value: custom,
-							label: selected,
+							label: custom,
 							index: index + 1,
 							wasCustom: true,
 						})
@@ -168,7 +168,6 @@ export async function promptQuestionnaireFallback(
 				}
 				continue
 			}
-
 			case "multi": {
 				let customOption: QuestionOption
 				const options = [...question.options]
@@ -191,16 +190,18 @@ export async function promptQuestionnaireFallback(
 					.map((choice) => {
 						if (choice.type === "custom") {
 							return {
-								...customOption,
+								id: customOption.id,
 								value: choice.value,
+								label: choice.value,
 								index: choice.index,
 							}
 						}
 						// User selection is 1-based
 						const option = options[choice.index - 1]
 						return {
-							...option,
+							id: option.id,
 							value: option.id,
+							label: option.label,
 							index: choice.index,
 						}
 					})

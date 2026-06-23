@@ -45,6 +45,10 @@ export type RenderOption = QuestionOption & { isOther?: boolean }
 export interface Answer {
 	id: string
 	value: string
+	/**
+	 * Label should always be set to value (user input) when `wasCustom` is true.
+	 * Otherwise, it is the label of the option.
+	 */
 	label: string
 	wasCustom: boolean
 	/**

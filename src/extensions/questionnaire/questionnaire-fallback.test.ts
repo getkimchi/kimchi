@@ -367,8 +367,8 @@ describe("promptQuestionnaireFallback — multi type", () => {
 		expect(result.answers).toEqual([
 			{
 				id: "features",
-				label: "Type your own answer",
-				labels: ["Type your own answer"],
+				label: "My custom answer",
+				labels: ["My custom answer"],
 				value: "My custom answer",
 				values: ["My custom answer"],
 				indices: [4],
@@ -570,7 +570,7 @@ describe("promptQuestionnaireFallback — single type", () => {
 			{
 				id: "scope",
 				value: "my free text",
-				label: "Type your own answer",
+				label: "my free text",
 				wasCustom: true,
 				index: 4,
 			},
