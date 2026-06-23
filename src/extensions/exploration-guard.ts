@@ -63,8 +63,17 @@ const NO_TOOL_MANDATORY_BASE =
 /** Stronger message for the mandatory steer — used both for subagents (where
  *  the next tool call will be blocked) and for main agents (where the
  *  previous wording was being ignored indefinitely on stuck tasks). */
-const NO_TOOL_MANDATORY_STRONG_BASE =
-	"Exploration guard (turn %d with no tool calls): you are stuck in a thinking loop. Further reasoning without action will not produce a different result — either call a tool this turn or respond with plain text explaining what you are doing. If the next turn also has no tool calls the conversation will be terminated."
+/**
+ * Steer sent to a stuck subagent before the abort fires.
+ * The subagent gets ONE more turn to produce a text response;
+ * that response is what the orchestrator will see as the subagent's output.
+ * Be explicit about what a useful summary contains.
+ */
+const NO_TOOL_SUBAGENT_ABORT_STEER =
+	"Exploration guard: this subagent has produced %d consecutive turns with no tool calls and will be terminated after this turn. " +
+	"Respond NOW with a plain-text summary covering: (1) what you were asked to do, " +
+	"(2) what you completed or changed, (3) what is still incomplete and why, " +
+	"(4) any key findings or blockers. Do not call any tools. This summary is the only output the orchestrator will receive."
 
 export const STEER_MESSAGE_TYPE = "exploration-guard-steer"
 
@@ -83,9 +92,10 @@ export class ExplorationGuard {
 	private currentTurnHasWriteTool = false
 	private currentTurnHasAnyTool = false
 	private currentTurnHasReadTool = false
-	/** When true (subagent only), the next tool_call should be blocked.
-	 *  Set when the mandatory no-tool steer fires; cleared on user input. */
-	private subagentStuck = false
+	/** When true (subagent only), the guard will call pi.abort() on the next
+	 *  turn_end. Set after the abort-steer fires; the subagent gets exactly
+	 *  one more turn to produce a text summary. Cleared on reset(). */
+	private subagentAbortPending = false
 
 	constructor(options: ExplorationGuardOptions = {}) {
 		this.readTools = options.readTools ?? new Set(DEFAULT_READ_TOOLS)
@@ -104,7 +114,7 @@ export class ExplorationGuard {
 		this.currentTurnHasWriteTool = false
 		this.currentTurnHasAnyTool = false
 		this.currentTurnHasReadTool = false
-		this.subagentStuck = false
+		this.subagentAbortPending = false
 	}
 
 	turnStart(): void {
@@ -142,18 +152,18 @@ export class ExplorationGuard {
 			this.consecutiveNoToolTurns++
 
 			if (this.consecutiveNoToolTurns === this.noToolSteerThreshold) {
-				// For subagents: use the strong wording and set the stuck flag
-				// so the next tool_call is blocked, forcing a text response.
-				// For main agents: use the original wording — the stronger
-				// message caused models to think harder instead of acting.
+				// Subagents: send a summary-request steer and schedule an abort on
+				// the next turn_end. The subagent gets one turn to produce a useful
+				// text summary; that text becomes the output the orchestrator sees.
+				// Main agents: original wording — stronger messages caused models
+				// to think harder instead of acting.
 				if (this.isSubagent()) {
-					sendSteer(NO_TOOL_MANDATORY_STRONG_BASE.replace("%d", String(this.noToolSteerThreshold)))
-					this.subagentStuck = true
+					sendSteer(NO_TOOL_SUBAGENT_ABORT_STEER.replace("%d", String(this.noToolSteerThreshold)))
+					this.subagentAbortPending = true
 				} else {
 					sendSteer(NO_TOOL_MANDATORY_BASE.replace("%d", String(this.noToolSteerThreshold)))
 				}
-				// Reset after the mandatory steer so the model gets a fresh
-				// budget rather than immediately re-triggering on the next turn.
+				// Reset the counter after the mandatory steer.
 				this.consecutiveNoToolTurns = 0
 			} else if (this.consecutiveNoToolTurns === this.noToolWarnThreshold) {
 				sendSteer(NO_TOOL_WARNING_BASE.replace("%d", String(this.noToolWarnThreshold)))
@@ -197,11 +207,11 @@ export class ExplorationGuard {
 		return this.consecutiveNoToolTurns
 	}
 
-	/** True when the guard has decided the agent (subagent) is stuck and
-	 *  the next tool call should be blocked to force a text response.
-	 *  Always false for main agents. Cleared on user input via reset(). */
-	isSubagentStuck(): boolean {
-		return this.subagentStuck
+	/** True when the guard has scheduled an abort for the next turn_end.
+	 *  Only set for subagents after the no-tool mandatory threshold fires.
+	 *  Always false for main agents. Cleared on reset(). */
+	isSubagentAbortPending(): boolean {
+		return this.subagentAbortPending
 	}
 }
 
@@ -257,22 +267,18 @@ export default function explorationGuardExtension(pi: ExtensionAPI, options?: Ex
 	pi.on("tool_call", (event) => {
 		if (!event.toolName) return
 		guard.recordToolCall(event.toolName)
-		// Subagent terminate: after the no-tool mandatory threshold fires,
-		// block the next tool call so the model is forced to respond with
-		// plain text. Without this, the steer is just another text injection
-		// the model ignores indefinitely (observed: 377 fires on a single task).
-		if (guard.isSubagentStuck()) {
-			return {
-				block: true,
-				reason:
-					"Exploration guard: subagent has had multiple consecutive no-tool turns. " +
-					"Respond with plain text (no tool call) explaining your plan or conclusion.",
-			}
-		}
 		return { block: false }
 	})
 
 	pi.on("turn_end", () => {
+		// If a subagent abort is pending, fire it NOW before processing the
+		// steer. The subagent already received the summary-request steer last
+		// turn; whatever it produced this turn becomes the orchestrator output.
+		if (guard.isSubagentAbortPending()) {
+			ctx?.abort()
+			return
+		}
+
 		guard.turnEnd((text) => {
 			pi.sendMessage(
 				{

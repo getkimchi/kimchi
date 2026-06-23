@@ -560,68 +560,70 @@ describe("STEER_MESSAGE_TYPE", () => {
 })
 
 describe("Subagent terminate behavior", () => {
-	// In subagent mode, the guard does two things differently:
-	//   1. The mandatory steer is always the strong wording (regardless of
-	//      subagent status) — subagents AND main agents get the new message.
-	//   2. After the mandatory steer, the guard sets subagentStuck=true so
-	//      the next tool_call can be blocked, forcing a text response.
-	// Main agents keep the steer-only behaviour (subagentStuck is never set).
+	// When a subagent hits the no-tool mandatory threshold:
+	//   1. It receives a steer asking for a plain-text summary.
+	//   2. subagentAbortPending is set to true.
+	//   3. On the NEXT turn_end (one turn later), pi.abort() is called.
+	// This gives the subagent exactly one turn to produce a useful summary
+	// that becomes the output the orchestrator receives.
+	// Main agents keep steer-only behaviour (abort is never triggered).
 
-	it("isSubagentStuck() returns false by default (main agent)", () => {
+	it("isSubagentAbortPending() returns false by default", () => {
 		const guard = createGuard()
-		expect(guard.isSubagentStuck()).toBe(false)
+		expect(guard.isSubagentAbortPending()).toBe(false)
 	})
 
-	it("isSubagentStuck() stays false for main agent after mandatory threshold", () => {
+	it("isSubagentAbortPending() stays false for main agent after mandatory threshold", () => {
 		const guard = createGuard()
 		for (let i = 0; i < 5; i++) {
 			guard.turnStart()
 			guard.turnEnd(() => {})
 		}
-		expect(guard.isSubagentStuck()).toBe(false)
+		expect(guard.isSubagentAbortPending()).toBe(false)
 	})
 
-	it("isSubagentStuck() flips true after mandatory threshold for subagents", () => {
+	it("isSubagentAbortPending() flips true after mandatory threshold for subagents", () => {
 		const guard = createGuard({ isSubagent: () => true })
 		for (let i = 0; i < 5; i++) {
 			guard.turnStart()
 			guard.turnEnd(() => {})
 		}
-		expect(guard.isSubagentStuck()).toBe(true)
+		expect(guard.isSubagentAbortPending()).toBe(true)
 	})
 
-	it("isSubagentStuck() is evaluated per-event (not cached at construction)", () => {
+	it("isSubagentAbortPending() is evaluated per-event (not cached at construction)", () => {
 		let isSub = false
 		const guard = createGuard({ isSubagent: () => isSub })
 		for (let i = 0; i < 5; i++) {
 			guard.turnStart()
 			guard.turnEnd(() => {})
 		}
-		expect(guard.isSubagentStuck()).toBe(false)
+		expect(guard.isSubagentAbortPending()).toBe(false)
 
 		isSub = true
 		for (let i = 0; i < 5; i++) {
 			guard.turnStart()
 			guard.turnEnd(() => {})
 		}
-		expect(guard.isSubagentStuck()).toBe(true)
+		expect(guard.isSubagentAbortPending()).toBe(true)
 	})
 
-	it("reset() clears subagentStuck", () => {
+	it("reset() clears subagentAbortPending", () => {
 		const guard = createGuard({ isSubagent: () => true })
 		for (let i = 0; i < 5; i++) {
 			guard.turnStart()
 			guard.turnEnd(() => {})
 		}
-		expect(guard.isSubagentStuck()).toBe(true)
+		expect(guard.isSubagentAbortPending()).toBe(true)
 		guard.reset()
-		expect(guard.isSubagentStuck()).toBe(false)
+		expect(guard.isSubagentAbortPending()).toBe(false)
 	})
 
-	it("subagent uses strong wording; main agent uses original wording", () => {
-		// Strong wording is only for subagents. Main agent gets the original
-		// mandatory message — the strong wording caused main-agent models
-		// to think harder instead of acting, making thinking loops worse.
+	it("subagent steer requests a structured summary; main agent gets original wording", () => {
+		// The subagent steer explicitly asks for what was done, what is
+		// incomplete, and any blockers — so the orchestrator gets useful output.
+		// Main agent keeps the original wording (stronger messages cause
+		// models to think harder instead of acting).
 		const subGuard = createGuard({ isSubagent: () => true })
 		const mainGuard = createGuard()
 		const subSteers: string[] = []
@@ -632,10 +634,11 @@ describe("Subagent terminate behavior", () => {
 			mainGuard.turnStart()
 			mainGuard.turnEnd((t) => mainSteers.push(t))
 		}
-		// Subagent gets the strong wording with termination warning.
-		expect(subSteers[1]).toContain("respond with plain text")
+		// Subagent steer: asks for a summary and warns about termination.
 		expect(subSteers[1]).toContain("terminated")
-		// Main agent gets the original wording.
+		expect(subSteers[1]).toContain("what you completed")
+		expect(subSteers[1]).toContain("orchestrator")
+		// Main agent: original wording, no termination language.
 		expect(mainSteers[1]).toContain("5 consecutive turns with no tool calls")
 		expect(mainSteers[1]).toContain("You must use a tool this turn")
 		expect(mainSteers[1]).not.toContain("terminated")
