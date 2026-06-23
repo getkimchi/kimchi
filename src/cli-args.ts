@@ -77,18 +77,18 @@ export function extractSpicyFlag(args: string[]): { spicy: boolean; rest: string
 /**
  * Apply the `--spicy` flag to the process environment and return the stripped argv.
  *
- * TEMPORARY (testing): the spicy variant is forced on for every launch,
- * regardless of whether `--spicy` was passed. The flag token is still stripped
- * from the returned array. To restore the opt-in behaviour, only set the env
- * var when `spicy` is true (see the commented-out conditional below).
+ * - When `--spicy` is present: sets `env[PROMPT_VARIANT_ENV]="spicy"` and
+ *   removes the flag token from the returned array.
+ * - When the flag is absent: leaves `env` untouched and returns args unchanged
+ *   (so `KIMCHI_PROMPT_VARIANT` still works as an escape hatch).
  *
  * Pass an isolated env object in tests to avoid mutating `process.env`.
  */
 export function applyVariantSelection(argv: string[], env: NodeJS.ProcessEnv): string[] {
-	const { rest } = extractSpicyFlag(argv)
-	// Restore opt-in behaviour by replacing the line below with:
-	//   if (spicy) env[PROMPT_VARIANT_ENV] = "spicy"
-	env[PROMPT_VARIANT_ENV] = "spicy"
+	const { spicy, rest } = extractSpicyFlag(argv)
+	if (spicy) {
+		env[PROMPT_VARIANT_ENV] = "spicy"
+	}
 	return rest
 }
 
