@@ -47,11 +47,32 @@ jobs:
         run: pnpm run test:smoke
 
   master-checks:
-    if: github.event_name == 'push'
+    # Run on both push-to-master and pull_request so PR CI exercises the same
+    # post-merge checks (e.g. `make build` + `pnpm run test` without the
+    # `KIMCHI_PROXY_HELPER` env var) that will run after merge. Without this,
+    # a PR based on a stale base ref can pass `pr-checks` and only fail at the
+    # post-merge `master-checks` step, leaving master red until a follow-up
+    # lands (see #657 for the original incident).
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
-      group: ci-master
+      # Pick a concurrency group name based on the triggering event:
+      #
+      #   push to master     → group = "ci-master"
+      #                        (single slot; new pushes cancel stale runs)
+      #   pull_request       → group = "ci-pr-master-checks-<head_ref>"
+      #                        e.g. PR from "fix/foo"  →  "ci-pr-master-checks-fix/foo"
+      #                        (one slot per PR; cancels only that PR's stale runs)
+      #
+      # Why not a single "ci-master" group across both events? It would make
+      # concurrent PRs cancel each other and let master pushes cancel
+      # in-flight PR runs.
+      #
+      # `&&`/`||` short-circuit in GitHub Actions expressions, so the
+      # `format(...)` on the right side is only evaluated on pull_request
+      # events (where `github.head_ref` is defined; it's empty for push).
+      group: ${{ github.event_name == 'push' && 'ci-master' || format('ci-pr-master-checks-{0}', github.head_ref) }}
       cancel-in-progress: true
 
     steps:

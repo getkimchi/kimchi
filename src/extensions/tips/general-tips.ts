@@ -34,12 +34,7 @@ export const GENERAL_TIPS = [
 	{
 		id: "add-tags",
 		scope: "general",
-		message: "Tag requests with `/tags add key:value`, e.g. `project:myapp` `team:backend`.",
-	},
-	{
-		id: "auto-tags",
-		scope: "general",
-		message: 'Set default tags: `export KIMCHI_TAGS="team:backend,project:api"`.',
+		message: "Tag requests in Analytics: `/tags add key:value` (e.g. project:myapp).",
 	},
 	{
 		id: "continue-session",
