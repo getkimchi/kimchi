@@ -52,9 +52,14 @@ const targetFlag = crossTarget ? ` --target=${crossTarget}` : ""
 // Trust the OS certificate store in addition to Bun's bundled roots so users behind
 // TLS-intercepting corporate proxies (Netskope, Zscaler, etc.) can reach the API without
 // extra env vars. Bun ignores the system store by default; --use-system-ca is additive.
+const isWindowsTarget = crossTarget?.includes("windows") || (!crossTarget && platform() === "win32")
+const execArgv = isWindowsTarget
+	? `--use-system-ca --jsc-useJITCage=false`
+	: `--use-system-ca`
+
 run(
 	"compile",
-	`bun build src/entry.ts --compile${targetFlag} --compile-exec-argv="--use-system-ca" --outfile dist/bin/${exeName} --external chromium-bidi --external electron`.trim(),
+	`bun build src/entry.ts --compile${targetFlag} --compile-exec-argv="${execArgv}" --outfile dist/bin/${exeName} --external chromium-bidi --external electron`.trim(),
 )
 
 // Bun --compile produces binaries with an invalid code signature on macOS.
