@@ -58,6 +58,17 @@ describe("buildOneshotNudge", () => {
 		expect(out).not.toContain("propose_ferment_scoping")
 	})
 
+	it("includes the full shared planning process from src/shared/planning", () => {
+		const out = buildOneshotNudge(makeFerment(), INTENT)
+		expect(out).toContain("STEP 1 — ORIENT")
+		expect(out).toContain("STEP 2 — INTERVIEW")
+		expect(out).toContain("STEP 3 — COMPLETION CRITERIA")
+		expect(out).toContain("STEP 4 — DEEP EXPLORATION")
+		expect(out).toContain("STEP 5 — PLAN")
+		expect(out).toContain("## Chunks")
+		expect(out).toContain("Self-validation")
+	})
+
 	// Step 5 of the unify-ferment-tool-modes ferment: the one-shot envelope
 	// describes the lifecycle-driven toolset transition (planning phase →
 	// implementation toolset unlocks on activate_ferment_phase) rather than
