@@ -38,25 +38,42 @@ test("completed todos stop pinning the overlay", async ({ terminal }) => {
 			await waitForText(terminal, "0/2 done · 2 active", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			trace.step("active todos overlay visible")
 
-			terminal.submit("/todos done 1")
+			// Write + submit separately — one-shot `terminal.submit("/todos done 1\r")`
+			// races the TUI's autocomplete accept path on rapid slash commands and
+			// can swallow the Enter key, dropping the command. Same workaround as
+			// the theme-selector tests.
+			terminal.write("/todos done 1")
+			await waitForText(terminal, "/todos done 1", { timeoutMs: INPUT_TIMEOUT_MS })
+			trace.step("typed /todos done 1")
+			terminal.submit("")
 			await waitForText(terminal, "Updated todo 1.", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			await waitForText(terminal, "Todos · Global", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			await waitForText(terminal, "1/2 done · 1 active", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			trace.step("partially completed overlay remains visible")
 
-			terminal.submit("/todos done 2")
-			await waitForText(terminal, "Updated todo 2.", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			await waitForViewToExclude(terminal, "Todos · Global")
-			await waitForViewToExclude(terminal, "2/2 done · 0 active")
+			terminal.write("/todos done 2")
+			await waitForText(terminal, "/todos done 2", { timeoutMs: INPUT_TIMEOUT_MS })
+			trace.step("typed /todos done 2")
+			terminal.submit("")
+			// Wait for the stable overlay-state outcome first (overlay disappears
+			// because there are no active todos). The "Updated todo N."
+			// notification is transient — it can render for only one frame
+			// before the widget re-renders, so checking it via the viewable
+			// buffer is racy. The notification is preserved in the full
+			// buffer; we assert it there after the stable state has settled.
+			await waitForWidgetToHide(terminal)
+			await waitForText(terminal, "Updated todo 2.", { timeoutMs: INPUT_TIMEOUT_MS, full: true })
 			trace.step("completed-only overlay hidden")
 
 			terminal.submit("continue after completed todos")
 			await waitForText(terminal, "fake response", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			await waitForViewToExclude(terminal, "Todos · Global")
-			await waitForViewToExclude(terminal, "2/2 done · 0 active")
+			await waitForWidgetToHide(terminal)
 			trace.step("follow-up prompt did not reopen completed-only overlay")
 
-			terminal.submit("/todos")
+			terminal.write("/todos")
+			await waitForText(terminal, "/todos", { timeoutMs: INPUT_TIMEOUT_MS })
+			trace.step("typed /todos")
+			terminal.submit("")
 			await waitForText(terminal, "Todos · Global", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			await waitForText(terminal, "2/2 done · 0 active", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			trace.step("completed overlay manually reopened")
@@ -64,13 +81,21 @@ test("completed todos stop pinning the overlay", async ({ terminal }) => {
 	)
 })
 
-async function waitForViewToExclude(terminal: Terminal, text: string): Promise<void> {
+/**
+ * Wait for the todo widget to leave the terminal view. The widget is hidden
+ * when there are no active todos, so this is the stable signal that the
+ * most recent `/todos` command has been processed. Prefer over polling the
+ * transient "Updated todo N." notification, which can be skipped entirely
+ * if the widget re-render coincides with the slash-command handler's
+ * notification render.
+ */
+async function waitForWidgetToHide(terminal: Terminal): Promise<void> {
 	const startedAt = Date.now()
 	let view = viewText(terminal)
 	while (Date.now() - startedAt < INPUT_TIMEOUT_MS) {
-		if (!view.includes(text)) return
+		if (!view.includes("Todos · Global") && !view.includes("done · 0 active")) return
 		await new Promise((resolve) => setTimeout(resolve, 100))
 		view = viewText(terminal)
 	}
-	throw new Error(`Timed out waiting for ${JSON.stringify(text)} to leave the terminal view.\n\nTerminal:\n${view}`)
+	throw new Error(`Timed out waiting for todo widget to hide.\n\nTerminal:\n${view}`)
 }
