@@ -13,6 +13,8 @@
 import type { ExtensionAPI, ExtensionContext, MessageRenderer } from "@earendil-works/pi-coding-agent"
 import { Container, Text } from "@earendil-works/pi-tui"
 import type { Step } from "../../ferment/types.js"
+import * as EntryTriggerRegistry from "../../shared/planning/entry-trigger-registry.js"
+import * as PromptSupplementRegistry from "../../shared/planning/prompt-supplement-registry.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import { requestSharedFooterRender } from "../shared-footer.js"
@@ -226,12 +228,35 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	pi.registerMessageRenderer("ferment_worktree_warning", fermentBreadcrumbRenderer)
 	pi.registerMessageRenderer("ferment_oneshot_failed", fermentBreadcrumbRenderer)
 
-	createSystemPromptBlocks(pi, "ferment").register({
-		id: "ferment-supplement",
+	// Same `ferment-planning-block` for interactive and oneshot — both modes
+	// register through the shared registry so `compose('ferment')` returns it
+	// regardless of which entry path bootstrapped the session.
+	const fermentPlanningBlock = {
+		id: "ferment-planning-block",
 		render: () => {
 			if (!ctx) return undefined
 			return buildFermentPromptBlock(ctx, pi, runtime)
 		},
+	}
+	PromptSupplementRegistry.register("ferment-planning-block", fermentPlanningBlock, {
+		modes: ["ferment"],
+	})
+	createSystemPromptBlocks(pi, "ferment").register(fermentPlanningBlock)
+
+	// ─── Entry triggers (planning mode routing) ───────────────────────────
+	// The actual ferment-creation logic lives in commands.ts (slash command
+	// handler) and state.ts (KIMCHI_ACTIVE_FERMENT env-var reader); the
+	// registry entries make the routing table explicit and discoverable.
+	EntryTriggerRegistry.register("/ferment-new", (event) => {
+		if (event.kind !== "slash-command") return { kind: "noop" }
+		if (event.command !== "new") return { kind: "noop" }
+		return { kind: "enter-mode", mode: "ferment", reason: "/ferment new <intent>" }
+	})
+	EntryTriggerRegistry.register("KIMCHI_ACTIVE_FERMENT", (event) => {
+		if (event.kind !== "env-var") return { kind: "noop" }
+		if (event.name !== "KIMCHI_ACTIVE_FERMENT") return { kind: "noop" }
+		if (!event.value) return { kind: "noop" }
+		return { kind: "enter-mode", mode: "ferment", reason: `KIMCHI_ACTIVE_FERMENT=${event.value}` }
 	})
 
 	// ─── Tool registrations ───────────────────────────────────────────────────

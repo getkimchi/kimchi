@@ -1,3 +1,6 @@
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import type {
 	ExtensionAPI,
 	ExtensionContext,
@@ -26,12 +29,16 @@ import { getPermissionMode } from "./mode-controller.js"
 import { SessionMemory } from "./session-memory.js"
 import type { Rule } from "./types.js"
 
-vi.mock("node:fs", () => ({
-	existsSync: vi.fn(() => true),
-	mkdirSync: vi.fn(),
-	readFileSync: vi.fn(),
-	writeFileSync: vi.fn(),
-}))
+vi.mock("node:fs", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs")>()
+	return {
+		...actual,
+		existsSync: vi.fn(actual.existsSync),
+		mkdirSync: vi.fn(actual.mkdirSync),
+		readFileSync: vi.fn(actual.readFileSync),
+		writeFileSync: vi.fn(actual.writeFileSync),
+	}
+})
 
 vi.mock("./classifier.js", () => ({
 	classifyToolCall: vi.fn(async () => ({ verdict: "safe", reason: "mock safe" })),
@@ -551,7 +558,7 @@ describe("plan mode assumption detection", () => {
 		expect(ctx.ui.select).toHaveBeenCalled()
 	})
 
-	it("review menu does not offer ferment conversion", async () => {
+	it("review menu offers Execute / Rework / Start as ferment", async () => {
 		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
 		await harness.fire("session_start", {}, createMockContext([]))
 
@@ -563,9 +570,134 @@ describe("plan mode assumption detection", () => {
 		expect(ctx.ui.select).toHaveBeenCalledWith("Plan complete. How would you like to proceed?", [
 			"Execute the plan",
 			"Rework the plan",
+			"Start as ferment",
 		])
 		expect(harness.pi.sendMessage).not.toHaveBeenCalled()
 		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "plan", source: "user" })
+	})
+
+	it("oneshot sessions skip the plan-complete dropdown entirely", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		// Simulate a oneshot session: pi.getFlag returns true for ferment-oneshot.
+		;(harness.pi as { getFlag?: (n: string) => unknown }).getFlag = (n: string) =>
+			n === "ferment-oneshot" ? true : undefined
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		const planText =
+			"# Plan\n\n## Goal\nAdd caching layer.\n\n## Chunks\n- Chunk 1\nImplement cache.\n\n<!-- PLAN_COMPLETE -->"
+		const ctx = createMockContext([])
+		await fireTurnEnd(harness, planText, ctx)
+
+		// The dropdown must NOT have been shown — oneshot sessions bypass it.
+		expect(ctx.ui.select).not.toHaveBeenCalled()
+	})
+
+	it("Start as ferment persists a ferment artifact under .kimchi/ferments", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		const planText =
+			"# Plan\n\n## Goal\nAdd caching layer.\n\n## Steps\n- step one\n- step two\n- step three\n\n<!-- PLAN_COMPLETE -->"
+
+		// Use a temp cwd so we don't pollute the repo.
+		const tmpDir = mkdtempSync(join(tmpdir(), "ferment-promo-"))
+		try {
+			const ctx = createMockContext(["Start as ferment"])
+			ctx.cwd = tmpDir
+			await fireTurnEnd(harness, planText, ctx)
+
+			const fermentsDir = join(tmpDir, ".kimchi", "ferments")
+			expect(existsSync(fermentsDir)).toBe(true)
+			const files = readdirSync(fermentsDir).filter((f) => f.endsWith(".json"))
+			expect(files).toHaveLength(1)
+
+			const artifact = JSON.parse(readFileSync(join(fermentsDir, files[0]), "utf-8"))
+			expect(artifact.status).toBe("draft")
+			expect(artifact.workMode).toBe("auto")
+			expect(artifact.id).toMatch(/^ferment-\d+$/)
+			expect(artifact.phases).toHaveLength(1)
+			// The phase contains the decomposed steps from the plan text.
+			expect(artifact.phases[0].steps.length).toBeGreaterThanOrEqual(1)
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true })
+		}
+	})
+
+	it("Start as ferment applies the implementation-ferment tool profile", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		// The START_AS_FERMENT branch persists a ferment artifact under <cwd>/.kimchi/ferments
+		// before applying the tool profile. Use a real temp dir for cwd so the writes succeed —
+		// the default mock cwd ("/test") does not exist on the test runner.
+		const tmpDir = mkdtempSync(join(tmpdir(), "prof-"))
+		try {
+			const planText = "# Plan\n\n## Goal\nAdd caching layer.\n\n## Steps\n- step one\n\n<!-- PLAN_COMPLETE -->"
+			const ctx = createMockContext(["Start as ferment"])
+			ctx.cwd = tmpDir
+			await fireTurnEnd(harness, planText, ctx)
+
+			// Find the implementation-ferment apply call by selecting the largest
+			// setActiveTools call — the planning-adhoc profile produces a 12-tool set
+			// while the implementation-ferment profile produces a 31-tool set, so the
+			// implementation-ferment apply is unambiguously the maximum.
+			expect(harness.pi.setActiveTools).toHaveBeenCalled()
+			const calls = vi.mocked(harness.pi.setActiveTools).mock.calls
+			const implementationFermentCall = calls.reduce<{ size: number; arr: string[] | undefined }>(
+				(best, c) => {
+					const arr = c[0] as string[] | undefined
+					const size = arr?.length ?? 0
+					return size > best.size ? { size, arr } : best
+				},
+				{ size: 0, arr: undefined },
+			)
+			expect(implementationFermentCall.arr).toBeDefined()
+			const toolSet = implementationFermentCall.arr as string[]
+			// The implementation-ferment profile includes ferment write tools (`edit`, `write`).
+			expect(toolSet).toContain("edit")
+			expect(toolSet).toContain("write")
+			// And it must NOT include the adhoc-only tool `questionnaire`.
+			expect(toolSet).not.toContain("questionnaire")
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true })
+		}
+	})
+
+	it("Start as ferment swaps tool names per the tool-name-mapping doc", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		// Same tmp-dir setup as the artifact test — the default mock cwd ("/test")
+		// does not exist on the test runner.
+		const tmpDir = mkdtempSync(join(tmpdir(), "swap-"))
+		try {
+			const planText = "# Plan\n\n## Goal\nAdd caching layer.\n\n## Steps\n- step one\n\n<!-- PLAN_COMPLETE -->"
+			const ctx = createMockContext(["Start as ferment"])
+			ctx.cwd = tmpDir
+			await fireTurnEnd(harness, planText, ctx)
+
+			const calls = vi.mocked(harness.pi.setActiveTools).mock.calls
+			const implementationFermentCall = calls.reduce<{ size: number; arr: string[] | undefined }>(
+				(best, c) => {
+					const arr = c[0] as string[] | undefined
+					const size = arr?.length ?? 0
+					return size > best.size ? { size, arr } : best
+				},
+				{ size: 0, arr: undefined },
+			)
+			expect(implementationFermentCall.arr).toBeDefined()
+			const toolSet = implementationFermentCall.arr as string[]
+
+			// Adhoc-only tools must NOT be present (per the tool-swap contract at
+			// permissions/index.ts:524-562).
+			expect(toolSet).not.toContain("questionnaire")
+			expect(toolSet).not.toContain("update_todos")
+			expect(toolSet).not.toContain("add_todo")
+			// Shared core tools MUST remain visible.
+			expect(toolSet).toContain("read")
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true })
+		}
 	})
 })
 

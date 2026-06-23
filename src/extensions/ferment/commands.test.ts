@@ -5,6 +5,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import type { Ferment } from "../../ferment/types.js"
+import { SHARED_CORE_TOOLS, getToolsForProfile } from "../../shared/planning/tool-catalog.js"
 import {
 	FermentCommandController,
 	getFermentArgumentCompletions,
@@ -381,7 +382,7 @@ describe("FermentCommandController", () => {
 		expect(h.storage.get(ferment.id)?.status).toBe("draft")
 		expect(h.runtime.getActive()).toBeUndefined()
 		expect(h.runtime.setActive).toHaveBeenLastCalledWith(undefined)
-		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash"])
+		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(expect.arrayContaining(SHARED_CORE_TOOLS.map((t) => t.name)))
 		expect(h.runtime.getContinuationPolicy()).toBe("manual")
 		expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining('Exited Ferment mode for "Draft Exit"'))
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
@@ -418,7 +419,7 @@ describe("FermentCommandController", () => {
 		expect(h.runtime.getActive()).toBeUndefined()
 		expect(h.runtime.setActive).toHaveBeenCalledWith(expect.objectContaining({ status: "paused" }))
 		expect(h.runtime.setActive).toHaveBeenLastCalledWith(undefined)
-		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash"])
+		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(expect.arrayContaining(SHARED_CORE_TOOLS.map((t) => t.name)))
 		expect(h.runtime.getContinuationPolicy()).toBe("automated")
 	})
 
@@ -436,7 +437,7 @@ describe("FermentCommandController", () => {
 		expect(h.runtime.getActive()).toBeUndefined()
 		expect(h.runtime.setActive).toHaveBeenCalledWith(expect.objectContaining({ status: "paused" }))
 		expect(h.runtime.setActive).toHaveBeenLastCalledWith(undefined)
-		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash"])
+		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(expect.arrayContaining(SHARED_CORE_TOOLS.map((t) => t.name)))
 	})
 
 	it("/ferment exit reconciles stale paused active cache with running storage", async () => {
@@ -484,7 +485,7 @@ describe("FermentCommandController", () => {
 		expect(h.runtime.getActive()).toBeUndefined()
 		expect(h.runtime.setActive).toHaveBeenCalledTimes(1)
 		expect(h.runtime.setActive).toHaveBeenLastCalledWith(undefined)
-		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash"])
+		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(expect.arrayContaining(SHARED_CORE_TOOLS.map((t) => t.name)))
 	})
 
 	it("/ferment exit detaches terminal ferments without mutating lifecycle", async () => {
@@ -501,7 +502,7 @@ describe("FermentCommandController", () => {
 		expect(h.runtime.getActive()).toBeUndefined()
 		expect(h.runtime.setActive).toHaveBeenCalledTimes(1)
 		expect(h.runtime.setActive).toHaveBeenLastCalledWith(undefined)
-		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash"])
+		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(expect.arrayContaining(SHARED_CORE_TOOLS.map((t) => t.name)))
 		expect(h.ctx.ui.notify).toHaveBeenCalledWith(
 			'Exited Ferment mode for "Complete Exit". It remains complete and is still available from /ferment list.',
 		)
@@ -977,7 +978,13 @@ describe("registerFermentCommands", () => {
 		expect(h.runtime.getContinuationPolicy()).toBe("automated")
 		expect(active.status).toBe("paused")
 		expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("run /ferment resume"))
-		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "propose_ferment_scoping"])
+		// paused ferment with no phase activated => profileForFerment returns "planning"
+		// => planning-ferment tools via the shared catalog (read, grep, find, ls,
+		// web_fetch, web_search, set_phase, propose_ferment_scoping, scope_ferment,
+		// update_ferment_scope_field, confirm_ferment_completion_criteria,
+		// list_ferments, ask_user, activate_ferment_phase).
+		const planningTools = getToolsForProfile("planning-ferment").map((t) => t.name)
+		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(expect.arrayContaining(planningTools))
 		expect(h.pi.sendMessage).not.toHaveBeenCalled()
 	})
 

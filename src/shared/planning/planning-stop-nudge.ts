@@ -73,7 +73,5 @@ export function extractTextFromContent(content: unknown[]): string {
  * Returns true if the content array contains at least one tool call.
  */
 export function contentHasToolCall(content: unknown[]): boolean {
-	return content.some(
-		(c) => (c as { type: string }).type === "tool_use" || (c as { type: string }).type === "tool_result",
-	)
+	return content.some((c) => (c as { type: string }).type === "tool_use")
 }
