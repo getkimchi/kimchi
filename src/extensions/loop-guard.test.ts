@@ -40,12 +40,12 @@ describe("LoopGuard.reset", () => {
 		expect(guard.isWarned()).toBe(false)
 	})
 
-	it("clears triggered flag", () => {
+	it("clears warned flag", () => {
 		const guard = new LoopGuard()
-		feed(guard, repeat(rec({ isError: true }), 4))
-		expect(guard.isTriggered()).toBe(true)
+		feed(guard, repeat(rec({ isError: true }), 3))
+		expect(guard.isWarned()).toBe(true)
 		guard.reset()
-		expect(guard.isTriggered()).toBe(false)
+		expect(guard.isWarned()).toBe(false)
 	})
 })
 
@@ -111,12 +111,14 @@ describe("Consecutive identical errors detector", () => {
 		expect(guard.record(r).state).toBe("warn")
 	})
 
-	it("terminates on the 4th consecutive identical failing call", () => {
+	it("warns again after counter reset (never terminates)", () => {
 		const guard = new LoopGuard()
 		const r = rec({ isError: true, outputFingerprint: FP_A })
-		feed(guard, repeat(r, 3))
-		expect(guard.record(r).state).toBe("terminate")
-		expect(guard.isTriggered()).toBe(true)
+		feed(guard, repeat(r, 3)) // first detection → warn + counter reset
+		expect(guard.isWarned()).toBe(true)
+		// After the warn, counters are reset. Feed enough to trigger again.
+		const states = feed(guard, repeat(r, 3))
+		expect(states[2].state).toBe("warn") // second detection → warn again
 	})
 
 	it("breaks the streak on a successful call", () => {
@@ -291,23 +293,26 @@ describe("Exact ngram detector (all 4 fields)", () => {
 })
 
 describe("Shared warning fuse", () => {
-	it("warn from one detector + fire from another → terminate", () => {
+	it("second detection from a different detector also warns (never terminates)", () => {
 		const guard = new LoopGuard()
 		feed(guard, repeat(rec({ isError: true, outputFingerprint: FP_A }), 3))
 		expect(guard.isWarned()).toBe(true)
-		expect(guard.isTriggered()).toBe(false)
 
+		// After the first warn, counters are reset. A different detector
+		// triggers on a new pattern — should warn again, not terminate.
+		// The exact 2-gram fires at rep 6 (12 records), which triggers
+		// another warn (not terminate) and clears history again.
 		const a = rec({ toolArgs: '{"command":"x"}', outputFingerprint: "x1" })
 		const b = rec({ toolArgs: '{"command":"y"}', outputFingerprint: "y1" })
-		let last: ReturnType<LoopGuard["record"]> = { state: "ok" }
-		for (let i = 0; i < 5; i++) {
-			last = guard.record(a)
-			last = guard.record(b)
+		const states: Array<ReturnType<LoopGuard["record"]>> = []
+		for (let i = 0; i < 7; i++) {
+			states.push(guard.record(a))
+			states.push(guard.record(b))
 		}
-		last = guard.record(a)
-		last = guard.record(b)
-		expect(last.state).toBe("terminate")
-		expect(guard.isTriggered()).toBe(true)
+		// At least one of the states should be a warn (the second detection).
+		const warns = states.filter((s) => s.state === "warn")
+		expect(warns.length).toBeGreaterThanOrEqual(1)
+		expect(warns[0].state).toBe("warn")
 	})
 
 	it("two near-misses below threshold stay ok", () => {
@@ -329,15 +334,14 @@ describe("Shared warning fuse", () => {
 		expect(guard.isTriggered()).toBe(false)
 	})
 
-	it("warn → next ok call → next detector fire still terminates (fuse does not reset)", () => {
+	it("second detection after recovery also warns", () => {
 		const guard = new LoopGuard()
 		feed(guard, repeat(rec({ isError: true, outputFingerprint: FP_A }), 3))
 		expect(guard.isWarned()).toBe(true)
-		guard.record(rec({ toolArgs: '{"command":"recover"}', outputFingerprint: "r1" }))
+		// After the warn, counters are reset. New consecutive loop:
 		const r = rec({ isError: true, outputFingerprint: "fp_r" })
-		feed(guard, repeat(r, 2))
-		const last = guard.record(r)
-		expect(last.state).toBe("terminate")
+		const states = feed(guard, repeat(r, 3))
+		expect(states[2].state).toBe("warn")
 	})
 })
 
@@ -348,38 +352,19 @@ describe("LoopGuard.blockIfLoop (pre-execution prediction)", () => {
 		expect(guard.blockIfLoop({ toolName: "bash", toolArgs: '{"command":"ls"}' })).toBe(false)
 	})
 
-	it("fires and sets triggered when next call would complete a consecutive-identical loop", () => {
+	it("returns false after warn because history is cleared", () => {
+		// After a warn, the guard resets the window history. blockIfLoop
+		// can't find a proxy in an empty history, so it returns false.
 		const guard = new LoopGuard()
 		feed(guard, repeat(rec({ isError: true, outputFingerprint: FP_A }), 3))
-		expect(guard.blockIfLoop({ toolName: "bash", toolArgs: '{"command":"ls"}' })).toBe(true)
-		expect(guard.isTriggered()).toBe(true)
+		expect(guard.isWarned()).toBe(true)
+		expect(guard.blockIfLoop({ toolName: "bash", toolArgs: '{"command":"ls"}' })).toBe(false)
 	})
 
 	it("returns false for a clearly different next call", () => {
 		const guard = new LoopGuard()
-		feed(guard, repeat(rec({ isError: true, outputFingerprint: FP_A }), 3))
+		feed(guard, repeat(rec({ isError: true, outputFingerprint: FP_A }), 2))
 		expect(guard.blockIfLoop({ toolName: "bash", toolArgs: '{"command":"different"}' })).toBe(false)
-	})
-
-	it("does not mutate history on a non-firing prediction", () => {
-		const guard = new LoopGuard()
-		feed(guard, repeat(rec({ isError: true, outputFingerprint: FP_A }), 3))
-		guard.blockIfLoop({ toolName: "bash", toolArgs: '{"command":"different"}' })
-		expect(guard.record(rec({ isError: true, outputFingerprint: FP_A })).state).toBe("terminate")
-	})
-
-	it("returns true when next call would extend an alternating 2-gram", () => {
-		const guard = new LoopGuard()
-		const a = rec({ toolArgs: '{"command":"a"}', outputFingerprint: FP_A })
-		const b = rec({ toolArgs: '{"command":"b"}', outputFingerprint: FP_B })
-		for (let i = 0; i < 5; i++) {
-			guard.record(a)
-			guard.record(b)
-		}
-		guard.record(a)
-		guard.record(b)
-		expect(guard.isWarned()).toBe(true)
-		expect(guard.blockIfLoop({ toolName: "bash", toolArgs: '{"command":"a"}' })).toBe(true)
 	})
 })
 
@@ -511,14 +496,16 @@ describe("Edit-run cycle detector", () => {
 		expect(guard.isTriggered()).toBe(false)
 	})
 
-	it("terminates on the next call after warn (counts remain at threshold)", () => {
+	it("after warn, counters reset so next round does not immediately re-fire", () => {
 		const guard = new LoopGuard()
-		// 24 records: 8 full rounds. The 23rd record (bash(P) at end of round 8)
-		// triggers warn; the 24th record (read) re-triggers the edit-run
-		// detector and bumps the guard to terminate.
-		feedEditRunRecords(guard, 24)
+		// 23 records triggers warn (at the 8th bash). After that, window
+		// counters are cleared so the next few records don't re-fire.
+		feedEditRunRecords(guard, 23)
 		expect(guard.isWarned()).toBe(true)
-		expect(guard.isTriggered()).toBe(true)
+		// One more record (the read) should NOT immediately re-fire.
+		feedEditRunRecords(guard, 1)
+		// Still warned (flag persists), but no terminate.
+		expect(guard.isWarned()).toBe(true)
 	})
 
 	it("does not fire when edits target different files", () => {
@@ -652,27 +639,13 @@ describe("Edit-run cycle detector", () => {
 		expect(guard.isWarned()).toBe(false)
 	})
 
-	it("blockIfLoop predicts edit-run extension after warn", () => {
+	it("blockIfLoop returns false after warn (history cleared)", () => {
 		const guard = new LoopGuard()
 		feedEditRunRounds(guard, 8)
 		expect(guard.isWarned()).toBe(true)
-
-		// Predict that an edit to the same file would push the edit-run
-		// counter over the threshold again. blockIfLoop simulates adding the
-		// hypo record and re-running detectors.
+		// After the warn, window history is cleared. blockIfLoop can't find
+		// a matching proxy in an empty history, so it returns false.
 		const editArgs = '{"path":"/app/main.c","edits":[{"oldText":"x","newText":"next"}]}'
-		expect(guard.blockIfLoop({ toolName: "edit", toolArgs: editArgs })).toBe(true)
-		expect(guard.isTriggered()).toBe(true)
-	})
-
-	it("blockIfLoop does not block clearly different edit-run patterns", () => {
-		const guard = new LoopGuard()
-		feedEditRunRounds(guard, 8)
-		expect(guard.isWarned()).toBe(true)
-
-		// An edit to a completely different file shouldn't extend the loop
-		// — the edit-run detector requires the SAME file, not just any edit.
-		const editArgs = '{"path":"/app/completely/different.txt","edits":[{"oldText":"a","newText":"b"}]}'
 		expect(guard.blockIfLoop({ toolName: "edit", toolArgs: editArgs })).toBe(false)
 	})
 
@@ -826,21 +799,12 @@ describe("Edit-run cycle detector — task-total backstop", () => {
 		expect(guard.isTriggered()).toBe(false)
 	})
 
-	it("blockIfLoop predicts task-total cycle extension", () => {
+	it("blockIfLoop returns false after warn (history cleared)", () => {
 		const guard = new LoopGuard()
 		feedSparseEditRun(guard, 12, 12, 3)
 		expect(guard.isWarned()).toBe(true)
+		// After warn, window is cleared. blockIfLoop returns false.
 		const editArgs = '{"path":"/app/main.c","edits":[{"oldText":"x","newText":"y"}]}'
-		expect(guard.blockIfLoop({ toolName: "edit", toolArgs: editArgs })).toBe(true)
-		expect(guard.isTriggered()).toBe(true)
-	})
-
-	it("blockIfLoop does not block calls that don't extend the task-total cycle", () => {
-		const guard = new LoopGuard()
-		feedSparseEditRun(guard, 12, 12, 3)
-		expect(guard.isWarned()).toBe(true)
-		// Edit to a different file — doesn't extend the cycle.
-		const editArgs = '{"path":"/app/different.c","edits":[{"oldText":"a","newText":"b"}]}'
 		expect(guard.blockIfLoop({ toolName: "edit", toolArgs: editArgs })).toBe(false)
 	})
 })

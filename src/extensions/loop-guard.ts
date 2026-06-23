@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto"
-import type { ExtensionAPI, ToolResultEvent } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext, ToolResultEvent } from "@earendil-works/pi-coding-agent"
+import { isAgentWorker } from "./agent-worker-context.js"
 
 export interface ToolHistoryRecord {
 	toolName: string
@@ -35,10 +36,12 @@ const FINGERPRINT_TAIL_LINES = 20
 const REASON_ARG_PREVIEW = 80
 
 const STEERING_MESSAGE =
-	"Loop guard warning: your recent tool calls show a repeating pattern. Step back, summarize what isn't working, and try a substantively different approach. Repeating the same pattern will halt tool use for this turn."
-
-const TERMINATION_MESSAGE =
-	"Loop guard halted tool use. Do not make any more tool calls. Respond with plain text only: summarize what was attempted, what failed, and what you would need to make progress."
+	"Loop guard: you are repeating the same edit-and-run cycle without making progress. " +
+	"STOP and change your approach. Before your next tool call: " +
+	"(1) State in one sentence what is failing and why. " +
+	"(2) List at least two alternative approaches you have NOT tried. " +
+	"(3) Pick the most promising one and try THAT instead. " +
+	"Do not repeat the same file edits or the same commands — the loop guard will keep firing if you do."
 
 /**
  * Detects when an agent is stuck repeating itself across tool calls. Four
@@ -124,13 +127,19 @@ export class LoopGuard {
 			return { state: "ok" }
 		}
 
-		if (!this.warned) {
-			this.warned = true
-			return { state: "warn", reason: `${STEERING_MESSAGE} (${reason})` }
-		}
+		// Always warn, never terminate. Blocking tool calls forces the model
+		// into no-tool turns which deadlocks with the exploration guard.
+		this.warned = true
 
-		this.triggered = true
-		return { state: "terminate", reason: TERMINATION_MESSAGE }
+		// Reset the window counters so the model must loop again before the
+		// next steer fires — avoids flooding the context with steers on
+		// every subsequent tool call. Task-total counts are NOT reset so
+		// the task-total detector can fire again if the model keeps looping.
+		this.history = []
+		this.editCounts.clear()
+		this.bashCounts.clear()
+
+		return { state: "warn", reason: `${STEERING_MESSAGE} (${reason})` }
 	}
 
 	/**
@@ -449,10 +458,19 @@ function mapMax(map: Map<string, number>): [string, number] | undefined {
 
 export default function loopGuardExtension(pi: ExtensionAPI) {
 	const guard = new LoopGuard()
+	let ctx: ExtensionContext | undefined
+	/** True when a subagent loop-guard steer has fired and the subagent
+	 *  gets one more turn to produce a summary before abort. */
+	let subagentAbortPending = false
+
+	pi.on("session_start", (_event, _ctx) => {
+		ctx = _ctx
+	})
 
 	pi.on("input", (event) => {
 		if (event.source === "extension") return
 		guard.reset()
+		subagentAbortPending = false
 	})
 
 	pi.on("tool_call", (event) => {
@@ -462,25 +480,19 @@ export default function loopGuardExtension(pi: ExtensionAPI) {
 				reason: "Tool name is empty. Check your tool call syntax and use only the tools listed under Available Tools.",
 			}
 		}
-		if (guard.isTriggered()) {
-			return { block: true, reason: TERMINATION_MESSAGE }
-		}
-		const call = { toolName: event.toolName, toolArgs: stableStringify(event.input) }
-		if (guard.blockIfLoop(call)) {
-			return { block: true, reason: TERMINATION_MESSAGE }
-		}
+		// The loop guard never blocks tool calls. Blocking tools forces the
+		// model into no-tool turns which deadlocks with the exploration guard.
+		// Subagents are terminated via ctx.abort() in turn_end instead.
 	})
 
-	// After the loop guard terminates tool use, the model must produce a
-	// text-only response. Once that response is complete (turn_end), reset
-	// the guard so the model gets a fresh chance to try a different approach.
-	// Without this, in one-shot sessions (benchmarks, ferments) the triggered
-	// flag stays true forever and every subsequent tool call is blocked —
-	// deadlocking with the exploration guard which tells the model to call
-	// a tool.
 	pi.on("turn_end", () => {
-		if (guard.isTriggered()) {
-			guard.reset()
+		// Subagent abort: after a loop-guard steer fired, the subagent gets
+		// one turn to produce output, then we abort. Whatever it produced
+		// becomes the responseText the orchestrator receives.
+		if (subagentAbortPending) {
+			ctx?.abort()
+			subagentAbortPending = false
+			return
 		}
 	})
 
@@ -501,6 +513,12 @@ export default function loopGuardExtension(pi: ExtensionAPI) {
 				},
 				{ deliverAs: "steer" },
 			)
+			// Subagent: schedule an abort on the next turn_end. The subagent
+			// gets one more turn to produce a summary; that text becomes the
+			// output the orchestrator receives.
+			if (isAgentWorker()) {
+				subagentAbortPending = true
+			}
 		}
 	})
 }
