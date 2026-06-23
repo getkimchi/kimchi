@@ -54,52 +54,101 @@ from classify import classify
 from harbor_runner import build_harbor_command, format_command_for_log, run_harbor
 from outcome import Outcome
 
-def _fetch_all_tasks(dataset: str, bench_dir: Path) -> list[str]:
-    """Fetch all task names from the Harbor dataset registry.
-
-    Exits non-zero if the dataset cannot be resolved — there is no safe
-    fallback when SELECTED_TASKS_JSON is unset and Harbor is the source of truth.
-    """
-    dataset_ref = dataset if "@" in dataset else f"{dataset}@latest"
-    script = (
-        "import asyncio, json, sys\n"
-        "from harbor.registry.client.package import PackageDatasetClient\n"
-        "async def main():\n"
-        "    meta = await PackageDatasetClient().get_dataset_metadata(sys.argv[1])\n"
-        "    print(json.dumps([t.get_name() for t in meta.task_ids]))\n"
-        "asyncio.run(main())\n"
-    )
-    result = subprocess.run(
-        [
-            "uv", "run", "--project", "benchmark/terminal-bench-2",
-            "--python", "3.14", "python", "-c", script, dataset_ref,
-        ],
-        cwd=str(bench_dir),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        print(
-            f"[chunk] failed to fetch task list from Harbor dataset {dataset_ref!r}",
-            file=sys.stderr,
-            flush=True,
-        )
-        if result.stderr.strip():
-            print(result.stderr.strip(), file=sys.stderr, flush=True)
-        raise SystemExit(1)
-    lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-    if not lines:
-        print(
-            f"[chunk] Harbor dataset {dataset_ref!r} returned no output",
-            file=sys.stderr,
-            flush=True,
-        )
-        raise SystemExit(1)
-    # uv may emit progress lines; the JSON array is the last non-empty line
-    raw_names: list[str] = json.loads(lines[-1])
-    # get_name() returns "terminal-bench/make-mips-interpreter"; strip the namespace
-    return [name.rsplit("/", 1)[-1] for name in raw_names]
+def _fetch_all_tasks(dataset: str, bench_dir: Path) -> list[str]:  # noqa: ARG001
+    # Hardcoded instead of queried from Harbor at runtime: the Harbor registry
+    # backend (Supabase/PostgREST) occasionally fails with PGRST002 on cold
+    # start, which would abort the entire benchmark job.
+    return [
+        "adaptive-rejection-sampler",
+        "bn-fit-modify",
+        "break-filter-js-from-html",
+        "build-cython-ext",
+        "build-pmars",
+        "build-pov-ray",
+        "caffe-cifar-10",
+        "cancel-async-tasks",
+        "chess-best-move",
+        "circuit-fibsqrt",
+        "cobol-modernization",
+        "code-from-image",
+        "compile-compcert",
+        "configure-git-webserver",
+        "constraints-scheduling",
+        "count-dataset-tokens",
+        "crack-7z-hash",
+        "custom-memory-heap-crash",
+        "db-wal-recovery",
+        "distribution-search",
+        "dna-assembly",
+        "dna-insert",
+        "extract-elf",
+        "extract-moves-from-video",
+        "feal-differential-cryptanalysis",
+        "feal-linear-cryptanalysis",
+        "filter-js-from-html",
+        "financial-document-processor",
+        "fix-code-vulnerability",
+        "fix-git",
+        "fix-ocaml-gc",
+        "gcode-to-text",
+        "git-leak-recovery",
+        "git-multibranch",
+        "gpt2-codegolf",
+        "headless-terminal",
+        "hf-model-inference",
+        "install-windows-3-11",
+        "kv-store-grpc",
+        "large-scale-text-editing",
+        "largest-eigenval",
+        "llm-inference-batching-scheduler",
+        "log-summary-date-ranges",
+        "mailman",
+        "make-doom-for-mips",
+        "make-mips-interpreter",
+        "mcmc-sampling-stan",
+        "merge-diff-arc-agi-task",
+        "model-extraction-relu-logits",
+        "modernize-scientific-stack",
+        "mteb-leaderboard",
+        "mteb-retrieve",
+        "multi-source-data-merger",
+        "nginx-request-logging",
+        "openssl-selfsigned-cert",
+        "overfull-hbox",
+        "password-recovery",
+        "path-tracing",
+        "path-tracing-reverse",
+        "polyglot-c-py",
+        "polyglot-rust-c",
+        "portfolio-optimization",
+        "protein-assembly",
+        "prove-plus-comm",
+        "pypi-server",
+        "pytorch-model-cli",
+        "pytorch-model-recovery",
+        "qemu-alpine-ssh",
+        "qemu-startup",
+        "query-optimize",
+        "raman-fitting",
+        "regex-chess",
+        "regex-log",
+        "reshard-c4-data",
+        "rstan-to-pystan",
+        "sam-cell-seg",
+        "sanitize-git-repo",
+        "schemelike-metacircular-eval",
+        "sparql-university",
+        "sqlite-db-truncate",
+        "sqlite-with-gcov",
+        "torch-pipeline-parallelism",
+        "torch-tensor-parallelism",
+        "train-fasttext",
+        "tune-mjcf",
+        "video-processing",
+        "vulnerable-secret",
+        "winning-avg-corewars",
+        "write-compressor",
+    ]
 
 
 def run_id_from_chunk_attempt(*, chunk_index: int, chunk_attempt: int) -> str:
