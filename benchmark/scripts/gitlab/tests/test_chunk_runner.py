@@ -656,3 +656,73 @@ def test_derive_configuration(env: dict, expected: str, monkeypatch: pytest.Monk
     for key, value in env.items():
         monkeypatch.setenv(key, value)
     assert _derive_configuration() == expected
+
+
+# ---------------------------------------------------------------------------
+# tasks_all / BENCH_TASKS_ALL
+# ---------------------------------------------------------------------------
+
+def _main_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **overrides: str) -> None:
+    """Set the minimal env vars required to call main(), with optional overrides."""
+    defaults = {
+        "BENCH_CHUNK_INDEX": "0",
+        "BENCH_CHUNK_COUNT": "1",
+        "SELECTED_TASKS_JSON": '["task-a"]',
+        "BENCHMARK_RESULTS_DIR": str(tmp_path / "jobs"),
+        "BENCHMARK_GCS_BUCKET": "test-bucket",
+        "BENCH_PARALLELISM": "1",
+        "BENCH_ATTEMPTS": "1",
+        "BENCH_TIMEOUT_MULTIPLIER": "1",
+        "CODING_AGENT": "kimchi",
+        "MODEL": "kimchi-dev/kimi-k2.6",
+        "KIMCHI_API_KEY": "test-key",
+        "DATASET": "terminal-bench/terminal-bench-2",
+        "KIMCHI_MULTI_MODEL": "false",
+        "KIMCHI_FERMENT_ONESHOT": "false",
+    }
+    for key, val in {**defaults, **overrides}.items():
+        monkeypatch.setenv(key, val)
+
+
+def test_tasks_all_fetches_all_tasks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BENCH_TASKS_ALL=true calls _fetch_all_tasks regardless of SELECTED_TASKS_JSON."""
+    _main_env(tmp_path, monkeypatch, BENCH_TASKS_ALL="true", SELECTED_TASKS_JSON='["task-a"]')
+
+    all_tasks = ["task-x", "task-y"]
+    results_dir = tmp_path / "jobs"
+    for task in ["task-x__1", "task-y__1"]:
+        trial = results_dir / "run-1" / task
+        trial.mkdir(parents=True)
+        (trial / "result.json").write_text(
+            json.dumps({"verifier_result": {"rewards": {"reward": 1.0}}})
+        )
+
+    with patch("chunk_runner._fetch_all_tasks", return_value=all_tasks) as mock_fetch, \
+         patch("chunk_runner.run_harbor"), \
+         patch("chunk_runner._make_gcs_uploader", return_value=MagicMock()):
+        main()
+
+    mock_fetch.assert_called_once()
+
+
+def test_tasks_all_false_uses_selected_tasks_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BENCH_TASKS_ALL=false (or unset) uses SELECTED_TASKS_JSON, not _fetch_all_tasks."""
+    _main_env(tmp_path, monkeypatch, BENCH_TASKS_ALL="false", SELECTED_TASKS_JSON='["task-a"]')
+
+    results_dir = tmp_path / "jobs"
+    trial = results_dir / "run-1" / "task-a__1"
+    trial.mkdir(parents=True)
+    (trial / "result.json").write_text(
+        json.dumps({"verifier_result": {"rewards": {"reward": 1.0}}})
+    )
+
+    with patch("chunk_runner._fetch_all_tasks") as mock_fetch, \
+         patch("chunk_runner.run_harbor"), \
+         patch("chunk_runner._make_gcs_uploader", return_value=MagicMock()):
+        main()
+
+    mock_fetch.assert_not_called()

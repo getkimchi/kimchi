@@ -92,6 +92,7 @@ setup-image:
     CODING_AGENT: "$[[ inputs.agent ]]"
     MODEL: "$[[ inputs.model ]]"
     GCS_UPLOAD_REQUIRED: "true"
+    BENCH_TASKS_ALL: "$[[ inputs.tasks_all ]]"
     KIMCHI_FERMENT_ONESHOT: "$[[ inputs.kimchi_ferment_oneshot ]]"
     KIMCHI_MULTI_MODEL: "$[[ inputs.kimchi_multi_model ]]"
     BENCH_CHUNK_INDEX: "$CHUNK"

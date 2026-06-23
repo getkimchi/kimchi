@@ -39,6 +39,7 @@ from bench_config import (
     DEFAULT_CODING_AGENT,
     DEFAULT_KIMCHI_MULTI_MODEL,
     DEFAULT_MODEL,
+    ENV_BENCH_TASKS_ALL,
     ENV_BENCHMARK_NAME,
     ENV_BENCHMARK_RESULTS_DIR,
     ENV_BENCHMARK_RUN_METADATA,
@@ -724,10 +725,14 @@ def main() -> int:
     # that already completed on a prior attempt. See _restore_prior_artifact().
     _restore_prior_artifact(results_dir, workspace=Path.cwd())
 
+    tasks_all = _env_bool(ENV_BENCH_TASKS_ALL, False)
     raw_selected = os.environ.get("SELECTED_TASKS_JSON", "[]")
-    selected_tasks = json.loads(raw_selected)
-    if not selected_tasks:
+    if tasks_all:
         selected_tasks = _fetch_all_tasks(dataset, bench_dir=Path.cwd())
+    else:
+        selected_tasks = json.loads(raw_selected)
+        if not selected_tasks:
+            selected_tasks = _fetch_all_tasks(dataset, bench_dir=Path.cwd())
 
     _write_run_metadata(results_dir, selected_tasks)
 
