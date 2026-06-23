@@ -1,4 +1,5 @@
 import type { AgentSideConnection, PermissionOption, ToolCallUpdate } from "@agentclientprotocol/sdk"
+import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 import type { PermissionChoice, ToolPermissionPrompter } from "../../extensions/permissions/prompter.js"
 import type { ApprovalOutcome } from "../../extensions/permissions/prompts.js"
 import { requestWithAbort } from "./utils.js"
@@ -12,6 +13,7 @@ export type ToolCallUpdateBuilder = (
 export function createAcpPermissionPrompter(
 	conn: AgentSideConnection,
 	sessionId: string,
+	uiContext: ExtensionUIContext,
 	buildToolCallUpdate: ToolCallUpdateBuilder,
 ): ToolPermissionPrompter {
 	return {
@@ -50,8 +52,12 @@ export function createAcpPermissionPrompter(
 					return { kind: "allow-remember", rule: selected.rule }
 				case "allow-remember-wildcard":
 					return { kind: "allow-remember-wildcard", rule: selected.rule }
-				case "deny":
+				case "deny": {
+					const feedback = await uiContext.input("Tell the assistant what to do differently:")
+					const text = feedback?.trim()
+					if (text) return { kind: "deny-with-feedback", feedback: text }
 					return { kind: "deny" }
+				}
 			}
 		},
 	}

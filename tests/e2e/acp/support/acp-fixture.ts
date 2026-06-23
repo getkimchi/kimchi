@@ -84,7 +84,7 @@ export class RecordingClient {
 	readonly permissionRequests: acp.RequestPermissionRequest[] = []
 	readonly elicitationRequests: Array<{ method: string; params: unknown }> = []
 
-	private permissionResolver: ((response: acp.RequestPermissionResponse) => void) | null = null
+	private permissionResolver: ((response: acp.RequestPermissionResponse) => acp.RequestPermissionResponse) | null = null
 	private elicitationResolver: ((response: acp.CreateElicitationResponse) => acp.CreateElicitationResponse) | null =
 		null
 
@@ -103,6 +103,12 @@ export class RecordingClient {
 
 	async requestPermission(params: acp.RequestPermissionRequest): Promise<acp.RequestPermissionResponse> {
 		this.permissionRequests.push(params)
+		// If a test hooked the next permission response, consume it once.
+		if (this.permissionResolver) {
+			const resolver = this.permissionResolver
+			this.permissionResolver = null
+			return resolver({ outcome: { outcome: "selected", optionId: "" } })
+		}
 		// Auto-approve the first allow_once option so the test scenario
 		// can proceed through tool execution without manual intervention.
 		const allow = params.options.find((o) => o.kind === "allow_once") ?? params.options[0]
@@ -128,7 +134,7 @@ export class RecordingClient {
 		if (this.elicitationResolver) {
 			const resolver = this.elicitationResolver
 			this.elicitationResolver = null
-			return resolver({ action: "accept", content: {} }) as acp.CreateElicitationResponse
+			return resolver({ action: "accept", content: {} })
 		}
 		return { action: "accept", content: {} }
 	}
@@ -136,6 +142,22 @@ export class RecordingClient {
 	/** Hook the next elicitation request to resolve with the given answer. */
 	answerNextElicitationWith(response: acp.CreateElicitationResponse): void {
 		this.elicitationResolver = () => response
+	}
+
+	/**
+	 * Hook the next permission request to resolve with the given outcome.
+	 * If `optionId` is not supplied, the resolver picks the first option
+	 * matching `kind` (e.g. "reject_once") so callers can express intent
+	 * without knowing the synthesized option ids.
+	 */
+	answerNextPermissionWith(response: acp.RequestPermissionResponse | { kind: string }): void {
+		this.permissionResolver = () => {
+			if ("outcome" in response) return response
+			// Find the matching option on the *most recently received* request.
+			const req = this.permissionRequests[this.permissionRequests.length - 1]
+			const opt = req?.options.find((o) => o.kind === response.kind) ?? req?.options[0]
+			return { outcome: { outcome: "selected", optionId: opt?.optionId ?? "" } }
+		}
 	}
 
 	/** All agent_message_chunk text chunks concatenated, per session. */

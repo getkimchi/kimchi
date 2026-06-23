@@ -251,14 +251,14 @@ export class KimchiAcpAgent implements Agent {
 		// dispose it — so make ownership transfer atomic.
 		try {
 			assertSessionHasModel(session)
-			const sessionId = session.sessionId
-			registerAcpPrompter(sessionId, createAcpPermissionPrompter(this.conn, sessionId, buildToolCallUpdate))
 
+			const sessionId = session.sessionId
+			const uiContext = this.createUiContext(session)
 			const permissionFlagController = registerPermissionFlagController(sessionId, initialMode, (params) =>
 				this.send(params),
 			)
-
-			await this.bindAcpExtensions(session)
+			registerAcpPrompter(sessionId, createAcpPermissionPrompter(this.conn, sessionId, uiContext, buildToolCallUpdate))
+			await this.bindAcpExtensions(session, uiContext)
 
 			const unsubscribe = session.subscribe((event) => this.onSessionEvent(sessionId, event))
 			this.sessions.set(sessionId, { session, unsubscribe })
@@ -280,14 +280,16 @@ export class KimchiAcpAgent implements Agent {
 		}
 	}
 
-	private async bindAcpExtensions(session: AgentSession): Promise<void> {
+	private createUiContext(session: AgentSession): ExtensionUIContext {
+		// Build the ExtensionUIContext that pi's runner routes `ctx.ui.*` calls
+		// through. Bound to a single session for its lifetime — the connection,
+		// capabilities, and `send` callback are all session-scoped state.
+		return createAcpUIContext(this.conn, session.sessionId, this.clientCapabilities, (params) => this.send(params))
+	}
+
+	private async bindAcpExtensions(session: AgentSession, uiContext: ExtensionUIContext): Promise<void> {
 		await session.bindExtensions({
-			// Build the ExtensionUIContext that pi's runner routes `ctx.ui.*` calls
-			// through. Bound to a single session for its lifetime — the connection,
-			// capabilities, and `send` callback are all session-scoped state.
-			uiContext: createAcpUIContext(this.conn, session.sessionId, this.clientCapabilities, (params) =>
-				this.send(params),
-			),
+			uiContext,
 			// Mode is "rpc" so extensions can branch on `ctx.mode === "rpc"` to detect
 			// this transport (added in pi-coding-agent 0.78.1). `ctx.hasUI` is derived
 			// from the uiContext by the runner, so extensions that only check the
@@ -415,11 +417,11 @@ export class KimchiAcpAgent implements Agent {
 		}
 		try {
 			assertSessionHasModel(session)
-			registerAcpPrompter(sid, createAcpPermissionPrompter(this.conn, sid, buildToolCallUpdate))
 
+			const uiContext = this.createUiContext(session)
 			const permissionFlagController = registerPermissionFlagController(sid, initialMode, (params) => this.send(params))
-
-			await this.bindAcpExtensions(session)
+			registerAcpPrompter(sid, createAcpPermissionPrompter(this.conn, sid, uiContext, buildToolCallUpdate))
+			await this.bindAcpExtensions(session, uiContext)
 
 			const unsubscribe = session.subscribe((event) => this.onSessionEvent(sid, event))
 			this.sessions.set(sid, { session, unsubscribe })
