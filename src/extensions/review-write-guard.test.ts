@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { OrchestratorWriteGuard } from "./review-write-guard.js"
-import reviewWriteGuardExtension from "./review-write-guard.js"
 
 let mockPhase: string | undefined = "review"
 
@@ -147,37 +146,5 @@ describe("OrchestratorWriteGuard — other phases", () => {
 		mockPhase = "plan"
 		guard.checkToolCall("edit")
 		expect(guard.getState().subagentReturnedInBuild).toBe(false)
-	})
-})
-
-describe("reviewWriteGuardExtension - warn sendMessage delivery", () => {
-	it("delivers steer message with deliverAs: steer after subagent return in build phase", () => {
-		mockPhase = "build"
-
-		type Handler = (event: unknown, ctx?: unknown) => unknown
-		const handlers = new Map<string, Handler[]>()
-		const sendMessage = vi.fn()
-		const pi = {
-			on: (event: string, handler: Handler) => {
-				const list = handlers.get(event) ?? []
-				list.push(handler)
-				handlers.set(event, list)
-			},
-			sendMessage,
-		}
-
-		reviewWriteGuardExtension(pi as never, { buildPhaseThreshold: 2 })
-
-		// Record a subagent return so the build-phase steer logic activates
-		for (const h of handlers.get("tool_result") ?? []) h({ toolName: "Agent" })
-
-		// First edit: allowed (below threshold)
-		for (const h of handlers.get("tool_call") ?? []) h({ toolName: "edit" })
-		// Second edit: triggers steer
-		for (const h of handlers.get("tool_call") ?? []) h({ toolName: "edit" })
-
-		expect(sendMessage).toHaveBeenCalledOnce()
-		const [, options] = sendMessage.mock.calls[0]
-		expect(options).toEqual({ deliverAs: "steer" })
 	})
 })

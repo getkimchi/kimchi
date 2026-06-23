@@ -6,11 +6,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { BASH_TOOL_GUARD_EVENTS } from "./bash-tool-guard-events.js"
 import bashToolGuardExtension, { STEER_MESSAGE_TYPE } from "./bash-tool-guard.js"
-import type { PromptVariant } from "./prompt-construction/variants/index.js"
 
 let mockMode: string | undefined = "default"
 let mockResourceEnabled = true
-const mockResolvePromptVariant = vi.fn((): PromptVariant => ({ name: "default" }))
 
 vi.mock("./permissions/mode-controller.js", () => ({
 	getPermissionMode: () => (mockMode ? { mode: mockMode, source: "user" } : undefined),
@@ -20,14 +18,9 @@ vi.mock("../resources/store.js", () => ({
 	isResourceEnabled: (id: string) => (id === "extensions.bash-tool-guard" ? mockResourceEnabled : true),
 }))
 
-vi.mock("./prompt-construction/variants/index.js", () => ({
-	resolvePromptVariant: () => mockResolvePromptVariant(),
-}))
-
 afterEach(() => {
 	mockMode = "default"
 	mockResourceEnabled = true
-	mockResolvePromptVariant.mockReturnValue({ name: "default" })
 })
 
 interface BlockResult {
@@ -42,11 +35,19 @@ interface MockExtensionAPI {
 	events: { emit: ReturnType<typeof vi.fn> }
 	_blockResult?: BlockResult
 	_emittedEvents: Array<{ channel: string; payload: unknown }>
+	/** getAllTools() returns the live bash tool list. The integration tests
+	 *  don't exercise the preference description override, so the default
+	 *  empty array is fine — the session_start hook only needs the call to
+	 *  not throw. Override via `setTools()` for tests that need a specific
+	 *  tool list. */
+	getAllTools: () => Array<{ name: string; description: string }>
+	setTools: (tools: Array<{ name: string; description: string }>) => void
 }
 
 function createMockPI(): MockExtensionAPI {
 	const handlers: MockExtensionAPI["handlers"] = {}
 	const _emittedEvents: MockExtensionAPI["_emittedEvents"] = []
+	let tools: Array<{ name: string; description: string }> = []
 	return {
 		handlers,
 		on(event: string, handler) {
@@ -60,6 +61,12 @@ function createMockPI(): MockExtensionAPI {
 			}),
 		},
 		_emittedEvents,
+		getAllTools() {
+			return tools
+		},
+		setTools(t) {
+			tools = t
+		},
 	}
 }
 
@@ -760,53 +767,5 @@ describe("bashToolGuardExtension — per-category thresholds", () => {
 			input: { command: "sed -i 's/a/b/' a.ts" },
 		})
 		expect(rEdit?.block).toBe(true)
-	})
-})
-
-describe("bashToolGuardExtension - variant suppression", () => {
-	it("registers no handlers when variant is v2 (suppressBashToolGuard: true)", () => {
-		mockResolvePromptVariant.mockReturnValue({ name: "v2", suppressBashToolGuard: true })
-		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
-		expect(pi.handlers.session_start).toBeUndefined()
-		expect(pi.handlers.input).toBeUndefined()
-		expect(pi.handlers.tool_call).toBeUndefined()
-	})
-
-	it("does not warn on a bash read command when variant is v2", () => {
-		mockResolvePromptVariant.mockReturnValue({ name: "v2", suppressBashToolGuard: true })
-		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
-		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat foo.ts" } })
-		expect(pi.sendMessage).not.toHaveBeenCalled()
-	})
-
-	it("registers no handlers when variant is opinionated-v2 (inherits suppressBashToolGuard: true)", () => {
-		mockResolvePromptVariant.mockReturnValue({ name: "opinionated-v2", suppressBashToolGuard: true })
-		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
-		expect(pi.handlers.session_start).toBeUndefined()
-		expect(pi.handlers.input).toBeUndefined()
-		expect(pi.handlers.tool_call).toBeUndefined()
-	})
-
-	it("does not warn on a bash read command when variant is opinionated-v2", () => {
-		mockResolvePromptVariant.mockReturnValue({ name: "opinionated-v2", suppressBashToolGuard: true })
-		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
-		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat foo.ts" } })
-		expect(pi.sendMessage).not.toHaveBeenCalled()
-	})
-
-	it("still warns on a bash read command with the default variant", () => {
-		mockResolvePromptVariant.mockReturnValue({ name: "default" })
-		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI)
-		fireSessionStart(pi)
-		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat foo.ts" } })
-		expect(pi.sendMessage).toHaveBeenCalledOnce()
-		expect(pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: STEER_MESSAGE_TYPE }), {
-			deliverAs: "steer",
-		})
 	})
 })

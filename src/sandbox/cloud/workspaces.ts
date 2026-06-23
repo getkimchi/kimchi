@@ -23,7 +23,7 @@ export async function listWorkspaces(apiKey: string, options?: ListWorkspacesOpt
 			params.set("page.limit", String(LIST_WORKSPACES_PAGE_LIMIT))
 			if (cursor) params.set("page.cursor", cursor)
 
-			const url = `${endpoint}/ai-optimizer/v1beta/organizations/${encodeURIComponent(orgId)}/sessions?${params.toString()}`
+			const url = `${endpoint}/ai-optimizer/v1beta/organizations/${encodeURIComponent(orgId)}/workspaces?${params.toString()}`
 			const resp = await fetchWithTimeout(
 				url,
 				{
@@ -88,7 +88,7 @@ export async function deleteWorkspace(
 	const fetchImpl = options?.fetch ?? globalThis.fetch
 	const endpoint = resolveEndpoint(options)
 
-	const url = `${endpoint}/ai-optimizer/v1beta/organizations/${encodeURIComponent(orgId)}/sessions/${encodeURIComponent(workspaceId)}`
+	const url = `${endpoint}/ai-optimizer/v1beta/organizations/${encodeURIComponent(orgId)}/workspaces/${encodeURIComponent(workspaceId)}`
 	const resp = await fetchWithTimeout(
 		url,
 		{

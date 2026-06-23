@@ -44,9 +44,10 @@ const M = "kimchi-dev"
 /**
  * Model role defaults for the spicy variant.
  *
- * minimax-m3 is the primary model for all reasoning and coding roles.
- * nemotron-3-ultra-fp4 is kept for the explorer role; it is cheap, fast,
- * and has a 1M-token context window ideal for read-only codebase traversal.
+ * minimax-m3 drives all reasoning and coding roles (orchestrator, planner,
+ * builder, reviewer). nemotron-3-ultra-fp4 is kept for the explorer role;
+ * it is cheap, fast, and has a 1M-token context window ideal for read-only
+ * codebase traversal. The judge role uses claude-opus-4-6 for grading.
  *
  * These are DEFAULTS only; explicit user settings.json modelRoles still win.
  */
@@ -56,7 +57,7 @@ export const SPICY_MODEL_ROLE_DEFAULTS = {
 	builder: `${M}/minimax-m3`,
 	reviewer: `${M}/minimax-m3`,
 	explorer: `${M}/nemotron-3-ultra-fp4`,
-	judge: `${M}/minimax-m3`,
+	judge: `${M}/claude-opus-4-6`,
 } as const
 
 // ---------------------------------------------------------------------------

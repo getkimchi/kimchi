@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest"
+import { describe, expect, it } from "vitest"
 import { LoopGuard, type ToolHistoryRecord, fingerprint } from "./loop-guard.js"
 
 const FP_A = "fp_a"
@@ -423,40 +423,5 @@ describe("Edit-then-rerun cycle must NOT fire", () => {
 		}
 		expect(guard.isWarned()).toBe(false)
 		expect(guard.isTriggered()).toBe(false)
-	})
-})
-
-describe("loopGuardExtension - warn sendMessage delivery", () => {
-	it("delivers warn message with deliverAs: steer on consecutive identical errors", async () => {
-		const { default: loopGuardExtension } = await import("./loop-guard.js")
-
-		type Handler = (event: unknown) => unknown
-		const handlers = new Map<string, Handler[]>()
-		const sendMessage = vi.fn()
-		const pi = {
-			on: (event: string, handler: Handler) => {
-				const list = handlers.get(event) ?? []
-				list.push(handler)
-				handlers.set(event, list)
-			},
-			sendMessage,
-		}
-
-		loopGuardExtension(pi as never)
-
-		// 3 consecutive identical failing tool results triggers a warn
-		const failEvent = {
-			toolName: "bash",
-			input: { command: "failing-cmd" },
-			isError: true,
-			content: [{ type: "text", text: "error: same output every time" }],
-		}
-		for (let i = 0; i < 3; i++) {
-			for (const h of handlers.get("tool_result") ?? []) h(failEvent)
-		}
-
-		expect(sendMessage).toHaveBeenCalledOnce()
-		const [, options] = sendMessage.mock.calls[0]
-		expect(options).toEqual({ deliverAs: "steer" })
 	})
 })

@@ -153,7 +153,20 @@ const FIND_EXECUTION_FLAGS = new Set([
 ])
 
 // Programs where only specific subcommands are read-only.
-const READ_ONLY_SUBCOMMANDS: Record<string, Set<string>> = {
+/** Allowed subcommands for a program in plan mode.
+ *  Two shapes are supported:
+ *  - `Set<string>` (legacy): the first subcommand must be in the set; sub-sub-
+ *    commands are NOT checked. Used by `git`, `npm`, `kubectl`, etc., whose
+ *    listed subcommands have no mutation-capable sub-sub-commands worth
+ *    distinguishing, OR where the team has accepted the trade-off (e.g. `git
+ *    branch <new>` creates a branch but is rarely abused in plan mode).
+ *  - `Record<subcommand, string[] | "*">` (fine-grained): the first subcommand
+ *    must be a key, then `tokens[2]` is matched against the array, or the value
+ *    `"*"` allows any sub-sub-command. Absent sub-sub-command (e.g. bare
+ *    `gh pr`) is blocked. Used by CLIs whose parent commands have both safe
+ *    and unsafe children (e.g. `gh pr`, `glab mr`).
+ */
+const READ_ONLY_SUBCOMMANDS: Record<string, Set<string> | Record<string, string[] | "*">> = {
 	git: new Set([
 		"status",
 		"log",
@@ -188,6 +201,58 @@ const READ_ONLY_SUBCOMMANDS: Record<string, Set<string>> = {
 	cargo: new Set(["tree", "search", "--version"]),
 	docker: new Set(["ps", "images", "logs", "inspect", "version", "info"]),
 	kubectl: new Set(["get", "describe", "logs", "top", "version", "config"]),
+	// `gh` and `glab` use the fine-grained form (per-sub-sub-command
+	// allowlist) because both CLIs have mutation-capable sub-sub-commands
+	// under each parent (e.g. `gh pr create`, `glab mr create`, `gh repo
+	// delete`, `glab ci run`). Plan mode has no classifier gate, so anything
+	// past `isReadOnlyBashCommand` runs without a prompt — a coarse
+	// parent-level allowlist would let those mutations through.
+	//
+	// Sub-sub-commands not listed under a parent (e.g. `gh pr checkout`) are
+	// BLOCKED. To widen, add to the relevant sub-sub-command array.
+	//
+	// The matcher inspects `tokens[2]` only — sub-sub-sub-commands and flags
+	// are not considered. If a parent has both safe and unsafe sub-sub-
+	// sub-commands (e.g. `glab cluster agent list` vs `glab cluster agent
+	// uninstall`), the parent is omitted entirely to avoid over-broad
+	// allowance.
+	//
+	// Intentionally NOT included as parents at all:
+	//   - `gh api` / `glab api`: thin HTTP wrappers that can mutate.
+	//   - `gh browse` / `gh codespace`: process side effects (browser, VM).
+	//   - `glab cluster`: nested sub-sub-sub-commands include mutations
+	//      (e.g. `agent uninstall`); wildcards would be over-broad.
+	gh: {
+		pr: ["view", "list", "diff", "checks", "status"],
+		issue: ["view", "list", "status"],
+		repo: ["view", "list"],
+		run: ["view", "list", "watch"],
+		workflow: ["view", "list"],
+		release: ["view", "list"],
+		auth: ["status"],
+		config: ["list", "get"],
+		extension: ["list", "search"],
+		gist: ["list", "view"],
+		status: "*",
+		search: "*",
+	},
+	glab: {
+		mr: ["list", "view", "diff"],
+		"merge-request": ["list", "view", "diff"],
+		issue: ["list", "view"],
+		repo: ["list", "view"],
+		project: ["list", "view"],
+		ci: ["list", "view", "status", "trace", "lint"],
+		pipeline: ["list", "view", "status", "trace"],
+		release: ["list", "view"],
+		snippet: ["list", "view"],
+		variable: ["list", "get"],
+		auth: ["status"],
+		config: ["get", "list"],
+		user: "*",
+		status: "*",
+		search: "*",
+	},
 }
 
 // Programs that must never run — even when gated behind rules — because the
@@ -344,7 +409,23 @@ function isSegmentReadOnly(tokens: string[]): boolean {
 	const allowedSubs = READ_ONLY_SUBCOMMANDS[program]
 	if (allowedSubs) {
 		const sub = tokens[1]
-		return sub !== undefined && allowedSubs.has(sub)
+		if (sub === undefined) return false
+
+		// Legacy Set<string>: any sub-sub-command allowed once the parent
+		// subcommand is in the set. Used by git, npm, kubectl, etc.
+		if (allowedSubs instanceof Set) {
+			return allowedSubs.has(sub)
+		}
+
+		// Fine-grained: per-sub-sub-command allowlist. Absent sub-sub-command
+		// (e.g. `gh pr` with no third token) is blocked — `gh pr` alone is
+		// useless and treating it as read-only invites confusion.
+		const allowedActions = allowedSubs[sub]
+		if (allowedActions === undefined) return false
+		if (allowedActions === "*") return true
+
+		const action = tokens[2]
+		return action !== undefined && allowedActions.includes(action)
 	}
 
 	const restrictedCheck = RESTRICTED_PROGRAMS[program]

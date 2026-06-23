@@ -121,7 +121,7 @@ describe("resolveModelRolesForVariant: variant defaults (no settings.json)", () 
 		expect(roles.planner).toBe("kimchi-dev/minimax-m3")
 		expect(roles.builder).toBe("kimchi-dev/minimax-m3")
 		expect(roles.reviewer).toBe("kimchi-dev/minimax-m3")
-		expect(roles.judge).toBe("kimchi-dev/minimax-m3")
+		expect(roles.judge).toBe("kimchi-dev/claude-opus-4-6")
 		expect(roles.explorer).toBe("kimchi-dev/nemotron-3-ultra-fp4")
 	})
 })
@@ -151,8 +151,8 @@ describe("SPICY variant modelRoleDefaults", () => {
 		expect(SPICY.modelRoleDefaults?.reviewer).toBe("kimchi-dev/minimax-m3")
 	})
 
-	it("judge is minimax-m3", () => {
-		expect(SPICY.modelRoleDefaults?.judge).toBe("kimchi-dev/minimax-m3")
+	it("judge is claude-opus-4-6", () => {
+		expect(SPICY.modelRoleDefaults?.judge).toBe("kimchi-dev/claude-opus-4-6")
 	})
 
 	it("explorer is nemotron (light, cheap, 1M-context)", () => {
@@ -298,10 +298,10 @@ describe("getModelRoles(): production singleton is variant-aware", () => {
 		expect(getModelRoles().planner).toBe("kimchi-dev/minimax-m3")
 	})
 
-	it("spicy variant: judge is kimchi-dev/minimax-m3", () => {
+	it("spicy variant: judge is kimchi-dev/claude-opus-4-6", () => {
 		process.env[MODEL_ROLES_SETTINGS_PATH_ENV] = NO_SETTINGS
 		process.env[PROMPT_VARIANT_ENV] = SPICY_NAME
-		expect(getModelRoles().judge).toBe("kimchi-dev/minimax-m3")
+		expect(getModelRoles().judge).toBe("kimchi-dev/claude-opus-4-6")
 	})
 
 	it("spicy variant: explorer is nemotron (the light model)", () => {
