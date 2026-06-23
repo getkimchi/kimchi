@@ -92,8 +92,10 @@ List non-negotiable requirements (e.g., "no new dependencies", "preserve existin
 ## Chunks
 Ordered, independently-verifiable units of work. Each chunk has:
 - **Scope**: what it covers (file paths, components)
+- **Files Changed**: every file created, modified, or deleted — use concrete paths, not globs
 - **Depends On**: which prior chunk(s) it requires
 - **Accept When**: 2-3 concrete, verifiable criteria
+- **Test Coverage**: which test files need creation or update for this chunk
 - **Open Questions**: explicitly list any unknowns or assumptions (never leave implicit)
 
 ## Verification Strategy
@@ -109,4 +111,16 @@ Assumption rule: you are encouraged to make assumptions when planning — explor
 educated guesses. However, every assumption must be surfaced explicitly and resolved with the user
 before the plan is finalized. Add unresolved assumptions to the relevant chunk's Open Questions,
 use your mode's Q&A tool to confirm them, then move confirmed ones to the Decision Log.
-Do not present the plan as final while any Open Question remains unresolved.`
+Do not present the plan as final while any Open Question remains unresolved.
+
+Self-validation: after writing the plan, re-read it and cross-check against the completion criteria.
+For each chunk, verify: (1) Files Changed lists concrete paths, not vague descriptions, (2) Accept
+When criteria are testable and specific, (3) no implicit assumptions remain unrecorded. Flag and
+fix any gaps before submitting the plan for review.
+
+Common plan anti-patterns to avoid:
+- Chunks that say "refactor X" without listing which files change and how
+- Accept When criteria that are just "it works" or "tests pass" without naming the specific test
+- Every chunk depending on the previous one when some could be parallel
+- Exploration or discovery as an implementation chunk — that belongs in Steps 1/4, not in the plan
+- Verification Strategy that is identical for every chunk instead of chunk-specific`
