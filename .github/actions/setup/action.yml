@@ -33,7 +33,9 @@ runs:
     - name: Setup Bun
       if: inputs.bun == 'true'
       uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-
+      with:
+        bun-version: "1.1.38"
+        
     - name: Cache Playwright browsers
       if: inputs.playwright == 'true'
       uses: actions/cache@v4
