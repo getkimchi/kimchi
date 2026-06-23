@@ -471,6 +471,19 @@ export default function loopGuardExtension(pi: ExtensionAPI) {
 		}
 	})
 
+	// After the loop guard terminates tool use, the model must produce a
+	// text-only response. Once that response is complete (turn_end), reset
+	// the guard so the model gets a fresh chance to try a different approach.
+	// Without this, in one-shot sessions (benchmarks, ferments) the triggered
+	// flag stays true forever and every subsequent tool call is blocked —
+	// deadlocking with the exploration guard which tells the model to call
+	// a tool.
+	pi.on("turn_end", () => {
+		if (guard.isTriggered()) {
+			guard.reset()
+		}
+	})
+
 	pi.on("tool_result", (event) => {
 		const record: ToolHistoryRecord = {
 			toolName: event.toolName,
