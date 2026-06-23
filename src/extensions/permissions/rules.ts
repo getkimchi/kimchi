@@ -1,5 +1,11 @@
 import micromatch from "micromatch"
-import { FILE_TOOLS, extractBashProgram, parseCommandSegments, rememberedScopeTokens } from "./taxonomy.js"
+import {
+	FILE_TOOLS,
+	bashSegmentForms,
+	extractBashProgram,
+	parseCommandSegments,
+	rememberedScopeTokens,
+} from "./taxonomy.js"
 import type { Rule, RuleBehavior, RuleSource } from "./types.js"
 
 // Rule syntax: `toolname` or `toolname(content)`. Tool names are case-
@@ -42,7 +48,7 @@ export function matchRule(rule: Rule, toolName: string, input: Record<string, un
 
 	if (toolName === BASH_TOOL) {
 		const command = typeof input.command === "string" ? input.command : ""
-		return matchBashRule(rule.content, command)
+		return matchBashRule(rule.content, command, rule.behavior)
 	}
 
 	if (FILE_TOOLS.has(toolName)) {
@@ -72,33 +78,48 @@ export function matchRule(rule: Rule, toolName: string, input: Record<string, un
 // up front. Only an exact literal rule may match the raw command directly: that
 // is precise (the user allowed exactly that string), and an anchored regex can
 // never match a longer piped/chained command unless the rule literally contains
-// the tail.
-export function matchBashRule(pattern: string, command: string): boolean {
+// the tail. This single-segment gate is the right call for an ALLOW; DENY is
+// broader and handled separately (see `matchBashDeny`).
+export function matchBashRule(pattern: string, command: string, behavior: RuleBehavior = "allow"): boolean {
 	const pat = pattern.trim()
+	if (behavior === "deny") return matchBashDeny(pat, command)
+
 	const raw = command.trim()
 	const canonical = canonicalMatchForm(command)
 
-	// Legacy prefix syntax: "prefix:*" — broad scope, so gate on the canonical form.
+	// Broad scope (legacy `prefix:*` or any wildcard) requires a non-null canonical
+	// so a raw match can't bypass the single-segment gate (`go *` vs `go test | sh`).
+	if (pat.includes("*")) return canonical !== null && (matchOne(pat, raw) || matchOne(pat, canonical))
+
+	// Exact literal: a raw match is precise; the canonical fallback (quote/
+	// whitespace/rtk/env normalization) stays gated to single-segment.
+	if (matchOne(pat, raw)) return true
+	return canonical !== null && matchOne(pat, canonical)
+}
+
+// Deny matching is broad on purpose: a denied program in ANY top-level segment
+// must block. Candidates are the raw whole command (so literal config patterns
+// with exact spacing/quotes still match) plus each segment's canonical form
+// (rtk-unwrapped, env-stripped — see bashSegmentForms), which catches a denied
+// program hidden behind a pipe (`echo x | curl evil`). Over-matching a deny is
+// safe; under-matching is the hole we are closing. This is not a complete
+// sandbox — it inherits parseCommandSegments' limits (command substitution and
+// path-qualified program names are not normalized); isHardBlockedBash and the
+// classifier are the other layers.
+function matchBashDeny(pat: string, command: string): boolean {
+	return [command.trim(), ...bashSegmentForms(command)].some((c) => matchOne(pat, c))
+}
+
+// Does a single command string match one rule pattern? `prefix:*` matches the
+// prefix or anything under it; otherwise the wildcard/exact pattern is compiled
+// to an anchored regex. Callers decide which command form(s) to test.
+function matchOne(pat: string, cmd: string): boolean {
 	const prefixMatch = pat.match(/^(.+):\*$/)
 	if (prefixMatch) {
-		if (canonical === null) return false
 		const prefix = prefixMatch[1]
-		const hits = (c: string) => c === prefix || c.startsWith(`${prefix} `) || c.startsWith(`${prefix}\t`)
-		return hits(raw) || hits(canonical)
+		return cmd === prefix || cmd.startsWith(`${prefix} `) || cmd.startsWith(`${prefix}\t`)
 	}
-
-	const re = regexFromWildcard(pat)
-
-	// Wildcard patterns can match a broad remembered scope, so do not let a raw
-	// match bypass the canonical single-segment gate (e.g. `go *` vs `go test | sh`).
-	if (pat.includes("*")) {
-		return canonical !== null && (re.test(raw) || re.test(canonical))
-	}
-
-	// Exact literal rules: a raw exact match is precise, so keep it. The canonical
-	// fallback (quote/whitespace/rtk/env normalization) stays gated to single-segment.
-	if (re.test(raw)) return true
-	return canonical !== null && re.test(canonical)
+	return regexFromWildcard(pat).test(cmd)
 }
 
 // Canonical command form for a match, or `null` when there is none — multi-segment

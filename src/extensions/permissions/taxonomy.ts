@@ -355,6 +355,25 @@ export function rememberedScopeTokens(command: string): string[] {
 	return [...env, ...prog]
 }
 
+// Canonical command form for each top-level segment that `parseCommandSegments`
+// resolves (split on `| ; && ||`), with the rtk wrapper(s) stripped, env
+// assignments dropped, and quotes/whitespace normalized. Used by DENY matching,
+// which checks every segment so a denied program behind a pipe still blocks.
+// (allow matching stays single-segment via rememberedScopeTokens — it must not
+// widen an approval to a piped tail.) NOTE: this inherits `parseCommandSegments`
+// limits — command substitution (`$(...)`, backticks) and path-qualified program
+// names are not normalized, so deny is not a complete sandbox. See isHardBlockedBash
+// / the classifier for the other layers.
+export function bashSegmentForms(command: string): string[] {
+	return parseCommandSegments(command)
+		.map((seg) => {
+			let tokens = seg.tokens
+			while (tokens[0] === "rtk") tokens = tokens.slice(1)
+			return tokens.join(" ")
+		})
+		.filter((form) => form.length > 0)
+}
+
 export function isReadOnlyBashCommand(command: string): boolean {
 	if (isHardBlockedBash(command)) return false
 

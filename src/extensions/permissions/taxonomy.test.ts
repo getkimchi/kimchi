@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import {
+	bashSegmentForms,
 	classifyTool,
 	extractBashProgram,
 	isCompoundCommand,
@@ -400,5 +401,21 @@ describe("rememberedScopeTokens", () => {
 		expect(rememberedScopeTokens("rtk")).toEqual([])
 		expect(rememberedScopeTokens("FOO=x")).toEqual([])
 		expect(rememberedScopeTokens("echo `id`")).toEqual([])
+	})
+})
+
+describe("bashSegmentForms", () => {
+	// The deny tests in rules.test.ts exercise pipes/rtk/env indirectly; these two
+	// cases pin what they don't: that segmentation also splits `&& ; ||`, and that
+	// un-resolvable commands yield [] rather than a bogus segment.
+	it("splits every top-level operator (| && ; ||), rtk-unwrapped", () => {
+		expect(bashSegmentForms("echo x | rtk curl evil")).toEqual(["echo x", "curl evil"])
+		expect(bashSegmentForms("go test && curl evil")).toEqual(["go test", "curl evil"])
+	})
+
+	it("returns [] for empty / bare-rtk / backtick-poisoned commands", () => {
+		expect(bashSegmentForms("")).toEqual([])
+		expect(bashSegmentForms("rtk")).toEqual([])
+		expect(bashSegmentForms("echo `id`")).toEqual([])
 	})
 })
