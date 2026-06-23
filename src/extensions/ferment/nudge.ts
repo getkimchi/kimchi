@@ -22,6 +22,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Ferment } from "../../ferment/types.js"
+
 import { decideContinuation } from "./continuation.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { scheduleNextFermentAction } from "./scheduler.js"
