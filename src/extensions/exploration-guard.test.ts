@@ -323,8 +323,8 @@ describe("No-tool turn detection (thinking-only detector)", () => {
 		}
 		expect(steers).toHaveLength(2)
 		expect(steers[0]).toContain("3 consecutive turns with no tool calls")
-		expect(steers[1]).toContain("turn 5 with no tool calls")
-		expect(steers[1]).toContain("respond with plain text")
+		expect(steers[1]).toContain("5 consecutive turns with no tool calls")
+		expect(steers[1]).toContain("You must use a tool this turn")
 		// Counter resets after the mandatory steer so the model gets a fresh budget.
 		expect(guard.getConsecutiveNoToolTurns()).toBe(0)
 	})
@@ -349,7 +349,7 @@ describe("No-tool turn detection (thinking-only detector)", () => {
 		guard.turnStart()
 		guard.turnEnd((text) => steers.push(text))
 		expect(steers).toHaveLength(2)
-		expect(steers[1]).toContain("turn 4 with no tool calls")
+		expect(steers[1]).toContain("4 consecutive turns with no tool calls")
 	})
 
 	it("each threshold fires once per streak; mandatory steer resets the counter", () => {
@@ -366,7 +366,7 @@ describe("No-tool turn detection (thinking-only detector)", () => {
 		for (let i = 0; i < 5; i++) noToolTurn()
 		expect(steers).toHaveLength(2)
 		expect(steers[0]).toContain("3 consecutive turns with no tool calls")
-		expect(steers[1]).toContain("turn 5 with no tool calls")
+		expect(steers[1]).toContain("5 consecutive turns with no tool calls")
 		expect(guard.getConsecutiveNoToolTurns()).toBe(0)
 
 		for (let i = 0; i < 3; i++) noToolTurn()
@@ -618,9 +618,10 @@ describe("Subagent terminate behavior", () => {
 		expect(guard.isSubagentStuck()).toBe(false)
 	})
 
-	it("subagent mandatory steer uses the strong wording (same as main agent)", () => {
-		// The mandatory steer wording was strengthened for both modes —
-		// main agents get the strong wording but stay steer-only.
+	it("subagent uses strong wording; main agent uses original wording", () => {
+		// Strong wording is only for subagents. Main agent gets the original
+		// mandatory message — the strong wording caused main-agent models
+		// to think harder instead of acting, making thinking loops worse.
 		const subGuard = createGuard({ isSubagent: () => true })
 		const mainGuard = createGuard()
 		const subSteers: string[] = []
@@ -631,10 +632,12 @@ describe("Subagent terminate behavior", () => {
 			mainGuard.turnStart()
 			mainGuard.turnEnd((t) => mainSteers.push(t))
 		}
-		// Both should contain the strong-wording fragments.
+		// Subagent gets the strong wording with termination warning.
 		expect(subSteers[1]).toContain("respond with plain text")
 		expect(subSteers[1]).toContain("terminated")
-		expect(mainSteers[1]).toContain("respond with plain text")
-		expect(mainSteers[1]).toContain("terminated")
+		// Main agent gets the original wording.
+		expect(mainSteers[1]).toContain("5 consecutive turns with no tool calls")
+		expect(mainSteers[1]).toContain("You must use a tool this turn")
+		expect(mainSteers[1]).not.toContain("terminated")
 	})
 })

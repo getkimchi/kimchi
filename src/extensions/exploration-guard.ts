@@ -142,13 +142,15 @@ export class ExplorationGuard {
 			this.consecutiveNoToolTurns++
 
 			if (this.consecutiveNoToolTurns === this.noToolSteerThreshold) {
-				// Stronger wording (mandatory steer). Subagents also set a
-				// flag so the next tool_call is blocked — see the tool_call
-				// hook below. Main agents keep the steer-only behaviour; the
-				// wording is stronger but the agent can still ignore it.
-				sendSteer(NO_TOOL_MANDATORY_STRONG_BASE.replace("%d", String(this.noToolSteerThreshold)))
+				// For subagents: use the strong wording and set the stuck flag
+				// so the next tool_call is blocked, forcing a text response.
+				// For main agents: use the original wording — the stronger
+				// message caused models to think harder instead of acting.
 				if (this.isSubagent()) {
+					sendSteer(NO_TOOL_MANDATORY_STRONG_BASE.replace("%d", String(this.noToolSteerThreshold)))
 					this.subagentStuck = true
+				} else {
+					sendSteer(NO_TOOL_MANDATORY_BASE.replace("%d", String(this.noToolSteerThreshold)))
 				}
 				// Reset after the mandatory steer so the model gets a fresh
 				// budget rather than immediately re-triggering on the next turn.
