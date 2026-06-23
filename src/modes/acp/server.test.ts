@@ -11,7 +11,13 @@ import type {
 	AgentSession,
 	AgentSessionEvent,
 	AgentSessionEventListener,
+	AuthStorage,
+	ExtensionContext,
+	ExtensionUIContext,
+	ModelRegistry,
 	SessionInfo as PiSessionInfo,
+	SessionManager,
+	Theme,
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -1933,19 +1939,30 @@ describe("ACP mode controller integration with permissions extension", () => {
 		}
 	}
 
-	function createMockContext(sessionId: string, cwd: string): unknown {
+	function createMockContext(sessionId: string, cwd: string): ExtensionContext {
 		return {
-			sessionManager: { getSessionId: () => sessionId },
+			sessionManager: { getSessionId: vi.fn().mockReturnValue(sessionId) } as unknown as SessionManager,
 			cwd,
-			hasUI: false,
+			mode: "rpc",
+			hasUI: true,
 			ui: {
-				notify: () => {},
-				setStatus: () => {},
-				showPermissionSelector: () => Promise.resolve({ decision: "allow", remember: false }),
-				theme: { semanticColors: { fg: { red: "", yellow: "", green: "" } } },
-			},
-			modelRegistry: { authStorage: { getCredentials: () => ({}) } },
-		}
+				notify: vi.fn(),
+				setStatus: vi.fn(),
+				onTerminalInput: vi.fn(),
+				theme: { fg: vi.fn(), bg: vi.fn(), getFgAnsi: vi.fn() } as unknown as Theme,
+			} as unknown as ExtensionUIContext,
+			modelRegistry: {
+				authStorage: {} as AuthStorage,
+				getApiKeyAndHeaders: vi.fn().mockReturnValue({ ok: true, apiKey: "test" }),
+				getAvailable: vi.fn().mockReturnValue([
+					{
+						id: "kimi",
+						name: "kimi",
+					},
+				]),
+				find: vi.fn().mockReturnValue({ id: "kimi", name: "kimi" }),
+			} as unknown as ModelRegistry,
+		} as unknown as ExtensionContext
 	}
 
 	afterEach(() => {

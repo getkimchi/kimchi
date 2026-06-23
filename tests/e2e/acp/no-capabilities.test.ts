@@ -54,12 +54,13 @@ describe("ACP integration — no capabilities", () => {
 			"Use the bash tool to run exactly `touch /tmp/kimchi-acp-marker-none.txt` and reply with the word done",
 		)
 		expect(t2.stopReason, "turn 2 stop reason").toBe("end_turn")
-		expect(fixture.client.permissionRequests.length, "request_permission call (no-capabilities fallback)").toBeGreaterThanOrEqual(1)
+		expect(
+			fixture.client.permissionRequests.length,
+			"request_permission call (no-capabilities fallback)",
+		).toBeGreaterThanOrEqual(1)
 		expect(t2.chunks, "turn 2 agent text contains tool output").toContain("done")
 
-		const piNotifications = fixture.client.extNotifications.filter((n) =>
-			n.method.startsWith("_kimchi.dev/pi_"),
-		)
+		const piNotifications = fixture.client.extNotifications.filter((n) => n.method.startsWith("_kimchi.dev/pi_"))
 		expect(piNotifications, "no _kimchi.dev/pi_* extNotifications").toEqual([])
 
 		const warnings = fixture.client.acpWarnings()
@@ -69,8 +70,6 @@ describe("ACP integration — no capabilities", () => {
 		expect(notifyWarning, "notify warning found by test-notify marker").toBeDefined()
 		expect(setStatusWarning, "setStatus warning found by test-key marker").toBeDefined()
 		expect(notifyWarning, "notify warning references missing capability").toContain("_kimchi.dev/pi_notify")
-		expect(setStatusWarning, "setStatus warning references missing capability").toContain(
-			"_kimchi.dev/pi_setStatus",
-		)
+		expect(setStatusWarning, "setStatus warning references missing capability").toContain("_kimchi.dev/pi_setStatus")
 	})
 })

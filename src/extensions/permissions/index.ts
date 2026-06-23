@@ -143,10 +143,10 @@ function canPrompt(ctx: ExtensionContext): boolean {
 	if (isAgentWorker()) return false
 
 	const acpPrompter = getAcpPrompter(ctx.sessionManager.getSessionId())
-	if (ctx.mode === "rpc") return acpPrompter !== undefined
+	if (ctx.mode === "rpc" && acpPrompter) return true
 
 	if (ctx.hasUI) return true
-	return acpPrompter !== undefined
+	return false
 }
 
 function resolvePrompter(ctx: ExtensionContext): ToolPermissionPrompter | undefined {
@@ -156,7 +156,7 @@ function resolvePrompter(ctx: ExtensionContext): ToolPermissionPrompter | undefi
 	if (ctx.mode === "rpc" && acpPrompter) return acpPrompter
 
 	if (ctx.hasUI) return terminalPrompter(ctx)
-	return acpPrompter
+	return undefined
 }
 
 export default function permissionsExtension(pi: ExtensionAPI): void {
@@ -758,10 +758,11 @@ export async function handleCompoundConfirm(
 		const prompter = resolvePrompter(opts.ctx)
 		if (!prompter) return { block: true, reason: "No UI to confirm permission" }
 
-		if (!opts.ctx.hasUI) {
-			// ACP v1 presents compound commands as one permission card. It does
-			// not offer TUI's per-subcommand picker, so remembered rules are scoped
-			// to the compound call's suggested scope rather than each segment.
+		if (opts.ctx.mode !== "tui") {
+			// Non-TUI transports (chiefly ACP) present compound commands as one
+			// permission card. They do not offer TUI's per-subcommand picker, so
+			// remembered rules are scoped to the compound call's suggested scope
+			// rather than each segment.
 			const input = event.input
 			const outcome = await prompter.request({
 				toolCallId: event.toolCallId ?? `${event.toolName}-permission`,

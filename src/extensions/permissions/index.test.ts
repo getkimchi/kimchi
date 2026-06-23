@@ -59,6 +59,7 @@ function createMockContext(
 	let selectCallIndex = 0
 	return {
 		hasUI: true,
+		mode: "tui",
 		cwd: "/test",
 		sessionManager: { getSessionId: () => sessionId },
 		ui: {
@@ -693,7 +694,11 @@ describe("permissions ACP prompter", () => {
 		vi.unstubAllEnvs()
 	})
 
-	it("uses a registered ACP prompter in headless default mode", async () => {
+	it("uses a registered ACP prompter in headless rpc mode", async () => {
+		// The ACP prompter is only reachable when mode === "rpc"; this test
+		// covers the headless variant (hasUI === false). See also the
+		// "uses the ACP prompter in rpc mode when hasUI is false (headless rpc)"
+		// selection-logic test for the canPrompt/resolvePrompter decision.
 		const requests: Array<{ toolCallId: string; choices: string[] }> = []
 		registerAcpPrompter(TEST_SESSION_ID, {
 			request: async (req) => {
@@ -705,7 +710,7 @@ describe("permissions ACP prompter", () => {
 			},
 		})
 		const harness = createPermissionsHarness(["bash"])
-		const ctx = createClassifierContext()
+		const ctx = { ...createClassifierContext(), mode: "rpc" } as unknown as ExtensionContext
 		await harness.fire("session_start", {}, ctx)
 
 		const result = await harness.fire(
@@ -733,7 +738,8 @@ describe("permissions ACP prompter", () => {
 			},
 		})
 		const harness = createPermissionsHarness(["bash"])
-		const ctx = createClassifierContext()
+		// ACP prompter is only reachable in rpc mode.
+		const ctx = { ...createClassifierContext(), mode: "rpc" } as unknown as ExtensionContext
 		await harness.fire("session_start", {}, ctx)
 
 		for (const toolCallId of ["tc-once-1", "tc-once-2"]) {
@@ -759,7 +765,8 @@ describe("permissions ACP prompter", () => {
 			},
 		})
 		const harness = createPermissionsHarness(["bash"])
-		const ctx = createClassifierContext()
+		// ACP prompter is only reachable in rpc mode.
+		const ctx = { ...createClassifierContext(), mode: "rpc" } as unknown as ExtensionContext
 		await harness.fire("session_start", {}, ctx)
 
 		for (const toolCallId of ["tc-remember-1", "tc-remember-2"]) {
@@ -871,15 +878,13 @@ describe("permissions ACP prompter", () => {
 		expect(classifyToolCall).not.toHaveBeenCalled()
 	})
 
-	it("falls back to the classifier in rpc mode when no ACP prompter is registered", async () => {
-		// canPrompt returns false in rpc mode without an ACP prompter, so the
-		// permission flow must fall through to the classifier. With a
-		// requires-confirmation verdict and no prompter, the flow fails closed.
-		vi.mocked(classifyToolCall).mockResolvedValueOnce({
-			verdict: "requires-confirmation",
-			reason: "rpc without acp",
-			ok: true,
-		})
+	it("uses the terminal prompter in rpc mode when hasUI is true but no ACP prompter is registered", async () => {
+		// With no ACP prompter registered, resolvePrompter falls through to
+		// terminalPrompter(ctx) because hasUI is true — not the classifier.
+		// The classifier is reserved for mode === "auto" or non-promptable
+		// contexts, not for "rpc + ui + no acp". The mocked ui.select
+		// returns undefined (empty selectResults), which terminalPrompter
+		// surfaces as a denial.
 		const harness = createPermissionsHarness(["bash"])
 		const ctx = {
 			...createClassifierContext(),
@@ -895,9 +900,9 @@ describe("permissions ACP prompter", () => {
 			ctx,
 		)
 
-		expect(result).toEqual({ block: true, reason: "Classifier: rpc without acp (no UI to confirm)" })
-		expect(selectSpy).not.toHaveBeenCalled()
-		expect(classifyToolCall).toHaveBeenCalledTimes(1)
+		expect(selectSpy, "terminal prompter invoked via ctx.ui.select").toHaveBeenCalledTimes(1)
+		expect(classifyToolCall, "classifier not invoked when hasUI is true").not.toHaveBeenCalled()
+		expect(result).toEqual({ block: true, reason: "Declined by user" })
 	})
 })
 

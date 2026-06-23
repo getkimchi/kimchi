@@ -2,9 +2,9 @@
 // Each scenario drives a fixed prompt sequence against a fake LLM backend
 // and asserts the wire-level behavior the *client* observes.
 
-import type * as acp from "@agentclientprotocol/sdk"
 import { setTimeout as delay } from "node:timers/promises"
-import { PROMPT_TIMEOUT_MS, type AcpFixture } from "./acp-fixture.js"
+import type * as acp from "@agentclientprotocol/sdk"
+import { type AcpFixture, PROMPT_TIMEOUT_MS } from "./acp-fixture.js"
 
 export interface ScenarioResult {
 	sessionId: string
@@ -18,11 +18,7 @@ export async function newSession(fixture: AcpFixture, cwd: string): Promise<stri
 	return ns.sessionId
 }
 
-export async function prompt(
-	fixture: AcpFixture,
-	sessionId: string,
-	text: string,
-): Promise<ScenarioResult> {
+export async function prompt(fixture: AcpFixture, sessionId: string, text: string): Promise<ScenarioResult> {
 	const promptPromise = fixture.conn
 		.prompt({ sessionId, prompt: [{ type: "text", text }] })
 		.catch((err) => ({ stopReason: "ERROR" as const, error: err }))
@@ -51,9 +47,7 @@ export async function waitForSessionUpdate(
 ): Promise<acp.SessionUpdate> {
 	const start = Date.now()
 	while (Date.now() - start < timeoutMs) {
-		const hit = fixture.client.sessionUpdates.find(
-			(u) => u.sessionId === sessionId && predicate(u.update),
-		)
+		const hit = fixture.client.sessionUpdates.find((u) => u.sessionId === sessionId && predicate(u.update))
 		if (hit) return hit.update
 		await delay(50)
 	}

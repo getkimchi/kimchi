@@ -3,13 +3,13 @@
 // so every test triggers the fire-and-forget UI surface during `session_start`.
 // ACP speaks JSON-RPC over stdio — no node-pty like the TUI fixture.
 
-import { spawn, type ChildProcess } from "node:child_process"
+import { type ChildProcess, spawn } from "node:child_process"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
-import { fileURLToPath } from "node:url"
 import { Readable, Writable } from "node:stream"
 import { setTimeout as delay } from "node:timers/promises"
+import { fileURLToPath } from "node:url"
 import * as acp from "@agentclientprotocol/sdk"
 import type { ClientSideConnection } from "@agentclientprotocol/sdk"
 import {
@@ -62,6 +62,14 @@ export interface AcpFixtureOptions {
 	 * into the `_kimchi.dev/pi_*` extension namespace via per-method flags.
 	 */
 	clientMeta?: Record<string, unknown>
+	/**
+	 * Path to a JavaScript extension to drop into the harness's
+	 * `extensions/` directory before spawning kimchi. Defaults to the
+	 * bundled `test-ui-extension.js` (notifies + setStatus). Tests that
+	 * need to drive `ctx.ui.confirm`/`select`/`input` should point this at
+	 * a custom extension that exercises those calls.
+	 */
+	extensionPath?: string
 }
 
 export interface StartAcpFixtureOptions extends AcpFixtureOptions {
@@ -77,7 +85,8 @@ export class RecordingClient {
 	readonly elicitationRequests: Array<{ method: string; params: unknown }> = []
 
 	private permissionResolver: ((response: acp.RequestPermissionResponse) => void) | null = null
-	private elicitationResolver: ((response: acp.CreateElicitationResponse) => acp.CreateElicitationResponse) | null = null
+	private elicitationResolver: ((response: acp.CreateElicitationResponse) => acp.CreateElicitationResponse) | null =
+		null
 
 	async sessionUpdate(params: acp.SessionNotification): Promise<void> {
 		this.sessionUpdates.push({ sessionId: params.sessionId, update: params.update })
@@ -114,9 +123,7 @@ export class RecordingClient {
 	 * `unstable_createElicitation`. We accept with an empty content object
 	 * by default; tests can override via `answerNextElicitationWith`.
 	 */
-	async unstable_createElicitation(
-		params: acp.CreateElicitationRequest,
-	): Promise<acp.CreateElicitationResponse> {
+	async unstable_createElicitation(params: acp.CreateElicitationRequest): Promise<acp.CreateElicitationResponse> {
 		this.elicitationRequests.push({ method: "elicitation/create", params })
 		if (this.elicitationResolver) {
 			const resolver = this.elicitationResolver
@@ -171,7 +178,7 @@ function textOf(update: acp.SessionUpdate): string | undefined {
 }
 
 export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<AcpFixture> {
-	const { artifactName, responses, clientCapabilities, clientMeta } = options
+	const { artifactName, responses, clientCapabilities, clientMeta, extensionPath } = options
 	const fake = await startFakeOpenAiServer({ responses })
 	const homeDir = mkdtempSync(join(tmpdir(), "kimchi-acp-home-"))
 	const workDir = mkdtempSync(join(tmpdir(), "kimchi-acp-work-"))
@@ -183,7 +190,7 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 		try {
 			const path = join(REPO_ROOT, `${artifactName}.${outcome}.acp-e2e.log`)
 			const sections = [
-				'# Kimchi ACP E2E Artifact',
+				"# Kimchi ACP E2E Artifact",
 				[
 					`name: ${artifactName}`,
 					`outcome: ${outcome}`,
@@ -266,7 +273,8 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 		)
 
 		// pi-coding-agent auto-loads `${agentDir}/extensions/*.js` on every session.
-		const extSource = readFileSync(TEST_EXTENSION_PATH, "utf-8")
+		const extPath = extensionPath ?? TEST_EXTENSION_PATH
+		const extSource = readFileSync(extPath, "utf-8")
 		writeFileSync(join(agentDir, "extensions", "test-ui-extension.js"), extSource, "utf-8")
 
 		proc = spawn(BINARY_PATH, ["--mode", "acp"], {
