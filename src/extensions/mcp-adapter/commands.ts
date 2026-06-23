@@ -206,6 +206,10 @@ export async function openMcpPanel(
 			const freshCache = loadMetadataCache()
 			return freshCache?.servers?.[serverName] ?? null
 		},
+		onSave: (changes) => {
+			writeDirectToolsConfig(changes, provenanceMap, config)
+			ctx.ui.notify("Direct tools updated. Restart pi to apply.", "info")
+		},
 	}
 
 	const { createMcpPanel } = await import("./mcp-panel.js")

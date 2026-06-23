@@ -2,12 +2,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
-import {
-	type ModelCustomMetadata,
-	loadModelMetadata,
-	resetModelMetadataCache,
-	saveModelMetadata,
-} from "./model-metadata.js"
+import { type ModelCustomMetadata, resetModelMetadataCache, saveModelMetadata } from "./model-metadata.js"
 import {
 	DEFAULT_MODEL_ROLES,
 	type ModelRoles,
@@ -216,21 +211,19 @@ describe("modelIdFromRef", () => {
 })
 
 describe("DEFAULT_MODEL_ROLES", () => {
-	it("orchestrator is kimi-k2.6", () => {
-		expect(DEFAULT_MODEL_ROLES.orchestrator).toBe("kimchi-dev/kimi-k2.6")
+	it("orchestrator is minimax-m3", () => {
+		expect(DEFAULT_MODEL_ROLES.orchestrator).toBe("kimchi-dev/minimax-m3")
 	})
 
-	it("builder pool contains models with the build role but not nemotron", () => {
+	it("builder pool contains the build role but not nemotron", () => {
 		const builders = normalizeRoleModels(DEFAULT_MODEL_ROLES.builder)
-		expect(builders).toContain("kimchi-dev/minimax-m2.7")
-		expect(builders).toContain("kimchi-dev/kimi-k2.6")
+		expect(builders).toContain("kimchi-dev/minimax-m3")
 		expect(builders).not.toContain("kimchi-dev/nemotron-3-ultra-fp4")
 	})
 
-	it("reviewer pool contains kimi-k2.6 and minimax", () => {
+	it("reviewer pool contains minimax-m3", () => {
 		const reviewers = normalizeRoleModels(DEFAULT_MODEL_ROLES.reviewer)
-		expect(reviewers).toContain("kimchi-dev/kimi-k2.6")
-		expect(reviewers).toContain("kimchi-dev/minimax-m2.7")
+		expect(reviewers).toContain("kimchi-dev/minimax-m3")
 	})
 
 	it("explorer pool contains nemotron", () => {
@@ -238,9 +231,9 @@ describe("DEFAULT_MODEL_ROLES", () => {
 		expect(explorers).toContain("kimchi-dev/nemotron-3-ultra-fp4")
 	})
 
-	it("planner pool contains kimi-k2.6", () => {
+	it("planner pool contains minimax-m3", () => {
 		const planners = normalizeRoleModels(DEFAULT_MODEL_ROLES.planner)
-		expect(planners).toContain("kimchi-dev/kimi-k2.6")
+		expect(planners).toContain("kimchi-dev/minimax-m3")
 	})
 
 	it("judge defaults to orchestrator model", () => {
@@ -305,7 +298,7 @@ describe("saveModelRoles", () => {
 })
 
 describe("validateModelRoles", () => {
-	const available = new Set(["kimi-k2.6", "minimax-m2.7", "nemotron-3-ultra-fp4"])
+	const available = new Set(["kimi-k2.6", "minimax-m2.7", "minimax-m3", "nemotron-3-ultra-fp4"])
 
 	it("returns no unavailable roles when all defaults are available", () => {
 		const result = validateModelRoles(DEFAULT_MODEL_ROLES, available)
@@ -328,7 +321,7 @@ describe("validateModelRoles", () => {
 			orchestrator: "openai/gpt-4o",
 			planner: "openai/gpt-4o",
 			builder: "anthropic/claude-sonnet-4-5",
-			reviewer: "kimchi-dev/minimax-m2.7",
+			reviewer: "kimchi-dev/minimax-m3",
 			explorer: "google/gemini-pro",
 			researcher: "kimchi-dev/nemotron-3-ultra-fp4",
 			judge: "kimchi-dev/kimi-k2.6",
@@ -345,9 +338,9 @@ describe("validateModelRoles", () => {
 	it("strips provider prefix when checking availability", () => {
 		const roles: ModelRoles = {
 			...DEFAULT_MODEL_ROLES,
-			builder: "custom-provider/minimax-m2.7",
+			builder: "custom-provider/minimax-m3",
 		}
-		// minimax-m2.7 is in the available set regardless of provider prefix
+		// minimax-m3 is in the available set regardless of provider prefix
 		const result = validateModelRoles(roles, available)
 		expect(result.unavailable).toHaveLength(0)
 	})

@@ -227,7 +227,7 @@ describe("buildSystemPrompt", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
-				currentModelId: "minimax-m2.7",
+				currentModelId: "minimax-m3",
 				registry,
 				mode: "orchestrator",
 			})
@@ -239,7 +239,7 @@ describe("buildSystemPrompt", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
-				currentModelId: "minimax-m2.7",
+				currentModelId: "minimax-m3",
 				currentPhase: "build",
 				registry,
 				mode: "orchestrator",
@@ -297,7 +297,7 @@ describe("buildSystemPrompt", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
-				currentModelId: "minimax-m2.7",
+				currentModelId: "minimax-m3",
 				currentPhase: "build",
 				registry,
 				mode: "subagent",
@@ -418,7 +418,7 @@ describe("buildSystemPrompt", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
-				currentModelId: "minimax-m2.7",
+				currentModelId: "minimax-m3",
 				currentPhase: "build",
 				registry,
 				mode: "single",

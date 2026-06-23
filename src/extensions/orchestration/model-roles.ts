@@ -86,13 +86,13 @@ const HARNESS_SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "s
 
 /** Hardcoded default model-to-role assignment. Users override via /multi-model. */
 export const DEFAULT_MODEL_ROLES: Readonly<ModelRoles> = {
-	orchestrator: "kimchi-dev/kimi-k2.6",
-	planner: "kimchi-dev/kimi-k2.6",
-	builder: ["kimchi-dev/kimi-k2.6", "kimchi-dev/minimax-m2.7"],
-	reviewer: ["kimchi-dev/kimi-k2.6", "kimchi-dev/minimax-m2.7"],
+	orchestrator: "kimchi-dev/minimax-m3",
+	planner: "kimchi-dev/minimax-m3",
+	builder: ["kimchi-dev/minimax-m3"],
+	reviewer: ["kimchi-dev/minimax-m3"],
 	explorer: "kimchi-dev/nemotron-3-ultra-fp4",
-	researcher: "kimchi-dev/kimi-k2.6",
-	judge: "kimchi-dev/kimi-k2.6",
+	researcher: "kimchi-dev/minimax-m3",
+	judge: "kimchi-dev/minimax-m3",
 }
 
 export interface ModelRolesWarning {
