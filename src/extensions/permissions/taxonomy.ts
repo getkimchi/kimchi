@@ -188,6 +188,52 @@ const READ_ONLY_SUBCOMMANDS: Record<string, Set<string>> = {
 	cargo: new Set(["tree", "search", "--version"]),
 	docker: new Set(["ps", "images", "logs", "inspect", "version", "info"]),
 	kubectl: new Set(["get", "describe", "logs", "top", "version", "config"]),
+	// `gh` and `glab` are inspection-first CLIs; the dominant plan-mode use
+	// case is read-only (list/view/diff/checks). The matcher granularity is
+	// the FIRST subcommand only, so listing a parent here also permits
+	// mutation-capable sub-subcommands such as `gh pr create`, `gh pr merge`,
+	// `gh repo delete`, `glab mr create`, `glab ci run`. This is the same
+	// trade-off the existing `git: ["branch", "remote"]` entry already
+	// makes. Narrowing this requires per-sub-subcommand matching; tracked
+	// separately as a follow-up (dynamic per-mode tool config).
+	//
+	// Intentionally NOT included:
+	//   - `gh api` / `glab api`: thin HTTP wrappers that can mutate.
+	//   - `gh browse` / `glab`: open external processes (browser) — not a
+	//     file mutation but still a process side effect that plan mode
+	//     shouldn't allow silently.
+	gh: new Set([
+		"pr",
+		"issue",
+		"repo",
+		"run",
+		"workflow",
+		"release",
+		"auth",
+		"config",
+		"extension",
+		"gist",
+		"status",
+		"search",
+	]),
+	glab: new Set([
+		"mr",
+		"merge-request",
+		"issue",
+		"repo",
+		"project",
+		"ci",
+		"pipeline",
+		"release",
+		"snippet",
+		"variable",
+		"cluster",
+		"auth",
+		"config",
+		"user",
+		"status",
+		"search",
+	]),
 }
 
 // Programs that must never run — even when gated behind rules — because the
