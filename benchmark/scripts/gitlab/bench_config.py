@@ -24,7 +24,7 @@ import os
 
 # --- Model ---
 ENV_MODEL = "MODEL"
-DEFAULT_MODEL = "kimchi-dev/kimi-k2.6"
+DEFAULT_MODEL = "kimchi-dev/minimax-m3"
 
 
 def parse_model() -> tuple[str, str]:

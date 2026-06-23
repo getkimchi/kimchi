@@ -108,7 +108,7 @@ inputs:
   model:
     description: "Kimchi model used for the benchmark run."
     type: string
-    default: "kimchi-dev/kimi-k2.6"
+    default: "kimchi-dev/minimax-m3"
     options:
       - kimchi-dev/kimi-k2.6
       - kimchi-dev/claude-sonnet-4-6
