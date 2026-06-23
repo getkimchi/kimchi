@@ -183,17 +183,19 @@ describe("applyVariantSelection", () => {
 		expect(stripped).toEqual(["--print"])
 	})
 
-	it("leaves env untouched when --spicy is absent", () => {
-		const env: NodeJS.ProcessEnv = { KIMCHI_PROMPT_VARIANT: "spicy" }
+	// TEMPORARY (testing): spicy is forced on for every launch, so it is set
+	// even when --spicy is absent. Restore the opt-in assertions when reverting.
+	it("forces env to 'spicy' even when --spicy is absent", () => {
+		const env: NodeJS.ProcessEnv = { KIMCHI_PROMPT_VARIANT: "old" }
 		const stripped = applyVariantSelection(["--model", "foo"], env)
 		expect(env.KIMCHI_PROMPT_VARIANT).toBe("spicy")
 		expect(stripped).toEqual(["--model", "foo"])
 	})
 
-	it("does not set env when --spicy is absent and env was empty", () => {
+	it("sets env to 'spicy' when --spicy is absent and env was empty", () => {
 		const env: NodeJS.ProcessEnv = {}
 		applyVariantSelection(["--model", "foo"], env)
-		expect(env.KIMCHI_PROMPT_VARIANT).toBeUndefined()
+		expect(env.KIMCHI_PROMPT_VARIANT).toBe("spicy")
 	})
 
 	it("returned args never contain --spicy", () => {
@@ -207,8 +209,9 @@ describe("applyVariantSelection", () => {
 		const env: NodeJS.ProcessEnv = {}
 		const stripped = applyVariantSelection(["--variant", "spicy"], env)
 		// --variant is not stripped by applyVariantSelection (it delegates to extractSpicyFlag)
-		// so it stays in rest - the caller must not pass --variant
-		expect(env.KIMCHI_PROMPT_VARIANT).toBeUndefined()
+		// so it stays in rest - the caller must not pass --variant. Env is forced to
+		// spicy regardless (TEMPORARY testing behaviour).
+		expect(env.KIMCHI_PROMPT_VARIANT).toBe("spicy")
 		expect(stripped).toContain("--variant")
 	})
 })
