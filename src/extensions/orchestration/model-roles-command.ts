@@ -19,11 +19,9 @@ import {
 	type ModelCustomMetadata,
 	deleteModelMetadata,
 	getModelMetadata,
-	isModelMetadataMissing,
 	resolveModelMetadata,
 	saveModelMetadata,
 } from "./model-metadata.js"
-import { MODEL_CAPABILITIES } from "./model-registry/builtin-models.js"
 import {
 	DEFAULT_MODEL_ROLES,
 	type ModelRoles,
@@ -94,17 +92,6 @@ export function formatRoleDisplay(role: keyof ModelRoles, value: RoleModelAssign
 	const isDefault = isEqualAssignment(value, DEFAULT_MODEL_ROLES[role])
 	const suffix = isDefault ? " (default)" : ""
 	return `${info.label}: ${formatRoleAssignment(value)}${suffix}`
-}
-
-function hasBuiltinCapability(ref: string): boolean {
-	const id = modelIdFromRef(ref)
-	const entry = MODEL_CAPABILITIES.get(id)
-	return entry !== undefined && entry !== "ignored"
-}
-
-function shouldPromptForMetadata(ref: string): boolean {
-	if (hasBuiltinCapability(ref)) return false
-	return isModelMetadataMissing(ref)
 }
 
 export async function collectModelMetadata(
@@ -198,32 +185,6 @@ export async function collectModelMetadata(
 	}
 
 	return config
-}
-
-async function promptMetadataWizard(
-	ref: string,
-	ctx: ExtensionCommandContext,
-	configuredThisSession: Set<string>,
-): Promise<void> {
-	if (configuredThisSession.has(ref)) return
-
-	const wizardChoice = await ctx.ui.select(
-		`${ref}\nThis model has no metadata (tier, description, vision).\nSpecifying metadata will improve orchestration.`,
-		["Configure now", "Skip"],
-	)
-	if (wizardChoice !== "Configure now") {
-		configuredThisSession.add(ref)
-		return
-	}
-
-	const metadata = await collectModelMetadata(ref, resolveModelMetadata(ref) ?? undefined, ctx)
-	if (hasMetadataContent(metadata)) {
-		const map = new Map<string, ModelCustomMetadata>()
-		map.set(ref, metadata)
-		saveModelMetadata(map)
-		ctx.ui.notify(`Metadata saved for ${ref}.`, "info")
-	}
-	configuredThisSession.add(ref)
 }
 
 // ---------------------------------------------------------------------------
@@ -352,7 +313,6 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 			}
 
 			const roles = { ...getModelRoles() }
-			const configuredThisSession = new Set<string>()
 
 			const apiModels = getAvailableModels()
 			const availableModelRefs = apiModels.map((m) => `kimchi-dev/${m.slug}`)
@@ -490,16 +450,11 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 						}
 					}
 				}
-
-				if (shouldPromptForMetadata(newRef)) {
-					await promptMetadataWizard(newRef, ctx, configuredThisSession)
-				}
 			}
 
 			const showMultiModelEditor = async (roleKey: keyof ModelRoles): Promise<void> => {
 				const info = ROLE_LABELS[roleKey]
-				const previousModels = new Set(normalizeRoleModels(roles[roleKey]))
-				const selected = new Set(previousModels)
+				const selected = new Set(normalizeRoleModels(roles[roleKey]))
 
 				// eslint-disable-next-line no-constant-condition
 				while (true) {
@@ -563,13 +518,6 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 					return
 				}
 				ctx.ui.notify(`${info.label} set to ${models.join(", ")}`, "info")
-
-				const newlyAdded = models.filter((ref) => !previousModels.has(ref))
-				for (const ref of newlyAdded) {
-					if (shouldPromptForMetadata(ref)) {
-						await promptMetadataWizard(ref, ctx, configuredThisSession)
-					}
-				}
 			}
 
 			const showMetadataEditor = async (): Promise<void> => {

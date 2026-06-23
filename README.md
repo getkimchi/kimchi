@@ -113,7 +113,7 @@ External models (Anthropic, OpenAI, or any non-builtin provider) have no built-i
 
 With the metadata above, the orchestrator will use minimax for simple build chunks and Claude for complex ones. Without it, both models look like standard-tier to the orchestrator and selection is arbitrary.
 
-Metadata can also be managed interactively via `/multi-model` → "Edit model metadata". Custom overrides can be reset to defaults from the same menu. When switching to an unknown model, a wizard prompts for metadata configuration. Metadata for builtin models can be overridden the same way.
+Metadata can also be managed interactively via `/multi-model` → "Edit model metadata" — this is the only in-app path for configuring or overriding metadata, so model selection stays uninterrupted. Custom overrides can be reset to defaults from the same menu. Metadata for builtin models can be overridden the same way.
 
 ### Phase tracking
 
