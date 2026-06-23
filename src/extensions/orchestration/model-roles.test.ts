@@ -2,12 +2,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
-import {
-	type ModelCustomMetadata,
-	loadModelMetadata,
-	resetModelMetadataCache,
-	saveModelMetadata,
-} from "./model-metadata.js"
+import { type ModelCustomMetadata, resetModelMetadataCache, saveModelMetadata } from "./model-metadata.js"
 import {
 	DEFAULT_MODEL_ROLES,
 	type ModelRoles,
@@ -303,7 +298,7 @@ describe("saveModelRoles", () => {
 })
 
 describe("validateModelRoles", () => {
-	const available = new Set(["kimi-k2.6", "minimax-m3", "nemotron-3-ultra-fp4"])
+	const available = new Set(["kimi-k2.6", "minimax-m2.7", "minimax-m3", "nemotron-3-ultra-fp4"])
 
 	it("returns no unavailable roles when all defaults are available", () => {
 		const result = validateModelRoles(DEFAULT_MODEL_ROLES, available)

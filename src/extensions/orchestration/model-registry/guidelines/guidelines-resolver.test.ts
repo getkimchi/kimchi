@@ -33,10 +33,11 @@ describe("phase guideline resolution", () => {
 	})
 
 	it("returns model-specific guideline when model has one", () => {
-		const result = resolvePhaseGuideline("build", "minimax-m3", registry)
+		const result = resolvePhaseGuideline("build", "minimax-m2.7", registry)
 		expect(result).toContain("MiniMax M2 family")
 		expect(result).toContain("Outline-then-diff")
-		expect(result).toContain("STAY IN SCOPE")
+		expect(result).toContain("minimax-m2.7 specific")
+		expect(result).toContain("mutex-based concurrency")
 	})
 
 	it("returns default guideline for phases with no model override", () => {
@@ -64,6 +65,13 @@ describe("orchestration guideline resolution", () => {
 	it("returns empty string when no model is specified", () => {
 		const result = resolveOrchestrationGuideline(undefined, registry)
 		expect(result).toBe("")
+	})
+
+	it("returns composed orchestration guideline for minimax-m2.7", () => {
+		const result = resolveOrchestrationGuideline("minimax-m2.7", registry)
+		expect(result).toContain("MiniMax M2 family")
+		expect(result).toContain("web_search")
+		expect(result).toContain("front-load")
 	})
 
 	it("returns composed orchestration guideline for minimax-m3", () => {
@@ -158,6 +166,19 @@ describe("builtin-model guideline content", () => {
 		const result = resolvePhaseGuideline("plan", "kimi-k2.6", registry)
 		expect(result).toContain("Chunks")
 		expect(result).toContain("per-chunk acceptance criteria")
+	})
+
+	it("minimax-m2.7 build: contains family and per-model layers", () => {
+		const result = resolvePhaseGuideline("build", "minimax-m2.7", registry)
+		expect(result).toContain("Outline-then-diff")
+		expect(result).toContain("mutex")
+	})
+
+	it("minimax-m2.7 review: contains family and per-model layers", () => {
+		const result = resolvePhaseGuideline("review", "minimax-m2.7", registry)
+		expect(result).toContain("scope creep")
+		expect(result).toContain("hallucinated APIs")
+		expect(result).toContain("inappropriate concurrency")
 	})
 
 	it("minimax-m3 build: contains family layer", () => {

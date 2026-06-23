@@ -21,6 +21,9 @@ import {
 	MINIMAX_FAMILY_PLAN,
 	MINIMAX_FAMILY_RESEARCH,
 	MINIMAX_FAMILY_REVIEW,
+	MINIMAX_M27_BUILD,
+	MINIMAX_M27_ORCHESTRATION,
+	MINIMAX_M27_REVIEW,
 } from "./guidelines/minimax-family.js"
 import {
 	NEMOTRON_3_ULTRA_BUILD,
@@ -61,6 +64,14 @@ complex planning, and correctness-critical tasks. Handles images, screenshots, a
 Best for: orchestration, architectural planning, plan verification involving concurrency or \
 algorithmic design, multi-step coding tasks, and any work requiring image understanding. \
 Replaces kimi-k2.6 (orchestrator) and minimax-m2.7 (builder/reviewer subagent).`
+
+const MINIMAX_M27_DESCRIPTION = `\
+The strongest coding model in the pool. \
+Best accuracy on multi-file bugs, complex refactors, and extended tool call chains. \
+Best for: well-scoped coding tasks (CRUD, parsers, handlers, CLI wiring, straightforward tests), \
+and mechanical code review of straightforward code. \
+Not reliable for algorithm-correctness tasks (graph algorithms, topological sort, complex data \
+structure invariants) — use a heavy-tier model for those.`
 
 const NEMOTRON_3_ULTRA_DESCRIPTION = `\
 Cheapest and fastest. 1M token context window with near-perfect retrieval — \
@@ -146,6 +157,23 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 		},
 	],
 	[
+		"minimax-m2.7",
+		{
+			vision: false,
+			tier: "standard",
+			description: MINIMAX_M27_DESCRIPTION,
+			guidelines: guidelinesMap({
+				build: [DEFAULT_BUILD_GUIDELINES, MINIMAX_FAMILY_BUILD, MINIMAX_M27_BUILD],
+				review: [DEFAULT_REVIEW_GUIDELINES, MINIMAX_FAMILY_REVIEW, MINIMAX_M27_REVIEW],
+			}),
+			orchestrationGuidelines: optionalGuidelines(
+				DEFAULT_ORCHESTRATION_GUIDELINES,
+				MINIMAX_FAMILY_ORCHESTRATION,
+				MINIMAX_M27_ORCHESTRATION,
+			),
+		},
+	],
+	[
 		"nemotron-3-ultra-fp4",
 		{
 			vision: false,
@@ -168,7 +196,6 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 	["claude-opus-4-6", "ignored"],
 	["glm-5-fp8", "ignored"],
 	["minimax-m2.5", "ignored"],
-	["minimax-m2.7", "ignored"],
 	["claude-opus-4-6-20250514", "ignored"],
 	["claude-sonnet-4-6", "ignored"],
 	["claude-sonnet-4-5", "ignored"],

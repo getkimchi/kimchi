@@ -44,12 +44,12 @@ describe("resolveClassifierModels", () => {
 			expect(resolveClassifierModels(registry)?.primary).toBe(light)
 		})
 
-		it("falls back to heavy when no light or standard model resolves", () => {
-			const heavy = kimchi(HEAVY_ID)
+		it("falls back to standard when no light model resolves", () => {
+			const standard = kimchi(STANDARD_ID)
 			const current = fakeModel("anthropic", "claude-opus")
-			const registry = fakeRegistry(new Map([[HEAVY_ID, heavy]]), [current])
+			const registry = fakeRegistry(new Map([[STANDARD_ID, standard]]), [current])
 
-			expect(resolveClassifierModels(registry)?.primary).toBe(heavy)
+			expect(resolveClassifierModels(registry)?.primary).toBe(standard)
 		})
 
 		it("falls back to cheapest available when no kimchi models resolve", () => {
@@ -62,22 +62,20 @@ describe("resolveClassifierModels", () => {
 	})
 
 	describe("fallback", () => {
-		it("steps up to heavy when standard is unavailable", () => {
+		it("steps up to standard when light is the primary", () => {
 			const light = kimchi(LIGHT_ID)
-			const heavy = kimchi(HEAVY_ID)
+			const standard = kimchi(STANDARD_ID)
 			const registry = fakeRegistry(
 				new Map([
 					[LIGHT_ID, light],
-					[HEAVY_ID, heavy],
+					[STANDARD_ID, standard],
 				]),
 				[light],
 			)
 
 			const result = resolveClassifierModels(registry)
 			expect(result?.primary).toBe(light)
-			if (LIGHT_ID !== HEAVY_ID) {
-				expect(result?.fallback).toBe(heavy)
-			}
+			expect(result?.fallback).toBe(standard)
 		})
 
 		it("skips to heavy when standard is unavailable", () => {
