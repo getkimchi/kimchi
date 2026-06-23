@@ -31,6 +31,8 @@ const EXACT_2GRAM_THRESHOLD = 5 // 6× repeat of a 2-gram with identical output
 const EXACT_3GRAM_THRESHOLD = 3 // 4× repeat of a 3-gram with identical output
 const EDIT_RUN_THRESHOLD = 8 // same file edited 8× AND same bash prefix 8× in window
 const EDIT_RUN_TOTAL_THRESHOLD = 12 // same file 12× AND same bash prefix 12× over the whole task
+const BASH_REPEAT_THRESHOLD = 12 // bash-only: same prefix 12× in window (no edit required)
+const BASH_REPEAT_TOTAL_THRESHOLD = 15 // bash-only: same prefix 15× across the task
 const BASH_PREFIX_LENGTH = 50 // normalize bash commands by this prefix
 const FINGERPRINT_TAIL_LINES = 20
 const REASON_ARG_PREVIEW = 80
@@ -75,6 +77,10 @@ export class LoopGuard {
 	 *  on session_start / user input via `reset()`. */
 	private editCountsTotal = new Map<string, number>()
 	private bashCountsTotal = new Map<string, number>()
+	/** Normalized bash prefix counts (window). Strips preamble commands
+	 *  and collapses on tool+file so flag variations don't dodge detection. */
+	private bashCountsNorm = new Map<string, number>()
+	private bashCountsNormTotal = new Map<string, number>()
 	private warned = false
 	private triggered = false
 
@@ -84,6 +90,8 @@ export class LoopGuard {
 		this.bashCounts.clear()
 		this.editCountsTotal.clear()
 		this.bashCountsTotal.clear()
+		this.bashCountsNorm.clear()
+		this.bashCountsNormTotal.clear()
 		this.warned = false
 		this.triggered = false
 	}
@@ -108,6 +116,11 @@ export class LoopGuard {
 			mapIncrement(this.bashCounts, bashPrefix)
 			mapIncrement(this.bashCountsTotal, bashPrefix)
 		}
+		const bashPrefixNorm = extractBashPrefixNormalized(rec)
+		if (bashPrefixNorm) {
+			mapIncrement(this.bashCountsNorm, bashPrefixNorm)
+			mapIncrement(this.bashCountsNormTotal, bashPrefixNorm)
+		}
 
 		this.history.push(rec)
 		if (this.history.length > WINDOW_SIZE) {
@@ -119,6 +132,8 @@ export class LoopGuard {
 				if (evictedEdit) mapDecrement(this.editCounts, evictedEdit)
 				const evictedBash = extractBashPrefix(evicted)
 				if (evictedBash) mapDecrement(this.bashCounts, evictedBash)
+				const evictedBashNorm = extractBashPrefixNormalized(evicted)
+				if (evictedBashNorm) mapDecrement(this.bashCountsNorm, evictedBashNorm)
 			}
 		}
 
@@ -138,6 +153,7 @@ export class LoopGuard {
 		this.history = []
 		this.editCounts.clear()
 		this.bashCounts.clear()
+		this.bashCountsNorm.clear()
 
 		return { state: "warn", reason: `${STEERING_MESSAGE} (${reason})` }
 	}
@@ -240,7 +256,8 @@ export class LoopGuard {
 			this.detectExactNgram() ??
 			this.detectFuzzyNgram() ??
 			this.detectEditRunCycle() ??
-			this.detectEditRunCycleTotal()
+			this.detectEditRunCycleTotal() ??
+			this.detectBashRepetition()
 		)
 	}
 
@@ -282,7 +299,10 @@ export class LoopGuard {
 
 	private detectEditRunCycle(): string | undefined {
 		const topEdit = mapMax(this.editCounts)
-		const topBash = mapMax(this.bashCounts)
+		const topBashRaw = mapMax(this.bashCounts)
+		const topBashNorm = mapMax(this.bashCountsNorm)
+		// Pick the higher of raw vs normalized bash count.
+		const topBash = pickHigher(topBashRaw, topBashNorm)
 		if (!topEdit || !topBash) return undefined
 		if (topEdit[1] < EDIT_RUN_THRESHOLD || topBash[1] < EDIT_RUN_THRESHOLD) return undefined
 		const editPreview =
@@ -298,8 +318,12 @@ export class LoopGuard {
 		// it's sensitive to recent behaviour; this is a backstop for the
 		// case where the model spreads the same edit/bash pattern over
 		// 100+ rounds with other work interleaved (e.g. read/grep/ls).
+		// Check both raw and normalized bash prefixes.
 		const topEdit = mapMax(this.editCountsTotal)
-		const topBash = mapMax(this.bashCountsTotal)
+		const topBashRaw = mapMax(this.bashCountsTotal)
+		const topBashNorm = mapMax(this.bashCountsNormTotal)
+		// Pick the higher of raw vs normalized bash count.
+		const topBash = pickHigher(topBashRaw, topBashNorm)
 		if (!topEdit || !topBash) return undefined
 		if (topEdit[1] < EDIT_RUN_TOTAL_THRESHOLD || topBash[1] < EDIT_RUN_TOTAL_THRESHOLD) return undefined
 		const editPreview =
@@ -307,6 +331,38 @@ export class LoopGuard {
 		const bashPreview =
 			topBash[0].length > REASON_ARG_PREVIEW ? `${topBash[0].slice(0, REASON_ARG_PREVIEW)}…` : topBash[0]
 		return `edit-run cycle (task-total): ${editPreview} edited ${topEdit[1]}× and bash "${bashPreview}" ran ${topBash[1]}× across the task`
+	}
+
+	/**
+	 * Detects bash-only loops: the same command (raw or normalized prefix)
+	 * repeated many times without requiring any file edits. Catches patterns
+	 * like repeated yt-dlp downloads, repeated curl calls, repeated make on
+	 * a project that always fails.
+	 */
+	private detectBashRepetition(): string | undefined {
+		// Bash-only thresholds are higher than edit-run because the signal
+		// is weaker (no paired file edit to confirm it's a loop).
+		// Window check (raw)
+		const topBashWin = mapMax(this.bashCounts)
+		if (topBashWin && topBashWin[1] >= BASH_REPEAT_THRESHOLD) {
+			return `bash repetition: "${truncPreview(topBashWin[0])}" ran ${topBashWin[1]}× in last ${this.history.length} calls`
+		}
+		// Window check (normalized)
+		const topBashNormWin = mapMax(this.bashCountsNorm)
+		if (topBashNormWin && topBashNormWin[1] >= BASH_REPEAT_THRESHOLD) {
+			return `bash repetition (normalized): "${truncPreview(topBashNormWin[0])}" ran ${topBashNormWin[1]}× in last ${this.history.length} calls`
+		}
+		// Task-total check (raw)
+		const topBashTotal = mapMax(this.bashCountsTotal)
+		if (topBashTotal && topBashTotal[1] >= BASH_REPEAT_TOTAL_THRESHOLD) {
+			return `bash repetition (task-total): "${truncPreview(topBashTotal[0])}" ran ${topBashTotal[1]}× across the task`
+		}
+		// Task-total check (normalized)
+		const topBashNormTotal = mapMax(this.bashCountsNormTotal)
+		if (topBashNormTotal && topBashNormTotal[1] >= BASH_REPEAT_TOTAL_THRESHOLD) {
+			return `bash repetition (normalized task-total): "${truncPreview(topBashNormTotal[0])}" ran ${topBashNormTotal[1]}× across the task`
+		}
+		return undefined
 	}
 }
 
@@ -419,7 +475,7 @@ function extractEditTarget(rec: ToolHistoryRecord): string | undefined {
 }
 
 /**
- * Extract a normalized command prefix from a bash tool record. Returns
+ * Extract a raw command prefix from a bash tool record. Returns
  * undefined for other tools or when the command is missing or non-string.
  *
  * The prefix length is intentionally short: it groups commands that share an
@@ -435,6 +491,70 @@ function extractBashPrefix(rec: ToolHistoryRecord): string | undefined {
 	} catch {
 		return undefined
 	}
+}
+
+/**
+ * Commands that are pure side-effects or preamble — not the "core intent"
+ * of a compound command. When normalizing, these are skipped to find the
+ * first meaningful command segment.
+ */
+const PREAMBLE_COMMANDS = new Set([
+	"rm",
+	"echo",
+	"wc",
+	"sleep",
+	"cd",
+	"mkdir",
+	"printf",
+	"export",
+	"test",
+	"true",
+	"false",
+	"set",
+	"unset",
+])
+
+/**
+ * Extract a normalized bash prefix that strips common preamble (rm, echo,
+ * wc, cd, etc.) and collapses on `<tool> <first-path-argument>`. This
+ * catches loops where the model varies flags or preamble but the core
+ * intent is the same (e.g. `rm -f a.out && gcc -O3 file.c` and
+ * `wc -c file.c && gcc -O0 file.c` both normalize to `gcc file.c`).
+ *
+ * Returns undefined for non-bash tools.
+ */
+export function extractBashPrefixNormalized(rec: ToolHistoryRecord): string | undefined {
+	if (rec.toolName !== "bash") return undefined
+	try {
+		const args = JSON.parse(rec.toolArgs) as { command?: unknown }
+		if (typeof args.command !== "string") return undefined
+		return normalizeBashCommand(args.command)
+	} catch {
+		return undefined
+	}
+}
+
+/** Exported for testing. */
+export function normalizeBashCommand(command: string): string {
+	// Split on compound operators and newlines to get individual segments.
+	const segments = command.split(/\s*(?:&&|\|\||;|\n)\s*/)
+	for (const seg of segments) {
+		const trimmed = seg.trim()
+		if (!trimmed) continue
+		const tokens = trimmed.split(/\s+/)
+		const tool = tokens[0]
+		if (!tool || PREAMBLE_COMMANDS.has(tool)) continue
+		// Found the core command. Extract <tool> <first-path-argument>
+		// to collapse flag variations (gcc -O0 file.c ≈ gcc -O3 file.c).
+		const pathArg = tokens.slice(1).find((t) => !t.startsWith("-") && (t.includes("/") || /\.[a-zA-Z]/.test(t)))
+		if (pathArg) {
+			return `${tool} ${pathArg}`
+		}
+		// No path argument — fall back to raw prefix of the core command.
+		return trimmed.slice(0, BASH_PREFIX_LENGTH)
+	}
+	// All segments are preamble — use the full command prefix.
+	return command.slice(0, BASH_PREFIX_LENGTH)
 }
 
 function mapIncrement(map: Map<string, number>, key: string): void {
@@ -454,6 +574,18 @@ function mapMax(map: Map<string, number>): [string, number] | undefined {
 		if (!best || v > best[1]) best = [k, v]
 	}
 	return best
+}
+
+/** Pick whichever of two optional [key, count] pairs has the higher count. */
+function pickHigher(a: [string, number] | undefined, b: [string, number] | undefined): [string, number] | undefined {
+	if (!a) return b
+	if (!b) return a
+	return a[1] >= b[1] ? a : b
+}
+
+/** Truncate a string for display in reason messages. */
+function truncPreview(s: string): string {
+	return s.length > REASON_ARG_PREVIEW ? `${s.slice(0, REASON_ARG_PREVIEW)}…` : s
 }
 
 export default function loopGuardExtension(pi: ExtensionAPI) {

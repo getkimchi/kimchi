@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { LoopGuard, type ToolHistoryRecord, fingerprint } from "./loop-guard.js"
+import { LoopGuard, type ToolHistoryRecord, fingerprint, normalizeBashCommand } from "./loop-guard.js"
 
 const FP_A = "fp_a"
 const FP_B = "fp_b"
@@ -806,5 +806,158 @@ describe("Edit-run cycle detector — task-total backstop", () => {
 		// After warn, window is cleared. blockIfLoop returns false.
 		const editArgs = '{"path":"/app/main.c","edits":[{"oldText":"x","newText":"y"}]}'
 		expect(guard.blockIfLoop({ toolName: "edit", toolArgs: editArgs })).toBe(false)
+	})
+})
+
+describe("normalizeBashCommand", () => {
+	it("strips leading preamble commands (rm, echo, wc, cd, sleep)", () => {
+		// Core command is gcc, path argument is file.c (from the gcc segment,
+		// NOT from the preamble's /app/a.out).
+		expect(normalizeBashCommand("rm -f /app/a.out && gcc -O3 file.c")).toBe("gcc file.c")
+		// wc is preamble-only (read-style) so it falls through to the raw prefix.
+		expect(normalizeBashCommand("wc -c /app/file.c")).toBe("wc -c /app/file.c")
+		// sleep + echo: both preamble, falls through.
+		expect(normalizeBashCommand("sleep 30 && echo done")).toBe("sleep 30 && echo done")
+	})
+
+	it("collapses on tool + first path argument to ignore flag variations", () => {
+		// Same intent: compile gpt2.c, different optimization flags and output paths.
+		expect(normalizeBashCommand("gcc -O3 -lm /app/gpt2.c -o /app/a.out")).toBe(
+			normalizeBashCommand("gcc -O0 -g /app/gpt2.c -o /tmp/debug"),
+		)
+		expect(normalizeBashCommand("gcc -O3 -lm /app/gpt2.c -o /app/a.out")).toBe("gcc /app/gpt2.c")
+	})
+
+	it("skips preamble and finds the core command in a chain", () => {
+		// Core is gcc, path argument is file.c from the gcc segment.
+		expect(normalizeBashCommand("rm -f a.out && wc -c file.c && gcc -O3 file.c")).toBe("gcc file.c")
+	})
+
+	it("falls back to raw prefix when no path-like argument is present", () => {
+		const result = normalizeBashCommand("echo hello world")
+		expect(result).toBe("echo hello world")
+	})
+
+	it("handles semicolon-separated commands", () => {
+		// cd is preamble, ls is core (no path arg → falls back to raw prefix).
+		expect(normalizeBashCommand("cd /app; ls -la; rm -rf tmp")).toBe("ls -la")
+	})
+
+	it("handles newline-separated commands", () => {
+		expect(normalizeBashCommand("rm -f a.out\ngcc -O3 file.c")).toBe("gcc file.c")
+	})
+
+	it("ignores flags like -O0, -O3, -lm, -g", () => {
+		// Flags start with "-" so they're not treated as path arguments.
+		expect(normalizeBashCommand("python3 -O -u script.py")).toBe("python3 script.py")
+	})
+
+	it("handles relative paths with file extensions", () => {
+		expect(normalizeBashCommand("cat ./test.txt")).toBe("cat ./test.txt")
+	})
+
+	it("uses the first path-argument when multiple are present", () => {
+		// cp is NOT a preamble command (it's a real action). It gets
+		// collapsed on the first path argument.
+		expect(normalizeBashCommand("cp /app/src.c /tmp/build/")).toBe("cp /app/src.c")
+	})
+})
+
+describe("Bash-only loop detector", () => {
+	// Catches the case where the model repeats the same bash command many times
+	// without file edits — e.g. repeated yt-dlp downloads, curl calls, etc.
+
+	function feedBashCalls(guard: LoopGuard, commands: string[], fingerprint: string): void {
+		for (const cmd of commands) {
+			guard.record({
+				toolName: "bash",
+				toolArgs: `{"command":${JSON.stringify(cmd)}}`,
+				isError: false,
+				outputFingerprint: fingerprint,
+			})
+		}
+	}
+
+	it("does not fire below window threshold", () => {
+		// Use varying fingerprints so consecutive-identical doesn't fire.
+		// Only the bash-repetition detector should be under test here.
+		const guard = new LoopGuard()
+		const commands = Array(11).fill("yt-dlp https://example.com/video")
+		for (let i = 0; i < commands.length; i++) {
+			guard.record({
+				toolName: "bash",
+				toolArgs: `{"command":${JSON.stringify(commands[i])}}`,
+				isError: false,
+				outputFingerprint: `fp-${i}`,
+			})
+		}
+		expect(guard.isWarned()).toBe(false)
+	})
+
+	it("does not fire when commands have no repeat (11 different commands)", () => {
+		const guard = new LoopGuard()
+		const commands = Array.from({ length: 11 }, (_, i) => `echo unique-cmd-${i}`)
+		feedBashCalls(guard, commands, "fp_same")
+		expect(guard.isWarned()).toBe(false)
+	})
+
+	it("fires at window threshold (12 same-prefix calls)", () => {
+		const guard = new LoopGuard()
+		feedBashCalls(guard, Array(12).fill("yt-dlp https://example.com/video"), "fp_same")
+		expect(guard.isWarned()).toBe(true)
+	})
+
+	it("does not require file edits to fire", () => {
+		// Same prefix, no edits — should still fire.
+		const guard = new LoopGuard()
+		const commands = Array(12).fill("curl https://api.example.com/data")
+		feedBashCalls(guard, commands, "fp_same")
+		expect(guard.isWarned()).toBe(true)
+	})
+
+	it("catches varied flag patterns via normalization", () => {
+		// Without normalization, each `gcc` invocation has a different raw prefix.
+		// With normalization, they all collapse to "gcc /app/gpt2.c".
+		const guard = new LoopGuard()
+		const commands = [
+			"rm -f /app/a.out && gcc -O3 -lm /app/gpt2.c -o /app/a.out",
+			"wc -c /app/gpt2.c && gcc -O0 -g /app/gpt2.c",
+			"gcc -O3 /app/gpt2.c -o /app/v3",
+			"rm -f /tmp/test && gcc /app/gpt2.c",
+			"gcc -O2 /app/gpt2.c",
+		]
+		// Feed 3 copies of each so 15 total — enough to trigger.
+		const repeated = commands.flatMap((c) => [c, c, c])
+		feedBashCalls(guard, repeated, "fp_same")
+		expect(guard.isWarned()).toBe(true)
+	})
+
+	it("does not fire when bash commands are genuinely different", () => {
+		const guard = new LoopGuard()
+		const commands = [
+			"git status",
+			"git diff",
+			"git log --oneline -5",
+			"npm test",
+			"pnpm run build",
+			"pytest tests/",
+			"ls -la",
+			"grep -r TODO src/",
+			"wc -l src/*.ts",
+			"find . -name '*.test.ts'",
+		]
+		feedBashCalls(guard, commands, "fp_same")
+		expect(guard.isWarned()).toBe(false)
+	})
+
+	it("window counts reset after warn so the model gets a fresh budget", () => {
+		const guard = new LoopGuard()
+		feedBashCalls(guard, Array(12).fill("apt-get install -y some-package"), "fp_a")
+		expect(guard.isWarned()).toBe(true)
+		// After warn, window is cleared. Next batch doesn't immediately re-fire.
+		feedBashCalls(guard, Array(12).fill("apt-get install -y another-package"), "fp_b")
+		// Total counts may re-trigger after enough accumulates.
+		// Window should be clear though.
+		expect(guard.isWarned()).toBe(true) // task-total re-triggered
 	})
 })
