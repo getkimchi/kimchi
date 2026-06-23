@@ -141,6 +141,10 @@ test("/multi-model metadata editor saves tier/vision/description", async ({ term
 			// builtin metadata, so the wizard will offer "keep current (X)"
 			// options alongside the explicit choices.
 			await waitForText(terminal, "kimchi-dev/minimax-m3", { timeoutMs: INPUT_TIMEOUT_MS })
+			// Explicit assertion: if the default orchestrator ref ever
+			// changes, this surfaces the failure here at the picker rather
+			// than as a confusing downstream timeout waiting for the submenu.
+			expect(viewText(terminal)).toContain("kimchi-dev/minimax-m3")
 			terminal.submit("")
 			// The submenu title is `${ref} — metadata`. Matching the full
 			// `kimchi-dev/minimax-m3 — metadata` string avoids matching the
@@ -196,13 +200,15 @@ test("/multi-model metadata editor saves tier/vision/description", async ({ term
 			await waitForText(terminal, /Metadata saved for kimchi-dev\/minimax-m3\./, { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("metadata saved notification")
 
-			// Verify on-disk state.
+			// Verify on-disk state. Assert against the parsed JSON object
+			// (not raw text regex) so a key reorder or pretty-print change
+			// can't silently shift the failure mode.
 			const settingsPath = `${fixture.homeDir}/.config/kimchi/harness/settings.json`
-			const raw = await readFileSafely(settingsPath)
-			expect(raw).toMatch(/"modelMetadata"\s*:/)
-			expect(raw).toMatch(/"tier"\s*:\s*"(heavy|standard|light)"/)
-			expect(raw).toMatch(/"vision"\s*:\s*true/)
-			expect(raw).toMatch(/heavy model for complex work/)
+			const settings = await readSettingsJson(settingsPath)
+			const meta = settings.modelMetadata?.["kimchi-dev/minimax-m3"]
+			expect(meta).toBeDefined()
+			expect(meta).toMatchObject({ tier: "heavy", vision: true })
+			expect(meta?.description).toContain("heavy model for complex work")
 			trace.step("settings.json carries saved metadata")
 
 			terminal.keyEscape()
@@ -281,7 +287,17 @@ async function navigateMenuTo(
 	throw new Error(`Could not navigate to menu option "${target}".`)
 }
 
-async function readFileSafely(path: string): Promise<string> {
+async function readSettingsJson(path: string): Promise<Record<string, any>> {
 	const { readFileSync } = await import("node:fs")
-	return readFileSync(path, "utf-8")
+	let raw: string
+	try {
+		raw = readFileSync(path, "utf-8")
+	} catch (err) {
+		throw new Error(`Settings file not found at ${path}: ${err instanceof Error ? err.message : err}`)
+	}
+	try {
+		return JSON.parse(raw)
+	} catch (err) {
+		throw new Error(`Settings file at ${path} is not valid JSON: ${err instanceof Error ? err.message : err}`)
+	}
 }
