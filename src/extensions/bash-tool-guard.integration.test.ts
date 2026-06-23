@@ -35,11 +35,19 @@ interface MockExtensionAPI {
 	events: { emit: ReturnType<typeof vi.fn> }
 	_blockResult?: BlockResult
 	_emittedEvents: Array<{ channel: string; payload: unknown }>
+	/** getAllTools() returns the live bash tool list. The integration tests
+	 *  don't exercise the preference description override, so the default
+	 *  empty array is fine — the session_start hook only needs the call to
+	 *  not throw. Override via `setTools()` for tests that need a specific
+	 *  tool list. */
+	getAllTools: () => Array<{ name: string; description: string }>
+	setTools: (tools: Array<{ name: string; description: string }>) => void
 }
 
 function createMockPI(): MockExtensionAPI {
 	const handlers: MockExtensionAPI["handlers"] = {}
 	const _emittedEvents: MockExtensionAPI["_emittedEvents"] = []
+	let tools: Array<{ name: string; description: string }> = []
 	return {
 		handlers,
 		on(event: string, handler) {
@@ -53,6 +61,12 @@ function createMockPI(): MockExtensionAPI {
 			}),
 		},
 		_emittedEvents,
+		getAllTools() {
+			return tools
+		},
+		setTools(t) {
+			tools = t
+		},
 	}
 }
 

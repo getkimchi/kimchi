@@ -7,6 +7,12 @@ import { Shell } from "@microsoft/tui-test"
 import type { Terminal } from "@microsoft/tui-test/lib/terminal/term.js"
 import { STARTUP_TIMEOUT_MS, fullText, viewText, waitForText } from "./assertions.js"
 import {
+	type FakeOllamaModel,
+	type FakeOllamaServer,
+	type StartFakeOllamaServerOptions,
+	startFakeOllamaServer,
+} from "./fake-ollama-server.js"
+import {
 	DEFAULT_MODEL,
 	type FakeModel,
 	type FakeOpenAiServer,
@@ -15,12 +21,6 @@ import {
 	resolveModels,
 	startFakeOpenAiServer,
 } from "./fake-openai-server.js"
-import {
-	type FakeOllamaModel,
-	type FakeOllamaServer,
-	type StartFakeOllamaServerOptions,
-	startFakeOllamaServer,
-} from "./fake-ollama-server.js"
 
 /** Shared terminal geometry/shell for every TUI e2e test. */
 export const TUI_TEST_CONFIG = { shell: Shell.Bash, rows: 40, columns: 120 } as const
@@ -141,12 +141,19 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 }
 
 export function launchKimchi(terminal: Terminal, fixture: KimchiFixture, extraArgs: string[] = []): void {
+	// KIMCHI_PERMISSIONS=yolo skips every permission check (rules, denylist,
+	// classifier, prompts) so tool calls execute without blocking on the TUI
+	// permission prompt — no test driver is wired to answer it. TUI E2E
+	// should not depend on permission UX; permission flows are covered by
+	// unit tests in src/extensions/permissions/. Tests that deliberately
+	// exercise the prompt UI should override via `extraArgs` (e.g. `--plan`).
 	terminal.submit(
 		[
 			`cd ${sh(fixture.workDir)} &&`,
 			"env",
 			`HOME=${sh(fixture.homeDir)}`,
 			`PI_PACKAGE_DIR=${sh(PACKAGE_DIR)}`,
+			"KIMCHI_PERMISSIONS=yolo",
 			...((fixture.ollama ? [`OLLAMA_HOST=${sh(fixture.ollama.baseUrl)}`] : []) as string[]),
 			"TERM=xterm-256color",
 			sh(BINARY_PATH),

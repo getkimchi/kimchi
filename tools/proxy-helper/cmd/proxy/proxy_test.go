@@ -23,12 +23,12 @@ import (
 // buildWSURL so the client connects to /ssh on the same server instead of
 // the production wss://<sandbox>/ssh URL.
 type fakeBackend struct {
-	t          *testing.T
-	apiKey     string
-	sessionURI string
-	sessionID  string
-	orgID      string
-	sessToken  string
+	t            *testing.T
+	apiKey       string
+	workspaceURI string
+	workspaceID  string
+	orgID        string
+	sessToken    string
 
 	// echo controls what /ssh does with incoming messages. Default: echo back.
 	echo func(ctx context.Context, c *websocket.Conn)
@@ -40,12 +40,12 @@ type fakeBackend struct {
 
 func newFakeBackend(t *testing.T) *fakeBackend {
 	return &fakeBackend{
-		t:          t,
-		apiKey:     "test-api-key",
-		sessionURI: "sandbox.example.test",
-		sessionID:  "sess-123",
-		orgID:      "org-abc",
-		sessToken:  "short-lived-token",
+		t:            t,
+		apiKey:       "test-api-key",
+		workspaceURI: "sandbox.example.test",
+		workspaceID:  "sess-123",
+		orgID:        "org-abc",
+		sessToken:    "short-lived-token",
 	}
 }
 
@@ -65,8 +65,8 @@ func (f *fakeBackend) handler() http.Handler {
 	})
 
 	mux.HandleFunc("/ai-optimizer/v1beta/organizations/", func(w http.ResponseWriter, r *http.Request) {
-		// Only the .../sessions list lives under here.
-		if !strings.HasSuffix(r.URL.Path, "/sessions") {
+		// Only the .../workspaces list lives under here.
+		if !strings.HasSuffix(r.URL.Path, "/workspaces") {
 			http.NotFound(w, r)
 			return
 		}
@@ -91,7 +91,7 @@ func (f *fakeBackend) handler() http.Handler {
 		case "cursor-2":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"items": []map[string]string{
-					{"id": f.sessionID, "uri": f.sessionURI},
+					{"id": f.workspaceID, "uri": f.workspaceURI},
 				},
 				"nextPageCursor": "",
 			})
@@ -101,20 +101,20 @@ func (f *fakeBackend) handler() http.Handler {
 		}
 	})
 
-	mux.HandleFunc("/ai-optimizer/v1beta/session-tokens:exchange", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/ai-optimizer/v1beta/workspace-tokens:exchange", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-Api-Key") != f.apiKey {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		var body struct {
-			SessionID string `json:"sessionId"`
+			WorkspaceID string `json:"workspaceId"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if body.SessionID != f.sessionID {
-			f.t.Errorf("exchange: got sessionId=%q want %q", body.SessionID, f.sessionID)
+		if body.WorkspaceID != f.workspaceID {
+			f.t.Errorf("exchange: got workspaceId=%q want %q", body.WorkspaceID, f.workspaceID)
 		}
 		_ = json.NewEncoder(w).Encode(map[string]string{
 			"token":      f.sessToken,
@@ -177,8 +177,8 @@ func TestProxyConnect_HappyPath(t *testing.T) {
 	}
 	origBuildWSURL := buildWSURL
 	buildWSURL = func(sandboxURL string, _ int) string {
-		if sandboxURL != fb.sessionURI {
-			t.Errorf("buildWSURL: got %q want %q", sandboxURL, fb.sessionURI)
+		if sandboxURL != fb.workspaceURI {
+			t.Errorf("buildWSURL: got %q want %q", sandboxURL, fb.workspaceURI)
 		}
 		return "ws://" + u.Host + "/ssh"
 	}
@@ -195,7 +195,7 @@ func TestProxyConnect_HappyPath(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := proxyConnectIO(ctx, fb.sessionURI, fb.apiKey, srv.URL, 443, stdinR, &stdout); err != nil {
+	if err := proxyConnectIO(ctx, fb.workspaceURI, fb.apiKey, srv.URL, 443, stdinR, &stdout); err != nil {
 		t.Fatalf("proxyConnectIO: %v", err)
 	}
 
@@ -221,7 +221,7 @@ func TestProxyConnect_BadAPIKey(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err := proxyConnectIO(ctx, fb.sessionURI, "wrong-key", srv.URL, 443, strings.NewReader(""), io.Discard)
+	err := proxyConnectIO(ctx, fb.workspaceURI, "wrong-key", srv.URL, 443, strings.NewReader(""), io.Discard)
 	if err == nil {
 		t.Fatal("expected error for bad API key")
 	}
@@ -231,7 +231,7 @@ func TestProxyConnect_BadAPIKey(t *testing.T) {
 	}
 }
 
-func TestProxyConnect_SessionNotFound(t *testing.T) {
+func TestProxyConnect_WorkspaceNotFound(t *testing.T) {
 	fb := newFakeBackend(t)
 	srv := httptest.NewServer(fb.handler())
 	defer srv.Close()
@@ -241,7 +241,7 @@ func TestProxyConnect_SessionNotFound(t *testing.T) {
 
 	err := proxyConnectIO(ctx, "nonexistent.example.test", fb.apiKey, srv.URL, 443, strings.NewReader(""), io.Discard)
 	if err == nil {
-		t.Fatal("expected error for missing session URI")
+		t.Fatal("expected error for missing workspace URI")
 	}
 	var authErr *cast.RemoteAuthError
 	if !errors.As(err, &authErr) || authErr.Status != 404 {
@@ -275,7 +275,7 @@ func TestProxyConnect_ServerCloseExitsCleanly(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- proxyConnectIO(ctx, fb.sessionURI, fb.apiKey, srv.URL, 443, stdin, &stdout)
+		done <- proxyConnectIO(ctx, fb.workspaceURI, fb.apiKey, srv.URL, 443, stdin, &stdout)
 	}()
 
 	select {
