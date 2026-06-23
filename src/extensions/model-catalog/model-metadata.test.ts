@@ -300,6 +300,29 @@ describe("saveModelMetadata", () => {
 		expect(saved.modelMetadata["model/a"]).toEqual({ tier: "heavy", description: "Updated" })
 		expect(saved.modelMetadata["model/b"]).toEqual({ tier: "standard" })
 	})
+
+	// Regression: previously saveModelMetadata caught JSON.parse errors
+	// indiscriminately and would overwrite a corrupted settings.json with {}
+	// + only the new modelMetadata, destroying the user's other settings.
+	// A corrupted file must surface the error instead.
+	it("throws when settings.json contains malformed JSON", () => {
+		mkdirSync(testDir, { recursive: true })
+		const corrupted = "{ this is not valid json :::"
+		writeFileSync(testPath, corrupted)
+
+		const metadata = new Map<string, ModelCustomMetadata>([["custom/model", { tier: "heavy" }]])
+		expect(() => saveModelMetadata(metadata, testPath)).toThrow()
+
+		// The file must be left untouched — silent overwrite is the bug.
+		expect(readFileSync(testPath, "utf-8")).toBe(corrupted)
+	})
+
+	it("does not throw when settings.json is absent", () => {
+		// ENOENT is the only acceptable swallowed error.
+		const metadata = new Map<string, ModelCustomMetadata>([["custom/model", { tier: "heavy" }]])
+		expect(() => saveModelMetadata(metadata, testPath)).not.toThrow()
+		expect(existsSync(testPath)).toBe(true)
+	})
 })
 
 describe("deleteModelMetadata", () => {
@@ -478,11 +501,6 @@ describe("resolveModelMetadata", () => {
 		expect(result).toEqual(expect.objectContaining({ source: "builtin", tier: "standard", vision: false }))
 	})
 
-	it("returns builtin for minimax-m3", () => {
-		const result = resolveModelMetadata("kimchi-dev/minimax-m3", testPath)
-		expect(result).toEqual(expect.objectContaining({ source: "builtin", tier: "heavy", vision: true }))
-	})
-
 	it("returns builtin for nemotron-3-ultra-fp4", () => {
 		const result = resolveModelMetadata("kimchi-dev/nemotron-3-ultra-fp4", testPath)
 		expect(result).toEqual(expect.objectContaining({ source: "builtin", tier: "light" }))
@@ -502,7 +520,6 @@ describe("isModelMetadataMissing", () => {
 	it("returns false for known builtin model", () => {
 		expect(isModelMetadataMissing("kimchi-dev/kimi-k2.6", testPath)).toBe(false)
 		expect(isModelMetadataMissing("kimchi-dev/minimax-m2.7", testPath)).toBe(false)
-		expect(isModelMetadataMissing("kimchi-dev/minimax-m3", testPath)).toBe(false)
 	})
 
 	it("returns true for completely unknown model with no custom metadata", () => {

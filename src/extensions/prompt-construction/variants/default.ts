@@ -4,10 +4,6 @@
  * Opening this file shows exactly what the default variant configures: nothing
  * beyond stock. Every field is absent/undefined, so the assembled prompt is
  * byte-for-byte identical to the original when no variant is active.
- *
- * Model posture: uses the stock builtin model roles with no override
- * (modelRoleDefaults is undefined). Role resolution is handled entirely by
- * DEFAULT_MODEL_ROLES in the model-roles module.
  */
 
 import type { PromptVariant } from "./types.js"
@@ -20,6 +16,6 @@ import type { PromptVariant } from "./types.js"
 export const DEFAULT_VARIANT: PromptVariant = {
 	name: "default",
 	// All other fields are intentionally absent.
-	// No intro override, no guidelines, no model role defaults, no discipline reminder.
+	// No intro override, no guidelines, no discipline reminder.
 	// The assembled prompt is byte-for-byte identical to the original.
 }

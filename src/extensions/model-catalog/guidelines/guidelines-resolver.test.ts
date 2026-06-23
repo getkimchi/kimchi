@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import type { ModelMetadata } from "../../../../models.js"
+import type { ModelMetadata } from "../../../models.js"
 import { MODEL_CAPABILITIES, ModelRegistry } from "../index.js"
 import {
 	buildOrchestrationGuidelinesSection,
@@ -74,13 +74,6 @@ describe("orchestration guideline resolution", () => {
 		expect(result).toContain("front-load")
 	})
 
-	it("returns composed orchestration guideline for minimax-m3", () => {
-		const result = resolveOrchestrationGuideline("minimax-m3", registry)
-		expect(result).toContain("MiniMax M2 family")
-		expect(result).toContain("web_search")
-		expect(result).toContain("front-load")
-	})
-
 	it("returns composed orchestration guideline for kimi-k2.6", () => {
 		const result = resolveOrchestrationGuideline("kimi-k2.6", registry)
 		expect(result).toContain("Kimi family")
@@ -115,7 +108,7 @@ describe("guideline section building", () => {
 	const registry = new ModelRegistry(ALL_KNOWN_METADATA)
 
 	it("builds orchestration guidelines section with content", () => {
-		const result = buildOrchestrationGuidelinesSection("minimax-m3", registry)
+		const result = buildOrchestrationGuidelinesSection("minimax-m2.7", registry)
 		expect(result).toContain("### Orchestration Guidelines")
 		expect(result).toContain("MiniMax M2 family")
 	})
@@ -126,7 +119,7 @@ describe("guideline section building", () => {
 	})
 
 	it("builds phase guidelines section with model content", () => {
-		const result = buildPhaseGuidelinesSection("minimax-m3", "build", registry)
+		const result = buildPhaseGuidelinesSection("minimax-m2.7", "build", registry)
 		expect(result).toContain("## Phase Guidelines (build)")
 		expect(result).toContain("Outline-then-diff")
 	})
@@ -179,18 +172,6 @@ describe("builtin-model guideline content", () => {
 		expect(result).toContain("scope creep")
 		expect(result).toContain("hallucinated APIs")
 		expect(result).toContain("inappropriate concurrency")
-	})
-
-	it("minimax-m3 build: contains family layer", () => {
-		const result = resolvePhaseGuideline("build", "minimax-m3", registry)
-		expect(result).toContain("Outline-then-diff")
-		expect(result).toContain("STAY IN SCOPE")
-	})
-
-	it("minimax-m3 review: contains family layer", () => {
-		const result = resolvePhaseGuideline("review", "minimax-m3", registry)
-		expect(result).toContain("scope creep")
-		expect(result).toContain("hallucinated APIs")
 	})
 
 	it("nemotron-3-ultra-fp4 explore: contains per-model layer", () => {

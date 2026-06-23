@@ -11,7 +11,6 @@
 
 import type { Skill } from "@earendil-works/pi-coding-agent"
 import type { AgentConfig } from "../../agents/personas/types.js"
-import type { ModelRoles } from "../../orchestration/model-roles.js"
 import type { SuppressibleSection } from "../system-prompt-blocks.js"
 import type { PromptMode, ToolInfo } from "../system-prompt.js"
 
@@ -103,15 +102,4 @@ export interface PromptVariant {
 
 	/** When true, the exploration-guard extension does not register any handlers (entirely inert for this variant). */
 	suppressExplorationGuard?: boolean
-
-	/**
-	 * Variant-scoped model role defaults. Applied between DEFAULT_MODEL_ROLES
-	 * and explicit user settings.json values. Precedence (highest wins):
-	 *   user settings.json > modelRoleDefaults > DEFAULT_MODEL_ROLES
-	 *
-	 * Only roles specified here override the auto-built defaults. Unspecified
-	 * roles fall back to the auto-built default. The default variant leaves this
-	 * undefined, keeping default resolution byte-identical to today.
-	 */
-	modelRoleDefaults?: Partial<ModelRoles>
 }

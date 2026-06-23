@@ -147,7 +147,7 @@ describe("isEqualAssignment", () => {
 
 describe("formatRoleDisplay", () => {
 	it("appends (default) suffix when value matches DEFAULT_MODEL_ROLES", () => {
-		const display = formatRoleDisplay("orchestrator", "kimchi-dev/kimi-k2.6")
+		const display = formatRoleDisplay("orchestrator", "kimchi-dev/minimax-m3")
 		expect(display).toMatch(/\(default\)$/)
 	})
 
@@ -187,7 +187,7 @@ describe("formatRoleSummaryBlock", () => {
 	})
 
 	it("appends (default) suffix to each model line when assignment matches default", () => {
-		const display = formatRoleSummaryBlock("orchestrator", "kimchi-dev/kimi-k2.6")
+		const display = formatRoleSummaryBlock("orchestrator", "kimchi-dev/minimax-m3")
 		expect(display).toContain("(default)")
 	})
 

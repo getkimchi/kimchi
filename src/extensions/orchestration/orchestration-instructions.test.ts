@@ -36,7 +36,6 @@ describe("resolveOrchestrationInstructions", () => {
 		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
-			mode: "orchestrator",
 			roles: DEFAULT_MODEL_ROLES,
 		})
 		expect(result).toContain("Orchestrate the work")
@@ -46,7 +45,6 @@ describe("resolveOrchestrationInstructions", () => {
 		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
-			mode: "orchestrator",
 			roles: DEFAULT_MODEL_ROLES,
 		})
 		expect(result).toContain("## Your Team")
@@ -57,9 +55,8 @@ describe("resolveOrchestrationInstructions", () => {
 
 	it("shows Your Capabilities section with orchestrator roles", () => {
 		const result = resolveAsString({
-			currentModelId: "kimi-k2.6",
+			currentModelId: "minimax-m3",
 			registry,
-			mode: "orchestrator",
 			roles: DEFAULT_MODEL_ROLES,
 		})
 		expect(result).toContain("## Your Capabilities")
@@ -70,7 +67,6 @@ describe("resolveOrchestrationInstructions", () => {
 		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
-			mode: "orchestrator",
 			roles: DEFAULT_MODEL_ROLES,
 		})
 		expect(result).toContain("Your responsibilities per phase")
@@ -85,7 +81,6 @@ describe("resolveOrchestrationInstructions", () => {
 		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
-			mode: "orchestrator",
 			roles: {
 				...DEFAULT_MODEL_ROLES,
 				planner: "some-other/model",
@@ -99,7 +94,6 @@ describe("resolveOrchestrationInstructions", () => {
 		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
-			mode: "orchestrator",
 			roles: {
 				orchestrator: "anthropic/claude-opus-4-7",
 				planner: "anthropic/claude-opus-4-7",
@@ -117,9 +111,8 @@ describe("resolveOrchestrationInstructions", () => {
 
 	it("generates DO directive for plan when orchestrator is planner", () => {
 		const result = resolveAsString({
-			currentModelId: "kimi-k2.6",
+			currentModelId: "minimax-m3",
 			registry,
-			mode: "orchestrator",
 			roles: DEFAULT_MODEL_ROLES,
 		})
 		expect(result).not.toContain("### Planner")
@@ -131,7 +124,6 @@ describe("resolveOrchestrationInstructions", () => {
 		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
-			mode: "orchestrator",
 			roles: {
 				...DEFAULT_MODEL_ROLES,
 				planner: "anthropic/claude-opus-4-7",
@@ -146,12 +138,10 @@ describe("resolveOrchestrationInstructions", () => {
 
 	it("renders tier and description for models in Your Team", () => {
 		const result = resolveAsString({
-			currentModelId: "kimi-k2.6",
+			currentModelId: "minimax-m3",
 			registry,
-			mode: "orchestrator",
 			roles: DEFAULT_MODEL_ROLES,
 		})
-		expect(result).toContain("Tier: standard")
 		expect(result).toContain("Tier: heavy")
 		expect(result).toContain("Tier: light")
 	})
@@ -160,7 +150,6 @@ describe("resolveOrchestrationInstructions", () => {
 		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
-			mode: "orchestrator",
 		})
 		expect(result).toContain("Orchestrate the work")
 		expect(result).toContain("Token budgets")
@@ -177,7 +166,6 @@ describe("resolveOrchestrationInstructions", () => {
 		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
-			mode: "orchestrator",
 			roles: DEFAULT_MODEL_ROLES,
 		})
 		expect(result).toContain("race/thread-safety detector")
@@ -188,7 +176,6 @@ describe("resolveOrchestrationInstructions", () => {
 		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
-			mode: "orchestrator",
 			roles: DEFAULT_MODEL_ROLES,
 		})
 		expect(result).toContain("complexity")
@@ -201,7 +188,6 @@ describe("resolveOrchestrationInstructions", () => {
 		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
-			mode: "orchestrator",
 			roles: DEFAULT_MODEL_ROLES,
 		})
 		expect(result).toContain("What makes a good complex chunk spec")
@@ -214,7 +200,6 @@ describe("resolveOrchestrationInstructions", () => {
 		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
-			mode: "orchestrator",
 			roles: DEFAULT_MODEL_ROLES,
 		})
 		expect(result).toContain("Review (read code + write findings report)")
@@ -225,62 +210,15 @@ describe("resolveOrchestrationInstructions", () => {
 		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
-			mode: "orchestrator",
 			roles: DEFAULT_MODEL_ROLES,
 		})
 		expect(result).not.toContain("Prefer lightweight re-verification")
 	})
 
-	it("returns single-model instructions with model ID in single-model mode", () => {
-		const result = resolveAsString({
-			currentModelId: "kimi-k2.6",
-			registry,
-			mode: "single",
-		})
-		expect(result).toContain("Single-Model Mode")
-		expect(result).toContain("kimi-k2.6")
-		expect(result).toContain("MUST always pass your own model ID")
-		expect(result).toContain("never delegate to a different model")
-	})
-
-	it("returns subagent instructions in subagent mode", () => {
-		const result = resolveAsString({
-			currentModelId: "kimi-k2.6",
-			registry,
-			mode: "subagent",
-		})
-		expect(result).toContain("Subagent response protocol")
-		expect(result).toContain('{"summary":')
-		expect(result).not.toContain("Orchestrate the work")
-	})
-
-	it("does not affect subagent mode even with roles", () => {
-		const result = resolveAsString({
-			currentModelId: "kimi-k2.6",
-			registry,
-			mode: "subagent",
-			roles: DEFAULT_MODEL_ROLES,
-		})
-		expect(result).toContain("Subagent response protocol")
-		expect(result).not.toContain("Your Team")
-	})
-
-	it("does not affect single-model mode even with roles", () => {
-		const result = resolveAsString({
-			currentModelId: "kimi-k2.6",
-			registry,
-			mode: "single",
-			roles: DEFAULT_MODEL_ROLES,
-		})
-		expect(result).toContain("Single-Model Mode")
-		expect(result).not.toContain("Your Team")
-	})
-
 	it("includes model-specific orchestration guidelines when provided", () => {
 		const result = resolveAsString({
-			currentModelId: "minimax-m2.7",
+			currentModelId: "minimax-m3",
 			registry,
-			mode: "orchestrator",
 			roles: DEFAULT_MODEL_ROLES,
 		})
 		expect(result).toContain("### Orchestration Guidelines")
@@ -291,7 +229,6 @@ describe("resolveOrchestrationInstructions", () => {
 		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
-			mode: "orchestrator",
 			roles: {
 				orchestrator: "kimchi-dev/kimi-k2.6",
 				planner: "kimchi-dev/kimi-k2.6",
@@ -321,7 +258,6 @@ describe("resolveOrchestrationInstructions with custom configs", () => {
 		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
-			mode: "orchestrator",
 			roles: {
 				orchestrator: "kimchi-dev/kimi-k2.6",
 				planner: "kimchi-dev/kimi-k2.6",
@@ -345,7 +281,6 @@ describe("resolveOrchestrationInstructions with custom configs", () => {
 		const result = resolveAsString({
 			currentModelId: "external-orchestrator",
 			registry,
-			mode: "orchestrator",
 			roles: {
 				orchestrator: "external-orchestrator",
 				planner: "external-orchestrator",
@@ -376,7 +311,6 @@ describe("resolveOrchestrationInstructions with custom configs", () => {
 		const result = resolveAsString({
 			currentModelId: "unknown-model",
 			registry,
-			mode: "orchestrator",
 			roles,
 		})
 		expect(result).toContain("unknown-model")
@@ -400,7 +334,6 @@ describe("resolveOrchestrationInstructions with custom configs", () => {
 		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
-			mode: "orchestrator",
 			roles,
 			customConfigs,
 		})
@@ -425,7 +358,6 @@ describe("resolveOrchestrationInstructions with custom configs", () => {
 		const result = resolveAsString({
 			currentModelId: "external-orchestrator",
 			registry,
-			mode: "orchestrator",
 			roles,
 		})
 		expect(result).toContain("Tier: standard")
@@ -457,7 +389,6 @@ describe("resolveOrchestrationInstructions with custom configs", () => {
 		const result = resolveAsString({
 			currentModelId: "claude-opus-4-6",
 			registry,
-			mode: "orchestrator",
 			roles,
 			customConfigs,
 		})
@@ -480,7 +411,6 @@ describe("resolveOrchestrationInstructions with custom configs", () => {
 		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
-			mode: "orchestrator",
 			roles,
 			customConfigs,
 		})
@@ -501,7 +431,6 @@ describe("Build phase directive (complex-chunk tier routing)", () => {
 		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
-			mode: "orchestrator",
 			roles: DEFAULT_MODEL_ROLES,
 		})
 		expect(result).toContain("#### Build phase")
