@@ -226,7 +226,7 @@ describe("todos extension session state", () => {
 		expect(harness.sendMessage).not.toHaveBeenCalled()
 	})
 
-	it("injects a process checkpoint after successful non-todo work", async () => {
+	it("keeps injecting process checkpoints after successful non-todo work until todos are updated", async () => {
 		const harness = createTodosHarness()
 		const ctx = createContext("session", [])
 		await harness.fire("session_start", { reason: "new" }, ctx)
@@ -242,7 +242,14 @@ describe("todos extension session state", () => {
 		expect(checkpoint.display).toBe(false)
 		expect(checkpoint.details).toEqual({ reason: "todo_checkpoint" })
 		expect(checkpoint.content[0].text).toContain(TODO_CHECKPOINT_MESSAGE)
+		expect(checkpoint.content[0].text).toContain("impossible")
+		expect(checkpoint.content[0].text).toContain("blocked")
 		expect(checkpoint.content[0].text).toContain("#1 [in_progress] check work")
+		const repeated = (await harness.fire("context", { messages: [] }, ctx)) as {
+			messages: Array<{ details: unknown; content: Array<{ text: string }> }>
+		}
+		expect(repeated.messages[0].details).toEqual({ reason: "todo_checkpoint" })
+		expect(repeated.messages[0].content[0].text).toContain("#1 [in_progress] check work")
 	})
 
 	it("clears checkpoint pressure after a todo write", async () => {
@@ -257,7 +264,7 @@ describe("todos extension session state", () => {
 		expect(await harness.fire("context", { messages: [] }, ctx)).toBeUndefined()
 	})
 
-	it("queues one reconciliation nudge when the assistant tries to stop with todos", async () => {
+	it("requeues reconciliation nudges when the assistant keeps stopping with unchanged active todos", async () => {
 		const harness = createTodosHarness()
 		const ctx = createContext("session", [])
 		await harness.fire("session_start", { reason: "new" }, ctx)
@@ -267,7 +274,7 @@ describe("todos extension session state", () => {
 		await harness.fire("turn_end", terminalTurn(), ctx)
 		await harness.fire("turn_end", terminalTurn(), ctx)
 
-		expect(harness.sendMessage).toHaveBeenCalledTimes(1)
+		expect(harness.sendMessage).toHaveBeenCalledTimes(2)
 		expect(harness.sendMessage).toHaveBeenCalledWith(
 			{
 				customType: TODO_CUSTOM_ENTRY_TYPE,
@@ -282,10 +289,27 @@ describe("todos extension session state", () => {
 			},
 			{ deliverAs: "followUp" },
 		)
+		expect(harness.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				content: [expect.objectContaining({ text: expect.stringContaining("impossible") })],
+			}),
+			{ deliverAs: "followUp" },
+		)
+		expect(harness.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				content: [expect.objectContaining({ text: expect.stringContaining("blocked") })],
+			}),
+			{ deliverAs: "followUp" },
+		)
+		const checkpoint = (await harness.fire("context", { messages: [] }, ctx)) as {
+			messages: Array<{ details: unknown; content: Array<{ text: string }> }>
+		}
+		expect(checkpoint.messages[0].details).toEqual({ reason: "todo_checkpoint" })
+		expect(checkpoint.messages[0].content[0].text).toContain("still active")
 
 		applyWriteTodos({ todos: [{ id: 1, content: "still active", status: "completed" }] })
 		await harness.fire("turn_end", terminalTurn(), ctx)
-		expect(harness.sendMessage).toHaveBeenCalledTimes(1)
+		expect(harness.sendMessage).toHaveBeenCalledTimes(2)
 	})
 
 	it("does not reconcile immediately after only writing todos", async () => {

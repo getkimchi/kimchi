@@ -79,7 +79,7 @@ describe("todo widget helpers", () => {
 		const component = setWidget.mock.calls[0][1]
 		const instance = component({ requestRender: vi.fn() }, theme)
 		expect(instance.render(80)).toContain("Todos · Global")
-		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("todos", "0/1 todos -> F7")
+		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("todos", "0/1 done · 1 active -> F7")
 	})
 
 	it("auto-hides when all todos are completed", () => {
