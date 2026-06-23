@@ -65,6 +65,7 @@ import {
 	splitModelRef,
 	validateModelRoles,
 } from "../orchestration/model-roles.js"
+import { setSessionMode } from "../session-mode.js"
 import { getCurrentPhase } from "../tags.js"
 import { type ContextFile, loadGlobalContextFiles, loadProjectContextFiles } from "./context-files.js"
 import { type EnvironmentInfo, type PromptMode, type ToolInfo, buildSystemPrompt } from "./system-prompt.js"
@@ -385,7 +386,7 @@ export default function (skillPaths: string[]) {
 				}
 			})
 
-			pi.on("turn_end", async (event) => {
+			pi.on("turn_end", async (event, ctx) => {
 				if (event.message.role !== "assistant") return
 				// Safe after the role guard: AgentMessage with role "assistant" is AssistantMessage.
 				const assistantMsg = event.message as AssistantMessage
@@ -431,7 +432,7 @@ export default function (skillPaths: string[]) {
 					return
 				}
 
-				if (!continuationNudge.evaluateTurn(assistantMsg)) return
+				if (!continuationNudge.evaluateTurn(assistantMsg, ctx?.model?.id)) return
 				pi.sendMessage(
 					{
 						customType: NUDGE_CUSTOM_TYPE,
@@ -519,6 +520,7 @@ export default function (skillPaths: string[]) {
 			}
 
 			const mode: PromptMode = subagentMode ? "subagent" : multiModelEnabled ? "orchestrator" : "single"
+			setSessionMode(ctx.sessionManager?.getSessionId(), mode)
 			const roles = mode === "orchestrator" ? getModelRoles() : undefined
 			const customConfigs = mode === "orchestrator" && roles ? extractCustomConfigs(roles) : undefined
 

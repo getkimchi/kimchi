@@ -149,6 +149,11 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 			),
 		},
 	],
+	// minimax-m3 is excluded from auto-routing (ignored) so it does NOT alter
+	// DEFAULT_MODEL_ROLES or enter any role pool. Variants that want m3 assign
+	// it explicitly via modelRoleDefaults. The "ignored" flag suppresses the
+	// unknown-model warning at startup without adding it to the router.
+	["minimax-m3", "ignored"],
 	[
 		"nemotron-3-ultra-fp4",
 		{

@@ -1,5 +1,6 @@
-import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext, InputEvent, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { isAgentWorker } from "../agent-worker-context.js"
+import { resolvePromptVariant } from "../prompt-construction/variants/index.js"
 import { registerTodosCommand } from "./command.js"
 import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
 import {
@@ -30,6 +31,13 @@ export * from "./prompt-block.js"
 
 export const TODO_CLEANUP_MESSAGE =
 	"Your session todo list is complete but still open. If you are no longer working on these todos and everything is finished, call clear_todos to clear the list. If there is more to do, add the next items with add_todo instead. Do not leave a finished todo list lingering. This todo bookkeeping is internal; do not tell the user you are clearing or updating todos."
+
+export const TODO_OPEN_REMINDER_TYPE = "todo-open-reminder"
+
+export function buildOpenTodosReminder(openCount: number): string {
+	const itemLabel = openCount === 1 ? "1 open todo item" : `${openCount} open todo items`
+	return `You have ${itemLabel} on your session list. Keep the list current as you work (mark items done as they complete, add new steps discovered), and call clear_todos once the work is finished. This todo bookkeeping is internal; do not tell the user about it.`
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object"
@@ -102,6 +110,22 @@ export default function todosExtension(pi: ExtensionAPI): void {
 			},
 			{ deliverAs: "nextTurn" },
 		)
+	}
+
+	if (resolvePromptVariant().name === "spicy") {
+		pi.on("input", (event: InputEvent) => {
+			if (event.source === "extension") return
+			const open = getTodosForScope().filter((t) => t.status !== "completed").length
+			if (open <= 0) return
+			pi.sendMessage(
+				{
+					customType: TODO_OPEN_REMINDER_TYPE,
+					content: [{ type: "text", text: buildOpenTodosReminder(open) }],
+					display: false,
+				},
+				{ deliverAs: "nextTurn" },
+			)
+		})
 	}
 
 	registerTodosCommand(pi)

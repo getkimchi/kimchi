@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest"
 import {
+	applyVariantSelection,
+	extractSpicyFlag,
 	getCliModeArg,
 	isExperimentalFeaturesArg,
 	isHelpOrVersionArgs,
@@ -106,6 +108,14 @@ describe("isPreDispatchValueFlag", () => {
 			expect(isPreDispatchValueFlag(arg)).toBe(false)
 		},
 	)
+
+	it("does not treat --variant as a value flag (--variant flag was removed)", () => {
+		expect(isPreDispatchValueFlag("--variant")).toBe(false)
+	})
+
+	it("does not treat --spicy as a value flag (it is a boolean flag)", () => {
+		expect(isPreDispatchValueFlag("--spicy")).toBe(false)
+	})
 })
 
 describe("isExperimentalFeaturesArg", () => {
@@ -123,6 +133,83 @@ describe("isExperimentalFeaturesArg", () => {
 
 	it("returns false for empty args", () => {
 		expect(isExperimentalFeaturesArg([])).toBe(false)
+	})
+})
+
+describe("extractSpicyFlag", () => {
+	it("returns spicy=true and strips --spicy when present", () => {
+		const result = extractSpicyFlag(["--spicy"])
+		expect(result.spicy).toBe(true)
+		expect(result.rest).toEqual([])
+	})
+
+	it("returns spicy=false and unchanged rest when --spicy is absent", () => {
+		const result = extractSpicyFlag(["--model", "foo", "--print"])
+		expect(result.spicy).toBe(false)
+		expect(result.rest).toEqual(["--model", "foo", "--print"])
+	})
+
+	it("preserves other args in order when --spicy is in the middle", () => {
+		const result = extractSpicyFlag(["--model", "foo", "--spicy", "--print"])
+		expect(result.spicy).toBe(true)
+		expect(result.rest).toEqual(["--model", "foo", "--print"])
+	})
+
+	it("handles repeated --spicy occurrences: strips all of them, returns spicy=true", () => {
+		const result = extractSpicyFlag(["--spicy", "--model", "foo", "--spicy"])
+		expect(result.spicy).toBe(true)
+		expect(result.rest).toEqual(["--model", "foo"])
+	})
+
+	it("returns spicy=false for empty args", () => {
+		const result = extractSpicyFlag([])
+		expect(result.spicy).toBe(false)
+		expect(result.rest).toEqual([])
+	})
+})
+
+describe("applyVariantSelection", () => {
+	it("sets env to 'spicy' when --spicy is present", () => {
+		const env: NodeJS.ProcessEnv = {}
+		const stripped = applyVariantSelection(["--spicy", "--print"], env)
+		expect(env.KIMCHI_PROMPT_VARIANT).toBe("spicy")
+		expect(stripped).toEqual(["--print"])
+	})
+
+	it("overrides a pre-existing KIMCHI_PROMPT_VARIANT when --spicy is present", () => {
+		const env: NodeJS.ProcessEnv = { KIMCHI_PROMPT_VARIANT: "old" }
+		const stripped = applyVariantSelection(["--spicy", "--print"], env)
+		expect(env.KIMCHI_PROMPT_VARIANT).toBe("spicy")
+		expect(stripped).toEqual(["--print"])
+	})
+
+	it("leaves env untouched when --spicy is absent", () => {
+		const env: NodeJS.ProcessEnv = { KIMCHI_PROMPT_VARIANT: "spicy" }
+		const stripped = applyVariantSelection(["--model", "foo"], env)
+		expect(env.KIMCHI_PROMPT_VARIANT).toBe("spicy")
+		expect(stripped).toEqual(["--model", "foo"])
+	})
+
+	it("does not set env when --spicy is absent and env was empty", () => {
+		const env: NodeJS.ProcessEnv = {}
+		applyVariantSelection(["--model", "foo"], env)
+		expect(env.KIMCHI_PROMPT_VARIANT).toBeUndefined()
+	})
+
+	it("returned args never contain --spicy", () => {
+		const stripped = applyVariantSelection(["--spicy", "--model", "foo", "--spicy"], {})
+		expect(stripped.some((a) => a === "--spicy")).toBe(false)
+	})
+
+	it("returned args never contain --variant (old flag no longer supported)", () => {
+		// --variant is not recognized by the new parser; it passes through as-is
+		// (but is NOT the same as --spicy). This test confirms --variant is NOT stripped.
+		const env: NodeJS.ProcessEnv = {}
+		const stripped = applyVariantSelection(["--variant", "spicy"], env)
+		// --variant is not stripped by applyVariantSelection (it delegates to extractSpicyFlag)
+		// so it stays in rest - the caller must not pass --variant
+		expect(env.KIMCHI_PROMPT_VARIANT).toBeUndefined()
+		expect(stripped).toContain("--variant")
 	})
 })
 

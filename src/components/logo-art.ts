@@ -1,6 +1,20 @@
 import type { Theme } from "@earendil-works/pi-coding-agent"
 import { RST_FG } from "../ansi.js"
+import { DEFAULT_VARIANT, resolvePromptVariant } from "../extensions/prompt-construction/variants/index.js"
 import { getFolder, getGitBranch, getVersion } from "../utils.js"
+
+const LOGO_GLYPHS = [
+	"     █▀  █  █ ▀█▀ █▄ ▄█ ▄▀▀ █  █ ▀█▀",
+	"    ███  █▀▄   █  █ ▀ █ █   █▀▀█  █",
+	"▄  ▄███  █  █  █  █   █ █▄▄ █  █  █",
+	"▀████▀   ▀  ▀ ▀▀▀ ▀   ▀  ▀▀ ▀  ▀ ▀▀▀",
+]
+
+const FIRE_COLORS = ["\x1b[38;5;196m", "\x1b[38;5;202m", "\x1b[38;5;208m", "\x1b[38;5;214m"]
+
+function buildBurningLogoLines(): string[] {
+	return LOGO_GLYPHS.map((glyph, i) => `${FIRE_COLORS[i]}${glyph}${RST_FG}`)
+}
 
 let cachedVersion: string | undefined
 
@@ -34,6 +48,9 @@ export function truncatePath(path: string, maxWidth: number): string {
 }
 
 export function buildLogoLines(theme: Theme): string[] {
+	const variant = resolvePromptVariant()
+	if (variant.name !== DEFAULT_VARIANT.name) return buildBurningLogoLines()
+
 	const L = theme.getFgAnsi("accent")
 	const G = theme.getFgAnsi("bashMode")
 	return [
@@ -60,6 +77,10 @@ export function buildInfoLines(
 	const lines: string[] = [`${dim}v${cachedVersion}${RST_FG}${vdot}${dim}${folder}${RST_FG}`]
 	if (branch) {
 		lines.push(`${branchColor}${branch}${RST_FG}`)
+	}
+	const variant = resolvePromptVariant()
+	if (variant.name !== DEFAULT_VARIANT.name) {
+		lines.push(`\x1b[38;5;208mvariant ${variant.tagline ?? variant.name}${RST_FG}`)
 	}
 	return lines
 }

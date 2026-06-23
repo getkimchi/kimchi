@@ -1,4 +1,5 @@
 import { parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
+import { PROMPT_VARIANT_ENV } from "./extensions/prompt-construction/variants/index.js"
 
 // Pre-dispatch scanners still need to skip values for Kimchi-local raw scans
 // such as `--mode acp`, which upstream pi does not parse.
@@ -60,3 +61,35 @@ export function isExperimentalFeaturesArg(args: string[]): boolean {
 export function stripExperimentalFeaturesArg(args: string[]): string[] {
 	return args.filter((a) => a !== "--enable-experimental-features")
 }
+
+/**
+ * Extract the `--spicy` boolean flag from argv.
+ *
+ * Strips the `--spicy` token wherever it appears and returns spicy=true if it
+ * was present. The flag takes no value. The flag is removed from `rest` so it
+ * never reaches the pi SDK parser.
+ */
+export function extractSpicyFlag(args: string[]): { spicy: boolean; rest: string[] } {
+	const rest = args.filter((a) => a !== "--spicy")
+	return { spicy: rest.length !== args.length, rest }
+}
+
+/**
+ * Apply the `--spicy` flag to the process environment and return the stripped argv.
+ *
+ * - When `--spicy` is present: sets `env[PROMPT_VARIANT_ENV]="spicy"` and
+ *   removes the flag token from the returned array.
+ * - When the flag is absent: leaves `env` untouched and returns args unchanged
+ *   (so `KIMCHI_PROMPT_VARIANT` still works as an escape hatch).
+ *
+ * Pass an isolated env object in tests to avoid mutating `process.env`.
+ */
+export function applyVariantSelection(argv: string[], env: NodeJS.ProcessEnv): string[] {
+	const { spicy, rest } = extractSpicyFlag(argv)
+	if (spicy) {
+		env[PROMPT_VARIANT_ENV] = "spicy"
+	}
+	return rest
+}
+
+export { PROMPT_VARIANT_ENV }

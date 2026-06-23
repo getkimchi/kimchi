@@ -6,6 +6,7 @@ import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { AgentSession } from "@earendil-works/pi-coding-agent"
 import {
+	applyVariantSelection,
 	getCliModeArg,
 	isExperimentalFeaturesArg,
 	isHelpOrVersionArgs,
@@ -36,6 +37,7 @@ import behavioursExtension from "./extensions/behaviours/index.js"
 import claudeCodeHooksAdapter from "./extensions/claude-code-hook-adapter/index.js"
 import claudeCodeSkillsExtension from "./extensions/claude-code-skills/index.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
+import disciplineReminderExtension from "./extensions/discipline-reminder.js"
 import explorationGuardExtension from "./extensions/exploration-guard.js"
 import fermentExtension from "./extensions/ferment/index.js"
 import helpExtension from "./extensions/help.js"
@@ -59,6 +61,7 @@ import { installPiNativeCompatibilityShim } from "./extensions/pi-package-lookup
 import pluginPackageHooksAdapter from "./extensions/plugin-package-hook-adapter/index.js"
 import promptEnrichmentExtension from "./extensions/prompt-construction/prompt-enrichment.js"
 import promptSummaryExtension from "./extensions/prompt-summary.js"
+import promptVariantNoticeExtension from "./extensions/prompt-variant-notice.js"
 import questionnaireExtension from "./extensions/questionnaire.js"
 import reportBugExtension from "./extensions/report-bug.js"
 import reviewWriteGuardExtension from "./extensions/review-write-guard.js"
@@ -170,6 +173,11 @@ const _origExportToHtml = (AgentSession as any).prototype.exportToHtml
 }
 const helpOrVersion = isHelpOrVersionArgs(process.argv.slice(2))
 
+// Strip --spicy once, before any branch that calls main(), and apply it to
+// the environment. Every main() call below receives argsWithoutVariant so the
+// flag never reaches the pi SDK parser.
+const argsWithoutVariant = applyVariantSelection(process.argv.slice(2), process.env)
+
 // Internal control signal: setup cancellation must skip harness/extensions
 // without a hard process.exit(), so clack can restore terminal state normally.
 class SetupCancelled extends Error {}
@@ -187,7 +195,7 @@ try {
 
 	if (helpOrVersion) {
 		const { main } = await import("@earendil-works/pi-coding-agent")
-		await main(process.argv.slice(2), { extensionFactories: [] })
+		await main(argsWithoutVariant, { extensionFactories: [] })
 	} else {
 		// Fire harness_launched (one shot per harness session; respects telemetry opt-out)
 		if (telemetryConfig.enabled) {
@@ -361,7 +369,9 @@ try {
 		// Probe runs here (before pi-mono takes stdin) so the result is cached for
 		// the kimchi-minimal-tints and terminal-colors extensions. Skip non-TUI
 		// modes: stdout belongs to the caller, and OSC escapes corrupt it.
-		const rawArgs = stripExperimentalFeaturesArg(process.argv.slice(2))
+		// Note: argsWithoutVariant is computed once at the top of cli.ts (before
+		// the helpOrVersion branch) so --spicy is stripped on every code path.
+		const rawArgs = stripExperimentalFeaturesArg(argsWithoutVariant)
 		const terminalIo = {
 			stdinIsTTY: process.stdin.isTTY === true,
 			stdoutIsTTY: process.stdout.isTTY === true,
@@ -447,6 +457,7 @@ try {
 		const effectiveSkillPaths = [...new Set([...skillPaths, ...getActiveVendorSkillPaths()])]
 		const extensionFactories = [
 			startupUpdateExtension,
+			promptVariantNoticeExtension,
 			superpowersExtension,
 			sessionNameExtension(),
 			shutdownMarkerExtension,
@@ -456,6 +467,7 @@ try {
 			startupAuthGate,
 			loopGuardExtension,
 			explorationGuardExtension,
+			disciplineReminderExtension,
 			reviewWriteGuardExtension,
 			lspExtension,
 			// Always registered — the tool_call handler checks isResourceEnabled

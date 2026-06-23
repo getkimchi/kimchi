@@ -20,6 +20,7 @@ interface FlagDoc {
 const KIMCHI_FLAGS: FlagDoc[] = [
 	{ name: "--provider <name>", description: "Provider (default: kimchi-dev)" },
 	{ name: "--model <pattern>", description: "Model id or pattern, optionally `provider/id` and/or `:<thinking>`" },
+	{ name: "--spicy", description: "Use the spicy variant (opinionated coordinator/architect prompts)" },
 	{ name: "--thinking <level>", description: "Thinking level: off, minimal, low, medium, high, xhigh" },
 	{ name: "--mode <mode>", description: "Output mode: text (default), json, rpc, acp" },
 	{ name: "--print, -p", description: "Non-interactive mode: process prompt and exit" },

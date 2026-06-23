@@ -41,6 +41,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 
+import { resolvePromptVariant } from "../prompt-construction/variants/index.js"
 import {
 	type ModelCustomMetadata,
 	getModelMetadata,
@@ -84,6 +85,13 @@ const ROLE_KEYS: readonly (keyof ModelRoles)[] = ["orchestrator", ...DELEGABLE_R
 
 const HARNESS_SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "settings.json")
 
+/** Override the settings path used by the production singleton (for tests only). */
+export const MODEL_ROLES_SETTINGS_PATH_ENV = "KIMCHI_MODEL_ROLES_SETTINGS_PATH"
+
+function resolvedSettingsPath(): string {
+	return process.env[MODEL_ROLES_SETTINGS_PATH_ENV] ?? HARNESS_SETTINGS_PATH
+}
+
 /** Hardcoded default model-to-role assignment. Users override via /multi-model. */
 export const DEFAULT_MODEL_ROLES: Readonly<ModelRoles> = {
 	orchestrator: "kimchi-dev/kimi-k2.6",
@@ -121,11 +129,14 @@ function trimRoleValue(value: string | string[]): RoleModelAssignment {
 
 /**
  * Parse and validate raw modelRoles from settings.json.
- * Returns a validated ModelRoles merged with defaults, plus any warnings.
+ * Returns a validated ModelRoles merged with `base` (defaults to DEFAULT_MODEL_ROLES), plus any warnings.
  */
-export function parseModelRoles(raw: unknown): { roles: ModelRoles; warnings: ModelRolesWarning[] } {
+export function parseModelRoles(
+	raw: unknown,
+	base: ModelRoles = DEFAULT_MODEL_ROLES,
+): { roles: ModelRoles; warnings: ModelRolesWarning[] } {
 	const warnings: ModelRolesWarning[] = []
-	const roles: ModelRoles = { ...DEFAULT_MODEL_ROLES }
+	const roles: ModelRoles = { ...base }
 
 	if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
 		return { roles, warnings }
@@ -179,6 +190,37 @@ export function resolveModelRoles(settingsPath?: string): { roles: ModelRoles; w
 		// settings.json absent or unreadable — use defaults
 	}
 	return { roles: { ...DEFAULT_MODEL_ROLES }, warnings: [] }
+}
+
+/**
+ * Resolve model roles with variant-scoped defaults layered in.
+ *
+ * Precedence (highest wins):
+ *   user settings.json > variantDefaults > DEFAULT_MODEL_ROLES
+ *
+ * When variantDefaults is undefined or empty, the result is byte-identical
+ * to resolveModelRoles().
+ */
+export function resolveModelRolesForVariant(
+	variantDefaults: Partial<ModelRoles> | undefined,
+	settingsPath?: string,
+): { roles: ModelRoles; warnings: ModelRolesWarning[] } {
+	// Base: auto-built defaults merged with variant-scoped overrides.
+	const base: ModelRoles = { ...DEFAULT_MODEL_ROLES, ...variantDefaults }
+
+	const path = settingsPath ?? HARNESS_SETTINGS_PATH
+	try {
+		const raw = readFileSync(path, "utf-8")
+		const parsed = JSON.parse(raw)
+		if (parsed && typeof parsed === "object" && "modelRoles" in parsed) {
+			// Parse user config starting from `base` so that variant defaults
+			// sit below user settings in the precedence stack.
+			return parseModelRoles(parsed.modelRoles, base)
+		}
+	} catch {
+		// settings.json absent or unreadable - use base (variant defaults applied)
+	}
+	return { roles: base, warnings: [] }
 }
 
 function isEqualRoleValue(a: RoleModelAssignment, b: RoleModelAssignment): boolean {
@@ -264,12 +306,12 @@ export function validateModelRoles(
 let _resolved: { roles: ModelRoles; warnings: ModelRolesWarning[] } | undefined
 
 export function getModelRoles(): ModelRoles {
-	_resolved ??= resolveModelRoles()
+	_resolved ??= resolveModelRolesForVariant(resolvePromptVariant().modelRoleDefaults, resolvedSettingsPath())
 	return _resolved.roles
 }
 
 export function getModelRolesWarnings(): readonly ModelRolesWarning[] {
-	_resolved ??= resolveModelRoles()
+	_resolved ??= resolveModelRolesForVariant(resolvePromptVariant().modelRoleDefaults, resolvedSettingsPath())
 	return _resolved.warnings
 }
 

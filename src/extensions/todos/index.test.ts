@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
-import todosExtension, { TODO_CLEANUP_MESSAGE } from "./index.js"
+import todosExtension, { TODO_CLEANUP_MESSAGE, TODO_OPEN_REMINDER_TYPE, buildOpenTodosReminder } from "./index.js"
 import { __resetTodoStore, applyWriteTodos, getTodosForScope } from "./store.js"
 import { TODO_TOOL_NAMES, UPDATE_TODOS_TOOL_NAME } from "./tool.js"
 import { TODO_TOOL_RESULT_SCHEMA_VERSION, type TodoStatus } from "./types.js"
@@ -100,6 +100,187 @@ function customTodosEntry(id: string, content: string, status: TodoStatus = "pen
 		},
 	} as unknown as SessionEntry
 }
+
+// ---------------------------------------------------------------------------
+// Pi mock factory for input handler tests (does NOT call todosExtension)
+// ---------------------------------------------------------------------------
+
+type InputHandler = (event: { source: string }) => unknown
+
+function createInputHarness() {
+	const handlers = new Map<string, InputHandler[]>()
+	const sendMessage = vi.fn()
+	const pi = {
+		registerTool: vi.fn(),
+		registerCommand: vi.fn(),
+		registerShortcut: vi.fn(),
+		appendEntry: vi.fn(),
+		sendMessage,
+		getActiveTools: vi.fn(() => [...TODO_TOOL_NAMES]),
+		on: vi.fn((event: string, handler: InputHandler) => {
+			const list = handlers.get(event) ?? []
+			list.push(handler)
+			handlers.set(event, list)
+		}),
+	} as unknown as ExtensionAPI
+
+	return {
+		pi,
+		handlers,
+		sendMessage,
+		fireInput(source: string) {
+			for (const h of handlers.get("input") ?? []) h({ source })
+		},
+	}
+}
+
+// ---------------------------------------------------------------------------
+// buildOpenTodosReminder
+// ---------------------------------------------------------------------------
+
+describe("buildOpenTodosReminder", () => {
+	it("uses singular wording for 1 open item", () => {
+		expect(buildOpenTodosReminder(1)).toContain("1 open todo item")
+		expect(buildOpenTodosReminder(1)).not.toContain("1 open todo items")
+	})
+
+	it("uses plural wording for 2 open items", () => {
+		expect(buildOpenTodosReminder(2)).toContain("2 open todo items")
+	})
+
+	it("uses plural wording for larger counts", () => {
+		expect(buildOpenTodosReminder(5)).toContain("5 open todo items")
+	})
+
+	it("contains clear_todos", () => {
+		expect(buildOpenTodosReminder(1)).toContain("clear_todos")
+		expect(buildOpenTodosReminder(3)).toContain("clear_todos")
+	})
+})
+
+// ---------------------------------------------------------------------------
+// open-todos input handler (spicy variant, main session only)
+// ---------------------------------------------------------------------------
+
+describe("todos open-reminder input handler", () => {
+	let savedVariant: string | undefined
+	let savedSubagent: string | undefined
+
+	beforeEach(() => {
+		savedVariant = process.env.KIMCHI_PROMPT_VARIANT
+		process.env.KIMCHI_PROMPT_VARIANT = "spicy"
+		__resetTodoStore()
+	})
+
+	afterEach(() => {
+		if (savedVariant === undefined) {
+			Reflect.deleteProperty(process.env, "KIMCHI_PROMPT_VARIANT")
+		} else {
+			process.env.KIMCHI_PROMPT_VARIANT = savedVariant
+		}
+		if (savedSubagent === undefined) {
+			Reflect.deleteProperty(process.env, "KIMCHI_SUBAGENT")
+		} else {
+			process.env.KIMCHI_SUBAGENT = savedSubagent
+		}
+		savedSubagent = undefined
+	})
+
+	it("sends reminder with correct shape when user input arrives and todos are open", () => {
+		applyWriteTodos({
+			todos: [
+				{ content: "task A", status: "pending" },
+				{ content: "task B", status: "pending" },
+				{ content: "task C", status: "completed" },
+			],
+		})
+		const { pi, sendMessage, fireInput } = createInputHarness()
+		todosExtension(pi)
+
+		fireInput("interactive")
+
+		expect(sendMessage).toHaveBeenCalledOnce()
+		const [msg, opts] = sendMessage.mock.calls[0]
+		expect(msg.customType).toBe(TODO_OPEN_REMINDER_TYPE)
+		expect(msg.display).toBe(false)
+		expect(opts).toEqual({ deliverAs: "nextTurn" })
+		expect(msg.content).toHaveLength(1)
+		expect(msg.content[0].type).toBe("text")
+		expect(msg.content[0].text).toContain("2 open todo")
+	})
+
+	it("does not send when event.source is 'extension'", () => {
+		applyWriteTodos({ todos: [{ content: "task A", status: "pending" }] })
+		const { pi, sendMessage, fireInput } = createInputHarness()
+		todosExtension(pi)
+
+		fireInput("extension")
+
+		expect(sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("does not send when all todos are completed", () => {
+		applyWriteTodos({ todos: [{ content: "task A", status: "completed" }] })
+		const { pi, sendMessage, fireInput } = createInputHarness()
+		todosExtension(pi)
+
+		fireInput("interactive")
+
+		expect(sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("does not send when the store is empty", () => {
+		const { pi, sendMessage, fireInput } = createInputHarness()
+		todosExtension(pi)
+
+		fireInput("interactive")
+
+		expect(sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("does not register the input handler and does not send when variant is 'default'", () => {
+		process.env.KIMCHI_PROMPT_VARIANT = "default"
+		applyWriteTodos({ todos: [{ content: "task A", status: "pending" }] })
+		const { pi, handlers, sendMessage, fireInput } = createInputHarness()
+		todosExtension(pi)
+
+		expect(handlers.get("input")).toBeUndefined()
+		fireInput("interactive")
+		expect(sendMessage).not.toHaveBeenCalledWith(
+			expect.objectContaining({ customType: TODO_OPEN_REMINDER_TYPE }),
+			expect.anything(),
+		)
+	})
+
+	it("does not send when KIMCHI_PROMPT_VARIANT is unset (resolves to default)", () => {
+		Reflect.deleteProperty(process.env, "KIMCHI_PROMPT_VARIANT")
+		applyWriteTodos({ todos: [{ content: "task A", status: "pending" }] })
+		const { pi, sendMessage, fireInput } = createInputHarness()
+		todosExtension(pi)
+
+		fireInput("interactive")
+
+		expect(sendMessage).not.toHaveBeenCalledWith(
+			expect.objectContaining({ customType: TODO_OPEN_REMINDER_TYPE }),
+			expect.anything(),
+		)
+	})
+
+	it("does not send when isAgentWorker() is true (KIMCHI_SUBAGENT=1)", () => {
+		savedSubagent = process.env.KIMCHI_SUBAGENT
+		process.env.KIMCHI_SUBAGENT = "1"
+		applyWriteTodos({ todos: [{ content: "task A", status: "pending" }] })
+		const { pi, sendMessage, fireInput } = createInputHarness()
+		todosExtension(pi)
+
+		fireInput("interactive")
+
+		expect(sendMessage).not.toHaveBeenCalledWith(
+			expect.objectContaining({ customType: TODO_OPEN_REMINDER_TYPE }),
+			expect.anything(),
+		)
+	})
+})
 
 describe("todos extension session state", () => {
 	beforeEach(() => {

@@ -25,6 +25,7 @@ import { isToolExpanded, registerToolCall } from "../../expand-state.js"
 import { filterThinkingForDisplay } from "../hide-thinking.js"
 import { sessionHasImages } from "../model-guard.js"
 import { KIMCHI_DEV_PROVIDER, MODEL_CAPABILITIES } from "../orchestration/model-registry/index.js"
+import { resolvePromptVariant } from "../prompt-construction/variants/index.js"
 import { trackSubagentSpawned } from "../telemetry/index.js"
 import { AgentManager } from "./manager/agent-manager.js"
 import {
@@ -485,7 +486,8 @@ export default function (pi: ExtensionAPI) {
 
 	const reloadCustomAgents = (cwd: string = process.cwd()) => {
 		const userAgents = loadCustomAgents(cwd)
-		registerAgents(userAgents)
+		const variant = resolvePromptVariant()
+		registerAgents(userAgents, variant.transformAgents)
 	}
 
 	reloadCustomAgents()

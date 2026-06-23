@@ -949,12 +949,15 @@ describe("continuation nudge turn_end handler", () => {
 
 		promptEnrichmentExtension([])(pi)
 
-		const fire = async (event: string, payload: unknown) => {
+		const kimiCtx = { model: { id: "kimi-k2.6" } }
+
+		// fire uses kimiCtx by default; pass an explicit ctx to override.
+		const fire = async (event: string, payload: unknown, ctx: unknown = kimiCtx) => {
 			const handlers = handlerMap.get(event) ?? []
-			for (const h of handlers) await h(payload)
+			for (const h of handlers) await h(payload, ctx)
 		}
 
-		return { fire, sendMessageCalls }
+		return { fire, sendMessageCalls, kimiCtx }
 	}
 
 	function makeAssistantWithStop(
@@ -1060,5 +1063,43 @@ describe("continuation nudge turn_end handler", () => {
 		// might be stuck.
 		expect(sendMessageCalls.length).toBe(1)
 		expect((sendMessageCalls[0].message as { content?: string }).content).toContain("If you have finished")
+	})
+
+	it("sends continuation nudge for Kimi K2 model on text-only turn (positive gate)", async () => {
+		const { fire, sendMessageCalls, kimiCtx } = buildNudgeHandlers()
+
+		await fire("input", { source: "user" }, kimiCtx)
+		await fire(
+			"turn_end",
+			{ message: makeAssistantWithStop([{ type: "text", text: "I will delegate this." }]) },
+			kimiCtx,
+		)
+
+		// Kimi ctx: nudge must fire.
+		expect(sendMessageCalls.length).toBe(1)
+		expect((sendMessageCalls[0].message as { customType?: string }).customType).toBe("nudge")
+		expect((sendMessageCalls[0].message as { content?: string }).content).toContain(
+			"ended your turn without calling a tool",
+		)
+	})
+
+	it("does not send continuation nudge for an ineligible model on text-only turn (negative gate)", async () => {
+		const { fire, sendMessageCalls } = buildNudgeHandlers()
+		const ineligibleCtx = { model: { id: "nemotron-3" } }
+
+		await fire("input", { source: "user" }, ineligibleCtx)
+		await fire(
+			"turn_end",
+			{ message: makeAssistantWithStop([{ type: "text", text: "I will delegate this." }]) },
+			ineligibleCtx,
+		)
+
+		// Ineligible model (not Kimi-K2 or minimax-m3): the continuation nudge gate must suppress the nudge entirely.
+		const nudgeCalls = sendMessageCalls.filter(
+			(c) =>
+				(c.message as { customType?: string }).customType === "nudge" &&
+				(c.message as { content?: string }).content?.includes("ended your turn without calling a tool"),
+		)
+		expect(nudgeCalls.length).toBe(0)
 	})
 })

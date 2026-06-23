@@ -5,6 +5,8 @@ import {
 	DONE_SIGNAL,
 	EmptyTurnNudge,
 	type OrchestratorMessages,
+	isKimiK2Family,
+	isMinimaxM3Family,
 	stripStaleNudges,
 	stripUiOnlyMessages,
 } from "./continuation-nudge.js"
@@ -57,83 +59,83 @@ describe("ContinuationNudge.evaluateTurn", () => {
 	it("nudges a text-only first turn after user input", () => {
 		const guard = new ContinuationNudge()
 		guard.resetForNewUserInput()
-		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
+		expect(guard.evaluateTurn(textOnlyMessage, "kimi-k2.6")).toBe(true)
 	})
 
 	it("does not nudge when the turn contains a tool call", () => {
 		const guard = new ContinuationNudge()
 		guard.resetForNewUserInput()
-		expect(guard.evaluateTurn(toolCallMessage)).toBe(false)
+		expect(guard.evaluateTurn(toolCallMessage, "kimi-k2.6")).toBe(false)
 	})
 
 	it("does not nudge when the turn has both text and a tool call", () => {
 		const guard = new ContinuationNudge()
 		guard.resetForNewUserInput()
-		expect(guard.evaluateTurn(textAndToolCallMessage)).toBe(false)
+		expect(guard.evaluateTurn(textAndToolCallMessage, "kimi-k2.6")).toBe(false)
 	})
 
 	it("does not nudge when the turn has no text at all", () => {
 		const guard = new ContinuationNudge()
 		guard.resetForNewUserInput()
-		expect(guard.evaluateTurn(makeAssistant([]))).toBe(false)
+		expect(guard.evaluateTurn(makeAssistant([]), "kimi-k2.6")).toBe(false)
 	})
 
 	it("treats empty-string text as no text", () => {
 		const guard = new ContinuationNudge()
 		guard.resetForNewUserInput()
-		expect(guard.evaluateTurn(emptyTextMessage)).toBe(false)
+		expect(guard.evaluateTurn(emptyTextMessage, "kimi-k2.6")).toBe(false)
 	})
 
 	it("treats whitespace-only text as no text", () => {
 		const guard = new ContinuationNudge()
 		guard.resetForNewUserInput()
-		expect(guard.evaluateTurn(whitespaceTextMessage)).toBe(false)
+		expect(guard.evaluateTurn(whitespaceTextMessage, "kimi-k2.6")).toBe(false)
 	})
 
 	it("nudges at most twice per user-input cycle", () => {
 		const guard = new ContinuationNudge()
 		guard.resetForNewUserInput()
-		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
-		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
-		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
+		expect(guard.evaluateTurn(textOnlyMessage, "kimi-k2.6")).toBe(true)
+		expect(guard.evaluateTurn(textOnlyMessage, "kimi-k2.6")).toBe(true)
+		expect(guard.evaluateTurn(textOnlyMessage, "kimi-k2.6")).toBe(false)
 	})
 
 	it("does not nudge when any tool has already been called this cycle", () => {
 		const guard = new ContinuationNudge()
 		guard.resetForNewUserInput()
 		guard.recordToolCall()
-		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
+		expect(guard.evaluateTurn(textOnlyMessage, "kimi-k2.6")).toBe(false)
 	})
 
 	it("re-arms after a new user input", () => {
 		const guard = new ContinuationNudge()
 		guard.resetForNewUserInput()
-		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
+		expect(guard.evaluateTurn(textOnlyMessage, "kimi-k2.6")).toBe(true)
 		guard.resetForNewUserInput()
-		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
+		expect(guard.evaluateTurn(textOnlyMessage, "kimi-k2.6")).toBe(true)
 	})
 
 	it("re-arms tool-call tracking on reset", () => {
 		const guard = new ContinuationNudge()
 		guard.resetForNewUserInput()
 		guard.recordToolCall()
-		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
+		expect(guard.evaluateTurn(textOnlyMessage, "kimi-k2.6")).toBe(false)
 		guard.resetForNewUserInput()
-		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
+		expect(guard.evaluateTurn(textOnlyMessage, "kimi-k2.6")).toBe(true)
 	})
 
 	it("sets nudge response pending after nudging", () => {
 		const guard = new ContinuationNudge()
 		guard.resetForNewUserInput()
 		expect(guard.isNudgeResponsePending()).toBe(false)
-		guard.evaluateTurn(textOnlyMessage)
+		guard.evaluateTurn(textOnlyMessage, "kimi-k2.6")
 		expect(guard.isNudgeResponsePending()).toBe(true)
 	})
 
 	it("clears nudge response pending when a tool call is recorded", () => {
 		const guard = new ContinuationNudge()
 		guard.resetForNewUserInput()
-		guard.evaluateTurn(textOnlyMessage)
+		guard.evaluateTurn(textOnlyMessage, "kimi-k2.6")
 		expect(guard.isNudgeResponsePending()).toBe(true)
 		guard.recordToolCall()
 		expect(guard.isNudgeResponsePending()).toBe(false)
@@ -142,7 +144,7 @@ describe("ContinuationNudge.evaluateTurn", () => {
 	it("clears nudge response pending on reset", () => {
 		const guard = new ContinuationNudge()
 		guard.resetForNewUserInput()
-		guard.evaluateTurn(textOnlyMessage)
+		guard.evaluateTurn(textOnlyMessage, "kimi-k2.6")
 		expect(guard.isNudgeResponsePending()).toBe(true)
 		guard.resetForNewUserInput()
 		expect(guard.isNudgeResponsePending()).toBe(false)
@@ -152,7 +154,117 @@ describe("ContinuationNudge.evaluateTurn", () => {
 		const guard = new ContinuationNudge()
 		guard.resetForNewUserInput()
 		const thinkingOnly = makeAssistant([{ type: "thinking", thinking: "Let me reason..." }])
-		expect(guard.evaluateTurn(thinkingOnly)).toBe(false)
+		expect(guard.evaluateTurn(thinkingOnly, "kimi-k2.6")).toBe(false)
+	})
+})
+
+describe("isKimiK2Family", () => {
+	it("returns true for kimi-k2.6", () => {
+		expect(isKimiK2Family("kimi-k2.6")).toBe(true)
+	})
+
+	it("returns true for kimi-k2.5", () => {
+		expect(isKimiK2Family("kimi-k2.5")).toBe(true)
+	})
+
+	it("returns true for uppercase KIMI-K2.6", () => {
+		expect(isKimiK2Family("KIMI-K2.6")).toBe(true)
+	})
+
+	it("returns true for provider-prefixed kimchi-dev/kimi-k2.6", () => {
+		expect(isKimiK2Family("kimchi-dev/kimi-k2.6")).toBe(true)
+	})
+
+	it("returns false for minimax-m3", () => {
+		expect(isKimiK2Family("minimax-m3")).toBe(false)
+	})
+
+	it("returns false for nemotron-3", () => {
+		expect(isKimiK2Family("nemotron-3")).toBe(false)
+	})
+
+	it("returns false for undefined", () => {
+		expect(isKimiK2Family(undefined)).toBe(false)
+	})
+
+	it("returns false for empty string", () => {
+		expect(isKimiK2Family("")).toBe(false)
+	})
+})
+
+describe("isMinimaxM3Family", () => {
+	it("returns true for minimax-m3", () => {
+		expect(isMinimaxM3Family("minimax-m3")).toBe(true)
+	})
+
+	it("returns true for uppercase MINIMAX-M3", () => {
+		expect(isMinimaxM3Family("MINIMAX-M3")).toBe(true)
+	})
+
+	it("returns true for provider-prefixed kimchi-dev/minimax-m3", () => {
+		expect(isMinimaxM3Family("kimchi-dev/minimax-m3")).toBe(true)
+	})
+
+	it("returns false for kimi-k2.6", () => {
+		expect(isMinimaxM3Family("kimi-k2.6")).toBe(false)
+	})
+
+	it("returns false for nemotron-3", () => {
+		expect(isMinimaxM3Family("nemotron-3")).toBe(false)
+	})
+
+	it("returns false for undefined", () => {
+		expect(isMinimaxM3Family(undefined)).toBe(false)
+	})
+
+	it("returns false for empty string", () => {
+		expect(isMinimaxM3Family("")).toBe(false)
+	})
+})
+
+describe("ContinuationNudge.evaluateTurn model gating", () => {
+	it("fires for minimax-m3", () => {
+		const guard = new ContinuationNudge()
+		guard.resetForNewUserInput()
+		expect(guard.evaluateTurn(textOnlyMessage, "minimax-m3")).toBe(true)
+	})
+
+	it("fires for provider-prefixed minimax-m3", () => {
+		const guard = new ContinuationNudge()
+		guard.resetForNewUserInput()
+		expect(guard.evaluateTurn(textOnlyMessage, "kimchi-dev/minimax-m3")).toBe(true)
+	})
+
+	it("fires for kimi-k2.6", () => {
+		const guard = new ContinuationNudge()
+		guard.resetForNewUserInput()
+		expect(guard.evaluateTurn(textOnlyMessage, "kimi-k2.6")).toBe(true)
+	})
+
+	it("fires the nudge for provider-prefixed kimi-k2.6", () => {
+		const guard = new ContinuationNudge()
+		guard.resetForNewUserInput()
+		expect(guard.evaluateTurn(textOnlyMessage, "kimchi-dev/kimi-k2.6")).toBe(true)
+	})
+
+	it("suppresses the nudge for nemotron-3", () => {
+		const guard = new ContinuationNudge()
+		guard.resetForNewUserInput()
+		expect(guard.evaluateTurn(textOnlyMessage, "nemotron-3")).toBe(false)
+	})
+
+	it("suppresses the nudge when model id is undefined", () => {
+		const guard = new ContinuationNudge()
+		guard.resetForNewUserInput()
+		expect(guard.evaluateTurn(textOnlyMessage, undefined)).toBe(false)
+	})
+
+	it("minimax-m3 respects MAX_NUDGES - fires twice then is suppressed", () => {
+		const guard = new ContinuationNudge()
+		guard.resetForNewUserInput()
+		expect(guard.evaluateTurn(textOnlyMessage, "minimax-m3")).toBe(true)
+		expect(guard.evaluateTurn(textOnlyMessage, "minimax-m3")).toBe(true)
+		expect(guard.evaluateTurn(textOnlyMessage, "minimax-m3")).toBe(false)
 	})
 })
 
@@ -202,7 +314,7 @@ describe("ContinuationNudge nudge-response-pending state", () => {
 		const guard = new ContinuationNudge()
 		guard.resetForNewUserInput()
 		expect(guard.isNudgeResponsePending()).toBe(false)
-		guard.evaluateTurn(textOnlyMessage)
+		guard.evaluateTurn(textOnlyMessage, "kimi-k2.6")
 		expect(guard.isNudgeResponsePending()).toBe(true)
 	})
 
@@ -213,7 +325,7 @@ describe("ContinuationNudge nudge-response-pending state", () => {
 		// to decide whether to honour the stop or send another nudge.
 		const guard = new ContinuationNudge()
 		guard.resetForNewUserInput()
-		guard.evaluateTurn(textOnlyMessage) // first nudge fires
+		guard.evaluateTurn(textOnlyMessage, "kimi-k2.6") // first nudge fires
 		expect(guard.isNudgeResponsePending()).toBe(true)
 		// Model responds with text but not <done>; no tool calls recorded.
 		guard.accumulateResponse("I am done with the task.")
@@ -226,7 +338,7 @@ describe("ContinuationNudge nudge-response-pending state", () => {
 	it("clears pending state when model calls a tool after nudge", () => {
 		const guard = new ContinuationNudge()
 		guard.resetForNewUserInput()
-		guard.evaluateTurn(textOnlyMessage) // nudge fires
+		guard.evaluateTurn(textOnlyMessage, "kimi-k2.6") // nudge fires
 		expect(guard.isNudgeResponsePending()).toBe(true)
 		guard.recordToolCall() // model obeyed the nudge
 		expect(guard.isNudgeResponsePending()).toBe(false)
@@ -240,7 +352,7 @@ describe("ContinuationNudge Agent-pending suppression", () => {
 		guard.markDelegationCall()
 		// Even though this is a text-only turn, the nudge must not fire
 		// because an Agent result is still pending.
-		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
+		expect(guard.evaluateTurn(textOnlyMessage, "kimi-k2.6")).toBe(false)
 	})
 
 	it("allows the nudge after clearDelegationPending is called", () => {
@@ -249,7 +361,7 @@ describe("ContinuationNudge Agent-pending suppression", () => {
 		guard.markDelegationCall()
 		guard.clearDelegationPending()
 		// Now the nudge can fire normally.
-		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
+		expect(guard.evaluateTurn(textOnlyMessage, "kimi-k2.6")).toBe(true)
 	})
 
 	it("resetForNewUserInput does NOT clear pending delegation count", () => {
@@ -259,7 +371,7 @@ describe("ContinuationNudge Agent-pending suppression", () => {
 		// Simulate an unrelated user input arriving while an Agent is running.
 		guard.resetForNewUserInput()
 		// The nudge must still be suppressed — we are still waiting for the result.
-		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
+		expect(guard.evaluateTurn(textOnlyMessage, "kimi-k2.6")).toBe(false)
 	})
 
 	it("a regular tool call does NOT clear pending delegation count", () => {
@@ -268,7 +380,7 @@ describe("ContinuationNudge Agent-pending suppression", () => {
 		guard.markDelegationCall()
 		// Model makes a regular non-Agent tool call — delegation is still pending.
 		guard.recordToolCall()
-		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
+		expect(guard.evaluateTurn(textOnlyMessage, "kimi-k2.6")).toBe(false)
 	})
 
 	it("multiple markDelegationCall requires matching clearDelegationPending calls", () => {
@@ -276,13 +388,13 @@ describe("ContinuationNudge Agent-pending suppression", () => {
 		guard.resetForNewUserInput()
 		guard.markDelegationCall()
 		guard.markDelegationCall() // two concurrent Agents
-		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
+		expect(guard.evaluateTurn(textOnlyMessage, "kimi-k2.6")).toBe(false)
 		// First result arrives — still one pending.
 		guard.clearDelegationPending()
-		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
+		expect(guard.evaluateTurn(textOnlyMessage, "kimi-k2.6")).toBe(false)
 		// Second result arrives — all done, nudge can fire.
 		guard.clearDelegationPending()
-		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
+		expect(guard.evaluateTurn(textOnlyMessage, "kimi-k2.6")).toBe(true)
 	})
 
 	it("clearDelegationPending without markDelegationCall has no effect", () => {
@@ -290,7 +402,7 @@ describe("ContinuationNudge Agent-pending suppression", () => {
 		guard.resetForNewUserInput()
 		guard.clearDelegationPending()
 		// Normal behavior: nudge fires on text-only turn.
-		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
+		expect(guard.evaluateTurn(textOnlyMessage, "kimi-k2.6")).toBe(true)
 	})
 })
 

@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext, InputEvent } from "@earendil-works/pi-coding-agent"
 import { getPermissionMode } from "./permissions/mode-controller.js"
+import { resolvePromptVariant } from "./prompt-construction/variants/index.js"
 
 export const DEFAULT_READ_TOOLS = new Set([
 	"read",
@@ -125,6 +126,8 @@ export class ExplorationGuard {
 }
 
 export default function explorationGuardExtension(pi: ExtensionAPI, options?: ExplorationGuardOptions): void {
+	if (resolvePromptVariant().suppressExplorationGuard) return
+
 	// ExtensionContext is populated on session start
 	let ctx: ExtensionContext | undefined
 
