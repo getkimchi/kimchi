@@ -136,6 +136,8 @@ const mockReadTelemetryConfig = vi.mocked(readTelemetryConfig)
 type SessionEvent = { type: string; [k: string]: unknown }
 type Subscriber = (event: SessionEvent) => void
 
+const DEFAULT_REGISTERED_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "ls"]
+
 function makeFakeSession({
 	promptTokens = 0,
 	outputTokens = 0,
@@ -146,6 +148,7 @@ function makeFakeSession({
 	events,
 	statsTokens,
 	activeToolNames = [],
+	registeredToolNames,
 }: {
 	promptTokens?: number
 	outputTokens?: number
@@ -156,9 +159,11 @@ function makeFakeSession({
 	events?: SessionEvent[]
 	statsTokens?: { input: number; output: number; cacheRead: number; cacheWrite: number }
 	activeToolNames?: string[]
+	registeredToolNames?: string[]
 } = {}) {
 	const subscribers: Subscriber[] = []
 	let promptCalled = false
+	const registeredTools = new Set(registeredToolNames ?? [...DEFAULT_REGISTERED_TOOL_NAMES, ...activeToolNames])
 	const sessionStatsTokens =
 		statsTokens ??
 		({
@@ -179,6 +184,7 @@ function makeFakeSession({
 		abort: abortSpy,
 		steer: vi.fn(),
 		getActiveToolNames: vi.fn().mockReturnValue(activeToolNames),
+		getToolDefinition: vi.fn((name: string) => (registeredTools.has(name) ? { name } : undefined)),
 		setActiveToolsByName: vi.fn(),
 		bindExtensions: vi.fn().mockResolvedValue(undefined),
 		messages: [],
@@ -677,6 +683,27 @@ describe("runAgent — profile tool access", () => {
 			"ls",
 			"web_search",
 		])
+	})
+
+	it("omits requested tools that are absent from the subagent registry", async () => {
+		mockGetToolNamesForType.mockReturnValue(["read", "grep", "missing_tool"])
+		const session = makeFakeSession({
+			activeToolNames: ["read", "web_search"],
+			registeredToolNames: ["read", "web_search"],
+		})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Researcher", "research it", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		expect(session.setActiveToolsByName).toHaveBeenCalledWith(["read", "web_search"])
+		expect(mockBuildAgentPrompt.mock.calls.at(-1)?.[4]?.activeToolNames).toEqual(["read", "web_search"])
 	})
 
 	it("keeps only matching extension tools when profile names an extension allowlist", async () => {

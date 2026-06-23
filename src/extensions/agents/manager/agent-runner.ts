@@ -68,6 +68,7 @@ function getActiveSubagentToolNames(
 	requestedToolNames: string[],
 	currentActiveToolNames: string[],
 	extensions: true | string[],
+	isRegisteredToolName: (name: string) => boolean,
 	disallowedSet?: Set<string>,
 ): string[] {
 	const requestedToolNameSet = new Set(requestedToolNames)
@@ -76,6 +77,7 @@ function getActiveSubagentToolNames(
 
 	return [...candidates].filter((name) => {
 		if (isExcludedSubagentToolName(name, disallowedSet)) return false
+		if (!isRegisteredToolName(name)) return false
 		if (requestedToolNameSet.has(name)) return true
 		if (allBuiltinToolNames.has(name)) return false
 		if (Array.isArray(extensions)) return extensions.some((ext) => name.startsWith(ext) || name.includes(ext))
@@ -442,12 +444,18 @@ async function runAgentInner(
 	})
 
 	if (extensions !== false) {
-		const activeTools = getActiveSubagentToolNames(toolNames, session.getActiveToolNames(), extensions, disallowedSet)
+		const activeTools = getActiveSubagentToolNames(
+			toolNames,
+			session.getActiveToolNames(),
+			extensions,
+			(name) => session.getToolDefinition(name) !== undefined,
+			disallowedSet,
+		)
 		systemPrompt = buildSystemPrompt(activeTools)
 		await loader.reload()
 		session.setActiveToolsByName(activeTools)
-	} else if (disallowedSet) {
-		const activeTools = session.getActiveToolNames().filter((t) => !disallowedSet.has(t))
+	} else {
+		const activeTools = session.getActiveToolNames().filter((t) => !disallowedSet?.has(t))
 		systemPrompt = buildSystemPrompt(activeTools)
 		await loader.reload()
 		session.setActiveToolsByName(activeTools)
