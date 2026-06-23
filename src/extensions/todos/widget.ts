@@ -150,10 +150,7 @@ export function setTodosStatus(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return
 	const scope = resolveTodoScope()
 	const counts = getTodoCountsForScope(scope)
-	ctx.ui.setStatus(
-		TODO_STATUS_KEY,
-		hasActiveTodos(counts) ? `${counts.completed}/${counts.total} todos -> F7` : undefined,
-	)
+	ctx.ui.setStatus(TODO_STATUS_KEY, hasActiveTodos(counts) ? `${summarizeTodoCounts(counts)} -> F7` : undefined)
 }
 
 export function ensureTodoWidget(ctx: ExtensionContext): void {
