@@ -66,6 +66,11 @@ export class ContinuationNudge {
 	 *  does not re-arm the nudge and cause spurious "you didn't call a tool"
 	 *  prompts that the model mistakes for user input. */
 	private toolsCalledThisAgentRun = false
+	/** Session-lifetime latch: once any tool has been called in this session,
+	 *  it stays true. Suppresses the nudge in a fresh conversation where the
+	 *  user opens with a conversational prompt and the model legitimately
+	 *  responds with text-only clarifying questions instead of calling a tool. */
+	private toolsCalledThisSession = false
 	private nudgeCountThisCycle = 0
 	private nudgeResponsePending = false
 	private accumulatedResponseText = ""
@@ -95,6 +100,7 @@ export class ContinuationNudge {
 	recordToolCall(): void {
 		this.toolsCalledSinceLastUserInput = true
 		this.toolsCalledThisAgentRun = true
+		this.toolsCalledThisSession = true
 		this.nudgeResponsePending = false
 		this.accumulatedResponseText = ""
 	}
@@ -122,6 +128,8 @@ export class ContinuationNudge {
 
 	evaluateTurn(message: AssistantMessage): boolean {
 		if (this.nudgeCountThisCycle >= ContinuationNudge.MAX_NUDGES) return false
+		// In a fresh session, suppress the nudge until at least one tool has been called.
+		if (!this.toolsCalledThisSession) return false
 		if (this.toolsCalledSinceLastUserInput) return false
 		// Do not nudge while any Agent result is pending — the model must
 		// wait for all Agent outputs before it can continue or signal done.
@@ -161,6 +169,10 @@ export class ContinuationNudge {
 		return this.toolsCalledThisAgentRun
 	}
 
+	hasToolBeenCalledThisSession(): boolean {
+		return this.toolsCalledThisSession
+	}
+
 	getNudgeText(): string {
 		return this.nudgeCountThisCycle <= 1 ? CONTINUATION_NUDGE_TEXT : SECOND_NUDGE_TEXT
 	}
@@ -185,10 +197,6 @@ export class EmptyTurnNudge {
 
 	evaluateTurn(message: AssistantMessage): boolean {
 		if (this.nudgeCountThisCycle >= EmptyTurnNudge.MAX_NUDGES) return false
-
-		// Respect user aborts (Esc / Ctrl+C) the same way the continuation
-		// nudge does — the model should not be asked to keep going after
-		// the user explicitly cancelled.
 		if (message.stopReason === "aborted") return false
 
 		const hasText = message.content.some((c) => c.type === "text" && c.text.trim().length > 0)
