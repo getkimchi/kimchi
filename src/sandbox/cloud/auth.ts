@@ -97,7 +97,7 @@ export async function exchangeWorkspaceToken(
 	const endpoint = resolveEndpoint(options)
 	const fetchImpl = options?.fetch ?? globalThis.fetch
 
-	const url = `${endpoint}/ai-optimizer/v1beta/session-tokens:exchange`
+	const url = `${endpoint}/ai-optimizer/v1beta/workspace-tokens:exchange`
 	const resp = await fetchWithTimeout(
 		url,
 		{
@@ -106,7 +106,7 @@ export async function exchangeWorkspaceToken(
 				Authorization: `Bearer ${apiKey}`,
 				"Content-Type": "application/json",
 			},
-			body: JSON.stringify({ sessionId: workspaceId }),
+			body: JSON.stringify({ workspaceId: workspaceId }),
 		},
 		fetchImpl,
 	)

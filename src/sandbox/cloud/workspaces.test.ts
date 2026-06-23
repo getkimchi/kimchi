@@ -16,7 +16,7 @@ function listUrl(cursor?: string) {
 	const params = new URLSearchParams()
 	params.set("page.limit", "200")
 	if (cursor) params.set("page.cursor", cursor)
-	return `${BASE}/ai-optimizer/v1beta/organizations/${ORG_ID}/sessions?${params.toString()}`
+	return `${BASE}/ai-optimizer/v1beta/organizations/${ORG_ID}/workspaces?${params.toString()}`
 }
 
 function workspaceFixture(overrides: Partial<Record<string, unknown>> = {}) {
@@ -231,7 +231,7 @@ describe("deleteWorkspace", () => {
 		await deleteWorkspace("org-1", "ws-1", "key1", { endpoint: BASE, fetch: mockFetch })
 
 		expect(mockFetch).toHaveBeenCalledTimes(1)
-		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/ai-optimizer/v1beta/organizations/org-1/sessions/ws-1`)
+		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/ai-optimizer/v1beta/organizations/org-1/workspaces/ws-1`)
 		expect(mockFetch.mock.calls[0][1]).toMatchObject({
 			method: "DELETE",
 			headers: expect.objectContaining({ Authorization: "Bearer key1" }),
