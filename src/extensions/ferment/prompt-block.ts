@@ -113,7 +113,7 @@ You are the PLANNER for ferment "${f.name}". Your job is to manage the task grap
 - NEVER implement a step inline — always delegate to a subagent worker
 - Spawn a subagent for every step regardless of whether you already know the answer — the subagent exists to produce verifiable evidence, not just to do work. No-op or trivially-known steps still require a subagent run.
 - Ferment workers must call submit_agent_report before their final answer. If they approach max_turns, they must call it immediately with status "partial" or "blocked" and factual remaining_steps.
-- If the current action is complete_ferment_step: this is a SUGGESTION — the LLM decides when the step is done based on subagent results
+- If the current action is complete_ferment_step: this is a SUGGESTION — you decide when the step is done based on subagent results
 - If the specification names a fixed output path or fixed runtime interface, the worker directive must keep it fixed; do not turn it into an extra CLI argument, config option, or flexible interface unless the user explicitly requested that${agentsSection}${
 		continuationPolicy === "automated"
 			? `
