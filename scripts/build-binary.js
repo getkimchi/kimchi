@@ -10,11 +10,8 @@ import { execSync } from "node:child_process"
 import { platform } from "node:os"
 
 const TARGET_MAP = {
-	"darwin-x64": "bun-darwin-x64",
-	"darwin-arm64": "bun-darwin-arm64",
 	"linux-arm64": "bun-linux-arm64",
 	"linux-x64": "bun-linux-x64",
-	"windows-x64": "bun-windows-x64",
 }
 
 const targetArg =
@@ -23,8 +20,6 @@ const targetArg =
 
 const crossTarget = targetArg ? (TARGET_MAP[targetArg] ?? targetArg) : undefined
 const isCrossCompile = !!crossTarget
-
-const exeName = platform() === "win32" || crossTarget?.includes("windows") ? "kimchi.exe" : "kimchi"
 
 function run(label, cmd) {
 	console.log(`\n→ ${label}`)
@@ -52,7 +47,9 @@ const targetFlag = crossTarget ? ` --target=${crossTarget}` : ""
 // Trust the OS certificate store in addition to Bun's bundled roots so users behind
 // TLS-intercepting corporate proxies (Netskope, Zscaler, etc.) can reach the API without
 // extra env vars. Bun ignores the system store by default; --use-system-ca is additive.
+
 const isWindowsTarget = crossTarget?.includes("windows") || (!crossTarget && platform() === "win32")
+
 const execArgv = isWindowsTarget
 	? `--use-system-ca --jsc-useJITCage=false`
 	: `--use-system-ca`
@@ -65,11 +62,9 @@ run(
 // Bun --compile produces binaries with an invalid code signature on macOS.
 // The kernel kills badly-signed arm64 binaries immediately (SIGKILL, exit 137).
 // Strip the corrupt signature and re-sign ad-hoc. See: https://github.com/oven-sh/bun/issues/7208
-const isDarwinTarget = !crossTarget || crossTarget.includes("darwin")
-
-if (platform() === "darwin" && isDarwinTarget) {
-	run("codesign (strip)", `codesign --remove-signature dist/bin/${exeName}`)
-	run("codesign (ad-hoc)", `codesign -s - dist/bin/${exeName}`)
+if (!isCrossCompile && platform() === "darwin") {
+	run("codesign (strip)", "codesign --remove-signature dist/bin/kimchi")
+	run("codesign (ad-hoc)", "codesign -s - dist/bin/kimchi")
 }
 
-run("copy resources", `node scripts/copy-resources.js ${targetArg ?? ""}`)
+run("copy resources", "node scripts/copy-resources.js")
