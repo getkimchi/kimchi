@@ -35,6 +35,24 @@ describe("suggestScope", () => {
 		expect(s.content).toBeUndefined()
 		expect(s.label).toBe("web_search")
 	})
+
+	it("keeps the env prefix in the bash scope (key and value)", () => {
+		const s = suggestScope("bash", { command: "GOWORK=off go test -race" })
+		expect(s.content).toBe("GOWORK=off go test:*")
+		expect(s.label).toBe("bash(GOWORK=off go test:*)")
+		expect(s.wildcardContent).toBe("GOWORK=off go *")
+	})
+
+	it("keeps env even for non-inert vars (no allowlist) and strips rtk", () => {
+		const s = suggestScope("bash", { command: "LD_PRELOAD=/tmp/x.so rtk go test" })
+		expect(s.content).toBe("LD_PRELOAD=/tmp/x.so go test:*")
+	})
+
+	it("is unchanged for commands with no env prefix", () => {
+		const s = suggestScope("bash", { command: "go test --short" })
+		expect(s.content).toBe("go test:*")
+		expect(s.wildcardContent).toBe("go *")
+	})
 })
 
 describe("SessionMemory", () => {

@@ -673,6 +673,109 @@ describe("permissions ferment tool classification", () => {
 	})
 })
 
+describe("permissions TUI allow-remember", () => {
+	afterEach(() => {
+		unregisterSessionPermissionFlagController(TEST_SESSION_ID)
+	})
+
+	// Build a UI context whose select() always picks the "don't ask again"
+	// (allow-remember) choice, and records how many times it was invoked.
+	function rememberingContext(): ExtensionContext {
+		const select = vi.fn(async (_title: string, choices: string[]) => {
+			return choices.find((c) => c.includes("don't ask again")) ?? choices[0]
+		})
+		return {
+			hasUI: true,
+			cwd: "/test",
+			sessionManager: { getSessionId: () => TEST_SESSION_ID },
+			ui: {
+				select,
+				input: vi.fn(async () => ""),
+				notify: vi.fn(),
+				setStatus: vi.fn(),
+				setWorkingVisible: vi.fn(),
+				theme: { fg: vi.fn((_, s) => s), getFgAnsi: vi.fn(() => "") },
+				onTerminalInput: vi.fn(() => () => {}),
+			},
+		} as unknown as ExtensionContext
+	}
+
+	it("does not re-prompt for an identical command after 'don't ask again'", async () => {
+		const harness = createPermissionsHarness(["bash"])
+		const ctx = rememberingContext()
+		await harness.fire("session_start", {}, ctx)
+
+		const event = { toolName: "bash", input: { command: "go test ./..." } }
+
+		const first = await harness.fire("tool_call", event, ctx)
+		expect(first).toBeUndefined() // approved
+		expect(ctx.ui.select).toHaveBeenCalledTimes(1)
+
+		const second = await harness.fire("tool_call", event, ctx)
+		expect(second).toBeUndefined() // remembered — no prompt
+		expect(ctx.ui.select).toHaveBeenCalledTimes(1)
+	})
+
+	it("does not re-prompt for an env-prefixed + rtk-wrapped command", async () => {
+		const harness = createPermissionsHarness(["bash"])
+		const ctx = rememberingContext()
+		await harness.fire("session_start", {}, ctx)
+
+		const event = {
+			toolName: "bash",
+			input: { command: "GOWORK=off rtk go test -race -timeout 30s -count=1 ./controllers/discovery/... 2>&1" },
+		}
+
+		await harness.fire("tool_call", event, ctx)
+		expect(ctx.ui.select).toHaveBeenCalledTimes(1)
+
+		await harness.fire("tool_call", event, ctx)
+		expect(ctx.ui.select).toHaveBeenCalledTimes(1)
+	})
+
+	it("does not re-prompt for a command with shell-quoted arguments", async () => {
+		const harness = createPermissionsHarness(["bash"])
+		const ctx = rememberingContext()
+		await harness.fire("session_start", {}, ctx)
+
+		const event = { toolName: "bash", input: { command: 'touch "file with spaces.txt"' } }
+
+		await harness.fire("tool_call", event, ctx)
+		expect(ctx.ui.select).toHaveBeenCalledTimes(1)
+
+		await harness.fire("tool_call", event, ctx)
+		expect(ctx.ui.select).toHaveBeenCalledTimes(1)
+	})
+
+	it("does not re-prompt for a re-run with a non-inert env prefix (was the bug)", async () => {
+		const harness = createPermissionsHarness(["bash"])
+		const ctx = rememberingContext()
+		await harness.fire("session_start", {}, ctx)
+
+		const event = { toolName: "bash", input: { command: "LD_PRELOAD=/tmp/x.so go test ./..." } }
+		await harness.fire("tool_call", event, ctx)
+		expect(ctx.ui.select).toHaveBeenCalledTimes(1)
+		await harness.fire("tool_call", event, ctx)
+		expect(ctx.ui.select).toHaveBeenCalledTimes(1) // remembered — no second prompt
+	})
+
+	it("re-prompts when an env var is added to a bare-approved command", async () => {
+		const harness = createPermissionsHarness(["bash"])
+		const ctx = rememberingContext()
+		await harness.fire("session_start", {}, ctx)
+
+		await harness.fire("tool_call", { toolName: "bash", input: { command: "go test ./..." } }, ctx)
+		expect(ctx.ui.select).toHaveBeenCalledTimes(1)
+		// Adding LD_PRELOAD must NOT be covered by the bare `go test` approval.
+		await harness.fire(
+			"tool_call",
+			{ toolName: "bash", input: { command: "LD_PRELOAD=/tmp/evil.so go test ./..." } },
+			ctx,
+		)
+		expect(ctx.ui.select).toHaveBeenCalledTimes(2) // prompted again
+	})
+})
+
 describe("permissions ACP prompter", () => {
 	beforeEach(() => {
 		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
