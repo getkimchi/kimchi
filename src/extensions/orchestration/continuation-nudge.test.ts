@@ -154,6 +154,32 @@ describe("ContinuationNudge.evaluateTurn", () => {
 		const thinkingOnly = makeAssistant([{ type: "thinking", thinking: "Let me reason..." }])
 		expect(guard.evaluateTurn(thinkingOnly)).toBe(false)
 	})
+
+	it("does not nudge when the user aborted the turn (stopReason: aborted)", () => {
+		const guard = new ContinuationNudge()
+		guard.resetForNewUserInput()
+		const aborted = { ...textOnlyMessage, stopReason: "aborted" as const }
+		expect(guard.evaluateTurn(aborted)).toBe(false)
+	})
+
+	it("does not consume a nudge slot when the turn was aborted", () => {
+		// An aborted turn must not decrement the per-cycle budget — a subsequent
+		// legitimate text-only turn in the same cycle should still get its nudge.
+		const guard = new ContinuationNudge()
+		guard.resetForNewUserInput()
+		const aborted = { ...textOnlyMessage, stopReason: "aborted" as const }
+		expect(guard.evaluateTurn(aborted)).toBe(false)
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
+	})
+
+	it("still nudges on a normal stopReason: stop turn", () => {
+		// Regression guard — the abort check must not regress the normal path.
+		const guard = new ContinuationNudge()
+		guard.resetForNewUserInput()
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
+	})
 })
 
 describe("ContinuationNudge.isDoneSignalReceived", () => {
@@ -411,6 +437,12 @@ describe("EmptyTurnNudge", () => {
 		// Reset re-arms the nudge for the next user-input cycle
 		guard.resetForNewUserInput()
 		expect(guard.evaluateTurn(emptyMessage)).toBe(true)
+	})
+
+	it("does not nudge when the user aborted the turn (stopReason: aborted)", () => {
+		const guard = new EmptyTurnNudge()
+		const aborted = { ...emptyMessage, stopReason: "aborted" as const }
+		expect(guard.evaluateTurn(aborted)).toBe(false)
 	})
 })
 

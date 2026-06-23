@@ -126,6 +126,9 @@ export class ContinuationNudge {
 		// Do not nudge while any Agent result is pending — the model must
 		// wait for all Agent outputs before it can continue or signal done.
 		if (this.pendingDelegationCount > 0) return false
+		// The user explicitly cancelled this turn (Esc / Ctrl+C). Respect the
+		// abort — they don't want the model to be re-prompted with a nudge.
+		if (message.stopReason === "aborted") return false
 		const hasToolCalls = message.content.some((c) => c.type === "toolCall")
 		const hasText = message.content.some((c) => c.type === "text" && c.text.trim().length > 0)
 		if (hasToolCalls || !hasText) return false
@@ -182,6 +185,11 @@ export class EmptyTurnNudge {
 
 	evaluateTurn(message: AssistantMessage): boolean {
 		if (this.nudgeCountThisCycle >= EmptyTurnNudge.MAX_NUDGES) return false
+
+		// Respect user aborts (Esc / Ctrl+C) the same way the continuation
+		// nudge does — the model should not be asked to keep going after
+		// the user explicitly cancelled.
+		if (message.stopReason === "aborted") return false
 
 		const hasText = message.content.some((c) => c.type === "text" && c.text.trim().length > 0)
 		const hasToolCalls = message.content.some((c) => c.type === "toolCall")
