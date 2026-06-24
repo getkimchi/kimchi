@@ -1308,3 +1308,48 @@ Does this plan look right?`,
 		})
 	})
 })
+
+describe("agent-spawn-guard integration", () => {
+	it("redirects an orchestrator that tries to spawn before starting the step", async () => {
+		const { allHandlers } = registerFermentExtension()
+
+		setActive(
+			makeActivePlanFerment({
+				activePhaseId: "phase-1",
+				phases: [
+					{
+						id: "phase-1",
+						index: 1,
+						name: "Phase",
+						goal: "Build",
+						status: "active",
+						steps: [{ id: "step-1", index: 1, description: "Implement guard", status: "pending" }],
+					},
+				],
+			}),
+		)
+
+		// Walk every tool_call handler the broadcast fixture collected and find
+		// the first one that returns a block. We do NOT assume the guard is
+		// last — we just assert that SOMEONE in the chain blocks with a reason
+		// that points at start_ferment_step.
+		const toolCall = { toolName: "Agent", input: { subagent_type: "Builder", prompt: "implement it" } }
+		let redirect: { block: boolean; reason?: string } | undefined
+		for (const handler of allHandlers.get("tool_call") ?? []) {
+			const r = (await handler(toolCall, {})) as { block: boolean; reason?: string } | undefined
+			if (r?.block) {
+				redirect = r
+				break
+			}
+		}
+
+		expect(redirect).toBeDefined()
+		// Assert on the guard's exact phrasing rather than just /start_ferment_step/.
+		// Other tool_call handlers (permissions, loop-guard) could in principle
+		// block with a different reason that happens to mention the tool name;
+		// matching the guard-specific sentence proves the agent-spawn guard is the
+		// one that fired.
+		expect(redirect?.reason ?? "").toContain("has a pending step that has not been started")
+		expect(redirect?.reason ?? "").toContain("start_ferment_step")
+	})
+})
