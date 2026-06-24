@@ -22,8 +22,8 @@ const {
 	readTeleportHelpSeenAtMock,
 	writeTeleportHelpSeenAtMock,
 	readLocalGitConfigMock,
-	propagateGitConfigMock,
-	propagateGitCredentialMock,
+	provisionGitIdentityMock,
+	provisionGitCredentialMock,
 } = vi.hoisted(() => ({
 	authMock: vi.fn(),
 	waitReadyMock: vi.fn(),
@@ -50,8 +50,8 @@ const {
 	readTeleportHelpSeenAtMock: vi.fn(),
 	writeTeleportHelpSeenAtMock: vi.fn(),
 	readLocalGitConfigMock: vi.fn(),
-	propagateGitConfigMock: vi.fn(),
-	propagateGitCredentialMock: vi.fn(),
+	provisionGitIdentityMock: vi.fn(),
+	provisionGitCredentialMock: vi.fn(),
 }))
 
 vi.mock("../../../sandbox/cloud/auth.js", () => ({ authenticateWorkspace: authMock }))
@@ -69,6 +69,7 @@ vi.mock("../ui/workspaces-panel.js", () => ({ pickWorkspace: pickWorkspaceMock }
 vi.mock("../../../sandbox/git-credentials.js", () => ({
 	getGitRemoteHost: getGitRemoteHostMock,
 	parseHostFromRemoteUrl: parseHostMock,
+	readLocalGitConfig: readLocalGitConfigMock,
 }))
 vi.mock("../../../config.js", () => ({
 	readGitToken: readGitTokenMock,
@@ -76,10 +77,9 @@ vi.mock("../../../config.js", () => ({
 	readTeleportHelpSeenAt: readTeleportHelpSeenAtMock,
 	writeTeleportHelpSeenAt: writeTeleportHelpSeenAtMock,
 }))
-vi.mock("../provisioning/git-propagate.js", () => ({
-	readLocalGitConfig: readLocalGitConfigMock,
-	propagateGitConfigToSandbox: propagateGitConfigMock,
-	propagateGitCredentialToSandbox: propagateGitCredentialMock,
+vi.mock("../provisioning/git-provision.js", () => ({
+	provisionGitIdentity: provisionGitIdentityMock,
+	provisionGitCredential: provisionGitCredentialMock,
 }))
 vi.mock("../ui/progress.js", () => ({
 	createTeleportProgress: (...args: unknown[]) => {
@@ -193,8 +193,8 @@ beforeEach(() => {
 	readTeleportHelpSeenAtMock.mockReset().mockReturnValue("2025-01-01T00:00:00.000Z")
 	writeTeleportHelpSeenAtMock.mockReset()
 	readLocalGitConfigMock.mockReset().mockResolvedValue({})
-	propagateGitConfigMock.mockReset().mockResolvedValue(undefined)
-	propagateGitCredentialMock.mockReset().mockResolvedValue(undefined)
+	provisionGitIdentityMock.mockReset().mockResolvedValue(undefined)
+	provisionGitCredentialMock.mockReset().mockResolvedValue(undefined)
 })
 
 afterEach(() => {
@@ -422,10 +422,10 @@ describe("runTeleport", () => {
 			readGitTokenMock.mockReturnValue("ghp_cached")
 			readLocalGitConfigMock.mockResolvedValue({ name: "Alice", email: "a@example.com" })
 			const order: string[] = []
-			propagateGitConfigMock.mockImplementation(async () => {
+			provisionGitIdentityMock.mockImplementation(async () => {
 				order.push("identity")
 			})
-			propagateGitCredentialMock.mockImplementation(async () => {
+			provisionGitCredentialMock.mockImplementation(async () => {
 				order.push("credential")
 			})
 			createSessionMock.mockImplementation(async () => {
@@ -463,8 +463,8 @@ describe("runTeleport", () => {
 
 			expect(progressInstances[0]?.promptGitToken).toHaveBeenCalledWith("github.com")
 			expect(writeGitTokenMock).toHaveBeenCalledWith("github.com", "ghp_new", undefined)
-			expect(propagateGitCredentialMock).toHaveBeenCalledOnce()
-			expect(propagateGitCredentialMock.mock.calls[0][0]).toMatchObject({
+			expect(provisionGitCredentialMock).toHaveBeenCalledOnce()
+			expect(provisionGitCredentialMock.mock.calls[0][1]).toMatchObject({
 				gitHost: "github.com",
 				gitToken: "ghp_new",
 			})
@@ -502,7 +502,7 @@ describe("runTeleport", () => {
 
 			expect(readGitTokenMock).not.toHaveBeenCalled()
 			expect(progressInstances[0]?.promptGitToken).not.toHaveBeenCalled()
-			expect(propagateGitCredentialMock).not.toHaveBeenCalled()
+			expect(provisionGitCredentialMock).not.toHaveBeenCalled()
 			expect(createSessionMock.mock.calls[0][2]).toMatchObject({
 				details: { git: { repo: "https://github.com/me/x.git", targetDirectory: "x" } },
 			})
@@ -516,16 +516,16 @@ describe("runTeleport", () => {
 
 			await runTeleport("--workspace 11111111-1111-4111-8111-111111111111", ctx)
 
-			expect(propagateGitConfigMock).toHaveBeenCalledOnce()
-			expect(propagateGitCredentialMock).toHaveBeenCalledOnce()
+			expect(provisionGitIdentityMock).toHaveBeenCalledOnce()
+			expect(provisionGitCredentialMock).toHaveBeenCalledOnce()
 			expect(createSessionMock.mock.calls[0][2]).toEqual({ agentMode: "PTY" })
 		})
 
 		it("warns (does not refuse) on identity/credential propagation failure", async () => {
 			readGitTokenMock.mockReturnValue("ghp_cached")
 			readLocalGitConfigMock.mockResolvedValue({ name: "Alice" })
-			propagateGitConfigMock.mockRejectedValueOnce(new Error("identity boom"))
-			propagateGitCredentialMock.mockRejectedValueOnce(new Error("cred boom"))
+			provisionGitIdentityMock.mockRejectedValueOnce(new Error("identity boom"))
+			provisionGitCredentialMock.mockRejectedValueOnce(new Error("cred boom"))
 			const { ctx, ui } = makeCtx()
 
 			await runTeleport("--workspace 11111111-1111-4111-8111-111111111111 --git-repo https://github.com/me/x.git", ctx)

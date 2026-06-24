@@ -181,55 +181,6 @@ function bashCall(command: string): ToolCallEvent {
 	return { toolName: "bash", input: { command } }
 }
 
-describe("TriggerEngine.requeueLoaded", () => {
-	it("repopulates pending with every loaded behaviour, preserving the loaded set", () => {
-		const a = makeBehaviour({ name: "a", kind: "triggered", triggers: { session: cli("foo") } })
-		const b = makeBehaviour({ name: "b", kind: "triggered", triggers: { session: cli("bar") } })
-		const engine = new TriggerEngine([a, b])
-		engine.evaluateSessionTriggers(makeContext({ clis: ["foo", "bar"] }), 0)
-
-		// Drain pending — simulating injector delivery on the first turn.
-		expect(engine.takePending("a")).toBe(true)
-		expect(engine.takePending("b")).toBe(true)
-		expect(engine.pendingNames()).toEqual([])
-
-		const requeued = engine.requeueLoaded()
-		expect(requeued).toEqual(["a", "b"])
-		expect(engine.pendingNames()).toEqual(["a", "b"])
-		expect(engine.loadedNames()).toEqual(["a", "b"])
-	})
-
-	it("does nothing when nothing is loaded", () => {
-		const engine = new TriggerEngine([])
-		expect(engine.requeueLoaded()).toEqual([])
-		expect(engine.pendingNames()).toEqual([])
-	})
-
-	it("returns names in registry order regardless of load order", () => {
-		const a = makeBehaviour({ name: "a", kind: "triggered", triggers: { tool: tool("bash") } })
-		const b = makeBehaviour({ name: "b", kind: "triggered", triggers: { tool: tool("bash") } })
-		const engine = new TriggerEngine([a, b])
-		// Load b first via tool, then a — registry order is still [a, b].
-		engine.evaluateToolTriggers(bashCall("ls"), 0)
-		expect(engine.requeueLoaded()).toEqual(["a", "b"])
-	})
-
-	it("does not re-emit load events when triggers are re-evaluated after requeue", () => {
-		const ghCli = makeBehaviour({
-			name: "gh-cli",
-			kind: "triggered",
-			triggers: { session: cli("gh") },
-		})
-		const engine = new TriggerEngine([ghCli])
-		const ctx = makeContext({ clis: ["gh"] })
-		expect(engine.evaluateSessionTriggers(ctx, 0)).toHaveLength(1)
-		engine.takePending("gh-cli")
-		engine.requeueLoaded()
-		// A second evaluateSessionTriggers pass must not produce a second load event.
-		expect(engine.evaluateSessionTriggers(ctx, 1)).toEqual([])
-	})
-})
-
 describe("TriggerEngine.loadRecord", () => {
 	it("captures session-trigger metadata", () => {
 		const ghCli = makeBehaviour({

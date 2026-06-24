@@ -28,23 +28,6 @@ export class PromptEditor extends CustomEditor {
 	private _pendingImageIndicator: string | null = null
 	private _sessionIndicator: string | null = null
 
-	/**
-	 * Computes the width available for the editor's content text when a
-	 * right-aligned indicator is shown. Ensures at least 1 cell remains so
-	 * super.render() doesn't receive a zero/negative width.
-	 *
-	 * Layout invariant: contentWidth = contentRenderWidth + indicatorVisibleWidth + indicatorGutter
-	 * where indicatorGutter is 1 space between text and indicator when indicator is present, 0 otherwise.
-	 */
-	private computeContentWidth(contentWidth: number, indicatorRaw: string | null): number {
-		const indicatorVisibleWidth = indicatorRaw ? visibleWidth(indicatorRaw) : 0
-		const indicatorGutter = indicatorVisibleWidth > 0 ? 1 : 0
-		return Math.max(
-			1,
-			indicatorVisibleWidth > 0 ? contentWidth - indicatorVisibleWidth - indicatorGutter : contentWidth,
-		)
-	}
-
 	constructor(tui: TUI, editorTheme: EditorTheme, keybindings: KeybindingsManager, appTheme: Theme) {
 		super(tui, editorTheme, keybindings)
 		this.appTheme = appTheme
@@ -56,10 +39,10 @@ export class PromptEditor extends CustomEditor {
 	}
 
 	/**
-	 * Show a short status string right-aligned on the prompt's first line
-	 * (the placeholder row). Stays visible regardless of editor content until
-	 * cleared with `null`. Used by the clipboard-image extension to surface
-	 * pending pasted attachments.
+	 * Show a short status string in its own row just inside the editor's top
+	 * border. Stays visible regardless of editor content until cleared with
+	 * `null`. Used by the clipboard-image extension to surface pending pasted
+	 * attachments.
 	 */
 	setPendingImageIndicator(text: string | null) {
 		if (this._pendingImageIndicator === text) return
@@ -68,14 +51,43 @@ export class PromptEditor extends CustomEditor {
 	}
 
 	/**
-	 * Show a short session label right-aligned on the prompt's first line.
-	 * Used by the teleport extension to remind the user they are connected
-	 * to a remote worker. Pass `null` to clear.
+	 * Show a short session label in its own row just inside the editor's top
+	 * border. Used by the teleport extension to remind the user they are
+	 * connected to a remote worker. Pass `null` to clear.
 	 */
 	setSessionIndicator(text: string | null) {
 		if (this._sessionIndicator === text) return
 		this._sessionIndicator = text
 		this.tui.requestRender()
+	}
+
+	/**
+	 * Compose the current session + pending-image indicators into a single
+	 * raw string, or null if neither is set.
+	 */
+	private combinedIndicator(): string | null {
+		const parts: string[] = []
+		if (this._sessionIndicator) parts.push(this._sessionIndicator)
+		if (this._pendingImageIndicator) parts.push(this._pendingImageIndicator)
+		return parts.length > 0 ? parts.join(" ") : null
+	}
+
+	/**
+	 * Build a right-aligned, muted indicator row that fits inside `width`.
+	 * Truncates with an ellipsis if the indicator text is wider than the row.
+	 * Returns null when no indicator is set so the editor's row count stays
+	 * unchanged when nothing is pending.
+	 */
+	private renderIndicatorRow(width: number): string | null {
+		const raw = this.combinedIndicator()
+		if (!raw) return null
+		const muted = this.appTheme.getFgAnsi("muted")
+		// truncateToWidth handles the wider-than-width case via cell-aware
+		// truncation (preserves ANSI escapes, replaces the tail with "...").
+		const truncated = truncateToWidth(raw, width)
+		const tw = visibleWidth(truncated)
+		const pad = " ".repeat(Math.max(0, width - tw))
+		return `${pad}${muted}${truncated}${RST_FG}`
 	}
 
 	override handleInput(data: string) {
@@ -106,19 +118,10 @@ export class PromptEditor extends CustomEditor {
 		const innerWidth = width
 		const contentWidth = innerWidth - CHEVRON_WIDTH
 
-		// When an attachment indicator is shown, the editor body must wrap one
-		// indicator-width earlier on every row so the indicator (always pinned to
-		// the first row's right edge) never collides with typed text. Computed
-		// before super.render() because we need the *narrower* layout up front.
-		const indicatorParts: string[] = []
-		if (this._sessionIndicator) indicatorParts.push(this._sessionIndicator)
-		if (this._pendingImageIndicator) indicatorParts.push(this._pendingImageIndicator)
-		const indicatorRaw = indicatorParts.length > 0 ? indicatorParts.join(" ") : null
-		const contentRenderWidth = this.computeContentWidth(contentWidth, indicatorRaw)
-		const lines = super.render(contentRenderWidth)
-
-		const indicatorVisibleWidth = indicatorRaw ? visibleWidth(indicatorRaw) : 0
-		const indicatorGutter = indicatorVisibleWidth > 0 ? 1 : 0
+		// Editor body always renders at the full content width — the indicator
+		// lives in its own row (renderIndicatorRow below), so the user's text
+		// is never squeezed to make room for a right-aligned status string.
+		const lines = super.render(contentWidth)
 
 		// Find bottom border: scan backwards for a line starting with ─
 		let bottomIdx = Math.min(2, lines.length - 1)
@@ -134,30 +137,29 @@ export class PromptEditor extends CustomEditor {
 		const bottomBorder = rebuildBorder(lines[bottomIdx], innerWidth, border)
 		const result: string[] = [topBorder]
 
-		// Right-aligned status segment pinned to the first content row of the
-		// prompt. Always shown when set: typed text is wrapped one indicator-
-		// width earlier (see contentRenderWidth above) so the indicator never
-		// collides with text. Persists across empty/non-empty editor states
-		// until cleared via setPendingImageIndicator(null).
-		const indicatorStyled = indicatorRaw ? `${muted}${indicatorRaw}${RST_FG}` : ""
+		// Indicator row sits between the top border and the first content row,
+		// rendered at the full inner width (right-aligned, muted). When no
+		// indicator is set, this row is omitted entirely so the editor's row
+		// count is unchanged from the no-indicator case.
+		const indicatorRow = this.renderIndicatorRow(innerWidth)
+		if (indicatorRow !== null) {
+			result.push(indicatorRow)
+		}
 
 		if (this.getText().length === 0) {
 			const cursorMarker = "\x1b_pi:c\x07"
 			// Use terminal's native cursor — no custom styling
 			const cursor = `${cursorMarker} `
-			// Reserve room for the indicator (plus one space gutter) on the right.
-			// If the placeholder no longer fits, drop it entirely rather than
-			// truncating mid-word — the cursor still anchors the row.
+			// The indicator no longer competes for placeholder space — it lives
+			// on its own row above this one.
 			const cursorCellWidth = 1 // width of the space the terminal-native cursor occupies
 			const leadWidth = CHEVRON_WIDTH + cursorCellWidth
-			const placeholderBudget = innerWidth - leadWidth - indicatorVisibleWidth - indicatorGutter
+			const placeholderBudget = innerWidth - leadWidth
 			const placeholderText = placeholderBudget >= visibleWidth(PLACEHOLDER_TEXT) ? PLACEHOLDER_TEXT : ""
 			const placeholderRendered = placeholderText.length > 0 ? `${muted}${placeholderText}${RST_FG}` : ""
-			const usedWidth = leadWidth + visibleWidth(placeholderText) + indicatorVisibleWidth + indicatorGutter
+			const usedWidth = leadWidth + visibleWidth(placeholderText)
 			const middlePad = " ".repeat(Math.max(0, innerWidth - usedWidth))
-			result.push(
-				`${chevronColor}❯${RST_FG} ${cursor}${placeholderRendered}${middlePad}${indicatorStyled}${indicatorGutter > 0 ? " " : ""}`,
-			)
+			result.push(`${chevronColor}❯${RST_FG} ${cursor}${placeholderRendered}${middlePad}`)
 		} else {
 			const contentLines = lines.slice(1, bottomIdx)
 			let cursorIdx = contentLines.findIndex((l) => l.includes("\x1b_pi:c"))
@@ -168,16 +170,8 @@ export class PromptEditor extends CustomEditor {
 				const styled = i === cursorIdx ? line.replace("\x1b[7m", "").replaceAll("\x1b[0m", `\x1b[0m${textColor}`) : line
 				const prefix = i === cursorIdx ? `${chevronColor}❯${RST_FG} ` : "  "
 				const styledWidth = visibleWidth(styled)
-				if (i === 0 && indicatorVisibleWidth > 0) {
-					// First row hosts the indicator. Editor body was rendered at
-					// contentRenderWidth so styledWidth <= contentRenderWidth and the
-					// gap below is always non-negative.
-					const gap = " ".repeat(Math.max(0, contentWidth - styledWidth - indicatorVisibleWidth))
-					result.push(`${prefix}${textColor}${styled}${RST_FG}${gap}${indicatorStyled}`)
-				} else {
-					const rightPad = " ".repeat(Math.max(0, contentWidth - styledWidth))
-					result.push(`${prefix}${textColor}${styled}${rightPad}${RST_FG}`)
-				}
+				const rightPad = " ".repeat(Math.max(0, contentWidth - styledWidth))
+				result.push(`${prefix}${textColor}${styled}${rightPad}${RST_FG}`)
 			}
 		}
 

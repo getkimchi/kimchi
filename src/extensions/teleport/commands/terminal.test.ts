@@ -5,14 +5,14 @@ const {
 	authMock,
 	getGitRemoteHostMock,
 	readGitTokenMock,
-	propagateGitCredentialMock,
+	provisionGitCredentialMock,
 	buildProxyCommandMock,
 	listWorkspacesMock,
 } = vi.hoisted(() => ({
 	authMock: vi.fn(),
 	getGitRemoteHostMock: vi.fn(),
 	readGitTokenMock: vi.fn(),
-	propagateGitCredentialMock: vi.fn(),
+	provisionGitCredentialMock: vi.fn(),
 	buildProxyCommandMock: vi.fn(),
 	listWorkspacesMock: vi.fn(),
 }))
@@ -21,8 +21,9 @@ vi.mock("../../../sandbox/cloud/auth.js", () => ({ authenticateWorkspace: authMo
 vi.mock("../../../sandbox/cloud/workspaces.js", () => ({ listWorkspaces: listWorkspacesMock }))
 vi.mock("../../../sandbox/git-credentials.js", () => ({ getGitRemoteHost: getGitRemoteHostMock }))
 vi.mock("../../../config.js", () => ({ readGitToken: readGitTokenMock }))
-vi.mock("../provisioning/git-propagate.js", () => ({
-	propagateGitCredentialToSandbox: propagateGitCredentialMock,
+vi.mock("../../../sandbox/worker/client.js", () => ({ WorkerClient: class {} }))
+vi.mock("../provisioning/git-provision.js", () => ({
+	provisionGitCredential: provisionGitCredentialMock,
 }))
 vi.mock("../provisioning/proxy-command.js", () => ({ buildProxyCommand: buildProxyCommandMock }))
 
@@ -97,7 +98,7 @@ beforeEach(() => {
 	authMock.mockReset().mockResolvedValue(CREDS)
 	getGitRemoteHostMock.mockReset().mockResolvedValue(undefined)
 	readGitTokenMock.mockReset().mockReturnValue(undefined)
-	propagateGitCredentialMock.mockReset().mockResolvedValue(undefined)
+	provisionGitCredentialMock.mockReset().mockResolvedValue(undefined)
 	buildProxyCommandMock.mockReset().mockReturnValue("kimchi --ssh-proxy %h")
 	listWorkspacesMock.mockReset().mockResolvedValue([])
 })
@@ -162,22 +163,20 @@ describe("runTerminal", () => {
 
 		await runTerminal("33333333-3333-4333-8333-333333333333", ctx, { _runChildWithTTYHandoff: runChild })
 
-		expect(propagateGitCredentialMock).toHaveBeenCalledOnce()
-		expect(propagateGitCredentialMock.mock.calls[0][0]).toMatchObject({
-			remoteHost: "h.example",
-			authToken: "tok-1",
+		expect(provisionGitCredentialMock).toHaveBeenCalledOnce()
+		expect(provisionGitCredentialMock.mock.calls[0][1]).toMatchObject({
 			gitHost: "github.com",
 			gitToken: "ghp_cached",
 		})
 
 		await runTerminal("33333333-3333-4333-8333-333333333333", ctx, { _runChildWithTTYHandoff: runChild })
-		expect(propagateGitCredentialMock).toHaveBeenCalledTimes(2)
+		expect(provisionGitCredentialMock).toHaveBeenCalledTimes(2)
 	})
 
 	it("warns and proceeds when credential propagation fails", async () => {
 		getGitRemoteHostMock.mockResolvedValue("github.com")
 		readGitTokenMock.mockReturnValue("ghp_cached")
-		propagateGitCredentialMock.mockRejectedValueOnce(new Error("cred boom"))
+		provisionGitCredentialMock.mockRejectedValueOnce(new Error("cred boom"))
 		const { ctx, ui } = makeCtx()
 		const runChild = vi.fn().mockResolvedValue(0)
 

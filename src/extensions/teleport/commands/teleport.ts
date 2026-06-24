@@ -4,7 +4,7 @@ import { readGitToken, readTeleportHelpSeenAt, writeGitToken, writeTeleportHelpS
 import { authenticateWorkspace } from "../../../sandbox/cloud/auth.js"
 import { waitForWorkspaceReady } from "../../../sandbox/cloud/readiness.js"
 import type { WorkspaceCredentials } from "../../../sandbox/cloud/types.js"
-import { getGitRemoteHost, parseHostFromRemoteUrl } from "../../../sandbox/git-credentials.js"
+import { getGitRemoteHost, parseHostFromRemoteUrl, readLocalGitConfig } from "../../../sandbox/git-credentials.js"
 import { WorkerClient } from "../../../sandbox/worker/client.js"
 import { createSession, listSessions } from "../../../sandbox/worker/sessions.js"
 import type { CreateSessionRequest, Session } from "../../../sandbox/worker/types.js"
@@ -15,11 +15,7 @@ import { runPreflight } from "../preflight/index.js"
 import { SIZE_REFUSE_BYTES, SIZE_WARN_BYTES } from "../preflight/workspace-size.js"
 import { SANDBOX_USER } from "../provisioning/constants.js"
 import { sumIncludeListBytes } from "../provisioning/estimate-bytes.js"
-import {
-	propagateGitConfigToSandbox,
-	propagateGitCredentialToSandbox,
-	readLocalGitConfig,
-} from "../provisioning/git-propagate.js"
+import { provisionGitCredential, provisionGitIdentity } from "../provisioning/git-provision.js"
 import { buildIncludeList } from "../provisioning/include-list.js"
 import { deriveSandboxDest, deriveSandboxDestFromRepoUrl, repoBasename } from "../provisioning/paths.js"
 import { runRsync } from "../provisioning/rsync-runner.js"
@@ -174,30 +170,18 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 
 		const identityP =
 			localGitConfig.name || localGitConfig.email
-				? propagateGitConfigToSandbox({
-						remoteHost: creds.host,
-						remoteUser: SANDBOX_USER,
-						authToken: creds.connectToken,
-						gitName: localGitConfig.name,
-						gitEmail: localGitConfig.email,
-						signal,
-					}).catch((err) => {
-						if (!signal.aborted) {
-							warn(ctx, `Could not set git identity on sandbox: ${err instanceof Error ? err.message : String(err)}`)
-						}
-					})
+				? provisionGitIdentity(client, { name: localGitConfig.name, email: localGitConfig.email }, signal).catch(
+						(err) => {
+							if (!signal.aborted) {
+								warn(ctx, `Could not set git identity on sandbox: ${err instanceof Error ? err.message : String(err)}`)
+							}
+						},
+					)
 				: Promise.resolve()
 
 		const credsPropP =
 			gitHost && gitToken
-				? propagateGitCredentialToSandbox({
-						remoteHost: creds.host,
-						remoteUser: SANDBOX_USER,
-						authToken: creds.connectToken,
-						gitHost,
-						gitToken,
-						signal,
-					}).catch((err) => {
+				? provisionGitCredential(client, { gitHost, gitToken }, signal).catch((err) => {
 						if (!signal.aborted) {
 							warn(
 								ctx,
