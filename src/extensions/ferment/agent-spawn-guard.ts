@@ -17,7 +17,7 @@
  * ledger stays at "0 done", the engine keeps returning start_step as the next
  * action, and multiple uncoordinated agents can be spawned for the same work.
  *
- * Scope of enforcement (Phase 1):
+ * Scope of enforcement:
  *   - Only blocks when engine.action.kind === "start_step". All other engine
  *     states (complete_step, recover_step, complete_phase, etc.) allow the
  *     spawn — those legitimately need helper agents (Explore, Reviewer).
@@ -25,8 +25,7 @@
  *     rule. The engine emits start_step for at most one pending step at a
  *     time and emits complete_step (not start_step) once any sibling is
  *     running, so the guard's engine-driven decision cannot reason about
- *     half-started cohorts. The cohort rule is deferred to a follow-up that
- *     introduces a start_cohort action kind in the engine.
+ *     half-started cohorts.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
