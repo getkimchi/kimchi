@@ -77,7 +77,7 @@ Replace 3 inline tool catalog definitions with a single shared catalog at `src/s
 - Verify: `test -f docs/tool-name-mapping.md && grep -cE '^\| ' docs/tool-name-mapping.md | awk '{exit !($1 >= 6)}' && grep -c 'judge-routed\|judge model' docs/tool-name-mapping.md | awk '{exit !($1 >= 2)}'`
 - Accept when: The doc enumerates at least the rows in the cross-phase table above, plus any additional differences found.
 
-**1. Create shared catalog module.** Define `ToolProfile`, `ToolEntry`, and the four arrays plus `getToolsForProfile(profile, mode)` derivation function.
+**1. Create shared catalog module.** Define `ToolProfile`, `ToolEntry`, and the four arrays plus the `getToolsForProfile(profile)` derivation function (returns `ToolEntry[]`).
 - Verify: `test -f src/shared/planning/tool-catalog.ts && grep -c 'SHARED_CORE_TOOLS\|ADHOC_MODE_TOOLS\|FERMENT_MODE_TOOLS\|WRITE_TOOLS' src/shared/planning/tool-catalog.ts`
 - Accept when: Module exports the four arrays and the derivation function with documented types.
 
@@ -145,9 +145,15 @@ const WRITE_TOOLS: ToolEntry[] = [
   { name: "get_subagent_result", profiles: ["implementation-ferment"], modes: ["ferment"] },
 ]
 
-export function getToolsForProfile(profile: ToolProfile, mode: "adhoc" | "ferment"): string[] {
-  const all = [...SHARED_CORE_TOOLS, ...ADHOC_MODE_TOOLS, ...FERMENT_MODE_TOOLS, ...WRITE_TOOLS]
-  return all.filter((t) => t.profiles.includes(profile) && t.modes.includes(mode)).map((t) => t.name)
+// Final signature (this draft was simplified during implementation):
+export function getToolsForProfile(profile: ToolProfile): ToolEntry[] {
+  // Returns ToolEntry[] so callers can read metadata (modes, phases, routing)
+  // alongside the tool name. The earlier draft returned `string[]` and took a
+  // `mode` parameter; the implementation folded `mode` into the profile name
+  // (`planning-adhoc` vs `planning-ferment`) instead, removing the need for a
+  // second argument. The `idle` profile is special-cased in
+  // `applyCore` (tool-profile-manager.ts) to restore the user's full
+  // registered toolset minus ferment-only tools.
 }
 ```
 
@@ -155,11 +161,11 @@ export function getToolsForProfile(profile: ToolProfile, mode: "adhoc" | "fermen
 - Verify: `pnpm vitest run src/shared/planning/tool-catalog.test.ts`
 - Accept when: All profile derivations return expected tool sets for `idle`, `planning-adhoc`, `planning-ferment`, `implementation-ferment`, `worker`; mode-specific tools (e.g., `questionnaire` vs `ask_user`) appear only in their respective modes; `routing` metadata is preserved for `ask_user` and `confirm_ferment_completion_criteria`.
 
-**3. Migrate `permissions/index.ts`** — replace `PLAN_MODE_TOOLS` (`index.ts:82-93`) and `PLAN_MODE_TOOL_SET` (`index.ts:96`) usage with `getToolsForProfile("planning-adhoc", "adhoc")`. Keep re-export for backwards compat.
+**3. Migrate `permissions/index.ts`** — replace `PLAN_MODE_TOOLS` (`index.ts:82-93`) and `PLAN_MODE_TOOL_SET` (`index.ts:96`) usage with `getToolsForProfile("planning-adhoc").map(t => t.name)`. Keep re-export for backwards compat.
 - Verify: `grep -c 'PLAN_MODE_TOOLS' src/extensions/permissions/index.ts | awk '{exit !($1 <= 1)}' && grep -c 'getToolsForProfile' src/extensions/permissions/index.ts | awk '{exit !($1 >= 1)}'`
 - Accept when: `--plan` mode sees the same tool set as before (verified by snapshot test).
 
-**4. Migrate `extensions/ferment/tool-scope.ts`** — replace `PLANNING_TOOL_NAMES` (`tool-scope.ts:18-48`) and `IMPLEMENTATION_TOOL_NAMES` (`tool-scope.ts:50-84`) with `getToolsForProfile("planning-ferment", "ferment")` and `getToolsForProfile("implementation-ferment", "ferment")`.
+**4. Migrate `extensions/ferment/tool-scope.ts`** — replace `PLANNING_TOOL_NAMES` (`tool-scope.ts:18-48`) and `IMPLEMENTATION_TOOL_NAMES` (`tool-scope.ts:50-84`) with `getToolsForProfile("planning-ferment")` and `getToolsForProfile("implementation-ferment")` (callers map to names with `.map(t => t.name)`).
 - Verify: `grep -c 'getToolsForProfile' src/extensions/ferment/tool-scope.ts | awk '{exit !($1 >= 2)}'`
 - Accept when: Ferment planning and implementation profiles see the same tool sets as before — for both interactive and oneshot ferment.
 

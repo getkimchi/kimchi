@@ -47,9 +47,20 @@ type ToolProfile = "idle" | "planning-adhoc" | "planning-ferment" | "implementat
 
 type ToolEntry = {
   name: string
-  profiles: ToolProfile[]
-  modes: ("adhoc" | "ferment" | "both")[]
+  // `phases` is set on ferment-mode tools to gate visibility per ferment
+  // lifecycle stage (planning vs implementation). Omitted on non-ferment tools.
+  phases?: ("planning" | "implementation")[]
+  modes: ("shared" | "adhoc" | "ferment")[]
+  routing?: "interactive" | "judge" | "n/a"
 }
+
+// Note: the implementation derives `profiles` from `modes` + `phases` inside
+// `getToolsForProfile(profile)`. Earlier drafts of this RFC stored profiles
+// on the entry directly; the final implementation simplified that by
+// computing the per-profile set at call time. The behaviour is the same.
+//
+// `modes: ["shared"]` is the implementation's spelling of the RFC's earlier
+// `["both"]` — either name describes "available in both adhoc and ferment".
 
 // Shared core: tools available in both modes across most profiles
 const SHARED_CORE_TOOLS: ToolEntry[] = [
@@ -59,8 +70,14 @@ const SHARED_CORE_TOOLS: ToolEntry[] = [
   { name: "ls",        profiles: ["idle", "planning-adhoc", "planning-ferment", "implementation-ferment"], modes: ["both"] },
   { name: "web_fetch", profiles: ["idle", "planning-adhoc", "planning-ferment", "implementation-ferment"], modes: ["both"] },
   { name: "web_search",profiles: ["idle", "planning-adhoc", "planning-ferment", "implementation-ferment"], modes: ["both"] },
-  { name: "list_ferments", profiles: ["idle"], modes: ["both"] },
 ]
+
+// list_ferments is a ferment-mode discovery tool that is exposed across all
+// ferment profiles (planning, implementation) plus idle so the user can list
+// existing ferments without an active one. The implementation places it in
+// FERMENT_MODE_TOOLS rather than SHARED_CORE_TOOLS, but the visibility is
+// equivalent because the `idle` profile in the implementation restores the
+// full registered toolset minus ferment-only-implementation tools.
 
 // Adhoc-specific: tools only available in --plan mode
 const ADHOC_MODE_TOOLS: ToolEntry[] = [
@@ -73,6 +90,7 @@ const ADHOC_MODE_TOOLS: ToolEntry[] = [
 
 // Ferment-specific: tools only available in ferment mode
 const FERMENT_MODE_TOOLS: ToolEntry[] = [
+  { name: "list_ferments",                  profiles: ["idle", "planning-ferment", "implementation-ferment"], modes: ["ferment"] },
   { name: "propose_ferment_scoping",        profiles: ["planning-ferment"],              modes: ["ferment"] },
   { name: "scope_ferment",                  profiles: ["planning-ferment", "implementation-ferment"], modes: ["ferment"] },
   { name: "update_ferment_scope_field",     profiles: ["planning-ferment"],              modes: ["ferment"] },

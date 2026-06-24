@@ -11,12 +11,14 @@ import {
 } from "./tool-profile-manager.js"
 
 /** Build a fresh mock ExtensionAPI. */
-const makeMockPi = (): ExtensionAPI => {
+const makeMockPi = (overrides: { allTools?: Array<{ name: string }> } = {}): ExtensionAPI => {
 	const setActiveTools = vi.fn()
 	const on = vi.fn()
+	const getAllTools = vi.fn(() => overrides.allTools ?? [])
 	return {
 		setActiveTools,
 		on,
+		getAllTools,
 	} as unknown as ExtensionAPI
 }
 
@@ -37,6 +39,36 @@ describe("apply", () => {
 		expect(pi.setActiveTools).toHaveBeenCalledOnce()
 		expect(pi.setActiveTools).toHaveBeenCalledWith(expectedTools)
 		expect(isSnapshotAppliedThisTurn()).toBe(true)
+	})
+
+	it("idle profile restores all registered tools minus ferment-only tools", () => {
+		// Simulate a real-world toolset: shared core tools + bash + write + a
+		// ferment-only tool. The idle profile should keep everything except the
+		// ferment-only tool — mirroring the pre-unification behaviour where
+		// exiting a ferment returned the user to their normal chat toolset.
+		const pi = makeMockPi({
+			allTools: [
+				{ name: "read" },
+				{ name: "bash" },
+				{ name: "write" },
+				{ name: "edit" },
+				{ name: "propose_ferment_scoping" }, // ferment-only — filtered out
+				{ name: "start_ferment_step" }, // ferment-only — filtered out
+			],
+		})
+
+		apply("idle", "ferment", pi)
+
+		expect(pi.setActiveTools).toHaveBeenCalledOnce()
+		expect(pi.setActiveTools).toHaveBeenCalledWith(["read", "bash", "write", "edit"])
+	})
+
+	it("idle profile returns an empty array when no tools are registered", () => {
+		const pi = makeMockPi({ allTools: [] })
+
+		apply("idle", "ferment", pi)
+
+		expect(pi.setActiveTools).toHaveBeenCalledWith([])
 	})
 })
 

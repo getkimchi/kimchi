@@ -210,30 +210,33 @@ describe("worker profile", () => {
 })
 
 describe("idle profile", () => {
-	it("returns catalog idle profile: shared core tools only, no write or ferment tools", () => {
-		// The catalog's idle profile is SHARED_CORE_TOOLS (read, grep, find, ls,
-		// web_fetch, web_search). Write tools (bash) and ferment tools are absent
-		// by catalog design; the old dynamic getAllTools approach is replaced.
+	it("restores the user's full base toolset minus ferment-only tools", () => {
+		// The idle profile is a special case: rather than returning the catalog's
+		// fixed SHARED_CORE_TOOLS list, it derives from the registered toolset so
+		// users keep access to bash, edit, write, third-party tools, etc. when
+		// they exit a ferment back to normal chat. Only ferment-only tools are
+		// filtered out. See PR #683 review feedback for the rationale.
 		const allTools = [
 			"read",
 			"bash",
-			"list_ferments",
-			"request_ferment_workflow",
-			"propose_ferment_scoping", // ferment-only: absent from catalog idle
-			"start_ferment_step", // ferment-only: absent from catalog idle
-			"activate_ferment_phase", // ferment-only: absent from catalog idle
+			"edit",
+			"write",
+			"list_ferments", // ferment-mode but not planner-only; remains visible
+			"propose_ferment_scoping", // ferment-only: filtered out
+			"start_ferment_step", // ferment-only: filtered out
+			"activate_ferment_phase", // ferment-only: filtered out
 		]
 		const pi = createPi([], allTools)
 
 		applyFermentToolProfile(pi, "idle")
 
 		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
+		// Base toolset preserved
 		expect(lastCall).toContain("read")
-		expect(lastCall).toContain("grep")
-		expect(lastCall).toContain("find")
-		expect(lastCall).toContain("ls")
-		expect(lastCall).not.toContain("bash") // not in catalog idle profile
-		expect(lastCall).not.toContain("list_ferments") // not in catalog idle profile
+		expect(lastCall).toContain("bash")
+		expect(lastCall).toContain("edit")
+		expect(lastCall).toContain("write")
+		// Ferment-only planner tools stripped
 		expect(lastCall).not.toContain("propose_ferment_scoping")
 		expect(lastCall).not.toContain("start_ferment_step")
 		expect(lastCall).not.toContain("activate_ferment_phase")

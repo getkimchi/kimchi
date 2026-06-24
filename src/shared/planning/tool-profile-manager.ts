@@ -34,6 +34,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 
+import { isFermentOnlyToolName } from "../../extensions/ferment/tool-names.js"
 import { getDisabledToolNames } from "../../extensions/prompt-construction/tool-visibility.js"
 import { getToolsForProfile } from "./tool-catalog.js"
 import type { ToolProfile } from "./tool-catalog.js"
@@ -65,17 +66,36 @@ let turnListenerInstalled = false
  * can call the tool-setting logic without triggering the cooperative-layer
  * no-op guard in `applyCooperativeTweak()`.
  *
+ * The `"idle"` profile is a special case: rather than returning a fixed
+ * catalog list, it restores the user's full base toolset (all registered
+ * tools minus ferment-only tools). This preserves the pre-unification
+ * behaviour where exiting a ferment returned the model to its normal chat
+ * toolset — including `bash`, `edit`, `write`, and any third-party tools.
+ *
  * @internal — not for direct use outside the tool-profile and ferment layers.
  */
 export function applyCore(profile: ToolProfile, pi: ExtensionAPI): void {
 	installTurnBoundaryReset(pi)
-	const tools = getToolsForProfile(profile)
-	// Filter out tools that the cooperative visibility layer has voted to
-	// hide.  Without this, a snapshot apply would re-surface tools that
-	// another extension disabled (e.g. ask_user / confirm_ferment_completion_
-	// criteria hidden when no UI is attached), undoing the cooperative vote.
 	const disabled = getDisabledToolNames(pi)
-	const allowedNames = tools.map((t) => t.name).filter((name) => !disabled.has(name))
+
+	let allowedNames: string[]
+	if (profile === "idle") {
+		// Idle = no active ferment, no plan mode. Restore the full registered
+		// toolset minus ferment-only tools so users keep access to bash, edit,
+		// write, third-party tools, etc. in normal chat.
+		allowedNames = pi
+			.getAllTools()
+			.map((t) => t.name)
+			.filter((name) => !isFermentOnlyToolName(name) && !disabled.has(name))
+	} else {
+		const tools = getToolsForProfile(profile)
+		// Filter out tools that the cooperative visibility layer has voted to
+		// hide.  Without this, a snapshot apply would re-surface tools that
+		// another extension disabled (e.g. ask_user / confirm_ferment_completion_
+		// criteria hidden when no UI is attached), undoing the cooperative vote.
+		allowedNames = tools.map((t) => t.name).filter((name) => !disabled.has(name))
+	}
+
 	pi.setActiveTools(allowedNames)
 	snapshotAppliedThisTurn = true
 }
