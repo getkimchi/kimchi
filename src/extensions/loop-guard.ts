@@ -104,6 +104,11 @@ export class LoopGuard {
 		return this.warned
 	}
 
+	/** Test helper: get the current total count for a bash prefix. */
+	getTotalBashCount(prefix: string): number {
+		return this.bashCountsTotal.get(prefix) ?? 0
+	}
+
 	record(rec: ToolHistoryRecord): LoopGuardResult {
 		// Increment semantic counters for the new record before pushing.
 		const editTarget = extractEditTarget(rec)
@@ -137,8 +142,8 @@ export class LoopGuard {
 			}
 		}
 
-		const reason = this.detect()
-		if (reason === undefined) {
+		const detected = this.detect()
+		if (detected === undefined) {
 			return { state: "ok" }
 		}
 
@@ -148,14 +153,24 @@ export class LoopGuard {
 
 		// Reset the window counters so the model must loop again before the
 		// next steer fires — avoids flooding the context with steers on
-		// every subsequent tool call. Task-total counts are NOT reset so
-		// the task-total detector can fire again if the model keeps looping.
+		// every subsequent tool call.
 		this.history = []
 		this.editCounts.clear()
 		this.bashCounts.clear()
 		this.bashCountsNorm.clear()
 
-		return { state: "warn", reason: `${STEERING_MESSAGE} (${reason})` }
+		// For task-total detectors, reset the specific keys that fired so
+		// the same threshold doesn't fire on every subsequent record for
+		// the rest of the session. The model must accumulate a fresh
+		// batch of matching calls to re-trigger. Reset (not decrement by 1)
+		// because the threshold was reached — partial carryover doesn't help.
+		for (const key of detected.firedKeys) {
+			this.editCountsTotal.delete(key)
+			this.bashCountsTotal.delete(key)
+			this.bashCountsNormTotal.delete(key)
+		}
+
+		return { state: "warn", reason: `${STEERING_MESSAGE} (${detected.reason})` }
 	}
 
 	/**
@@ -250,7 +265,12 @@ export class LoopGuard {
 		}
 	}
 
-	private detect(): string | undefined {
+	/** Run all detectors and return the first one that fires, along with
+	 *  any map keys that should be decremented when the caller resets
+	 *  state. Task-total keys are included so the caller can decrement
+	 *  them after a warn — otherwise the same task-total threshold would
+	 *  fire on every subsequent record for the rest of the session. */
+	private detect(): { reason: string; firedKeys: string[] } | undefined {
 		return (
 			this.detectConsecutiveIdenticalCalls() ??
 			this.detectExactNgram() ??
@@ -261,11 +281,11 @@ export class LoopGuard {
 		)
 	}
 
-	private detectNgramOnly(): string | undefined {
+	private detectNgramOnly(): { reason: string; firedKeys: string[] } | undefined {
 		return this.detectConsecutiveIdenticalCalls() ?? this.detectExactNgram() ?? this.detectFuzzyNgram()
 	}
 
-	private detectConsecutiveIdenticalCalls(): string | undefined {
+	private detectConsecutiveIdenticalCalls(): { reason: string; firedKeys: string[] } | undefined {
 		const last = this.history[this.history.length - 1]
 		if (!last) return undefined
 		const targetKey = exactKey(last)
@@ -278,26 +298,37 @@ export class LoopGuard {
 			}
 		}
 		if (count < CONSECUTIVE_IDENTICAL_THRESHOLD) return undefined
-		return `${count} consecutive identical calls of ${formatCall(last)} producing identical output`
+		return {
+			reason: `${count} consecutive identical calls of ${formatCall(last)} producing identical output`,
+			firedKeys: [],
+		}
 	}
 
-	private detectExactNgram(): string | undefined {
+	private detectExactNgram(): { reason: string; firedKeys: string[] } | undefined {
 		const r2 = countContiguousNgramReps(this.history, 2, exactKey)
-		if (r2 > EXACT_2GRAM_THRESHOLD) return formatLoopReason(this.history, 2, r2, "identical results")
+		if (r2 > EXACT_2GRAM_THRESHOLD) {
+			return { reason: formatLoopReason(this.history, 2, r2, "identical results"), firedKeys: [] }
+		}
 		const r3 = countContiguousNgramReps(this.history, 3, exactKey)
-		if (r3 > EXACT_3GRAM_THRESHOLD) return formatLoopReason(this.history, 3, r3, "identical results")
+		if (r3 > EXACT_3GRAM_THRESHOLD) {
+			return { reason: formatLoopReason(this.history, 3, r3, "identical results"), firedKeys: [] }
+		}
 		return undefined
 	}
 
-	private detectFuzzyNgram(): string | undefined {
+	private detectFuzzyNgram(): { reason: string; firedKeys: string[] } | undefined {
 		const r2 = countContiguousNgramReps(this.history, 2, fuzzyKey)
-		if (r2 > FUZZY_2GRAM_THRESHOLD) return formatLoopReason(this.history, 2, r2, "same arguments")
+		if (r2 > FUZZY_2GRAM_THRESHOLD) {
+			return { reason: formatLoopReason(this.history, 2, r2, "same arguments"), firedKeys: [] }
+		}
 		const r3 = countContiguousNgramReps(this.history, 3, fuzzyKey)
-		if (r3 > FUZZY_3GRAM_THRESHOLD) return formatLoopReason(this.history, 3, r3, "same arguments")
+		if (r3 > FUZZY_3GRAM_THRESHOLD) {
+			return { reason: formatLoopReason(this.history, 3, r3, "same arguments"), firedKeys: [] }
+		}
 		return undefined
 	}
 
-	private detectEditRunCycle(): string | undefined {
+	private detectEditRunCycle(): { reason: string; firedKeys: string[] } | undefined {
 		const topEdit = mapMax(this.editCounts)
 		const topBashRaw = mapMax(this.bashCounts)
 		const topBashNorm = mapMax(this.bashCountsNorm)
@@ -309,10 +340,15 @@ export class LoopGuard {
 			topEdit[0].length > REASON_ARG_PREVIEW ? `${topEdit[0].slice(0, REASON_ARG_PREVIEW)}…` : topEdit[0]
 		const bashPreview =
 			topBash[0].length > REASON_ARG_PREVIEW ? `${topBash[0].slice(0, REASON_ARG_PREVIEW)}…` : topBash[0]
-		return `edit-run cycle: ${editPreview} edited ${topEdit[1]}× and bash "${bashPreview}" ran ${topBash[1]}× in last ${this.history.length} calls`
+		// firedKeys are empty: window counters are fully reset by the caller
+		// after each warn, so we don't need to decrement individual keys.
+		return {
+			reason: `edit-run cycle: ${editPreview} edited ${topEdit[1]}× and bash "${bashPreview}" ran ${topBash[1]}× in last ${this.history.length} calls`,
+			firedKeys: [],
+		}
 	}
 
-	private detectEditRunCycleTotal(): string | undefined {
+	private detectEditRunCycleTotal(): { reason: string; firedKeys: string[] } | undefined {
 		// Task-total counts catch interleaved loops that the 30-record
 		// window misses. Window-based detection is still preferred because
 		// it's sensitive to recent behaviour; this is a backstop for the
@@ -330,7 +366,13 @@ export class LoopGuard {
 			topEdit[0].length > REASON_ARG_PREVIEW ? `${topEdit[0].slice(0, REASON_ARG_PREVIEW)}…` : topEdit[0]
 		const bashPreview =
 			topBash[0].length > REASON_ARG_PREVIEW ? `${topBash[0].slice(0, REASON_ARG_PREVIEW)}…` : topBash[0]
-		return `edit-run cycle (task-total): ${editPreview} edited ${topEdit[1]}× and bash "${bashPreview}" ran ${topBash[1]}× across the task`
+		// Include the fired keys so the caller can decrement them in the
+		// task-total maps. Without this, the same threshold would re-fire
+		// on every subsequent tool call for the rest of the session.
+		return {
+			reason: `edit-run cycle (task-total): ${editPreview} edited ${topEdit[1]}× and bash "${bashPreview}" ran ${topBash[1]}× across the task`,
+			firedKeys: [topEdit[0], topBash[0]],
+		}
 	}
 
 	/**
@@ -339,28 +381,40 @@ export class LoopGuard {
 	 * like repeated yt-dlp downloads, repeated curl calls, repeated make on
 	 * a project that always fails.
 	 */
-	private detectBashRepetition(): string | undefined {
+	private detectBashRepetition(): { reason: string; firedKeys: string[] } | undefined {
 		// Bash-only thresholds are higher than edit-run because the signal
 		// is weaker (no paired file edit to confirm it's a loop).
 		// Window check (raw)
 		const topBashWin = mapMax(this.bashCounts)
 		if (topBashWin && topBashWin[1] >= BASH_REPEAT_THRESHOLD) {
-			return `bash repetition: "${truncPreview(topBashWin[0])}" ran ${topBashWin[1]}× in last ${this.history.length} calls`
+			return {
+				reason: `bash repetition: "${truncPreview(topBashWin[0])}" ran ${topBashWin[1]}× in last ${this.history.length} calls`,
+				firedKeys: [],
+			}
 		}
 		// Window check (normalized)
 		const topBashNormWin = mapMax(this.bashCountsNorm)
 		if (topBashNormWin && topBashNormWin[1] >= BASH_REPEAT_THRESHOLD) {
-			return `bash repetition (normalized): "${truncPreview(topBashNormWin[0])}" ran ${topBashNormWin[1]}× in last ${this.history.length} calls`
+			return {
+				reason: `bash repetition (normalized): "${truncPreview(topBashNormWin[0])}" ran ${topBashNormWin[1]}× in last ${this.history.length} calls`,
+				firedKeys: [],
+			}
 		}
 		// Task-total check (raw)
 		const topBashTotal = mapMax(this.bashCountsTotal)
 		if (topBashTotal && topBashTotal[1] >= BASH_REPEAT_TOTAL_THRESHOLD) {
-			return `bash repetition (task-total): "${truncPreview(topBashTotal[0])}" ran ${topBashTotal[1]}× across the task`
+			return {
+				reason: `bash repetition (task-total): "${truncPreview(topBashTotal[0])}" ran ${topBashTotal[1]}× across the task`,
+				firedKeys: [topBashTotal[0]],
+			}
 		}
 		// Task-total check (normalized)
 		const topBashNormTotal = mapMax(this.bashCountsNormTotal)
 		if (topBashNormTotal && topBashNormTotal[1] >= BASH_REPEAT_TOTAL_THRESHOLD) {
-			return `bash repetition (normalized task-total): "${truncPreview(topBashNormTotal[0])}" ran ${topBashNormTotal[1]}× across the task`
+			return {
+				reason: `bash repetition (normalized task-total): "${truncPreview(topBashNormTotal[0])}" ran ${topBashNormTotal[1]}× across the task`,
+				firedKeys: [topBashNormTotal[0]],
+			}
 		}
 		return undefined
 	}
