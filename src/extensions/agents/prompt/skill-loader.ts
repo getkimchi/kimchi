@@ -6,7 +6,7 @@
 
 import { readFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { join } from "node:path"
+import { isAbsolute, join } from "node:path"
 import type { Skill } from "@earendil-works/pi-coding-agent"
 import { loadSkillsFromDir } from "@earendil-works/pi-coding-agent"
 import { DEFAULT_SKILL_PATHS } from "../../../config.js"
@@ -31,6 +31,9 @@ export function preloadSkills(skillNames: string[], cwd: string): PreloadedSkill
 
 	// Build resolved absolute paths from DEFAULT_SKILL_PATHS
 	const resolvedPaths = DEFAULT_SKILL_PATHS.map((p) => {
+		if (isAbsolute(p)) {
+			return p
+		}
 		if (p.startsWith(".config/")) {
 			return join(homedir(), p)
 		}
