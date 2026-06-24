@@ -1,9 +1,14 @@
 /**
  * Planning stop-nudge logic.
  *
- * Used by plan mode (permissions extension): the model made tool calls, then
- * ended with stopReason "stop" without writing PLAN_COMPLETE. Without a nudge
- * the session stalls silently.
+ * Used by:
+ * - Plan mode (permissions extension): the model made tool calls, then ended
+ *   with stopReason "stop" without writing PLAN_COMPLETE.
+ * - Ferment scoping (ferment extension): the model made tool calls during
+ *   draft scoping, then ended with stopReason "stop" without calling
+ *   scope_ferment or propose_ferment_scoping.
+ *
+ * Without a nudge the session stalls silently.
  *
  * Note: ferment worker sessions do NOT need this nudge — a worker stopping
  * with stopReason "stop" means it finished its assigned task normally.
@@ -52,10 +57,38 @@ export const PLAN_MODE_STOP_NUDGE =
 	"- Do NOT stop again until you have written <!-- PLAN_COMPLETE -->."
 
 /**
+ * Nudge text for ferment scoping (one-shot or interactive). Instructs the
+ * model to continue toward calling scope_ferment / propose_ferment_scoping.
+ */
+export const FERMENT_SCOPING_STOP_NUDGE =
+	"You stopped during ferment scoping without finalising the plan. Continue now:\n" +
+	"- If you still need more orientation or exploration, take the next concrete tool call to gather it.\n" +
+	"- If you have enough context to plan, call `scope_ferment` (one-shot) or `propose_ferment_scoping` (interactive) with the complete payload: goal, success_criteria, constraints, assumptions, phases, and the P1/P2/P3 gates array.\n" +
+	"- Do NOT stop again until you have called the scoping tool or made progress toward it."
+
+/**
  * Returns true if the turn text contains a known plan-mode completion signal.
  */
 export function hasPlanCompletionSignal(text: string): boolean {
 	return text.includes("<!-- PLAN_COMPLETE -->") || text.includes("<done>")
+}
+
+/**
+ * Tool names whose presence in a turn signals ferment scoping progress.
+ * A turn that calls one of these is considered a completion signal for the
+ * scoping stop-nudge (no nudge needed).
+ */
+const FERMENT_SCOPING_COMPLETION_TOOLS = new Set([
+	"scope_ferment",
+	"propose_ferment_scoping",
+	"confirm_ferment_completion_criteria",
+])
+
+/**
+ * Returns true if any tool call in the turn signals ferment scoping progress.
+ */
+export function hasFermentScopingCompletionSignal(toolNames: string[]): boolean {
+	return toolNames.some((name) => FERMENT_SCOPING_COMPLETION_TOOLS.has(name))
 }
 
 /**

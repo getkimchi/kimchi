@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest"
 import {
+	FERMENT_SCOPING_STOP_NUDGE,
 	MAX_PLANNING_STOP_NUDGES,
 	PLAN_MODE_STOP_NUDGE,
 	contentHasToolCall,
 	extractTextFromContent,
+	hasFermentScopingCompletionSignal,
 	hasPlanCompletionSignal,
 	isNudgeSuppressed,
 	shouldNudge,
@@ -137,5 +139,38 @@ describe("PLAN_MODE_STOP_NUDGE", () => {
 		expect(PLAN_MODE_STOP_NUDGE).toContain("Goal")
 		expect(PLAN_MODE_STOP_NUDGE).toContain("Chunks")
 		expect(PLAN_MODE_STOP_NUDGE).toContain("Verification Strategy")
+	})
+})
+
+describe("FERMENT_SCOPING_STOP_NUDGE", () => {
+	it("references both scoping tools so it applies to one-shot and interactive", () => {
+		expect(FERMENT_SCOPING_STOP_NUDGE).toContain("scope_ferment")
+		expect(FERMENT_SCOPING_STOP_NUDGE).toContain("propose_ferment_scoping")
+	})
+
+	it("references the P1/P2/P3 gates array required by the scoping schema", () => {
+		expect(FERMENT_SCOPING_STOP_NUDGE).toContain("P1/P2/P3")
+	})
+})
+
+describe("hasFermentScopingCompletionSignal", () => {
+	it("returns true when scope_ferment is in the tool call list", () => {
+		expect(hasFermentScopingCompletionSignal(["read", "scope_ferment"])).toBe(true)
+	})
+
+	it("returns true when propose_ferment_scoping is in the tool call list", () => {
+		expect(hasFermentScopingCompletionSignal(["propose_ferment_scoping"])).toBe(true)
+	})
+
+	it("returns true when confirm_ferment_completion_criteria is in the tool call list", () => {
+		expect(hasFermentScopingCompletionSignal(["confirm_ferment_completion_criteria"])).toBe(true)
+	})
+
+	it("returns false when only exploration tools are present", () => {
+		expect(hasFermentScopingCompletionSignal(["read", "grep", "ls", "bash"])).toBe(false)
+	})
+
+	it("returns false for an empty list", () => {
+		expect(hasFermentScopingCompletionSignal([])).toBe(false)
 	})
 })

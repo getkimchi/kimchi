@@ -482,13 +482,18 @@ function persistFerment(fermentId: string): void {
 // Tracks consecutive turns during draft scoping where the model only called
 // read-like tools (read, grep, ls, find, bash, web_search, web_fetch, set_phase)
 // without calling any scoping-progression tool (ask_user,
-// confirm_ferment_completion_criteria, propose_ferment_scoping, Agent).
+// confirm_ferment_completion_criteria, propose_ferment_scoping, scope_ferment, Agent).
 // After MAX_SCOPING_EXPLORE_TURNS, the turn_end handler injects a nudge
 // telling the model to stop exploring and advance to the next scoping step.
+//
+// Threshold is intentionally generous: thorough exploration is part of a good
+// plan. Bench data shows ~3 productive exploration turns are normal before the
+// model can write a well-grounded scope. We only want to catch the long-tail
+// case where the model is genuinely stuck.
 
 const scopingExploreTurns = new Map<string, number>()
 
-export const MAX_SCOPING_EXPLORE_TURNS = 4
+export const MAX_SCOPING_EXPLORE_TURNS = 8
 
 export function bumpScopingExploreTurns(fermentId: string): number {
 	const next = (scopingExploreTurns.get(fermentId) ?? 0) + 1

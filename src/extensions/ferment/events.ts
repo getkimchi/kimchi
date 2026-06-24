@@ -16,6 +16,7 @@ import {
 	maybeInjectFermentStopNudge,
 	maybeInjectReactiveContinuationNudge,
 	maybeInjectScopingProgressNudge,
+	maybeInjectScopingStopNudge,
 	onFermentToolCallSeen,
 	resetReactiveContinuationNudgeCount,
 } from "./nudge.js"
@@ -466,11 +467,21 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		if (!f) return
 
 		// During draft scoping, detect when the model is stuck exploring
-		// without progressing through the scoping steps.
-		if (f.status === "draft" && runtime.isScopingInteractive(f.id) && toolCallSeen) {
+		// without progressing through the scoping steps. Fires for both
+		// interactive and one-shot scoping — consistency across modes is
+		// important so the model gets the same kick regardless of entry point.
+		if (f.status === "draft" && toolCallSeen) {
 			const toolNames = getToolCallNames(content)
-			const nudged = maybeInjectScopingProgressNudge(pi, f.id, toolNames)
+			const interactive = runtime.isScopingInteractive(f.id)
+			const nudged = maybeInjectScopingProgressNudge(pi, f.id, toolNames, { interactive })
 			if (nudged) return
+
+			// Stop-without-scoping: the model made tool calls but ended with
+			// stopReason "stop" without calling any scoping-completion tool.
+			if (stopReason === "stop") {
+				const stopNudged = maybeInjectScopingStopNudge(pi, f.id, toolNames, stopReason)
+				if (stopNudged) return
+			}
 		}
 
 		const userInputHandled = await maybeRunUserInputDropdown(pi, ctx, content, f, runtime)
