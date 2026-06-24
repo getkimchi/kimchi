@@ -1,7 +1,6 @@
 import { expect, test } from "@microsoft/tui-test"
 import type { KimchiFixture } from "./support/kimchi-fixture.js"
 import { TUI_TEST_CONFIG, runKimchiSession } from "./support/kimchi-fixture.js"
-import { STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -37,21 +36,25 @@ function anyRequestContainsAnyNudge(fixture: KimchiFixture): boolean {
 
 /**
  * Waits for the harness to finish processing the orchestrator's main turn
- * AND any nudge-driven followUp turn. The terminal prints a `✻ Worked for`
- * status line after each turn completes; for "stays silent" tests exactly
- * one appears (the orchestrator's turn), for "fires" tests two or more
- * appear (orchestrator + each nudge response). We wait for the orchestrator
- * marker, then poll until no new requests have arrived for 1.5s — that's
- * the deterministic "all nudges have either fired or been suppressed"
- * signal.
+ * AND any nudge-driven followUp turn.
+ *
+ * Polls `fixture.fake.requests.length` until no new completion requests
+ * have arrived for `settleForMs`. This is the authoritative "all nudges
+ * have either fired or been suppressed" signal — stable for the full
+ * window means the harness is idle and ready to assert.
+ *
+ * Terminal-marker waits ("Worked for", etc.) were tried and dropped:
+ * they were unreliable across empty-turn and aborted scenarios where
+ * the marker never renders, and added wall time without accelerating
+ * the happy path.
  */
-async function waitForTurnToSettle(fixture: KimchiFixture, terminal: import("@microsoft/tui-test").Terminal) {
-	await waitForText(terminal, "Worked for", { timeoutMs: STREAM_TIMEOUT_MS })
-	const settleForMs = 1_500
+async function waitForTurnToSettle(fixture: KimchiFixture) {
+	const settleForMs = 1_200
+	const timeoutMs = 30_000
 	const startedAt = Date.now()
 	let lastCount = fixture.fake.requests.length
 	let stableSince = Date.now()
-	while (Date.now() - startedAt < settleForMs * 4) {
+	while (Date.now() - startedAt < timeoutMs) {
 		await new Promise((resolve) => setTimeout(resolve, 100))
 		const currentCount = fixture.fake.requests.length
 		if (currentCount !== lastCount) {
@@ -62,6 +65,22 @@ async function waitForTurnToSettle(fixture: KimchiFixture, terminal: import("@mi
 		}
 	}
 	throw new Error("Request count did not settle")
+}
+
+/**
+ * Waits until at least one completion request has reached the fake server.
+ * Used by the abort test to prove the stream actually started before
+ * issuing Ctrl+C — otherwise a slow CI runner could send Ctrl+C while
+ * the harness is still booting the request, which would dismiss the
+ * input rather than abort an in-flight turn.
+ */
+async function waitForFirstRequest(fixture: KimchiFixture, timeoutMs = 10_000) {
+	const startedAt = Date.now()
+	while (Date.now() - startedAt < timeoutMs) {
+		if (fixture.fake.requests.length >= 1) return
+		await new Promise((resolve) => setTimeout(resolve, 50))
+	}
+	throw new Error("No completion request reached the fake server before timeout")
 }
 
 /**
@@ -90,7 +109,7 @@ test("continuation nudge stays silent on a text-only response in a fresh session
 		async (fixture, trace) => {
 			terminal.submit("hello")
 			trace.step("submitted prompt")
-			await waitForTurnToSettle(fixture, terminal)
+			await waitForTurnToSettle(fixture)
 			trace.step("settled")
 			expect(anyRequestContainsAnyNudge(fixture)).toBe(false)
 		},
@@ -111,11 +130,18 @@ test("continuation nudge stays silent after the user aborts an in-flight turn", 
 		async (fixture, trace) => {
 			terminal.submit("go")
 			trace.step("submitted prompt")
-			// 700ms lands well after the first chunk and well before the final one.
-			await new Promise((resolve) => setTimeout(resolve, 700))
+			// Wait for the harness to actually start streaming before aborting.
+			// Without this gate, a slow CI runner could process Ctrl+C while
+			// the harness is still booting the completion request, which
+			// would dismiss the input instead of triggering a real abort.
+			await waitForFirstRequest(fixture)
+			trace.step("first completion request observed")
+			// Sleep long enough for the first chunk (delayMs=400) to land but
+			// well before the final chunk.
+			await new Promise((resolve) => setTimeout(resolve, 500))
 			terminal.keyCtrlC()
 			trace.step("pressed Ctrl+C during streaming")
-			await waitForTurnToSettle(fixture, terminal)
+			await waitForTurnToSettle(fixture)
 			trace.step("settled")
 			// Assert against ALL nudges (continuation + empty-turn) so this
 			// test catches either nudge firing on top of an abort.
@@ -136,7 +162,7 @@ test("empty-turn nudge fires when the orchestrator returns empty content", async
 		async (fixture, trace) => {
 			terminal.submit("go")
 			trace.step("submitted prompt")
-			await waitForTurnToSettle(fixture, terminal)
+			await waitForTurnToSettle(fixture)
 			trace.step("settled")
 			expect(anyRequestContainsAnyNudge(fixture)).toBe(true)
 		},
@@ -169,7 +195,7 @@ test("empty-turn nudge stays silent when a tool was called earlier in the run", 
 		async (fixture, trace) => {
 			terminal.submit("show me /dev/null")
 			trace.step("submitted prompt")
-			await waitForTurnToSettle(fixture, terminal)
+			await waitForTurnToSettle(fixture)
 			trace.step("settled")
 			// Assert against ONLY the empty-turn nudge phrase — this test
 			// pins the per-run guard at prompt-enrichment.ts. Asserting
@@ -204,7 +230,7 @@ test("continuation nudge fires when the orchestrator returns text-only after a t
 		async (fixture, trace) => {
 			terminal.submit("show me /dev/null")
 			trace.step("submitted prompt")
-			await waitForTurnToSettle(fixture, terminal)
+			await waitForTurnToSettle(fixture)
 			trace.step("settled")
 			expect(anyRequestContainsAnyNudge(fixture)).toBe(true)
 		},
