@@ -13,7 +13,7 @@ const namesOf = (entries: ToolEntry[]): string[] => entries.map((t) => t.name)
 
 const TOOL_NAMES = {
 	sharedCore: ["read", "grep", "find", "ls", "web_fetch", "web_search"],
-	adhocOnly: ["questionnaire", "update_todos", "add_todo", "mark_todo", "clear_todos"],
+	adhocOnly: ["questionnaire", "create_todos", "update_todos", "add_todo", "mark_todo", "clear_todos"],
 	fermentPlanningTools: [
 		"set_phase",
 		"propose_ferment_scoping",
@@ -51,7 +51,7 @@ describe("SHARED_CORE_TOOLS", () => {
 
 describe("ADHOC_MODE_TOOLS", () => {
 	it("contains --plan-only tools", () => {
-		expect(ADHOC_MODE_TOOLS).toHaveLength(5)
+		expect(ADHOC_MODE_TOOLS).toHaveLength(6)
 		for (const name of TOOL_NAMES.adhocOnly) {
 			expect(ADHOC_MODE_TOOLS).toContainEqual(expect.objectContaining({ name }))
 		}

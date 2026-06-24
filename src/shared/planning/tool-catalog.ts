@@ -102,6 +102,8 @@ export const SHARED_CORE_TOOLS: ToolEntry[] = [
 export const ADHOC_MODE_TOOLS: ToolEntry[] = [
 	// interactive — model collects structured input from the user
 	{ name: "questionnaire", modes: ["adhoc"], routing: "interactive" },
+	// Todo lifecycle tools — must mirror TODO_TOOL_NAMES in src/extensions/todos/tool.ts
+	{ name: "create_todos", modes: ["adhoc"] },
 	{ name: "update_todos", modes: ["adhoc"] },
 	{ name: "add_todo", modes: ["adhoc"] },
 	{ name: "mark_todo", modes: ["adhoc"] },
