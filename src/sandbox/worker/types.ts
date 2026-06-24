@@ -77,6 +77,36 @@ export interface SandboxStatus {
 	anyAgentRunning: boolean
 }
 
+export interface GitIdentity {
+	host: string
+	user: string
+	secretRef: string
+}
+
+export interface CreateGitIdentityRequest {
+	user: string
+	secretRef: string
+}
+
+export interface UpdateGitIdentityRequest {
+	user: string
+	secretRef: string
+}
+
+export interface SetGitGlobalConfigRequest {
+	user?: {
+		name?: string
+		email?: string
+	}
+}
+
+export interface PutSecretRequest {
+	name: string
+	/** Base64-encoded value. */
+	value: string
+	injectIntoEnv?: boolean
+}
+
 export class WorkerError extends Error {
 	constructor(
 		message: string,

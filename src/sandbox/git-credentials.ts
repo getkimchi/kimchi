@@ -31,6 +31,26 @@ export function parseHostFromRemoteUrl(url: string): string | undefined {
 	return undefined
 }
 
+/**
+ * Read the local git user.name and user.email from the repository at `cwd`.
+ * Returns undefined for each value that is not configured.
+ */
+export async function readLocalGitConfig(cwd: string): Promise<{ name?: string; email?: string }> {
+	let name: string | undefined
+	let email: string | undefined
+	try {
+		const { stdout } = await execAsync(`git -C "${cwd}" config user.name`)
+		const trimmed = stdout.trim()
+		if (trimmed) name = trimmed
+	} catch {}
+	try {
+		const { stdout } = await execAsync(`git -C "${cwd}" config user.email`)
+		const trimmed = stdout.trim()
+		if (trimmed) email = trimmed
+	} catch {}
+	return { name, email }
+}
+
 export interface GetGitRemoteHostOptions {
 	/** Override the exec function (for testing). */
 	exec?: typeof execAsync
