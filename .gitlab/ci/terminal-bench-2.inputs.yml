@@ -110,6 +110,7 @@ inputs:
     type: string
     default: "kimchi-dev/minimax-m3"
     options:
+      - kimchi-dev/kimi-k2.7
       - kimchi-dev/kimi-k2.6
       - kimchi-dev/claude-sonnet-4-6
       - kimchi-dev/claude-opus-4-6
