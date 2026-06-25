@@ -5,7 +5,7 @@ import type { Ferment } from "../../ferment/types.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { deferExtensionAction } from "../deferred-action.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
-import { maybeTriggerFermentCompaction } from "./auto-compaction.js"
+import { maybeTriggerFermentCompaction, maybeTriggerMidTurnFermentCompaction } from "./auto-compaction.js"
 import { formatDuration } from "./colors.js"
 import { extractContextualOptions, extractTrailingQuestion } from "./contextual-options.js"
 import { decideContinuation } from "./continuation.js"
@@ -508,5 +508,12 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		// Fires between turns in automated-continuation mode, so the next
 		// phase starts with a fresh compacted session.
 		maybeTriggerFermentCompaction(pi, ctx, runtime)
+
+		// Mid-turn guard: if the context crossed the auto-compaction threshold
+		// while a step is still in progress, compact now and resume the step.
+		// Only acts on tool-use turns; stop/error/aborted are handled elsewhere.
+		if (event.message.role === "assistant" && event.message.stopReason === "toolUse") {
+			maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, event.message.usage.totalTokens)
+		}
 	})
 }

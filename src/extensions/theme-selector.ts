@@ -95,14 +95,19 @@ export default function themeSelectorExtension(pi: ExtensionAPI) {
 
 				// Preview theme on navigation (hover/arrow keys)
 				selectList.onSelectionChange = (item) => {
-					ui.previewTheme(item.value)
+					// The runtime implements previewTheme but it is not yet in the
+					// upstream ExtensionUIContext type definition.
+					;(ui as unknown as { previewTheme(name: string): void }).previewTheme(item.value)
 				}
 
 				// Finalize selection on Enter
 				selectList.onSelect = (item) => {
 					const result = ui.setTheme(item.value)
 					if (!result.success) {
-						ui.showError(`Failed to load theme "${item.value}": ${result.error}\nFell back to dark theme.`)
+						// showError is also implemented at runtime but missing from the type.
+						;(ui as unknown as { showError(message: string): void }).showError(
+							`Failed to load theme "${item.value}": ${result.error}\nFell back to dark theme.`,
+						)
 					}
 					done()
 				}
@@ -110,7 +115,9 @@ export default function themeSelectorExtension(pi: ExtensionAPI) {
 				selectList.onCancel = () => {
 					// Restore original theme on cancel (no persist, mirrors /settings onThemePreview).
 					// Guard: Theme.name is optional; skip the preview if there is no name to restore.
-					if (currentThemeName) ui.previewTheme(currentThemeName)
+					if (currentThemeName) {
+						;(ui as unknown as { previewTheme(name: string): void }).previewTheme(currentThemeName)
+					}
 					done()
 				}
 
