@@ -7,7 +7,7 @@ import { FermentEventStore } from "../../ferment/event-store.js"
 import { resolveFermentsDir } from "../../ferment/store.js"
 import { getAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
 import * as EntryTriggerRegistry from "../../shared/planning/entry-trigger-registry.js"
-import { decomposePlanToPhase } from "../../shared/planning/plan-decomposition.js"
+import { parseSharedPlan } from "../../shared/planning/plan-decomposition.js"
 import {
 	PLAN_MODE_STOP_NUDGE,
 	contentHasToolCall,
@@ -606,7 +606,11 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			//   - read, grep, find, ls, web_fetch, web_search
 			//   - bash (read-only gate still applies — same per-call enforcement)
 			try {
-				const planned = decomposePlanToPhase(text)
+				// Parse the plan against the shared planning process structure first.
+				// Goal / Constraints / Chunks become structured ferment fields;
+				// Verification Strategy / Decision Log / Risks are metadata and must
+				// not become implementation steps. (PR #683 review nit 3473746281.)
+				const parsed = parseSharedPlan(text)
 				// Create a storage instance scoped to ctx.cwd so the ferment artifact
 				// lands in the project's .kimchi/ferments/ directory, not process.cwd().
 				// defaultFermentRuntime.getStorage() always uses process.cwd(); in
@@ -615,22 +619,47 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				const fermentDir = resolveFermentsDir(ctx.cwd)
 				const storage = new FermentEventStore(fermentDir)
 				const runtime = { ...defaultFermentRuntime, getStorage: () => storage }
+
+				// If the plan doesn't follow the shared structure (no `## Chunks`
+				// section), fall back to draft-only: persist the ferment but do NOT
+				// activate a phase or swap to implementation tools. Lossy section
+				// splitting would produce steps named "Goal", "Constraints", "Risks",
+				// etc., which silently misrepresent the plan. The user can resume
+				// the draft via /ferment list when they want to implement it.
+				if (parsed.chunks.length === 0) {
+					const draftName = parsed.goal.split("\n")[0] || "Plan from --plan mode"
+					const draft = storage.create(draftName, parsed.goal || text.trim())
+					defaultFermentRuntime.setActive(draft)
+					if (pi.events) emitFermentCreated(pi.events, draft)
+					appendRefEntry(pi, draft.id)
+					changeMode(ctx, "plan", "auto", "user")
+					ctx.ui?.notify?.(
+						`Saved draft ferment "${draft.name}". The plan didn't include a "## Chunks" section, so it wasn't auto-scoped. Use /ferment list to resume and scope it interactively.`,
+					)
+					return
+				}
+
 				// Create the ferment through the normal storage API so it gets a
 				// proper ID, is visible to runtime.getActive(), the scheduler, and
 				// the compaction / resume paths.
-				const draft = storage.create(planned.name || "Plan from --plan mode", planned.goal)
-				// Scope it immediately using the decomposed plan so phases are populated.
+				const fermentName = parsed.goal.split("\n")[0].slice(0, 80) || "Plan from --plan mode"
+				const draft = storage.create(fermentName, parsed.goal)
+				// Scope it using the structured fields from the shared plan.
 				const applyAndPersist = createApplyAndPersist(runtime)
 				const scoped = applyAndPersist(draft.id, {
 					type: "scope",
-					goal: planned.goal,
-					successCriteria: [],
-					constraints: [],
+					goal: parsed.goal,
+					successCriteria: parsed.successCriteria,
+					constraints: parsed.constraints,
 					phases: [
 						{
-							name: planned.name || "Phase 1",
-							goal: planned.goal,
-							steps: planned.steps.map((s) => ({ description: s.description })),
+							name: fermentName,
+							goal: parsed.goal,
+							// Each chunk becomes one implementation step. Title and body
+							// are joined so the engineer sees the full chunk context.
+							steps: parsed.chunks.map((chunk) => ({
+								description: chunk.body ? `${chunk.title}\n${chunk.body}` : chunk.title,
+							})),
 						},
 					],
 				})
@@ -649,11 +678,17 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				if (pi.events) emitFermentCreated(pi.events, activated.ferment)
 				appendRefEntry(pi, activated.ferment.id)
 				changeMode(ctx, "plan", "auto", "user")
-			} catch {
-				// Non-fatal: fall back to just applying the tool profile so the session
-				// remains usable even if the storage path fails.
-				ToolProfileManager.apply("implementation-ferment", "ferment", pi)
-				changeMode(ctx, "plan", "auto", "user")
+			} catch (err) {
+				// Fail closed: if the runtime path failed (storage write error, FSM
+				// rejection, etc.), the session must NOT end up with implementation
+				// tools visible but no active ferment, no session ref, no creation
+				// event, and no initialized runtime/scheduler state. That was the
+				// silent-invalid-state bug from PR #683 review (comment 3473746278).
+				// Stay in plan mode, clear any half-set runtime state, and surface
+				// the failure so the user knows promotion did not succeed.
+				defaultFermentRuntime.setActive(undefined)
+				const message = err instanceof Error ? err.message : String(err)
+				ctx.ui?.notify?.(`Could not start this plan as a ferment: ${message}. Staying in plan mode.`)
 			}
 		}
 		// Decline or escape: stay in plan mode.

@@ -145,9 +145,12 @@ export const ScopingQuestionSchema = Type.Object({
 })
 
 export const ProposeScopingParams = Type.Object({
-	ferment_id: Type.String({
-		description: "The ferment whose scoping you're proposing.",
-	}),
+	ferment_id: Type.Optional(
+		Type.String({
+			description:
+				"The ferment whose scoping you're proposing. Omit when no ferment is active; the host will create a new draft ferment and attach the proposal to it.",
+		}),
+	),
 	title: Type.String({
 		description:
 			"Required concise 3-5 word title for this ferment. The host applies it only after the user confirms/saves this proposal.",

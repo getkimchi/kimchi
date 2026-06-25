@@ -64,6 +64,9 @@ function createHarness() {
 		setActiveTools: vi.fn(),
 	} as unknown as ExtensionAPI
 	const ferment = storage.create("Lifecycle Test")
+	// Isolation: tests should set their own active ferment rather than inherit
+	// module-level state from earlier tests.
+	runtime.setActive(undefined)
 	return { storage, runtime, pi, fermentId: ferment.id }
 }
 
@@ -520,6 +523,90 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 		const result = { content: [{ type: "text", text: "**Bold** plan" }] }
 		const component = tool.renderResult?.(result)
 		expect(component).toBeDefined()
+	})
+
+	it("creates a new draft ferment when ferment_id is omitted and no active ferment exists", async () => {
+		const { h, execute } = createProposeHarness()
+		expect(h.runtime.getActive()).toBeUndefined()
+		const beforeCount = h.storage.list().length
+
+		const result = await execute(
+			"tool-call-1",
+			{
+				title: "Bootstrap Ferment",
+				goal: "Ship the feature",
+				success_criteria: ["Tests pass"],
+				phases: [{ name: "P1", goal: "Build it", steps: [{ description: "Code it" }] }],
+				questions: [],
+				gates: passingPlanGates(),
+			},
+			undefined,
+			undefined,
+			{ ui: {} },
+		)
+
+		expect(okText(result)).toContain("Plan saved")
+		expect(h.storage.list().length).toBe(beforeCount + 1)
+		const active = h.runtime.getActive()
+		expect(active).toBeDefined()
+		expect(active?.name).toBe("Bootstrap Ferment")
+		expect(active?.status).toBe("planned")
+	})
+
+	it("creates a new draft ferment when an unknown ferment_id is provided and no active ferment exists", async () => {
+		const { h, execute } = createProposeHarness()
+		const beforeCount = h.storage.list().length
+
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: "research-nudge-prompts",
+				title: "Unknown Id Ferment",
+				goal: "Ship the feature",
+				success_criteria: ["Tests pass"],
+				phases: [{ name: "P1", goal: "Build it", steps: [{ description: "Code it" }] }],
+				questions: [],
+				gates: passingPlanGates(),
+			},
+			undefined,
+			undefined,
+			{ ui: {} },
+		)
+
+		expect(okText(result)).toContain("Plan saved")
+		expect(h.storage.list().length).toBe(beforeCount + 1)
+		const active = h.runtime.getActive()
+		expect(active).toBeDefined()
+		expect(active?.name).toBe("Unknown Id Ferment")
+	})
+
+	it("targets the active ferment when ferment_id is omitted", async () => {
+		const { h, execute } = createProposeHarness()
+		const existing = h.storage.get(h.fermentId)
+		if (!existing) throw new Error("Harness ferment missing")
+		h.runtime.setActive(existing)
+		const beforeCount = h.storage.list().length
+
+		const result = await execute(
+			"tool-call-1",
+			{
+				title: "Updated Title",
+				goal: "Updated goal",
+				success_criteria: ["Tests pass"],
+				phases: [{ name: "P1", goal: "Build it", steps: [{ description: "Code it" }] }],
+				questions: [],
+				gates: passingPlanGates(),
+			},
+			undefined,
+			undefined,
+			{ ui: {} },
+		)
+
+		expect(okText(result)).toContain("Plan saved")
+		expect(h.storage.list().length).toBe(beforeCount)
+		const active = h.runtime.getActive()
+		expect(active?.id).toBe(h.fermentId)
+		expect(active?.name).toBe("Updated Title")
 	})
 })
 

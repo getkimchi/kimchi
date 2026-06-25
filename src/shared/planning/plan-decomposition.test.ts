@@ -1,5 +1,100 @@
 import { describe, expect, it } from "vitest"
-import { decomposePlanToPhase } from "./plan-decomposition.js"
+import { decomposePlanToPhase, parseSharedPlan } from "./plan-decomposition.js"
+
+describe("parseSharedPlan", () => {
+	// The shared planning process produces plans with this structure:
+	//   ## Goal
+	//   ## Constraints
+	//   ## Chunks
+	//   ## Verification Strategy
+	//   ## Decision Log
+	//   ## Risks
+	// parseSharedPlan must extract structured fields rather than splitting every
+	// `##` heading into a step (which would produce steps named "Goal",
+	// "Constraints", "Risks", etc.).
+	const SHARED_PLAN = `## Goal
+Add a caching layer to the API client so repeat requests skip the network.
+
+## Constraints
+- No new dependencies
+- Preserve existing API surface
+- Cache TTL must be configurable
+
+## Chunks
+
+### Chunk 1: Add cache primitive
+- **Scope**: New \`cache.ts\` module
+- **Files Changed**: src/api/cache.ts
+- **Accept When**: cache.get returns undefined for missing keys; cache.set + cache.get round-trips a value
+
+### Chunk 2: Wire cache into client
+- **Scope**: API client
+- **Files Changed**: src/api/client.ts
+- **Accept When**: repeat GET hits the cache; cache miss falls through to network
+
+## Verification Strategy
+Run pnpm test src/api after each chunk.
+
+## Decision Log
+- Chose Map over WeakMap for predictable iteration.
+
+## Risks
+- Cache staleness: mitigated by short default TTL.
+`
+
+	it("extracts the goal from the ## Goal section", () => {
+		const parsed = parseSharedPlan(SHARED_PLAN)
+		expect(parsed.goal).toBe("Add a caching layer to the API client so repeat requests skip the network.")
+	})
+
+	it("extracts constraints as a list from the ## Constraints section", () => {
+		const parsed = parseSharedPlan(SHARED_PLAN)
+		expect(parsed.constraints).toEqual([
+			"No new dependencies",
+			"Preserve existing API surface",
+			"Cache TTL must be configurable",
+		])
+	})
+
+	it("extracts each chunk from the ## Chunks section as a step", () => {
+		const parsed = parseSharedPlan(SHARED_PLAN)
+		expect(parsed.chunks).toHaveLength(2)
+		expect(parsed.chunks[0].title).toBe("Chunk 1: Add cache primitive")
+		expect(parsed.chunks[1].title).toBe("Chunk 2: Wire cache into client")
+	})
+
+	it("derives success criteria from chunk 'Accept When' items", () => {
+		const parsed = parseSharedPlan(SHARED_PLAN)
+		expect(parsed.successCriteria.length).toBeGreaterThanOrEqual(2)
+		expect(parsed.successCriteria.some((c) => c.includes("cache.get returns undefined for missing keys"))).toBe(true)
+		expect(parsed.successCriteria.some((c) => c.includes("repeat GET hits the cache"))).toBe(true)
+	})
+
+	it("does NOT turn Verification Strategy, Decision Log, or Risks into chunks", () => {
+		const parsed = parseSharedPlan(SHARED_PLAN)
+		for (const chunk of parsed.chunks) {
+			expect(chunk.title).not.toMatch(/^Verification Strategy/i)
+			expect(chunk.title).not.toMatch(/^Decision Log/i)
+			expect(chunk.title).not.toMatch(/^Risks/i)
+		}
+	})
+
+	it("returns empty arrays when sections are missing", () => {
+		const parsed = parseSharedPlan("Just a free-form plan with no structure.")
+		expect(parsed.goal).toBe("")
+		expect(parsed.constraints).toEqual([])
+		expect(parsed.successCriteria).toEqual([])
+		expect(parsed.chunks).toEqual([])
+	})
+
+	it("handles an empty plan gracefully", () => {
+		const parsed = parseSharedPlan("")
+		expect(parsed.goal).toBe("")
+		expect(parsed.constraints).toEqual([])
+		expect(parsed.successCriteria).toEqual([])
+		expect(parsed.chunks).toEqual([])
+	})
+})
 
 describe("decomposePlanToPhase", () => {
 	describe("multi-heading plan", () => {
