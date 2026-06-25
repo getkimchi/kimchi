@@ -33,7 +33,7 @@ const PI_META = { "kimchi.dev": { ...ADVERTISED_CAPABILITIES } } as const
 
 const FEEDBACK_TEXT = "Please don't touch that file — use the editor tool instead."
 
-describe.skip("ACP integration — permission flow", () => {
+describe("ACP integration — permission flow", () => {
 	describe("compound bash in rpc mode", () => {
 		let fixture: AcpFixture
 

@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { type AcpFixture, startAcpFixture } from "./support/acp-fixture.js"
 import { newSession, prompt } from "./support/scenarios.js"
 
-describe.skip("ACP integration — no capabilities", () => {
+describe("ACP integration — no capabilities", () => {
 	let fixture: AcpFixture
 
 	beforeEach(async () => {

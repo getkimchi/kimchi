@@ -18,7 +18,7 @@ const FULL_CAPABILITIES: ClientCapabilities = {
 // Spread the kimchi source of truth so this stays in sync when a method is added.
 const PI_META = { "kimchi.dev": { ...ADVERTISED_CAPABILITIES } } as const
 
-describe.skip("ACP integration — all capabilities", () => {
+describe("ACP integration — all capabilities", () => {
 	let fixture: AcpFixture
 
 	beforeEach(async () => {
