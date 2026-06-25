@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import type { ModelMetadata } from "../../../../models.js"
 import { MODEL_CAPABILITIES, ModelRegistry } from "../index.js"
+import { DEFAULT_BUILD_GUIDELINES } from "./default-phase-guidelines.js"
 import {
 	buildOrchestrationGuidelinesSection,
 	buildPhaseGuidelinesSection,
@@ -206,5 +207,12 @@ describe("builtin-model guideline content", () => {
 	it("claude-opus-4-6 explore: returns default (ignored model)", () => {
 		const result = resolvePhaseGuideline("explore", "claude-opus-4-6", registry)
 		expect(result).toContain("During **explore** phase")
+	})
+
+	it("build guideline warns against interactive CLI commands and prescribes non-interactive flags", () => {
+		expect(DEFAULT_BUILD_GUIDELINES).toContain("Never run interactive commands")
+		expect(DEFAULT_BUILD_GUIDELINES).toContain("patch --forward")
+		expect(DEFAULT_BUILD_GUIDELINES).toContain("GIT_EDITOR=true")
+		expect(DEFAULT_BUILD_GUIDELINES).toContain("redirect stdin from `/dev/null`")
 	})
 })

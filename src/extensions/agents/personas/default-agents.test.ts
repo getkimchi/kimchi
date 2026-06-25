@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import { DEFAULT_AGENTS } from "./default-agents.js"
-import { AGENT_EXPLORE, AGENT_GENERAL_PURPOSE, AGENT_PLAN, AGENT_RESEARCHER } from "./types.js"
+import { AGENT_BUILDER, AGENT_EXPLORE, AGENT_GENERAL_PURPOSE, AGENT_PLAN, AGENT_RESEARCHER } from "./types.js"
 
 import { resolveAgentInvocationConfig } from "../resolution/invocation-config.js"
 
@@ -49,6 +49,17 @@ describe("DEFAULT_AGENTS", () => {
 	it("Researcher agent has roles set to research", () => {
 		const r = DEFAULT_AGENTS.get(AGENT_RESEARCHER) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
 		expect(r.roles).toContain("research")
+	})
+
+	it("Builder prompt instructs trust in provided context and limits verification turns", () => {
+		const builder = DEFAULT_AGENTS.get(AGENT_BUILDER) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
+		expect(builder.systemPrompt).toContain(
+			"Treat the provided file paths, code snippets, and task description as authoritative",
+		)
+		expect(builder.systemPrompt).toContain(
+			"Do not spend more than **2 consecutive turns** reading or verifying before making the first concrete edit",
+		)
+		expect(builder.systemPrompt).toContain("Do not re-read files merely to confirm what was provided")
 	})
 })
 

@@ -812,6 +812,7 @@ ${typeListText}
 Guidelines:
 - If the user explicitly asks to use the Agent tool, call Agent exactly once with the requested agent type and token_budget. Do not refuse or preflight the budget in prose; let the tool enforce it.
 - For parallel work, use run_in_background: true on each agent. Foreground calls run sequentially — only one executes at a time.
+- Keep each Agent call focused on a single outcome. Agents succeed when given 1–2 files or one mechanical change; they time out when asked to perform multi-file patch-and-verify workflows in one call. Split large tasks into smaller, independent Agent calls.
 - Use Explore for codebase searches and code understanding.
 - Use Plan for architecture and implementation planning.
 - Use Researcher for web/docs research with cited sources.

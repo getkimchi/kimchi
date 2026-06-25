@@ -40,6 +40,7 @@ export const DEFAULT_BUILD_GUIDELINES = `During **build** phase:
 - If the same code pattern is needed >2 times, extract an abstraction first instead of duplicating.
 - After each meaningful change, run the type-checker / linter / tests. Fix errors before moving on.
 - Always wrap shell commands with a timeout to prevent hanging. Use language-native timeouts where available (e.g. \`go test -timeout 60s\`, \`pytest --timeout=60\`, \`jest --testTimeout=60000\`) and \`timeout <seconds> <command>\` for everything else (e.g. \`timeout 30 go run .\`, \`timeout 60 ./server\`). Default to 60 seconds unless the task explicitly requires longer.
+- **Never run interactive commands** (e.g. \`patch -p1\`, \`git rebase\`, \`git commit\`, \`git merge\`, \`git cherry-pick\`, default \`npm init\`). Use non-interactive flags: \`patch --forward\` or \`patch -N\`, \`git -c core.editor=true ...\`, \`GIT_EDITOR=true\`, \`npm init -y\`, \`--yes\`, \`--non-interactive\`. If a command might block on input, redirect stdin from \`/dev/null\` or prefix with \`timeout\`.
 - If a tool call fails, diagnose the root cause before retrying — do not retry blindly.
 - Keep diffs minimal and reviewable.
 - **Git commits**: Always end every commit message with a blank line followed by \`${KIMCHI_COAUTHOR}\`.`
