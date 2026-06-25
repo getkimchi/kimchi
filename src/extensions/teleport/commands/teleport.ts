@@ -18,7 +18,7 @@ import { sumIncludeListBytes } from "../provisioning/estimate-bytes.js"
 import { provisionGitCredential, provisionGitIdentity } from "../provisioning/git-provision.js"
 import { buildIncludeList } from "../provisioning/include-list.js"
 import { deriveSandboxDest, deriveSandboxDestFromRepoUrl, repoBasename } from "../provisioning/paths.js"
-import { runRsync } from "../provisioning/rsync-runner.js"
+import { formatRsyncFailure, runRsync } from "../provisioning/rsync-runner.js"
 import { STATUS_KEY, type TeleportContext } from "../types.js"
 import { formatBytes } from "../ui/format-bytes.js"
 import { promptTeleportHelp } from "../ui/help-modal.js"
@@ -219,7 +219,9 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 						if (signal.aborted) throw err
 						// Surface a refusal-style error that the outer catch will
 						// translate into the "Workspace sync failed" notify via refuse().
-						throw new SyncFailure(err instanceof Error ? err.message : String(err))
+						// formatRsyncFailure folds in rsync's stderr (e.g. which file it
+						// couldn't transfer) so a code-23 partial failure is diagnosable.
+						throw new SyncFailure(formatRsyncFailure(err))
 					}
 				})()
 			: Promise.resolve()
@@ -243,7 +245,10 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 
 		progress.step("Opening session")
 		if (existing.some((s) => s.name === sessionName)) {
-			refuse(ctx, `Session "${sessionName}" already exists in workspace ${workspaceId}. Use /sessions to attach.`)
+			refuse(
+				ctx,
+				`Session "${sessionName}" already exists in workspace ${workspaceId}. Use /remote-sessions to attach.`,
+			)
 		}
 		const sessionCwd = args.gitRepo
 			? deriveSandboxDestFromRepoUrl(args.gitRepo)
@@ -282,7 +287,7 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 		progress.stop()
 		if (signal.aborted) {
 			const wsHint = creds
-				? ` Workspace ${workspaceId} is still up. Use /workspaces to remove or /teleport ${workspaceId} to resume.`
+				? ` Workspace ${workspaceId} is still up. Use /remote-sessions to remove or /teleport ${workspaceId} to resume.`
 				: ""
 			ctx.ui.notify(`Teleport cancelled.${wsHint}`, "info")
 			return
