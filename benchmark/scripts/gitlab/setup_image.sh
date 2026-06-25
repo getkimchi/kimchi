@@ -42,6 +42,9 @@ if [ "${CODING_AGENT:-kimchi}" = "kimchi" ]; then
     git fetch --depth="${GIT_DEPTH:-20}" origin "${BENCHMARK_TARGET_REF}"
     KIMCHI_BUILD_DIR="$(mktemp -d)"
     git worktree add --detach "${KIMCHI_BUILD_DIR}" FETCH_HEAD
+    # `git worktree add` does not initialize submodules; the build needs
+    # vendor/superpowers/skills (submodule), so populate it here.
+    git -C "${KIMCHI_BUILD_DIR}" submodule update --init --recursive
   fi
   echo "==> Building Kimchi binary in ${KIMCHI_BUILD_DIR}"
   (
