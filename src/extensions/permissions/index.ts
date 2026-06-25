@@ -1,13 +1,34 @@
+import { existsSync, mkdirSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedSemanticFg } from "../../ansi.js"
+import { FermentEventStore } from "../../ferment/event-store.js"
+import { resolveFermentsDir } from "../../ferment/store.js"
 import { getAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
+import * as EntryTriggerRegistry from "../../shared/planning/entry-trigger-registry.js"
+import { parseSharedPlan } from "../../shared/planning/plan-decomposition.js"
+import {
+	PLAN_MODE_STOP_NUDGE,
+	contentHasToolCall,
+	extractTextFromContent,
+	hasPlanCompletionSignal,
+	isNudgeSuppressed,
+	shouldNudge,
+} from "../../shared/planning/planning-stop-nudge.js"
+import * as PromptSupplementRegistry from "../../shared/planning/prompt-supplement-registry.js"
+import * as ToolProfileManager from "../../shared/planning/tool-profile-manager.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
+import { emitFermentCreated } from "../ferment/domain-events-emitter.js"
+import { appendRefEntry } from "../ferment/nudge.js"
+import { defaultFermentRuntime } from "../ferment/runtime.js"
 import { hasActiveFerment, notifyFermentActive, onActiveFermentChange } from "../ferment/state.js"
+import { createApplyAndPersist } from "../ferment/tool-helpers.js"
 import { isFermentToolName, isUserFacingFermentToolName } from "../ferment/tool-names.js"
+import { setActiveFermentAndApplyProfile } from "../ferment/tool-scope.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
+import type { SystemPromptBlock } from "../prompt-construction/system-prompt-blocks.js"
 import { type ToolVisibilityAPI, createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
@@ -276,8 +297,18 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	function applyPlanModeTools(): void {
 		if (planModeApplied) return
 		try {
+			// Track which tools plan mode is removing so `restoreToolsFromPlanMode`
+			// can re-enable them. Without this snapshot, restore would be a no-op
+			// because `ToolProfileManager.apply` (via `pi.setActiveTools`) does
+			// not preserve the prior active-tool set.
 			planModeHiddenTools = pi.getActiveTools().filter((name) => !isPlanModeTool(name))
+			// Register the disable vote with the cooperative visibility layer so
+			// `restoreToolsFromPlanMode`'s `planToolVisibility.enable(...)` call
+			// matches the matching disable vote (and so the snapshot below does
+			// not re-surface these tools when `getDisabledToolNames` is read by
+			// other extensions' `setActiveTools` calls).
 			planToolVisibility.disable(planModeHiddenTools)
+			ToolProfileManager.apply("planning-adhoc", "adhoc", pi)
 			planModeApplied = true
 		} catch {
 			// Tool visibility may be unavailable; tool_call handler still enforces the policy.
@@ -465,12 +496,42 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	})
 
 	const blocks = createSystemPromptBlocks(pi, "permissions")
-	blocks.register({
+	// Register the plan-mode prompt supplement via the shared registry so that
+	// future readers (`compose('adhoc')` from the renderer) can find it without
+	// having to walk every extension's blocks handle. The blocks handle is kept
+	// alive (it still owns the `pi` binding for session-shutdown cleanup); the
+	// registry entry below is the canonical lookup path.
+	const planModeSupplementBlock: SystemPromptBlock = {
 		id: "plan-mode-supplement",
 		render: () => {
 			if (getRuntimePermissionMode().mode !== "plan") return undefined
 			return planModeSupplement.trim()
 		},
+	}
+	PromptSupplementRegistry.register("plan-mode-supplement", planModeSupplementBlock, {
+		modes: ["adhoc"],
+	})
+	blocks.register(planModeSupplementBlock)
+
+	// ─── Entry triggers (planning mode routing) ───────────────────────────
+	// The actual mode-mutating logic lives in the inline handlers below; the
+	// registry entries make the routing table explicit and discoverable.
+	EntryTriggerRegistry.register("--plan-flag", (event) => {
+		if (event.kind !== "cli-flag") return { kind: "noop" }
+		if (event.name !== "--plan") return { kind: "noop" }
+		return { kind: "enter-mode", mode: "adhoc", reason: "CLI --plan flag" }
+	})
+	EntryTriggerRegistry.register("shift-tab-cycle", (event) => {
+		if (event.kind !== "key-press") return { kind: "noop" }
+		if (event.key !== "shift+tab") return { kind: "noop" }
+		// Cycling semantics: caller picks next mode from runtime state.
+		return { kind: "switch-mode", mode: "adhoc", reason: "shift+tab cycle (caller picks next)" }
+	})
+	EntryTriggerRegistry.register("questionnaire-auto-promote", (event) => {
+		if (event.kind !== "tool-call") return { kind: "noop" }
+		if (event.toolName !== "questionnaire") return { kind: "noop" }
+		if (event.mode !== "idle") return { kind: "noop" }
+		return { kind: "enter-mode", mode: "adhoc", reason: "questionnaire tool call in default mode" }
 	})
 
 	// When the agent produces <!-- PLAN_COMPLETE --> in plan mode, show the approval menu.
@@ -488,11 +549,16 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 
 		if (!text.includes("<!-- PLAN_COMPLETE -->") && !text.includes("<done>")) return
 
+		// Oneshot sessions bypass the dropdown entirely — the bench path auto-pilots
+		// the rest of the lifecycle through scope_ferment and friends, no user prompt needed.
+		if (pi.getFlag?.("ferment-oneshot") === true) return
+
 		const EXECUTE = "Execute the plan"
 		const DECLINE = "Rework the plan"
+		const START_AS_FERMENT = "Start as ferment"
 
 		const choice = await withWorkingHidden(ctx, () =>
-			ctx.ui.select("Plan complete. How would you like to proceed?", [EXECUTE, DECLINE]),
+			ctx.ui.select("Plan complete. How would you like to proceed?", [EXECUTE, DECLINE, START_AS_FERMENT]),
 		)
 
 		if (choice === EXECUTE) {
@@ -504,8 +570,178 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			}
 			changeMode(ctx, "plan", "auto", "user")
 			executePlan(planPath, text)
+		} else if (choice === START_AS_FERMENT) {
+			// ── Tool-swap contract ────────────────────────────────────────────────
+			// This is a SNAPSHOT SWAP that takes effect at the next turn boundary —
+			// there is no explicit handoff message and no model-visible notification.
+			// `ToolProfileManager.apply("implementation-ferment", "ferment", pi)`
+			// calls `pi.setActiveTools(...)` with the catalog-derived set for that
+			// profile (see `src/shared/planning/tool-catalog.ts`). The model sees the
+			// swap on its next invocation; nothing is queued or deferred.
+			//
+			// Tools REMOVED (adhoc / planning-only, no longer visible):
+			//   - questionnaire          (adhoc-only; superseded by ask_user)
+			//   - update_todos           (adhoc-only)
+			//   - add_todo               (adhoc-only)
+			//   - mark_todo              (adhoc-only)
+			//   - clear_todos            (adhoc-only)
+			//
+			// Tools ADDED (ferment-mode, newly visible):
+			//   - ask_user               (interactive routing — TUI in interactive mode,
+			//                              judge model in oneshot via ferment/ask-user.ts)
+			//   - confirm_ferment_completion_criteria (interactive routing, planning)
+			//   - set_phase              (planning — phase tracker)
+			//   - propose_ferment_scoping / scope_ferment / update_ferment_scope_field
+			//                            (planning — scoping surface)
+			//   - list_ferments          (always-both discovery)
+			//   - activate_ferment_phase (planning → implementation transition)
+			//   - refine/complete/skip/fail/start/complete/verify/skip/fail_ferment_step
+			//                            (implementation — step lifecycle)
+			//   - add_ferment_decision / add_ferment_memory
+			//                            (implementation — knowledge capture)
+			//   - complete_ferment       (implementation — termination)
+			//   - edit / write / Agent / get_subagent_result (implementation write set)
+			//
+			// Tools UNCHANGED (shared core, visible in both modes):
+			//   - read, grep, find, ls, web_fetch, web_search
+			//   - bash (read-only gate still applies — same per-call enforcement)
+			try {
+				// Parse the plan against the shared planning process structure first.
+				// Goal / Constraints / Chunks become structured ferment fields;
+				// Verification Strategy / Decision Log / Risks are metadata and must
+				// not become implementation steps. (PR #683 review nit 3473746281.)
+				const parsed = parseSharedPlan(text)
+				// Create a storage instance scoped to ctx.cwd so the ferment artifact
+				// lands in the project's .kimchi/ferments/ directory, not process.cwd().
+				// defaultFermentRuntime.getStorage() always uses process.cwd(); in
+				// production these are the same, but tests (and future multi-root setups)
+				// need the explicit scoping.
+				const fermentDir = resolveFermentsDir(ctx.cwd)
+				const storage = new FermentEventStore(fermentDir)
+				const runtime = { ...defaultFermentRuntime, getStorage: () => storage }
+
+				// If the plan doesn't follow the shared structure (no `## Chunks`
+				// section), fall back to draft-only: persist the ferment but do NOT
+				// activate a phase or swap to implementation tools. Lossy section
+				// splitting would produce steps named "Goal", "Constraints", "Risks",
+				// etc., which silently misrepresent the plan. The user can resume
+				// the draft via /ferment list when they want to implement it.
+				if (parsed.chunks.length === 0) {
+					const draftName = parsed.goal.split("\n")[0] || "Plan from --plan mode"
+					const draft = storage.create(draftName, parsed.goal || text.trim())
+					defaultFermentRuntime.setActive(draft)
+					if (pi.events) emitFermentCreated(pi.events, draft)
+					appendRefEntry(pi, draft.id)
+					changeMode(ctx, "plan", "auto", "user")
+					ctx.ui?.notify?.(
+						`Saved draft ferment "${draft.name}". The plan didn't include a "## Chunks" section, so it wasn't auto-scoped. Use /ferment list to resume and scope it interactively.`,
+					)
+					return
+				}
+
+				// Create the ferment through the normal storage API so it gets a
+				// proper ID, is visible to runtime.getActive(), the scheduler, and
+				// the compaction / resume paths.
+				const fermentName = parsed.goal.split("\n")[0].slice(0, 80) || "Plan from --plan mode"
+				const draft = storage.create(fermentName, parsed.goal)
+				// Scope it using the structured fields from the shared plan.
+				const applyAndPersist = createApplyAndPersist(runtime)
+				const scoped = applyAndPersist(draft.id, {
+					type: "scope",
+					goal: parsed.goal,
+					successCriteria: parsed.successCriteria,
+					constraints: parsed.constraints,
+					phases: [
+						{
+							name: fermentName,
+							goal: parsed.goal,
+							// Each chunk becomes one implementation step. Title and body
+							// are joined so the engineer sees the full chunk context.
+							steps: parsed.chunks.map((chunk) => ({
+								description: chunk.body ? `${chunk.title}\n${chunk.body}` : chunk.title,
+							})),
+						},
+					],
+				})
+				if (!scoped.ok) throw new Error(scoped.error.message)
+				// Activate the first phase so the ferment enters implementation mode.
+				const activated = applyAndPersist(draft.id, {
+					type: "activate_phase",
+					phaseId: scoped.ferment.phases[0]?.id ?? "phase-1",
+				})
+				if (!activated.ok) throw new Error(activated.error.message)
+				// Register the ferment as active in the runtime, emit the creation
+				// event, and append a session ref so resumed sessions can find it.
+				defaultFermentRuntime.setActive(activated.ferment)
+				setActiveFermentAndApplyProfile(pi, defaultFermentRuntime, activated.ferment)
+				// pi.events may be undefined in headless / test contexts; guard before emitting.
+				if (pi.events) emitFermentCreated(pi.events, activated.ferment)
+				appendRefEntry(pi, activated.ferment.id)
+				changeMode(ctx, "plan", "auto", "user")
+			} catch (err) {
+				// Fail closed: if the runtime path failed (storage write error, FSM
+				// rejection, etc.), the session must NOT end up with implementation
+				// tools visible but no active ferment, no session ref, no creation
+				// event, and no initialized runtime/scheduler state. That was the
+				// silent-invalid-state bug from PR #683 review (comment 3473746278).
+				// Stay in plan mode, clear any half-set runtime state, and surface
+				// the failure so the user knows promotion did not succeed.
+				defaultFermentRuntime.setActive(undefined)
+				const message = err instanceof Error ? err.message : String(err)
+				ctx.ui?.notify?.(`Could not start this plan as a ferment: ${message}. Staying in plan mode.`)
+			}
 		}
 		// Decline or escape: stay in plan mode.
+	})
+
+	// Plan-mode stop nudge: fires when the model made tool calls this turn but
+	// ended with stopReason "stop" without writing PLAN_COMPLETE.
+	// Logic lives in src/shared/planning/planning-stop-nudge.ts.
+	const planStopNudgeCounts = new Map<string, number>()
+
+	pi.on("turn_end", (event, ctx) => {
+		if (getRuntimePermissionMode().mode !== "plan") {
+			planStopNudgeCounts.clear()
+			return
+		}
+
+		const message = event.message
+		if (message.role !== "assistant") return
+
+		const stopReason = (message as { stopReason?: string }).stopReason
+		// Reset counter on non-stop turns (model still progressing).
+		if (stopReason !== "stop") {
+			planStopNudgeCounts.clear()
+			return
+		}
+
+		const content = message.content as unknown[]
+		const text = extractTextFromContent(content)
+
+		if (
+			!shouldNudge({
+				hasToolCall: contentHasToolCall(content),
+				stopReason,
+				completionSignalPresent: hasPlanCompletionSignal(text),
+			})
+		)
+			return
+
+		const sessionId = ctx.sessionManager.getSessionId()
+		const count = (planStopNudgeCounts.get(sessionId) ?? 0) + 1
+		planStopNudgeCounts.set(sessionId, count)
+
+		if (isNudgeSuppressed(count)) return
+
+		void pi.sendMessage(
+			{
+				customType: "plan_stop_nudge",
+				content: [{ type: "text", text: PLAN_MODE_STOP_NUDGE }],
+				display: false,
+				details: undefined,
+			},
+			{ triggerTurn: true },
+		)
 	})
 
 	pi.on("tool_call", async (event, ctx) => {

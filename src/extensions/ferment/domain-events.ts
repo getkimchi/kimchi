@@ -97,6 +97,7 @@ export interface FermentPhaseCompletedPayload {
 	deltaInputTokens: number
 	deltaOutputTokens: number
 	blockRetries: number
+	steeringCount: number
 }
 
 export interface FermentStepStartedPayload {
@@ -114,6 +115,7 @@ export interface FermentStepCompletedPayload {
 	durationMs: number
 	grade?: string
 	success: boolean
+	steeringCount: number
 }
 
 export interface FermentStepFailedPayload {

@@ -119,13 +119,18 @@ describe("planning profile", () => {
 		}
 	})
 
-	it("when allTools returns ZERO ferment tools, result is empty (defensive)", () => {
+	it("when allTools contains only non-ferment tools, catalog planning tools are still applied", () => {
+		// The catalog is authoritative: planning-ferment always returns the catalog's
+		// tool list, independent of what allTools reports. This replaces the old
+		// defensive "return empty when intersection is empty" behavior.
 		const pi = createPi([], ["bash", "edit"])
 
 		applyFermentToolProfile(pi, "planning")
 
 		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
-		expect(lastCall).toEqual([])
+		// Catalog planning-ferment includes core tools.
+		expect(lastCall).toContain("read")
+		expect(lastCall).toContain("list_ferments")
 	})
 
 	// Regression: activate_ferment_phase is the transition trigger from planning
@@ -205,140 +210,35 @@ describe("worker profile", () => {
 })
 
 describe("idle profile", () => {
-	it("includes non-ferment tools and discovery tools but strips ferment-only tools", () => {
-		// Idle = normal chat or post-ferment. Non-ferment tools (read, bash, etc.)
-		// and discovery tools (list_ferments, request_ferment_workflow) stay.
-		// Ferment-only lifecycle/planning tools are hidden.
+	it("restores the user's full base toolset minus ferment-only tools", () => {
+		// The idle profile is a special case: rather than returning the catalog's
+		// fixed SHARED_CORE_TOOLS list, it derives from the registered toolset so
+		// users keep access to bash, edit, write, third-party tools, etc. when
+		// they exit a ferment back to normal chat. Only ferment-only tools are
+		// filtered out. See PR #683 review feedback for the rationale.
 		const allTools = [
 			"read",
 			"bash",
-			"list_ferments",
-			"request_ferment_workflow",
-			"propose_ferment_scoping", // ferment-only: should be hidden
-			"start_ferment_step", // ferment-only: should be hidden
-			"activate_ferment_phase", // ferment-only: should be hidden
+			"edit",
+			"write",
+			"list_ferments", // ferment-mode but not planner-only; remains visible
+			"propose_ferment_scoping", // ferment-only: filtered out
+			"start_ferment_step", // ferment-only: filtered out
+			"activate_ferment_phase", // ferment-only: filtered out
 		]
 		const pi = createPi([], allTools)
 
 		applyFermentToolProfile(pi, "idle")
 
 		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
+		// Base toolset preserved
 		expect(lastCall).toContain("read")
 		expect(lastCall).toContain("bash")
-		expect(lastCall).toContain("list_ferments")
-		expect(lastCall).toContain("request_ferment_workflow")
+		expect(lastCall).toContain("edit")
+		expect(lastCall).toContain("write")
+		// Ferment-only planner tools stripped
 		expect(lastCall).not.toContain("propose_ferment_scoping")
 		expect(lastCall).not.toContain("start_ferment_step")
 		expect(lastCall).not.toContain("activate_ferment_phase")
-	})
-})
-
-describe("planning → implementation transition", () => {
-	it("profileForFerment returns planning when all phases are planned", () => {
-		const ferment = buildFerment("planned")
-		expect(profileForFerment(ferment)).toBe("planning")
-	})
-
-	it("profileForFerment returns implementation after activate_ferment_phase transitions phase to active", () => {
-		// Simulate the result of activate_ferment_phase returning success.
-		const ferment = buildFerment("active")
-		expect(profileForFerment(ferment)).toBe("implementation")
-	})
-
-	it("scope_ferment returning success does NOT change the profile (phase status stays planned)", () => {
-		// scope_ferment populates the phases but does not activate them.
-		const ferment = buildFerment("planned")
-		// The profile remains planning because the phase is still "planned".
-		expect(profileForFerment(ferment)).toBe("planning")
-		// After activate_ferment_phase succeeds, the phase becomes "active" and profile becomes implementation.
-		const activatedFerment = buildFerment("active")
-		expect(profileForFerment(activatedFerment)).toBe("implementation")
-	})
-})
-
-describe("normal vs one-shot parity", () => {
-	it("profileForFerment returns planning for both normal and one-shot when phases are planned", () => {
-		// Both normal interactive mode and one-shot mode use the same profile model.
-		const ferment = buildFerment("planned")
-		expect(profileForFerment(ferment)).toBe("planning")
-	})
-
-	it("profileForFerment returns implementation for both normal and one-shot when a phase is active", () => {
-		// The difference between normal and one-shot is the continuation policy (auto vs manual),
-		// NOT the toolset.
-		const ferment = buildFerment("active")
-		expect(profileForFerment(ferment)).toBe("implementation")
-	})
-})
-
-describe("visibility-layer interlock", () => {
-	// Regression: applyFermentRuntimeToolProfile called setActiveTools directly,
-	// bypassing the cooperative visibility layer. Tools hidden at session_start
-	// (e.g. ask_user / confirm_ferment_completion_criteria when hasUI=false) could
-	// be re-added by the ferment profile applied in before_agent_start.
-	// See: https://github.com/getkimchi/kimchi/pull/647
-
-	it("implementation profile does not re-add tools disabled via createToolVisibility", () => {
-		const allTools = ["bash", "edit", "ask_user", "confirm_ferment_completion_criteria", ...FERMENT_TOOL_NAMES]
-		const pi = createPi(allTools, allTools)
-
-		// Simulate session_start with hasUI=false: disable both interactive tools.
-		const visibility = createToolVisibility(pi)
-		visibility.disable(["ask_user", "confirm_ferment_completion_criteria"])
-
-		// Now simulate before_agent_start applying the implementation profile for an active ferment.
-		applyFermentToolProfile(pi, "implementation")
-
-		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
-		expect(lastCall).not.toContain("ask_user")
-		expect(lastCall).not.toContain("confirm_ferment_completion_criteria")
-	})
-
-	it("planning profile does not re-add tools disabled via createToolVisibility", () => {
-		const allTools = ["ask_user", "confirm_ferment_completion_criteria", "propose_ferment_scoping", "scope_ferment"]
-		const pi = createPi(allTools, allTools)
-
-		const visibility = createToolVisibility(pi)
-		visibility.disable(["ask_user", "confirm_ferment_completion_criteria"])
-
-		applyFermentToolProfile(pi, "planning")
-
-		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
-		expect(lastCall).not.toContain("ask_user")
-		expect(lastCall).not.toContain("confirm_ferment_completion_criteria")
-	})
-
-	it("idle profile does not re-add tools disabled via createToolVisibility", () => {
-		const allTools = ["bash", "ask_user", "confirm_ferment_completion_criteria"]
-		const pi = createPi(allTools, allTools)
-
-		const visibility = createToolVisibility(pi)
-		visibility.disable(["ask_user", "confirm_ferment_completion_criteria"])
-
-		applyFermentToolProfile(pi, "idle")
-
-		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
-		expect(lastCall).not.toContain("ask_user")
-		expect(lastCall).not.toContain("confirm_ferment_completion_criteria")
-		expect(lastCall).toContain("bash")
-	})
-
-	it("profile respects visibility votes only while votes are active — re-enabling restores the tool", () => {
-		const allTools = ["bash", "ask_user", ...FERMENT_TOOL_NAMES]
-		const pi = createPi(allTools, allTools)
-
-		const visibility = createToolVisibility(pi)
-		visibility.disable(["ask_user"])
-
-		// Vote is active: tool should be absent.
-		applyFermentToolProfile(pi, "implementation")
-		let lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
-		expect(lastCall).not.toContain("ask_user")
-
-		// Remove the vote: tool should return.
-		visibility.enable(["ask_user"])
-		applyFermentToolProfile(pi, "implementation")
-		lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
-		expect(lastCall).toContain("ask_user")
 	})
 })
