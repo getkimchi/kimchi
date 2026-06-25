@@ -117,6 +117,19 @@ describe("registerAgentSpawnGuard", () => {
 		expect(result).toEqual({ block: false })
 	})
 
+	it("allows Agent spawn when active ferment state is malformed", async () => {
+		const pi = makePi()
+		const runtime = createDefaultFermentRuntime()
+		runtime.setActive({
+			...makeFerment("running", [{ id: "step-1", index: 1, description: "x", status: "pending" }]),
+			phases: undefined,
+		} as unknown as Ferment)
+		registerAgentSpawnGuard(pi as unknown as ExtensionAPI, runtime)
+
+		const result = await pi.fireAll("tool_call", { toolName: "Agent" })
+		expect(result).toEqual({ block: false })
+	})
+
 	it("ignores non-Agent tool calls", async () => {
 		const pi = makePi()
 		const runtime = createDefaultFermentRuntime()

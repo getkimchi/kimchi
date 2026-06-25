@@ -58,7 +58,14 @@ function buildRedirectIfStartStepPending(runtime: FermentRuntime): { block: true
 	// by spawning agents.
 	if (ferment.status !== "running") return { block: false }
 
-	const action = determineNextAction(ferment)
+	let action: ReturnType<typeof determineNextAction>
+	try {
+		action = determineNextAction(ferment)
+	} catch {
+		// Be permissive on malformed or drifted persisted state. The guard is
+		// advisory enforcement; an engine error here must not break tool calls.
+		return { block: false }
+	}
 
 	// Only block when the engine's next action is to start a step. If the next
 	// action is complete_step, complete_phase, recover, etc., a worker spawn
