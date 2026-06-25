@@ -1,7 +1,7 @@
 """Centralised benchmark environment configuration.
 
 Single source of truth for env var names and defaults used by multiple
-benchmark scripts (chunk_runner.py, run-gitlab.py, summarize_results.py).
+benchmark scripts (chunk_runner.py, summarize_results.py).
 
 This module exposes two kinds of values:
 

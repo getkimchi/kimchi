@@ -73,6 +73,17 @@ def metadata_string(metadata: dict[str, Any], key: str, default: str = "unknown"
 
 
 def create_archive(results_dir: Path, archive_file: Path) -> None:
+    """Tar `results_dir` into `archive_file` with `results_dir.name` as the archive root.
+
+    The archive mirrors the live `BENCHMARK_RESULTS_DIR` layout, so it includes:
+      - `jobs/run-N/task__attempt/result.json` — per-trial enriched verdicts.
+      - `jobs/chunk-meta/chunk-N.json` — per-chunk attempt summaries written by
+        `chunk_runner._write_chunk_meta` (one entry per chunk that ran, with
+        `chunk_attempt`, `exit_code`, `needs_retry`, and `timestamp`). These
+        exist because the summary job runs after all chunks and tars the entire
+        results directory in one shot; downstream consumers that destructure the
+        archive should skip the `chunk-meta/` directory.
+    """
     archive_file.parent.mkdir(parents=True, exist_ok=True)
     with tarfile.open(archive_file, "w:gz") as tar:
         tar.add(results_dir, arcname=results_dir.name)

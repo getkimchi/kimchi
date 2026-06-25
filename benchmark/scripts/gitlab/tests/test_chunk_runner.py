@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import itertools
 import json
+import os
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from chunk_runner import _derive_configuration, main, process_trial_results, run_id_from_chunk_attempt
+from chunk_runner import _build_gcs_key_prefix, _derive_configuration, _write_run_metadata, main, process_trial_results, run_id_from_chunk_attempt
 
 
 def _write_result(trial_dir: Path, payload: dict) -> None:
@@ -21,36 +24,30 @@ def test_run_id_format() -> None:
     assert rid == "chunk-3-attempt-2"
 
 
-def test_process_classifies_pass_and_writes_local_and_gcs(
+def test_process_classifies_pass_and_writes_local(
     tmp_results_dir: Path,
 ) -> None:
-    """A pass verdict writes to local and GCS, returns outcome=scored_pass."""
+    """A pass verdict writes the enriched result.json locally and returns outcome=scored_pass."""
     trial = tmp_results_dir / "run-1" / "task-a__1"
     _write_result(trial, {"verifier_result": {"rewards": {"reward": 1.0}}})
-
-    gcs = MagicMock()
 
     needs_retry = process_trial_results(
         results_dir=tmp_results_dir,
         expected_tasks=["task-a"],
         chunk_attempt=1,
         run_id="chunk-0-attempt-1",
-        gcs_uploader=gcs,
     )
 
     assert needs_retry == []
     # Local file overwritten with enriched version
     enriched = json.loads((trial / "result.json").read_text())
     assert enriched["outcome"] == "scored_pass"
-    # GCS upload called once with the trial dir name as key
-    assert gcs.upload.call_count == 1
-    assert gcs.upload.call_args.args[1] == "task-a__1"
 
 
-def test_process_classifies_infra_and_skips_gcs_upload(
+def test_process_classifies_infra_and_marks_needs_retry(
     tmp_results_dir: Path,
 ) -> None:
-    """An error/infra verdict writes local enriched file but does NOT upload to GCS, returns in needs_retry."""
+    """An error/infra verdict writes the enriched file locally and appears in needs_retry."""
     trial = tmp_results_dir / "run-1" / "task-b__1"
     _write_result(
         trial,
@@ -60,88 +57,44 @@ def test_process_classifies_infra_and_skips_gcs_upload(
         },
     )
 
-    gcs = MagicMock()
-
     needs_retry = process_trial_results(
         results_dir=tmp_results_dir,
         expected_tasks=["task-b"],
         chunk_attempt=1,
         run_id="chunk-0-attempt-1",
-        gcs_uploader=gcs,
     )
 
     assert needs_retry == ["task-b"]
     enriched = json.loads((trial / "result.json").read_text())
     assert enriched["outcome"] == "error"
     assert enriched["error_category"] == "infra"
-    # GCS upload NOT called for error/infra verdicts on non-final attempts
-    gcs.upload.assert_not_called()
-
-
-def test_process_uploads_infra_verdict_on_final_attempt(
-    tmp_results_dir: Path,
-) -> None:
-    """On the final attempt, infra verdicts ARE uploaded to GCS so they remain visible."""
-    trial = tmp_results_dir / "run-1" / "task-b__1"
-    _write_result(
-        trial,
-        {
-            "verifier_result": {"rewards": {"reward": 0.0}},
-            "exception_info": {"exception_type": "ConnectionError"},
-        },
-    )
-
-    gcs = MagicMock()
-    gcs.upload.return_value = True
-
-    needs_retry = process_trial_results(
-        results_dir=tmp_results_dir,
-        expected_tasks=["task-b"],
-        chunk_attempt=3,
-        run_id="chunk-0-attempt-3",
-        gcs_uploader=gcs,
-        is_final_attempt=True,
-    )
-
-    assert needs_retry == ["task-b"]
-    # GCS upload IS called for infra verdict on final attempt
-    assert gcs.upload.call_count == 1
-    assert gcs.upload.call_args.args[1] == "task-b__1"
 
 
 def test_process_marks_missing_as_needs_retry(tmp_results_dir: Path) -> None:
     """A task with no local result.json is added to needs_retry."""
-    gcs = MagicMock()
-
     needs_retry = process_trial_results(
         results_dir=tmp_results_dir,
         expected_tasks=["task-missing"],
         chunk_attempt=1,
         run_id="chunk-0-attempt-1",
-        gcs_uploader=gcs,
     )
 
     assert needs_retry == ["task-missing"]
-    gcs.upload.assert_not_called()
 
 
-def test_process_quality_fail_writes_to_gcs(tmp_results_dir: Path) -> None:
-    """A quality-fail verdict (no infra exception) uploads to GCS as final."""
+def test_process_quality_fail_no_retry(tmp_results_dir: Path) -> None:
+    """A quality-fail verdict (no infra exception) is terminal: needs_retry stays empty."""
     trial = tmp_results_dir / "run-1" / "task-c__1"
     _write_result(trial, {"verifier_result": {"rewards": {"reward": 0.0}}})
-
-    gcs = MagicMock()
 
     needs_retry = process_trial_results(
         results_dir=tmp_results_dir,
         expected_tasks=["task-c"],
         chunk_attempt=1,
         run_id="chunk-0-attempt-1",
-        gcs_uploader=gcs,
     )
 
     assert needs_retry == []
-    gcs.upload.assert_called_once()
 
 
 def test_main_exits_zero_when_no_tasks_need_retry(
@@ -173,8 +126,7 @@ def test_main_exits_zero_when_no_tasks_need_retry(
         )
 
     # Harbor MUST NOT be invoked when nothing needs retry
-    with patch("chunk_runner.run_harbor") as mock_harbor, \
-         patch("chunk_runner._make_gcs_uploader", return_value=MagicMock()):
+    with patch("chunk_runner.run_harbor") as mock_harbor:
         exit_code = main()
 
     assert exit_code == 0
@@ -220,8 +172,7 @@ def test_main_invokes_harbor_for_missing_tasks(
         proc.wait.return_value = 0
         return proc
 
-    with patch("chunk_runner.run_harbor", side_effect=fake_harbor) as mock_harbor, \
-         patch("chunk_runner._make_gcs_uploader", return_value=MagicMock()):
+    with patch("chunk_runner.run_harbor", side_effect=fake_harbor) as mock_harbor:
         exit_code = main()
 
     # Harbor was invoked
@@ -264,8 +215,7 @@ def test_main_writes_chunk_meta_on_success(
         proc.wait.return_value = 0
         return proc
 
-    with patch("chunk_runner.run_harbor", side_effect=fake_harbor), \
-         patch("chunk_runner._make_gcs_uploader", return_value=MagicMock()):
+    with patch("chunk_runner.run_harbor", side_effect=fake_harbor):
         exit_code = main()
 
     assert exit_code == 0
@@ -276,6 +226,52 @@ def test_main_writes_chunk_meta_on_success(
     assert meta["chunk_attempt"] == 1
     assert meta["exit_code"] == 0
     assert meta["needs_retry"] == []
+
+
+def test_main_passes_unique_job_name_per_chunk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression guard: main() must pass --job-name chunk-{index}-{CI_JOB_ID} to Harbor.
+
+    Without this, parallel chunks that start within the same second produce
+    identical Harbor job directory names (default YYYY-MM-DD__HH-MM-SS) and
+    clobber each other's config.json, result.json, job.log, and lock.json.
+    """
+    monkeypatch.setenv("BENCH_CHUNK_INDEX", "0")
+    monkeypatch.setenv("BENCH_CHUNK_COUNT", "3")
+    monkeypatch.setenv("SELECTED_TASKS_JSON", '["task-a","task-b","task-c"]')
+    monkeypatch.setenv("BENCHMARK_RESULTS_DIR", str(tmp_path / "jobs"))
+    monkeypatch.setenv("BENCHMARK_GCS_BUCKET", "test-bucket")
+    monkeypatch.setenv("BENCH_PARALLELISM", "1")
+    monkeypatch.setenv("BENCH_ATTEMPTS", "1")
+    monkeypatch.setenv("BENCH_TIMEOUT_MULTIPLIER", "1")
+    monkeypatch.setenv("CODING_AGENT", "kimchi")
+    monkeypatch.setenv("MODEL", "kimchi-dev/kimi-k2.6")
+    monkeypatch.setenv("KIMCHI_API_KEY", "test-key")
+    monkeypatch.setenv("DATASET", "terminal-bench/terminal-bench-2")
+    monkeypatch.setenv("KIMCHI_MULTI_MODEL", "false")
+    monkeypatch.setenv("KIMCHI_FERMENT_ONESHOT", "false")
+    monkeypatch.setenv("CI_JOB_ID", "12345")
+
+    def fake_harbor(*, cmd, cwd, env):
+        run_dir = Path(env["BENCHMARK_RESULTS_DIR"]) / "run-1"
+        (run_dir / "task-a__1").mkdir(parents=True)
+        (run_dir / "task-a__1" / "result.json").write_text(
+            json.dumps({"verifier_result": {"rewards": {"reward": 1.0}}})
+        )
+        proc = MagicMock()
+        proc.wait.return_value = 0
+        return proc
+
+    with patch("chunk_runner.run_harbor", side_effect=fake_harbor) as mock_harbor:
+        main()
+
+    assert mock_harbor.call_count == 1
+    cmd = mock_harbor.call_args.kwargs["cmd"]
+    pairs = list(itertools.pairwise(cmd))
+    assert ("--job-name", "chunk-0-12345") in pairs, (
+        f"expected --job-name chunk-0-12345 in cmd; got cmd={cmd!r}"
+    )
 
 
 def test_main_detects_retry_via_chunk_meta(
@@ -316,8 +312,7 @@ def test_main_detects_retry_via_chunk_meta(
         proc.wait.return_value = 0
         return proc
 
-    with patch("chunk_runner.run_harbor", side_effect=fake_harbor), \
-         patch("chunk_runner._make_gcs_uploader", return_value=MagicMock()):
+    with patch("chunk_runner.run_harbor", side_effect=fake_harbor):
         exit_code = main()
 
     assert exit_code == 0
@@ -700,8 +695,7 @@ def test_tasks_all_fetches_all_tasks(
         )
 
     with patch("chunk_runner._fetch_all_tasks", return_value=all_tasks) as mock_fetch, \
-         patch("chunk_runner.run_harbor"), \
-         patch("chunk_runner._make_gcs_uploader", return_value=MagicMock()):
+         patch("chunk_runner.run_harbor"):
         main()
 
     mock_fetch.assert_called_once()
@@ -721,8 +715,115 @@ def test_tasks_all_false_uses_selected_tasks_json(
     )
 
     with patch("chunk_runner._fetch_all_tasks") as mock_fetch, \
-         patch("chunk_runner.run_harbor"), \
-         patch("chunk_runner._make_gcs_uploader", return_value=MagicMock()):
+         patch("chunk_runner.run_harbor"):
         main()
 
     mock_fetch.assert_not_called()
+
+
+# GCS key prefix
+# ---------------------------------------------------------------------------
+
+
+# Pinned UTC date so the test is stable across midnight boundaries.
+_FROZEN_GMTIME = time.struct_time((2026, 6, 22, 12, 0, 0, 0, 173, 0))
+
+
+def test_build_gcs_key_prefix_is_pipeline_level(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The GCS prefix identifies the benchmark run, not the chunk job.
+
+    Two chunks in the same pipeline produce the same prefix; two pipelines
+    produce different prefixes. Consumers use this prefix to locate
+    jobs.tar.gz + per-trial result.json files.
+    """
+    pipeline_a = {
+        "BENCHMARK_NAME": "terminal-bench-2",
+        "CODING_AGENT": "kimchi",
+        "MODEL": "anthropic/claude-sonnet-4-20250514",
+        "KIMCHI_MULTI_MODEL": "true",
+        "KIMCHI_FERMENT_ONESHOT": "false",
+        "CI_COMMIT_REF_NAME": "benchmarks",
+        "CI_COMMIT_SHA": "abc1234567890abcdef1234567890abcdef12345",
+        "CI_PIPELINE_ID": "1001",
+        "CI_JOB_ID": "9001",
+    }
+    pipeline_b = {**pipeline_a, "CI_PIPELINE_ID": "1002"}
+
+    # Wipe vars the function consults so the dict above is the full env.
+    for key in (
+        "BENCHMARK_NAME",
+        "CODING_AGENT",
+        "MODEL",
+        "KIMCHI_MULTI_MODEL",
+        "KIMCHI_FERMENT_ONESHOT",
+        "CI_COMMIT_REF_NAME",
+        "CI_COMMIT_SHA",
+        "CI_PIPELINE_ID",
+        "CI_JOB_ID",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr("chunk_runner.time.gmtime", lambda: _FROZEN_GMTIME)
+
+    for key, value in pipeline_a.items():
+        monkeypatch.setenv(key, value)
+    prefix_chunk_0 = _build_gcs_key_prefix()
+
+    monkeypatch.setenv("CI_JOB_ID", "9002")
+    prefix_chunk_1 = _build_gcs_key_prefix()
+
+    monkeypatch.setenv("CI_PIPELINE_ID", "1002")
+    monkeypatch.delenv("CI_JOB_ID")
+    prefix_pipeline_b = _build_gcs_key_prefix()
+
+    assert prefix_chunk_0 == prefix_chunk_1, (
+        "Two chunks in the same pipeline must share the same GCS prefix; "
+        f"got {prefix_chunk_0!r} vs {prefix_chunk_1!r}"
+    )
+    assert prefix_chunk_0 != prefix_pipeline_b, (
+        "Different pipelines must produce different prefixes"
+    )
+    # Regression guard: the old code embedded CI_JOB_ID in the run= segment.
+    assert "j9001" not in prefix_chunk_0, (
+        f"GCS prefix must not embed CI_JOB_ID; got {prefix_chunk_0!r}"
+    )
+    assert "j9002" not in prefix_chunk_1, (
+        f"GCS prefix must not embed CI_JOB_ID; got {prefix_chunk_1!r}"
+    )
+
+
+def test_write_run_metadata_is_pipeline_level(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_write_run_metadata writes a file with gcs.run_id == pipeline-level and
+    gitlab.job_id == per-chunk CI_JOB_ID.
+
+    Regression guard: a previous edit removed the `job_id` local from this
+    function but left a downstream reference in the gitlab dict, raising
+    NameError in production. This test exercises the full function and
+    asserts both fields are populated correctly.
+    """
+    metadata_path = tmp_path / "run-metadata.json"
+    monkeypatch.setenv("BENCHMARK_RUN_METADATA", str(metadata_path))
+    monkeypatch.setenv("BENCHMARK_NAME", "terminal-bench-2")
+    monkeypatch.setenv("CODING_AGENT", "kimchi")
+    monkeypatch.setenv("MODEL", "anthropic/claude-sonnet-4-20250514")
+    monkeypatch.setenv("KIMCHI_MULTI_MODEL", "true")
+    monkeypatch.setenv("KIMCHI_FERMENT_ONESHOT", "false")
+    monkeypatch.setenv("CI_COMMIT_REF_NAME", "benchmarks")
+    monkeypatch.setenv("CI_COMMIT_SHA", "abc1234567890abcdef1234567890abcdef12345")
+    monkeypatch.setenv("CI_PIPELINE_ID", "1001")
+    monkeypatch.setenv("CI_JOB_ID", "9002")
+    monkeypatch.setattr("chunk_runner.time.gmtime", lambda: _FROZEN_GMTIME)
+
+    _write_run_metadata(tmp_path, ["task-a", "task-b"])
+
+    assert metadata_path.is_file()
+    metadata = json.loads(metadata_path.read_text())
+    assert metadata["gcs"]["run_id"] == "gitlab-p1001"
+    assert "j9002" not in metadata["gcs"]["run_id"]
+    # gcs.prefix is also pipeline-level and must agree with gcs.run_id.
+    assert metadata["gcs"]["prefix"].endswith(f"/run={metadata['gcs']['run_id']}")
+    # gitlab.job_id is intentionally the per-chunk CI_JOB_ID — used for
+    # traceability, not for the GCS prefix.
+    assert metadata["gitlab"]["job_id"] == "9002"
+    assert metadata["gitlab"]["pipeline_id"] == "1001"

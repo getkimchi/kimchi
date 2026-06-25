@@ -12,10 +12,11 @@ Responsibilities:
   5. Invoke Harbor on the missing tasks.
   6. Classify any newly written result.json files.
   7. Write enriched verdicts to local workspace (artifact preserved on retry).
-  8. Upload non-infra verdicts to GCS incrementally.
-  9. Exit non-zero if any tasks need retry; GitLab handles retry/resume.
+  8. Exit non-zero if any tasks need retry; GitLab handles retry/resume.
 
-GCS is write-only from this module. Resume state lives in the local artifact.
+Per-trial GCS uploads are NOT done here. The summary job tars the entire
+`BENCHMARK_RESULTS_DIR` into `jobs.tar.gz` and uploads that as the single
+source of truth. Resume state lives in the local artifact.
 """
 
 from __future__ import annotations
@@ -189,33 +190,24 @@ def _trial_dir_for_task(results_dir: Path, task_name: str) -> Path | None:
     return sorted(matches, key=lambda p: p.name, reverse=True)[0]
 
 
-class GcsUploader(Protocol):
-    """Minimal interface for uploading enriched result.json to GCS.
-
-    Implementations return True on successful upload and False on failure
-    (rather than raising), so a transient GCS outage does not crash the
-    chunk and the local artifact remains the source of truth.
-    """
-
-    def upload(self, local_path: Path, gcs_key: str) -> bool: ...
-
-
 def process_trial_results(
     *,
     results_dir: Path,
     expected_tasks: list[str],
     chunk_attempt: int,
     run_id: str,
-    gcs_uploader: GcsUploader,
-    is_final_attempt: bool = False,
 ) -> list[str]:
-    """Classify each trial and write enriched results locally + to GCS.
+    """Classify each trial and write enriched results to the local workspace.
 
     `expected_tasks` is a list of BARE task names (e.g. ['task-a', 'task-b']).
     Returns the list of tasks that need retry (infra_error=True or missing).
 
-    On the final attempt, infra verdicts are uploaded to GCS as terminal
-    failures so they remain visible (no further retries will overwrite them).
+    No GCS uploads happen here. The summary job tars the entire
+    `BENCHMARK_RESULTS_DIR` (including this chunk's slice under
+    `jobs/run-N/task__attempt/`) into `jobs.tar.gz` after all chunks finish
+    and uploads that as the single source of truth. Per-trial uploads would
+    be redundant and a transient GCS failure previously triggered unnecessary
+    Harbor re-runs via this function's needs_retry signal.
     """
     needs_retry: list[str] = []
 
@@ -240,37 +232,19 @@ def process_trial_results(
         }
         (trial_dir / "result.json").write_text(json.dumps(enriched, indent=2) + "\n")
 
-        should_retry = (
+        if (
             verdict.outcome == Outcome.AGENT_TIMEOUT
             or (verdict.outcome == Outcome.ERROR and verdict.error_category == "infra")
-        )
-        if should_retry:
-            needs_retry.append(task_name)
-            if is_final_attempt:
-                # Last attempt: upload as terminal infra failure so the summary
-                # job sees it. No more retries will overwrite this verdict.
-                gcs_uploader.upload(trial_dir / "result.json", trial_dir.name)
-            continue
-
-        # Non-infra: upload to GCS. Key is the full path under the run prefix;
-        # caller is responsible for providing a uploader that knows the prefix.
-        # A failed upload means the summary job won't see this verdict, so the
-        # trial must be retried on the next attempt (per spec: "Incremental
-        # upload ensures only un-uploaded trials re-run"). The local enriched
-        # result.json is already persisted above, so re-upload is cheap.
-        if not gcs_uploader.upload(trial_dir / "result.json", trial_dir.name):
+        ):
             needs_retry.append(task_name)
 
     return needs_retry
 
 
 __all__ = [
-    "GcsUploader",
-    "_fetch_all_tasks",
     "_build_gcs_key_prefix",
     "_detect_chunk_attempt",
     "_expected_tasks_for_chunk",
-    "_make_gcs_uploader",
     "_trial_dir_for_task",
     "_write_chunk_meta",
     "list_trial_dirs",
@@ -290,7 +264,11 @@ def _expected_tasks_for_chunk(
 
 
 def _derive_configuration() -> str:
-    """Derive configuration label from agent/model flags, mirroring run-gitlab.py."""
+    """Derive configuration label from agent/model flags.
+
+    Returns one of: 'default', 'multi-mode', 'multi-mode-ferment',
+    'single-model', 'single-model-ferment'.
+    """
     coding_agent = os.environ.get(ENV_CODING_AGENT, DEFAULT_CODING_AGENT)
     if coding_agent != "kimchi":
         return "default"
@@ -307,7 +285,14 @@ def _configuration_segment() -> str:
 
 
 def _build_gcs_key_prefix() -> str:
-    """Build the GCS key prefix for this run. Mirrors the legacy prefix structure."""
+    """Build the GCS key prefix for this run. Pipeline-level (not job-level).
+
+    All chunks in the same pipeline MUST produce the same prefix so that:
+      - per-trial result.json uploads from different chunks land under a
+        single, predictable prefix consumers can iterate;
+      - the summary job (the sole writer of jobs.tar.gz) can locate the
+        prefix from run-metadata.json without knowing which chunk it ran for.
+    """
     benchmark = os.environ.get(ENV_BENCHMARK_NAME, DEFAULT_BENCHMARK_NAME)
     coding_agent = os.environ.get(ENV_CODING_AGENT, DEFAULT_CODING_AGENT)
     model_provider, model_name = parse_model()
@@ -315,8 +300,9 @@ def _build_gcs_key_prefix() -> str:
     configuration = _derive_configuration()
     date = time.strftime("%Y-%m-%d", time.gmtime())
     pipeline_id = os.environ.get("CI_PIPELINE_ID", "unknown")
-    job_id = os.environ.get("CI_JOB_ID", "unknown")
-    run_id = f"gitlab-p{pipeline_id}-j{job_id}"
+    # Pipeline-level identifier: identical for all chunks in the same pipeline.
+    # Job ID intentionally excluded — see docstring.
+    run_id = f"gitlab-p{pipeline_id}"
 
     def sanitize(value: str) -> str:
         out = re.sub(r"[^A-Za-z0-9._-]+", "-", value)
@@ -351,8 +337,11 @@ def _write_run_metadata(results_dir: Path, selected_tasks: list[str]) -> None:
     pipeline_ref = os.environ.get("CI_COMMIT_REF_NAME", "")
     pipeline_sha = os.environ.get("CI_COMMIT_SHA", "")
     pipeline_id = os.environ.get("CI_PIPELINE_ID", "unknown")
+    # job_id is recorded in the metadata's gitlab section for traceability;
+    # it is NOT included in run_id because run_id is pipeline-level (matches
+    # _build_gcs_key_prefix). See that function for rationale.
     job_id = os.environ.get("CI_JOB_ID", "unknown")
-    run_id = f"gitlab-p{pipeline_id}-j{job_id}"
+    run_id = f"gitlab-p{pipeline_id}"
 
     metadata = {
         "schema_version": 1,
@@ -454,7 +443,7 @@ def _print_heartbeat(
                     or (verdict.outcome == Outcome.ERROR and verdict.error_category == "infra")
                 )
                 retry_label = f"will-retry({verdict.outcome})" if needs_retry_trial else "final"
-                cause = verdict.error_subcategory or _get_exception_type(result_path) or "verifier_failed"
+                cause = verdict.error_subcategory or _get_exception_type(result_path) or verdict.outcome
                 print(
                     f"[chunk-{chunk_index}] trial={trial_dir.name} reward={reward_text} FAILED"
                     f" cause={cause} {retry_label}",
@@ -473,44 +462,6 @@ def _print_heartbeat(
         f"mean_reward={mean}",
         flush=True,
     )
-
-
-def _make_gcs_uploader(prefix: str) -> GcsUploader:
-    """Build a GcsUploader that prefixes all keys with `prefix` and shells out to gcloud.
-
-    Upload failures are reported via the return value rather than raised, so a
-    transient GCS outage doesn't crash the chunk. Callers should treat a False
-    return as "not yet uploaded" and trigger retry (per the chunk's spec:
-    "Incremental upload ensures only un-uploaded trials re-run").
-    """
-
-    class _GcloudUploader:
-        def upload(self, local_path: Path, gcs_key: str) -> bool:
-            bucket = os.environ.get("BENCHMARK_GCS_BUCKET", "")
-            if not bucket:
-                print(
-                    f"[chunk] GCS upload skipped: BENCHMARK_GCS_BUCKET not set (local_path={local_path})",
-                    file=sys.stderr,
-                    flush=True,
-                )
-                return False
-            full_key = f"{prefix}/{gcs_key}/result.json"
-            result = subprocess.run(
-                ["gcloud", "storage", "cp", str(local_path), f"gs://{bucket}/{full_key}"],
-                check=False,
-                capture_output=True,
-            )
-            if result.returncode != 0:
-                print(
-                    f"[chunk] GCS upload failed for {gcs_key} (rc={result.returncode}); "
-                    f"local artifact preserved, will retry next attempt",
-                    file=sys.stderr,
-                    flush=True,
-                )
-                return False
-            return True
-
-    return _GcloudUploader()
 
 
 def _env_int(name: str, default: int) -> int:
@@ -750,7 +701,6 @@ def main() -> int:
     chunk_count = _env_int("BENCH_CHUNK_COUNT", 8)
     job_retry_count = _env_int("CI_JOB_RETRY_COUNT", 0)
     job_max_retries = _env_int("BENCH_JOB_MAX_RETRIES", 2)
-    is_final_attempt = job_retry_count >= job_max_retries
     parallelism = _env_int("BENCH_PARALLELISM", 1)
     attempts = _env_int("BENCH_ATTEMPTS", 1)
     timeout_multiplier = _env_float("BENCH_TIMEOUT_MULTIPLIER", 1.0)
@@ -804,8 +754,6 @@ def main() -> int:
         return 0
 
     run_id = run_id_from_chunk_attempt(chunk_index=chunk_index, chunk_attempt=chunk_attempt)
-    gcs_prefix = _build_gcs_key_prefix()
-    uploader = _make_gcs_uploader(gcs_prefix)
 
     # First pass: classify what's already in the workspace
     needs_retry = process_trial_results(
@@ -813,8 +761,6 @@ def main() -> int:
         expected_tasks=expected,
         chunk_attempt=chunk_attempt,
         run_id=run_id,
-        gcs_uploader=uploader,
-        is_final_attempt=is_final_attempt,
     )
 
     if not needs_retry:
@@ -833,6 +779,13 @@ def main() -> int:
         f"[chunk-{chunk_index}/attempt-{chunk_attempt}] running Harbor on {len(needs_retry)} tasks: {needs_retry}",
         flush=True,
     )
+    # Per-chunk job name to avoid timestamp collisions when parallel chunks
+    # start within the same second. Harbor defaults the job directory name to
+    # `YYYY-MM-DD__HH-MM-SS`; with 3 chunks dispatched at the same instant
+    # they can collapse onto the same name and clobber each other's
+    # `config.json`, `result.json`, `job.log`, `lock.json` (last writer wins).
+    # Embedding the chunk index + CI_JOB_ID guarantees a unique name per chunk.
+    job_name = f"chunk-{chunk_index}-{os.environ.get('CI_JOB_ID', 'local')}"
     cmd = build_harbor_command(
         tasks=needs_retry,
         agent_import_path=_agent_import_path(coding_agent),
@@ -842,6 +795,7 @@ def main() -> int:
         attempts=attempts,
         timeout_multiplier=timeout_multiplier,
         jobs_dir=results_dir,
+        job_name=job_name,
         kimchi_multi_model=kimchi_multi_model,
         kimchi_ferment_oneshot=kimchi_ferment_oneshot,
         coding_agent=coding_agent,
@@ -890,8 +844,6 @@ def main() -> int:
         expected_tasks=expected,
         chunk_attempt=chunk_attempt,
         run_id=run_id,
-        gcs_uploader=uploader,
-        is_final_attempt=is_final_attempt,
     )
 
     exit_code = 0 if not final_needs_retry else 1

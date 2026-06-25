@@ -1,8 +1,7 @@
 """Harbor subprocess management — builds and invokes `harbor run` commands.
 
-Extracted from run-gitlab.py so it can be unit-tested and reused by
-chunk_runner.py. Pure-function command construction plus a thin subprocess
-wrapper.
+Shared by chunk_runner.py so it can be unit-tested independently of Harbor.
+Pure-function command construction plus a thin subprocess wrapper.
 """
 
 from __future__ import annotations
@@ -22,6 +21,7 @@ def build_harbor_command(
     attempts: int,
     timeout_multiplier: float,
     jobs_dir: str | Path | None = None,
+    job_name: str | None = None,
     kimchi_multi_model: bool = False,
     kimchi_ferment_oneshot: bool = False,
     claude_code_api_max_retries: int = 0,
@@ -43,6 +43,8 @@ def build_harbor_command(
     ]
     if jobs_dir is not None:
         cmd.extend(["--jobs-dir", str(jobs_dir)])
+    if job_name is not None:
+        cmd.extend(["--job-name", job_name])
 
     if coding_agent == "claude-code" and claude_code_api_max_retries > 0:
         cmd.extend([

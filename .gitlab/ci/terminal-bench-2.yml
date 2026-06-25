@@ -133,7 +133,6 @@ setup-image:
       echo "=========================================="
     - python3 benchmark/scripts/gitlab/chunk_runner.py
   after_script:
-    - python3 benchmark/scripts/gitlab/upload_gcs.py
     - python3 benchmark/scripts/gitlab/redact_api_key.py
   artifacts:
     when: always
@@ -169,6 +168,7 @@ terminal-bench-2-summary:
     - !reference [.gcloud-setup, script]
   script:
     - python3 benchmark/scripts/gitlab/summarize_results.py
+    - python3 benchmark/scripts/gitlab/upload_gcs.py
     - python3 benchmark/scripts/gitlab/upload_summary_gcs.py
   artifacts:
     when: always

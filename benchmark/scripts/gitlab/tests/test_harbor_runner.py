@@ -100,3 +100,35 @@ def test_command_includes_kimchi_ferment_oneshot_kwarg() -> None:
 
     pairs = list(itertools.pairwise(cmd))
     assert ("--agent-kwarg", "ferment-oneshot=true") in pairs
+
+
+def test_command_includes_job_name_when_provided() -> None:
+    """--job-name is forwarded when the caller passes it (chunk_runner does this)."""
+    cmd = build_harbor_command(
+        tasks=["task-a"],
+        agent_import_path="kimchi_agent:Kimchi",
+        model="kimchi-dev/kimi-k2.6",
+        dataset="terminal-bench/terminal-bench-2",
+        parallelism=1,
+        attempts=1,
+        timeout_multiplier=1.0,
+        job_name="chunk-0-9001",
+    )
+
+    pairs = list(itertools.pairwise(cmd))
+    assert ("--job-name", "chunk-0-9001") in pairs
+
+
+def test_command_omits_job_name_flag_by_default() -> None:
+    """When job_name is not provided, the flag is omitted so Harbor uses its default (timestamp)."""
+    cmd = build_harbor_command(
+        tasks=["task-a"],
+        agent_import_path="kimchi_agent:Kimchi",
+        model="kimchi-dev/kimi-k2.6",
+        dataset="terminal-bench/terminal-bench-2",
+        parallelism=1,
+        attempts=1,
+        timeout_multiplier=1.0,
+    )
+
+    assert "--job-name" not in cmd
