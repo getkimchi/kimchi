@@ -70,6 +70,46 @@ describe("apply", () => {
 
 		expect(pi.setActiveTools).toHaveBeenCalledWith([])
 	})
+
+	// Regression: implementation-ferment previously used a fixed catalog snapshot,
+	// causing MCP/custom/third-party tools registered by other extensions to
+	// silently disappear when a ferment phase activated.
+	it("implementation-ferment profile includes MCP/custom tools registered by other extensions", () => {
+		const pi = makeMockPi({
+			allTools: [
+				{ name: "read" },
+				{ name: "bash" },
+				{ name: "my_custom_mcp_tool" }, // third-party tool
+				{ name: "another_mcp_tool" }, // third-party tool
+				{ name: "propose_ferment_scoping" }, // ferment-only — included in implementation
+			],
+		})
+
+		apply("implementation-ferment", "ferment", pi)
+
+		const calledWith = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.calls[0][0] as string[]
+		expect(calledWith).toContain("my_custom_mcp_tool")
+		expect(calledWith).toContain("another_mcp_tool")
+		expect(calledWith).toContain("read")
+		expect(calledWith).toContain("bash")
+	})
+
+	it("implementation-ferment profile still includes all required ferment lifecycle tools", () => {
+		const pi = makeMockPi({
+			allTools: [{ name: "read" }, { name: "bash" }],
+		})
+
+		apply("implementation-ferment", "ferment", pi)
+
+		const calledWith = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.calls[0][0] as string[]
+		// Core ferment lifecycle tools must always be present
+		expect(calledWith).toContain("activate_ferment_phase")
+		expect(calledWith).toContain("complete_ferment_step")
+		expect(calledWith).toContain("complete_ferment")
+		expect(calledWith).toContain("edit")
+		expect(calledWith).toContain("write")
+		expect(calledWith).toContain("Agent")
+	})
 })
 
 describe("applyCooperativeTweak", () => {

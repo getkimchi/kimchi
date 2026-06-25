@@ -66,11 +66,20 @@ let turnListenerInstalled = false
  * can call the tool-setting logic without triggering the cooperative-layer
  * no-op guard in `applyCooperativeTweak()`.
  *
- * The `"idle"` profile is a special case: rather than returning a fixed
- * catalog list, it restores the user's full base toolset (all registered
- * tools minus ferment-only tools). This preserves the pre-unification
- * behaviour where exiting a ferment returned the model to its normal chat
- * toolset — including `bash`, `edit`, `write`, and any third-party tools.
+ * Two profiles use `pi.getAllTools()` as their base rather than the fixed
+ * catalog, so that MCP/custom/third-party tools registered by other
+ * extensions are preserved:
+ *
+ * - `"idle"`: full registered toolset minus ferment-only tools. Restores the
+ *   pre-unification behaviour where exiting a ferment returned the user to
+ *   their normal chat toolset — including `bash`, `edit`, `write`, and any
+ *   third-party tools.
+ *
+ * - `"implementation-ferment"`: full registered toolset plus the required
+ *   ferment lifecycle tools added defensively (so they are always present
+ *   even if not in `pi.getAllTools()`). Planning/scoping is constrained by
+ *   the catalog; implementation is the phase where the agent needs the full
+ *   execution surface including any extensions the user has installed.
  *
  * @internal — not for direct use outside the tool-profile and ferment layers.
  */
@@ -87,6 +96,17 @@ export function applyCore(profile: ToolProfile, pi: ExtensionAPI): void {
 			.getAllTools()
 			.map((t) => t.name)
 			.filter((name) => !isFermentOnlyToolName(name) && !disabled.has(name))
+	} else if (profile === "implementation-ferment") {
+		// Implementation phase: start from the full registered toolset so
+		// MCP/custom/third-party tools are preserved, then merge in the
+		// required ferment catalog tools defensively (they may not be
+		// registered in the mock/test environment, but must always be present).
+		const registeredNames = new Set(pi.getAllTools().map((t) => t.name))
+		const catalogTools = getToolsForProfile(profile).map((t) => t.name)
+		// Union: registered tools first (preserves order), then any catalog
+		// tools not already present.
+		const merged = [...registeredNames, ...catalogTools.filter((name) => !registeredNames.has(name))]
+		allowedNames = merged.filter((name) => !disabled.has(name))
 	} else {
 		const tools = getToolsForProfile(profile)
 		// Filter out tools that the cooperative visibility layer has voted to
