@@ -15,6 +15,11 @@ import type { Phase } from "../orchestration/model-registry/types.js"
 import type { ModelRoles } from "../orchestration/model-roles.js"
 import { resolveOrchestrationInstructions } from "../orchestration/orchestration-instructions.js"
 import type { OrchestrationInstructionsResult } from "../orchestration/orchestration-instructions.js"
+import {
+	type AnthropicCacheModel,
+	type SystemTextBlock,
+	toCachedSystemBlocks,
+} from "./anthropic-prompt-cache.js"
 import type { ContextFile } from "./context-files.js"
 import { type SuppressibleSection, renderSystemPromptBlocks } from "./system-prompt-blocks.js"
 
@@ -100,6 +105,21 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 		systemPromptBlocks: blocks.map((block) => block.content).join("\n\n"),
 		suppressed,
 	})
+}
+
+/**
+ * Build the system prompt as Anthropic content blocks with a prompt-cache
+ * breakpoint on the static prefix.
+ *
+ * Assembles the same prompt as `buildSystemPrompt`, then wraps it via
+ * `toCachedSystemBlocks` so Anthropic-capable models replay the prefix at
+ * cache-read price on every turn after the first. Non-Anthropic models get the
+ * identical text in an unmarked block, so callers can adopt this uniformly.
+ */
+export function buildSystemPromptBlocks(
+	options: SystemPromptBuildOptions & { model?: AnthropicCacheModel },
+): SystemTextBlock[] {
+	return toCachedSystemBlocks(buildSystemPrompt(options), options.model)
 }
 
 // ---------------------------------------------------------------------------
