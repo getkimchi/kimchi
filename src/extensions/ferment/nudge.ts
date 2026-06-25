@@ -23,7 +23,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Ferment } from "../../ferment/types.js"
 import {
-	FERMENT_SCOPING_STOP_NUDGE,
+	FERMENT_SCOPING_STOP_NUDGE_INTERACTIVE,
+	FERMENT_SCOPING_STOP_NUDGE_ONESHOT,
 	hasFermentScopingCompletionSignal,
 	isNudgeSuppressed,
 	shouldNudge,
@@ -250,16 +251,16 @@ export function maybeInjectScopingProgressNudge(
 	resetScopingExploreTurns(fermentId)
 
 	const nudgeText = opts.interactive
-		? `SCOPING PROGRESS CHECK: You have spent ${count} turns reading files without advancing through the scoping steps. Stop exploring and move to the next scoping step NOW.
+		? `SCOPING PROGRESS CHECK: You have spent ${count} turns reading files. Are you ready to move to the next scoping step? If not, resolve any missing context and then move on.
 
-- If you haven't asked the user any questions yet, call ask_user with your interview questions (Step 2).
-- If you've completed the interview, call confirm_ferment_completion_criteria to confirm success criteria (Step 3).
-- If criteria are confirmed, call propose_ferment_scoping with the full plan (Step 5).
-- Do NOT continue reading more files. You have enough context to proceed.`
-		: `SCOPING PROGRESS CHECK: You have spent ${count} turns exploring without finalising the plan. Move to scoping NOW.
+- Step 2 — Interview: if you still need information from the user, call ask_user.
+- Step 3 — Completion criteria: once the interview is done, call confirm_ferment_completion_criteria to confirm the completion criteria with the user.
+- Step 5 — Plan: once completion criteria are confirmed, call propose_ferment_scoping with the full plan (this proposes the full scoping to the user for approval; it is separate from Step 3 which only confirms the completion criteria).
+- If you still need more context, take one targeted action to get it, then advance.`
+		: `SCOPING PROGRESS CHECK: You have spent ${count} turns exploring without finalising the plan. Are you ready to call scope_ferment?
 
-- In one-shot mode there is no interactive user — do not call ask_user or confirm_ferment_completion_criteria.
-- Call scope_ferment with the complete payload: goal, success_criteria, constraints, assumptions, phases, and the P1/P2/P3 gates array.
+- If you still need information, call ask_user — questions route automatically to the judge.
+- Otherwise call scope_ferment with the complete payload: goal, success_criteria, constraints, assumptions, phases, and the P1/P2/P3 gates array.
 - Record any remaining uncertainty in assumptions rather than continuing to explore.`
 
 	void pi.sendMessage(
@@ -304,6 +305,7 @@ export function maybeInjectScopingStopNudge(
 	fermentId: string,
 	toolNames: string[],
 	stopReason: string | undefined,
+	opts: { interactive: boolean } = { interactive: true },
 ): boolean {
 	const completionSignalPresent = hasFermentScopingCompletionSignal(toolNames)
 
@@ -315,10 +317,12 @@ export function maybeInjectScopingStopNudge(
 	scopingStopNudgeCounts.set(fermentId, count)
 
 	if (isNudgeSuppressed(count)) return false
+
+	const nudgeText = opts.interactive ? FERMENT_SCOPING_STOP_NUDGE_INTERACTIVE : FERMENT_SCOPING_STOP_NUDGE_ONESHOT
 	void pi.sendMessage(
 		{
 			customType: "ferment_scoping_stop_nudge",
-			content: [{ type: "text", text: FERMENT_SCOPING_STOP_NUDGE }],
+			content: [{ type: "text", text: nudgeText }],
 			display: false,
 			details: undefined,
 		},

@@ -14,8 +14,8 @@ User intent: "${intent}"
 ## Your job
 
 Follow the shared planning process below. The only differences from interactive ferment scoping are:
-- **Interview**: do not ask the user questions. Record any assumptions directly in \`scope_ferment.assumptions\`.
-- **Completion Criteria**: do not call \`confirm_ferment_completion_criteria\` — there is no interactive user. Draft criteria from the intent and include them directly in \`scope_ferment.success_criteria\`.
+- **Interview**: call \`ask_user\` as normal — questions are automatically routed to a judge that stands in for the user. You do not need to do anything special.
+- **Completion Criteria**: \`confirm_ferment_completion_criteria\` is not available in one-shot mode. Draft criteria from the intent and include them directly in \`scope_ferment.success_criteria\`.
 - Then call \`scope_ferment\` with the complete plan.
 
 ${SHARED_PLANNING_PROCESS}
@@ -44,7 +44,7 @@ Every turn MUST end with a ferment lifecycle tool call or an Agent spawn. Do not
 ## Toolset
 
 Toolset follows the ferment lifecycle:
-- During the planning phase (before the first successful \`activate_ferment_phase\`), only read-only research tools and the ferment planning tools are available: \`read\`, \`grep\`, \`find\`, \`ls\`, \`web_fetch\`, \`web_search\`, \`set_phase\`, plus \`scope_ferment\`, \`update_ferment_scope_field\`, \`confirm_ferment_completion_criteria\`, \`list_ferments\`, \`ask_user\`. Use these to draft the plan.
+- During the planning phase (before the first successful \`activate_ferment_phase\`), only read-only research tools and the ferment planning tools are available: \`read\`, \`grep\`, \`find\`, \`ls\`, \`web_fetch\`, \`web_search\`, \`set_phase\`, plus \`scope_ferment\`, \`update_ferment_scope_field\`, \`list_ferments\`, \`ask_user\`. Use these to draft the plan.
 - Once \`activate_ferment_phase\` returns success, the implementation toolset unlocks on the NEXT model turn: \`bash\`, \`edit\`, \`write\`, \`Agent\`, \`get_subagent_result\`, and the remaining ferment lifecycle tools (\`refine_ferment_phase\`, \`complete_ferment_phase\`, \`start_ferment_step\`, \`complete_ferment_step\`, \`verify_ferment_step\`, etc.). Launch an \`Agent\` worker for any implementation or verification work — workers keep their full toolset regardless of the planner profile.
 - Do not start another ferment in this one-shot run. Use \`get_subagent_result\` to collect background Agent results. There is no shell CLI for ferment phase or step transitions; use the ferment tools directly.`
 }

@@ -4,6 +4,7 @@ import { deriveDraftFermentTitle } from "../../ferment/title.js"
 import type { Ferment } from "../../ferment/types.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { deferExtensionAction } from "../deferred-action.js"
+import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { maybeTriggerFermentCompaction } from "./auto-compaction.js"
 import { formatDuration } from "./colors.js"
 import { extractContextualOptions, extractTrailingQuestion } from "./contextual-options.js"
@@ -344,6 +345,13 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		} else if (pi.getFlag("ferment-oneshot") === true) {
 			pendingOneshot = true
 			runtime.setActive(undefined)
+			// In one-shot mode there is no interactive user to confirm criteria.
+			// Hide confirm_ferment_completion_criteria via the cooperative visibility
+			// layer so the model never sees it in its toolset — the model should
+			// include success_criteria directly in scope_ferment instead.
+			// ask_user is intentionally left visible: calls route transparently to
+			// the judge model, which stands in for the user.
+			createToolVisibility(pi).disable(["confirm_ferment_completion_criteria"])
 		} else {
 			pendingOneshot = false
 			runtime.setActive(undefined)
@@ -479,7 +487,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 			// Stop-without-scoping: the model made tool calls but ended with
 			// stopReason "stop" without calling any scoping-completion tool.
 			if (stopReason === "stop") {
-				const stopNudged = maybeInjectScopingStopNudge(pi, f.id, toolNames, stopReason)
+				const stopNudged = maybeInjectScopingStopNudge(pi, f.id, toolNames, stopReason, { interactive })
 				if (stopNudged) return
 			}
 		}

@@ -47,10 +47,24 @@ describe("buildOneshotNudge", () => {
 		expect(out).toMatch(/schema\s+(rejects|requires|hard-?rejects)/i)
 	})
 
-	it("tells the model not to ask the user for confirmation", () => {
+	it("does not tell the model to skip asking questions — ask_user routes to judge automatically", () => {
 		const out = buildOneshotNudge(makeFerment(), INTENT)
-		// The prompt forbids pausing/asking — verify some variant of that instruction is present.
-		expect(out).toMatch(/WITHOUT pausing to ask the user|do not.*ask|never stop/i)
+		// The Interview step must NOT tell the model to skip calling ask_user.
+		// Judge routing is transparent; the model calls ask_user as normal.
+		// Check the Interview bullet specifically (not the shared process which may
+		// mention "Do not ask" in a different context).
+		const interviewBullet = out.match(/- \*\*Interview\*\*:.*?(?=\n- \*\*|\n\n)/s)?.[0] ?? ""
+		expect(interviewBullet).not.toMatch(/do not ask.*question|skip.*question|no.*interactive user/i)
+	})
+
+	it("does not instruct the model to skip confirm_ferment_completion_criteria explicitly", () => {
+		const out = buildOneshotNudge(makeFerment(), INTENT)
+		// confirm_ferment_completion_criteria is hidden from the toolset in one-shot mode
+		// (via the cooperative visibility layer), so the prompt doesn't need to mention it.
+		// If it does appear, it should not be telling the model NOT to call it.
+		if (out.includes("confirm_ferment_completion_criteria")) {
+			expect(out).not.toMatch(/do not call confirm_ferment_completion_criteria/i)
+		}
 	})
 
 	it("does NOT suggest propose_ferment_scoping in the user message", () => {

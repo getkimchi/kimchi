@@ -428,7 +428,7 @@ describe("scoping progress nudge", () => {
 			expect.objectContaining({
 				content: [
 					expect.objectContaining({
-						text: expect.stringContaining("In one-shot mode there is no interactive user"),
+						text: expect.stringContaining("questions route automatically to the judge"),
 					}),
 				],
 			}),
