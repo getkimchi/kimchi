@@ -221,10 +221,10 @@ describe("DEFAULT_MODEL_ROLES", () => {
 		expect(builders).not.toContain("kimchi-dev/nemotron-3-ultra-fp4")
 	})
 
-	it("reviewer pool contains both kimi-k2.7 and minimax-m3", () => {
+	it("reviewer pool contains kimi-k2.7 only", () => {
 		const reviewers = normalizeRoleModels(DEFAULT_MODEL_ROLES.reviewer)
 		expect(reviewers).toContain("kimchi-dev/kimi-k2.7")
-		expect(reviewers).toContain("kimchi-dev/minimax-m3")
+		expect(reviewers).not.toContain("kimchi-dev/minimax-m3")
 	})
 
 	it("explorer pool contains nemotron", () => {
