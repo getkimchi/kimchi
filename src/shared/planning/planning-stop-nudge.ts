@@ -104,7 +104,14 @@ export function extractTextFromContent(content: unknown[]): string {
 
 /**
  * Returns true if the content array contains at least one tool call.
+ *
+ * Checks both:
+ * - `"toolCall"` — the pi-mono normalized shape used in `turn_end` assistant messages.
+ * - `"tool_use"` — the raw provider shape (Anthropic), kept for defensive compatibility.
  */
 export function contentHasToolCall(content: unknown[]): boolean {
-	return content.some((c) => (c as { type: string }).type === "tool_use")
+	return content.some((c) => {
+		const type = (c as { type: string }).type
+		return type === "toolCall" || type === "tool_use"
+	})
 }

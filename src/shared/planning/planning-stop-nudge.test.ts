@@ -103,7 +103,18 @@ describe("extractTextFromContent", () => {
 })
 
 describe("contentHasToolCall", () => {
-	it("returns true when tool_use block is present", () => {
+	// Regression: contentHasToolCall previously checked for type "tool_use" (raw provider shape)
+	// but turn_end assistant messages use pi-mono's normalized shape type "toolCall".
+	// This caused shouldNudge() to miss real tool calls and fire stall-recovery nudges incorrectly.
+	it("returns true for the pi-mono normalized 'toolCall' shape used in turn_end", () => {
+		const content = [
+			{ type: "text", text: "thinking..." },
+			{ type: "toolCall", id: "1", name: "read", input: {} },
+		]
+		expect(contentHasToolCall(content)).toBe(true)
+	})
+
+	it("also returns true for the raw provider 'tool_use' shape", () => {
 		const content = [
 			{ type: "text", text: "thinking..." },
 			{ type: "tool_use", id: "1", name: "read", input: {} },
