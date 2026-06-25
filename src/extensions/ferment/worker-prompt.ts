@@ -34,7 +34,7 @@ export function buildWorkerContext(ferment: Ferment, phase: Phase, step: Step, o
 	lines.push("")
 	lines.push(`Ferment docs directory: .kimchi/ferments/${ferment.id}/docs/`)
 	lines.push(
-		"Write transient audit notes, investigation reports, implementation notes, and verification reports there. Do NOT create ad-hoc project-root scratch folders like .ui-audit/ unless the user explicitly requested a product artifact in the app itself.",
+		"Use this directory only when the worker's role explicitly requires a durable artifact, such as implementation notes or verification reports. Explore/read-only workers must return decision-ready findings directly to the orchestrator and write no reports, docs, notes, or scratch files. Do NOT create ad-hoc project-root scratch folders like .ui-audit/ unless the user explicitly requested a product artifact in the app itself.",
 	)
 	if (ferment.scoping.goal?.answer) {
 		lines.push("")

@@ -71,7 +71,19 @@ describe("buildWorkerContext", () => {
 
 		expect(ctx).toContain("Ferment docs directory:")
 		expect(ctx).toContain(".kimchi/ferments/ferment-docs-1/docs/")
+		expect(ctx).toContain("only when the worker's role explicitly requires a durable artifact")
 		expect(ctx).toContain("Do NOT create ad-hoc project-root scratch folders like .ui-audit/")
+	})
+
+	it("does not tell read-only exploration workers to write investigation reports", () => {
+		const phase = makePhase({ steps: [makeStep({ description: "Explore the prompt assembly path" })] })
+		const f = makeFerment({ id: "ferment-docs-2", phases: [phase] })
+
+		const ctx = buildWorkerContext(f, phase, phase.steps[0])
+
+		expect(ctx).toContain("Explore/read-only workers must return decision-ready findings directly")
+		expect(ctx).toContain("write no reports, docs, notes, or scratch files")
+		expect(ctx).not.toContain("Write transient audit notes, investigation reports")
 	})
 
 	it("includes ferment goal and success criteria when present", () => {
