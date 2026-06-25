@@ -141,6 +141,66 @@ class TrialSummary:
         return result
 
 
+@dataclass
+class TaskVerdict:
+    """Aggregated result for a single benchmark task across all attempts."""
+
+    task: str
+    attempts: list[TrialSummary]
+    final_outcome: Outcome
+    passed: bool
+
+    def final_verdict(self) -> str:
+        return "passed" if self.passed else "failed"
+
+    def _attempt_label(self, trial: TrialSummary) -> str:
+        label = str(trial.outcome)
+        if trial.outcome == Outcome.ERROR and trial.error_subcategory:
+            label = f"{label} ({trial.error_subcategory})"
+        return label
+
+
+def build_task_verdicts(trials: list[TrialSummary]) -> list[TaskVerdict]:
+    """Group trials by task and compute the final task verdict.
+
+    A task passes if any attempt passed. Otherwise the final outcome is the
+    outcome of the last attempt (highest attempt number).
+    """
+    by_task: dict[str, list[TrialSummary]] = defaultdict(list)
+    for trial in trials:
+        by_task[trial.task].append(trial)
+
+    verdicts: list[TaskVerdict] = []
+    for task in sorted(by_task):
+        attempts = sorted(by_task[task], key=lambda t: t.attempt)
+        passed = any(t.outcome == Outcome.SCORED_PASS for t in attempts)
+        final_outcome = Outcome.SCORED_PASS if passed else (attempts[-1].outcome if attempts else Outcome.SCORED_FAIL)
+        verdicts.append(TaskVerdict(task=task, attempts=attempts, final_outcome=final_outcome, passed=passed))
+    return verdicts
+
+
+def format_task_table(verdicts: list[TaskVerdict]) -> str:
+    """Format a Markdown table of task outcomes suitable for CI logs."""
+    if not verdicts:
+        return "No task results to display."
+
+    header = ["Task", "Outcomes", "Final verdict"]
+    rows: list[list[str]] = [header]
+
+    for v in verdicts:
+        outcomes = " → ".join(v._attempt_label(t) for t in v.attempts)
+        final = f"{v.final_verdict()} ({v._attempt_label(v.attempts[-1])})"
+        rows.append([v.task, outcomes, final])
+
+    widths = [max(len(row[i]) for row in rows) for i in range(len(header))]
+
+    def fmt_row(cells: list[str]) -> str:
+        return "| " + " | ".join(cell.ljust(widths[i]) for i, cell in enumerate(cells)) + " |"
+
+    separator = fmt_row(["-" * w for w in widths])
+    return "\n".join([fmt_row(rows[0]), separator] + [fmt_row(row) for row in rows[1:]])
+
+
 def getenv(name: str, default: str = "") -> str:
     return os.environ.get(name, default)
 
@@ -832,6 +892,11 @@ def write_summary(metadata_path: Path, output_path: Path, results_dir_override: 
     started_at, finished_at = run_bounds(results_dir, trials)
     generated_at = utc_now()
     summary = build_summary(metadata, trials, started_at, finished_at, generated_at, results_dir)
+
+    task_verdicts = build_task_verdicts(trials)
+    print(format_task_table(task_verdicts))
+    print()
+
     for warning in warnings:
         print(f"Warning: {warning}")
 

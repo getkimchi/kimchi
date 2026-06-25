@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import tempfile
 import unittest
@@ -273,6 +275,141 @@ class SummarizeResultsClassificationTest(unittest.TestCase):
             summary = self.summarize(result)
             data = summary.to_summary_json()
             self.assertIn(data["status"], ("passed", "failed"), f"Unexpected status for {result.get('exception_info')}")
+
+
+class BuildTaskVerdictsTest(unittest.TestCase):
+    def _trial(self, task: str, attempt: int, outcome: summarize_results.Outcome, *, error_subcategory: str | None = None) -> summarize_results.TrialSummary:
+        return summarize_results.TrialSummary(
+            task=task,
+            trial_id=f"{task}__{attempt}",
+            attempt=attempt,
+            solved=outcome == summarize_results.Outcome.SCORED_PASS,
+            reward=1.0 if outcome == summarize_results.Outcome.SCORED_PASS else 0.0,
+            exception=None,
+            exception_message=None,
+            total_time_seconds=60,
+            models=[],
+            trial_dir=Path("/tmp"),
+            start="2026-06-18T12:00:00Z",
+            end="2026-06-18T12:01:00Z",
+            outcome=outcome,
+            error_subcategory=error_subcategory,
+        )
+
+    def test_passes_if_any_attempt_passes(self) -> None:
+        trials = [
+            self._trial("task-a", 1, summarize_results.Outcome.SCORED_FAIL),
+            self._trial("task-a", 2, summarize_results.Outcome.SCORED_PASS),
+        ]
+        verdicts = summarize_results.build_task_verdicts(trials)
+        self.assertEqual(len(verdicts), 1)
+        self.assertTrue(verdicts[0].passed)
+        self.assertEqual(verdicts[0].final_outcome, summarize_results.Outcome.SCORED_PASS)
+
+    def test_fails_with_last_attempt_outcome(self) -> None:
+        trials = [
+            self._trial("task-b", 1, summarize_results.Outcome.AGENT_TIMEOUT),
+            self._trial("task-b", 2, summarize_results.Outcome.SCORED_FAIL),
+        ]
+        verdicts = summarize_results.build_task_verdicts(trials)
+        self.assertFalse(verdicts[0].passed)
+        self.assertEqual(verdicts[0].final_outcome, summarize_results.Outcome.SCORED_FAIL)
+
+    def test_error_subcategory_carried_into_verdict(self) -> None:
+        trials = [
+            self._trial("task-c", 1, summarize_results.Outcome.ERROR, error_subcategory="infra_network_error"),
+        ]
+        verdicts = summarize_results.build_task_verdicts(trials)
+        self.assertFalse(verdicts[0].passed)
+        self.assertEqual(verdicts[0].final_outcome, summarize_results.Outcome.ERROR)
+        self.assertEqual(verdicts[0].attempts[0].error_subcategory, "infra_network_error")
+
+
+class FormatTaskTableTest(unittest.TestCase):
+    def _verdict(self, task: str, outcomes: list[summarize_results.Outcome], *, error_subcategories: list[str | None] | None = None) -> summarize_results.TaskVerdict:
+        if error_subcategories is None:
+            error_subcategories = [None] * len(outcomes)
+        attempts = [
+            summarize_results.TrialSummary(
+                task=task,
+                trial_id=f"{task}__{i + 1}",
+                attempt=i + 1,
+                solved=o == summarize_results.Outcome.SCORED_PASS,
+                reward=1.0 if o == summarize_results.Outcome.SCORED_PASS else 0.0,
+                exception=None,
+                exception_message=None,
+                total_time_seconds=60,
+                models=[],
+                trial_dir=Path("/tmp"),
+                start="2026-06-18T12:00:00Z",
+                end="2026-06-18T12:01:00Z",
+                outcome=o,
+                error_subcategory=es,
+            )
+            for i, (o, es) in enumerate(zip(outcomes, error_subcategories))
+        ]
+        passed = any(t.outcome == summarize_results.Outcome.SCORED_PASS for t in attempts)
+        final = summarize_results.Outcome.SCORED_PASS if passed else attempts[-1].outcome
+        return summarize_results.TaskVerdict(task=task, attempts=attempts, final_outcome=final, passed=passed)
+
+    def test_table_includes_tasks_attempts_and_final_verdict(self) -> None:
+        verdicts = [
+            self._verdict("task-a", [summarize_results.Outcome.SCORED_FAIL, summarize_results.Outcome.SCORED_PASS]),
+            self._verdict("task-b", [summarize_results.Outcome.AGENT_TIMEOUT]),
+            self._verdict("task-c", [summarize_results.Outcome.ERROR], error_subcategories=["infra_network_error"]),
+        ]
+        table = summarize_results.format_task_table(verdicts)
+        self.assertIn("task-a", table)
+        self.assertIn("scored_fail → scored_pass", table)
+        self.assertIn("task-b", table)
+        self.assertIn("agent_timeout", table)
+        self.assertIn("task-c", table)
+        self.assertIn("error (infra_network_error)", table)
+        self.assertIn("passed", table)
+        self.assertIn("failed", table)
+
+    def test_empty_verdicts_returns_friendly_message(self) -> None:
+        self.assertEqual(summarize_results.format_task_table([]), "No task results to display.")
+
+
+class WriteSummaryPrintsTableTest(unittest.TestCase):
+    def test_write_summary_prints_task_table(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            results_dir = tmp_path / "jobs" / "run-1"
+            results_dir.mkdir(parents=True)
+
+            trial_dir = results_dir / "sample-task__abc123"
+            trial_dir.mkdir()
+            write_json(trial_dir / "result.json", {
+                **BASE_RESULT,
+                "outcome": "scored_pass",
+                "error_category": None,
+                "error_subcategory": None,
+            })
+            sessions_dir = trial_dir / "agent" / "sessions"
+            sessions_dir.mkdir(parents=True)
+            (sessions_dir / "main.jsonl").write_text("\n", encoding="utf-8")
+
+            metadata_path = tmp_path / "run-metadata.json"
+            write_json(metadata_path, {
+                "benchmark": "terminal-bench-2",
+                "coding_agent": "kimchi",
+                "model": "kimchi-dev/kimi-k2.6",
+                "results_dir": str(results_dir),
+            })
+
+            output_path = tmp_path / "summary.json"
+
+            captured = io.StringIO()
+            with contextlib.redirect_stdout(captured):
+                summarize_results.write_summary(metadata_path, output_path, results_dir_override=results_dir)
+
+            stdout = captured.getvalue()
+            self.assertIn("sample-task", stdout)
+            self.assertIn("scored_pass", stdout)
+            self.assertIn("passed", stdout)
+            self.assertIn("Final verdict", stdout)
 
 
 if __name__ == "__main__":
