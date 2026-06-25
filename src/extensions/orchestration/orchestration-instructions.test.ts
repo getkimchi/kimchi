@@ -55,12 +55,12 @@ describe("resolveOrchestrationInstructions", () => {
 
 	it("shows Your Capabilities section with orchestrator roles", () => {
 		const result = resolveAsString({
-			currentModelId: "minimax-m3",
+			currentModelId: "kimi-k2.7",
 			registry,
 			roles: DEFAULT_MODEL_ROLES,
 		})
 		expect(result).toContain("## Your Capabilities")
-		expect(result).toContain("You have these roles: **planner, builder, reviewer, researcher**")
+		expect(result).toContain("You have these roles: **planner, reviewer**")
 	})
 
 	it("uses DO/DONT directives in Step 3", () => {
@@ -111,7 +111,7 @@ describe("resolveOrchestrationInstructions", () => {
 
 	it("generates DO directive for plan when orchestrator is planner", () => {
 		const result = resolveAsString({
-			currentModelId: "minimax-m3",
+			currentModelId: "kimi-k2.7",
 			registry,
 			roles: DEFAULT_MODEL_ROLES,
 		})
