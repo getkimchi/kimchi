@@ -51,7 +51,7 @@ export default function themeSelectorExtension(pi: ExtensionAPI) {
 	pi.registerCommand("theme", {
 		description: "Select color theme",
 		handler: async (_args, ctx) => {
-			if (!ctx.hasUI) return
+			if (ctx.mode !== "tui") return
 			const ui = ctx.ui
 			const themes = ui.getAllThemes()
 			const currentThemeName = ui.theme.name
@@ -93,19 +93,16 @@ export default function themeSelectorExtension(pi: ExtensionAPI) {
 					selectList.setSelectedIndex(currentIndex)
 				}
 
-				// Preview theme on navigation (hover/arrow keys). Applying a Theme
-				// instance (vs a name string) switches live without persisting,
-				// matching the old previewTheme semantics.
+				// Preview theme on navigation (hover/arrow keys)
 				selectList.onSelectionChange = (item) => {
-					const preview = ui.getTheme(item.value)
-					if (preview) ui.setTheme(preview)
+					ui.previewTheme(item.value)
 				}
 
 				// Finalize selection on Enter
 				selectList.onSelect = (item) => {
 					const result = ui.setTheme(item.value)
 					if (!result.success) {
-						ui.notify(`Failed to load theme "${item.value}": ${result.error}\nFell back to dark theme.`, "error")
+						ui.showError(`Failed to load theme "${item.value}": ${result.error}\nFell back to dark theme.`)
 					}
 					done()
 				}
@@ -113,10 +110,7 @@ export default function themeSelectorExtension(pi: ExtensionAPI) {
 				selectList.onCancel = () => {
 					// Restore original theme on cancel (no persist, mirrors /settings onThemePreview).
 					// Guard: Theme.name is optional; skip the preview if there is no name to restore.
-					if (currentThemeName) {
-						const original = ui.getTheme(currentThemeName)
-						if (original) ui.setTheme(original)
-					}
+					if (currentThemeName) ui.previewTheme(currentThemeName)
 					done()
 				}
 
