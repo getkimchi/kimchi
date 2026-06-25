@@ -3,9 +3,10 @@ import { resolve } from "node:path"
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedSemanticFg } from "../../ansi.js"
+import { FermentEventStore } from "../../ferment/event-store.js"
+import { resolveFermentsDir } from "../../ferment/store.js"
 import { getAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
 import * as EntryTriggerRegistry from "../../shared/planning/entry-trigger-registry.js"
-import { FermentPlanStore } from "../../shared/planning/plan-artifact-store.js"
 import { decomposePlanToPhase } from "../../shared/planning/plan-decomposition.js"
 import {
 	PLAN_MODE_STOP_NUDGE,
@@ -19,8 +20,13 @@ import * as PromptSupplementRegistry from "../../shared/planning/prompt-suppleme
 import * as ToolProfileManager from "../../shared/planning/tool-profile-manager.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
+import { emitFermentCreated } from "../ferment/domain-events-emitter.js"
+import { appendRefEntry } from "../ferment/nudge.js"
+import { defaultFermentRuntime } from "../ferment/runtime.js"
 import { hasActiveFerment, notifyFermentActive, onActiveFermentChange } from "../ferment/state.js"
+import { createApplyAndPersist } from "../ferment/tool-helpers.js"
 import { isFermentToolName, isUserFacingFermentToolName } from "../ferment/tool-names.js"
+import { setActiveFermentAndApplyProfile } from "../ferment/tool-scope.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import type { SystemPromptBlock } from "../prompt-construction/system-prompt-blocks.js"
 import { type ToolVisibilityAPI, createToolVisibility } from "../prompt-construction/tool-visibility.js"
@@ -601,42 +607,53 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			//   - bash (read-only gate still applies — same per-call enforcement)
 			try {
 				const planned = decomposePlanToPhase(text)
-				// Persist the new ferment artifact at <cwd>/.kimchi/ferments/<id>.json.
-				// Use FermentPlanStore to handle directory creation, file naming, and serialization.
-				const fermentId = `ferment-${Date.now()}`
-				const ref = new FermentPlanStore().saveSync(
-					{
-						id: fermentId,
-						name: planned.name || "Plan from --plan mode",
-						goal: planned.goal,
-						status: "draft",
-						extra: {
-							workMode: "auto",
-							phases: [
-								{
-									id: planned.id,
-									index: planned.index,
-									name: planned.name || planned.id,
-									goal: planned.goal,
-									status: "active",
-									steps: planned.steps.map((s) => ({
-										id: s.id,
-										index: s.index,
-										description: s.description,
-										status: "pending",
-									})),
-								},
-							],
+				// Create a storage instance scoped to ctx.cwd so the ferment artifact
+				// lands in the project's .kimchi/ferments/ directory, not process.cwd().
+				// defaultFermentRuntime.getStorage() always uses process.cwd(); in
+				// production these are the same, but tests (and future multi-root setups)
+				// need the explicit scoping.
+				const fermentDir = resolveFermentsDir(ctx.cwd)
+				const storage = new FermentEventStore(fermentDir)
+				const runtime = { ...defaultFermentRuntime, getStorage: () => storage }
+				// Create the ferment through the normal storage API so it gets a
+				// proper ID, is visible to runtime.getActive(), the scheduler, and
+				// the compaction / resume paths.
+				const draft = storage.create(planned.name || "Plan from --plan mode", planned.goal)
+				// Scope it immediately using the decomposed plan so phases are populated.
+				const applyAndPersist = createApplyAndPersist(runtime)
+				const scoped = applyAndPersist(draft.id, {
+					type: "scope",
+					goal: planned.goal,
+					successCriteria: [],
+					constraints: [],
+					phases: [
+						{
+							name: planned.name || "Phase 1",
+							goal: planned.goal,
+							steps: planned.steps.map((s) => ({ description: s.description })),
 						},
-					},
-					{ cwd: ctx.cwd },
-				)
-				// Keep ref in scope for potential future use (logging, error reporting, etc.)
-				void ref
-				ToolProfileManager.apply("implementation-ferment", "ferment", pi)
+					],
+				})
+				if (!scoped.ok) throw new Error(scoped.error.message)
+				// Activate the first phase so the ferment enters implementation mode.
+				const activated = applyAndPersist(draft.id, {
+					type: "activate_phase",
+					phaseId: scoped.ferment.phases[0]?.id ?? "phase-1",
+				})
+				if (!activated.ok) throw new Error(activated.error.message)
+				// Register the ferment as active in the runtime, emit the creation
+				// event, and append a session ref so resumed sessions can find it.
+				defaultFermentRuntime.setActive(activated.ferment)
+				setActiveFermentAndApplyProfile(pi, defaultFermentRuntime, activated.ferment)
+				// pi.events may be undefined in headless / test contexts; guard before emitting.
+				if (pi.events) emitFermentCreated(pi.events, activated.ferment)
+				appendRefEntry(pi, activated.ferment.id)
 				changeMode(ctx, "plan", "auto", "user")
 			} catch {
-				// Non-fatal: tool-profile and mode change are the critical bits.
+				// Non-fatal: fall back to just applying the tool profile so the session
+				// remains usable even if the storage path fails.
+				ToolProfileManager.apply("implementation-ferment", "ferment", pi)
+				changeMode(ctx, "plan", "auto", "user")
 			}
 		}
 		// Decline or escape: stay in plan mode.
