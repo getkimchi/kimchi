@@ -57,14 +57,30 @@ export const PLAN_MODE_STOP_NUDGE =
 	"- Do NOT stop again until you have written <!-- PLAN_COMPLETE -->."
 
 /**
- * Nudge text for ferment scoping (one-shot or interactive). Instructs the
- * model to continue toward calling scope_ferment / propose_ferment_scoping.
+ * Nudge text for interactive ferment scoping. Instructs the model to continue
+ * toward calling propose_ferment_scoping.
  */
-export const FERMENT_SCOPING_STOP_NUDGE =
+export const FERMENT_SCOPING_STOP_NUDGE_INTERACTIVE =
 	"You stopped during ferment scoping without finalising the plan. Continue now:\n" +
 	"- If you still need more orientation or exploration, take the next concrete tool call to gather it.\n" +
-	"- If you have enough context to plan, call `scope_ferment` (one-shot) or `propose_ferment_scoping` (interactive) with the complete payload: goal, success_criteria, constraints, assumptions, phases, and the P1/P2/P3 gates array.\n" +
+	"- If you have enough context to plan, call `propose_ferment_scoping` with the complete payload: goal, success_criteria, constraints, assumptions, phases, and the P1/P2/P3 gates array.\n" +
 	"- Do NOT stop again until you have called the scoping tool or made progress toward it."
+
+/**
+ * Nudge text for one-shot ferment scoping. Instructs the model to continue
+ * toward calling scope_ferment directly (no interactive tools available).
+ */
+export const FERMENT_SCOPING_STOP_NUDGE_ONESHOT =
+	"You stopped during ferment scoping without finalising the plan. Continue now:\n" +
+	"- If you still need information, call `ask_user` — questions route automatically to the judge.\n" +
+	"- If you have enough context to plan, call `scope_ferment` with the complete payload: goal, success_criteria, constraints, assumptions, phases, and the P1/P2/P3 gates array.\n" +
+	"- Do NOT stop again until you have called scope_ferment or made progress toward it."
+
+/**
+ * @deprecated Use FERMENT_SCOPING_STOP_NUDGE_INTERACTIVE or FERMENT_SCOPING_STOP_NUDGE_ONESHOT.
+ * Kept for backwards compatibility with callers that don't know their mode yet.
+ */
+export const FERMENT_SCOPING_STOP_NUDGE = FERMENT_SCOPING_STOP_NUDGE_INTERACTIVE
 
 /**
  * Returns true if the turn text contains a known plan-mode completion signal.

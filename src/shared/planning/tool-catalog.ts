@@ -206,6 +206,14 @@ export const WRITE_TOOLS: ToolEntry[] = [
  * - `'planning-adhoc'`           → SHARED_CORE_TOOLS + ADHOC_MODE_TOOLS + bash
  * - `'planning-ferment'`         → SHARED_CORE_TOOLS + ferment tools visible in planning
  * - `'implementation-ferment'`   → SHARED_CORE_TOOLS + all ferment tools + all write tools
+ *
+ * TODO: Consider accepting a predicate/context (e.g.
+ * `(entry: ToolEntry, ctx: { phase, routing, interactionMode }) => boolean`)
+ * instead of only a static profile string. That would let the same tool be
+ * available in interactive ferment but hidden in one-shot ferment without
+ * forcing every case into static catalog buckets. For now, the combination
+ * of static profiles + cooperative `disableToolName` (tool-visibility.ts)
+ * handles the interactive vs. one-shot distinction adequately.
  */
 export function getToolsForProfile(profile: ToolProfile): ToolEntry[] {
 	switch (profile) {

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import type { EntryEvent, EntryTrigger, ModeState } from "./entry-trigger-registry.js"
+import type { EntryTrigger, EntryTriggerEvent, ModeState } from "./entry-trigger-registry.js"
 import { clear, dispatch, has, register, size } from "./entry-trigger-registry.js"
 
 describe("entry-trigger-registry", () => {
@@ -20,7 +20,7 @@ describe("entry-trigger-registry", () => {
 			})
 			register("test-trigger", trigger)
 
-			const event: EntryEvent = { kind: "cli-flag", name: "plan", value: true }
+			const event: EntryTriggerEvent = { kind: "cli-flag", name: "plan", present: true }
 			const state = dispatch(event)
 
 			expect(state.kind).toBe("enter-mode")
@@ -49,7 +49,7 @@ describe("entry-trigger-registry", () => {
 			register("adhoc-trigger", trigger2)
 			register("ferment-trigger", trigger3)
 
-			const event: EntryEvent = { kind: "cli-flag", name: "plan", value: true }
+			const event: EntryTriggerEvent = { kind: "cli-flag", name: "plan", present: true }
 			const state = dispatch(event)
 
 			expect(state.kind).toBe("enter-mode")
@@ -77,7 +77,7 @@ describe("entry-trigger-registry", () => {
 			register("reject-trigger", trigger2)
 			register("accept-trigger", trigger3)
 
-			const event: EntryEvent = { kind: "cli-flag", name: "plan", value: true }
+			const event: EntryTriggerEvent = { kind: "cli-flag", name: "plan", present: true }
 			const state = dispatch(event)
 
 			expect(state.kind).toBe("reject")
@@ -95,7 +95,7 @@ describe("entry-trigger-registry", () => {
 			register("noop1", trigger1)
 			register("noop2", trigger2)
 
-			const event: EntryEvent = { kind: "cli-flag", name: "plan", value: true }
+			const event: EntryTriggerEvent = { kind: "cli-flag", name: "plan", present: true }
 			const state = dispatch(event)
 
 			expect(state.kind).toBe("noop")
@@ -104,7 +104,7 @@ describe("entry-trigger-registry", () => {
 
 	describe("dispatch with no triggers", () => {
 		it("returns noop when registry is empty", () => {
-			const event: EntryEvent = { kind: "cli-flag", name: "plan", value: true }
+			const event: EntryTriggerEvent = { kind: "cli-flag", name: "plan", present: true }
 			const state = dispatch(event)
 
 			expect(state.kind).toBe("noop")
@@ -127,7 +127,7 @@ describe("entry-trigger-registry", () => {
 			register("same-key", trigger1)
 			register("same-key", trigger2)
 
-			const event: EntryEvent = { kind: "cli-flag", name: "plan", value: true }
+			const event: EntryTriggerEvent = { kind: "cli-flag", name: "plan", present: true }
 			const state = dispatch(event)
 
 			expect(state.kind).toBe("enter-mode")
@@ -147,7 +147,7 @@ describe("entry-trigger-registry", () => {
 			clear()
 			expect(size()).toBe(0)
 
-			const event: EntryEvent = { kind: "cli-flag", name: "plan", value: true }
+			const event: EntryTriggerEvent = { kind: "cli-flag", name: "plan", present: true }
 			const state = dispatch(event)
 			expect(state.kind).toBe("noop")
 		})
@@ -229,27 +229,52 @@ describe("entry-trigger-registry", () => {
 	})
 
 	describe("cli-flag event", () => {
-		it("trigger receives cli-flag event payload", () => {
-			let receivedEvent: EntryEvent | null = null
+		// Review nit 3472299148: cli-flag splits flag presence (present) from
+		// flag payload (value) so handlers never have to inspect `value === true`
+		// to ask "was this flag supplied?".
+		it("trigger receives cli-flag event payload (present-only boolean flag)", () => {
+			let receivedEvent: EntryTriggerEvent | null = null
 			const trigger: EntryTrigger = (event) => {
 				receivedEvent = event
-				return event.kind === "cli-flag" && event.name === "plan" && event.value === true
+				return event.kind === "cli-flag" && event.name === "plan" && event.present
 					? { kind: "enter-mode", mode: "adhoc", reason: "cli-flag" }
 					: { kind: "noop" }
 			}
 			register("cli-flag-trigger", trigger)
 
-			const event: EntryEvent = { kind: "cli-flag", name: "plan", value: true }
+			const event: EntryTriggerEvent = { kind: "cli-flag", name: "plan", present: true }
 			const state = dispatch(event)
 
 			expect(receivedEvent).toEqual(event)
 			expect(state.kind).toBe("enter-mode")
 		})
+
+		it("trigger reads value separately from presence for value-bearing flags", () => {
+			let receivedEvent: EntryTriggerEvent | null = null
+			const trigger: EntryTrigger = (event) => {
+				receivedEvent = event
+				if (event.kind !== "cli-flag") return { kind: "noop" }
+				if (!event.present) return { kind: "noop" }
+				return event.value === "plan"
+					? { kind: "enter-mode", mode: "adhoc", reason: `mode=${event.value}` }
+					: { kind: "noop" }
+			}
+			register("cli-flag-value-trigger", trigger)
+
+			const event: EntryTriggerEvent = { kind: "cli-flag", name: "mode", present: true, value: "plan" }
+			const state = dispatch(event)
+
+			expect(receivedEvent).toEqual(event)
+			expect(state.kind).toBe("enter-mode")
+			if (state.kind === "enter-mode") {
+				expect(state.reason).toBe("mode=plan")
+			}
+		})
 	})
 
 	describe("key-press event", () => {
 		it("trigger receives key-press event payload", () => {
-			let receivedEvent: EntryEvent | null = null
+			let receivedEvent: EntryTriggerEvent | null = null
 			const trigger: EntryTrigger = (event) => {
 				receivedEvent = event
 				return event.kind === "key-press" && event.key === "shift+tab"
@@ -258,7 +283,7 @@ describe("entry-trigger-registry", () => {
 			}
 			register("key-press-trigger", trigger)
 
-			const event: EntryEvent = { kind: "key-press", key: "shift+tab" }
+			const event: EntryTriggerEvent = { kind: "key-press", key: "shift+tab" }
 			const state = dispatch(event)
 
 			expect(receivedEvent).toEqual(event)
@@ -271,7 +296,7 @@ describe("entry-trigger-registry", () => {
 
 	describe("tool-call event", () => {
 		it("trigger receives tool-call event payload", () => {
-			let receivedEvent: EntryEvent | null = null
+			let receivedEvent: EntryTriggerEvent | null = null
 			const trigger: EntryTrigger = (event) => {
 				receivedEvent = event
 				return event.kind === "tool-call" && event.toolName === "questionnaire" && event.mode === "idle"
@@ -280,7 +305,7 @@ describe("entry-trigger-registry", () => {
 			}
 			register("tool-call-trigger", trigger)
 
-			const event: EntryEvent = {
+			const event: EntryTriggerEvent = {
 				kind: "tool-call",
 				toolName: "questionnaire",
 				mode: "idle",
@@ -293,8 +318,10 @@ describe("entry-trigger-registry", () => {
 	})
 
 	describe("slash-command event", () => {
-		it("trigger receives slash-command event payload", () => {
-			let receivedEvent: EntryEvent | null = null
+		// Review nit 3472304236: args is now a tokenised string[] so handlers
+		// don't have to invent or duplicate their own splitting convention.
+		it("trigger receives slash-command event payload with args as string[]", () => {
+			let receivedEvent: EntryTriggerEvent | null = null
 			const trigger: EntryTrigger = (event) => {
 				receivedEvent = event
 				return event.kind === "slash-command" && event.command === "ferment"
@@ -303,21 +330,27 @@ describe("entry-trigger-registry", () => {
 			}
 			register("slash-command-trigger", trigger)
 
-			const event: EntryEvent = {
+			const event: EntryTriggerEvent = {
 				kind: "slash-command",
 				command: "ferment",
-				args: "new MyFerment",
+				args: ["new", "MyFerment"],
 			}
 			const state = dispatch(event)
 
 			expect(receivedEvent).toEqual(event)
+			if (receivedEvent !== null) {
+				const e = receivedEvent as EntryTriggerEvent
+				if (e.kind === "slash-command") {
+					expect(e.args).toEqual(["new", "MyFerment"])
+				}
+			}
 			expect(state.kind).toBe("enter-mode")
 		})
 	})
 
 	describe("env-var event", () => {
 		it("trigger receives env-var event payload", () => {
-			let receivedEvent: EntryEvent | null = null
+			let receivedEvent: EntryTriggerEvent | null = null
 			const trigger: EntryTrigger = (event) => {
 				receivedEvent = event
 				return event.kind === "env-var" && event.name === "KIMCHI_ACTIVE_FERMENT" && event.value
@@ -326,7 +359,7 @@ describe("entry-trigger-registry", () => {
 			}
 			register("env-var-trigger", trigger)
 
-			const event: EntryEvent = {
+			const event: EntryTriggerEvent = {
 				kind: "env-var",
 				name: "KIMCHI_ACTIVE_FERMENT",
 				value: "ferment-123",
@@ -338,7 +371,7 @@ describe("entry-trigger-registry", () => {
 		})
 
 		it("trigger handles undefined env-var value", () => {
-			let receivedEvent: EntryEvent | null = null
+			let receivedEvent: EntryTriggerEvent | null = null
 			const trigger: EntryTrigger = (event) => {
 				receivedEvent = event
 				return event.kind === "env-var" && event.value === undefined
@@ -347,7 +380,7 @@ describe("entry-trigger-registry", () => {
 			}
 			register("env-var-undefined-trigger", trigger)
 
-			const event: EntryEvent = {
+			const event: EntryTriggerEvent = {
 				kind: "env-var",
 				name: "KIMCHI_ACTIVE_FERMENT",
 				value: undefined,
@@ -362,31 +395,31 @@ describe("entry-trigger-registry", () => {
 	describe("trigger can return different states based on event contents", () => {
 		it("trigger returns enter-mode for one event, noop for another", () => {
 			const trigger: EntryTrigger = (event) => {
-				if (event.kind === "cli-flag" && event.name === "plan" && event.value === true) {
+				if (event.kind === "cli-flag" && event.name === "plan" && event.present) {
 					return { kind: "enter-mode", mode: "adhoc", reason: "plan flag" }
 				}
-				if (event.kind === "cli-flag" && event.name === "ferment" && event.value === true) {
+				if (event.kind === "cli-flag" && event.name === "ferment" && event.present) {
 					return { kind: "enter-mode", mode: "ferment", reason: "ferment flag" }
 				}
 				return { kind: "noop" }
 			}
 			register("conditional-trigger", trigger)
 
-			const planEvent: EntryEvent = { kind: "cli-flag", name: "plan", value: true }
+			const planEvent: EntryTriggerEvent = { kind: "cli-flag", name: "plan", present: true }
 			const planState = dispatch(planEvent)
 			expect(planState.kind).toBe("enter-mode")
 			if (planState.kind === "enter-mode") {
 				expect(planState.mode).toBe("adhoc")
 			}
 
-			const fermentEvent: EntryEvent = { kind: "cli-flag", name: "ferment", value: true }
+			const fermentEvent: EntryTriggerEvent = { kind: "cli-flag", name: "ferment", present: true }
 			const fermentState = dispatch(fermentEvent)
 			expect(fermentState.kind).toBe("enter-mode")
 			if (fermentState.kind === "enter-mode") {
 				expect(fermentState.mode).toBe("ferment")
 			}
 
-			const otherEvent: EntryEvent = { kind: "cli-flag", name: "other", value: true }
+			const otherEvent: EntryTriggerEvent = { kind: "cli-flag", name: "other", present: true }
 			const otherState = dispatch(otherEvent)
 			expect(otherState.kind).toBe("noop")
 		})

@@ -206,32 +206,71 @@ describe("plan-artifact-store", () => {
 		})
 
 		describe("load with missing JSON fields", () => {
-			it("coerces missing fields to safe defaults", () => {
+			function writeFermentFile(dir: string, id: string, content: object): ArtifactRef {
+				const fermentsDir = join(dir, ".kimchi", "ferments")
+				if (!existsSync(fermentsDir)) mkdirSync(fermentsDir, { recursive: true })
+				const filePath = join(fermentsDir, `${id}.json`)
+				writeFileSync(filePath, JSON.stringify(content), "utf-8")
+				return { kind: "ferment", path: filePath, format: "json", id }
+			}
+
+			it("loads a fully valid artifact without error", () => {
 				const store = new FermentPlanStore()
-
-				// Write a minimal JSON file directly
-				const fermentsDir = join(tmpDir, ".kimchi", "ferments")
-				// Create directory manually since we're not using store.save
-				if (!existsSync(fermentsDir)) {
-					mkdirSync(fermentsDir, { recursive: true })
-				}
-				const filePath = join(fermentsDir, "minimal.json")
-				writeFileSync(filePath, JSON.stringify({ id: "minimal", otherField: "value" }), "utf-8")
-
-				const ref: ArtifactRef = {
-					kind: "ferment",
-					path: filePath,
-					format: "json",
-					id: "minimal",
-				}
-
+				const ref = writeFermentFile(tmpDir, "valid", {
+					id: "valid",
+					name: "My Ferment",
+					goal: "Do the thing",
+					status: "draft",
+				})
 				const loaded = store.loadSync(ref)
+				expect(loaded.id).toBe("valid")
+				expect(loaded.name).toBe("My Ferment")
+				expect(loaded.goal).toBe("Do the thing")
+			})
 
-				expect(loaded.id).toBe("minimal")
-				expect(loaded.name).toBe("")
-				expect(loaded.goal).toBe("")
+			// Regression: loadSync previously silently coerced missing required fields
+			// to empty strings, returning semantically invalid artifacts to callers.
+			it("throws a descriptive error when 'name' is missing", () => {
+				const store = new FermentPlanStore()
+				const ref = writeFermentFile(tmpDir, "no-name", {
+					id: "no-name",
+					goal: "Do the thing",
+					status: "draft",
+				})
+				expect(() => store.loadSync(ref)).toThrow(/missing required field 'name'/i)
+			})
+
+			it("throws a descriptive error when 'goal' is missing", () => {
+				const store = new FermentPlanStore()
+				const ref = writeFermentFile(tmpDir, "no-goal", {
+					id: "no-goal",
+					name: "My Ferment",
+					status: "draft",
+				})
+				expect(() => store.loadSync(ref)).toThrow(/missing required field 'goal'/i)
+			})
+
+			it("throws a descriptive error when 'id' is missing from both JSON and ref fallback cannot be empty", () => {
+				const store = new FermentPlanStore()
+				const ref = writeFermentFile(tmpDir, "no-id", {
+					name: "My Ferment",
+					goal: "Do the thing",
+					status: "draft",
+				})
+				// ref.id provides a fallback, so missing id in JSON should still work
+				const loaded = store.loadSync(ref)
+				expect(loaded.id).toBe("no-id") // falls back to ref.id
+			})
+
+			it("defaults status to 'draft' when missing (backwards compat for legacy artifacts)", () => {
+				const store = new FermentPlanStore()
+				const ref = writeFermentFile(tmpDir, "no-status", {
+					id: "no-status",
+					name: "My Ferment",
+					goal: "Do the thing",
+				})
+				const loaded = store.loadSync(ref)
 				expect(loaded.status).toBe("draft")
-				expect(loaded.extra).toEqual({ otherField: "value" })
 			})
 		})
 

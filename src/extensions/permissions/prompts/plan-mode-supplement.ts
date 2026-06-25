@@ -25,11 +25,14 @@ STEP 3 (Completion Criteria):
 
 STEP 5 (Plan):
 - Draft the plan directly within this conversation using the structure defined above.
-- When your plan is complete and all Open Questions are resolved, end your response
-  with one of these markers on its own line:
+- Emit exactly one completion marker when ALL of the following are true:
+  1. The plan is written in full (Goal, Constraints, Chunks, Verification Strategy, Decision Log, Risks).
+  2. All Open Questions are resolved — none remain unanswered.
+  3. You are not waiting on any clarification from the user.
+  Use one of these markers on its own line at the end of your response:
     ${PLAN_COMPLETE_MARKER}
   or simply:
     ${DONE_MARKER}
-- Do NOT include these markers on incomplete drafts, clarifying questions, or while
-  any Open Question remains unresolved. The approval menu will not appear until all
+- Do NOT include these markers on intermediate drafts, while posing clarifying questions,
+  or while any Open Question remains unresolved. The approval menu will not appear until all
   Open Questions are cleared.`

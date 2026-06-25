@@ -218,9 +218,21 @@ export class FermentPlanStore implements PlanArtifactStore<FermentArtifactPayloa
 		}
 		const raw = readFileSync(ref.path, "utf-8")
 		const parsed = JSON.parse(raw) as Record<string, unknown>
+		// id falls back to ref.id (the filename stem) for legacy artifacts written
+		// before id was stored in the JSON body.
 		const id = typeof parsed.id === "string" ? parsed.id : ref.id
-		const name = typeof parsed.name === "string" ? parsed.name : ""
-		const goal = typeof parsed.goal === "string" ? parsed.goal : ""
+		// name and goal are required — throw a clear error rather than returning
+		// an empty string that silently produces a semantically invalid artifact.
+		if (typeof parsed.name !== "string" || parsed.name.trim() === "") {
+			throw new Error(`FermentPlanStore.load: missing required field 'name' in ${ref.path}`)
+		}
+		if (typeof parsed.goal !== "string" || parsed.goal.trim() === "") {
+			throw new Error(`FermentPlanStore.load: missing required field 'goal' in ${ref.path}`)
+		}
+		const name = parsed.name
+		const goal = parsed.goal
+		// status defaults to 'draft' for backwards compat with legacy artifacts
+		// that predate the status field.
 		const status = typeof parsed.status === "string" ? parsed.status : "draft"
 		const { id: _id, name: _name, goal: _goal, status: _status, ...rest } = parsed
 		void _id

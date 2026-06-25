@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest"
 import {
 	FERMENT_SCOPING_STOP_NUDGE,
+	FERMENT_SCOPING_STOP_NUDGE_INTERACTIVE,
+	FERMENT_SCOPING_STOP_NUDGE_ONESHOT,
 	MAX_PLANNING_STOP_NUDGES,
 	PLAN_MODE_STOP_NUDGE,
 	contentHasToolCall,
@@ -153,14 +155,42 @@ describe("PLAN_MODE_STOP_NUDGE", () => {
 	})
 })
 
-describe("FERMENT_SCOPING_STOP_NUDGE", () => {
-	it("references both scoping tools so it applies to one-shot and interactive", () => {
-		expect(FERMENT_SCOPING_STOP_NUDGE).toContain("scope_ferment")
-		expect(FERMENT_SCOPING_STOP_NUDGE).toContain("propose_ferment_scoping")
+describe("FERMENT_SCOPING_STOP_NUDGE (deprecated alias)", () => {
+	it("equals the interactive variant for backwards compatibility", () => {
+		expect(FERMENT_SCOPING_STOP_NUDGE).toBe(FERMENT_SCOPING_STOP_NUDGE_INTERACTIVE)
+	})
+})
+
+describe("FERMENT_SCOPING_STOP_NUDGE_INTERACTIVE", () => {
+	it("references propose_ferment_scoping (the interactive scoping tool)", () => {
+		expect(FERMENT_SCOPING_STOP_NUDGE_INTERACTIVE).toContain("propose_ferment_scoping")
+	})
+
+	it("does not reference scope_ferment (that is for one-shot)", () => {
+		expect(FERMENT_SCOPING_STOP_NUDGE_INTERACTIVE).not.toContain("scope_ferment")
 	})
 
 	it("references the P1/P2/P3 gates array required by the scoping schema", () => {
-		expect(FERMENT_SCOPING_STOP_NUDGE).toContain("P1/P2/P3")
+		expect(FERMENT_SCOPING_STOP_NUDGE_INTERACTIVE).toContain("P1/P2/P3")
+	})
+})
+
+describe("FERMENT_SCOPING_STOP_NUDGE_ONESHOT", () => {
+	it("references scope_ferment (the one-shot scoping tool)", () => {
+		expect(FERMENT_SCOPING_STOP_NUDGE_ONESHOT).toContain("scope_ferment")
+	})
+
+	it("does not reference propose_ferment_scoping (that is for interactive)", () => {
+		expect(FERMENT_SCOPING_STOP_NUDGE_ONESHOT).not.toContain("propose_ferment_scoping")
+	})
+
+	it("mentions ask_user routing to the judge", () => {
+		expect(FERMENT_SCOPING_STOP_NUDGE_ONESHOT).toContain("ask_user")
+		expect(FERMENT_SCOPING_STOP_NUDGE_ONESHOT).toContain("judge")
+	})
+
+	it("references the P1/P2/P3 gates array required by the scoping schema", () => {
+		expect(FERMENT_SCOPING_STOP_NUDGE_ONESHOT).toContain("P1/P2/P3")
 	})
 })
 
