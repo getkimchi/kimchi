@@ -20,9 +20,10 @@ export const DEFAULT_RESEARCH_GUIDELINES = `During **research** phase:
 export const DEFAULT_PLAN_GUIDELINES = `During **plan** phase:
 - Design BEFORE coding: file paths, interfaces, function signatures, data flow.
 - Save the spec as a markdown file in the Documents directory. The build phase reads from there — do not redo discovery in build.
-- List every file that will be created, modified, or deleted, with concrete paths.
-- Identify test files that need creation or update. State the testing strategy.
-- Call out non-obvious decisions and the alternatives you rejected — one line each.
+- Use the standard plan structure: Goal, Constraints, Chunks (with Files Changed, Depends On, Accept When, Test Coverage, Open Questions), Verification Strategy, Decision Log, Risks.
+- Every chunk must list concrete file paths in Files Changed — not globs, not vague descriptions. Interfaces and file paths beat prose.
+- Identify test files that need creation or update in each chunk's Test Coverage field.
+- Call out non-obvious decisions and the alternatives you rejected in the Decision Log.
 - Any library, runtime, or build-tool version assumption in the plan must either be verified with \`web_search\`/\`web_fetch\` or recorded as an explicit assumption in the Decision Log with a request for user confirmation. Do not let stale knowledge become an implicit plan dependency.
 - Keep the spec focused. Interfaces and file paths beat prose. Long plans waste downstream tokens.
 - **Plan self-validation**: After writing the spec, re-read it in a separate turn and cross-check every requirement. Flag gaps — missing features, ambiguous API choices, unhandled edge cases. This is a lightweight self check; it does not replace external verification for complex tasks.
