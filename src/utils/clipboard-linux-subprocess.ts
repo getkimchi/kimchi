@@ -38,10 +38,15 @@ export function createLinuxClipboard(): NativeClipboard {
 			const imageType = formats.find((f) => /^image\/(png|jpeg|jpg|gif|webp|bmp)/i.test(f)) ?? "image/png"
 			try {
 				const result = isWayland()
-					? spawnSync("wl-paste", ["--type", imageType], { timeout: 5000, encoding: "buffer" })
+					? spawnSync("wl-paste", ["--type", imageType], {
+							timeout: 5000,
+							encoding: "buffer",
+							maxBuffer: 50 * 1024 * 1024,
+						})
 					: spawnSync("xclip", ["-selection", "clipboard", "-t", imageType, "-o"], {
 							timeout: 5000,
 							encoding: "buffer",
+							maxBuffer: 50 * 1024 * 1024,
 						})
 				if (result.status !== 0 || !result.stdout) return []
 				return Array.from(result.stdout)
