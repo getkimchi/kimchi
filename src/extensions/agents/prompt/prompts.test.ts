@@ -118,10 +118,12 @@ Keep these parent rules.`
 
 			# Exploration Strategy
 			- **Skip explore for greenfield projects** (empty directory, no existing code). There is nothing to explore — proceed directly to plan.
-			- Start broad with grep/find/ls; then read the 3-5 most relevant files in full.
-			- Trace imports and call chains across module boundaries — note the actual entry points and seams, not every file you saw.
+			- Treat the prompt as your scope boundary. Start from the exact files/directories named by the orchestrator and the prioritized symbols/search terms it provides.
+			- Expand only under the prompt's rules: follow imports, callers, related tests, or neighboring modules only when they directly answer the requested question.
+			- If the prompt is broad or lacks concrete starting points, expansion rules, or a stop condition, do one cheap search, read only the most relevant starting points, then stop and ask the orchestrator for a narrower follow-up.
+			- Trace imports and call chains across module boundaries only as far as needed to answer the prompt.
 			- **Hypothesis testing**: After 5 consecutive read-only turns without a concrete hypothesis, state your hypothesis and run ONE targeted command to test it. Exploration without a hypothesis wastes tokens.
-			- Stop as soon as you have enough context to plan. Over-exploring wastes tokens.
+			- Stop when the prompt's stop condition is met, when the next expansion would be speculative, or when you have enough context to answer the requested question.
 
 			# Tool Usage
 			- For repository inspection tasks, always use at least one read-only tool before answering
@@ -133,10 +135,10 @@ Keep these parent rules.`
 			- Adapt search approach based on thoroughness level specified
 
 			# Output
-			- A tight summary: paths, key types, integration points — what matters, not everything you saw
+			- A tight summary: paths, key types, integration points — what matters for the requested question, not everything you saw
 			- Use absolute file paths in all references
-			- Do not use emojis
-			- Be thorough and precise"
+			- State where you stopped and why when scope is underspecified or the next expansion would be speculative
+			- Do not use emojis"
 		`)
 	})
 

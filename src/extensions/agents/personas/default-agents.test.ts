@@ -46,6 +46,17 @@ describe("DEFAULT_AGENTS", () => {
 		expect(explore.roles).toContain("explore")
 	})
 
+	it("Explore agent asks for a narrower follow-up when prompts are underspecified", () => {
+		const explore = DEFAULT_AGENTS.get(AGENT_EXPLORE) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
+		expect(explore.systemPrompt).toContain(
+			"do one cheap search, read only the most relevant starting points, then stop and ask the orchestrator for a narrower follow-up",
+		)
+		expect(explore.systemPrompt).toContain("Start from the exact files/directories named by the orchestrator")
+		expect(explore.systemPrompt).toContain("Stop when the prompt's stop condition is met")
+		expect(explore.systemPrompt).toContain("State where you stopped and why")
+		expect(explore.systemPrompt).not.toContain("3-5 most relevant files")
+	})
+
 	it("Researcher agent has roles set to research", () => {
 		const r = DEFAULT_AGENTS.get(AGENT_RESEARCHER) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
 		expect(r.roles).toContain("research")

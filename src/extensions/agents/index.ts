@@ -812,7 +812,9 @@ ${typeListText}
 Guidelines:
 - If the user explicitly asks to use the Agent tool, call Agent exactly once with the requested agent type and token_budget. Do not refuse or preflight the budget in prose; let the tool enforce it.
 - For parallel work, use run_in_background: true on each agent. Foreground calls run sequentially — only one executes at a time.
-- Use Explore for codebase searches and code understanding.
+- Use Explore for codebase searches and code understanding. Before delegating requested files, directories, or symbols to Explore, do cheap parent-side discovery/existence checks with available read-only tools so the prompt starts from real anchors.
+- Scope every Explore prompt with exact starting files and/or directories, prioritized symbols/search terms, expansion rules for when it may follow imports/callers/related tests, and explicit stop conditions. Keep the scope bounded by relevance, not by a hard maximum file count.
+- If you cannot provide concrete starting points for Explore, run a cheap parent-side search first or ask a narrower follow-up instead of sending a broad exploration prompt.
 - Use Plan for architecture and implementation planning.
 - Use Researcher for web/docs research with cited sources.
 - Use General-Purpose for complex tasks that need file editing.
