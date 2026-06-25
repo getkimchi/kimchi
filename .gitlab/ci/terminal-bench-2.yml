@@ -7,7 +7,7 @@ include:
   - component: $CI_SERVER_FQDN/castai/tooling/gitlab-ci-components/auth@v0.0.29
 
 workflow:
-  name: 'Terminal Bench 2 — $[[ inputs.agent ]] on $[[ inputs.model ]]'
+  name: 'Terminal Bench 2 — $[[ inputs.agent ]] · $[[ inputs.model ]] · $[[ inputs.target_ref ]] · multi-model=$[[ inputs.kimchi_multi_model ]] · ferment=$[[ inputs.kimchi_ferment_oneshot ]] · tasks_all=$[[ inputs.tasks_all ]]'
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       variables:
@@ -105,6 +105,32 @@ setup-image:
     - !reference [.gcloud-setup, script]
   script:
     - export SELECTED_TASKS_JSON='$[[ inputs.tasks ]]'
+    - |
+      echo "=========================================="
+      echo "Terminal Bench 2 — CI inputs"
+      echo "=========================================="
+      echo "agent:                    ${CODING_AGENT}"
+      echo "target_ref:               ${BENCHMARK_TARGET_REF}"
+      echo "tasks_all:                ${BENCH_TASKS_ALL}"
+      echo "tasks:                    ${SELECTED_TASKS_JSON:-}"
+      echo "model:                    ${MODEL}"
+      echo "kimchi_multi_model:       ${KIMCHI_MULTI_MODEL}"
+      echo "kimchi_ferment_oneshot:   ${KIMCHI_FERMENT_ONESHOT}"
+      echo "parallelism:              ${BENCH_PARALLELISM}"
+      echo "attempts:                 ${BENCH_ATTEMPTS}"
+      echo "timeout_multiplier:       ${BENCH_TIMEOUT_MULTIPLIER}"
+      echo "chunk:                    ${BENCH_CHUNK_INDEX}/${BENCH_CHUNK_COUNT}"
+      echo "------------------------------------------"
+      if [ "${CODING_AGENT}" = "kimchi" ]; then
+        model_label="single-model"
+        [ "${KIMCHI_MULTI_MODEL}" = "true" ] && model_label="multi-model"
+        extras=""
+        [ "${KIMCHI_FERMENT_ONESHOT}" = "true" ] && extras=" · ferment"
+        echo "Configuration: ${model_label}${extras}"
+      else
+        echo "Configuration: n/a (agent=${CODING_AGENT})"
+      fi
+      echo "=========================================="
     - python3 benchmark/scripts/gitlab/chunk_runner.py
   after_script:
     - python3 benchmark/scripts/gitlab/upload_gcs.py
