@@ -64,6 +64,7 @@ describe("phase guideline resolution", () => {
 			expect(result).toContain("version you are assuming")
 			expect(result).toContain("version/API assumption")
 			expect(result).toContain("do not bluff")
+			expect(result).toContain("Do not rely on training memory")
 			expect(result).not.toContain("AT MOST one")
 			expect(result).not.toContain("Skip web research")
 		})
@@ -71,35 +72,41 @@ describe("phase guideline resolution", () => {
 		it("default explore guideline contains research-nudge anchor", () => {
 			const result = resolvePhaseGuideline("explore", "nonexistent-model", registry)
 			expect(result).toContain("unfamiliar library")
+			expect(result).toContain("named third-party dependencies")
 		})
 
 		it("default plan guideline contains version-assumption-to-decision-log anchor", () => {
 			const result = resolvePhaseGuideline("plan", "nonexistent-model", registry)
 			expect(result).toContain("version assumption")
 			expect(result).toContain("Decision Log")
+			expect(result).toContain("I remember this")
 		})
 
 		it("default build guideline contains uncertain-API anchor", () => {
 			const result = resolvePhaseGuideline("build", "nonexistent-model", registry)
 			expect(result).toContain("uncertain about a library API")
+			expect(result).toContain("assume your knowledge may be stale")
 		})
 
 		it("kimi-k2.6 research composes default and family research layers", () => {
 			const result = resolvePhaseGuideline("research", "kimi-k2.6", registry)
 			expect(result).toContain("During **research** phase (Kimi family)")
 			expect(result).toContain("version assumption")
+			expect(result).toContain("Do not treat a library or kit")
 		})
 
 		it("minimax-m3 research composes default and family research layers", () => {
 			const result = resolvePhaseGuideline("research", "minimax-m3", registry)
 			expect(result).toContain("During **research** phase (MiniMax family)")
 			expect(result).toContain("hallucinating APIs")
+			expect(result).toContain("Do not treat named libraries")
 		})
 
 		it("nemotron-3-ultra-fp4 research composes default and family research layers", () => {
 			const result = resolvePhaseGuideline("research", "nemotron-3-ultra-fp4", registry)
 			expect(result).toContain("During **research** phase (Nemotron family)")
 			expect(result).toContain("training data is older")
+			expect(result).toContain("Do not treat named libraries")
 		})
 	})
 })

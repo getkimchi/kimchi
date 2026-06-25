@@ -492,6 +492,7 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain("version you are assuming")
 			expect(result).toContain("version/API assumption")
 			expect(result).toContain("do not bluff")
+			expect(result).toContain("Do not rely on training memory")
 			expect(result).not.toContain("AT MOST one")
 		})
 
@@ -521,6 +522,7 @@ describe("buildSystemPrompt", () => {
 			})
 			expect(result).toContain("## Phase Guidelines (build)")
 			expect(result).toContain("uncertain about a library API")
+			expect(result).toContain("assume your knowledge may be stale")
 		})
 	})
 })
