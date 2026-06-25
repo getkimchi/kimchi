@@ -14,6 +14,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from bench_config import is_retryable, should_retry_agent_timeout
 from classify import ERROR_RULES, ErrorRule  # noqa: F401 — ErrorRule re-exported for callers
 from outcome import Outcome
 
@@ -346,6 +347,15 @@ def metadata_string(metadata: dict[str, Any], key: str, default: str = "unknown"
 def metadata_dict(metadata: dict[str, Any], key: str) -> dict[str, Any]:
     value = metadata.get(key)
     return value if isinstance(value, dict) else {}
+
+
+def metadata_bool(metadata: dict[str, Any], key: str, default: bool = False) -> bool:
+    value = metadata.get(key)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes")
+    return default
 
 
 def split_model_ref(value: str | None) -> tuple[str, str]:
@@ -759,6 +769,11 @@ def build_run(
         },
         "configuration": metadata_string(metadata, "configuration", "na"),
         "model": metadata_string(metadata, "model"),
+        "retry_agent_timeout": metadata_bool(
+            metadata_dict(metadata, "parameters"),
+            "retry_agent_timeout",
+            default=should_retry_agent_timeout(),
+        ),
     }
 
 
@@ -816,11 +831,6 @@ def build_summary(
         idx for idx, meta in chunk_metas.items() if meta.get("exhausted")
     )
 
-    def _is_retryable(t: TrialSummary) -> bool:
-        return t.outcome == Outcome.AGENT_TIMEOUT or (
-            t.outcome == Outcome.ERROR and t.error_category == "infra"
-        )
-
     passed = sum(1 for t in trials if t.outcome == Outcome.SCORED_PASS)
     # Exhausted tasks: chunks that ran out of retries and still had failures.
     exhausted_tasks: set[str] = set()
@@ -841,7 +851,7 @@ def build_summary(
     # failed_quality: outcome is scored_fail (includes tasks still retrying)
     failed_quality = sum(1 for t in trials if t.outcome == Outcome.SCORED_FAIL)
     # infra_retries: count of tasks that hit a retryable outcome at least once
-    infra_retries = sum(1 for t in trials if _is_retryable(t))
+    infra_retries = sum(1 for t in trials if is_retryable(t.outcome, t.error_category))
 
     return {
         "schema_version": SUMMARY_SCHEMA_VERSION,

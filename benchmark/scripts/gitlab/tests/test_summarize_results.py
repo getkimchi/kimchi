@@ -412,5 +412,41 @@ class WriteSummaryPrintsTableTest(unittest.TestCase):
             self.assertIn("Final verdict", stdout)
 
 
+class BuildRunRetryAgentTimeoutTest(unittest.TestCase):
+    """build_run must surface parameters.retry_agent_timeout into the GCS-uploaded summary.json."""
+
+    GENERATED_AT = "2026-06-25T00:00:00Z"
+
+    def _metadata(self, retry_value):
+        return {
+            "benchmark": "terminal-bench-2",
+            "coding_agent": "kimchi",
+            "model": "kimchi-dev/kimi-k2.6",
+            "configuration": "single-model",
+            "parameters": {"retry_agent_timeout": retry_value},
+            "gitlab": {"pipeline_id": "42", "target_commit_sha": "deadbeef"},
+            "gcs": {"run_id": "gitlab-p42"},
+        }
+
+    def test_retry_agent_timeout_true_propagates(self) -> None:
+        run = summarize_results.build_run(self._metadata(True), None, None, self.GENERATED_AT)
+        self.assertIs(run["retry_agent_timeout"], True)
+
+    def test_retry_agent_timeout_false_propagates(self) -> None:
+        run = summarize_results.build_run(self._metadata(False), None, None, self.GENERATED_AT)
+        self.assertIs(run["retry_agent_timeout"], False)
+
+    def test_retry_agent_timeout_accepts_string_true(self) -> None:
+        # YAML may surface the input as "true"/"false" strings; helper must coerce.
+        run = summarize_results.build_run(self._metadata("true"), None, None, self.GENERATED_AT)
+        self.assertIs(run["retry_agent_timeout"], True)
+
+    def test_retry_agent_timeout_falls_back_to_env_when_missing(self) -> None:
+        metadata = self._metadata(0)  # non-bool, non-string: default kicks in
+        run = summarize_results.build_run(metadata, None, None, self.GENERATED_AT)
+        # Falls back to should_retry_agent_timeout() — default True when env unset.
+        self.assertIsInstance(run["retry_agent_timeout"], bool)
+
+
 if __name__ == "__main__":
     unittest.main()

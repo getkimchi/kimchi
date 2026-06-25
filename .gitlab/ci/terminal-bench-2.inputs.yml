@@ -129,6 +129,10 @@ inputs:
     description: "Run each task through Kimchi ferment one-shot workflow. Ignored unless agent is kimchi."
     type: boolean
     default: false
+  retry_agent_timeout:
+    description: "Retry chunks whose agent runs hit an AgentTimeoutError verdict. Infra errors are always retried."
+    type: boolean
+    default: true
   parallelism:
     description: "Maximum number of benchmark tasks to run concurrently."
     type: number

@@ -48,7 +48,9 @@ from bench_config import (
     ENV_KIMCHI_FERMENT_ONESHOT,
     ENV_KIMCHI_MULTI_MODEL,
     ENV_MODEL,
+    is_retryable,
     parse_model,
+    should_retry_agent_timeout,
 )
 from chunk_slicing import slice_tasks
 from classify import classify
@@ -200,7 +202,8 @@ def process_trial_results(
     """Classify each trial and write enriched results to the local workspace.
 
     `expected_tasks` is a list of BARE task names (e.g. ['task-a', 'task-b']).
-    Returns the list of tasks that need retry (infra_error=True or missing).
+    Returns the list of tasks that need retry (infra_error or missing, or
+    AgentTimeoutError when BENCH_RETRY_AGENT_TIMEOUT=true).
 
     No GCS uploads happen here. The summary job tars the entire
     `BENCHMARK_RESULTS_DIR` (including this chunk's slice under
@@ -232,10 +235,7 @@ def process_trial_results(
         }
         (trial_dir / "result.json").write_text(json.dumps(enriched, indent=2) + "\n")
 
-        if (
-            verdict.outcome == Outcome.AGENT_TIMEOUT
-            or (verdict.outcome == Outcome.ERROR and verdict.error_category == "infra")
-        ):
+        if is_retryable(verdict.outcome, verdict.error_category):
             needs_retry.append(task_name)
 
     return needs_retry
@@ -358,6 +358,7 @@ def _write_run_metadata(results_dir: Path, selected_tasks: list[str]) -> None:
             "attempts": os.environ.get("BENCH_ATTEMPTS", "1"),
             "parallelism": os.environ.get("BENCH_PARALLELISM", "1"),
             "timeout_multiplier": os.environ.get("BENCH_TIMEOUT_MULTIPLIER", "1.0"),
+            "retry_agent_timeout": should_retry_agent_timeout(),
         },
         "results_dir": str(results_dir),
         "runner": {
@@ -438,10 +439,7 @@ def _print_heartbeat(
                 print(f"[chunk-{chunk_index}] trial={trial_dir.name} reward={reward_text} passed", flush=True)
             else:
                 verdict = classify(trial_dir)
-                needs_retry_trial = (
-                    verdict.outcome == Outcome.AGENT_TIMEOUT
-                    or (verdict.outcome == Outcome.ERROR and verdict.error_category == "infra")
-                )
+                needs_retry_trial = is_retryable(verdict.outcome, verdict.error_category)
                 retry_label = f"will-retry({verdict.outcome})" if needs_retry_trial else "final"
                 cause = verdict.error_subcategory or _get_exception_type(result_path) or verdict.outcome
                 print(
@@ -828,14 +826,18 @@ def main() -> int:
             time.sleep(poll_interval)
             now = time.monotonic()
             if proc.poll() is None and now >= next_heartbeat:
-                _print_heartbeat(results_dir, int(now - started), len(needs_retry), reported_trials, chunk_index)
+                _print_heartbeat(
+                    results_dir, int(now - started), len(needs_retry), reported_trials, chunk_index
+                )
                 next_heartbeat = now + _HEARTBEAT_INTERVAL
     finally:
         signal.signal(signal.SIGINT, prev_sigint)
         signal.signal(signal.SIGTERM, prev_sigterm)
 
     harbor_status = proc.wait()
-    _print_heartbeat(results_dir, int(time.monotonic() - started), len(needs_retry), reported_trials, chunk_index)
+    _print_heartbeat(
+        results_dir, int(time.monotonic() - started), len(needs_retry), reported_trials, chunk_index
+    )
     print(f"[chunk-{chunk_index}] Harbor exited with status {harbor_status}", flush=True)
 
     # Second pass: classify what Harbor produced

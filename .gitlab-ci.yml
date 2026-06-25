@@ -13,6 +13,7 @@ include:
       kimchi_multi_model: $[[ inputs.kimchi_multi_model ]]
       kimchi_ferment_oneshot: $[[ inputs.kimchi_ferment_oneshot ]]
       tasks_all: $[[ inputs.tasks_all ]]
+      retry_agent_timeout: $[[ inputs.retry_agent_timeout ]]
       parallelism: $[[ inputs.parallelism ]]
       attempts: $[[ inputs.attempts ]]
       timeout_multiplier: $[[ inputs.timeout_multiplier ]]

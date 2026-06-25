@@ -98,6 +98,7 @@ setup-image:
     BENCH_CHUNK_INDEX: "$CHUNK"
     BENCH_CHUNK_COUNT: 3
     BENCH_JOB_MAX_RETRIES: 2
+    BENCH_RETRY_AGENT_TIMEOUT: "$[[ inputs.retry_agent_timeout ]]"
     DOCKER_HOST: tcp://docker:2375
     DOCKER_TLS_CERTDIR: ""
   before_script:
@@ -119,6 +120,7 @@ setup-image:
       echo "parallelism:              ${BENCH_PARALLELISM}"
       echo "attempts:                 ${BENCH_ATTEMPTS}"
       echo "timeout_multiplier:       ${BENCH_TIMEOUT_MULTIPLIER}"
+      echo "retry_agent_timeout:      ${BENCH_RETRY_AGENT_TIMEOUT}"
       echo "chunk:                    ${BENCH_CHUNK_INDEX}/${BENCH_CHUNK_COUNT}"
       echo "------------------------------------------"
       if [ "${CODING_AGENT}" = "kimchi" ]; then
@@ -160,6 +162,7 @@ terminal-bench-2-summary:
   variables:
     <<: *gcp-auth-vars
     BENCHMARK_RESULTS_DIR: benchmark/terminal-bench-2/jobs
+    BENCH_RETRY_AGENT_TIMEOUT: "$[[ inputs.retry_agent_timeout ]]"
     DEBIAN_FRONTEND: noninteractive
     FF_TIMESTAMPS: "true"
     GCS_UPLOAD_REQUIRED: "true"

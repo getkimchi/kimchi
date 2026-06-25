@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import os
 
+from outcome import Outcome
+
 # --- Model ---
 ENV_MODEL = "MODEL"
 DEFAULT_MODEL = "kimchi-dev/minimax-m3"
@@ -98,3 +100,27 @@ DEFAULT_SELECTED_TASKS_JSON = "[]"
 
 ENV_BENCH_TASKS_ALL = "BENCH_TASKS_ALL"
 DEFAULT_BENCH_TASKS_ALL = "false"
+
+# --- Retry behavior ---
+ENV_BENCH_RETRY_AGENT_TIMEOUT = "BENCH_RETRY_AGENT_TIMEOUT"
+DEFAULT_BENCH_RETRY_AGENT_TIMEOUT = True
+
+
+def should_retry_agent_timeout() -> bool:
+    """Return True when chunks should retry AgentTimeoutError verdicts.
+
+    Reads $BENCH_RETRY_AGENT_TIMEOUT at call time so test fixtures can override it.
+    """
+    raw = os.environ.get(ENV_BENCH_RETRY_AGENT_TIMEOUT, str(DEFAULT_BENCH_RETRY_AGENT_TIMEOUT)).strip().lower()
+    return raw in ("true", "1", "yes")
+
+
+def is_retryable(outcome: Outcome, error_category: str | None) -> bool:
+    """Single source of truth: should this verdict outcome trigger a retry?
+
+    Infra errors (outcome=ERROR, error_category='infra') are always retried.
+    AgentTimeoutError retries are controlled by $BENCH_RETRY_AGENT_TIMEOUT (default true).
+    """
+    if outcome == Outcome.AGENT_TIMEOUT:
+        return should_retry_agent_timeout()
+    return outcome == Outcome.ERROR and error_category == "infra"
