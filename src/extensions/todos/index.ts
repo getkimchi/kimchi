@@ -1,3 +1,4 @@
+import type { AssistantMessage } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { registerTodosCommand } from "./command.js"
@@ -104,6 +105,31 @@ function isTerminalAssistantTurn(
 	return message.stopReason !== "aborted" && message.stopReason !== "error"
 }
 
+function isAssistantMessage(message: unknown): message is AssistantMessage {
+	return isRecord(message) && message.role === "assistant" && Array.isArray(message.content)
+}
+
+function hasAssistantToolCall(message: AssistantMessage): boolean {
+	return message.content.some((block) => block.type === "toolCall")
+}
+
+function isFinalAnswerCandidate(message: AssistantMessage): boolean {
+	return message.stopReason !== "toolUse" && message.stopReason !== "aborted" && message.stopReason !== "error"
+}
+
+function clearAssistantText(message: AssistantMessage): void {
+	for (const block of message.content) {
+		if (block.type === "text") block.text = ""
+	}
+}
+
+function assistantWithoutText(message: AssistantMessage): AssistantMessage {
+	return {
+		...message,
+		content: message.content.filter((block) => block.type !== "text"),
+	}
+}
+
 export default function todosExtension(pi: ExtensionAPI): void {
 	registerTodosTool(pi)
 	registerTodoPromptBlock(pi)
@@ -123,6 +149,8 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		workSinceTodoWrite = false
 		reconcileSteeredTodosKey = undefined
 	}
+
+	const hasPendingTodoReconciliation = () => workSinceTodoWrite && currentTodoStateKey() !== undefined
 
 	const maybeSteerTodoReconciliation = () => {
 		if (!workSinceTodoWrite) return
@@ -174,6 +202,19 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	pi.on("tool_execution_end", (event) => {
 		if (event.isError || TODO_REPLAY_TOOL_NAME_SET.has(event.toolName)) return
 		if (currentTodoStateKey()) workSinceTodoWrite = true
+	})
+
+	pi.on("message_update", (event) => {
+		if (!hasPendingTodoReconciliation() || !isAssistantMessage(event.message)) return
+		if (hasAssistantToolCall(event.message) || !isFinalAnswerCandidate(event.message)) return
+		clearAssistantText(event.message)
+	})
+
+	pi.on("message_end", (event) => {
+		if (!hasPendingTodoReconciliation() || !isAssistantMessage(event.message)) return
+		if (hasAssistantToolCall(event.message) || !isFinalAnswerCandidate(event.message)) return
+		clearAssistantText(event.message)
+		return { message: assistantWithoutText(event.message) }
 	})
 
 	pi.on("context", (event) => {

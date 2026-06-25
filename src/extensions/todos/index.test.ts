@@ -288,6 +288,40 @@ describe("todos extension session state", () => {
 		expect(harness.sendMessage).toHaveBeenCalledTimes(1)
 	})
 
+	it("suppresses premature final assistant text while stale todos remain", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+
+		applyWriteTodos({ todos: [{ content: "report package name", status: "in_progress" }] })
+		await harness.fire("tool_execution_end", { toolName: "read", isError: false }, ctx)
+
+		const message = {
+			role: "assistant" as const,
+			content: [{ type: "text" as const, text: "@kimchi-dev/cli" }],
+			stopReason: "stop",
+		}
+
+		await harness.fire("message_update", { message, assistantMessageEvent: {} }, ctx)
+		expect(message.content[0].text).toBe("")
+
+		message.content[0].text = "@kimchi-dev/cli"
+		const result = (await harness.fire("message_end", { message }, ctx)) as {
+			message?: { content: unknown[] }
+		}
+		expect(message.content[0].text).toBe("")
+		expect(result.message?.content).toEqual([])
+
+		await harness.fire("turn_end", { message, toolResults: [] }, ctx)
+		expect(harness.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				details: { reason: "reconcile_todos" },
+				content: [expect.objectContaining({ text: expect.stringContaining("report package name") })],
+			}),
+			{ deliverAs: "followUp" },
+		)
+	})
+
 	it("does not reconcile immediately after only writing todos", async () => {
 		const harness = createTodosHarness()
 		const ctx = createContext("session", [])
@@ -317,6 +351,37 @@ describe("todos extension session state", () => {
 
 		expect(setWidget).toHaveBeenCalledTimes(2)
 		expect(harness.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("does not auto-ask blocked todo questions after the terminal turn settles", async () => {
+		const harness = createTodosHarness()
+		const custom = vi.fn(async () => ({ questions: [], answers: [], cancelled: true }))
+		const ctx = createContext("session", [], {
+			hasUI: true,
+			ui: {
+				theme,
+				setWidget: vi.fn(),
+				setStatus: vi.fn(),
+				custom,
+			} as unknown as ExtensionContext["ui"],
+		})
+		await harness.fire("session_start", { reason: "new" }, ctx)
+
+		applyWriteTodos({ todos: [{ id: 1, content: "Get approval code", status: "blocked" }] })
+		applyWriteTodos({
+			todos: [
+				{ id: 1, content: "Get approval code", status: "blocked" },
+				{ id: 2, content: "Get target environment", status: "blocked" },
+			],
+		})
+		await Promise.resolve()
+
+		expect(custom).not.toHaveBeenCalled()
+
+		await harness.fire("turn_end", terminalTurn(), ctx)
+		await Promise.resolve()
+
+		expect(custom).not.toHaveBeenCalled()
 	})
 
 	it("does not reconcile on non-terminal turns", async () => {

@@ -12,6 +12,12 @@ function registeredQuestionnaireTool() {
 					onUpdate: unknown,
 					ctx: unknown,
 				) => Promise<{ content: { text: string }[]; details: { cancelled: boolean } }>
+				renderResult: (
+					result: { content: { type: string; text: string }[]; details?: unknown },
+					options: unknown,
+					theme: { fg: (_color: string, text: string) => string; bold: (text: string) => string },
+					context: unknown,
+				) => { render: (width: number) => string[] }
 		  }
 		| undefined
 	const pi = {
@@ -247,6 +253,41 @@ describe("formatAnswerText", () => {
 			},
 		]
 		expect(formatAnswerText(questions, answers)).toBe("Q1: user selected: A, B")
+	})
+})
+
+describe("questionnaire result renderer", () => {
+	it("renders question labels instead of raw ids", () => {
+		const tool = registeredQuestionnaireTool()
+		const text = tool
+			.renderResult(
+				{
+					content: [{ type: "text", text: "Scope: user selected: 1. Auth module" }],
+					details: {
+						cancelled: false,
+						questions: [
+							{
+								id: "scope",
+								label: "Scope",
+								prompt: "What scope?",
+								type: "single",
+								options: [{ id: "auth", label: "Auth module" }],
+								allowOther: false,
+								required: true,
+							},
+						],
+						answers: [{ id: "scope", value: "auth", label: "Auth module", wasCustom: false, index: 1 }],
+					},
+				},
+				undefined,
+				{ fg: (_color, value) => value, bold: (value) => value },
+				undefined,
+			)
+			.render(80)
+			.join("\n")
+
+		expect(text).toContain("Scope: 1. Auth module")
+		expect(text).not.toContain("scope: 1. Auth module")
 	})
 })
 

@@ -263,6 +263,7 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 				return new Text(theme.fg("warning", "Cancelled"), 0, 0)
 			}
 			const lines = details.answers.map((a) => {
+				const qLabel = details.questions.find((q) => q.id === a.id)?.label || a.id
 				if (a.values && a.labels) {
 					const items = a.labels
 						.map((l, i) => {
@@ -270,13 +271,13 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 							return idx ? `${idx}. ${l}` : l
 						})
 						.join(", ")
-					return `${theme.fg("success", "\u2713 ")}${theme.fg("accent", a.id)}: ${items}`
+					return `${theme.fg("success", "\u2713 ")}${theme.fg("accent", qLabel)}: ${items}`
 				}
 				if (a.wasCustom) {
-					return `${theme.fg("success", "\u2713 ")}${theme.fg("accent", a.id)}: ${theme.fg("muted", "(wrote) ")}${a.label}`
+					return `${theme.fg("success", "\u2713 ")}${theme.fg("accent", qLabel)}: ${theme.fg("muted", "(wrote) ")}${a.label}`
 				}
 				const display = a.index ? `${a.index}. ${a.label}` : a.label
-				return `${theme.fg("success", "\u2713 ")}${theme.fg("accent", a.id)}: ${display}`
+				return `${theme.fg("success", "\u2713 ")}${theme.fg("accent", qLabel)}: ${display}`
 			})
 			return new Text(lines.join("\n"), 0, 0)
 		},
