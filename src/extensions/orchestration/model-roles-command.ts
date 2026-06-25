@@ -13,8 +13,7 @@ import { getAvailableModels } from "../../startup-context.js"
 import { setProcessOrchestratorRef } from "../kimchi-process.js"
 import { withSuppressedModelSelectGuard } from "../model-switch.js"
 import { getMultiModelEnabled } from "../prompt-construction/prompt-enrichment.js"
-import { type QuestionFormResult, createQuestionForm } from "../questionnaire-form.js"
-import { type Question, YES_NO_OPTIONS } from "../questionnaire-reducer.js"
+import { type Question, type QuestionFormResult, YES_NO_OPTIONS, createQuestionForm } from "../questionnaire/index.js"
 import {
 	type ModelCustomMetadata,
 	deleteModelMetadata,

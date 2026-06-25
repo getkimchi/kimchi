@@ -14,6 +14,8 @@
  * `tui`/`editor`/`done` references.
  */
 
+import { CUSTOM_OPTION_ID, CUSTOM_OPTION_LABEL } from "./constants.js"
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type QuestionType = "single" | "multi" | "text" | "confirm"
@@ -45,12 +47,22 @@ export type RenderOption = QuestionOption & { isOther?: boolean }
 export interface Answer {
 	id: string
 	value: string
+	/**
+	 * Label should always be set to value (user input) when `wasCustom` is true.
+	 * Otherwise, it is the label of the option.
+	 */
 	label: string
 	wasCustom: boolean
+	/**
+	 * 1-based position of the selected option in the rendered option list.
+	 */
 	index?: number
 	// multi-select fields
 	values?: string[]
 	labels?: string[]
+	/**
+	 * 1-based positions of the selected options (if multiple) in the rendered option list.
+	 */
 	indices?: number[]
 }
 
@@ -119,7 +131,7 @@ export function currentOptions(state: QuestionnaireState): RenderOption[] {
 	if (!q || q.type === "text") return []
 	const opts: RenderOption[] = [...q.options]
 	if (q.allowOther) {
-		opts.push({ id: "__other__", label: q.otherLabel ?? "Type your own answer", isOther: true })
+		opts.push({ id: CUSTOM_OPTION_ID, label: q.otherLabel ?? CUSTOM_OPTION_LABEL, isOther: true })
 	}
 	return opts
 }
@@ -193,7 +205,7 @@ function mutableCurrentOptions(s: MutableState): RenderOption[] {
 	if (!q || q.type === "text") return []
 	const opts: RenderOption[] = [...q.options]
 	if (q.allowOther) {
-		opts.push({ id: "__other__", label: q.otherLabel ?? "Type your own answer", isOther: true })
+		opts.push({ id: CUSTOM_OPTION_ID, label: q.otherLabel ?? CUSTOM_OPTION_LABEL, isOther: true })
 	}
 	return opts
 }

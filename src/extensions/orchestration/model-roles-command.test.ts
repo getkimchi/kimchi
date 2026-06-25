@@ -29,12 +29,12 @@ vi.mock("./model-metadata.js", () => ({
 // Spy on the shared form factory so we can assert what questions / header
 // were rendered without booting the real TUI. The factory itself is loaded
 // for real so its reducer wiring is exercised end-to-end.
-import * as questionnaireForm from "../questionnaire-form.js"
-import type { QuestionFormResult } from "../questionnaire-form.js"
-import type { Answer, Question } from "../questionnaire-reducer.js"
+import * as questionnaireForm from "../questionnaire/questionnaire-form.js"
+import type { QuestionFormResult } from "../questionnaire/questionnaire-form.js"
+import type { Answer, Question } from "../questionnaire/questionnaire-reducer.js"
 
-vi.mock("../questionnaire-form.js", async () => {
-	const actual = await vi.importActual<typeof questionnaireForm>("../questionnaire-form.js")
+vi.mock("../questionnaire/questionnaire-form.js", async () => {
+	const actual = await vi.importActual<typeof questionnaireForm>("../questionnaire/questionnaire-form.js")
 	return {
 		...actual,
 		createQuestionForm: vi.fn(actual.createQuestionForm),

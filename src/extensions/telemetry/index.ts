@@ -78,6 +78,18 @@ const stepStartTimes = new Map<string, number>()
 /** User steering interaction count during a ferment, keyed by fermentId. */
 const fermentSteeringCounts = new Map<string, number>()
 
+/**
+ * Steering count snapshot at phase activation, keyed by "${fermentId}:${phaseId}".
+ * Used to compute per-phase steering delta.
+ */
+const phaseSteeringSnapshots = new Map<string, number>()
+
+/**
+ * Steering count snapshot at step start, keyed by "${fermentId}:${phaseId}:${stepId}".
+ * Used to compute per-step steering delta.
+ */
+const stepSteeringSnapshots = new Map<string, number>()
+
 /** @internal — exposed for testing only */
 export function _resetFermentTrackingState(): void {
 	phaseTokenSnapshots.clear()
@@ -86,6 +98,8 @@ export function _resetFermentTrackingState(): void {
 	phaseStartTimes.clear()
 	stepStartTimes.clear()
 	fermentSteeringCounts.clear()
+	phaseSteeringSnapshots.clear()
+	stepSteeringSnapshots.clear()
 }
 
 /** @internal — exposed for testing only */
@@ -208,6 +222,12 @@ function cleanupFermentState(fermentId: string): void {
 	for (const key of stepStartTimes.keys()) {
 		if (key.startsWith(`${fermentId}:`)) stepStartTimes.delete(key)
 	}
+	for (const key of phaseSteeringSnapshots.keys()) {
+		if (key.startsWith(`${fermentId}:`)) phaseSteeringSnapshots.delete(key)
+	}
+	for (const key of stepSteeringSnapshots.keys()) {
+		if (key.startsWith(`${fermentId}:`)) stepSteeringSnapshots.delete(key)
+	}
 }
 
 function onFermentStarted(raw: unknown): void {
@@ -313,6 +333,7 @@ function onPhaseStarted(raw: unknown): void {
 	const payload = raw as FermentPhaseStartedPayload
 	const phaseKey = `${payload.fermentId}:${payload.phaseId}`
 	phaseStartTimes.set(phaseKey, Date.now())
+	phaseSteeringSnapshots.set(phaseKey, fermentSteeringCounts.get(payload.fermentId) ?? 0)
 	snapshotPhaseTokens(payload.fermentId, payload.phaseId)
 	ctx.emitWithIds(
 		"ferment.phase.started",
@@ -329,6 +350,9 @@ function onPhaseCompleted(raw: unknown): void {
 	const phaseKey = `${payload.fermentId}:${payload.phaseId}`
 	const phaseStartMs = phaseStartTimes.get(phaseKey) ?? 0
 	phaseStartTimes.delete(phaseKey)
+	const steeringAtStart = phaseSteeringSnapshots.get(phaseKey) ?? 0
+	phaseSteeringSnapshots.delete(phaseKey)
+	const steeringCount = (fermentSteeringCounts.get(payload.fermentId) ?? 0) - steeringAtStart
 	const { deltaInput, deltaOutput } = consumePhaseTokenDelta(payload.fermentId, payload.phaseId)
 	// Accumulate into the ferment-level running total.
 	const ft = fermentTokenTotals.get(payload.fermentId)
@@ -343,6 +367,7 @@ function onPhaseCompleted(raw: unknown): void {
 		delta_input_tokens: deltaInput,
 		delta_output_tokens: deltaOutput,
 		block_retries: payload.blockRetries,
+		steering_count: steeringCount,
 		model: ctx.currentModel,
 	}
 	if (payload.grade) attrs.grade = payload.grade
@@ -356,6 +381,7 @@ function onStepStarted(raw: unknown): void {
 	const payload = raw as FermentStepStartedPayload
 	const key = `${payload.fermentId}:${payload.phaseId}:${payload.stepId}`
 	stepStartTimes.set(key, Date.now())
+	stepSteeringSnapshots.set(key, fermentSteeringCounts.get(payload.fermentId) ?? 0)
 	ctx.emitWithIds(
 		"ferment.step.started",
 		{ ferment_id: payload.fermentId, phase_id: payload.phaseId, step_id: payload.stepId },
@@ -371,10 +397,14 @@ function onStepCompleted(raw: unknown): void {
 	const key = `${payload.fermentId}:${payload.phaseId}:${payload.stepId}`
 	const startMs = stepStartTimes.get(key) ?? Date.now()
 	stepStartTimes.delete(key)
+	const steeringAtStart = stepSteeringSnapshots.get(key) ?? 0
+	stepSteeringSnapshots.delete(key)
+	const steeringCount = (fermentSteeringCounts.get(payload.fermentId) ?? 0) - steeringAtStart
 	const attrs: Record<string, string | number | boolean> = {
 		step_index: payload.stepIndex,
 		duration_ms: Date.now() - startMs,
 		success: payload.success,
+		steering_count: steeringCount,
 		model: ctx.currentModel,
 	}
 	if (payload.grade) attrs.grade = payload.grade

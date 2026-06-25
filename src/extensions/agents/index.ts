@@ -1691,6 +1691,10 @@ Model selection — YOU choose based on task complexity:
 			return
 		}
 
+		if (ctx.mode !== "tui") {
+			return
+		}
+
 		const { ConversationViewer } = await import("./ui/conversation-viewer.js")
 		const session = record.session
 		const activity = agentActivity.get(record.id)

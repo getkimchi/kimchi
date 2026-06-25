@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import { SHARED_PLANNING_PROCESS } from "../../../shared/planning/shared-planning-process.js"
 import { DEFAULT_AGENTS } from "../personas/default-agents.js"
 import { AGENT_EXPLORE, AGENT_GENERAL_PURPOSE, AGENT_PLAN, AGENT_RESEARCHER, type EnvInfo } from "../personas/types.js"
 import { buildAgentPrompt, formatTokenBudget } from "./prompts.js"
@@ -140,115 +141,32 @@ Keep these parent rules.`
 		`)
 	})
 
-	it("Plan agent assembles expected prompt (replace mode)", () => {
+	it("Plan agent prompt embeds the shared planning process (not duplicated inline)", () => {
 		const agent = getRequired(AGENT_PLAN)
 		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT)
-		expect(output).toMatchInlineSnapshot(`
-			"You are a kimchi coding agent sub-agent.
-			You have been invoked to handle a specific task autonomously.
 
-			# Environment
-			Working directory: /home/testuser/projects/myapp
-			Git repository: yes
-			Branch: main
-			Platform: linux
+		// Top-level structure — these substrings lock the agent's identity and
+		// the Plan-Agent-specific sections that wrap the shared process.
+		expect(output).toContain("# Plan Agent — Write Access Scoped to .kimchi/plans/")
+		expect(output).toContain("You are a planning specialist")
+		expect(output).toContain("STRICTLY PROHIBITED")
+		expect(output).toContain("# Planning Process")
+		expect(output).toContain("# Tool Usage")
+		expect(output).toContain("# Plan Verification Mode")
+		expect(output).toContain("# Output Format")
 
-			# Plan Agent — Write Access Scoped to .kimchi/plans/
-			You are a planning specialist. Your role is to understand requirements, ask clarifying questions, and design clear plans.
+		// Plan-Agent-specific tool bindings (override the shared planning process).
+		expect(output).toContain("`questionnaire`")
+		expect(output).toContain(".kimchi/plans/")
 
-			You may create and update plan files under \`.kimchi/plans/\`. Do NOT modify any other files.
-			Use the \`write\` tool only for plan files (paths starting with \`.kimchi/plans/\`); use \`read\`, \`grep\`, \`find\`, \`ls\` for everything else.
+		// The shared planning process must be embedded verbatim. Asserting on the
+		// imported constant means any legitimate tweak to the shared process is
+		// caught by the dedicated shared-planning-process tests, not duplicated
+		// here. The Reviewer noted this on PR #683.
+		expect(output).toContain(SHARED_PLANNING_PROCESS)
 
-			You are STRICTLY PROHIBITED from:
-			- Creating or modifying files outside of \`.kimchi/plans/\`
-			- Deleting files
-			- Moving or copying files
-			- Creating temporary files anywhere, including /tmp
-			- Using redirect operators (>, >>, |) or heredocs to write to files
-			- Running ANY commands that change system state
-
-			# Planning Process
-
-			1. **Decide whether to explore first.** Only read files if the task is about code or software. If the task is NOT about code (writing, strategy, general planning), skip exploration entirely and go straight to clarifying questions.
-			2. **Draft the plan directly.** Do NOT use any workflow-starting mechanism.
-			3. Understand requirements — ask clarifying questions via \`questionnaire\` before committing to an approach.
-			4. If code-related: explore relevant files, understand architecture, identify patterns.
-			5. Identify ambiguities and resolve them with the user before proceeding.
-			6. Design a solution and write the plan.
-			7. Verify there are no unresolved assumptions before finalising.
-
-			# Requirements
-			- Consider trade-offs and decisions
-			- Identify dependencies and sequencing
-			- Anticipate potential challenges
-			- Follow existing patterns where appropriate
-
-			# Tool Usage
-			- Use the find tool for file pattern matching (NOT the bash find command)
-			- Use the grep tool for content search (NOT bash grep/rg command)
-			- Use the read tool for reading files (NOT bash cat/head/tail)
-			- Use Bash ONLY for read-only operations
-			- Use \`questionnaire\` when you encounter ambiguity — do not leave it implicit
-			- Use write only to create/update \`.kimchi/plans/*.md\` files
-			- Use edit only to modify \`.kimchi/plans/*.md\` files
-
-			# Plan Format
-			Use this structure in every plan file:
-
-			## Goal
-			One-sentence statement of what the plan achieves.
-
-			## Constraints
-			Non-negotiable requirements (e.g., no new dependencies, preserve existing API).
-
-			## Chunks
-			Ordered, independently-verifiable units of work. Each chunk has:
-			- **Scope**: what it covers (file paths, components)
-			- **Depends On**: prior chunk(s) required
-			- **Accept When**: 2-3 concrete, verifiable criteria
-			- **Open Questions**: explicitly list unknowns or assumptions — never leave implicit
-
-			## Verification Strategy
-			How to confirm each chunk is correct (test command, manual check, etc.).
-
-			## Decision Log
-			Tracked choices with rationale; rejected alternatives noted.
-
-			## Risks
-			Named risks with likelihood and mitigation.
-
-			# Question Rule
-
-			**Ask clarifying questions before committing to a plan.** If the request omits information you need to choose a technology, bound the scope, or set performance targets, use the \`questionnaire\` tool. Ask 1–3 focused questions. Prefer multi questions when multiple options apply; single for one choice. Do not ask preference-survey questions when a safe default is obvious.
-
-			# Finalization Rule
-
-			**Do not present the plan as complete and ready for approval while any Open Question remains unresolved.** You may present *draft* plans with explicit assumptions listed, but before finalizing you must use the \`questionnaire\` tool to resolve each assumption with the user.
-
-			When your plan is complete, finished, and ready for user approval, end your response with one of these markers on its own line:
-
-			<!-- PLAN_COMPLETE -->
-
-			or simply:
-
-			<done>
-
-			Either marker signals the system to show the approval menu. Do NOT include them on incomplete drafts, while assumptions remain unresolved, or when asking clarifying questions.
-
-			# Plan Verification Mode
-
-			When asked to verify a plan: read the plan and task description, check completeness (chunks ordered, interfaces defined, acceptance criteria verifiable, edge cases addressed), flag chunks marked \`simple\` that contain concurrency or complex algorithms as misclassified. Output **APPROVED** or **NEEDS_REVISION** with specific gaps. Do NOT rewrite the plan.
-
-			# Output Format
-			- Use absolute file paths
-			- Do not use emojis
-			- Write your plan to \`.kimchi/plans/<descriptive-name>.md\`
-			- End your response with:
-
-			### Critical Files for Implementation
-			List 3-5 files most critical for implementing this plan:
-			- /absolute/path/to/file.ts - [Brief reason]"
-		`)
+		// Critical Files section at the end — unique to the Plan agent persona.
+		expect(output).toContain("### Critical Files for Implementation")
 	})
 
 	it("Researcher agent assembles expected prompt (replace mode)", () => {

@@ -250,7 +250,7 @@ describe("formatAnswerText", () => {
 	})
 })
 
-describe("questionnaire non-interactive visibility", () => {
+describe("questionnaire environment behavior", () => {
 	interface FakePi {
 		registerTool: ReturnType<typeof vi.fn>
 		on: ReturnType<typeof vi.fn>
@@ -272,6 +272,29 @@ describe("questionnaire non-interactive visibility", () => {
 			if (event === "session_start") pi._sessionStart = handler
 		})
 		return pi
+	}
+
+	function makeCtx(mode: "tui" | "rpc" | "json" | "print" | undefined) {
+		const ui = {
+			input: vi.fn(async () => "user typed"),
+			confirm: vi.fn(async () => true),
+			select: vi.fn(async () => undefined),
+			custom: vi.fn(async () => ({
+				questions: [],
+				answers: [
+					{
+						id: "name",
+						value: "from custom",
+						label: "from custom",
+						wasCustom: true,
+					},
+				],
+				cancelled: false,
+			})),
+		}
+		const ctx = { hasUI: true, ui }
+		if (mode !== undefined) (ctx as { mode?: string }).mode = mode
+		return { ctx, ui }
 	}
 
 	it("disables the tool from the active set when session_start fires with no UI", () => {
@@ -319,5 +342,84 @@ describe("questionnaire non-interactive visibility", () => {
 		const text = result.content[0]?.text ?? ""
 		expect(text).toContain("questionnaire is unavailable")
 		expect(text).toContain("Do NOT call questionnaire again")
+	})
+
+	// ─── Execute-path routing (ctx.mode) ───────────────────────────────────────
+	//
+	// The `questionnaire` tool splits into two code paths depending on `ctx.mode`:
+	//   - tui    → ctx.ui.custom(...) with the full question form (tested via the TUI suite)
+	//   - other  → promptQuestionnaireFallback(ctx.ui, questions) (RPC, json, print modes)
+	//
+	// These tests confirm the dispatch in `questionnaire.ts` actually invokes the
+	// fallback path in non-tui modes, and the custom-form path in tui mode.
+	// The fallback behaviour itself (text, confirm, multi, single) is
+	// covered exhaustively in `questionnaire-fallback.test.ts`.
+
+	it("routes non-tui modes through promptQuestionnaireFallback (ui.input, not ui.custom)", async () => {
+		const tool = registeredQuestionnaireTool()
+		const { ctx, ui } = makeCtx("rpc")
+		const result = await tool.execute(
+			"call-1",
+			{
+				questions: [
+					{
+						id: "name",
+						type: "text",
+						label: "Name",
+						prompt: "What is your name?",
+					},
+				],
+			},
+			undefined,
+			undefined,
+			ctx,
+		)
+		// Fallback path: a single text question resolves via ui.input, never ui.custom.
+		expect(ui.input).toHaveBeenCalledWith("What is your name?")
+		expect(ui.custom).not.toHaveBeenCalled()
+		expect(result.details.cancelled).toBe(false)
+		expect(result.content[0]?.text).toContain("Name")
+		expect(result.content[0]?.text).toContain("user wrote")
+	})
+
+	it("routes non-tui mode 'json' through the fallback as well", async () => {
+		const tool = registeredQuestionnaireTool()
+		const { ctx, ui } = makeCtx("json")
+		await tool.execute(
+			"call-1",
+			{
+				questions: [
+					{
+						id: "ship",
+						type: "confirm",
+						label: "Ship",
+						prompt: "Ship it?",
+					},
+				],
+			},
+			undefined,
+			undefined,
+			ctx,
+		)
+		expect(ui.confirm).toHaveBeenCalled()
+		expect(ui.custom).not.toHaveBeenCalled()
+	})
+
+	it("routes mode 'tui' through ctx.ui.custom (not the fallback)", async () => {
+		const tool = registeredQuestionnaireTool()
+		const { ctx, ui } = makeCtx("tui")
+		const result = await tool.execute(
+			"call-1",
+			{
+				questions: [{ id: "name", type: "text", prompt: "What is your name?" }],
+			},
+			undefined,
+			undefined,
+			ctx,
+		)
+		expect(ui.custom).toHaveBeenCalled()
+		// TUI form handles its own input via editor — the fallback's ui.input must NOT be called.
+		expect(ui.input).not.toHaveBeenCalled()
+		expect(result.details.cancelled).toBe(false)
 	})
 })

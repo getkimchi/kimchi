@@ -1,3 +1,4 @@
+import { HARNESS_CLIENT_TYPE } from "../constants.js"
 import { checkResponse, fetchWithTimeout, resolveEndpoint } from "./http.js"
 import { verifyApiKey } from "./keys.js"
 import type { AuthenticateOptions, ListWorkspacesOptions, Workspace, WorkspaceStatus } from "./types.js"
@@ -21,6 +22,7 @@ export async function listWorkspaces(apiKey: string, options?: ListWorkspacesOpt
 		for (let page = 0; page < LIST_WORKSPACES_PAGE_HARD_CAP; page++) {
 			const params = new URLSearchParams()
 			params.set("page.limit", String(LIST_WORKSPACES_PAGE_LIMIT))
+			params.set("clientType", HARNESS_CLIENT_TYPE)
 			if (cursor) params.set("page.cursor", cursor)
 
 			const url = `${endpoint}/ai-optimizer/v1beta/organizations/${encodeURIComponent(orgId)}/workspaces?${params.toString()}`

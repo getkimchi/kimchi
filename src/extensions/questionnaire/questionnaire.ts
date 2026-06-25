@@ -19,17 +19,10 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Text, truncateToWidth } from "@earendil-works/pi-tui"
 import { type Static, Type } from "typebox"
 
-import { createToolVisibility } from "./prompt-construction/tool-visibility.js"
+import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
+import { type QuestionnaireResult, promptQuestionnaireFallback } from "./questionnaire-fallback.js"
 import { createQuestionForm } from "./questionnaire-form.js"
 import { type Answer, type Question, type QuestionType, YES_NO_OPTIONS } from "./questionnaire-reducer.js"
-
-export type { Answer, Question }
-
-interface QuestionnaireResult {
-	questions: Question[]
-	answers: Answer[]
-	cancelled: boolean
-}
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
 
@@ -76,8 +69,6 @@ const QuestionnaireParams = Type.Object({
 })
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-export type QuestionnaireQuestionTypeInput = string
 
 /** Normalize an agent-supplied question type to the canonical vocabulary.
  *  Only an omitted (undefined) type defaults to "single"; any other string must
@@ -223,9 +214,14 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 				)
 			}
 
-			const result = await ctx.ui.custom<QuestionnaireResult>((tui, theme, _kb, done) =>
-				createQuestionForm(tui, theme, questions, { title: params.header }, done),
-			)
+			let result: QuestionnaireResult
+			if (ctx.mode !== "tui") {
+				result = await promptQuestionnaireFallback(ctx.ui, questions)
+			} else {
+				result = await ctx.ui.custom<QuestionnaireResult>((tui, theme, _kb, done) =>
+					createQuestionForm(tui, theme, questions, { title: params.header }, done),
+				)
+			}
 
 			if (result.cancelled) {
 				return {
