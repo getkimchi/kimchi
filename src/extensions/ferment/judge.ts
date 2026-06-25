@@ -26,6 +26,11 @@ import { getJudgeModel, getJudgeModelRegistry } from "./state.js"
 
 const GRADES: Grade[] = ["A", "B", "C", "D", "F"]
 const JOURNEY_GRADE_MAX_ATTEMPTS = 3
+// The journey grade output is a single letter plus a rationale that is sliced to
+// 800 chars (~200 tokens) downstream, so cap the request to avoid paying for an
+// uncapped generation on the heavy-tier judge model. 512 leaves ample headroom
+// and matches the bounded-output pattern of the other judge calls (150/200/500).
+const JOURNEY_GRADE_MAX_TOKENS = 512
 
 export function isGrade(value: unknown): value is Grade {
 	return typeof value === "string" && (GRADES as string[]).includes(value)
@@ -320,7 +325,7 @@ export async function judgeJourneyGrade(
 ): Promise<JudgeJourneyGradeResult> {
 	const userMsg = buildJourneyGradeUserMsg(input)
 	for (let attempt = 1; attempt <= JOURNEY_GRADE_MAX_ATTEMPTS; attempt++) {
-		const api = await apiCall(JOURNEY_GRADE_SYSTEM, userMsg)
+		const api = await apiCall(JOURNEY_GRADE_SYSTEM, userMsg, JOURNEY_GRADE_MAX_TOKENS)
 		if (!api.ok) {
 			const failure: JudgeJourneyGradeFailure = { ok: false, reason: api.reason, detail: api.detail }
 			if (api.reason === "empty_response" && attempt < JOURNEY_GRADE_MAX_ATTEMPTS) continue
