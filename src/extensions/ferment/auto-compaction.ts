@@ -43,6 +43,13 @@ export interface FermentHandoffDetails {
 	compactionTokensBefore?: number
 }
 
+/** Return the token count at which we should trigger auto-compaction.
+ *  Clamped to zero so tiny context windows never produce a negative threshold
+ *  that would spuriously match any non-negative token count. */
+function compactionThreshold(contextWindow: number): number {
+	return Math.max(0, contextWindow - COMPACTION_RESERVE_TOKENS)
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /**
@@ -220,6 +227,14 @@ export function buildHandoffDetails(
 	}
 }
 
+// Error messages that upstream treats as routine "no-op" compaction outcomes.
+// Kept as a single source of truth so the two compaction paths stay consistent.
+const EXPECTED_COMPACTION_ERROR_MESSAGES = ["too small", "Already compacted", "Compaction cancelled"]
+
+function isExpectedCompactionError(error: Error): boolean {
+	return EXPECTED_COMPACTION_ERROR_MESSAGES.some((message) => error.message.includes(message))
+}
+
 // ─── Main entry point ─────────────────────────────────────────────────────────
 
 /**
@@ -290,57 +305,53 @@ function triggerCompactionForPending(
 		)
 	}
 
-	ctx.compact({
-		customInstructions,
-		onComplete: (result: CompactionResult) => {
-			runtime.clearCompactionInFlight(fermentId)
-			appendHandoffEntry(result)
-
-			// After compaction the session is idle. The LLM's previous
-			// next-action reasoning was discarded with the old history, so
-			// schedule the next ferment action as a follow-up turn to keep
-			// automated ferments moving forward without user intervention.
-			try {
-				const freshFerment = runtime.getStorage().get(fermentId)
-				if (freshFerment && (freshFerment.status === "running" || freshFerment.status === "planned")) {
-					runtime.setActive(freshFerment)
-					scheduleNextFermentAction(pi, freshFerment, runtime, {
-						tag: "Auto-compaction continuation",
-						deliverAsFollowUp: true,
-					})
-				}
-			} catch {
-				// Best-effort: scheduler errors must not propagate from a compaction callback.
-			}
-		},
-		onError: (error: Error) => {
-			try {
+	try {
+		ctx.compact({
+			customInstructions,
+			onComplete: (result: CompactionResult) => {
 				runtime.clearCompactionInFlight(fermentId)
-				// Silently skip expected non-errors: session too small, already
-				// compacted, cancelled. These are routine when steps are short.
-				const isExpected =
-					error.message.includes("too small") ||
-					error.message.includes("Already compacted") ||
-					error.message.includes("Compaction cancelled")
-				if (!isExpected) {
-					ctx.ui?.notify?.(`Stage compaction failed: ${error.message}`, "warning")
+				appendHandoffEntry(result)
+
+				// After compaction the session is idle. The LLM's previous
+				// next-action reasoning was discarded with the old history, so
+				// schedule the next ferment action as a follow-up turn to keep
+				// automated ferments moving forward without user intervention.
+				try {
+					const freshFerment = runtime.getStorage().get(fermentId)
+					if (freshFerment && (freshFerment.status === "running" || freshFerment.status === "planned")) {
+						runtime.setActive(freshFerment)
+						scheduleNextFermentAction(pi, freshFerment, runtime, {
+							tag: "Auto-compaction continuation",
+							deliverAsFollowUp: true,
+						})
+					}
+				} catch {
+					// Best-effort: scheduler errors must not propagate from a compaction callback.
 				}
-				// Always append the handoff entry even when compaction fails/is skipped.
-				appendHandoffEntry()
-			} catch {
-				// Best-effort: never let onError propagate and crash the extension.
-			}
-		},
-	})
-}
-
-// Track which ferment/turn we already warned about for oneshot overruns so we
-// don't spam breadcrumbs on every turn_end above threshold.
-const oneshotOverrunWarned = new Set<string>()
-
-/** Clear the oneshot overrun warning set at session start. */
-export function clearMidTurnOneshotWarnings(): void {
-	oneshotOverrunWarned.clear()
+			},
+			onError: (error: Error) => {
+				try {
+					runtime.clearCompactionInFlight(fermentId)
+					// Silently skip expected non-errors: session too small, already
+					// compacted, cancelled. These are routine when steps are short.
+					if (!isExpectedCompactionError(error)) {
+						ctx.ui?.notify?.(`Stage compaction failed: ${error.message}`, "warning")
+					}
+					// Always append the handoff entry even when compaction fails/is skipped.
+					appendHandoffEntry()
+				} catch {
+					// Best-effort: never let onError propagate and crash the extension.
+				}
+			},
+		})
+	} catch (error) {
+		// ctx.compact should never throw, but if it does before invoking callbacks
+		// the in-flight flag must be cleared so future compactions are not blocked.
+		runtime.clearCompactionInFlight(fermentId)
+		if (error instanceof Error && !isExpectedCompactionError(error)) {
+			ctx.ui?.notify?.(`Stage compaction failed: ${error.message}`, "warning")
+		}
+	}
 }
 
 /**
@@ -359,10 +370,10 @@ export function maybeTriggerMidTurnFermentCompaction(
 ): void {
 	if (pi.getFlag?.("ferment-oneshot") === true) {
 		const active = runtime.getActive()
-		if (active && totalTokens > (ctx.model?.contextWindow ?? Number.MAX_SAFE_INTEGER) - COMPACTION_RESERVE_TOKENS) {
+		if (active && totalTokens > compactionThreshold(ctx.model?.contextWindow ?? Number.MAX_SAFE_INTEGER)) {
 			const warnKey = active.id
-			if (!oneshotOverrunWarned.has(warnKey)) {
-				oneshotOverrunWarned.add(warnKey)
+			if (!runtime.hasMidTurnOneshotWarning(warnKey)) {
+				runtime.markMidTurnOneshotWarning(warnKey)
 				pi.appendEntry("ferment_breadcrumb", {
 					text: `Mid-turn context overrun in oneshot ferment "${active.name}" — treating as planning failure`,
 				})
@@ -373,7 +384,7 @@ export function maybeTriggerMidTurnFermentCompaction(
 
 	const model = ctx.model
 	if (!model) return
-	if (totalTokens <= model.contextWindow - COMPACTION_RESERVE_TOKENS) return
+	if (totalTokens <= compactionThreshold(model.contextWindow)) return
 
 	const activeFerment = runtime.getActive()
 	if (!activeFerment) return
@@ -389,36 +400,41 @@ export function maybeTriggerMidTurnFermentCompaction(
 
 	const customInstructions = buildMidTurnCustomInstructions(activeFerment, activePhase, activeStep)
 
-	ctx.compact({
-		customInstructions,
-		onComplete: (result: CompactionResult) => {
-			runtime.clearCompactionInFlight(fermentId)
+	try {
+		ctx.compact({
+			customInstructions,
+			onComplete: (result: CompactionResult) => {
+				runtime.clearCompactionInFlight(fermentId)
 
-			const freshFerment = runtime.getStorage().get(fermentId)
-			if (!freshFerment) return
+				const freshFerment = runtime.getStorage().get(fermentId)
+				if (!freshFerment) return
 
-			const { phase, step } = findActivePhaseAndStep(freshFerment)
-			pi.appendEntry("ferment_breadcrumb", {
-				text: `Mid-turn compaction resume: ferment "${freshFerment.name}" · phase ${phase?.index ?? "?"}/${freshFerment.phases.length} "${phase?.name ?? "unknown"}" · step ${step?.index ?? "?"}/${phase?.steps.length ?? 0} · ${(result.tokensBefore ?? 0).toLocaleString()} tokens before compaction`,
-			})
-
-			if (freshFerment.status === "running") {
-				runtime.setActive(freshFerment)
-				scheduleNextFermentAction(pi, freshFerment, runtime, {
-					tag: "Mid-turn compaction resume",
-					deliverAsFollowUp: true,
+				const { phase, step } = findActivePhaseAndStep(freshFerment)
+				pi.appendEntry("ferment_breadcrumb", {
+					text: `Mid-turn compaction resume: ferment "${freshFerment.name}" · phase ${phase?.index ?? "?"}/${freshFerment.phases.length} "${phase?.name ?? "unknown"}" · step ${step?.index ?? "?"}/${phase?.steps.length ?? 0} · ${(result.tokensBefore ?? 0).toLocaleString()} tokens before compaction`,
 				})
-			}
-		},
-		onError: (error: Error) => {
-			runtime.clearCompactionInFlight(fermentId)
-			const isExpected =
-				error.message.includes("too small") ||
-				error.message.includes("Already compacted") ||
-				error.message.includes("Compaction cancelled")
-			if (!isExpected) {
-				ctx.ui?.notify?.(`Mid-turn compaction failed: ${error.message}`, "warning")
-			}
-		},
-	})
+
+				if (freshFerment.status === "running") {
+					runtime.setActive(freshFerment)
+					scheduleNextFermentAction(pi, freshFerment, runtime, {
+						tag: "Mid-turn compaction resume",
+						deliverAsFollowUp: true,
+					})
+				}
+			},
+			onError: (error: Error) => {
+				runtime.clearCompactionInFlight(fermentId)
+				if (!isExpectedCompactionError(error)) {
+					ctx.ui?.notify?.(`Mid-turn compaction failed: ${error.message}`, "warning")
+				}
+			},
+		})
+	} catch (error) {
+		// ctx.compact should never throw, but if it does before invoking callbacks
+		// the in-flight flag must be cleared so future compactions are not blocked.
+		runtime.clearCompactionInFlight(fermentId)
+		if (error instanceof Error && !isExpectedCompactionError(error)) {
+			ctx.ui?.notify?.(`Mid-turn compaction failed: ${error.message}`, "warning")
+		}
+	}
 }

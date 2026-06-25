@@ -513,7 +513,7 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		// while a step is still in progress, compact now and resume the step.
 		// Only acts on tool-use turns; stop/error/aborted are handled elsewhere.
 		if (event.message.role === "assistant" && event.message.stopReason === "toolUse") {
-			maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, event.message.usage.totalTokens)
+			maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, event.message.usage?.totalTokens ?? 0)
 		}
 	})
 }

@@ -714,4 +714,57 @@ describe("maybeTriggerMidTurnFermentCompaction", () => {
 			}),
 		)
 	})
+
+	it("onError with an expected error clears in-flight without notifying", () => {
+		const ferment = makeFermentWithPhase()
+		ferment.phases[0].status = "active"
+		ferment.phases[0].steps[0].status = "running"
+		const runtime = makeMidTurnRuntime(ferment)
+		runtime.clearCompactionInFlight(ferment.id)
+		const pi = makePi()
+		const ctx = makeMidTurnCtx()
+
+		maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, CONTEXT_WINDOW - 1)
+		expect(runtime.isCompactionInFlight(ferment.id)).toBe(true)
+
+		const compactArgs = vi.mocked(ctx.compact).mock.calls[0]?.[0]
+		compactArgs?.onError?.(new Error("Compaction cancelled"))
+
+		expect(runtime.isCompactionInFlight(ferment.id)).toBe(false)
+		expect(ctx.ui?.notify).not.toHaveBeenCalled()
+	})
+
+	it("onError with an unexpected error clears in-flight and notifies", () => {
+		const ferment = makeFermentWithPhase()
+		ferment.phases[0].status = "active"
+		ferment.phases[0].steps[0].status = "running"
+		const runtime = makeMidTurnRuntime(ferment)
+		runtime.clearCompactionInFlight(ferment.id)
+		const pi = makePi()
+		const ctx = makeMidTurnCtx()
+
+		maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, CONTEXT_WINDOW - 1)
+		const compactArgs = vi.mocked(ctx.compact).mock.calls[0]?.[0]
+		compactArgs?.onError?.(new Error("disk full"))
+
+		expect(runtime.isCompactionInFlight(ferment.id)).toBe(false)
+		expect(ctx.ui?.notify).toHaveBeenCalledWith(expect.stringContaining("disk full"), "warning")
+	})
+
+	it("clears in-flight and notifies when ctx.compact throws synchronously", () => {
+		const ferment = makeFermentWithPhase()
+		ferment.phases[0].status = "active"
+		ferment.phases[0].steps[0].status = "running"
+		const runtime = makeMidTurnRuntime(ferment)
+		runtime.clearCompactionInFlight(ferment.id)
+		const pi = makePi()
+		const ctx = makeMidTurnCtx()
+		ctx.compact = vi.fn(() => {
+			throw new Error("sync compact failure")
+		})
+
+		expect(() => maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, CONTEXT_WINDOW - 1)).not.toThrow()
+		expect(runtime.isCompactionInFlight(ferment.id)).toBe(false)
+		expect(ctx.ui?.notify).toHaveBeenCalledWith(expect.stringContaining("sync compact failure"), "warning")
+	})
 })
