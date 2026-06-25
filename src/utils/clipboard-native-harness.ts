@@ -30,6 +30,8 @@
 // WSL_INTEROP) because WSLg may set $DISPLAY to ":0" even when no graphical
 // session is running, giving a false positive to the simple display check.
 
+import { createLinuxClipboard } from "./clipboard-linux-subprocess.js"
+
 export type NativeClipboard = {
 	hasImage(): boolean
 	getImageBinary(): Promise<number[]>
@@ -118,15 +120,7 @@ export function getNativeClipboard(): { clipboard: NativeClipboard | null; error
 	// method call which opens a new X11 connection; background threads in the Rust
 	// library keep those connections alive and exhaust X11's 255-client limit.
 	if (process.platform === "linux") {
-		try {
-			// eslint-disable-next-line @typescript-eslint/no-require-imports
-			const mod = require("./clipboard-linux-subprocess.js") as typeof import("./clipboard-linux-subprocess.js")
-			const { createLinuxClipboard } = mod
-			cached = createLinuxClipboard()
-		} catch (err) {
-			cached = null
-			loadError = err instanceof Error ? err.message : String(err)
-		}
+		cached = createLinuxClipboard()
 		return { clipboard: cached, error: loadError }
 	}
 
