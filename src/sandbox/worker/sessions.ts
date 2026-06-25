@@ -2,7 +2,7 @@ import type { WorkerClient } from "./client.js"
 import type { CreateSessionRequest, Session } from "./types.js"
 
 export async function listSessions(client: WorkerClient, signal?: AbortSignal): Promise<Session[]> {
-	const map = await client.get<Record<string, Omit<Session, "name">>>("/session", signal)
+	const map = await client.get<Record<string, Omit<Session, "name">>>("/session?clientType=harness", signal)
 	return Object.entries(map).map(([name, s]) => ({ ...s, name }))
 }
 

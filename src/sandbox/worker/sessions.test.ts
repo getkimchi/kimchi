@@ -54,7 +54,7 @@ describe("listSessions", () => {
 		expect(result.map((s) => s.name).sort()).toEqual(["alpha", "beta"])
 		const alpha = result.find((s) => s.name === "alpha")
 		expect(alpha).toMatchObject({ name: "alpha", agentMode: "PTY", alive: true })
-		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/session`)
+		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/session?clientType=harness`)
 	})
 
 	it("returns an empty array when the worker has no sessions", async () => {

@@ -15,6 +15,7 @@ function verifyResponse() {
 function listUrl(cursor?: string) {
 	const params = new URLSearchParams()
 	params.set("page.limit", "200")
+	params.set("clientType", "harness")
 	if (cursor) params.set("page.cursor", cursor)
 	return `${BASE}/ai-optimizer/v1beta/organizations/${ORG_ID}/workspaces?${params.toString()}`
 }
