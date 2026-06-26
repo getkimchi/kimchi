@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process"
-import { mkdtempSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -97,6 +97,41 @@ describe("gatherPhaseEvidence", () => {
 		const ev = gatherPhaseEvidence("HEAD", repoDir)
 		expect(ev.filesChanged).not.toContain("ignored.log")
 		expect(ev.filesChanged).toContain("?? real.ts")
+	})
+
+	it("handles untracked file names with shell metacharacters safely", () => {
+		// Regression test for command injection: file names with shell
+		// metacharacters must not break out of the git command. If the
+		// filename is shell-interpreted, `;touch marker` creates a file
+		// named `marker` in repoDir. With spawnSync (shell: false) it is
+		// treated as a literal filename.
+		const trickyName = "file;touch marker"
+		writeFileSync(join(repoDir, trickyName), "export const safe = true\n")
+
+		const ev = gatherPhaseEvidence("HEAD", repoDir)
+		expect(ev.available).toBe(true)
+		expect(ev.diffSnippet).toContain("export const safe")
+		// The injection must not have created the marker file
+		expect(existsSync(join(repoDir, "marker"))).toBe(false)
+	})
+
+	it("caps untracked entries independently so they do not crowd out tracked files", () => {
+		// Create a tracked change
+		writeFileSync(join(repoDir, "README.md"), "updated\n")
+		execSync("git add README.md", { cwd: repoDir, stdio: "ignore" })
+
+		// Create many untracked files (more than MAX_FILES_LISTED)
+		for (let i = 0; i < 25; i++) {
+			writeFileSync(join(repoDir, `untracked-${i}.ts`), `export const v${i} = ${i}\n`)
+		}
+
+		const ev = gatherPhaseEvidence("HEAD", repoDir)
+		expect(ev.available).toBe(true)
+		// Tracked file must still appear despite many untracked files
+		expect(ev.filesChanged).toContain("README.md")
+		// Untracked files should be present but capped
+		expect(ev.filesChanged).toContain("?? untracked-0.ts")
+		expect(ev.filesChanged).toContain("more untracked files")
 	})
 
 	it("returns unavailable when not in a git repository", () => {
