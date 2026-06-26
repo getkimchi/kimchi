@@ -19,6 +19,7 @@ import { isAgentWorker } from "../agent-worker-context.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import { requestSharedFooterRender } from "../shared-footer.js"
 import { registerTipProvider } from "../tips/registry.js"
+import { registerAgentSpawnGuard } from "./agent-spawn-guard.js"
 import { maybeTriggerFermentCompaction } from "./auto-compaction.js"
 import { fermentBreadcrumbRenderer } from "./breadcrumb-renderer.js"
 import { registerFermentCommands } from "./commands.js"
@@ -264,4 +265,5 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	registerPhaseTools(pi, runtime)
 	registerStepTools(pi, runtime)
 	registerKnowledgeTools(pi, runtime)
+	registerAgentSpawnGuard(pi, runtime)
 }
