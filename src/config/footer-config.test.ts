@@ -2,6 +2,7 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
+	DEFAULT_FOOTER_PINNED,
 	FOOTER_ELEMENTS,
 	_invalidateFooterConfigCache,
 	isPinned,
@@ -67,14 +68,14 @@ describe("FOOTER_ELEMENTS", () => {
 // ─── readFooterConfig ─────────────────────────────────────────────────────────
 
 describe("readFooterConfig", () => {
-	it("returns default pinned elements when no footer key exists in settings", () => {
+	it("returns DEFAULT_FOOTER_PINNED when no footer key exists in settings", () => {
 		memfs.set(SETTINGS_PATH, "{}")
-		expect(readFooterConfig().pinned).toEqual(["agents", "context", "phase", "usage"])
+		expect(readFooterConfig().pinned).toEqual(DEFAULT_FOOTER_PINNED)
 	})
 
-	it("fresh install defaults to exactly agents, context, phase, and usage — 4 elements", () => {
-		expect(readFooterConfig().pinned).toEqual(expect.arrayContaining(["agents", "context", "phase", "usage"]))
-		expect(readFooterConfig().pinned).toHaveLength(4)
+	it("DEFAULT_FOOTER_PINNED contains agents, context, phase, usage", () => {
+		expect(DEFAULT_FOOTER_PINNED).toEqual(expect.arrayContaining(["agents", "context", "phase", "usage"]))
+		expect(DEFAULT_FOOTER_PINNED).toHaveLength(4)
 	})
 
 	it("agents, context, phase, usage are all isPinned=true on first read with no config", () => {

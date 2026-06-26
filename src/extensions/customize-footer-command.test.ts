@@ -3,7 +3,7 @@ import { join } from "node:path"
 import type { ExtensionContext, ReadonlyFooterDataProvider, Theme } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { StatsFooter } from "../components/footer.js"
-import { _invalidateFooterConfigCache, setPinned } from "../config/footer-config.js"
+import { DEFAULT_FOOTER_PINNED, _invalidateFooterConfigCache, setPinned } from "../config/footer-config.js"
 import * as AGENTS from "./agents/index.js"
 import { CustomizeFooterComponent } from "./customize-footer-command.js"
 import * as FERMENT from "./ferment/index.js"
@@ -207,7 +207,7 @@ describe("footer bar: toggling", () => {
 	})
 
 	it("unpinning all four defaults shows none of their segments", () => {
-		for (const id of ["agents", "context", "phase", "usage"] as const) setPinned(id, false)
+		for (const id of DEFAULT_FOOTER_PINNED) setPinned(id, false)
 		const visible = renderFooter()
 		expect(visible).not.toContain("ctx")
 		expect(visible).not.toContain("phase:")
