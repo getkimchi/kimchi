@@ -1128,7 +1128,9 @@ describe("fermentExtension question dropdown", () => {
 			await vi.runOnlyPendingTimersAsync()
 
 			expect(storage.get(draft.id)?.status).toBe("draft")
-			expect(getPendingPlanReview(draft.id)).toBeDefined()
+			// Feedback path clears the pending review so the model regains its
+			// full toolset to revise the plan (tool-scope suppression is lifted).
+			expect(getPendingPlanReview(draft.id)).toBeUndefined()
 			expect(pi.sendMessage).toHaveBeenCalledWith(
 				expect.objectContaining({
 					customType: "ferment_scoping_iteration",
@@ -1189,7 +1191,10 @@ describe("fermentExtension question dropdown", () => {
 			await vi.runOnlyPendingTimersAsync()
 
 			expect(storage.get(draft.id)?.status).toBe("draft")
-			expect(getPendingPlanReview(draft.id)).toBeDefined()
+			// Cancel path clears the pending review and restores the planning
+			// tool profile so the model can continue working (re-propose, etc.).
+			expect(getPendingPlanReview(draft.id)).toBeUndefined()
+			expect(pi.setActiveTools).toHaveBeenCalled()
 			expect(pi.sendMessage).not.toHaveBeenCalled()
 		} finally {
 			vi.useRealTimers()
