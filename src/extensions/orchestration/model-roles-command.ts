@@ -7,8 +7,10 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent"
+import { getSelectListTheme } from "@earendil-works/pi-coding-agent"
 import { Key, type TUI, matchesKey, wrapTextWithAnsi } from "@earendil-works/pi-tui"
-import type { Component } from "@earendil-works/pi-tui"
+import type { Component, SelectItem } from "@earendil-works/pi-tui"
+import { SelectList } from "@earendil-works/pi-tui"
 import { getAvailableModels } from "../../startup-context.js"
 import { setProcessOrchestratorRef } from "../kimchi-process.js"
 import { withSuppressedModelSelectGuard } from "../model-switch.js"
@@ -36,6 +38,37 @@ import {
 function syncOrchestratorRef(roles: ModelRoles): void {
 	setProcessOrchestratorRef(roles.orchestrator)
 }
+
+/**
+ * Ephemeral cursor position for the multi-model picker, keyed by role.
+ * Stored on `globalThis` so it survives across every conceivable scope
+ * boundary in Bun-compiled binaries — module init, handler re-invocation,
+ * closure re-creation. Without this, the cursor resets to row 0 every time
+ * the picker is re-opened.
+ */
+type RoleCursorMap = Map<keyof ModelRoles, number>
+const ROLE_CURSORS_KEY = Symbol.for("kimchi.roleCursors.v1")
+const globalAny = globalThis as unknown as { [ROLE_CURSORS_KEY]?: RoleCursorMap }
+const roleCursors: RoleCursorMap = (() => {
+	if (!globalAny[ROLE_CURSORS_KEY]) globalAny[ROLE_CURSORS_KEY] = new Map()
+	return globalAny[ROLE_CURSORS_KEY]
+})()
+
+/**
+ * Cursor position for the main /multi-model menu (the role list itself).
+ * Same persistence strategy as `roleCursors` so the cursor survives the
+ * recursive showMainMenu() cycle triggered by selecting a role, picking
+ * "Edit model metadata...", etc. Without this, every return-to-menu jump
+ * resets the cursor to row 0, which makes a workflow like
+ * "configure Builder → back → configure Reviewer → back" require
+ * re-navigating from the top each time.
+ */
+const MAIN_MENU_CURSOR_KEY = Symbol.for("kimchi.mainMenuCursor.v1")
+const mainMenuCursor: { index: number } = (() => {
+	const g = globalAny as unknown as { [MAIN_MENU_CURSOR_KEY]?: { index: number } }
+	if (!g[MAIN_MENU_CURSOR_KEY]) g[MAIN_MENU_CURSOR_KEY] = { index: 0 }
+	return g[MAIN_MENU_CURSOR_KEY]
+})()
 
 const ROLE_LABELS: Record<keyof ModelRoles, { label: string; description: string }> = {
 	orchestrator: { label: "Orchestrator", description: "main model, delegates work" },
@@ -191,45 +224,42 @@ export async function collectModelMetadata(
 // Custom toggle-select component (space to toggle, cursor preserved)
 // ---------------------------------------------------------------------------
 
-interface ToggleSelectResult {
+export interface ToggleSelectResult {
 	selected: Set<string>
 	cancelled: boolean
-	addCustom: boolean
 }
 
-function createToggleSelect(
+export function createToggleSelect(
 	tui: TUI,
 	theme: Theme,
 	title: string,
 	refs: string[],
 	selected: Set<string>,
+	cursor: { index: number },
 	done: (result: ToggleSelectResult) => void,
 ): Component {
-	let cursorIndex = 0
 	let cachedLines: string[] | undefined
 
-	const ADD_CUSTOM = "Add custom model..."
-	const doneLabel = () => `Done (${selected.size} selected)`
-	const allItems = (): string[] => [...refs, ADD_CUSTOM, doneLabel()]
-
 	function handleInput(data: string): void {
-		const items = allItems()
-
 		if (matchesKey(data, Key.up)) {
-			cursorIndex = (cursorIndex - 1 + items.length) % items.length
+			// Guard against empty refs — `% 0` is NaN in JS, which would
+			// permanently break the cursor until the component is re-mounted.
+			if (refs.length === 0) return
+			cursor.index = (cursor.index - 1 + refs.length) % refs.length
 			cachedLines = undefined
 			tui.requestRender()
 			return
 		}
 		if (matchesKey(data, Key.down)) {
-			cursorIndex = (cursorIndex + 1) % items.length
+			if (refs.length === 0) return
+			cursor.index = (cursor.index + 1) % refs.length
 			cachedLines = undefined
 			tui.requestRender()
 			return
 		}
 		if (data === " ") {
-			if (cursorIndex < refs.length) {
-				const ref = refs[cursorIndex]
+			const ref = refs[cursor.index]
+			if (ref !== undefined) {
 				if (selected.has(ref)) {
 					selected.delete(ref)
 				} else {
@@ -241,16 +271,11 @@ function createToggleSelect(
 			return
 		}
 		if (matchesKey(data, Key.enter)) {
-			const item = items[cursorIndex]
-			if (item === ADD_CUSTOM) {
-				done({ selected, cancelled: false, addCustom: true })
-				return
-			}
-			done({ selected, cancelled: false, addCustom: false })
+			done({ selected, cancelled: false })
 			return
 		}
 		if (matchesKey(data, Key.escape)) {
-			done({ selected, cancelled: true, addCustom: false })
+			done({ selected, cancelled: true })
 			return
 		}
 	}
@@ -269,25 +294,24 @@ function createToggleSelect(
 		add(` ${theme.fg("text", theme.bold(title))}`)
 		lines.push("")
 
-		const items = allItems()
-		for (let i = 0; i < items.length; i++) {
-			const isCursor = i === cursorIndex
+		for (let i = 0; i < refs.length; i++) {
+			const isCursor = i === cursor.index
 			const prefix = isCursor ? theme.fg("accent", "> ") : "  "
 
-			if (i < refs.length) {
-				const ref = refs[i]
-				const checked = selected.has(ref)
-				const box = checked ? "[x]" : "[ ]"
-				const color = isCursor ? "accent" : "text"
-				add(`${prefix}${theme.fg(color, `${box} ${ref}`)}`)
-			} else {
-				const color = isCursor ? "accent" : "text"
-				add(`${prefix}${theme.fg(color, items[i])}`)
-			}
+			const ref = refs[i]
+			const checked = selected.has(ref)
+			const box = checked ? "[x]" : "[ ]"
+			const color = isCursor ? "accent" : "text"
+			add(`${prefix}${theme.fg(color, `${box} ${ref}`)}`)
 		}
 
 		lines.push("")
-		add(theme.fg("dim", " \u2191\u2193 navigate  space toggle  enter confirm  esc cancel"))
+		add(
+			theme.fg(
+				"dim",
+				` \u2191\u2193 navigate \u00b7 space toggle \u00b7 \u23ce confirm (${selected.size} selected) \u00b7 esc cancel`,
+			),
+		)
 		add(theme.fg("accent", "\u2500".repeat(width)))
 
 		cachedLines = lines
@@ -329,7 +353,50 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 				const roleOptions = ROLE_KEYS.map((key) => formatRoleSummaryBlock(key, roles[key]))
 				const options = [...roleOptions, "Edit model metadata...", "Reset all to defaults"]
 
-				const choice = await ctx.ui.select("Model Roles", options)
+				// Persist cursor across recursive showMainMenu() cycles. We can't
+				// use ctx.ui.select directly because upstream's wrapper doesn't
+				// expose initial-index support, so we build our own SelectList
+				// here via ctx.ui.custom. The cursor is read from mainMenuCursor
+				// on open and written back on every selection change / confirm.
+				const menuResult = await ctx.ui.custom<{ value: string | undefined; cancelled: boolean }>(
+					(tui, _theme, _kb, done) => {
+						const items: SelectItem[] = options.map((opt) => ({ value: opt, label: opt }))
+						const selectList = new SelectList(items, Math.min(items.length, 10), getSelectListTheme())
+						const safeIndex = items.length === 0 ? 0 : Math.max(0, Math.min(mainMenuCursor.index, items.length - 1))
+						if (items.length > 0) selectList.setSelectedIndex(safeIndex)
+						const indexOf = (value: string): number => items.findIndex((it) => it.value === value)
+						selectList.onSelectionChange = (item) => {
+							mainMenuCursor.index = indexOf(item.value)
+							tui.requestRender()
+						}
+						selectList.onSelect = (item) => {
+							mainMenuCursor.index = indexOf(item.value)
+							done({ value: item.value, cancelled: false })
+						}
+						selectList.onCancel = () => {
+							done({ value: undefined, cancelled: true })
+						}
+						return {
+							render(width: number) {
+								// Prepend a title line so `await waitForText(terminal, "Model Roles")`
+								// in the TUI E2E suite matches (and so users see a header above
+								// the role list). Upstream ctx.ui.select wraps SelectList with this
+								// same title; we replicate it here because we replaced ctx.ui.select
+								// with our own SelectList wrapper to enable initial-index injection.
+								return ["Model Roles", "", ...selectList.render(width)]
+							},
+							invalidate() {
+								selectList.invalidate?.()
+							},
+							handleInput(data: string) {
+								selectList.handleInput?.(data)
+								tui.requestRender()
+							},
+						}
+					},
+				)
+
+				const choice = menuResult.value
 				if (!choice) return
 
 				if (choice === "Reset all to defaults") {
@@ -455,53 +522,34 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 			const showMultiModelEditor = async (roleKey: keyof ModelRoles): Promise<void> => {
 				const info = ROLE_LABELS[roleKey]
 				const selected = new Set(normalizeRoleModels(roles[roleKey]))
-
-				// eslint-disable-next-line no-constant-condition
-				while (true) {
-					const result = await ctx.ui.custom<ToggleSelectResult>((tui, theme, _kb, done) =>
-						createToggleSelect(
-							tui,
-							theme,
-							`${info.label} — toggle models (${selected.size} selected)`,
-							availableModelRefs,
-							selected,
-							done,
-						),
-					)
-
-					if (result.cancelled) return
-
-					if (result.addCustom) {
-						const input = await ctx.ui.input("Model (provider/model-id):")
-						if (!input?.trim()) continue
-						const ref = input.trim()
-
-						if (!splitModelRef(ref)) {
-							ctx.ui.notify(
-								`Invalid format: "${ref}". Expected "provider/model-id" (e.g. "anthropic/claude-sonnet-4-5").`,
-								"error",
-							)
-							continue
-						}
-
-						const modelId = modelIdFromRef(ref)
-						const availableIds = new Set(apiModels.map((m) => m.slug))
-						if (!availableIds.has(modelId)) {
-							ctx.ui.notify(
-								`Note: "${ref}" is not in the available models list. It will be used if the provider is configured.`,
-								"warning",
-							)
-						}
-
-						if (!availableModelRefs.includes(ref)) {
-							availableModelRefs.push(ref)
-						}
-						selected.add(ref)
-						continue
-					}
-
-					break
+				let cursorIndex = roleCursors.get(roleKey) ?? 0
+				// Clamp in case the model list shrank since last open (e.g.
+				// reset, or models removed from the registry). Empty list →
+				// keep cursor at 0; arrow keys are guarded against this in
+				// createToggleSelect's handleInput.
+				if (availableModelRefs.length === 0) {
+					cursorIndex = 0
+				} else if (cursorIndex >= availableModelRefs.length) {
+					cursorIndex = availableModelRefs.length - 1
 				}
+				const cursor = { index: cursorIndex }
+
+				const result = await ctx.ui.custom<ToggleSelectResult>((tui, theme, _kb, done) =>
+					createToggleSelect(
+						tui,
+						theme,
+						`${info.label} — toggle models (${selected.size} selected)`,
+						availableModelRefs,
+						selected,
+						cursor,
+						done,
+					),
+				)
+
+				// Persist cursor back to the map regardless of cancel/save outcome.
+				roleCursors.set(roleKey, cursor.index)
+
+				if (result.cancelled) return
 
 				if (selected.size === 0) {
 					ctx.ui.notify(`${info.label} must have at least one model. Keeping current assignment.`, "warning")

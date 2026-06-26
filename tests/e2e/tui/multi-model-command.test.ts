@@ -41,6 +41,16 @@ const TWO_MODELS = [
 	{ slug: "heavy", displayName: "Fake Heavy", contextWindow: 1_000_000, maxTokens: 4096 },
 ] as const
 
+// Four models so Down x3 lands on row 3 without wrapping (Down x1 in
+// TWO_MODELS-style fixtures would land on the last row, conflating
+// "persisted" with "wrapped").
+const FOUR_MODELS = [
+	{ slug: "alpha", displayName: "Fake Alpha", contextWindow: 1_000_000, maxTokens: 4096 },
+	{ slug: "bravo", displayName: "Fake Bravo", contextWindow: 1_000_000, maxTokens: 4096 },
+	{ slug: "charlie", displayName: "Fake Charlie", contextWindow: 1_000_000, maxTokens: 4096 },
+	{ slug: "delta", displayName: "Fake Delta", contextWindow: 1_000_000, maxTokens: 4096 },
+] as const
+
 test("/multi-model opens the main menu with the role summary and footer entries", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
@@ -247,6 +257,310 @@ test("/multi-model builder role opens toggle-select with current assignment pre-
 			trace.step("current assignment pre-checked")
 
 			// Escape cancels back to the main menu.
+			terminal.keyEscape()
+			await waitForText(terminal, "Model Roles", { timeoutMs: INPUT_TIMEOUT_MS })
+		},
+	)
+})
+
+// ---------------------------------------------------------------------------
+// UX fixes: Enter confirms from any row, no Done/Add custom rows, cursor
+// persists across re-open, Space toggles. These behaviors are pinned by the
+// tests below so the original UX bugs cannot regress silently.
+// ---------------------------------------------------------------------------
+
+test("/multi-model Enter on first row of toggle-select confirms without scrolling", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "multi-model-enter-first-row",
+			models: [...TWO_MODELS],
+			responses: [],
+		},
+		async (_fixture, trace) => {
+			terminal.write("/multi-model ")
+			await waitForText(terminal, "/multi-model ", { timeoutMs: INPUT_TIMEOUT_MS })
+			terminal.submit("")
+			await waitForText(terminal, "Model Roles", { timeoutMs: INPUT_TIMEOUT_MS })
+			trace.step("main menu open")
+
+			await navigateMenuTo(terminal, trace, "Builder")
+			await waitForText(terminal, "toggle models", { timeoutMs: INPUT_TIMEOUT_MS })
+			trace.step("toggle-select open for Builder")
+
+			// The cursor (`> ` prefix) must land on the FIRST model row.
+			// The original UX bug was that Enter only worked on a hidden
+			// "Done" row at the bottom — this assertion pins the fix.
+			const beforeView = viewText(terminal)
+			const cursorLine = beforeView.split("\n").find((line) => /^> \[/.test(line))
+			expect(cursorLine).toBeDefined()
+			trace.step("cursor on first row")
+
+			// Press Enter immediately. No scrolling, no Done button needed.
+			terminal.submit("")
+			await waitForText(terminal, /Builder set to/, { timeoutMs: INPUT_TIMEOUT_MS })
+			trace.step("Enter from first row confirmed selection")
+		},
+	)
+})
+
+test("/multi-model toggle-select has no Done/Add custom rows and uses new footer", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "multi-model-no-done-no-custom",
+			models: [...TWO_MODELS],
+			responses: [],
+		},
+		async (_fixture, trace) => {
+			terminal.write("/multi-model ")
+			await waitForText(terminal, "/multi-model ", { timeoutMs: INPUT_TIMEOUT_MS })
+			terminal.submit("")
+			await waitForText(terminal, "Model Roles", { timeoutMs: INPUT_TIMEOUT_MS })
+			trace.step("main menu open")
+
+			await navigateMenuTo(terminal, trace, "Builder")
+			await waitForText(terminal, "toggle models", { timeoutMs: INPUT_TIMEOUT_MS })
+			trace.step("toggle-select open")
+
+			const view = viewText(terminal)
+
+			// Hidden Done row and Add custom row must be gone — these were
+			// the original UX bugs the refactor removed.
+			expect(view).not.toContain("Done (")
+			expect(view).not.toContain("Add custom")
+			trace.step("no Done or Add custom rows visible")
+
+			// Footer uses the new key set with (N selected) count and
+			// does NOT mention the removed "c custom" keybinding.
+			expect(view).not.toContain("c custom")
+			expect(view).toMatch(/\(\d+ selected\)/)
+			trace.step("footer shows new key set with (N selected)")
+		},
+	)
+})
+
+test("/multi-model toggle-select preserves cursor across Escape + re-open", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "multi-model-cursor-persists",
+			models: [...TWO_MODELS],
+			responses: [],
+		},
+		async (_fixture, trace) => {
+			terminal.write("/multi-model ")
+			await waitForText(terminal, "/multi-model ", { timeoutMs: INPUT_TIMEOUT_MS })
+			terminal.submit("")
+			await waitForText(terminal, "Model Roles", { timeoutMs: INPUT_TIMEOUT_MS })
+			trace.step("main menu open")
+
+			await navigateMenuTo(terminal, trace, "Builder")
+			await waitForText(terminal, "toggle models", { timeoutMs: INPUT_TIMEOUT_MS })
+			trace.step("toggle-select first open")
+
+			// Move cursor down to row 1 (with TWO_MODELS that's the second
+			// and last model — no wrap yet). Capture which model the cursor
+			// is on so we can compare after re-open.
+			terminal.keyDown()
+			await new Promise((resolve) => setTimeout(resolve, 100))
+
+			const firstOpenView = viewText(terminal)
+			const firstCursorLine = firstOpenView.split("\n").find((line) => /^> \[/.test(line))
+			expect(firstCursorLine).toBeDefined()
+			const firstCursorModel = firstCursorLine?.match(/kimchi-dev\/(\S+)/)?.[1]
+			expect(firstCursorModel).toBeDefined()
+			trace.step(`cursor on row 1 (${firstCursorModel})`)
+
+			// Escape cancels back to main menu.
+			terminal.keyEscape()
+			await waitForText(terminal, "Model Roles", { timeoutMs: INPUT_TIMEOUT_MS })
+			trace.step("back at main menu")
+
+			// Re-open Builder picker.
+			await navigateMenuTo(terminal, trace, "Builder")
+			await waitForText(terminal, "toggle models", { timeoutMs: INPUT_TIMEOUT_MS })
+			trace.step("toggle-select re-opened")
+
+			// Cursor must still be on the same model — this is the original
+			// UX bug the refactor claimed to fix.
+			const reOpenView = viewText(terminal)
+			const reOpenCursorLine = reOpenView.split("\n").find((line) => /^> \[/.test(line))
+			expect(reOpenCursorLine).toBeDefined()
+			const reOpenCursorModel = reOpenCursorLine?.match(/kimchi-dev\/(\S+)/)?.[1]
+			expect(reOpenCursorModel).toBe(firstCursorModel)
+			trace.step(`cursor persisted on ${reOpenCursorModel} after re-open`)
+
+			terminal.keyEscape()
+			await waitForText(terminal, "Model Roles", { timeoutMs: INPUT_TIMEOUT_MS })
+		},
+	)
+})
+
+test("/multi-model Space toggles checkbox state in toggle-select", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "multi-model-space-toggle",
+			models: [...TWO_MODELS],
+			responses: [],
+		},
+		async (_fixture, trace) => {
+			terminal.write("/multi-model ")
+			await waitForText(terminal, "/multi-model ", { timeoutMs: INPUT_TIMEOUT_MS })
+			terminal.submit("")
+			await waitForText(terminal, "Model Roles", { timeoutMs: INPUT_TIMEOUT_MS })
+			trace.step("main menu open")
+
+			await navigateMenuTo(terminal, trace, "Builder")
+			await waitForText(terminal, "toggle models", { timeoutMs: INPUT_TIMEOUT_MS })
+			trace.step("toggle-select open")
+
+			// Capture the initial state of the cursor row (which is row 0).
+			const beforeView = viewText(terminal)
+			const beforeCursorLine = beforeView.split("\n").find((line) => /^> \[/.test(line))
+			expect(beforeCursorLine).toBeDefined()
+			const wasChecked = beforeCursorLine?.includes("[x]") ?? false
+			trace.step(`cursor row was ${wasChecked ? "checked" : "unchecked"}`)
+
+			// Press Space to toggle. Space must be sent without a trailing
+			// Enter (which is what `terminal.write(" ")` achieves).
+			terminal.write(" ")
+			await new Promise((resolve) => setTimeout(resolve, 100))
+
+			const afterView = viewText(terminal)
+			const afterCursorLine = afterView.split("\n").find((line) => /^> \[/.test(line))
+			expect(afterCursorLine).toBeDefined()
+			const isChecked = afterCursorLine?.includes("[x]") ?? false
+			trace.step(`cursor row is now ${isChecked ? "checked" : "unchecked"}`)
+
+			expect(isChecked).toBe(!wasChecked)
+		},
+	)
+})
+
+test("/multi-model planner cursor persists across Down x3 + Enter + re-open", async ({ terminal }) => {
+	// Mirrors the user-reported scenario: open the picker, press Down three
+	// times to land on row 3, press Enter (NOT Escape) to confirm, return to
+	// the main menu, re-open the same role, and assert the cursor is back on
+	// the same model. This complements test #7 above which uses Down x1 +
+	// Escape — both paths share the same `roleCursors` persistence, but the
+	// Enter path additionally exercises the "save and recurse back to main
+	// menu" branch which Escape skips.
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "multi-model-planner-cursor-down3-enter",
+			models: [...FOUR_MODELS],
+			responses: [],
+		},
+		async (_fixture, trace) => {
+			terminal.write("/multi-model ")
+			await waitForText(terminal, "/multi-model ", { timeoutMs: INPUT_TIMEOUT_MS })
+			terminal.submit("")
+			await waitForText(terminal, "Model Roles", { timeoutMs: INPUT_TIMEOUT_MS })
+			trace.step("main menu open")
+
+			// First open: navigate to Planner and press Down three times.
+			await navigateMenuTo(terminal, trace, "Planner")
+			await waitForText(terminal, "toggle models", { timeoutMs: INPUT_TIMEOUT_MS })
+			trace.step("toggle-select first open for Planner")
+
+			for (let i = 0; i < 3; i += 1) {
+				terminal.keyDown()
+				await new Promise((resolve) => setTimeout(resolve, 100))
+			}
+
+			const firstOpenView = viewText(terminal)
+			const firstCursorLine = firstOpenView.split("\n").find((line) => /^> \[/.test(line))
+			expect(firstCursorLine).toBeDefined()
+			const firstCursorModel = firstCursorLine?.match(/kimchi-dev\/(\S+)/)?.[1]
+			expect(firstCursorModel).toBeDefined()
+			expect(firstCursorModel).toBe("delta") // row 3 of alpha/bravo/charlie/delta
+			trace.step(`cursor on row 3 (${firstCursorModel})`)
+
+			// Enter (NOT Escape) confirms and returns to the main menu.
+			terminal.submit("")
+			await waitForText(terminal, /Planner set to/, { timeoutMs: INPUT_TIMEOUT_MS })
+			await waitForText(terminal, "Model Roles", { timeoutMs: INPUT_TIMEOUT_MS })
+			trace.step("Enter confirmed selection, back at main menu")
+
+			// Second open: re-open Planner and assert the cursor lands on
+			// the same model. If `roleCursors.set(roleKey, cursor.index)` is
+			// skipped or short-circuited by the Enter path, this assertion
+			// will fail with the cursor on row 0 (alpha) instead of row 3.
+			await navigateMenuTo(terminal, trace, "Planner")
+			await waitForText(terminal, "toggle models", { timeoutMs: INPUT_TIMEOUT_MS })
+			trace.step("toggle-select re-opened for Planner")
+
+			const reOpenView = viewText(terminal)
+			const reOpenCursorLine = reOpenView.split("\n").find((line) => /^> \[/.test(line))
+			expect(reOpenCursorLine).toBeDefined()
+			const reOpenCursorModel = reOpenCursorLine?.match(/kimchi-dev\/(\S+)/)?.[1]
+			expect(reOpenCursorModel).toBe(firstCursorModel)
+			trace.step(`cursor persisted on ${reOpenCursorModel} after Enter + re-open`)
+
+			terminal.keyEscape()
+			await waitForText(terminal, "Model Roles", { timeoutMs: INPUT_TIMEOUT_MS })
+		},
+	)
+})
+
+test("/multi-model main menu cursor returns to the role that was just configured", async ({ terminal }) => {
+	// This is the user-reported bug: configure a role, return to the main
+	// menu, and the cursor should land back on that role (so the next role
+	// you configure is one Down-arrow away, not seven). Without the fix,
+	// the cursor resets to row 0 every time the menu re-opens because the
+	// underlying ctx.ui.select creates a fresh SelectList on each call.
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "multi-model-main-menu-cursor-persists",
+			models: [...FOUR_MODELS],
+			responses: [],
+		},
+		async (_fixture, trace) => {
+			terminal.write("/multi-model ")
+			await waitForText(terminal, "/multi-model ", { timeoutMs: INPUT_TIMEOUT_MS })
+			terminal.submit("")
+			await waitForText(terminal, "Model Roles", { timeoutMs: INPUT_TIMEOUT_MS })
+			trace.step("main menu open")
+
+			// First configure Builder via the main menu.
+			await navigateMenuTo(terminal, trace, "Builder")
+			await waitForText(terminal, "toggle models", { timeoutMs: INPUT_TIMEOUT_MS })
+			trace.step("Builder picker open")
+
+			// Toggle one model and confirm with Enter so the picker closes
+			// via the same path the user exercises manually.
+			terminal.write(" ")
+			await new Promise((resolve) => setTimeout(resolve, 100))
+			terminal.submit("")
+			await waitForText(terminal, /Builder set to/, { timeoutMs: INPUT_TIMEOUT_MS })
+			trace.step("Builder configured, back at main menu")
+
+			await waitForText(terminal, "Model Roles", { timeoutMs: INPUT_TIMEOUT_MS })
+
+			// ASSERT: the cursor (`→ `) is on the Builder row, not on
+			// Orchestrator (row 0). The cursor line will include both
+			// "→" and "Builder" only when persistence is working.
+			const view = viewText(terminal)
+			const cursorLine = view.split("\n").find((line) => line.includes("→") && line.includes("Builder"))
+			expect(cursorLine).toBeDefined()
+			trace.step("main menu cursor returned to Builder")
+
+			// Sanity check: navigate further to Reviewer (one Down past
+			// Builder) and verify the cursor moves — guards against a
+			// "stuck on Builder" false positive from the assertion above.
+			terminal.keyDown()
+			await new Promise((resolve) => setTimeout(resolve, 100))
+			const viewAfterDown = viewText(terminal)
+			const cursorLineAfterDown = viewAfterDown
+				.split("\n")
+				.find((line) => line.includes("→") && line.includes("Reviewer"))
+			expect(cursorLineAfterDown).toBeDefined()
+			trace.step("cursor moves normally after restoring to Builder")
+
 			terminal.keyEscape()
 			await waitForText(terminal, "Model Roles", { timeoutMs: INPUT_TIMEOUT_MS })
 		},

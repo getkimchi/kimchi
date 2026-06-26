@@ -58,6 +58,12 @@ scaling. Prefer minimax-m2.7 for build subagents — it is faster and completes 
 within standard budgets. Use kimi-k2.6 as a build subagent ONLY as a retry after \
 minimax has already failed on the same chunk.`
 
+const KIMI_K27_DESCRIPTION = `\
+Flagship Kimi model with vision support — the default for orchestration, deep research, \
+complex planning, and correctness-critical tasks. Handles images, screenshots, and visual input. \
+Best for: orchestration, architectural planning, plan verification involving concurrency or \
+algorithmic design, multi-step coding tasks, and any work requiring image understanding.`
+
 const MINIMAX_M3_DESCRIPTION = `\
 Primary MiniMax model with vision support — the default for orchestration, deep research, \
 complex planning, and correctness-critical tasks. Handles images, screenshots, and visual input. \
@@ -138,6 +144,21 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 				KIMI_FAMILY_ORCHESTRATION,
 				KIMI_K26_ORCHESTRATION,
 			),
+		},
+	],
+	[
+		"kimi-k2.7",
+		{
+			vision: true,
+			tier: "heavy",
+			description: KIMI_K27_DESCRIPTION,
+			guidelines: guidelinesMap({
+				research: [DEFAULT_RESEARCH_GUIDELINES, KIMI_FAMILY_RESEARCH],
+				plan: [DEFAULT_PLAN_GUIDELINES, KIMI_FAMILY_PLAN],
+				build: [DEFAULT_BUILD_GUIDELINES, KIMI_FAMILY_BUILD],
+				review: [DEFAULT_REVIEW_GUIDELINES, KIMI_FAMILY_REVIEW],
+			}),
+			orchestrationGuidelines: optionalGuidelines(DEFAULT_ORCHESTRATION_GUIDELINES, KIMI_FAMILY_ORCHESTRATION),
 		},
 	],
 	["kimi-k2.5", "ignored"],
