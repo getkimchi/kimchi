@@ -11,9 +11,11 @@ import {
 
 const namesOf = (entries: ToolEntry[]): string[] => entries.map((t) => t.name)
 
+const TODO_TOOL_NAMES = ["create_todos", "update_todos", "add_todo", "mark_todo", "clear_todos"]
+
 const TOOL_NAMES = {
-	sharedCore: ["read", "grep", "find", "ls", "web_fetch", "web_search"],
-	adhocOnly: ["questionnaire", "create_todos", "update_todos", "add_todo", "mark_todo", "clear_todos"],
+	sharedCore: ["read", "grep", "find", "ls", "web_fetch", "web_search", ...TODO_TOOL_NAMES],
+	adhocOnly: ["questionnaire"],
 	fermentPlanningTools: [
 		"set_phase",
 		"propose_ferment_scoping",
@@ -41,8 +43,8 @@ const TOOL_NAMES = {
 }
 
 describe("SHARED_CORE_TOOLS", () => {
-	it("contains the 6 read-only discovery tools", () => {
-		expect(SHARED_CORE_TOOLS).toHaveLength(6)
+	it("contains the 6 read-only discovery tools plus 5 todo lifecycle tools", () => {
+		expect(SHARED_CORE_TOOLS).toHaveLength(11)
 		for (const name of TOOL_NAMES.sharedCore) {
 			expect(SHARED_CORE_TOOLS).toContainEqual(expect.objectContaining({ name }))
 		}
@@ -51,7 +53,7 @@ describe("SHARED_CORE_TOOLS", () => {
 
 describe("ADHOC_MODE_TOOLS", () => {
 	it("contains --plan-only tools", () => {
-		expect(ADHOC_MODE_TOOLS).toHaveLength(6)
+		expect(ADHOC_MODE_TOOLS).toHaveLength(1)
 		for (const name of TOOL_NAMES.adhocOnly) {
 			expect(ADHOC_MODE_TOOLS).toContainEqual(expect.objectContaining({ name }))
 		}
@@ -154,7 +156,7 @@ describe("getToolsForProfile", () => {
 	describe("idle", () => {
 		it("returns only shared core tools", () => {
 			const result = getToolsForProfile("idle")
-			expect(result).toHaveLength(6)
+			expect(result).toHaveLength(11)
 			expect(namesOf(result)).toEqual(TOOL_NAMES.sharedCore)
 		})
 
@@ -231,6 +233,12 @@ describe("getToolsForProfile", () => {
 			}
 		})
 
+		it("includes todo lifecycle tools (shared core)", () => {
+			for (const name of TODO_TOOL_NAMES) {
+				expect(names).toContain(name)
+			}
+		})
+
 		it("does NOT include adhoc-only tools", () => {
 			for (const name of TOOL_NAMES.adhocOnly) {
 				expect(names).not.toContain(name)
@@ -263,6 +271,12 @@ describe("getToolsForProfile", () => {
 
 		it("includes all FERMENT_MODE_TOOLS", () => {
 			for (const name of [...TOOL_NAMES.fermentPlanningTools, ...TOOL_NAMES.fermentImplementationTools]) {
+				expect(names).toContain(name)
+			}
+		})
+
+		it("includes todo lifecycle tools (shared core)", () => {
+			for (const name of TODO_TOOL_NAMES) {
 				expect(names).toContain(name)
 			}
 		})
