@@ -1156,7 +1156,7 @@ describe("fermentExtension question dropdown", () => {
 		}
 	})
 
-	it("keeps pending plan review when the review dialog is cancelled", async () => {
+	it("clears pending plan review when the review dialog is cancelled", async () => {
 		vi.useFakeTimers()
 		try {
 			const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-index-plan-review-cancel-test-")))

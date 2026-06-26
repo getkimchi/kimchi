@@ -214,6 +214,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 				},
 				{ triggerTurn: true, deliverAs: "followUp" },
 			)
+			runtime.clearPendingPlanReview(review.fermentId)
 		} finally {
 			planReviewRunning = false
 		}
