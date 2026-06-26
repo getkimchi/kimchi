@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { Key, isKeyRelease, matchesKey, visibleWidth } from "@earendil-works/pi-tui"
+import { SLASH_COMMANDS } from "./slash-commands.js"
 
 type HelpRow = { kind: "heading"; text: string } | { kind: "entry"; key: string; desc: string } | { kind: "spacer" }
 
@@ -15,26 +16,11 @@ const HELP_ROWS: HelpRow[] = [
 
 	{ kind: "spacer" },
 	{ kind: "heading", text: "Slash Commands" },
-	{ kind: "entry", key: "/settings", desc: "Open settings menu" },
-	{ kind: "entry", key: "/model", desc: "Switch to a specific model" },
-	{ kind: "entry", key: "/scoped-models", desc: "Enable or disable models for Ctrl+P cycling" },
-	{ kind: "entry", key: "/multi-model", desc: "Configure model roles" },
-	{ kind: "entry", key: "/ferment", desc: "Run task in background" },
-	{ kind: "entry", key: "/todos", desc: "Open todo overlay / manage short-lived todo items" },
-	{ kind: "entry", key: "/compact", desc: "Compact context window" },
-	{ kind: "entry", key: "/name", desc: "Rename this session" },
-	{ kind: "entry", key: "/new", desc: "Start a new session" },
-	{ kind: "entry", key: "/agents", desc: "Manage background agents" },
-	{ kind: "entry", key: "/permissions", desc: "View or change permission mode and rules" },
-	{ kind: "entry", key: "/phase", desc: "Show or change the current work phase" },
-	{ kind: "entry", key: "/bug", desc: "Report a bug — opens GitHub issue form" },
-	{ kind: "entry", key: "/stats", desc: "View coding analytics and metrics" },
-	{ kind: "entry", key: "/mcp", desc: "Show MCP server status" },
-	{ kind: "entry", key: "/resources", desc: "Manage resources (files, URLs, images)" },
-	{ kind: "entry", key: "/tags", desc: "Manage usage tracking tags" },
-	{ kind: "entry", key: "/tips", desc: "Show all tips" },
-	{ kind: "entry", key: "/help", desc: "Show this help" },
-	{ kind: "entry", key: "/exit", desc: "Exit the application" },
+	...Object.entries(SLASH_COMMANDS).map(([key, { hint }]) => ({
+		kind: "entry" as const,
+		key: `/${key}`,
+		desc: hint,
+	})),
 ]
 
 // The overlay maxHeight percentage — must match overlayOptions below.
@@ -48,7 +34,7 @@ export default function helpExtension(pi: ExtensionAPI) {
 	pi.registerCommand("help", {
 		description: "Show keyboard shortcuts and slash commands",
 		handler: async (_args, ctx) => {
-			if (!ctx.hasUI) {
+			if (ctx.mode !== "tui") {
 				const lines: string[] = []
 				for (const row of HELP_ROWS) {
 					if (row.kind === "heading") {

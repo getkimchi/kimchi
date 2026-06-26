@@ -128,6 +128,18 @@ describe("ProposeScopingParams schema", () => {
 		expect(Value.Check(ProposeScopingParams, payload)).toBe(true)
 	})
 
+	it("accepts payload without ferment_id (ferment_id is optional)", () => {
+		const payload = {
+			title: "Test Ferment",
+			goal: "Do something",
+			success_criteria: ["Tests pass"],
+			phases: minimalPhases(),
+			gates: passingGates(),
+		}
+
+		expect(Value.Check(ProposeScopingParams, payload)).toBe(true)
+	})
+
 	it("documents improvement selection as a multi scoping question", () => {
 		const questionsSchema = (ProposeScopingParams as unknown as { properties: { questions: unknown } }).properties
 			.questions

@@ -20,11 +20,12 @@ export const DEFAULT_RESEARCH_GUIDELINES = `During **research** phase:
 export const DEFAULT_PLAN_GUIDELINES = `During **plan** phase:
 - Design BEFORE coding: file paths, interfaces, function signatures, data flow.
 - Save the spec as a markdown file in the Documents directory. The build phase reads from there — do not redo discovery in build.
-- List every file that will be created, modified, or deleted, with concrete paths.
-- Identify test files that need creation or update. State the testing strategy.
-- Call out non-obvious decisions and the alternatives you rejected — one line each.
-- Keep the spec focused. Interfaces and file paths beat prose. Long plans waste downstream tokens.
-- **Plan self-validation**: After writing the spec, re-read it in a separate turn and cross-check every requirement. Flag gaps — missing features, ambiguous API choices, unhandled edge cases. This is a lightweight self check; it does not replace external verification for complex tasks.
+- Use the standard plan structure: Goal, Constraints, Chunks (with Files Changed, Depends On, Accept When, Test Coverage, Open Questions), Verification Strategy, Decision Log, Risks.
+- Every chunk must list concrete file paths in Files Changed — not globs, not vague descriptions. Interfaces and file paths beat prose.
+- Identify test files that need creation or update in each chunk's Test Coverage field.
+- Call out non-obvious decisions and the alternatives you rejected in the Decision Log.
+- Keep the spec focused. Long plans waste downstream tokens.
+- **Plan self-validation**: After writing the spec, re-read it and cross-check: does every chunk have concrete file paths? Are Accept When criteria testable and specific? Are there implicit assumptions not in the Decision Log? Fix gaps before submitting.
 - **Plan verification (complex tasks only)**: If the plan is complex (3+ files, new architecture, unclear requirements, or any uncertainty), have a different model with \`plan\` or \`review\` strength verify the spec before build. See the orchestration instructions for skip/verify criteria and verifier selection.`
 
 /** Co-author trailer appended to every commit message. Defined once here so

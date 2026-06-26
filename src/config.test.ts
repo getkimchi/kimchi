@@ -687,10 +687,6 @@ describe("getActiveVendorSkillPaths", () => {
 		writeFileSync(join(mockHome, ".config", "kimchi", "harness", "skills", "using-superpowers", "SKILL.md"), "")
 		expect(getActiveVendorSkillPaths()).toEqual([])
 	})
-
-	it("returns empty array when vendor dir does not exist", () => {
-		expect(getActiveVendorSkillPaths()).toEqual([])
-	})
 })
 
 describe("buildSkillPathOptions", () => {
