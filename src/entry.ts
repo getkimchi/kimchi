@@ -56,6 +56,15 @@ process.env.KIMCHI_DISABLE_BUILTIN_PROVIDERS = "1"
 
 installProxyAgent()
 
+// Phase 2 of the auto-update plan: on-launch update check + swap. Dynamic
+// import keeps the network deps in ./update/workflow.js out of every test
+// that touches entry.ts. The call never throws (see auto-update.ts).
+try {
+	await (await import("./update/auto-update.js")).maybeAutoUpdateOnLaunch()
+} catch (err) {
+	console.warn(`[kimchi-auto-update] failed: ${(err as Error).message}`)
+}
+
 // Install before the dynamic cli.js import - the interceptor must wrap process.stdin.emit before any pi-* listener attaches. See src/paste-interceptor.ts for the rationale (LLM-1358).
 installPasteInterceptor()
 
