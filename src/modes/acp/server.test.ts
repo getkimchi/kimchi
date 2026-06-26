@@ -11,7 +11,13 @@ import type {
 	AgentSession,
 	AgentSessionEvent,
 	AgentSessionEventListener,
+	AuthStorage,
+	ExtensionContext,
+	ExtensionUIContext,
+	ModelRegistry,
 	SessionInfo as PiSessionInfo,
+	SessionManager,
+	Theme,
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -71,11 +77,26 @@ class FakeAgentSession {
 	abortImpl: () => Promise<void> = async () => {}
 	bindExtensionsImpl: (_bindings: unknown) => Promise<void> = async () => {}
 	lastPromptImages?: unknown[]
+	promptCalls: Array<{ prompt: string; opts?: { images?: unknown[] } }> = []
 	// Branch entries returned to the replay walker. Tests fill this with the
 	// shape buildSessionContext consumers expect (type:"message" + role).
 	branch: unknown[] = []
 	sessionManager = {
 		getBranch: () => this.branch,
+	}
+	// Captures whatever setUIContext the agent installs so tests can assert
+	// on it. The real AgentSession exposes this via its extensionRunner
+	// getter; the fake keeps it on the session root for simpler test wiring.
+	setUIContextCalls: unknown[] = []
+	extensionRunner = {
+		setUIContext: (ui: unknown) => {
+			this.setUIContextCalls.push(ui)
+		},
+		emit: async (_event: unknown) => {
+			// Real runner exposes emit for session lifecycle events; the fake
+			// just resolves so disposeSessionRecord's session_shutdown hook
+			// doesn't throw.
+		},
 	}
 
 	constructor(sessionId: string) {
@@ -95,6 +116,7 @@ class FakeAgentSession {
 
 	async prompt(text: string, opts?: { images?: unknown[] }): Promise<void> {
 		this.lastPromptImages = opts?.images
+		this.promptCalls.push({ prompt: text, opts })
 		await this.promptImpl(text, opts)
 	}
 
@@ -149,6 +171,12 @@ const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
 function agentEnd(): AgentSessionEvent {
 	return { type: "agent_end", messages: [], willRetry: false }
+}
+
+// Drop the incidental `available_commands_update` re-broadcast on session
+// resume so replay tests can assert on transcript shape alone.
+function replayOnly(updates: SessionNotification[]): SessionNotification[] {
+	return updates.filter((u) => u.update.sessionUpdate !== "available_commands_update")
 }
 
 describe("KimchiAcpAgent turn lifecycle", () => {
@@ -1378,6 +1406,57 @@ describe("newSession model state", () => {
 	})
 })
 
+describe("newSession available commands", () => {
+	it("sends available_commands_update with /bug command on session init", async () => {
+		const fake = new FakeAgentSession("session-commands")
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const { conn, updates } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+		})
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		// Find the available_commands_update notification
+		const update = updates.find((u) => u.update.sessionUpdate === "available_commands_update")
+		expect(update).toBeDefined()
+		expect(update?.sessionId).toBe("session-commands")
+
+		const updatePayload = update?.update as { availableCommands: Array<Record<string, unknown>> }
+		expect(updatePayload.availableCommands).toHaveLength(1)
+
+		const cmd = updatePayload.availableCommands[0]
+		expect(cmd).toMatchObject({
+			name: "bug",
+			description: expect.any(String),
+			input: { hint: expect.any(String) },
+		})
+	})
+})
+
+describe("loadSession available commands", () => {
+	it("sends available_commands_update alongside the transcript replay", async () => {
+		const fake = new FakeAgentSession("session-load-test")
+		fake.branch = [userTextEntry("previous message", "u1", null)]
+		const loader: AcpSessionLoader = async () => asSession(fake)
+		const { conn, updates } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(new FakeAgentSession("unused")),
+			sessionLoader: loader,
+		})
+
+		await agent.loadSession({ sessionId: "session-load-test", cwd: "/tmp", mcpServers: [] })
+
+		// loadSessionFresh re-broadcasts the command palette on resume.
+		const cmdUpdate = updates.find((u) => u.update.sessionUpdate === "available_commands_update")
+		expect(cmdUpdate).toBeDefined()
+		expect(updates.find((u) => u.update.sessionUpdate === "user_message_chunk")).toBeDefined()
+	})
+})
+
 describe("unstable_setSessionModel", () => {
 	it("switches to a valid model", async () => {
 		const fake = new FakeAgentSession("switch-session")
@@ -1860,19 +1939,30 @@ describe("ACP mode controller integration with permissions extension", () => {
 		}
 	}
 
-	function createMockContext(sessionId: string, cwd: string): unknown {
+	function createMockContext(sessionId: string, cwd: string): ExtensionContext {
 		return {
-			sessionManager: { getSessionId: () => sessionId },
+			sessionManager: { getSessionId: vi.fn().mockReturnValue(sessionId) } as unknown as SessionManager,
 			cwd,
-			hasUI: false,
+			mode: "rpc",
+			hasUI: true,
 			ui: {
-				notify: () => {},
-				setStatus: () => {},
-				showPermissionSelector: () => Promise.resolve({ decision: "allow", remember: false }),
-				theme: { semanticColors: { fg: { red: "", yellow: "", green: "" } } },
-			},
-			modelRegistry: { authStorage: { getCredentials: () => ({}) } },
-		}
+				notify: vi.fn(),
+				setStatus: vi.fn(),
+				onTerminalInput: vi.fn(),
+				theme: { fg: vi.fn(), bg: vi.fn(), getFgAnsi: vi.fn() } as unknown as Theme,
+			} as unknown as ExtensionUIContext,
+			modelRegistry: {
+				authStorage: {} as AuthStorage,
+				getApiKeyAndHeaders: vi.fn().mockReturnValue({ ok: true, apiKey: "test" }),
+				getAvailable: vi.fn().mockReturnValue([
+					{
+						id: "kimi",
+						name: "kimi",
+					},
+				]),
+				find: vi.fn().mockReturnValue({ id: "kimi", name: "kimi" }),
+			} as unknown as ModelRegistry,
+		} as unknown as ExtensionContext
 	}
 
 	afterEach(() => {
@@ -2819,8 +2909,11 @@ describe("KimchiAcpAgent loadSession", () => {
 			currentModelId: "test/test-model",
 		})
 		expect(loaderCalls.count).toBe(0)
-		expect(updates).toHaveLength(1)
-		expect(updates[0].update).toMatchObject({
+
+		const replayUpdates = replayOnly(updates)
+		// loadSession replay sends user_message_chunk
+		expect(replayUpdates).toHaveLength(1)
+		expect(replayUpdates[0].update).toMatchObject({
 			sessionUpdate: "user_message_chunk",
 			content: { type: "text", text: "already here" },
 		})
@@ -3027,7 +3120,9 @@ describe("KimchiAcpAgent loadSession", () => {
 			mcpServers: [],
 		})
 		// Snapshot updates seen at this point (ie. before any further awaits).
-		updatesAtResolve.push(...updates)
+		// Drop the incidental available_commands_update so we can assert on
+		// transcript shape without coupling to the command palette.
+		updatesAtResolve.push(...replayOnly(updates))
 
 		expect(updatesAtResolve).toHaveLength(4)
 		expect(updatesAtResolve[0].update).toMatchObject({
@@ -3104,14 +3199,15 @@ describe("KimchiAcpAgent loadSession", () => {
 			cwd: "/tmp",
 			mcpServers: [],
 		})
-		expect(updates.map((u) => u.update.sessionUpdate)).toEqual([
+		const replay = replayOnly(updates)
+		expect(replay.map((u) => u.update.sessionUpdate)).toEqual([
 			"user_message_chunk",
 			"agent_message_chunk",
 			"agent_thought_chunk",
 			"agent_message_chunk",
 		])
-		expect((updates[1].update as { content: { text: string } }).content.text).toBe("first second")
-		expect((updates[3].update as { content: { text: string } }).content.text).toBe("third")
+		expect((replay[1].update as { content: { text: string } }).content.text).toBe("first second")
+		expect((replay[3].update as { content: { text: string } }).content.text).toBe("third")
 	})
 
 	it("routes ANSI-dimmed replay text to thought chunks and strips remaining ANSI", async () => {
@@ -3375,10 +3471,11 @@ describe("KimchiAcpAgent loadSession", () => {
 				cwd: "/tmp",
 				mcpServers: [],
 			})
-			const seq = updates.map((u) => u.update.sessionUpdate)
+			const seq = replayOnly(updates).map((u) => u.update.sessionUpdate)
 			expect(seq).toEqual(["user_message_chunk", "tool_call", "tool_call_update"])
 
-			const toolCall = updates[1].update as Record<string, unknown>
+			const replay = replayOnly(updates)
+			const toolCall = replay[1].update as Record<string, unknown>
 			expect(toolCall).toMatchObject({
 				sessionUpdate: "tool_call",
 				toolCallId: "tc-1",
@@ -3388,7 +3485,7 @@ describe("KimchiAcpAgent loadSession", () => {
 				locations: c.expect.locations,
 				rawInput: c.args,
 			})
-			const update = updates[2].update as Record<string, unknown>
+			const update = replay[2].update as Record<string, unknown>
 			expect(update).toMatchObject({
 				sessionUpdate: "tool_call_update",
 				toolCallId: "tc-1",
@@ -3424,8 +3521,9 @@ describe("KimchiAcpAgent loadSession", () => {
 			cwd: "/tmp",
 			mcpServers: [],
 		})
-		const toolCall = updates[1].update as { status?: string }
-		const update = updates[2].update as {
+		const replay = replayOnly(updates)
+		const toolCall = replay[1].update as { status?: string }
+		const update = replay[2].update as {
 			status?: string
 			content: Array<{ content: { text: string } }>
 		}
@@ -3461,9 +3559,14 @@ describe("KimchiAcpAgent loadSession", () => {
 			cwd: "/tmp",
 			mcpServers: [],
 		})
-		expect(updates.map((u) => u.update.sessionUpdate)).toEqual(["user_message_chunk", "tool_call", "tool_call_update"])
-		const toolCall = updates[1].update as { status?: string }
-		const update = updates[2].update as { status?: string; content: unknown[] }
+		expect(replayOnly(updates).map((u) => u.update.sessionUpdate)).toEqual([
+			"user_message_chunk",
+			"tool_call",
+			"tool_call_update",
+		])
+		const replay = replayOnly(updates)
+		const toolCall = replay[1].update as { status?: string }
+		const update = replay[2].update as { status?: string; content: unknown[] }
 		expect(toolCall.status).toBe("failed")
 		expect(update.status).toBe("failed")
 		expect(update.content).toEqual([])
@@ -3592,7 +3695,10 @@ describe("KimchiAcpAgent loadSession", () => {
 			cwd: "/tmp",
 			mcpServers: [],
 		})
-		expect(updates).toHaveLength(0)
+
+		// The only update expected here is a no-op surface commands update
+		expect(updates).toHaveLength(1)
+		expect(updates[0].update.sessionUpdate).toEqual("available_commands_update")
 	})
 
 	it("replays a mixed transcript end-to-end (text, thinking, tool, skipped entries, follow-up text)", async () => {
@@ -3650,6 +3756,7 @@ describe("KimchiAcpAgent loadSession", () => {
 			"tool_call",
 			"tool_call_update",
 			"agent_message_chunk",
+			"available_commands_update",
 		])
 	})
 

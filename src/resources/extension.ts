@@ -89,13 +89,13 @@ async function handleResourcesCommand(args: string, ctx: ExtensionContext): Prom
 }
 
 async function openResourceMenu(ctx: ExtensionContext): Promise<void> {
-	if (!ctx.hasUI) return showResourceStatus(ctx)
+	if (ctx.mode !== "tui") return showResourceStatus(ctx)
 
 	await ctx.ui.custom<void>((tui, theme, _keybindings, done) => createResourceManager(tui, theme, done))
 }
 
 async function openResourceKindMenu(ctx: ExtensionContext, kind: ResourceKind): Promise<void> {
-	if (!ctx.hasUI) return showResourceStatus(ctx)
+	if (ctx.mode !== "tui") return showResourceStatus(ctx)
 
 	await ctx.ui.custom<void>((tui, theme, _keybindings, done) => createResourceManager(tui, theme, done, kind))
 }

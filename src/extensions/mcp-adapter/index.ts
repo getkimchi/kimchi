@@ -336,7 +336,7 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 				case "status":
 				case "":
 				default:
-					if (ctx.hasUI) {
+					if (ctx.mode === "tui") {
 						await openMcpPanel(state, pi, ctx, earlyConfigPath)
 					} else {
 						await showStatus(state, ctx)

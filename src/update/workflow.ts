@@ -199,6 +199,8 @@ export async function applyUpdate(opts: UpdateOptions): Promise<UpdateResult> {
 			// share (/usr/local/share) still had the stale metadata.
 			const shareSrc = join(extractedRoot, "share", "kimchi")
 			const shareDst = resolveAuxiliaryFilesDir(process.env, homedir(), targetPath)
+			// Always cleanup vendored directory to fully override it.
+			rmSync(join(shareDst, "vendor"), { recursive: true, force: true })
 			copySupportingFiles(shareSrc, shareDst, repo.binary)
 
 			return { from: opts.tag, to: opts.tag, backupPath }

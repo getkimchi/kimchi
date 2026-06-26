@@ -46,6 +46,7 @@ function makeMockPi(): { api: ExtensionAPI; commands: Map<string, CommandConfig>
 function makeUIContext(): ExtensionCommandContext {
 	return {
 		hasUI: true,
+		mode: "tui",
 		ui: {
 			notify: vi.fn(),
 			progress: vi.fn(),

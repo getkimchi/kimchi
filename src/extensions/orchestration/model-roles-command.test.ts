@@ -29,12 +29,12 @@ vi.mock("./model-metadata.js", () => ({
 // Spy on the shared form factory so we can assert what questions / header
 // were rendered without booting the real TUI. The factory itself is loaded
 // for real so its reducer wiring is exercised end-to-end.
-import * as questionnaireForm from "../questionnaire-form.js"
-import type { QuestionFormResult } from "../questionnaire-form.js"
-import type { Answer, Question } from "../questionnaire-reducer.js"
+import * as questionnaireForm from "../questionnaire/questionnaire-form.js"
+import type { QuestionFormResult } from "../questionnaire/questionnaire-form.js"
+import type { Answer, Question } from "../questionnaire/questionnaire-reducer.js"
 
-vi.mock("../questionnaire-form.js", async () => {
-	const actual = await vi.importActual<typeof questionnaireForm>("../questionnaire-form.js")
+vi.mock("../questionnaire/questionnaire-form.js", async () => {
+	const actual = await vi.importActual<typeof questionnaireForm>("../questionnaire/questionnaire-form.js")
 	return {
 		...actual,
 		createQuestionForm: vi.fn(actual.createQuestionForm),
@@ -146,7 +146,7 @@ describe("isEqualAssignment", () => {
 
 describe("formatRoleDisplay", () => {
 	it("appends (default) suffix when value matches DEFAULT_MODEL_ROLES", () => {
-		const display = formatRoleDisplay("orchestrator", "kimchi-dev/minimax-m3")
+		const display = formatRoleDisplay("orchestrator", "kimchi-dev/kimi-k2.7")
 		expect(display).toMatch(/\(default\)$/)
 	})
 
@@ -186,7 +186,7 @@ describe("formatRoleSummaryBlock", () => {
 	})
 
 	it("appends (default) suffix to each model line when assignment matches default", () => {
-		const display = formatRoleSummaryBlock("orchestrator", "kimchi-dev/minimax-m3")
+		const display = formatRoleSummaryBlock("orchestrator", "kimchi-dev/kimi-k2.7")
 		expect(display).toContain("(default)")
 	})
 

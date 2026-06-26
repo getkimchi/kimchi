@@ -27,6 +27,7 @@
 		"test:e2e:tui:debug": "pnpm run build:binary && node scripts/run-tui-e2e.js --debug",
 		"test:e2e:tui:trace": "pnpm run build:binary && node scripts/run-tui-e2e.js --trace",
 		"test:e2e:tui:trace:replay": "node scripts/run-tui-e2e.js replay",
+		"test:e2e:acp": "pnpm run build:binary && vitest run --config tests/e2e/acp/vitest.config.ts",
 		"postinstall": "node scripts/patch-pi-ai-oauth.js",
 		"prepare": "husky",
 		"verify": "pnpm run check && pnpm run build:binary && pnpm run test && pnpm run test:smoke"

@@ -5,6 +5,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import type { Ferment } from "../../ferment/types.js"
+import { getToolsForProfile } from "../../shared/planning/tool-catalog.js"
 import {
 	FermentCommandController,
 	getFermentArgumentCompletions,
@@ -381,6 +382,9 @@ describe("FermentCommandController", () => {
 		expect(h.storage.get(ferment.id)?.status).toBe("draft")
 		expect(h.runtime.getActive()).toBeUndefined()
 		expect(h.runtime.setActive).toHaveBeenLastCalledWith(undefined)
+		// Idle profile restores the user's full base toolset (all registered tools
+		// minus ferment-only). Harness registers [read, bash, propose_ferment_scoping,
+		// start_ferment_step]; the two ferment-only tools are filtered out.
 		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash"])
 		expect(h.runtime.getContinuationPolicy()).toBe("manual")
 		expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining('Exited Ferment mode for "Draft Exit"'))
@@ -977,7 +981,13 @@ describe("registerFermentCommands", () => {
 		expect(h.runtime.getContinuationPolicy()).toBe("automated")
 		expect(active.status).toBe("paused")
 		expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("run /ferment resume"))
-		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "propose_ferment_scoping"])
+		// paused ferment with no phase activated => profileForFerment returns "planning"
+		// => planning-ferment tools via the shared catalog (read, grep, find, ls,
+		// web_fetch, web_search, set_phase, propose_ferment_scoping, scope_ferment,
+		// update_ferment_scope_field, confirm_ferment_completion_criteria,
+		// list_ferments, ask_user, activate_ferment_phase).
+		const planningTools = getToolsForProfile("planning-ferment").map((t) => t.name)
+		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(expect.arrayContaining(planningTools))
 		expect(h.pi.sendMessage).not.toHaveBeenCalled()
 	})
 

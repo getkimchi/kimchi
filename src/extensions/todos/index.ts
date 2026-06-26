@@ -30,9 +30,9 @@ export * from "./command.js"
 export * from "./prompt-block.js"
 
 export const TODO_RECONCILE_MESSAGE =
-	"Internal hidden todo checkpoint. You are about to stop while the session todo list still needs reconciliation. Before any user-facing wrap-up, use the todo tools to make the list match reality: if an item is done, mark it completed; if work remains, keep working or mark the real pending/blocked state; if the list is obsolete or fully done, clear it. Do not tell the user about this checkpoint or mention that you are clearing or updating todos."
+	"Internal hidden todo checkpoint. You are about to stop while the session todo list still needs reconciliation. You must use the todo tools before any user-facing wrap-up. Make the list match reality: mark completed work completed; keep real remaining work pending/in_progress; mark blocked work blocked; clear obsolete or fully done lists. If work is impossible, unavailable, or cannot proceed now, mark it blocked instead of continuing indefinitely. Do not tell the user about this checkpoint or mention that you are clearing or updating todos."
 export const TODO_CHECKPOINT_MESSAGE =
-	"Internal hidden todo checkpoint. You changed state since the session todo list was last updated. Before switching tasks or answering finally, reconcile the todo list: completed work should be marked completed, remaining work should stay pending/in_progress/blocked with the real next step, and obsolete or fully done lists should be cleared. Do not tell the user about this checkpoint or mention that you are clearing or updating todos."
+	"Internal hidden todo checkpoint. You changed state since the session todo list was last updated. You must use the todo tools before switching tasks or answering finally. Make the list match reality: mark completed work completed; keep real remaining work pending/in_progress; mark blocked work blocked; clear obsolete or fully done lists. If work is impossible, unavailable, or cannot proceed now, mark it blocked instead of continuing indefinitely. Do not tell the user about this checkpoint or mention that you are clearing or updating todos."
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object"
@@ -95,6 +95,15 @@ function hiddenTodoMessage(reason: string, text: string) {
 	}
 }
 
+function hasVisibleText(message: unknown): boolean {
+	if (!isRecord(message)) return false
+	const content = message.content
+	if (!Array.isArray(content)) return false
+	return content.some(
+		(part) => isRecord(part) && part.type === "text" && typeof part.text === "string" && part.text.trim(),
+	)
+}
+
 function isTerminalAssistantTurn(
 	event: { message: unknown; toolResults: readonly unknown[] },
 	ctx: ExtensionContext,
@@ -143,27 +152,26 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	let latestCtx: ExtensionContext | undefined
 	let unsubscribeTodoStore: (() => void) | undefined
 	let workSinceTodoWrite = false
-	let reconcileSteeredTodosKey: string | undefined
+	let suppressedFinalAssistantText = false
 
 	const resetTodoProcessState = () => {
 		workSinceTodoWrite = false
-		reconcileSteeredTodosKey = undefined
+		suppressedFinalAssistantText = false
 	}
 
 	const hasPendingTodoReconciliation = () => workSinceTodoWrite && currentTodoStateKey() !== undefined
 
-	const maybeSteerTodoReconciliation = () => {
+	const maybeSteerTodoReconciliation = (message: unknown) => {
 		if (!workSinceTodoWrite) return
-		const key = currentTodoStateKey()
-		if (!key) {
+		if (!hasVisibleText(message) && !suppressedFinalAssistantText) return
+		if (!currentTodoStateKey()) {
 			resetTodoProcessState()
 			return
 		}
-		if (reconcileSteeredTodosKey === key) return
-		reconcileSteeredTodosKey = key
 		const stateText = currentTodoStateText()
-		const message = stateText ? `${TODO_RECONCILE_MESSAGE}\n\n${stateText}` : TODO_RECONCILE_MESSAGE
-		pi.sendMessage(hiddenTodoMessage("reconcile_todos", message), { deliverAs: "followUp" })
+		const promptText = stateText ? `${TODO_RECONCILE_MESSAGE}\n\n${stateText}` : TODO_RECONCILE_MESSAGE
+		pi.sendMessage(hiddenTodoMessage("reconcile_todos", promptText), { deliverAs: "followUp" })
+		suppressedFinalAssistantText = false
 	}
 
 	registerTodosCommand(pi)
@@ -188,7 +196,6 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		unsubscribeTodoStore?.()
 		unsubscribeTodoStore = subscribeTodoStore(() => {
 			workSinceTodoWrite = false
-			reconcileSteeredTodosKey = undefined
 			if (!latestCtx?.hasUI) return
 			syncTodoWidget(latestCtx)
 		})
@@ -207,12 +214,14 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	pi.on("message_update", (event) => {
 		if (!hasPendingTodoReconciliation() || !isAssistantMessage(event.message)) return
 		if (hasAssistantToolCall(event.message) || !isFinalAnswerCandidate(event.message)) return
+		suppressedFinalAssistantText = true
 		clearAssistantText(event.message)
 	})
 
 	pi.on("message_end", (event) => {
 		if (!hasPendingTodoReconciliation() || !isAssistantMessage(event.message)) return
 		if (hasAssistantToolCall(event.message) || !isFinalAnswerCandidate(event.message)) return
+		suppressedFinalAssistantText = true
 		clearAssistantText(event.message)
 		return { message: assistantWithoutText(event.message) }
 	})
@@ -220,10 +229,7 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	pi.on("context", (event) => {
 		if (!workSinceTodoWrite) return undefined
 		const stateText = currentTodoStateText()
-		if (!stateText) {
-			workSinceTodoWrite = false
-			return undefined
-		}
+		if (!stateText) return resetTodoProcessState()
 		return {
 			messages: [
 				...event.messages,
@@ -239,7 +245,7 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	pi.on("turn_end", (event, ctx) => {
 		if (!isTerminalAssistantTurn(event, ctx)) return
 		syncTodoWidget(ctx)
-		maybeSteerTodoReconciliation()
+		maybeSteerTodoReconciliation(event.message)
 	})
 
 	pi.on("session_shutdown", (_event, ctx) => {

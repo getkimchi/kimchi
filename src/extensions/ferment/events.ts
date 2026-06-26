@@ -4,7 +4,8 @@ import { deriveDraftFermentTitle } from "../../ferment/title.js"
 import type { Ferment } from "../../ferment/types.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { deferExtensionAction } from "../deferred-action.js"
-import { maybeTriggerFermentCompaction } from "./auto-compaction.js"
+import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
+import { maybeTriggerFermentCompaction, maybeTriggerMidTurnFermentCompaction } from "./auto-compaction.js"
 import { formatDuration } from "./colors.js"
 import { extractContextualOptions, extractTrailingQuestion } from "./contextual-options.js"
 import { decideContinuation } from "./continuation.js"
@@ -16,6 +17,7 @@ import {
 	maybeInjectFermentStopNudge,
 	maybeInjectReactiveContinuationNudge,
 	maybeInjectScopingProgressNudge,
+	maybeInjectScopingStopNudge,
 	onFermentToolCallSeen,
 	resetReactiveContinuationNudgeCount,
 } from "./nudge.js"
@@ -343,6 +345,13 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		} else if (pi.getFlag("ferment-oneshot") === true) {
 			pendingOneshot = true
 			runtime.setActive(undefined)
+			// In one-shot mode there is no interactive user to confirm criteria.
+			// Hide confirm_ferment_completion_criteria via the cooperative visibility
+			// layer so the model never sees it in its toolset — the model should
+			// include success_criteria directly in scope_ferment instead.
+			// ask_user is intentionally left visible: calls route transparently to
+			// the judge model, which stands in for the user.
+			createToolVisibility(pi).disable(["confirm_ferment_completion_criteria"])
 		} else {
 			pendingOneshot = false
 			runtime.setActive(undefined)
@@ -466,11 +475,21 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		if (!f) return
 
 		// During draft scoping, detect when the model is stuck exploring
-		// without progressing through the scoping steps.
-		if (f.status === "draft" && runtime.isScopingInteractive(f.id) && toolCallSeen) {
+		// without progressing through the scoping steps. Fires for both
+		// interactive and one-shot scoping — consistency across modes is
+		// important so the model gets the same kick regardless of entry point.
+		if (f.status === "draft" && toolCallSeen) {
 			const toolNames = getToolCallNames(content)
-			const nudged = maybeInjectScopingProgressNudge(pi, f.id, toolNames)
+			const interactive = runtime.isScopingInteractive(f.id)
+			const nudged = maybeInjectScopingProgressNudge(pi, f.id, toolNames, { interactive })
 			if (nudged) return
+
+			// Stop-without-scoping: the model made tool calls but ended with
+			// stopReason "stop" without calling any scoping-completion tool.
+			if (stopReason === "stop") {
+				const stopNudged = maybeInjectScopingStopNudge(pi, f.id, toolNames, stopReason, { interactive })
+				if (stopNudged) return
+			}
 		}
 
 		const userInputHandled = await maybeRunUserInputDropdown(pi, ctx, content, f, runtime)
@@ -489,5 +508,12 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 		// Fires between turns in automated-continuation mode, so the next
 		// phase starts with a fresh compacted session.
 		maybeTriggerFermentCompaction(pi, ctx, runtime)
+
+		// Mid-turn guard: if the context crossed the auto-compaction threshold
+		// while a step is still in progress, compact now and resume the step.
+		// Only acts on tool-use turns; stop/error/aborted are handled elsewhere.
+		if (event.message.role === "assistant" && event.message.stopReason === "toolUse") {
+			maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, event.message.usage?.totalTokens ?? 0)
+		}
 	})
 }

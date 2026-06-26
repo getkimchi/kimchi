@@ -1,6 +1,6 @@
 /**
  * Trigger engine — pure state machine that decides when triggered behaviours
- * load and tracks pending injections for the injector to drain.
+ * load and tracks pending one-shot injections for the in-turn steer path.
  *
  * Two evaluation paths share the same `loaded`/`pending` state:
  * - `evaluateSessionTriggers` — runs probes against the resolved
@@ -12,8 +12,15 @@
  * also records the load circumstances (turn, trigger source, tool args) so
  * downstream consumers (session summary) don't need a parallel side-table.
  *
- * On compaction the loaded set is preserved; `requeueLoaded` repopulates the
- * pending queue so the injector re-delivers each loaded body once.
+ * Persistence across turns is handled by the system-prompt block registered
+ * for each triggered behaviour: the block renders its body iff the behaviour
+ * is loaded, so the loaded set surviving a session reset is sufficient —
+ * no explicit re-injection is required after compaction.
+ *
+ * The `pending` queue exists solely to gate the in-turn steer delivery from
+ * `tool_result`: a tool-triggered body is steered exactly once, the first
+ * time its tool result arrives after the trigger fires. Session-triggered
+ * bodies never go through this path — they only appear in the system prompt.
  */
 
 import type { SessionContext } from "./session-context.js"
@@ -120,21 +127,5 @@ export class TriggerEngine {
 	reset(): void {
 		this.loaded.clear()
 		this.pending.clear()
-	}
-
-	/**
-	 * Repopulate the pending queue with every currently-loaded behaviour, in
-	 * registry order. The loaded set is preserved — triggers do not re-fire
-	 * and `behaviour_loaded` entries are not re-emitted. Used after compaction
-	 * to re-inject bodies the summarisation step replaced.
-	 */
-	requeueLoaded(): string[] {
-		const requeued: string[] = []
-		for (const b of this.behaviours) {
-			if (!this.loaded.has(b.name)) continue
-			this.pending.add(b.name)
-			requeued.push(b.name)
-		}
-		return requeued
 	}
 }

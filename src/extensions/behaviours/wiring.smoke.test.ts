@@ -10,12 +10,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it } from "vitest"
 import { type EnvironmentInfo, buildSystemPrompt } from "../prompt-construction/system-prompt.js"
 import type { ResolverIO } from "./session-context.js"
-import {
-	BEHAVIOUR_EVAL_TYPE,
-	BEHAVIOUR_LOADED_TYPE,
-	BEHAVIOUR_REQUEUED_TYPE,
-	BEHAVIOUR_SESSION_SUMMARY_TYPE,
-} from "./stats.js"
+import { BEHAVIOUR_EVAL_TYPE, BEHAVIOUR_LOADED_TYPE, BEHAVIOUR_SESSION_SUMMARY_TYPE } from "./stats.js"
 import { cli, tool } from "./triggers.js"
 import type { Behaviour } from "./types.js"
 import { BEHAVIOUR_BODY_TYPE, wireBehaviours } from "./wiring.js"
@@ -184,25 +179,31 @@ describe("wireBehaviours — session_start", () => {
 		expect(pi.entries(BEHAVIOUR_LOADED_TYPE)).toHaveLength(2)
 	})
 
-	it("loads session-triggered behaviours before appendEntry is available", async () => {
+	it("renders session-triggered bodies in the system prompt before appendEntry is available", async () => {
 		const pi = setupWired([ghCli])
 		pi.setRuntimeReady(false)
 
-		await pi.fire("session_start", {}, { cwd: "/tmp" })
+		await pi.fire(
+			"session_start",
+			{},
+			{
+				cwd: "/tmp",
+				sessionManager: { getSessionId: () => TEST_SESSION_ID },
+			},
+		)
 
 		expect(pi.entries(BEHAVIOUR_LOADED_TYPE)).toEqual([])
 
-		const next = await pi.fire<{ message?: { customType: string; content: string; display: boolean } }>(
-			"before_agent_start",
-			{ prompt: "hi", systemPrompt: "BASE" },
-		)
-		expect(next.flatMap((r) => (r.message ? [r.message] : []))).toEqual([
-			expect.objectContaining({
-				customType: BEHAVIOUR_BODY_TYPE,
-				content: "Use gh for GitHub.",
-				display: false,
-			}),
-		])
+		// The system-prompt block renders the body as soon as the engine has
+		// loaded it, independent of when the deferred appendEntry fires.
+		const sp = buildSystemPrompt({
+			tools: [{ name: "read", description: "Read file contents" }],
+			env: testEnv,
+			contextFiles: [],
+			mode: "orchestrator",
+			sessionId: TEST_SESSION_ID,
+		})
+		expect(sp).toContain("Use gh for GitHub.")
 
 		pi.setRuntimeReady(true)
 		await flushDeferredActions()
@@ -275,30 +276,37 @@ describe("wireBehaviours — tool_result", () => {
 			},
 		])
 
-		// Pending drained: a later before_agent_start does NOT re-deliver the body.
-		const next = await pi.fire<{ message?: unknown }>("before_agent_start", { prompt: "x", systemPrompt: "BASE" })
-		expect(next.flatMap((r) => (r.message ? [r.message] : []))).toEqual([])
+		// Pending drained: a later tool_result with the same body must NOT re-steer.
+		const sentBefore = pi.sent.length
+		await pi.fire("tool_result", { toolName: "bash", input: { command: "glab mr list" } })
+		expect(pi.sent.length).toBe(sentBefore)
 	})
 
-	it("does not steer for session-triggered bodies that are still pending", async () => {
+	it("does not steer session-triggered bodies; they appear in the system prompt instead", async () => {
 		const pi = setupWired([ghCli])
-		await pi.fire("session_start", {}, { cwd: "/tmp" })
+		await pi.fire(
+			"session_start",
+			{},
+			{
+				cwd: "/tmp",
+				sessionManager: { getSessionId: () => TEST_SESSION_ID },
+			},
+		)
 		await flushDeferredActions()
 		await pi.fire("tool_result", { toolName: "bash", input: { command: "gh pr list" } })
 
+		// Session-triggered bodies never go through the steer path.
 		expect(pi.sent).toEqual([])
 
-		const next = await pi.fire<{ message?: { customType: string; content: string; display: boolean } }>(
-			"before_agent_start",
-			{ prompt: "x", systemPrompt: "BASE" },
-		)
-		expect(next.flatMap((r) => (r.message ? [r.message] : []))).toEqual([
-			expect.objectContaining({
-				customType: BEHAVIOUR_BODY_TYPE,
-				content: "Use gh for GitHub.",
-				display: false,
-			}),
-		])
+		// The body is delivered via the system-prompt block instead.
+		const sp = buildSystemPrompt({
+			tools: [{ name: "read", description: "Read file contents" }],
+			env: testEnv,
+			contextFiles: [],
+			mode: "orchestrator",
+			sessionId: TEST_SESSION_ID,
+		})
+		expect(sp).toContain("Use gh for GitHub.")
 	})
 })
 
@@ -341,47 +349,113 @@ describe("wireBehaviours — before_agent_start", () => {
 		expect(sp.indexOf("## Rules")).toBeLessThan(sp.indexOf("Project rule."))
 	})
 
-	it("delivers the body of a loaded triggered behaviour as a hidden message, exactly once", async () => {
+	it("renders a loaded triggered behaviour's body in the system prompt", async () => {
 		const pi = setupWired([ghCli])
-		await pi.fire("session_start", {}, { cwd: "/tmp" })
-		await flushDeferredActions()
-
-		const first = await pi.fire<{ message?: { customType: string; content: string; display: boolean } }>(
-			"before_agent_start",
-			{ prompt: "hi", systemPrompt: "BASE" },
+		await pi.fire(
+			"session_start",
+			{},
+			{
+				cwd: "/tmp",
+				sessionManager: { getSessionId: () => TEST_SESSION_ID },
+			},
 		)
-		const messages = first.flatMap((r) => (r.message ? [r.message] : []))
-		expect(messages).toEqual([
-			expect.objectContaining({
-				customType: BEHAVIOUR_BODY_TYPE,
-				content: "Use gh for GitHub.",
-				display: false,
-			}),
-		])
-
-		// Second turn — body already drained, no message returned.
-		const second = await pi.fire<{ message?: unknown }>("before_agent_start", { prompt: "hi", systemPrompt: "BASE" })
-		expect(second.flatMap((r) => (r.message ? [r.message] : []))).toEqual([])
-	})
-})
-
-describe("wireBehaviours — session_compact", () => {
-	it("appends behaviour_requeued for each loaded behaviour and re-delivers the body", async () => {
-		const pi = setupWired([ghCli])
-		await pi.fire("session_start", {}, { cwd: "/tmp" })
 		await flushDeferredActions()
-		await pi.fire("turn_start", { turnIndex: 5 })
-		// Drain initial pending.
-		await pi.fire("before_agent_start", { prompt: "hi", systemPrompt: "BASE" })
+
+		const sp = buildSystemPrompt({
+			tools: [{ name: "read", description: "Read file contents" }],
+			env: testEnv,
+			contextFiles: [],
+			mode: "orchestrator",
+			sessionId: TEST_SESSION_ID,
+		})
+
+		expect(sp).toContain("Use gh for GitHub.")
+		// Rendered as developer-role content, not as a user-role message.
+		const beforeAgentStartMessages = await pi.fire<{ message?: unknown }>("before_agent_start", {
+			prompt: "hi",
+			systemPrompt: "BASE",
+		})
+		expect(beforeAgentStartMessages.flatMap((r) => (r.message ? [r.message] : []))).toEqual([])
+	})
+
+	it("omits triggered bodies from the system prompt when they have not loaded", async () => {
+		const pi = setupWired([glabCli])
+		await pi.fire(
+			"session_start",
+			{},
+			{
+				cwd: "/tmp",
+				sessionManager: { getSessionId: () => TEST_SESSION_ID },
+			},
+		)
+		await flushDeferredActions()
+
+		const sp = buildSystemPrompt({
+			tools: [{ name: "read", description: "Read file contents" }],
+			env: testEnv,
+			contextFiles: [],
+			mode: "orchestrator",
+			sessionId: TEST_SESSION_ID,
+		})
+
+		expect(sp).not.toContain("Use glab for GitLab.")
+	})
+
+	it("renders a tool-triggered body's content in the system prompt on subsequent turns", async () => {
+		const pi = setupWired([glabCli])
+		await pi.fire(
+			"session_start",
+			{},
+			{
+				cwd: "/tmp",
+				sessionManager: { getSessionId: () => TEST_SESSION_ID },
+			},
+		)
+		await pi.fire("turn_start", { turnIndex: 1 })
+		await pi.fire("tool_call", { toolName: "bash", input: { command: "glab mr list" } })
+
+		const sp = buildSystemPrompt({
+			tools: [{ name: "read", description: "Read file contents" }],
+			env: testEnv,
+			contextFiles: [],
+			mode: "orchestrator",
+			sessionId: TEST_SESSION_ID,
+		})
+
+		expect(sp).toContain("Use glab for GitLab.")
+	})
+
+	it("keeps a triggered body in the system prompt after session_compact", async () => {
+		const pi = setupWired([ghCli])
+		await pi.fire(
+			"session_start",
+			{},
+			{
+				cwd: "/tmp",
+				sessionManager: { getSessionId: () => TEST_SESSION_ID },
+			},
+		)
+		await flushDeferredActions()
+
+		const beforeCompact = buildSystemPrompt({
+			tools: [{ name: "read", description: "Read file contents" }],
+			env: testEnv,
+			contextFiles: [],
+			mode: "orchestrator",
+			sessionId: TEST_SESSION_ID,
+		})
+		expect(beforeCompact).toContain("Use gh for GitHub.")
 
 		await pi.fire("session_compact", {})
-		expect(pi.entries(BEHAVIOUR_REQUEUED_TYPE)).toEqual([
-			{ type: BEHAVIOUR_REQUEUED_TYPE, data: { name: "gh-cli", turnIndex: 5 } },
-		])
 
-		// Body re-delivered on next agent start.
-		const post = await pi.fire<{ message?: unknown }>("before_agent_start", { prompt: "hi", systemPrompt: "BASE" })
-		expect(post.flatMap((r) => (r.message ? [r.message] : []))).toHaveLength(1)
+		const afterCompact = buildSystemPrompt({
+			tools: [{ name: "read", description: "Read file contents" }],
+			env: testEnv,
+			contextFiles: [],
+			mode: "orchestrator",
+			sessionId: TEST_SESSION_ID,
+		})
+		expect(afterCompact).toContain("Use gh for GitHub.")
 	})
 })
 

@@ -109,10 +109,20 @@ describe("registerFermentEvents", () => {
 
 		expect(runtime.setActive).toHaveBeenCalledWith(undefined)
 		expect(pi.getAllTools).not.toHaveBeenCalled()
-		expect(pi.setActiveTools).not.toHaveBeenCalled()
+		// In one-shot mode, confirm_ferment_completion_criteria is hidden via the
+		// cooperative visibility layer — this calls pi.setActiveTools once to remove it.
+		const setActiveToolsAfterSessionStart = vi.mocked(pi.setActiveTools).mock.calls
+		if (setActiveToolsAfterSessionStart.length > 0) {
+			// The only permitted call is from disabling confirm_ferment_completion_criteria.
+			const lastCall = setActiveToolsAfterSessionStart.at(-1)?.[0] as string[] | undefined
+			expect(lastCall).not.toContain("confirm_ferment_completion_criteria")
+		}
 
 		const beforeAgentStart = handlers.get("before_agent_start")
 		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		// Clear spy so we can assert before_agent_start behaviour independently.
+		vi.mocked(pi.setActiveTools).mockClear()
 
 		await beforeAgentStart({ systemPrompt: "base" }, {})
 

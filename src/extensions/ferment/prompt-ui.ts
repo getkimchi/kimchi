@@ -1,17 +1,11 @@
-import type { ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent"
+import type { Theme } from "@earendil-works/pi-coding-agent"
 import type { Component, TUI } from "@earendil-works/pi-tui"
 import type { ScopingQuestionType } from "../../ferment/types.js"
-import { createQuestionForm } from "../questionnaire-form.js"
-import type { Answer, Question, QuestionType } from "../questionnaire-reducer.js"
+import { type Answer, type Question, type QuestionType, createQuestionForm } from "../questionnaire/index.js"
 import { setTipWidgetLocation } from "../tips/index.js"
+import type { FermentUi } from "./ui.js"
 
-export type PromptUi = {
-	select?: (title: string, options: string[]) => Promise<string | undefined>
-	input?: (title: string, placeholder?: string) => Promise<string | undefined>
-	editor?: (title: string, prefill?: string) => Promise<string | undefined>
-	custom?: ExtensionUIContext["custom"]
-	setWorkingVisible?: (visible: boolean) => void
-}
+type PromptUi = Pick<FermentUi, "select" | "input" | "editor" | "custom" | "setWorkingVisible">
 
 export interface PromptEditorOptions {
 	placeholder?: string
@@ -58,8 +52,8 @@ export interface PromptFormResult {
 	cancelled: boolean
 }
 
-export function getPromptUi(ctx: unknown): PromptUi | undefined {
-	return (ctx as { ui?: PromptUi } | undefined)?.ui
+export function getPromptUi(ctx: { ui?: PromptUi } | undefined): PromptUi | undefined {
+	return ctx?.ui
 }
 
 export async function withWorkingHidden<T>(ui: PromptUi, fn: () => Promise<T>): Promise<T> {
@@ -76,20 +70,28 @@ export async function withWorkingHidden<T>(ui: PromptUi, fn: () => Promise<T>): 
 	}
 }
 
-export function promptSelect(ctx: unknown, title: string, options: string[]): Promise<string | undefined> {
+export function promptSelect(
+	ctx: { ui?: PromptUi } | undefined,
+	title: string,
+	options: string[],
+): Promise<string | undefined> {
 	const ui = getPromptUi(ctx)
 	if (!ui?.select) return Promise.resolve(undefined)
 	return withWorkingHidden(ui, () => ui.select?.(title, options) ?? Promise.resolve(undefined))
 }
 
-export function promptInput(ctx: unknown, title: string, placeholder?: string): Promise<string | undefined> {
+export function promptInput(
+	ctx: { ui?: PromptUi } | undefined,
+	title: string,
+	placeholder?: string,
+): Promise<string | undefined> {
 	const ui = getPromptUi(ctx)
 	if (!ui?.input) return Promise.resolve(undefined)
 	return withWorkingHidden(ui, () => ui.input?.(title, placeholder) ?? Promise.resolve(undefined))
 }
 
 export function promptEditor(
-	ctx: unknown,
+	ctx: { ui?: PromptUi } | undefined,
 	title: string,
 	options: PromptEditorOptions = {},
 ): Promise<string | undefined> {
@@ -108,7 +110,10 @@ export function promptEditor(
 	return Promise.resolve(undefined)
 }
 
-export async function promptForm(ctx: unknown, spec: PromptFormSpec): Promise<PromptFormResult | undefined> {
+export async function promptForm(
+	ctx: { ui?: PromptUi } | undefined,
+	spec: PromptFormSpec,
+): Promise<PromptFormResult | undefined> {
 	const ui = getPromptUi(ctx)
 	if (!ui) return undefined
 	const questions = spec.questions.map(normalizePromptFormQuestion)

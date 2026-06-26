@@ -1002,7 +1002,9 @@ describe("continuation nudge turn_end handler", () => {
 	it("sends a continuation nudge on a text-only turn with no tools called", async () => {
 		const { fire, sendMessageCalls } = buildNudgeHandlers()
 
-		// Simulate user input to reset the nudge state.
+		// Simulate a tool having been called earlier in the session so the
+		// fresh-session suppression does not apply. Then a new user-input cycle.
+		await fire("tool_execution_start", {})
 		await fire("input", { source: "user" })
 
 		// Model responds with text-only, stopReason "stop".
@@ -1018,7 +1020,8 @@ describe("continuation nudge turn_end handler", () => {
 	it("does not send a second nudge when model responds to nudge with stopReason 'stop'", async () => {
 		const { fire, sendMessageCalls } = buildNudgeHandlers()
 
-		// Simulate user input.
+		// Tool called earlier in the session so the fresh-session guard is past.
+		await fire("tool_execution_start", {})
 		await fire("input", { source: "user" })
 
 		// First text-only turn triggers the continuation nudge.
@@ -1038,6 +1041,7 @@ describe("continuation nudge turn_end handler", () => {
 	it("falls through to second nudge when model responds with non-stop stopReason", async () => {
 		const { fire, sendMessageCalls } = buildNudgeHandlers()
 
+		await fire("tool_execution_start", {})
 		await fire("input", { source: "user" })
 
 		// First text-only turn triggers the continuation nudge.
