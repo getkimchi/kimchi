@@ -8,7 +8,12 @@
 //   node scripts/build-binary.js --target windows-x64   # build for Windows x86-64
 
 import { execSync } from "node:child_process"
+import { rmSync } from "node:fs"
 import { arch, platform } from "node:os"
+import { dirname, join } from "node:path"
+import { fileURLToPath } from "node:url"
+
+const projectRoot = join(dirname(fileURLToPath(import.meta.url)), "..")
 
 const TARGETS = {
 	"darwin-arm64": { bun: "bun-darwin-arm64", os: "darwin", binaryName: "kimchi" },
@@ -58,6 +63,11 @@ function run(label, cmd) {
 	}
 }
 
+function cleanDist() {
+	console.log("\n→ clean")
+	rmSync(join(projectRoot, "dist"), { recursive: true, force: true })
+}
+
 const isCI = !!process.env.CI
 
 // In CI the binary will be build in its own step.
@@ -66,7 +76,7 @@ if (!isCI) {
 	run("build proxy-helper", `node scripts/build-proxy-helper.js${helperTargetFlag}`)
 }
 
-run("clean", "pnpm run clean")
+cleanDist()
 run("typecheck", "pnpm run typecheck")
 
 // Externalize packages that cannot be bundled into a Bun compiled binary (native addons, browser automation harnesses).
