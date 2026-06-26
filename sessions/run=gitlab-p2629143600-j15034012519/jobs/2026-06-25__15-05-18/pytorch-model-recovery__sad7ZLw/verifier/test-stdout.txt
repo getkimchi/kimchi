@@ -1,198 +1,0 @@
-Get:1 http://deb.debian.org/debian bookworm InRelease [151 kB]
-Get:2 http://deb.debian.org/debian bookworm-updates InRelease [55.4 kB]
-Get:3 http://deb.debian.org/debian-security bookworm-security InRelease [48.0 kB]
-Get:4 http://deb.debian.org/debian bookworm/main amd64 Packages [8790 kB]
-Get:5 http://deb.debian.org/debian-security bookworm-security/main amd64 Packages [313 kB]
-Fetched 9357 kB in 1s (8265 kB/s)
-Reading package lists...
-Reading package lists...
-Building dependency tree...
-Reading state information...
-The following additional packages will be installed:
-  krb5-locales libbrotli1 libcurl4 libgssapi-krb5-2 libk5crypto3 libkeyutils1
-  libkrb5-3 libkrb5support0 libldap-2.5-0 libldap-common libnghttp2-14 libpsl5
-  librtmp1 libsasl2-2 libsasl2-modules libsasl2-modules-db libssh2-1
-  publicsuffix
-Suggested packages:
-  krb5-doc krb5-user libsasl2-modules-gssapi-mit
-  | libsasl2-modules-gssapi-heimdal libsasl2-modules-ldap libsasl2-modules-otp
-  libsasl2-modules-sql
-The following NEW packages will be installed:
-  curl krb5-locales libbrotli1 libcurl4 libgssapi-krb5-2 libk5crypto3
-  libkeyutils1 libkrb5-3 libkrb5support0 libldap-2.5-0 libldap-common
-  libnghttp2-14 libpsl5 librtmp1 libsasl2-2 libsasl2-modules
-  libsasl2-modules-db libssh2-1 publicsuffix
-0 upgraded, 19 newly installed, 0 to remove and 29 not upgraded.
-Need to get 2491 kB of archives.
-After this operation, 6813 kB of additional disk space will be used.
-Get:1 http://deb.debian.org/debian-security bookworm-security/main amd64 krb5-locales all 1.20.1-2+deb12u5 [63.5 kB]
-Get:2 http://deb.debian.org/debian bookworm/main amd64 libbrotli1 amd64 1.0.9-2+b6 [275 kB]
-Get:3 http://deb.debian.org/debian-security bookworm-security/main amd64 libkrb5support0 amd64 1.20.1-2+deb12u5 [33.2 kB]
-Get:4 http://deb.debian.org/debian-security bookworm-security/main amd64 libk5crypto3 amd64 1.20.1-2+deb12u5 [79.7 kB]
-Get:5 http://deb.debian.org/debian bookworm/main amd64 libkeyutils1 amd64 1.6.3-2 [8808 B]
-Get:6 http://deb.debian.org/debian-security bookworm-security/main amd64 libkrb5-3 amd64 1.20.1-2+deb12u5 [332 kB]
-Get:7 http://deb.debian.org/debian-security bookworm-security/main amd64 libgssapi-krb5-2 amd64 1.20.1-2+deb12u5 [135 kB]
-Get:8 http://deb.debian.org/debian bookworm/main amd64 libsasl2-modules-db amd64 2.1.28+dfsg-10 [20.3 kB]
-Get:9 http://deb.debian.org/debian bookworm/main amd64 libsasl2-2 amd64 2.1.28+dfsg-10 [59.7 kB]
-Get:10 http://deb.debian.org/debian bookworm/main amd64 libldap-2.5-0 amd64 2.5.13+dfsg-5 [183 kB]
-Get:11 http://deb.debian.org/debian-security bookworm-security/main amd64 libnghttp2-14 amd64 1.52.0-1+deb12u3 [72.4 kB]
-Get:12 http://deb.debian.org/debian bookworm/main amd64 libpsl5 amd64 0.21.2-1 [58.7 kB]
-Get:13 http://deb.debian.org/debian bookworm/main amd64 librtmp1 amd64 2.4+20151223.gitfa8646d.1-2+b2 [60.8 kB]
-Get:14 http://deb.debian.org/debian bookworm/main amd64 libssh2-1 amd64 1.10.0-3+b1 [179 kB]
-Get:15 http://deb.debian.org/debian bookworm/main amd64 libcurl4 amd64 7.88.1-10+deb12u14 [392 kB]
-Get:16 http://deb.debian.org/debian bookworm/main amd64 curl amd64 7.88.1-10+deb12u14 [316 kB]
-Get:17 http://deb.debian.org/debian bookworm/main amd64 libldap-common all 2.5.13+dfsg-5 [29.3 kB]
-Get:18 http://deb.debian.org/debian bookworm/main amd64 libsasl2-modules amd64 2.1.28+dfsg-10 [66.6 kB]
-Get:19 http://deb.debian.org/debian bookworm/main amd64 publicsuffix all 20230209.2326-1 [126 kB]
-debconf: delaying package configuration, since apt-utils is not installed
-Fetched 2491 kB in 0s (28.0 MB/s)
-Selecting previously unselected package krb5-locales.
-(Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 6744 files and directories currently installed.)
-Preparing to unpack .../00-krb5-locales_1.20.1-2+deb12u5_all.deb ...
-Unpacking krb5-locales (1.20.1-2+deb12u5) ...
-Selecting previously unselected package libbrotli1:amd64.
-Preparing to unpack .../01-libbrotli1_1.0.9-2+b6_amd64.deb ...
-Unpacking libbrotli1:amd64 (1.0.9-2+b6) ...
-Selecting previously unselected package libkrb5support0:amd64.
-Preparing to unpack .../02-libkrb5support0_1.20.1-2+deb12u5_amd64.deb ...
-Unpacking libkrb5support0:amd64 (1.20.1-2+deb12u5) ...
-Selecting previously unselected package libk5crypto3:amd64.
-Preparing to unpack .../03-libk5crypto3_1.20.1-2+deb12u5_amd64.deb ...
-Unpacking libk5crypto3:amd64 (1.20.1-2+deb12u5) ...
-Selecting previously unselected package libkeyutils1:amd64.
-Preparing to unpack .../04-libkeyutils1_1.6.3-2_amd64.deb ...
-Unpacking libkeyutils1:amd64 (1.6.3-2) ...
-Selecting previously unselected package libkrb5-3:amd64.
-Preparing to unpack .../05-libkrb5-3_1.20.1-2+deb12u5_amd64.deb ...
-Unpacking libkrb5-3:amd64 (1.20.1-2+deb12u5) ...
-Selecting previously unselected package libgssapi-krb5-2:amd64.
-Preparing to unpack .../06-libgssapi-krb5-2_1.20.1-2+deb12u5_amd64.deb ...
-Unpacking libgssapi-krb5-2:amd64 (1.20.1-2+deb12u5) ...
-Selecting previously unselected package libsasl2-modules-db:amd64.
-Preparing to unpack .../07-libsasl2-modules-db_2.1.28+dfsg-10_amd64.deb ...
-Unpacking libsasl2-modules-db:amd64 (2.1.28+dfsg-10) ...
-Selecting previously unselected package libsasl2-2:amd64.
-Preparing to unpack .../08-libsasl2-2_2.1.28+dfsg-10_amd64.deb ...
-Unpacking libsasl2-2:amd64 (2.1.28+dfsg-10) ...
-Selecting previously unselected package libldap-2.5-0:amd64.
-Preparing to unpack .../09-libldap-2.5-0_2.5.13+dfsg-5_amd64.deb ...
-Unpacking libldap-2.5-0:amd64 (2.5.13+dfsg-5) ...
-Selecting previously unselected package libnghttp2-14:amd64.
-Preparing to unpack .../10-libnghttp2-14_1.52.0-1+deb12u3_amd64.deb ...
-Unpacking libnghttp2-14:amd64 (1.52.0-1+deb12u3) ...
-Selecting previously unselected package libpsl5:amd64.
-Preparing to unpack .../11-libpsl5_0.21.2-1_amd64.deb ...
-Unpacking libpsl5:amd64 (0.21.2-1) ...
-Selecting previously unselected package librtmp1:amd64.
-Preparing to unpack .../12-librtmp1_2.4+20151223.gitfa8646d.1-2+b2_amd64.deb ...
-Unpacking librtmp1:amd64 (2.4+20151223.gitfa8646d.1-2+b2) ...
-Selecting previously unselected package libssh2-1:amd64.
-Preparing to unpack .../13-libssh2-1_1.10.0-3+b1_amd64.deb ...
-Unpacking libssh2-1:amd64 (1.10.0-3+b1) ...
-Selecting previously unselected package libcurl4:amd64.
-Preparing to unpack .../14-libcurl4_7.88.1-10+deb12u14_amd64.deb ...
-Unpacking libcurl4:amd64 (7.88.1-10+deb12u14) ...
-Selecting previously unselected package curl.
-Preparing to unpack .../15-curl_7.88.1-10+deb12u14_amd64.deb ...
-Unpacking curl (7.88.1-10+deb12u14) ...
-Selecting previously unselected package libldap-common.
-Preparing to unpack .../16-libldap-common_2.5.13+dfsg-5_all.deb ...
-Unpacking libldap-common (2.5.13+dfsg-5) ...
-Selecting previously unselected package libsasl2-modules:amd64.
-Preparing to unpack .../17-libsasl2-modules_2.1.28+dfsg-10_amd64.deb ...
-Unpacking libsasl2-modules:amd64 (2.1.28+dfsg-10) ...
-Selecting previously unselected package publicsuffix.
-Preparing to unpack .../18-publicsuffix_20230209.2326-1_all.deb ...
-Unpacking publicsuffix (20230209.2326-1) ...
-Setting up libkeyutils1:amd64 (1.6.3-2) ...
-Setting up libpsl5:amd64 (0.21.2-1) ...
-Setting up libbrotli1:amd64 (1.0.9-2+b6) ...
-Setting up libsasl2-modules:amd64 (2.1.28+dfsg-10) ...
-Setting up libnghttp2-14:amd64 (1.52.0-1+deb12u3) ...
-Setting up krb5-locales (1.20.1-2+deb12u5) ...
-Setting up libldap-common (2.5.13+dfsg-5) ...
-Setting up libkrb5support0:amd64 (1.20.1-2+deb12u5) ...
-Setting up libsasl2-modules-db:amd64 (2.1.28+dfsg-10) ...
-Setting up librtmp1:amd64 (2.4+20151223.gitfa8646d.1-2+b2) ...
-Setting up libk5crypto3:amd64 (1.20.1-2+deb12u5) ...
-Setting up libsasl2-2:amd64 (2.1.28+dfsg-10) ...
-Setting up libssh2-1:amd64 (1.10.0-3+b1) ...
-Setting up libkrb5-3:amd64 (1.20.1-2+deb12u5) ...
-Setting up publicsuffix (20230209.2326-1) ...
-Setting up libldap-2.5-0:amd64 (2.5.13+dfsg-5) ...
-Setting up libgssapi-krb5-2:amd64 (1.20.1-2+deb12u5) ...
-Setting up libcurl4:amd64 (7.88.1-10+deb12u14) ...
-Setting up curl (7.88.1-10+deb12u14) ...
-Processing triggers for libc-bin (2.36-9+deb12u10) ...
-downloading uv 0.9.5 x86_64-unknown-linux-gnu
-no checksums to verify
-installing to /root/.local/bin
-  uv
-  uvx
-everything's installed!
-
-To add $HOME/.local/bin to your PATH, either restart your shell or run:
-
-    source $HOME/.local/bin/env (sh, bash, zsh)
-    source $HOME/.local/bin/env.fish (fish)
-Downloading sympy (6.0MiB)
-Downloading nvidia-curand-cu12 (53.7MiB)
-Downloading nvidia-nvjitlink-cu12 (18.8MiB)
-Downloading pygments (1.2MiB)
-Downloading nvidia-cublas-cu12 (374.9MiB)
-Downloading networkx (2.0MiB)
-Downloading nvidia-nccl-cu12 (192.0MiB)
-Downloading torch (783.0MiB)
-Downloading triton (148.5MiB)
-Downloading nvidia-cufile-cu12 (1.1MiB)
-Downloading nvidia-cuda-cupti-cu12 (8.5MiB)
-Downloading nvidia-cusparselt-cu12 (149.5MiB)
-Downloading nvidia-cusparse-cu12 (206.5MiB)
-Downloading nvidia-cufft-cu12 (190.9MiB)
-Downloading nvidia-cuda-nvrtc-cu12 (22.6MiB)
-Downloading nvidia-cudnn-cu12 (544.5MiB)
-Downloading nvidia-cusolver-cu12 (150.9MiB)
- Downloading nvidia-cufile-cu12
- Downloading pygments
- Downloading networkx
- Downloading nvidia-cuda-cupti-cu12
- Downloading sympy
- Downloading nvidia-nvjitlink-cu12
- Downloading nvidia-cuda-nvrtc-cu12
- Downloading nvidia-curand-cu12
- Downloading nvidia-cusparselt-cu12
- Downloading triton
- Downloading nvidia-cusolver-cu12
- Downloading nvidia-nccl-cu12
- Downloading nvidia-cufft-cu12
- Downloading nvidia-cusparse-cu12
- Downloading nvidia-cublas-cu12
- Downloading nvidia-cudnn-cu12
- Downloading torch
-Installed 31 packages in 499ms
-============================= test session starts ==============================
-platform linux -- Python 3.13.7, pytest-8.4.1, pluggy-1.6.0
-rootdir: /tests
-plugins: json-ctrf-0.3.5
-collected 5 items
-
-../tests/test_outputs.py .....                                           [100%]
-
-=============================== warnings summary ===============================
-../root/.cache/uv/archive-v0/I7-OdXcgDIFCFtPey0v85/lib/python3.13/site-packages/torch/_subclasses/functional_tensor.py:276
-  /root/.cache/uv/archive-v0/I7-OdXcgDIFCFtPey0v85/lib/python3.13/site-packages/torch/_subclasses/functional_tensor.py:276: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /pytorch/torch/csrc/utils/tensor_numpy.cpp:81.)
-    cpu = _conversion_method_template(device=torch.device("cpu"))
-
-test_outputs.py::test_model_loss
-  /root/.cache/uv/archive-v0/I7-OdXcgDIFCFtPey0v85/lib/python3.13/site-packages/torch/nn/modules/transformer.py:382: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.self_attn.batch_first was not True(use batch_first for better inference performance)
-    warnings.warn(
-
--- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-==================================== PASSES ====================================
-=========================== short test summary info ============================
-PASSED ../tests/test_outputs.py::test_weights_file_unchanged
-PASSED ../tests/test_outputs.py::test_model_file_exists
-PASSED ../tests/test_outputs.py::test_model_loads_weights
-PASSED ../tests/test_outputs.py::test_state_dicts_match
-PASSED ../tests/test_outputs.py::test_model_loss
-=================== 5 passed, 2 warnings in 78.60s (0:01:18) ===================
