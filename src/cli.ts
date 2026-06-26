@@ -276,12 +276,12 @@ try {
 				}
 				await injectOllamaProvider(modelsJsonPath, resolveOllamaHost())
 				models = [...models, ...readOllamaModelMetadata(modelsJsonPath)]
-			} else if (isTransientModelsError(err)) {
+			} else if (isTransientModelsError(err) || (is401 && !process.stdin.isTTY)) {
 				// Rate limit / gateway error with no cached models to fall back on.
 				// Don't crash startup over a transient condition — continue with an
 				// empty list; the login gate and later refreshes will repopulate it.
 				console.warn(
-					`Could not load the model list right now (${err instanceof Error ? err.message : String(err)}). Continuing; models will refresh once the service is reachable.`,
+					`Could not load the model list right now (${err instanceof Error ? err.message : String(err)}). Continuing with cached models.`,
 				)
 				models = []
 			} else {

@@ -10,14 +10,16 @@
 import { type SpawnSyncReturns, spawnSync } from "node:child_process"
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { createRequire } from "node:module"
-import { tmpdir } from "node:os"
+import { tmpdir, platform } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { type IPty, spawn as ptySpawn } from "node-pty"
 import { afterAll, beforeAll } from "vitest"
 
 const nodeRequire = createRequire(import.meta.url)
 
-export const BINARY_PATH = resolve("dist/bin/kimchi")
+export const BINARY_PATH = resolve(
+  platform() === "win32" ? "dist/bin/kimchi.exe" : "dist/bin/kimchi"
+)
 export const PACKAGE_DIR = resolve("dist/share/kimchi")
 
 let tempHome: string | undefined
