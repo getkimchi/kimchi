@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from classify import ERROR_RULES, classify
 from outcome import Outcome
 
@@ -63,6 +65,135 @@ def test_agent_timeout_error_is_agent_timeout(tmp_results_dir: Path) -> None:
     assert verdict.outcome == "agent_timeout"
     assert verdict.error_category is None
     assert verdict.error_subcategory is None
+    assert verdict.raw["agent_timeout_analysis"]["timeout_cause"] == "unknown"
+
+
+def _write_session(trial_dir: Path, entries: list[dict]) -> None:
+    session_dir = trial_dir / "agent" / "sessions"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    with (session_dir / "main.jsonl").open("w", encoding="utf-8") as fh:
+        for e in entries:
+            fh.write(json.dumps(e) + "\n")
+
+
+def _agent_timeout_payload(occurred_at: str) -> dict:
+    return {
+        "exception_info": {
+            "exception_type": "AgentTimeoutError",
+            "exception_message": "Agent execution timed out after 900.0 seconds",
+            "occurred_at": occurred_at,
+        }
+    }
+
+
+def test_agent_timeout_analysis_inference_hang(tmp_results_dir: Path) -> None:
+    """Last message was a toolResult long before the timeout → model API hang."""
+    trial = tmp_results_dir / "run-1" / "task-timeout-inference__1"
+    _write_result(trial, _agent_timeout_payload("2026-06-25T12:30:00.000000Z"))
+    _write_session(
+        trial,
+        [
+            {"type": "message", "timestamp": "2026-06-25T12:00:00.000000Z", "message": {"role": "user"}},
+            {"type": "message", "timestamp": "2026-06-25T12:05:00.000000Z", "message": {"role": "assistant"}},
+            {"type": "message", "timestamp": "2026-06-25T12:20:00.000000Z", "message": {"role": "toolResult"}},
+        ],
+    )
+    verdict = classify(trial)
+    analysis = verdict.raw["agent_timeout_analysis"]
+    assert verdict.outcome == "agent_timeout"
+    assert verdict.error_subcategory is None
+    assert analysis["timeout_cause"] == "inference_hang"
+    assert analysis["last_role"] == "toolResult"
+    assert analysis["time_since_last_message_sec"] == pytest.approx(600.0)
+
+
+def test_agent_timeout_analysis_tool_hang(tmp_results_dir: Path) -> None:
+    """Last LLM call dispatched a non-Agent tool long before the timeout → tool hang."""
+    trial = tmp_results_dir / "run-1" / "task-timeout-tool__1"
+    _write_result(trial, _agent_timeout_payload("2026-06-25T12:30:00.000000Z"))
+    _write_session(
+        trial,
+        [
+            {
+                "type": "message",
+                "timestamp": "2026-06-25T11:50:00.000000Z",
+                "message": {"role": "user"},
+            },
+            {
+                "type": "message",
+                "timestamp": "2026-06-25T11:55:00.000000Z",
+                "message": {"role": "toolResult"},
+            },
+            {
+                "type": "message",
+                "timestamp": "2026-06-25T12:00:00.000000Z",
+                "message": {"role": "assistant"},
+            },
+            {
+                "customType": "llm_response_debug",
+                "timestamp": "2026-06-25T12:00:01.000000Z",
+                "data": {"toolCalls": [{"name": "bash"}]},
+            },
+        ],
+    )
+    verdict = classify(trial)
+    analysis = verdict.raw["agent_timeout_analysis"]
+    assert verdict.outcome == "agent_timeout"
+    assert verdict.error_subcategory is None
+    assert analysis["timeout_cause"] == "tool_hang"
+
+
+def test_agent_timeout_analysis_agent_in_flight(tmp_results_dir: Path) -> None:
+    """Last LLM call dispatched the Agent tool → parent waiting on subagent."""
+    trial = tmp_results_dir / "run-1" / "task-timeout-agent__1"
+    _write_result(trial, _agent_timeout_payload("2026-06-25T12:30:00.000000Z"))
+    _write_session(
+        trial,
+        [
+            {
+                "type": "message",
+                "timestamp": "2026-06-25T11:50:00.000000Z",
+                "message": {"role": "user"},
+            },
+            {
+                "type": "message",
+                "timestamp": "2026-06-25T11:55:00.000000Z",
+                "message": {"role": "toolResult"},
+            },
+            {
+                "type": "message",
+                "timestamp": "2026-06-25T12:00:00.000000Z",
+                "message": {"role": "assistant"},
+            },
+            {
+                "customType": "llm_response_debug",
+                "timestamp": "2026-06-25T12:00:01.000000Z",
+                "data": {"toolCalls": [{"name": "Agent"}]},
+            },
+        ],
+    )
+    verdict = classify(trial)
+    analysis = verdict.raw["agent_timeout_analysis"]
+    assert verdict.outcome == "agent_timeout"
+    assert verdict.error_subcategory is None
+    assert analysis["timeout_cause"] == "agent_in_flight"
+
+
+def test_agent_timeout_analysis_few_turns(tmp_results_dir: Path) -> None:
+    """Barely-started sessions are classified as few_turns regardless of last role."""
+    trial = tmp_results_dir / "run-1" / "task-timeout-few__1"
+    _write_result(trial, _agent_timeout_payload("2026-06-25T12:30:00.000000Z"))
+    _write_session(
+        trial,
+        [
+            {"type": "message", "timestamp": "2026-06-25T12:29:00.000000Z", "message": {"role": "user"}},
+        ],
+    )
+    verdict = classify(trial)
+    analysis = verdict.raw["agent_timeout_analysis"]
+    assert verdict.outcome == "agent_timeout"
+    assert verdict.error_subcategory is None
+    assert analysis["timeout_cause"] == "few_turns"
 
 
 # ── error/infra — read failures ───────────────────────────────────────────────
@@ -295,3 +426,203 @@ def test_error_rules_outcomes_are_consistent() -> None:
             assert rule.error_category in ("infra", "agent"), (
                 f"{rule.kind}: ERROR outcome must have infra or quality category, got {rule.error_category!r}"
             )
+
+
+# ── error/infra — API key budget (direct, agent exits non-zero) ──────────────────
+
+def test_anthropic_spend_limit_in_captured_stdout_is_api_key_budget(tmp_results_dir: Path) -> None:
+    """Anthropic 429 'spend limit' captured in agent stdout → api_key_budget_exceeded."""
+    trial = tmp_results_dir / "run-1" / "task-budget__1"
+    _write_result(
+        trial,
+        {
+            "exception_info": {
+                "exception_type": "NonZeroAgentExitCodeError",
+                "exception_message": (
+                    "Command failed (exit 1): /installed-agent/bin/kimchi "
+                    "--print --session /logs/agent/sessions/main.jsonl "
+                    "--dangerously-skip-permissions\n"
+                    'stdout: 429 "API key has reached its spend limit.\\n'
+                    "Increase the budget in the console or contact your "
+                    'organization admin to continue."\\n'
+                ),
+            }
+        },
+    )
+
+    verdict = classify(trial)
+
+    assert verdict.outcome == "error"
+    assert verdict.error_category == "infra"
+    assert verdict.error_subcategory == "api_key_budget_exceeded"
+
+
+def test_insufficient_credits_is_api_key_budget(tmp_results_dir: Path) -> None:
+    """Variant wording used by some providers → same subcategory."""
+    trial = tmp_results_dir / "run-1" / "task-credits__1"
+    _write_result(
+        trial,
+        {
+            "exception_info": {
+                "exception_type": "NonZeroAgentExitCodeError",
+                "exception_message": "API error: insufficient credits to complete request",
+            }
+        },
+    )
+
+    verdict = classify(trial)
+
+    assert verdict.outcome == "error"
+    assert verdict.error_category == "infra"
+    assert verdict.error_subcategory == "api_key_budget_exceeded"
+
+
+# ── error/infra — API key budget (agent timed out because of budget) ─────────────
+
+_BUDGET_ERROR_EXACT_MESSAGE = (
+    '429 "API key has reached its spend limit.\\n'
+    'Increase the budget in the console or contact your '
+    'organization admin to continue."'
+)
+
+
+def _write_session_message_errorMessage(trial: Path, error_message: object) -> None:
+    """Write a session jsonl containing one assistant message with the given errorMessage."""
+    sessions = trial / "agent" / "sessions"
+    sessions.mkdir(parents=True, exist_ok=True)
+    (sessions / "main.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "message",
+                "message": {
+                    "role": "assistant",
+                    "stopReason": "error",
+                    "errorMessage": error_message,
+                },
+            }
+        )
+        + "\n"
+    )
+
+
+def test_agent_timeout_with_exact_budget_error_message_is_api_key_budget(tmp_results_dir: Path) -> None:
+    """AgentTimeoutError + exact anthropic 429 errorMessage → ERROR/infra/api_key_budget_exceeded.
+
+    Matches the actual production shape: a `type: message` entry with the verbatim provider
+    errorMessage. Any deviation (substring, variant wording, extra whitespace) keeps the trial
+    as agent_timeout.
+    """
+    trial = tmp_results_dir / "run-1" / "task-budget-timeout__1"
+    _write_result(
+        trial,
+        {
+            "exception_info": {
+                "exception_type": "AgentTimeoutError",
+                "exception_message": "Agent execution timed out after 3600 seconds",
+            }
+        },
+    )
+    _write_session_message_errorMessage(trial, _BUDGET_ERROR_EXACT_MESSAGE)
+
+    verdict = classify(trial)
+
+    assert verdict.outcome == "error"
+    assert verdict.error_category == "infra"
+    assert verdict.error_subcategory == "api_key_budget_exceeded"
+
+
+def test_agent_timeout_with_similar_budget_message_stays_agent_timeout(tmp_results_dir: Path) -> None:
+    """A near-miss errorMessage (extra whitespace, lower-case, substring only) must not match.
+
+    Validates the exact-match contract: only the verbatim provider body triggers the
+    classification.
+    """
+    trial = tmp_results_dir / "run-1" / "task-budget-near-miss__1"
+    _write_result(
+        trial,
+        {
+            "exception_info": {
+                "exception_type": "AgentTimeoutError",
+                "exception_message": "Agent execution timed out after 3600 seconds",
+            }
+        },
+    )
+    # Substring only (no 429 prefix, no closing quote) — must not match.
+    _write_session_message_errorMessage(
+        trial,
+        "api key has reached its spend limit",
+    )
+
+    verdict = classify(trial)
+
+    assert verdict.outcome == "agent_timeout"
+    assert verdict.error_category is None
+    assert verdict.error_subcategory is None
+
+
+def test_agent_timeout_with_non_string_error_message_stays_agent_timeout(tmp_results_dir: Path) -> None:
+    """errorMessage that is not a string (e.g. null) must not match the exact string."""
+    trial = tmp_results_dir / "run-1" / "task-budget-null__1"
+    _write_result(
+        trial,
+        {
+            "exception_info": {
+                "exception_type": "AgentTimeoutError",
+                "exception_message": "Agent execution timed out after 3600 seconds",
+            }
+        },
+    )
+    _write_session_message_errorMessage(trial, None)
+
+    verdict = classify(trial)
+
+    assert verdict.outcome == "agent_timeout"
+
+
+def test_agent_timeout_without_budget_error_message_stays_agent_timeout(tmp_results_dir: Path) -> None:
+    """An AgentTimeoutError with an unrelated assistant message stays AGENT_TIMEOUT."""
+    trial = tmp_results_dir / "run-1" / "task-pure-timeout__1"
+    _write_result(
+        trial,
+        {
+            "exception_info": {
+                "exception_type": "AgentTimeoutError",
+                "exception_message": "Agent execution timed out after 3600 seconds",
+            }
+        },
+    )
+    _write_session_message_errorMessage(trial, "I am working on the task but it is taking a long time...")
+
+    verdict = classify(trial)
+
+    assert verdict.outcome == "agent_timeout"
+    assert verdict.error_category is None
+    assert verdict.error_subcategory is None
+
+
+def test_agent_timeout_with_no_sessions_dir_stays_agent_timeout(tmp_results_dir: Path) -> None:
+    """An AgentTimeoutError with no agent/sessions/ directory stays AGENT_TIMEOUT."""
+    trial = tmp_results_dir / "run-1" / "task-no-sessions__1"
+    _write_result(
+        trial,
+        {"exception_info": {"exception_type": "AgentTimeoutError"}},
+    )
+    # no sessions dir
+
+    verdict = classify(trial)
+
+    assert verdict.outcome == "agent_timeout"
+
+
+def test_scored_pass_is_not_refined_by_session_scan(tmp_results_dir: Path) -> None:
+    """Sanity: the refinement only runs on AGENT_TIMEOUT — other outcomes are untouched."""
+    trial = tmp_results_dir / "run-1" / "task-pass__1"
+    _write_result(trial, {"verifier_result": {"rewards": {"reward": 1.0}}})
+    # Even with the exact budget errorMessage in sessions, a passing trial stays scored_pass.
+    _write_session_message_errorMessage(trial, _BUDGET_ERROR_EXACT_MESSAGE)
+
+    verdict = classify(trial)
+
+    assert verdict.outcome == "scored_pass"
+    assert verdict.error_category is None
+    assert verdict.error_subcategory is None

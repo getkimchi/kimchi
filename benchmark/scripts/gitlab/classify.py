@@ -16,12 +16,33 @@ summarize_results.py TrialErrorClassifier.
 from __future__ import annotations
 
 import json
+import re
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
 from outcome import Outcome
+
+
+# Gap threshold used when inspecting the agent session JSONL for an
+# AgentTimeoutError. Matches the default in scripts/analyze_timeouts.py.
+_AGENT_TIMEOUT_GAP_SEC = 120
+
+
+# Timeout-cause labels stored in agent_timeout_analysis.timeout_cause.
+# These are bare strings (no prefix) — the verdict's error_subcategory
+# remains None for AGENT_TIMEOUT so downstream consumers read the cause
+# from the analysis dict instead.
+_TIMEOUT_CAUSE_AGENT_IN_FLIGHT = "agent_in_flight"
+_TIMEOUT_CAUSE_LOOP_STALLED = "loop_stalled"
+_TIMEOUT_CAUSE_TOOL_HANG = "tool_hang"
+_TIMEOUT_CAUSE_INFERENCE_HANG = "inference_hang"
+_TIMEOUT_CAUSE_TOOL_RETURNED = "tool_returned"
+_TIMEOUT_CAUSE_TOOL_IN_FLIGHT = "tool_in_flight"
+_TIMEOUT_CAUSE_FEW_TURNS = "few_turns"
+_TIMEOUT_CAUSE_UNKNOWN = "unknown"
 
 
 @dataclass(frozen=True)
@@ -207,6 +228,28 @@ ERROR_RULES: tuple[ErrorRule, ...] = (
         marker_groups=(("api error", "524"), ("origin_response_timeout",), ("cloudflare", "timeout")),
         evidence_markers=("origin_response_timeout", "cloudflare", "524"),
     ),
+    # ── Provider budget / quota errors (direct exception type or in captured stdout) ──
+    ErrorRule(
+        kind="api_key_budget_exceeded",
+        outcome=Outcome.ERROR,
+        error_category="infra",
+        marker_groups=(
+            ("api key has reached its spend limit",),
+            ("increase the budget in the console",),
+            ("spend limit",),
+            ("budget has been exceeded",),
+            ("insufficient credits",),
+            ("usage limit has been reached",),
+        ),
+        evidence_markers=(
+            "api key has reached its spend limit",
+            "increase the budget in the console",
+            "spend limit",
+            "budget has been exceeded",
+            "insufficient credits",
+            "usage limit has been reached",
+        ),
+    ),
     ErrorRule(
         kind="agent_upstream_error",
         outcome=Outcome.ERROR,
@@ -334,6 +377,138 @@ def _phase_contains_time(result: dict, phase: str, timestamp: datetime) -> bool:
     return start is not None and end is not None and start <= timestamp <= end
 
 
+def _iter_session_jsonl(trial_dir: Path, pattern: str = "*.jsonl") -> Iterator[dict]:
+    """Yield valid JSON objects from agent/sessions JSONL files matching pattern."""
+    sessions_dir = trial_dir / "agent" / "sessions"
+    if not sessions_dir.is_dir():
+        return
+    for path in sessions_dir.rglob(pattern):
+        try:
+            with path.open("r", encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(entry, dict):
+                        yield entry
+        except OSError:
+            continue
+
+
+def _extract_timeout_duration(msg: str) -> float | None:
+    """Pull the 'after X.Y seconds' value out of an exception message."""
+    m = re.search(r"after\s+([0-9]+(?:\.[0-9]+)?)\s+seconds", msg or "")
+    return float(m.group(1)) if m else None
+
+
+def _empty_timeout_analysis(timeout_duration_sec: float | None) -> dict:
+    """Return an agent_timeout_analysis dict for when we have no session data."""
+    return {
+        "timeout_cause": _TIMEOUT_CAUSE_UNKNOWN,
+        "last_role": "",
+        "last_tool_name": None,
+        "n_messages": 0,
+        "time_since_last_message_sec": None,
+        "time_since_last_assistant_message_sec": None,
+        "timeout_duration_sec": timeout_duration_sec,
+        "gap_fraction": None,
+    }
+
+
+def _analyze_agent_timeout(trial_dir: Path, result: dict) -> dict:
+    """Build an agent_timeout_analysis dict from agent/sessions/main.jsonl.
+
+    Mirrors the state machine in scripts/analyze_timeouts.py (last-role × gap).
+    Always returns a dict; when the session file is missing or unreadable,
+    timeout_cause is "unknown" and timing fields are null/0.
+    """
+    exception_message = str(_get_path(result, "exception_info", "exception_message") or "")
+    timeout_duration_sec = _extract_timeout_duration(exception_message)
+
+    entries = list(_iter_session_jsonl(trial_dir, "main.jsonl"))
+    if not entries:
+        return _empty_timeout_analysis(timeout_duration_sec)
+
+    timeout_at = _parse_iso(_get_path(result, "exception_info", "occurred_at"))
+    if timeout_at is None:
+        timeout_at = _parse_iso(result.get("finished_at"))
+    if timeout_at is None:
+        return _empty_timeout_analysis(timeout_duration_sec)
+
+    # Collect message entries: (timestamp, role).
+    msg_pairs: list[tuple[datetime, str]] = []
+    for e in entries:
+        if e.get("type") != "message":
+            continue
+        msg = e.get("message") or {}
+        ts = _parse_iso(e.get("timestamp"))
+        if ts is not None:
+            msg_pairs.append((ts, str(msg.get("role", ""))))
+
+    n_messages = len(msg_pairs)
+    last_role = ""
+    last_tool_name: str | None = None
+    time_since_last_message_sec: float | None = None
+    time_since_last_assistant_message_sec: float | None = None
+
+    if msg_pairs:
+        last_msg_ts, last_role = msg_pairs[-1]
+        gap = (timeout_at - last_msg_ts).total_seconds()
+        time_since_last_message_sec = max(0.0, gap)
+
+        asst_msgs = [ts for ts, _ in msg_pairs if _ == "assistant"]
+        if asst_msgs:
+            last_asst_ts = asst_msgs[-1]
+            time_since_last_assistant_message_sec = max(
+                0.0, (timeout_at - last_asst_ts).total_seconds()
+            )
+
+    # Last tool name from the final llm_response_debug entry.
+    debug_entries = [e for e in entries if e.get("customType") == "llm_response_debug"]
+    if debug_entries:
+        last_calls = (debug_entries[-1].get("data") or {}).get("toolCalls") or []
+        if last_calls and isinstance(last_calls, list):
+            last_tool_name = (last_calls[0] or {}).get("name")
+
+    # State machine — identical thresholds to analyze_timeouts.py.
+    timeout_cause = _TIMEOUT_CAUSE_UNKNOWN
+    if n_messages <= 2:
+        timeout_cause = _TIMEOUT_CAUSE_FEW_TURNS
+    elif msg_pairs:
+        gap = time_since_last_message_sec if time_since_last_message_sec is not None else 0.0
+        if last_tool_name == "Agent":
+            timeout_cause = _TIMEOUT_CAUSE_AGENT_IN_FLIGHT
+        elif last_role == "assistant" and last_tool_name is None and gap >= _AGENT_TIMEOUT_GAP_SEC:
+            timeout_cause = _TIMEOUT_CAUSE_LOOP_STALLED
+        elif last_role == "toolResult" and gap < _AGENT_TIMEOUT_GAP_SEC:
+            timeout_cause = _TIMEOUT_CAUSE_TOOL_RETURNED
+        elif last_role == "assistant" and gap < _AGENT_TIMEOUT_GAP_SEC:
+            timeout_cause = _TIMEOUT_CAUSE_TOOL_IN_FLIGHT
+        elif last_role == "toolResult":
+            timeout_cause = _TIMEOUT_CAUSE_INFERENCE_HANG
+        elif last_role == "assistant" and last_tool_name is not None:
+            timeout_cause = _TIMEOUT_CAUSE_TOOL_HANG
+
+    gap_fraction: float | None = None
+    if time_since_last_message_sec is not None and timeout_duration_sec:
+        gap_fraction = time_since_last_message_sec / timeout_duration_sec
+
+    return {
+        "timeout_cause": timeout_cause,
+        "last_role": last_role,
+        "last_tool_name": last_tool_name,
+        "n_messages": n_messages,
+        "time_since_last_message_sec": time_since_last_message_sec,
+        "time_since_last_assistant_message_sec": time_since_last_assistant_message_sec,
+        "timeout_duration_sec": timeout_duration_sec,
+        "gap_fraction": gap_fraction,
+    }
+
+
 def _exception_phase(result: dict) -> str:
     """Return the pipeline phase where an unclassified exception most likely occurred."""
     occurred_at = _parse_iso(_get_path(result, "exception_info", "occurred_at"))
@@ -350,6 +525,34 @@ def _exception_phase(result: dict) -> str:
     if result.get("verifier") is not None:
         return "verifier"
     return "unknown"
+
+
+# Exact errorMessage body the anthropic provider returns on a 429 spend limit.
+# Match exactly (not as a substring) so unrelated "spend limit" / "budget" mentions
+# in agent logs do not false-positive the budget classification.
+_BUDGET_ERROR_EXACT_MESSAGE = (
+    '429 "API key has reached its spend limit.\\n'
+    'Increase the budget in the console or contact your '
+    'organization admin to continue."'
+)
+
+
+def _session_marks_budget_error(trial_dir: Path) -> bool:
+    """Whether an agent session message has the exact anthropic 429 spend-limit errorMessage.
+
+    Conservative: matches the verbatim errorMessage string from the provider's 429 response,
+    not substrings or variants. False positives would re-classify legitimate timeouts as
+    budget errors, so we trade off missing other providers' budget wording for precision.
+
+    When True, an AGENT_TIMEOUT verdict should be re-classified as ERROR/infra/budget:
+    the agent didn't time out because it was slow — it was blocked on a budget error and
+    kept retrying until Harbor killed it for exceeding the wall-clock limit.
+    """
+    for entry in _iter_session_jsonl(trial_dir):
+        error_message = _get_path(entry, "message", "errorMessage")
+        if error_message == _BUDGET_ERROR_EXACT_MESSAGE:
+            return True
+    return False
 
 
 def classify(trial_dir: Path) -> Verdict:
@@ -392,9 +595,29 @@ def classify(trial_dir: Path) -> Verdict:
     context = _build_error_context(result)
     for rule in ERROR_RULES:
         if rule.matches(context):
-            # agent_timeout verdict is self-describing — no subcategory needed.
-            # error_subcategory only carries the kind for ERROR outcome verdicts.
-            subcategory = rule.kind if rule.outcome == Outcome.ERROR else None
+            # A generic agent_timeout that was actually caused by a budget error is re-classified
+            # before the Verdict is constructed — no Verdict-then-replace. Same wire values as the
+            # direct 429 case, so dashboards can filter on error_subcategory alone.
+            if rule.outcome == Outcome.AGENT_TIMEOUT and _session_marks_budget_error(trial_dir):
+                return Verdict(
+                    outcome=Outcome.ERROR,
+                    error_category="infra",
+                    error_subcategory="api_key_budget_exceeded",
+                    reward=reward,
+                    raw=result,
+                )
+
+            if rule.outcome == Outcome.AGENT_TIMEOUT:
+                # Inspect the agent session JSONL to locate where the timeout
+                # happened (model API, tool executor, subagent dispatch, etc.).
+                # The cause lives in raw["agent_timeout_analysis"]; subcategory
+                # stays None so consumers don't conflate it with retry buckets.
+                analysis = _analyze_agent_timeout(trial_dir, result)
+                result = {**result, "agent_timeout_analysis": analysis}
+                subcategory: str | None = None
+            else:
+                subcategory = rule.kind
+
             return Verdict(
                 outcome=rule.outcome,
                 error_category=rule.error_category,
