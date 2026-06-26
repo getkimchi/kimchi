@@ -98,6 +98,8 @@ Ordered, independently-verifiable units of work. Each chunk has:
 - **Test Coverage**: which test files need creation or update for this chunk
 - **Open Questions**: explicitly list any unknowns or assumptions (never leave implicit)
 
+Step sizing rule: every step should fit within ~25% of the active model's context window when implemented, including its tool output. If you cannot see how to fit a step within that budget, split it into smaller steps.
+
 ## Verification Strategy
 How to confirm each chunk is correct (test command, manual check, etc.).
 

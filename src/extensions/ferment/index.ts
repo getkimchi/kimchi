@@ -193,6 +193,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 
 	pi.on("session_start", (_event, _ctx) => {
 		ctx = _ctx
+		runtime.clearMidTurnOneshotWarnings()
 	})
 
 	pi.on("session_shutdown", () => {
