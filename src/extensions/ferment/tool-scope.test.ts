@@ -74,14 +74,27 @@ describe("profileForFerment", () => {
 })
 
 describe("planning profile", () => {
-	it("when allTools contains only planning tools, result is the registered subset", () => {
+	it("when allTools contains only planning tools, result is the registered subset plus shared core (todo tools)", () => {
+		// The planning profile derives from the catalog's planning-ferment profile,
+		// which includes SHARED_CORE_TOOLS (read tools + todo lifecycle tools) plus
+		// the ferment planning tools. We pass only PLANNING_TOOL_NAMES as registered
+		// tools; the catalog adds the shared core regardless of registration.
 		const planningTools = [...PLANNING_TOOL_NAMES]
 		const pi = createPi([], planningTools)
 
 		applyFermentToolProfile(pi, "planning")
 
 		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
-		expect(lastCall).toEqual(planningTools)
+		// All registered planning tools must be present
+		for (const name of planningTools) {
+			expect(lastCall).toContain(name)
+		}
+		// Todo lifecycle tools are shared core — always present
+		expect(lastCall).toContain("create_todos")
+		expect(lastCall).toContain("update_todos")
+		expect(lastCall).toContain("add_todo")
+		expect(lastCall).toContain("mark_todo")
+		expect(lastCall).toContain("clear_todos")
 	})
 
 	it("when allTools contains extra non-planning tools, they are excluded (intersection)", () => {
