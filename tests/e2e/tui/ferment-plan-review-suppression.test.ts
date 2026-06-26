@@ -17,7 +17,7 @@
 import { readFileSync, readdirSync } from "node:fs"
 import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
-import { INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
+import { INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, waitForText, viewText } from "./support/assertions.js"
 import { TUI_TEST_CONFIG, runKimchiSession } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -264,13 +264,24 @@ test("plan review: cancel restores planning tools, model can re-propose, ferment
 			terminal.keyEscape()
 			trace.step("pressed Escape — cancelled review")
 
-			// Stage 7: verify ferment stays in "draft" status.
-			await new Promise((r) => setTimeout(r, 500))
-			const draftArtifact = await findFermentArtifact(fixture.workDir, "draft", 3000)
+			// Stage 7: wait for the review dialog to disappear before proceeding.
+			// The cancel is asynchronous — submitting a revision message before it
+			// completes means the model doesn't get a new turn with tools restored.
+			// Poll until "Proceed with this plan?" is no longer in the terminal.
+			const cancelDeadline = Date.now() + INPUT_TIMEOUT_MS
+			while (Date.now() < cancelDeadline) {
+				const text = viewText(terminal)
+				if (!text.includes("Proceed with this plan?")) break
+				await new Promise((r) => setTimeout(r, 100))
+			}
+			trace.step("review dialog dismissed after cancel")
+
+			// Stage 8: verify ferment stays in "draft" status.
+			const draftArtifact = await findFermentArtifact(fixture.workDir, "draft", 5000)
 			expect(draftArtifact).toBeDefined()
 			trace.step("ferment remains in 'draft' status after cancel")
 
-			// Stage 8: user types a revision message → model gets new turn with tools restored.
+			// Stage 9: user types a revision message → model gets new turn with tools restored.
 			terminal.submit("Let me revise the plan")
 			trace.step("submitted revision message")
 

@@ -155,7 +155,15 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 		planReviewRunning = true
 		try {
 			const outcome = await promptPlanReview(ctx, { planMarkdown: review.planMarkdown })
-			if (!outcome) return
+			if (!outcome) {
+				// promptPlanReview resolved to undefined (e.g. UI dismissed without
+				// an explicit choice). Treat it the same as cancellation: clear the
+				// pending review and restore the tool profile so the model is not
+				// left with all tools suppressed.
+				runtime.clearPendingPlanReview(review.fermentId)
+				applyFermentRuntimeToolProfile(pi, runtime)
+				return
+			}
 			if (outcome.kind === "cancelled") {
 				// Delete the persisted proposal and clear the in-memory pending
 				// review, then restore the planning-ferment tool profile. Without
