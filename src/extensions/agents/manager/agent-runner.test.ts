@@ -1618,6 +1618,31 @@ describe("resumeAgent — inactivity steering", () => {
 		expect(result.aborted).toBe(false)
 	})
 
+	it("charges resume usage from final session stats when message usage is missing", async () => {
+		const { resumeAgent } = await import("./agent-runner.js")
+		const onAssistantUsage = vi.fn()
+		const statsTokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+		const session = makeFakeSession({
+			emitUsage: false,
+			statsTokens,
+			promptAction: async () => {
+				statsTokens.input = 200
+				statsTokens.output = 1_500
+			},
+		})
+
+		const result = await resumeAgent(session as unknown as AgentSession, "resume prompt", {
+			tokenBudget: 1_024,
+			onAssistantUsage,
+		})
+
+		expect(onAssistantUsage).toHaveBeenCalledWith(
+			expect.objectContaining({ input: 200, output: 1_500, cacheRead: 0, cacheWrite: 0 }),
+		)
+		expect(result.aborted).toBe(true)
+		expect(result.abortReason).toBe("token_budget")
+	})
+
 	it("adds orchestrator prefix to automated inactivity steer", async () => {
 		const { resumeAgent } = await import("./agent-runner.js")
 		vi.useFakeTimers()

@@ -123,6 +123,26 @@ const INACTIVITY_CHECK_INTERVAL = 10_000
 const DEFAULT_INACTIVITY_TIMEOUT = 120_000
 /** Default wall-clock timeout for subagents (seconds). Prevents hangs on blocking operations. */
 const DEFAULT_MAX_DURATION = 900
+/**
+ * Floor enforced on any non-null per-attempt token budget. Prevents a caller
+ * from passing a sub-thousand budget that the runner would silently raise to
+ * this value, masking a cumulative-budget overshoot. Shared with the manager,
+ * which refuses to resume a Ferment worker whose remaining cumulative budget
+ * falls below this floor.
+ */
+export const MIN_TOKEN_BUDGET = 1024
+
+/**
+ * Lower floor for report-finalization resumes. `finalize_report` is a bounded
+ * operation (maxTurns: 2, maxDuration: 30) that only emits a structured
+ * `submit_agent_report` payload — it needs a few hundred tokens, not a full
+ * thousand. Using the continuation floor here would block workers that are
+ * near-exhaustion but still capable of producing their report, leaving the
+ * orchestrator unable to complete the step (no structured report →
+ * `complete_ferment_step` hard-rejects). The overshoot is bounded to ≤ this
+ * value against the cumulative budget.
+ */
+export const MIN_FINALIZE_TOKEN_BUDGET = 256
 
 /** Get the grace turns value. */
 export function getGraceTurns(): number {
@@ -727,6 +747,7 @@ export async function resumeAgent(
 		signal?: AbortSignal
 		maxTurns?: number
 		tokenBudget?: number
+		minTokenBudget?: number
 		inactivityTimeout?: number
 		maxDuration?: number
 		hardTurnLimit?: boolean
@@ -739,9 +760,15 @@ export async function resumeAgent(
 	const resumeInactivity = { lastActivityAt: Date.now(), steered: false }
 	const resumeInactivityTimeout = options.inactivityTimeout ?? DEFAULT_INACTIVITY_TIMEOUT
 	const effectiveMaxTurns = normalizeMaxTurns(options.maxTurns)
-	const MIN_TOKEN_BUDGET = 1024
-	const effectiveTokenBudget = options.tokenBudget != null ? Math.max(options.tokenBudget, MIN_TOKEN_BUDGET) : undefined
+	const minBudget = options.minTokenBudget ?? MIN_TOKEN_BUDGET
+	const effectiveTokenBudget = options.tokenBudget != null ? Math.max(options.tokenBudget, minBudget) : undefined
 	const effectiveMaxDuration = options.maxDuration ?? DEFAULT_MAX_DURATION
+	const observedUsage: LifetimeUsage = getSessionUsage(session) ?? {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+	}
 	let turnCount = 0
 	let cumulativeTokens = 0
 	let softLimitReached = false
@@ -797,12 +824,16 @@ export async function resumeAgent(
 					cacheRead: u.cacheRead ?? 0,
 					cacheWrite: u.cacheWrite ?? 0,
 				}
+				addUsage(observedUsage, usage)
 				cumulativeTokens += getOutputTotal(usage)
 				options.onAssistantUsage?.(usage)
 				if (!terminationToolCompleted && effectiveTokenBudget != null && !budgetAborted) {
 					if (cumulativeTokens > effectiveTokenBudget) {
 						budgetAborted = true
 						abortReason = "token_budget"
+						console.warn(
+							`[agent-runner] resume token budget exceeded (cumulative=${cumulativeTokens}, budget=${effectiveTokenBudget}); aborting`,
+						)
 						session.abort()
 					} else if (!tokenSoftLimitSteered && cumulativeTokens >= effectiveTokenBudget * 0.8) {
 						tokenSoftLimitSteered = true
@@ -846,6 +877,23 @@ export async function resumeAgent(
 		collector.unsubscribe()
 		unsubEvents()
 		cleanupAbort()
+	}
+
+	const finalUsageDelta = usageDelta(getSessionUsage(session), observedUsage)
+	if (finalUsageDelta) {
+		addUsage(observedUsage, finalUsageDelta)
+		cumulativeTokens += getOutputTotal(finalUsageDelta)
+		options.onAssistantUsage?.(finalUsageDelta)
+	}
+
+	if (
+		!terminationToolCompleted &&
+		effectiveTokenBudget != null &&
+		!budgetAborted &&
+		cumulativeTokens > effectiveTokenBudget
+	) {
+		budgetAborted = true
+		abortReason = "token_budget"
 	}
 
 	const responseText = collector.getText().trim() || getLastAssistantText(session)

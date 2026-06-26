@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 vi.mock("./agent-runner.js", () => ({
 	runAgent: vi.fn(),
 	resumeAgent: vi.fn(),
+	MIN_TOKEN_BUDGET: 1024,
+	MIN_FINALIZE_TOKEN_BUDGET: 256,
 }))
 
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
@@ -424,6 +426,88 @@ describe("AgentManager", () => {
 		)
 	})
 
+	it("does not resume a Ferment worker when remaining cumulative budget is below the runner floor", async () => {
+		const session = { dispose: vi.fn() } as unknown as AgentSession
+		mockRunAgent.mockResolvedValueOnce({
+			responseText: "checkpoint",
+			session,
+			aborted: true,
+			abortReason: "token_budget",
+			steered: false,
+		})
+		manager = new AgentManager()
+		const record = await manager.spawnAndWait(fakePi(), fakeCtx(), "Explore", "inspect", {
+			description: "inspect",
+			taskRef: {
+				kind: "ferment_step",
+				ferment_id: "f1",
+				phase_id: "p1",
+				step_id: "s1",
+				budget_tier: "narrow",
+			},
+		})
+		record.lifetimeUsage.output = 99_500
+
+		const resumed = await manager.resume(record.id, "continue", { tokenBudget: 999_999 })
+
+		expect(resumed).toBe(record)
+		expect(mockResumeAgent).not.toHaveBeenCalled()
+		expect(record.resumeAttempts).toHaveLength(0)
+	})
+
+	it("allows finalize_report when remaining budget is below the continuation floor but above the finalize floor", async () => {
+		const session = { dispose: vi.fn() } as unknown as AgentSession
+		mockRunAgent.mockResolvedValueOnce({ responseText: "checkpoint", session, aborted: false, steered: false })
+		mockResumeAgent.mockResolvedValueOnce({ responseText: "reported", session, aborted: false, steered: false })
+		manager = new AgentManager()
+		const record = await manager.spawnAndWait(fakePi(), fakeCtx(), "Explore", "inspect", {
+			description: "inspect",
+			taskRef: {
+				kind: "ferment_step",
+				ferment_id: "f1",
+				phase_id: "p1",
+				step_id: "s1",
+				budget_tier: "narrow",
+			},
+		})
+		// Narrow tier has a 100k cumulative budget. 99_700 used → 300 remaining:
+		// below the continuation floor (1024) but above the finalize floor (256).
+		record.lifetimeUsage.output = 99_700
+
+		const resumed = await manager.resume(record.id, undefined, { purpose: "finalize_report" })
+
+		expect(resumed).toBe(record)
+		expect(mockResumeAgent).toHaveBeenCalledOnce()
+		expect(mockResumeAgent.mock.calls[0]?.[2]).toEqual(
+			expect.objectContaining({ minTokenBudget: 256, tokenBudget: 300 }),
+		)
+	})
+
+	it("blocks finalize_report when remaining budget is below the finalize floor", async () => {
+		const session = { dispose: vi.fn() } as unknown as AgentSession
+		mockRunAgent.mockResolvedValueOnce({ responseText: "checkpoint", session, aborted: false, steered: false })
+		manager = new AgentManager()
+		const record = await manager.spawnAndWait(fakePi(), fakeCtx(), "Explore", "inspect", {
+			description: "inspect",
+			taskRef: {
+				kind: "ferment_step",
+				ferment_id: "f1",
+				phase_id: "p1",
+				step_id: "s1",
+				budget_tier: "narrow",
+			},
+		})
+		// 99_900 used → 100 remaining: below the finalize floor (256).
+		record.lifetimeUsage.output = 99_900
+
+		const resumed = await manager.resume(record.id, undefined, { purpose: "finalize_report" })
+
+		expect(resumed).toBe(record)
+		expect(mockResumeAgent).not.toHaveBeenCalled()
+		expect(record.resumeAttempts).toHaveLength(0)
+		expect(manager.getResumeBlockReason(record.id, "finalize_report")).toContain("report-finalization budget")
+	})
+
 	it("does not charge report finalization against the continuation resume quota", async () => {
 		const session = { dispose: vi.fn() } as unknown as AgentSession
 		mockRunAgent.mockResolvedValueOnce({ responseText: "done", session, aborted: false, steered: false })
@@ -494,6 +578,27 @@ describe("AgentManager", () => {
 		const resumed = await resumePromise
 
 		expect(resumed?.status).toBe("stopped")
+	})
+
+	it("keeps a resumed worker stopped when the resume prompt rejects after manual abort", async () => {
+		const session = { dispose: vi.fn() } as unknown as AgentSession
+		mockRunAgent.mockResolvedValueOnce({ responseText: "checkpoint", session, aborted: false, steered: false })
+		mockResumeAgent.mockImplementationOnce(async (_session, _prompt, options) => {
+			const attemptSignal = options?.signal
+			if (!attemptSignal) throw new Error("expected resume abort signal")
+			await new Promise<void>((resolve) => attemptSignal.addEventListener("abort", () => resolve(), { once: true }))
+			throw new Error("prompt aborted")
+		})
+		manager = new AgentManager()
+		const record = await manager.spawnAndWait(fakePi(), fakeCtx(), "Explore", "inspect", { description: "inspect" })
+
+		const resumePromise = manager.resume(record.id, "continue", { maxTurns: 2, maxDuration: 30 })
+		await vi.waitFor(() => expect(mockResumeAgent).toHaveBeenCalledOnce())
+		expect(manager.abort(record.id)).toBe(true)
+		const resumed = await resumePromise
+
+		expect(resumed?.status).toBe("stopped")
+		expect(resumed?.error).toBeUndefined()
 	})
 
 	describe("submitReport", () => {

@@ -14,7 +14,13 @@ import type {
 } from "../personas/types.js"
 import { FERMENT_WORKER_BUDGETS } from "../worker-budget-policy.js"
 import type { WorkerReportSubmission } from "../worker-report.js"
-import { type ToolActivity, resumeAgent, runAgent } from "./agent-runner.js"
+import {
+	MIN_FINALIZE_TOKEN_BUDGET,
+	MIN_TOKEN_BUDGET,
+	type ToolActivity,
+	resumeAgent,
+	runAgent,
+} from "./agent-runner.js"
 import { type LifetimeUsage, addUsage } from "./usage.js"
 
 export type OnAgentComplete = (record: AgentRecord) => void
@@ -303,8 +309,8 @@ export class AgentManager {
 			.catch((err) => {
 				if (record.status !== "stopped") {
 					record.status = "error"
+					record.error = err instanceof Error ? err.message : String(err)
 				}
-				record.error = err instanceof Error ? err.message : String(err)
 				record.completedAt ??= Date.now()
 				record.latestOutcome = buildAgentOutcome(record)
 
@@ -451,6 +457,7 @@ export class AgentManager {
 				signal: abortController.signal,
 				maxTurns: attemptLimits.maxTurns,
 				tokenBudget: attemptTokenBudget,
+				minTokenBudget: purpose === "finalize_report" ? MIN_FINALIZE_TOKEN_BUDGET : undefined,
 				inactivityTimeout: options.inactivityTimeout,
 				maxDuration: attemptLimits.maxDuration,
 				hardTurnLimit: record.taskRef?.kind === "ferment_step",
@@ -466,8 +473,10 @@ export class AgentManager {
 			record.maxTurns = result.maxTurns ?? attemptLimits.maxTurns
 			record.completedAt = Date.now()
 		} catch (err) {
-			record.status = "error"
-			record.error = err instanceof Error ? err.message : String(err)
+			if ((record.status as AgentRecord["status"]) !== "stopped") {
+				record.status = "error"
+				record.error = err instanceof Error ? err.message : String(err)
+			}
 			record.completedAt = Date.now()
 		} finally {
 			options.signal?.removeEventListener("abort", onCallerAbort)
@@ -497,6 +506,15 @@ export class AgentManager {
 		}
 		if (record.taskRef && record.lifetimeUsage.output >= cumulativeTokenBudget(record.taskRef)) {
 			return `Agent "${id}" exhausted the cumulative ${record.taskRef.budget_tier ?? "standard"} Ferment worker output budget (${cumulativeTokenBudget(record.taskRef)} tokens).`
+		}
+		if (record.taskRef) {
+			const remaining = cumulativeTokenBudget(record.taskRef) - record.lifetimeUsage.output
+			const minBudget = purpose === "finalize_report" ? MIN_FINALIZE_TOKEN_BUDGET : MIN_TOKEN_BUDGET
+			if (remaining < minBudget) {
+				return purpose === "finalize_report"
+					? `Agent "${id}" has only ${remaining} output tokens remaining, below the minimum report-finalization budget (${minBudget} tokens). The session retains its work but cannot produce a structured report. Inspect the raw output and either spawn a replacement worker or stop and report the step as incomplete.`
+					: `Agent "${id}" has only ${remaining} output tokens remaining, below the minimum enforceable resume budget (${minBudget} tokens). Spawn a new linked worker for remaining work.`
+			}
 		}
 		return undefined
 	}
