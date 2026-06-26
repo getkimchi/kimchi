@@ -146,10 +146,6 @@ describe("footer bar: default content", () => {
 		expect(renderFooter()).toContain("ctx")
 	})
 
-	it("shows phase segment (pinned by default)", () => {
-		expect(renderFooter()).toContain("phase:explore")
-	})
-
 	it("shows agents count when agents are active (pinned by default)", () => {
 		vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(2)
 		expect(renderFooter()).toContain("2 agents")
@@ -178,11 +174,6 @@ describe("footer bar: toggling", () => {
 		expect(renderFooter()).not.toContain("ctx")
 	})
 
-	it("unpinning phase removes the phase segment", () => {
-		setPinned("phase", false)
-		expect(renderFooter()).not.toContain("phase:")
-	})
-
 	it("re-pinning context after unpinning restores the ctx segment", () => {
 		setPinned("context", false)
 		expect(renderFooter()).not.toContain("ctx")
@@ -206,11 +197,10 @@ describe("footer bar: toggling", () => {
 		expect(renderFooter()).toContain("Ferment:")
 	})
 
-	it("unpinning all four defaults shows none of their segments", () => {
+	it("unpinning all three defaults shows none of their segments", () => {
 		for (const id of DEFAULT_FOOTER_PINNED) setPinned(id, false)
 		const visible = renderFooter()
 		expect(visible).not.toContain("ctx")
-		expect(visible).not.toContain("phase:")
 	})
 })
 
@@ -221,7 +211,7 @@ describe("customize-footer popover", () => {
 		const text = strip(makeComponent().render(80).join("\n"))
 		expect(text).toContain("● Context")
 		expect(text).toContain("● Agents")
-		expect(text).toContain("● Phase")
+		expect(text).toContain("○ Phase")
 		expect(text).toContain("● Token I/O")
 	})
 

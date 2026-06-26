@@ -17,7 +17,7 @@ export type FooterConfig = { pinned: FooterElementId[] }
 
 const FOOTER_KEY = "footer"
 
-export const DEFAULT_FOOTER_PINNED: FooterElementId[] = ["agents", "context", "phase", "usage"]
+export const DEFAULT_FOOTER_PINNED: FooterElementId[] = ["agents", "context", "usage"]
 
 /** All footer elements for the settings UI.
  *  canPin=false marks elements that are always visible and cannot be toggled. */

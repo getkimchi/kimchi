@@ -73,13 +73,13 @@ describe("readFooterConfig", () => {
 		expect(readFooterConfig().pinned).toEqual(DEFAULT_FOOTER_PINNED)
 	})
 
-	it("DEFAULT_FOOTER_PINNED contains agents, context, phase, usage", () => {
-		expect(DEFAULT_FOOTER_PINNED).toEqual(expect.arrayContaining(["agents", "context", "phase", "usage"]))
-		expect(DEFAULT_FOOTER_PINNED).toHaveLength(4)
+	it("DEFAULT_FOOTER_PINNED contains agents, context, usage", () => {
+		expect(DEFAULT_FOOTER_PINNED).toEqual(expect.arrayContaining(["agents", "context", "usage"]))
+		expect(DEFAULT_FOOTER_PINNED).toHaveLength(3)
 	})
 
-	it("agents, context, phase, usage are all isPinned=true on first read with no config", () => {
-		for (const id of ["agents", "context", "phase", "usage"] as const) {
+	it("agents, context, usage are all isPinned=true on first read with no config", () => {
+		for (const id of ["agents", "context", "usage"] as const) {
 			expect(isPinned(id)).toBe(true)
 		}
 	})
@@ -182,10 +182,10 @@ describe("isPinned", () => {
 	it("can toggle multiple elements independently", () => {
 		setPinned("context", true)
 		setPinned("model", true)
-		setPinned("phase", true)
+		setPinned("ferment", true)
 		setPinned("model", false)
 		const pinned = readFooterConfig().pinned
-		expect(pinned).toEqual(expect.arrayContaining(["context", "phase"]))
+		expect(pinned).toEqual(expect.arrayContaining(["context", "ferment"]))
 		expect(pinned).not.toContain("model")
 	})
 })
