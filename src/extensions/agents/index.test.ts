@@ -24,6 +24,8 @@ describe("AGENT_MODEL_PARAMETER_DESCRIPTION", () => {
 	it("describes model fallback without referring to orchestrator-only prompt sections", () => {
 		expect(AGENT_MODEL_PARAMETER_DESCRIPTION).toContain("If omitted, the agent uses the current session model")
 		expect(AGENT_MODEL_PARAMETER_DESCRIPTION).toContain("Follow your system prompt's delegation rules")
+		expect(AGENT_MODEL_PARAMETER_DESCRIPTION).toContain("Partial model IDs")
+		expect(AGENT_MODEL_PARAMETER_DESCRIPTION).toContain("specify the full versioned model ID")
 		expect(AGENT_MODEL_PARAMETER_DESCRIPTION).not.toContain("Your Team")
 		expect(AGENT_MODEL_PARAMETER_DESCRIPTION).not.toContain("orchestration mode")
 	})
