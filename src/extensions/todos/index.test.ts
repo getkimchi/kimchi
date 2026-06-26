@@ -69,10 +69,6 @@ function terminalTurnWithText(text = "Done."): unknown {
 	return { message: { role: "assistant", content: [{ type: "text", text }], stopReason: "end_turn" }, toolResults: [] }
 }
 
-function terminalTurnWithString(text = "Done."): unknown {
-	return { message: { role: "assistant", content: text, stopReason: "end_turn" }, toolResults: [] }
-}
-
 function toolCall(toolName: string): unknown {
 	return {
 		type: "tool_call",
@@ -279,7 +275,7 @@ describe("todos extension session state", () => {
 
 		applyWriteTodos({ todos: [{ content: "still active", status: "in_progress" }] })
 		await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
-		await harness.fire("turn_end", terminalTurnWithString(), ctx)
+		await harness.fire("turn_end", terminalTurnWithText(), ctx)
 		await harness.fire("input", { type: "input", text: "", source: "extension", streamingBehavior: "followUp" }, ctx)
 		await harness.fire("turn_end", terminalTurnWithText(), ctx)
 
