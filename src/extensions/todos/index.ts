@@ -94,6 +94,15 @@ function hiddenTodoMessage(reason: string, text: string) {
 	}
 }
 
+function hasVisibleText(message: unknown): boolean {
+	if (!isRecord(message)) return false
+	const content = message.content
+	if (!Array.isArray(content)) return false
+	return content.some(
+		(part) => isRecord(part) && part.type === "text" && typeof part.text === "string" && part.text.trim(),
+	)
+}
+
 function isTerminalAssistantTurn(
 	event: { message: unknown; toolResults: readonly unknown[] },
 	ctx: ExtensionContext,
@@ -122,15 +131,16 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		workSinceTodoWrite = false
 	}
 
-	const maybeSteerTodoReconciliation = () => {
+	const maybeSteerTodoReconciliation = (message: unknown) => {
 		if (!workSinceTodoWrite) return
+		if (!hasVisibleText(message)) return
 		if (!currentTodoStateKey()) {
 			resetTodoProcessState()
 			return
 		}
 		const stateText = currentTodoStateText()
-		const message = stateText ? `${TODO_RECONCILE_MESSAGE}\n\n${stateText}` : TODO_RECONCILE_MESSAGE
-		pi.sendMessage(hiddenTodoMessage("reconcile_todos", message), { deliverAs: "followUp" })
+		const promptText = stateText ? `${TODO_RECONCILE_MESSAGE}\n\n${stateText}` : TODO_RECONCILE_MESSAGE
+		pi.sendMessage(hiddenTodoMessage("reconcile_todos", promptText), { deliverAs: "followUp" })
 	}
 
 	registerTodosCommand(pi)
@@ -189,7 +199,7 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	pi.on("turn_end", (event, ctx) => {
 		if (!isTerminalAssistantTurn(event, ctx)) return
 		syncTodoWidget(ctx)
-		maybeSteerTodoReconciliation()
+		maybeSteerTodoReconciliation(event.message)
 	})
 
 	pi.on("session_shutdown", (_event, ctx) => {

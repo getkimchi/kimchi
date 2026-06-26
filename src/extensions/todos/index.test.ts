@@ -65,6 +65,10 @@ function terminalTurn(stopReason = "end_turn"): unknown {
 	return { message: { role: "assistant", content: [], stopReason }, toolResults: [] }
 }
 
+function terminalTurnWithText(text = "Done."): unknown {
+	return { message: { role: "assistant", content: [{ type: "text", text }], stopReason: "end_turn" }, toolResults: [] }
+}
+
 function toolCall(toolName: string): unknown {
 	return {
 		type: "tool_call",
@@ -264,15 +268,16 @@ describe("todos extension session state", () => {
 		expect(await harness.fire("context", { messages: [] }, ctx)).toBeUndefined()
 	})
 
-	it("requeues reconciliation nudges when the assistant keeps stopping with unchanged active todos", async () => {
+	it("queues reconciliation follow-ups after visible terminal stops", async () => {
 		const harness = createTodosHarness()
 		const ctx = createContext("session", [])
 		await harness.fire("session_start", { reason: "new" }, ctx)
 
 		applyWriteTodos({ todos: [{ content: "still active", status: "in_progress" }] })
 		await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
-		await harness.fire("turn_end", terminalTurn(), ctx)
-		await harness.fire("turn_end", terminalTurn(), ctx)
+		await harness.fire("turn_end", terminalTurnWithText(), ctx)
+		await harness.fire("input", { type: "input", text: "", source: "extension", streamingBehavior: "followUp" }, ctx)
+		await harness.fire("turn_end", terminalTurnWithText(), ctx)
 
 		expect(harness.sendMessage).toHaveBeenCalledTimes(2)
 		expect(harness.sendMessage).toHaveBeenCalledWith(
@@ -289,18 +294,11 @@ describe("todos extension session state", () => {
 			},
 			{ deliverAs: "followUp" },
 		)
-		expect(harness.sendMessage).toHaveBeenCalledWith(
-			expect.objectContaining({
-				content: [expect.objectContaining({ text: expect.stringContaining("impossible") })],
-			}),
-			{ deliverAs: "followUp" },
-		)
-		expect(harness.sendMessage).toHaveBeenCalledWith(
-			expect.objectContaining({
-				content: [expect.objectContaining({ text: expect.stringContaining("blocked") })],
-			}),
-			{ deliverAs: "followUp" },
-		)
+		const reconcileMessage = vi.mocked(harness.sendMessage).mock.calls[0]?.[0] as {
+			content: Array<{ text: string }>
+		}
+		expect(reconcileMessage.content[0].text).toContain("impossible")
+		expect(reconcileMessage.content[0].text).toContain("blocked")
 		const checkpoint = (await harness.fire("context", { messages: [] }, ctx)) as {
 			messages: Array<{ details: unknown; content: Array<{ text: string }> }>
 		}
@@ -310,6 +308,23 @@ describe("todos extension session state", () => {
 		applyWriteTodos({ todos: [{ id: 1, content: "still active", status: "completed" }] })
 		await harness.fire("turn_end", terminalTurn(), ctx)
 		expect(harness.sendMessage).toHaveBeenCalledTimes(2)
+	})
+
+	it("does not send a reconciliation follow-up after an empty visible stop", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+
+		applyWriteTodos({ todos: [{ content: "still active", status: "in_progress" }] })
+		await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+		await harness.fire("turn_end", terminalTurn("stop"), ctx)
+
+		expect(harness.sendMessage).not.toHaveBeenCalled()
+		const checkpoint = (await harness.fire("context", { messages: [] }, ctx)) as {
+			messages: Array<{ details: unknown; content: Array<{ text: string }> }>
+		}
+		expect(checkpoint.messages[0].details).toEqual({ reason: "todo_checkpoint" })
+		expect(checkpoint.messages[0].content[0].text).toContain("still active")
 	})
 
 	it("does not reconcile immediately after only writing todos", async () => {

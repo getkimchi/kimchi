@@ -5,6 +5,7 @@ import type { TodoScope } from "./types.js"
 import {
 	__test_buildTodoLines,
 	__test_summarizeTodos,
+	expandTodoWidget,
 	openTodoWidget,
 	resetTodoWidgetState,
 	syncTodoWidget,
@@ -111,6 +112,99 @@ describe("todo widget helpers", () => {
 		expect(instance.render(80)).toContain("1/1 done · 0 active")
 		expect(instance.render(80)).toContain("  1.  ✓ done")
 		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("todos", undefined)
+	})
+
+	it("rolls the capped widget forward when leading todos are completed", () => {
+		const setWidget = vi.fn()
+		const ctx = createUiContext("session", setWidget)
+		applyWriteTodos({
+			todos: Array.from({ length: 11 }, (_, index) => ({
+				content: `task ${index + 1}`,
+				status: index < 9 ? "completed" : index === 9 ? "in_progress" : "pending",
+			})),
+		})
+
+		openTodoWidget(ctx)
+
+		const component = setWidget.mock.calls[0][1]
+		const instance = component({ requestRender: vi.fn() }, theme)
+		const lines = instance.render(120)
+		expect(lines).toContain("9/11 done · 2 active")
+		expect(lines.indexOf("… 7 completed")).toBeLessThan(lines.indexOf("  8.  ✓ task 8"))
+		expect(lines).toContain("  8.  ✓ task 8")
+		expect(lines).toContain("  9.  ✓ task 9")
+		expect(lines).toContain(" 10.  ▶ task 10")
+		expect(lines).toContain(" 11.  ○ task 11")
+		expect(lines.some((line: string) => line.includes("  1.  ✓ task 1"))).toBe(false)
+	})
+
+	it("can expand the widget to show all todo rows", () => {
+		const setWidget = vi.fn()
+		const ctx = createUiContext("session", setWidget)
+		applyWriteTodos({
+			todos: Array.from({ length: 11 }, (_, index) => ({
+				content: `task ${index + 1}`,
+				status: index < 9 ? "completed" : index === 9 ? "in_progress" : "pending",
+			})),
+		})
+
+		expandTodoWidget(ctx)
+
+		const component = setWidget.mock.calls[0][1]
+		const instance = component({ requestRender: vi.fn() }, theme)
+		const lines = instance.render(120)
+		expect(lines).toContain("  1.  ✓ task 1")
+		expect(lines).toContain(" 10.  ▶ task 10")
+		expect(lines).toContain(" 11.  ○ task 11")
+		expect(lines).not.toContain("… 9 completed")
+	})
+
+	it("indicates hidden todos before and after the visible window", () => {
+		const setWidget = vi.fn()
+		const ctx = createUiContext("session", setWidget)
+		applyWriteTodos({
+			todos: Array.from({ length: 19 }, (_, index) => ({
+				content: `task ${index + 1}`,
+				status: index < 9 ? "completed" : "pending",
+			})),
+		})
+
+		openTodoWidget(ctx)
+
+		const component = setWidget.mock.calls[0][1]
+		const instance = component({ requestRender: vi.fn() }, theme)
+		const lines = instance.render(120)
+		expect(lines).toContain("… 7 completed")
+		expect(lines).toContain("  8.  ✓ task 8")
+		expect(lines).toContain("  9.  ✓ task 9")
+		expect(lines).toContain(" 10.  ○ task 10")
+		expect(lines).toContain(" 14.  ○ task 14")
+		expect(lines).toContain("… 5 more")
+		expect(lines.indexOf("… 7 completed")).toBeLessThan(lines.indexOf("  8.  ✓ task 8"))
+		expect(lines.indexOf("… 5 more")).toBeGreaterThan(lines.indexOf(" 14.  ○ task 14"))
+	})
+
+	it("anchors completed overflow at the end", () => {
+		const setWidget = vi.fn()
+		const ctx = createUiContext("session", setWidget)
+		applyWriteTodos({
+			todos: Array.from({ length: 19 }, (_, index) => ({
+				content: `task ${index + 1}`,
+				status: "completed",
+			})),
+		})
+
+		openTodoWidget(ctx)
+
+		const component = setWidget.mock.calls[0][1]
+		const instance = component({ requestRender: vi.fn() }, theme)
+		const lines = instance.render(120)
+		expect(lines).toContain("19/19 done · 0 active")
+		expect(lines).toContain("… 10 completed")
+		expect(lines).toContain(" 11.  ✓ task 11")
+		expect(lines).toContain(" 19.  ✓ task 19")
+		expect(lines).not.toContain("… 9 more")
+		expect(lines.some((line: string) => line.includes("  1.  ✓ task 1"))).toBe(false)
 	})
 
 	it("re-registers the widget for a new context and ignores stale invalidations", () => {
