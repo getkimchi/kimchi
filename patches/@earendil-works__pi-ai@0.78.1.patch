@@ -1,22 +1,8 @@
-# Patch: Add cache_creation_tokens fallback for LiteLLM prompt-caching write counts
-#
-# Upstream issue: pi-ai OpenAI completions provider only reads
-# `prompt_tokens_details.cache_write_tokens`, but LiteLLM (Kimchi's gateway)
-# returns cache writes as `cache_creation_tokens`. This causes cache-write to
-# always be reported as 0.
-#
-# Tracking: TODO - open upstream issue/PR against pi-mono to add
-# `cache_creation_tokens` fallback in parseChunkUsage.
-#
-# Removal criteria: Remove this patch once upstream pi-ai accepts a PR that
-# adds `cache_creation_tokens` as a fallback for `cache_write_tokens` in the
-# OpenAI completions provider, and the fixed version is released and pinned.
-#
 diff --git a/dist/providers/openai-completions.js b/dist/providers/openai-completions.js
-index 47acfa838f10d0e14ab6368dc0c2f242ffeb73a0..c21a0284192085ea5564a25568f7d6829b9e814d 100644
+index 423825a3dcf189304e3112bf68c6d8f89cb2ec44..038eddc8e9e62d850c63da3876383964f14573d1 100644
 --- a/dist/providers/openai-completions.js
 +++ b/dist/providers/openai-completions.js
-@@ -819,10 +819,11 @@ function convertTools(tools, compat) {
+@@ -825,10 +825,11 @@ function convertTools(tools, compat) {
  function parseChunkUsage(rawUsage, model) {
      const promptTokens = rawUsage.prompt_tokens || 0;
      const cacheReadTokens = rawUsage.prompt_tokens_details?.cached_tokens ?? rawUsage.prompt_cache_hit_tokens ?? 0;
@@ -29,3 +15,54 @@ index 47acfa838f10d0e14ab6368dc0c2f242ffeb73a0..c21a0284192085ea5564a25568f7d682
      // OpenRouter's own provider/tests affirm the separate mapping:
      // https://github.com/OpenRouterTeam/ai-sdk-provider/pull/409
      // Do not subtract writes from cached_tokens, otherwise spec-compliant
+diff --git a/dist/utils/validation.js b/dist/utils/validation.js
+index 9ba1a5f5aecd015b01d1e88fdb62b8dcca176e52..ca077cb942a2761f3b24459d4af916927049963e 100644
+--- a/dist/utils/validation.js
++++ b/dist/utils/validation.js
+@@ -123,6 +123,24 @@ function coercePrimitiveByType(value, type) {
+             }
+             return value;
+         }
++        case "array": {
++            if (typeof value === "string") {
++                try {
++                    const parsed = JSON.parse(value);
++                    if (Array.isArray(parsed)) return parsed;
++                } catch { /* fall through */ }
++            }
++            return value;
++        }
++        case "object": {
++            if (typeof value === "string") {
++                try {
++                    const parsed = JSON.parse(value);
++                    if (isRecord(parsed) && !Array.isArray(parsed)) return parsed;
++                } catch { /* fall through */ }
++            }
++            return value;
++        }
+         default:
+             return value;
+     }
+@@ -251,10 +269,18 @@ export function validateToolCall(tools, toolCall) {
+  * @throws Error with formatted message if validation fails
+  */
+ export function validateToolArguments(tool, toolCall) {
+-    const args = structuredClone(toolCall.arguments);
+-    Value.Convert(tool.parameters, args);
++    let args = structuredClone(toolCall.arguments);
++    if (isJsonSchemaObject(tool.parameters)) {
++        args = coerceWithJsonSchema(args, tool.parameters);
++    }
++    try {
++        Value.Convert(tool.parameters, args);
++    } catch (conversionError) {
++        const cause = conversionError instanceof Error ? conversionError.message : String(conversionError);
++        throw new Error(`Validation failed for tool "${toolCall.name}": argument conversion failed: ${cause}\n\nReceived arguments:\n${JSON.stringify(toolCall.arguments, null, 2)}`);
++    }
+     const validator = getValidator(tool.parameters);
+-    if (!hasTypeBoxMetadata(tool.parameters) && isJsonSchemaObject(tool.parameters)) {
++    if (isJsonSchemaObject(tool.parameters)) {
+         const coerced = coerceWithJsonSchema(args, tool.parameters);
+         if (coerced !== args) {
+             if (isRecord(args) && isRecord(coerced)) {
