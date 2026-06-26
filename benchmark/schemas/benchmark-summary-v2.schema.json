@@ -1,0 +1,446 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kimchi.dev/schemas/benchmark-summary-v2.schema.json",
+  "title": "Benchmark summary v2",
+  "description": "JSON artifact schema for terminal-bench-2 benchmark run summaries produced by summarize_results.py.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "classification",
+    "totals",
+    "chunks_exhausted_retries",
+    "run",
+    "trials",
+    "source"
+  ],
+  "properties": {
+    "schema_version": {
+      "description": "Schema version identifier.",
+      "const": "benchmark-summary/v2"
+    },
+    "classification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "classified_by",
+        "pipeline_run_id",
+        "pipeline_url",
+        "generated_at"
+      ],
+      "properties": {
+        "classified_by": {
+          "type": "string",
+          "minLength": 1
+        },
+        "pipeline_run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "pipeline_url": {
+          "type": "string"
+        },
+        "generated_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "totals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trials",
+        "tasks",
+        "tasks_with_retryable_outcome"
+      ],
+      "properties": {
+        "trials": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "recorded",
+            "expected",
+            "scored_pass",
+            "scored_fail",
+            "agent_timeout",
+            "error"
+          ],
+          "properties": {
+            "recorded": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Number of trial records included in this summary."
+            },
+            "expected": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Number of trials expected (tasks expected times attempts per task)."
+            },
+            "scored_pass": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "scored_fail": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "agent_timeout": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "error": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "tasks": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "expected",
+            "scored_pass",
+            "scored_fail",
+            "agent_timeout",
+            "error",
+            "no_verdict"
+          ],
+          "properties": {
+            "expected": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Number of distinct benchmark tasks expected to be run."
+            },
+            "scored_pass": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "scored_fail": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "agent_timeout": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "error": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "no_verdict": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Expected tasks with no result.json from an exhausted chunk."
+            }
+          }
+        },
+        "tasks_with_retryable_outcome": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of tasks that hit a retryable outcome at least once."
+        }
+      }
+    },
+    "chunks_exhausted_retries": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^chunk-[0-9]+$"
+      }
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "benchmark",
+        "run_id",
+        "started_at",
+        "ended_at",
+        "agent",
+        "configuration",
+        "model",
+        "retry_agent_timeout"
+      ],
+      "properties": {
+        "benchmark": {
+          "type": "string",
+          "minLength": 1
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "started_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "ended_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "agent": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "version"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "version": {
+              "description": "Commit SHA of the benchmarked code.",
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "configuration": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "retry_agent_timeout": {
+          "description": "Whether agent_timeout verdicts were retried by chunk_runner.",
+          "type": "boolean"
+        }
+      }
+    },
+    "trials": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "trial_id",
+          "task",
+          "attempt",
+          "status",
+          "score",
+          "error",
+          "models",
+          "error_category",
+          "error_subcategory",
+          "verdict"
+        ],
+        "properties": {
+          "trial_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "task": {
+            "type": "string",
+            "minLength": 1
+          },
+          "attempt": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "status": {
+            "description": "Backward-compatible two-value outcome. 'passed' only when the verifier reward is 1.0; otherwise 'failed'. Required by dwh.kimchi_benchmark_runs.",
+            "type": "string",
+            "enum": ["passed", "failed"]
+          },
+          "score": {
+            "description": "Verifier reward. Null when no verifier result is available.",
+            "type": ["number", "null"],
+            "minimum": 0,
+            "maximum": 1
+          },
+          "duration_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "error": {
+            "description": "Null for passed trials; otherwise an error summary.",
+            "type": ["object", "null"],
+            "additionalProperties": false,
+            "required": ["type", "message"],
+            "properties": {
+              "type": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              }
+            }
+          },
+          "error_category": {
+            "description": "High-level error bucket. Null for passed or agent_timeout verdicts.",
+            "type": ["string", "null"],
+            "enum": ["infra", "agent", null]
+          },
+          "error_subcategory": {
+            "description": "Fine-grained error kind from classify.py. Null for passed trials.",
+            "type": ["string", "null"]
+          },
+          "verdict": {
+            "description": "Internal outcome enum.",
+            "type": "string",
+            "enum": ["scored_pass", "scored_fail", "agent_timeout", "error"]
+          },
+          "agent_timeout_analysis": {
+            "description": "Timeout diagnostics from scripts/analyze_timeouts.py. Present when verdict is agent_timeout.",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "timeout_status",
+              "last_role",
+              "last_tool_name",
+              "n_messages",
+              "time_since_last_message_sec",
+              "time_since_last_assistant_message_sec",
+              "timeout_duration_sec",
+              "gap_fraction"
+            ],
+            "properties": {
+              "timeout_status": {
+                "type": "string",
+                "enum": [
+                  "agent_in_flight",
+                  "loop_stalled",
+                  "tool_hang",
+                  "inference_hang",
+                  "tool_returned",
+                  "tool_in_flight",
+                  "few_turns",
+                  "unknown"
+                ]
+              },
+              "last_role": {
+                "type": "string"
+              },
+              "last_tool_name": {
+                "type": ["string", "null"]
+              },
+              "n_messages": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "time_since_last_message_sec": {
+                "type": ["number", "null"],
+                "minimum": 0
+              },
+              "time_since_last_assistant_message_sec": {
+                "type": ["number", "null"],
+                "minimum": 0
+              },
+              "timeout_duration_sec": {
+                "type": ["number", "null"],
+                "minimum": 0
+              },
+              "gap_fraction": {
+                "type": ["number", "null"],
+                "minimum": 0,
+                "maximum": 1
+              }
+            }
+          },
+          "models": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "model",
+                "llm_rounds",
+                "tokens",
+                "tools"
+              ],
+              "properties": {
+                "model": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "llm_rounds": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "tokens": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "input",
+                    "cache_read",
+                    "cache_write",
+                    "output"
+                  ],
+                  "properties": {
+                    "input": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "cache_read": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "cache_write": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "output": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  }
+                },
+                "tools": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "name",
+                      "calls"
+                    ],
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "calls": {
+                        "type": "integer",
+                        "minimum": 0
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gitlab"
+      ],
+      "properties": {
+        "gitlab": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ref",
+            "commit_sha"
+          ],
+          "properties": {
+            "ref": {
+              "type": "string"
+            },
+            "commit_sha": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -31,18 +31,18 @@ from outcome import Outcome
 _AGENT_TIMEOUT_GAP_SEC = 120
 
 
-# Timeout-cause labels stored in agent_timeout_analysis.timeout_cause.
+# Timeout-status labels stored in agent_timeout_analysis.timeout_status.
 # These are bare strings (no prefix) — the verdict's error_subcategory
 # remains None for AGENT_TIMEOUT so downstream consumers read the cause
 # from the analysis dict instead.
-_TIMEOUT_CAUSE_AGENT_IN_FLIGHT = "agent_in_flight"
-_TIMEOUT_CAUSE_LOOP_STALLED = "loop_stalled"
-_TIMEOUT_CAUSE_TOOL_HANG = "tool_hang"
-_TIMEOUT_CAUSE_INFERENCE_HANG = "inference_hang"
-_TIMEOUT_CAUSE_TOOL_RETURNED = "tool_returned"
-_TIMEOUT_CAUSE_TOOL_IN_FLIGHT = "tool_in_flight"
-_TIMEOUT_CAUSE_FEW_TURNS = "few_turns"
-_TIMEOUT_CAUSE_UNKNOWN = "unknown"
+_TIMEOUT_STATUS_AGENT_IN_FLIGHT = "agent_in_flight"
+_TIMEOUT_STATUS_LOOP_STALLED = "loop_stalled"
+_TIMEOUT_STATUS_TOOL_HANG = "tool_hang"
+_TIMEOUT_STATUS_INFERENCE_HANG = "inference_hang"
+_TIMEOUT_STATUS_TOOL_RETURNED = "tool_returned"
+_TIMEOUT_STATUS_TOOL_IN_FLIGHT = "tool_in_flight"
+_TIMEOUT_STATUS_FEW_TURNS = "few_turns"
+_TIMEOUT_STATUS_UNKNOWN = "unknown"
 
 
 @dataclass(frozen=True)
@@ -408,7 +408,7 @@ def _extract_timeout_duration(msg: str) -> float | None:
 def _empty_timeout_analysis(timeout_duration_sec: float | None) -> dict:
     """Return an agent_timeout_analysis dict for when we have no session data."""
     return {
-        "timeout_cause": _TIMEOUT_CAUSE_UNKNOWN,
+        "timeout_status": _TIMEOUT_STATUS_UNKNOWN,
         "last_role": "",
         "last_tool_name": None,
         "n_messages": 0,
@@ -424,7 +424,7 @@ def _analyze_agent_timeout(trial_dir: Path, result: dict) -> dict:
 
     Mirrors the state machine in scripts/analyze_timeouts.py (last-role × gap).
     Always returns a dict; when the session file is missing or unreadable,
-    timeout_cause is "unknown" and timing fields are null/0.
+    timeout_status is "unknown" and timing fields are null/0.
     """
     exception_message = str(_get_path(result, "exception_info", "exception_message") or "")
     timeout_duration_sec = _extract_timeout_duration(exception_message)
@@ -475,30 +475,30 @@ def _analyze_agent_timeout(trial_dir: Path, result: dict) -> dict:
             last_tool_name = (last_calls[0] or {}).get("name")
 
     # State machine — identical thresholds to analyze_timeouts.py.
-    timeout_cause = _TIMEOUT_CAUSE_UNKNOWN
+    timeout_status = _TIMEOUT_STATUS_UNKNOWN
     if n_messages <= 2:
-        timeout_cause = _TIMEOUT_CAUSE_FEW_TURNS
+        timeout_status = _TIMEOUT_STATUS_FEW_TURNS
     elif msg_pairs:
         gap = time_since_last_message_sec if time_since_last_message_sec is not None else 0.0
         if last_tool_name == "Agent":
-            timeout_cause = _TIMEOUT_CAUSE_AGENT_IN_FLIGHT
+            timeout_status = _TIMEOUT_STATUS_AGENT_IN_FLIGHT
         elif last_role == "assistant" and last_tool_name is None and gap >= _AGENT_TIMEOUT_GAP_SEC:
-            timeout_cause = _TIMEOUT_CAUSE_LOOP_STALLED
+            timeout_status = _TIMEOUT_STATUS_LOOP_STALLED
         elif last_role == "toolResult" and gap < _AGENT_TIMEOUT_GAP_SEC:
-            timeout_cause = _TIMEOUT_CAUSE_TOOL_RETURNED
+            timeout_status = _TIMEOUT_STATUS_TOOL_RETURNED
         elif last_role == "assistant" and gap < _AGENT_TIMEOUT_GAP_SEC:
-            timeout_cause = _TIMEOUT_CAUSE_TOOL_IN_FLIGHT
+            timeout_status = _TIMEOUT_STATUS_TOOL_IN_FLIGHT
         elif last_role == "toolResult":
-            timeout_cause = _TIMEOUT_CAUSE_INFERENCE_HANG
+            timeout_status = _TIMEOUT_STATUS_INFERENCE_HANG
         elif last_role == "assistant" and last_tool_name is not None:
-            timeout_cause = _TIMEOUT_CAUSE_TOOL_HANG
+            timeout_status = _TIMEOUT_STATUS_TOOL_HANG
 
     gap_fraction: float | None = None
     if time_since_last_message_sec is not None and timeout_duration_sec:
         gap_fraction = time_since_last_message_sec / timeout_duration_sec
 
     return {
-        "timeout_cause": timeout_cause,
+        "timeout_status": timeout_status,
         "last_role": last_role,
         "last_tool_name": last_tool_name,
         "n_messages": n_messages,

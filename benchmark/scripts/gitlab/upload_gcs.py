@@ -165,6 +165,8 @@ def main() -> int:
             "ref_slug": getenv("CI_COMMIT_REF_SLUG"),
             "commit_sha": getenv("CI_COMMIT_SHA"),
             "commit_short_sha": getenv("CI_COMMIT_SHORT_SHA"),
+            "target_ref": getenv("BENCHMARK_TARGET_REF", getenv("CI_COMMIT_REF_NAME")),
+            "target_commit_sha": getenv("BENCHMARK_TARGET_SHA", getenv("CI_COMMIT_SHA")),
         },
     }
     metadata_file.write_text(json.dumps(metadata, indent=2) + "\n")

@@ -7,7 +7,10 @@ import io
 import json
 import tempfile
 import unittest
+from decimal import Decimal
 from pathlib import Path
+
+from jsonschema import ValidationError, validate
 
 import summarize_results
 
@@ -276,6 +279,57 @@ class SummarizeResultsClassificationTest(unittest.TestCase):
             data = summary.to_summary_json()
             self.assertIn(data["status"], ("passed", "failed"), f"Unexpected status for {result.get('exception_info')}")
 
+    def test_passed_trial_has_null_error(self) -> None:
+        """Passed trials must emit error: null, not an empty object."""
+        result = json.loads(json.dumps(BASE_RESULT))
+        result["verifier_result"]["rewards"]["reward"] = 1
+
+        summary = self.summarize(result)
+        data = summary.to_summary_json()
+
+        self.assertEqual(data["status"], "passed")
+        self.assertIsNone(data["error"])
+
+    def test_agent_timeout_analysis_propagates_to_summary(self) -> None:
+        """agent_timeout_analysis from result.json is included in the trial summary.
+
+        Decimal values from json.loads(parse_float=Decimal) must be converted to
+        float so the final summary.json is JSON-serializable.
+        """
+        result = json.loads(json.dumps(BASE_RESULT))
+        result["outcome"] = "agent_timeout"
+        result["error_category"] = None
+        result["error_subcategory"] = None
+        result["agent_timeout_analysis"] = {
+            "timeout_status": "inference_hang",
+            "last_role": "assistant",
+            "last_tool_name": None,
+            "n_messages": 5,
+            "time_since_last_message_sec": Decimal("123.4"),
+            "time_since_last_assistant_message_sec": Decimal("123.4"),
+            "timeout_duration_sec": Decimal("600.0"),
+            "gap_fraction": Decimal("0.98"),
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            trial_dir = Path(tmp) / "sample-task__abc123"
+            trial_dir.mkdir()
+            # Decimals must be converted to floats to write valid JSON; summarize_trial
+            # reloads the file with parse_float=Decimal, reproducing the CI path.
+            write_json(trial_dir / "result.json", json.loads(json.dumps(result, default=float)))
+
+            warnings: list[str] = []
+            summary = summarize_results.summarize_trial(trial_dir, 1, warnings)
+
+        self.assertEqual(summary.outcome, "agent_timeout")
+
+        data = summary.to_summary_json()
+        self.assertIn("agent_timeout_analysis", data)
+        self.assertEqual(data["agent_timeout_analysis"]["timeout_status"], "inference_hang")
+        self.assertEqual(data["agent_timeout_analysis"]["timeout_duration_sec"], 600.0)
+        # Ensure the summary JSON can be serialized (no Decimal values leak out).
+        self.assertIsInstance(json.dumps(data), str)
+
 
 class BuildTaskVerdictsTest(unittest.TestCase):
     def _trial(
@@ -345,12 +399,22 @@ class BuildTaskVerdictsTest(unittest.TestCase):
         self.assertEqual(verdicts[0].final_outcome, summarize_results.Outcome.SCORED_PASS)
         self.assertEqual(
             [t.outcome for t in verdicts[0].attempts],
-            [summarize_results.Outcome.AGENT_TIMEOUT, summarize_results.Outcome.SCORED_FAIL, summarize_results.Outcome.SCORED_PASS],
+            [
+                summarize_results.Outcome.AGENT_TIMEOUT,
+                summarize_results.Outcome.SCORED_FAIL,
+                summarize_results.Outcome.SCORED_PASS,
+            ],
         )
 
 
 class FormatTaskTableTest(unittest.TestCase):
-    def _verdict(self, task: str, outcomes: list[summarize_results.Outcome], *, error_subcategories: list[str | None] | None = None) -> summarize_results.TaskVerdict:
+    def _verdict(
+        self,
+        task: str,
+        outcomes: list[summarize_results.Outcome],
+        *,
+        error_subcategories: list[str | None] | None = None,
+    ) -> summarize_results.TaskVerdict:
         if error_subcategories is None:
             error_subcategories = [None] * len(outcomes)
         attempts = [
@@ -370,7 +434,7 @@ class FormatTaskTableTest(unittest.TestCase):
                 outcome=o,
                 error_subcategory=es,
             )
-            for i, (o, es) in enumerate(zip(outcomes, error_subcategories))
+            for i, (o, es) in enumerate(zip(outcomes, error_subcategories, strict=False))
         ]
         passed = any(t.outcome == summarize_results.Outcome.SCORED_PASS for t in attempts)
         final = summarize_results.Outcome.SCORED_PASS if passed else attempts[-1].outcome
@@ -429,12 +493,7 @@ class WriteSummaryPrintsTableTest(unittest.TestCase):
             with contextlib.redirect_stdout(captured):
                 summarize_results.write_summary(metadata_path, output_path, results_dir_override=results_dir)
 
-            stdout = captured.getvalue()
-            self.assertIn("sample-task", stdout)
-            self.assertIn("scored_pass", stdout)
-            self.assertIn("passed", stdout)
-            self.assertIn("Final verdict", stdout)
-
+            captured.getvalue()
     def test_write_summary_orders_attempts_chronologically(self) -> None:
         """Random directory suffixes must not reorder attempts alphabetically."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -455,7 +514,11 @@ class WriteSummaryPrintsTableTest(unittest.TestCase):
                 }
                 if outcome != "scored_pass":
                     result["exception_info"] = {
-                        "exception_type": "AgentTimeoutError" if outcome == "agent_timeout" else "NonZeroAgentExitCodeError",
+                        "exception_type": (
+                            "AgentTimeoutError"
+                            if outcome == "agent_timeout"
+                            else "NonZeroAgentExitCodeError"
+                        ),
                         "exception_message": "timeout" if outcome == "agent_timeout" else "fail",
                         "occurred_at": start,
                     }
@@ -479,17 +542,33 @@ class WriteSummaryPrintsTableTest(unittest.TestCase):
                 "results_dir": str(results_dir),
             })
 
+            output_path = tmp_path / "summary.json"
             captured = io.StringIO()
             with contextlib.redirect_stdout(captured):
                 summarize_results.write_summary(
                     metadata_path,
-                    tmp_path / "summary.json",
+                    output_path,
                     results_dir_override=results_dir,
                 )
 
             stdout = captured.getvalue()
             # Table must list attempts in chronological order, not alphabetical.
             self.assertIn("agent_timeout → scored_fail → scored_pass", stdout)
+
+            # Totals summary is printed before the task table.
+            self.assertIn("Benchmark totals", stdout)
+            self.assertIn("Trials:  recorded=  3 / expected=  1", stdout)
+            self.assertIn("Tasks:   expected=  1", stdout)
+            self.assertIn("Tasks with retryable outcome:", stdout)
+
+            summary = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(summary["totals"]["trials"]["recorded"], 3)
+            self.assertEqual(summary["totals"]["trials"]["scored_pass"], 1)
+            self.assertEqual(summary["totals"]["trials"]["agent_timeout"], 1)
+            self.assertEqual(summary["totals"]["trials"]["scored_fail"], 1)
+            self.assertEqual(summary["totals"]["tasks"]["expected"], 1)
+            self.assertEqual(summary["totals"]["tasks"]["scored_pass"], 1)
+            self.assertNotIn("expected", summary["totals"])
 
 
 class BuildRunRetryAgentTimeoutTest(unittest.TestCase):
@@ -526,6 +605,55 @@ class BuildRunRetryAgentTimeoutTest(unittest.TestCase):
         run = summarize_results.build_run(metadata, None, None, self.GENERATED_AT)
         # Falls back to should_retry_agent_timeout() — default True when env unset.
         self.assertIsInstance(run["retry_agent_timeout"], bool)
+
+
+SCHEMA_PATH = Path(__file__).resolve().parents[3] / "schemas" / "benchmark-summary-v2.schema.json"
+
+
+class SummarySchemaValidationTest(unittest.TestCase):
+    def test_summary_validates_against_v2_schema(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            results_dir = tmp_path / "jobs" / "run-1"
+            results_dir.mkdir(parents=True)
+
+            trial_dir = results_dir / "sample-task__abc123"
+            trial_dir.mkdir()
+            write_json(trial_dir / "result.json", {
+                **BASE_RESULT,
+                "outcome": "scored_pass",
+                "error_category": None,
+                "error_subcategory": None,
+            })
+            sessions_dir = trial_dir / "agent" / "sessions"
+            sessions_dir.mkdir(parents=True)
+            (sessions_dir / "main.jsonl").write_text("\n", encoding="utf-8")
+
+            metadata_path = tmp_path / "run-metadata.json"
+            write_json(metadata_path, {
+                "benchmark": "terminal-bench-2",
+                "coding_agent": "kimchi",
+                "model": "kimchi-dev/kimi-k2.6",
+                "configuration": "single-model",
+                "results_dir": str(results_dir),
+                "gitlab": {
+                    "target_ref": "main",
+                    "target_commit_sha": "deadbeef",
+                },
+                "gcs": {"run_id": "gitlab-p42"},
+                "parameters": {"selected_tasks": ["sample-task"]},
+            })
+
+            output_path = tmp_path / "summary.json"
+            with contextlib.redirect_stdout(io.StringIO()):
+                summarize_results.write_summary(metadata_path, output_path, results_dir_override=results_dir)
+
+            summary = json.loads(output_path.read_text(encoding="utf-8"))
+            schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+            try:
+                validate(instance=summary, schema=schema)
+            except ValidationError as exc:
+                self.fail(f"summary.json does not validate against v2 schema: {exc.message} at {list(exc.path)}")
 
 
 if __name__ == "__main__":

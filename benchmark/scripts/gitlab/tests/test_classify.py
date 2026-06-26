@@ -65,7 +65,7 @@ def test_agent_timeout_error_is_agent_timeout(tmp_results_dir: Path) -> None:
     assert verdict.outcome == "agent_timeout"
     assert verdict.error_category is None
     assert verdict.error_subcategory is None
-    assert verdict.raw["agent_timeout_analysis"]["timeout_cause"] == "unknown"
+    assert verdict.raw["agent_timeout_analysis"]["timeout_status"] == "unknown"
 
 
 def _write_session(trial_dir: Path, entries: list[dict]) -> None:
@@ -102,7 +102,7 @@ def test_agent_timeout_analysis_inference_hang(tmp_results_dir: Path) -> None:
     analysis = verdict.raw["agent_timeout_analysis"]
     assert verdict.outcome == "agent_timeout"
     assert verdict.error_subcategory is None
-    assert analysis["timeout_cause"] == "inference_hang"
+    assert analysis["timeout_status"] == "inference_hang"
     assert analysis["last_role"] == "toolResult"
     assert analysis["time_since_last_message_sec"] == pytest.approx(600.0)
 
@@ -140,7 +140,7 @@ def test_agent_timeout_analysis_tool_hang(tmp_results_dir: Path) -> None:
     analysis = verdict.raw["agent_timeout_analysis"]
     assert verdict.outcome == "agent_timeout"
     assert verdict.error_subcategory is None
-    assert analysis["timeout_cause"] == "tool_hang"
+    assert analysis["timeout_status"] == "tool_hang"
 
 
 def test_agent_timeout_analysis_agent_in_flight(tmp_results_dir: Path) -> None:
@@ -176,7 +176,7 @@ def test_agent_timeout_analysis_agent_in_flight(tmp_results_dir: Path) -> None:
     analysis = verdict.raw["agent_timeout_analysis"]
     assert verdict.outcome == "agent_timeout"
     assert verdict.error_subcategory is None
-    assert analysis["timeout_cause"] == "agent_in_flight"
+    assert analysis["timeout_status"] == "agent_in_flight"
 
 
 def test_agent_timeout_analysis_few_turns(tmp_results_dir: Path) -> None:
@@ -193,7 +193,7 @@ def test_agent_timeout_analysis_few_turns(tmp_results_dir: Path) -> None:
     analysis = verdict.raw["agent_timeout_analysis"]
     assert verdict.outcome == "agent_timeout"
     assert verdict.error_subcategory is None
-    assert analysis["timeout_cause"] == "few_turns"
+    assert analysis["timeout_status"] == "few_turns"
 
 
 # ── error/infra — read failures ───────────────────────────────────────────────

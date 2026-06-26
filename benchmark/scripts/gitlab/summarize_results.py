@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from bench_config import is_retryable, should_retry_agent_timeout
-from classify import ERROR_RULES, ErrorRule  # noqa: F401 — ErrorRule re-exported for callers
+from classify import ERROR_RULES, ErrorRule
 from outcome import Outcome
 
 # Lookup used by extract_error_evidence() to find evidence_markers by kind.
@@ -26,6 +26,17 @@ SUMMARY_SCHEMA_VERSION = "benchmark-summary/v2"
 MAX_CHUNK_ATTEMPTS = 3  # 1 initial + 2 retries (matches YAML retry: 2)
 KIMCHI_MODEL_PROVIDERS = frozenset({"kimchi-dev"})
 ERROR_EVIDENCE_LIMIT = 1_000
+
+
+def _convert_decimals(value: Any) -> Any:
+    """Recursively convert Decimal values to float for JSON serialization."""
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, dict):
+        return {k: _convert_decimals(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_convert_decimals(v) for v in value]
+    return value
 
 
 @dataclass
@@ -114,11 +125,14 @@ class TrialSummary:
     error_category: str | None = None
     error_subcategory: str | None = None
     outcome: Outcome = Outcome.SCORED_FAIL
+    agent_timeout_analysis: dict[str, Any] | None = None
 
     def status(self) -> str:
         return "passed" if self.outcome == Outcome.SCORED_PASS else "failed"
 
-    def error(self) -> dict[str, str]:
+    def error(self) -> dict[str, str] | None:
+        if self.outcome == Outcome.SCORED_PASS:
+            return None
         return {
             "type": self.error_subcategory or self.exception or "",
             "message": self.exception_message or self.exception or "",
@@ -139,6 +153,8 @@ class TrialSummary:
         result["error_category"] = self.error_category
         result["error_subcategory"] = self.error_subcategory
         result["verdict"] = self.outcome
+        if self.agent_timeout_analysis is not None:
+            result["agent_timeout_analysis"] = self.agent_timeout_analysis
         return result
 
 
@@ -205,6 +221,41 @@ def format_task_table(verdicts: list[TaskVerdict]) -> str:
 
     separator = fmt_row(["-" * w for w in widths])
     return "\n".join([fmt_row(rows[0]), separator] + [fmt_row(row) for row in rows[1:]])
+
+
+def format_totals(totals: dict[str, Any]) -> str:
+    """Format the totals block as a readable summary for CI logs."""
+    trials = totals.get("trials") or {}
+    tasks = totals.get("tasks") or {}
+
+    trial_breakdown = (
+        f"scored_pass={trials.get('scored_pass', 0)} "
+        f"scored_fail={trials.get('scored_fail', 0)} "
+        f"agent_timeout={trials.get('agent_timeout', 0)} "
+        f"error={trials.get('error', 0)}"
+    )
+    task_breakdown = (
+        f"scored_pass={tasks.get('scored_pass', 0)} "
+        f"scored_fail={tasks.get('scored_fail', 0)} "
+        f"agent_timeout={tasks.get('agent_timeout', 0)} "
+        f"error={tasks.get('error', 0)} "
+        f"no_verdict={tasks.get('no_verdict', 0)}"
+    )
+
+    trial_line = (
+        f"Trials:  recorded={trials.get('recorded', 0):>3} / "
+        f"expected={trials.get('expected', 0):>3}  ({trial_breakdown})"
+    )
+    task_line = f"Tasks:   expected={tasks.get('expected', 0):>3}  ({task_breakdown})"
+
+    lines = [
+        "Benchmark totals",
+        "================",
+        trial_line,
+        task_line,
+        f"Tasks with retryable outcome: {totals.get('tasks_with_retryable_outcome', 0)}",
+    ]
+    return "\n".join(lines)
 
 
 def getenv(name: str, default: str = "") -> str:
@@ -729,6 +780,10 @@ def summarize_trial(trial_dir: Path, attempt: int, warnings: list[str]) -> Trial
     total_time_seconds = trial_total_time(result, session_scan)
     task = trial_dir.name.split("__", 1)[0]
 
+    agent_timeout_analysis = _convert_decimals(result.get("agent_timeout_analysis"))
+    if not isinstance(agent_timeout_analysis, dict):
+        agent_timeout_analysis = None
+
     return TrialSummary(
         task=task,
         trial_id=trial_dir.name,
@@ -747,6 +802,7 @@ def summarize_trial(trial_dir: Path, attempt: int, warnings: list[str]) -> Trial
         outcome=outcome,
         error_category=error_category,
         error_subcategory=error_subcategory,
+        agent_timeout_analysis=agent_timeout_analysis,
     )
 
 
@@ -765,7 +821,6 @@ def build_run(
     return {
         "benchmark": metadata_string(metadata, "benchmark"),
         "run_id": run_id,
-        "status": "completed",
         "started_at": start,
         "ended_at": end,
         "agent": {
@@ -836,27 +891,38 @@ def build_summary(
         idx for idx, meta in chunk_metas.items() if meta.get("exhausted")
     )
 
-    passed = sum(1 for t in trials if t.outcome == Outcome.SCORED_PASS)
+    selected_tasks = metadata_dict(metadata, "parameters").get("selected_tasks") or metadata.get("selected_tasks")
+    tasks_expected = (
+        len(selected_tasks)
+        if isinstance(selected_tasks, list)
+        else len({t.task for t in trials})
+    )
+
+    attempts_per_task = int_value(metadata_dict(metadata, "parameters").get("attempts")) or 1
+    trials_expected = tasks_expected * attempts_per_task
+
     # Exhausted tasks: chunks that ran out of retries and still had failures.
     exhausted_tasks: set[str] = set()
     for idx in chunks_exhausted:
         exhausted_tasks.update(chunk_metas[idx].get("needs_retry", []))
-    # agent_timeout / error: tasks whose chunk exhausted retries, split by outcome.
-    timeout_count = sum(
-        1 for t in trials
-        if t.outcome == Outcome.AGENT_TIMEOUT and t.task in exhausted_tasks
-    )
-    infra_error_count = sum(
-        1 for t in trials
-        if t.outcome == Outcome.ERROR and t.task in exhausted_tasks
-    )
+
     # no_verdict: exhausted tasks with no result.json at all (true unknown, not in trials).
     trial_task_names = {t.task for t in trials}
     no_verdict = sum(1 for task in exhausted_tasks if task not in trial_task_names)
-    # failed_quality: outcome is scored_fail (includes tasks still retrying)
-    failed_quality = sum(1 for t in trials if t.outcome == Outcome.SCORED_FAIL)
-    # infra_retries: count of tasks that hit a retryable outcome at least once
-    infra_retries = sum(1 for t in trials if is_retryable(t.outcome, t.error_category))
+
+    # Trial-level counts by verdict.
+    trial_counts: dict[Outcome, int] = Counter(t.outcome for t in trials)
+
+    # Task-level counts by final verdict.
+    task_verdicts = build_task_verdicts(trials)
+    task_counts: dict[Outcome, int] = Counter()
+    for verdict in task_verdicts:
+        task_counts[verdict.final_outcome] += 1
+
+    # Tasks that hit a retryable outcome at least once.
+    tasks_with_retryable_outcome = len(
+        {t.task for t in trials if is_retryable(t.outcome, t.error_category)}
+    )
 
     return {
         "schema_version": SUMMARY_SCHEMA_VERSION,
@@ -867,15 +933,24 @@ def build_summary(
             "generated_at": generated_at,
         },
         "totals": {
-            "expected": len(trials),
-            "passed": passed,
-            "failed_quality": failed_quality,
-            "timeout": timeout_count,
-            "infra_error": infra_error_count,
-            "no_verdict": no_verdict,
-            "infra_retries": infra_retries,
+            "trials": {
+                "recorded": len(trials),
+                "expected": trials_expected,
+                "scored_pass": trial_counts.get(Outcome.SCORED_PASS, 0),
+                "scored_fail": trial_counts.get(Outcome.SCORED_FAIL, 0),
+                "agent_timeout": trial_counts.get(Outcome.AGENT_TIMEOUT, 0),
+                "error": trial_counts.get(Outcome.ERROR, 0),
+            },
+            "tasks": {
+                "expected": tasks_expected,
+                "scored_pass": task_counts.get(Outcome.SCORED_PASS, 0),
+                "scored_fail": task_counts.get(Outcome.SCORED_FAIL, 0),
+                "agent_timeout": task_counts.get(Outcome.AGENT_TIMEOUT, 0),
+                "error": task_counts.get(Outcome.ERROR, 0),
+                "no_verdict": no_verdict,
+            },
+            "tasks_with_retryable_outcome": tasks_with_retryable_outcome,
         },
-        "is_complete": no_verdict == 0 and timeout_count == 0 and infra_error_count == 0,
         "chunks_exhausted_retries": [f"chunk-{idx}" for idx in chunks_exhausted],
         "run": build_run(metadata, started_at, finished_at, generated_at),
         "trials": [t.to_summary_json() for t in trials],
@@ -922,6 +997,8 @@ def write_summary(metadata_path: Path, output_path: Path, results_dir_override: 
     summary = build_summary(metadata, trials, started_at, finished_at, generated_at, results_dir)
 
     task_verdicts = build_task_verdicts(trials)
+    print(format_totals(summary["totals"]))
+    print()
     print(format_task_table(task_verdicts))
     print()
 
