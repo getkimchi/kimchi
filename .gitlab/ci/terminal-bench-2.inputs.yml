@@ -115,12 +115,10 @@ inputs:
     default: "kimchi-dev/minimax-m3"
     options:
       - kimchi-dev/kimi-k2.7
-      - kimchi-dev/kimi-k2.6
       - kimchi-dev/claude-sonnet-4-6
       - kimchi-dev/claude-opus-4-6
       - kimchi-dev/minimax-m3
-      - kimchi-dev/minimax-m2.7
-      - kimchi-dev/nemotron-3-super-fp4
+      - kimchi-dev/glm-5.2-fp8
   kimchi_multi_model:
     description: "Enable Kimchi multi-model routing. Ignored unless agent is kimchi."
     type: boolean
