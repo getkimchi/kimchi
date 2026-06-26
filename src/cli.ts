@@ -281,7 +281,7 @@ try {
 				// Don't crash startup over a transient condition — continue with an
 				// empty list; the login gate and later refreshes will repopulate it.
 				console.warn(
-					`Could not load the model list right now (${err instanceof Error ? err.message : String(err)}). Continuing with cached models.`,
+					`Could not load the model list right now (${err instanceof Error ? err.message : String(err)}). Continuing without models; they will refresh once the service is reachable.`,
 				)
 				models = []
 			} else {

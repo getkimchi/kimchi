@@ -12,7 +12,14 @@ Write-Host "Installing Kimchi from $Repo ($Version)..."
 
 switch ($env:PROCESSOR_ARCHITECTURE) {
     "AMD64" {
-        $hasAVX2 = [System.Runtime.Intrinsics.X86.Avx2]::IsSupported
+        $hasAVX2 = $false
+        try {
+            $hasAVX2 = [System.Runtime.Intrinsics.X86.Avx2]::IsSupported
+        } catch {
+            # System.Runtime.Intrinsics not available on PowerShell 5.1 (.NET Framework)
+            # Falls back to x64_compat build to be safe
+            $hasAVX2 = $false
+        }
         if ($hasAVX2) {
             $Arch = "x64"
         } else {

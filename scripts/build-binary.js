@@ -43,15 +43,22 @@ const isCI = !!process.env.CI
 // 	run("build proxy-helper", "make -C tools/proxy-helper build")
 // }
 
-if (!isCI) {
-	if (platform() === "win32") {
-		run(
-			"build proxy-helper",
-			'go build -C tools/proxy-helper -ldflags="-s -w -extldflags=-static" -o bin/proxy-helper.exe .',
-		)
-	} else {
-		run("build proxy-helper", "make -C tools/proxy-helper build")
-	}
+// can use for cross target
+// if (!isCI) {
+// 	if (platform() === "win32") {
+// 		run(
+// 			"build proxy-helper",
+// 			'go build -C tools/proxy-helper -ldflags="-s -w -extldflags=-static" -o bin/proxy-helper.exe .',
+// 		)
+// 	} else {
+// 		run("build proxy-helper", "make -C tools/proxy-helper build")
+// 	}
+// }
+
+if (crossTarget?.includes("windows") || platform() === "win32") {
+    // build proxy-helper.exe
+} else {
+    run("build proxy-helper", "make -C tools/proxy-helper build")
 }
 
 run("clean", "pnpm run clean")
