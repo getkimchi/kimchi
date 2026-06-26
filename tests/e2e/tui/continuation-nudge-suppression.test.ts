@@ -7,7 +7,8 @@ test.use(TUI_TEST_CONFIG)
 /** Nudge phrases emitted by the orchestrator nudges when they fire. */
 const CONTINUATION_NUDGE_PHRASE = "You ended your turn without calling a tool" // CONTINUATION_NUDGE_TEXT
 const SECOND_NUDGE_PHRASE = "You MUST call a tool immediately" // SECOND_NUDGE_TEXT
-const EMPTY_TURN_NUDGE_PHRASE = "If you have finished, please summarize the result for the user" // EMPTY_TURN_NUDGE_TEXT
+const EMPTY_TURN_NUDGE_PHRASE =
+	"If you have finished, please summarize the result for the user" // EMPTY_TURN_NUDGE_TEXT
 
 /**
  * The harness makes several session-bookkeeping completion requests per user
@@ -64,26 +65,6 @@ async function waitForTurnToSettle(fixture: KimchiFixture) {
 		}
 	}
 	throw new Error("Request count did not settle")
-}
-
-/**
- * Waits until a nudge phrase appears in any recorded request body, OR until
- * `timeoutMs` elapses. Used by "nudge fires" tests to avoid a race where
- * `waitForTurnToSettle` declares idle during a gap between the main response
- * and the nudge follow-up request (the gap can exceed `settleForMs` on slow
- * CI runners, causing flakiness).
- */
-async function waitForNudge(
-	fixture: KimchiFixture,
-	predicate: (f: KimchiFixture) => boolean,
-	timeoutMs = 15_000,
-): Promise<void> {
-	const startedAt = Date.now()
-	while (Date.now() - startedAt < timeoutMs) {
-		if (predicate(fixture)) return
-		await new Promise((resolve) => setTimeout(resolve, 100))
-	}
-	// Timed out — let the caller's expect() produce the assertion error.
 }
 
 /**
@@ -197,7 +178,9 @@ test("empty-turn nudge stays silent when a tool was called earlier in the run", 
 				// First orchestrator call returns a tool call -> tool executes,
 				// `toolsCalledThisAgentRun` flips on.
 				{
-					toolCalls: [{ function: { name: "read", arguments: JSON.stringify({ path: "/dev/null" }) } }],
+					toolCalls: [
+						{ function: { name: "read", arguments: JSON.stringify({ path: "/dev/null" }) } },
+					],
 				},
 				// Post-tool response is empty. Without the per-run guard this
 				// would fire the empty-turn nudge ("summarize or continue");
@@ -234,7 +217,9 @@ test("continuation nudge fires when the orchestrator returns text-only after a t
 				// First orchestrator call returns a tool call -> tool executes,
 				// session-lifetime `toolsCalledThisSession` flips on.
 				{
-					toolCalls: [{ function: { name: "read", arguments: JSON.stringify({ path: "/dev/null" }) } }],
+					toolCalls: [
+						{ function: { name: "read", arguments: JSON.stringify({ path: "/dev/null" }) } },
+					],
 				},
 				// Post-tool response is text-only (legitimate end-of-task
 				// summary). With the fresh-session suppression now behind us,
@@ -247,12 +232,6 @@ test("continuation nudge fires when the orchestrator returns text-only after a t
 			trace.step("submitted prompt")
 			await waitForTurnToSettle(fixture)
 			trace.step("settled")
-			// The nudge follow-up request may arrive after waitForTurnToSettle
-			// declares idle (the gap between the text-only response and the
-			// nudge can exceed settleForMs on slow CI runners). Poll until
-			// the nudge appears to avoid flakiness.
-			await waitForNudge(fixture, anyRequestContainsAnyNudge)
-			trace.step("nudge observed")
 			expect(anyRequestContainsAnyNudge(fixture)).toBe(true)
 		},
 	)
