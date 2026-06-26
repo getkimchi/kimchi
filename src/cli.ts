@@ -30,6 +30,7 @@ import { isBunBinary } from "./env.js"
 import activityExtension from "./extensions/activity.js"
 import agentsExtension from "./extensions/agents/index.js"
 import assistantPrefixExtension from "./extensions/assistant-prefix.js"
+import autoUpdateSettingsExtension from "./extensions/auto-update-settings.js"
 import bashDefaultTimeoutExtension from "./extensions/bash-default-timeout.js"
 import bashToolGuardExtension from "./extensions/bash-tool-guard.js"
 import behavioursExtension from "./extensions/behaviours/index.js"
@@ -447,6 +448,7 @@ try {
 			: []
 		const effectiveSkillPaths = [...new Set([...skillPaths, ...getActiveVendorSkillPaths()])]
 		const extensionFactories = [
+			autoUpdateSettingsExtension,
 			startupUpdateExtension,
 			superpowersExtension,
 			sessionNameExtension(),
