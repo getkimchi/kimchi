@@ -36,6 +36,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 
 import { isFermentOnlyToolName } from "../../extensions/ferment/tool-names.js"
 import { getDisabledToolNames } from "../../extensions/prompt-construction/tool-visibility.js"
+import { getReadOnlyToolNames } from "./read-only-tool-registry.js"
 import { getToolsForProfile } from "./tool-catalog.js"
 import type { ToolProfile } from "./tool-catalog.js"
 
@@ -109,11 +110,29 @@ export function applyCore(profile: ToolProfile, pi: ExtensionAPI): void {
 		allowedNames = merged.filter((name) => !disabled.has(name))
 	} else {
 		const tools = getToolsForProfile(profile)
+		allowedNames = tools.map((t) => t.name)
+
+		// During planning (both planning-ferment and planning-adhoc), union in
+		// read-only-qualified tools registered by extensions (e.g. mcp-adapter's
+		// read-only MCP tools). Write tools remain excluded — the model cannot
+		// call them during planning, mirroring the hard filter on edit/write.
+		// worker is intentionally NOT modified here so the worker phase keeps
+		// its catalog.
+		if (profile === "planning-ferment" || profile === "planning-adhoc") {
+			const readOnlyExtra = getReadOnlyToolNames(pi)
+			if (readOnlyExtra.length > 0) {
+				const existing = new Set(allowedNames)
+				for (const name of readOnlyExtra) {
+					if (!existing.has(name)) allowedNames.push(name)
+				}
+			}
+		}
+
 		// Filter out tools that the cooperative visibility layer has voted to
 		// hide.  Without this, a snapshot apply would re-surface tools that
 		// another extension disabled (e.g. ask_user / confirm_ferment_completion_
 		// criteria hidden when no UI is attached), undoing the cooperative vote.
-		allowedNames = tools.map((t) => t.name).filter((name) => !disabled.has(name))
+		allowedNames = allowedNames.filter((name) => !disabled.has(name))
 	}
 
 	pi.setActiveTools(allowedNames)
