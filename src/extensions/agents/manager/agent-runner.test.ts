@@ -121,7 +121,7 @@ import { loadProjectContextFiles } from "../../prompt-construction/context-files
 import telemetryExtension from "../../telemetry/index.js"
 import { getAgentConfig, getConfig, getToolNamesForType } from "../personas/agent-types.js"
 import { buildAgentPrompt } from "../prompt/prompts.js"
-import { type RunOptions, runAgent } from "./agent-runner.js"
+import { type RunOptions, resumeAgent, runAgent } from "./agent-runner.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "./constants.js"
 
 const mockCreateAgentSession = vi.mocked(createAgentSession)
@@ -1276,6 +1276,68 @@ describe("runAgent — maxDuration enforcement", () => {
 		expect(abortSpy).toHaveBeenCalled()
 		expect(result.aborted).toBe(true)
 		expect(result.abortReason).toBe("max_duration")
+	})
+})
+
+describe("resumeAgent — maxDuration enforcement", () => {
+	beforeEach(() => {
+		vi.useFakeTimers()
+	})
+
+	afterEach(() => {
+		vi.useRealTimers()
+		vi.clearAllMocks()
+	})
+
+	it("classifies submit_agent_report as success even after maxDuration fires", async () => {
+		const abortSpy = vi.fn()
+		const subscribers: Subscriber[] = []
+		let resolvePrompt: (() => void) | undefined
+		const promptPromise = new Promise<void>((resolve) => {
+			resolvePrompt = resolve
+		})
+		const emit = (event: SessionEvent) => {
+			for (const subscriber of subscribers) subscriber(event)
+		}
+		const session = {
+			subscribe: vi.fn((cb: Subscriber) => {
+				subscribers.push(cb)
+				return () => {
+					const idx = subscribers.indexOf(cb)
+					if (idx !== -1) subscribers.splice(idx, 1)
+				}
+			}),
+			abort: abortSpy,
+			steer: vi.fn(),
+			messages: [],
+			getSessionStats: vi.fn().mockReturnValue({
+				tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			}),
+			prompt: vi.fn().mockImplementation(async () => {
+				await promptPromise
+			}),
+		}
+
+		const resultPromise = resumeAgent(session as unknown as AgentSession, "finish", {
+			maxTurns: 5,
+			maxDuration: 60,
+			shouldTerminateAfterTool: (toolName) => toolName === "submit_agent_report",
+		})
+
+		await vi.advanceTimersByTimeAsync(60_001)
+		expect(abortSpy).toHaveBeenCalledOnce()
+
+		emit({ type: "tool_execution_end", toolName: "submit_agent_report" })
+		emit({ type: "turn_end" })
+		resolvePrompt?.()
+
+		const result = await resultPromise
+		expect(result).toMatchObject({
+			aborted: false,
+			abortReason: undefined,
+			turnsUsed: 1,
+			maxTurns: 5,
+		})
 	})
 })
 

@@ -25,15 +25,16 @@ export function registerResumeSubagentTool(pi: ExtensionAPI, manager: AgentManag
 					Type.Integer({ description: "Maximum output tokens for this attempt.", minimum: 1024 }),
 				),
 				purpose: Type.Optional(
-					Type.Union([Type.Literal("continuation"), Type.Literal("finalize_report")], {
+					Type.Union([Type.Literal("continuation"), Type.Literal("continue"), Type.Literal("finalize_report")], {
 						description:
-							"Use finalize_report only when task work is already finished and the worker only needs to submit its report.",
+							'Use "continuation" for follow-up work ("continue" is accepted as a compatibility alias). Use finalize_report only when task work is already finished and the worker only needs to submit its report.',
 					}),
 				),
 			}),
 			execute: async (_toolCallId, params, signal) => {
 				const agentId = params.agent_id as string
-				const purpose = (params.purpose as "continuation" | "finalize_report" | undefined) ?? "continuation"
+				const rawPurpose = params.purpose as "continuation" | "continue" | "finalize_report" | undefined
+				const purpose = rawPurpose === "continue" ? "continuation" : (rawPurpose ?? "continuation")
 				const existing = manager.getRecord(agentId)
 				if (!existing) return textResult(`Agent not found: "${agentId}". It may have been cleaned up.`)
 				if (!existing.session) return textResult(`Agent "${agentId}" has no active session to resume.`)

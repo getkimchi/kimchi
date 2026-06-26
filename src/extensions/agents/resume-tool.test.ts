@@ -36,6 +36,7 @@ describe("resume_subagent", () => {
 		expect(properties).toHaveProperty("prompt")
 		expect(properties).toHaveProperty("max_turns")
 		expect(properties).toHaveProperty("max_duration")
+		expect(JSON.stringify(properties.purpose)).toContain('"continue"')
 		expect(properties).not.toHaveProperty("subagent_type")
 		expect(properties).not.toHaveProperty("description")
 		expect(properties).not.toHaveProperty("model")
@@ -70,6 +71,32 @@ describe("resume_subagent", () => {
 			agentId: "agent-1",
 			status: "completed",
 			agentOutcome: { outcome: "completed" },
+		})
+	})
+
+	it('accepts purpose "continue" as a compatibility alias for continuation', async () => {
+		const { manager, tool } = setupManager()
+
+		await tool.execute(
+			"call-1",
+			{
+				agent_id: "agent-1",
+				prompt: "finish tests",
+				max_turns: 3,
+				max_duration: 60,
+				purpose: "continue",
+			},
+			undefined,
+			undefined,
+			undefined,
+		)
+
+		expect(manager.resume).toHaveBeenCalledWith("agent-1", "finish tests", {
+			signal: undefined,
+			maxTurns: 3,
+			maxDuration: 60,
+			tokenBudget: undefined,
+			purpose: "continuation",
 		})
 	})
 
