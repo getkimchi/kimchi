@@ -81,10 +81,11 @@ export function loadPendingProposal(fermentId: string, root?: string): PendingPr
 		if (typeof raw.fermentId !== "string" || raw.fermentId !== fermentId) return undefined
 		if (typeof raw.title !== "string") return undefined
 		if (typeof raw.goal !== "string") return undefined
-		if (!Array.isArray(raw.successCriteria)) return undefined
-		if (!Array.isArray(raw.constraints)) return undefined
+		if (!Array.isArray(raw.successCriteria) || !raw.successCriteria.every((x) => typeof x === "string"))
+			return undefined
+		if (!Array.isArray(raw.constraints) || !raw.constraints.every((x) => typeof x === "string")) return undefined
 		if (typeof raw.assumptions !== "string") return undefined
-		if (!Array.isArray(raw.phases)) return undefined
+		if (!Array.isArray(raw.phases) || !raw.phases.every((x) => x !== null && typeof x === "object")) return undefined
 		if (typeof raw.planMarkdown !== "string") return undefined
 		if (typeof raw.proposeIterations !== "number") return undefined
 		if (typeof raw.savedAt !== "string") return undefined
@@ -105,15 +106,22 @@ export function savePendingProposal(
 	data: PendingProposalData,
 	options?: { root?: string; onError?: (err: unknown) => void },
 ): boolean {
+	let tmp: string | undefined
 	try {
 		const dir = fermentSidecarDir(fermentId, options?.root)
 		if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
 		const path = pendingProposalPath(fermentId, options?.root)
-		const tmp = `${path}.tmp.${process.pid}.${Date.now()}`
+		tmp = `${path}.tmp.${process.pid}.${Date.now()}`
 		writeFileSync(tmp, JSON.stringify(data, null, 2), "utf-8")
 		renameSync(tmp, path)
 		return true
 	} catch (err) {
+		// Clean up orphaned temp file so failed writes don't accumulate.
+		try {
+			if (tmp && existsSync(tmp)) unlinkSync(tmp)
+		} catch {
+			// Ignore — best-effort cleanup.
+		}
 		options?.onError?.(err)
 		return false
 	}

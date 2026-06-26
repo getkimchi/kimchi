@@ -27,6 +27,7 @@ import {
 	loadPendingProposal,
 	savePendingProposal,
 } from "./pending-proposal-store.js"
+import { clearPendingPlanReviewTrigger } from "./plan-review-trigger.js"
 import { resumeFerment } from "./resume.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
 import { confirmPendingScope } from "./scoping-confirmation.js"
@@ -108,6 +109,7 @@ afterEach(() => {
 	clearAllScopingGates()
 	clearAllPendingScopes()
 	setActive(undefined)
+	clearPendingPlanReviewTrigger()
 	if (prevFermentsDir === undefined) {
 		process.env.KIMCHI_FERMENTS_DIR = undefined
 	} else {

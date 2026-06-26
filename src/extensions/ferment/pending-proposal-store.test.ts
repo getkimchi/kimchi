@@ -165,6 +165,56 @@ describe("pending-proposal-store", () => {
 
 			expect(loadPendingProposal(fId, root)).toBeUndefined()
 		})
+
+		it("returns undefined when successCriteria contains non-string elements", () => {
+			const fId = "ferment-bad-sc-elems"
+			const dir = join(root, fId)
+			mkdirSync(dir, { recursive: true })
+			writeFileSync(
+				join(dir, "pending-proposal.json"),
+				JSON.stringify({
+					schemaVersion: PENDING_PROPOSAL_SCHEMA_VERSION,
+					fermentId: fId,
+					title: "t",
+					goal: "g",
+					successCriteria: ["ok", 123],
+					constraints: [],
+					assumptions: "",
+					phases: [],
+					planMarkdown: "",
+					proposeIterations: 0,
+					savedAt: "2026-06-26T00:00:00.000Z",
+				}),
+				"utf-8",
+			)
+
+			expect(loadPendingProposal(fId, root)).toBeUndefined()
+		})
+
+		it("returns undefined when phases contains non-object elements", () => {
+			const fId = "ferment-bad-phases"
+			const dir = join(root, fId)
+			mkdirSync(dir, { recursive: true })
+			writeFileSync(
+				join(dir, "pending-proposal.json"),
+				JSON.stringify({
+					schemaVersion: PENDING_PROPOSAL_SCHEMA_VERSION,
+					fermentId: fId,
+					title: "t",
+					goal: "g",
+					successCriteria: [],
+					constraints: [],
+					assumptions: "",
+					phases: [null],
+					planMarkdown: "",
+					proposeIterations: 0,
+					savedAt: "2026-06-26T00:00:00.000Z",
+				}),
+				"utf-8",
+			)
+
+			expect(loadPendingProposal(fId, root)).toBeUndefined()
+		})
 	})
 
 	describe("atomic temp + rename write", () => {
@@ -199,6 +249,24 @@ describe("pending-proposal-store", () => {
 			expect(captured).toBeDefined()
 			// No final file should exist at the (impossible) target path.
 			expect(existsSync(join(blockerPath, fId, "pending-proposal.json"))).toBe(false)
+		})
+
+		it("cleans up orphaned .tmp files when renameSync fails", () => {
+			const fId = "ferment-tmp-cleanup"
+			// Create the target directory so writeFileSync succeeds, but make
+			// the target path itself a directory so renameSync fails (can't
+			// rename over a directory).
+			const dir = join(root, fId)
+			mkdirSync(dir, { recursive: true })
+			mkdirSync(join(dir, "pending-proposal.json"), { recursive: true })
+
+			const ok = savePendingProposal(fId, sampleData(fId), { root })
+			expect(ok).toBe(false)
+
+			// No stray .tmp.* files should remain.
+			const entries = readdirSync(dir)
+			const tmpFiles = entries.filter((e) => e.startsWith("pending-proposal.json.tmp."))
+			expect(tmpFiles).toEqual([])
 		})
 	})
 })

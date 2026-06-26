@@ -155,6 +155,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 			const outcome = await promptPlanReview(ctx, { planMarkdown: review.planMarkdown })
 			if (!outcome) return
 			if (outcome.kind === "cancelled") {
+				deletePendingProposal(review.fermentId)
 				return
 			}
 

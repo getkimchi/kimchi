@@ -136,6 +136,12 @@ export function resumeFerment(
 			// turn fires naturally, so invoke the registered trigger directly —
 			// this presents the saved proposal for review WITHOUT spinning up an
 			// LLM turn (no scoping nudge, no re-propose risk).
+			//
+			// Early return is intentional: for a draft with a persisted proposal,
+			// `determineNextAction` would return { kind: "scope" } (no phases yet)
+			// which triggers a scoping nudge we explicitly want to suppress.
+			// `scheduleFermentWakeUp` would schedule a wake-up that also nudges
+			// the LLM — both are undesirable while a plan review is pending.
 			triggerPendingPlanReview(ctx)
 			return
 		}

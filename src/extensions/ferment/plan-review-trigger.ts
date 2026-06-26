@@ -24,6 +24,11 @@ export function setPendingPlanReviewTrigger(fn: PlanReviewTrigger | undefined): 
 	trigger = fn
 }
 
+/** Clear the registered trigger. Used by test teardown to prevent cross-suite leakage. */
+export function clearPendingPlanReviewTrigger(): void {
+	trigger = undefined
+}
+
 export function triggerPendingPlanReview(ctx: Pick<ExtensionContext, "ui"> | undefined): void {
 	trigger?.(ctx)
 }
