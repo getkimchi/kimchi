@@ -42,6 +42,7 @@ import { assertGateFieldsPresent, validateGatesOrErr } from "../gate-validation.
 import { ensureGitRepo } from "../git-init.js"
 import { judgeJourneyGrade } from "../judge.js"
 import { appendRefEntry, resetReactiveContinuationNudgeCount } from "../nudge.js"
+import { PENDING_PROPOSAL_SCHEMA_VERSION, savePendingProposal } from "../pending-proposal-store.js"
 import { gatherPhaseEvidence } from "../phase-evidence.js"
 import { getPromptUi, promptEditor, promptForm, promptSelect } from "../prompt-ui.js"
 import { readLatestPhaseReviews } from "../review-evidence.js"
@@ -934,6 +935,21 @@ ${renderGateGuidance("scope_ferment")}`,
 				runtime.setPendingPlanReview({
 					fermentId,
 					planMarkdown: planEntry,
+				})
+				// Persist the pending proposal to disk so a session restart can
+				// re-arm this review instead of nudging the LLM to re-scope.
+				savePendingProposal(fermentId, {
+					schemaVersion: PENDING_PROPOSAL_SCHEMA_VERSION,
+					fermentId,
+					title: params.title,
+					goal: params.goal,
+					successCriteria: params.success_criteria ?? [],
+					constraints: params.constraints ?? [],
+					assumptions: params.assumptions ?? "",
+					phases: params.phases,
+					planMarkdown: planEntry,
+					proposeIterations: nextIterations,
+					savedAt: new Date().toISOString(),
 				})
 				return planToolOk("Plan ready for review. The review dialog will open when this turn finishes.")
 			}
