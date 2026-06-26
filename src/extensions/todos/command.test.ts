@@ -79,7 +79,7 @@ describe("/todos command helpers", () => {
 		)
 	})
 
-	it("registers /todo as an alias", () => {
+	it("registers the /todos command", () => {
 		const registered = new Map<string, unknown>()
 		registerTodosCommand({
 			registerCommand: (name: string, config: unknown) => {
@@ -88,6 +88,6 @@ describe("/todos command helpers", () => {
 		} as never)
 
 		expect(registered.has("todos")).toBe(true)
-		expect(registered.has("todo")).toBe(true)
+		expect(registered.has("todo")).toBe(false)
 	})
 })

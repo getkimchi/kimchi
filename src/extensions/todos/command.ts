@@ -12,7 +12,6 @@ import {
 } from "./widget.js"
 
 export const TODOS_COMMAND = "todos"
-const TODO_COMMAND_ALIASES = ["todo"]
 
 type TodoAction =
 	| "help"
@@ -258,7 +257,6 @@ export function registerTodosCommand(pi: ExtensionAPI): void {
 		})
 	}
 	registerCommand(TODOS_COMMAND)
-	for (const alias of TODO_COMMAND_ALIASES) registerCommand(alias)
 }
 
 export {
