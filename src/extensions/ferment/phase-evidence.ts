@@ -35,21 +35,92 @@ export interface PhaseEvidence {
 export function gatherPhaseEvidence(sinceRef = "HEAD~10", cwd = process.cwd()): PhaseEvidence {
 	try {
 		const stat = run(`git diff --stat ${sinceRef}`, cwd)
-		if (!stat.trim()) {
+		const untracked = gatherUntrackedFiles(cwd)
+
+		// No tracked changes AND no untracked files
+		if (!stat.trim() && untracked.length === 0) {
 			return { filesChanged: "(no changes)", diffSnippet: "", available: true }
 		}
 
-		const filesChanged = limitFileList(stat)
+		// Build combined file list: tracked diff stat + untracked entries.
+		// Untracked entries use the `?? path` prefix that mirrors
+		// `git status --porcelain` so the judge LLM can recognise them as
+		// "new untracked file".
+		let filesChanged = limitFileList(stat)
+		if (untracked.length > 0) {
+			const untrackedSection = untracked.map((f) => `?? ${f}`).join("\n")
+			filesChanged = filesChanged ? `${filesChanged}\n${untrackedSection}` : untrackedSection
+			filesChanged = limitFileList(filesChanged)
+		}
 
-		// Bound the diff. We include a head + tail of the unified diff so the
-		// judge sees both the first and the last changes in case the diff is
-		// long. Plain `git diff` without context limits could explode in size.
-		const fullDiff = run(`git diff --unified=2 ${sinceRef}`, cwd)
+		// Build combined diff: tracked diff + synthetic diffs for untracked files.
+		// Untracked diffs are bounded by MAX_DIFF_BYTES to prevent an explosion if
+		// there are many large untracked files; the final truncateDiff then bounds
+		// the combined total.
+		let fullDiff = run(`git diff --unified=2 ${sinceRef}`, cwd)
+		if (untracked.length > 0) {
+			const untrackedDiffs: string[] = []
+			let untrackedBytes = 0
+			for (const f of untracked) {
+				if (untrackedBytes >= MAX_DIFF_BYTES) break
+				const d = diffUntrackedFile(cwd, f)
+				if (d) {
+					untrackedDiffs.push(d)
+					untrackedBytes += d.length
+				}
+			}
+			if (untrackedDiffs.length > 0) {
+				fullDiff = fullDiff ? `${fullDiff}\n${untrackedDiffs.join("\n")}` : untrackedDiffs.join("\n")
+			}
+		}
+
 		const diffSnippet = truncateDiff(fullDiff)
 
 		return { filesChanged, diffSnippet, available: true }
 	} catch {
 		return { filesChanged: "(git unavailable)", diffSnippet: "", available: false }
+	}
+}
+
+/**
+ * List untracked files on disk using `git ls-files --others --exclude-standard`.
+ * This respects .gitignore (unlike `--others` alone), so gitignored files are
+ * excluded. Returns relative paths, one per line. Empty array on git error.
+ */
+function gatherUntrackedFiles(cwd: string): string[] {
+	try {
+		const output = run("git ls-files --others --exclude-standard", cwd)
+		return output
+			.split("\n")
+			.map((l) => l.trim())
+			.filter(Boolean)
+	} catch {
+		return []
+	}
+}
+
+/**
+ * Produce a synthetic unified diff for an untracked file by diffing it against
+ * /dev/null. `git diff --no-index` exits with code 1 when differences are
+ * found, which execSync treats as an error — we catch and read err.stdout,
+ * which is the standard pattern for --no-index. Returns "" on any other error
+ * (e.g. file deleted between listing and diffing).
+ */
+function diffUntrackedFile(cwd: string, filePath: string): string {
+	try {
+		return execSync(`git diff --no-index --unified=2 /dev/null ${filePath}`, {
+			cwd,
+			encoding: "utf-8",
+			timeout: GIT_TIMEOUT_MS,
+			stdio: ["ignore", "pipe", "ignore"],
+		}).toString()
+	} catch (err: unknown) {
+		// exit code 1 means "differences found" — stdout has the diff
+		if (err && typeof err === "object" && "stdout" in err) {
+			const stdout = (err as { stdout?: unknown }).stdout
+			if (typeof stdout === "string") return stdout
+		}
+		return ""
 	}
 }
 
