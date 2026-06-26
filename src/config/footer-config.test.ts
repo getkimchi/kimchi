@@ -67,8 +67,34 @@ describe("FOOTER_ELEMENTS", () => {
 // ─── readFooterConfig ─────────────────────────────────────────────────────────
 
 describe("readFooterConfig", () => {
-	it("returns { pinned: [] } when no footer config exists", () => {
+	it("returns default pinned elements when no footer key exists in settings", () => {
 		memfs.set(SETTINGS_PATH, "{}")
+		expect(readFooterConfig().pinned).toEqual(["agents", "context", "phase", "usage"])
+	})
+
+	it("fresh install defaults to exactly agents, context, phase, and usage — 4 elements", () => {
+		expect(readFooterConfig().pinned).toEqual(expect.arrayContaining(["agents", "context", "phase", "usage"]))
+		expect(readFooterConfig().pinned).toHaveLength(4)
+	})
+
+	it("agents, context, phase, usage are all isPinned=true on first read with no config", () => {
+		memfs.set(SETTINGS_PATH, "{}")
+		for (const id of ["agents", "context", "phase", "usage"] as const) {
+			expect(isPinned(id)).toBe(true)
+			_invalidateFooterConfigCache()
+		}
+	})
+
+	it("ferment, tags, team are isPinned=false on first read with no config", () => {
+		memfs.set(SETTINGS_PATH, "{}")
+		for (const id of ["ferment", "tags", "team"] as const) {
+			expect(isPinned(id)).toBe(false)
+			_invalidateFooterConfigCache()
+		}
+	})
+
+	it("returns { pinned: [] } when footer key exists with empty pinned array", () => {
+		memfs.set(SETTINGS_PATH, JSON.stringify({ footer: { pinned: [] } }, null, 2))
 		expect(readFooterConfig().pinned).toEqual([])
 	})
 
@@ -92,11 +118,11 @@ describe("writeFooterConfig", () => {
 		expect(stored.footer).toEqual({ pinned: ["model"] })
 	})
 
-	it("deletes the footer key when pinned array is empty", () => {
+	it("writes footer key with empty pinned array (does not delete it)", () => {
 		memfs.set(SETTINGS_PATH, JSON.stringify({ modelRoles: { foo: "bar" }, footer: { pinned: ["model"] } }, null, 2))
 		writeFooterConfig({ pinned: [] })
 		const stored = JSON.parse(memfs.get(SETTINGS_PATH) ?? "{}")
-		expect(stored.footer).toBeUndefined()
+		expect(stored.footer).toEqual({ pinned: [] })
 		expect(stored.modelRoles).toEqual({ foo: "bar" })
 	})
 
@@ -146,8 +172,8 @@ describe("isPinned", () => {
 		expect(isPinned("ferment")).toBe(true)
 	})
 
-	it("returns false for an unpinned element", () => {
-		expect(isPinned("agents")).toBe(false)
+	it("returns false for an element not in defaults", () => {
+		expect(isPinned("ferment")).toBe(false)
 	})
 
 	it("returns false after element is unpinned", () => {
