@@ -117,6 +117,26 @@ describe("registerAgentSpawnGuard", () => {
 		expect(result).toEqual({ block: false })
 	})
 
+	// Regression: the engine forward-suggests start_step for the NEXT pending
+	// step when one step is already running (engine.test.ts:248). The guard must
+	// not treat that forward suggestion as a precondition and block the worker
+	// spawn for the running step. Reproduces the stuck session 019f0397 where
+	// the orchestrator started step-1, then Agent was blocked citing step-2.
+	it("allows Agent spawn when a step is running and a later step is pending", async () => {
+		const pi = makePi()
+		const runtime = createDefaultFermentRuntime()
+		runtime.setActive(
+			makeFerment("running", [
+				{ id: "step-1", index: 1, description: "running step", status: "running" },
+				{ id: "step-2", index: 2, description: "pending step", status: "pending" },
+			]),
+		)
+		registerAgentSpawnGuard(pi as unknown as ExtensionAPI, runtime)
+
+		const result = await pi.fireAll("tool_call", { toolName: "Agent" })
+		expect(result).toEqual({ block: false })
+	})
+
 	it("allows Agent spawn when active ferment state is malformed", async () => {
 		const pi = makePi()
 		const runtime = createDefaultFermentRuntime()
