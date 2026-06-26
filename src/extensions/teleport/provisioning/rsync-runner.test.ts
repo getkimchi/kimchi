@@ -5,11 +5,13 @@ import { describe, expect, it } from "vitest"
 import {
 	BASE_EXCLUDE_GLOBS,
 	type CumulativeState,
+	RsyncError,
 	type RsyncStats,
 	buildExcludeList,
 	buildMkdirArgv,
 	buildRsyncArgv,
 	buildSshOption,
+	formatRsyncFailure,
 	handleLine,
 	resolveGitIgnored,
 	runRsync,
@@ -511,5 +513,32 @@ describe("trackCumulative", () => {
 		trackCumulative("Number of regular files transferred: 1", s)
 		trackCumulative("Total transferred file size: 500 bytes", s)
 		expect(s).toEqual({ completedBytes: 500, currentFileBytes: 0 })
+	})
+})
+
+describe("formatRsyncFailure", () => {
+	it("appends the trimmed stderr head for an RsyncError", () => {
+		const err = new RsyncError(23, '\n  rsync: link_stat "x" failed: No such file or directory (2)\n')
+		const msg = formatRsyncFailure(err)
+		expect(msg).toBe('rsync exited with code 23\nstderr:\nrsync: link_stat "x" failed: No such file or directory (2)')
+	})
+
+	it("returns just the message when stderr is empty/whitespace", () => {
+		expect(formatRsyncFailure(new RsyncError(23, "   \n  "))).toBe("rsync exited with code 23")
+		expect(formatRsyncFailure(new RsyncError(23, ""))).toBe("rsync exited with code 23")
+	})
+
+	it("truncates the stderr head to 1500 chars", () => {
+		const long = "e".repeat(5000)
+		const msg = formatRsyncFailure(new RsyncError(23, long))
+		expect(msg).toBe(`rsync exited with code 23\nstderr:\n${"e".repeat(1500)}`)
+	})
+
+	it("falls back to the message for a generic Error", () => {
+		expect(formatRsyncFailure(new Error("boom"))).toBe("boom")
+	})
+
+	it("stringifies a non-Error value", () => {
+		expect(formatRsyncFailure("nope")).toBe("nope")
 	})
 })

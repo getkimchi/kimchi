@@ -1,12 +1,11 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
 import { TeleportRefusal } from "./commands/errors.js"
-import { runSessions } from "./commands/sessions.js"
+import { runRemoteSessions } from "./commands/remote-sessions.js"
 import { runSshConfig } from "./commands/ssh-config.js"
 import { runSync } from "./commands/sync.js"
 import { runTeleport } from "./commands/teleport.js"
 import { runTerminal } from "./commands/terminal.js"
-import { runWorkspaces } from "./commands/workspaces.js"
 import type { TeleportContext } from "./types.js"
 
 type CommandFn = (args: string, ctx: TeleportContext) => Promise<void>
@@ -48,13 +47,9 @@ export default function teleportExtension(pi: ExtensionAPI): void {
 		description: "Sync files between local and sandbox workspace",
 		handler: makeHandler(runSync),
 	})
-	pi.registerCommand("sessions", {
-		description: "List kimchi sessions across all workspaces",
-		handler: makeHandler(runSessions),
-	})
-	pi.registerCommand("workspaces", {
-		description: "List and manage kimchi workspaces",
-		handler: makeHandler(runWorkspaces),
+	pi.registerCommand("remote-sessions", {
+		description: "Browse workspaces and their kimchi sessions",
+		handler: makeHandler(runRemoteSessions),
 	})
 	pi.registerCommand("ssh-config", {
 		description: "Refresh ~/.config/kimchi/ssh_config from your workspaces",
