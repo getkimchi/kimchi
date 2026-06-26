@@ -10,6 +10,8 @@ describe("FermentRuntime", () => {
 	})
 
 	afterEach(() => {
+		// Clear any active ferment so permission-mode listeners don't leak across tests.
+		runtime.setActive(undefined)
 		vi.restoreAllMocks()
 	})
 

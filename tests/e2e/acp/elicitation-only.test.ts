@@ -16,7 +16,7 @@ const ELICITATION_ONLY_CAPABILITIES: ClientCapabilities = {
 	elicitation: { form: {} },
 }
 
-describe.skip("ACP integration — elicitation only", () => {
+describe("ACP integration — elicitation only", () => {
 	let fixture: AcpFixture
 
 	beforeEach(async () => {

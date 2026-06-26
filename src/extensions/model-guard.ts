@@ -1,5 +1,7 @@
 import type { AssistantMessage, ImageContent, TextContent, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai"
 import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { COMPACTION_RESERVE_TOKENS } from "./compaction-thresholds.js"
+import { hasActiveFerment } from "./ferment/state.js"
 
 /** Messages that have a content array we can inspect for images. */
 type ContentMessage = UserMessage | AssistantMessage | ToolResultMessage
@@ -333,6 +335,12 @@ export default function createModelGuardExtension(_pi: ExtensionAPI) {
 	// turn ends. turn_end fires after every individual LLM response inside the
 	// loop, giving us a chance to compact before the hard limit is hit.
 	_pi.on("turn_end", async (event, ctx: ExtensionContext) => {
+		// Ferment-aware mid-turn compaction lives in the ferment extension
+		// (src/extensions/ferment/auto-compaction.ts). It resumes the in-progress
+		// step after compaction. Defer to it whenever a ferment is active so we
+		// don't double-compact and so the ferment continues automatically.
+		if (hasActiveFerment()) return
+
 		const model = ctx.model
 		if (!model) return
 
@@ -346,9 +354,7 @@ export default function createModelGuardExtension(_pi: ExtensionAPI) {
 		if (!usage?.totalTokens) return
 
 		// Use the same threshold as upstream auto-compaction: contextWindow - reserveTokens.
-		// reserveTokens defaults to 16,384 in DEFAULT_COMPACTION_SETTINGS.
-		const RESERVE_TOKENS = 16_384
-		if (usage.totalTokens <= model.contextWindow - RESERVE_TOKENS) return
+		if (usage.totalTokens <= model.contextWindow - COMPACTION_RESERVE_TOKENS) return
 
 		// Threshold exceeded mid-turn. Compact now.
 		//

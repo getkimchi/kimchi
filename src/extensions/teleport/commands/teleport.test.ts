@@ -273,7 +273,10 @@ describe("runTeleport", () => {
 		)
 		expect(listSessionsMock).toHaveBeenCalledOnce()
 		expect(createSessionMock).not.toHaveBeenCalled()
-		expect(ui.notify).toHaveBeenCalledWith(expect.stringMatching(/already exists.*Use \/sessions to attach/), "error")
+		expect(ui.notify).toHaveBeenCalledWith(
+			expect.stringMatching(/already exists.*Use \/remote-sessions to attach/),
+			"error",
+		)
 	})
 
 	it("refuses when listSessions fails", async () => {
@@ -313,7 +316,7 @@ describe("runTeleport", () => {
 		expect(ui.notify).toHaveBeenCalledWith(expect.stringMatching(/Teleport cancelled/), "info")
 		// We had creds (auth succeeded before the cancel) → notify must include the workspace hint.
 		expect(ui.notify).toHaveBeenCalledWith(
-			expect.stringMatching(/Workspace .* is still up.*\/workspaces.*\/teleport/),
+			expect.stringMatching(/Workspace .* is still up.*\/remote-sessions.*\/teleport/),
 			"info",
 		)
 		expect(progressInstances[0]?.stop).toHaveBeenCalled()

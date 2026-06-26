@@ -581,10 +581,10 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			//
 			// Tools REMOVED (adhoc / planning-only, no longer visible):
 			//   - questionnaire          (adhoc-only; superseded by ask_user)
-			//   - update_todos           (adhoc-only)
-			//   - add_todo               (adhoc-only)
-			//   - mark_todo              (adhoc-only)
-			//   - clear_todos            (adhoc-only)
+			//
+			// Note: todo lifecycle tools (create_todos, update_todos, add_todo,
+			// mark_todo, clear_todos) are shared core — they remain visible in
+			// all modes including ferment.
 			//
 			// Tools ADDED (ferment-mode, newly visible):
 			//   - ask_user               (interactive routing — TUI in interactive mode,

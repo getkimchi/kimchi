@@ -26,6 +26,19 @@ const SETTINGS_SUBMENU_SELECT_LIST_LAYOUT = {
 	maxPrimaryColumnWidth: 32,
 }
 
+// Runtime-only UI helpers that are not yet exported from the upstream
+// ExtensionUIContext type. The casts are isolated here and guarded at runtime
+// so the code fails gracefully if the contract drifts.
+function getPreviewTheme(ui: ExtensionCommandContext["ui"]): ((name: string) => void) | undefined {
+	const candidate = ui as unknown as { previewTheme?: (name: string) => void }
+	return typeof candidate.previewTheme === "function" ? candidate.previewTheme : undefined
+}
+
+function getShowError(ui: ExtensionCommandContext["ui"]): ((message: string) => void) | undefined {
+	const candidate = ui as unknown as { showError?: (message: string) => void }
+	return typeof candidate.showError === "function" ? candidate.showError : undefined
+}
+
 // Inline copy of pi-coding-agent's private DynamicBorder component
 // (dist/modes/interactive/components/dynamic-border.js). Re-implemented
 // locally because:
@@ -95,14 +108,14 @@ export default function themeSelectorExtension(pi: ExtensionAPI) {
 
 				// Preview theme on navigation (hover/arrow keys)
 				selectList.onSelectionChange = (item) => {
-					ui.previewTheme(item.value)
+					getPreviewTheme(ui)?.(item.value)
 				}
 
 				// Finalize selection on Enter
 				selectList.onSelect = (item) => {
 					const result = ui.setTheme(item.value)
 					if (!result.success) {
-						ui.showError(`Failed to load theme "${item.value}": ${result.error}\nFell back to dark theme.`)
+						getShowError(ui)?.(`Failed to load theme "${item.value}": ${result.error}\nFell back to dark theme.`)
 					}
 					done()
 				}
@@ -110,7 +123,9 @@ export default function themeSelectorExtension(pi: ExtensionAPI) {
 				selectList.onCancel = () => {
 					// Restore original theme on cancel (no persist, mirrors /settings onThemePreview).
 					// Guard: Theme.name is optional; skip the preview if there is no name to restore.
-					if (currentThemeName) ui.previewTheme(currentThemeName)
+					if (currentThemeName) {
+						getPreviewTheme(ui)?.(currentThemeName)
+					}
 					done()
 				}
 

@@ -89,6 +89,22 @@ export async function listGitTrackedFiles(
 }
 
 /**
+ * Tracked files whose working-tree copy is missing (deleted on disk but the
+ * deletion not yet staged/committed). The caller filters these out of the
+ * tracked list so rsync isn't asked to stat a source that no longer exists —
+ * which would fail the whole transfer with code 23 ("partial transfer due to
+ * error"). Reported relative to `cwd` with the same prefix behavior as
+ * `--cached`, so the paths match for set membership.
+ */
+export async function listGitDeletedFiles(
+	cwd: string,
+	signal?: AbortSignal,
+	spawner: typeof spawn = defaultSpawn,
+): Promise<string[]> {
+	return runGitLsFiles(cwd, ["--deleted"], signal, spawner)
+}
+
+/**
  * Untracked files that git would otherwise see (i.e. not gitignored).
  * The caller is expected to apply `excludesBaseFilePattern()` to this
  * list — these are the candidates for the "accidental .env / .DS_Store"
@@ -150,9 +166,13 @@ export async function walkGitDir(cwd: string, signal?: AbortSignal): Promise<str
  * POSIX-separated.
  *
  * Composed of:
- *   1. `git ls-files --cached -z` — tracked files. Passed through
- *      verbatim. These are explicit user intent (committed) — if we
- *      drop them, the remote's `git status` reports them as deleted.
+ *   1. `git ls-files --cached -z` — tracked files, minus any that
+ *      `git ls-files --deleted -z` reports as missing from the working
+ *      tree. Tracked entries are otherwise explicit user intent — if we
+ *      drop a present one, the remote's `git status` shows it deleted —
+ *      but a tracked file the user has `rm`'d (deletion not yet staged)
+ *      isn't on disk, so feeding it to rsync fails the transfer with
+ *      code 23. Excluding it just mirrors the local deleted state.
  *   2. `git ls-files --others --exclude-standard -z` — untracked files
  *      git would otherwise see. The basename safety filter is applied
  *      here so an accidentally-left-around `.env` / `.DS_Store` doesn't
@@ -170,11 +190,14 @@ export async function buildIncludeList(
 	signal?: AbortSignal,
 	spawner: typeof spawn = defaultSpawn,
 ): Promise<string[]> {
-	const [tracked, others, gitDirFiles] = await Promise.all([
+	const [tracked, others, deleted, gitDirFiles] = await Promise.all([
 		listGitTrackedFiles(cwd, signal, spawner),
 		listGitUntrackedFiles(cwd, signal, spawner),
+		listGitDeletedFiles(cwd, signal, spawner),
 		walkGitDir(cwd, signal),
 	])
+	const deletedSet = new Set(deleted)
+	const liveTracked = tracked.filter((p) => !deletedSet.has(p))
 	const safeOthers = others.filter((p) => !excludesBaseFilePattern(p))
-	return [...tracked, ...safeOthers, ...gitDirFiles]
+	return [...liveTracked, ...safeOthers, ...gitDirFiles]
 }

@@ -289,6 +289,25 @@ export function clearAllPendingCompactions(): void {
 	compactionInFlight.clear()
 }
 
+// ─── Mid-turn oneshot overrun warnings (per session) ─────────────────────────
+// Tracks which one-shot ferments have already emitted a mid-turn context-overrun
+// breadcrumb so we don't spam on every turn_end above threshold. Kept in state
+// (not a module-level Set in auto-compaction.ts) so it is scoped to the runtime
+// instance and resets with session_start.
+const midTurnOneshotWarnings = new Set<string>()
+
+export function markMidTurnOneshotWarning(fermentId: string): void {
+	midTurnOneshotWarnings.add(fermentId)
+}
+
+export function hasMidTurnOneshotWarning(fermentId: string): boolean {
+	return midTurnOneshotWarnings.has(fermentId)
+}
+
+export function clearMidTurnOneshotWarnings(): void {
+	midTurnOneshotWarnings.clear()
+}
+
 // ─── Block-retry counter (per phase) ─────────────────────────────────────────
 // Key: `${fermentId}:${phaseId}`. Incremented every time complete_ferment_phase is
 // called and the reviewer emits at least one `block` flag. After

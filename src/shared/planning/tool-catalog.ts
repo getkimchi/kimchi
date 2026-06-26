@@ -96,18 +96,23 @@ export const SHARED_CORE_TOOLS: ToolEntry[] = [
 	{ name: "ls", modes: ["shared"] },
 	{ name: "web_fetch", modes: ["shared"] },
 	{ name: "web_search", modes: ["shared"] },
+	// Todo lifecycle tools — must mirror TODO_TOOL_NAMES in src/extensions/todos/tool.ts
+	// These are general-purpose session tools used in all modes (adhoc chat,
+	// ferment planning, and ferment implementation). The system prompt,
+	// the ferment todo-sync bridge, and BUILTIN_ALLOW_TOOL_NAMES all treat
+	// them as universally available. Cataloging them as `shared` ensures
+	// every profile derived from getToolsForProfile includes them.
+	{ name: "create_todos", modes: ["shared"] },
+	{ name: "update_todos", modes: ["shared"] },
+	{ name: "add_todo", modes: ["shared"] },
+	{ name: "mark_todo", modes: ["shared"] },
+	{ name: "clear_todos", modes: ["shared"] },
 ]
 
 /** Tools gated behind `--plan` (adhoc planning mode). */
 export const ADHOC_MODE_TOOLS: ToolEntry[] = [
 	// interactive — model collects structured input from the user
 	{ name: "questionnaire", modes: ["adhoc"], routing: "interactive" },
-	// Todo lifecycle tools — must mirror TODO_TOOL_NAMES in src/extensions/todos/tool.ts
-	{ name: "create_todos", modes: ["adhoc"] },
-	{ name: "update_todos", modes: ["adhoc"] },
-	{ name: "add_todo", modes: ["adhoc"] },
-	{ name: "mark_todo", modes: ["adhoc"] },
-	{ name: "clear_todos", modes: ["adhoc"] },
 ]
 
 /**

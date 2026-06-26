@@ -116,6 +116,11 @@ test.fail(
 				await waitForText(terminal, "ask_user", { timeoutMs: STREAM_TIMEOUT_MS })
 				trace.step("ask_user visible in tool list — tool swap confirmed")
 
+				// Todo lifecycle tools are shared core — they must remain visible
+				// after the plan-to-ferment tool swap (regression: previously adhoc-only).
+				await waitForText(terminal, "update_todos", { timeoutMs: STREAM_TIMEOUT_MS })
+				trace.step("update_todos visible — todo tools available during ferment")
+
 				const finalText = fullText(terminal)
 				expect(finalText.includes("questionnaire")).toBe(false)
 				trace.step("`questionnaire` absent — adhoc tools removed")

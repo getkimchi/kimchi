@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import { SCOPING_DISCOVERY_GUIDANCE } from "../../extensions/ferment/constants.js"
 import { SHARED_PLANNING_PROCESS } from "./shared-planning-process.js"
 
 describe("SHARED_PLANNING_PROCESS", () => {
@@ -188,6 +189,23 @@ describe("SHARED_PLANNING_PROCESS", () => {
 
 		expect(planSection).toContain("Ensure completion criteria were confirmed")
 		expect(planSection).toContain("before finalizing")
+	})
+
+	it("includes step-sizing guidance so each step fits within a single context window", () => {
+		expect(SHARED_PLANNING_PROCESS).toContain(
+			"every step should fit within ~25% of the active model's context window when implemented",
+		)
+		expect(SHARED_PLANNING_PROCESS).toContain(
+			"If you cannot see how to fit a step within that budget, split it into smaller steps",
+		)
+	})
+
+	it("flows the step-sizing guidance into the ferment scoping prompt", () => {
+		// SCOPING_DISCOVERY_GUIDANCE embeds SHARED_PLANNING_PROCESS, so the same
+		// step-sizing sentence reaches the ferment planner.
+		expect(SCOPING_DISCOVERY_GUIDANCE).toContain(
+			"every step should fit within ~25% of the active model's context window when implemented",
+		)
 	})
 
 	it("is under 7000 characters — process guidance plus shared plan template", () => {

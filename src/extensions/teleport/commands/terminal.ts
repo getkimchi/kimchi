@@ -89,7 +89,9 @@ export async function runTerminal(
 	} catch (err) {
 		refuse(ctx, `Failed to launch ssh: ${err instanceof Error ? err.message : String(err)}`)
 	}
-	if (code !== 0) {
+	// 130 (SIGINT) and 143 (SIGTERM) are the normal ways to leave an interactive
+	// shell (Ctrl-C / Ctrl-D), so don't warn on them — only on genuine failures.
+	if (code !== 0 && code !== 130 && code !== 143) {
 		warn(ctx, `ssh exited with code ${code}.`)
 	}
 }
