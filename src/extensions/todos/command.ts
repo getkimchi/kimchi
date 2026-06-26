@@ -48,6 +48,7 @@ const COMMAND_COMPLETIONS = [
 	"list",
 	"expand",
 	"expand all",
+	"show all",
 	"all",
 	"collapse",
 	"clear",
@@ -165,7 +166,6 @@ function applyTodoAction(
 		parsed.action === "help" ||
 		parsed.action === "open" ||
 		parsed.action === "expand" ||
-		parsed.action === "expand_all" ||
 		parsed.action === "collapse" ||
 		parsed.action === "list"
 	) {

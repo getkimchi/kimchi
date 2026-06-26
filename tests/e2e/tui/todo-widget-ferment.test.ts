@@ -1,5 +1,5 @@
 import { expect, test } from "@microsoft/tui-test"
-import { INPUT_TIMEOUT_MS, STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
+import { INPUT_TIMEOUT_MS, STREAM_TIMEOUT_MS, viewText, waitForText } from "./support/assertions.js"
 import { TUI_TEST_CONFIG, runKimchiSession } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -103,6 +103,94 @@ test("todo widget summary reflects mixed-status counts", async ({ terminal }) =>
 			await waitForText(terminal, "blocked item", { timeoutMs: INPUT_TIMEOUT_MS })
 			await waitForText(terminal, "done item", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("all items visible")
+		},
+	)
+})
+
+test("todo widget shows rolling markers around active work", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "todo-widget-rolling-window",
+			responses: [
+				{
+					stream: ["Rolled", " todos."],
+					toolCalls: [
+						{
+							function: {
+								name: "update_todos",
+								arguments: JSON.stringify({
+									todos: Array.from({ length: 19 }, (_, index) => ({
+										content: `task ${index + 1}`,
+										status: index < 9 ? "completed" : index === 9 ? "in_progress" : "pending",
+									})),
+								}),
+							},
+						},
+					],
+				},
+			],
+		},
+		async (_fixture, trace) => {
+			terminal.submit("Create rolling todos")
+
+			await waitForText(terminal, "9/19 done · 10 active", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "… 7 completed", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "  8.  ✓ task 8", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "  9.  ✓ task 9", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, " 10.  ▶ task 10", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, " 14.  ○ task 14", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "… 5 more", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			trace.step("rolling active window visible")
+
+			const text = viewText(terminal)
+			expect(text).not.toContain("  1.  ✓ task 1")
+			expect(text).not.toContain(" 19.  ○ task 19")
+		},
+	)
+})
+
+test("todo widget anchors completed overflow at the end", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "todo-widget-completed-end",
+			responses: [
+				{
+					stream: ["All", " completed."],
+					toolCalls: [
+						{
+							function: {
+								name: "update_todos",
+								arguments: JSON.stringify({
+									todos: Array.from({ length: 19 }, (_, index) => ({
+										content: `task ${index + 1}`,
+										status: "completed",
+									})),
+								}),
+							},
+						},
+					],
+				},
+			],
+		},
+		async (_fixture, trace) => {
+			terminal.submit("Create completed todos")
+			await waitForText(terminal, "All completed.", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
+
+			terminal.write("/todos")
+			await waitForText(terminal, "/todos", { timeoutMs: INPUT_TIMEOUT_MS })
+			terminal.submit("")
+
+			await waitForText(terminal, "19/19 done · 0 active", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "… 10 completed", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, " 11.  ✓ task 11", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, " 19.  ✓ task 19", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			trace.step("completed end window visible")
+
+			const text = viewText(terminal)
+			expect(text).not.toContain("  1.  ✓ task 1")
+			expect(text).not.toContain("… 9 more")
 		},
 	)
 })

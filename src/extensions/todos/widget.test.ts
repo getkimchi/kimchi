@@ -56,7 +56,7 @@ describe("todo widget helpers", () => {
 		])
 	})
 
-	it("renders stored todo ids instead of list positions", () => {
+	it("renders command positions instead of stored todo ids", () => {
 		applyWriteTodos({
 			todos: [
 				{ id: 6, content: "trace-visible id", status: "in_progress" },
@@ -65,9 +65,9 @@ describe("todo widget helpers", () => {
 		})
 
 		const lines = __test_buildTodoLines(theme)
-		expect(lines).toContain("  6.  ▶ trace-visible id")
-		expect(lines).toContain(" 10.  ○ later id")
-		expect(lines).not.toContain("  1.  ▶ trace-visible id")
+		expect(lines).toContain("  1.  ▶ trace-visible id")
+		expect(lines).toContain("  2.  ○ later id")
+		expect(lines).not.toContain("  6.  ▶ trace-visible id")
 	})
 
 	it("auto-opens while active todos exist", () => {

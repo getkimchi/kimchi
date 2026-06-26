@@ -11,8 +11,7 @@ const TODO_WIDGET_OPTIONS = { placement: "aboveEditor" } as const
 const TODO_STATUS_KEY = "todos"
 const TODO_LIST_HINT_TEXT = "F7 or enter '/todos' to collapse"
 const MAX_TODO_WIDGET_LINES = 14
-const TODO_WIDGET_HEADER_LINES = 4
-const TODO_WIDGET_BODY_LINES = MAX_TODO_WIDGET_LINES - TODO_WIDGET_HEADER_LINES
+const TODO_WIDGET_BODY_LINES = 10
 const TODO_WIDGET_ROLL_THRESHOLD = TODO_WIDGET_BODY_LINES - 1
 const MAX_ROLLED_TODO_ROWS = 5
 const MAX_ROLLED_CONTEXT_ROWS = 2
@@ -74,8 +73,8 @@ function isFermentTodo(todo: TodoItem): boolean {
 	return todo.content.startsWith("↳ ") || todo.content.startsWith("[Phase ")
 }
 
-function todoLine(todo: TodoItem, _displayIndex: number, theme: Theme, scope: TodoScope): string {
-	const index = `${todo.id}`.padStart(2)
+function todoLine(todo: TodoItem, displayIndex: number, theme: Theme, scope: TodoScope): string {
+	const index = `${displayIndex + 1}`.padStart(2)
 	const symbol = TODO_SYMBOL[todo.status]
 	const isFerment = scope.kind === "ferment" || isFermentTodo(todo)
 
@@ -124,7 +123,12 @@ function summarizeTodosForScope(scope: TodoScope): string {
 	return summarizeTodoCounts(getTodoCountsForScope(scope))
 }
 
-function selectTodoWindow(todos: TodoItem[]): { todos: TodoItem[]; hiddenBefore: number; hiddenAfter: number } {
+function selectTodoWindow(todos: TodoItem[]): {
+	todos: TodoItem[]
+	startIndex: number
+	hiddenBefore: number
+	hiddenAfter: number
+} {
 	const firstActiveIndex = todos.findIndex((todo) => todo.status !== "completed")
 	const startIndex =
 		firstActiveIndex === -1
@@ -137,6 +141,7 @@ function selectTodoWindow(todos: TodoItem[]): { todos: TodoItem[]; hiddenBefore:
 	const visibleTodos = todos.slice(startIndex, startIndex + visibleCount)
 	return {
 		todos: visibleTodos,
+		startIndex,
 		hiddenBefore: startIndex,
 		hiddenAfter: Math.max(0, todos.length - startIndex - visibleTodos.length),
 	}
@@ -153,17 +158,22 @@ function todoWindowAfterText(hiddenAfter: number): string | undefined {
 export function buildTodoLines(theme: Theme): string[] {
 	const scope = resolveTodoScope()
 	const todos = getTodosForScope(scope)
-	const lines: string[] = [theme.fg("accent", formatScopeHeader(scope)), ""]
 
 	if (todos.length === 0) {
-		lines.push(theme.fg("dim", "No todos yet. Add one with `/todos add <text>`."))
-		return lines
+		return [
+			theme.fg("accent", formatScopeHeader(scope)),
+			"",
+			theme.fg("dim", "No todos yet. Add one with `/todos add <text>`."),
+		]
 	}
 
-	lines.push(theme.fg("dim", summarizeTodosForScope(scope)))
-	lines.push("")
+	const lines = buildTodoListHeaderLines(theme, scope)
 	lines.push(...todos.map((todo, index) => todoLine(todo, index, theme, scope)))
 	return lines
+}
+
+function buildTodoListHeaderLines(theme: Theme, scope: TodoScope): string[] {
+	return [theme.fg("accent", formatScopeHeader(scope)), "", theme.fg("dim", summarizeTodosForScope(scope)), ""]
 }
 
 function buildTodoWidgetLines(theme: Theme, expanded: boolean): string[] {
@@ -179,9 +189,9 @@ function buildTodoWidgetLines(theme: Theme, expanded: boolean): string[] {
 	const beforeText = todoWindowBeforeText(window.hiddenBefore)
 	const afterText = todoWindowAfterText(window.hiddenAfter)
 	return [
-		...lines.slice(0, TODO_WIDGET_HEADER_LINES),
+		...buildTodoListHeaderLines(theme, scope),
 		...(beforeText ? [theme.fg("dim", beforeText)] : []),
-		...window.todos.map((todo, index) => todoLine(todo, index, theme, scope)),
+		...window.todos.map((todo, index) => todoLine(todo, window.startIndex + index, theme, scope)),
 		...(afterText ? [theme.fg("dim", afterText)] : []),
 	]
 }

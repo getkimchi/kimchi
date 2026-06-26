@@ -16,6 +16,7 @@ describe("/todos command helpers", () => {
 		expect(__test_parseTodoArgs("block 3")).toEqual({ action: "block", text: "", index: 2 })
 		expect(__test_parseTodoArgs("remove 4")).toEqual({ action: "delete", text: "", index: 3 })
 		expect(__test_parseTodoArgs("expand all")).toEqual({ action: "expand_all", text: "", index: null })
+		expect(__test_parseTodoArgs("show all")).toEqual({ action: "expand_all", text: "", index: null })
 		expect(__test_parseTodoArgs("all")).toEqual({ action: "expand_all", text: "", index: null })
 	})
 
@@ -80,14 +81,23 @@ describe("/todos command helpers", () => {
 	})
 
 	it("registers the /todos command", () => {
-		const registered = new Map<string, unknown>()
+		const registered = new Map<string, { getArgumentCompletions: (prefix: string) => Array<{ value: string }> }>()
 		registerTodosCommand({
-			registerCommand: (name: string, config: unknown) => {
+			registerCommand: (
+				name: string,
+				config: { getArgumentCompletions: (prefix: string) => Array<{ value: string }> },
+			) => {
 				registered.set(name, config)
 			},
 		} as never)
 
 		expect(registered.has("todos")).toBe(true)
 		expect(registered.has("todo")).toBe(false)
+		expect(
+			registered
+				.get("todos")
+				?.getArgumentCompletions("show")
+				.map((entry) => entry.value),
+		).toEqual(["show all"])
 	})
 })

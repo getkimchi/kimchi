@@ -97,6 +97,7 @@ function hiddenTodoMessage(reason: string, text: string) {
 function hasVisibleText(message: unknown): boolean {
 	if (!isRecord(message)) return false
 	const content = message.content
+	if (typeof content === "string") return content.trim().length > 0
 	if (!Array.isArray(content)) return false
 	return content.some(
 		(part) => isRecord(part) && part.type === "text" && typeof part.text === "string" && part.text.trim(),
