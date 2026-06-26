@@ -14,10 +14,16 @@ Install the latest release:
 brew install getkimchi/tap/kimchi
 ```
 
-**Install script:**
+**Install script (macOS / Linux):**
 
 ```bash
 curl -fsSL https://github.com/getkimchi/kimchi/releases/latest/download/install.sh | bash
+```
+
+**PowerShell (Windows):**
+
+```powershell
+irm https://github.com/getkimchi/kimchi/releases/latest/download/install.ps1 | iex
 ```
 
 Then configure your API key and launch:

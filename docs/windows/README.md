@@ -4,6 +4,26 @@ This document explains how Kimchi's Windows binary is built, what the release
 pipeline verifies, and how to reproduce the setup locally when fixing Windows
 bugs.
 
+## Native Install
+
+Install the latest native Windows release from PowerShell:
+
+```powershell
+irm https://github.com/getkimchi/kimchi/releases/latest/download/install.ps1 | iex
+```
+
+The installer downloads `kimchi_windows_amd64.tar.gz`, installs
+`kimchi.exe` under `%LOCALAPPDATA%\Kimchi\bin`, stages shared runtime files
+under `%LOCALAPPDATA%\Kimchi\share\kimchi`, and adds the `bin` directory to
+the user `PATH`.
+
+Set `KIMCHI_INSTALL_DIR` to override the install root:
+
+```powershell
+$env:KIMCHI_INSTALL_DIR = "C:\Tools\Kimchi"
+irm https://github.com/getkimchi/kimchi/releases/latest/download/install.ps1 | iex
+```
+
 ## Release Pipeline
 
 Windows release artifacts should be built on a real GitHub-hosted Windows
@@ -33,7 +53,7 @@ The Windows build job does the same packaging work as Linux/macOS:
 6. Build the Bun standalone executable:
 
    ```bash
-   pnpm run build:binary
+   node scripts/build-binary.js --target bun-windows-x64
    ```
 
 7. Verify the Windows runtime surface:
@@ -48,7 +68,10 @@ The Windows build job does the same packaging work as Linux/macOS:
    helper. The dummy endpoint is expected to fail at connection time; it must
    not fail with `proxy-helper binary not found`.
 
-9. Upload:
+9. Package `kimchi_windows_amd64.tar.gz` and verify `scripts/install.ps1`
+   against that local archive.
+
+10. Upload:
 
    ```text
    kimchi_windows_amd64.tar.gz

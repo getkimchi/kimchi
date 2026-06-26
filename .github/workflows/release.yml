@@ -80,7 +80,7 @@ jobs:
         run: node scripts/build-proxy-helper.js --target ${{ matrix.target }}
 
       - name: Build binary
-        run: pnpm run build:binary
+        run: node scripts/build-binary.js --target ${{ matrix.target }}
 
       - name: Verify binary architecture
         if: ${{ matrix.os != 'windows' }}
@@ -106,9 +106,18 @@ jobs:
           Get-Item dist/bin/kimchi.exe
           Get-Item dist/share/kimchi/bin/proxy-helper.exe
 
+          function Assert-LastExitCode([string]$label) {
+            if ($LASTEXITCODE -ne 0) {
+              throw "$label failed with exit code $LASTEXITCODE"
+            }
+          }
+
           .\dist\bin\kimchi.exe --version
-          .\dist\bin\kimchi.exe --help | Select-Object -First 20
-          .\dist\share\kimchi\bin\proxy-helper.exe ssh-proxy --help | Select-Object -First 20
+          Assert-LastExitCode "kimchi --version"
+          .\dist\bin\kimchi.exe --help
+          Assert-LastExitCode "kimchi --help"
+          .\dist\share\kimchi\bin\proxy-helper.exe ssh-proxy --help
+          Assert-LastExitCode "proxy-helper ssh-proxy --help"
 
           $env:KIMCHI_API_KEY = "dummy"
           $env:KIMCHI_REMOTE_ENDPOINT = "http://127.0.0.1:9"
@@ -125,6 +134,17 @@ jobs:
       - name: Package binary
         shell: bash
         run: tar -czf kimchi_${{ matrix.os }}_${{ matrix.arch }}.tar.gz -C dist bin share
+
+      - name: Verify Windows installer
+        if: ${{ matrix.os == 'windows' }}
+        shell: pwsh
+        env:
+          KIMCHI_ARCHIVE_PATH: kimchi_${{ matrix.os }}_${{ matrix.arch }}.tar.gz
+          KIMCHI_INSTALL_DIR: ${{ runner.temp }}\kimchi-install
+          KIMCHI_SKIP_PATH_UPDATE: "1"
+        run: |
+          .\scripts\install.ps1
+          & "$env:KIMCHI_INSTALL_DIR\bin\kimchi.exe" --version
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -184,6 +204,7 @@ jobs:
             artifacts/kimchi_*.tar.gz
             artifacts/checksums.txt
             scripts/install.sh
+            scripts/install.ps1
           generate_release_notes: true
 
   homebrew:
