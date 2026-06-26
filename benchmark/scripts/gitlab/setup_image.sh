@@ -98,4 +98,7 @@ else
   docker push "${BENCH_IMAGE}"
 fi
 
-echo "BENCH_IMAGE=${BENCH_IMAGE}" > bench.env
+{
+  echo "BENCH_IMAGE=${BENCH_IMAGE}"
+  echo "BENCHMARK_TARGET_SHA=${BENCHMARK_TARGET_SHA}"
+} > bench.env
