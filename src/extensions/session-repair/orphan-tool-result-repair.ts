@@ -141,8 +141,10 @@ const orphanToolResultRepairExtension: ExtensionFactory = (pi: ExtensionAPI) => 
 				return
 			}
 
-			// Split into lines, preserving the original line-ending semantics by
-			// operating on a split that keeps the trailing newline out of each line.
+			// Split into lines. If the file ends with a trailing newline, split
+			// produces a trailing "" element which rewriteSessionJsonl keeps as a
+			// malformed line — so join("\n") preserves the trailing newline.
+			// \r\n line endings are preserved because \r stays attached to each line.
 			const lines = originalText.split("\n")
 
 			const { rewritten, dropped } = rewriteSessionJsonl(lines)
@@ -159,6 +161,8 @@ const orphanToolResultRepairExtension: ExtensionFactory = (pi: ExtensionAPI) => 
 			}
 
 			// Atomically rewrite: write to a temp file then rename over the original.
+			// join("\n") reconstructs the original line-ending style because split
+			// preserved \r on each line and the trailing "" element.
 			const tmpPath = `${sessionFile}.repair-tmp`
 			fs.writeFileSync(tmpPath, rewritten.join("\n"), "utf8")
 			fs.renameSync(tmpPath, sessionFile)

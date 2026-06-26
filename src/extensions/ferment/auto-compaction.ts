@@ -352,16 +352,6 @@ function triggerCompactionForPending(
 	// (resets at session_start, not leaked across test runs).
 	runtime.markCompactionInFlight(fermentId)
 
-	// Defense-in-depth: maybeTriggerFermentCompaction already guards against
-	// in-flight tool calls before draining, but if this entry was drained by an
-	// older code path, bail here too rather than compacting mid-tool-call. The
-	// pending entry is already removed from the map; it will be retried as a
-	// follow-up by the next completed step. Never block the pipeline.
-	if (isToolCallInFlightInSession(ctx)) {
-		runtime.clearCompactionInFlight(fermentId)
-		return
-	}
-
 	// Reload the ferment from disk — the in-memory copy may be stale.
 	const fermentMaybe = runtime.getStorage().get(fermentId)
 	if (!fermentMaybe) {
