@@ -173,7 +173,12 @@ def build_task_verdicts(trials: list[TrialSummary]) -> list[TaskVerdict]:
 
     verdicts: list[TaskVerdict] = []
     for task in sorted(by_task):
-        attempts = sorted(by_task[task], key=lambda t: t.attempt)
+        # Sort by real start time so the table reflects chronological order,
+        # not the alphabetical order of random trial directory suffixes.
+        attempts = sorted(
+            by_task[task],
+            key=lambda t: parse_time(t.start) or datetime.min.replace(tzinfo=UTC),
+        )
         passed = any(t.outcome == Outcome.SCORED_PASS for t in attempts)
         final_outcome = Outcome.SCORED_PASS if passed else (attempts[-1].outcome if attempts else Outcome.SCORED_FAIL)
         verdicts.append(TaskVerdict(task=task, attempts=attempts, final_outcome=final_outcome, passed=passed))
@@ -892,12 +897,25 @@ def write_summary(metadata_path: Path, output_path: Path, results_dir_override: 
     if not trial_dirs:
         warnings.append(f"No trial result directories found under {results_dir}")
 
+    # Build trials first, then sort chronologically and reassign attempt numbers.
+    # The initial directory enumeration is alphabetical (due to random suffixes),
+    # which does not reflect actual execution order.
+    raw_trials: list[TrialSummary] = []
+    for trial_dir in trial_dirs:
+        raw_trials.append(summarize_trial(trial_dir, 0, warnings))
+
+    raw_trials.sort(
+        key=lambda t: (
+            t.task,
+            parse_time(t.start) or datetime.min.replace(tzinfo=UTC),
+        )
+    )
     attempts_by_task: defaultdict[str, int] = defaultdict(int)
     trials: list[TrialSummary] = []
-    for trial_dir in sorted(trial_dirs, key=lambda path: (path.name.split("__", 1)[0], path.name)):
-        task = trial_dir.name.split("__", 1)[0]
-        attempts_by_task[task] += 1
-        trials.append(summarize_trial(trial_dir, attempts_by_task[task], warnings))
+    for trial in raw_trials:
+        attempts_by_task[trial.task] += 1
+        trial.attempt = attempts_by_task[trial.task]
+        trials.append(trial)
 
     started_at, finished_at = run_bounds(results_dir, trials)
     generated_at = utc_now()

@@ -278,7 +278,15 @@ class SummarizeResultsClassificationTest(unittest.TestCase):
 
 
 class BuildTaskVerdictsTest(unittest.TestCase):
-    def _trial(self, task: str, attempt: int, outcome: summarize_results.Outcome, *, error_subcategory: str | None = None) -> summarize_results.TrialSummary:
+    def _trial(
+        self,
+        task: str,
+        attempt: int,
+        outcome: summarize_results.Outcome,
+        *,
+        error_subcategory: str | None = None,
+        start: str = "2026-06-18T12:00:00Z",
+    ) -> summarize_results.TrialSummary:
         return summarize_results.TrialSummary(
             task=task,
             trial_id=f"{task}__{attempt}",
@@ -290,7 +298,7 @@ class BuildTaskVerdictsTest(unittest.TestCase):
             total_time_seconds=60,
             models=[],
             trial_dir=Path("/tmp"),
-            start="2026-06-18T12:00:00Z",
+            start=start,
             end="2026-06-18T12:01:00Z",
             outcome=outcome,
             error_subcategory=error_subcategory,
@@ -323,6 +331,22 @@ class BuildTaskVerdictsTest(unittest.TestCase):
         self.assertFalse(verdicts[0].passed)
         self.assertEqual(verdicts[0].final_outcome, summarize_results.Outcome.ERROR)
         self.assertEqual(verdicts[0].attempts[0].error_subcategory, "infra_network_error")
+
+    def test_attempts_sorted_chronologically_not_by_attempt_number(self) -> None:
+        # Directory names are random suffixes; attempt numbers may be assigned
+        # alphabetically. The verdict must order by real start time.
+        trials = [
+            self._trial("task-d", 2, summarize_results.Outcome.SCORED_FAIL, start="2026-06-18T12:02:00Z"),
+            self._trial("task-d", 1, summarize_results.Outcome.AGENT_TIMEOUT, start="2026-06-18T12:01:00Z"),
+            self._trial("task-d", 3, summarize_results.Outcome.SCORED_PASS, start="2026-06-18T12:03:00Z"),
+        ]
+        verdicts = summarize_results.build_task_verdicts(trials)
+        self.assertTrue(verdicts[0].passed)
+        self.assertEqual(verdicts[0].final_outcome, summarize_results.Outcome.SCORED_PASS)
+        self.assertEqual(
+            [t.outcome for t in verdicts[0].attempts],
+            [summarize_results.Outcome.AGENT_TIMEOUT, summarize_results.Outcome.SCORED_FAIL, summarize_results.Outcome.SCORED_PASS],
+        )
 
 
 class FormatTaskTableTest(unittest.TestCase):
@@ -410,6 +434,62 @@ class WriteSummaryPrintsTableTest(unittest.TestCase):
             self.assertIn("scored_pass", stdout)
             self.assertIn("passed", stdout)
             self.assertIn("Final verdict", stdout)
+
+    def test_write_summary_orders_attempts_chronologically(self) -> None:
+        """Random directory suffixes must not reorder attempts alphabetically."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            results_dir = tmp_path / "jobs" / "run-1"
+            results_dir.mkdir(parents=True)
+
+            def _make_trial(name: str, start: str, outcome: str, reward: int) -> Path:
+                trial_dir = results_dir / name
+                trial_dir.mkdir()
+                result = {
+                    **BASE_RESULT,
+                    "agent_execution": {"started_at": start, "finished_at": start},
+                    "verifier_result": {"rewards": {"reward": reward}},
+                    "outcome": outcome,
+                    "error_category": None,
+                    "error_subcategory": None,
+                }
+                if outcome != "scored_pass":
+                    result["exception_info"] = {
+                        "exception_type": "AgentTimeoutError" if outcome == "agent_timeout" else "NonZeroAgentExitCodeError",
+                        "exception_message": "timeout" if outcome == "agent_timeout" else "fail",
+                        "occurred_at": start,
+                    }
+                write_json(trial_dir / "result.json", result)
+                sessions_dir = trial_dir / "agent" / "sessions"
+                sessions_dir.mkdir(parents=True)
+                (sessions_dir / "main.jsonl").write_text("\n", encoding="utf-8")
+                return trial_dir
+
+            # Alphabetically, "z..." comes before "a...", but chronologically
+            # the "a..." trial ran first and the "z..." trial ran last.
+            _make_trial("sample-task__zzz", "2026-06-18T12:03:00Z", "scored_pass", 1)
+            _make_trial("sample-task__aaa", "2026-06-18T12:01:00Z", "agent_timeout", 0)
+            _make_trial("sample-task__mmm", "2026-06-18T12:02:00Z", "scored_fail", 0)
+
+            metadata_path = tmp_path / "run-metadata.json"
+            write_json(metadata_path, {
+                "benchmark": "terminal-bench-2",
+                "coding_agent": "kimchi",
+                "model": "kimchi-dev/kimi-k2.6",
+                "results_dir": str(results_dir),
+            })
+
+            captured = io.StringIO()
+            with contextlib.redirect_stdout(captured):
+                summarize_results.write_summary(
+                    metadata_path,
+                    tmp_path / "summary.json",
+                    results_dir_override=results_dir,
+                )
+
+            stdout = captured.getvalue()
+            # Table must list attempts in chronological order, not alphabetical.
+            self.assertIn("agent_timeout → scored_fail → scored_pass", stdout)
 
 
 class BuildRunRetryAgentTimeoutTest(unittest.TestCase):
