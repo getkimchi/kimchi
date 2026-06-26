@@ -132,7 +132,7 @@ inputs:
   retry_agent_timeout:
     description: "Retry chunks whose agent runs hit an AgentTimeoutError verdict. Infra errors are always retried."
     type: boolean
-    default: true
+    default: false
   parallelism:
     description: "Maximum number of benchmark tasks to run concurrently."
     type: number

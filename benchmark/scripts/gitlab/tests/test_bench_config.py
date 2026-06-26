@@ -11,7 +11,8 @@ from outcome import Outcome
 @pytest.mark.parametrize(
     ("outcome", "error_category", "env_value", "expected"),
     [
-        # Agent timeouts: follow the env flag
+        # Agent timeouts: follow the env flag (default is false)
+        (Outcome.AGENT_TIMEOUT, None,    None,    False),
         (Outcome.AGENT_TIMEOUT, None,    "true",  True),
         (Outcome.AGENT_TIMEOUT, None,    "false", False),
         (Outcome.AGENT_TIMEOUT, None,    "1",     True),
@@ -35,5 +36,8 @@ def test_is_retryable(
     expected: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("BENCH_RETRY_AGENT_TIMEOUT", env_value)
+    if env_value is None:
+        monkeypatch.delenv("BENCH_RETRY_AGENT_TIMEOUT", raising=False)
+    else:
+        monkeypatch.setenv("BENCH_RETRY_AGENT_TIMEOUT", env_value)
     assert is_retryable(outcome, error_category) is expected

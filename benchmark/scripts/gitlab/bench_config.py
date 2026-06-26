@@ -103,7 +103,7 @@ DEFAULT_BENCH_TASKS_ALL = "false"
 
 # --- Retry behavior ---
 ENV_BENCH_RETRY_AGENT_TIMEOUT = "BENCH_RETRY_AGENT_TIMEOUT"
-DEFAULT_BENCH_RETRY_AGENT_TIMEOUT = True
+DEFAULT_BENCH_RETRY_AGENT_TIMEOUT = False
 
 
 def should_retry_agent_timeout() -> bool:
@@ -119,7 +119,7 @@ def is_retryable(outcome: Outcome, error_category: str | None) -> bool:
     """Single source of truth: should this verdict outcome trigger a retry?
 
     Infra errors (outcome=ERROR, error_category='infra') are always retried.
-    AgentTimeoutError retries are controlled by $BENCH_RETRY_AGENT_TIMEOUT (default true).
+    AgentTimeoutError retries are controlled by $BENCH_RETRY_AGENT_TIMEOUT (default false).
     """
     if outcome == Outcome.AGENT_TIMEOUT:
         return should_retry_agent_timeout()
