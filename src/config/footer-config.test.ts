@@ -79,19 +79,16 @@ describe("readFooterConfig", () => {
 	})
 
 	it("agents, context, phase, usage are all isPinned=true on first read with no config", () => {
-		memfs.set(SETTINGS_PATH, "{}")
 		for (const id of ["agents", "context", "phase", "usage"] as const) {
 			expect(isPinned(id)).toBe(true)
-			_invalidateFooterConfigCache()
 		}
 	})
 
-	it("ferment, tags, team are isPinned=false on first read with no config", () => {
-		memfs.set(SETTINGS_PATH, "{}")
-		for (const id of ["ferment", "tags", "team"] as const) {
-			expect(isPinned(id)).toBe(false)
-			_invalidateFooterConfigCache()
-		}
+	it("ferment, tags, team are not pinned by default even though context is", () => {
+		expect(isPinned("context")).toBe(true)
+		expect(isPinned("ferment")).toBe(false)
+		expect(isPinned("tags")).toBe(false)
+		expect(isPinned("team")).toBe(false)
 	})
 
 	it("returns { pinned: [] } when footer key exists with empty pinned array", () => {
@@ -119,12 +116,10 @@ describe("writeFooterConfig", () => {
 		expect(stored.footer).toEqual({ pinned: ["model"] })
 	})
 
-	it("writes footer key with empty pinned array (does not delete it)", () => {
-		memfs.set(SETTINGS_PATH, JSON.stringify({ modelRoles: { foo: "bar" }, footer: { pinned: ["model"] } }, null, 2))
+	it("writing empty pinned keeps the key present so defaults do not re-apply on next read", () => {
 		writeFooterConfig({ pinned: [] })
-		const stored = JSON.parse(memfs.get(SETTINGS_PATH) ?? "{}")
-		expect(stored.footer).toEqual({ pinned: [] })
-		expect(stored.modelRoles).toEqual({ foo: "bar" })
+		_invalidateFooterConfigCache()
+		expect(readFooterConfig().pinned).toEqual([])
 	})
 
 	it("merge-safety: does not clobber sibling top-level keys", () => {

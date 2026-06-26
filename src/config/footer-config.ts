@@ -111,7 +111,7 @@ export function writeFooterConfig(config: FooterConfig): void {
 	const settings = readJson(path)
 	settings[FOOTER_KEY] = config
 	writeJson(path, settings)
-	_config = config
+	_config = { pinned: [...config.pinned] }
 }
 
 export function setPinned(id: FooterElementId, pinned: boolean): void {
