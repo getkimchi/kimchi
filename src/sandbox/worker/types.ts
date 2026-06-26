@@ -48,7 +48,7 @@ export interface SessionStatus {
 /**
  * Worker session. The openapi schema is `allOf(CreateSessionRequest, SessionStatus)`; we
  * additionally lift `name` onto the object — the worker exposes it only as the map key in
- * `GET /session`, but downstream consumers (sorting, rendering the /sessions table) want
+ * `GET /session`, but downstream consumers (sorting, rendering the /remote-sessions table) want
  * it inline. Client-side convenience, never sent over the wire.
  */
 export interface Session extends CreateSessionRequest, SessionStatus {

@@ -289,6 +289,25 @@ export function clearAllPendingCompactions(): void {
 	compactionInFlight.clear()
 }
 
+// ─── Mid-turn oneshot overrun warnings (per session) ─────────────────────────
+// Tracks which one-shot ferments have already emitted a mid-turn context-overrun
+// breadcrumb so we don't spam on every turn_end above threshold. Kept in state
+// (not a module-level Set in auto-compaction.ts) so it is scoped to the runtime
+// instance and resets with session_start.
+const midTurnOneshotWarnings = new Set<string>()
+
+export function markMidTurnOneshotWarning(fermentId: string): void {
+	midTurnOneshotWarnings.add(fermentId)
+}
+
+export function hasMidTurnOneshotWarning(fermentId: string): boolean {
+	return midTurnOneshotWarnings.has(fermentId)
+}
+
+export function clearMidTurnOneshotWarnings(): void {
+	midTurnOneshotWarnings.clear()
+}
+
 // ─── Block-retry counter (per phase) ─────────────────────────────────────────
 // Key: `${fermentId}:${phaseId}`. Incremented every time complete_ferment_phase is
 // called and the reviewer emits at least one `block` flag. After
@@ -482,13 +501,18 @@ function persistFerment(fermentId: string): void {
 // Tracks consecutive turns during draft scoping where the model only called
 // read-like tools (read, grep, ls, find, bash, web_search, web_fetch, set_phase)
 // without calling any scoping-progression tool (ask_user,
-// confirm_ferment_completion_criteria, propose_ferment_scoping, Agent).
+// confirm_ferment_completion_criteria, propose_ferment_scoping, scope_ferment, Agent).
 // After MAX_SCOPING_EXPLORE_TURNS, the turn_end handler injects a nudge
 // telling the model to stop exploring and advance to the next scoping step.
+//
+// Threshold is intentionally generous: thorough exploration is part of a good
+// plan. Bench data shows ~3 productive exploration turns are normal before the
+// model can write a well-grounded scope. We only want to catch the long-tail
+// case where the model is genuinely stuck.
 
 const scopingExploreTurns = new Map<string, number>()
 
-export const MAX_SCOPING_EXPLORE_TURNS = 4
+export const MAX_SCOPING_EXPLORE_TURNS = 8
 
 export function bumpScopingExploreTurns(fermentId: string): number {
 	const next = (scopingExploreTurns.get(fermentId) ?? 0) + 1

@@ -189,24 +189,6 @@ Context:
 
 ${SCOPING_DISCOVERY_GUIDANCE}
 
-Important constraints:
-- You MUST work through the steps (Orient → Interview → Criteria → Explore → Plan) in order.
-- In Step 1 (Orient), only do lightweight reads: file listing, README, config, short snippets.
-- The interview in Step 2 is iterative — reflect after each round of answers before asking more.
-- Confirm completion criteria with confirm_ferment_completion_criteria before moving to exploration.
-- Use ask_user for Step 2 user interactions. In Step 3, use confirm_ferment_completion_criteria instead of ask_user.
-
-Question policy (for propose_ferment_scoping.questions, used in Step 5 only):
-- After Steps 1-4, any remaining decision-blocking questions go in propose_ferment_scoping.questions.
-- The host renders them as TUI dropdowns.
-- If no question remains decision-blocking, emit questions: [] and record defaults in assumptions.
-- Do not ask preference-survey questions when there is a safe, reversible default.
-
-Planning policy:
-- Default to one phase for simple tasks.
-- Add phases only for real vertical slices/tracer bullets, materially different complexity/risk tiers, independent parallel workstreams, or distinct code localities.
-- Do not split phases just for setup, directory creation, CRUD vs polish, or to make the plan look organized.
-
 Output contract:
 Call propose_ferment_scoping with ferment_id "${f.id}" and a complete payload: title, goal, success_criteria, constraints, assumptions, 1-7 phases, questions, and gates. title is required; set it to a concise 3-5 word Ferment name.
 The gates array is required and must contain exactly P1, P2, and P3. Every gate object must include id, verdict, rationale, and evidence. Never emit a partial gates array.

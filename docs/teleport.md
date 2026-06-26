@@ -202,17 +202,17 @@ On completion, a summary shows the number of files and bytes transferred.
 
 ---
 
-### `/sessions`
+### `/remote-sessions`
 
-List all sessions across all workspaces through an interactive TUI panel.
+Browse and manage all workspaces and their sessions through a single interactive TUI panel. This replaces the former `/sessions` and `/workspaces` commands.
 
 ```
-/sessions
+/remote-sessions
 ```
 
-This opens a full-screen panel showing every session grouped by workspace. Each row shows the workspace name, session name, status, and last activity time.
+This opens a full-screen **tree** panel: each workspace is a top-level row, with its sessions nested beneath it (drawn with `├─` / `└─` connectors). Columns are `NAME / SESSION`, `STATUS`, and `LAST ACTIVITY`.
 
-**Session status:**
+**Status:**
 
 | Status | Meaning |
 |---|---|
@@ -220,36 +220,18 @@ This opens a full-screen panel showing every session grouped by workspace. Each 
 | **disconnected** | Session is alive but no client is connected. |
 | **idle** | Session exists on the server but is not alive (e.g. process exited). |
 | **completed** | Session has finished and been cleaned up. |
-| **unreachable** | Could not reach the workspace to list its sessions. |
+| **unreachable** | Could not reach the workspace to list its sessions — shown on the workspace row, which then has no nested sessions. |
 
 **Panel keybindings:**
 
-| Key | Action |
-|---|---|
-| `↑` / `↓` or `j` / `k` | Navigate the list |
-| `Enter` | Attach to the selected session (opens the PTY overlay) |
-| `d` | Delete the selected session (with confirmation) |
-| `Esc` or `q` or `x` | Close the panel |
-
----
-
-### `/workspaces`
-
-List and manage all workspaces through an interactive TUI panel.
-
-```
-/workspaces
-```
-
-This opens a full-screen panel showing every workspace with its host, status, session count, and last activity.
-
-**Panel keybindings:**
+The action keys are context-aware — they apply to whichever kind of row (workspace or session) is selected.
 
 | Key | Action |
 |---|---|
-| `↑` / `↓` or `j` / `k` | Navigate the list |
-| `Enter` | Open a raw SSH terminal (`/terminal`) into the selected workspace |
-| `d` | Delete the selected workspace and all its sessions (with confirmation) |
+| `↑` / `↓` or `j` / `k` | Navigate across workspaces and sessions |
+| `Enter` | On a workspace: open a raw SSH terminal (`/terminal`). On a session: attach to it (opens the PTY overlay) |
+| `d` | Delete the selected workspace (and all its sessions) or the selected session — with confirmation |
+| `r` | Rename the selected workspace (no-op on a session — session renaming isn't supported) |
 | `Esc` or `q` or `x` | Close the panel |
 
 ---
@@ -354,7 +336,7 @@ On subsequent `/terminal` calls or when reusing a workspace, kimchi automaticall
 ### Re-enter a workspace later
 
 ```
-/sessions                    # find your session, press Enter to attach
+/remote-sessions             # find your session under its workspace, press Enter to attach
 # or
 /teleport --workspace mybox  # create a new session in the existing workspace
 ```
@@ -402,8 +384,9 @@ exit                         # return to kimchi
 ### Manage sessions and workspaces
 
 ```
-/sessions        # see all sessions across workspaces, attach or delete
-/workspaces      # see all workspaces, open SSH terminal or delete
+/remote-sessions   # tree of all workspaces and their sessions:
+                   #   Enter on a workspace → SSH terminal; on a session → attach
+                   #   d → delete workspace or session; r → rename workspace
 ```
 
 ### Recover from a lost connection
@@ -412,7 +395,7 @@ exit                         # return to kimchi
 # overlay shows: "connection lost — ctrl+r retry · ctrl+d exit"
 Ctrl+R           # force reconnect with fresh token
 # or
-Ctrl+D           # exit overlay, then /sessions to reattach later
+Ctrl+D           # exit overlay, then /remote-sessions to reattach later
 ```
 
 ---
@@ -438,8 +421,8 @@ If `rsync` is not on your `PATH`, `/sync` and `/teleport` (in rsync mode) will f
 
 ### Session not found
 
-If you reference a session that no longer exists, kimchi will suggest using `/sessions` to browse available sessions. Sessions that have finished and been cleaned up server-side cannot be reattached.
+If you reference a session that no longer exists, kimchi will suggest using `/remote-sessions` to browse available sessions. Sessions that have finished and been cleaned up server-side cannot be reattached.
 
 ### Workspace not found
 
-If you reference a workspace that doesn't exist (or that you don't have access to), authentication will fail. Use `/workspaces` to list your available workspaces.
+If you reference a workspace that doesn't exist (or that you don't have access to), authentication will fail. Use `/remote-sessions` to list your available workspaces.

@@ -90,6 +90,7 @@ import {
 export const AGENT_TOOL_GUIDELINES = `Guidelines:
 - If the user explicitly asks to use the Agent tool, call Agent exactly once with the requested agent type and token_budget. Do not refuse or preflight the budget in prose; let the tool enforce it.
 - For parallel work, use run_in_background: true on each agent. Foreground calls run sequentially — only one executes at a time.
+- Keep each Agent call focused on a single outcome. Agents succeed when given 1–2 files or one mechanical change; they time out when asked to perform multi-file patch-and-verify workflows in one call. Split large tasks into smaller, independent Agent calls.
 - Use Explore for bounded fact-finding that answers one decision-relevant question for the parent orchestrator. Before delegating requested files, directories, or symbols to Explore, do cheap parent-side discovery/existence checks with available read-only tools so the prompt starts from real anchors.
 - Scope every Explore prompt with exact starting files and/or directories, prioritized symbols/search terms, one question to answer, allowed expansion rules for when it may follow imports/callers/related tests, and a qualitative stop condition tied to that question. Keep the scope bounded by relevance, not by a hard maximum file count.
 - Explore is read-only and should return decision-ready findings to you. Do not ask Explore agents to write reports, create docs, edit files, save findings to disk, or produce polished artifacts. You should consume the returned findings directly and decide the next step.

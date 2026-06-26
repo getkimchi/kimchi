@@ -70,7 +70,7 @@ export async function resolveWorkspaceRef(
 		)
 		if (matches.length === 1) return { id: matches[0].id, name: matches[0].name }
 		if (matches.length === 0) {
-			refuse(ctx, `No workspace matching "${ref}". Try /workspaces to see the available ones.`)
+			refuse(ctx, `No workspace matching "${ref}". Try /remote-sessions to see the available ones.`)
 		}
 		const rows = matches
 			.map((w) => `  • ${w.id}  ${w.name || "(no name)"}  [${leftmostLabel(w.host) ?? "no-host"}]`)

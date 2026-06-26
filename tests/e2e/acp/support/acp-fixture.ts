@@ -279,7 +279,7 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 									name: "Fake Basic",
 									reasoning: false,
 									input: ["text"],
-									contextWindow: 8192,
+									contextWindow: 64_000,
 									maxTokens: 1024,
 									cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 									provider: "openai",

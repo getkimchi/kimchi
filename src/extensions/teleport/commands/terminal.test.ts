@@ -195,6 +195,17 @@ describe("runTerminal", () => {
 		expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining("42"), "warning")
 	})
 
+	it("does not warn for the benign interactive-exit codes 130 (SIGINT) and 143 (SIGTERM)", async () => {
+		for (const code of [130, 143]) {
+			const { ctx, ui } = makeCtx()
+			const runChild = vi.fn().mockResolvedValue(code)
+
+			await runTerminal("33333333-3333-4333-8333-333333333333", ctx, { _runChildWithTTYHandoff: runChild })
+
+			expect(ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("exited with code"), "warning")
+		}
+	})
+
 	it("refuses when extra positional args are given", async () => {
 		const { ctx, ui } = makeCtx()
 		const runChild = vi.fn().mockResolvedValue(0)
