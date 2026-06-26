@@ -33,7 +33,7 @@ export const DEFAULT_PLAN_GUIDELINES = `During **plan** phase:
 export const KIMCHI_COAUTHOR = "Co-Authored-By: Kimchi <noreply@kimchi.dev>"
 
 export const DEFAULT_BUILD_GUIDELINES = `During **build** phase:
-- Read each file BEFORE modifying it. Never edit blind.
+- Read a file before modifying it — unless the orchestrator already provided its contents and path in the task spec, in which case you may proceed directly to editing.
 - Batch independent tool calls in a single turn — fewer turns = less context accumulation.
 - Prefer \`edit\` over \`write\` for files >30 lines. Reserve \`write\` for new files or full rewrites.
 - Stay in scope: do NOT add features, refactors, or "improvements" beyond what the spec asks for.
