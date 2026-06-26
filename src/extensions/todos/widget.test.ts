@@ -184,6 +184,27 @@ describe("todo widget helpers", () => {
 		expect(lines.indexOf("… 5 more")).toBeGreaterThan(lines.indexOf(" 14.  ○ task 14"))
 	})
 
+	it("keeps pending overflow within the capped widget height", () => {
+		const setWidget = vi.fn()
+		const ctx = createUiContext("session", setWidget)
+		applyWriteTodos({
+			todos: Array.from({ length: 19 }, (_, index) => ({
+				content: `task ${index + 1}`,
+				status: "pending",
+			})),
+		})
+
+		openTodoWidget(ctx)
+
+		const component = setWidget.mock.calls[0][1]
+		const instance = component({ requestRender: vi.fn() }, theme)
+		const lines = instance.render(120)
+		expect(lines).toHaveLength(14)
+		expect(lines).toContain("  9.  ○ task 9")
+		expect(lines).toContain("… 10 more")
+		expect(lines.some((line: string) => line.includes(" 10.  ○ task 10"))).toBe(false)
+	})
+
 	it("anchors completed overflow at the end", () => {
 		const setWidget = vi.fn()
 		const ctx = createUiContext("session", setWidget)

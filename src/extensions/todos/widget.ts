@@ -136,8 +136,10 @@ function selectTodoWindow(todos: TodoItem[]): {
 			: firstActiveIndex >= TODO_WIDGET_ROLL_THRESHOLD
 				? firstActiveIndex - MAX_ROLLED_CONTEXT_ROWS
 				: 0
-	const visibleCount =
+	const baseVisibleCount =
 		startIndex > 0 && firstActiveIndex !== -1 ? MAX_ROLLED_CONTEXT_ROWS + MAX_ROLLED_TODO_ROWS : TODO_WIDGET_BODY_LINES
+	const markerCount = (startIndex > 0 ? 1 : 0) + (todos.length > startIndex + baseVisibleCount ? 1 : 0)
+	const visibleCount = Math.min(baseVisibleCount, TODO_WIDGET_BODY_LINES - markerCount)
 	const visibleTodos = todos.slice(startIndex, startIndex + visibleCount)
 	return {
 		todos: visibleTodos,
