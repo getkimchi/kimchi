@@ -10,8 +10,12 @@ import { execSync } from "node:child_process"
 import { platform } from "node:os"
 
 const TARGET_MAP = {
+	"darwin-x64": "bun-darwin-x64",
+	"darwin-arm64": "bun-darwin-arm64",
 	"linux-arm64": "bun-linux-arm64",
 	"linux-x64": "bun-linux-x64",
+	"windows-x64": "bun-windows-x64",
+	"windows-x64-baseline": "bun-windows-x64-baseline",
 }
 
 const targetArg =
@@ -20,6 +24,8 @@ const targetArg =
 
 const crossTarget = targetArg ? (TARGET_MAP[targetArg] ?? targetArg) : undefined
 const isCrossCompile = !!crossTarget
+
+const exeName = platform() === "win32" || crossTarget?.includes("windows") ? "kimchi.exe" : "kimchi"
 
 function run(label, cmd) {
 	console.log(`\n→ ${label}`)
@@ -33,8 +39,26 @@ function run(label, cmd) {
 const isCI = !!process.env.CI
 
 // In CI the binary will be build in its own step.
-if (!isCI) {
-	run("build proxy-helper", "make -C tools/proxy-helper build")
+// if (!isCI) {
+// 	run("build proxy-helper", "make -C tools/proxy-helper build")
+// }
+
+// can use for cross target
+// if (!isCI) {
+// 	if (platform() === "win32") {
+// 		run(
+// 			"build proxy-helper",
+// 			'go build -C tools/proxy-helper -ldflags="-s -w -extldflags=-static" -o bin/proxy-helper.exe .',
+// 		)
+// 	} else {
+// 		run("build proxy-helper", "make -C tools/proxy-helper build")
+// 	}
+// }
+
+if (crossTarget?.includes("windows") || platform() === "win32") {
+    // build proxy-helper.exe
+} else {
+    run("build proxy-helper", "make -C tools/proxy-helper build")
 }
 
 run("clean", "pnpm run clean")
@@ -49,15 +73,16 @@ const targetFlag = crossTarget ? ` --target=${crossTarget}` : ""
 // extra env vars. Bun ignores the system store by default; --use-system-ca is additive.
 run(
 	"compile",
-	`bun build src/entry.ts --compile${targetFlag} --compile-exec-argv="--use-system-ca" --outfile dist/bin/kimchi --external chromium-bidi --external electron`.trim(),
+	`bun build src/entry.ts --compile${targetFlag} --compile-exec-argv="--use-system-ca" --outfile dist/bin/${exeName} --external chromium-bidi --external electron --external @mariozechner/clipboard-win32-x64-msvc`.trim(),
 )
-
 // Bun --compile produces binaries with an invalid code signature on macOS.
 // The kernel kills badly-signed arm64 binaries immediately (SIGKILL, exit 137).
 // Strip the corrupt signature and re-sign ad-hoc. See: https://github.com/oven-sh/bun/issues/7208
-if (!isCrossCompile && platform() === "darwin") {
-	run("codesign (strip)", "codesign --remove-signature dist/bin/kimchi")
-	run("codesign (ad-hoc)", "codesign -s - dist/bin/kimchi")
+const isDarwinTarget = !crossTarget || crossTarget.includes("darwin")
+
+if (platform() === "darwin" && isDarwinTarget) {
+	run("codesign (strip)", `codesign --remove-signature dist/bin/${exeName}`)
+	run("codesign (ad-hoc)", `codesign -s - dist/bin/${exeName}`)
 }
 
-run("copy resources", "node scripts/copy-resources.js")
+run("copy resources", `node scripts/copy-resources.js ${targetArg ?? ""}`)

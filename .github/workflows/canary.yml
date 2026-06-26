@@ -69,9 +69,6 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: true
-
       - uses: ./.github/actions/setup
         with:
           bun: "true"
@@ -92,31 +89,41 @@ jobs:
     strategy:
       matrix:
         include:
-          - target: bun-darwin-x64
+          - target: darwin-x64
             os: darwin
             arch: amd64
             runner: macos-15-intel
-          - target: bun-darwin-arm64
+
+          - target: darwin-arm64
             os: darwin
             arch: arm64
             runner: macos-15
-          - target: bun-linux-x64
+
+          - target: linux-x64
             os: linux
             arch: amd64
             runner: ubuntu-latest
-          - target: bun-linux-arm64
+
+          - target: linux-arm64
             os: linux
             arch: arm64
             runner: ubuntu-24.04-arm
+
+          - target: windows-x64
+            os: windows
+            arch: x64
+            runner: windows-latest
+
+          - target: windows-x64-baseline
+            os: windows-baseline
+            arch: x64_compat
+            runner: ubuntu-latest
 
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: true
-
       - uses: ./.github/actions/setup
         with:
           bun: "true"
@@ -127,18 +134,44 @@ jobs:
           cache-dependency-path: tools/proxy-helper/go.sum
 
       - name: Build proxy-helper
+        if: matrix.os != 'windows' && matrix.os != 'windows-baseline'
         run: make -C tools/proxy-helper build
         env:
           GOOS: ${{ matrix.os }}
           GOARCH: ${{ matrix.arch }}
 
+      - name: Build proxy-helper (Windows static)
+        if: matrix.os == 'windows'
+        shell: bash
+        working-directory: tools/proxy-helper
+        run: make build-windows
+
+      - name: Build proxy-helper (Windows baseline cross-compile)
+        if: matrix.os == 'windows-baseline'
+        working-directory: tools/proxy-helper
+        run: make build-windows-compat
+
+      # - name: Build proxy-helper (Windows static)
+      #   if: matrix.os == 'windows'
+      #   shell: pwsh
+      #   working-directory: tools/proxy-helper
+      #   run: |
+      #     go build -ldflags "-extldflags=-static" -o bin/proxy-helper.exe
+
+      # - name: Build proxy-helper (Windows baseline cross-compile)
+      #   if: matrix.os == 'windows-baseline'
+      #   working-directory: tools/proxy-helper
+      #   run: |
+      #     GOOS=windows GOARCH=amd64 go build -ldflags "-extldflags=-static" -o bin/proxy-helper.exe
+
       - name: Set version
         run: node scripts/set-version.js "${{ needs.preflight.outputs.version }}"
 
       - name: Build binary
-        run: pnpm run build:binary
+        run: node scripts/build-binary.js --target ${{ matrix.target }}
 
       - name: Verify binary architecture
+        if: matrix.os != 'windows' && matrix.os != 'windows-baseline'
         run: |
           file dist/bin/kimchi
           case "${{ matrix.arch }}" in
@@ -148,15 +181,37 @@ jobs:
           esac
 
       - name: Package binary
+        if: matrix.os != 'windows' && matrix.os != 'windows-baseline'
         run: tar -czf kimchi_${{ matrix.os }}_${{ matrix.arch }}.tar.gz -C dist bin share
 
-      - name: Upload artifact
+      - name: Package Windows binary
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          Compress-Archive `
+            -Path dist\bin,dist\share `
+            -DestinationPath kimchi_windows_${{ matrix.arch }}.zip
+
+      - name: Package Windows baseline binary
+        if: matrix.os == 'windows-baseline'
+        run: |
+          cd dist && zip -r ../kimchi_windows_${{ matrix.arch }}.zip bin share
+
+      - name: Upload artifact (non-windows)
+        if: matrix.os != 'windows' && matrix.os != 'windows-baseline'
         uses: actions/upload-artifact@v4
         with:
           name: kimchi_${{ matrix.os }}_${{ matrix.arch }}
-          path: kimchi_${{ matrix.os }}_${{ matrix.arch }}.tar.gz
+          path: kimchi_${{ matrix.os }}_${{ matrix.arch }}.*
 
-  smoke-test:
+      - name: Upload artifact (windows)
+        if: matrix.os == 'windows' || matrix.os == 'windows-baseline'
+        uses: actions/upload-artifact@v4
+        with:
+          name: kimchi_windows_${{ matrix.arch }}
+          path: kimchi_windows_${{ matrix.arch }}.*
+
+  smoke-test-linux:
     needs: [preflight, build]
     if: needs.preflight.outputs.should-build == 'true'
     runs-on: ubuntu-latest
@@ -181,8 +236,64 @@ jobs:
       - name: Smoke tests
         run: pnpm run test:smoke
 
+  smoke-test-windows:
+    needs: [preflight, build]
+    if: needs.preflight.outputs.should-build == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          bun: "true"
+
+      - name: Download Windows binary
+        uses: actions/download-artifact@v4
+        with:
+          name: kimchi_windows_x64
+
+      - name: Extract binary into dist/
+        shell: pwsh
+        run: |
+          mkdir dist
+          Expand-Archive -Path kimchi_windows_x64.zip -DestinationPath dist
+
+      - name: Run smoke tests
+        shell: pwsh
+        run: |
+          dist\bin\kimchi.exe --version
+          pnpm run test:smoke
+
+  smoke-test-windows-compat:
+    needs: [preflight, build]
+    if: needs.preflight.outputs.should-build == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 5
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup
+        with:
+          bun: "true"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: kimchi_windows_x64_compat
+
+      - shell: pwsh
+        run: |
+          mkdir dist
+          Expand-Archive kimchi_windows_x64_compat.zip -DestinationPath dist
+
+      - shell: pwsh
+        run: |
+          dist\bin\kimchi.exe --version
+          pnpm run test:smoke
+          
   release:
-    needs: [preflight, smoke-test]
+    needs: [preflight, smoke-test-linux, smoke-test-windows, smoke-test-windows-compat]
     if: needs.preflight.outputs.should-build == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -203,7 +314,7 @@ jobs:
       - name: Generate checksums
         run: |
           cd artifacts
-          sha256sum kimchi_*.tar.gz > checksums.txt
+          sha256sum kimchi_* > checksums.txt
 
       - name: Build release notes
         env:
@@ -238,5 +349,6 @@ jobs:
             --notes-file release-notes.md \
             --prerelease \
             --target "$GITHUB_SHA" \
-            artifacts/kimchi_*.tar.gz \
-            artifacts/checksums.txt
+              artifacts/kimchi_*.tar.gz \
+              artifacts/kimchi_*.zip \
+              artifacts/checksums.txt
