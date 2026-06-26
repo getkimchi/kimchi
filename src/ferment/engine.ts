@@ -14,7 +14,7 @@
  *   Used by callers that need the full coaching message.
  */
 
-import type { Ferment, FermentAction, Phase, Step } from "./types.js"
+import { type Ferment, type FermentAction, type Phase, type Step, inSameParallelCohort } from "./types.js"
 
 // ─── Declarative Action Types ─────────────────────────────────────────────────
 
@@ -108,7 +108,40 @@ export function determineNextAction(ferment: Ferment): DeclarativeAction | undef
 			}
 		}
 
-		// 9. Steps pending → start first pending
+		// 9. Step running → check for parallel siblings to start, else complete_step.
+		//
+		// A running step blocks non-parallel siblings (the FSM rejects concurrent
+		// non-parallel starts). So before suggesting start_step for a pending step,
+		// we must check whether the pending step is in the same parallel cohort.
+		// If it is, start_step is valid. If not, the only actionable next step is
+		// to complete the running one — the FSM would reject a start on the
+		// pending sibling.
+		//
+		// This ordering prevents a delegation deadlock in multi-step phases:
+		// the agent-spawn-guard blocks Agent dispatch when the engine returns
+		// start_step, but the FSM rejects the start because a sibling is running.
+		const runningStep = active.steps.find((s) => s.status === "running")
+		if (runningStep) {
+			const parallelPending = active.steps.find((s) => s.status === "pending" && inSameParallelCohort(runningStep, s))
+			if (parallelPending) {
+				return {
+					kind: "start_step",
+					phaseId: active.id,
+					stepId: parallelPending.id,
+					reason: "start parallel sibling while cohort is running",
+					canParallel: true,
+				}
+			}
+
+			return {
+				kind: "complete_step",
+				phaseId: active.id,
+				stepId: runningStep.id,
+				reason: "mark the running step as complete",
+			}
+		}
+
+		// 10. Steps pending → start first pending (no step is running)
 		const nextStep = findNextStep(active)
 		if (nextStep) {
 			return {
@@ -117,17 +150,6 @@ export function determineNextAction(ferment: Ferment): DeclarativeAction | undef
 				stepId: nextStep.id,
 				reason: "start the next pending step",
 				canParallel: false,
-			}
-		}
-
-		// 10. Step running → complete_step (SUGGESTION, LLM decides when)
-		const runningStep = active.steps.find((s) => s.status === "running")
-		if (runningStep) {
-			return {
-				kind: "complete_step",
-				phaseId: active.id,
-				stepId: runningStep.id,
-				reason: "mark the running step as complete",
 			}
 		}
 
