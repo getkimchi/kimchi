@@ -1,0 +1,118 @@
+{
+  "id": "b4976057-5ec0-4641-ae16-191120e1a061",
+  "task_name": "terminal-bench/bn-fit-modify",
+  "trial_name": "bn-fit-modify__vMRW2Gt",
+  "trial_uri": "file:///builds/castai/kimchi/kimchi/benchmark/terminal-bench-2/jobs/2026-06-25__10-50-09/bn-fit-modify__vMRW2Gt",
+  "task_id": {
+    "org": "terminal-bench",
+    "name": "bn-fit-modify",
+    "ref": "sha256:48b71fbf20c4dfb661fe49d8fb6cfb91417be422c87889dd30110626a1d1f7eb"
+  },
+  "source": "terminal-bench/terminal-bench-2",
+  "task_checksum": "f34f2473e83fd1cd5b3558403f4a9a3116419b5dd415817cb5aef2e953a9736f",
+  "config": {
+    "task": {
+      "path": null,
+      "git_url": null,
+      "git_commit_id": null,
+      "name": "terminal-bench/bn-fit-modify",
+      "ref": "sha256:48b71fbf20c4dfb661fe49d8fb6cfb91417be422c87889dd30110626a1d1f7eb",
+      "overwrite": false,
+      "download_dir": null,
+      "source": "terminal-bench/terminal-bench-2"
+    },
+    "trial_name": "bn-fit-modify__vMRW2Gt",
+    "trials_dir": "/builds/castai/kimchi/kimchi/benchmark/terminal-bench-2/jobs/2026-06-25__10-50-09",
+    "timeout_multiplier": 3.0,
+    "agent_timeout_multiplier": null,
+    "verifier_timeout_multiplier": null,
+    "agent_setup_timeout_multiplier": null,
+    "environment_build_timeout_multiplier": null,
+    "agent": {
+      "name": null,
+      "import_path": "kimchi_agent:Kimchi",
+      "model_name": "kimchi-dev/minimax-m3",
+      "skills": [],
+      "override_timeout_sec": null,
+      "override_setup_timeout_sec": null,
+      "max_timeout_sec": null,
+      "extra_allowed_hosts": [],
+      "kwargs": {
+        "multi-model": true
+      },
+      "env": {},
+      "mcp_servers": []
+    },
+    "environment": {
+      "type": "docker",
+      "import_path": null,
+      "force_build": false,
+      "delete": true,
+      "cpu_enforcement_policy": "auto",
+      "memory_enforcement_policy": "auto",
+      "override_cpus": null,
+      "override_memory_mb": null,
+      "override_storage_mb": null,
+      "override_gpus": null,
+      "override_tpu": null,
+      "mounts": null,
+      "extra_docker_compose": [],
+      "env": {},
+      "kwargs": {},
+      "extra_allowed_hosts": []
+    },
+    "verifier": {
+      "override_timeout_sec": null,
+      "max_timeout_sec": null,
+      "env": {},
+      "disable": false
+    },
+    "artifacts": [],
+    "extra_instruction_paths": [],
+    "job_id": "e8a8f033-55ca-4ac8-a278-2589ab90e7dc"
+  },
+  "agent_info": {
+    "name": "kimchi",
+    "version": "0.0.0",
+    "model_info": {
+      "name": "multi-model",
+      "provider": "kimchi"
+    }
+  },
+  "agent_result": {
+    "n_input_tokens": 941864,
+    "n_cache_tokens": 0,
+    "n_output_tokens": 25563,
+    "cost_usd": null,
+    "rollout_details": null,
+    "metadata": null
+  },
+  "verifier_result": {
+    "rewards": {
+      "reward": 1.0
+    }
+  },
+  "exception_info": null,
+  "started_at": "2026-06-25T10:50:16.669468Z",
+  "finished_at": "2026-06-25T11:07:15.853490Z",
+  "environment_setup": {
+    "started_at": "2026-06-25T10:50:17.077588Z",
+    "finished_at": "2026-06-25T10:50:51.094381Z"
+  },
+  "agent_setup": {
+    "started_at": "2026-06-25T10:50:51.094420Z",
+    "finished_at": "2026-06-25T10:50:52.999166Z"
+  },
+  "agent_execution": {
+    "started_at": "2026-06-25T10:50:52.999248Z",
+    "finished_at": "2026-06-25T11:06:35.614314Z"
+  },
+  "verifier": {
+    "started_at": "2026-06-25T11:06:36.301553Z",
+    "finished_at": "2026-06-25T11:06:58.222335Z"
+  },
+  "step_results": null,
+  "outcome": "scored_pass",
+  "error_category": null,
+  "error_subcategory": null
+}

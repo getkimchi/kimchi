@@ -1,0 +1,41 @@
+{
+  "fermentId": "019ea6ea-e768-717f-a8f3-63cd6755637b",
+  "phases": {
+    "total": 1,
+    "completed": 0,
+    "skipped": 0,
+    "failed": 0,
+    "active": 1,
+    "planned": 0
+  },
+  "steps": {
+    "total": 11,
+    "done": 0,
+    "skipped": 0,
+    "failed": 0,
+    "running": 0,
+    "planned": 11
+  },
+  "timing": {
+    "totalDurationMs": 6765077,
+    "phaseDurationsMs": {
+      "phase-1": 6092377
+    },
+    "stepDurationsMs": {}
+  },
+  "grading": {
+    "phaseGrades": [],
+    "stepGrades": []
+  },
+  "workers": {
+    "totalParallelSteps": 0
+  },
+  "decisions": {
+    "total": 0,
+    "byPhase": {}
+  },
+  "memories": {
+    "total": 0,
+    "byCategory": {}
+  }
+}

@@ -1,0 +1,540 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Terminal-Bench 2 Benchmark Analysis — Kimchi (minimax-m3, multi-mode-ferment)</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #161a22;
+    --panel-2: #1d2230;
+    --border: #2a3142;
+    --text: #e6e9ef;
+    --muted: #98a2b3;
+    --accent: #6ea8ff;
+    --good: #4ade80;
+    --warn: #fbbf24;
+    --bad: #f87171;
+    --info: #60a5fa;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; line-height: 1.55; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 32px 24px 64px; }
+  h1, h2, h3, h4 { color: var(--text); margin-top: 1.6em; }
+  h1 { font-size: 1.85rem; margin-top: 0; letter-spacing: -0.01em; }
+  h2 { font-size: 1.35rem; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+  h3 { font-size: 1.1rem; color: var(--accent); }
+  h4 { font-size: 1rem; color: var(--muted); margin-bottom: 0.3em; }
+  p { margin: 0.6em 0; }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.92em; }
+  code { background: var(--panel-2); padding: 2px 6px; border-radius: 4px; color: #ffd28a; border: 1px solid var(--border); }
+  pre { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0 24px; font-size: 0.92rem; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { background: var(--panel-2); color: var(--muted); font-weight: 600; }
+  tr:hover td { background: rgba(110, 168, 255, 0.04); }
+  .pass { color: var(--good); font-weight: 600; }
+  .fail { color: var(--bad); font-weight: 600; }
+  .warn { color: var(--warn); font-weight: 600; }
+  .muted { color: var(--muted); }
+  .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); margin: 16px 0 24px; }
+  .stat { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+  .stat .label { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+  .stat .value { font-size: 1.7rem; font-weight: 700; margin-top: 4px; }
+  .stat .sub { font-size: 0.85rem; color: var(--muted); margin-top: 4px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; margin: 14px 0; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 0.78rem; border: 1px solid var(--border); background: var(--panel-2); color: var(--muted); margin-right: 4px; }
+  .pill.good { color: var(--good); border-color: rgba(74, 222, 128, 0.4); }
+  .pill.bad { color: var(--bad); border-color: rgba(248, 113, 113, 0.4); }
+  .pill.warn { color: var(--warn); border-color: rgba(251, 191, 36, 0.4); }
+  .pill.info { color: var(--info); border-color: rgba(96, 165, 250, 0.4); }
+  ul { margin: 6px 0 6px 0; padding-left: 22px; }
+  li { margin: 3px 0; }
+  .footer { color: var(--muted); font-size: 0.85rem; margin-top: 40px; border-top: 1px solid var(--border); padding-top: 16px; }
+  .bar { height: 14px; background: var(--panel-2); border-radius: 4px; overflow: hidden; border: 1px solid var(--border); display: flex; }
+  .bar > span { display: block; height: 100%; }
+  .bar .pass { background: var(--good); }
+  .bar .qual { background: var(--bad); }
+  .bar .to { background: var(--warn); }
+  .bar .other { background: var(--muted); }
+  .legend { font-size: 0.85rem; color: var(--muted); margin: 4px 0 16px; }
+  .legend span { display: inline-block; margin-right: 14px; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
+  details { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; margin: 8px 0; }
+  summary { cursor: pointer; font-weight: 600; color: var(--accent); padding: 4px 0; }
+  .small { font-size: 0.85rem; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Terminal-Bench 2 — Benchmark Analysis</h1>
+<p class="small">
+  Run <code>gitlab-p2629143600-j15034012517</code> ·
+  Agent <code>kimchi</code> v<code>457f38dc</code> ·
+  Model <code>kimchi-dev/minimax-m3</code> ·
+  Configuration <code>multi-mode-ferment</code> ·
+  Pipeline <code>2629143600</code> ·
+  Generated <code>2026-06-25T16:03:23Z</code> ·
+  Source ref <code>LLM-fix-overbroad-subagent-prompts</code>
+</p>
+
+<hr style="border:none;border-top:1px solid var(--border);margin:18px 0;">
+
+<h2>1. Executive Summary</h2>
+
+<div class="grid">
+  <div class="stat">
+    <div class="label">Trials Reported</div>
+    <div class="value">18</div>
+    <div class="sub">Expected by benchmark</div>
+  </div>
+  <div class="stat">
+    <div class="label">Passed</div>
+    <div class="value" style="color:var(--good)">6</div>
+    <div class="sub">33.3% pass rate</div>
+  </div>
+  <div class="stat">
+    <div class="label">Failed (quality)</div>
+    <div class="value" style="color:var(--bad)">6</div>
+    <div class="sub">Verifier reward &lt; threshold</div>
+  </div>
+  <div class="stat">
+    <div class="label">Timed Out</div>
+    <div class="value" style="color:var(--warn)">1</div>
+    <div class="sub">Agent wall-clock budget exceeded</div>
+  </div>
+  <div class="stat">
+    <div class="label">Infra Errors</div>
+    <div class="value">0</div>
+    <div class="sub">No infra-side aborts</div>
+  </div>
+  <div class="stat">
+    <div class="label">No Verdict</div>
+    <div class="value">0</div>
+    <div class="sub">—</div>
+  </div>
+</div>
+
+<div class="panel">
+  <h4 style="margin-top:0">Outcome Distribution</h4>
+  <div class="bar" title="18 trials">
+    <span class="pass" style="width:33.3%"></span>
+    <span class="qual" style="width:33.3%"></span>
+    <span class="to" style="width:5.6%"></span>
+    <span class="other" style="width:27.8%"></span>
+  </div>
+  <div class="legend">
+    <span><i style="background:var(--good)"></i>Scored pass (6)</span>
+    <span><i style="background:var(--bad)"></i>Scored fail (6)</span>
+    <span><i style="background:var(--warn)"></i>Agent timeout (1)</span>
+    <span><i style="background:var(--muted)"></i>Combined scored_fail + agent_timeout verdicts from retries (5)</span>
+  </div>
+  <p class="small">The <code>summary.totals</code> splits failures into <code>failed_quality</code> (6) and <code>timeout</code> (1); the underlying <code>trials</code> array additionally carries verdict tags <code>scored_fail</code> (10) and <code>agent_timeout</code> (5) because retries get re-classified. Both views are reconciled in the per-trial table below.</p>
+</div>
+
+<p><strong>Headline:</strong> the agent reached a verdict on all 18 trials, but only one in three produced a passing artifact. The single biggest cause of failure is the agent exhausting its wall-clock budget (the trial-level timeout is exactly 2700s under <code>timeout_multiplier: 3.0</code>); the second biggest cause is the agent declaring "done" with an artifact that the verifier rejects. <strong>Run is incomplete</strong> (<code>is_complete: false</code>) — chunk-0 exhausted its retry budget, so additional task/attempt slots were planned but not executed in this run.</p>
+
+<h2>2. Per-Trial Results</h2>
+
+<table>
+  <thead>
+    <tr>
+      <th>Task</th><th>Attempt</th><th>Verdict</th><th>Duration</th>
+      <th>LLM rounds (orch / sub)</th><th>Input tokens (orch / sub)</th><th>Cache read</th><th>Notes</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>fix-code-vulnerability</td><td>1</td>
+      <td class="pass">PASS</td><td>17m 16s</td>
+      <td>41 / 27</td><td>1.36M / 151k</td><td>0</td>
+      <td>Commit message surfaced from run</td>
+    </tr>
+    <tr>
+      <td>fix-git</td><td>1</td>
+      <td class="pass">PASS</td><td>43m 11s</td>
+      <td>36 / 50</td><td>1.32M / 354k</td><td>0</td>
+      <td>Sub-agent did 89 bash calls</td>
+    </tr>
+    <tr>
+      <td>hf-model-inference</td><td>1</td>
+      <td class="pass">PASS</td><td>16m 37s</td>
+      <td>22 / 28</td><td>636k / 89k</td><td>0</td>
+      <td>Lowest input spend of passes</td>
+    </tr>
+    <tr>
+      <td>merge-diff-arc-agi-task</td><td>1</td>
+      <td class="pass">PASS</td><td>27m 44s</td>
+      <td>49 / 56</td><td>1.99M / 170k</td><td>164k (kimi)</td>
+      <td>Highest input cost of passes</td>
+    </tr>
+    <tr>
+      <td>mteb-leaderboard</td><td>1</td>
+      <td class="pass">PASS</td><td>12m 55s</td>
+      <td>23 / 44</td><td>1.22M / 215k</td><td>367k (kimi)</td>
+      <td>Used web_fetch / web_search</td>
+    </tr>
+    <tr>
+      <td>pytorch-model-recovery</td><td>3</td>
+      <td class="pass">PASS</td><td>47m 08s</td>
+      <td>29 / 53</td><td>1.05M / 397k</td><td>0</td>
+      <td>Only task to pass on a retry</td>
+    </tr>
+
+    <tr>
+      <td>bn-fit-modify</td><td>1</td>
+      <td class="fail">scored_fail</td><td>66m 33s</td>
+      <td>39 / 61</td><td>1.59M / 369k</td><td>0</td>
+      <td>Most expensive single attempt</td>
+    </tr>
+    <tr>
+      <td>build-cython-ext</td><td>1</td>
+      <td class="fail">scored_fail</td><td>45m 07s</td>
+      <td>23 / 25</td><td>782k / 176k</td><td>0</td>
+      <td>Sub-agent ran 18 bash calls</td>
+    </tr>
+    <tr>
+      <td>build-cython-ext</td><td>2</td>
+      <td class="fail">scored_fail</td><td>45m 07s</td>
+      <td>79 / —</td><td>1.79M / —</td><td>0</td>
+      <td>No sub-agent model; 76 bash calls in orchestrator</td>
+    </tr>
+    <tr>
+      <td>build-cython-ext</td><td>3</td>
+      <td class="warn">agent_timeout</td><td>45m 09s</td>
+      <td>23 / 30+10</td><td>751k / 184k+26k</td><td>0</td>
+      <td>Two sub-agents (k2.6 + m2.7) both attempted</td>
+    </tr>
+    <tr>
+      <td>cobol-modernization</td><td>1</td>
+      <td class="fail">scored_fail</td><td>45m 10s</td>
+      <td>32 / 14</td><td>1.31M / 96k</td><td>0</td>
+      <td>Sub-agent finished but task failed</td>
+    </tr>
+    <tr>
+      <td>cobol-modernization</td><td>2</td>
+      <td class="warn">agent_timeout</td><td>45m 11s</td>
+      <td>29 / 35+4</td><td>1.01M / 200k+16k</td><td>10k (kimi)</td>
+      <td>Three-model fan-out (m2.7 + k2.7)</td>
+    </tr>
+    <tr>
+      <td>cobol-modernization</td><td>3</td>
+      <td class="fail">scored_fail</td><td>1m 01s</td>
+      <td>1 / —</td><td>25k / —</td><td>0</td>
+      <td>Abort at planning phase — see §4.1</td>
+    </tr>
+    <tr>
+      <td>extract-elf</td><td>1</td>
+      <td class="warn">agent_timeout</td><td>45m 21s</td>
+      <td>14 / 35</td><td>459k / 205k</td><td>0</td>
+      <td>Sub-agent burned 40 bash calls</td>
+    </tr>
+    <tr>
+      <td>extract-elf</td><td>2</td>
+      <td class="warn">agent_timeout</td><td>45m 11s</td>
+      <td>31 / 22</td><td>1.32M / 91k</td><td>0</td>
+      <td>11 ferment steps started but never completed</td>
+    </tr>
+    <tr>
+      <td>extract-elf</td><td>3</td>
+      <td class="fail">scored_fail</td><td>31m 16s</td>
+      <td>19 / 24</td><td>826k / 163k</td><td>62k (kimi)</td>
+      <td>Sub-agent (k2.7) ran 28 bash calls</td>
+    </tr>
+    <tr>
+      <td>pytorch-model-recovery</td><td>1</td>
+      <td class="warn">agent_timeout</td><td>47m 33s</td>
+      <td>48 / 21</td><td>2.11M / 103k</td><td>0</td>
+      <td>Highest token burn in dataset</td>
+    </tr>
+    <tr>
+      <td>pytorch-model-recovery</td><td>2</td><td class="warn">agent_timeout</td><td>46m 48s</td>
+      <td>51 / —</td><td>988k / —</td><td>0</td>
+      <td>No sub-agent invoked</td>
+    </tr>
+  </tbody>
+</table>
+
+<p class="small">"orch / sub" lists rounds and tokens for the orchestrator (<code>minimax-m3</code>) first and any sub-agent models after the slash. Where two sub-agents were spawned they are summed (e.g. <code>30+10</code> rounds). All durations shown are from <code>duration_ms</code> in the summary.</p>
+
+<h2>3. Patterns by Outcome and Task Type</h2>
+
+<h3>3.1 Outcome distribution</h3>
+<div class="grid">
+  <div class="stat">
+    <div class="label">Unique tasks attempted</div>
+    <div class="value">10</div>
+    <div class="sub">Of 18 expected</div>
+  </div>
+  <div class="stat">
+    <div class="label">Tasks that passed at least once</div>
+    <div class="value">6</div>
+    <div class="sub">60% task coverage</div>
+  </div>
+  <div class="stat">
+    <div class="label">Tasks that failed every attempt</div>
+    <div class="value">3</div>
+    <div class="sub">build-cython-ext, cobol-modernization, extract-elf</div>
+  </div>
+  <div class="stat">
+    <div class="label">Tasks with infra retries used</div>
+    <div class="value">4</div>
+    <div class="sub">build-cython-ext, cobol-modernization, extract-elf, pytorch-model-recovery</div>
+  </div>
+</div>
+
+<h3>3.2 Failure mode taxonomy</h3>
+
+<table>
+  <thead>
+    <tr><th>Category</th><th>Count</th><th>Symptom</th><th>Tasks affected</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><span class="pill warn">agent_timeout</span></td>
+      <td>5</td>
+      <td>Trial wall-clock (2700s) hit before <code>complete_ferment</code>; orchestrator or sub-agent was still iterating when Docker exec was cancelled.</td>
+      <td>build-cython-ext (a3), cobol-modernization (a2), extract-elf (a1, a2), pytorch-model-recovery (a1, a2)</td>
+    </tr>
+    <tr>
+      <td><span class="pill bad">scored_fail (after timeout-burn)</span></td>
+      <td>4</td>
+      <td>Verifier ran but reward = 0; in three of these the agent already used close to the budget and the produced artifact was still wrong.</td>
+      <td>build-cython-ext (a1, a2), bn-fit-modify, pytorch-model-recovery (none — actually passes after retries)</td>
+    </tr>
+    <tr>
+      <td><span class="pill bad">scored_fail (clean)</span></td>
+      <td>6</td>
+      <td>Verifier ran and rejected the artifact even though the trial ended "naturally" (no timeout).</td>
+      <td>bn-fit-modify, build-cython-ext (a1, a2), cobol-modernization (a1, a3), extract-elf (a3)</td>
+    </tr>
+    <tr>
+      <td><span class="pill info">planning abort</span></td>
+      <td>1</td>
+      <td>Trial ended after 1 LLM round with no tool calls — ferment lifecycle did not progress past the initial planning message.</td>
+      <td>cobol-modernization (a3)</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>3.3 Patterns by task type</h3>
+
+<div class="panel">
+  <h4 style="margin-top:0"><span class="pill bad">Failed every attempt</span> build-cython-ext (3/3)</h4>
+  <ul>
+    <li>Every attempt hit ~2700s of wall-clock; even attempts that nominally finished (a1, a2 verdict <code>scored_fail</code>) consumed almost the full budget.</li>
+    <li>Attempt 2 made the orchestrator itself drive the build: 79 LLM rounds and 76 <code>bash</code> calls with no sub-agent — yet still scored 0. This suggests the bottleneck is the cython build itself (compilation cycles, missing system deps) rather than planning.</li>
+    <li>Attempt 3 used both <code>kimi-k2.6</code> and <code>minimax-m2.7</code> as sub-agents but still timed out.</li>
+    <li>Error excerpts pulled into the summary all reference <code>cinvariants</code> / <code>ImportError</code>, pointing to the optional C-extension import path the verifier cares about.</li>
+  </ul>
+</div>
+
+<div class="panel">
+  <h4 style="margin-top:0"><span class="pill bad">Failed every attempt</span> cobol-modernization (3/3)</h4>
+  <ul>
+    <li>Attempts 1 and 2 used the full 2700s budget and produced an artifact the verifier rejected (a1) or never finished (a2).</li>
+    <li>Attempt 3 is the dataset outlier: <strong>1 LLM round, 0 tool calls, 61 seconds</strong>. The session file shows the trial received the initial user message, the orchestrator produced a single thinking + text reply, and the trial ended. This is a planning-phase abort, not an execution failure.</li>
+    <li>Error message in a2 (<code>ls: cannot access '/app/.kimchi/': No such file or directory</code>) indicates the sub-agent was looking inside the workspace for the harness's own state directory — a prompt/context leakage symptom.</li>
+  </ul>
+</div>
+
+<div class="panel">
+  <h4 style="margin-top:0"><span class="pill bad">Failed every attempt</span> extract-elf (3/3)</h4>
+  <ul>
+    <li>Attempts 1 and 2 timed out mid-execution; attempt 3 (the only one to finish within budget) still scored 0.</li>
+    <li>Attempt 2 is striking: the orchestrator burned <strong>11 ferment steps</strong>, 5 phase activations, 5 phase completions, but only ever completed 1 sub-agent. The ferment lifecycle is iterating without making forward progress — see §5.</li>
+    <li>Attempt 3 sub-agent (kimi-k2.7) wrote two artifacts and ran 28 bash calls before declaring done; the verifier still rejected (<code>SyntaxError: /app/out.json: Unexpected end of JSON input</code> in a2 / <code>fail('Failed to read ${path}: ${err.message}')</code> in a3).</li>
+  </ul>
+</div>
+
+<div class="panel">
+  <h4 style="margin-top:0"><span class="pill warn">Mixed</span> pytorch-model-recovery</h4>
+  <ul>
+    <li>Attempt 1 burned 2.11M input tokens — the highest in the dataset — and still timed out at 47m33s.</li>
+    <li>Attempt 2 ran the orchestrator solo (no sub-agent model in the breakdown) and again timed out.</li>
+    <li>Attempt 3 passed with a kimi-k2.6 sub-agent that did most of the heavy lifting (53 rounds, 41 bash calls, 9 writes). This is the clearest evidence in the run that <em>which sub-agent model the orchestrator picks matters as much as the prompt</em>.</li>
+  </ul>
+</div>
+
+<div class="panel">
+  <h4 style="margin-top:0"><span class="pill good">Pass-on-first-try</span> fix-code-vulnerability, fix-git, hf-model-inference, merge-diff-arc-agi-task, mteb-leaderboard</h4>
+  <ul>
+    <li><code>merge-diff-arc-agi-task</code> had the highest token cost of passes (1.99M) but succeeded — long input is not by itself a failure signal.</li>
+    <li><code>mteb-leaderboard</code> is the only pass that used <code>web_fetch</code> / <code>web_search</code> and is also the fastest pass (12m55s).</li>
+    <li><code>fix-git</code> ran the sub-agent for 50 rounds / 89 bash calls — high volume, but finished inside budget.</li>
+  </ul>
+</div>
+
+<h3>3.4 Sub-agent model usage</h3>
+
+<table>
+  <thead>
+    <tr><th>Sub-agent model</th><th>Trials where it ran</th><th>Passes / Trials</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>minimax-m2.7</td><td>bn-fit-modify, build-cython-ext (a1), cobol-modernization (a1, a2), extract-elf (a1, a2), fix-code-vulnerability, fix-git, hf-model-inference, pytorch-model-recovery (a1)</td>
+      <td>3 / 10</td>
+    </tr>
+    <tr>
+      <td>kimi-k2.6</td><td>build-cython-ext (a3), hf-model-inference, pytorch-model-recovery (a3)</td>
+      <td>2 / 3</td>
+    </tr>
+    <tr>
+      <td>kimi-k2.7</td><td>cobol-modernization (a2), extract-elf (a3), merge-diff-arc-agi-task, mteb-leaderboard</td>
+      <td>2 / 4</td>
+    </tr>
+    <tr>
+      <td>minimax-m2.7 (secondary, attempt 3)</td><td>build-cython-ext (a3)</td>
+      <td>0 / 1</td>
+    </tr>
+    <tr>
+      <td>(no sub-agent)</td><td>build-cython-ext (a2), cobol-modernization (a3 — abort), pytorch-model-recovery (a2)</td>
+      <td>0 / 3</td>
+    </tr>
+  </tbody>
+</table>
+
+<p class="small">The kimi-k2.x sub-agents are disproportionately effective when they run (4/7 = 57% pass rate) versus m2.7 (3/10 = 30%). The single pass on a retry (pytorch-model-recovery attempt 3) used kimi-k2.6.</p>
+
+<h3>3.5 Token economics</h3>
+
+<table>
+  <thead>
+    <tr><th>Bucket</th><th>Mean input tokens</th><th>Median</th><th>Range</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Passes (6)</td><td>1.26M</td><td>1.27M</td><td>636k – 1.99M</td></tr>
+    <tr><td>Quality failures (6)</td><td>1.10M</td><td>0.94M</td><td>25k – 1.79M</td></tr>
+    <tr><td>Timeouts (6)</td><td>1.27M</td><td>1.21M</td><td>459k – 2.11M</td></tr>
+  </tbody>
+</table>
+
+<p>Mean input spend is similar across outcomes, but the <em>variance</em> on failures is wider (cobol-modernization attempt 3 burned 25k tokens before aborting; build-cython-ext attempt 2 burned 1.79M and still scored 0). Failure is not strongly predicted by raw input volume — what predicts failure is whether the agent <em>finishes in time</em>.</p>
+
+<h2>4. Specific Failure Walkthroughs</h2>
+
+<div class="panel">
+  <h4 style="margin-top:0">4.1 cobol-modernization attempt 3 — the 61-second abort</h4>
+  <p>The session file (<code>2026-06-25__14-54-47/cobol-modernization__rnogJuu/agent/sessions/main.jsonl</code>) shows:</p>
+  <ol>
+    <li>Session opens with the standard <code>session / thinking_level_change / model_change</code> boilerplate.</li>
+    <li>A <code>ferment_reference</code> custom message pins a ferment ID.</li>
+    <li>A <code>ferment_ack</code> records the orchestrator accepting the one-shot ferment brief.</li>
+    <li>One user-role <code>message</code> delivers the full prompt (verbatim: "You are given a COBOL program located at … /app/program.py …").</li>
+    <li>One assistant turn: <code>thinking</code> block ends with "Let me call <code>scope_ferment</code> now." then a single <code>text</code> reply: "I'll start by scoping this ferment …". <strong>No tool calls.</strong></li>
+    <li>Custom <code>turn_duration</code> reports 47.9s; <code>llm_response_debug</code> shows <code>toolCalls: []</code>; <code>behaviour_session_summary</code> shows zero observations of either bound-tool-output or re-read-before-edit; <code>agent_end</code> fires.</li>
+  </ol>
+  <p>The trial terminated at <code>61s</code> with <code>llm_rounds: 1</code> and no tool calls. The error in <code>summary.json</code> is empty (<code>error.type: ""</code>), and the verdict is <code>scored_fail</code>. Combined with the duration, this is consistent with <strong>the ferment lifecycle rejecting the orchestrator's first turn</strong> — the planner profile is supposed to call <code>scope_ferment</code> as the first action, but the model produced text instead. The harness's enforcement ("Toolset follows the ferment lifecycle") would then treat this as a turn-discipline violation and abort. This needs to be reproduced against the live harness to confirm, but the signature matches.</p>
+</div>
+
+<div class="panel">
+  <h4 style="margin-top:0">4.2 build-cython-ext attempt 2 — orchestrator solo, 79 rounds, scored_fail</h4>
+  <p>The orchestrator (<code>minimax-m3</code>) ran for 79 LLM rounds and 76 <code>bash</code> calls without ever spawning a sub-agent. Tokens: 1.79M input / 33k output. The verdict was <code>scored_fail</code> at 2700s. The error string is the start of a Python traceback (<code>Traceback (most recent call last):</code>), which matches the task verifying a built Cython extension.</p>
+  <p>Compared to attempt 1 (23 rounds + a m2.7 sub-agent that ran 18 bash calls), attempt 2 is the orchestrator <em>trying to do the work itself</em> — and spending more rounds to get a worse result. Two implications:</p>
+  <ul>
+    <li>Sub-agent routing is not stable across attempts of the same task: sometimes the orchestrator delegates, sometimes it doesn't, and the choice is not consistently winning.</li>
+    <li>When the orchestrator drives a build cycle directly, it loops on the same compiler errors rather than escaping via delegation.</li>
+  </ul>
+</div>
+
+<div class="panel">
+  <h4 style="margin-top:0">4.3 extract-elf attempt 2 — 11 ferment steps, 0 forward progress</h4>
+  <p>This run exposes the risk of the ferment lifecycle under pressure:</p>
+  <ul>
+    <li>Orchestrator: 31 rounds, 13 <code>start_ferment_step</code> calls, 11 <code>complete_ferment_step</code> calls, 5 phase activations, 5 phase completions, and one final <code>complete_ferment</code>.</li>
+    <li>Sub-agent (m2.7): 22 rounds, 41 bash calls, 1 write.</li>
+    <li>Verifier error: <code>SyntaxError: /app/out.json: Unexpected end of JSON input</code> — i.e. the script ran but produced an empty file.</li>
+  </ul>
+  <p>The orchestrator successfully drove the lifecycle all the way to <code>complete_ferment</code>, but the artifact was empty. With 11 ferment steps declared "complete" and 41 bash calls under the sub-agent, the failure mode here is that each individual step looks small enough to "complete" but no step ever validates the end-to-end output — the agent never runs the produced script and checks the JSON output file is non-empty before declaring done. This is a missing integration test in the plan, not a tool failure.</p>
+</div>
+
+<div class="panel">
+  <h4 style="margin-top:0">4.4 bn-fit-modify — most expensive single attempt (66m, 1.96M tokens)</h4>
+  <p>Orchestrator: 39 rounds, 1.59M input / 26k output, 8 <code>Agent</code> calls, 6 <code>start_ferment_step</code>, 6 <code>complete_ferment_step</code>. Sub-agent (m2.7): 61 rounds, 50 bash calls, 5 writes, 1 edit. Total wall-clock: 3993s — <strong>the only trial in the run that exceeded the 2700s timeout-multiplier cap</strong>, because the trial itself was likely killed late or the timeout-multiplier re-applied. The error excerpt "<code>Traceback (most recent call last):</code>" mirrors the verification flow.</p>
+  <p>8 sub-agent spawns is the highest fan-out in the dataset (alongside merge-diff-arc-agi-task's 11). This trial shows what happens when the orchestrator leans hard into delegation: it converges to a wrong answer anyway, just slower.</p>
+</div>
+
+<h2>5. Agent Behavior Observations</h2>
+
+<div class="panel">
+  <h4 style="margin-top:0">5.1 Cache is effectively off for the orchestrator</h4>
+  <p>Every <code>minimax-m3</code> orchestrator row in the summary has <code>cache_read: 0, cache_write: 0</code>. Only <code>kimi-k2.x</code> sub-agents register any cache activity (e.g. cobol-modernization a2: 10k cache_read on k2.7; extract-elf a3: 62k; merge-diff-arc-agi: 165k; mteb-leaderboard: 367k). On a benchmark where the orchestrator's input bill alone averages 1.2M tokens per trial, eliminating prompt-prefix caching on minimax-m3 is leaving real performance and cost on the table.</p>
+</div>
+
+<div class="panel">
+  <h4 style="margin-top:0">5.2 Sub-agent selection is unstable across attempts</h4>
+  <p>For the same task, retry attempts pick different sub-agent models (or none). Examples:</p>
+  <ul>
+    <li><code>build-cython-ext</code>: a1 → m2.7; a2 → none (orchestrator solo); a3 → k2.6 + m2.7.</li>
+    <li><code>cobol-modernization</code>: a1 → m2.7; a2 → m2.7 + k2.7; a3 → none (aborts at planning).</li>
+    <li><code>pytorch-model-recovery</code>: a1 → m2.7; a2 → none; a3 → k2.6.</li>
+  </ul>
+  <p>This is a multi-model agent without a deterministic routing policy. For a benchmark we want reproducibility; the current behaviour makes "did sub-agent X help?" hard to attribute.</p>
+</div>
+
+<div class="panel">
+  <h4 style="margin-top:0">5.3 Heavy delegation does not correlate with success</h4>
+  <p>Trials with the most <code>Agent</code> spawns:</p>
+  <ul>
+    <li>merge-diff-arc-agi-task: 11 Agent calls → PASS</li>
+    <li>cobol-modernization a2: 11 → TIMEOUT</li>
+    <li>build-cython-ext a3: 10 → TIMEOUT</li>
+    <li>bn-fit-modify: 8 → FAIL</li>
+    <li>mteb-leaderboard: 4 → PASS</li>
+  </ul>
+  <p>The pattern is bimodal: a few passes work despite high fan-out (merge-diff-arc-agi-task), but the failure cases cluster at the same fan-out level. The branch under test (<code>LLM-fix-overbroad-subagent-prompts</code>) is explicitly trying to address this, so the run is measuring exactly this dimension.</p>
+</div>
+
+<div class="panel">
+  <h4 style="margin-top:0">5.4 The ferment lifecycle does not enforce end-to-end verification</h4>
+  <p>Across the 18 trials the orchestrator reaches <code>complete_ferment</code> in many of them, but the verifier still rejects the artifact (extract-elf a2 is the clearest example). Each ferment step is "completed" individually; the harness appears to have no gate that says "before you complete the ferment, run the produced script end-to-end and inspect the output". The run-time data suggests this would catch at least the extract-elf class of failures.</p>
+</div>
+
+<div class="panel">
+  <h4 style="margin-top:0">5.5 Cost asymmetry between pass and fail is small; cost asymmetry between timeout and within-budget is large</h4>
+  <p>Within-budget runs average ~17m; timeout runs are all pinned to ~45m by the budget. So timeouts are not a function of model speed — they are a function of the work plan being too large for 2700s. Increasing the budget would help the wall-clock failures linearly; increasing plan quality would help them super-linearly.</p>
+</div>
+
+<h2>6. Recommendations</h2>
+
+<div class="panel">
+  <h4 style="margin-top:0">For the agent</h4>
+  <ol>
+    <li><strong>Fix the planning-phase abort path</strong> (cobol-modernization a3). When the orchestrator's first turn produces no tool call under the ferment planner profile, the run aborts after a single round. Either make the planner profile retry, or escalate to a follow-up turn, instead of letting the trial die. Investigate whether the "Toolset follows the ferment lifecycle" toolset restriction is the proximate cause of the early termination.</li>
+    <li><strong>Add an end-to-end verification step before <code>complete_ferment</code></strong>. Even a single mandatory "run the produced artifact and check the verifier's output paths" step would have caught the empty-JSON extract-elf a2 case and likely the build-cython-ext empty-import cases.</li>
+    <li><strong>Investigate prompt-prefix caching on <code>minimax-m3</code></strong>. Zero cache utilisation across all orchestrator runs is the largest single efficiency loss in the dataset.</li>
+    <li><strong>Make sub-agent selection deterministic and per-task-profile</strong>. The current non-determinism (different sub-agent model per attempt, sometimes none) makes evaluation noisy. Even a static mapping "this task class → this sub-agent model" would help.</li>
+    <li><strong>Reduce default per-step budgets where the work is mechanical.</strong> extract-elf a2 ran 41 bash calls under one sub-agent without producing a non-empty output. A short "check after N steps that the artifact file is valid" guard inside the worker would have surfaced the problem far earlier.</li>
+  </ol>
+</div>
+
+<div class="panel">
+  <h4 style="margin-top:0">For the benchmark harness</h4>
+  <ol>
+    <li><strong>Re-run with <code>timeout_multiplier: 5</code></strong> on the three tasks that failed every attempt (build-cython-ext, cobol-modernization, extract-elf) to separate "needs more time" from "needs different model".</li>
+    <li><strong>Surface a per-attempt sub-agent model trace in <code>summary.json</code></strong>. Today the trail mixes orchestrator and sub-agent token totals per trial but not per attempt; knowing which sub-agent model was used in each retry is needed for the multi-model routing analysis.</li>
+    <li><strong>Re-classify <code>scored_fail</code> trials that hit the budget cap as <code>agent_timeout</code></strong> in <code>summary.totals</code>. Currently, a trial that hits 2700s and then verifier-0s is counted as <code>failed_quality</code>, but it was the budget that killed it. Several of the 6 "scored_fail" rows in <code>totals</code> are functionally timeouts.</li>
+    <li><strong>Persist session JSONLs in a stable location</strong>. The <code>find</code> tool's default <code>.gitignore</code> handling hid every <code>main.jsonl</code> under <code>agent/sessions/</code> from filesystem walks; analysts need to read them by path. Either lift them out of <code>.gitignore</code> territory, or symlink them into the analysis directory.</li>
+    <li><strong>Plan for <code>is_complete: false</code></strong>. The summary explicitly flags that chunk-0 exhausted retries, so the 18 reported trials are not the entire intended workload. Re-running the exhausted chunk should be the first follow-up before drawing final conclusions.</li>
+  </ol>
+</div>
+
+<div class="panel">
+  <h4 style="margin-top:0">For the model evaluation</h4>
+  <ol>
+    <li><strong>Isolate <code>minimax-m3</code> from <code>minimax-m2.7</code> effects.</strong> In multi-model mode the orchestrator and sub-agent contribute to the same trial score. To attribute capability, run a single-model ablation (orchestrator = sub-agent = minimax-m3) on the same task list and compare.</li>
+    <li><strong>Quantify the "sub-agent helps" effect on the kimi-k2.x branch.</strong> 4/7 = 57% pass rate when k2.x runs vs 3/10 = 30% when only m2.7 runs. A targeted ablation — same task, kimi-k2.x sub-agent vs m2.7 sub-agent — would give a clean signal.</li>
+    <li><strong>Pre-classify tasks by expected difficulty</strong> (e.g. build/compile vs file-transformation vs git-history recovery) and report pass-rate per bucket. The current aggregate 33% hides that file-transformation tasks (fix-git, fix-code-vulnerability) are 100% on first try while build tasks (build-cython-ext) are 0%.</li>
+  </ol>
+</div>
+
+<div class="footer">
+  <p>Source data: <code>.benchmark/summary.json</code> (schema <code>benchmark-summary/v2</code>, generated <code>2026-06-25T16:03:23Z</code> by <code>classify.py@v1</code>) and per-trial <code>result.json</code> files under <code>benchmark/terminal-bench-2/jobs/</code>. Session evidence sampled from <code>agent/sessions/main.jsonl</code>. Pipeline: <code>gitlab.com/castai/kimchi/kimchi/-/pipelines/2629143600</code>.</p>
+  <p>This report is auto-generated; no scripts, event handlers, or external resources are loaded.</p>
+</div>
+
+</div>
+</body>
+</html>

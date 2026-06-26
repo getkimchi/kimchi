@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "fermentId": "019f0075-439e-72d3-b544-061a421e6854",
+  "phaseId": "phase-3",
+  "phaseName": "Verify and report",
+  "attempt": 1,
+  "timestamp": "2026-06-25T20:45:09.348Z",
+  "goal": "Prove the recovery is complete: master contains the changes, working tree is clean, and no source of recovery was accidentally destroyed.",
+  "summary": "Verification and reporting complete. master HEAD = `ffbccb021e2ed0452a80f7ab8b98424b1aa5e9ec`, working tree clean, recovered commits (`ffbccb0` merge + `650dba4` original) reachable from master. Final report covers pre-recovery SHA, source SHA, strategy (recover-stanford branch + --no-ff merge + conflict resolution), resulting log, file diffs, preserved recovery branch, and notes about unrelated dangling objects.",
+  "stepSummaries": "  1. Verify master HEAD includes the recovered commits, working tree matches HEAD, and the original recovery source (branch/stash) is preserved where appropriate. [verified]\n  2. Produce a final recovery report listing: pre-recovery master SHA, source of recovered work (branch/stash/SHA), strategy used, and the resulting master log. [verified]",
+  "diffAvailable": true,
+  "diffFilesChanged": "(no changes)",
+  "flags": [],
+  "derivedGrade": "A",
+  "reviewerRationale": "All gates pass; project checks validate.",
+  "gateVerdicts": [
+    {
+      "id": "F1",
+      "verdict": "pass",
+      "rationale": "Step 1 ran real git verification commands (status, log graph, branch, fsck, merge-base --is-ancestor, stash list, reflog). Step 2 ran real git log/diff/show commands to build the report. Both used real verification, not proxies.",
+      "evidence": "Step 1 verify (status + log ^PRE_RECOVERY) exit 0; Step 2 verify (log --oneline -5 master) exit 0."
+    },
+    {
+      "id": "F2",
+      "verdict": "pass",
+      "rationale": "Phase goal (prove recovery is complete + produce report) is satisfied — master contains the recovered commits, working tree matches HEAD, recovery branch preserved, full markdown report with all required sections produced.",
+      "evidence": "Final report includes TL;DR, pre-recovery SHA (d7d3e4b), source SHA (650dba4), strategy (recover-stanford + --no-ff merge), resulting master log (top 5), file diffs, and outstanding notes."
+    },
+    {
+      "id": "F3",
+      "verdict": "pass",
+      "rationale": "Nothing deferred. The dangling commit b0d59cd is explicitly called out as intentionally not merged (it's an older clone root, not the user's recent work). The dangling tree from fsck is cosmetic.",
+      "evidence": "Outstanding-items section in the report documents both: b0d59cd not merged (intentional), cosmetic tree ignored."
+    }
+  ],
+  "projectChecks": {
+    "discovered": false,
+    "anyFailed": false,
+    "commands": []
+  }
+}

@@ -1,0 +1,184 @@
+{
+  "id": "019eff1c-024d-748a-9b05-409a804d55d8",
+  "name": "COBOL to Python Reimplementation",
+  "description": "You are given a COBOL program located at /app/src/program.cbl. This program reads input data from /app/src/INPUT.DAT and modifies one or more .DAT files located in the /app/data/ directory. The COBOL program is designed to be run from the /app/ directory and should be compiled and executed using GnuCOBOL 3.\nYour task is to re-implement the functionality of program.cbl in Python. You must create a new Python script located at /app/program.py, which performs the exact same operations as the COBOL program. \nSpecifically, the Python script must:\n  - Read inputs from /app/src/INPUT.DAT\n  - Apply the same logic to modify the .DAT files in /app/data/ as the COBOL program does\n  - The .DAT files produced by running /app/program.py must be identical (content-wise) to those produced by running /app/src/program.cbl using GnuCOBOL\n     \nSuccess Criteria:\n  - Given the same /app/src/INPUT.DAT file and the same initial states of ACCOUNTS.DAT, BOOKS.DAT, and TRANSACTIONS.DAT files in /app/data/,\n    after running /app/program.py, the /app/data/ACCOUNTS.DAT, /app/data/BOOKS.DAT, and /app/data/TRANSACTIONS.DAT files must be identical (content-wise) to those produced by running /app/src/program.cbl using GnuCOBOL",
+  "status": "paused",
+  "worktree": {
+    "path": "/app"
+  },
+  "scoping": {
+    "goal": {
+      "answer": "Re-implement the functionality of /app/src/program.cbl as a Python script at /app/program.py that produces byte-identical ACCOUNTS.DAT, BOOKS.DAT, and TRANSACTIONS.DAT files when run with the same INPUT.DAT.",
+      "confirmedAt": "2026-06-25T14:09:24.943Z"
+    },
+    "criteria": {
+      "answer": "Running /app/program.py with INPUT.DAT and initial .DAT files produces ACCOUNTS.DAT, BOOKS.DAT, and TRANSACTIONS.DAT that are byte-identical to those produced by compiling and running /app/src/program.cbl with GnuCOBOL 3.\nPython script at /app/program.py reads INPUT.DAT from /app/src/INPUT.DAT and writes the three .DAT files into /app/data/.\nPython script can be executed directly with python3 /app/program.py from /app/ working directory.\nVerification step confirms byte-equality via diff or cmp against GnuCOBOL-generated outputs.",
+      "confirmedAt": "2026-06-25T14:09:24.943Z"
+    },
+    "constraints": {
+      "answer": "Must use GnuCOBOL 3 to generate reference outputs from /app/src/program.cbl., Python script must run from /app/ working directory., No new external Python dependencies beyond standard library unless strictly required., Must match COBOL file formats exactly: record sizes, line terminators, padding, encoding., Python script location fixed at /app/program.py.",
+      "confirmedAt": "2026-06-25T14:09:24.943Z"
+    },
+    "phases": {
+      "answer": "Analyze COBOL program and data formats, Implement Python program and verify byte-identical output",
+      "confirmedAt": "2026-06-25T14:09:24.943Z"
+    },
+    "assumptions": {
+      "answer": "I assume /app/src/program.cbl, /app/src/INPUT.DAT, and the three .DAT files in /app/data/ already exist and are accessible. I assume GnuCOBOL (cobc) is available in the environment. I assume the COBOL program's behavior is deterministic and fully described by its source — no external state or environment-dependent paths beyond /app/data/ and /app/src/INPUT.DAT. I assume the .DAT files use fixed-width records (typical of COBOL) and that byte-identical output is achievable without depending on locale or timestamp variability in either implementation.",
+      "confirmedAt": "2026-06-25T14:09:24.943Z"
+    }
+  },
+  "phases": [
+    {
+      "id": "phase-1",
+      "index": 1,
+      "name": "Analyze COBOL program and data formats",
+      "goal": "Understand the COBOL program's logic, record layouts for INPUT.DAT, ACCOUNTS.DAT, BOOKS.DAT, TRANSACTIONS.DAT, and the transformation rules so the Python reimplementation can reproduce them exactly.",
+      "description": "Read /app/src/program.cbl and inspect the .DAT files in /app/data/ and INPUT.DAT to derive record layouts, control flow, and any COBOL-specific behaviors (default padding, line endings, numeric formatting, file open modes).",
+      "parallel": false,
+      "status": "completed",
+      "steps": [
+        {
+          "id": "step-1",
+          "index": 1,
+          "description": "Read /app/src/program.cbl in full and document its high-level logic: data structures (FD entries), PROCEDURE DIVISION flow, READ/WRITE/REWRITE operations, control breaks, and any file modes.",
+          "status": "verified",
+          "verification": {
+            "command": "test -s /app/src/program.cbl && wc -l /app/src/program.cbl",
+            "retries": 2,
+            "retryDelayMs": 1000
+          },
+          "parallel": false,
+          "startedAt": "2026-06-25T14:09:30.787Z",
+          "completedAt": "2026-06-25T14:16:32.672Z",
+          "result": {
+            "success": true,
+            "exitCode": 0,
+            "stdout": "",
+            "stderr": "",
+            "completedAt": "2026-06-25T14:16:32.672Z"
+          }
+        },
+        {
+          "id": "step-2",
+          "index": 2,
+          "description": "Inspect /app/src/INPUT.DAT and /app/data/ACCOUNTS.DAT, /app/data/BOOKS.DAT, /app/data/TRANSACTIONS.DAT. Use xxd/od and Python to determine record sizes, delimiters, encoding, padding, and numeric/alpha field formatting.",
+          "status": "verified",
+          "verification": {
+            "command": "ls -la /app/src/INPUT.DAT /app/data/ACCOUNTS.DAT /app/data/BOOKS.DAT /app/data/TRANSACTIONS.DAT",
+            "retries": 2,
+            "retryDelayMs": 1000
+          },
+          "parallel": false,
+          "startedAt": "2026-06-25T14:16:38.934Z",
+          "completedAt": "2026-06-25T14:37:15.681Z",
+          "result": {
+            "success": true,
+            "exitCode": 0,
+            "stdout": "",
+            "stderr": "",
+            "completedAt": "2026-06-25T14:37:15.681Z"
+          }
+        },
+        {
+          "id": "step-3",
+          "index": 3,
+          "description": "Write a concise record-layout spec to /app/.kimchi/docs/record_layout.md documenting field offsets, lengths, types, and any formatting rules derived from steps 1-2. This is the contract the Python implementation must satisfy.",
+          "status": "verified",
+          "verification": {
+            "command": "test -s /app/.kimchi/docs/record_layout.md",
+            "retries": 2,
+            "retryDelayMs": 1000
+          },
+          "parallel": false,
+          "startedAt": "2026-06-25T14:40:12.115Z",
+          "completedAt": "2026-06-25T14:43:54.723Z",
+          "result": {
+            "success": true,
+            "exitCode": 0,
+            "stdout": "",
+            "stderr": "",
+            "completedAt": "2026-06-25T14:43:54.723Z"
+          }
+        }
+      ],
+      "startedAt": "2026-06-25T14:09:27.609Z",
+      "completedAt": "2026-06-25T14:45:02.332Z",
+      "summary": "Phase 1 complete. Produced three artifacts: (1) cobol_analysis.md — full reading of program.cbl (164 lines, BOOKFORUM) with file definitions, record layouts, working-storage, paragraph-by-paragraph PROCEDURE DIVISION flow, READ/REWRITE/EXTEND inventory, and edge cases. (2) file_inspection.md — byte-level inspection using od/Python revealing critical facts: INPUT.DAT is 15 bytes on disk but INPUT-RECORD declares 22 bytes (GnuCOBOL zero-pads the short read into the PIC 9(10) amount field); no record terminators or trailing newlines in any file; GnuCOBOL stores subtraction underflow as |result| zero-padded to 10 digits (not modular arithmetic — verified by compiling/running COBOL with a test valid input). (3) record_layout.md — concise contract spec for the Python implementation consolidating all findings. Reference outputs from a valid COBOL run were saved to /tmp/cobol_backup/ for later byte-comparison.",
+      "grade": {
+        "grade": "A",
+        "rationale": "All gates pass; project checks validate.",
+        "gradedAt": "2026-06-25T14:45:02.332Z"
+      }
+    },
+    {
+      "id": "phase-2",
+      "index": 2,
+      "name": "Implement Python program and verify byte-identical output",
+      "goal": "Implement /app/program.py that performs the same logic and produces byte-identical ACCOUNTS.DAT, BOOKS.DAT, TRANSACTIONS.DAT as GnuCOBOL execution of /app/src/program.cbl.",
+      "description": "Write the Python reimplementation based on the record-layout spec and verified COBOL behavior. Compile and run the COBOL program to generate reference outputs, then run the Python program and diff the resulting .DAT files.",
+      "parallel": false,
+      "status": "active",
+      "steps": [
+        {
+          "id": "step-1",
+          "index": 1,
+          "description": "Write /app/program.py implementing the COBOL logic. Use the record-layout spec from phase 1. Open INPUT.DAT for read and the three .DAT files for read/write in fixed-record binary/text modes consistent with COBOL. Preserve byte-exact record formatting (lengths, padding, numeric edits).",
+          "status": "pending",
+          "verification": {
+            "command": "test -s /app/program.py && python3 -c 'import ast,sys; ast.parse(open(\"/app/program.py\").read()); sys.exit(0)'",
+            "retries": 2,
+            "retryDelayMs": 1000
+          },
+          "parallel": false,
+          "startedAt": "2026-06-25T14:48:26.086Z"
+        },
+        {
+          "id": "step-2",
+          "index": 2,
+          "description": "Restore the initial .DAT files from any backup, then compile and run the COBOL program (cobc -x -o /tmp/program /app/src/program.cbl && /tmp/program) from /app/ to generate reference outputs in /app/data/.",
+          "status": "pending",
+          "verification": {
+            "command": "cobc -x -o /tmp/program /app/src/program.cbl && (cd /app && /tmp/program)",
+            "retries": 2,
+            "retryDelayMs": 1000
+          },
+          "parallel": false
+        },
+        {
+          "id": "step-3",
+          "index": 3,
+          "description": "Save reference outputs, restore initial .DAT files, run /app/program.py from /app/, then cmp the Python outputs against the reference outputs. All three .DAT files must match byte-for-byte.",
+          "status": "pending",
+          "verification": {
+            "command": "cd /app && python3 /app/program.py && cmp /app/data/ACCOUNTS.DAT /tmp/ref_ACCOUNTS.DAT && cmp /app/data/BOOKS.DAT /tmp/ref_BOOKS.DAT && cmp /app/data/TRANSACTIONS.DAT /tmp/ref_TRANSACTIONS.DAT",
+            "retries": 2,
+            "retryDelayMs": 1000
+          },
+          "parallel": false
+        }
+      ],
+      "startedAt": "2026-06-25T14:46:07.420Z"
+    }
+  ],
+  "decisions": [],
+  "memories": [],
+  "createdAt": "2026-06-25T14:08:06.221Z",
+  "updatedAt": "2026-06-25T14:53:04.566Z",
+  "goal": "Re-implement the functionality of /app/src/program.cbl as a Python script at /app/program.py that produces byte-identical ACCOUNTS.DAT, BOOKS.DAT, and TRANSACTIONS.DAT files when run with the same INPUT.DAT.",
+  "successCriteria": [
+    "Running /app/program.py with INPUT.DAT and initial .DAT files produces ACCOUNTS.DAT, BOOKS.DAT, and TRANSACTIONS.DAT that are byte-identical to those produced by compiling and running /app/src/program.cbl with GnuCOBOL 3.",
+    "Python script at /app/program.py reads INPUT.DAT from /app/src/INPUT.DAT and writes the three .DAT files into /app/data/.",
+    "Python script can be executed directly with python3 /app/program.py from /app/ working directory.",
+    "Verification step confirms byte-equality via diff or cmp against GnuCOBOL-generated outputs."
+  ],
+  "constraints": [
+    "Must use GnuCOBOL 3 to generate reference outputs from /app/src/program.cbl.",
+    "Python script must run from /app/ working directory.",
+    "No new external Python dependencies beyond standard library unless strictly required.",
+    "Must match COBOL file formats exactly: record sizes, line terminators, padding, encoding.",
+    "Python script location fixed at /app/program.py."
+  ],
+  "lastActiveAt": "2026-06-25T14:46:07.420Z",
+  "activePhaseId": "phase-2"
+}

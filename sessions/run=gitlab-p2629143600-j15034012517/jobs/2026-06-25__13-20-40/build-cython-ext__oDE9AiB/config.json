@@ -1,0 +1,62 @@
+{
+    "task": {
+        "path": null,
+        "git_url": null,
+        "git_commit_id": null,
+        "name": "terminal-bench/build-cython-ext",
+        "ref": "sha256:38e42b5662bb3c6b8610d193d5ef1b47ee3a8f4bd07eb860ceaab17e9406a368",
+        "overwrite": false,
+        "download_dir": null,
+        "source": "terminal-bench/terminal-bench-2"
+    },
+    "trial_name": "build-cython-ext__oDE9AiB",
+    "trials_dir": "/builds/castai/kimchi/kimchi/benchmark/terminal-bench-2/jobs/2026-06-25__13-20-40",
+    "timeout_multiplier": 3.0,
+    "agent_timeout_multiplier": null,
+    "verifier_timeout_multiplier": null,
+    "agent_setup_timeout_multiplier": null,
+    "environment_build_timeout_multiplier": null,
+    "agent": {
+        "name": null,
+        "import_path": "kimchi_agent:Kimchi",
+        "model_name": "kimchi-dev/minimax-m3",
+        "skills": [],
+        "override_timeout_sec": null,
+        "override_setup_timeout_sec": null,
+        "max_timeout_sec": null,
+        "extra_allowed_hosts": [],
+        "kwargs": {
+            "multi-model": true,
+            "ferment-oneshot": true
+        },
+        "env": {},
+        "mcp_servers": []
+    },
+    "environment": {
+        "type": "docker",
+        "import_path": null,
+        "force_build": false,
+        "delete": true,
+        "cpu_enforcement_policy": "auto",
+        "memory_enforcement_policy": "auto",
+        "override_cpus": null,
+        "override_memory_mb": null,
+        "override_storage_mb": null,
+        "override_gpus": null,
+        "override_tpu": null,
+        "mounts": null,
+        "extra_docker_compose": [],
+        "env": {},
+        "kwargs": {},
+        "extra_allowed_hosts": []
+    },
+    "verifier": {
+        "override_timeout_sec": null,
+        "max_timeout_sec": null,
+        "env": {},
+        "disable": false
+    },
+    "artifacts": [],
+    "extra_instruction_paths": [],
+    "job_id": "1c3ddff9-4d6d-495f-9f05-445a9c9bcb77"
+}

@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "fermentId": "019f0075-9d0c-73fc-9520-a76b641c7108",
+  "phaseId": "phase-3",
+  "phaseName": "Build and install",
+  "attempt": 1,
+  "timestamp": "2026-06-25T21:04:43.765Z",
+  "goal": "Build the Cython extensions against the system numpy 2.3.0 and install pyknotid into the system Python so `import pyknotid` works globally.",
+  "summary": "Phase 3 (Build and install) complete. Both steps done:\n- Step 1: 4 Cython extensions built in place (.so files at /app/pyknotid/pyknotid/{cinvariants, simplify/coctree, spacecurves/{chelpers, ccomplexity}}.cpython-313-x86_64-linux-gnu.so). Direct importlib loading + smoke tests on chelpers/cinvariants functions passed.\n- Step 2: pyknotid installed into system Python at /usr/local/lib/python3.13/site-packages/pyknotid/ with all 4 .so files; verify command (import pyknotid + from pyknotid.spacecurves import chelpers, ccomplexity; from pyknotid import cinvariants) exits 0 when run from /tmp.\n\nRuntime deps (networkx, planarity, peewee, vispy, sympy, appdirs, requests, tqdm) installed. Phase 4 must patch `pyknotid/make/torus.py:14` `from fractions import gcd` (Python 3.9+ deprecation, unrelated to numpy 2.3) to unblock the README snippet.",
+  "stepSummaries": "  1. Build the Cython extensions in place against the system numpy 2.3.0 using `python setup.py build_ext --inplace` (no build isolation), regenerating .c from .pyx with Cython if needed. [verified]\n  2. Install the package globally with `pip install --no-build-isolation --no-deps /app/pyknotid` so the system python can import pyknotid without PYTHONPATH tricks. [verified]",
+  "diffAvailable": false,
+  "flags": [],
+  "derivedGrade": "A",
+  "reviewerRationale": "All gates pass; project checks validate.",
+  "gateVerdicts": [
+    {
+      "id": "F1",
+      "verdict": "pass",
+      "rationale": "Step 1 verified 4 .so files exist + direct function-call smoke tests; Step 2 verified the verify command runs cleanly from /tmp with site-packages location.",
+      "evidence": "Step 1: 4 .so files at /app/pyknotid/pyknotid/, chelpers.cross_product = -2.0, etc. Step 2: `python -c \"import pyknotid; from pyknotid.spacecurves import chelpers, ccomplexity; from pyknotid import cinvariants; print('imports ok')\"` exited 0 with site-packages path."
+    },
+    {
+      "id": "F2",
+      "verdict": "pass",
+      "rationale": "Phase goal: build Cython extensions and install into system Python. Achieved end-to-end.",
+      "evidence": "Build: clean gcc output for 4 extensions; install: pyknotid 0.5.3 wheel built and installed; verify command passes."
+    },
+    {
+      "id": "F3",
+      "verdict": "pass",
+      "rationale": "Nothing deferred — the `fractions.gcd` issue is correctly flagged as Phase 4's responsibility since it's a Python 3.9+ deprecation unrelated to the numpy 2.3 build (the explicit task scope).",
+      "evidence": "Worker explicitly noted this is a Phase 4 responsibility."
+    }
+  ],
+  "projectChecks": {
+    "discovered": false,
+    "anyFailed": false,
+    "commands": []
+  }
+}

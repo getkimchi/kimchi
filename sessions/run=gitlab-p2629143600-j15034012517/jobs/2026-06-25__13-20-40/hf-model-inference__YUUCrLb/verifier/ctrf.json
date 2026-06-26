@@ -1,0 +1,56 @@
+{
+    "results": {
+        "tool": {
+            "name": "pytest",
+            "version": "8.4.1"
+        },
+        "summary": {
+            "tests": 4,
+            "passed": 4,
+            "failed": 0,
+            "skipped": 0,
+            "pending": 0,
+            "other": 0,
+            "start": 1782394832.4380877,
+            "stop": 1782394883.9985342
+        },
+        "tests": [
+            {
+                "name": "test_outputs.py::test_model_downloaded",
+                "status": "passed",
+                "duration": 4.2752966419793665,
+                "start": 1782394832.5463831,
+                "stop": 1782394836.8221164,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_flask_api_running",
+                "status": "passed",
+                "duration": 0.004023509565740824,
+                "start": 1782394836.8224165,
+                "stop": 1782394836.8266017,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_sentiment_endpoint",
+                "status": "passed",
+                "duration": 47.16751441126689,
+                "start": 1782394836.826788,
+                "stop": 1782394883.9945335,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_api_error_handling",
+                "status": "passed",
+                "duration": 0.0033331657759845257,
+                "start": 1782394883.9947686,
+                "stop": 1782394883.998308,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            }
+        ]
+    }
+}

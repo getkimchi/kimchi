@@ -1,0 +1,98 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-06-25T12:22:30Z",
+  "benchmark": "terminal-bench-2",
+  "coding_agent": "kimchi",
+  "model": "kimchi-dev/minimax-m3",
+  "model_provider": "kimchi-dev",
+  "model_name": "minimax-m3",
+  "configuration": "multi-mode",
+  "multi_mode": true,
+  "ferment": false,
+  "selected_tasks": [
+    "hf-model-inference",
+    "fix-code-vulnerability",
+    "build-cython-ext",
+    "bn-fit-modify",
+    "fix-git",
+    "mteb-leaderboard",
+    "cobol-modernization",
+    "merge-diff-arc-agi-task",
+    "extract-elf",
+    "pytorch-model-recovery"
+  ],
+  "parameters": {
+    "attempts": "1",
+    "parallelism": "10",
+    "timeout_multiplier": "3"
+  },
+  "run_metadata": {
+    "schema_version": 1,
+    "benchmark": "terminal-bench-2",
+    "coding_agent": "kimchi",
+    "model": "kimchi-dev/minimax-m3",
+    "model_provider": "kimchi-dev",
+    "model_name": "minimax-m3",
+    "configuration": "multi-mode",
+    "multi_mode": true,
+    "ferment": false,
+    "selected_tasks": [
+      "hf-model-inference",
+      "fix-code-vulnerability",
+      "build-cython-ext",
+      "bn-fit-modify",
+      "fix-git",
+      "mteb-leaderboard",
+      "cobol-modernization",
+      "merge-diff-arc-agi-task",
+      "extract-elf",
+      "pytorch-model-recovery"
+    ],
+    "parameters": {
+      "attempts": "1",
+      "parallelism": "10",
+      "timeout_multiplier": "3"
+    },
+    "results_dir": "/builds/castai/kimchi/kimchi/benchmark/terminal-bench-2/jobs",
+    "runner": {
+      "dataset": "terminal-bench/terminal-bench-2"
+    },
+    "gcs": {
+      "date": "2026-06-25",
+      "run_id": "gitlab-p2628735748-j15031002199",
+      "prefix": "runs/benchmark=terminal-bench-2/coding_agent=kimchi/model_provider=kimchi-dev/model=minimax-m3/configuration=multi-mode/date=2026-06-25/run=gitlab-p2628735748-j15031002199"
+    },
+    "gitlab": {
+      "project_path": "castai/kimchi/kimchi",
+      "project_id": "82797533",
+      "pipeline_id": "2628735748",
+      "pipeline_url": "https://gitlab.com/castai/kimchi/kimchi/-/pipelines/2628735748",
+      "pipeline_source": "web",
+      "job_id": "15031002199",
+      "job_url": "https://gitlab.com/castai/kimchi/kimchi/-/jobs/15031002199",
+      "ref": "add-analysis-step-to-benchmarks",
+      "ref_slug": "add-analysis-step-to-benchmarks",
+      "commit_sha": "e0e48e4c049b7a3eb816c775b045f03c2e3982b8",
+      "commit_short_sha": "e0e48e4c",
+      "target_ref": "LLM-fix-overbroad-subagent-prompts",
+      "target_commit_sha": "e0e48e4c049b7a3eb816c775b045f03c2e3982b8"
+    }
+  },
+  "gcs": {
+    "bucket": "cicd-master-oxk5-llm-terminal-benchmarks",
+    "prefix": "runs/benchmark=terminal-bench-2/coding_agent=kimchi/model_provider=kimchi-dev/model=minimax-m3/configuration=multi-mode/date=2026-06-25/run=gitlab-p2628735748-j15031002199"
+  },
+  "gitlab": {
+    "project_path": "castai/kimchi/kimchi",
+    "project_id": "82797533",
+    "pipeline_id": "2628735748",
+    "pipeline_url": "https://gitlab.com/castai/kimchi/kimchi/-/pipelines/2628735748",
+    "pipeline_source": "web",
+    "job_id": "15032747168",
+    "job_url": "https://gitlab.com/castai/kimchi/kimchi/-/jobs/15032747168",
+    "ref": "add-analysis-step-to-benchmarks",
+    "ref_slug": "add-analysis-step-to-benchmarks",
+    "commit_sha": "e0e48e4c049b7a3eb816c775b045f03c2e3982b8",
+    "commit_short_sha": "e0e48e4c"
+  }
+}

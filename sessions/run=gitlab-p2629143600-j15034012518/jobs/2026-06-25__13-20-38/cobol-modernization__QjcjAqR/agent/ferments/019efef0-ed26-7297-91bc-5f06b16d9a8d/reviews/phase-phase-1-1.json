@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "fermentId": "019efef0-ed26-7297-91bc-5f06b16d9a8d",
+  "phaseId": "phase-1",
+  "phaseName": "Analyze COBOL program",
+  "attempt": 1,
+  "timestamp": "2026-06-25T14:04:40.207Z",
+  "goal": "Read program.cbl and INPUT.DAT to fully understand record layouts, FD entries, control flow, and the exact transformation logic that must be replicated.",
+  "summary": "Phase 1 produced two complementary analysis documents: (1) a comprehensive 681-line spec at /app/.kimchi/ferments/019efef0-ed26-7297-91bc-5f06b16d9a8d/docs/cobol-spec.md with full PIC layouts, PROCEDURE DIVISION traces, and byte-level analysis of INPUT.DAT and the three .DAT files; (2) a focused 172-line implementation guide at /app/.kimchi/docs/cobol-analysis.md with concrete Python pseudocode, padding helpers, and edge-case checklist. Key facts established: COBOL uses 4 sequential full scans of ACCOUNTS-FILE/BOOKS-FILE per execution, INPUT.DAT is 15 bytes unterminated (pads to amount=200), .DAT files are unterminated (no LF/CR between records, exact multiples of FD record size), seed B007 is not in BOOKS.DAT so transaction will fail validation and leave all .DAT files unchanged.",
+  "stepSummaries": "  1. Read /app/src/program.cbl in full and capture: SELECT clauses, FD record layouts (PIC clauses), line/record sizes, and OPEN modes. [verified]\n  2. Read /app/src/INPUT.DAT and capture exact byte length of each line and field positions (hex dump if needed). [verified]\n  3. Inspect the three .DAT file formats (existing snapshot in /app/data) to confirm record length matches COBOL FD. [verified]\n  4. Write a Markdown spec at /app/.kimchi/docs/cobol-analysis.md summarizing the per-record transformation logic with concrete PIC mappings and pseudocode so a Builder can implement Python logic without re-reading the COBOL. [verified]",
+  "diffAvailable": false,
+  "flags": [],
+  "derivedGrade": "A",
+  "reviewerRationale": "All gates pass; project checks validate.",
+  "gateVerdicts": [
+    {
+      "id": "F1",
+      "verdict": "pass",
+      "rationale": "Step verifications were proxies/sentinels (file existence and byte dumps), which is acceptable for an analysis-only phase — no semantic code was written in this phase.",
+      "evidence": "All 4 steps verified with file existence / wc / od output"
+    },
+    {
+      "id": "F2",
+      "verdict": "pass",
+      "rationale": "Phase goal was to understand the COBOL program and produce documentation; both deliverables (681-line spec + 172-line guide) exhaustively cover record layouts, control flow, file I/O, and transformation logic.",
+      "evidence": "/app/.kimchi/docs/cobol-analysis.md (172 lines) and /app/.kimchi/ferments/019efef0-ed26-7297-91bc-5f06b16d9a8d/docs/cobol-spec.md (681 lines) both exist and cover the same logical ground at different detail levels."
+    },
+    {
+      "id": "F3",
+      "verdict": "pass",
+      "rationale": "Nothing was deferred in this phase; the analysis is complete enough that Phase 2 can begin implementation directly from the docs.",
+      "evidence": "cobol-analysis.md includes complete pseudocode for /app/program.py including all helper functions, file I/O, validation, and update logic."
+    }
+  ],
+  "projectChecks": {
+    "discovered": false,
+    "anyFailed": false,
+    "commands": []
+  }
+}

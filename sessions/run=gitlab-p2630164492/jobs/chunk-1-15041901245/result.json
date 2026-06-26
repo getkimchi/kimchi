@@ -1,0 +1,41 @@
+{
+    "id": "b65649e5-6c06-4bb9-9c77-5606bc4926ad",
+    "started_at": "2026-06-25T20:24:47.395232",
+    "updated_at": "2026-06-25T20:46:53.275932",
+    "finished_at": "2026-06-25T20:46:53.275932",
+    "n_total_trials": 3,
+    "stats": {
+        "n_completed_trials": 3,
+        "n_errored_trials": 0,
+        "n_running_trials": 0,
+        "n_pending_trials": 0,
+        "n_cancelled_trials": 0,
+        "n_retries": 0,
+        "evals": {
+            "kimchi__multi-model__terminal-bench/terminal-bench-2": {
+                "n_trials": 3,
+                "n_errors": 0,
+                "metrics": [
+                    {
+                        "mean": 1.0
+                    }
+                ],
+                "pass_at_k": {},
+                "reward_stats": {
+                    "reward": {
+                        "1.0": [
+                            "mteb-leaderboard__462DuWu",
+                            "fix-git__3yrdWfQ",
+                            "cobol-modernization__4cEx6c2"
+                        ]
+                    }
+                },
+                "exception_stats": {}
+            }
+        },
+        "n_input_tokens": 4881862,
+        "n_cache_tokens": 455232,
+        "n_output_tokens": 114578,
+        "cost_usd": null
+    }
+}

@@ -1,0 +1,77 @@
+{
+    "results": {
+        "tool": {
+            "name": "pytest",
+            "version": "8.4.1"
+        },
+        "summary": {
+            "tests": 5,
+            "passed": 1,
+            "failed": 4,
+            "skipped": 0,
+            "pending": 0,
+            "other": 0,
+            "start": 1782399818.3446457,
+            "stop": 1782399840.0465086
+        },
+        "tests": [
+            {
+                "name": "test_outputs.py::test_weights_file_unchanged",
+                "status": "passed",
+                "duration": 13.924339088145643,
+                "start": 1782399821.9135382,
+                "stop": 1782399835.838377,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_model_file_exists",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0007224604487419128,
+                "start": 1782399835.8386817,
+                "stop": 1782399835.9398053,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "def test_model_file_exists():\n        \"\"\"Checks if the model file exists\"\"\"\n        # Reference the directory the agent operated in (the WORKDIR in the Docker env)\n        hello_path = Path(\"/app/model.pt\")\n    \n>       assert hello_path.exists(), f\"File {hello_path} does not exist\"\nE       AssertionError: File /app/model.pt does not exist\nE       assert False\nE        +  where False = exists()\nE        +    where exists = PosixPath('/app/model.pt').exists\n\n/tests/test_outputs.py:108: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_outputs.py::test_model_loads_weights",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0004725637845695019,
+                "start": 1782399835.9400122,
+                "stop": 1782399835.9466555,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "def test_model_loads_weights():\n        \"\"\"Checks if the model can loads the original weights without any errors\"\"\"\n        # Reference the directory the agent operated in (the WORKDIR in the Docker env)\n>       model = torch.jit.load(\"/app/model.pt\")\n                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\n/tests/test_outputs.py:114: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nf = '/app/model.pt', map_location = None, _extra_files = None\n_restore_shapes = False\n\n    def load(f, map_location=None, _extra_files=None, _restore_shapes=False):\n        r\"\"\"\n        Load a :class:`ScriptModule` or :class:`ScriptFunction` previously saved with :func:`torch.jit.save <torch.jit.save>`.\n    \n        All previously saved modules, no matter their device, are first loaded onto CPU,\n        and then are moved to the devices they were saved from. If this fails (e.g.\n        because the run time system doesn't have certain devices), an exception is\n        raised.\n    \n        Args:\n            f: a file-like object (has to implement read, readline, tell, and seek),\n                or a string containing a file name\n            map_location (string or torch.device): A simplified version of\n                ``map_location`` in `torch.jit.save` used to dynamically remap\n                storages to an alternative set of devices.\n            _extra_files (dictionary of filename to content): The extra\n                filenames given in the map would be loaded and their content\n                would be stored in the provided map.\n            _restore_shapes (bool): Whether or not to retrace the module on load using stored inputs\n    \n        Returns:\n            A :class:`ScriptModule` object.\n    \n        .. warning::\n            It is possible to construct malicious pickle data which will execute arbitrary code\n            during func:`torch.jit.load`. Never load data that could have come from an untrusted\n            source, or that could have been tampered with. **Only load data you trust**.\n    \n        Example:\n        .. testcode::\n    \n            import torch\n            import io\n    \n            torch.jit.load('scriptmodule.pt')\n    \n            # Load ScriptModule from io.BytesIO object\n            with open('scriptmodule.pt', 'rb') as f:\n                buffer = io.BytesIO(f.read())\n    \n            # Load all tensors to the original device\n            torch.jit.load(buffer)\n    \n            # Load all tensors onto CPU, using a device\n            buffer.seek(0)\n            torch.jit.load(buffer, map_location=torch.device('cpu'))\n    \n            # Load all tensors onto CPU, using a string\n            buffer.seek(0)\n            torch.jit.load(buffer, map_location='cpu')\n    \n            # Load with extra files.\n            extra_files = {'foo.txt': ''}  # values will be replaced with data\n            torch.jit.load('scriptmodule.pt', _extra_files=extra_files)\n            print(extra_files['foo.txt'])\n    \n        .. testoutput::\n            :hide:\n    \n            ...\n    \n        .. testcleanup::\n    \n            import os\n            os.remove(\"scriptmodule.pt\")\n        \"\"\"\n        if isinstance(f, (str, os.PathLike)):\n            if not os.path.exists(f):\n>               raise ValueError(f\"The provided filename {f} does not exist\")\nE               ValueError: The provided filename /app/model.pt does not exist\n\n/root/.cache/uv/archive-v0/R0Buz9sCi-CQo63kjU3Gd/lib/python3.13/site-packages/torch/jit/_serialization.py:158: ValueError",
+                "message": "The test failed in the call phase"
+            },
+            {
+                "name": "test_outputs.py::test_state_dicts_match",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.00044006993994116783,
+                "start": 1782399835.9468591,
+                "stop": 1782399835.9533162,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "def test_state_dicts_match():\n        \"\"\"Checks to see if the state dicts of the recovered model match exactly with the\n        original weights, except for the output layer\"\"\"\n        # Reference the directory the agent operated in (the WORKDIR in the Docker env)\n>       agent_state_dict = torch.jit.load(\"/app/model.pt\").state_dict()\n                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\n/tests/test_outputs.py:123: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nf = '/app/model.pt', map_location = None, _extra_files = None\n_restore_shapes = False\n\n    def load(f, map_location=None, _extra_files=None, _restore_shapes=False):\n        r\"\"\"\n        Load a :class:`ScriptModule` or :class:`ScriptFunction` previously saved with :func:`torch.jit.save <torch.jit.save>`.\n    \n        All previously saved modules, no matter their device, are first loaded onto CPU,\n        and then are moved to the devices they were saved from. If this fails (e.g.\n        because the run time system doesn't have certain devices), an exception is\n        raised.\n    \n        Args:\n            f: a file-like object (has to implement read, readline, tell, and seek),\n                or a string containing a file name\n            map_location (string or torch.device): A simplified version of\n                ``map_location`` in `torch.jit.save` used to dynamically remap\n                storages to an alternative set of devices.\n            _extra_files (dictionary of filename to content): The extra\n                filenames given in the map would be loaded and their content\n                would be stored in the provided map.\n            _restore_shapes (bool): Whether or not to retrace the module on load using stored inputs\n    \n        Returns:\n            A :class:`ScriptModule` object.\n    \n        .. warning::\n            It is possible to construct malicious pickle data which will execute arbitrary code\n            during func:`torch.jit.load`. Never load data that could have come from an untrusted\n            source, or that could have been tampered with. **Only load data you trust**.\n    \n        Example:\n        .. testcode::\n    \n            import torch\n            import io\n    \n            torch.jit.load('scriptmodule.pt')\n    \n            # Load ScriptModule from io.BytesIO object\n            with open('scriptmodule.pt', 'rb') as f:\n                buffer = io.BytesIO(f.read())\n    \n            # Load all tensors to the original device\n            torch.jit.load(buffer)\n    \n            # Load all tensors onto CPU, using a device\n            buffer.seek(0)\n            torch.jit.load(buffer, map_location=torch.device('cpu'))\n    \n            # Load all tensors onto CPU, using a string\n            buffer.seek(0)\n            torch.jit.load(buffer, map_location='cpu')\n    \n            # Load with extra files.\n            extra_files = {'foo.txt': ''}  # values will be replaced with data\n            torch.jit.load('scriptmodule.pt', _extra_files=extra_files)\n            print(extra_files['foo.txt'])\n    \n        .. testoutput::\n            :hide:\n    \n            ...\n    \n        .. testcleanup::\n    \n            import os\n            os.remove(\"scriptmodule.pt\")\n        \"\"\"\n        if isinstance(f, (str, os.PathLike)):\n            if not os.path.exists(f):\n>               raise ValueError(f\"The provided filename {f} does not exist\")\nE               ValueError: The provided filename /app/model.pt does not exist\n\n/root/.cache/uv/archive-v0/R0Buz9sCi-CQo63kjU3Gd/lib/python3.13/site-packages/torch/jit/_serialization.py:158: ValueError",
+                "message": "The test failed in the call phase"
+            },
+            {
+                "name": "test_outputs.py::test_model_loss",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 3.9855310269631445,
+                "start": 1782399835.9534986,
+                "stop": 1782399840.045758,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "def test_model_loss():\n        \"\"\"Checks to see if the loss of the recovered model is lower than\n        the original model\"\"\"\n        true_model = RecoveredModel(\n            input_dim=64,\n            d_model=128,\n            nhead=4,\n            num_encoder_layers=3,\n            num_decoder_layers=1,\n            dim_feedforward=256,\n            dropout=0.0,\n        )\n        true_model.load_state_dict(torch.load(\"/app/weights.pt\"))\n    \n>       agent_model = torch.jit.load(\"/app/model.pt\")\n                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\n/tests/test_outputs.py:153: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nf = '/app/model.pt', map_location = None, _extra_files = None\n_restore_shapes = False\n\n    def load(f, map_location=None, _extra_files=None, _restore_shapes=False):\n        r\"\"\"\n        Load a :class:`ScriptModule` or :class:`ScriptFunction` previously saved with :func:`torch.jit.save <torch.jit.save>`.\n    \n        All previously saved modules, no matter their device, are first loaded onto CPU,\n        and then are moved to the devices they were saved from. If this fails (e.g.\n        because the run time system doesn't have certain devices), an exception is\n        raised.\n    \n        Args:\n            f: a file-like object (has to implement read, readline, tell, and seek),\n                or a string containing a file name\n            map_location (string or torch.device): A simplified version of\n                ``map_location`` in `torch.jit.save` used to dynamically remap\n                storages to an alternative set of devices.\n            _extra_files (dictionary of filename to content): The extra\n                filenames given in the map would be loaded and their content\n                would be stored in the provided map.\n            _restore_shapes (bool): Whether or not to retrace the module on load using stored inputs\n    \n        Returns:\n            A :class:`ScriptModule` object.\n    \n        .. warning::\n            It is possible to construct malicious pickle data which will execute arbitrary code\n            during func:`torch.jit.load`. Never load data that could have come from an untrusted\n            source, or that could have been tampered with. **Only load data you trust**.\n    \n        Example:\n        .. testcode::\n    \n            import torch\n            import io\n    \n            torch.jit.load('scriptmodule.pt')\n    \n            # Load ScriptModule from io.BytesIO object\n            with open('scriptmodule.pt', 'rb') as f:\n                buffer = io.BytesIO(f.read())\n    \n            # Load all tensors to the original device\n            torch.jit.load(buffer)\n    \n            # Load all tensors onto CPU, using a device\n            buffer.seek(0)\n            torch.jit.load(buffer, map_location=torch.device('cpu'))\n    \n            # Load all tensors onto CPU, using a string\n            buffer.seek(0)\n            torch.jit.load(buffer, map_location='cpu')\n    \n            # Load with extra files.\n            extra_files = {'foo.txt': ''}  # values will be replaced with data\n            torch.jit.load('scriptmodule.pt', _extra_files=extra_files)\n            print(extra_files['foo.txt'])\n    \n        .. testoutput::\n            :hide:\n    \n            ...\n    \n        .. testcleanup::\n    \n            import os\n            os.remove(\"scriptmodule.pt\")\n        \"\"\"\n        if isinstance(f, (str, os.PathLike)):\n            if not os.path.exists(f):\n>               raise ValueError(f\"The provided filename {f} does not exist\")\nE               ValueError: The provided filename /app/model.pt does not exist\n\n/root/.cache/uv/archive-v0/R0Buz9sCi-CQo63kjU3Gd/lib/python3.13/site-packages/torch/jit/_serialization.py:158: ValueError",
+                "message": "The test failed in the call phase"
+            }
+        ]
+    }
+}

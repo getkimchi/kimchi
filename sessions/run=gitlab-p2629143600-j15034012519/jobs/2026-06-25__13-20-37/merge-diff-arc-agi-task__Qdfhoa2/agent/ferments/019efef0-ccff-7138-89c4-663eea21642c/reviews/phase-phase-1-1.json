@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "fermentId": "019efef0-ccff-7138-89c4-663eea21642c",
+  "phaseId": "phase-1",
+  "phaseName": "Initialize repo and fetch bundles",
+  "attempt": 1,
+  "timestamp": "2026-06-25T13:25:28.144Z",
+  "goal": "Create /app/repo, init git, fetch both bundles into branch1 and branch2",
+  "summary": "Phase 1 complete. /app/repo is a git repo, branch1 (c8dca82, contains algo.py, utils.py) and branch2 (836b057, contains algo.py, requirements.txt, .DS_Store) both exist and were fetched from bundle1/bundle2 HEAD respectively. branch1 is currently checked out.",
+  "stepSummaries": "  1. mkdir /app/repo and git init [verified]\n  2. Inspect bundle refs for bundle1 and bundle2 to identify HEAD candidates [verified]\n  3. Fetch bundle1 into branch1 and checkout [verified]\n  4. Fetch bundle2 into branch2 and checkout [verified]",
+  "diffAvailable": false,
+  "flags": [],
+  "derivedGrade": "A",
+  "reviewerRationale": "All gates pass; project checks validate.",
+  "gateVerdicts": [
+    {
+      "id": "F1",
+      "verdict": "pass",
+      "rationale": "All four steps used real git operations and verified via git rev-parse, list-heads, fetch, and checkout — load-bearing artifact exercised.",
+      "evidence": "Step 1: git init exit 0; Step 2: list-heads produced concrete refs; Step 3: fetch + checkout to c8dca82; Step 4: fetch to 836b057."
+    },
+    {
+      "id": "F2",
+      "verdict": "pass",
+      "rationale": "Phase goal — create /app/repo as git repo with branch1 and branch2 fetched — is achieved.",
+      "evidence": "/app/repo/.git exists; git rev-parse --verify branch1 → c8dca82; git rev-parse --verify branch2 → 836b057."
+    },
+    {
+      "id": "F3",
+      "verdict": "pass",
+      "rationale": "Nothing deferred in this phase; merge and map implementation are explicitly phase 3.",
+      "evidence": "n/a"
+    }
+  ],
+  "projectChecks": {
+    "discovered": false,
+    "anyFailed": false,
+    "commands": []
+  }
+}

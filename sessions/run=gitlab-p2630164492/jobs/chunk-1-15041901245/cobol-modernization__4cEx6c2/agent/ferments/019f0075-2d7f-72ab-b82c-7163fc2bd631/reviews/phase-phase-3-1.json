@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "fermentId": "019f0075-2d7f-72ab-b82c-7163fc2bd631",
+  "phaseId": "phase-3",
+  "phaseName": "Verify byte-identical output",
+  "attempt": 1,
+  "timestamp": "2026-06-25T20:42:51.105Z",
+  "goal": "Confirm that running /app/program.py produces .DAT files byte-identical to those produced by the compiled COBOL program under the same initial state.",
+  "summary": "Phase 3 complete. Both the Python script (/app/program.py) and the compiled COBOL binary (/tmp/program_cobol) produce byte-identical ACCOUNTS.DAT (102B), BOOKS.DAT (84B), and TRANSACTIONS.DAT (66B) when run from /app on the initial data state, both matching /tmp/cobol_baseline (cmp exit 0 for all three). Stdout also matches byte-for-byte. The COBOL reproducibility check rules out nondeterminism — the Python match is genuine.",
+  "stepSummaries": "  1. Restore /app/data/*.DAT from /tmp/initial_data, run /app/program.py, then cmp each resulting file against /tmp/cobol_baseline. [verified]\n  2. Restore /app/data/*.DAT again, run the compiled COBOL binary, and cmp against /tmp/cobol_baseline to confirm the COBOL path is reproducible (catches nondeterminism in the COBOL build, not the Python port). [verified]",
+  "diffAvailable": false,
+  "flags": [],
+  "derivedGrade": "A",
+  "reviewerRationale": "All gates pass; project checks validate.",
+  "gateVerdicts": [
+    {
+      "id": "F1",
+      "verdict": "pass",
+      "rationale": "Step 1 used real cmp commands (test-grade verification) on actual file content. Step 2 used real COBOL execution and real cmp commands. No proxies.",
+      "evidence": "Step 1: cmp ACCOUNTS/BOOKS/TRANSACTIONS all exit 0; Step 2: cmp ACCOUNTS/BOOKS/TRANSACTIONS all exit 0; both stdout cmp also exit 0."
+    },
+    {
+      "id": "F2",
+      "verdict": "pass",
+      "rationale": "Phase goal was to confirm /app/program.py produces byte-identical output to the COBOL program. Confirmed via two independent verification runs.",
+      "evidence": "Python output cmp-clean against /tmp/cobol_baseline (phase 3 step 1); COBOL reproducibility confirmed (phase 3 step 2)."
+    },
+    {
+      "id": "F3",
+      "verdict": "pass",
+      "rationale": "Nothing deferred; all verification steps completed.",
+      "evidence": "n/a"
+    }
+  ],
+  "projectChecks": {
+    "discovered": false,
+    "anyFailed": false,
+    "commands": []
+  }
+}

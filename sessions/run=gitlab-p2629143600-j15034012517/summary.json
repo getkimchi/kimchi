@@ -1,0 +1,1628 @@
+{
+  "schema_version": "benchmark-summary/v2",
+  "classification": {
+    "classified_by": "classify.py@v1",
+    "pipeline_run_id": "2629143600",
+    "pipeline_url": "https://gitlab.com/castai/kimchi/kimchi/-/pipelines/2629143600",
+    "generated_at": "2026-06-25T16:03:23Z"
+  },
+  "totals": {
+    "expected": 18,
+    "passed": 6,
+    "failed_quality": 6,
+    "timeout": 1,
+    "infra_error": 0,
+    "no_verdict": 0,
+    "infra_retries": 6
+  },
+  "is_complete": false,
+  "chunks_exhausted_retries": [
+    "chunk-0"
+  ],
+  "run": {
+    "benchmark": "terminal-bench-2",
+    "run_id": "gitlab-p2629143600-j15034012517",
+    "status": "completed",
+    "started_at": "2026-06-25T13:20:40.024092Z",
+    "ended_at": "2026-06-25T16:02:05.217833Z",
+    "agent": {
+      "name": "kimchi",
+      "version": "457f38dce031f94d80c647c0fed2e567a3ab3f2e"
+    },
+    "configuration": "multi-mode-ferment",
+    "model": "kimchi-dev/minimax-m3"
+  },
+  "trials": [
+    {
+      "trial_id": "bn-fit-modify__ZKCCBcA",
+      "task": "bn-fit-modify",
+      "attempt": 1,
+      "status": "failed",
+      "score": 0.0,
+      "error": {
+        "type": "",
+        "message": "Traceback (most recent call last):"
+      },
+      "models": [
+        {
+          "model": "kimchi-dev/minimax-m3",
+          "llm_rounds": 39,
+          "tokens": {
+            "input": 1587896,
+            "cache_read": 0,
+            "cache_write": 0,
+            "output": 25623
+          },
+          "tools": [
+            {
+              "name": "Agent",
+              "calls": 8
+            },
+            {
+              "name": "complete_ferment_step",
+              "calls": 6
+            },
+            {
+              "name": "start_ferment_step",
+              "calls": 6
+            },
+            {
+              "name": "bash",
+              "calls": 3
+            },
+            {
+              "name": "read",
+              "calls": 3
+            },
+            {
+              "name": "activate_ferment_phase",
+              "calls": 2
+            },
+            {
+              "name": "complete_ferment_phase",
+              "calls": 2
+            },
+            {
+              "name": "complete_ferment",
+              "calls": 1
+            },
+            {
+              "name": "list_ferments",
+              "calls": 1
+            },
+            {
+              "name": "refine_ferment_phase",
+              "calls": 1
+            },
+            {
+              "name": "scope_ferment",
+              "calls": 1
+            }
+          ]
+        },
+        {
+          "model": "kimchi-dev/minimax-m2.7",
+          "llm_rounds": 61,
+          "tokens": {
+            "input": 368671,
+            "cache_read": 0,
+            "cache_write": 0,
+            "output": 28382
+          },
+          "tools": [
+            {
+              "name": "bash",
+              "calls": 50
+            },
+            {
+              "name": "write",
+              "calls": 5
+            },
+            {
+              "name": "read",
+              "calls": 2
+            },
+            {
+              "name": "edit",
+              "calls": 1
+            }
+          ]
+        }
+      ],
+      "duration_ms": 3993000,
+      "error_category": null,
+      "error_subcategory": null,
+      "verdict": "scored_fail"
+    },
+    {
+      "trial_id": "build-cython-ext__5XGHHxt",
+      "task": "build-cython-ext",
+      "attempt": 1,
+      "status": "failed",
+      "score": 0.0,
+      "error": {
+        "type": "AgentTimeoutError",
+        "message": "/app/pyknotid/pyknotid/invariants.py:1245:        print('Failed to import cinvariants. Using *slow* python numpy method.')"
+      },
+      "models": [
+        {
+          "model": "kimchi-dev/minimax-m3",
+          "llm_rounds": 23,
+          "tokens": {
+            "input": 781677,
+            "cache_read": 0,
+            "cache_write": 0,
+            "output": 15697
+          },
+          "tools": [
+            {
+              "name": "bash",
+              "calls": 13
+            },
+            {
+              "name": "read",
+              "calls": 9
+            },
+            {
+              "name": "Agent",
+              "calls": 3
+            },
+            {
+              "name": "complete_ferment_step",
+              "calls": 3
+            },
+            {
+              "name": "start_ferment_step",
+              "calls": 3
+            },
+            {
+              "name": "grep",
+              "calls": 2
+            },
+            {
+              "name": "activate_ferment_phase",
+              "calls": 1
+            },
+            {
+              "name": "find",
+              "calls": 1
+            },
+            {
+              "name": "scope_ferment",
+              "calls": 1
+            },
+            {
+              "name": "write",
+              "calls": 1
+            }
+          ]
+        },
+        {
+          "model": "kimchi-dev/minimax-m2.7",
+          "llm_rounds": 25,
+          "tokens": {
+            "input": 175943,
+            "cache_read": 0,
+            "cache_write": 0,
+            "output": 7094
+          },
+          "tools": [
+            {
+              "name": "bash",
+              "calls": 18
+            },
+            {
+              "name": "read",
+              "calls": 12
+            },
+            {
+              "name": "edit",
+              "calls": 8
+            },
+            {
+              "name": "find",
+              "calls": 3
+            },
+            {
+              "name": "grep",
+              "calls": 2
+            }
+          ]
+        }
+      ],
+      "duration_ms": 2707000,
+      "error_category": null,
+      "error_subcategory": null,
+      "verdict": "scored_fail"
+    },
+    {
+      "trial_id": "build-cython-ext__nrZNNSq",
+      "task": "build-cython-ext",
+      "attempt": 2,
+      "status": "failed",
+      "score": 0.0,
+      "error": {
+        "type": "AgentTimeoutError",
+        "message": "Traceback (most recent call last):"
+      },
+      "models": [
+        {
+          "model": "kimchi-dev/minimax-m3",
+          "llm_rounds": 79,
+          "tokens": {
+            "input": 1789962,
+            "cache_read": 0,
+            "cache_write": 0,
+            "output": 33394
+          },
+          "tools": [
+            {
+              "name": "bash",
+              "calls": 76
+            },
+            {
+              "name": "read",
+              "calls": 15
+            },
+            {
+              "name": "Agent",
+              "calls": 5
+            },
+            {
+              "name": "edit",
+              "calls": 5
+            },
+            {
+              "name": "start_ferment_step",
+              "calls": 4
+            },
+            {
+              "name": "complete_ferment_step",
+              "calls": 3
+            },
+            {
+              "name": "activate_ferment_phase",
+              "calls": 2
+            },
+            {
+              "name": "write",
+              "calls": 2
+            },
+            {
+              "name": "complete_ferment_phase",
+              "calls": 1
+            },
+            {
+              "name": "grep",
+              "calls": 1
+            },
+            {
+              "name": "scope_ferment",
+              "calls": 1
+            }
+          ]
+        }
+      ],
+      "duration_ms": 2707000,
+      "error_category": null,
+      "error_subcategory": null,
+      "verdict": "scored_fail"
+    },
+    {
+      "trial_id": "build-cython-ext__oDE9AiB",
+      "task": "build-cython-ext",
+      "attempt": 3,
+      "status": "failed",
+      "score": 0.0,
+      "error": {
+        "type": "AgentTimeoutError",
+        "message": "except ImportError:"
+      },
+      "models": [
+        {
+          "model": "kimchi-dev/minimax-m3",
+          "llm_rounds": 23,
+          "tokens": {
+            "input": 750616,
+            "cache_read": 0,
+            "cache_write": 0,
+            "output": 16829
+          },
+          "tools": [
+            {
+              "name": "Agent",
+              "calls": 10
+            },
+            {
+              "name": "start_ferment_step",
+              "calls": 4
+            },
+            {
+              "name": "complete_ferment_step",
+              "calls": 3
+            },
+            {
+              "name": "activate_ferment_phase",
+              "calls": 2
+            },
+            {
+              "name": "complete_ferment_phase",
+              "calls": 1
+            },
+            {
+              "name": "scope_ferment",
+              "calls": 1
+            }
+          ]
+        },
+        {
+          "model": "kimchi-dev/kimi-k2.6",
+          "llm_rounds": 30,
+          "tokens": {
+            "input": 183879,
+            "cache_read": 0,
+            "cache_write": 0,
+            "output": 11771
+          },
+          "tools": [
+            {
+              "name": "bash",
+              "calls": 53
+            },
+            {
+              "name": "read",
+              "calls": 9
+            },
+            {
+              "name": "ls",
+              "calls": 3
+            },
+            {
+              "name": "write",
+              "calls": 3
+            }
+          ]
+        },
+        {
+          "model": "kimchi-dev/minimax-m2.7",
+          "llm_rounds": 10,
+          "tokens": {
+            "input": 26433,
+            "cache_read": 0,
+            "cache_write": 0,
+            "output": 3327
+          },
+          "tools": [
+            {
+              "name": "bash",
+              "calls": 18
+            },
+            {
+              "name": "write",
+              "calls": 1
+            }
+          ]
+        }
+      ],
+      "duration_ms": 2709000,
+      "error_category": null,
+      "error_subcategory": null,
+      "verdict": "agent_timeout"
+    },
+    {
+      "trial_id": "cobol-modernization__JSQXyQK",
+      "task": "cobol-modernization",
+      "attempt": 1,
+      "status": "failed",
+      "score": 0.0,
+      "error": {
+        "type": "AgentTimeoutError",
+        "message": "DISPLAY \"Error: Input file is empty\""
+      },
+      "models": [
+        {
+          "model": "kimchi-dev/minimax-m3",
+          "llm_rounds": 32,
+          "tokens": {
+            "input": 1309587,
+            "cache_read": 0,
+            "cache_write": 0,
+            "output": 28602
+          },
+          "tools": [
+            {
+              "name": "bash",
+              "calls": 13
+            },
+            {
+              "name": "start_ferment_step",
+              "calls": 4
+            },
+            {
+              "name": "Agent",
+              "calls": 3
+            },
+            {
+              "name": "complete_ferment_step",
+              "calls": 3
+            },
+            {
+              "name": "activate_ferment_phase",
+              "calls": 2
+            },
+            {
+              "name": "read",
+              "calls": 2
+            },
+            {
+              "name": "write",
+              "calls": 2
+            },
+            {
+              "name": "complete_ferment_phase",
+              "calls": 1
+            },
+            {
+              "name": "scope_ferment",
+              "calls": 1
+            }
+          ]
+        },
+        {
+          "model": "kimchi-dev/minimax-m2.7",
+          "llm_rounds": 14,
+          "tokens": {
+            "input": 95719,
+            "cache_read": 0,
+            "cache_write": 0,
+            "output": 13460
+          },
+          "tools": [
+            {
+              "name": "bash",
+              "calls": 15
+            },
+            {
+              "name": "read",
+              "calls": 6
+            },
+            {
+              "name": "ls",
+              "calls": 3
+            }
+          ]
+        }
+      ],
+      "duration_ms": 2710000,
+      "error_category": null,
+      "error_subcategory": null,
+      "verdict": "scored_fail"
+    },
+    {
+      "trial_id": "cobol-modernization__QjcjAqR",
+      "task": "cobol-modernization",
+      "attempt": 2,
+      "status": "failed",
+      "score": 0.0,
+      "error": {
+        "type": "AgentTimeoutError",
+        "message": "ls: cannot access '/app/.kimchi/': No such file or directory"
+      },
+      "models": [
+        {
+          "model": "kimchi-dev/minimax-m3",
+          "llm_rounds": 29,
+          "tokens": {
+            "input": 1010991,
+            "cache_read": 0,
+            "cache_write": 0,
+            "output": 17270
+          },
+          "tools": [
+            {
+              "name": "Agent",
+              "calls": 11
+            },
+            {
+              "name": "bash",
+              "calls": 5
+            },
+            {
+              "name": "start_ferment_step",
+              "calls": 5
+            },
+            {
+              "name": "complete_ferment_step",
+              "calls": 4
+            },
+            {
+              "name": "activate_ferment_phase",
+              "calls": 2
+            },
+            {
+              "name": "complete_ferment_phase",
+              "calls": 1
+            },
+            {
+              "name": "scope_ferment",
+              "calls": 1
+            }
+          ]
+        },
+        {
+          "model": "kimchi-dev/minimax-m2.7",
+          "llm_rounds": 35,
+          "tokens": {
+            "input": 200423,
+            "cache_read": 0,
+            "cache_write": 0,
+            "output": 27629
+          },
+          "tools": [
+            {
+              "name": "bash",
+              "calls": 37
+            },
+            {
+              "name": "read",
+              "calls": 6
+            },
+            {
+              "name": "find",
+              "calls": 2
+            },
+            {
+              "name": "edit",
+              "calls": 1
+            },
+            {
+              "name": "grep",
+              "calls": 1
+            },
+            {
+              "name": "ls",
+              "calls": 1
+            },
+            {
+              "name": "write",
+              "calls": 1
+            }
+          ]
+        },
+        {
+          "model": "kimchi-dev/kimi-k2.7",
+          "llm_rounds": 4,
+          "tokens": {
+            "input": 16297,
+            "cache_read": 9664,
+            "cache_write": 0,
+            "output": 3475
+          },
+          "tools": [
+            {
+              "name": "bash",
+              "calls": 4
+            },
+            {
+              "name": "write",
+              "calls": 1
+            }
+          ]
+        }
+      ],
+      "duration_ms": 2711000,
+      "error_category": null,
+      "error_subcategory": null,
+      "verdict": "agent_timeout"
+    },
+    {
+      "trial_id": "cobol-modernization__rnogJuu",
+      "task": "cobol-modernization",
+      "attempt": 3,
+      "status": "failed",
+      "score": 0.0,
+      "error": {
+        "type": "",
+        "message": "=================================== FAILURES ==================================="
+      },
+      "models": [
+        {
+          "model": "kimchi-dev/minimax-m3",
+          "llm_rounds": 1,
+          "tokens": {
+            "input": 24511,
+            "cache_read": 0,
+            "cache_write": 0,
+            "output": 2668
+          },
+          "tools": []
+        }
+      ],
+      "duration_ms": 61000,
+      "error_category": null,
+      "error_subcategory": null,
+      "verdict": "scored_fail"
+    },
+    {
+      "trial_id": "extract-elf__CQxrgXW",
+      "task": "extract-elf",
+      "attempt": 1,
+      "status": "failed",
+      "score": 0.0,
+      "error": {
+        "type": "AgentTimeoutError",
+        "message": "Agent aborted in 300.2s (12 tool uses, 35.9k token) (aborted \u2014 wall-clock duration limit exceeded, output may be incomplete)."
+      },
+      "models": [
+        {
+          "model": "kimchi-dev/minimax-m3",
+          "llm_rounds": 14,
+          "tokens": {
+            "input": 458803,
+            "cache_read": 0,
+            "cache_write": 0,
+            "output": 21788
+          },
+          "tools": [
+            {
+              "name": "Agent",
+              "calls": 4
+            },
+            {
+              "name": "start_ferment_step",
+              "calls": 4
+            },
+            {
+              "name": "bash",
+              "calls": 2
+            },
+            {
+              "name": "complete_ferment_step",
+              "calls": 2
+            },
+            {
+              "name": "activate_ferment_phase",
+              "calls": 1
+            },
+            {
+              "name": "scope_ferment",
+              "calls": 1
+            }
+          ]
+        },
+        {
+          "model": "kimchi-dev/minimax-m2.7",
+          "llm_rounds": 35,
+          "tokens": {
+            "input": 204641,
+            "cache_read": 0,
+            "cache_write": 0,
+            "output": 11692
+          },
+          "tools": [
+            {
+              "name": "bash",
+              "calls": 40
+            },
+            {
+              "name": "read",
+              "calls": 2
+            },
+            {
+              "name": "write",
+              "calls": 1
+            }
+          ]
+        }
+      ],
+      "duration_ms": 2721000,
+      "error_category": null,
+      "error_subcategory": null,
+      "verdict": "agent_timeout"
+    },
+    {
+      "trial_id": "extract-elf__ZGYEAYx",
+      "task": "extract-elf",
+      "attempt": 2,
+      "status": "failed",
+      "score": 0.0,
+      "error": {
+        "type": "AgentTimeoutError",
+        "message": "SyntaxError: /app/out.json: Unexpected end of JSON input"
+      },
+      "models": [
+        {
+          "model": "kimchi-dev/minimax-m3",
+          "llm_rounds": 31,
+          "tokens": {
+            "input": 1318724,
+            "cache_read": 0,
+            "cache_write": 0,
+            "output": 28896
+          },
+          "tools": [
+            {
+              "name": "start_ferment_step",
+              "calls": 13
+            },
+            {
+              "name": "complete_ferment_step",
+              "calls": 11
+            },
+            {
+              "name": "Agent",
+              "calls": 7
+            },
+            {
+              "name": "activate_ferment_phase",
+              "calls": 5
+            },
+            {
+              "name": "complete_ferment_phase",
+              "calls": 5
+            },
+            {
+              "name": "bash",
+              "calls": 1
+            },
+            {
+              "name": "complete_ferment",
+              "calls": 1
+            },
+            {
+              "name": "scope_ferment",
+              "calls": 1
+            }
+          ]
+        },
+        {
+          "model": "kimchi-dev/minimax-m2.7",
+          "llm_rounds": 22,
+          "tokens": {
+            "input": 91327,
+            "cache_read": 0,
+            "cache_write": 0,
+            "output": 14711
+          },
+          "tools": [
+            {
+              "name": "bash",
+              "calls": 41
+            },
+            {
+              "name": "read",
+              "calls": 1
+            },
+            {
+              "name": "write",
+              "calls": 1
+            }
+          ]
+        }
+      ],
+      "duration_ms": 2711000,
+      "error_category": null,
+      "error_subcategory": null,
+      "verdict": "agent_timeout"
+    },
+    {
+      "trial_id": "extract-elf__x5MmZVK",
+      "task": "extract-elf",
+      "attempt": 3,
+      "status": "failed",
+      "score": 0.0,
+      "error": {
+        "type": "",
+        "message": "fail(`Failed to read ${path}: ${err.message}`);"
+      },
+      "models": [
+        {
+          "model": "kimchi-dev/minimax-m3",
+          "llm_rounds": 19,
+          "tokens": {
+            "input": 825704,
+            "cache_read": 0,
+            "cache_write": 0,
+            "output": 33018
+          },
+          "tools": [
+            {
+              "name": "Agent",
+              "calls": 4
+            },
+            {
+              "name": "complete_ferment_step",
+              "calls": 3
+            },
+            {
+              "name": "start_ferment_step",
+              "calls": 3
+            },
+            {
+              "name": "read",
+              "calls": 2
+            },
+            {
+              "name": "activate_ferment_phase",
+              "calls": 1
+            },
+            {
+              "name": "bash",
+              "calls": 1
+            },
+            {
+              "name": "complete_ferment",
+              "calls": 1
+            },
+            {
+              "name": "complete_ferment_phase",
+              "calls": 1
+            },
+            {
+              "name": "edit",
+              "calls": 1
+            },
+            {
+              "name": "scope_ferment",
+              "calls": 1
+            }
+          ]
+        },
+        {
+          "model": "kimchi-dev/kimi-k2.7",
+          "llm_rounds": 24,
+          "tokens": {
+            "input": 163259,
+            "cache_read": 62016,
+            "cache_write": 0,
+            "output": 13256
+          },
+          "tools": [
+            {
+              "name": "bash",
+              "calls": 28
+            },
+            {
+              "name": "ls",
+              "calls": 2
+            },
+            {
+              "name": "read",
+              "calls": 2
+            },
+            {
+              "name": "write",
+              "calls": 2
+            }
+          ]
+        }
+      ],
+      "duration_ms": 1876000,
+      "error_category": null,
+      "error_subcategory": null,
+      "verdict": "scored_fail"
+    },
+    {
+      "trial_id": "fix-code-vulnerability__zxXCAUU",
+      "task": "fix-code-vulnerability",
+      "attempt": 1,
+      "status": "passed",
+      "score": 1.0,
+      "error": {
+        "type": "",
+        "message": "e3d8e71 fix: Route.__repr__ and Route.get_undecorated_callback exceptions."
+      },
+      "models": [
+        {
+          "model": "kimchi-dev/minimax-m3",
+          "llm_rounds": 41,
+          "tokens": {
+            "input": 1356879,
+            "cache_read": 0,
+            "cache_write": 0,
+            "output": 12511
+          },
+          "tools": [
+            {
+              "name": "bash",
+              "calls": 10
+            },
+            {
+              "name": "complete_ferment_step",
+              "calls": 7
+            },
+            {
+              "name": "start_ferment_step",
+              "calls": 7
+            },
+            {
+              "name": "activate_ferment_phase",
+              "calls": 3
+            },
+            {
+              "name": "complete_ferment_phase",
+              "calls": 3
+            },
+            {
+              "name": "read",
+              "calls": 3
+            },
+            {
+              "name": "Agent",
+              "calls": 2
+            },
+            {
+              "name": "complete_ferment",
+              "calls": 1
+            },
+            {
+              "name": "edit",
+              "calls": 1
+            },
+            {
+              "name": "scope_ferment",
+              "calls": 1
+            },
+            {
+              "name": "write",
+              "calls": 1
+            }
+          ]
+        },
+        {
+          "model": "kimchi-dev/minimax-m2.7",
+          "llm_rounds": 27,
+          "tokens": {
+            "input": 151419,
+            "cache_read": 0,
+            "cache_write": 0,
+            "output": 7611
+          },
+          "tools": [
+            {
+              "name": "bash",
+              "calls": 12
+            },
+            {
+              "name": "read",
+              "calls": 8
+            },
+            {
+              "name": "grep",
+              "calls": 3
+            },
+            {
+              "name": "ls",
+              "calls": 2
+            }
+          ]
+        }
+      ],
+      "duration_ms": 1036000,
+      "error_category": null,
+      "error_subcategory": null,
+      "verdict": "scored_pass"
+    },
+    {
+      "trial_id": "fix-git__2STMHqA",
+      "task": "fix-git",
+      "attempt": 1,
+      "status": "passed",
+      "score": 1.0,
+      "error": {
+        "type": "",
+        "message": "ls: cannot access '.git/lost-found/other/': No such file or directory"
+      },
+      "models": [
+        {
+          "model": "kimchi-dev/minimax-m3",
+          "llm_rounds": 36,
+          "tokens": {
+            "input": 1321294,
+            "cache_read": 0,
+            "cache_write": 0,
+            "output": 27623
+          },
+          "tools": [
+            {
+              "name": "Agent",
+              "calls": 6
+            },
+            {
+              "name": "complete_ferment_step",
+              "calls": 6
+            },
+            {
+              "name": "start_ferment_step",
+              "calls": 6
+            },
+            {
+              "name": "activate_ferment_phase",
+              "calls": 2
+            },
+            {
+              "name": "complete_ferment_phase",
+              "calls": 2
+            },
+            {
+              "name": "bash",
+              "calls": 1
+            },
+            {
+              "name": "read",
+              "calls": 1
+            },
+            {
+              "name": "scope_ferment",
+              "calls": 1
+            }
+          ]
+        },
+        {
+          "model": "kimchi-dev/minimax-m2.7",
+          "llm_rounds": 50,
+          "tokens": {
+            "input": 353575,
+            "cache_read": 0,
+            "cache_write": 0,
+            "output": 27004
+          },
+          "tools": [
+            {
+              "name": "bash",
+              "calls": 89
+            },
+            {
+              "name": "read",
+              "calls": 6
+            },
+            {
+              "name": "write",
+              "calls": 6
+            },
+            {
+              "name": "ls",
+              "calls": 2
+            }
+          ]
+        }
+      ],
+      "duration_ms": 2591000,
+      "error_category": null,
+      "error_subcategory": null,
+      "verdict": "scored_pass"
+    },
+    {
+      "trial_id": "hf-model-inference__YUUCrLb",
+      "task": "hf-model-inference",
+      "attempt": 1,
+      "status": "passed",
+      "score": 1.0,
+      "error": {
+        "type": "",
+        "message": "WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning."
+      },
+      "models": [
+        {
+          "model": "kimchi-dev/minimax-m3",
+          "llm_rounds": 22,
+          "tokens": {
+            "input": 636381,
+            "cache_read": 0,
+            "cache_write": 0,
+            "output": 10650
+          },
+          "tools": [
+            {
+              "name": "Agent",
+              "calls": 5
+            },
+            {
+              "name": "complete_ferment_step",
+              "calls": 5
+            },
+            {
+              "name": "start_ferment_step",
+              "calls": 5
+            },
+            {
+              "name": "activate_ferment_phase",
+              "calls": 2
+            },
+            {
+              "name": "complete_ferment_phase",
+              "calls": 2
+            },
+            {
+              "name": "complete_ferment",
+              "calls": 1
+            },
+            {
+              "name": "scope_ferment",
+              "calls": 1
+            }
+          ]
+        },
+        {
+          "model": "kimchi-dev/kimi-k2.6",
+          "llm_rounds": 28,
+          "tokens": {
+            "input": 88617,
+            "cache_read": 0,
+            "cache_write": 0,
+            "output": 7314
+          },
+          "tools": [
+            {
+              "name": "bash",
+              "calls": 27
+            },
+            {
+              "name": "write",
+              "calls": 2
+            },
+            {
+              "name": "ls",
+              "calls": 1
+            },
+            {
+              "name": "read",
+              "calls": 1
+            }
+          ]
+        }
+      ],
+      "duration_ms": 997000,
+      "error_category": null,
+      "error_subcategory": null,
+      "verdict": "scored_pass"
+    },
+    {
+      "trial_id": "merge-diff-arc-agi-task__Qdfhoa2",
+      "task": "merge-diff-arc-agi-task",
+      "attempt": 1,
+      "status": "passed",
+      "score": 1.0,
+      "error": {
+        "type": "",
+        "message": "BEGIN failed--compilation aborted at -e line 1."
+      },
+      "models": [
+        {
+          "model": "kimchi-dev/minimax-m3",
+          "llm_rounds": 49,
+          "tokens": {
+            "input": 1994772,
+            "cache_read": 0,
+            "cache_write": 0,
+            "output": 27415
+          },
+          "tools": [
+            {
+              "name": "Agent",
+              "calls": 11
+            },
+            {
+              "name": "start_ferment_step",
+              "calls": 11
+            },
+            {
+              "name": "complete_ferment_step",
+              "calls": 10
+            },
+            {
+              "name": "activate_ferment_phase",
+              "calls": 3
+            },
+            {
+              "name": "bash",
+              "calls": 3
+            },
+            {
+              "name": "complete_ferment_phase",
+              "calls": 3
+            },
+            {
+              "name": "complete_ferment",
+              "calls": 1
+            },
+            {
+              "name": "scope_ferment",
+              "calls": 1
+            }
+          ]
+        },
+        {
+          "model": "kimchi-dev/kimi-k2.7",
+          "llm_rounds": 56,
+          "tokens": {
+            "input": 170379,
+            "cache_read": 164608,
+            "cache_write": 0,
+            "output": 24701
+          },
+          "tools": [
+            {
+              "name": "bash",
+              "calls": 45
+            },
+            {
+              "name": "read",
+              "calls": 5
+            },
+            {
+              "name": "write",
+              "calls": 3
+            }
+          ]
+        }
+      ],
+      "duration_ms": 1664000,
+      "error_category": null,
+      "error_subcategory": null,
+      "verdict": "scored_pass"
+    },
+    {
+      "trial_id": "mteb-leaderboard__hGdA2hW",
+      "task": "mteb-leaderboard",
+      "attempt": 1,
+      "status": "passed",
+      "score": 1.0,
+      "error": {
+        "type": "",
+        "message": "{\"_id\":\"633581939ac57cf2967be686\",\"id\":\"mteb/leaderboard\",\"sdk\":\"docker\",\"likes\":7503,\"tags\":[\"docker\",\"leaderboard\",\"region:us\"],\"private\":false,\"author\":\"mteb\",\"sha\":\"2901eeb886ae92aaeadba25d47fe426438d98b2e\",\"lastModified\":\"2026-06-25T13:12:45.000Z\",\"cardData\":{\"title\":\"MTEB Leaderboard\",\"emoji\":\"\ud83d\udcca\",\"colorFrom\":\"blue\",\"colorTo\":\"indigo\",\"sdk\":\"docker\",\"app_port\":7860,\"app_file\":\"app.py\",\"pinned\":true,\"tags\":[\"leaderboard\"],\"startup_duration_timeout\":\"1h\",\"fullWidth\":true,\"license\":\"mit\",\"short_description\":\"Embedding Leaderboard\",\"thumbnail\":\"https://cdn-uploads.huggingface.co/production/uploads/61af4544d691b3aadd1f62b6/A56z-sYlNvd7XyeopfGhg.png\"},\"subdomain\":\"mteb-leaderboard\",\"gated\":false,\"disabled\":false,\"host\":\"https://mteb-leaderboard.hf.space\",\"models\":[\"aari1995/German_Semantic_STS_V2\",\"abhinand/MedEmbed-small-v0.1\",\"ai-forever/FRIDA\",\"ai-forever/ru-en-RoSBERTa\",\"ai-forever/sbert_large_mt_nlu_ru\",\"ai-forever/sbert_large_nlu_ru\",\"ai-sage/Giga-Embeddings-instruct\",\"AITeamVN/Vi"
+      },
+      "models": [
+        {
+          "model": "kimchi-dev/minimax-m3",
+          "llm_rounds": 23,
+          "tokens": {
+            "input": 1218076,
+            "cache_read": 0,
+            "cache_write": 0,
+            "output": 13637
+          },
+          "tools": [
+            {
+              "name": "Agent",
+              "calls": 4
+            },
+            {
+              "name": "bash",
+              "calls": 4
+            },
+            {
+              "name": "complete_ferment_step",
+              "calls": 3
+            },
+            {
+              "name": "start_ferment_step",
+              "calls": 3
+            },
+            {
+              "name": "web_fetch",
+              "calls": 3
+            },
+            {
+              "name": "web_search",
+              "calls": 2
+            },
+            {
+              "name": "write",
+              "calls": 2
+            },
+            {
+              "name": "activate_ferment_phase",
+              "calls": 1
+            },
+            {
+              "name": "complete_ferment_phase",
+              "calls": 1
+            },
+            {
+              "name": "read",
+              "calls": 1
+            },
+            {
+              "name": "scope_ferment",
+              "calls": 1
+            }
+          ]
+        },
+        {
+          "model": "kimchi-dev/kimi-k2.7",
+          "llm_rounds": 44,
+          "tokens": {
+            "input": 214500,
+            "cache_read": 367488,
+            "cache_write": 0,
+            "output": 9890
+          },
+          "tools": [
+            {
+              "name": "bash",
+              "calls": 36
+            },
+            {
+              "name": "edit",
+              "calls": 1
+            },
+            {
+              "name": "read",
+              "calls": 1
+            },
+            {
+              "name": "write",
+              "calls": 1
+            }
+          ]
+        }
+      ],
+      "duration_ms": 775000,
+      "error_category": null,
+      "error_subcategory": null,
+      "verdict": "scored_pass"
+    },
+    {
+      "trial_id": "pytorch-model-recovery__2D6Mfja",
+      "task": "pytorch-model-recovery",
+      "attempt": 1,
+      "status": "failed",
+      "score": 0.0,
+      "error": {
+        "type": "AgentTimeoutError",
+        "message": "/usr/local/lib/python3.13/site-packages/torch/_subclasses/functional_tensor.py:276: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /pytorch/torch/csrc/utils/tensor_numpy.cpp:81.)"
+      },
+      "models": [
+        {
+          "model": "kimchi-dev/minimax-m3",
+          "llm_rounds": 48,
+          "tokens": {
+            "input": 2113997,
+            "cache_read": 0,
+            "cache_write": 0,
+            "output": 29663
+          },
+          "tools": [
+            {
+              "name": "bash",
+              "calls": 24
+            },
+            {
+              "name": "start_ferment_step",
+              "calls": 5
+            },
+            {
+              "name": "write",
+              "calls": 5
+            },
+            {
+              "name": "complete_ferment_step",
+              "calls": 4
+            },
+            {
+              "name": "Agent",
+              "calls": 3
+            },
+            {
+              "name": "activate_ferment_phase",
+              "calls": 2
+            },
+            {
+              "name": "read",
+              "calls": 2
+            },
+            {
+              "name": "complete_ferment_phase",
+              "calls": 1
+            },
+            {
+              "name": "edit",
+              "calls": 1
+            },
+            {
+              "name": "scope_ferment",
+              "calls": 1
+            }
+          ]
+        },
+        {
+          "model": "kimchi-dev/minimax-m2.7",
+          "llm_rounds": 21,
+          "tokens": {
+            "input": 103312,
+            "cache_read": 0,
+            "cache_write": 0,
+            "output": 7575
+          },
+          "tools": [
+            {
+              "name": "bash",
+              "calls": 13
+            },
+            {
+              "name": "edit",
+              "calls": 3
+            },
+            {
+              "name": "write",
+              "calls": 3
+            }
+          ]
+        }
+      ],
+      "duration_ms": 2853000,
+      "error_category": null,
+      "error_subcategory": null,
+      "verdict": "agent_timeout"
+    },
+    {
+      "trial_id": "pytorch-model-recovery__fKWzJL2",
+      "task": "pytorch-model-recovery",
+      "attempt": 2,
+      "status": "failed",
+      "score": 0.0,
+      "error": {
+        "type": "AgentTimeoutError",
+        "message": "/usr/local/lib/python3.13/site-packages/torch/_subclasses/functional_tensor.py:276: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /pytorch/torch/csrc/utils/tensor_numpy.cpp:81.)"
+      },
+      "models": [
+        {
+          "model": "kimchi-dev/minimax-m3",
+          "llm_rounds": 51,
+          "tokens": {
+            "input": 988028,
+            "cache_read": 0,
+            "cache_write": 0,
+            "output": 34163
+          },
+          "tools": [
+            {
+              "name": "bash",
+              "calls": 22
+            },
+            {
+              "name": "Agent",
+              "calls": 6
+            },
+            {
+              "name": "read",
+              "calls": 5
+            },
+            {
+              "name": "start_ferment_step",
+              "calls": 5
+            },
+            {
+              "name": "complete_ferment_step",
+              "calls": 4
+            },
+            {
+              "name": "write",
+              "calls": 4
+            },
+            {
+              "name": "activate_ferment_phase",
+              "calls": 2
+            },
+            {
+              "name": "complete_ferment_phase",
+              "calls": 1
+            },
+            {
+              "name": "edit",
+              "calls": 1
+            },
+            {
+              "name": "scope_ferment",
+              "calls": 1
+            }
+          ]
+        }
+      ],
+      "duration_ms": 2808000,
+      "error_category": null,
+      "error_subcategory": null,
+      "verdict": "agent_timeout"
+    },
+    {
+      "trial_id": "pytorch-model-recovery__sad7ZLw",
+      "task": "pytorch-model-recovery",
+      "attempt": 3,
+      "status": "passed",
+      "score": 1.0,
+      "error": {
+        "type": "AgentTimeoutError",
+        "message": "/usr/local/lib/python3.13/site-packages/torch/_subclasses/functional_tensor.py:276: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /pytorch/torch/csrc/utils/tensor_numpy.cpp:81.)"
+      },
+      "models": [
+        {
+          "model": "kimchi-dev/minimax-m3",
+          "llm_rounds": 29,
+          "tokens": {
+            "input": 1045149,
+            "cache_read": 0,
+            "cache_write": 0,
+            "output": 18654
+          },
+          "tools": [
+            {
+              "name": "bash",
+              "calls": 7
+            },
+            {
+              "name": "Agent",
+              "calls": 5
+            },
+            {
+              "name": "start_ferment_step",
+              "calls": 5
+            },
+            {
+              "name": "complete_ferment_step",
+              "calls": 4
+            },
+            {
+              "name": "read",
+              "calls": 3
+            },
+            {
+              "name": "activate_ferment_phase",
+              "calls": 2
+            },
+            {
+              "name": "complete_ferment_phase",
+              "calls": 1
+            },
+            {
+              "name": "scope_ferment",
+              "calls": 1
+            }
+          ]
+        },
+        {
+          "model": "kimchi-dev/kimi-k2.6",
+          "llm_rounds": 53,
+          "tokens": {
+            "input": 396539,
+            "cache_read": 0,
+            "cache_write": 0,
+            "output": 23877
+          },
+          "tools": [
+            {
+              "name": "bash",
+              "calls": 41
+            },
+            {
+              "name": "read",
+              "calls": 9
+            },
+            {
+              "name": "write",
+              "calls": 9
+            },
+            {
+              "name": "ls",
+              "calls": 2
+            },
+            {
+              "name": "find",
+              "calls": 1
+            }
+          ]
+        }
+      ],
+      "duration_ms": 2828000,
+      "error_category": null,
+      "error_subcategory": null,
+      "verdict": "scored_pass"
+    }
+  ],
+  "source": {
+    "gitlab": {
+      "ref": "LLM-fix-overbroad-subagent-prompts",
+      "commit_sha": "457f38dce031f94d80c647c0fed2e567a3ab3f2e"
+    }
+  }
+}

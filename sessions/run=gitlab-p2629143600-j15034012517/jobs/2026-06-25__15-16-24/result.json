@@ -1,0 +1,43 @@
+{
+    "id": "867a1ecf-6f11-4fce-b379-014f6df360d2",
+    "started_at": "2026-06-25T15:16:26.835340",
+    "updated_at": "2026-06-25T16:02:05.217833",
+    "finished_at": "2026-06-25T16:02:05.217833",
+    "n_total_trials": 1,
+    "stats": {
+        "n_completed_trials": 1,
+        "n_errored_trials": 1,
+        "n_running_trials": 0,
+        "n_pending_trials": 0,
+        "n_cancelled_trials": 0,
+        "n_retries": 0,
+        "evals": {
+            "kimchi__multi-model__terminal-bench/terminal-bench-2": {
+                "n_trials": 1,
+                "n_errors": 1,
+                "metrics": [
+                    {
+                        "mean": 0.0
+                    }
+                ],
+                "pass_at_k": {},
+                "reward_stats": {
+                    "reward": {
+                        "0.0": [
+                            "build-cython-ext__nrZNNSq"
+                        ]
+                    }
+                },
+                "exception_stats": {
+                    "AgentTimeoutError": [
+                        "build-cython-ext__nrZNNSq"
+                    ]
+                }
+            }
+        },
+        "n_input_tokens": 1789962,
+        "n_cache_tokens": 0,
+        "n_output_tokens": 33394,
+        "cost_usd": null
+    }
+}

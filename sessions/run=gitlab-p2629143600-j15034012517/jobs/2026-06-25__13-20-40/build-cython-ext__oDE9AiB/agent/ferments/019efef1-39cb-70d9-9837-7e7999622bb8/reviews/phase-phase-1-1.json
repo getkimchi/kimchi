@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "fermentId": "019efef1-39cb-70d9-9837-7e7999622bb8",
+  "phaseId": "phase-1",
+  "phaseName": "Setup and Source Exploration",
+  "attempt": 1,
+  "timestamp": "2026-06-25T14:03:50.324Z",
+  "goal": "Clone the pyknotid 0.5.3 source and inventory the Cython extension files plus the build configuration so the next phase knows exactly which lines break NumPy 2.0+ compatibility.",
+  "summary": "Phase 1 (Setup and Source Exploration) complete. Cloned pyknotid 0.5.3 to /app/pyknotid, inventoried 4 .pyx sources and the Cython-based setup.py, and produced a NumPy 2.0+ compat scan that identifies 1 np.bool and 6 np.int occurrences needing fixes plus a distutils→setuptools concern in setup.py. All output captured in /app/.kimchi/ferments/019efef1-39cb-70d9-9837-7e7999622bb8/docs/ (clone-result.md, inventory.md, numpy-compat-scan.md).",
+  "stepSummaries": "  1. Run `git clone --depth 1 --branch 0.5.3 https://github.com/SPOCKnots/pyknotid.git /app/pyknotid` and verify the expected top-level layout (pyknotid/, tests/, setup.py or pyproject.toml). [verified]\n  2. Inventory the .pyx/.pxd/.pxi files used by chelpers, ccomplexity, cinvariants, plus setup.py / pyproject.toml build config and any existing compiled artifacts. Record exact paths. [verified]\n  3. Grep the Cython sources for known-broken NumPy 2.0+ patterns: `PyArray_API`, `import_array`, deprecated dtype keyword usage, `np.int_`/`np.float_` aliases, and any `PyArray_FromDims`-style removals. Produce a concrete list of offending lines. [verified]",
+  "diffAvailable": false,
+  "flags": [],
+  "derivedGrade": "A",
+  "reviewerRationale": "All gates pass; project checks validate.",
+  "gateVerdicts": [
+    {
+      "id": "F1",
+      "verdict": "pass",
+      "rationale": "All three steps used real filesystem verifications: clone+layout test, find inventory grep, and deprecated-pattern grep that printed SCAN_OK exit 0. No proxy-only steps.",
+      "evidence": "Step 1: 'OK' from layout check; Step 2: 'INVENTORY_OK' from find+ls; Step 3: 'SCAN_OK' from regex grep"
+    },
+    {
+      "id": "F2",
+      "verdict": "pass",
+      "rationale": "The phase goal was to clone + inventory + identify incompat patterns. The clone produced the source tree, the inventory enumerated the four .pyx files and setup.py build config, and the scan produced an explicit list of fix targets (np.bool x1, np.int x6). All three deliverables exist.",
+      "evidence": "/app/pyknotid/pyknotid/cinvariants.pyx, /app/pyknotid/pyknotid/spacecurves/chelpers.pyx, /app/pyknotid/pyknotid/spacecurves/ccomplexity.pyx, /app/pyknotid/pyknotid/simplify/coctree.pyx all exist; docs/numpy-compat-scan.md contains the fix list"
+    },
+    {
+      "id": "F3",
+      "verdict": "pass",
+      "rationale": "Nothing deferred. All three planned steps completed with their verify commands passing.",
+      "evidence": "n/a"
+    }
+  ],
+  "projectChecks": {
+    "discovered": false,
+    "anyFailed": false,
+    "commands": []
+  }
+}

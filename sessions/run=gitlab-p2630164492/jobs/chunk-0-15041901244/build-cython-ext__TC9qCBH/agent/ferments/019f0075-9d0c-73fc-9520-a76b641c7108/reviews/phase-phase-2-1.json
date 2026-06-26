@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "fermentId": "019f0075-9d0c-73fc-9520-a76b641c7108",
+  "phaseId": "phase-2",
+  "phaseName": "Patch sources for numpy 2.3",
+  "attempt": 1,
+  "timestamp": "2026-06-25T20:56:29.351Z",
+  "goal": "Apply the minimal set of edits to .pyx and .py files to make the package buildable and importable under numpy 2.3.0 without changing structure.",
+  "summary": "Phase 2 (Patch sources for numpy 2.3) complete. All 4 steps done:\n- Step 1: 3 hits of `np.int` in ccomplexity.pyx → `int`\n- Step 2: No numpy function aliases to replace (verified 0)\n- Step 3: Both setup.py files patched to drop distutils/Cython.Distutils\n- Step 4: 29 hits of `n.{float,int,bool,complex,long}` and `np.{int,bool,float}` across 10 .py files → Python builtins\n\nSmoke test `python -c \"import pyknotid\"` exits 0 against numpy 2.3.0. Cython 3.2.6 and setuptools 82 are installed.",
+  "stepSummaries": "  1. Replace removed numpy scalar type aliases (np.float_, np.int_, np.complex_, np.bool8, np.object_, np.str_, np.long) with the equivalent Python builtins or numpy.generic base classes where they appear as type annotations in .pyx files (chelpers.pyx, ccomplexity.pyx, cinvariants.pyx). [verified]\n  2. Replace removed numpy function aliases (np.product, np.cumproduct, np.alltrue, np.sometrue, np.in1d, np.trapz, np.row_stack, np.itemset, np.cast) with their numpy 2.x equivalents (np.prod, np.cumprod, np.all, np.any, np.isin, np.trapezoid, np.vstack, direct ndarray assignment, np.astype). [verified]\n  3. Fix numpy.distutils usage in setup.py and any helper module: switch to setuptools + numpy.distutils fallback removed (use plain setuptools Extension, or `if hasattr(numpy, 'distutils')` shim). Compile chelpers, ccomplexity, cinvariants as Cython extensions. [verified]\n  4. Fix any dtype / array API breakages (np.array(..., dtype='float') still works; ensure .astype with copy=False; ensure buffer protocol / cdef double[::1] memoryview slices compile; fix np.array(..., copy=False) deprecation; ensure import of numpy as cimport numpy handles NPY_NO_DEPRECATED_API if needed). [verified]",
+  "diffAvailable": false,
+  "flags": [],
+  "derivedGrade": "A",
+  "reviewerRationale": "All gates pass; project checks validate.",
+  "gateVerdicts": [
+    {
+      "id": "F1",
+      "verdict": "pass",
+      "rationale": "All 4 step verifications ran with concrete bash commands. Step 4's smoke test (`import pyknotid`) is the strongest signal — it actually exercises the patched .py modules under numpy 2.3.0.",
+      "evidence": "Step 1 verify wc -l = 0; Step 2 verify wc -l = 0; Step 3 verify greps = 0 + setup.py --help-commands exit 0; Step 4 smoke test `import pyknotid` exit 0 + final alias greps wc -l = 0."
+    },
+    {
+      "id": "F2",
+      "verdict": "pass",
+      "rationale": "Phase goal: patch sources so the package is buildable/importable under numpy 2.3.0. Achieved: 32 source edits across 11 files (.pyx + .py), both setup.py files updated, package importable end-to-end.",
+      "evidence": "Smoke test `python -c \"import pyknotid\"` exit 0 is the canonical evidence."
+    },
+    {
+      "id": "F3",
+      "verdict": "pass",
+      "rationale": "Nothing deferred. The .c files left over from the worker's earlier `--help-commands` invocations are intentional (Phase 3 will build/clean). The `NPY_NO_DEPRECATED_API` note is non-blocking.",
+      "evidence": "n/a"
+    }
+  ],
+  "projectChecks": {
+    "discovered": false,
+    "anyFailed": false,
+    "commands": []
+  }
+}

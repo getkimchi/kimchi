@@ -1,0 +1,9 @@
+{
+  "chunk_index": 0,
+  "chunk_attempt": 3,
+  "exit_code": 1,
+  "needs_retry": [
+    "build-cython-ext"
+  ],
+  "timestamp": "2026-06-25T16:02:15Z"
+}

@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "fermentId": "019f0078-e656-74ad-a821-933bc2bcb2e0",
+  "phaseId": "phase-1",
+  "phaseName": "Install dependencies and download model",
+  "attempt": 1,
+  "timestamp": "2026-06-25T20:37:05.051Z",
+  "goal": "Install transformers, torch, and flask into the system Python, then snapshot distilbert-base-uncased-finetuned-sst-2-english into /app/model_cache/sentiment_model so it can be loaded offline.",
+  "summary": "Phase 1 installed/confirmed the runtime and produced the on-disk model snapshot. transformers 4.56.0, torch 2.7.1+cu126, flask 3.1.1 importable system-wide. distilbert-base-uncased-finetuned-sst-2-english snapshot saved at /app/model_cache/sentiment_model with config.json, tokenizer_config.json, vocab.txt, tokenizer.json, special_tokens_map.json, and model.safetensors (~255 MB). Offline reload + forward pass already validated end-to-end inside step 2.",
+  "stepSummaries": "  1. Install required Python packages system-wide: transformers, torch (CPU), flask, and a JSON helper if needed. Use pip install --no-cache-dir to keep the image small. [verified]\n  2. Download distilbert-base-uncased-finetuned-sst-2-english and persist it under /app/model_cache/sentiment_model using AutoTokenizer.from_pretrained and AutoModelForSequenceClassification.from_pretrained then .save_pretrained. Confirm config.json, tokenizer files, and model weights exist. [verified]",
+  "diffAvailable": false,
+  "flags": [],
+  "derivedGrade": "A",
+  "reviewerRationale": "All gates pass; project checks validate.",
+  "gateVerdicts": [
+    {
+      "id": "F1",
+      "verdict": "pass",
+      "rationale": "Both steps used real verification: step 1 ran an import smoke that printed three version strings; step 2 ran a filesystem assertion plus an offline forward pass that produced expected logits. Nothing is proxy-only.",
+      "evidence": "Step 1 verify printed `4.56.0 2.7.1+cu126 3.1.1`; step 2 verify `test -f` + grep matched model.safetensors and offline forward pass returned (1, 2) logits with argmax POSITIVE."
+    },
+    {
+      "id": "F2",
+      "verdict": "pass",
+      "rationale": "Phase goal is \"install runtime + snapshot the model offline\" — both halves are satisfied. The combined output is a self-contained model directory that the next phase's Flask app will load with `from_pretrained(\"/app/model_cache/sentiment_model\")` under TRANSFORMERS_OFFLINE=1.",
+      "evidence": "/app/model_cache/sentiment_model/{config.json, tokenizer_config.json, model.safetensors, vocab.txt, tokenizer.json, special_tokens_map.json} all present."
+    },
+    {
+      "id": "F3",
+      "verdict": "pass",
+      "rationale": "Nothing deferred. Both planned steps executed and verified; offline-reload test was an extra sanity check, not deferred work.",
+      "evidence": "Phase plan had 2 steps; both completed with terminal verdicts; no skipped or failed items."
+    }
+  ],
+  "projectChecks": {
+    "discovered": false,
+    "anyFailed": false,
+    "commands": []
+  }
+}

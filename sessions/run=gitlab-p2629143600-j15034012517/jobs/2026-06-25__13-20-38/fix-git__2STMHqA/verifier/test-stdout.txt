@@ -1,0 +1,58 @@
+Get:1 http://deb.debian.org/debian bookworm InRelease [151 kB]
+Get:2 http://deb.debian.org/debian bookworm-updates InRelease [55.4 kB]
+Get:3 http://deb.debian.org/debian-security bookworm-security InRelease [48.0 kB]
+Get:4 http://deb.debian.org/debian bookworm/main amd64 Packages [8790 kB]
+Get:5 http://deb.debian.org/debian-security bookworm-security/main amd64 Packages [313 kB]
+Fetched 9357 kB in 2s (6122 kB/s)
+Reading package lists...
+Reading package lists...
+Building dependency tree...
+Reading state information...
+The following additional packages will be installed:
+  libcurl4
+The following NEW packages will be installed:
+  curl libcurl4
+0 upgraded, 2 newly installed, 0 to remove and 37 not upgraded.
+Need to get 707 kB of archives.
+After this operation, 1361 kB of additional disk space will be used.
+Get:1 http://deb.debian.org/debian bookworm/main amd64 libcurl4 amd64 7.88.1-10+deb12u14 [392 kB]
+Get:2 http://deb.debian.org/debian bookworm/main amd64 curl amd64 7.88.1-10+deb12u14 [316 kB]
+debconf: delaying package configuration, since apt-utils is not installed
+Fetched 707 kB in 0s (5238 kB/s)
+Selecting previously unselected package libcurl4:amd64.
+(Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 10322 files and directories currently installed.)
+Preparing to unpack .../libcurl4_7.88.1-10+deb12u14_amd64.deb ...
+Unpacking libcurl4:amd64 (7.88.1-10+deb12u14) ...
+Selecting previously unselected package curl.
+Preparing to unpack .../curl_7.88.1-10+deb12u14_amd64.deb ...
+Unpacking curl (7.88.1-10+deb12u14) ...
+Setting up libcurl4:amd64 (7.88.1-10+deb12u14) ...
+Setting up curl (7.88.1-10+deb12u14) ...
+Processing triggers for libc-bin (2.36-9+deb12u10) ...
+downloading uv 0.9.5 x86_64-unknown-linux-gnu
+no checksums to verify
+installing to /root/.local/bin
+  uv
+  uvx
+everything's installed!
+
+To add $HOME/.local/bin to your PATH, either restart your shell or run:
+
+    source $HOME/.local/bin/env (sh, bash, zsh)
+    source $HOME/.local/bin/env.fish (fish)
+Downloading pygments (1.2MiB)
+ Downloading pygments
+Installed 6 packages in 27ms
+============================= test session starts ==============================
+platform linux -- Python 3.13.7, pytest-8.4.1, pluggy-1.6.0
+rootdir: /tests
+plugins: json-ctrf-0.3.5
+collected 2 items
+
+../../tests/test_outputs.py ..                                           [100%]
+
+==================================== PASSES ====================================
+=========================== short test summary info ============================
+PASSED ../../tests/test_outputs.py::test_about_file
+PASSED ../../tests/test_outputs.py::test_layout_file
+============================== 2 passed in 0.36s ===============================

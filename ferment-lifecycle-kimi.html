@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ferment Lifecycle — Complete Reference</title>
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+    mermaid.initialize({ startOnLoad: true, theme: 'dark' });
+  </script>
+  <style>
+    :root {
+      --bg: #0b0f14;
+      --panel: #111822;
+      --panel-2: #141e2b;
+      --text: #d8e2ec;
+      --muted: #8fa3b8;
+      --accent: #4ecdc4;
+      --accent-2: #ff6b6b;
+      --accent-3: #ffe66d;
+      --accent-4: #95e1d3;
+      --border: #1f2d3d;
+      --code-bg: #0d131a;
+      --ok: #4ade80;
+      --warn: #fbbf24;
+      --fail: #f87171;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+    }
+    header {
+      background: linear-gradient(135deg, #111822 0%, #0b1219 100%);
+      border-bottom: 1px solid var(--border);
+      padding: 3rem 2rem 2rem;
+      text-align: center;
+    }
+    header h1 { margin: 0; font-size: 2.5rem; color: var(--accent); }
+    header p { margin: 0.5rem 0 0; color: var(--muted); font-size: 1.1rem; }
+    nav {
+      position: sticky;
+      top: 0;
+      background: rgba(11, 15, 20, 0.95);
+      backdrop-filter: blur(8px);
+      border-bottom: 1px solid var(--border);
+      padding: 0.75rem 1.5rem;
+      z-index: 100;
+      overflow-x: auto;
+      white-space: nowrap;
+    }
+    nav a {
+      color: var(--muted);
+      text-decoration: none;
+      margin-right: 1.25rem;
+      font-size: 0.9rem;
+      font-weight: 500;
+    }
+    nav a:hover { color: var(--accent); }
+    main { max-width: 1100px; margin: 0 auto; padding: 2rem; }
+    section { margin-bottom: 3.5rem; }
+    h2 { color: var(--accent); border-bottom: 1px solid var(--border); padding-bottom: 0.5rem; margin-top: 0; }
+    h3 { color: var(--accent-4); margin-top: 2rem; }
+    h4 { color: var(--accent-3); margin-top: 1.5rem; }
+    p { margin: 0.75rem 0; }
+    code, pre {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      background: var(--code-bg);
+      border-radius: 6px;
+    }
+    code { padding: 0.15rem 0.4rem; font-size: 0.9em; }
+    pre {
+      padding: 1rem;
+      overflow-x: auto;
+      border: 1px solid var(--border);
+      font-size: 0.85rem;
+    }
+    .callout {
+      border-left: 4px solid var(--accent);
+      background: var(--panel);
+      padding: 1rem 1.25rem;
+      margin: 1rem 0;
+      border-radius: 0 8px 8px 0;
+    }
+    .callout.warn { border-left-color: var(--warn); }
+    .callout.danger { border-left-color: var(--fail); }
+    .callout.info { border-left-color: #60a5fa; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1rem 0;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      font-size: 0.92rem;
+    }
+    th, td { padding: 0.7rem 0.9rem; border: 1px solid var(--border); text-align: left; vertical-align: top; }
+    th { background: var(--panel-2); color: var(--accent); font-weight: 600; }
+    tr:nth-child(even) { background: rgba(255,255,255,0.02); }
+    .status-draft { color: #60a5fa; }
+    .status-planned { color: #a78bfa; }
+    .status-running { color: var(--ok); }
+    .status-paused { color: var(--warn); }
+    .status-complete { color: var(--accent); }
+    .status-abandoned { color: var(--fail); }
+    .status-active { color: var(--ok); }
+    .status-completed { color: var(--accent); }
+    .status-skipped { color: var(--muted); }
+    .status-failed { color: var(--fail); }
+    .status-pending { color: var(--muted); }
+    .status-done { color: var(--ok); }
+    .status-verified { color: var(--accent); }
+    .mermaid { background: transparent !important; }
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+    @media (max-width: 800px) { .two-col { grid-template-columns: 1fr; } }
+    ul.tight li { margin-bottom: 0.4rem; }
+    .legend span { display: inline-block; margin-right: 1rem; }
+    .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; }
+    footer { text-align: center; padding: 2rem; color: var(--muted); font-size: 0.85rem; border-top: 1px solid var(--border); }
+  </style>
+</head>
+<body>
+<header>
+  <h1>🍺 Ferment Lifecycle</h1>
+  <p>Complete technical reference for Kimchi’s autonomous project-execution mode</p>
+</header>
+
+<nav>
+  <a href="#philosophy">Philosophy</a>
+  <a href="#states">States</a>
+  <a href="#lifecycle">Lifecycle</a>
+  <a href="#engine">Engine</a>
+  <a href="#state-machine">State Machine</a>
+  <a href="#persistence">Persistence</a>
+  <a href="#scoping">Scoping</a>
+  <a href="#execution">Execution</a>
+  <a href="#verification">Verification</a>
+  <a href="#continuation">Continuation</a>
+  <a href="#parallel">Parallel</a>
+  <a href="#recovery">Recovery</a>
+  <a href="#knowledge">Knowledge</a>
+  <a href="#tool-profiles">Tool Profiles</a>
+  <a href="#commands">Commands</a>
+  <a href="#files">Files</a>
+</nav>
+
+<main>
+
+<section id="philosophy">
+  <h2>1. Core Philosophy</h2>
+  <p><strong>“The plan IS the state.”</strong> A ferment is a single JSON file (<code>.kimchi/ferments/&lt;uuid&gt;.json</code>). The harness reads it at session start, a deterministic engine decides what to do next, and every mutation is immediately persisted. If the session crashes or ends, the next session resumes from exactly the same point.</p>
+
+  <div class="callout">
+    <strong>Three-layer architecture</strong>
+    <ol class="tight">
+      <li><strong>Tool handlers</strong> (<code>src/extensions/ferment/tools/</code>) — validate UI gates, run side effects (judge, verification), format LLM-facing text.</li>
+      <li><strong>Pure state machine</strong> (<code>src/ferment/state-machine.ts</code>) — <code>(ferment, command, ctx) → next ferment</code>; no I/O, no time, no randomness.</li>
+      <li><strong>Storage / event store</strong> (<code>src/ferment/store.ts</code>, <code>event-store.ts</code>) — atomic read/write and an append-only event log.</li>
+    </ol>
+  </div>
+</section>
+
+<section id="states">
+  <h2>2. Status Taxonomy</h2>
+
+  <h3>2.1 Ferment status</h3>
+  <table>
+    <tr><th>Status</th><th>Meaning</th><th>Can mutate?</th></tr>
+    <tr><td><span class="status-draft">draft</span></td><td>Created; scoping in progress.</td><td>Yes, via scoping tools.</td></tr>
+    <tr><td><span class="status-planned">planned</span></td><td>Scoping confirmed; no phase activated yet.</td><td>Yes.</td></tr>
+    <tr><td><span class="status-running">running</span></td><td>At least one phase is active.</td><td>Yes.</td></tr>
+    <tr><td><span class="status-paused">paused</span></td><td>User-intervention/session state; most tools blocked.</td><td>Only <code>resume</code> / <code>abandon</code>.</td></tr>
+    <tr><td><span class="status-complete">complete</span></td><td>Explicitly finalized after all phases terminal.</td><td>No.</td></tr>
+    <tr><td><span class="status-abandoned">abandoned</span></td><td>Permanently stopped.</td><td>No.</td></tr>
+  </table>
+
+  <h3>2.2 Phase status</h3>
+  <p><code>planned → active → completed / skipped / failed</code>. A failed phase can be retried (<code>activate_ferment_phase</code>) or bypassed (<code>skip_ferment_phase</code>).</p>
+
+  <h3>2.3 Step status</h3>
+  <p><code>pending → running → done / verified / skipped / failed</code>. <code>failed</code> steps can be recovered by starting them again. <code>done</code> means completed without a passing verification command; <code>verified</code> means the verification command returned exit code 0.</p>
+</section>
+
+<section id="lifecycle">
+  <h2>3. Lifecycle Diagrams</h2>
+
+  <h3>3.1 Ferment lifecycle</h3>
+  <pre class="mermaid">
+stateDiagram-v2
+    [*] --> Draft: /ferment new
+    Draft --> Planned: scope_ferment
+    Planned --> Running: activate_ferment_phase
+    Running --> Planned: complete/skip/fail phase\n(no active phase left)
+    Planned --> Paused: /ferment pause
+    Running --> Paused: /ferment pause
+    Paused --> Running: /ferment resume (active phase exists)
+    Paused --> Planned: /ferment resume (no active phase)
+    Planned --> Complete: complete_ferment
+    Running --> Complete: complete_ferment
+    Draft --> Abandoned: /ferment abandon
+    Planned --> Abandoned: /ferment abandon
+    Running --> Abandoned: /ferment abandon
+    Paused --> Abandoned: /ferment abandon
+  </pre>
+
+  <h3>3.2 Phase lifecycle</h3>
+  <pre class="mermaid">
+stateDiagram-v2
+    [*] --> Planned
+    Planned --> Active: activate_ferment_phase
+    Active --> Completed: complete_ferment_phase
+    Active --> Skipped: skip_ferment_phase
+    Active --> Failed: fail_ferment_phase
+    Failed --> Active: activate_ferment_phase (retry)
+    Failed --> Skipped: skip_ferment_phase (bypass)
+  </pre>
+
+  <h3>3.3 Step lifecycle</h3>
+  <pre class="mermaid">
+stateDiagram-v2
+    [*] --> Pending
+    Pending --> Running: start_ferment_step
+    Running --> Done: complete_ferment_step
+    Running --> Verified: verify_ferment_step
+    Pending --> Skipped: skip_ferment_step
+    Running --> Skipped: skip_ferment_step
+    Pending --> Failed: fail_ferment_step
+    Running --> Failed: fail_ferment_step
+    Failed --> Running: start_ferment_step (retry)
+    Failed --> Skipped: skip_ferment_step (bypass)
+  </pre>
+</section>
+
+<section id="engine">
+  <h2>4. The Forward Engine (<code>determineNextAction</code>)</h2>
+  <p>The engine in <code>src/ferment/engine.ts</code> reads canonical ferment state and returns the next action the LLM should take. It is priority-ordered:</p>
+
+  <table>
+    <tr><th>Priority</th><th>Condition</th><th>Action</th></tr>
+    <tr><td>0</td><td>Status is <code>complete</code> or <code>abandoned</code></td><td><code>undefined</code> (idle)</td></tr>
+    <tr><td>1</td><td>No phases defined</td><td><code>scope</code></td></tr>
+    <tr><td>2</td><td>Status is <code>paused</code></td><td><code>pause</code></td></tr>
+    <tr><td>3</td><td>Any phase <code>failed</code></td><td><code>recover_phase</code></td></tr>
+    <tr><td>4</td><td>All phases terminal</td><td><code>complete_ferment</code></td></tr>
+    <tr><td>5</td><td>No active phase, status <code>planned</code></td><td><code>activate_phase</code> (first planned)</td></tr>
+    <tr><td>6</td><td>Status <code>running</code> but no active phase</td><td><code>pause</code> (recovered state)</td></tr>
+    <tr><td>7</td><td>Active phase has no steps</td><td><code>refine</code></td></tr>
+    <tr><td>8</td><td>Active step <code>failed</code></td><td><code>recover_step</code></td></tr>
+    <tr><td>9</td><td>Step pending</td><td><code>start_step</code></td></tr>
+    <tr><td>10</td><td>Step running</td><td><code>complete_step</code> (suggestion)</td></tr>
+    <tr><td>11</td><td>All steps terminal</td><td><code>complete_phase</code></td></tr>
+  </table>
+
+  <div class="callout info">
+    The engine returns a <code>DeclarativeAction</code> (kind + IDs + reason). The scheduler turns that into a context-rich nudge naming the exact tool, IDs, and description/verify command.
+  </div>
+</section>
+
+<section id="state-machine">
+  <h2>5. Pure State Machine (<code>applyCommand</code>)</h2>
+  <p><code>src/ferment/state-machine.ts</code> contains pure transition logic. Every command either returns the next <code>Ferment</code> or a typed <code>TransitionError</code> with a code such as <code>FERMENT_NOT_IN_STATUS</code>, <code>PHASE_NOT_IN_STATUS</code>, <code>STEP_RUNNING</code>, or <code>CONCURRENT_NON_PARALLEL_STEP</code>.</p>
+
+  <h3>5.1 Key invariants enforced</h3>
+  <ul class="tight">
+    <li>Only one non-parallel step may run at a time.</li>
+    <li>A phase cannot be refined while a step inside it is <code>running</code> (would destroy in-flight work).</li>
+    <li><code>complete_ferment</code> requires every phase to be terminal.</li>
+    <li>Pausing resets <code>running</code> steps back to <code>pending</code> (their subagent is killed).</li>
+    <li>Singleton <code>parallel_group</code> values collapse to sequential; only cohorts of size ≥2 are parallel.</li>
+  </ul>
+
+  <h3>5.2 Lifecycle helpers</h3>
+  <p><code>src/ferment/lifecycle.ts</code> provides helpers such as <code>activateSinglePhase</code> (deactivates any other active phase first) and <code>settleAfterPhaseTerminalPatch</code> (sets <code>status</code> back to <code>planned</code> or <code>running</code> based on remaining active phases).</p>
+</section>
+
+<section id="persistence">
+  <h2>6. Persistence & Event Store</h2>
+
+  <h3>6.1 Legacy snapshot</h3>
+  <p><code>FermentStorage</code> (<code>src/ferment/store.ts</code>) reads/writes <code>.kimchi/ferments/&lt;uuid&gt;.json</code>. It supports migration from V1→V2→V3→V4, caches ferments in memory, resolves by ID prefix or fuzzy name, and writes atomically via temp-file + rename.</p>
+
+  <h3>6.2 Event log (source of truth)</h3>
+  <p>The new event-store model (<code>src/ferment/event-store.ts</code>) maintains an append-only <code>&lt;uuid&gt;.events.jsonl</code> file. Every state mutation produces one or more typed events (e.g. <code>phase_activated</code>, <code>step_started</code>, <code>step_completed</code>, <code>ferment_completed</code>). Each event carries <code>preStateHash</code> / <code>postStateHash</code> for tamper detection.</p>
+
+  <h3>6.3 Command → events</h3>
+  <p><code>src/ferment/event-mapper.ts</code> translates each successful <code>Command</code> into the events appended to the log. It folds each emitted event back onto a cursor so the final hash matches the real fold.</p>
+
+  <h3>6.4 File layout</h3>
+  <pre>
+.kimchi/ferments/
+  &lt;uuid&gt;.json              ← snapshot cache (legacy format)
+  &lt;uuid&gt;.events.jsonl      ← append-only event log
+  &lt;uuid&gt;.phases.json       ← immutable phase snapshots
+  &lt;uuid&gt;.stats.json        ← computed stats cache
+  </pre>
+
+  <h3>6.5 Directory resolution</h3>
+  <ol>
+    <li><code>KIMCHI_FERMENTS_DIR</code> environment variable.</li>
+    <li><code>&lt;project-root&gt;/.kimchi/ferments</code> when inside a git/package project.</li>
+    <li><code>~/.config/kimchi/ferments</code> global fallback.</li>
+  </ol>
+</section>
+
+<section id="scoping">
+  <h2>7. Scoping Flow</h2>
+
+  <h3>7.1 Interactive creation</h3>
+  <pre>
+&gt; /ferment
+"What would you like to ferment?"
+   ↓
+Agent drafts goal, success criteria, constraints, assumptions, 1–7 phases.
+   ↓
+If ambiguous, asks focused scoping questions via <code>propose_ferment_scoping</code>.
+   ↓
+User reviews markdown plan in a TUI dropdown.
+   ↓
+User chooses "Start execution" → <code>scope_ferment</code> → status becomes planned.
+  </pre>
+
+  <h3>7.2 Scoping fields</h3>
+  <table>
+    <tr><th>Field</th><th>Stored in</th><th>Tool</th></tr>
+    <tr><td>Goal</td><td><code>goal</code>, <code>scoping.goal</code></td><td><code>scope_ferment</code> / <code>update_ferment_scope_field goal</code></td></tr>
+    <tr><td>Success criteria</td><td><code>successCriteria[]</code>, <code>scoping.criteria</code></td><td><code>scope_ferment</code> / <code>update_ferment_scope_field criteria</code></td></tr>
+    <tr><td>Constraints</td><td><code>constraints[]</code>, <code>scoping.constraints</code></td><td><code>scope_ferment</code> / <code>update_ferment_scope_field constraints</code></td></tr>
+    <tr><td>Assumptions</td><td><code>scoping.assumptions</code></td><td><code>scope_ferment</code> / <code>update_ferment_scope_field assumptions</code></td></tr>
+    <tr><td>Phases</td><td><code>phases[]</code>, <code>scoping.phases</code></td><td><code>scope_ferment</code></td></tr>
+  </table>
+
+  <h3>7.3 Gate validation</h3>
+  <p>Scoping requires P1, P2, P3 plan-scope gates. Each gate needs <code>id</code>, <code>verdict</code> (<code>pass</code>/<code>flag</code>/<code>omitted</code>), <code>rationale</code>, and <code>evidence</code>.</p>
+</section>
+
+<section id="execution">
+  <h2>8. Execution Flow</h2>
+
+  <h3>8.1 Overview</h3>
+  <pre>
+draft → planned → running
+            ↓
+    activate_ferment_phase(phase-1)
+            ↓
+    refine_ferment_phase(phase-1, steps)
+            ↓
+    start_ferment_step(phase-1, step-1)
+            ↓
+    Agent worker executes step
+            ↓
+    complete_ferment_step(phase-1, step-1)
+            ↓
+    ... next step ...
+            ↓
+    complete_ferment_phase(phase-1)
+            ↓
+    activate_ferment_phase(phase-2) or pause on manual policy
+  </pre>
+
+  <h3>8.2 Activating a phase</h3>
+  <p><code>activate_ferment_phase</code> transitions a <code>planned</code> (or <code>failed</code>) phase to <code>active</code>. If a different phase was active, it is demoted to <code>planned</code>. For parallel cohorts, <code>activate_phase_group</code> atomically activates every phase sharing the same <code>groupIndex</code>.</p>
+
+  <h3>8.3 Refining a phase</h3>
+  <p><code>refine_ferment_phase</code> populates <code>steps[]</code>. Each step has a <code>description</code> and optional <code>verify</code> command. Steps can also belong to a <code>parallel_group</code>. Refine is rejected if any step in the phase is <code>running</code>.</p>
+
+  <h3>8.4 Starting a step</h3>
+  <p><code>start_ferment_step</code> marks a step <code>running</code>. It records the git HEAD ref, emits a plan-first preamble, provides worker context (decisions, memories, prior step summaries), and returns parallel siblings if the step is part of a cohort.</p>
+
+  <h3>8.5 Completing a step</h3>
+  <p><code>complete_ferment_step</code>:</p>
+  <ol>
+    <li>Validates step-level gates; agent-emitted <code>flag</code> verdicts block the call.</li>
+    <li>If the step has a <code>verify</code> command, runs it (60s timeout, 2 retries by default).</li>
+    <li>On exit 0, status becomes <code>verified</code>; otherwise <code>done</code>.</li>
+    <li>A judge (Claude Opus 4.6) classifies the result and assigns a letter grade A–F.</li>
+    <li>Records a pending compaction so the session can be compacted at <code>agent_end</code>.</li>
+  </ol>
+
+  <h3>8.6 Completing a phase</h3>
+  <p><code>complete_ferment_phase</code>:</p>
+  <ol>
+    <li>Validates phase-level gates P1/P2/P3.</li>
+    <li>Runs deterministic project-check validation (tests, lint, typecheck are discovered but not executed).</li>
+    <li>Gathers git evidence (diff, files changed) since the phase started.</li>
+    <li>Combines project-check flags and gate-verdict flags; block flags produce grade F, warn flags produce B.</li>
+    <li>Persists review evidence and escalates after repeated block retries.</li>
+    <li>Applies continuation policy (manual = pause at phase boundary, automated = continue).</li>
+  </ol>
+</section>
+
+<section id="verification">
+  <h2>9. Verification & Grading</h2>
+
+  <h3>9.1 Verification command</h3>
+  <p>Each step may specify a bash command. When the step completes, the harness executes it. The result (exit code, stdout, stderr) is stored in <code>StepResult</code>. A non-zero exit does not automatically fail the step; instead the judge decides whether to pass, retry, or fail.</p>
+
+  <h3>9.2 Grades</h3>
+  <table>
+    <tr><th>Grade</th><th>Meaning</th></tr>
+    <tr><td>A</td><td>Excellent — objective met.</td></tr>
+    <tr><td>B</td><td>Good — minor gaps / warn flags.</td></tr>
+    <tr><td>C</td><td>Acceptable — significant gaps.</td></tr>
+    <tr><td>D</td><td>Poor — objective barely met.</td></tr>
+    <tr><td>F</td><td>Failed — objective not met / block flags.</td></tr>
+  </table>
+
+  <h3>9.3 Grade propagation</h3>
+  <p>Step grades feed into phase grades; phase grades feed into the final ferment grade at <code>complete_ferment</code>. Grades are shown in the dashboard and injected back into the planner context.</p>
+</section>
+
+<section id="continuation">
+  <h2>10. Continuation Policy</h2>
+  <p>The runtime continuation policy decides whether the engine’s next action is executed automatically or waits for user input.</p>
+
+  <table>
+    <tr><th>Policy</th><th>Behavior</th></tr>
+    <tr><td><strong>manual</strong></td><td>Agent asks before moving to the next phase. Work inside the current phase continues autonomously.</td></tr>
+    <tr><td><strong>automated</strong></td><td>Keeps going through all stages until complete, blocked, paused, or failed.</td></tr>
+  </table>
+
+  <p>Controlled by <code>/ferment manual</code> and <code>/ferment auto</code>.</p>
+
+  <h3>10.1 Phase boundary detection</h3>
+  <p><code>src/extensions/ferment/continuation.ts</code> detects a manual phase boundary when the next action is <code>activate_phase</code> and at least one earlier phase is already terminal. The UI shows a dropdown: “Continue to next phase / Pause here / Let me say something.”</p>
+</section>
+
+<section id="parallel">
+  <h2>11. Parallel Execution</h2>
+  <p>Phases or steps sharing the same <code>parallel_group</code> number execute concurrently. Singleton groups collapse back to sequential to avoid mis-signaling the engine and UI.</p>
+
+  <pre>
+Phase 3: "Backend API"    parallel_group: 1
+Phase 4: "Frontend UI"    parallel_group: 1
+Phase 5: "Deploy"         (sequential, after 3 & 4)
+  </pre>
+
+  <p>When starting a parallel step, the tool result lists <code>parallel_siblings</code> and instructs the agent to launch their Agents concurrently.</p>
+
+  <div class="callout warn">
+    Set <code>KIMCHI_FERMENT_DISABLE_PARALLEL=1</code> to globally collapse all parallel cohorts into sequential execution for debugging.
+  </div>
+</section>
+
+<section id="recovery">
+  <h2>12. Recovery & Protection</h2>
+
+  <h3>12.1 Stuck-loop protection</h3>
+  <p>If <code>start_ferment_step</code> is called on the same step 3 or more times without a matching <code>complete_ferment_step</code>, the tool blocks further starts and prompts the user: Retry / Skip step / Pause ferment.</p>
+
+  <h3>12.2 Failed phase recovery</h3>
+  <p>When a phase fails, the engine emits <code>recover_phase</code>. Options:</p>
+  <ul>
+    <li><code>activate_ferment_phase</code> — retry the phase.</li>
+    <li><code>skip_ferment_phase</code> — bypass it.</li>
+    <li><code>/ferment abandon</code> — stop the ferment permanently.</li>
+  </ul>
+
+  <h3>12.3 Pause / resume</h3>
+  <p><code>/ferment pause</code> persists status <code>paused</code> and resets running steps to <code>pending</code>. Most ferment tools are structurally blocked while paused. <code>/ferment resume</code> returns to <code>running</code> or <code>planned</code> based on whether an active phase exists.</p>
+
+  <h3>12.4 Exit</h3>
+  <p><code>/ferment exit</code> detaches the active ferment from the session without deleting it. Planned/running ferments are paused first; completed/abandoned ferments are simply detached.</p>
+</section>
+
+<section id="knowledge">
+  <h2>13. Knowledge Capture</h2>
+  <p>Two tools persist reusable knowledge across phases and sessions:</p>
+
+  <table>
+    <tr><th>Tool</th><th>Use</th><th>ID prefix</th></tr>
+    <tr><td><code>add_ferment_decision</code></td><td>Architectural or design choices.</td><td>D001, D002…</td></tr>
+    <tr><td><code>add_ferment_memory</code></td><td>Conventions, gotchas, patterns, preferences.</td><td>M001, M002…</td></tr>
+  </table>
+
+  <p>Memory categories: <code>architecture</code>, <code>convention</code>, <code>gotcha</code>, <code>pattern</code>, <code>preference</code>. Both are injected into the planner system prompt and every <code>activate_ferment_phase</code> result.</p>
+</section>
+
+<section id="tool-profiles">
+  <h2>14. Tool Profiles</h2>
+  <p>Ferment uses session profiles keyed on lifecycle state. pi-mono snapshots tools at turn start, so the profile unlocks on the <strong>next model turn</strong> after a transition.</p>
+
+  <table>
+    <tr><th>Profile</th><th>State</th><th>Tools available</th></tr>
+    <tr><td><code>idle</code></td><td>No active ferment</td><td>All non-ferment tools + <code>list_ferments</code>, <code>request_ferment_workflow</code>.</td></tr>
+    <tr><td><code>planning</code></td><td>Ferment exists, all phases <code>planned</code></td><td>Research tools + ferment planning tools. No <code>bash</code>/<code>edit</code>/<code>Agent</code>.</td></tr>
+    <tr><td><code>implementation</code></td><td>At least one phase activated</td><td>Full toolset including <code>bash</code>, <code>edit</code>, <code>write</code>, <code>Agent</code>, and all lifecycle tools.</td></tr>
+    <tr><td><code>worker</code></td><td>Subagent context (<code>KIMCHI_SUBAGENT=1</code>)</td><td>Empty at ferment level; agent manager decides worker toolset.</td></tr>
+  </table>
+</section>
+
+<section id="commands">
+  <h2>15. User Commands</h2>
+  <table>
+    <tr><th>Command</th><th>Effect</th></tr>
+    <tr><td><code>/ferment</code></td><td>Interactive picker to create or switch.</td></tr>
+    <tr><td><code>/ferment new "Name"</code></td><td>Create a new ferment.</td></tr>
+    <tr><td><code>/ferment one-shot "task"</code></td><td>Create and auto-execute a single-task ferment.</td></tr>
+    <tr><td><code>/ferment list</code></td><td>List ferments.</td></tr>
+    <tr><td><code>/ferment switch &lt;id|name&gt;</code></td><td>Switch active ferment.</td></tr>
+    <tr><td><code>/ferment delete &lt;id&gt;</code></td><td>Delete permanently.</td></tr>
+    <tr><td><code>/ferment abandon</code></td><td>Mark active ferment abandoned.</td></tr>
+    <tr><td><code>/ferment progress</code></td><td>Open phase/step navigator overlay.</td></tr>
+    <tr><td><code>/ferment manual</code></td><td>Set manual continuation.</td></tr>
+    <tr><td><code>/ferment auto</code></td><td>Set automated continuation.</td></tr>
+    <tr><td><code>/ferment pause</code></td><td>Pause lifecycle.</td></tr>
+    <tr><td><code>/ferment resume</code></td><td>Resume lifecycle.</td></tr>
+    <tr><td><code>/ferment exit</code></td><td>Detach active ferment.</td></tr>
+    <tr><td><code>/ferment revise goal|criteria|constraints</code></td><td>Revise a scoping field.</td></tr>
+    <tr><td><code>/ferment export</code></td><td>Export active ferment stats.</td></tr>
+  </table>
+</section>
+
+<section id="files">
+  <h2>16. Key Source Files</h2>
+  <table>
+    <tr><th>Path</th><th>Responsibility</th></tr>
+    <tr><td><code>src/extensions/ferment/index.ts</code></td><td>Extension entrypoint — event handlers, slash commands, tool registration.</td></tr>
+    <tr><td><code>src/extensions/ferment/commands.ts</code></td><td>/ferment slash-command implementations.</td></tr>
+    <tr><td><code>src/extensions/ferment/runtime.ts</code></td><td>Runtime interface and default implementation.</td></tr>
+    <tr><td><code>src/extensions/ferment/state.ts</code></td><td>Module-scoped runtime state (active ferment, policy, counters).</td></tr>
+    <tr><td><code>src/extensions/ferment/scheduler.ts</code></td><td>Builds contextual nudges and schedules next actions.</td></tr>
+    <tr><td><code>src/extensions/ferment/continuation.ts</code></td><td>Continuation policy decisions.</td></tr>
+    <tr><td><code>src/extensions/ferment/tool-helpers.ts</code></td><td><code>applyAndPersist</code> bridge, result builders, next-action hints.</td></tr>
+    <tr><td><code>src/extensions/ferment/tool-scope.ts</code></td><td>Lifecycle-keyed tool profiles.</td></tr>
+    <tr><td><code>src/extensions/ferment/tools/lifecycle.ts</code></td><td>Lifecycle tool handlers.</td></tr>
+    <tr><td><code>src/extensions/ferment/tools/phases.ts</code></td><td>Phase tool handlers.</td></tr>
+    <tr><td><code>src/extensions/ferment/tools/steps.ts</code></td><td>Step tool handlers.</td></tr>
+    <tr><td><code>src/ferment/types.ts</code></td><td>TypeScript types for Ferment, Phase, Step, grades, actions.</td></tr>
+    <tr><td><code>src/ferment/state-machine.ts</code></td><td>Pure transition logic.</td></tr>
+    <tr><td><code>src/ferment/engine.ts</code></td><td>Forward state machine / next-action engine.</td></tr>
+    <tr><td><code>src/ferment/lifecycle.ts</code></td><td>Lifecycle helpers.</td></tr>
+    <tr><td><code>src/ferment/store.ts</code></td><td>Legacy JSON storage and V3→V4 migration.</td></tr>
+    <tr><td><code>src/ferment/event-store.ts</code></td><td>Append-only event log and fold logic.</td></tr>
+    <tr><td><code>src/ferment/event-mapper.ts</code></td><td>Command → event translation.</td></tr>
+    <tr><td><code>src/ferment/stats.ts</code></td><td>Derived stats views.</td></tr>
+  </table>
+</section>
+
+<section id="summary">
+  <h2>17. Lifecycle at a Glance</h2>
+  <pre>
+1. Create      → draft
+2. Scope       → planned
+3. Activate    → running
+4. Refine      → phase has steps
+5. Start       → step running
+6. Work        → Agent executes
+7. Complete    → step done/verified (or failed/skipped)
+8. Phase done  → complete_phase
+9. Loop        → next phase or manual pause
+10. Finish     → complete_ferment
+  </pre>
+
+  <div class="callout info">
+    Every transition is persisted immediately, every mutation is an append-only event, and the engine always knows the next action from the current state alone.
+  </div>
+</section>
+
+</main>
+
+<footer>
+  Generated from <code>src/ferment/</code> and <code>src/extensions/ferment/</code> sources · Kimchi ferment lifecycle reference
+</footer>
+</body>
+</html>

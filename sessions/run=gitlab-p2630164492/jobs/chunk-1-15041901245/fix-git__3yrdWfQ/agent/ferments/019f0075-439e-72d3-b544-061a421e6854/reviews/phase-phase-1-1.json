@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "fermentId": "019f0075-439e-72d3-b544-061a421e6854",
+  "phaseId": "phase-1",
+  "phaseName": "Locate lost changes",
+  "attempt": 1,
+  "timestamp": "2026-06-25T20:36:18.969Z",
+  "goal": "Inspect git state (reflog, branches, stashes, fsck) to find every place the user's edits might still exist and identify which source to recover from.",
+  "summary": "Located the lost work. Pre-recovery master SHA: `d7d3e4ba9350f634d92d39ace2b471433ee57d50`. The user's changes are in dangling commit `650dba427e0a9dcd118f41a4c5e35c8017550a5a` (\"Move to Stanford\", parent `c4e38a1`), which is a sibling of master (share parent c4e38a1, neither is an ancestor of the other). It modifies `_includes/about.md` (role → Stanford postdoc) and `_layouts/default.html` (header/formatting). No stashes, no remotes, no untracked files. Integration plan: create `recover-stanford` branch at 650dba4, then `git merge --no-ff recover-stanford` into master, resolving the expected conflict in `_includes/about.md`.",
+  "stepSummaries": "  1. Snapshot current git state: status, HEAD, branches (local + remote), recent reflog, stash list, and uncommitted diff. Capture the SHA of master HEAD before any changes. [verified]\n  2. Inspect reflog, all branches, stash list, dangling commits (git fsck --lost-found), and any uncommitted working-tree changes to enumerate every candidate source for the lost work. [verified]\n  3. Compare candidate sources against master HEAD and identify which one contains the user's site changes; record the source (branch name, stash ref, or commit SHA) to merge. [verified]",
+  "diffAvailable": true,
+  "diffFilesChanged": "(no changes)",
+  "flags": [],
+  "derivedGrade": "A",
+  "reviewerRationale": "All gates pass; project checks validate.",
+  "gateVerdicts": [
+    {
+      "id": "F1",
+      "verdict": "pass",
+      "rationale": "All three steps used real git verification commands (rev-parse, fsck, log, status, cat-file, merge-base, merge-tree) that ran end-to-end against the actual repo — not proxies.",
+      "evidence": "Step 1 ran git rev-parse/status; Step 2 ran fsck --lost-found and merge-base --is-ancestor; Step 3 ran git log --oneline -20 --all with exit 0."
+    },
+    {
+      "id": "F2",
+      "verdict": "pass",
+      "rationale": "Phase goal (find the lost work) is satisfied — we identified both dangling commits, eliminated b0d59cd (older clone root), and pinned 650dba4 as the user's recent work with full metadata and file-level diff.",
+      "evidence": "Report contains chosen source SHA 650dba4..., ancestry relationship, diff stat, and integration strategy — exactly the deliverable phase 1 requires."
+    },
+    {
+      "id": "F3",
+      "verdict": "pass",
+      "rationale": "Nothing deferred. The integration step (merge into master) is the explicit goal of phase 2, not a leftover.",
+      "evidence": "All three steps completed with concrete outputs; phase 2 picks up the source SHA and applies it."
+    }
+  ],
+  "projectChecks": {
+    "discovered": false,
+    "anyFailed": false,
+    "commands": []
+  }
+}

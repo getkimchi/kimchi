@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "fermentId": "019efef4-46f6-7493-a52c-ba2e6300bb6b",
+  "phaseId": "phase-1",
+  "phaseName": "Architecture recovery and baseline MSE",
+  "attempt": 1,
+  "timestamp": "2026-06-25T13:53:40.254Z",
+  "goal": "Inspect /app/weights.pt and /app/dataset.pt, derive the RecoveredModel architecture, load weights strictly, and compute the baseline MSE loss on the dataset.",
+  "summary": "Phase 1 complete: architecture recovered (transformer encoder-decoder with Linear(64→128) projection + sinusoidal PE + 3-layer encoder + 1-layer decoder + Linear(128→64) output, d_model=128, nhead=8, dim_ff=256, batch_first=True). RecoveredModel in /app/model.py strictly loads /app/weights.pt. Baseline MSE = 1.5510306358337402 on /app/dataset.pt. OUTPUT_LAYER_KEY identified as literal 'output_layer'.",
+  "stepSummaries": "  1. Run a small inspection script that loads /app/weights.pt (with map_location='cpu' and weights_only=True if available) and prints every key with shape and dtype; also loads /app/dataset.pt and prints the structure (type, shapes, dtypes) so the dataset's (X, y) pair is identified. Write the inspection summary to /app/.kimchi/docs/inspect.md. [verified]\n  2. Implement RecoveredModel in /app/model.py. Use the inspected shapes/dtypes to define nn.Linear / nn.Conv / activations / BatchNorm etc. so that model.load_state_dict(state_dict, strict=True) succeeds. Include a small self-test at the bottom that asserts strict load and prints a baseline forward pass on a batch from /app/dataset.pt. [verified]\n  3. Compute baseline MSE: load /app/weights.pt into RecoveredModel in eval() mode, run forward over /app/dataset.pt, compute MSE between predictions and targets. Save baseline MSE value and the target key naming decision to /app/.kimchi/docs/baseline.md. [verified]",
+  "diffAvailable": false,
+  "flags": [],
+  "derivedGrade": "A",
+  "reviewerRationale": "All gates pass; project checks validate.",
+  "gateVerdicts": [
+    {
+      "id": "F1",
+      "verdict": "pass",
+      "rationale": "Step 1 (inspect.md) was smoke — direct torch.load execution. Step 2 (model.py) used the prescribed verify command end-to-end (real test: load_state_dict strict). Step 3 (baseline.md) used smoke — model.py self-test output. Mixed but the load-bearing strict-load verification is real.",
+      "evidence": "Step 2 verify command: `cd /app && python -c \"import torch; from model import RecoveredModel; sd = torch.load('/app/weights.pt', map_location='cpu'); m = RecoveredModel(); m.load_state_dict(sd, strict=True); print('strict load OK')\"` exited 0 with 'strict load OK'."
+    },
+    {
+      "id": "F2",
+      "verdict": "pass",
+      "rationale": "Phase goal: derive RecoveredModel architecture, load weights strictly, compute baseline MSE. All three are delivered — /app/model.py exists and strict-loads, baseline MSE 1.5510 saved to baseline.md.",
+      "evidence": "/app/model.py; /app/.kimchi/docs/baseline.md with baseline_mse=1.5510306358337402."
+    },
+    {
+      "id": "F3",
+      "verdict": "pass",
+      "rationale": "Nothing deferred — all three planned steps completed. nhead correction (3→8) was a fix within step 2, not a deferral.",
+      "evidence": "Step 1, 2, 3 all marked completed."
+    }
+  ],
+  "projectChecks": {
+    "discovered": false,
+    "anyFailed": false,
+    "commands": []
+  }
+}

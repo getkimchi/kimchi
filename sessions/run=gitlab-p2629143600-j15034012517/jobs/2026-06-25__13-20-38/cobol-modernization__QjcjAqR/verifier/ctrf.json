@@ -1,0 +1,53 @@
+{
+    "results": {
+        "tool": {
+            "name": "pytest",
+            "version": "8.4.1"
+        },
+        "summary": {
+            "tests": 3,
+            "passed": 1,
+            "failed": 2,
+            "skipped": 0,
+            "pending": 0,
+            "other": 0,
+            "start": 1782396372.37935,
+            "stop": 1782396372.4870262
+        },
+        "tests": [
+            {
+                "name": "test_outputs.py::test_required_files_exist",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0006762868724763393,
+                "start": 1782396372.4503458,
+                "stop": 1782396372.4653065,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "def test_required_files_exist():\n        \"\"\"Test that all required Python files exist\"\"\"\n        required_files = [\n            \"/app/program.py\",\n        ]\n    \n        for file_path in required_files:\n>           assert Path(file_path).exists(), f\"Required file {file_path} does not exist\"\nE           AssertionError: Required file /app/program.py does not exist\nE           assert False\nE            +  where False = exists()\nE            +    where exists = PosixPath('/app/program.py').exists\nE            +      where PosixPath('/app/program.py') = Path('/app/program.py')\n\n/tests/test_outputs.py:18: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_outputs.py::test_data_files_exist",
+                "status": "passed",
+                "duration": 0.0004579853266477585,
+                "start": 1782396372.4655344,
+                "stop": 1782396372.4661498,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_program_output",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.017691753339022398,
+                "start": 1782396372.466317,
+                "stop": 1782396372.4868274,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "def test_program_output():\n        \"\"\"Test that the program produces the expected output and file contents\"\"\"\n        initial_accounts = (\n            \"U001John Doe            0000001000U002Jane Smith\"\n            \"          0000002000U003Bob Wilson          0000001500\"\n        )\n    \n        initial_books = (\n            \"B001Python Basics       U001B002COBOL Guide         \"\n            \"U002B003Java Tutorial       U003\"\n        )\n    \n        initial_transactions = \"\"\n    \n        data_dir = Path(\"/app/data\")\n    \n        (data_dir / \"ACCOUNTS.DAT\").write_text(initial_accounts)\n        (data_dir / \"BOOKS.DAT\").write_text(initial_books)\n        (data_dir / \"TRANSACTIONS.DAT\").write_text(initial_transactions)\n    \n        Path(\"/app/src/INPUT.DAT\").write_text(\"U001U003B0030000000020\")\n        result = subprocess.run(\n            [\"python\", \"/app/program.py\"], capture_output=True, text=True\n        )\n>       assert result.returncode == 0, \"Command failed\"\nE       AssertionError: Command failed\nE       assert 2 == 0\nE        +  where 2 = CompletedProcess(args=['python', '/app/program.py'], returncode=2, stdout='', stderr=\"python: can't open file '/app/program.py': [Errno 2] No such file or directory\\n\").returncode\n\n/tests/test_outputs.py:58: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            }
+        ]
+    }
+}

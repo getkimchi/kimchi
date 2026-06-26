@@ -1,0 +1,60 @@
+Hit:1 http://archive.ubuntu.com/ubuntu noble InRelease
+Hit:2 http://security.ubuntu.com/ubuntu noble-security InRelease
+Hit:3 http://archive.ubuntu.com/ubuntu noble-updates InRelease
+Hit:4 http://archive.ubuntu.com/ubuntu noble-backports InRelease
+Reading package lists...
+Reading package lists...
+Building dependency tree...
+Reading state information...
+git is already the newest version (1:2.43.0-1ubuntu7.3).
+The following NEW packages will be installed:
+  curl libcurl4t64
+0 upgraded, 2 newly installed, 0 to remove and 24 not upgraded.
+Need to get 569 kB of archives.
+After this operation, 1483 kB of additional disk space will be used.
+Get:1 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 libcurl4t64 amd64 8.5.0-2ubuntu10.9 [342 kB]
+Get:2 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 curl amd64 8.5.0-2ubuntu10.9 [227 kB]
+debconf: delaying package configuration, since apt-utils is not installed
+Fetched 569 kB in 0s (2533 kB/s)
+Selecting previously unselected package libcurl4t64:amd64.
+(Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 9864 files and directories currently installed.)
+Preparing to unpack .../libcurl4t64_8.5.0-2ubuntu10.9_amd64.deb ...
+Unpacking libcurl4t64:amd64 (8.5.0-2ubuntu10.9) ...
+Selecting previously unselected package curl.
+Preparing to unpack .../curl_8.5.0-2ubuntu10.9_amd64.deb ...
+Unpacking curl (8.5.0-2ubuntu10.9) ...
+Setting up libcurl4t64:amd64 (8.5.0-2ubuntu10.9) ...
+Setting up curl (8.5.0-2ubuntu10.9) ...
+Processing triggers for libc-bin (2.39-0ubuntu8.6) ...
+downloading uv 0.9.5 x86_64-unknown-linux-gnu
+no checksums to verify
+installing to /root/.local/bin
+  uv
+  uvx
+everything's installed!
+
+To add $HOME/.local/bin to your PATH, either restart your shell or run:
+
+    source $HOME/.local/bin/env (sh, bash, zsh)
+    source $HOME/.local/bin/env.fish (fish)
+Downloading cpython-3.13.9-linux-x86_64-gnu (download) (32.0MiB)
+ Downloading cpython-3.13.9-linux-x86_64-gnu (download)
+Downloading pygments (1.2MiB)
+ Downloading pygments
+Installed 6 packages in 20ms
+============================= test session starts ==============================
+platform linux -- Python 3.13.9, pytest-8.4.1, pluggy-1.6.0
+rootdir: /tests
+plugins: json-ctrf-0.3.5
+collected 5 items
+
+../tests/test_outputs.py .....                                           [100%]
+
+==================================== PASSES ====================================
+=========================== short test summary info ============================
+PASSED ../tests/test_outputs.py::test_git_repo_init
+PASSED ../tests/test_outputs.py::test_both_bundles_fetched
+PASSED ../tests/test_outputs.py::test_algo_py_exists
+PASSED ../tests/test_outputs.py::test_algo_py_has_map_function
+PASSED ../tests/test_outputs.py::test_algo_map_function_with_test_input
+============================== 5 passed in 0.08s ===============================

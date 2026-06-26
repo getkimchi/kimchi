@@ -1,0 +1,629 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>terminal-bench-2 — kimchi Benchmark Analysis</title>
+<style>
+:root {
+  --bg: #f7f7f9;
+  --panel: #ffffff;
+  --border: #e3e4e8;
+  --text: #1a1c20;
+  --muted: #5b6370;
+  --accent: #2657c8;
+  --pass: #1f8a4c;
+  --fail: #c53030;
+  --warn: #b86c00;
+  --info: #4a4a4a;
+  --code-bg: #1f2330;
+  --code-text: #e8e9ee;
+  --code-keyword: #ff9d72;
+  --code-string: #c3e88d;
+}
+* { box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.55;
+}
+header {
+  background: linear-gradient(135deg, #1d2540 0%, #2a3b6f 100%);
+  color: #f3f4f8;
+  padding: 32px 24px;
+}
+header .inner { max-width: 1100px; margin: 0 auto; }
+header h1 { margin: 0 0 8px 0; font-size: 28px; letter-spacing: 0.2px; }
+header .subtitle { font-size: 14px; opacity: 0.85; }
+header .meta { display: flex; flex-wrap: wrap; gap: 24px; margin-top: 16px; font-size: 13px; opacity: 0.9; }
+header .meta span strong { font-weight: 600; color: #fff; }
+main { max-width: 1100px; margin: 0 auto; padding: 24px; }
+section { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 24px; margin-bottom: 24px; }
+section h2 { margin-top: 0; font-size: 20px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+section h3 { font-size: 16px; margin-top: 24px; }
+section h4 { font-size: 14px; margin-top: 16px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+p { margin: 8px 0; }
+code { background: #eef0f5; padding: 1px 5px; border-radius: 3px; font-family: "SF Mono", Menlo, Monaco, Consolas, monospace; font-size: 0.92em; }
+pre { background: var(--code-bg); color: var(--code-text); padding: 14px 16px; border-radius: 6px; overflow-x: auto; font-family: "SF Mono", Menlo, Monaco, Consolas, monospace; font-size: 13px; line-height: 1.5; }
+pre .k { color: var(--code-keyword); }
+pre .s { color: var(--code-string); }
+table { border-collapse: collapse; width: 100%; font-size: 14px; margin: 12px 0; }
+th, td { padding: 8px 10px; border: 1px solid var(--border); text-align: left; vertical-align: top; }
+th { background: #f0f2f6; font-weight: 600; }
+tr.pass td.status { color: var(--pass); font-weight: 600; }
+tr.fail td.status { color: var(--fail); font-weight: 600; }
+tr.partial td.status { color: var(--warn); font-weight: 600; }
+.kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin: 16px 0; }
+.kpi { background: #f7f8fb; border: 1px solid var(--border); border-radius: 6px; padding: 14px; }
+.kpi .label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+.kpi .value { font-size: 28px; font-weight: 700; margin-top: 4px; }
+.kpi.pass .value { color: var(--pass); }
+.kpi.fail .value { color: var(--fail); }
+.kpi.warn .value { color: var(--warn); }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: 600; }
+.badge.pass { background: #e3f5ea; color: var(--pass); }
+.badge.fail { background: #fbe5e5; color: var(--fail); }
+.badge.warn { background: #fcf0db; color: var(--warn); }
+.badge.info { background: #e6e9f0; color: var(--info); }
+.callout { background: #f4f7fc; border-left: 4px solid var(--accent); padding: 12px 16px; margin: 12px 0; border-radius: 0 4px 4px 0; }
+.callout.warn { background: #fcf5e7; border-left-color: var(--warn); }
+.callout.fail { background: #fbecec; border-left-color: var(--fail); }
+.callout strong { display: block; margin-bottom: 4px; }
+ul.tight, ol.tight { margin: 4px 0 8px 0; padding-left: 20px; }
+ul.tight li, ol.tight li { margin-bottom: 4px; }
+details { background: #fafbfc; border: 1px solid var(--border); border-radius: 6px; padding: 10px 14px; margin: 8px 0; }
+details summary { cursor: pointer; font-weight: 600; }
+details[open] summary { margin-bottom: 8px; }
+.two-col { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+.bar { display: flex; height: 18px; border-radius: 4px; overflow: hidden; background: #e9ebef; margin: 6px 0; }
+.bar > div { padding: 0 6px; font-size: 12px; line-height: 18px; color: #fff; text-align: center; }
+.bar .pass { background: var(--pass); }
+.bar .fail { background: var(--fail); }
+.metric-row { display: flex; flex-wrap: wrap; gap: 18px; }
+.metric-row > div { min-width: 130px; }
+footer { text-align: center; color: var(--muted); font-size: 12px; padding: 24px 0; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="inner">
+    <h1>terminal-bench-2 — kimchi Benchmark Analysis</h1>
+    <div class="subtitle">Multi-model (multi-mode-ferment) agent evaluation against terminal-bench-2 tasks</div>
+    <div class="meta">
+      <span><strong>Pipeline:</strong> <a style="color:#fff;text-decoration:underline" href="https://gitlab.com/castai/kimchi/kimchi/-/pipelines/2629959523">2629959523</a></span>
+      <span><strong>Generated:</strong> 2026-06-25T19:23:17Z</span>
+      <span><strong>Agent commit:</strong> <code style="background:rgba(255,255,255,0.15);color:#fff;">06b594d5</code></span>
+      <span><strong>Agent version:</strong> kimchi 06b594d5 (multi-mode-ferment)</span>
+      <span><strong>Total duration:</strong> ~46 min</span>
+    </div>
+  </div>
+</header>
+
+<main>
+
+<section>
+  <h2>1. Executive Summary</h2>
+
+  <div class="kpi-grid">
+    <div class="kpi"><div class="label">Tasks run</div><div class="value">10</div></div>
+    <div class="kpi pass"><div class="label">Passed</div><div class="value">6</div></div>
+    <div class="kpi fail"><div class="label">Failed</div><div class="value">4</div></div>
+    <div class="kpi warn"><div class="label">Timeouts</div><div class="value">1</div></div>
+    <div class="kpi"><div class="label">Pass rate</div><div class="value">60%</div></div>
+    <div class="kpi"><div class="label">Completed run</div><div class="value">yes</div></div>
+  </div>
+
+  <div class="bar">
+    <div class="pass" style="width:60%">Passed 6 (60%)</div>
+    <div class="fail" style="width:40%">Failed 4 (40%)</div>
+  </div>
+
+  <p>The agent configuration under test (<code>multi-mode-ferment</code> with primary model <code>kimi-k2.7</code> and orchestrator <code>minimax-m3</code>) achieved a <strong>6/10 pass rate</strong> against terminal-bench-2. The four failures cluster into two distinct failure modes:</p>
+  <ul class="tight">
+    <li><strong>Orchestrator premature-exit (2 trials):</strong> cobol-modernization and fix-code-vulnerability each used exactly <em>one</em> LLM round, made zero tool calls, and exited. The orchestrator produced detailed thinking about how it would call <code>scope_ferment</code> but never actually issued any tool call.</li>
+    <li><strong>Long-horizon / research-execution breakdowns (2 trials):</strong> build-cython-ext timed out at 2700s during multi-phase Cython build/install/verify; mteb-leaderboard produced the wrong artefact (or no artefact) for the verifier despite extensive research notes.</li>
+  </ul>
+
+  <p>All passing trials used the full multi-model <em>ferment</em> lifecycle (scope → activate phase → start step → spawn Agent worker → complete step → complete phase → complete ferment). The 6 passes consumed a healthy amount of subagent delegation; the 4 failures all reflect lifecycle-discipline problems, not capability ceilings of the underlying models.</p>
+</section>
+
+<section>
+  <h2>2. Per-Trial Results</h2>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Task</th>
+        <th>Status</th>
+        <th>Verdict</th>
+        <th>Duration</th>
+        <th>Orchestrator model</th>
+        <th>Worker model(s)</th>
+        <th>Orch. rounds</th>
+        <th>Worker rounds</th>
+        <th>Total input tokens</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr class="pass">
+        <td><code>bn-fit-modify</code></td>
+        <td class="status"><span class="badge pass">PASS</span></td>
+        <td>scored_pass</td>
+        <td>29m 44s</td>
+        <td>minimax-m3</td>
+        <td>kimi-k2.6</td>
+        <td>46</td>
+        <td>48</td>
+        <td>2.37M</td>
+      </tr>
+      <tr class="fail">
+        <td><code>build-cython-ext</code></td>
+        <td class="status"><span class="badge fail">FAIL</span></td>
+        <td>agent_timeout</td>
+        <td>45m 8s (capped 2700s)</td>
+        <td>minimax-m3</td>
+        <td>kimi-k2.6</td>
+        <td>28</td>
+        <td>88</td>
+        <td>4.29M</td>
+      </tr>
+      <tr class="fail">
+        <td><code>cobol-modernization</code></td>
+        <td class="status"><span class="badge fail">FAIL</span></span></td>
+        <td>scored_fail</td>
+        <td>1m 26s</td>
+        <td>minimax-m3</td>
+        <td>— (none)</td>
+        <td>1</td>
+        <td>0</td>
+        <td>24.5K</td>
+      </tr>
+      <tr class="pass">
+        <td><code>extract-elf</code></td>
+        <td class="status"><span class="badge pass">PASS</span></td>
+        <td>scored_pass</td>
+        <td>22m 36s</td>
+        <td>minimax-m3</td>
+        <td>kimi-k2.6</td>
+        <td>25</td>
+        <td>31</td>
+        <td>969K</td>
+      </tr>
+      <tr class="fail">
+        <td><code>fix-code-vulnerability</code></td>
+        <td class="status"><span class="badge fail">FAIL</span></td>
+        <td>scored_fail</td>
+        <td>1m 6s</td>
+        <td>minimax-m3</td>
+        <td>— (none)</td>
+        <td>1</td>
+        <td>0</td>
+        <td>25.4K</td>
+      </tr>
+      <tr class="pass">
+        <td><code>fix-git</code></td>
+        <td class="status"><span class="badge pass">PASS</span></td>
+        <td>scored_pass</td>
+        <td>11m 56s</td>
+        <td>minimax-m3</td>
+        <td>kimi-k2.7</td>
+        <td>24</td>
+        <td>23</td>
+        <td>823K</td>
+      </tr>
+      <tr class="pass">
+        <td><code>hf-model-inference</code></td>
+        <td class="status"><span class="badge pass">PASS</span></td>
+        <td>scored_pass</td>
+        <td>14m 4s</td>
+        <td>minimax-m3</td>
+        <td>kimi-k2.7</td>
+        <td>18</td>
+        <td>26</td>
+        <td>615K</td>
+      </tr>
+      <tr class="pass">
+        <td><code>merge-diff-arc-agi-task</code></td>
+        <td class="status"><span class="badge pass">PASS</span></td>
+        <td>scored_pass</td>
+        <td>28m 27s</td>
+        <td>minimax-m3</td>
+        <td>minimax-m2.7</td>
+        <td>39</td>
+        <td>67</td>
+        <td>1.92M</td>
+      </tr>
+      <tr class="fail">
+        <td><code>mteb-leaderboard</code></td>
+        <td class="status"><span class="badge fail">FAIL</span></td>
+        <td>scored_fail</td>
+        <td>10m 14s</td>
+        <td>minimax-m3</td>
+        <td>kimi-k2.7</td>
+        <td>35</td>
+        <td>26</td>
+        <td>1.73M</td>
+      </tr>
+      <tr class="pass">
+        <td><code>pytorch-model-recovery</code></td>
+        <td class="status"><span class="badge pass">PASS</span></td>
+        <td>scored_pass</td>
+        <td>40m 34s</td>
+        <td>minimax-m3</td>
+        <td>kimi-k2.6</td>
+        <td>39</td>
+        <td>41</td>
+        <td>1.75M</td>
+      </tr>
+    </tbody>
+  </table>
+  <p style="font-size:13px;color:var(--muted);">Orchestrator rounds and worker rounds are taken from each trial's <code>models</code> array; total input tokens sum input + cache_read per trial.</p>
+</section>
+
+<section>
+  <h2>3. Failure Mode Taxonomy</h2>
+
+  <p>The four failed trials cluster cleanly into three categories. Below is the failure breakdown with explicit evidence drawn from the session logs.</p>
+
+  <h3>3.1 Category A — Orchestrator premature-exit (silent zero-tool termination)</h3>
+
+  <div class="callout fail">
+    <strong>Affected: cobol-modernization, fix-code-vulnerability</strong>
+    Both trials ended after a single LLM round with <code>toolCalls: []</code>. The orchestrator produced a long internal <code>thinking</code> block describing how it would call <code>scope_ferment</code>, followed by a short <code>text</code> reply ("I'll execute this one-shot ferment…"), and then the session terminated. No <code>scope_ferment</code>, no <code>activate_ferment_phase</code>, no work of any kind was performed. Both trials ended in <strong>under 100 seconds</strong>, both with verifier reward 0.0.
+  </div>
+
+  <p>Evidence from <code>cobol-modernization/main.jsonl</code> (assistant message truncated):</p>
+<pre>{
+  <span class="k">"role"</span>: <span class="s">"assistant"</span>,
+  <span class="k">"stopReason"</span>: <span class="s">"stop"</span>,
+  <span class="k">"content"</span>: [
+    { <span class="k">"type"</span>: <span class="s">"thinking"</span>, <span class="k">"thinking"</span>: <span class="s">"Thinking: The user wants me to execute a one-shot ferment…"</span> },
+    { <span class="k">"type"</span>: <span class="s">"text"</span>,     <span class="k">"text"</span>:     <span class="s">"I'll execute this one-shot ferment by first scoping the plan, then running through each phase."</span> }
+  ],
+  <span class="k">"toolCalls"</span>: []
+}</pre>
+
+  <p>Both files end with a <code>prompt-summary</code> custom event noting "1m 19s" / "58.9s" total — and the verdict's <code>error.message</code> is just the tail of the verifier's pytest output (<code>=================================== FAILURES ===================================</code> or the bottle.py test instructions), confirming the agent never produced any file output for the verifier to score. This is the single highest-impact failure pattern in the run: <strong>two out of ten failures (20% of all trials, 50% of all failures) are caused entirely by the orchestrator deciding to stop without calling any tool</strong>.</p>
+
+  <h4>Why this happens (hypothesis)</h4>
+  <ul class="tight">
+    <li>The system prompt explicitly orders the first turn: "Call scope_ferment as your VERY FIRST tool call on this turn." Despite that, the orchestrator's text reply reads "I'll execute this one-shot ferment…" — i.e. it narrates intent rather than executing it.</li>
+    <li>The session shows no error, no tool-call refusal, and no guard-steered nudge. The model simply chose <code>stopReason: "stop"</code> after writing one sentence. There is no evidence in the log that the agent harness retried or detected the missed tool call.</li>
+    <li>Both affected trials contain a <code>one-shot ferment</code> preamble and are unusually long (multi-thousand-token) user prompts. The orchestrator may have treated the long prompt as a planning task and produced a thinking-only response.</li>
+  </ul>
+
+  <h3>3.2 Category B — Hard timeout on heavy multi-phase work</h3>
+
+  <div class="callout warn">
+    <strong>Affected: build-cython-ext</strong>
+    Outcome: <code>AgentTimeoutError: Agent execution timed out after 2700.0 seconds</code>. Verifier reward 0.0.
+  </div>
+
+  <p>Evidence: the trial consumed <strong>88 LLM rounds</strong> on the worker (<code>kimi-k2.6</code>) and <strong>28 rounds</strong> on the orchestrator (<code>minimax-m3</code>), totalling <strong>4.29M input tokens</strong> — the highest token usage of the run. Session timestamps show the agent making real progress (cloned pyknotid 0.5.3, surveyed NumPy 1.x deprecated APIs across the tree, applied targeted <code>np.int → int</code>, <code>n.double → n.float64</code>, <code>dtype=bool</code>, <code>distutils → setuptools</code>, etc. patches across 12 .py files and 2 .pyx files) before the 2700-second wall clock fired. The session was cancelled mid-phase-3 (build/install/verify).</p>
+
+  <p>What worked:</p>
+  <ul class="tight">
+    <li>Plan was sound — 3 phases with verified gates and explicit verify commands.</li>
+    <li>Patches were applied accurately (e.g. <code>ccomplexity.pyx</code> <code>np.int</code> → <code>int</code>, <code>coctree.pyx</code> <code>n.double</code> → <code>n.float64</code>).</li>
+    <li>Worker reports (e.g. the <code>step-2-1-patches.md</code> audit notes) show clean, minimal diffs.</li>
+  </ul>
+  <p>What did not work:</p>
+  <ul class="tight">
+    <li>The agent spent too much round budget on Phase 2 (12 .py files + 2 .pyx files patched across 3 separate complete-ferment-step calls before reaching Phase 3).</li>
+    <li>The plan did not anticipate that <code>pip install .</code> from Cython source might fail and need iterative debugging — Phase 3 step 1 alone (build) was the obvious place to eat the rest of the budget.</li>
+    <li>With a 3.0× timeout multiplier and no override, this trial had effectively 45 minutes of wall clock. Trial ended ~5s before the next checkpoint.</li>
+  </ul>
+
+  <h3>3.3 Category C — Research succeeds, artefact mismatch</h3>
+
+  <div class="callout warn">
+    <strong>Affected: mteb-leaderboard</strong>
+    Outcome: <code>scored_fail</code> with verifier <code>reward: 0.0</code>. Trial <code>error.message</code> contains the literal token <code>startup_duration_timeout: 1h</code>, suggesting the verifier hit its 1-hour timeout while waiting for the agent environment to come up.
+  </div>
+
+  <p>The orchestrator and worker collaborated through 61 rounds (35 + 26) and 1.73M input tokens of web research. The work itself was largely correct:</p>
+  <ul class="tight">
+    <li>Correctly identified the URL <code>https://huggingface.co/spaces/mteb/leaderboard</code> via the mteb/MTEB README and the HF Space.</li>
+    <li>Cross-referenced the HKasar1239/scandinavian-embedding-toolkit card and the TTC blog to land on the model id <code>jealk/TTC-L2V-supervised-2</code>.</li>
+    <li>Wrote <code>/app/.kimchi/docs/research.md</code> with the URL, model id on its own line, and four pieces of corroborating evidence.</li>
+  </ul>
+
+  <p>Failure evidence:</p>
+  <ul class="tight">
+    <li>The orchestrator initially tried to spawn a sub-agent with <code>model: "sonnet"</code> — a model that does not exist in the configured provider. The Agent tool returned a "Model not found" listing of valid IDs (<code>kimi-k2.6</code>, <code>kimi-k2.7</code>, <code>minimax-m2.7</code>, <code>minimax-m3</code>, plus <code>glm-5.2-fp8</code> and <code>nemotron-3-ultra-fp4</code>). The orchestrator retried with <code>kimi-k2.7</code>.</li>
+    <li>The first sub-agent (researcher) hit its <code>max_turns=20</code> budget in 149.3s without producing output. The orchestrator then decided to do the research itself with <code>web_search</code>/<code>web_fetch</code>.</li>
+    <li>The session shows the model id was captured in research notes, but the trail of the trial does not show a final <code>write</code> of <code>/app/result.txt</code> in the main session log within the visible window. The verifier scored 0.0, indicating the file was either absent, empty, or did not contain the expected org/model id format.</li>
+    <li>The summary field carries the timestamp <code>startup_duration_timeout: 1h</code> as the verifier error — implying the verifier pipeline itself timed out before it could run. This may also be a noisy <code>error.message</code> tag from classify.py that captured a partial string.</li>
+  </ul>
+
+  <div class="callout">
+    <strong>Cross-cutting observation:</strong> categories A and C both involve the orchestrator failing to converge on the actual deliverable file the verifier checks (program.cbl → program.py for cobol-modernization; report.jsonl for fix-code-vulnerability; result.txt for mteb-leaderboard). The harness's tooling did <em>not</em> detect the missing artefact. A "deliverable-exists" smoke check before the verifier runs would have caught categories A and likely C.
+  </div>
+</section>
+
+<section>
+  <h2>4. Patterns by Task Type</h2>
+
+  <div class="two-col">
+
+    <div>
+      <h3>4.1 Code-reimplementation tasks</h3>
+      <table>
+        <tr><td><code>cobol-modernization</code></td><td><span class="badge fail">fail</span></td><td>premature exit</td></tr>
+      </table>
+      <p>Single trial in this category. Failed in category A (orchestrator exited before calling scope_ferment). No evidence about the COBOL→Python translation capability itself.</p>
+    </div>
+
+    <div>
+      <h3>4.2 Build-from-source / Cython compilation</h3>
+      <table>
+        <tr><td><code>build-cython-ext</code></td><td><span class="badge fail">fail</span></td><td>timeout</td></tr>
+        <tr><td><code>hf-model-inference</code></td><td><span class="badge pass">pass</span></td><td>14m 4s</td></tr>
+        <tr><td><code>pytorch-model-recovery</code></td><td><span class="badge pass">pass</span></td><td>40m 34s</td></tr>
+      </table>
+      <p>Heavy compilation tasks split 2/1 in favour of passes. The pass trials ran with worker <code>kimi-k2.7</code>; the failed trial pinned <code>kimi-k2.6</code>. The bottleneck is wall-clock budget, not tool selection.</p>
+    </div>
+
+    <div>
+      <h3>4.3 Git / repo manipulation</h3>
+      <table>
+        <tr><td><code>fix-git</code></td><td><span class="badge pass">pass</span></td><td>11m 56s</td></tr>
+        <tr><td><code>merge-diff-arc-agi-task</code></td><td><span class="badge pass">pass</span></td><td>28m 27s</td></tr>
+      </table>
+      <p>Both passed. merge-diff-arc-agi-task is a multi-step task (init repo, fetch two bundles, merge, implement an ARC-AGI <code>map()</code> from examples.json) and passed with 67 worker rounds on <code>minimax-m2.7</code>. The merge trial log shows the worker handled the missing <code>git</code> binary (installed via <code>apt-get install -y git</code>) before continuing.</p>
+    </div>
+
+    <div>
+      <h3>4.4 Reverse-engineering from examples</h3>
+      <table>
+        <tr><td><code>bn-fit-modify</code></td><td><span class="badge pass">pass</span></td><td>29m 44s</td></tr>
+        <tr><td><code>extract-elf</code></td><td><span class="badge pass">pass</span></td><td>22m 36s</td></tr>
+      </table>
+      <p>Both passed. bn-fit-modify has the highest orchestrator round count of the pass set (46), reflecting the multi-phase BN recovery (DAG learning → do-intervention → 10k sample). extract-elf ran clean with a smaller LLM footprint (25 + 31 rounds).</p>
+    </div>
+
+    <div>
+      <h3>4.5 Security / vulnerability fix</h3>
+      <table>
+        <tr><td><code>fix-code-vulnerability</code></td><td><span class="badge fail">fail</span></td><td>premature exit</td></tr>
+      </table>
+      <p>Single trial, failed in category A. Task asks for a CWE-aware patch to bottle.py plus a <code>report.jsonl</code> describing the vulnerability. The orchestrator exited without producing either artefact.</p>
+    </div>
+
+    <div>
+      <h3>4.6 Web research / external data lookup</h3>
+      <table>
+        <tr><td><code>mteb-leaderboard</code></td><td><span class="badge fail">fail</span></td><td>research-ok / artefact-missing</td></tr>
+      </table>
+      <p>Single trial, failed in category C. Research quality was high (URL identified, model id cross-referenced against four sources, evidence chain recorded). However the trial's main.jsonl shows the orchestrator attempted <code>model: "sonnet"</code> (invalid), recovered, but ran out of cycles producing the final <code>/app/result.txt</code>.</p>
+    </div>
+
+  </div>
+</section>
+
+<section>
+  <h2>5. Agent Behaviour Observations</h2>
+
+  <h3>5.1 Multi-model architecture in practice</h3>
+  <p>Every trial used <code>multi-model: true</code> and <code>ferment-oneshot: true</code> in the agent config. In practice this resolved to:</p>
+  <ul class="tight">
+    <li><strong>Orchestrator:</strong> always <code>minimax-m3</code> (1 LLM round for category-A failures; 18–46 rounds for everything else).</li>
+    <li><strong>Workers:</strong> <code>kimi-k2.7</code> (3 passes), <code>kimi-k2.6</code> (4 passes + 1 fail), <code>minimax-m2.7</code> (1 pass on merge-diff-arc-agi-task).</li>
+    <li><strong>Worker subagent types observed:</strong> <code>Researcher</code> (mteb-leaderboard step 1), <code>General-Purpose</code> (clone/init/pyx-patch steps), <code>Builder</code> (BN dataset inspection).</li>
+  </ul>
+  <p>The split between planning rounds (orchestrator) and execution rounds (worker) was roughly 1:1 for most passes (e.g. bn-fit-modify: 46/48, pytorch-model-recovery: 39/41, extract-elf: 25/31). This is consistent with the "planner profile → subagent with full toolset" pattern documented in the agent's lifecycle tools.</p>
+
+  <h3>5.2 Ferment lifecycle adherence</h3>
+  <p>Passing trials all followed the canonical lifecycle:</p>
+<pre>scope_ferment
+  → activate_ferment_phase (×N phases)
+    → start_ferment_step
+      → Agent(subagent_type=..., max_turns=..., max_duration=...)
+      → complete_ferment_step
+    → next step…
+  → complete_ferment_phase
+  → next phase…
+→ complete_ferment</pre>
+
+  <p>The lifecycle tool is strict about gate arrays (the prompt says "The schema hard-rejects calls missing this array"), and all passing trials emitted well-formed <code>gates: [{id, verdict, rationale, evidence}]</code> arrays. Workers received explicit <code>Worker Context</code> blocks with the phase goal, step verify command, success criteria, and the audit-notes directory.</p>
+
+  <h3>5.3 Tool usage patterns</h3>
+  <ul class="tight">
+    <li><strong>bash + read + grep</strong> are dominant for the worker (e.g. build-cython-ext: 143 bash, 58 read, 15 grep calls).</li>
+    <li><strong>Agent</strong> is heavily used by the orchestrator as the delegation primitive (3–6 calls per trial in the pass set).</li>
+    <li><strong>Ferment lifecycle tools</strong> (<code>scope_ferment</code>, <code>activate_ferment_phase</code>, <code>start_ferment_step</code>, <code>complete_ferment_step</code>, <code>complete_ferment_phase</code>, <code>complete_ferment</code>) are 8–13 calls per passing trial — every phase and step transition is named explicitly.</li>
+    <li><strong>web_search / web_fetch</strong> only appear in mteb-leaderboard, as expected.</li>
+    <li><strong>create_todos</strong> was used once (build-cython-ext).</li>
+  </ul>
+
+  <h3>5.4 Behaviour guardrails</h3>
+  <p>Every session log includes a <code>behaviour_loaded</code> / <code>behaviour_session_summary</code> event noting the active guards:</p>
+  <ul class="tight">
+    <li><code>bound-tool-output</code> — observed: 0, violated: 0 across all sessions. Guard appears to have steered but never tripped.</li>
+    <li><code>re-read-before-edit</code> — observed: 0, violated: 0. The guard was loaded but not invoked during the runs examined.</li>
+    <li><code>git-hygiene</code> — loaded on session start for tasks involving git (fix-git, merge-diff-arc-agi-task).</li>
+  </ul>
+  <p>The <code>bash-tool-guard-steer</code> custom event appears throughout build-cython-ext's main.jsonl, indicating the guard nudged the model away from <code>head</code>/<code>tail</code>-style bash use toward <code>read</code>. This is positive — but only the surviving trials benefited from it.</p>
+
+  <h3>5.5 Subagent budget management</h3>
+  <p>The system prompt mandates <code>max_turns</code> and <code>max_duration</code> on every Agent call and warns "When the worker exhausts its budget, call complete_ferment_step with whatever it produced and spawn a scoped follow-up". In mteb-leaderboard the first subagent hit <code>max_turns=20</code> in 26 actual turns and 149.3s, returning <code>"No output."</code> — exactly the failure mode the prompt anticipates. The orchestrator recovered by re-scoping and continuing the work in the main loop. This is the documented recovery path in action, but it cost enough rounds that the final <code>result.txt</code> write did not complete in time.</p>
+
+  <h3>5.6 Model id hallucination</h3>
+  <p>mteb-leaderboard's first subagent dispatch used <code>model: "sonnet"</code> — not in the configured registry. The Agent tool refused and listed valid IDs. The orchestrator self-corrected. This is a one-off hallucination, not a recurring pattern, but worth noting because none of the other trials exposed it (they all used model ids that existed).</p>
+</section>
+
+<section>
+  <h2>6. Token and Time Budget Analysis</h2>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Trial</th>
+        <th>Outcome</th>
+        <th>Duration</th>
+        <th>Total input tokens</th>
+        <th>Total output tokens</th>
+        <th>Cache-read tokens</th>
+        <th>Rounds (orch+work)</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr class="pass"><td>bn-fit-modify</td><td><span class="badge pass">pass</span></td><td>29m 44s</td><td>2.37M</td><td>41K</td><td>0</td><td>46 + 48</td></tr>
+      <tr class="fail"><td>build-cython-ext</td><td><span class="badge fail">fail</span></td><td>45m 8s</td><td>4.29M</td><td>76K</td><td>0</td><td>28 + 88</td></tr>
+      <tr class="fail"><td>cobol-modernization</td><td><span class="badge fail">fail</span></td><td>1m 26s</td><td>24K</td><td>1.9K</td><td>0</td><td>1 + 0</td></tr>
+      <tr class="pass"><td>extract-elf</td><td><span class="badge pass">pass</span></td><td>22m 36s</td><td>970K</td><td>34K</td><td>0</td><td>25 + 31</td></tr>
+      <tr class="fail"><td>fix-code-vulnerability</td><td><span class="badge fail">fail</span></td><td>1m 6s</td><td>25K</td><td>2.2K</td><td>0</td><td>1 + 0</td></tr>
+      <tr class="pass"><td>fix-git</td><td><span class="badge pass">pass</span></td><td>11m 56s</td><td>823K</td><td>25K</td><td>30K</td><td>24 + 23</td></tr>
+      <tr class="pass"><td>hf-model-inference</td><td><span class="badge pass">pass</span></td><td>14m 4s</td><td>615K</td><td>21K</td><td>44K</td><td>18 + 26</td></tr>
+      <tr class="pass"><td>merge-diff-arc-agi-task</td><td><span class="badge pass">pass</span></td><td>28m 27s</td><td>1.92M</td><td>47K</td><td>0</td><td>39 + 67</td></tr>
+      <tr class="fail"><td>mteb-leaderboard</td><td><span class="badge fail">fail</span></td><td>10m 14s</td><td>1.73M</td><td>19K</td><td>115K</td><td>35 + 26</td></tr>
+      <tr class="pass"><td>pytorch-model-recovery</td><td><span class="badge pass">pass</span></td><td>40m 34s</td><td>1.75M</td><td>37K</td><td>0</td><td>39 + 41</td></tr>
+    </tbody>
+  </table>
+
+  <h3>6.1 Token efficiency</h3>
+  <ul class="tight">
+    <li><strong>Failed "premature exit" trials</strong> consumed just 24K–25K input tokens — the cheapest signal in the run. The cost of premature exit is essentially zero; the cost of <em>not</em> detecting it is two missed scores.</li>
+    <li><strong>Passes averaged</strong> ~1.4M input tokens per trial. The cheapest pass (hf-model-inference) used 615K. The most expensive pass (bn-fit-modify) used 2.37M.</li>
+    <li><strong>build-cython-ext</strong> is the only timeout; it consumed 4.29M tokens before the wall clock fired. Roughly 30% of all input tokens in the run were burned on this one trial.</li>
+    <li><strong>Cache reuse</strong> was zero on most trials, but hf-model-inference (44K), fix-git (30K), and mteb-leaderboard (115K) showed cache hits — consistent with repeated fetches of the same long system prompt and fermentation tool descriptions.</li>
+  </ul>
+
+  <h3>6.2 Round count vs duration</h3>
+  <p>Round counts scale roughly linearly with token cost, but duration does not — the orchestration overhead per round varies by 3–10× depending on whether subagents are involved. Build-cython-ext averaged 11.8 rounds/minute in its final stretch; cobol-modernization did the work in a single 79-second round. The cost asymmetry suggests the orchestrator should detect the "this is going to need many rounds" signal earlier in long-horizon tasks and either narrow scope or break the work into more parallel subagents.</p>
+</section>
+
+<section>
+  <h2>7. Specific Failure Walk-throughs</h2>
+
+  <details>
+    <summary><strong>cobol-modernization</strong> — premature exit (failure category A)</summary>
+    <p>Session: <code>.../cobol-modernization__JWG5Pw7/agent/sessions/main.jsonl</code></p>
+    <p>Run timestamps:</p>
+    <ul class="tight">
+      <li>agent_execution: <code>18:36:34.166Z → 18:38:00.462Z</code> (86s of execution, of which ~79s was the single LLM round)</li>
+      <li>verifier: <code>18:38:00.869Z → 18:38:09.672Z</code> (verifier ran but scored 0.0)</li>
+    </ul>
+    <p>Single assistant turn contents (paraphrased): the model produced a 1.9K-output reasoning block where it:</p>
+    <ol class="tight">
+      <li>Correctly identified that it should call <code>scope_ferment</code> first.</li>
+      <li>Drafted a 3-phase plan (reference baseline → Python implementation → verification).</li>
+      <li>Then chose <code>stopReason: "stop"</code> with text "I'll execute this one-shot ferment by first scoping the plan, then running through each phase." — never issuing the <code>scope_ferment</code> call.</li>
+    </ol>
+    <p>Verifier failure mode: pytest collected 0 tests or the script under test never executed, because the agent never wrote <code>/app/program.py</code>.</p>
+  </details>
+
+  <details>
+    <summary><strong>fix-code-vulnerability</strong> — premature exit (failure category A)</summary>
+    <p>Session: <code>.../fix-code-vulnerability__kARp2KP/agent/sessions/main.jsonl</code></p>
+    <p>Run timestamps:</p>
+    <ul class="tight">
+      <li>agent_execution: <code>18:36:34.132Z → 18:37:40.245Z</code> (~66s execution, single 58.9s LLM round)</li>
+      <li>verifier: <code>18:37:40.848Z → 18:37:45.466Z</code> (verifier ran but scored 0.0)</li>
+    </ul>
+    <p>Same shape as cobol-modernization: the orchestrator planned the work in detail (CWE analysis → identify → write report.jsonl → patch bottle.py → verify with pytest) and emitted "I'll execute the one-shot ferment task by first calling scope_ferment as required." but did not actually call <code>scope_ferment</code>. The trial never touched bottle.py, never produced report.jsonl.</p>
+  </details>
+
+  <details>
+    <summary><strong>build-cython-ext</strong> — 2700s agent timeout (failure category B)</summary>
+    <p>Session: <code>.../build-cython-ext__pq6ZxqG/agent/sessions/main.jsonl</code> + 5 subagent session files.</p>
+    <p>Real progress made (visible in session logs):</p>
+    <ol class="tight">
+      <li>Phase 1 step 1 (clone): 4-tool, 17.2K-token worker run completed in 43s. <code>git clone --depth 1 --branch 0.5.3 https://github.com/SPOCKnots/pyknotid.git /app/pyknotid</code> succeeded; tag reported as <code>0.5.3</code>.</li>
+      <li>Phase 2 step 1 (Python file patches): 9-tool, 24.2K-token worker patched 12 .py files (e.g. <code>dtnotation.py</code>: <code>np.int</code> → <code>int</code>; <code>openknot.py</code>: <code>.astype(int)</code>, <code>dtype=bool</code>).</li>
+      <li>Phase 2 step 2 (.pyx patches): 14-tool, 66.3K-token worker patched <code>ccomplexity.pyx</code> and <code>coctree.pyx</code> (5 line replacements total). Cython was not installed in the env so the syntax-compile check was skipped.</li>
+      <li>Phase 2 step 3 (import smoke) was started; static-import check discovered a pre-existing <code>SyntaxError</code> in <code>periodicline.py</code> (a stub with a missing colon), which the orchestrator classified as dead code rather than blocking.</li>
+      <li>Phase 3 (build/install/verify) was about to start — the orchestrator was in the middle of reasoning about the <code>pyknotid</code> package layout (namespace package vs regular package based on cwd) when the 2700s timeout fired.</li>
+    </ol>
+    <p>Verifier scored 0.0; the verifier ran in 6 seconds after the agent was cancelled, indicating it found no working artefacts.</p>
+    <p>Likely causes of the timeout:</p>
+    <ul class="tight">
+      <li>Phase 2 was split into 3 separate <code>start_ferment_step → Agent → complete_ferment_step</code> cycles when one worker could have done all three. The orchestrator explicitly considered batching and rejected it ("the steps are tightly coupled"), then paid the round-trip overhead three times.</li>
+      <li>The orchestrator spent ~6 turns reasoning about the <code>pyknotid</code> import-path semantics before issuing the next tool call.</li>
+      <li>Cython build from source for a multi-extension NumPy-2-bound package is intrinsically slow; the plan's "pip install ." step had no early-failure budget.</li>
+    </ul>
+  </details>
+
+  <details>
+    <summary><strong>mteb-leaderboard</strong> — research succeeded, artefact did not land (failure category C)</summary>
+    <p>Session: <code>.../mteb-leaderboard__qPLHrhA/agent/sessions/main.jsonl</code> + 1 subagent session file (the aborted researcher).</p>
+    <p>What went right:</p>
+    <ul class="tight">
+      <li>Phase 1 step 1: orchestrator wrote <code>/app/.kimchi/docs/research.md</code> with <code>URL: https://huggingface.co/spaces/mteb/leaderboard</code> and identified <code>jealk/TTC-L2V-supervised-2</code> as the top model. The bare model id was placed on its own line so the verify grep would match.</li>
+      <li>Phase 1 step 2: orchestrator corroborated the model id against four sources (HKasar1239/scandinavian-embedding-toolkit card, thetechcollective.eu blog, jealk/TTC-L2V-supervised-2 model card, github.com/jalkestrup/llm2vec-da).</li>
+      <li>Phase 1 step 3: orchestrator confirmed the org/model id format and ran the verify grep.</li>
+    </ul>
+    <p>What went wrong:</p>
+    <ul class="tight">
+      <li>The first subagent dispatch used <code>model: "sonnet"</code> — a hallucinated model id. The Agent tool returned a "Model not found" error listing valid models. The orchestrator retried with <code>kimchi-dev/kimi-k2.7</code>.</li>
+      <li>The recovered subagent (researcher) hit <code>max_turns=20</code> in 26 actual turns (149.3s) with no output. The orchestrator then absorbed the research work into the main loop.</li>
+      <li>The session then continued with the orchestrator performing <code>web_search</code> + <code>write</code> calls directly, completing phase 1 and starting phase 2 ("Write result and verify").</li>
+      <li>The trial's <code>result.json</code> has <code>agent_execution</code> ending at <code>18:51:15Z</code> after <code>started_at</code> <code>18:41:00Z</code> (~10 minutes). <code>verifier_result.reward</code> = 0.0. The <code>error.message</code> includes the substring <code>startup_duration_timeout: 1h</code>, suggesting the verifier pipeline did not run within its 1-hour window or that classify.py surfaced a stale string.</li>
+    </ul>
+    <p>Net effect: the orchestrator spent so much round budget on planning + recovery from the model-id hallucination that the final <code>/app/result.txt</code> write — a trivial operation once the model id was known — was either skipped or produced output the verifier did not accept. A simple "after phase 1, force the final write" rule would have made this pass.</p>
+  </details>
+</section>
+
+<section>
+  <h2>8. Recommendations</h2>
+
+  <h3>8.1 Fix the orchestrator's premature-exit pattern (highest impact)</h3>
+  <ol class="tight">
+    <li><strong>Add a no-tool-call guardrail at the orchestrator layer.</strong> If the orchestrator finishes its first turn without any tool call, the harness should inject a follow-up message like "Your task requires you to call <code>scope_ferment</code> first. Issue the tool call now." before the session is declared complete. The two category-A failures would both have been caught by this single rule.</li>
+    <li><strong>Detect "narrative-only" assistant messages.</strong> When the assistant text contains first-person future-tense narration ("I'll do X", "Let me start by Y") without any accompanying <code>tool_calls</code>, nudge the model or refuse to end the turn.</li>
+    <li><strong>Make the system prompt harder to misinterpret.</strong> The current prompt's "Call scope_ferment as your VERY FIRST tool call on this turn" is a soft instruction; consider turning it into a structured first-turn contract: <code>{ "tool": "scope_ferment", "required": true }</code> that the harness enforces before accepting a turn without a tool call.</li>
+    <li><strong>Add a post-orchestrator smoke check before the verifier.</strong> For each task, the harness knows the deliverable paths (e.g. <code>/app/program.py</code>, <code>/app/result.txt</code>, <code>/app/report.jsonl</code>). Run a cheap <code>test -s</code> on each before the verifier fires and force a re-run of the final phase if the file is missing or empty.</li>
+  </ol>
+
+  <h3>8.2 Improve long-horizon budget management</h3>
+  <ol class="tight">
+    <li><strong>Right-size per-step budgets based on step complexity.</strong> The system prompt already prescribes 20–30/300s, 40–60/600s, 80/900s bands. The trials examined used 20/300 and 40/600 throughout; build-cython-ext's later steps probably needed 80/900.</li>
+    <li><strong>Collapse tightly-coupled steps into a single subagent.</strong> bn-fit-modify and pytorch-model-recovery got 5+ round-trips per phase that could have been 1–2. The current instruction explicitly warns against batching because "the steps are tightly coupled", but it should warn against the opposite — fragmenting a phase into N subagents when they need shared state.</li>
+    <li><strong>Surface remaining budget to the orchestrator.</strong> If the orchestrator had a clear "Phase 3 of 3, ~12 minutes of budget remaining" indicator, it could skip non-essential verification and prioritise the final deliverable.</li>
+    <li><strong>For Cython/CMake-heavy tasks, plan a fast-fail build check early.</strong> build-cython-ext ran 12 file patches before checking whether the package would even import. A "compile-import sanity check after every 3 patches" rule would have surfaced deeper issues earlier or revealed that the patches were sufficient.</li>
+  </ol>
+
+  <h3>8.3 Reduce model-id hallucination</h3>
+  <ol class="tight">
+    <li><strong>Constrain the <code>model</code> parameter on Agent dispatches.</strong> Pass the list of valid models into the orchestrator's system context or have the harness validate model ids before invoking the subagent. The single hallucination of "sonnet" cost a full subagent round-trip.</li>
+    <li><strong>Surface the configured model registry in the prompt.</strong> The mteb-leaderboard failure shows the orchestrator guessed at model names. Listing <code>"Available workers: kimchi-dev/kimi-k2.7, kimchi-dev/kimi-k2.6, kimchi-dev/minimax-m2.7, kimchi-dev/glm-5.2-fp8, kimchi-dev/nemotron-3-ultra-fp4"</code> at the top of the planning prompt would prevent this.</li>
+  </ol>
+
+  <h3>8.4 Benchmark-side improvements</h3>
+  <ol class="tight">
+    <li><strong>Tighter timeout policy for simple tasks.</strong> cobol-modernization and fix-code-vulnerability each had 3.0× multiplier but exited in ~85 seconds — there is no signal in the timeout that they failed quickly. A "minimum-viable time" check (e.g. "agent must have made &gt;10 tool calls within first 60s") would force re-runs.</li>
+    <li><strong>Improve <code>classify.py</code> error capture.</strong> The mteb-leaderboard <code>error.message</code> contains <code>startup_duration_timeout: 1h</code>, which looks like a stale string rather than a precise verdict. Consider storing a structured error category alongside the message.</li>
+    <li><strong>Add a "no-tool-call" verdict.</strong> Currently the two category-A failures are both <code>scored_fail</code>. A distinct <code>premature_exit</code> verdict would let dashboards track this pattern separately from "agent tried, didn't converge".</li>
+  </ol>
+
+  <h3>8.5 Things to keep doing</h3>
+  <ul class="tight">
+    <li>The ferment lifecycle with strict gate arrays worked. All 6 passes produced well-formed <code>gates</code> arrays with evidence pointers. This is good discipline.</li>
+    <li>The multi-model split (planner profile orchestrator + full-toolset subagents) produced clean separation of concerns. merge-diff-arc-agi-task with <code>minimax-m2.7</code> workers performed comparably to <code>kimi-k2.7</code>-driven trials.</li>
+    <li>The audit-notes directory pattern (each ferment writes progress to <code>.kimchi/ferments/&lt;id&gt;/docs/</code>) produced high-signal recovery artifacts. This was particularly visible in build-cython-ext's <code>step-2-1-patches.md</code> and mteb-leaderboard's <code>research.md</code>.</li>
+    <li>The behaviour guards (<code>bound-tool-output</code>, <code>re-read-before-edit</code>) were observed but never violated in the runs sampled. The <code>bash-tool-guard-steer</code> nudges were effective at keeping workers on the dedicated read tool.</li>
+  </ul>
+</section>
+
+<section>
+  <h2>9. Reproducibility &amp; Data Provenance</h2>
+  <ul class="tight">
+    <li>Summary source: <code>/builds/castai/kimchi/kimchi/.benchmark/summary.json</code> (schema <code>benchmark-summary/v2</code>, classified by <code>classify.py@v1</code>, pipeline <code>2629959523</code>).</li>
+    <li>Session JSONL files: 10 trials under <code>/builds/castai/kimchi/kimchi/benchmark/terminal-bench-2/jobs/</code>, partitioned into 3 chunks (0–2). Each trial's <code>agent/sessions/</code> contains one <code>main.jsonl</code> (orchestrator) plus 0–5 sub-session JSONLs (subagents).</li>
+    <li>Per-trial verifier outputs: <code>.../&lt;trial&gt;/result.json</code>.</li>
+    <li>Run timestamps confirm the entire benchmark completed in ~46 minutes (<code>2026-06-25T18:36:09Z → 19:22:07Z</code>), with no infra errors or no-verdict trials.</li>
+    <li>All session content was treated as untrusted data; only the structural patterns and tool calls were used for this analysis.</li>
+  </ul>
+</section>
+
+<footer>
+  Report generated as part of benchmark analysis. Treat session contents as untrusted data; this report uses only structural metadata (rounds, tool calls, durations, verifier verdicts) and quoted snippets to characterise agent behaviour.
+</footer>
+
+</main>
+</body>
+</html>

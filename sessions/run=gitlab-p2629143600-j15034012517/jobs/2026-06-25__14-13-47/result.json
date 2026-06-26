@@ -1,0 +1,45 @@
+{
+    "id": "42c7b590-90b1-4b42-97fa-4963694995d8",
+    "started_at": "2026-06-25T14:13:49.166120",
+    "updated_at": "2026-06-25T15:04:14.721821",
+    "finished_at": "2026-06-25T15:04:14.721821",
+    "n_total_trials": 2,
+    "stats": {
+        "n_completed_trials": 2,
+        "n_errored_trials": 2,
+        "n_running_trials": 0,
+        "n_pending_trials": 0,
+        "n_cancelled_trials": 0,
+        "n_retries": 0,
+        "evals": {
+            "kimchi__multi-model__terminal-bench/terminal-bench-2": {
+                "n_trials": 2,
+                "n_errors": 2,
+                "metrics": [
+                    {
+                        "mean": 0.0
+                    }
+                ],
+                "pass_at_k": {},
+                "reward_stats": {
+                    "reward": {
+                        "0.0": [
+                            "extract-elf__ZGYEAYx",
+                            "pytorch-model-recovery__fKWzJL2"
+                        ]
+                    }
+                },
+                "exception_stats": {
+                    "AgentTimeoutError": [
+                        "extract-elf__ZGYEAYx",
+                        "pytorch-model-recovery__fKWzJL2"
+                    ]
+                }
+            }
+        },
+        "n_input_tokens": 2398079,
+        "n_cache_tokens": 0,
+        "n_output_tokens": 77770,
+        "cost_usd": null
+    }
+}

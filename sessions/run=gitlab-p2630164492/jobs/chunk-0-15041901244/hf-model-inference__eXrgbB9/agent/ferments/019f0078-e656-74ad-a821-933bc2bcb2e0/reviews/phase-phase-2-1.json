@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "fermentId": "019f0078-e656-74ad-a821-933bc2bcb2e0",
+  "phaseId": "phase-2",
+  "phaseName": "Build Flask service and run it in the background",
+  "attempt": 1,
+  "timestamp": "2026-06-25T20:48:42.251Z",
+  "goal": "Implement /app/app.py serving POST /sentiment per the API schema, launch it on 0.0.0.0:5000 as a detached background process, and verify all success criteria.",
+  "summary": "Phase 2 produced and shipped a working Flask sentiment service. /app/app.py (72 lines) loads the local DistilBERT SST-2 model at import time under TRANSFORMERS_OFFLINE=1, exposes POST /sentiment per the documented contract, and binds to 0.0.0.0:5000 with debug=False and use_reloader=False. The service was launched as PID 762 under setsid+nohup, logging to /app/app.log. End-to-end verification confirmed: positive → 200 positive (0.999882), negative → 200 negative (0.999646), {} / non-string / whitespace → 400 with {\"error\":...}. Port 5000 confirmed LISTEN on 0.0.0.0 via /proc/net/tcp. Container lacked curl/ss/ps so verification used python3+urllib+/proc only — no installs were added.",
+  "stepSummaries": "  1. Write /app/app.py: load the local model once at startup, expose POST /sentiment that accepts {\"text\": ...}, returns {sentiment, confidence:{positive,negative}}, and returns 400 {\"error\": ...} on missing/empty/non-string text or invalid JSON. Bind to 0.0.0.0:5000. [verified]\n  2. Launch /app/app.py as a detached background process (nohup ... & or setsid) logging to /app/app.log, then wait for the port to be listening. [verified]\n  3. Verify the API end-to-end: positive text returns sentiment=positive with positive>negative; negative text returns sentiment=negative with negative>positive; missing/invalid text returns HTTP 400 with {\"error\": ...}. [verified]",
+  "diffAvailable": false,
+  "flags": [],
+  "derivedGrade": "A",
+  "reviewerRationale": "All gates pass; project checks validate.",
+  "gateVerdicts": [
+    {
+      "id": "F1",
+      "verdict": "pass",
+      "rationale": "All three steps used real verification. Step 1 used an AST parse plus an import smoke that loaded the actual model and reported the route table and id2label. Step 2 used /proc/net/tcp + /proc/<pid>/cmdline (the container's available substitute for ss/pgrep) plus a urllib smoke round-trip. Step 3 ran five real HTTP requests against the live service with assertions on status codes and JSON bodies. No proxy-only steps.",
+      "evidence": "Step 1: AST ok + import printed `routes: ['/sentiment', '/sentiment']` + `NEG_ID=0 POS_ID=1`. Step 2: LISTEN 00000000:1388 + pid 762 cmdline = `python3 -u /app/app.py`. Step 3: /tmp/verify_api.py printed `ALL_PASS` exit 0 across 5 cases."
+    },
+    {
+      "id": "F2",
+      "verdict": "pass",
+      "rationale": "Phase goal is \"implement the Flask app, launch it detached, and verify all success criteria.\" The /app/app.py source exists, the process is detached (setsid+nohup PID 762, log to /app/app.log), port 5000 is bound on 0.0.0.0, and the API contract is satisfied end-to-end (positive/negative/error responses all match schema). Every success criterion in the plan has at least one piece of evidence in this report.",
+      "evidence": "Criteria 2-5 are directly observed; criteria 6-7 (detached + listening on 0.0.0.0) are confirmed via /proc."
+    },
+    {
+      "id": "F3",
+      "verdict": "pass",
+      "rationale": "Nothing deferred. All three planned steps executed and verified. The /tmp/verify_api.py and /tmp/dl_model.py helpers are throwaway test files under /tmp, not artifacts of the shipped service — they don't pollute /app.",
+      "evidence": "Phase plan had 3 steps; all completed with terminal verdicts; no skipped or failed items."
+    }
+  ],
+  "projectChecks": {
+    "discovered": false,
+    "anyFailed": false,
+    "commands": []
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "fermentId": "019f0079-7542-76c7-b55a-8e17aed32bb0",
+  "phaseId": "phase-2",
+  "phaseName": "Write result file and verify",
+  "attempt": 1,
+  "timestamp": "2026-06-25T20:41:29.874Z",
+  "goal": "Persist the identified model name to /app/result.txt and verify the output",
+  "summary": "Phase 2 complete. Wrote `GritLM/GritLM-7B` (single line, trailing newline, 17 bytes, no BOM) to /app/result.txt and verified it matches the organization/model_name regex with no extra whitespace or unexpected lines.\n\nPhase output:\n- /app/result.txt exists\n- Content: `GritLM/GritLM-7B\\n`\n- Regex `^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$` matches\n- Verified by grep, wc -l (=1), wc -c (=17), and od byte dump\n\nThe deliverable for the ferment is complete: the model identifier is persisted at the required path in the required format.",
+  "stepSummaries": "  1. Write the confirmed organization/model_name string to /app/result.txt as a single line with a trailing newline. [verified]\n  2. Verify the file matches organization/model_name regex and contains no extra whitespace or unexpected lines. [verified]",
+  "diffAvailable": false,
+  "flags": [],
+  "derivedGrade": "A",
+  "reviewerRationale": "All gates pass; project checks validate.",
+  "gateVerdicts": [
+    {
+      "id": "F1",
+      "verdict": "pass",
+      "rationale": "Step 1 used a smoke verification (cat /app/result.txt) that exercised the written artifact. Step 2 used a smoke verification (regex grep) that also exercised the artifact's content. Both load-bearing steps are smoke-verified.",
+      "evidence": "Step 1 S2 verdict: smoke (cat /app/result.txt returned literal GritLM/GritLM-7B); Step 2 S2 verdict: smoke (grep matched and returned GritLM/GritLM-7B with exit 0)."
+    },
+    {
+      "id": "F2",
+      "verdict": "pass",
+      "rationale": "Phase goal is to persist the identified model name to /app/result.txt and verify the output. Combined step outputs produced /app/result.txt containing exactly `GritLM/GritLM-7B\\n` and verified it matches the required format.",
+      "evidence": "/app/result.txt: 1 line, 17 bytes, content `GritLM/GritLM-7B\\n` per od -An -c; grep regex matches; byte-level inspection shows no extra characters."
+    },
+    {
+      "id": "F3",
+      "verdict": "pass",
+      "rationale": "Nothing deferred. Both planned steps completed and the deliverable is finalized.",
+      "evidence": "2/2 phase-2 steps marked done and verified."
+    }
+  ],
+  "projectChecks": {
+    "discovered": false,
+    "anyFailed": false,
+    "commands": []
+  }
+}

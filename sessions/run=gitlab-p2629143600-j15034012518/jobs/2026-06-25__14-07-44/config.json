@@ -1,0 +1,91 @@
+{
+    "job_name": "2026-06-25__14-07-44",
+    "jobs_dir": "/builds/castai/kimchi/kimchi/benchmark/terminal-bench-2/jobs",
+    "n_attempts": 1,
+    "timeout_multiplier": 3.0,
+    "agent_timeout_multiplier": null,
+    "verifier_timeout_multiplier": null,
+    "agent_setup_timeout_multiplier": null,
+    "environment_build_timeout_multiplier": null,
+    "debug": false,
+    "n_concurrent_trials": 10,
+    "quiet": false,
+    "retry": {
+        "max_retries": 0,
+        "include_exceptions": null,
+        "exclude_exceptions": [
+            "VerifierTimeoutError",
+            "RewardFileEmptyError",
+            "AgentTimeoutError",
+            "VerifierOutputParseError",
+            "RewardFileNotFoundError"
+        ],
+        "wait_multiplier": 1.0,
+        "min_wait_sec": 1.0,
+        "max_wait_sec": 60.0
+    },
+    "environment": {
+        "type": "docker",
+        "import_path": null,
+        "force_build": false,
+        "delete": true,
+        "cpu_enforcement_policy": "auto",
+        "memory_enforcement_policy": "auto",
+        "override_cpus": null,
+        "override_memory_mb": null,
+        "override_storage_mb": null,
+        "override_gpus": null,
+        "override_tpu": null,
+        "mounts": null,
+        "extra_docker_compose": [],
+        "env": {},
+        "kwargs": {},
+        "extra_allowed_hosts": []
+    },
+    "verifier": {
+        "override_timeout_sec": null,
+        "max_timeout_sec": null,
+        "env": {},
+        "disable": false
+    },
+    "metrics": [],
+    "agents": [
+        {
+            "name": null,
+            "import_path": "kimchi_agent:Kimchi",
+            "model_name": "kimchi-dev/minimax-m3",
+            "skills": [],
+            "override_timeout_sec": null,
+            "override_setup_timeout_sec": null,
+            "max_timeout_sec": null,
+            "extra_allowed_hosts": [],
+            "kwargs": {
+                "multi-model": true,
+                "ferment-oneshot": true
+            },
+            "env": {},
+            "mcp_servers": []
+        }
+    ],
+    "datasets": [
+        {
+            "path": null,
+            "name": "terminal-bench/terminal-bench-2",
+            "version": null,
+            "ref": "sha256:c6fc2e2382c1dbae99b2d5ecd2f4f4a60c3c01e0d84642d69b4afd92e99d078b",
+            "registry_url": null,
+            "registry_path": null,
+            "overwrite": false,
+            "download_dir": null,
+            "task_names": [
+                "terminal-bench/cobol-modernization"
+            ],
+            "exclude_task_names": null,
+            "n_tasks": null
+        }
+    ],
+    "tasks": [],
+    "artifacts": [],
+    "extra_instruction_paths": [],
+    "plugins": []
+}
