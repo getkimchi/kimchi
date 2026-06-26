@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-import { isReadOnlyMcpTool } from "../../extensions/mcp-adapter/tool-metadata.js"
+import { createToolVisibility } from "../../extensions/prompt-construction/tool-visibility.js"
 import { registerReadOnlyToolProvider, resetReadOnlyToolRegistry } from "./read-only-tool-registry.js"
 import { getToolsForProfile } from "./tool-catalog.js"
 import {
@@ -17,10 +17,20 @@ const makeMockPi = (overrides: { allTools?: Array<{ name: string }> } = {}): Ext
 	const setActiveTools = vi.fn()
 	const on = vi.fn()
 	const getAllTools = vi.fn(() => overrides.allTools ?? [])
+	// The cooperative visibility layer calls pi.getActiveTools() and
+	// pi.setActiveTools() when applying a disable vote. Provide a real list
+	// backed by the same mock so disabling a tool before apply() records the
+	// vote correctly.
+	let activeTools: string[] = []
+	const getActiveTools = vi.fn(() => activeTools)
+	const wrappedSetActiveTools = vi.fn((names: string[]) => {
+		activeTools = [...names]
+	})
 	return {
-		setActiveTools,
+		setActiveTools: wrappedSetActiveTools,
 		on,
 		getAllTools,
+		getActiveTools,
 	} as unknown as ExtensionAPI
 }
 
@@ -166,17 +176,20 @@ describe("apply", () => {
 		it("respects the cooperative-visibility disabled filter for read-only tools", () => {
 			const pi = makeMockPi()
 			registerReadOnlyToolProvider(pi, () => ["server_get_record"])
-			// Simulate the cooperative layer voting to hide the read-only tool.
-			// We do this by making getDisabledToolNames return it — but since
-			// that helper reads from the real tool-visibility WeakMap, we instead
-			// verify the filter is applied by checking a disabled catalog tool is
-			// excluded. The disabled-filter runs after the union, so a disabled
-			// read-only name would also be filtered — covered indirectly by the
-			// existing snapshot/cooperative tests.
+			// Simulate the cooperative layer voting to hide the read-only MCP
+			// tool. `createToolVisibility` reads `pi.getActiveTools()` and
+			// writes back via `pi.setActiveTools()`; the mock above mirrors
+			// that. The disable vote must propagate through the WeakMap so
+			// `getDisabledToolNames(pi)` returns it when `applyCore` runs.
+			createToolVisibility(pi).disable(["server_get_record"])
+			// Clear the disable's own setActiveTools call so the assertion below
+			// observes the apply() call only.
+			vi.mocked(pi.setActiveTools).mockClear()
+
 			apply("planning-ferment", "ferment", pi)
 
 			const calledWith = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.calls[0][0] as string[]
-			expect(calledWith).toContain("server_get_record")
+			expect(calledWith).not.toContain("server_get_record")
 		})
 	})
 })
@@ -238,33 +251,17 @@ describe("installTurnBoundaryReset", () => {
 })
 
 describe("read-only MCP filter integration (planning-ferment vs implementation-ferment)", () => {
-	// Simulated MCP tool metadata — mirrors what mcp-adapter's
-	// `state.toolMetadata` holds after a server connects. The provider closure
-	// below mirrors `readOnlyToolProvider` in src/extensions/mcp-adapter/index.ts:
-	// it iterates the metadata and returns names where `isReadOnlyMcpTool` holds.
-	const mcpToolMetadata = [
-		{
-			name: "server_get_record",
-			originalName: "get_record",
-			description: "Read a record",
-			annotations: { readOnlyHint: true } as const,
-		},
-		{
-			name: "server_create_record",
-			originalName: "create_record",
-			description: "Create a record",
-			annotations: { readOnlyHint: false } as const,
-		},
-		{
-			name: "server_delete_record",
-			originalName: "delete_record",
-			description: "Delete a record",
-			annotations: { readOnlyHint: false, destructiveHint: true } as const,
-		},
-	]
-
-	/** Provider that mirrors mcp-adapter's readOnlyToolProvider exactly. */
-	const mcpReadOnlyProvider = (): string[] => mcpToolMetadata.filter((m) => isReadOnlyMcpTool(m)).map((m) => m.name)
+	// These tests verify the registry + profile-manager behaviour (union,
+	// inclusion, exclusion) using pre-filtered fixture arrays. They do NOT
+	// exercise `isReadOnlyMcpTool` — that predicate lives in
+	// src/extensions/mcp-adapter/tool-metadata.ts and is covered by
+	// src/extensions/mcp-adapter/tool-metadata.test.ts. Coupling to it here
+	// would invert the dependency direction (shared/planning must not import
+	// from src/extensions/mcp-adapter).
+	//
+	// Fixture: three MCP tools behind a server. Only `server_get_record` is
+	// read-only-qualified (annotated with readOnlyHint:true).
+	const mcpReadOnlyProvider = (): string[] => ["server_get_record"]
 
 	it("planning-ferment: includes read-only MCP tool and excludes write/destructive MCP tools", () => {
 		const pi = makeMockPi()
@@ -283,20 +280,11 @@ describe("read-only MCP filter integration (planning-ferment vs implementation-f
 	})
 
 	it("planning-ferment: heuristic-only read-only tool (no annotations) is included", () => {
-		// Tool with no annotations but a get_ prefix — qualifies via heuristic
-		const heuristicMetadata = [
-			{ name: "server_search_items", originalName: "search_items", description: "Search" },
-			{
-				name: "server_update_record",
-				originalName: "update_record",
-				description: "Update",
-				annotations: { readOnlyHint: false } as const,
-			},
-		]
-		const provider = (): string[] => heuristicMetadata.filter((m) => isReadOnlyMcpTool(m)).map((m) => m.name)
-
+		// A separate provider whose read-only set is hardcoded — simulates a
+		// server that classified its tools via the name heuristic rather than
+		// annotations. The fixture asserts the registry treats it as read-only.
 		const pi = makeMockPi()
-		registerReadOnlyToolProvider(pi, provider)
+		registerReadOnlyToolProvider(pi, () => ["server_search_items"])
 
 		apply("planning-ferment", "ferment", pi)
 

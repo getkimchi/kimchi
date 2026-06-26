@@ -24,7 +24,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 /** A function that returns the current set of read-only-qualified tool names. */
 export type ReadOnlyToolProvider = () => string[]
 
-const providersByPi = new WeakMap<ExtensionAPI, ReadOnlyToolProvider[]>()
+let providersByPi = new WeakMap<ExtensionAPI, ReadOnlyToolProvider[]>()
 
 /**
  * Register a read-only-tool provider for the given session.
@@ -66,7 +66,16 @@ export function getReadOnlyToolNames(pi: ExtensionAPI): string[] {
 	const seen = new Set<string>()
 	const result: string[] = []
 	for (const provider of providers) {
-		for (const name of provider()) {
+		// A misbehaving provider must not break the planning phase — log and
+		// skip it, then continue with the remaining providers.
+		let names: string[]
+		try {
+			names = provider()
+		} catch (err) {
+			console.error("read-only tool provider threw, skipping", err)
+			continue
+		}
+		for (const name of names) {
 			if (!seen.has(name)) {
 				seen.add(name)
 				result.push(name)
@@ -78,13 +87,12 @@ export function getReadOnlyToolNames(pi: ExtensionAPI): string[] {
 
 /**
  * Reset the registry. Exported for test isolation so each test starts with a
- * clean WeakMap.
+ * clean WeakMap. Replaces the underlying WeakMap so any references held by
+ * previously-registered providers (via `session_shutdown` listeners) cannot
+ * keep stale entries alive.
  *
  * @internal — test-only.
  */
 export function resetReadOnlyToolRegistry(): void {
-	// WeakMap has no clear(); we rely on GC + test-isolation by removing keys.
-	// In tests, each case typically uses a fresh `pi` mock, so the WeakMap
-	// naturally has no entries. This function is a no-op kept for API symmetry
-	// with `resetAll()` in tool-profile-manager.ts.
+	providersByPi = new WeakMap()
 }

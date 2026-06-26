@@ -27,6 +27,11 @@ export function isReadOnlyMcpTool(meta: {
 }): boolean {
 	if (meta.annotations?.readOnlyHint === true) return true
 	if (meta.annotations === undefined && READ_ONLY_NAME_PREFIXES.test(meta.originalName)) {
+		// The name heuristic is best-effort: a tool with no annotations but a
+		// read-only-prefixed name (e.g. `get_reset_database`) cannot be proven
+		// safe, so we promote it and surface a warning so operators can audit
+		// the classification. Servers SHOULD set readOnlyHint explicitly.
+		console.warn(`[mcp] Tool "${meta.originalName}" promoted to read-only via name heuristic (no annotations)`)
 		return true
 	}
 	return false
