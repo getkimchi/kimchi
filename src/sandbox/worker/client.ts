@@ -62,6 +62,47 @@ export class WorkerClient {
 		return (await resp.json()) as T
 	}
 
+	async put<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+		const url = this.#url(path)
+		const resp = await fetchWithTimeout(
+			url,
+			{
+				method: "PUT",
+				headers: {
+					Authorization: `Bearer ${this.#token}`,
+					Accept: "application/json",
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify(body),
+			},
+			this.#fetch,
+			this.#timeoutMs,
+			signal,
+		)
+		await checkResponse(resp, url)
+		return (await resp.json()) as T
+	}
+
+	/** PUT that ignores the response body (for 204 / empty-200 endpoints). */
+	async putVoid(path: string, body: unknown, signal?: AbortSignal): Promise<void> {
+		const url = this.#url(path)
+		const resp = await fetchWithTimeout(
+			url,
+			{
+				method: "PUT",
+				headers: {
+					Authorization: `Bearer ${this.#token}`,
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify(body),
+			},
+			this.#fetch,
+			this.#timeoutMs,
+			signal,
+		)
+		await checkResponse(resp, url)
+	}
+
 	async postMultipart<T>(
 		path: string,
 		parts: { request: unknown; sessionFile?: string },

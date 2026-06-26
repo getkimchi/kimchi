@@ -1,11 +1,12 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs"
-import { resolve } from "node:path"
+/**
+ * Thin backwards-compat wrapper around `AdhocPlanStore.save()`. Kept so that
+ * any external caller (tests, scripts, other extensions) that imports
+ * `saveApprovedPlan` from this path continues to work after the Phase 4
+ * migration. New code should use `AdhocPlanStore` directly.
+ */
+import { AdhocPlanStore } from "../../shared/planning/plan-artifact-store.js"
 
 export function saveApprovedPlan(cwd: string, planText: string): string {
-	const plansDir = resolve(cwd, ".kimchi", "plans")
-	if (!existsSync(plansDir)) mkdirSync(plansDir, { recursive: true })
-	const fileName = `plan-${Date.now()}.md`
-	const filePath = resolve(plansDir, fileName)
-	writeFileSync(filePath, planText, "utf-8")
-	return filePath
+	const ref = new AdhocPlanStore().saveSync({ planText }, { cwd })
+	return ref.path
 }

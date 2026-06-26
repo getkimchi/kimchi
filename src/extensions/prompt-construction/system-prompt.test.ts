@@ -2,10 +2,15 @@ import type { Skill } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it } from "vitest"
 import type { ModelMetadata } from "../../models.js"
 import { MODEL_CAPABILITIES, ModelRegistry } from "../orchestration/model-registry/index.js"
-import { type EnvironmentInfo, buildSystemPrompt } from "./system-prompt.js"
+import { type EnvironmentInfo, buildSystemPrompt, formatEnvironmentSection } from "./system-prompt.js"
 
 const testEnv: EnvironmentInfo = {
 	os: "Linux",
+	rawPlatform: "linux",
+	cpuArchitecture: "x64",
+	shell: "/bin/bash",
+	osRelease: "6.1.0-test",
+	osVersion: "#1 SMP PREEMPT_DYNAMIC Test",
 	username: "testuser",
 	homeDir: "/home/testuser",
 	cwd: "/home/testuser/projects/myapp",
@@ -31,6 +36,43 @@ function fakeMetadata(slug: string): ModelMetadata {
 const ALL_KNOWN_METADATA = ALL_KNOWN_IDS.map(fakeMetadata)
 
 const registry = new ModelRegistry(ALL_KNOWN_METADATA)
+
+describe("formatEnvironmentSection", () => {
+	it("prints stable environment context lines", () => {
+		expect(formatEnvironmentSection(testEnv)).toBe(
+			[
+				"## Environment",
+				"",
+				"- OS: Linux",
+				"- OS release: 6.1.0-test",
+				"- OS version: #1 SMP PREEMPT_DYNAMIC Test",
+				"- Raw platform: linux",
+				"- CPU architecture: x64",
+				"- Shell: /bin/bash",
+				"- Shell family: posix",
+				"- Command guidance: Use commands compatible with the shell family. Do not use PowerShell/cmd syntax in POSIX shells, and do not use POSIX-only syntax in PowerShell/cmd unless the shell is Git Bash or WSL. If shell/platform conflict or are unclear, check with a read-only command before running write/destructive commands.",
+				"- Username: testuser",
+				'- Home directory: "/home/testuser"',
+				'- Working directory: "/home/testuser/projects/myapp"',
+				'- Documents directory: "/home/testuser/projects/myapp/.kimchi/docs"',
+				"- Current date: 2026-01-01",
+				"- Git repository: no",
+			].join("\n"),
+		)
+	})
+
+	it("classifies shell families from platform and shell", () => {
+		expect(formatEnvironmentSection({ ...testEnv, rawPlatform: "darwin", shell: "/bin/zsh" })).toContain(
+			"- Shell family: posix",
+		)
+		expect(formatEnvironmentSection({ ...testEnv, rawPlatform: "win32", shell: "pwsh.exe" })).toContain(
+			"- Shell family: powershell",
+		)
+		expect(
+			formatEnvironmentSection({ ...testEnv, rawPlatform: "win32", shell: "C:\\Program Files\\Git\\bin\\bash.exe" }),
+		).toContain("- Shell family: posix-on-windows")
+	})
+})
 
 function createSkill(overrides: Partial<Skill> & { name: string; description: string }): Skill {
 	return {
@@ -163,6 +205,11 @@ describe("buildSystemPrompt", () => {
 				mode: "orchestrator",
 			})
 			expect(result).toContain(`OS: ${testEnv.os}`)
+			expect(result).toContain(`OS release: ${testEnv.osRelease}`)
+			expect(result).toContain(`OS version: ${testEnv.osVersion}`)
+			expect(result).toContain(`Raw platform: ${testEnv.rawPlatform}`)
+			expect(result).toContain(`CPU architecture: ${testEnv.cpuArchitecture}`)
+			expect(result).toContain(`Shell: ${testEnv.shell}`)
 			expect(result).toContain(`Username: ${testEnv.username}`)
 			expect(result).toContain(`Home directory: "${testEnv.homeDir}"`)
 			expect(result).toContain(`Working directory: "${testEnv.cwd}"`)
@@ -227,7 +274,7 @@ describe("buildSystemPrompt", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
-				currentModelId: "minimax-m2.7",
+				currentModelId: "minimax-m3",
 				registry,
 				mode: "orchestrator",
 			})
@@ -239,7 +286,7 @@ describe("buildSystemPrompt", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
-				currentModelId: "minimax-m2.7",
+				currentModelId: "minimax-m3",
 				currentPhase: "build",
 				registry,
 				mode: "orchestrator",
@@ -297,7 +344,7 @@ describe("buildSystemPrompt", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
-				currentModelId: "minimax-m2.7",
+				currentModelId: "minimax-m3",
 				currentPhase: "build",
 				registry,
 				mode: "subagent",
@@ -349,6 +396,11 @@ describe("buildSystemPrompt", () => {
 				mode: "subagent",
 			})
 			expect(result).toContain(`OS: ${testEnv.os}`)
+			expect(result).toContain(`OS release: ${testEnv.osRelease}`)
+			expect(result).toContain(`OS version: ${testEnv.osVersion}`)
+			expect(result).toContain(`Raw platform: ${testEnv.rawPlatform}`)
+			expect(result).toContain(`CPU architecture: ${testEnv.cpuArchitecture}`)
+			expect(result).toContain(`Shell: ${testEnv.shell}`)
 			expect(result).toContain(`Username: ${testEnv.username}`)
 			expect(result).toContain(`Home directory: "${testEnv.homeDir}"`)
 			expect(result).toContain(`Working directory: "${testEnv.cwd}"`)
@@ -418,13 +470,59 @@ describe("buildSystemPrompt", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
-				currentModelId: "minimax-m2.7",
+				currentModelId: "minimax-m3",
 				currentPhase: "build",
 				registry,
 				mode: "single",
 			})
 			expect(result).toContain("## Phase Guidelines (build)")
 			expect(result).toContain("Outline-then-diff")
+		})
+
+		it("includes default research nudges for a non-OSS model in research phase", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				currentModelId: "claude-opus-4-6-20250514",
+				currentPhase: "research",
+				registry,
+				mode: "single",
+			})
+			expect(result).toContain("## Phase Guidelines (research)")
+			expect(result).toContain("version you are assuming")
+			expect(result).toContain("version/API assumption")
+			expect(result).toContain("do not bluff")
+			expect(result).toContain("Do not rely on training memory")
+			expect(result).not.toContain("AT MOST one")
+		})
+
+		it("includes default and family research nudges for an OSS model in research phase", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				currentModelId: "minimax-m3",
+				currentPhase: "research",
+				registry,
+				mode: "single",
+			})
+			expect(result).toContain("## Phase Guidelines (research)")
+			expect(result).toContain("MiniMax family")
+			expect(result).toContain("hallucinating APIs")
+			expect(result).toContain("version you are assuming")
+		})
+
+		it("includes build-phase research nudge for an OSS model in build phase", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				currentModelId: "minimax-m3",
+				currentPhase: "build",
+				registry,
+				mode: "single",
+			})
+			expect(result).toContain("## Phase Guidelines (build)")
+			expect(result).toContain("uncertain about a library API")
+			expect(result).toContain("assume your knowledge may be stale")
 		})
 	})
 })

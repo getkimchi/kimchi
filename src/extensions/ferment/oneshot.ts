@@ -1,4 +1,5 @@
 import type { Ferment } from "../../ferment/types.js"
+import { SHARED_PLANNING_PROCESS } from "../../shared/planning/shared-planning-process.js"
 
 /**
  * Build the one-shot envelope sent to the planner. Shared by the `/ferment one-shot`
@@ -12,9 +13,16 @@ User intent: "${intent}"
 
 ## Your job
 
-Execute ALL of the following steps in order WITHOUT pausing to ask the user, read files, or orient yourself first. Call scope_ferment as your VERY FIRST tool call on this turn.
+Follow the shared planning process below. The only differences from interactive ferment scoping are:
+- **Interview**: call \`ask_user\` as normal — questions are automatically routed to a judge that stands in for the user. You do not need to do anything special.
+- **Completion Criteria**: \`confirm_ferment_completion_criteria\` is not available in one-shot mode. Draft criteria from the intent and include them directly in \`scope_ferment.success_criteria\`.
+- Then call \`scope_ferment\` with the complete plan.
 
-1. **Call scope_ferment immediately** (ferment_id: "${ferment.id}") with:
+${SHARED_PLANNING_PROCESS}
+
+## One-shot execution
+
+1. **Call scope_ferment** (ferment_id: "${ferment.id}") with:
    - title: concise 3-5 word name derived from the task
    - goal: what the task asks for, in one sentence
    - success_criteria: observable, verifiable outcomes

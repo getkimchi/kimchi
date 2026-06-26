@@ -217,6 +217,9 @@ export function writeDirectToolsConfig(
 			} else if (servers[name]) {
 				servers[name] = { ...servers[name], directTools: value }
 			}
+
+			// Sync in-memory config so /mcp panel shows current state on reopen. Tool availability still requires restart.
+			fullConfig.mcpServers[name] = servers[name]
 		}
 
 		const key = raw["mcp-servers"] && !raw.mcpServers ? "mcp-servers" : "mcpServers"

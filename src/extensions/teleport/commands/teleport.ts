@@ -4,7 +4,7 @@ import { readGitToken, readTeleportHelpSeenAt, writeGitToken, writeTeleportHelpS
 import { authenticateWorkspace } from "../../../sandbox/cloud/auth.js"
 import { waitForWorkspaceReady } from "../../../sandbox/cloud/readiness.js"
 import type { WorkspaceCredentials } from "../../../sandbox/cloud/types.js"
-import { getGitRemoteHost, parseHostFromRemoteUrl } from "../../../sandbox/git-credentials.js"
+import { getGitRemoteHost, parseHostFromRemoteUrl, readLocalGitConfig } from "../../../sandbox/git-credentials.js"
 import { WorkerClient } from "../../../sandbox/worker/client.js"
 import { createSession, listSessions } from "../../../sandbox/worker/sessions.js"
 import type { CreateSessionRequest, Session } from "../../../sandbox/worker/types.js"
@@ -15,14 +15,10 @@ import { runPreflight } from "../preflight/index.js"
 import { SIZE_REFUSE_BYTES, SIZE_WARN_BYTES } from "../preflight/workspace-size.js"
 import { SANDBOX_USER } from "../provisioning/constants.js"
 import { sumIncludeListBytes } from "../provisioning/estimate-bytes.js"
-import {
-	propagateGitConfigToSandbox,
-	propagateGitCredentialToSandbox,
-	readLocalGitConfig,
-} from "../provisioning/git-propagate.js"
+import { provisionGitCredential, provisionGitIdentity } from "../provisioning/git-provision.js"
 import { buildIncludeList } from "../provisioning/include-list.js"
 import { deriveSandboxDest, deriveSandboxDestFromRepoUrl, repoBasename } from "../provisioning/paths.js"
-import { runRsync } from "../provisioning/rsync-runner.js"
+import { formatRsyncFailure, runRsync } from "../provisioning/rsync-runner.js"
 import { STATUS_KEY, type TeleportContext } from "../types.js"
 import { formatBytes } from "../ui/format-bytes.js"
 import { promptTeleportHelp } from "../ui/help-modal.js"
@@ -174,30 +170,18 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 
 		const identityP =
 			localGitConfig.name || localGitConfig.email
-				? propagateGitConfigToSandbox({
-						remoteHost: creds.host,
-						remoteUser: SANDBOX_USER,
-						authToken: creds.connectToken,
-						gitName: localGitConfig.name,
-						gitEmail: localGitConfig.email,
-						signal,
-					}).catch((err) => {
-						if (!signal.aborted) {
-							warn(ctx, `Could not set git identity on sandbox: ${err instanceof Error ? err.message : String(err)}`)
-						}
-					})
+				? provisionGitIdentity(client, { name: localGitConfig.name, email: localGitConfig.email }, signal).catch(
+						(err) => {
+							if (!signal.aborted) {
+								warn(ctx, `Could not set git identity on sandbox: ${err instanceof Error ? err.message : String(err)}`)
+							}
+						},
+					)
 				: Promise.resolve()
 
 		const credsPropP =
 			gitHost && gitToken
-				? propagateGitCredentialToSandbox({
-						remoteHost: creds.host,
-						remoteUser: SANDBOX_USER,
-						authToken: creds.connectToken,
-						gitHost,
-						gitToken,
-						signal,
-					}).catch((err) => {
+				? provisionGitCredential(client, { gitHost, gitToken }, signal).catch((err) => {
 						if (!signal.aborted) {
 							warn(
 								ctx,
@@ -235,7 +219,9 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 						if (signal.aborted) throw err
 						// Surface a refusal-style error that the outer catch will
 						// translate into the "Workspace sync failed" notify via refuse().
-						throw new SyncFailure(err instanceof Error ? err.message : String(err))
+						// formatRsyncFailure folds in rsync's stderr (e.g. which file it
+						// couldn't transfer) so a code-23 partial failure is diagnosable.
+						throw new SyncFailure(formatRsyncFailure(err))
 					}
 				})()
 			: Promise.resolve()
@@ -259,7 +245,10 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 
 		progress.step("Opening session")
 		if (existing.some((s) => s.name === sessionName)) {
-			refuse(ctx, `Session "${sessionName}" already exists in workspace ${workspaceId}. Use /sessions to attach.`)
+			refuse(
+				ctx,
+				`Session "${sessionName}" already exists in workspace ${workspaceId}. Use /remote-sessions to attach.`,
+			)
 		}
 		const sessionCwd = args.gitRepo
 			? deriveSandboxDestFromRepoUrl(args.gitRepo)
@@ -298,7 +287,7 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 		progress.stop()
 		if (signal.aborted) {
 			const wsHint = creds
-				? ` Workspace ${workspaceId} is still up. Use /workspaces to remove or /teleport ${workspaceId} to resume.`
+				? ` Workspace ${workspaceId} is still up. Use /remote-sessions to remove or /teleport ${workspaceId} to resume.`
 				: ""
 			ctx.ui.notify(`Teleport cancelled.${wsHint}`, "info")
 			return

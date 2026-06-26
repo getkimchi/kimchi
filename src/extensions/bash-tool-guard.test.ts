@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest"
-import {
+import bashToolGuardExtension, {
 	type BashCategory,
 	type BashGuardBlockResult,
 	type BashGuardWarnResult,
+	BASH_TOOL_DESCRIPTION,
 	BashToolGuard,
+	TOOL_PREFERENCES_BLOCK,
+	applyDescriptionOverride,
 	classifyBashCommand,
+	toolDescriptionOverride,
 } from "./bash-tool-guard.js"
 
 describe("classifyBashCommand — read patterns", () => {
@@ -676,5 +680,211 @@ describe("BashToolGuard — semantic intent override (no tool name)", () => {
 			guard.setLastUserPrompt("no changes needed")
 			expect(guard.recordCommand("echo 'x' > foo.ts").decision).toBe("warn")
 		})
+	})
+})
+
+// =============================================================================
+// Preference (upstream nudging)
+// =============================================================================
+//
+// The guard steers AFTER the model picks bash for a file op. The
+// preference block + description override steers BEFORE — nudging the model
+// to pick the dedicated tool in the first place. These tests cover the
+// pure helpers exported for that purpose and the default extension's
+// integration with the system prompt block + session_start mutation.
+
+describe("TOOL_PREFERENCES_BLOCK", () => {
+	it("contains the section header", () => {
+		expect(TOOL_PREFERENCES_BLOCK).toContain("## Tool Preferences")
+	})
+
+	it("maps each file operation to its dedicated tool", () => {
+		// Each line should pair the file operation with the dedicated
+		// tool name in backticks. Verifying the mapping catches
+		// accidental edits that drop the substitution targets.
+		expect(TOOL_PREFERENCES_BLOCK).toContain("use `read`")
+		expect(TOOL_PREFERENCES_BLOCK).toContain("use `edit`")
+		expect(TOOL_PREFERENCES_BLOCK).toContain("use `write`")
+		expect(TOOL_PREFERENCES_BLOCK).toContain("use `grep`")
+		expect(TOOL_PREFERENCES_BLOCK).toContain("use `find`")
+		expect(TOOL_PREFERENCES_BLOCK).toContain("use `ls`")
+	})
+
+	it("lists the anti-patterns being discouraged", () => {
+		// Spot-check the most common anti-patterns so we know the
+		// guidance covers the cases bash-tool-guard steers on.
+		expect(TOOL_PREFERENCES_BLOCK).toContain("cat")
+		expect(TOOL_PREFERENCES_BLOCK).toContain("head")
+		expect(TOOL_PREFERENCES_BLOCK).toContain("tail")
+		expect(TOOL_PREFERENCES_BLOCK).toContain("sed -i")
+	})
+
+	it("specifies what bash IS for", () => {
+		// The block must also say what bash is for, otherwise the model
+		// would think bash is now useless for everything.
+		expect(TOOL_PREFERENCES_BLOCK).toMatch(/build|test|git|package/i)
+	})
+})
+
+describe("BASH_TOOL_DESCRIPTION", () => {
+	it("describes what bash is for", () => {
+		expect(BASH_TOOL_DESCRIPTION).toMatch(/build|test|git|package/i)
+	})
+
+	it("explicitly tells the model to use dedicated tools for file ops", () => {
+		expect(BASH_TOOL_DESCRIPTION).toContain("use `read`")
+		expect(BASH_TOOL_DESCRIPTION).toContain("use `edit`")
+		expect(BASH_TOOL_DESCRIPTION).toContain("use `write`")
+		expect(BASH_TOOL_DESCRIPTION).toContain("use `grep`")
+		expect(BASH_TOOL_DESCRIPTION).toContain("use `find`")
+		expect(BASH_TOOL_DESCRIPTION).toContain("use `ls`")
+	})
+
+	it("preserves the upstream truncation behaviour", () => {
+		// The output truncation contract is important — dropping it would
+		// change runtime semantics. Verify the truncation info survives.
+		expect(BASH_TOOL_DESCRIPTION).toMatch(/truncat/i)
+	})
+})
+
+describe("toolDescriptionOverride", () => {
+	it("returns the override for the bash tool", () => {
+		expect(toolDescriptionOverride("bash")).toBe(BASH_TOOL_DESCRIPTION)
+	})
+
+	it("returns undefined for non-bash tools", () => {
+		expect(toolDescriptionOverride("read")).toBeUndefined()
+		expect(toolDescriptionOverride("edit")).toBeUndefined()
+		expect(toolDescriptionOverride("grep")).toBeUndefined()
+		expect(toolDescriptionOverride("Agent")).toBeUndefined()
+		expect(toolDescriptionOverride("")).toBeUndefined()
+	})
+})
+
+describe("applyDescriptionOverride", () => {
+	it("overrides the description for bash", () => {
+		const tool = { name: "bash", description: "old description" }
+		const result = applyDescriptionOverride(tool)
+		expect(result.description).toBe(BASH_TOOL_DESCRIPTION)
+	})
+
+	it("does not mutate the input object", () => {
+		const tool = { name: "read", description: "unchanged" }
+		const result = applyDescriptionOverride(tool)
+		expect(result).not.toBe(tool)
+		expect(result.description).toBe("unchanged")
+	})
+
+	it("passes through non-bash tools with the same description", () => {
+		const tool = { name: "read", description: "Read file contents" }
+		const result = applyDescriptionOverride(tool)
+		expect(result.description).toBe("Read file contents")
+	})
+})
+
+describe("bashToolGuardExtension — preference integration", () => {
+	interface MockTool {
+		name: string
+		description: string
+	}
+
+	interface MockPI {
+		handlers: Record<string, Array<(event: unknown) => unknown>>
+		on(event: string, handler: (event: unknown) => unknown): void
+		setTools(tools: MockTool[]): void
+		getAllTools(): MockTool[]
+	}
+
+	function createMockPI(): MockPI {
+		const handlers: MockPI["handlers"] = {}
+		let tools: MockTool[] = []
+		return {
+			handlers,
+			setTools(t) {
+				tools = t
+			},
+			getAllTools() {
+				return tools
+			},
+			on(event, handler) {
+				if (!handlers[event]) handlers[event] = []
+				handlers[event].push(handler)
+			},
+		}
+	}
+
+	function fireSessionStart(pi: MockPI): void {
+		const handlers = pi.handlers.session_start ?? []
+		for (const handler of handlers) handler({})
+	}
+
+	it("mutates the bash tool description on session_start", () => {
+		const pi = createMockPI()
+		// The extension requires more API surface than the mock
+		// provides — cast through `unknown` so the test stays focused
+		// on the session_start hook behavior.
+		bashToolGuardExtension(pi as unknown as Parameters<typeof bashToolGuardExtension>[0])
+
+		const tools = [
+			{ name: "read", description: "Read file contents" },
+			{ name: "bash", description: "Execute bash commands (ls, grep, find, etc.)" },
+			{ name: "edit", description: "Edit a file" },
+		]
+		pi.setTools(tools)
+
+		fireSessionStart(pi)
+
+		expect(tools[1].description).toBe(BASH_TOOL_DESCRIPTION)
+	})
+
+	it("does not mutate non-bash tools", () => {
+		const pi = createMockPI()
+		bashToolGuardExtension(pi as unknown as Parameters<typeof bashToolGuardExtension>[0])
+
+		const tools = [
+			{ name: "read", description: "Read file contents" },
+			{ name: "edit", description: "Edit a file" },
+			{ name: "grep", description: "Search file contents" },
+		]
+		pi.setTools(tools)
+
+		fireSessionStart(pi)
+
+		// All non-bash tools should be byte-for-byte unchanged.
+		expect(tools[0].description).toBe("Read file contents")
+		expect(tools[1].description).toBe("Edit a file")
+		expect(tools[2].description).toBe("Search file contents")
+	})
+
+	it("is safe when no bash tool is registered", () => {
+		const pi = createMockPI()
+		bashToolGuardExtension(pi as unknown as Parameters<typeof bashToolGuardExtension>[0])
+
+		pi.setTools([{ name: "read", description: "Read file contents" }])
+
+		expect(() => fireSessionStart(pi)).not.toThrow()
+	})
+
+	it("is safe when the tool list is empty", () => {
+		const pi = createMockPI()
+		bashToolGuardExtension(pi as unknown as Parameters<typeof bashToolGuardExtension>[0])
+		pi.setTools([])
+		expect(() => fireSessionStart(pi)).not.toThrow()
+	})
+
+	it("mutates the actual tool object so downstream reads see the change", () => {
+		// The kimchi prompt-enrichment handler reads pi.getAllTools() and
+		// passes the same object references to buildSystemPrompt. If the
+		// extension returns a new object, the mutation never reaches the
+		// prompt. Guard against accidental reassignment.
+		const pi = createMockPI()
+		bashToolGuardExtension(pi as unknown as Parameters<typeof bashToolGuardExtension>[0])
+		const bashTool = { name: "bash", description: "old" }
+		pi.setTools([bashTool])
+
+		fireSessionStart(pi)
+
+		expect(pi.getAllTools()[0]).toBe(bashTool)
+		expect(bashTool.description).toBe(BASH_TOOL_DESCRIPTION)
 	})
 })

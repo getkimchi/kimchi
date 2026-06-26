@@ -23,7 +23,7 @@
 import { execSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
-import { homedir, platform, userInfo } from "node:os"
+import { arch, homedir, version as osVersion, platform, release, userInfo } from "node:os"
 import { join } from "node:path"
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import { type ExtensionAPI, type Skill, getAgentDir, loadSkills } from "@earendil-works/pi-coding-agent"
@@ -463,7 +463,12 @@ export default function (skillPaths: string[]) {
 		}
 
 		const platformNames: Record<string, string> = { darwin: "macOS", win32: "Windows" }
-		const cachedOs = platformNames[platform()] ?? platform()
+		const cachedRawPlatform = platform()
+		const cachedOs = platformNames[cachedRawPlatform] ?? cachedRawPlatform
+		const cachedCpuArchitecture = arch()
+		const cachedShell = process.env.SHELL ?? process.env.ComSpec ?? "unknown"
+		const cachedOsRelease = release()
+		const cachedOsVersion = osVersion()
 		const cachedUsername = safeUsername()
 		const cachedHomeDir = homedir()
 
@@ -508,6 +513,11 @@ export default function (skillPaths: string[]) {
 			}
 			const env: EnvironmentInfo = {
 				os: cachedOs,
+				rawPlatform: cachedRawPlatform,
+				cpuArchitecture: cachedCpuArchitecture,
+				shell: cachedShell,
+				osRelease: cachedOsRelease,
+				osVersion: cachedOsVersion,
 				username: cachedUsername,
 				homeDir: cachedHomeDir,
 				cwd: ctx.cwd,

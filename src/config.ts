@@ -33,8 +33,6 @@ export function getActiveVendorSkillPaths(): string[] {
 	const harnessSkillsDir = join(home, ".config", "kimchi", "harness", "skills")
 	const superPowersSentinel = join(harnessSkillsDir, "using-superpowers", "SKILL.md")
 	if (existsSync(superPowersSentinel)) return []
-	// Only inject the vendor path if the dir actually exists on disk
-	if (!existsSync(join(home, SUPERPOWERS_SKILL_PATH))) return []
 	return VENDOR_SKILL_PATHS
 }
 

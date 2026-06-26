@@ -18,6 +18,8 @@ import {
 import {
 	MINIMAX_FAMILY_BUILD,
 	MINIMAX_FAMILY_ORCHESTRATION,
+	MINIMAX_FAMILY_PLAN,
+	MINIMAX_FAMILY_RESEARCH,
 	MINIMAX_FAMILY_REVIEW,
 	MINIMAX_M27_BUILD,
 	MINIMAX_M27_ORCHESTRATION,
@@ -55,6 +57,19 @@ As a build subagent it frequently times out before completing, even with 1.5x du
 scaling. Prefer minimax-m2.7 for build subagents — it is faster and completes reliably \
 within standard budgets. Use kimi-k2.6 as a build subagent ONLY as a retry after \
 minimax has already failed on the same chunk.`
+
+const KIMI_K27_DESCRIPTION = `\
+Flagship Kimi model with vision support — the default for orchestration, deep research, \
+complex planning, and correctness-critical tasks. Handles images, screenshots, and visual input. \
+Best for: orchestration, architectural planning, plan verification involving concurrency or \
+algorithmic design, multi-step coding tasks, and any work requiring image understanding.`
+
+const MINIMAX_M3_DESCRIPTION = `\
+Primary MiniMax model with vision support — the default for orchestration, deep research, \
+complex planning, and correctness-critical tasks. Handles images, screenshots, and visual input. \
+Best for: orchestration, architectural planning, plan verification involving concurrency or \
+algorithmic design, multi-step coding tasks, and any work requiring image understanding. \
+Replaces kimi-k2.6 (orchestrator) and minimax-m2.7 (builder/reviewer subagent).`
 
 const MINIMAX_M27_DESCRIPTION = `\
 The strongest coding model in the pool. \
@@ -131,7 +146,37 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 			),
 		},
 	],
+	[
+		"kimi-k2.7",
+		{
+			vision: true,
+			tier: "heavy",
+			description: KIMI_K27_DESCRIPTION,
+			guidelines: guidelinesMap({
+				research: [DEFAULT_RESEARCH_GUIDELINES, KIMI_FAMILY_RESEARCH],
+				plan: [DEFAULT_PLAN_GUIDELINES, KIMI_FAMILY_PLAN],
+				build: [DEFAULT_BUILD_GUIDELINES, KIMI_FAMILY_BUILD],
+				review: [DEFAULT_REVIEW_GUIDELINES, KIMI_FAMILY_REVIEW],
+			}),
+			orchestrationGuidelines: optionalGuidelines(DEFAULT_ORCHESTRATION_GUIDELINES, KIMI_FAMILY_ORCHESTRATION),
+		},
+	],
 	["kimi-k2.5", "ignored"],
+	[
+		"minimax-m3",
+		{
+			vision: true,
+			tier: "heavy",
+			description: MINIMAX_M3_DESCRIPTION,
+			guidelines: guidelinesMap({
+				research: [DEFAULT_RESEARCH_GUIDELINES, MINIMAX_FAMILY_RESEARCH],
+				plan: [DEFAULT_PLAN_GUIDELINES, MINIMAX_FAMILY_PLAN],
+				build: [DEFAULT_BUILD_GUIDELINES, MINIMAX_FAMILY_BUILD],
+				review: [DEFAULT_REVIEW_GUIDELINES, MINIMAX_FAMILY_REVIEW],
+			}),
+			orchestrationGuidelines: optionalGuidelines(DEFAULT_ORCHESTRATION_GUIDELINES, MINIMAX_FAMILY_ORCHESTRATION),
+		},
+	],
 	[
 		"minimax-m2.7",
 		{

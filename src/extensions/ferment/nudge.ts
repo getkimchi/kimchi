@@ -22,6 +22,13 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Ferment } from "../../ferment/types.js"
+import {
+	FERMENT_SCOPING_STOP_NUDGE_INTERACTIVE,
+	FERMENT_SCOPING_STOP_NUDGE_ONESHOT,
+	hasFermentScopingCompletionSignal,
+	isNudgeSuppressed,
+	shouldNudge,
+} from "../../shared/planning/planning-stop-nudge.js"
 import { decideContinuation } from "./continuation.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { scheduleNextFermentAction } from "./scheduler.js"
@@ -200,11 +207,14 @@ export function onFermentToolCallSeen(fermentId: string): void {
 // Unlike the reactive continuation nudge (which only fires on text-only turns),
 // this fires even when the model IS making tool calls — just the wrong kind.
 
-/** Tool names that indicate the model is making scoping progress, not just exploring. */
+/** Tool names that indicate the model is making scoping progress, not just exploring.
+ *  Includes both the interactive (propose_ferment_scoping) and one-shot (scope_ferment)
+ *  scoping tools so the progress nudge behaves consistently across modes. */
 const SCOPING_PROGRESS_TOOLS = new Set([
 	"ask_user",
 	"confirm_ferment_completion_criteria",
 	"propose_ferment_scoping",
+	"scope_ferment",
 	"Agent",
 ])
 
@@ -214,13 +224,21 @@ export function hasScopingProgressTool(toolNames: string[]): boolean {
 }
 
 /**
- * Called from turn_end when a draft ferment's scoping is interactive.
+ * Called from turn_end during draft ferment scoping (one-shot or interactive).
  * If the model made tool calls but none were scoping-progress tools,
  * bump the exploration turn counter and inject a nudge after the threshold.
  *
+ * The nudge text adapts to interactive vs one-shot scoping so the model is
+ * pointed at the right tool (propose_ferment_scoping vs scope_ferment).
+ *
  * Returns true if a nudge was injected.
  */
-export function maybeInjectScopingProgressNudge(pi: ExtensionAPI, fermentId: string, toolNames: string[]): boolean {
+export function maybeInjectScopingProgressNudge(
+	pi: ExtensionAPI,
+	fermentId: string,
+	toolNames: string[],
+	opts: { interactive: boolean } = { interactive: true },
+): boolean {
 	if (hasScopingProgressTool(toolNames)) {
 		resetScopingExploreTurns(fermentId)
 		return false
@@ -232,20 +250,79 @@ export function maybeInjectScopingProgressNudge(pi: ExtensionAPI, fermentId: str
 	// Reset after nudge so we don't spam every turn
 	resetScopingExploreTurns(fermentId)
 
+	const nudgeText = opts.interactive
+		? `SCOPING PROGRESS CHECK: You have spent ${count} turns reading files. Are you ready to move to the next scoping step? If not, resolve any missing context and then move on.
+
+- Step 2 — Interview: if you still need information from the user, call ask_user.
+- Step 3 — Completion criteria: once the interview is done, call confirm_ferment_completion_criteria to confirm the completion criteria with the user.
+- Step 5 — Plan: once completion criteria are confirmed, call propose_ferment_scoping with the full plan (this proposes the full scoping to the user for approval; it is separate from Step 3 which only confirms the completion criteria).
+- If you still need more context, take one targeted action to get it, then advance.`
+		: `SCOPING PROGRESS CHECK: You have spent ${count} turns exploring without finalising the plan. Are you ready to call scope_ferment?
+
+- If you still need information, call ask_user — questions route automatically to the judge.
+- Otherwise call scope_ferment with the complete payload: goal, success_criteria, constraints, assumptions, phases, and the P1/P2/P3 gates array.
+- Record any remaining uncertainty in assumptions rather than continuing to explore.`
+
 	void pi.sendMessage(
 		{
 			customType: "ferment_scoping_progress_nudge",
 			content: [
 				{
 					type: "text",
-					text: `SCOPING PROGRESS CHECK: You have spent ${count} turns reading files without advancing through the scoping steps. Stop exploring and move to the next scoping step NOW.
-
-- If you haven't asked the user any questions yet, call ask_user with your interview questions (Step 2).
-- If you've completed the interview, call confirm_ferment_completion_criteria to confirm success criteria (Step 3).
-- If criteria are confirmed, call propose_ferment_scoping with the full plan (Step 5).
-- Do NOT continue reading more files. You have enough context to proceed.`,
+					text: nudgeText,
 				},
 			],
+			display: false,
+			details: undefined,
+		},
+		{ triggerTurn: true },
+	)
+	return true
+}
+
+// ─── Scoping stop nudge ───────────────────────────────────────────────────
+// During draft ferment scoping the model can also fail by stopping mid-turn
+// without ever calling scope_ferment / propose_ferment_scoping (stopReason
+// "stop" with tool calls but no scoping-completion tool). Capped per-ferment
+// to avoid flooding the context.
+
+const scopingStopNudgeCounts = new Map<string, number>()
+
+export function resetScopingStopNudgeCount(fermentId: string): void {
+	scopingStopNudgeCounts.delete(fermentId)
+}
+
+/**
+ * Fires when the model made tool calls during draft scoping but ended the turn
+ * with stopReason "stop" without calling any scoping-completion tool. Mirrors
+ * plan-mode-supplement's stop nudge: it prevents the silent stall where the
+ * model explores, decides it's done, and quits without calling scope_ferment.
+ *
+ * Returns true if a nudge was injected.
+ */
+export function maybeInjectScopingStopNudge(
+	pi: ExtensionAPI,
+	fermentId: string,
+	toolNames: string[],
+	stopReason: string | undefined,
+	opts: { interactive: boolean } = { interactive: true },
+): boolean {
+	const completionSignalPresent = hasFermentScopingCompletionSignal(toolNames)
+
+	if (!shouldNudge({ hasToolCall: toolNames.length > 0, stopReason, completionSignalPresent })) {
+		return false
+	}
+
+	const count = (scopingStopNudgeCounts.get(fermentId) ?? 0) + 1
+	scopingStopNudgeCounts.set(fermentId, count)
+
+	if (isNudgeSuppressed(count)) return false
+
+	const nudgeText = opts.interactive ? FERMENT_SCOPING_STOP_NUDGE_INTERACTIVE : FERMENT_SCOPING_STOP_NUDGE_ONESHOT
+	void pi.sendMessage(
+		{
+			customType: "ferment_scoping_stop_nudge",
+			content: [{ type: "text", text: nudgeText }],
 			display: false,
 			details: undefined,
 		},

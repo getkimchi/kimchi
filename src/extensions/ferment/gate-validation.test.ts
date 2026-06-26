@@ -1,5 +1,9 @@
+import { validateToolArguments } from "@earendil-works/pi-ai"
+import type { ToolCall } from "@earendil-works/pi-ai"
+import { Type } from "typebox"
 import { describe, expect, it } from "vitest"
 import { assertGateFieldsPresent, validateGatesOrErr } from "./gate-validation.js"
+import { CompleteStepParams } from "./tool-schemas.js"
 
 const validPhaseGates = () => [
 	{ id: "F1", verdict: "pass", rationale: "ok", evidence: "n/a" },
@@ -255,5 +259,61 @@ describe("assertGateFieldsPresent", () => {
 		expect(() => assertGateFieldsPresent(args)).toThrow(
 			/Every gate object requires \{id, verdict, rationale, evidence\}/,
 		)
+	})
+})
+
+describe("pi-ai validation patch regressions", () => {
+	it("coerces JSON-encoded string to array", () => {
+		const tool = {
+			name: "test-array",
+			description: "test array coercion",
+			parameters: Type.Object({ items: Type.Array(Type.String()) }),
+			execute: () => {},
+		}
+		const args = validateToolArguments(tool, {
+			type: "toolCall",
+			id: "test-array-call",
+			name: "test-array",
+			arguments: { items: '["a","b"]' },
+		} as ToolCall)
+		expect(args.items).toEqual(["a", "b"])
+	})
+
+	it("coerces JSON-encoded string to object", () => {
+		const tool = {
+			name: "test-object",
+			description: "test object coercion",
+			parameters: Type.Object({ config: Type.Object({ enabled: Type.Boolean() }) }),
+			execute: () => {},
+		}
+		const args = validateToolArguments(tool, {
+			type: "toolCall",
+			id: "test-object-call",
+			name: "test-object",
+			arguments: { config: '{"enabled":true}' },
+		} as ToolCall)
+		expect(args.config).toEqual({ enabled: true })
+	})
+
+	it("does not throw SyntaxError for already-parsed ferment args", () => {
+		const tool = {
+			name: "complete_ferment_step",
+			description: "test ferment args",
+			parameters: CompleteStepParams,
+			execute: () => {},
+		}
+		expect(() =>
+			validateToolArguments(tool, {
+				type: "toolCall",
+				id: "complete-step-call",
+				name: "complete_ferment_step",
+				arguments: {
+					ferment_id: "ferment-1",
+					phase_id: "phase-1",
+					step_id: "step-1",
+					gates: [{ id: "S1", verdict: "pass", rationale: "ok", evidence: "test" }],
+				},
+			} as ToolCall),
+		).not.toThrow(SyntaxError)
 	})
 })

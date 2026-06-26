@@ -1,9 +1,11 @@
 /**
- * Mode-specific prompt content for multi-model orchestration.
+ * Orchestrator-mode prompt content for multi-model orchestration.
  *
- * - Orchestrator: task approach, sharing context, Agent delegation rules, role-based model selection, budgets
- * - Subagent: response protocol, factual accuracy, tool discovery
- * - Single-model: empty (no orchestration content)
+ * Covers the orchestrator's team section (Your Team + Your Capabilities) and the
+ * per-phase DOs/DONTs, agent management rules, token budgets, and plan quality
+ * checklist. The subagent response protocol and single-model instructions live
+ * in `prompt-construction/system-prompt.ts` next to `buildSystemPrompt`, which
+ * is the module that knows about modes.
  */
 
 import { renderAgentWorkerBudgetTable } from "../agents/worker-budget-policy.js"
@@ -18,7 +20,6 @@ import { modelIdFromRef, normalizeRoleModels, splitModelRef } from "./model-role
 export interface OrchestrationInstructionsContext {
 	currentModelId?: string
 	registry?: ModelRegistry
-	mode: PromptMode
 	/** Role-based model assignments for orchestrator mode. */
 	roles?: ModelRoles
 	/** Custom model metadata for non-registry models. */
@@ -33,16 +34,18 @@ export interface OrchestrationInstructionsResult {
 export function resolveOrchestrationInstructions(
 	ctx: OrchestrationInstructionsContext,
 ): OrchestrationInstructionsResult {
-	if (ctx.mode === "orchestrator") {
-		return resolveOrchestratorInstructions(ctx)
-	}
-	if (ctx.mode === "subagent") {
-		return { teamSection: "", instructionsSection: resolveSubagentInstructions() }
-	}
-	if (ctx.mode === "single") {
-		return { teamSection: "", instructionsSection: resolveSingleModelInstructions(ctx.currentModelId) }
-	}
-	return { teamSection: "", instructionsSection: "" }
+	const teamSection =
+		ctx.roles && ctx.registry
+			? buildRoleAssignmentsSection(ctx.roles, ctx.registry, ctx.currentModelId, ctx.customConfigs)
+			: ""
+
+	const instructionParts: string[] = []
+	instructionParts.push(buildOrchestratorInstructions(ctx.roles, ctx.currentModelId, ctx.registry, ctx.customConfigs))
+
+	const orchGuidelines = buildOrchestrationGuidelinesSection(ctx.currentModelId, ctx.registry)
+	if (orchGuidelines) instructionParts.push(orchGuidelines)
+
+	return { teamSection, instructionsSection: instructionParts.join("\n\n") }
 }
 
 // ---------------------------------------------------------------------------
@@ -150,7 +153,7 @@ const AGENT_MANAGEMENT = `### Agent management
 - Write Agent prompts that are fully self-contained. Agents start with fresh context by default — include necessary instructions directly, or point them to a Markdown file containing larger context.
 - When delegating \`plan\` before \`build\`, have the Plan agent write a Markdown spec file (full method signatures, file paths, interfaces) to the Documents directory. Pass that file path to the build Agent — it must not rediscover what was already decided.
 - Spawn independent subtasks in parallel with \`run_in_background: true\`: do NOT run more than 3 concurrent Agents.
-- After an Agent returns, TRUST its output unless the subagent itself reported errors or produced obviously incomplete work. Do NOT re-read source files just to verify a successful subagent's findings — this is the most common source of wasted orchestrator turns. Instead, have the subagent write its substantive output to a Markdown file in the Documents directory and return the file path. Read ONLY that file (or pass it to the next subagent). For build agents specifically: if the agent reports tests pass and compilation succeeds, move on to the next chunk or to review. Do NOT re-read the code it wrote. For correction tasks, call Agent again with the correction task rather than fixing inline.
+- After an Agent returns, TRUST its output unless the subagent itself reported errors or produced obviously incomplete work. Do NOT re-read source files just to verify a successful subagent's findings — this is the most common source of wasted orchestrator turns. For artifact-producing agents (Plan, Reviewer, Fixer, and Researcher when the research is non-trivial), have the subagent write its substantive output to a Markdown file in the Documents directory and return the file path. Read ONLY that file (or pass it to the next subagent). Explore is the exception: Explore agents return decision-ready findings directly in the Agent result and must not be asked to write Markdown files, reports, docs, notes, or scratch files. For build agents specifically: if the agent reports tests pass and compilation succeeds, move on to the next chunk or to review. Do NOT re-read the code it wrote. For correction tasks, call Agent again with the correction task rather than fixing inline.
 - If an Agent call returns an error of any kind (including protocol violation, timeout, or exit error): do NOT attempt to implement or debug the work yourself. First assess whether the failure is retryable (e.g. transient timeouts or protocol violations) or not (e.g. missing files, permission errors, or invalid inputs). For retryable failures, call a replacement Agent with a corrected or simplified prompt — allow at most one retry per delegated step. For non-retryable failures, report the failure clearly and stop immediately without retrying.
 - **When a subagent returns agent_outcome.outcome other than "completed"**: the work is likely partial or invalid. Do NOT pick up the remaining work yourself — that defeats the purpose of delegation and wastes orchestrator tokens. Inspect agent_outcome.report before acting. Resume the same Agent only when remaining_steps are a direct continuation and preserving session context is valuable; use a changed-approach resume when the same thread still matters but the prior approach stalled; spawn a NEW follow-up Agent when remaining_steps have a clean narrower task boundary; run a short finalizer resume when the report is missing or the work appears finished but did not return completed; or stop/skip and report when blocked or unclear. Do not blindly retry the same prompt. **Include dependency context** in any replacement prompt: paste the public type signatures and function signatures of packages the follow-up agent will import (e.g. structs, interfaces, exported functions from earlier chunks) directly in the prompt so it does not waste turns re-reading files.
 - Do NOT call Agent for work you can do in a single tool call.
@@ -319,6 +322,9 @@ function buildExplorePhaseDirectives(ctx: PhaseDirectiveContext): string {
 		lines.push("- DO NOT explore the codebase yourself. You do not have the explorer role.")
 		lines.push(`- DO delegate to Agent(type: "Explore", model: ${models}).`)
 	}
+	lines.push(
+		"- DO ask Explore agents to return decision-ready findings directly in the Agent result. Do NOT ask Explore agents to write Markdown files, reports, docs, notes, or scratch files.",
+	)
 
 	return lines.join("\n")
 }
@@ -371,7 +377,7 @@ Before taking any action, silently reason through the steps below. Keep this rea
 
 Read **Your Capabilities** above. The sections below tell you exactly what to DO and what NOT to do for each pipeline phase. Follow them literally.
 
-Pass plans and structured findings as Markdown files in the Documents directory, not as inline blobs in prompts.`)
+Pass durable artifacts as Markdown files in the Documents directory: plans/specs, review findings, verification reports, and non-trivial research notes. Explore findings are not durable artifacts; consume them directly from the Agent result.`)
 
 	parts.push(buildPlanPhaseDirectives(ctx))
 	parts.push(buildBuildPhaseDirectives(ctx))
@@ -391,21 +397,6 @@ When Step 1 classified the task as **complex**, you MUST execute it as a phased 
 	parts.push(PLAN_QUALITY_CHECKLIST)
 
 	return parts.join("\n\n")
-}
-
-function resolveOrchestratorInstructions(ctx: OrchestrationInstructionsContext): OrchestrationInstructionsResult {
-	const teamSection =
-		ctx.roles && ctx.registry
-			? buildRoleAssignmentsSection(ctx.roles, ctx.registry, ctx.currentModelId, ctx.customConfigs)
-			: ""
-
-	const instructionParts: string[] = []
-	instructionParts.push(buildOrchestratorInstructions(ctx.roles, ctx.currentModelId, ctx.registry, ctx.customConfigs))
-
-	const orchGuidelines = buildOrchestrationGuidelinesSection(ctx.currentModelId, ctx.registry)
-	if (orchGuidelines) instructionParts.push(orchGuidelines)
-
-	return { teamSection, instructionsSection: instructionParts.join("\n\n") }
 }
 
 // ---------------------------------------------------------------------------
@@ -619,38 +610,4 @@ function buildRoleAssignmentsSection(
 		: "No capability information available for this model."
 
 	return `## Your Team\n\n${sections.join("\n\n")}\n\n## Your Capabilities\n\n${capabilitiesSection}`
-}
-
-// ---------------------------------------------------------------------------
-// Single-Model Mode Instructions
-// ---------------------------------------------------------------------------
-
-function resolveSingleModelInstructions(currentModelId?: string): string {
-	const modelClause = currentModelId ? ` Your model ID is \`${currentModelId}\`.` : ""
-	return `## Single-Model Mode
-
-You are running in single-model mode.${modelClause} All work in this session runs on the currently selected model. Handle tasks directly yourself unless delegation is clearly beneficial.
-
-You may spawn subagents with the \`Agent\` tool for parallel work or to isolate long-running tasks. When you do, you MUST always pass your own model ID in the \`model\` parameter — never delegate to a different model.`
-}
-
-// ---------------------------------------------------------------------------
-// Subagent Mode Instructions
-// ---------------------------------------------------------------------------
-
-const SUBAGENT_RESPONSE_PROTOCOL = `## Subagent response protocol
-
-Your final response must be a single JSON object with no other text before or after it:
-
-\`\`\`
-{"summary": "...", "files": ["path1", "path2"]}
-\`\`\`
-
-- \`summary\`: one paragraph (at most 5 sentences) covering what was done, any critical decisions, and any blockers.
-- \`files\`: array of absolute paths to every file written to the Documents directory. Empty array if none.
-
-Write all substantive output (plans, specs, research notes, findings) to files in the Documents directory — never inline in the summary. Do NOT add any text before or after the JSON. Do NOT wrap it in a markdown code fence.`
-
-function resolveSubagentInstructions(): string {
-	return [SUBAGENT_RESPONSE_PROTOCOL].join("\n\n")
 }

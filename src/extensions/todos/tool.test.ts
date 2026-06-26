@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { __resetTodoStore, getTodosForScope } from "./store.js"
-import { TODO_TOOL_NAMES, UPDATE_TODOS_TOOL_NAME, registerTodosTool } from "./tool.js"
+import { CREATE_TODOS_TOOL_NAME, TODO_TOOL_NAMES, UPDATE_TODOS_TOOL_NAME, registerTodosTool } from "./tool.js"
 
 function registeredTools() {
 	const registerTool = vi.fn()
@@ -18,6 +18,13 @@ describe("todo tools", () => {
 		registerTodosTool({ registerTool } as never)
 
 		expect(registerTool.mock.calls.map(([tool]) => tool.name)).toEqual([...TODO_TOOL_NAMES])
+		expect(registerTool.mock.calls.map(([tool]) => tool.name)).toEqual([
+			CREATE_TODOS_TOOL_NAME,
+			UPDATE_TODOS_TOOL_NAME,
+			"add_todo",
+			"mark_todo",
+			"clear_todos",
+		])
 	})
 
 	it("returns a structured error when reducer validation fails", async () => {
@@ -41,6 +48,22 @@ describe("todo tools", () => {
 
 		expect(tool.description).toContain("Update todo progress")
 		expect(tool.description).toContain("meaningful progress")
+	})
+
+	it("describes and executes create_todos as the initial planning path", async () => {
+		const tools = registeredTools()
+		const tool = tools[CREATE_TODOS_TOOL_NAME]
+
+		expect(tool.description).toContain("Create the initial todo list")
+		expect(tool.description).toContain("before starting multi-step tasks")
+		expect(tool.promptSnippet).toBe("Create the initial todo list before multi-step work")
+
+		const result = await tool.execute("create-1", {
+			todos: [{ content: "inspect trace", status: "in_progress" }],
+		})
+
+		expect(result.content).toEqual([{ type: "text", text: "Updated 1 todos." }])
+		expect(getTodosForScope().map((todo) => todo.content)).toEqual(["inspect trace"])
 	})
 
 	it("adds, marks, and clears todos", async () => {

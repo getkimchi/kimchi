@@ -28,6 +28,7 @@ import {
 	clearAllStepStarts,
 	clearBlockRetry,
 	clearCompactionInFlight,
+	clearMidTurnOneshotWarnings,
 	clearPendingCompaction,
 	clearFermentState as clearStateForFerment,
 	clearStepCompleteAttempt,
@@ -43,12 +44,14 @@ import {
 	getPhaseStartRef,
 	getStepStartRef,
 	getStorage,
+	hasMidTurnOneshotWarning,
 	isAutomatedContinuationEnabled,
 	isCompactionInFlight,
 	isScopingConfirmed,
 	isScopingInteractive,
 	markCompactionInFlight,
 	markHumanInput,
+	markMidTurnOneshotWarning,
 	markScopingConfirmed,
 	markScopingInteractive,
 	recordBlockHashAndCheckRepeat,
@@ -119,6 +122,9 @@ export interface FermentRuntime {
 	clearCompactionInFlight(fermentId: string): void
 	isCompactionInFlight(fermentId: string): boolean
 	clearAllPendingCompactions(): void
+	markMidTurnOneshotWarning(fermentId: string): void
+	hasMidTurnOneshotWarning(fermentId: string): boolean
+	clearMidTurnOneshotWarnings(): void
 }
 
 function getCurrentPendingPlanReview(): PendingPlanReview | undefined {
@@ -192,6 +198,9 @@ export function createDefaultFermentRuntime(): FermentRuntime {
 		clearCompactionInFlight,
 		isCompactionInFlight,
 		clearAllPendingCompactions,
+		markMidTurnOneshotWarning,
+		hasMidTurnOneshotWarning,
+		clearMidTurnOneshotWarnings,
 	}
 	return runtime
 }

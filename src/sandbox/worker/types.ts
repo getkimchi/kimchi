@@ -48,7 +48,7 @@ export interface SessionStatus {
 /**
  * Worker session. The openapi schema is `allOf(CreateSessionRequest, SessionStatus)`; we
  * additionally lift `name` onto the object — the worker exposes it only as the map key in
- * `GET /session`, but downstream consumers (sorting, rendering the /sessions table) want
+ * `GET /session`, but downstream consumers (sorting, rendering the /remote-sessions table) want
  * it inline. Client-side convenience, never sent over the wire.
  */
 export interface Session extends CreateSessionRequest, SessionStatus {
@@ -75,6 +75,36 @@ export interface SandboxStatus {
 	sessionStatus: Record<string, SessionStatus>
 	lastActivityAt: string
 	anyAgentRunning: boolean
+}
+
+export interface GitIdentity {
+	host: string
+	user: string
+	secretRef: string
+}
+
+export interface CreateGitIdentityRequest {
+	user: string
+	secretRef: string
+}
+
+export interface UpdateGitIdentityRequest {
+	user: string
+	secretRef: string
+}
+
+export interface SetGitGlobalConfigRequest {
+	user?: {
+		name?: string
+		email?: string
+	}
+}
+
+export interface PutSecretRequest {
+	name: string
+	/** Base64-encoded value. */
+	value: string
+	injectIntoEnv?: boolean
 }
 
 export class WorkerError extends Error {

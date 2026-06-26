@@ -58,6 +58,35 @@ import { type LifetimeUsage, addUsage, getLifetimeTotal, getOutputTotal, getSess
  */
 const EXCLUDED_TOOL_NAMES = ["Agent", "resume_subagent", "get_subagent_result", "steer_subagent", ...FERMENT_TOOL_NAMES]
 
+function isExcludedSubagentToolName(name: string, disallowedSet?: Set<string>): boolean {
+	return EXCLUDED_TOOL_NAMES.includes(name) || disallowedSet?.has(name) === true
+}
+
+function getPromptToolNames(toolNames: string[], disallowedSet?: Set<string>): string[] {
+	return toolNames.filter((name) => !isExcludedSubagentToolName(name, disallowedSet))
+}
+
+function getActiveSubagentToolNames(
+	requestedToolNames: string[],
+	currentActiveToolNames: string[],
+	extensions: true | string[],
+	isRegisteredToolName: (name: string) => boolean,
+	disallowedSet?: Set<string>,
+): string[] {
+	const requestedToolNameSet = new Set(requestedToolNames)
+	const allBuiltinToolNames = new Set(BUILTIN_TOOL_NAMES)
+	const candidates = new Set([...requestedToolNames, ...currentActiveToolNames])
+
+	return [...candidates].filter((name) => {
+		if (isExcludedSubagentToolName(name, disallowedSet)) return false
+		if (!isRegisteredToolName(name)) return false
+		if (requestedToolNameSet.has(name)) return true
+		if (allBuiltinToolNames.has(name)) return false
+		if (Array.isArray(extensions)) return extensions.some((ext) => name.startsWith(ext) || name.includes(ext))
+		return true
+	})
+}
+
 /** Prefix applied to automated steering messages so the LLM does not attribute them to the user. */
 const ORCHESTRATOR_PREFIX = "[Orchestrator — automated system instruction, not a user message]\n\n"
 
@@ -323,6 +352,8 @@ async function runAgentInner(
 		}
 	}
 
+	const disallowedSet = agentConfig?.disallowedTools ? new Set(agentConfig.disallowedTools) : undefined
+
 	const modelId = (options.model as { id?: string } | undefined)?.id
 	const guidelinePhase = agentConfig?.roles?.[0] as Phase | undefined
 	const guidelinesBlock = buildPhaseGuidelinesSection(modelId, guidelinePhase, getGuidelinesRegistry())
@@ -336,14 +367,15 @@ async function runAgentInner(
 		extras.budget = { maxTurns: effectiveMaxTurns, tokenBudget: effectiveTokenBudget }
 	}
 
-	let systemPrompt: string
-	if (agentConfig) {
-		systemPrompt = buildAgentPrompt(agentConfig, effectiveCwd, env, parentSystemPrompt, extras)
-	} else {
+	const buildSystemPrompt = (activeToolNames: string[]) => {
+		extras.activeToolNames = activeToolNames
+		if (agentConfig) return buildAgentPrompt(agentConfig, effectiveCwd, env, parentSystemPrompt, extras)
 		const fallback = DEFAULT_AGENTS.get(AGENT_GENERAL_PURPOSE)
 		if (!fallback) throw new Error(`No fallback config available for unknown type "${type}"`)
-		systemPrompt = buildAgentPrompt({ ...fallback, name: type }, effectiveCwd, env, parentSystemPrompt, extras)
+		return buildAgentPrompt({ ...fallback, name: type }, effectiveCwd, env, parentSystemPrompt, extras)
 	}
+
+	let systemPrompt = buildSystemPrompt(getPromptToolNames(toolNames, disallowedSet))
 
 	const debugSession = process.env.KIMCHI_DEBUG_SESSION
 	if (debugSession) {
@@ -418,8 +450,6 @@ async function runAgentInner(
 
 	const { session } = await createAgentSession(sessionOpts)
 
-	const disallowedSet = agentConfig?.disallowedTools ? new Set(agentConfig.disallowedTools) : undefined
-
 	await session.bindExtensions({
 		onError: (err) => {
 			options.onToolActivity?.({
@@ -430,22 +460,20 @@ async function runAgentInner(
 	})
 
 	if (effectiveExtensions !== false) {
-		const builtinToolNameSet = new Set(toolNames)
-		const allBuiltinToolNames = new Set(BUILTIN_TOOL_NAMES)
-		const activeTools = session.getActiveToolNames().filter((t) => {
-			if (EXCLUDED_TOOL_NAMES.includes(t)) return false
-			if (t === WORKER_REPORT_TOOL_NAME && options.workerReport) return true
-			if (disallowedSet?.has(t)) return false
-			if (builtinToolNameSet.has(t)) return true
-			if (allBuiltinToolNames.has(t)) return false
-			if (Array.isArray(effectiveExtensions)) {
-				return effectiveExtensions.some((ext) => t.startsWith(ext) || t.includes(ext))
-			}
-			return true
-		})
+		const activeTools = getActiveSubagentToolNames(
+			toolNames,
+			session.getActiveToolNames(),
+			effectiveExtensions,
+			(name) => session.getToolDefinition(name) !== undefined,
+			disallowedSet,
+		)
+		systemPrompt = buildSystemPrompt(activeTools)
+		await loader.reload()
 		session.setActiveToolsByName(activeTools)
-	} else if (disallowedSet) {
-		const activeTools = session.getActiveToolNames().filter((t) => !disallowedSet.has(t))
+	} else {
+		const activeTools = session.getActiveToolNames().filter((t) => !disallowedSet?.has(t))
+		systemPrompt = buildSystemPrompt(activeTools)
+		await loader.reload()
 		session.setActiveToolsByName(activeTools)
 	}
 
