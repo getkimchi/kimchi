@@ -73,6 +73,8 @@ describe("phase guideline resolution", () => {
 			const result = resolvePhaseGuideline("explore", "nonexistent-model", registry)
 			expect(result).toContain("unfamiliar library")
 			expect(result).toContain("named third-party dependencies")
+			expect(result).toContain("stale version assumptions")
+			expect(result).toContain("language runtime version")
 		})
 
 		it("default plan guideline contains version-assumption-to-decision-log anchor", () => {
@@ -86,6 +88,7 @@ describe("phase guideline resolution", () => {
 			const result = resolvePhaseGuideline("build", "nonexistent-model", registry)
 			expect(result).toContain("uncertain about a library API")
 			expect(result).toContain("assume your knowledge may be stale")
+			expect(result).toContain("current convention")
 		})
 
 		it("kimi-k2.6 research composes default and family research layers", () => {
