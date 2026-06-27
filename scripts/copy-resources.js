@@ -94,6 +94,9 @@ if (!isDev) {
 
 	const proxyHelperSrc = join(projectRoot, "tools", "proxy-helper", "bin", proxyHelperName)
 	const proxyHelperBinDest = join(projectRoot, "dist", "share", "kimchi", "bin")
+	if (!existsSync(proxyHelperSrc)) {
+		throw new Error(`proxy-helper binary not found: ${proxyHelperSrc}`)
+	}
 	mkdirSync(proxyHelperBinDest, { recursive: true })
 	cpSync(proxyHelperSrc, join(proxyHelperBinDest, proxyHelperName))
 }

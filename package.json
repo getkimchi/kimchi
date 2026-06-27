@@ -10,6 +10,7 @@
 	"scripts": {
 		"clean": "node -e \"import('node:fs').then(fs=>fs.rmSync('dist',{recursive:true,force:true}))\"",
 		"build": "tsc --noEmit && node scripts/copy-resources.js --dev",
+		"build:proxy-helper": "node scripts/build-proxy-helper.js",
 		"build:binary": "node scripts/build-binary.js",
 		"install:local": "node scripts/install-local.js",
 		"build:binary-linux-arm64": "node scripts/build-binary.js --target linux-arm64",

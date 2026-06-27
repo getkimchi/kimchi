@@ -113,6 +113,38 @@ jobs:
             *) echo "Unsupported arch: ${{ matrix.arch }}" >&2; exit 1 ;;
           esac
 
+      - name: Verify Windows binary
+        if: ${{ matrix.os == 'windows' }}
+        shell: pwsh
+        run: |
+          Get-Item dist/bin/kimchi.exe
+          Get-Item dist/share/kimchi/bin/proxy-helper.exe
+
+          function Assert-LastExitCode([string]$label) {
+            if ($LASTEXITCODE -ne 0) {
+              throw "$label failed with exit code $LASTEXITCODE"
+            }
+          }
+
+          .\dist\bin\kimchi.exe --version
+          Assert-LastExitCode "kimchi --version"
+          .\dist\bin\kimchi.exe --help
+          Assert-LastExitCode "kimchi --help"
+          .\dist\share\kimchi\bin\proxy-helper.exe ssh-proxy --help
+          Assert-LastExitCode "proxy-helper ssh-proxy --help"
+
+          $env:KIMCHI_API_KEY = "dummy"
+          $env:KIMCHI_REMOTE_ENDPOINT = "http://127.0.0.1:9"
+          $output = & .\dist\bin\kimchi.exe --ssh-proxy dummy-session 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | Write-Output
+          if ($exitCode -eq 0) {
+            throw "Expected dummy --ssh-proxy check to fail before connecting to a real API"
+          }
+          if ($output -match "proxy-helper binary not found") {
+            throw "Windows kimchi.exe could not locate the bundled proxy-helper.exe"
+          }
+
       - name: Package binary
         if: matrix.os != 'windows' && matrix.os != 'windows-baseline'
         run: tar -czf kimchi_${{ matrix.os }}_${{ matrix.arch }}.tar.gz -C dist bin share

@@ -586,6 +586,8 @@ Release assets follow the naming convention:
 
 A checksums.txt file is published for verification.
 
+Windows build and local VM testing notes live in [`docs/windows/README.md`](docs/windows/README.md).
+
 ## License
 
 [Apache License 2.0](LICENSE) -- see [CONTRIBUTING.md](CONTRIBUTING.md) for the CLA and contributor guidelines.
