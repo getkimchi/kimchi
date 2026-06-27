@@ -15,10 +15,26 @@ brew install getkimchi/tap/kimchi
 ```
 
 **Install script:**
-
 ```bash
 curl -fsSL https://github.com/getkimchi/kimchi/releases/latest/download/install.sh | bash
 ```
+
+### PowerShell installer (Windows x64)
+```powershell
+irm https://github.com/getkimchi/kimchi/releases/latest/download/install.ps1 | iex
+```
+If kimchi crashes on startup (older CPUs without AVX2 support), download `kimchi_windows_x64_compat.zip` from the manual download section instead.
+
+### Manual download
+Download the appropriate release package from:
+https://github.com/getkimchi/kimchi/releases/latest
+
+- macOS Intel → `kimchi_darwin_amd64.tar.gz`
+- macOS Apple Silicon → `kimchi_darwin_arm64.tar.gz`
+- Linux x64 → `kimchi_linux_amd64.tar.gz`
+- Linux ARM64 → `kimchi_linux_arm64.tar.gz`
+- Windows x64 (AVX2 / modern CPU) → `kimchi_windows_x64.zip`
+- Windows x64 (no AVX2 / older CPU) → `kimchi_windows_x64_compat.zip`
 
 Then configure your API key and launch:
 
@@ -113,7 +129,7 @@ External models (Anthropic, OpenAI, or any non-builtin provider) have no built-i
 
 With the metadata above, the orchestrator will use minimax for simple build chunks and Claude for complex ones. Without it, both models look like standard-tier to the orchestrator and selection is arbitrary.
 
-Metadata can also be managed interactively via `/multi-model` → "Edit model metadata" — this is the only in-app path for configuring or overriding metadata, so model selection stays uninterrupted. Custom overrides can be reset to defaults from the same menu. Metadata for builtin models can be overridden the same way.
+Metadata can also be managed interactively via `/multi-model` → "Edit model metadata". Custom overrides can be reset to defaults from the same menu. When switching to an unknown model, a wizard prompts for metadata configuration. Metadata for builtin models can be overridden the same way.
 
 ### Phase tracking
 
@@ -450,20 +466,22 @@ Stored in `~/.config/kimchi/config.json` (`migrationState: "skip-forever"`). Del
 - [corepack](https://nodejs.org/api/corepack.html) enabled (`corepack enable`)
 - pnpm (installed automatically via corepack)
 
+Windows:
+- Go (required to build `proxy-helper`)
+
 ### Quick setup
 
 ```bash
 ./scripts/dev-startup.sh
 ```
 
-This script checks and installs node, pnpm, and bun if missing, initializes git submodules, runs `pnpm install`, copies resources, and starts the harness with `pnpm run dev`.
+This script checks and installs node, pnpm, and bun if missing, runs `pnpm install`, copies resources, and starts the harness with `pnpm run dev`.
 
 ### Manual setup
 
 ```bash
 git clone git@github.com:getkimchi/kimchi.git
 cd kimchi
-git submodule update --init --recursive
 corepack enable
 pnpm install
 ```
@@ -492,6 +510,14 @@ Run the CLI directly via Bun:
 
 ```bash
 pnpm run dev
+```
+
+**Windows**
+
+If `pnpm run dev` is not yet available on Windows, run:
+
+```powershell
+bun run --preload ./src/set-package-dir.ts src/entry.ts
 ```
 
 Or build a standalone binary:
@@ -551,8 +577,14 @@ Supported platforms:
 
 - macOS (amd64, arm64)
 - Linux (amd64, arm64)
+- Windows (amd64)
 
-Release assets follow the naming convention `kimchi_{os}_{arch}.tar.gz` with a `checksums.txt` (SHA256) for verification.
+Release assets follow the naming convention:
+
+- kimchi_{os}_{arch}.tar.gz (macOS/Linux)
+- kimchi_windows_{arch}.zip (Windows)
+
+A checksums.txt file is published for verification.
 
 ## License
 
