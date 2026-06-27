@@ -65,6 +65,14 @@ type StepUiContext = Omit<Partial<FermentUiContext>, "ui"> & { ui?: Partial<Ferm
  * would produce a redundant back-to-back compaction with only a one-turn
  * delta, so skip it. The handoff entry for the phase boundary is still
  * appended by the phase-compaction path.
+ *
+ * Invariant: the `ferment` argument MUST be the post-completion ferment
+ * returned by `applyAndPersist` (completeOutcome.ferment or
+ * verifyOutcome.ferment), not the pre-completion copy. determineNextAction is
+ * a pure function of ferment state, so calling it on the post-completion
+ * ferment yields the same next-action decision the broader completeStep logic
+ * will act upon — if it says complete_phase, the phase IS complete and the
+ * phase-compaction path WILL fire.
  */
 function maybeRecordStepCompaction(runtime: FermentRuntime, ferment: Ferment, phase: Phase, step: Step): void {
 	const next = determineNextAction(ferment)
