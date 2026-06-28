@@ -3,7 +3,7 @@
 // Usage:
 //   node scripts/build-proxy-helper.js
 //   node scripts/build-proxy-helper.js --target windows-x64
-//   node scripts/build-proxy-helper.js --target bun-windows-x64-baseline
+//   node scripts/build-proxy-helper.js --target bun-windows-x64
 
 import { execFileSync } from "node:child_process"
 import { mkdirSync } from "node:fs"
@@ -21,14 +21,12 @@ const TARGETS = {
 	"linux-arm64": { goos: "linux", goarch: "arm64", helperName: "proxy-helper" },
 	"linux-x64": { goos: "linux", goarch: "amd64", helperName: "proxy-helper" },
 	"windows-x64": { goos: "windows", goarch: "amd64", helperName: "proxy-helper.exe" },
-	"windows-x64-baseline": { goos: "windows", goarch: "amd64", helperName: "proxy-helper.exe" },
 	"win-x64": { goos: "windows", goarch: "amd64", helperName: "proxy-helper.exe" },
 	"bun-darwin-arm64": { goos: "darwin", goarch: "arm64", helperName: "proxy-helper" },
 	"bun-darwin-x64": { goos: "darwin", goarch: "amd64", helperName: "proxy-helper" },
 	"bun-linux-arm64": { goos: "linux", goarch: "arm64", helperName: "proxy-helper" },
 	"bun-linux-x64": { goos: "linux", goarch: "amd64", helperName: "proxy-helper" },
 	"bun-windows-x64": { goos: "windows", goarch: "amd64", helperName: "proxy-helper.exe" },
-	"bun-windows-x64-baseline": { goos: "windows", goarch: "amd64", helperName: "proxy-helper.exe" },
 }
 
 const targetArg =

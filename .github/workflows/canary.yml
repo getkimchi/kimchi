@@ -108,7 +108,7 @@ jobs:
             os: linux
             arch: arm64
             runner: ubuntu-24.04-arm
-          - target: bun-windows-x64-baseline
+          - target: bun-windows-x64
             os: windows
             arch: amd64
             runner: windows-latest

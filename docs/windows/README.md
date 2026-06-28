@@ -33,7 +33,7 @@ runtime smoke test for the final `kimchi.exe`.
 
 The release matrix in `.github/workflows/release.yml` includes:
 
-- `bun-windows-x64-baseline`
+- `bun-windows-x64`
 - `windows`
 - `amd64`
 - `windows-latest`
@@ -47,13 +47,13 @@ The Windows build job does the same packaging work as Linux/macOS:
 5. Build the Go proxy helper:
 
    ```bash
-   node scripts/build-proxy-helper.js --target bun-windows-x64-baseline
+   node scripts/build-proxy-helper.js --target bun-windows-x64
    ```
 
 6. Build the Bun standalone executable:
 
    ```bash
-   node scripts/build-binary.js --target bun-windows-x64-baseline
+   node scripts/build-binary.js --target bun-windows-x64
    ```
 
 7. Verify the Windows runtime surface:
