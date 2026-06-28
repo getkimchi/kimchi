@@ -53,7 +53,7 @@ jobs:
             os: linux
             arch: arm64
             runner: ubuntu-24.04-arm
-          - target: bun-windows-x64
+          - target: bun-windows-x64-baseline
             os: windows
             arch: amd64
             runner: windows-latest

@@ -5,7 +5,7 @@
 //   node scripts/build-binary.js                        # build for the host platform
 //   node scripts/build-binary.js --target linux-arm64   # cross-compile for Linux ARM64 (Apple Silicon Docker)
 //   node scripts/build-binary.js --target linux-x64     # cross-compile for Linux x86-64
-//   node scripts/build-binary.js --target windows-x64   # build for Windows x86-64
+//   node scripts/build-binary.js --target windows-x64   # build for Windows x86-64 baseline
 
 import { execSync } from "node:child_process"
 import { rmSync } from "node:fs"
@@ -20,13 +20,15 @@ const TARGETS = {
 	"darwin-x64": { bun: "bun-darwin-x64", os: "darwin", binaryName: "kimchi" },
 	"linux-arm64": { bun: "bun-linux-arm64", os: "linux", binaryName: "kimchi" },
 	"linux-x64": { bun: "bun-linux-x64", os: "linux", binaryName: "kimchi" },
-	"windows-x64": { bun: "bun-windows-x64", os: "win32", binaryName: "kimchi.exe" },
-	"win-x64": { bun: "bun-windows-x64", os: "win32", binaryName: "kimchi.exe" },
+	"windows-x64": { bun: "bun-windows-x64-baseline", os: "win32", binaryName: "kimchi.exe" },
+	"windows-x64-baseline": { bun: "bun-windows-x64-baseline", os: "win32", binaryName: "kimchi.exe" },
+	"win-x64": { bun: "bun-windows-x64-baseline", os: "win32", binaryName: "kimchi.exe" },
 	"bun-darwin-arm64": { bun: "bun-darwin-arm64", os: "darwin", binaryName: "kimchi" },
 	"bun-darwin-x64": { bun: "bun-darwin-x64", os: "darwin", binaryName: "kimchi" },
 	"bun-linux-arm64": { bun: "bun-linux-arm64", os: "linux", binaryName: "kimchi" },
 	"bun-linux-x64": { bun: "bun-linux-x64", os: "linux", binaryName: "kimchi" },
 	"bun-windows-x64": { bun: "bun-windows-x64", os: "win32", binaryName: "kimchi.exe" },
+	"bun-windows-x64-baseline": { bun: "bun-windows-x64-baseline", os: "win32", binaryName: "kimchi.exe" },
 }
 
 const targetArg =
