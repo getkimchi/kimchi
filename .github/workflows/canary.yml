@@ -186,6 +186,7 @@ jobs:
           $env:KIMCHI_REMOTE_ENDPOINT = "http://127.0.0.1:9"
           $output = & .\dist\bin\kimchi.exe --ssh-proxy dummy-session 2>&1
           $exitCode = $LASTEXITCODE
+          $global:LASTEXITCODE = 0
           $output | Write-Output
           if ($exitCode -eq 0) {
             throw "Expected dummy --ssh-proxy check to fail before connecting to a real API"
