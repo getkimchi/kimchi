@@ -3,6 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it, vi } from "vitest"
 import type { WorkspaceCredentials } from "../cloud/types.js"
+import { HARNESS_CLIENT_TYPE } from "../constants.js"
 import { WorkerClient } from "./client.js"
 import { createSession, deleteSession, getSession, listSessions } from "./sessions.js"
 import type { CreateSessionRequest } from "./types.js"
@@ -54,7 +55,7 @@ describe("listSessions", () => {
 		expect(result.map((s) => s.name).sort()).toEqual(["alpha", "beta"])
 		const alpha = result.find((s) => s.name === "alpha")
 		expect(alpha).toMatchObject({ name: "alpha", agentMode: "PTY", alive: true })
-		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/session`)
+		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/session?clientType=${HARNESS_CLIENT_TYPE}`)
 	})
 
 	it("returns an empty array when the worker has no sessions", async () => {

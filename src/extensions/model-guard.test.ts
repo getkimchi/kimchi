@@ -1,7 +1,10 @@
 import type { ImageContent, TextContent, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai"
 import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import type { Ferment } from "../ferment/types.js"
 
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { COMPACTION_RESERVE_TOKENS } from "./compaction-thresholds.js"
+import { clearActiveFermentId, setActive as setActiveFerment } from "./ferment/state.js"
 import modelGuardExtension, {
 	estimateTokens,
 	hasImages,
@@ -576,8 +579,7 @@ function makeTurnEndEvent(totalTokens: number, stopReason: string) {
 
 describe("turn_end compaction guard", () => {
 	const CONTEXT_WINDOW = 262_144
-	const RESERVE = 16_384
-	const THRESHOLD = CONTEXT_WINDOW - RESERVE // 245,760
+	const THRESHOLD = CONTEXT_WINDOW - COMPACTION_RESERVE_TOKENS // 245,760
 
 	it("does not compact when totalTokens is below the compaction threshold", async () => {
 		const { pi, trigger } = makeMockPI()
@@ -652,6 +654,23 @@ describe("turn_end compaction guard", () => {
 		})
 		await trigger("turn_end", makeTurnEndEvent(THRESHOLD, "toolUse"), ctx)
 		expect(compact).not.toHaveBeenCalled()
+	})
+
+	it("defers to the ferment extension when a ferment is active", async () => {
+		setActiveFerment({ id: "f1", status: "running", phases: [] } as unknown as Ferment)
+		try {
+			const { pi, trigger } = makeMockPI()
+			modelGuardExtension(pi)
+			const compact = vi.fn()
+			const ctx = makeMockCtx({
+				model: { id: "kimi-k2.6", input: ["text"], contextWindow: CONTEXT_WINDOW } as ExtensionContext["model"],
+				compact,
+			})
+			await trigger("turn_end", makeTurnEndEvent(THRESHOLD + 1, "toolUse"), ctx)
+			expect(compact).not.toHaveBeenCalled()
+		} finally {
+			clearActiveFermentId()
+		}
 	})
 })
 

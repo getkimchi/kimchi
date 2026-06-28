@@ -13,19 +13,23 @@
 import type { ExtensionAPI, ExtensionContext, MessageRenderer } from "@earendil-works/pi-coding-agent"
 import { Container, Text } from "@earendil-works/pi-tui"
 import type { Step } from "../../ferment/types.js"
+import * as EntryTriggerRegistry from "../../shared/planning/entry-trigger-registry.js"
+import * as PromptSupplementRegistry from "../../shared/planning/prompt-supplement-registry.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import { requestSharedFooterRender } from "../shared-footer.js"
 import { registerTipProvider } from "../tips/registry.js"
+import { registerAgentSpawnGuard } from "./agent-spawn-guard.js"
 import { maybeTriggerFermentCompaction } from "./auto-compaction.js"
 import { fermentBreadcrumbRenderer } from "./breadcrumb-renderer.js"
 import { registerFermentCommands } from "./commands.js"
+import { decideContinuation } from "./continuation.js"
 import { registerFermentEvents } from "./events.js"
 import { FERMENT_STOP_POLICY_SHORTCUT, canToggleFermentStopPolicy } from "./footer-status.js"
 import { type PendingPlanReview, promptPlanReview } from "./plan-review.js"
 import { buildFermentPromptBlock } from "./prompt-block.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
-import { scheduleFermentWakeUp } from "./scheduler.js"
+import { scheduleFermentWakeUp, scheduleNextFermentAction } from "./scheduler.js"
 import { confirmPendingScope } from "./scoping-confirmation.js"
 import { FERMENT_REQUEST_MESSAGE_TYPE, type FermentRequestMessageDetails } from "./scoping.js"
 import { getActive, getActiveId, getContinuationPolicy } from "./state.js"
@@ -128,6 +132,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	}
 	let planReviewTimer: ReturnType<typeof setTimeout> | undefined
 	let planReviewRunning = false
+	let finalCompletionNudgedThisRun = false
 	// ExtensionContext is populated on session start
 	let ctx: ExtensionContext | undefined
 
@@ -168,7 +173,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 				}
 				runtime.clearPendingPlanReview(review.fermentId)
 				scheduleFermentWakeUp(pi, runtime, {
-					deliverAsFollowUp: true,
+					deliverAs: "followUp",
 					fermentId: review.fermentId,
 					tag: "Plan review start",
 				})
@@ -190,6 +195,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 
 	pi.on("session_start", (_event, _ctx) => {
 		ctx = _ctx
+		runtime.clearMidTurnOneshotWarnings()
 	})
 
 	pi.on("session_shutdown", () => {
@@ -213,11 +219,36 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 		// where the ferment completes within a single agent run and the turn_end
 		// handler already cleared most pending entries).
 		maybeTriggerFermentCompaction(pi, ctx, runtime)
+
+		// Completing the final phase does not complete the ferment: complete_ferment
+		// still has to run its C-gates and journey grading. If the model ends its run
+		// between those two lifecycle actions, retain that final action as a hidden
+		// follow-up instead of leaving a planned/running ferment to be paused at
+		// session shutdown. This schedules the tool call; it never applies the
+		// transition itself, so the completion gates cannot be bypassed.
+		const active = runtime.getActive()
+		if (!finalCompletionNudgedThisRun && active && runtime.isAutomatedContinuationEnabled()) {
+			const decision = decideContinuation(active, runtime.getContinuationPolicy(), {
+				treatCompleteFermentAsContinue: true,
+			})
+			if (decision.type === "continue" && decision.action.kind === "complete_ferment") {
+				scheduleNextFermentAction(pi, active, runtime, {
+					deliverAs: "followUp",
+					tag: "Final completion pending",
+					treatCompleteFermentAsContinue: true,
+				})
+			}
+		}
+		finalCompletionNudgedThisRun = false
 	})
 
 	pi.registerMessageRenderer(FERMENT_REQUEST_MESSAGE_TYPE, fermentRequestRenderer)
 	registerFermentStopPolicyShortcut(pi, runtime)
-	registerFermentEvents(pi, runtime)
+	registerFermentEvents(pi, runtime, {
+		onFinalCompletionNudgeScheduled: () => {
+			finalCompletionNudgedThisRun = true
+		},
+	})
 	registerFermentCommands(pi, runtime)
 
 	// ─── Message renderers ────────────────────────────────────────────────────
@@ -226,12 +257,35 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	pi.registerMessageRenderer("ferment_worktree_warning", fermentBreadcrumbRenderer)
 	pi.registerMessageRenderer("ferment_oneshot_failed", fermentBreadcrumbRenderer)
 
-	createSystemPromptBlocks(pi, "ferment").register({
-		id: "ferment-supplement",
+	// Same `ferment-planning-block` for interactive and oneshot — both modes
+	// register through the shared registry so `compose('ferment')` returns it
+	// regardless of which entry path bootstrapped the session.
+	const fermentPlanningBlock = {
+		id: "ferment-planning-block",
 		render: () => {
 			if (!ctx) return undefined
 			return buildFermentPromptBlock(ctx, pi, runtime)
 		},
+	}
+	PromptSupplementRegistry.register("ferment-planning-block", fermentPlanningBlock, {
+		modes: ["ferment"],
+	})
+	createSystemPromptBlocks(pi, "ferment").register(fermentPlanningBlock)
+
+	// ─── Entry triggers (planning mode routing) ───────────────────────────
+	// The actual ferment-creation logic lives in commands.ts (slash command
+	// handler) and state.ts (KIMCHI_ACTIVE_FERMENT env-var reader); the
+	// registry entries make the routing table explicit and discoverable.
+	EntryTriggerRegistry.register("/ferment-new", (event) => {
+		if (event.kind !== "slash-command") return { kind: "noop" }
+		if (event.command !== "new") return { kind: "noop" }
+		return { kind: "enter-mode", mode: "ferment", reason: "/ferment new <intent>" }
+	})
+	EntryTriggerRegistry.register("KIMCHI_ACTIVE_FERMENT", (event) => {
+		if (event.kind !== "env-var") return { kind: "noop" }
+		if (event.name !== "KIMCHI_ACTIVE_FERMENT") return { kind: "noop" }
+		if (!event.value) return { kind: "noop" }
+		return { kind: "enter-mode", mode: "ferment", reason: `KIMCHI_ACTIVE_FERMENT=${event.value}` }
 	})
 
 	// ─── Tool registrations ───────────────────────────────────────────────────
@@ -239,4 +293,5 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	registerPhaseTools(pi, runtime)
 	registerStepTools(pi, runtime)
 	registerKnowledgeTools(pi, runtime)
+	registerAgentSpawnGuard(pi, runtime)
 }

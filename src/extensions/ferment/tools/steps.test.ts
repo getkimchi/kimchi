@@ -7,6 +7,12 @@ import { FermentEventStore } from "../../../ferment/event-store.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "../runtime.js"
 import { clearAllStepStarts } from "../state.js"
 import { createApplyAndPersist } from "../tool-helpers.js"
+
+const mockAgentRecords = vi.hoisted(() => new Map<string, unknown>())
+vi.mock("../../agents/index.js", () => ({
+	getAgentRecordForTaskValidation: vi.fn((id: string) => mockAgentRecords.get(id)),
+}))
+
 import {
 	type StepHandlerServices,
 	type VerificationResult,
@@ -94,8 +100,35 @@ const passingStepGates = () => [
 	{ id: "S3", verdict: "pass" as const, rationale: "Empty input handled.", evidence: "throws TypeError; covered" },
 ]
 
+function linkedWorker(fermentId: string, phaseId = "phase-1", stepId = "step-1"): string {
+	const id = `agent-${mockAgentRecords.size + 1}`
+	mockAgentRecords.set(id, {
+		id,
+		visibility: "user",
+		taskRef: { kind: "ferment_step", ferment_id: fermentId, phase_id: phaseId, step_id: stepId },
+		latestOutcome: {
+			agent_id: id,
+			status: "completed",
+			outcome: "completed",
+			resumable: false,
+			token_usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			duration_ms: 1,
+			report: {
+				status: "completed",
+				summary: "done",
+				steps_completed: ["done"],
+				remaining_steps: [],
+				submitted_at: 1,
+			},
+			resume_attempts: 0,
+		},
+	})
+	return id
+}
+
 beforeEach(() => {
 	clearAllStepStarts()
+	mockAgentRecords.clear()
 	vi.restoreAllMocks()
 })
 
@@ -117,6 +150,62 @@ describe("startStep", () => {
 		expect(text).not.toMatch(/model "kimchi-dev/)
 		expect(h.storage.get(h.fermentId)?.phases[0].steps[0].status).toBe("running")
 		expect(h.runtime.getStepStartRef(h.fermentId, "phase-1", "step-1")).toBe("abc123")
+	})
+
+	it("defaults normal implementation work to the standard worker budget tier", async () => {
+		const h = createHarness()
+		const result = await startStep(
+			h.runtime,
+			{ ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1" },
+			{ pi: h.pi },
+			createServices(),
+		)
+
+		const text = okText(result)
+		expect(text).toContain('task_ref: {"kind":"ferment_step"')
+		expect(text).toContain('"budget_tier":"standard"')
+		expect(text).toContain("budget_tier=standard")
+		expect(text).toContain("max_turns=25")
+		expect(text).toContain("max_duration=300s")
+		expect(text).toContain("token_budget=100000")
+		expect(text).toContain("submit_agent_report")
+		expect(text).toContain("Do not complete the step from an exhausted worker")
+		expect(text).not.toContain("call complete_ferment_step with whatever it produced")
+	})
+
+	it("uses the explicitly selected narrow worker budget tier", async () => {
+		const h = createHarness()
+		const result = await startStep(
+			h.runtime,
+			{ ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1", budget_tier: "narrow" },
+			{ pi: h.pi },
+			createServices(),
+		)
+
+		const text = okText(result)
+		expect(text).toContain('"budget_tier":"narrow"')
+		expect(text).toContain("budget_tier=narrow")
+		expect(text).toContain("max_turns=10")
+		expect(text).toContain("max_duration=180s")
+		expect(text).toContain("token_budget=50000")
+		expect(text).toContain("cumulative_token_budget=100000")
+	})
+
+	it("uses the explicitly selected complex worker budget tier", async () => {
+		const h = createHarness()
+		const result = await startStep(
+			h.runtime,
+			{ ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1", budget_tier: "complex" },
+			{ pi: h.pi },
+			createServices(),
+		)
+
+		const text = okText(result)
+		expect(text).toContain('"budget_tier":"complex"')
+		expect(text).toContain("max_turns=30")
+		expect(text).toContain("max_duration=600s")
+		expect(text).toContain("token_budget=150000")
+		expect(text).toContain("cumulative_token_budget=375000")
 	})
 
 	it("includes fixed output paths from scoping in the worker prompt handoff", async () => {
@@ -246,6 +335,7 @@ describe("completeStep", () => {
 				ferment_id: h.fermentId,
 				phase_id: "phase-1",
 				step_id: "step-1",
+				worker_agent_id: linkedWorker(h.fermentId),
 				summary: "done",
 				gates: passingStepGates(),
 			},
@@ -273,6 +363,7 @@ describe("completeStep", () => {
 				ferment_id: h.fermentId,
 				phase_id: "phase-1",
 				step_id: "step-1",
+				worker_agent_id: linkedWorker(h.fermentId),
 				summary: "done",
 				gates: passingStepGates(),
 			},
@@ -306,7 +397,14 @@ describe("completeStep", () => {
 
 		const result = await completeStep(
 			h.runtime,
-			{ ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1", summary: "done", gates: flaggedGates },
+			{
+				ferment_id: h.fermentId,
+				phase_id: "phase-1",
+				step_id: "step-1",
+				worker_agent_id: linkedWorker(h.fermentId),
+				summary: "done",
+				gates: flaggedGates,
+			},
 			{ pi: h.pi },
 			services,
 		)
@@ -329,7 +427,14 @@ describe("completeStep", () => {
 
 		const result = await completeStep(
 			h.runtime,
-			{ ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1", summary: "done", gates: incomplete },
+			{
+				ferment_id: h.fermentId,
+				phase_id: "phase-1",
+				step_id: "step-1",
+				worker_agent_id: linkedWorker(h.fermentId),
+				summary: "done",
+				gates: incomplete,
+			},
 			{ pi: h.pi },
 			services,
 		)
@@ -355,6 +460,7 @@ describe("completeStep", () => {
 				ferment_id: h.fermentId,
 				phase_id: "phase-1",
 				step_id: "step-1",
+				worker_agent_id: linkedWorker(h.fermentId),
 				summary: "done",
 				gates: passingStepGates(),
 			},
@@ -382,6 +488,7 @@ describe("completeStep", () => {
 					ferment_id: h.fermentId,
 					phase_id: "phase-1",
 					step_id: "step-1",
+					worker_agent_id: linkedWorker(h.fermentId),
 					summary: "done",
 					gates: passingStepGates(),
 				},
@@ -406,6 +513,7 @@ describe("completeStep", () => {
 				ferment_id: h.fermentId,
 				phase_id: "phase-1",
 				step_id: "step-1",
+				worker_agent_id: linkedWorker(h.fermentId),
 				summary: "done",
 				gates: passingStepGates(),
 			},
@@ -416,63 +524,275 @@ describe("completeStep", () => {
 		expect(okText(result)).toContain("verified")
 		expect(services.judgeStepVerification).not.toHaveBeenCalled()
 	})
+
+	describe("validateLinkedWorker rejection paths", () => {
+		it("rejects when worker_agent_id is omitted", async () => {
+			const h = createHarness()
+			h.applyAndPersist(h.fermentId, { type: "start_step", phaseId: "phase-1", stepId: "step-1" })
+
+			const result = await completeStep(
+				h.runtime,
+				{
+					ferment_id: h.fermentId,
+					phase_id: "phase-1",
+					step_id: "step-1",
+					summary: "done",
+					gates: passingStepGates(),
+					// Cast: this test intentionally omits `worker_agent_id` to verify
+					// runtime validation rejects the missing field. TS would otherwise
+					// flag the call because the field is required by CompleteStepParams.
+				} as unknown as Parameters<typeof completeStep>[1],
+				{ pi: h.pi },
+				createServices(),
+			)
+
+			expect(errText(result)).toContain("requires worker_agent_id")
+		})
+
+		it("rejects when the agent record is not found", async () => {
+			const h = createHarness()
+			h.applyAndPersist(h.fermentId, { type: "start_step", phaseId: "phase-1", stepId: "step-1" })
+
+			const result = await completeStep(
+				h.runtime,
+				{
+					ferment_id: h.fermentId,
+					phase_id: "phase-1",
+					step_id: "step-1",
+					worker_agent_id: "agent-nonexistent",
+					summary: "done",
+					gates: passingStepGates(),
+				},
+				{ pi: h.pi },
+				createServices(),
+			)
+
+			expect(errText(result)).toContain("was not found")
+		})
+
+		it("rejects when the task ref does not match the ferment step", async () => {
+			const h = createHarness()
+			h.applyAndPersist(h.fermentId, { type: "start_step", phaseId: "phase-1", stepId: "step-1" })
+
+			mockAgentRecords.set("agent-mismatch", {
+				id: "agent-mismatch",
+				visibility: "user",
+				taskRef: { kind: "ferment_step", ferment_id: "other-ferment", phase_id: "phase-1", step_id: "step-1" },
+				latestOutcome: {
+					agent_id: "agent-mismatch",
+					status: "completed",
+					outcome: "completed",
+					resumable: false,
+					token_usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					duration_ms: 1,
+					report: {
+						status: "completed",
+						summary: "done",
+						steps_completed: [],
+						remaining_steps: [],
+						submitted_at: 1,
+					},
+					resume_attempts: 0,
+				},
+			})
+
+			const result = await completeStep(
+				h.runtime,
+				{
+					ferment_id: h.fermentId,
+					phase_id: "phase-1",
+					step_id: "step-1",
+					worker_agent_id: "agent-mismatch",
+					summary: "done",
+					gates: passingStepGates(),
+				},
+				{ pi: h.pi },
+				createServices(),
+			)
+
+			expect(errText(result)).toContain("is not linked to this Ferment step")
+		})
+
+		it("rejects when the agent has no recorded outcome", async () => {
+			const h = createHarness()
+			h.applyAndPersist(h.fermentId, { type: "start_step", phaseId: "phase-1", stepId: "step-1" })
+
+			mockAgentRecords.set("agent-no-outcome", {
+				id: "agent-no-outcome",
+				visibility: "user",
+				taskRef: { kind: "ferment_step", ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1" },
+			})
+
+			const result = await completeStep(
+				h.runtime,
+				{
+					ferment_id: h.fermentId,
+					phase_id: "phase-1",
+					step_id: "step-1",
+					worker_agent_id: "agent-no-outcome",
+					summary: "done",
+					gates: passingStepGates(),
+				},
+				{ pi: h.pi },
+				createServices(),
+			)
+
+			expect(errText(result)).toContain("has no recorded outcome")
+		})
+
+		it("rejects when the agent completed without submit_agent_report", async () => {
+			const h = createHarness()
+			h.applyAndPersist(h.fermentId, { type: "start_step", phaseId: "phase-1", stepId: "step-1" })
+
+			mockAgentRecords.set("agent-no-report", {
+				id: "agent-no-report",
+				visibility: "user",
+				taskRef: { kind: "ferment_step", ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1" },
+				latestOutcome: {
+					agent_id: "agent-no-report",
+					status: "completed",
+					outcome: "completed",
+					resumable: false,
+					token_usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					duration_ms: 1,
+					resume_attempts: 0,
+				},
+			})
+
+			const result = await completeStep(
+				h.runtime,
+				{
+					ferment_id: h.fermentId,
+					phase_id: "phase-1",
+					step_id: "step-1",
+					worker_agent_id: "agent-no-report",
+					summary: "done",
+					gates: passingStepGates(),
+				},
+				{ pi: h.pi },
+				createServices(),
+			)
+
+			expect(errText(result)).toContain("completed without submit_agent_report")
+		})
+
+		it("rejects when report status is not completed", async () => {
+			const h = createHarness()
+			h.applyAndPersist(h.fermentId, { type: "start_step", phaseId: "phase-1", stepId: "step-1" })
+
+			mockAgentRecords.set("agent-partial", {
+				id: "agent-partial",
+				visibility: "user",
+				taskRef: { kind: "ferment_step", ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1" },
+				latestOutcome: {
+					agent_id: "agent-partial",
+					status: "completed",
+					outcome: "completed",
+					resumable: false,
+					token_usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					duration_ms: 1,
+					report: {
+						status: "partial",
+						summary: "half done",
+						steps_completed: [],
+						remaining_steps: ["rest"],
+						submitted_at: 1,
+					},
+					resume_attempts: 0,
+				},
+			})
+
+			const result = await completeStep(
+				h.runtime,
+				{
+					ferment_id: h.fermentId,
+					phase_id: "phase-1",
+					step_id: "step-1",
+					worker_agent_id: "agent-partial",
+					summary: "done",
+					gates: passingStepGates(),
+				},
+				{ pi: h.pi },
+				createServices(),
+			)
+
+			expect(errText(result)).toContain('report status is "partial"')
+		})
+
+		it("rejects when the agent exhausted its budget", async () => {
+			const h = createHarness()
+			h.applyAndPersist(h.fermentId, { type: "start_step", phaseId: "phase-1", stepId: "step-1" })
+
+			mockAgentRecords.set("agent-exhausted", {
+				id: "agent-exhausted",
+				visibility: "user",
+				taskRef: { kind: "ferment_step", ferment_id: h.fermentId, phase_id: "phase-1", step_id: "step-1" },
+				latestOutcome: {
+					agent_id: "agent-exhausted",
+					status: "completed",
+					outcome: "budget_exhausted",
+					resumable: true,
+					token_usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					duration_ms: 1,
+					report: {
+						status: "partial",
+						summary: "ran out",
+						steps_completed: [],
+						remaining_steps: ["more"],
+						submitted_at: 1,
+					},
+					resume_attempts: 0,
+				},
+			})
+
+			const result = await completeStep(
+				h.runtime,
+				{
+					ferment_id: h.fermentId,
+					phase_id: "phase-1",
+					step_id: "step-1",
+					worker_agent_id: "agent-exhausted",
+					summary: "done",
+					gates: passingStepGates(),
+				},
+				{ pi: h.pi },
+				createServices(),
+			)
+
+			expect(errText(result)).toContain("exhausted its budget")
+		})
+	})
 })
 
 describe("suggestWorkerLimits", () => {
-	it("returns standard limits for a typical implementation step", () => {
+	it("returns the standard Ferment step budget by default", () => {
 		const limits = suggestWorkerLimits("Implement the auth middleware")
-		expect(limits.maxTurns).toBe(50)
-		expect(limits.maxDuration).toBe(600)
+		expect(limits).toEqual({
+			maxTurns: 25,
+			maxDuration: 300,
+			tokenBudget: 100_000,
+			cumulativeTokenBudget: 250_000,
+		})
 	})
 
-	it("returns heavy limits when description mentions compilation", () => {
+	it("does not inflate budgets from model-authored keywords", () => {
 		const limits = suggestWorkerLimits("Compile the MIPS binary and link dependencies")
-		expect(limits.maxTurns).toBe(80)
-		expect(limits.maxDuration).toBe(900)
+		expect(limits).toEqual({
+			maxTurns: 25,
+			maxDuration: 300,
+			tokenBudget: 100_000,
+			cumulativeTokenBudget: 250_000,
+		})
 	})
 
-	it("returns heavy limits when description mentions build", () => {
-		const limits = suggestWorkerLimits("Build and install the project dependencies")
-		expect(limits.maxTurns).toBe(80)
-		expect(limits.maxDuration).toBe(900)
-	})
-
-	it("returns heavy limits when verify command mentions make", () => {
+	it("does not inflate budgets from verification commands", () => {
 		const limits = suggestWorkerLimits("Run the build", "make -j4 && ./run_tests.sh")
-		expect(limits.maxTurns).toBe(80)
-		expect(limits.maxDuration).toBe(900)
-	})
-
-	it("returns light limits for a check/verify step without tests", () => {
-		const limits = suggestWorkerLimits("Verify the config file is correct")
-		expect(limits.maxTurns).toBe(25)
-		expect(limits.maxDuration).toBe(300)
-	})
-
-	it("returns light limits for a lint/format step", () => {
-		const limits = suggestWorkerLimits("Lint the source files and fix formatting")
-		expect(limits.maxTurns).toBe(25)
-		expect(limits.maxDuration).toBe(300)
-	})
-
-	it("returns standard limits when description mentions lint but verify runs tests", () => {
-		// verify contains 'test' so the light path is skipped
-		const limits = suggestWorkerLimits("Lint and add test coverage", "pnpm run test")
-		expect(limits.maxTurns).toBe(50)
-		expect(limits.maxDuration).toBe(600)
-	})
-
-	it("returns standard limits for a rename/config step that has a test verify command", () => {
-		const limits = suggestWorkerLimits("Rename the config fields", "pnpm test config")
-		expect(limits.maxTurns).toBe(50)
-		expect(limits.maxDuration).toBe(600)
-	})
-
-	it("is case-insensitive", () => {
-		const upper = suggestWorkerLimits("COMPILE the binary")
-		expect(upper.maxTurns).toBe(80)
-		const lower = suggestWorkerLimits("compile the binary")
-		expect(lower.maxTurns).toBe(80)
+		expect(limits).toEqual({
+			maxTurns: 25,
+			maxDuration: 300,
+			tokenBudget: 100_000,
+			cumulativeTokenBudget: 250_000,
+		})
 	})
 })
 
@@ -548,6 +868,7 @@ describe("start_ferment_step plan-first preamble", () => {
 				ferment_id: h.fermentId,
 				phase_id: "phase-1",
 				step_id: "step-1",
+				worker_agent_id: linkedWorker(h.fermentId),
 				summary: "Installed dependencies and verified config",
 				gates: passingStepGates(),
 			},

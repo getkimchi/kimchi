@@ -5,7 +5,7 @@ import { authenticateWorkspace } from "../../../sandbox/cloud/auth.js"
 import type { WorkspaceCredentials } from "../../../sandbox/cloud/types.js"
 import { rsyncInstallHint, whichRsync } from "../preflight/rsync.js"
 import { SANDBOX_HOME, SANDBOX_USER } from "../provisioning/constants.js"
-import { RsyncError, runRsync } from "../provisioning/rsync-runner.js"
+import { formatRsyncFailure, runRsync } from "../provisioning/rsync-runner.js"
 import type { TeleportContext } from "../types.js"
 import { formatBytes } from "../ui/format-bytes.js"
 import { SyncProgressRow } from "../ui/sync-progress-row.js"
@@ -35,7 +35,7 @@ export async function runSync(rawArgs: string, ctx: TeleportContext): Promise<vo
 		const workspace = await resolveWorkspaceRef(ctx, args.workspace, {
 			onEmpty: {
 				kind: "refuse",
-				message: `No workspace matching "${args.workspace}". Try /workspaces to see the available ones.`,
+				message: `No workspace matching "${args.workspace}". Try /remote-sessions to see the available ones.`,
 			},
 		})
 
@@ -81,14 +81,7 @@ export async function runSync(rawArgs: string, ctx: TeleportContext): Promise<vo
 			const prefix = args.dryRun ? "Dry run complete" : "Sync complete"
 			info(ctx, `${prefix}: ${result.fileCount} file(s), ${kb} KB in ${sec}s.`)
 		} catch (err) {
-			let msg: string
-			if (err instanceof RsyncError) {
-				const stderrHead = err.stderr?.trim().slice(0, 1500) ?? ""
-				msg = stderrHead ? `${err.message}\nstderr:\n${stderrHead}` : err.message
-			} else {
-				msg = err instanceof Error ? err.message : String(err)
-			}
-			refuse(ctx, `rsync failed: ${msg}`)
+			refuse(ctx, `rsync failed: ${formatRsyncFailure(err)}`)
 		}
 	} finally {
 		progress.stop()

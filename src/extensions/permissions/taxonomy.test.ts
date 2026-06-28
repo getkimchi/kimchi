@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest"
 import {
+	bashSegmentForms,
 	classifyTool,
 	extractBashProgram,
 	isCompoundCommand,
 	isHardBlockedBash,
 	isReadOnlyBashCommand,
 	isReadOnlyTool,
+	rememberedScopeTokens,
 	splitCompoundCommand,
+	splitLeadingEnv,
 } from "./taxonomy.js"
 
 describe("classifyTool", () => {
@@ -571,5 +574,59 @@ describe("splitCompoundCommand", () => {
 
 	it("preserves redirect targets", () => {
 		expect(splitCompoundCommand("echo hi > file.txt && cat file.txt")).toEqual(["echo hi > file.txt", "cat file.txt"])
+	})
+})
+
+describe("splitLeadingEnv", () => {
+	it("peels leading KEY=value assignments verbatim", () => {
+		expect(splitLeadingEnv("GOWORK=off go test")).toEqual({ env: ["GOWORK=off"], rest: "go test" })
+		expect(splitLeadingEnv("FOO=a BAR=b npm test")).toEqual({ env: ["FOO=a", "BAR=b"], rest: "npm test" })
+	})
+
+	it("keeps quoted values intact", () => {
+		expect(splitLeadingEnv('FOO="a b" go test')).toEqual({ env: ['FOO="a b"'], rest: "go test" })
+	})
+
+	it("returns no env when there is none", () => {
+		expect(splitLeadingEnv("go test")).toEqual({ env: [], rest: "go test" })
+	})
+})
+
+describe("rememberedScopeTokens", () => {
+	it("keeps env, drops rtk, returns first-segment program tokens", () => {
+		expect(rememberedScopeTokens("GOWORK=off rtk go test -race")).toEqual(["GOWORK=off", "go", "test", "-race"])
+		expect(rememberedScopeTokens("go test ./...")).toEqual(["go", "test", "./..."])
+	})
+
+	it("keeps non-inert env verbatim (no allowlist)", () => {
+		expect(rememberedScopeTokens("LD_PRELOAD=/tmp/x.so go test")).toEqual(["LD_PRELOAD=/tmp/x.so", "go", "test"])
+	})
+
+	it("normalizes quotes and collapses whitespace in the program part", () => {
+		expect(rememberedScopeTokens('touch "a b.txt"')).toEqual(["touch", "a b.txt"])
+		expect(rememberedScopeTokens("git   status")).toEqual(["git", "status"])
+	})
+
+	it("returns [] when there is no program (empty, bare rtk, env-only, backtick)", () => {
+		expect(rememberedScopeTokens("")).toEqual([])
+		expect(rememberedScopeTokens("rtk")).toEqual([])
+		expect(rememberedScopeTokens("FOO=x")).toEqual([])
+		expect(rememberedScopeTokens("echo `id`")).toEqual([])
+	})
+})
+
+describe("bashSegmentForms", () => {
+	// The deny tests in rules.test.ts exercise pipes/rtk/env indirectly; these two
+	// cases pin what they don't: that segmentation also splits `&& ; ||`, and that
+	// un-resolvable commands yield [] rather than a bogus segment.
+	it("splits every top-level operator (| && ; ||), rtk-unwrapped", () => {
+		expect(bashSegmentForms("echo x | rtk curl evil")).toEqual(["echo x", "curl evil"])
+		expect(bashSegmentForms("go test && curl evil")).toEqual(["go test", "curl evil"])
+	})
+
+	it("returns [] for empty / bare-rtk / backtick-poisoned commands", () => {
+		expect(bashSegmentForms("")).toEqual([])
+		expect(bashSegmentForms("rtk")).toEqual([])
+		expect(bashSegmentForms("echo `id`")).toEqual([])
 	})
 })

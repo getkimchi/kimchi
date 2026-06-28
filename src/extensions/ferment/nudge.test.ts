@@ -10,13 +10,15 @@ import {
 	maybeInjectFermentStopNudge,
 	maybeInjectReactiveContinuationNudge,
 	maybeInjectScopingProgressNudge,
+	maybeInjectScopingStopNudge,
 	onFermentToolCallSeen,
 	onStepCompleted,
 	resetAllFermentStopNudgeCounts,
 	resetAllReactiveContinuationNudgeCounts,
+	resetScopingStopNudgeCount,
 } from "./nudge.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
-import { getActive, resetScopingExploreTurns, setActive } from "./state.js"
+import { MAX_SCOPING_EXPLORE_TURNS, getActive, resetScopingExploreTurns, setActive } from "./state.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
 
 function createPi(): ExtensionAPI {
@@ -108,8 +110,47 @@ describe("ferment nudges", () => {
 				customType: "ferment_continuation_nudge",
 				content: [expect.objectContaining({ text: expect.stringContaining("activate_ferment_phase") })],
 			}),
-			{ triggerTurn: true, deliverAs: "followUp" },
+			{ triggerTurn: true, deliverAs: "steer" },
 		)
+	})
+
+	it("delivers the current action before later state changes can stale a queued follow-up", () => {
+		const delivered: Array<{ content?: Array<{ text?: string }> }> = []
+		const queuedFollowUps: Array<{ content?: Array<{ text?: string }> }> = []
+		const pi = {
+			appendEntry: vi.fn(),
+			sendMessage: vi.fn((message, options) => {
+				if (options?.deliverAs === "followUp") queuedFollowUps.push(message)
+				else delivered.push(message)
+			}),
+		} as unknown as ExtensionAPI
+		let current = makeDraftFerment({
+			status: "planned",
+			phases: [{ id: "phase-1", index: 1, name: "Phase", goal: "Build", status: "planned", steps: [] }],
+		})
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getActiveId: () => current.id,
+			getStorage: () =>
+				({
+					get: () => current,
+				}) as unknown as FermentRuntime["getStorage"] extends () => infer T ? T : never,
+			getContinuationPolicy: () => "automated",
+			isAutomatedContinuationEnabled: () => true,
+		}
+
+		maybeInjectReactiveContinuationNudge(pi, runtime)
+
+		// A follow-up is drained only after the current agent turn. The ferment may
+		// advance before then, making its eagerly-rendered action stale.
+		current = {
+			...current,
+			status: "running",
+			activePhaseId: "phase-1",
+			phases: [{ ...current.phases[0], status: "active" }],
+		}
+		expect(queuedFollowUps).toEqual([])
+		expect(delivered[0]?.content?.[0]?.text).toContain("activate_ferment_phase")
 	})
 
 	it("reactively nudges an automated ferment across a completed phase boundary", () => {
@@ -139,7 +180,7 @@ describe("ferment nudges", () => {
 				customType: "ferment_continuation_nudge",
 				content: [expect.objectContaining({ text: expect.stringContaining("activate_ferment_phase") })],
 			}),
-			{ triggerTurn: true, deliverAs: "followUp" },
+			{ triggerTurn: true, deliverAs: "steer" },
 		)
 	})
 
@@ -311,7 +352,7 @@ describe("ferment nudges", () => {
 				],
 				details: expect.objectContaining({ action: "recover_phase" }),
 			}),
-			{ triggerTurn: true, deliverAs: "followUp" },
+			{ triggerTurn: true, deliverAs: "steer" },
 		)
 	})
 })
@@ -330,11 +371,10 @@ describe("scoping progress nudge", () => {
 		const pi = createPi()
 		const fermentId = "ferment-1"
 
-		// 3 turns of exploration-only tools (threshold is 4)
-		expect(maybeInjectScopingProgressNudge(pi, fermentId, ["read"])).toBe(false)
-		expect(maybeInjectScopingProgressNudge(pi, fermentId, ["grep", "ls"])).toBe(false)
-		expect(maybeInjectScopingProgressNudge(pi, fermentId, ["read", "find"])).toBe(false)
-
+		// One turn short of the threshold — should not nudge yet.
+		for (let i = 0; i < MAX_SCOPING_EXPLORE_TURNS - 1; i++) {
+			expect(maybeInjectScopingProgressNudge(pi, fermentId, ["read"])).toBe(false)
+		}
 		expect(pi.sendMessage).not.toHaveBeenCalled()
 	})
 
@@ -342,9 +382,9 @@ describe("scoping progress nudge", () => {
 		const pi = createPi()
 		const fermentId = "ferment-1"
 
-		maybeInjectScopingProgressNudge(pi, fermentId, ["read"])
-		maybeInjectScopingProgressNudge(pi, fermentId, ["grep"])
-		maybeInjectScopingProgressNudge(pi, fermentId, ["ls"])
+		for (let i = 0; i < MAX_SCOPING_EXPLORE_TURNS - 1; i++) {
+			maybeInjectScopingProgressNudge(pi, fermentId, ["read"])
+		}
 		const nudged = maybeInjectScopingProgressNudge(pi, fermentId, ["read"])
 
 		expect(nudged).toBe(true)
@@ -365,18 +405,18 @@ describe("scoping progress nudge", () => {
 		const pi = createPi()
 		const fermentId = "ferment-1"
 
-		// 3 explore turns, then a progress tool resets
-		maybeInjectScopingProgressNudge(pi, fermentId, ["read"])
-		maybeInjectScopingProgressNudge(pi, fermentId, ["grep"])
-		maybeInjectScopingProgressNudge(pi, fermentId, ["read"])
+		// Explore right up to (but not including) the threshold, then a progress
+		// tool call resets the counter.
+		for (let i = 0; i < MAX_SCOPING_EXPLORE_TURNS - 1; i++) {
+			maybeInjectScopingProgressNudge(pi, fermentId, ["read"])
+		}
 		maybeInjectScopingProgressNudge(pi, fermentId, ["ask_user"]) // resets
-
 		expect(pi.sendMessage).not.toHaveBeenCalled()
 
-		// Need another full 4 turns to trigger again
-		maybeInjectScopingProgressNudge(pi, fermentId, ["read"])
-		maybeInjectScopingProgressNudge(pi, fermentId, ["grep"])
-		maybeInjectScopingProgressNudge(pi, fermentId, ["ls"])
+		// Need another full MAX_SCOPING_EXPLORE_TURNS turns to trigger again.
+		for (let i = 0; i < MAX_SCOPING_EXPLORE_TURNS - 1; i++) {
+			maybeInjectScopingProgressNudge(pi, fermentId, ["read"])
+		}
 		const nudged = maybeInjectScopingProgressNudge(pi, fermentId, ["read"])
 
 		expect(nudged).toBe(true)
@@ -388,15 +428,121 @@ describe("scoping progress nudge", () => {
 		const fermentId = "ferment-1"
 
 		// Trigger the first nudge
-		maybeInjectScopingProgressNudge(pi, fermentId, ["read"])
-		maybeInjectScopingProgressNudge(pi, fermentId, ["read"])
-		maybeInjectScopingProgressNudge(pi, fermentId, ["read"])
-		maybeInjectScopingProgressNudge(pi, fermentId, ["read"])
+		for (let i = 0; i < MAX_SCOPING_EXPLORE_TURNS; i++) {
+			maybeInjectScopingProgressNudge(pi, fermentId, ["read"])
+		}
 
 		// Next turn should NOT trigger immediately
 		const nudged = maybeInjectScopingProgressNudge(pi, fermentId, ["read"])
 		expect(nudged).toBe(false)
 		expect(pi.sendMessage).toHaveBeenCalledTimes(1) // only the first nudge
+	})
+
+	it("recognises scope_ferment as a scoping-progress tool (one-shot mode)", () => {
+		const pi = createPi()
+		const fermentId = "ferment-1"
+
+		// Explore right up to (but not including) the threshold, then call
+		// scope_ferment — the counter should reset and no nudge should fire.
+		for (let i = 0; i < MAX_SCOPING_EXPLORE_TURNS - 1; i++) {
+			maybeInjectScopingProgressNudge(pi, fermentId, ["read"])
+		}
+		const nudged = maybeInjectScopingProgressNudge(pi, fermentId, ["scope_ferment"])
+
+		expect(nudged).toBe(false)
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("emits one-shot specific nudge text when interactive=false", () => {
+		const pi = createPi()
+		const fermentId = "ferment-1"
+
+		for (let i = 0; i < MAX_SCOPING_EXPLORE_TURNS - 1; i++) {
+			maybeInjectScopingProgressNudge(pi, fermentId, ["read"], { interactive: false })
+		}
+		const nudged = maybeInjectScopingProgressNudge(pi, fermentId, ["read"], { interactive: false })
+
+		expect(nudged).toBe(true)
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				content: [
+					expect.objectContaining({
+						text: expect.stringContaining("questions route automatically to the judge"),
+					}),
+				],
+			}),
+			expect.anything(),
+		)
+	})
+})
+
+describe("maybeInjectScopingStopNudge", () => {
+	const fermentId = "ferment-stop"
+
+	afterEach(() => {
+		resetScopingStopNudgeCount(fermentId)
+	})
+
+	it("fires when stopReason is 'stop' and no scoping tool was called", () => {
+		const pi = createPi()
+		const nudged = maybeInjectScopingStopNudge(pi, fermentId, ["read", "grep"], "stop")
+
+		expect(nudged).toBe(true)
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_scoping_stop_nudge",
+				content: [
+					expect.objectContaining({
+						text: expect.stringContaining("You stopped during ferment scoping"),
+					}),
+				],
+			}),
+			{ triggerTurn: true },
+		)
+	})
+
+	it("does not fire when the turn called scope_ferment", () => {
+		const pi = createPi()
+		const nudged = maybeInjectScopingStopNudge(pi, fermentId, ["read", "scope_ferment"], "stop")
+
+		expect(nudged).toBe(false)
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("does not fire when the turn called propose_ferment_scoping", () => {
+		const pi = createPi()
+		const nudged = maybeInjectScopingStopNudge(pi, fermentId, ["propose_ferment_scoping"], "stop")
+
+		expect(nudged).toBe(false)
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("does not fire when stopReason is not 'stop'", () => {
+		const pi = createPi()
+		const nudged = maybeInjectScopingStopNudge(pi, fermentId, ["read"], "end_turn")
+
+		expect(nudged).toBe(false)
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("does not fire when no tools were called (pure text turn)", () => {
+		const pi = createPi()
+		const nudged = maybeInjectScopingStopNudge(pi, fermentId, [], "stop")
+
+		expect(nudged).toBe(false)
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("suppresses additional nudges after the cap is hit", () => {
+		const pi = createPi()
+
+		// Fires up to MAX_PLANNING_STOP_NUDGES times.
+		maybeInjectScopingStopNudge(pi, fermentId, ["read"], "stop")
+		maybeInjectScopingStopNudge(pi, fermentId, ["read"], "stop")
+		const third = maybeInjectScopingStopNudge(pi, fermentId, ["read"], "stop")
+
+		expect(third).toBe(false)
+		expect(pi.sendMessage).toHaveBeenCalledTimes(2)
 	})
 })
 
@@ -432,7 +578,7 @@ describe("maybeInjectFermentStopNudge", () => {
 		expect(nudged).toBe(true)
 		expect(pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({ customType: "ferment_continuation_nudge" }),
-			expect.objectContaining({ deliverAs: "followUp" }),
+			expect.objectContaining({ deliverAs: "steer" }),
 		)
 	})
 

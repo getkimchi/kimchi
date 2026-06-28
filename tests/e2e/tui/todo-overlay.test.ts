@@ -17,7 +17,7 @@ test("completed todos stop pinning the overlay", async ({ terminal }) => {
 						{
 							id: "call_create_todos",
 							function: {
-								name: "update_todos",
+								name: "create_todos",
 								arguments: JSON.stringify({
 									todos: [
 										{ content: "sticky panel", status: "pending" },
@@ -29,6 +29,7 @@ test("completed todos stop pinning the overlay", async ({ terminal }) => {
 					],
 				},
 				{ stream: ["Todo plan created."] },
+				{ stream: ["fake response"] },
 			],
 		},
 		async (_fixture, trace) => {
@@ -77,6 +78,65 @@ test("completed todos stop pinning the overlay", async ({ terminal }) => {
 			await waitForText(terminal, "Todos · Global", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			await waitForText(terminal, "2/2 done · 0 active", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			trace.step("completed overlay manually reopened")
+		},
+	)
+})
+
+test("todo overlay reconciles stale active todos after non-todo work", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "todo-overlay-reconciliation",
+			models: [{ slug: "basic", displayName: "Fake Basic", contextWindow: 1_000_000, maxTokens: 4096 }],
+			responses: [
+				{
+					toolCalls: [
+						{
+							id: "call_leave_active_todo",
+							function: {
+								name: "create_todos",
+								arguments: JSON.stringify({
+									todos: [
+										{ content: "create branch", status: "completed" },
+										{ content: "edit workflow", status: "completed" },
+										{ content: "commit and push", status: "in_progress" },
+									],
+								}),
+							},
+						},
+					],
+				},
+				{
+					toolCalls: [
+						{
+							id: "call_non_todo_work",
+							function: {
+								name: "bash",
+								arguments: JSON.stringify({ command: "sleep 0.2" }),
+							},
+						},
+					],
+				},
+				{ stream: ["Work finished."] },
+				{
+					toolCalls: [
+						{
+							id: "call_clear_reconciled_todos",
+							function: { name: "clear_todos", arguments: JSON.stringify({}) },
+						},
+					],
+				},
+				{ stream: [] },
+			],
+		},
+		async (_fixture, trace) => {
+			terminal.submit("leave an active todo")
+
+			await waitForText(terminal, "2/3 done · 1 active", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			trace.step("active todo overlay visible")
+
+			await waitForWidgetToHide(terminal)
+			trace.step("reconciliation follow-up cleared overlay")
 		},
 	)
 })

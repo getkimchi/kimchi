@@ -62,7 +62,7 @@ export function formatNextActionHint(ferment: Ferment): string | undefined {
 		}
 		case "complete_step": {
 			const label = stepLabel ?? `step "${action.stepId}"`
-			return `Next action: call \`${toolName}\` once the worker for ${label} has returned \u2014 ferment_id "${ferment.id}", phase_id "${action.phaseId}", step_id "${action.stepId}"${verifyHint}.`
+			return `Next action: call \`${toolName}\` with worker_agent_id only after the linked worker for ${label} has a completed outcome and completed report \u2014 ferment_id "${ferment.id}", phase_id "${action.phaseId}", step_id "${action.stepId}"${verifyHint}.`
 		}
 		case "verify_step": {
 			const label = stepLabel ?? `step "${action.stepId}"`

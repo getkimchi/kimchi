@@ -1,20 +1,10 @@
-import type { Api, Model } from "@earendil-works/pi-ai"
-import type { ExtensionUIContext, ModelRegistry } from "@earendil-works/pi-coding-agent"
+import type { ExtensionContext, ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 
-export interface FermentUi {
-	notify(message: string, level?: string): void
-	input?(label: string, placeholder?: string): Promise<string | undefined>
-	editor?(title: string, prefill?: string): Promise<string | undefined>
-	select?(title: string, options: string[]): Promise<string | undefined>
-	custom?: ExtensionUIContext["custom"]
-	confirm?(title: string, description?: string): Promise<boolean>
-	setStatus?: ExtensionUIContext["setStatus"]
-}
+export type FermentUi = Partial<
+	Pick<ExtensionUIContext, "input" | "editor" | "select" | "custom" | "confirm" | "setStatus" | "setWorkingVisible">
+> &
+	Pick<ExtensionUIContext, "notify">
 
-export interface FermentUiContext {
+export type FermentUiContext = Partial<Pick<ExtensionContext, "hasUI" | "mode" | "model" | "modelRegistry">> & {
 	ui: FermentUi
-	hasUI?: boolean
-	model?: Model<Api>
-	modelRegistry?: ModelRegistry
-	controller?: unknown
 }

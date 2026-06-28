@@ -58,9 +58,8 @@ export function isFermentToolName(name: string): boolean {
 
 /**
  * Returns true for ferment tools that should only be visible during an active
- * ferment (planning or implementation). The discovery tools — `list_ferments`
- * and `request_ferment_workflow` — are excluded so they remain visible in
- * normal chat and idle mode.
+ * ferment (planning or implementation). The discovery tool `list_ferments`
+ * is excluded so it remains visible in normal chat and idle mode.
  */
 export function isFermentOnlyToolName(name: string): boolean {
 	return PLANNER_ONLY_FERMENT_TOOL_NAMES.has(name)
@@ -76,4 +75,4 @@ export function isClassifiedFermentToolName(name: string): boolean {
 
 /** Shared message: there is no `create_ferment` tool. Explains the canonical creation/scoping paths. */
 export const CREATE_FERMENT_REDIRECT_MESSAGE =
-	'Ferment creation is host-owned and only happens through the `/ferment` slash commands. There is no `create_ferment` tool, no equivalent native or MCP tool, and no filesystem layout you can construct by hand. Do not search for, retry with, or invent variants like `new_ferment`, `start_ferment`, `make_ferment`, `begin_ferment`, `ferment_create`, etc.; none exist. Do NOT create directories, write status/manifest files, or run shell commands under `.kimchi/` to simulate a ferment — the host will not recognize them and the FSM will reject them. If a draft ferment is already active, call `propose_ferment_scoping` for draft scoping. Otherwise STOP, do not call any tools, and tell the user to run `/ferment`, `/ferment new "..."` or `/ferment one-shot "..."` themselves. Wait for the host to create the ferment before resuming.'
+	'Ferment creation is host-owned. There is no `create_ferment` tool, no equivalent native or MCP tool, and no filesystem layout you can construct by hand. Do not search for, retry with, or invent variants like `new_ferment`, `start_ferment`, `make_ferment`, `begin_ferment`, `ferment_create`, etc.; none exist. Do NOT create directories, write status/manifest files, or run shell commands under `.kimchi/` to simulate a ferment — the host will not recognize them and the FSM will reject them. If a draft ferment is already active, call `propose_ferment_scoping` for draft scoping. If no ferment is active, you may call `propose_ferment_scoping` without a `ferment_id` to create a new draft ferment directly. Otherwise tell the user to run `/ferment`, `/ferment new "..."` or `/ferment one-shot "..."` themselves and wait for the host to create the ferment before resuming.'

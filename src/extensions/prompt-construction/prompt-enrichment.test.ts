@@ -1,5 +1,5 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { arch, version as osVersion, platform, release, tmpdir } from "node:os"
 import { join } from "node:path"
 import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ToolInfo } from "@earendil-works/pi-coding-agent"
@@ -255,6 +255,41 @@ describe("prompt enrichment tool visibility", () => {
 
 		expect(result.systemPrompt).toContain('<tool name="read">')
 		expect(result.systemPrompt).not.toContain('<tool name="bash">')
+	})
+})
+
+describe("prompt enrichment environment context", () => {
+	beforeEach(() => {
+		vi.restoreAllMocks()
+		vi.spyOn(config, "loadConfig").mockReturnValue({ apiKey: "" } as ReturnType<typeof config.loadConfig>)
+		vi.spyOn(startupContext, "getAvailableModels").mockReturnValue([])
+	})
+
+	it("injects cheap platform and shell context into the system prompt", async () => {
+		const oldShell = process.env.SHELL
+		process.env.SHELL = "/bin/test-shell"
+		try {
+			const { beforeAgentStart } = buildPromptExtensionWithHandlers()
+			if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+			const result = (await beforeAgentStart(
+				{},
+				{ cwd: "/tmp", model: undefined, hasUI: false, sessionManager: { getSessionId: () => "session-1" } },
+			)) as { systemPrompt: string }
+
+			expect(result.systemPrompt).toContain(`- OS release: ${release()}`)
+			expect(result.systemPrompt).toContain(`- OS version: ${osVersion()}`)
+			expect(result.systemPrompt).toContain(`- Raw platform: ${platform()}`)
+			expect(result.systemPrompt).toContain(`- CPU architecture: ${arch()}`)
+			expect(result.systemPrompt).toContain("- Shell: /bin/test-shell")
+		} finally {
+			if (oldShell === undefined) {
+				// biome-ignore lint/performance/noDelete: process.env requires delete to truly unset.
+				delete process.env.SHELL
+			} else {
+				process.env.SHELL = oldShell
+			}
+		}
 	})
 })
 
@@ -970,7 +1005,9 @@ describe("continuation nudge turn_end handler", () => {
 	it("sends a continuation nudge on a text-only turn with no tools called", async () => {
 		const { fire, sendMessageCalls } = buildNudgeHandlers()
 
-		// Simulate user input to reset the nudge state.
+		// Simulate a tool having been called earlier in the session so the
+		// fresh-session suppression does not apply. Then a new user-input cycle.
+		await fire("tool_execution_start", {})
 		await fire("input", { source: "user" })
 
 		// Model responds with text-only, stopReason "stop".
@@ -986,7 +1023,8 @@ describe("continuation nudge turn_end handler", () => {
 	it("does not send a second nudge when model responds to nudge with stopReason 'stop'", async () => {
 		const { fire, sendMessageCalls } = buildNudgeHandlers()
 
-		// Simulate user input.
+		// Tool called earlier in the session so the fresh-session guard is past.
+		await fire("tool_execution_start", {})
 		await fire("input", { source: "user" })
 
 		// First text-only turn triggers the continuation nudge.
@@ -1006,6 +1044,7 @@ describe("continuation nudge turn_end handler", () => {
 	it("falls through to second nudge when model responds with non-stop stopReason", async () => {
 		const { fire, sendMessageCalls } = buildNudgeHandlers()
 
+		await fire("tool_execution_start", {})
 		await fire("input", { source: "user" })
 
 		// First text-only turn triggers the continuation nudge.
@@ -1068,6 +1107,9 @@ describe("continuation nudge turn_end handler", () => {
 	it("sends continuation nudge for Kimi K2 model on text-only turn (positive gate)", async () => {
 		const { fire, sendMessageCalls, kimiCtx } = buildNudgeHandlers()
 
+		// Simulate a tool having been called earlier in the session so the
+		// fresh-session suppression does not apply.
+		await fire("tool_execution_start", {}, kimiCtx)
 		await fire("input", { source: "user" }, kimiCtx)
 		await fire(
 			"turn_end",

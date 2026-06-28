@@ -1,9 +1,9 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Ferment } from "../../ferment/types.js"
+import * as ToolProfileManager from "../../shared/planning/tool-profile-manager.js"
 import { isAgentWorker } from "../agent-worker-context.js"
-import { getDisabledToolNames } from "../prompt-construction/tool-visibility.js"
 import type { FermentRuntime } from "./runtime.js"
-import { FERMENT_TOOLS, isFermentOnlyToolName } from "./tool-names.js"
+import { FERMENT_TOOLS } from "./tool-names.js"
 
 /**
  * Tools available during the planning phase of a ferment lifecycle.
@@ -52,6 +52,7 @@ export const IMPLEMENTATION_TOOL_NAMES: ReadonlySet<string> = new Set([
 	"write",
 	// Delegation tool: the higher-level persona-based `Agent`
 	"Agent",
+	"resume_subagent",
 	"get_subagent_result",
 	// Ferment lifecycle tools
 	FERMENT_TOOLS.ACTIVATE_PHASE,
@@ -73,8 +74,8 @@ export const IMPLEMENTATION_TOOL_NAMES: ReadonlySet<string> = new Set([
  * Profile applied to the planner's active tool list. Keyed on ferment
  * lifecycle state:
  *   - `idle`: no active ferment; all non-ferment tools + ferment discovery
- *             tools only (`list_ferments`, `request_ferment_workflow`). All
- *             ferment-only lifecycle/planning tools are hidden.
+ *             tool only (`list_ferments`). All ferment-only lifecycle/planning
+ *             tools are hidden.
  *   - `worker`: subagent worker context (`KIMCHI_SUBAGENT=1`); empty toolset,
  *               managed externally by the agents manager
  *   - `planning`: ferment exists, no phase activated yet; read-only research
@@ -105,50 +106,13 @@ export class FermentToolScope {
 	constructor(private readonly pi: ExtensionAPI) {}
 
 	applyProfile(profile: FermentToolProfile): void {
-		// Tools that have been disabled via the cooperative visibility layer (e.g.
-		// ask_user / confirm_ferment_completion_criteria hidden when no UI is
-		// attached) must remain absent even when this profile wants them visible.
-		// Without this filter, a direct setActiveTools call would undo the
-		// visibility-layer vote and re-surface tools the model cannot use.
-		const disabled = getDisabledToolNames(this.pi)
-		switch (profile) {
-			case "idle": {
-				// Normal chat / post-ferment state: show all non-ferment tools plus
-				// the two ferment discovery tools (list_ferments, request_ferment_workflow).
-				// All ferment-only lifecycle and planning tools are hidden so they
-				// don't clutter the model's tool list outside an active ferment.
-				const idle = this.pi
-					.getAllTools()
-					.map((t) => t.name)
-					.filter((name) => !isFermentOnlyToolName(name) && !disabled.has(name))
-				this.pi.setActiveTools(idle)
-				break
-			}
-			case "planning": {
-				// Intersection: only tools that are BOTH registered AND explicitly listed for planning.
-				const allTools = this.pi.getAllTools().map((tool) => tool.name)
-				const allowed = allTools.filter((name) => PLANNING_TOOL_NAMES.has(name) && !disabled.has(name))
-				this.pi.setActiveTools(allowed)
-				break
-			}
-			case "implementation": {
-				// Full toolset from registration, with guaranteed tools added defensively.
-				const allTools = this.pi.getAllTools().map((tool) => tool.name)
-				const allowed = new Set<string>(allTools)
-				for (const required of IMPLEMENTATION_TOOL_NAMES) {
-					allowed.add(required)
-				}
-				// Strip any tool that the cooperative visibility layer has voted to hide.
-				for (const name of disabled) {
-					allowed.delete(name)
-				}
-				this.pi.setActiveTools([...allowed])
-				break
-			}
-			case "worker":
-				this.pi.setActiveTools([])
-				break
-		}
+		// Map FermentToolProfile ("idle"|"worker"|"planning"|"implementation") to
+		// ToolProfile ("idle"|"worker"|"planning-ferment"|"implementation-ferment")
+		// so ToolProfileManager.apply() can route to the right catalog entries.
+		const catalogProfile = (
+			profile === "planning" ? "planning-ferment" : profile === "implementation" ? "implementation-ferment" : profile
+		) as "idle" | "worker" | "planning-ferment" | "implementation-ferment"
+		ToolProfileManager.apply(catalogProfile, "ferment", this.pi)
 	}
 }
 

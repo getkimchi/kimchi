@@ -91,11 +91,8 @@ if (!isDev) {
 	mkdirSync(proxyHelperBinDest, { recursive: true })
 	cpSync(proxyHelperSrc, join(proxyHelperBinDest, "proxy-helper"))
 
-	// teleport-proxy.js is invoked by `node` (spawned via ssh ProxyCommand), so it
-	// has to live on the real filesystem next to the binary's share assets — it
-	// can't be served from bun's compiled-binary virtual fs.
-	// cpSync(
-	// 	join(projectRoot, "src", "modes", "teleport", "teleport-proxy.js"),
-	// 	join(projectRoot, "dist", "share", "kimchi", "teleport-proxy.js"),
-	// )
+	const superpowersSkillSrc = join(projectRoot, "vendor", "superpowers", "skills")
+	const superpowersSkillDst = join(projectRoot, "dist", "share", "kimchi", "vendor", "superpowers", "skills")
+	mkdirSync(superpowersSkillDst, { recursive: true })
+	cpSync(superpowersSkillSrc, superpowersSkillDst, { recursive: true })
 }
