@@ -80,8 +80,10 @@ test("/ferment new runs planning and produces a scoped ferment artifact", async 
 			artifactName: "ferment-new-runs-planning",
 			gitInit: true,
 			responses: [
-				// Turn 1: model calls propose_ferment_scoping.
+				// Turn 1: emit orientation text first (required by the
+				// first-turn-orientation guard) then call propose_ferment_scoping.
 				{
+					stream: ["I'll outline the scope."],
 					toolCalls: [
 						{
 							function: {

@@ -110,6 +110,15 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 			"utf-8",
 		)
 
+		// Explicitly pin nothing so footer segments don't appear in the terminal during
+		// E2E tests. Without this, readFooterConfig() would return DEFAULT_FOOTER_PINNED
+		// (context, agents, phase, usage) and change the terminal layout for every test.
+		writeFileSync(
+			join(agentDir, "settings.json"),
+			JSON.stringify({ footer: { pinned: [] } }, null, "\t"),
+			"utf-8",
+		)
+
 		writeModelsConfig(join(agentDir, "models.json"), fake.baseUrl, options.models)
 
 		return {

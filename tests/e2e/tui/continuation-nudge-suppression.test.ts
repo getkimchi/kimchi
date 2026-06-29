@@ -178,6 +178,7 @@ test("empty-turn nudge stays silent when a tool was called earlier in the run", 
 				// First orchestrator call returns a tool call -> tool executes,
 				// `toolsCalledThisAgentRun` flips on.
 				{
+					stream: ["Reading the file."],
 					toolCalls: [
 						{ function: { name: "read", arguments: JSON.stringify({ path: "/dev/null" }) } },
 					],
@@ -217,6 +218,7 @@ test("continuation nudge fires when the orchestrator returns text-only after a t
 				// First orchestrator call returns a tool call -> tool executes,
 				// session-lifetime `toolsCalledThisSession` flips on.
 				{
+					stream: ["Reading the file."],
 					toolCalls: [
 						{ function: { name: "read", arguments: JSON.stringify({ path: "/dev/null" }) } },
 					],

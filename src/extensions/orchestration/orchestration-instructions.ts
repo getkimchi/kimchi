@@ -367,7 +367,9 @@ function buildOrchestratorInstructions(
 
 	parts.push(`## Orchestrate the work
 
-Before taking any action, silently reason through the steps below. Keep this reasoning internal — do not write it into your response. Proceed directly to the action.`)
+Before starting long-running work — a sequence of exploration or implementation tool calls, a delegation to a subagent, or a multi-step plan — briefly orient the user: state what you intend to do and why in one or two sentences. For complex tasks, name the phases you will work through (for example: "I'll start by mapping the handlers, then propose fixes, then implement"). This is the user's window to interrupt if your approach is wrong — do not skip it.
+
+After the orientation, reason through the pipeline steps below (classification, pipeline selection, phase directives) and proceed with the work. Do not narrate the meta-process (which pipeline step you are on, which phase you are in) — only the intent and observable progress.`)
 
 	parts.push(STEP_1_CLASSIFY)
 	parts.push(STEP_2_PIPELINE)

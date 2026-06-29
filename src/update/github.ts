@@ -11,7 +11,7 @@ const DEFAULT_DOWNLOAD_BASE = "https://github.com"
 export interface Repo {
 	owner: string
 	name: string
-	/** Binary name inside the tar.gz (also the prefix of the asset filename). */
+	/** Binary name inside the release archive (also the prefix of the asset filename). */
 	binary: string
 }
 

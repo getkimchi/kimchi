@@ -43,6 +43,7 @@ describe("ACP integration — permission flow", () => {
 				responses: [
 					{ stream: ["hello", " from", " compound", " client."] },
 					{
+						stream: ["I'll run that command."],
 						toolCalls: [
 							{
 								function: {
@@ -114,6 +115,7 @@ describe("ACP integration — permission flow", () => {
 				responses: [
 					{ stream: ["sure,", " denying", " now."] },
 					{
+						stream: ["I'll run that command."],
 						toolCalls: [
 							{
 								function: {

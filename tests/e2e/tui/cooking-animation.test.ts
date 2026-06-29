@@ -147,9 +147,11 @@ test("cooking animation restarts during tool execution and stops when the tool c
 		{
 			artifactName: "cooking-animation-tool-execution",
 			responses: [
-				// First response: model asks the bash tool to sleep 1s. The tool's
+				// First response: model emits a brief orientation text (required by
+				// the first-turn-orientation guard) before calling bash. The tool's
 				// execution time keeps the spinner visible long enough to observe.
 				{
+					stream: ["Running the slow command."],
 					toolCalls: [
 						{
 							id: "call_bash_sleep",

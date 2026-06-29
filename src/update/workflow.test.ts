@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { CanaryReleaseInfo, GitHubClient, ReleaseInfo, Repo } from "./github.js"
 
 const mocks = vi.hoisted(() => ({
-	extractTarGz: vi.fn(),
+	extractArchive: vi.fn(),
 	verifyChecksum: vi.fn(),
 	fetchChecksum: vi.fn(),
 	downloadArchive: vi.fn(),
@@ -17,7 +17,7 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock("./extract.js", () => ({
-	extractTarGz: mocks.extractTarGz,
+	extractArchive: mocks.extractArchive,
 	verifyChecksum: mocks.verifyChecksum,
 }))
 
@@ -272,7 +272,7 @@ describe("applyUpdate share destination", () => {
 	let prevPiPackageDir: string | undefined
 
 	beforeEach(() => {
-		mocks.extractTarGz.mockReset()
+		mocks.extractArchive.mockReset()
 		mocks.verifyChecksum.mockReset()
 		mocks.fetchChecksum.mockReset()
 		mocks.downloadArchive.mockReset()
@@ -294,7 +294,7 @@ describe("applyUpdate share destination", () => {
 		writeFileSync(join(extractRoot, "bin", "kimchi"), "")
 		writeFileSync(join(extractRoot, "share", "kimchi", "package.json"), "{}")
 
-		mocks.extractTarGz.mockResolvedValue(extractRoot)
+		mocks.extractArchive.mockResolvedValue(extractRoot)
 		mocks.verifyChecksum.mockResolvedValue(undefined)
 		mocks.fetchChecksum.mockResolvedValue("sha256:fff")
 		mocks.downloadArchive.mockResolvedValue(undefined)
@@ -361,5 +361,37 @@ describe("applyUpdate share destination", () => {
 			expect.stringContaining(".local/share/kimchi"),
 			"kimchi",
 		)
+	})
+
+	it("uses kimchi.exe from Windows archives", async () => {
+		const origPlatform = process.platform
+		Object.defineProperty(process, "platform", { value: "win32" })
+		try {
+			const winBinPath = join(fakePrefix, "bin", "kimchi.exe")
+			writeFileSync(join(extractRoot, "bin", "kimchi.exe"), "")
+			const client = {
+				fetchChecksum: mocks.fetchChecksum,
+				downloadArchive: mocks.downloadArchive,
+			} as unknown as GitHubClient
+
+			await applyUpdate({
+				repo: REPO,
+				tag: "v0.0.24",
+				executablePath: winBinPath,
+				client,
+			})
+
+			const newBinaryPath = join(extractRoot, "bin", "kimchi.exe")
+			expect(mocks.downloadArchive).toHaveBeenCalledWith(
+				REPO,
+				"v0.0.24",
+				expect.stringMatching(/kimchi_windows_amd64\.zip$/),
+			)
+			expect(mocks.macosCodesignReSign).toHaveBeenCalledWith(newBinaryPath)
+			expect(mocks.smokeTestBinary).toHaveBeenCalledWith(newBinaryPath)
+			expect(mocks.atomicInstall).toHaveBeenCalledWith(newBinaryPath, winBinPath)
+		} finally {
+			Object.defineProperty(process, "platform", { value: origPlatform })
+		}
 	})
 })

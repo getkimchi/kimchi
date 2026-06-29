@@ -187,48 +187,45 @@ export async function collectModelMetadata(
 }
 
 // ---------------------------------------------------------------------------
-// Custom toggle-select component (space to toggle, cursor preserved)
+// Custom toggle-select component (space to toggle, Enter confirms, Esc cancels)
 // ---------------------------------------------------------------------------
 
 interface ToggleSelectResult {
 	selected: Set<string>
 	cancelled: boolean
-	addCustom: boolean
 }
 
 function createToggleSelect(
 	tui: TUI,
 	theme: Theme,
-	title: string,
+	label: string,
 	refs: string[],
 	selected: Set<string>,
 	done: (result: ToggleSelectResult) => void,
 ): Component {
-	let cursorIndex = 0
 	let cachedLines: string[] | undefined
-
-	const ADD_CUSTOM = "Add custom model..."
-	const doneLabel = () => `Done (${selected.size} selected)`
-	const allItems = (): string[] => [...refs, ADD_CUSTOM, doneLabel()]
+	const cursor: { index: number } = { index: 0 }
 
 	function handleInput(data: string): void {
-		const items = allItems()
-
 		if (matchesKey(data, Key.up)) {
-			cursorIndex = (cursorIndex - 1 + items.length) % items.length
+			// Guard against empty refs — `% 0` is NaN in JS, which would
+			// permanently break the cursor until the component is re-mounted.
+			if (refs.length === 0) return
+			cursor.index = (cursor.index - 1 + refs.length) % refs.length
 			cachedLines = undefined
 			tui.requestRender()
 			return
 		}
 		if (matchesKey(data, Key.down)) {
-			cursorIndex = (cursorIndex + 1) % items.length
+			if (refs.length === 0) return
+			cursor.index = (cursor.index + 1) % refs.length
 			cachedLines = undefined
 			tui.requestRender()
 			return
 		}
 		if (data === " ") {
-			if (cursorIndex < refs.length) {
-				const ref = refs[cursorIndex]
+			const ref = refs[cursor.index]
+			if (ref !== undefined) {
 				if (selected.has(ref)) {
 					selected.delete(ref)
 				} else {
@@ -240,16 +237,11 @@ function createToggleSelect(
 			return
 		}
 		if (matchesKey(data, Key.enter)) {
-			const item = items[cursorIndex]
-			if (item === ADD_CUSTOM) {
-				done({ selected, cancelled: false, addCustom: true })
-				return
-			}
-			done({ selected, cancelled: false, addCustom: false })
+			done({ selected, cancelled: false })
 			return
 		}
 		if (matchesKey(data, Key.escape)) {
-			done({ selected, cancelled: true, addCustom: false })
+			done({ selected, cancelled: true })
 			return
 		}
 	}
@@ -265,28 +257,32 @@ function createToggleSelect(
 		}
 
 		add(theme.fg("accent", "\u2500".repeat(width)))
+		// The title embeds the current selection count, so it must be built
+		// inside render() rather than interpolated at call-time. Otherwise
+		// Space toggles update the footer count but leave the title frozen
+		// at the initial value (a confusing cosmetic mismatch).
+		const title = `${label} — toggle models (${selected.size} selected)`
 		add(` ${theme.fg("text", theme.bold(title))}`)
 		lines.push("")
 
-		const items = allItems()
-		for (let i = 0; i < items.length; i++) {
-			const isCursor = i === cursorIndex
+		for (let i = 0; i < refs.length; i++) {
+			const isCursor = i === cursor.index
 			const prefix = isCursor ? theme.fg("accent", "> ") : "  "
 
-			if (i < refs.length) {
-				const ref = refs[i]
-				const checked = selected.has(ref)
-				const box = checked ? "[x]" : "[ ]"
-				const color = isCursor ? "accent" : "text"
-				add(`${prefix}${theme.fg(color, `${box} ${ref}`)}`)
-			} else {
-				const color = isCursor ? "accent" : "text"
-				add(`${prefix}${theme.fg(color, items[i])}`)
-			}
+			const ref = refs[i]
+			const checked = selected.has(ref)
+			const box = checked ? "[x]" : "[ ]"
+			const color = isCursor ? "accent" : "text"
+			add(`${prefix}${theme.fg(color, `${box} ${ref}`)}`)
 		}
 
 		lines.push("")
-		add(theme.fg("dim", " \u2191\u2193 navigate  space toggle  enter confirm  esc cancel"))
+		add(
+			theme.fg(
+				"dim",
+				` \u2191\u2193 navigate \u00b7 space toggle \u00b7 \u23ce confirm (${selected.size} selected) \u00b7 esc cancel`,
+			),
+		)
 		add(theme.fg("accent", "\u2500".repeat(width)))
 
 		cachedLines = lines
@@ -328,6 +324,9 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 				const roleOptions = ROLE_KEYS.map((key) => formatRoleSummaryBlock(key, roles[key]))
 				const options = [...roleOptions, "Edit model metadata...", "Reset all to defaults"]
 
+				// No cursor preservation: the menu reopens from row 0 every
+				// time, which is what users expect when re-entering a fresh
+				// selection screen.
 				const choice = await ctx.ui.select("Model Roles", options)
 				if (!choice) return
 
@@ -394,37 +393,11 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 					const suffix = tags.length > 0 ? ` (${tags.join(", ")})` : ""
 					return `${ref}${suffix}`
 				})
-				modelOptions.push("Enter custom model...")
 
 				const choice = await ctx.ui.select(`${info.label} — ${info.description}`, modelOptions)
 				if (!choice) return
 
-				let newRef: string
-
-				if (choice === "Enter custom model...") {
-					const input = await ctx.ui.input("Model (provider/model-id):", currentModels[0] ?? "")
-					if (!input?.trim()) return
-					newRef = input.trim()
-
-					if (!splitModelRef(newRef)) {
-						ctx.ui.notify(
-							`Invalid format: "${newRef}". Expected "provider/model-id" (e.g. "anthropic/claude-sonnet-4-5").`,
-							"error",
-						)
-						return
-					}
-
-					const modelId = modelIdFromRef(newRef)
-					const availableIds = new Set(apiModels.map((m) => m.slug))
-					if (!availableIds.has(modelId)) {
-						ctx.ui.notify(
-							`Note: "${newRef}" is not in the available models list. It will be used if the provider is configured.`,
-							"warning",
-						)
-					}
-				} else {
-					newRef = choice.replace(/\s*\(.*\)$/, "")
-				}
+				const newRef = choice.replace(/\s*\(.*\)$/, "")
 
 				roles[roleKey] = newRef
 				try {
@@ -455,59 +428,25 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 				const info = ROLE_LABELS[roleKey]
 				const selected = new Set(normalizeRoleModels(roles[roleKey]))
 
-				// eslint-disable-next-line no-constant-condition
-				while (true) {
-					const result = await ctx.ui.custom<ToggleSelectResult>((tui, theme, _kb, done) =>
-						createToggleSelect(
-							tui,
-							theme,
-							`${info.label} — toggle models (${selected.size} selected)`,
-							availableModelRefs,
-							selected,
-							done,
-						),
-					)
+				const result = await ctx.ui.custom<ToggleSelectResult>((tui, theme, _kb, done) =>
+					createToggleSelect(tui, theme, info.label, availableModelRefs, selected, done),
+				)
 
-					if (result.cancelled) return
+				if (result.cancelled) return
 
-					if (result.addCustom) {
-						const input = await ctx.ui.input("Model (provider/model-id):")
-						if (!input?.trim()) continue
-						const ref = input.trim()
-
-						if (!splitModelRef(ref)) {
-							ctx.ui.notify(
-								`Invalid format: "${ref}". Expected "provider/model-id" (e.g. "anthropic/claude-sonnet-4-5").`,
-								"error",
-							)
-							continue
-						}
-
-						const modelId = modelIdFromRef(ref)
-						const availableIds = new Set(apiModels.map((m) => m.slug))
-						if (!availableIds.has(modelId)) {
-							ctx.ui.notify(
-								`Note: "${ref}" is not in the available models list. It will be used if the provider is configured.`,
-								"warning",
-							)
-						}
-
-						if (!availableModelRefs.includes(ref)) {
-							availableModelRefs.push(ref)
-						}
-						selected.add(ref)
-						continue
-					}
-
-					break
-				}
-
-				if (selected.size === 0) {
+				// Read from result.selected (the Set the component returned)
+				// rather than the outer closure variable. Today they are the
+				// same object — the picker mutates the Set in place — but
+				// reading from the result makes the dependency explicit and
+				// keeps the contract intact if the component ever switches to
+				// cloning the Set before resolving.
+				const finalSelected = result.selected
+				if (finalSelected.size === 0) {
 					ctx.ui.notify(`${info.label} must have at least one model. Keeping current assignment.`, "warning")
 					return
 				}
 
-				const models = [...selected]
+				const models = [...finalSelected]
 				const assignment: RoleModelAssignment = models.length === 1 ? models[0] : models
 				;(roles as Record<string, RoleModelAssignment>)[roleKey] = assignment
 				try {

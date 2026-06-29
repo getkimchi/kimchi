@@ -2,6 +2,7 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
+	DEFAULT_FOOTER_PINNED,
 	FOOTER_ELEMENTS,
 	_invalidateFooterConfigCache,
 	isPinned,
@@ -67,8 +68,31 @@ describe("FOOTER_ELEMENTS", () => {
 // ─── readFooterConfig ─────────────────────────────────────────────────────────
 
 describe("readFooterConfig", () => {
-	it("returns { pinned: [] } when no footer config exists", () => {
+	it("returns DEFAULT_FOOTER_PINNED when no footer key exists in settings", () => {
 		memfs.set(SETTINGS_PATH, "{}")
+		expect(readFooterConfig().pinned).toEqual(DEFAULT_FOOTER_PINNED)
+	})
+
+	it("DEFAULT_FOOTER_PINNED contains agents, context, usage", () => {
+		expect(DEFAULT_FOOTER_PINNED).toEqual(expect.arrayContaining(["agents", "context", "usage"]))
+		expect(DEFAULT_FOOTER_PINNED).toHaveLength(3)
+	})
+
+	it("agents, context, usage are all isPinned=true on first read with no config", () => {
+		for (const id of ["agents", "context", "usage"] as const) {
+			expect(isPinned(id)).toBe(true)
+		}
+	})
+
+	it("ferment, tags, team are not pinned by default even though context is", () => {
+		expect(isPinned("context")).toBe(true)
+		expect(isPinned("ferment")).toBe(false)
+		expect(isPinned("tags")).toBe(false)
+		expect(isPinned("team")).toBe(false)
+	})
+
+	it("returns { pinned: [] } when footer key exists with empty pinned array", () => {
+		memfs.set(SETTINGS_PATH, JSON.stringify({ footer: { pinned: [] } }, null, 2))
 		expect(readFooterConfig().pinned).toEqual([])
 	})
 
@@ -92,12 +116,10 @@ describe("writeFooterConfig", () => {
 		expect(stored.footer).toEqual({ pinned: ["model"] })
 	})
 
-	it("deletes the footer key when pinned array is empty", () => {
-		memfs.set(SETTINGS_PATH, JSON.stringify({ modelRoles: { foo: "bar" }, footer: { pinned: ["model"] } }, null, 2))
+	it("writing empty pinned keeps the key present so defaults do not re-apply on next read", () => {
 		writeFooterConfig({ pinned: [] })
-		const stored = JSON.parse(memfs.get(SETTINGS_PATH) ?? "{}")
-		expect(stored.footer).toBeUndefined()
-		expect(stored.modelRoles).toEqual({ foo: "bar" })
+		_invalidateFooterConfigCache()
+		expect(readFooterConfig().pinned).toEqual([])
 	})
 
 	it("merge-safety: does not clobber sibling top-level keys", () => {
@@ -146,8 +168,8 @@ describe("isPinned", () => {
 		expect(isPinned("ferment")).toBe(true)
 	})
 
-	it("returns false for an unpinned element", () => {
-		expect(isPinned("agents")).toBe(false)
+	it("returns false for an element not in defaults", () => {
+		expect(isPinned("ferment")).toBe(false)
 	})
 
 	it("returns false after element is unpinned", () => {
@@ -160,10 +182,10 @@ describe("isPinned", () => {
 	it("can toggle multiple elements independently", () => {
 		setPinned("context", true)
 		setPinned("model", true)
-		setPinned("phase", true)
+		setPinned("ferment", true)
 		setPinned("model", false)
 		const pinned = readFooterConfig().pinned
-		expect(pinned).toEqual(expect.arrayContaining(["context", "phase"]))
+		expect(pinned).toEqual(expect.arrayContaining(["context", "ferment"]))
 		expect(pinned).not.toContain("model")
 	})
 })
