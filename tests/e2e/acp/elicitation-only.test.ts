@@ -25,6 +25,7 @@ describe("ACP integration — elicitation only", () => {
 			responses: [
 				{ stream: ["hello", " from", " elicitation-only", " client."] },
 				{
+					stream: ["I'll run that command."],
 					toolCalls: [
 						{
 							function: {

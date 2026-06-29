@@ -554,7 +554,7 @@ describe("FermentCommandController", () => {
 		maybeInjectReactiveContinuationNudge(h.pi, h.runtime)
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({ customType: "ferment_continuation_nudge" }),
-			expect.objectContaining({ deliverAs: "followUp" }),
+			expect.objectContaining({ deliverAs: "steer" }),
 		)
 
 		const result = await controller.execute({ type: "exit" }, { raw: "exit", pi: h.pi, ctx: h.ctx, runtime: h.runtime })
@@ -574,7 +574,7 @@ describe("FermentCommandController", () => {
 
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({ customType: "ferment_continuation_nudge" }),
-			expect.objectContaining({ deliverAs: "followUp" }),
+			expect.objectContaining({ deliverAs: "steer" }),
 		)
 	})
 

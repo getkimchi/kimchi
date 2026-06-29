@@ -62,10 +62,10 @@ visibility after each FSM transition.
 
 | Profile | Active ferment state | Toolset |
 |---------|----------------------|---------|
-| `idle` | No active ferment | All non-ferment tools + `list_ferments` + `request_ferment_workflow`. All ferment-only lifecycle and planning tools are hidden so the model isn't prompted to start a ferment or mutate ferment state during normal chat. |
+| `idle` | No active ferment | All non-ferment tools + `list_ferments`. All ferment-only lifecycle and planning tools are hidden so the model isn't prompted to start a ferment or mutate ferment state during normal chat. |
 | `planning` | Ferment exists; all phases in `"planned"` status (no `activate_ferment_phase` yet) | Research set + ferment planning tools: `read`, `grep`, `find`, `ls`, `web_fetch`, `web_search`, `set_phase`, `propose_ferment_scoping`, `scope_ferment`, `update_ferment_scope_field`, `confirm_ferment_completion_criteria`, `list_ferments`, `ask_user` |
-| `implementation` | At least one phase activated (status `!== "planned"`) | Full toolset: union of all registered tools with `IMPLEMENTATION_TOOL_NAMES` — adds `bash`, `edit`, `write`, `Agent`, `get_subagent_result` + ferment lifecycle tools (`activate_ferment_phase`, `refine_ferment_phase`, `complete_ferment_phase`, `start_ferment_step`, `complete_ferment_step`, `verify_ferment_step`, `complete_ferment`, etc.) |
-| `worker` | Subagent worker context (`KIMCHI_SUBAGENT=1`) | Empty — workers get their toolset from the agents manager, not from ferment |
+| `implementation` | At least one phase activated (status `!== "planned"`) | Full toolset: union of all registered tools with `IMPLEMENTATION_TOOL_NAMES` — adds `bash`, `edit`, `write`, `Agent`, `resume_subagent`, `get_subagent_result` + ferment lifecycle tools (`activate_ferment_phase`, `refine_ferment_phase`, `complete_ferment_phase`, `start_ferment_step`, `complete_ferment_step`, `verify_ferment_step`, `complete_ferment`, etc.) |
+| `worker` | Subagent worker context (`KIMCHI_SUBAGENT=1`) | Empty from ferment's perspective — workers get their toolset from the agents manager, including `submit_agent_report` for Ferment-linked workers |
 
 **Transition:** `planning` → `implementation` on the first successful
 `activate_ferment_phase` call. Because pi-mono snapshots tools at turn start,
@@ -299,6 +299,108 @@ The block stays active until the step is either completed (`complete_ferment_ste
 
 ---
 
+## Worker budget tiers
+
+`start_ferment_step` accepts a `budget_tier` parameter that controls the worker's runtime limits. Three explicit tiers — pick by the shape of the work, not by prompt keywords:
+
+| Tier | `max_turns` | `max_duration` | `token_budget` | Cumulative tokens | Use for |
+|---|---|---|---|---|---|
+| `narrow` | 10 | 180s | 50,000 | 100,000 | Single verification or one small edit |
+| `standard` | 25 | 300s | 100,000 | 250,000 | Normal implementation (default) |
+| `complex` | 30 | 600s | 150,000 | 375,000 | Multi-file builds, iterative debugging |
+
+The agent manager clamps caller-provided `max_turns`, `max_duration`, and `token_budget` to the tier ceiling. The cumulative token budget accounts for any prior resume calls — total tokens spent across the worker's lifetime must not exceed the tier's cumulative limit.
+
+```typescript
+start_ferment_step({
+  ferment_id: "abc-123-def",
+  phase_id: "phase-1",
+  step_id: "step-2",
+  budget_tier: "standard"
+})
+```
+
+If you omit `budget_tier`, the default is `standard`.
+
+## Worker reports
+
+Ferment workers submit a structured JSON report at the end of their run via the `submit_agent_report` tool rather than free-form text. The schema is enforced by the tool and validated on submission:
+
+```typescript
+{
+  status: "completed" | "partial" | "blocked"   // required
+  summary: string                                // required, 1-3 sentences
+  steps_completed: string[]                      // required
+  remaining_steps: string[]                      // required — must be [] for "completed", non-empty for "partial"
+  files_touched?: string[]                       // optional
+  verification?: string[]                        // optional, e.g. commands run + results
+  blockers?: string[]                            // required (non-empty) for "blocked"
+  notes?: string                                 // optional
+}
+```
+
+The orchestrator reads `status`, `remaining_steps`, and `blockers` to decide the next action:
+
+- **`completed`** — work is done, step is marked complete.
+- **`partial`** — work remains; orchestrator can resume the worker via [`resume_subagent`](#resuming-a-subagent) with a continuation prompt.
+- **`blocked`** — worker hit a blocker it couldn't resolve; orchestrator surfaces it to the user.
+
+Once a worker submits an accepted `completed` report, the run terminates and the agent record is updated with the report. The orchestrator can force a missing report via `resume_subagent` with `purpose: "finalize_report"` (see below).
+
+## Resuming a subagent
+
+The `resume_subagent` tool continues an existing Agent session without re-spawning the worker. Two purposes:
+
+| Purpose | Use for |
+|---|---|
+| `"continuation"` | Steer the worker with a follow-up prompt when it stopped early or you need to redirect. You supply `prompt`, `max_turns`, `max_duration`. |
+| `"finalize_report"` | Force a structured report submission when the worker finished its work but didn't produce a clean report. The host injects the finalization prompt and limits (2 turns, 30s, 8,192 tokens). Caller prompt and limits are ignored. |
+
+Parameters:
+
+| Parameter | Type | Required | Notes |
+|---|---|---|---|
+| `agent_id` | string | yes | ID returned by the original `Agent` call. |
+| `purpose` | `"continuation"` \| `"finalize_report"` | no, default `"continuation"` | |
+| `prompt` | string | required for `continuation`; ignored for `finalize_report` | The follow-up instruction. |
+| `max_turns` | integer | required for `continuation`; ignored for `finalize_report` | Fresh turn allowance. |
+| `max_duration` | integer | required for `continuation`; ignored for `finalize_report` | Wall-clock limit in seconds. |
+| `token_budget` | integer | optional | Output token ceiling for this resume. Clamped to the worker's tier ceiling. |
+
+Examples:
+
+```typescript
+// Steer a worker that stopped early
+resume_subagent({
+  agent_id: "ag-abc123",
+  purpose: "continuation",
+  prompt: "The lint check is failing on src/auth.ts:42. Fix it and re-run pnpm lint.",
+  max_turns: 5,
+  max_duration: 120
+})
+
+// Force finalization — host controls the limits
+resume_subagent({
+  agent_id: "ag-abc123",
+  purpose: "finalize_report"
+})
+```
+
+### Block reasons
+
+`resume_subagent` refuses to run and returns a structured error when:
+
+- The `agent_id` doesn't exist or its session has been cleaned up.
+- The agent is still `running` or `queued` — steer it or wait instead.
+- `purpose: "finalize_report"` is used on a non-Ferment agent.
+- The worker has already submitted an accepted `completed` report for the current attempt.
+- For a Ferment-linked worker, the resume limit for the chosen purpose is exhausted (2 continuation resumes, 1 finalization).
+- For a Ferment-linked worker, the cumulative output token budget for the tier is exhausted.
+
+To revisit completed work, start a new step rather than resuming.
+
+---
+
 ## Context budget
 
 The dashboard widget tracks assistant turns in the current session:
@@ -403,8 +505,8 @@ These tools are available to the agent during a ferment session. They are not me
 
 | Tool | Description |
 |------|-------------|
-| `start_ferment_step` | Mark step as running. Emits a plan-first preamble (inline plan + `applyWriteTodos` todos from `src/extensions/todos/store.ts` + embed in subagent prompt) on every start. Returns worker prompt context and any parallel siblings for concurrent dispatch. Blocks after 3 consecutive starts without a complete (stuck-loop guard). |
-| `complete_ferment_step` | Mark step as done. Runs verification command automatically if set. |
+| `start_ferment_step` | Mark step as running. Emits a plan-first preamble (inline plan + `applyWriteTodos` todos from `src/extensions/todos/store.ts` + embed in subagent prompt) on every start. Returns worker prompt context and any parallel siblings for concurrent dispatch. Blocks after 3 consecutive starts without a complete (stuck-loop guard). Accepts `budget_tier` (`narrow`/`standard`/`complex`) for worker runtime limits — see [Worker budget tiers](#worker-budget-tiers). |
+| `complete_ferment_step` | Mark step as done. Requires `worker_agent_id` of the linked Ferment worker, which must have outcome `completed` and an accepted `completed` report. Runs the step's verification command automatically if set. |
 | `verify_ferment_step` | Run the verification command manually and record the result. |
 | `skip_ferment_step` | Skip a step (counts as terminal) |
 | `fail_ferment_step` | Mark a step as failed with a reason |

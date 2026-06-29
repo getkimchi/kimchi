@@ -282,6 +282,19 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).not.toContain("do not ask the user to confirm phase advancement")
 		})
 
+		it("omits turn discipline section under manual continuation policy", () => {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime({ status: "running" }, "manual")) ?? ""
+			expect(out).not.toContain("Turn discipline (automated ferment)")
+			expect(out).not.toContain("Every turn MUST end with a ferment lifecycle tool call")
+		})
+
+		it("includes turn discipline section under automated continuation policy", () => {
+			const out =
+				buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime({ status: "running" }, "automated")) ?? ""
+			expect(out).toContain("Turn discipline (automated ferment)")
+			expect(out).toContain("Every turn MUST end with a ferment lifecycle tool call")
+		})
+
 		it("uses automated cross-phase instructions under automated continuation policy", () => {
 			const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime({}, "automated")) ?? ""
 			expect(out).toContain("Automated continuation policy is active")
@@ -400,6 +413,23 @@ describe("buildFermentPromptBlock", () => {
 		expect(out).toContain("activate_ferment_phase")
 		// It must NOT contain the old "does not narrow" text.
 		expect(out).not.toContain("does not narrow")
+	})
+
+	it("combines bounded worker limits with report-aware exhaustion recovery", () => {
+		const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime({ status: "running" }, "automated")) ?? ""
+
+		expect(out).toContain("max_turns")
+		expect(out).toContain("max_duration")
+		expect(out).toContain("budget_tier")
+		expect(out).toContain("narrow | standard | complex")
+		expect(out).toContain("exact task_ref")
+		expect(out).toContain("submit_agent_report")
+		expect(out).toContain("complete_ferment_step automatically runs the scoped verification command")
+		expect(out).toContain("Do not rerun it with bash")
+		expect(out).toContain("do not mark the step complete")
+		expect(out).toContain("narrower linked replacement")
+		expect(out).toContain("Every turn MUST end with a ferment lifecycle tool call or an Agent spawn")
+		expect(out).not.toContain("call complete_ferment_step with whatever it produced")
 	})
 
 	// Unify Planning Pipeline Prompts — verify shared process steps live in ferment

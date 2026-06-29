@@ -23,12 +23,13 @@ import { registerAgentSpawnGuard } from "./agent-spawn-guard.js"
 import { maybeTriggerFermentCompaction } from "./auto-compaction.js"
 import { fermentBreadcrumbRenderer } from "./breadcrumb-renderer.js"
 import { registerFermentCommands } from "./commands.js"
+import { decideContinuation } from "./continuation.js"
 import { registerFermentEvents } from "./events.js"
 import { FERMENT_STOP_POLICY_SHORTCUT, canToggleFermentStopPolicy } from "./footer-status.js"
 import { type PendingPlanReview, promptPlanReview } from "./plan-review.js"
 import { buildFermentPromptBlock } from "./prompt-block.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
-import { scheduleFermentWakeUp } from "./scheduler.js"
+import { scheduleFermentWakeUp, scheduleNextFermentAction } from "./scheduler.js"
 import { confirmPendingScope } from "./scoping-confirmation.js"
 import { FERMENT_REQUEST_MESSAGE_TYPE, type FermentRequestMessageDetails } from "./scoping.js"
 import { getActive, getActiveId, getContinuationPolicy } from "./state.js"
@@ -131,6 +132,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	}
 	let planReviewTimer: ReturnType<typeof setTimeout> | undefined
 	let planReviewRunning = false
+	let finalCompletionNudgedThisRun = false
 	// ExtensionContext is populated on session start
 	let ctx: ExtensionContext | undefined
 
@@ -171,7 +173,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 				}
 				runtime.clearPendingPlanReview(review.fermentId)
 				scheduleFermentWakeUp(pi, runtime, {
-					deliverAsFollowUp: true,
+					deliverAs: "followUp",
 					fermentId: review.fermentId,
 					tag: "Plan review start",
 				})
@@ -217,11 +219,36 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 		// where the ferment completes within a single agent run and the turn_end
 		// handler already cleared most pending entries).
 		maybeTriggerFermentCompaction(pi, ctx, runtime)
+
+		// Completing the final phase does not complete the ferment: complete_ferment
+		// still has to run its C-gates and journey grading. If the model ends its run
+		// between those two lifecycle actions, retain that final action as a hidden
+		// follow-up instead of leaving a planned/running ferment to be paused at
+		// session shutdown. This schedules the tool call; it never applies the
+		// transition itself, so the completion gates cannot be bypassed.
+		const active = runtime.getActive()
+		if (!finalCompletionNudgedThisRun && active && runtime.isAutomatedContinuationEnabled()) {
+			const decision = decideContinuation(active, runtime.getContinuationPolicy(), {
+				treatCompleteFermentAsContinue: true,
+			})
+			if (decision.type === "continue" && decision.action.kind === "complete_ferment") {
+				scheduleNextFermentAction(pi, active, runtime, {
+					deliverAs: "followUp",
+					tag: "Final completion pending",
+					treatCompleteFermentAsContinue: true,
+				})
+			}
+		}
+		finalCompletionNudgedThisRun = false
 	})
 
 	pi.registerMessageRenderer(FERMENT_REQUEST_MESSAGE_TYPE, fermentRequestRenderer)
 	registerFermentStopPolicyShortcut(pi, runtime)
-	registerFermentEvents(pi, runtime)
+	registerFermentEvents(pi, runtime, {
+		onFinalCompletionNudgeScheduled: () => {
+			finalCompletionNudgedThisRun = true
+		},
+	})
 	registerFermentCommands(pi, runtime)
 
 	// ─── Message renderers ────────────────────────────────────────────────────

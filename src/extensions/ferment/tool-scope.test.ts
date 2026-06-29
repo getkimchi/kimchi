@@ -247,6 +247,7 @@ describe("idle profile", () => {
 		// Base toolset preserved
 		expect(lastCall).toContain("read")
 		expect(lastCall).toContain("bash")
+		expect(lastCall).toContain("list_ferments")
 		expect(lastCall).toContain("edit")
 		expect(lastCall).toContain("write")
 		// Ferment-only planner tools stripped

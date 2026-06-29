@@ -15,9 +15,9 @@
  *   call after writing storage. Today they re-sync active ferment state; keep
  *   callers on the hook so future post-mutation logic has one place to live.
  *
- * All `pi.sendMessage` calls use `deliverAs: "followUp"` to avoid the
- * "agent is already processing" error when triggered from inside tool execute
- * handlers.
+ * Action nudges use `deliverAs: "steer"` so they are consumed at the next
+ * agent-loop boundary. A follow-up waits until the current loop drains; by then
+ * the ferment may have advanced and the eagerly-rendered action can be stale.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
@@ -111,7 +111,7 @@ export function maybeInjectReactiveContinuationNudge(
 	reactiveNudgeCounts.set(fresh.id, count + 1)
 	scheduleNextFermentAction(pi, fresh, runtime, {
 		tag: "Reactive continuation nudge",
-		deliverAsFollowUp: true,
+		deliverAs: "steer",
 	})
 }
 
@@ -172,7 +172,7 @@ export function maybeInjectFermentStopNudge(
 	stopNudgeCounts.set(fresh.id, count + 1)
 	scheduleNextFermentAction(pi, fresh, runtime, {
 		tag: "Ferment stop nudge",
-		deliverAsFollowUp: true,
+		deliverAs: "steer",
 		treatCompleteFermentAsContinue: true,
 	})
 	return true

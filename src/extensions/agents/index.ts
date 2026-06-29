@@ -2,12 +2,13 @@
  * kimchi sub-agents.
  *
  * Tools:
- *   Agent             — LLM-callable: spawn a sub-agent
- *   get_subagent_result  — LLM-callable: check background agent status/result
- *   steer_subagent       — LLM-callable: send a steering message to a running agent
+ *   Agent             - LLM-callable: spawn a sub-agent
+ *   resume_subagent   - LLM-callable: continue an existing sub-agent session
+ *   get_subagent_result  - LLM-callable: check background agent status/result
+ *   steer_subagent       - LLM-callable: send a steering message to a running agent
  *
  * Commands:
- *   /agents                 — Interactive agent management menu
+ *   /agents                 - Interactive agent management menu
  */
 
 import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs"
@@ -26,7 +27,7 @@ import { filterThinkingForDisplay } from "../hide-thinking.js"
 import { sessionHasImages } from "../model-guard.js"
 import { KIMCHI_DEV_PROVIDER, MODEL_CAPABILITIES } from "../orchestration/model-registry/index.js"
 import { trackSubagentSpawned } from "../telemetry/index.js"
-import { AgentManager } from "./manager/agent-manager.js"
+import { AgentManager, buildAgentOutcome } from "./manager/agent-manager.js"
 import {
 	getAgentConversation,
 	getDefaultMaxTurns,
@@ -61,7 +62,9 @@ import {
 	AGENT_GENERAL_PURPOSE,
 	type AgentAbortReason,
 	type AgentConfig,
+	type AgentOutcome,
 	type AgentRecord,
+	type AgentTaskRef,
 	type AgentVisibility,
 	type JoinMode,
 	type NotificationDetails,
@@ -69,6 +72,7 @@ import {
 } from "./personas/types.js"
 import { resolveAgentInvocationConfig, resolveJoinMode } from "./resolution/invocation-config.js"
 import { type ModelRegistry, resolveModel } from "./resolution/model-resolver.js"
+import { registerResumeSubagentTool } from "./resume-tool.js"
 import { type SubagentsSettings, applyAndEmitLoaded, saveAndEmitChanged } from "./settings.js"
 import {
 	type AgentActivity,
@@ -132,6 +136,12 @@ interface GetSubagentResultDetails {
 	durationMs?: number
 	error?: string
 	bodyText: string
+	agentOutcome?: AgentOutcome
+}
+
+function formatAgentOutcomeBlock(outcome: AgentOutcome | undefined): string {
+	if (!outcome) return ""
+	return `\n\nagent_outcome:\n${JSON.stringify(outcome, null, 2)}`
 }
 
 function formatAgentBodyForDisplay(raw: string): string {
@@ -284,13 +294,13 @@ function getAbortLabel(reason?: AgentAbortReason): string {
 function getAbortNote(reason?: AgentAbortReason): string {
 	switch (reason) {
 		case "max_turns":
-			return " (aborted — max turns exceeded, output may be incomplete)"
+			return " (aborted - max turns exceeded, output may be incomplete)"
 		case "token_budget":
-			return " (aborted — token budget exceeded, output may be incomplete)"
+			return " (aborted - token budget exceeded, output may be incomplete)"
 		case "inactivity":
-			return " (aborted — agent became unresponsive, output may be incomplete)"
+			return " (aborted - agent became unresponsive, output may be incomplete)"
 		case "max_duration":
-			return " (aborted — wall-clock duration limit exceeded, output may be incomplete)"
+			return " (aborted - wall-clock duration limit exceeded, output may be incomplete)"
 		default:
 			return " (aborted, output may be incomplete)"
 	}
@@ -312,27 +322,32 @@ function getStatusLabel(status: string, error?: string, abortReason?: AgentAbort
 }
 
 function getStatusNote(status: string, abortReason?: AgentAbortReason): string {
-	switch (status) {
-		case "aborted":
-			return getAbortNote(abortReason)
-		case "steered":
-			return " (wrapped up — reached turn limit)"
-		case "stopped":
-			return " (stopped by user)"
-		default:
-			return ""
-	}
+	if (status === "error")
+		return "\nThe agent encountered an error. Review the error message and partial results before deciding how to proceed."
+	if (status === "stopped") return "\nThe agent was manually stopped by the user."
+	if (status === "aborted" && abortReason === "token_budget")
+		return "\nThe agent ran out of its token budget. See agent_outcome.recovery_guidance for next steps."
+	if (status === "aborted" && abortReason === "inactivity")
+		return "\nThe agent stopped producing output and was terminated. See agent_outcome.recovery_guidance for next steps."
+	if (status === "aborted" && abortReason === "max_duration")
+		return "\nThe agent exceeded its maximum allowed duration. See agent_outcome.recovery_guidance for next steps."
+	if (status === "aborted" && abortReason === "max_turns")
+		return "\nThe agent exhausted its turn budget. See agent_outcome.recovery_guidance for next steps."
+	return ""
 }
 
 function getStatusInstruction(status: string, abortReason?: AgentAbortReason): string {
 	if (status === "aborted" && abortReason === "token_budget") {
-		return "\nThe agent ran out of its token budget. Do NOT retry the same task with a higher budget. If the work is incomplete, you may spawn a NEW follow-up Agent scoped to only the remaining unfinished work — keep the same or lower budget."
+		return "\nThe agent ran out of its token budget. Inspect the worker report before acting. Use resume_subagent with a bounded steering prompt when remaining_steps are a direct continuation; spawn a narrower replacement Agent when remaining_steps have a clean task boundary; use resume_subagent with purpose finalize_report if the report is missing; or stop/report if blocked. Do not blindly retry the same prompt."
 	}
 	if (status === "aborted" && abortReason === "inactivity") {
-		return "\nThe agent stopped producing output and was terminated. Review any partial results. If the work is incomplete, you may spawn a follow-up Agent to continue from where this one left off."
+		return "\nThe agent stopped producing output and was terminated. Inspect the worker report before acting; this may indicate a stall. Resume only with a steering prompt that continues the same thread while avoiding the stalled operation, or spawn a narrower replacement Agent if remaining_steps have a clean task boundary."
 	}
 	if (status === "aborted" && abortReason === "max_duration") {
-		return "\nThe agent exceeded its maximum allowed wall-clock duration and was terminated. Review any partial results. If the work is incomplete, you may spawn a follow-up Agent scoped to only the remaining unfinished work. Do NOT implement the remaining work yourself — the orchestrator must delegate, not build."
+		return "\nThe agent exceeded its maximum allowed wall-clock duration and was terminated. Inspect the worker report before acting; this may indicate a hang or blocked command. Resume only with a bounded steering prompt that avoids the stalled operation and directly continues the same thread, or spawn a follow-up Agent scoped to a narrower task boundary. Do NOT implement the remaining work yourself — the orchestrator must delegate, not build."
+	}
+	if (status === "aborted" && abortReason === "max_turns") {
+		return "\nThe agent exhausted its turn budget. Do not mark delegated work complete from an aborted result. Inspect the worker report first: use resume_subagent with a bounded steering prompt when remaining_steps are a direct continuation; spawn a narrower linked replacement Agent when remaining_steps have a clean task boundary; use resume_subagent with purpose finalize_report if the report is missing; or stop/report if blocked. Do NOT implement the remaining work yourself — the orchestrator must delegate, not build."
 	}
 	return ""
 }
@@ -372,18 +387,7 @@ function formatTaskNotification(record: AgentRecord, resultMaxLen: number): stri
 
 function buildDetails(
 	base: Pick<AgentDetails, "displayName" | "description" | "subagentType" | "modelName" | "tags" | "visibility">,
-	record: {
-		toolUses: number
-		startedAt: number
-		completedAt?: number
-		status: string
-		abortReason?: AgentAbortReason
-		error?: string
-		id?: string
-		sessionFile?: string
-		session?: unknown
-		lifetimeUsage: LifetimeUsage
-	},
+	record: AgentRecord,
 	activity?: AgentActivity,
 	overrides?: Partial<AgentDetails>,
 ): AgentDetails {
@@ -405,6 +409,7 @@ function buildDetails(
 		sessionFile: record.sessionFile,
 		error: record.error,
 		abortReason: record.abortReason,
+		agentOutcome: record.latestOutcome,
 		...overrides,
 	}
 }
@@ -430,7 +435,7 @@ function buildNotificationDetails(
 		error: record.error,
 		resultPreview: record.result
 			? record.result.length > resultMaxLen
-				? `${record.result.slice(0, resultMaxLen)}…`
+				? `${record.result.slice(0, resultMaxLen)}...`
 				: record.result
 			: "No output.",
 	}
@@ -456,6 +461,39 @@ export function getActiveAgentModelIds(): string[] {
 		.filter((a) => a.status === "running" || a.status === "queued")
 		.map((a) => a.modelId)
 		.filter((id): id is string => id != null)
+}
+
+/**
+ * Returns a read-only snapshot of the agent record for task validation.
+ * The returned object is a shallow copy — nested objects (session, lifetimeUsage,
+ * etc.) are shared references. Callers MUST NOT mutate nested properties;
+ * doing so would corrupt the live agent's state in the manager.
+ */
+export function getAgentRecordForTaskValidation(id: string): Readonly<AgentRecord> | undefined {
+	const record = activeManager?.getRecord(id)
+	if (!record || record.visibility === "system") return undefined
+	return { ...record, latestOutcome: record.latestOutcome ?? buildAgentOutcome(record) }
+}
+
+function readAgentTaskRef(params: Record<string, unknown>): AgentTaskRef | undefined {
+	const ref = params.task_ref as Partial<AgentTaskRef> | undefined
+	if (
+		ref?.kind === "ferment_step" &&
+		typeof ref.ferment_id === "string" &&
+		typeof ref.phase_id === "string" &&
+		typeof ref.step_id === "string"
+	) {
+		return {
+			kind: "ferment_step",
+			ferment_id: ref.ferment_id,
+			phase_id: ref.phase_id,
+			step_id: ref.step_id,
+			...(ref.budget_tier === "narrow" || ref.budget_tier === "standard" || ref.budget_tier === "complex"
+				? { budget_tier: ref.budget_tier }
+				: {}),
+		}
+	}
+	return undefined
 }
 
 export default function (pi: ExtensionAPI) {
@@ -584,7 +622,7 @@ export default function (pi: ExtensionAPI) {
 
 			const notifications = unconsumed.map((r) => formatTaskNotification(r, 300)).join("\n\n")
 			const label = partial
-				? `${unconsumed.length} agent(s) finished (partial — others still running)`
+				? `${unconsumed.length} agent(s) finished (partial - others still running)`
 				: `${unconsumed.length} agent(s) finished`
 
 			const [first, ...rest] = unconsumed
@@ -800,7 +838,7 @@ export default function (pi: ExtensionAPI) {
 			...defaultDescs,
 			...(customDescs.length > 0 ? ["", "Custom agents:", ...customDescs] : []),
 			"",
-			`Custom agents can be defined in .kimchi/agents/<name>.md (project) or ${getAgentDir()}/agents/<name>.md (global) — they are picked up automatically. Project-level agents override global ones. Creating a .md file with the same name as a default agent overrides it.`,
+			`Custom agents can be defined in .kimchi/agents/<name>.md (project) or ${getAgentDir()}/agents/<name>.md (global) - they are picked up automatically. Project-level agents override global ones. Creating a .md file with the same name as a default agent overrides it.`,
 			`Global user instructions (applied to every session) can be placed in the global ${getAgentDir()}/AGENTS.md. Project-level AGENTS.md or CLAUDE.md files in the working directory tree are combined with it.`,
 		].join("\n")
 	}
@@ -884,19 +922,25 @@ ${AGENT_TOOL_GUIDELINES}`,
 							"Set to true to run in background. Returns agent ID immediately. You will be notified on completion.",
 					}),
 				),
-				resume: Type.Optional(
-					Type.String({
-						description: "Optional agent ID to resume from. Continues from previous context.",
-					}),
-				),
 				isolated: Type.Optional(
 					Type.Boolean({
-						description: "If true, agent gets no extension/MCP tools — only built-in tools.",
+						description: "If true, agent gets no extension/MCP tools - only built-in tools.",
 					}),
 				),
 				inherit_context: Type.Optional(
 					Type.Boolean({
 						description: "If true, fork parent conversation into the agent. Default: false (fresh context).",
+					}),
+				),
+				task_ref: Type.Optional(
+					Type.Object({
+						kind: Type.Literal("ferment_step"),
+						ferment_id: Type.String(),
+						phase_id: Type.String(),
+						step_id: Type.String(),
+						budget_tier: Type.Optional(
+							Type.Union([Type.Literal("narrow"), Type.Literal("standard"), Type.Literal("complex")]),
+						),
 					}),
 				),
 			}),
@@ -943,7 +987,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 					const frame = SPINNER[details.spinnerFrame ?? 0]
 					const s = stats(details)
 					let line = theme.fg("accent", frame) + (s ? ` ${s}` : "")
-					line += `\n${theme.fg("dim", `  ⎿  ${details.activity ?? "thinking…"}`)}`
+					line += `\n${theme.fg("dim", `  ⎿  ${details.activity ?? "thinking..."}`)}`
 					return new Text(line, 0, 0)
 				}
 
@@ -1046,7 +1090,18 @@ ${AGENT_TOOL_GUIDELINES}`,
 				const thinking = resolvedConfig.thinking
 				const inheritContext = resolvedConfig.inheritContext
 				const isolated = resolvedConfig.isolated
-				// The `visibility` field is intentionally NOT exposed in this tool's public schema —
+				const taskRef = readAgentTaskRef(params)
+				if (taskRef && (params.max_turns == null || params.max_duration == null || params.token_budget == null)) {
+					return textResult(
+						"Ferment-linked Agent calls require explicit max_turns, max_duration, and token_budget from the shared worker budget policy.",
+					)
+				}
+				if (taskRef && isolated) {
+					return textResult(
+						"Agent task_ref cannot be used with isolated: true. Ferment-linked workers must have extension tools enabled so they can call submit_agent_report.",
+					)
+				}
+				// The `visibility` field is intentionally NOT exposed in this tool's public schema -
 				// LLMs and personas cannot create hidden agents. Internal kimchi callers (e.g. permission
 				// classifiers, future MCP adapters) spawn hidden agents directly via `AgentManager.spawn(..., { visibility: "system" })`,
 				// which bypasses the tool layer entirely. Hardcoding "user" here ensures any defiant
@@ -1091,24 +1146,6 @@ ${AGENT_TOOL_GUIDELINES}`,
 					tags: agentTags.length > 0 ? agentTags : undefined,
 				}
 
-				if (params.resume) {
-					const existing = manager.getRecord(params.resume as string)
-					if (!existing) {
-						return textResult(`Agent not found: "${params.resume}". It may have been cleaned up.`)
-					}
-					if (!existing.session) {
-						return textResult(`Agent "${params.resume}" has no active session to resume.`)
-					}
-					const record = await manager.resume(params.resume as string, params.prompt as string, signal)
-					if (!record) {
-						return textResult(`Failed to resume agent "${params.resume}".`)
-					}
-					return textResult(
-						record.result?.trim() || record.error?.trim() || "No output.",
-						buildDetails({ ...detailBase, visibility: existing.visibility }, record),
-					)
-				}
-
 				if (runInBackground) {
 					const { state: bgState, callbacks: bgCallbacks } = createActivityTracker(effectiveMaxTurns)
 					let childSessionFile: string | undefined
@@ -1146,6 +1183,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 							model: model as Parameters<typeof manager.spawn>[4]["model"],
 							maxTurns: effectiveMaxTurns,
 							tokenBudget: resolvedConfig.tokenBudget,
+							taskRef,
 							maxDuration: resolvedConfig.maxDuration,
 							isolated,
 							inheritContext,
@@ -1267,6 +1305,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 						model: model as Parameters<typeof manager.spawnAndWait>[4]["model"],
 						maxTurns: effectiveMaxTurns,
 						tokenBudget: resolvedConfig.tokenBudget,
+						taskRef,
 						maxDuration: resolvedConfig.maxDuration,
 						isolated,
 						inheritContext,
@@ -1293,7 +1332,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 				const details = buildDetails(detailBase, record, fgState, { tokens: tokenText })
 
 				const fallbackNote = fellBack
-					? `Note: Unknown agent type "${rawType}" — using ${AGENT_GENERAL_PURPOSE}.\n\n`
+					? `Note: Unknown agent type "${rawType}" - using ${AGENT_GENERAL_PURPOSE}.\n\n`
 					: ""
 
 				if (record.status === "error") {
@@ -1315,13 +1354,16 @@ ${AGENT_TOOL_GUIDELINES}`,
 				const statsParts = [`${record.toolUses} tool uses`]
 				if (tokenText) statsParts.push(tokenText)
 				const outcome = record.status === "aborted" ? "aborted" : record.status === "stopped" ? "stopped" : "completed"
+				record.latestOutcome ??= buildAgentOutcome(record)
 				return textResult(
-					`${fallbackNote}Agent ${outcome} in ${formatMs(durationMs)} (${statsParts.join(", ")})${getStatusNote(record.status, record.abortReason)}.${getStatusInstruction(record.status, record.abortReason)}\n\n${record.result?.trim() || "No output."}`,
+					`${fallbackNote}Agent ${outcome} in ${formatMs(durationMs)} (${statsParts.join(", ")})${getStatusNote(record.status, record.abortReason)}.${getStatusInstruction(record.status, record.abortReason)}\n\n${record.result?.trim() || "No output."}${formatAgentOutcomeBlock(record.latestOutcome)}`,
 					details,
 				)
 			},
 		}),
 	)
+
+	registerResumeSubagentTool(pi, manager)
 
 	// ---- get_subagent_result tool ----
 
@@ -1391,7 +1433,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 						line += `\n${theme.fg("dim", `  ${l}`)}`
 					}
 					if (lines.length > maxLines) {
-						line += `\n${theme.fg("muted", `  … (${lines.length - maxLines} more lines — use verbose: true for full output)`)}`
+						line += `\n${theme.fg("muted", `  ... (${lines.length - maxLines} more lines - use verbose: true for full output)`)}`
 					}
 				} else if (!expanded) {
 					const summary = summaryForStatus(details.status, details.error, details.abortReason)
@@ -1439,6 +1481,12 @@ ${AGENT_TOOL_GUIDELINES}`,
 					bodyForDisplay = record.result?.trim() || "No output."
 					output += bodyForDisplay
 				}
+				record.latestOutcome ??= buildAgentOutcome(record)
+				if (record.latestOutcome && record.status !== "running" && record.status !== "queued") {
+					const outcomeBlock = formatAgentOutcomeBlock(record.latestOutcome)
+					output += outcomeBlock
+					bodyForDisplay += outcomeBlock
+				}
 
 				if (record.status !== "running" && record.status !== "queued") {
 					record.resultConsumed = true
@@ -1470,6 +1518,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 					durationMs,
 					error: record.error,
 					bodyText: formatAgentBodyForDisplay(bodyForDisplay),
+					agentOutcome: record.latestOutcome,
 				}
 
 				return textResult(output, details)
@@ -1555,7 +1604,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 		const cfg = getAgentConfig(type)
 		if (!cfg?.models?.length) return "inherit"
 		if (registry) {
-			// Probe the first entry — if even that doesn't resolve, the agent
+			// Probe the first entry - if even that doesn't resolve, the agent
 			// will inherit the parent's model anyway.
 			const resolvedM = resolveModel(cfg.models[0], registry)
 			if (typeof resolvedM === "string") return "inherit"
@@ -1576,7 +1625,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 		if (agents.length > 0) {
 			const running = agents.filter((a) => a.status === "running" || a.status === "queued").length
 			const done = agents.filter((a) => a.status === "completed" || a.status === "steered").length
-			options.push(`Running agents (${agents.length}) — ${running} running, ${done} done`)
+			options.push(`Running agents (${agents.length}) - ${running} running, ${done} done`)
 		}
 
 		if (allNames.length > 0) {
@@ -1650,7 +1699,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 		if (hasDisabled) legendParts.push("✕ = disabled")
 		const legend = legendParts.length ? `\n${legendParts.join("  ")}` : ""
 
-		const options = entries.map(({ prefix, desc }) => `${prefix.padEnd(maxPrefix)} — ${desc}`)
+		const options = entries.map(({ prefix, desc }) => `${prefix.padEnd(maxPrefix)} - ${desc}`)
 		if (legend) options.push(legend)
 
 		const choice = await ctx.ui.select("Agent types", options)
@@ -1692,7 +1741,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 
 	async function viewAgentConversation(ctx: ExtensionCommandContext, record: AgentRecord) {
 		if (!record.session) {
-			ctx.ui.notify(`Agent is ${record.status === "queued" ? "queued" : "expired"} — no session available.`, "info")
+			ctx.ui.notify(`Agent is ${record.status === "queued" ? "queued" : "expired"} - no session available.`, "info")
 			return
 		}
 
@@ -1933,7 +1982,7 @@ isolated: <true for no extension/MCP tools, only built-in tools. Default: false>
 memory: <"user" (global), "project" (per-project), or "local" (gitignored per-project) for persistent memory. Omit for none>
 ---
 
-<system prompt body — instructions for the agent>
+<system prompt body - instructions for the agent>
 \`\`\`
 
 Write the file using the write tool. Only write the file, nothing else.`
@@ -2128,9 +2177,9 @@ ${systemPrompt}
 			}
 		} else if (choice.startsWith("Join mode")) {
 			const val = await ctx.ui.select("Default join mode for background agents", [
-				"smart — auto-group 2+ agents in same turn (default)",
-				"async — always notify individually",
-				"group — always group background agents",
+				"smart - auto-group 2+ agents in same turn (default)",
+				"async - always notify individually",
+				"group - always group background agents",
 			])
 			if (val) {
 				const mode = val.split(" ")[0] as JoinMode

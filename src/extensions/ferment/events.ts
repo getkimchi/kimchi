@@ -124,7 +124,7 @@ async function maybeRunManualBoundaryDropdown(
 	if (choice === "Continue to next phase") {
 		scheduleFermentWakeUp(pi, runtime, {
 			allowManualPhaseBoundary: true,
-			deliverAsFollowUp: true,
+			deliverAs: "followUp",
 			fermentId: f.id,
 			tag: "Manual boundary wake-up",
 		})
@@ -243,7 +243,15 @@ async function maybeRunUserInputDropdown(
 	return true
 }
 
-export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime): void {
+export interface FermentEventCallbacks {
+	onFinalCompletionNudgeScheduled?: () => void
+}
+
+export function registerFermentEvents(
+	pi: ExtensionAPI,
+	runtime: FermentRuntime = defaultFermentRuntime,
+	callbacks: FermentEventCallbacks = {},
+): void {
 	const applyAndPersist = createApplyAndPersist(runtime)
 	let pendingOneshot = false
 	pi.registerFlag("ferment-oneshot", {
@@ -501,7 +509,18 @@ export function registerFermentEvents(pi: ExtensionAPI, runtime: FermentRuntime 
 			// while the ferment still requires action (e.g. completed a step then
 			// wrote a summary and quit without advancing the lifecycle). Nudge it
 			// to call the next ferment tool rather than leaving the run stalled.
-			maybeInjectFermentStopNudge(pi, runtime)
+			const nudged = maybeInjectFermentStopNudge(pi, runtime)
+			if (nudged) {
+				const current = runtime.getActive()
+				if (current) {
+					const decision = decideContinuation(current, runtime.getContinuationPolicy(), {
+						treatCompleteFermentAsContinue: true,
+					})
+					if (decision.type === "continue" && decision.action.kind === "complete_ferment") {
+						callbacks.onFinalCompletionNudgeScheduled?.()
+					}
+				}
+			}
 		}
 
 		// Trigger compaction after any turn that completed a step or phase.

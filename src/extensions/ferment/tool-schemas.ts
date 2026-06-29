@@ -5,18 +5,41 @@
  * here are the LLM-visible API contract — keep them concise and accurate.
  */
 
-import { Type } from "typebox"
+import { type TSchema, Type } from "typebox"
 
 /** Structured quality-gate verdict the agent must produce on every completion
  *  tool call. The set of valid `id`s, and which set is required for which
  *  tool, is enforced by `gate-registry.ts:assertGateCoverage`. Description
  *  text rendered into each tool's description tells the agent exactly which
  *  ids to produce and what each one asks. */
-export const GateVerdictSchema = Type.Object({
-	id: Type.String({
-		description: "Gate id from the registry. See the tool description for the exact ids this tool requires.",
-	}),
-	verdict: Type.Union(
+const CanonicalVerdictSchema = Type.Union([Type.Literal("pass"), Type.Literal("flag"), Type.Literal("omitted")], {
+	description:
+		"'pass' = the gate's question is answered affirmatively with concrete evidence. 'flag' = the gate identifies a real problem. 'omitted' = the gate does not apply (requires rationale). Use only pass | flag | omitted.",
+})
+
+const gateVerdictObject = <T extends TSchema>(verdict: T) =>
+	Type.Object({
+		id: Type.String({
+			description: "Gate id from the registry. See the tool description for the exact ids this tool requires.",
+		}),
+		verdict,
+		rationale: Type.String({
+			description:
+				'One sentence justifying the verdict. Required for every verdict including "pass" and "omitted". Example: "All phases have a bash verify command" or "Single phase, no ordering concerns".',
+		}),
+		evidence: Type.String({
+			description:
+				'File:line, quoted diff line, command output, or \'n/a\' for omitted gates. Empty evidence is rejected. Example: "src/foo.ts:42" or "pnpm test output" or "n/a".',
+		}),
+	})
+
+/** Canonical gate verdict used by plan, phase, and ferment completion tools. */
+export const GateVerdictSchema = gateVerdictObject(CanonicalVerdictSchema)
+
+/** Step gates defensively accept verification-classification aliases for S2.
+ * Runtime validation still rejects these aliases on S1/S3. */
+const StepGateVerdictSchema = gateVerdictObject(
+	Type.Union(
 		[
 			Type.Literal("pass"),
 			Type.Literal("flag"),
@@ -31,18 +54,10 @@ export const GateVerdictSchema = Type.Object({
 		],
 		{
 			description:
-				"'pass' = the gate's question is answered affirmatively with concrete evidence. 'flag' = the gate identifies a real problem (blocks advancement). 'omitted' = the gate doesn't apply to this work (requires rationale). Prefer pass | flag | omitted. If you accidentally use S2 verification labels, smoke/test/syntactic normalize to pass and proxy/sentinel normalize to flag.",
+				"Use pass | flag | omitted. For S2 only, smoke/test/syntactic normalize to pass and proxy/sentinel normalize to flag. S1 and S3 must use canonical verdicts.",
 		},
 	),
-	rationale: Type.String({
-		description:
-			"One sentence justifying the verdict. Required for every verdict including 'pass' and 'omitted'. Example: \"All phases have a bash verify command\" or \"Single phase, no ordering concerns\".",
-	}),
-	evidence: Type.String({
-		description:
-			'File:line, quoted diff line, command output, or \'n/a\' for omitted gates. Empty evidence is rejected. Example: "src/foo.ts:42" or "pnpm test output" or "n/a".',
-	}),
-})
+)
 
 export const ListParams = Type.Object({
 	filter: Type.Optional(Type.String({ description: "Optional status filter" })),
@@ -247,14 +262,24 @@ export const StepActionParams = Type.Object({
 		description:
 			"Step ID in format 'step-N', e.g. 'step-1'. Use the step_id returned by refine_ferment_phase or activate_ferment_phase.",
 	}),
+	budget_tier: Type.Optional(
+		Type.Union([Type.Literal("narrow"), Type.Literal("standard"), Type.Literal("complex")], {
+			description:
+				"Worker budget selected by scoped work shape: narrow for verification or one small edit; standard for normal implementation (default); complex for multi-file builds or iterative debugging.",
+		}),
+	),
 })
 
 export const CompleteStepParams = Type.Object({
 	ferment_id: Type.String(),
 	phase_id: Type.String(),
 	step_id: Type.String(),
+	worker_agent_id: Type.String({
+		description:
+			"Agent ID returned by the worker spawned for this step. The linked Agent must have task_ref matching this ferment step, outcome completed, and submit_agent_report status completed.",
+	}),
 	summary: Type.Optional(Type.String()),
-	gates: Type.Array(GateVerdictSchema, {
+	gates: Type.Array(StepGateVerdictSchema, {
 		description:
 			'Step-scope gate verdicts. Required ids: S1 (summary matches diff), S2 (verify command honesty), S3 (edge case awareness). A \'flag\' verdict blocks step completion. Example: [{"id":"S1","verdict":"pass","rationale":"Summary cites file paths and functions from the diff","evidence":"src/foo.ts:42"}, {"id":"S2","verdict":"pass","rationale":"Verify command is a real test, not just grep","evidence":"pnpm test -- src/foo.test.ts"}, {"id":"S3","verdict":"pass","rationale":"Handles empty input gracefully","evidence":"Tested with empty string; returns early"}]',
 	}),

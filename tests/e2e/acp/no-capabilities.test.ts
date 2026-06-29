@@ -16,6 +16,7 @@ describe("ACP integration — no capabilities", () => {
 			responses: [
 				{ stream: ["hello", " from", " minimal", " client."] },
 				{
+					stream: ["I'll run that command."],
 					toolCalls: [
 						{
 							function: {

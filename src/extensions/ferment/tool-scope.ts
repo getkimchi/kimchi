@@ -3,7 +3,7 @@ import type { Ferment } from "../../ferment/types.js"
 import * as ToolProfileManager from "../../shared/planning/tool-profile-manager.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import type { FermentRuntime } from "./runtime.js"
-import { FERMENT_TOOLS, isFermentOnlyToolName } from "./tool-names.js"
+import { FERMENT_TOOLS } from "./tool-names.js"
 
 /**
  * Tools available during the planning phase of a ferment lifecycle.
@@ -52,6 +52,7 @@ export const IMPLEMENTATION_TOOL_NAMES: ReadonlySet<string> = new Set([
 	"write",
 	// Delegation tool: the higher-level persona-based `Agent`
 	"Agent",
+	"resume_subagent",
 	"get_subagent_result",
 	// Ferment lifecycle tools
 	FERMENT_TOOLS.ACTIVATE_PHASE,
@@ -73,8 +74,8 @@ export const IMPLEMENTATION_TOOL_NAMES: ReadonlySet<string> = new Set([
  * Profile applied to the planner's active tool list. Keyed on ferment
  * lifecycle state:
  *   - `idle`: no active ferment; all non-ferment tools + ferment discovery
- *             tools only (`list_ferments`, `request_ferment_workflow`). All
- *             ferment-only lifecycle/planning tools are hidden.
+ *             tool only (`list_ferments`). All ferment-only lifecycle/planning
+ *             tools are hidden.
  *   - `worker`: subagent worker context (`KIMCHI_SUBAGENT=1`); empty toolset,
  *               managed externally by the agents manager
  *   - `planning`: ferment exists, no phase activated yet; read-only research

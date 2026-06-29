@@ -195,6 +195,7 @@ export const WRITE_TOOLS: ToolEntry[] = [
 	{ name: "edit", modes: ["ferment"] },
 	{ name: "write", modes: ["ferment"] },
 	{ name: "Agent", modes: ["ferment"] },
+	{ name: "resume_subagent", modes: ["ferment"] },
 	{ name: "get_subagent_result", modes: ["ferment"] },
 ]
 

@@ -27,6 +27,12 @@ export function isPreDispatchValueFlag(arg: string): boolean {
 	return PRE_DISPATCH_VALUE_FLAGS.has(arg)
 }
 
+export function isCliAtFileArg(arg: string, index: number, args: string[]): boolean {
+	if (!arg.startsWith("@") || arg === "@") return false
+	// Use Pi's parser as the source of truth instead of mirroring every value-taking flag.
+	return parsePiArgs(args.slice(0, index + 1)).fileArgs.length > parsePiArgs(args.slice(0, index)).fileArgs.length
+}
+
 export function getCliModeArg(args: string[]): string | undefined {
 	for (let i = 0; i < args.length; i += 1) {
 		const arg = args[i]

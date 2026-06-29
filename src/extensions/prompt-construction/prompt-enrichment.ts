@@ -146,7 +146,7 @@ export function getOrchestratorModelId(): string {
 export function getOrchestratorModelRef(): string {
 	return getModelRoles().orchestrator
 }
-const DELEGATION_TOOL_NAMES = new Set(["Agent", "subagent"])
+const DELEGATION_TOOL_NAMES = new Set(["Agent", "resume_subagent", "subagent"])
 
 // Tracks sessions that have already received a deprecation notification to avoid duplicate alerts.
 const deprecatedNotificationFired = new Set<string>()

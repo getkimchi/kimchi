@@ -67,6 +67,18 @@ describe("buildOneshotNudge", () => {
 		}
 	})
 
+	it("keeps exhausted workers incomplete and requires bounded linked recovery", () => {
+		const out = buildOneshotNudge(makeFerment(), INTENT)
+		expect(out).toContain("max_turns")
+		expect(out).toContain("max_duration")
+		expect(out).toContain("budget_tier")
+		expect(out).toContain("task_ref")
+		expect(out).toContain("submit_agent_report")
+		expect(out).toContain("do not mark the step complete")
+		expect(out).toContain("narrower linked replacement")
+		expect(out).not.toContain("call complete_ferment_step with what it produced")
+	})
+
 	it("does NOT suggest propose_ferment_scoping in the user message", () => {
 		const out = buildOneshotNudge(makeFerment(), INTENT)
 		expect(out).not.toContain("propose_ferment_scoping")

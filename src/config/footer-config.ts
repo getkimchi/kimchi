@@ -17,6 +17,8 @@ export type FooterConfig = { pinned: FooterElementId[] }
 
 const FOOTER_KEY = "footer"
 
+export const DEFAULT_FOOTER_PINNED: FooterElementId[] = ["agents", "context", "usage"]
+
 /** All footer elements for the settings UI.
  *  canPin=false marks elements that are always visible and cannot be toggled. */
 export const FOOTER_ELEMENTS: Array<{
@@ -92,6 +94,10 @@ export function _invalidateFooterConfigCache(): void {
 export function readFooterConfig(): FooterConfig {
 	if (_config !== null) return _config
 	const settings = readJson(getSettingsPath())
+	if (!(FOOTER_KEY in settings)) {
+		_config = { pinned: [...DEFAULT_FOOTER_PINNED] }
+		return _config
+	}
 	const raw = asRecord(settings[FOOTER_KEY])
 	const pinned = Array.isArray(raw.pinned)
 		? raw.pinned.filter((v): v is FooterElementId => FOOTER_ELEMENTS.some((e) => e.id === v))
@@ -103,13 +109,9 @@ export function readFooterConfig(): FooterConfig {
 export function writeFooterConfig(config: FooterConfig): void {
 	const path = getSettingsPath()
 	const settings = readJson(path)
-	if (config.pinned.length > 0) {
-		settings[FOOTER_KEY] = config
-	} else {
-		delete settings[FOOTER_KEY]
-	}
+	settings[FOOTER_KEY] = config
 	writeJson(path, settings)
-	_config = config
+	_config = { pinned: [...config.pinned] }
 }
 
 export function setPinned(id: FooterElementId, pinned: boolean): void {

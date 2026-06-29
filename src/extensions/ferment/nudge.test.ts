@@ -110,8 +110,47 @@ describe("ferment nudges", () => {
 				customType: "ferment_continuation_nudge",
 				content: [expect.objectContaining({ text: expect.stringContaining("activate_ferment_phase") })],
 			}),
-			{ triggerTurn: true, deliverAs: "followUp" },
+			{ triggerTurn: true, deliverAs: "steer" },
 		)
+	})
+
+	it("delivers the current action before later state changes can stale a queued follow-up", () => {
+		const delivered: Array<{ content?: Array<{ text?: string }> }> = []
+		const queuedFollowUps: Array<{ content?: Array<{ text?: string }> }> = []
+		const pi = {
+			appendEntry: vi.fn(),
+			sendMessage: vi.fn((message, options) => {
+				if (options?.deliverAs === "followUp") queuedFollowUps.push(message)
+				else delivered.push(message)
+			}),
+		} as unknown as ExtensionAPI
+		let current = makeDraftFerment({
+			status: "planned",
+			phases: [{ id: "phase-1", index: 1, name: "Phase", goal: "Build", status: "planned", steps: [] }],
+		})
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getActiveId: () => current.id,
+			getStorage: () =>
+				({
+					get: () => current,
+				}) as unknown as FermentRuntime["getStorage"] extends () => infer T ? T : never,
+			getContinuationPolicy: () => "automated",
+			isAutomatedContinuationEnabled: () => true,
+		}
+
+		maybeInjectReactiveContinuationNudge(pi, runtime)
+
+		// A follow-up is drained only after the current agent turn. The ferment may
+		// advance before then, making its eagerly-rendered action stale.
+		current = {
+			...current,
+			status: "running",
+			activePhaseId: "phase-1",
+			phases: [{ ...current.phases[0], status: "active" }],
+		}
+		expect(queuedFollowUps).toEqual([])
+		expect(delivered[0]?.content?.[0]?.text).toContain("activate_ferment_phase")
 	})
 
 	it("reactively nudges an automated ferment across a completed phase boundary", () => {
@@ -141,7 +180,7 @@ describe("ferment nudges", () => {
 				customType: "ferment_continuation_nudge",
 				content: [expect.objectContaining({ text: expect.stringContaining("activate_ferment_phase") })],
 			}),
-			{ triggerTurn: true, deliverAs: "followUp" },
+			{ triggerTurn: true, deliverAs: "steer" },
 		)
 	})
 
@@ -313,7 +352,7 @@ describe("ferment nudges", () => {
 				],
 				details: expect.objectContaining({ action: "recover_phase" }),
 			}),
-			{ triggerTurn: true, deliverAs: "followUp" },
+			{ triggerTurn: true, deliverAs: "steer" },
 		)
 	})
 })
@@ -539,7 +578,7 @@ describe("maybeInjectFermentStopNudge", () => {
 		expect(nudged).toBe(true)
 		expect(pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({ customType: "ferment_continuation_nudge" }),
-			expect.objectContaining({ deliverAs: "followUp" }),
+			expect.objectContaining({ deliverAs: "steer" }),
 		)
 	})
 

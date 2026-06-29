@@ -31,9 +31,11 @@ ${SHARED_PLANNING_PROCESS}
    - gates: exactly P1, P2, P3 — each with id, verdict, rationale, evidence. The schema hard-rejects calls missing this array.
 
 2. **For each phase**, call activate_ferment_phase, then for each step:
-   - call start_ferment_step
-   - spawn an Agent worker with explicit max_turns and max_duration — always set both. Calibrate to step complexity: simple edits 20–30 turns / 300s, typical implementation steps 40–60 turns / 600s, heavy compilation or iterative debugging up to 80 turns / 900s. If a worker exhausts its budget, call complete_ferment_step with what it produced, then spawn a scoped follow-up for remaining work.
-   - call complete_ferment_step with the worker's results
+   - call start_ferment_step with an explicit budget_tier chosen from the scoped work shape: narrow, standard (normal implementation default), or complex
+   - spawn an Agent worker with the exact task_ref returned by start_ferment_step and explicit max_turns, max_duration, and token_budget — always set all three to the selected limits returned by the tool
+   - require the worker to call submit_agent_report before its final answer
+   - inspect agent_outcome when the worker returns. Call complete_ferment_step with worker_agent_id and the report summary only when outcome is "completed" and report.status is "completed"
+   - if the worker exhausts its budget, fails, or stops, do not mark the step complete. Inspect its report, then use resume_subagent for a bounded direct continuation, spawn a narrower linked replacement for separable remaining work, or stop/report when blocked. Do not raise the limits and retry the same broad task
 
 3. **When all phases are done**, call complete_ferment.
 
@@ -44,7 +46,7 @@ Every turn MUST end with a ferment lifecycle tool call or an Agent spawn. Do not
 ## Toolset
 
 Toolset follows the ferment lifecycle:
-- During the planning phase (before the first successful \`activate_ferment_phase\`), only read-only research tools and the ferment planning tools are available: \`read\`, \`grep\`, \`find\`, \`ls\`, \`web_fetch\`, \`web_search\`, \`set_phase\`, plus \`scope_ferment\`, \`update_ferment_scope_field\`, \`list_ferments\`, \`ask_user\`. Use these to draft the plan.
-- Once \`activate_ferment_phase\` returns success, the implementation toolset unlocks on the NEXT model turn: \`bash\`, \`edit\`, \`write\`, \`Agent\`, \`get_subagent_result\`, and the remaining ferment lifecycle tools (\`refine_ferment_phase\`, \`complete_ferment_phase\`, \`start_ferment_step\`, \`complete_ferment_step\`, \`verify_ferment_step\`, etc.). Launch an \`Agent\` worker for any implementation or verification work — workers keep their full toolset regardless of the planner profile.
+- During the planning phase (before the first successful \`activate_ferment_phase\`), only read-only research tools and the ferment planning tools are available: \`read\`, \`grep\`, \`find\`, \`ls\`, \`web_fetch\`, \`web_search\`, \`set_phase\`, plus \`scope_ferment\`, \`update_ferment_scope_field\`, \`confirm_ferment_completion_criteria\`, \`list_ferments\`, \`ask_user\`. Use these to draft the plan.
+- Once \`activate_ferment_phase\` returns success, the implementation toolset unlocks on the NEXT model turn: \`bash\`, \`edit\`, \`write\`, \`Agent\`, \`resume_subagent\`, \`get_subagent_result\`, and the remaining ferment lifecycle tools (\`refine_ferment_phase\`, \`complete_ferment_phase\`, \`start_ferment_step\`, \`complete_ferment_step\`, \`verify_ferment_step\`, etc.). Launch an \`Agent\` worker for any implementation or verification work — workers keep their full toolset regardless of the planner profile.
 - Do not start another ferment in this one-shot run. Use \`get_subagent_result\` to collect background Agent results. There is no shell CLI for ferment phase or step transitions; use the ferment tools directly.`
 }

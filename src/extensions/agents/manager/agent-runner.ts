@@ -15,6 +15,7 @@ import {
 import { loadConfig, readTelemetryConfig } from "../../../config.js"
 import { getAvailableModels } from "../../../startup-context.js"
 import { runAsAgentWorker } from "../../agent-worker-context.js"
+import bashDefaultTimeoutExtension from "../../bash-default-timeout.js"
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
 import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
@@ -42,6 +43,7 @@ import {
 import { buildParentContext, extractText } from "../prompt/context.js"
 import { type PromptExtras, buildAgentPrompt, formatTokenBudget } from "../prompt/prompts.js"
 import { preloadSkills } from "../prompt/skill-loader.js"
+import { WORKER_REPORT_TOOL_NAME, type WorkerReportCapability, createWorkerReportExtension } from "../worker-report.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "./constants.js"
 import { type LifetimeUsage, addUsage, getLifetimeTotal, getOutputTotal, getSessionUsage } from "./usage.js"
 
@@ -51,10 +53,10 @@ import { type LifetimeUsage, addUsage, getLifetimeTotal, getOutputTotal, getSess
  * - Agent / get_subagent_result / steer_subagent: subagents must not spawn
  *   further nested subagents (the orchestrator owns delegation).
  * - All ferment lifecycle and planning tools: subagents must not mutate
- *   ferment state. The discovery tools (list_ferments, request_ferment_workflow)
+ *   ferment state. The discovery tool (list_ferments)
  *   are also excluded — they are only meaningful to the top-level planner.
  */
-const EXCLUDED_TOOL_NAMES = ["Agent", "get_subagent_result", "steer_subagent", ...FERMENT_TOOL_NAMES]
+const EXCLUDED_TOOL_NAMES = ["Agent", "resume_subagent", "get_subagent_result", "steer_subagent", ...FERMENT_TOOL_NAMES]
 
 function isExcludedSubagentToolName(name: string, disallowedSet?: Set<string>): boolean {
 	return EXCLUDED_TOOL_NAMES.includes(name) || disallowedSet?.has(name) === true
@@ -121,6 +123,26 @@ const INACTIVITY_CHECK_INTERVAL = 10_000
 const DEFAULT_INACTIVITY_TIMEOUT = 120_000
 /** Default wall-clock timeout for subagents (seconds). Prevents hangs on blocking operations. */
 const DEFAULT_MAX_DURATION = 900
+/**
+ * Floor enforced on any non-null per-attempt token budget. Prevents a caller
+ * from passing a sub-thousand budget that the runner would silently raise to
+ * this value, masking a cumulative-budget overshoot. Shared with the manager,
+ * which refuses to resume a Ferment worker whose remaining cumulative budget
+ * falls below this floor.
+ */
+export const MIN_TOKEN_BUDGET = 1024
+
+/**
+ * Lower floor for report-finalization resumes. `finalize_report` is a bounded
+ * operation (maxTurns: 2, maxDuration: 30) that only emits a structured
+ * `submit_agent_report` payload — it needs a few hundred tokens, not a full
+ * thousand. Using the continuation floor here would block workers that are
+ * near-exhaustion but still capable of producing their report, leaving the
+ * orchestrator unable to complete the step (no structured report →
+ * `complete_ferment_step` hard-rejects). The overshoot is bounded to ≤ this
+ * value against the cumulative budget.
+ */
+export const MIN_FINALIZE_TOKEN_BUDGET = 256
 
 /** Get the grace turns value. */
 export function getGraceTurns(): number {
@@ -210,6 +232,10 @@ export interface RunOptions {
 	inactivityTimeout?: number
 	/** Maximum wall-clock duration in seconds. The agent is aborted when this limit is exceeded. */
 	maxDuration?: number
+	/** Host-bound report capability. Present only for Ferment-linked workers. */
+	workerReport?: WorkerReportCapability
+	/** Enforce maxTurns as a hard cap instead of allowing ordinary-agent grace turns. */
+	hardTurnLimit?: boolean
 }
 
 export interface RunResult {
@@ -220,6 +246,8 @@ export interface RunResult {
 	abortReason?: AgentAbortReason
 	/** True if the agent was steered to wrap up (hit soft turn limit) but finished in time. */
 	steered: boolean
+	turnsUsed?: number
+	maxTurns?: number
 }
 
 function collectResponseText(session: AgentSession) {
@@ -310,6 +338,7 @@ async function runAgentInner(
 	const parentSystemPrompt = ctx.getSystemPrompt()
 
 	const extensions = options.isolated ? false : config.extensions
+	const effectiveExtensions = options.workerReport && extensions === false ? [] : extensions
 	const skills = options.isolated ? false : config.skills
 
 	const extras: PromptExtras = {
@@ -384,17 +413,24 @@ async function runAgentInner(
 
 	const agentDir = getAgentDir()
 
+	// Repo-native extensions registered directly by the Kimchi CLI are not
+	// discovered by a child session's DefaultResourceLoader. Register this
+	// safety hook explicitly so worker bash calls get the same default timeout.
+	const extensionFactories = [telemetryExtension(readTelemetryConfig()), bashDefaultTimeoutExtension]
+	if (options.workerReport) {
+		extensionFactories.push(createWorkerReportExtension(options.workerReport))
+	}
 	const loader = new DefaultResourceLoader({
 		cwd: effectiveCwd,
 		agentDir,
-		noExtensions: extensions === false,
+		noExtensions: effectiveExtensions === false,
 		noSkills,
 		noPromptTemplates: true,
 		noThemes: true,
 		noContextFiles: true,
 		systemPromptOverride: () => systemPrompt,
 		appendSystemPromptOverride: () => [],
-		extensionFactories: [telemetryExtension(readTelemetryConfig())],
+		extensionFactories,
 	})
 	await loader.reload()
 
@@ -425,7 +461,7 @@ async function runAgentInner(
 		model,
 		resourceLoader: loader,
 	}
-	if (extensions === false) {
+	if (effectiveExtensions === false) {
 		sessionOpts.tools = toolNames
 	}
 	if (thinkingLevel) {
@@ -443,11 +479,11 @@ async function runAgentInner(
 		},
 	})
 
-	if (extensions !== false) {
+	if (effectiveExtensions !== false) {
 		const activeTools = getActiveSubagentToolNames(
 			toolNames,
 			session.getActiveToolNames(),
-			extensions,
+			effectiveExtensions,
 			(name) => session.getToolDefinition(name) !== undefined,
 			disallowedSet,
 		)
@@ -471,6 +507,7 @@ async function runAgentInner(
 	let aborted = false
 	let abortReason: AgentAbortReason | undefined
 	let budgetAborted = false
+	let reportAccepted = false
 
 	const inactivity = { lastActivityAt: Date.now(), steered: false }
 	const inactivityTimeout = options.inactivityTimeout ?? DEFAULT_INACTIVITY_TIMEOUT
@@ -514,8 +551,12 @@ async function runAgentInner(
 		if (event.type === "turn_end") {
 			turnCount++
 			options.onTurnEnd?.(turnCount)
-			if (effectiveMaxTurns != null) {
-				if (!softLimitReached && turnCount >= effectiveMaxTurns) {
+			if (!reportAccepted && effectiveMaxTurns != null) {
+				if (options.hardTurnLimit && turnCount >= effectiveMaxTurns) {
+					aborted = true
+					abortReason = "max_turns"
+					session.abort()
+				} else if (!softLimitReached && turnCount >= effectiveMaxTurns) {
 					softLimitReached = true
 					steerAsOrchestrator(
 						session,
@@ -546,6 +587,10 @@ async function runAgentInner(
 		}
 		if (event.type === "tool_execution_end") {
 			options.onToolActivity?.({ type: "end", toolName: event.toolName })
+			if (event.toolName === WORKER_REPORT_TOOL_NAME && options.workerReport?.isAccepted()) {
+				reportAccepted = true
+				queueMicrotask(() => session.abort())
+			}
 		}
 		if (event.type === "message_end" && event.message.role === "assistant") {
 			const u = (
@@ -563,7 +608,7 @@ async function runAgentInner(
 				addUsage(observedUsage, usage)
 				addUsage(windowObservedUsage, usage)
 				options.onAssistantUsage?.(usage)
-				if (effectiveTokenBudget != null && !budgetAborted) {
+				if (!reportAccepted && effectiveTokenBudget != null && !budgetAborted) {
 					cumulativeTokens += getOutputTotal(usage)
 					if (cumulativeTokens > effectiveTokenBudget) {
 						budgetAborted = true
@@ -666,13 +711,26 @@ async function runAgentInner(
 		options.onAssistantUsage?.(finalUsageDelta)
 	}
 
-	if (effectiveTokenBudget != null && !budgetAborted && getOutputTotal(observedUsage) > effectiveTokenBudget) {
+	if (
+		!reportAccepted &&
+		effectiveTokenBudget != null &&
+		!budgetAborted &&
+		getOutputTotal(observedUsage) > effectiveTokenBudget
+	) {
 		budgetAborted = true
 		abortReason = "token_budget"
 	}
 
 	const responseText = collector.getText().trim() || getLastAssistantText(session)
-	return { responseText, session, aborted: aborted || budgetAborted, abortReason, steered: softLimitReached }
+	return {
+		responseText,
+		session,
+		aborted: reportAccepted ? false : aborted || budgetAborted,
+		abortReason: reportAccepted ? undefined : abortReason,
+		steered: softLimitReached,
+		turnsUsed: turnCount,
+		maxTurns: effectiveMaxTurns,
+	}
 }
 
 /**
@@ -683,37 +741,109 @@ export async function resumeAgent(
 	prompt: string,
 	options: {
 		onToolActivity?: (activity: ToolActivity) => void
+		onTurnEnd?: (turnCount: number) => void
 		onAssistantUsage?: (usage: LifetimeUsage) => void
 		onCompaction?: (info: { reason: "manual" | "threshold" | "overflow"; tokensBefore: number }) => void
 		signal?: AbortSignal
+		maxTurns?: number
+		tokenBudget?: number
+		minTokenBudget?: number
 		inactivityTimeout?: number
+		maxDuration?: number
+		hardTurnLimit?: boolean
+		shouldTerminateAfterTool?: (toolName: string) => boolean
 	} = {},
-): Promise<string> {
+): Promise<RunResult> {
 	const collector = collectResponseText(session)
 	const cleanupAbort = forwardAbortSignal(session, options.signal)
 
 	const resumeInactivity = { lastActivityAt: Date.now(), steered: false }
 	const resumeInactivityTimeout = options.inactivityTimeout ?? DEFAULT_INACTIVITY_TIMEOUT
+	const effectiveMaxTurns = normalizeMaxTurns(options.maxTurns)
+	const minBudget = options.minTokenBudget ?? MIN_TOKEN_BUDGET
+	const effectiveTokenBudget = options.tokenBudget != null ? Math.max(options.tokenBudget, minBudget) : undefined
+	const effectiveMaxDuration = options.maxDuration ?? DEFAULT_MAX_DURATION
+	const observedUsage: LifetimeUsage = getSessionUsage(session) ?? {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+	}
+	let turnCount = 0
+	let cumulativeTokens = 0
+	let softLimitReached = false
+	let tokenSoftLimitSteered = false
+	let aborted = false
+	let budgetAborted = false
+	let abortReason: AgentAbortReason | undefined
+	let terminationToolCompleted = false
 
 	const unsubEvents = session.subscribe((event: AgentSessionEvent) => {
 		resumeInactivity.lastActivityAt = Date.now()
 		if (resumeInactivity.steered) resumeInactivity.steered = false
 
+		if (event.type === "turn_end") {
+			turnCount++
+			options.onTurnEnd?.(turnCount)
+			if (!terminationToolCompleted && effectiveMaxTurns != null) {
+				if (options.hardTurnLimit && turnCount >= effectiveMaxTurns) {
+					aborted = true
+					abortReason = "max_turns"
+					session.abort()
+				} else if (!softLimitReached && turnCount >= effectiveMaxTurns) {
+					softLimitReached = true
+					steerAsOrchestrator(
+						session,
+						"You have reached this resume's turn limit. Stop exploring. Complete your current edit, ensure file syntax is valid, and summarize progress plus remaining work for the orchestrator. Do not start new edits.",
+					)
+				} else if (softLimitReached && turnCount >= effectiveMaxTurns + graceTurns) {
+					aborted = true
+					abortReason = "max_turns"
+					session.abort()
+				}
+			}
+		}
 		if (event.type === "tool_execution_start") options.onToolActivity?.({ type: "start", toolName: event.toolName })
-		if (event.type === "tool_execution_end") options.onToolActivity?.({ type: "end", toolName: event.toolName })
+		if (event.type === "tool_execution_end") {
+			options.onToolActivity?.({ type: "end", toolName: event.toolName })
+			if (options.shouldTerminateAfterTool?.(event.toolName)) {
+				terminationToolCompleted = true
+				queueMicrotask(() => session.abort())
+			}
+		}
 		if (event.type === "message_end" && event.message.role === "assistant") {
 			const u = (
 				event.message as unknown as {
 					usage?: { input: number; output: number; cacheRead: number; cacheWrite: number }
 				}
 			).usage
-			if (u)
-				options.onAssistantUsage?.({
+			if (u) {
+				const usage = {
 					input: u.input ?? 0,
 					output: u.output ?? 0,
 					cacheRead: u.cacheRead ?? 0,
 					cacheWrite: u.cacheWrite ?? 0,
-				})
+				}
+				addUsage(observedUsage, usage)
+				cumulativeTokens += getOutputTotal(usage)
+				options.onAssistantUsage?.(usage)
+				if (!terminationToolCompleted && effectiveTokenBudget != null && !budgetAborted) {
+					if (cumulativeTokens > effectiveTokenBudget) {
+						budgetAborted = true
+						abortReason = "token_budget"
+						console.warn(
+							`[agent-runner] resume token budget exceeded (cumulative=${cumulativeTokens}, budget=${effectiveTokenBudget}); aborting`,
+						)
+						session.abort()
+					} else if (!tokenSoftLimitSteered && cumulativeTokens >= effectiveTokenBudget * 0.8) {
+						tokenSoftLimitSteered = true
+						steerAsOrchestrator(
+							session,
+							"You are approaching this resume's output token limit. Wrap up current work and summarize remaining tasks.",
+						)
+					}
+				}
+			}
 		}
 		if (event.type === "compaction_end" && !event.aborted && event.result) {
 			options.onCompaction?.({ reason: event.reason, tokensBefore: event.result.tokensBefore })
@@ -723,23 +853,59 @@ export async function resumeAgent(
 	const resumeInactivityInterval = setInterval(() => {
 		const elapsed = Date.now() - resumeInactivity.lastActivityAt
 		if (resumeInactivity.steered && elapsed >= resumeInactivityTimeout) {
+			aborted = true
+			abortReason = "inactivity"
 			session.abort()
 		} else if (!resumeInactivity.steered && elapsed >= resumeInactivityTimeout) {
 			resumeInactivity.steered = true
 			steerAsOrchestrator(session, "You appear to be stalled. Resume work immediately or summarize your progress.")
 		}
 	}, INACTIVITY_CHECK_INTERVAL)
+	const durationTimer = effectiveMaxDuration
+		? setTimeout(() => {
+				aborted = true
+				abortReason = "max_duration"
+				session.abort()
+			}, effectiveMaxDuration * 1000)
+		: undefined
 
 	try {
 		await session.prompt(prompt)
 	} finally {
 		clearInterval(resumeInactivityInterval)
+		if (durationTimer) clearTimeout(durationTimer)
 		collector.unsubscribe()
 		unsubEvents()
 		cleanupAbort()
 	}
 
-	return collector.getText().trim() || getLastAssistantText(session)
+	const finalUsageDelta = usageDelta(getSessionUsage(session), observedUsage)
+	if (finalUsageDelta) {
+		addUsage(observedUsage, finalUsageDelta)
+		cumulativeTokens += getOutputTotal(finalUsageDelta)
+		options.onAssistantUsage?.(finalUsageDelta)
+	}
+
+	if (
+		!terminationToolCompleted &&
+		effectiveTokenBudget != null &&
+		!budgetAborted &&
+		cumulativeTokens > effectiveTokenBudget
+	) {
+		budgetAborted = true
+		abortReason = "token_budget"
+	}
+
+	const responseText = collector.getText().trim() || getLastAssistantText(session)
+	return {
+		responseText,
+		session,
+		aborted: terminationToolCompleted ? false : aborted || budgetAborted,
+		abortReason: terminationToolCompleted ? undefined : abortReason,
+		steered: softLimitReached,
+		turnsUsed: turnCount,
+		maxTurns: effectiveMaxTurns,
+	}
 }
 
 /**

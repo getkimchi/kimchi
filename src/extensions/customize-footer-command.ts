@@ -6,7 +6,7 @@ import { requestSharedFooterRender } from "./shared-footer.js"
 
 /** Component holds only transient UI state (selectedIndex).
  *  Checked state is NEVER stored here — render() always reads from the config cache (always current). */
-class CustomizeFooterComponent implements Component {
+export class CustomizeFooterComponent implements Component {
 	private selectedIndex: number
 	private readonly tui: { requestRender: (force?: boolean) => void }
 	private readonly done: () => void

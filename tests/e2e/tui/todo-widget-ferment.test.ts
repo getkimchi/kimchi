@@ -78,8 +78,10 @@ test("todo tools are available during ferment execution", async ({ terminal }) =
 			artifactName: "todo-widget-ferment-visibility",
 			gitInit: true,
 			responses: [
-				// Turn 1: model calls propose_ferment_scoping after the /ferment intent prompt.
+				// Turn 1: orientation text then propose_ferment_scoping (same contract
+				// as ferment-new-runs-planning.test.ts).
 				{
+					stream: ["I'll outline the scope."],
 					toolCalls: [
 						{
 							function: {
@@ -109,11 +111,13 @@ test("todo tools are available during ferment execution", async ({ terminal }) =
 						},
 					],
 				},
-				// Turn 2 (after tool result): short text, no tool calls.
-				// This triggers the plan-review dialog.
+				// Turn 2 (after tool result): short text, no trailing "?".
 				{ stream: ["I've outlined the scope for this test."] },
-				// Turn 3 (post-confirmation): host nudges to call activate_ferment_phase.
+				// Turn 3 (post-confirmation keepalive): mirrors ferment-new-runs-planning.
+				{},
+				// Turn 4 (host nudge): activate the implementation phase.
 				{
+					stream: ["Starting implementation."],
 					toolCalls: [
 						{
 							function: {
@@ -126,7 +130,7 @@ test("todo tools are available during ferment execution", async ({ terminal }) =
 						},
 					],
 				},
-				// Turn 4 (after phase activation): model calls update_todos during implementation.
+				// Turn 5: model calls update_todos during implementation.
 				{
 					stream: ["I'll track my work with todos."],
 					toolCalls: [
@@ -143,6 +147,8 @@ test("todo tools are available during ferment execution", async ({ terminal }) =
 						},
 					],
 				},
+				// Keepalive after implementation turn.
+				{},
 			],
 		},
 		async (_fixture, trace) => {
@@ -152,7 +158,7 @@ test("todo tools are available during ferment execution", async ({ terminal }) =
 			})
 			trace.step("ready prompt visible")
 
-			// Stage 2: enter ferment.
+			// Stage 2: enter ferment (same entry path as ferment-new-runs-planning).
 			terminal.write("/ferment")
 			await waitForText(terminal, "/ferment", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("typed /ferment")
@@ -178,7 +184,7 @@ test("todo tools are available during ferment execution", async ({ terminal }) =
 			})
 			trace.step("plan-review dialog visible")
 
-			// Stage 6: confirm → ferment is scoped.
+			// Stage 6: confirm → ferment is scoped and implementation can begin.
 			terminal.submit("")
 			trace.step("confirmed 'Start execution'")
 

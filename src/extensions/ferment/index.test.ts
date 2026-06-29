@@ -452,7 +452,7 @@ describe("fermentExtension question dropdown", () => {
 				customType: "ferment_continuation_nudge",
 				content: [expect.objectContaining({ text: expect.stringContaining("activate_ferment_phase") })],
 			}),
-			{ triggerTurn: true, deliverAs: "followUp" },
+			{ triggerTurn: true, deliverAs: "steer" },
 		)
 	})
 
@@ -504,7 +504,86 @@ describe("fermentExtension question dropdown", () => {
 				customType: "ferment_continuation_nudge",
 				content: [expect.objectContaining({ text: expect.stringContaining("activate_ferment_phase") })],
 			}),
+			{ triggerTurn: true, deliverAs: "steer" },
+		)
+	})
+
+	it("keeps final completion pending when the agent ends before calling complete_ferment", async () => {
+		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-index-final-completion-test-")))
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: () => storage,
+		}
+		runtime.setContinuationPolicy("automated")
+		const applyAndPersist = createApplyAndPersist(runtime)
+		const draft = storage.create("Final Completion")
+		const scoped = applyAndPersist(draft.id, {
+			type: "scope",
+			goal: "Goal",
+			successCriteria: ["Works"],
+			constraints: [],
+			phases: [{ name: "Phase", goal: "Build", steps: [] }],
+		})
+		if (!scoped.ok) throw new Error(scoped.error.message)
+		const activated = applyAndPersist(draft.id, { type: "activate_phase", phaseId: "phase-1" })
+		if (!activated.ok) throw new Error(activated.error.message)
+		const completedPhase = applyAndPersist(draft.id, {
+			type: "complete_phase",
+			phaseId: "phase-1",
+			summary: "done",
+		})
+		if (!completedPhase.ok) throw new Error(completedPhase.error.message)
+		runtime.setActive(completedPhase.ferment)
+
+		const { handlers, pi } = registerFermentExtension(runtime)
+		const turnEnd = handlers.get("turn_end")
+		const agentEnd = handlers.get("agent_end")
+		if (!turnEnd || !agentEnd) throw new Error("ferment lifecycle handlers were not registered")
+
+		await turnEnd(
+			{
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "Now complete the ferment." }],
+				},
+			},
+			{},
+		)
+		await agentEnd({ type: "agent_end" }, {})
+
+		expect(storage.get(draft.id)?.status).not.toBe("complete")
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_continuation_nudge",
+				content: [expect.objectContaining({ text: expect.stringContaining("complete_ferment") })],
+				details: expect.objectContaining({ action: "complete_ferment" }),
+			}),
 			{ triggerTurn: true, deliverAs: "followUp" },
+		)
+
+		vi.mocked(pi.sendMessage).mockClear()
+		await turnEnd(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "stop",
+					content: [
+						{ type: "toolCall", name: "complete_ferment_phase" },
+						{ type: "text", text: "Phase complete." },
+					],
+				},
+			},
+			{},
+		)
+		await agentEnd({ type: "agent_end" }, {})
+
+		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_continuation_nudge",
+				content: [expect.objectContaining({ text: expect.stringContaining("complete_ferment") })],
+			}),
+			expect.anything(),
 		)
 	})
 

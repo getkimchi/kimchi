@@ -322,7 +322,7 @@ function triggerCompactionForPending(
 						runtime.setActive(freshFerment)
 						scheduleNextFermentAction(pi, freshFerment, runtime, {
 							tag: "Auto-compaction continuation",
-							deliverAsFollowUp: true,
+							deliverAs: "followUp",
 						})
 					}
 				} catch {
@@ -417,8 +417,8 @@ export function maybeTriggerMidTurnFermentCompaction(
 				if (freshFerment.status === "running") {
 					runtime.setActive(freshFerment)
 					scheduleNextFermentAction(pi, freshFerment, runtime, {
-						tag: "Mid-turn compaction resume",
-						deliverAsFollowUp: true,
+						tag: "Auto-compaction continuation",
+						deliverAs: "followUp",
 					})
 				}
 			},
