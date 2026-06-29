@@ -6,7 +6,9 @@ import type {
 	ListSessionsRequest,
 	RequestPermissionRequest,
 	SessionNotification,
+	TextContent,
 } from "@agentclientprotocol/sdk"
+import type { AssistantMessage } from "@earendil-works/pi-ai"
 import type {
 	AgentSession,
 	AgentSessionEvent,
@@ -271,57 +273,17 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		})
 	})
 
-	// The fragile scenario the previous setImmediate heuristic could trip on:
-	// session.prompt() resolves BEFORE the subscriber receives agent_end (e.g.
-	// a slow extension agent_end handler awaits real I/O). The fix trusts
-	// pi-agent-core's agent_end contract and waits until the event actually
-	// arrives at our listener.
-	it("resolves end_turn even when agent_end is delivered after session.prompt resolves", async () => {
-		let agentEndDeliveredAt = 0
-		let outerResolvedAt = 0
-		fake.promptImpl = async () => {
-			// Mirror pi-mono: agent_start is the first event of a real run.
-			fake.emit({ type: "agent_start" })
-			// agent.prompt awaits the LLM call; simulate with a short delay.
-			await delay(5)
-			// session.prompt is about to resolve; schedule agent_end AFTER that,
-			// simulating a slow downstream handler on the agent_end path.
-			setTimeout(() => {
-				agentEndDeliveredAt = Date.now()
-				fake.emit(agentEnd())
-			}, 40)
-			// Return now — agent_end has NOT reached our subscriber yet.
-		}
-
-		const start = Date.now()
-		const result = await agent.prompt({
-			sessionId,
-			prompt: [{ type: "text", text: "hi" }],
-		})
-		outerResolvedAt = Date.now()
-
-		expect(result.stopReason).toBe("end_turn")
-		// The outer prompt must wait for agent_end, not race ahead of it.
-		expect(agentEndDeliveredAt).toBeGreaterThan(0)
-		expect(outerResolvedAt).toBeGreaterThanOrEqual(agentEndDeliveredAt)
-		expect(outerResolvedAt - start).toBeGreaterThanOrEqual(40)
-	})
-
-	// CANARY: documents the load-bearing assumption in prompt() that SOME turn
-	// event (agent_start or later) is delivered before session.prompt() resolves.
-	// pi-mono's agent.prompt awaits the LLM call, draining the microtask queue
-	// and ensuring _processAgentEvent ran for at least agent_start. If pi-mono
-	// ever delays ALL turn events until after session.prompt() resolves, real
-	// turns would hit the !turnActive branch and synthesize end_turn prematurely —
-	// late agent_end / tool events would be silently dropped. This test locks in
-	// the current behavior; a future pi-mono update that breaks the contract
-	// should fail this test, at which point swap the detector for something more
-	// robust (e.g. peek at isStreaming on the session).
-	it("CANARY: synthesizes end_turn when no turn events arrive before session.prompt resolves", async () => {
+	// session.prompt() is the source of truth for "turn is done". When events
+	// arrive AFTER session.prompt resolves (e.g. a slow downstream handler
+	// awaited something), the turn was already finalized on session.prompt
+	// resolve — late events must be dropped. agent_end no longer drives
+	// finalization, so it cannot be used as a barrier. If this ever regresses
+	// to "wait for late agent_end", we'd be vulnerable to the chained
+	// agent.continue() bug again.
+	it("drops late turn events that arrive after session.prompt resolves", async () => {
 		let lateEventsFired = false
 		fake.promptImpl = async () => {
 			await delay(5)
-			// Schedule agent_start + agent_end AFTER session.prompt resolves.
 			setTimeout(() => {
 				fake.emit({ type: "agent_start" })
 				fake.emit(agentEnd())
@@ -333,42 +295,11 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			sessionId,
 			prompt: [{ type: "text", text: "hi" }],
 		})
-		// Current behavior: end_turn synthesized immediately after session.prompt
-		// resolves — before late events arrive. If this changes to "cancelled" or
-		// "end_turn from late agent_end", the short-circuit detector was updated.
 		expect(result.stopReason).toBe("end_turn")
 		expect(lateEventsFired).toBe(false)
 
-		// Let late events fire and confirm they are dropped (turn already cleared).
 		await delay(40)
 		expect(lateEventsFired).toBe(true)
-	})
-
-	// Defensive widening: if the first event we observe from pi-mono is
-	// tool_execution_start (hypothetical future ordering where agent_start
-	// isn't synchronous with agent.prompt), turnActive still flips and the
-	// prompt() resolver waits for agent_end instead of synthesizing end_turn
-	// prematurely. This pins down the widening in TurnContext.turnActive.
-	it("treats tool_execution_start as a turn-active signal (no premature short-circuit)", async () => {
-		fake.promptImpl = async () => {
-			// No agent_start. Emit only tool_execution_start + agent_end.
-			fake.emit({
-				type: "tool_execution_start",
-				toolCallId: "tc-early",
-				toolName: "bash",
-				args: { command: "noop" },
-			})
-			await delay(5)
-			setTimeout(() => fake.emit(agentEnd()), 30)
-		}
-		const result = await agent.prompt({
-			sessionId,
-			prompt: [{ type: "text", text: "x" }],
-		})
-		// end_turn must come from agent_end (post-delay), not from the
-		// !turnActive short-circuit branch firing immediately after
-		// session.prompt() resolves.
-		expect(result.stopReason).toBe("end_turn")
 	})
 
 	// Extension-command / input-handler / no-op path: session.prompt returns
@@ -385,6 +316,74 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		})
 
 		expect(result.stopReason).toBe("end_turn")
+	})
+
+	// Regression: pi-mono's _runAgentPrompt chains multiple agent.prompt /
+	// agent.continue calls when retries, queued follow-up messages, or
+	// compaction are pending. Each chained call emits its own agent_start +
+	// agent_end pair. Previously the ACP handler finalized on the FIRST
+	// agent_end, sending end_turn mid-stream — the client then tried to send
+	// a new prompt and hit pi-mono's "Agent is already processing" throw
+	// because session.prompt was still running the chained continues.
+	// Now: end_turn is sent exactly once, only after session.prompt()
+	// resolves (i.e. after ALL chained calls complete).
+	it("sends exactly one end_turn after chained agent.continue() cycles complete", async () => {
+		const { conn: recordingConn, updates } = makeRecordingConn()
+		const localAgent = new KimchiAcpAgent(recordingConn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		const res = await localAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+		const localSessionId = res.sessionId
+
+		fake.promptImpl = async () => {
+			// Cycle 1 — first agent.prompt call.
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "text_delta",
+					delta: "first",
+					contentIndex: 0,
+					partial: {} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit(agentEnd())
+			await delay(5)
+			// Cycle 2 — agent.continue() (e.g. follow-up message queued,
+			// retry needed, or compaction). The user-visible bug is that the
+			// FIRST agent_end used to trigger end_turn here, dropping cycle 2.
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "text_delta",
+					delta: "second",
+					contentIndex: 0,
+					partial: {} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit(agentEnd())
+		}
+
+		const result = await localAgent.prompt({
+			sessionId: localSessionId,
+			prompt: [{ type: "text", text: "go" }],
+		})
+
+		// Single end_turn, with stopReason "end_turn".
+		expect(result.stopReason).toBe("end_turn")
+
+		// Both cycles' chunks reach the client. Under the OLD behavior,
+		// the first agent_end would have cleared entry.turn and dropped
+		// every cycle-2 event — so this assertion is the bug-reproducer.
+		const chunks = updates.flatMap((u) =>
+			u.update.sessionUpdate === "agent_message_chunk" ? [(u.update.content as TextContent).text] : [],
+		)
+		expect(chunks).toEqual(["first", "second"])
 	})
 
 	// Client cancels mid-turn: cancelled=true is set on the turn context, then

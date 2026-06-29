@@ -116,14 +116,6 @@ export interface RunAcpOptions {
 type TurnContext = {
 	cancelled: boolean
 	hiddenToolCallIds: Set<string>
-	// True once ANY turn-lifecycle event has been delivered to our subscriber
-	// (agent_start, message_update, tool_execution_start, tool_execution_update).
-	// Used by prompt()'s short-circuit detector to tell "session.prompt() ran
-	// agent.prompt and events are flowing" from "session.prompt() short-circuited
-	// before agent events ever fired". Originally this tracked only agent_start —
-	// defensive widening so a future pi-mono emit-order change can't make real
-	// turns look like short-circuits.
-	turnActive: boolean
 	resolve: (res: PromptResponse) => void
 	reject: (err: unknown) => void
 }
@@ -502,7 +494,6 @@ export class KimchiAcpAgent implements Agent {
 		entry.turn = {
 			cancelled: false,
 			hiddenToolCallIds: new Set(),
-			turnActive: false,
 			resolve: turnResolve,
 			reject: turnReject,
 		}
@@ -514,20 +505,18 @@ export class KimchiAcpAgent implements Agent {
 		// propagates to the caller regardless of whether session.prompt ever resolves.
 		entry.session.prompt(text, { source: "rpc", images }).then(
 			() => {
-				// pi-coding-agent's session.prompt() short-circuits for extension commands,
-				// input-handler intercepts, and no-op paths — in those cases agent.prompt()
-				// never runs and no agent events fire. For real turns it awaits agent.prompt()
-				// which emits agent_start first and agent_end last (pi-agent-core contract:
-				// types.d.ts "agent_end is the last event emitted for a run"). By the time
-				// agent.prompt() resolves, our subscriber has been called with at least
-				// agent_start — agent.prompt awaits the LLM call, draining the microtask
-				// queue. agent_end delivery can still race with session.prompt()'s resolution
-				// because _processAgentEvent awaits extension handlers before calling our
-				// listener. So: if ANY turn-lifecycle event was observed (turnActive), trust
-				// the agent_end contract and let the subscriber finalize the turn. Otherwise
-				// the turn short-circuited and we synthesize end_turn here.
-				if (entry.turn && !entry.turn.turnActive) {
-					this.finalizeTurn(entry, "end_turn")
+				// session.prompt() is the source of truth for "turn is done". We
+				// deliberately do NOT finalize on agent_end: pi-mono's _runAgentPrompt
+				// (agent-session.js) chains multiple agent.prompt / agent.continue
+				// calls — each emits its own agent_start + agent_end — when retries,
+				// queued follow-up messages, or compaction are pending. If we finalized
+				// on the first agent_end, end_turn would be sent mid-stream and the
+				// client's subsequent prompt would hit pi-mono's
+				// "Agent is already processing" throw because session.prompt is still
+				// running the chained continues. session.prompt() resolves only after
+				// ALL chained calls complete.
+				if (entry.turn) {
+					this.finalizeTurn(entry, entry.turn.cancelled ? "cancelled" : "end_turn")
 				}
 			},
 			(err) => {
@@ -617,12 +606,10 @@ export class KimchiAcpAgent implements Agent {
 		const turn = entry.turn
 		switch (event.type) {
 			case "agent_start": {
-				if (turn) turn.turnActive = true
 				return
 			}
 			case "message_update": {
 				if (!turn) return
-				turn.turnActive = true
 				const ame = event.assistantMessageEvent
 				if (ame.type === "text_delta" && ame.delta) {
 					this.send({
@@ -649,7 +636,6 @@ export class KimchiAcpAgent implements Agent {
 				// tool_call notifications the client would have to reconcile against
 				// a turn it already considers over.
 				if (!turn) return
-				turn.turnActive = true
 				if (isHiddenToolCall(event.toolName, event.args)) {
 					turn.hiddenToolCallIds.add(event.toolCallId)
 					return
@@ -671,7 +657,6 @@ export class KimchiAcpAgent implements Agent {
 			}
 			case "tool_execution_update": {
 				if (!turn) return
-				turn.turnActive = true
 				if (turn.hiddenToolCallIds.has(event.toolCallId) || isHiddenToolCall(event.toolName, event.args)) {
 					turn.hiddenToolCallIds.add(event.toolCallId)
 					return
@@ -708,11 +693,10 @@ export class KimchiAcpAgent implements Agent {
 				return
 			}
 			case "agent_end": {
-				// If no turn is active, this is a late agent_end after the prompt
-				// handler already synthesized end_turn (short-circuit path that
-				// nevertheless emitted events somehow) — safe to drop.
-				if (!turn) return
-				this.finalizeTurn(entry, turn.cancelled ? "cancelled" : "end_turn")
+				// No-op: turn finalization is driven by session.prompt()'s resolution
+				// in prompt(), NOT by agent_end. See comment in prompt() for the
+				// chained-agent.continue scenario. Just guard against stray agent_end
+				// events that arrive after the turn was finalized.
 				return
 			}
 			default:
