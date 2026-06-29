@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url"
 import { AgentSession } from "@earendil-works/pi-coding-agent"
 import {
 	getCliModeArg,
+	isCliAtFileArg,
 	isExperimentalFeaturesArg,
 	isHelpOrVersionArgs,
 	isTerminalUiMode,
@@ -89,6 +90,7 @@ import traceIdExtension from "./extensions/trace-id.js"
 import uiExtension from "./extensions/ui.js"
 import webFetchExtension from "./extensions/web-fetch/index.js"
 import webSearchExtension from "./extensions/web-search/index.js"
+import { normalizeAtFileArgs } from "./fs-paths.js"
 import {
 	injectExperimentalProvider,
 	isTransientModelsError,
@@ -360,14 +362,23 @@ try {
 			: resolve(dirname(fileURLToPath(import.meta.url)), "../themes")
 		mkdirSync(themesDir, { recursive: true })
 
-		// Probe runs here (before pi-mono takes stdin) so the result is cached for
-		// the kimchi-minimal-tints and terminal-colors extensions. Skip non-TUI
-		// modes: stdout belongs to the caller, and OSC escapes corrupt it.
-		const rawArgs = stripExperimentalFeaturesArg(process.argv.slice(2))
+		const atFileArgs = normalizeAtFileArgs(
+			stripExperimentalFeaturesArg(process.argv.slice(2)),
+			process.cwd(),
+			isCliAtFileArg,
+		)
+		if (atFileArgs.directoryArgs.length > 0) {
+			console.error(`Error: @file path must be a file, not a directory: ${atFileArgs.directoryArgs[0]}`)
+			process.exit(1)
+		}
+		const rawArgs = atFileArgs.args
 		const terminalIo = {
 			stdinIsTTY: process.stdin.isTTY === true,
 			stdoutIsTTY: process.stdout.isTTY === true,
 		}
+		// Probe runs here (before pi-mono takes stdin) so the result is cached for
+		// the kimchi-minimal-tints and terminal-colors extensions. Skip non-TUI
+		// modes: stdout belongs to the caller, and OSC escapes corrupt it.
 		const terminalStartupOutputAllowed = isTerminalUiMode(rawArgs, terminalIo)
 		if (terminalStartupOutputAllowed) {
 			await probeTerminalBackground()
