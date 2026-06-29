@@ -9,7 +9,7 @@
 import { getVersion } from "../utils.js"
 import { isHomebrewInstall } from "./paths.js"
 import { loadAutoUpdateSetting } from "./settings.js"
-import { applyUpdate, checkForUpdate } from "./workflow.js"
+import { applyUpdate, checkForUpdate, parseCanarySha7 } from "./workflow.js"
 
 const LOG_PREFIX = "[kimchi-auto-update]"
 
@@ -75,6 +75,19 @@ export function argvHasSkipTrigger(argv: readonly string[]): boolean {
 	return false
 }
 
+/** Default startup budget for the auto-update check. The caller (entry.ts)
+ *  races the call against this deadline via `AbortSignal`; we check it
+ *  after each await and skip the re-exec swap if the deadline has passed,
+ *  so a slow network never blocks the user past the budget. */
+const AUTO_UPDATE_DEFAULT_TIMEOUT_MS = 5_000
+
+export interface MaybeAutoUpdateOnLaunchOptions {
+	/** When the signal aborts, the function bails out at the next checkpoint
+	 *  without performing the re-exec swap. Used by entry.ts to cap startup
+	 *  time even when the network is slow. */
+	signal?: AbortSignal
+}
+
 /**
  * Decide whether to auto-update on launch and, if so, run the swap and
  * re-exec into the new binary.
@@ -82,11 +95,14 @@ export function argvHasSkipTrigger(argv: readonly string[]): boolean {
  * Skipped when ANY of these are true:
  *   - KIMCHI_NO_UPDATE_CHECK is set
  *   - isHomebrewInstall() returns true
+ *   - running on a canary build (canary users stay on the canary track;
+ *     currency is checked via `kimchi update --canary`)
  *   - loadAutoUpdateSetting() returns false
  *   - argv contains a subcommand (`update`/`setup`/`mcp`/`login`/`install`)
  *   - argv contains `--no-auto-update`, `--version`, `-v`, `--help`, `-h`
  *   - checkForUpdate throws or reports no update
  *   - applyUpdate throws (network, checksum, smoke-test failure)
+ *   - opts.signal is already aborted (caller's deadline has passed)
  *
  * On success (Linux/macOS): re-exec into the new binary.
  * On success (Windows): `atomicInstall` rotates `kimchi.exe` → `kimchi.exe.old`
@@ -98,12 +114,14 @@ export function argvHasSkipTrigger(argv: readonly string[]): boolean {
  *
  * Never throws.
  */
-export async function maybeAutoUpdateOnLaunch(): Promise<void> {
+export async function maybeAutoUpdateOnLaunch(opts: MaybeAutoUpdateOnLaunchOptions = {}): Promise<void> {
 	try {
 		if (process.env.KIMCHI_NO_UPDATE_CHECK) return
 		if (isHomebrewInstall()) return
+		if (parseCanarySha7(getVersion()) !== null) return
 		if (!loadAutoUpdateSetting()) return
 		if (argvHasSkipTrigger(process.argv)) return
+		if (opts.signal?.aborted) return
 
 		let check: Awaited<ReturnType<typeof checkForUpdate>>
 		try {
@@ -112,12 +130,29 @@ export async function maybeAutoUpdateOnLaunch(): Promise<void> {
 			warn(`update check failed: ${(err as Error).message}`)
 			return
 		}
+		if (opts.signal?.aborted) {
+			warn("deadline exceeded after update check; skipping auto-update on this launch")
+			return
+		}
 		if (!check.hasUpdate) return
 
+		// Audit log: every auto-update attempt is recorded with the tag and
+		// release URL before the binary is downloaded. Checksum verification
+		// happens inside applyUpdate; this line is the operator-visible trail.
+		warn(`applying update ${check.tag} from ${check.releaseUrl || "<no url>"}`)
 		try {
 			await applyUpdate({ tag: check.tag })
 		} catch (err) {
 			warn(`update apply failed: ${(err as Error).message}`)
+			return
+		}
+		if (opts.signal?.aborted) {
+			// Update is already on disk via atomicInstall's .old rotation on
+			// Windows, or staged for next launch on Linux/macOS (no rename
+			// happens until the user runs `kimchi update`). Bail without
+			// re-exec — the user's UI must not be torn down after they've
+			// already seen it.
+			warn(`update ${check.tag} applied but deadline exceeded; restart to use the new version`)
 			return
 		}
 
@@ -138,3 +173,7 @@ export async function maybeAutoUpdateOnLaunch(): Promise<void> {
 		warn(`unexpected: ${(err as Error).message}`)
 	}
 }
+
+// Re-exported for entry.ts so the timeout stays co-located with the module
+// it gates. Not part of the public API.
+export const DEFAULT_AUTO_UPDATE_TIMEOUT_MS = AUTO_UPDATE_DEFAULT_TIMEOUT_MS

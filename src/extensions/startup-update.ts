@@ -27,14 +27,25 @@ export default function startupUpdateExtension(pi: ExtensionAPI) {
 		// stable. Currency on canary is checked by `kimchi update --canary`.
 		if (parseCanarySha7(current) !== null) return
 
-		const autoUpdateEnabled = loadAutoUpdateSetting()
-		if (autoUpdateEnabled) {
-			// Auto-update is on: no nag (next launch applies silently).
-			// First launch only: explain the new behavior and how to opt out.
-			if (!loadAutoUpdateNoticeShown()) {
-				ctx.ui.notify("kimchi now updates itself in the background. Run `/update` to disable.")
-				markAutoUpdateNoticeShown()
+		try {
+			const autoUpdateEnabled = loadAutoUpdateSetting()
+			if (autoUpdateEnabled) {
+				// Auto-update is on: no nag (next launch applies silently).
+				// First launch only: explain the new behavior and how to opt out.
+				if (!loadAutoUpdateNoticeShown()) {
+					ctx.ui.notify("kimchi now updates itself in the background. Run `/update` to disable.")
+					markAutoUpdateNoticeShown()
+				}
+				return
 			}
+		} catch (err) {
+			// Settings layer broken (e.g. getAgentDir() throws, disk
+			// unwritable). Don't crash the session — bail and let the
+			// rest of the harness boot normally. Mirrors the swallow-
+			// and-continue pattern used for checkForUpdate below, but
+			// also returns early because we have no signal worth
+			// showing when the settings file itself is unreadable.
+			console.warn(`[startup-update] auto-update settings unavailable: ${(err as Error).message}`)
 			return
 		}
 
