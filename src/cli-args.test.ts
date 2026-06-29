@@ -120,6 +120,13 @@ describe("isCliAtFileArg", () => {
 		expect(isCliAtFileArg("@release", 1, ["--name", "@release"])).toBe(false)
 	})
 
+	it("uses parser position instead of matching @ values by text", () => {
+		const args = ["--name", "@same", "@same"]
+
+		expect(isCliAtFileArg("@same", 1, args)).toBe(false)
+		expect(isCliAtFileArg("@same", 2, args)).toBe(true)
+	})
+
 	it("still treats standalone @file args as attachments", () => {
 		expect(isCliAtFileArg("@prompt.md", 0, ["@prompt.md"])).toBe(true)
 		expect(isCliAtFileArg("@prompt.md", 1, ["--print", "@prompt.md"])).toBe(true)
