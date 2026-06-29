@@ -190,15 +190,15 @@ export async function collectModelMetadata(
 // Custom toggle-select component (space to toggle, Enter confirms, Esc cancels)
 // ---------------------------------------------------------------------------
 
-export interface ToggleSelectResult {
+interface ToggleSelectResult {
 	selected: Set<string>
 	cancelled: boolean
 }
 
-export function createToggleSelect(
+function createToggleSelect(
 	tui: TUI,
 	theme: Theme,
-	title: string,
+	label: string,
 	refs: string[],
 	selected: Set<string>,
 	done: (result: ToggleSelectResult) => void,
@@ -257,6 +257,11 @@ export function createToggleSelect(
 		}
 
 		add(theme.fg("accent", "\u2500".repeat(width)))
+		// The title embeds the current selection count, so it must be built
+		// inside render() rather than interpolated at call-time. Otherwise
+		// Space toggles update the footer count but leave the title frozen
+		// at the initial value (a confusing cosmetic mismatch).
+		const title = `${label} — toggle models (${selected.size} selected)`
 		add(` ${theme.fg("text", theme.bold(title))}`)
 		lines.push("")
 
@@ -424,24 +429,24 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 				const selected = new Set(normalizeRoleModels(roles[roleKey]))
 
 				const result = await ctx.ui.custom<ToggleSelectResult>((tui, theme, _kb, done) =>
-					createToggleSelect(
-						tui,
-						theme,
-						`${info.label} — toggle models (${selected.size} selected)`,
-						availableModelRefs,
-						selected,
-						done,
-					),
+					createToggleSelect(tui, theme, info.label, availableModelRefs, selected, done),
 				)
 
 				if (result.cancelled) return
 
-				if (selected.size === 0) {
+				// Read from result.selected (the Set the component returned)
+				// rather than the outer closure variable. Today they are the
+				// same object — the picker mutates the Set in place — but
+				// reading from the result makes the dependency explicit and
+				// keeps the contract intact if the component ever switches to
+				// cloning the Set before resolving.
+				const finalSelected = result.selected
+				if (finalSelected.size === 0) {
 					ctx.ui.notify(`${info.label} must have at least one model. Keeping current assignment.`, "warning")
 					return
 				}
 
-				const models = [...selected]
+				const models = [...finalSelected]
 				const assignment: RoleModelAssignment = models.length === 1 ? models[0] : models
 				;(roles as Record<string, RoleModelAssignment>)[roleKey] = assignment
 				try {

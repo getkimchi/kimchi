@@ -433,6 +433,59 @@ test("/multi-model Space toggles checkbox state in toggle-select", async ({ term
 	)
 })
 
+test("/multi-model toggle-select title count updates after Space toggle", async ({ terminal }) => {
+	// Regression: the title was previously interpolated at call-time and
+	// stayed frozen at the initial count while Space toggles updated the
+	// footer count, producing a cosmetic mismatch. The title must be
+	// rebuilt on every render so both title and footer show the same number.
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "multi-model-title-count",
+			models: [...TWO_MODELS],
+			responses: [],
+		},
+		async (_fixture, trace) => {
+			terminal.write("/multi-model ")
+			await waitForText(terminal, "/multi-model ", { timeoutMs: INPUT_TIMEOUT_MS })
+			terminal.submit("")
+			await waitForText(terminal, "Model Roles", { timeoutMs: INPUT_TIMEOUT_MS })
+			trace.step("main menu open")
+
+			await navigateMenuTo(terminal, trace, "Builder")
+			await waitForText(terminal, "toggle models", { timeoutMs: INPUT_TIMEOUT_MS })
+			trace.step("toggle-select open for Builder")
+
+			// Initial state: the Builder role's current assignment is the
+			// single-model default "kimchi-dev/kimi-k2.6" (not in TWO_MODELS
+			// but it still counts toward selected.size), so the title and
+			// footer both read "(1 selected)".
+			const beforeView = viewText(terminal)
+			expect(beforeView).toMatch(/Builder\s+\u2014\s+toggle models \(1 selected\)/)
+			expect(beforeView).toMatch(/\(1 selected\)/)
+			trace.step("initial title and footer both show 1 selected")
+
+			// Space toggles the cursor row (row 0 — "basic") into the
+			// selection. Send Space without a trailing Enter so the picker
+			// stays open and we can observe the updated render.
+			terminal.write(" ")
+			await new Promise((resolve) => setTimeout(resolve, 100))
+
+			// Both the title and the footer must now agree on "(2 selected)".
+			// Without the fix the title would still read "(1 selected)" while
+			// the footer correctly reads "(2 selected)".
+			const afterView = viewText(terminal)
+			expect(afterView).toMatch(/Builder\s+\u2014\s+toggle models \(2 selected\)/)
+			expect(afterView).toMatch(/\(2 selected\)/)
+			trace.step("title and footer both show 2 selected after Space")
+
+			// Escape cancels without persisting.
+			terminal.keyEscape()
+			await waitForText(terminal, "Model Roles", { timeoutMs: INPUT_TIMEOUT_MS })
+		},
+	)
+})
+
 test("/multi-model main menu cursor resets to row 0 after configuring a role", async ({ terminal }) => {
 	// The main menu must not preserve cursor position across re-open. After
 	// configuring a delegable role via the picker, returning to the main
