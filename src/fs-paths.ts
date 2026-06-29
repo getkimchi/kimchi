@@ -46,6 +46,14 @@ function isFile(p: string): boolean {
 	}
 }
 
+export function isExistingDirectory(filePath: string, cwd: string): boolean {
+	try {
+		return statSync(resolveUserPath(filePath, cwd)).isDirectory()
+	} catch {
+		return false
+	}
+}
+
 // Ordered set of transforms tried against the resolved absolute path. Each row is: "if the literal string didn't match, maybe it was typed one of these ways instead". Order matters: cheaper + more common substitutions first.
 // Single-axis only — variants are applied independently to the base, not cross-producted. Filenames that need multiple substitutions (e.g. NFD + curly apostrophe) must be listed as explicit combined entries (variant 5). This is a deliberate trade-off to keep the fallback ladder bounded.
 //   1. identity — the path as typed
@@ -73,4 +81,22 @@ export function findExistingFile(
 		if (exists(candidate)) return candidate
 	}
 	return null
+}
+
+export interface NormalizedAtFileArgs {
+	args: string[]
+	directoryArgs: string[]
+}
+
+export function normalizeAtFileArgs(args: string[], cwd: string): NormalizedAtFileArgs {
+	const directoryArgs: string[] = []
+	const normalized = args.map((arg) => {
+		if (!arg.startsWith("@") || arg === "@") return arg
+		const filePath = arg.slice(1)
+		const file = findExistingFile(filePath, cwd)
+		if (file) return `@${file}`
+		if (isExistingDirectory(filePath, cwd)) directoryArgs.push(resolveUserPath(filePath, cwd))
+		return arg
+	})
+	return { args: normalized, directoryArgs }
 }

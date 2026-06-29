@@ -356,6 +356,21 @@ describe("permissions plan-mode tool visibility", () => {
 		}
 	})
 
+	it("blocks read calls targeting directories before upstream read", async () => {
+		const tmp = mkdtempSync(join(tmpdir(), "kimchi-read-dir-"))
+		try {
+			const harness = createPermissionsHarness(["read"])
+			const result = await harness.fire("tool_call", { toolName: "read", input: { path: tmp } }, createMockContext([]))
+
+			expect(result).toEqual({
+				block: true,
+				reason: "Path is a directory; use ls/find instead of read.",
+			})
+		} finally {
+			rmSync(tmp, { recursive: true, force: true })
+		}
+	})
+
 	it("leaving plan mode does not restore tools hidden by another extension", async () => {
 		const harness = createPermissionsHarness(["read", "bash", "write", "edit", "grep"], { plan: true })
 		const peerVisibility = createToolVisibility(harness.pi)
