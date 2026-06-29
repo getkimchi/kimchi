@@ -1,15 +1,42 @@
-import { existsSync, mkdtempSync, readFileSync } from "node:fs"
+import { execSync } from "node:child_process"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { commandToEvents } from "./event-mapper.js"
 import { type FermentEvent, FermentEventStore, applyFermentEvent, stateHash } from "./event-store.js"
 import { applyCommand } from "./state-machine.js"
 import { FermentStorage, clearFermentCache } from "./store.js"
 import type { Phase } from "./types.js"
+import { createFermentWorktree } from "./worktree-lifecycle.js"
 
 function createTempDir() {
 	return mkdtempSync(join(tmpdir(), "ferment-event-store-test-"))
+}
+
+function initGitRepo(): string {
+	const repo = mkdtempSync(join(tmpdir(), "ferment-cleanup-repo-"))
+	execSync("git init", { cwd: repo, stdio: "ignore" })
+	execSync("git config user.email test@test.com", { cwd: repo, stdio: "ignore" })
+	execSync("git config user.name Test", { cwd: repo, stdio: "ignore" })
+	writeFileSync(join(repo, "README.md"), "# test\n", "utf-8")
+	execSync("git add .", { cwd: repo, stdio: "ignore" })
+	execSync("git commit -m init", { cwd: repo, stdio: "ignore" })
+	return repo
+}
+
+function enableWorktree(repoRoot: string, enabled: boolean) {
+	const configDir = join(repoRoot, ".kimchi")
+	mkdirSync(configDir, { recursive: true })
+	writeFileSync(join(configDir, "config.json"), JSON.stringify({ ferments: { worktree: { enabled } } }), "utf-8")
+}
+
+function worktreeList(repoRoot: string): string {
+	return execSync("git worktree list", { cwd: repoRoot, encoding: "utf-8" })
+}
+
+function branchList(repoRoot: string): string {
+	return execSync("git branch --list", { cwd: repoRoot, encoding: "utf-8" })
 }
 
 /** Run a command through the same path applyAndPersist uses in production. */
@@ -775,6 +802,102 @@ describe("FermentEventStore", () => {
 			expect(step.description).toBe("legacy task")
 			expect(step).not.toHaveProperty("workerModel")
 			expect(step).not.toHaveProperty("needsVision")
+		})
+	})
+
+	// ─── worktree cleanup on terminal transitions ─────────────────────────────
+
+	describe("worktree cleanup", () => {
+		let repoRoot: string
+
+		beforeEach(() => {
+			repoRoot = initGitRepo()
+			clearFermentCache()
+		})
+
+		afterEach(() => {
+			if (repoRoot) {
+				rmSync(repoRoot, { recursive: true, force: true })
+			}
+			clearFermentCache()
+		})
+
+		it("removes dedicated worktree and branch on complete when enabled", () => {
+			enableWorktree(repoRoot, true)
+			const fermentsDir = join(repoRoot, ".kimchi", "ferments")
+			mkdirSync(fermentsDir, { recursive: true })
+			const store = new FermentEventStore(fermentsDir)
+
+			const ferment = store.create("Cleanup complete")
+			const shortId = ferment.id.slice(0, 8)
+			const { path, branch } = createFermentWorktree(repoRoot, shortId)
+			store.updateWorktree(ferment.id, { path, branch })
+
+			// Drive the ferment to completion.
+			exec(store, ferment.id, {
+				type: "scope",
+				goal: "g",
+				successCriteria: ["c"],
+				constraints: [],
+				phases: [{ name: "P1", goal: "G1", steps: [] }],
+			})
+			const planned = store.get(ferment.id)
+			if (!planned) throw new Error("ferment missing")
+			exec(store, ferment.id, { type: "activate_phase", phaseId: planned.phases[0].id })
+			exec(store, ferment.id, { type: "complete_phase", phaseId: planned.phases[0].id, summary: "done" })
+			exec(store, ferment.id, { type: "complete_ferment" })
+
+			expect(store.get(ferment.id)?.status).toBe("complete")
+			expect(worktreeList(repoRoot)).not.toContain(path)
+			expect(branchList(repoRoot)).not.toContain(branch)
+		})
+
+		it("removes dedicated worktree and branch on abandon when enabled", () => {
+			enableWorktree(repoRoot, true)
+			const fermentsDir = join(repoRoot, ".kimchi", "ferments")
+			mkdirSync(fermentsDir, { recursive: true })
+			const store = new FermentEventStore(fermentsDir)
+
+			const ferment = store.create("Cleanup abandon")
+			const shortId = ferment.id.slice(0, 8)
+			const { path, branch } = createFermentWorktree(repoRoot, shortId)
+			store.updateWorktree(ferment.id, { path, branch })
+
+			exec(store, ferment.id, { type: "abandon", reason: "discarded" })
+
+			expect(store.get(ferment.id)?.status).toBe("abandoned")
+			expect(worktreeList(repoRoot)).not.toContain(path)
+			expect(branchList(repoRoot)).not.toContain(branch)
+		})
+
+		it("does not cleanup legacy ferment with no branch when enabled", () => {
+			enableWorktree(repoRoot, true)
+			const fermentsDir = join(repoRoot, ".kimchi", "ferments")
+			mkdirSync(fermentsDir, { recursive: true })
+			const store = new FermentEventStore(fermentsDir)
+
+			const ferment = store.create("Legacy cleanup")
+			store.updateWorktree(ferment.id, { path: repoRoot })
+
+			expect(() => exec(store, ferment.id, { type: "abandon" })).not.toThrow()
+			expect(store.get(ferment.id)?.status).toBe("abandoned")
+			expect(worktreeList(repoRoot)).toContain(repoRoot)
+		})
+
+		it("does not cleanup when worktree config is disabled", () => {
+			enableWorktree(repoRoot, false)
+			const fermentsDir = join(repoRoot, ".kimchi", "ferments")
+			mkdirSync(fermentsDir, { recursive: true })
+			const store = new FermentEventStore(fermentsDir)
+
+			const ferment = store.create("Disabled cleanup")
+			const shortId = ferment.id.slice(0, 8)
+			const path = join(repoRoot, ".worktrees", `ferment-${shortId}`)
+			const branch = `ferment/${shortId}`
+			store.updateWorktree(ferment.id, { path, branch })
+
+			expect(() => exec(store, ferment.id, { type: "abandon" })).not.toThrow()
+			expect(store.get(ferment.id)?.status).toBe("abandoned")
 		})
 	})
 })

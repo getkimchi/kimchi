@@ -1,9 +1,13 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { readWorktreeEnabled } from "../../config.js"
 import type { ScopePhaseInput } from "../../ferment/state-machine.js"
+import { detectProjectRoot } from "../../ferment/store.js"
 import { normalizeFermentTitle } from "../../ferment/title.js"
 import { deletePendingProposal } from "./pending-proposal-store.js"
+import { createFermentWorktree, isInsideLinkedWorktree } from "../../ferment/worktree-lifecycle.js"
 import type { FermentRuntime } from "./runtime.js"
 import { type ApplyOutcome, createApplyAndPersist } from "./tool-helpers.js"
+import { isDedicatedWorktree } from "./worktree.js"
 
 export type ConfirmPendingScopeSource = "propose_ferment_scoping" | "turn_end"
 
@@ -62,6 +66,31 @@ export function confirmPendingScope(
 		phases: scopedPhases,
 	})
 	if (!outcome.ok) return { ok: false, error: outcome.error }
+
+	let planned = outcome.ferment
+	const storage = runtime.getStorage()
+	const repoRoot = detectProjectRoot(planned.worktree.path ?? process.cwd())
+	const shortId = planned.id.slice(0, 8)
+	const worktreeEnabled = readWorktreeEnabled({ cwd: repoRoot })
+	const insideLinkedWorktree = isInsideLinkedWorktree()
+	const dedicatedWorktree = isDedicatedWorktree(planned.worktree)
+	const guard =
+		worktreeEnabled &&
+		!insideLinkedWorktree &&
+		!dedicatedWorktree &&
+		planned.worktree.branch &&
+		!planned.worktree.branch.startsWith("ferment/")
+	if (guard) {
+		const { path, branch, commit } = createFermentWorktree(repoRoot, shortId)
+		const updated = storage.updateWorktree(planned.id, { path, branch, commit })
+		storage.addDecision(planned.id, "Created ferment worktree", `Dedicated worktree at ${path} on branch ${branch}.`)
+		const reloaded = storage.get(planned.id)
+		if (reloaded) {
+			planned = reloaded
+			outcome.ferment = reloaded
+		}
+	}
+
 	runtime.clearPendingScope(fermentId)
 	// The user confirmed the plan; remove the persisted pending proposal so a
 	// later session restart cannot re-arm a stale review.
