@@ -82,3 +82,21 @@ export function findExistingFile(
 	}
 	return null
 }
+
+export interface NormalizedAtFileArgs {
+	args: string[]
+	directoryArgs: string[]
+}
+
+export function normalizeAtFileArgs(args: string[], cwd: string): NormalizedAtFileArgs {
+	const directoryArgs: string[] = []
+	const normalized = args.map((arg) => {
+		if (!arg.startsWith("@") || arg === "@") return arg
+		const filePath = arg.slice(1)
+		const file = findExistingFile(filePath, cwd)
+		if (file) return `@${file}`
+		if (isExistingDirectory(filePath, cwd)) directoryArgs.push(resolveUserPath(filePath, cwd))
+		return arg
+	})
+	return { args: normalized, directoryArgs }
+}
