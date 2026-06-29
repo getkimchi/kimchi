@@ -1,5 +1,7 @@
 import asyncio
 import json
+import os
+import secrets
 import shlex
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -462,11 +464,18 @@ class Kimchi(BaseInstalledAgent):
             )
             return {}
         trial_id = trial_dir.name
-        return {
-            "run": run_dir.name,
-            "task": trial_id.split("__", 1)[0],
-            "trial": trial_id,
-        }
+        auto: dict[str, str] = {}
+        # RUN_ID identifies the benchmark run across LLM request tags. In CI,
+        # set RUN_ID=gitlab-p$CI_PIPELINE_ID so it matches kimchi_benchmark_runs.run_id.
+        # Local runs without RUN_ID get a random hex so each local run is still
+        # uniquely traceable.
+        run_id = os.environ.get("RUN_ID", "").strip()
+        if not run_id:
+            run_id = f"local-{secrets.token_hex(6)}"
+        auto["run_id"] = run_id
+        auto["task"] = trial_id.split("__", 1)[0]
+        auto["trial"] = trial_id
+        return auto
 
     def _merge_kimchi_tags(self, user_raw: str) -> str:
         # User-supplied values via --ae KIMCHI_TAGS=... win on key collision.

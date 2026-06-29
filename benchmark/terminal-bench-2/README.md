@@ -227,7 +227,7 @@ Caveats:
 
 kimchi attaches tags from `KIMCHI_TAGS` to every outgoing LLM request payload and telemetry event, which lets you slice usage/tokens/cost server-side by run, experiment, or branch.
 
-The agent auto-injects `run:<timestamp>`, `task:<task_id>`, and `trial:<task_id>__<suffix>` derived from the trial directory layout (`jobs/<timestamp>/<task>__<trial>/`). You don't need to set these yourself — they're correct across globs (`-i 'terminal-bench/build-*'`), full-dataset runs, and parallel attempts (`-k N`, `-n N`).
+The agent auto-injects `run_id:<RUN_ID>`, `task:<task_id>`, and `trial:<task_id>__<suffix>` derived from the trial directory layout (`jobs/<run>/<task>__<trial>/`). Set `RUN_ID` in CI so the tag matches `kimchi_benchmark_runs.run_id`. For local runs without `RUN_ID`, the agent generates a random `local-<hex>` identifier so each run is still uniquely traceable. The other two tags are correct across globs (`-i 'terminal-bench/build-*'`), full-dataset runs, and parallel attempts (`-k N`, `-n N`).
 
 To add custom tags, forward `KIMCHI_TAGS` with `--ae`:
 
@@ -237,7 +237,7 @@ To add custom tags, forward `KIMCHI_TAGS` with `--ae`:
   --ae "KIMCHI_TAGS=bench:terminal-bench-2,experiment:baseline"
 ```
 
-User-supplied values win on key collision: passing `--ae KIMCHI_TAGS=task:custom` overrides the auto-injected `task:<task_id>`.
+User-supplied values win on key collision: passing `--ae KIMCHI_TAGS=task:custom` overrides the auto-injected `task:<task_id>`. The same applies to `run_id` — local overrides win over the auto-emitted or generated value.
 
 Tag format is `key:value`, comma-separated; keys and values are alphanumeric plus `.`, `_`, `-`, max 64 chars each side. Invalid tags are dropped silently. Per-trial token/cost totals also land in `jobs/<timestamp>/<task>__<trial_id>/result.json` regardless of tags, so for local-only aggregation you can just group result files by the `KIMCHI_TAGS` value you ran them with.
 

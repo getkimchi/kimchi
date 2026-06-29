@@ -95,6 +95,7 @@ setup-image:
     BENCH_TASKS_ALL: "$[[ inputs.tasks_all ]]"
     KIMCHI_FERMENT_ONESHOT: "$[[ inputs.kimchi_ferment_oneshot ]]"
     KIMCHI_MULTI_MODEL: "$[[ inputs.kimchi_multi_model ]]"
+    RUN_ID: "gitlab-p$CI_PIPELINE_ID"
     BENCH_CHUNK_INDEX: "$CHUNK"
     BENCH_CHUNK_COUNT: 3
     BENCH_JOB_MAX_RETRIES: 2

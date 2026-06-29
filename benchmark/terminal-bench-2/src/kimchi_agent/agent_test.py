@@ -41,7 +41,6 @@ def kimchi_test_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("RUN_ID", raising=False)
     monkeypatch.delenv(KIMCHI_INFRA_BREAKER_THRESHOLD_ENV, raising=False)
 
-
 async def test_run_uses_shell_process_group_cleanup_on_cancellation(tmp_path: Path) -> None:
     agent = RecordingKimchi(
         logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
@@ -250,9 +249,10 @@ async def test_run_passes_merged_tags_in_exec_env(tmp_path: Path) -> None:
         await agent.run("hello", object(), AgentContext())
 
     tags = dict(tag.split(":", 1) for tag in agent.agent_envs[0]["KIMCHI_TAGS"].split(","))
-    assert tags["run"] == "run-1"
+    assert tags["run_id"].startswith("local-")
     assert tags["task"] == "task"
     assert tags["trial"] == "task__trial"
+    assert "run" not in tags
 
 
 async def test_legacy_disable_multi_model_kwarg_does_not_emit_removed_cli_flag(tmp_path: Path) -> None:
@@ -342,3 +342,51 @@ def test_populate_context_skips_unreadable_session_files(tmp_path: Path) -> None
     assert context.n_cache_tokens == 2
     assert context.cost_usd == 0.5
     warning.assert_called_once()
+
+
+def test_auto_tags_includes_run_id_when_run_id_set(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    logs_dir = tmp_path / "jobs" / "any-name" / "task__trial-suffix" / "agent"
+    monkeypatch.setenv("RUN_ID", "gitlab-p9999999999")
+
+    agent = RecordingKimchi(logs_dir=logs_dir, model_name="kimchi-dev/kimi-k2.6")
+    tags = agent._auto_tags()
+
+    assert tags.get("run_id") == "gitlab-p9999999999"
+    assert tags.get("task") == "task"
+    assert tags.get("trial") == "task__trial-suffix"
+    assert "run" not in tags
+
+
+def test_auto_tags_generates_run_id_when_unset(tmp_path: Path) -> None:
+    logs_dir = tmp_path / "jobs" / "any-name" / "task__trial-suffix" / "agent"
+
+    agent = RecordingKimchi(logs_dir=logs_dir, model_name="kimchi-dev/kimi-k2.6")
+    tags = agent._auto_tags()
+
+    assert tags["run_id"].startswith("local-")
+    assert tags.get("task") == "task"
+    assert tags.get("trial") == "task__trial-suffix"
+    assert "run" not in tags
+
+
+def test_auto_tags_returns_empty_when_path_does_not_match(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    logs_dir = tmp_path / "wrong" / "layout" / "not-agent"
+    monkeypatch.setenv("RUN_ID", "gitlab-p9999999999")
+
+    agent = RecordingKimchi(logs_dir=logs_dir, model_name="kimchi-dev/kimi-k2.6")
+    tags = agent._auto_tags()
+
+    assert tags == {}
+
+
+def test_merge_kimchi_tags_user_run_id_overrides_auto(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    logs_dir = tmp_path / "jobs" / "any-name" / "task__trial-suffix" / "agent"
+    monkeypatch.setenv("RUN_ID", "gitlab-p9999999999")
+
+    agent = RecordingKimchi(logs_dir=logs_dir, model_name="kimchi-dev/kimi-k2.6")
+    merged = agent._merge_kimchi_tags("run_id:custom")
+
+    assert "run_id:custom" in merged
+    assert "run_id:gitlab-p9999999999" not in merged
+    assert "task:task" in merged
+    assert "trial:task__trial-suffix" in merged
