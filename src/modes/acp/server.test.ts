@@ -386,6 +386,73 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		expect(chunks).toEqual(["first", "second"])
 	})
 
+	// Cancel arrives between chained agent.continue() cycles. Cycle 1 completes
+	// normally (agent_start → message_update → agent_end), then the client calls
+	// cancel() before cycle 2 starts. session.prompt() resolves (abort may or may
+	// not prevent the next continue), and the .then() handler sees cancelled=true.
+	// The first cycle's chunks must still reach the client; the result must be
+	// "cancelled", not "end_turn".
+	it("resolves cancelled when cancel arrives between chained agent.continue() cycles", async () => {
+		const { conn: recordingConn, updates } = makeRecordingConn()
+		const localAgent = new KimchiAcpAgent(recordingConn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		const res = await localAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+		const localSessionId = res.sessionId
+
+		let cancelSeen = false
+		fake.promptImpl = async () => {
+			// Cycle 1 — completes normally.
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "text_delta",
+					delta: "before-cancel",
+					contentIndex: 0,
+					partial: {} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit(agentEnd())
+
+			// Simulate the async boundary between chained calls where
+			// _handlePostAgentRun decides whether to continue. The client's
+			// cancel() lands here.
+			while (!cancelSeen) await delay(5)
+
+			// Cycle 2 — would have run, but abort arrived. In real pi-mono the
+			// next agent.continue() may not even start; simulate the benign case
+			// where it does start but produces nothing meaningful before abort
+			// tears it down.
+			fake.emit({ type: "agent_start" })
+			fake.emit(agentEnd())
+		}
+		fake.abortImpl = async () => {
+			cancelSeen = true
+		}
+
+		const promptP = localAgent.prompt({
+			sessionId: localSessionId,
+			prompt: [{ type: "text", text: "go" }],
+		})
+		// Let cycle 1 complete and the promptImpl pause at the while-loop.
+		await delay(20)
+		await localAgent.cancel({ sessionId: localSessionId })
+
+		const result = await promptP
+		expect(result.stopReason).toBe("cancelled")
+		expect(fake.aborted).toBe(true)
+
+		// Cycle 1's chunk must have been delivered before cancellation.
+		const chunks = updates.flatMap((u) =>
+			u.update.sessionUpdate === "agent_message_chunk" ? [(u.update.content as TextContent).text] : [],
+		)
+		expect(chunks).toContain("before-cancel")
+	})
+
 	// Client cancels mid-turn: cancelled=true is set on the turn context, then
 	// agent_end fires and the subscriber finalizes with stopReason=cancelled.
 	it("resolves cancelled when cancel fires before agent_end", async () => {
@@ -453,6 +520,36 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 
 		await expect(agent.prompt({ sessionId, prompt: [{ type: "text", text: "x" }] })).rejects.toThrow(
 			/no model configured/,
+		)
+	})
+
+	// Chained continues: cycle 1 succeeds but cycle 2's agent.continue() throws
+	// a non-abort error (e.g. context overflow during compaction retry). The
+	// .catch() handler must propagate the error since cancelled is false — the
+	// client sees a JSON-RPC error, not a silent end_turn that hides the failure.
+	it("rejects the outer prompt when a chained agent.continue() throws a non-abort error", async () => {
+		fake.promptImpl = async () => {
+			// Cycle 1 — completes normally.
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "text_delta",
+					delta: "partial",
+					contentIndex: 0,
+					partial: {} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+			fake.emit(agentEnd())
+			await delay(5)
+			// Cycle 2 — blows up.
+			fake.emit({ type: "agent_start" })
+			throw new Error("context window overflow during compaction")
+		}
+
+		await expect(agent.prompt({ sessionId, prompt: [{ type: "text", text: "go" }] })).rejects.toThrow(
+			/context window overflow during compaction/,
 		)
 	})
 
