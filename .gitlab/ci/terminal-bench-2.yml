@@ -182,3 +182,60 @@ terminal-bench-2-summary:
       - .benchmark/run-metadata.json
       - .benchmark/summary.json
 
+terminal-bench-2-analyze:
+  stage: postprocess
+  rules:
+    - if: $[[ inputs.analyze_results ]] == true
+      when: always
+    - when: never
+  image: "$BENCH_IMAGE"
+  needs:
+    - job: setup-image
+      artifacts: true
+    - job: terminal-bench-2-chunks
+      artifacts: true
+    - job: terminal-bench-2-summary
+      artifacts: true
+  tags:
+    - runner::dind
+  variables:
+    BENCHMARK_RESULTS_DIR: benchmark/terminal-bench-2/jobs
+    DEBIAN_FRONTEND: noninteractive
+    FF_TIMESTAMPS: "true"
+    KIMCHI_ANALYSIS_MODEL: "kimchi-dev/glm-5.2-fp8"
+    KIMCHI_ANALYSIS_MAX_RETRIES: "2"
+    KIMCHI_ANALYSIS_TIMEOUT_SECONDS: "3600"
+  script:
+    - python3 benchmark/scripts/gitlab/analyze_sessions.py
+  artifacts:
+    when: always
+    expire_in: 30 days
+    name: "terminal-bench-2-analysis-$CI_COMMIT_REF_SLUG-$CI_PIPELINE_ID"
+    paths:
+      - .benchmark/analysis.html
+
+terminal-bench-2-upload-analysis:
+  stage: postprocess
+  rules:
+    - if: $[[ inputs.analyze_results ]] == true
+      when: on_success
+    - when: never
+  image: mirror.gcr.io/library/node:22-bookworm
+  id_tokens: !reference [.auth-gcp-id-tokens, id_tokens]
+  needs:
+    - job: terminal-bench-2-summary
+      artifacts: true
+    - job: terminal-bench-2-analyze
+      artifacts: true
+  tags:
+    - runner::dind
+  variables:
+    <<: *gcp-auth-vars
+    DEBIAN_FRONTEND: noninteractive
+    FF_TIMESTAMPS: "true"
+    GCS_UPLOAD_REQUIRED: "true"
+  before_script:
+    - !reference [.auth-gcp-script]
+    - !reference [.gcloud-setup, script]
+  script:
+    - python3 benchmark/scripts/gitlab/upload_analysis_gcs.py

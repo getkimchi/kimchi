@@ -1,0 +1,2 @@
+The report draft at {draft_path} failed automated validation: {validation_error}.
+Read the existing draft, correct it in place with the write or edit tool, then read it back and verify the correction. Preserve the analysis content; do not redo the benchmark analysis unless necessary. Finish only after the file starts with <!doctype html> and is a complete, self-contained, script-free HTML document. Do not modify any other files.

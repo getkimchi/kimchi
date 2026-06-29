@@ -131,6 +131,10 @@ inputs:
     description: "Retry chunks whose agent runs hit an AgentTimeoutError verdict. Infra errors are always retried."
     type: boolean
     default: false
+  analyze_results:
+    description: "Generate and upload session analysis after the benchmark summary."
+    type: boolean
+    default: false
   parallelism:
     description: "Maximum number of benchmark tasks to run concurrently."
     type: number
