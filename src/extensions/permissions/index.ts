@@ -755,7 +755,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			if (filePath && isExistingDirectory(filePath, ctx.cwd)) {
 				return {
 					block: true,
-					reason: "Path is a directory; use ls/find instead of read.",
+					reason: "Path is a directory; read only accepts files. List or search the directory instead.",
 				}
 			}
 		}

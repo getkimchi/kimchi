@@ -364,7 +364,7 @@ describe("permissions plan-mode tool visibility", () => {
 
 			expect(result).toEqual({
 				block: true,
-				reason: "Path is a directory; use ls/find instead of read.",
+				reason: "Path is a directory; read only accepts files. List or search the directory instead.",
 			})
 		} finally {
 			rmSync(tmp, { recursive: true, force: true })
