@@ -70,7 +70,12 @@ jobs:
           bun: "true"
 
       - name: Set version from tag
+        if: ${{ matrix.os != 'windows' }}
         run: node scripts/set-version.js "$GITHUB_REF_NAME"
+
+      - name: Set version from tag - windows
+        if: ${{ matrix.os == 'windows' }}
+        run: node scripts/set-version.js $env:GITHUB_REF_NAME
 
       - uses: actions/setup-go@v5
         with:
