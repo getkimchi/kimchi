@@ -29,11 +29,13 @@ function readRaw(path: string): Record<string, unknown> {
 	}
 }
 
-/** Default for autoUpdate is `true` (opt-out) — matches Claude Code's native-install default. */
+/** Default for autoUpdate is `false` (opt-in) for the initial rollout.
+ *  Plan: ship opt-in first, monitor for regressions, then flip to `true`
+ *  (opt-out) to match Claude Code's native-install default. */
 export function loadAutoUpdateSetting(): boolean {
 	const raw = readRaw(settingsPath())
-	// Missing or wrong type → opt-out default. Only an explicit `false` opts out.
-	if (typeof raw.autoUpdate !== "boolean") return true
+	// Missing or wrong type → opt-in default. Only an explicit `true` opts in.
+	if (typeof raw.autoUpdate !== "boolean") return false
 	return raw.autoUpdate
 }
 
