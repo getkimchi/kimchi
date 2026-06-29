@@ -53,6 +53,8 @@ export default function startupUpdateExtension(pi: ExtensionAPI) {
 		try {
 			const result = await checkForUpdate({ currentVersion: current, skipCache: false })
 			if (result.hasUpdate) {
+				// Homebrew-managed installs live outside kimchi's swap path —
+				// point the user at `brew upgrade` rather than `kimchi update`.
 				const updateCmd = ctx.ui.theme.bold(isHomebrewInstall() ? "brew upgrade kimchi" : "kimchi update")
 				ctx.ui.setStatus(UPDATE_STATUS_KEY, `Update available! Run ${updateCmd}`)
 			}

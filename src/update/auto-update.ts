@@ -14,8 +14,11 @@ import { applyUpdate, checkForUpdate, parseCanarySha7 } from "./workflow.js"
 const LOG_PREFIX = "[kimchi-auto-update]"
 
 // Subcommands that suppress auto-update so we never recurse into
-// `kimchi update --force` etc. Compared case-insensitively at argv[2] or as
-// the value of a `--flag=value` argument.
+// `kimchi update --force` etc. Compared case-insensitively only at the
+// positional argv[2] slot. Scanning arbitrary `--flag=value` arguments
+// would suppress auto-update for unrelated user flags that happen to
+// contain these strings (e.g. `--tag=update`); no real CLI flag takes a
+// skip-subcommand value today.
 const SKIP_SUBCOMMANDS = new Set(["update", "setup", "mcp", "login", "install"])
 
 // Pure flags that suppress auto-update. Checked anywhere in argv.
@@ -64,14 +67,6 @@ export function argvHasSkipTrigger(argv: readonly string[]): boolean {
 	// Positional subcommand at argv[2] (case-insensitive).
 	const first = argv[2]
 	if (first !== undefined && SKIP_SUBCOMMANDS.has(first.toLowerCase())) return true
-	// `--flag=<subcommand>` form — e.g. `--command=update`.
-	for (const arg of argv) {
-		if (!arg.startsWith("--")) continue
-		const eq = arg.indexOf("=")
-		if (eq <= 0) continue
-		const value = arg.slice(eq + 1).toLowerCase()
-		if (SKIP_SUBCOMMANDS.has(value)) return true
-	}
 	return false
 }
 

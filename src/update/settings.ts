@@ -1,6 +1,8 @@
 // Persistence for the harness auto-update toggle.
 // - File: ~/.config/kimchi/harness/settings.json (via getAgentDir())
-// - Defaults to `true` (opt-out) so first-time users get updates without prompts
+// - Defaults to `false` (opt-in) for the initial rollout; will flip to
+//   `true` (opt-out) to match Claude Code's native-install default once
+//   the rollout is validated. See loadAutoUpdateSetting() for details.
 // - Defensive sanitize: wrong types → default; corrupt JSON → warn + default
 // - Atomic write: tmp file + rename so a crash mid-write never corrupts settings
 
