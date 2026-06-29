@@ -10,10 +10,12 @@
 	"scripts": {
 		"clean": "rm -rf dist",
 		"build": "tsc --noEmit && node scripts/copy-resources.js --dev",
+		"build:proxy-helper": "node scripts/build-proxy-helper.js",
 		"build:binary": "node scripts/build-binary.js",
 		"install:local": "node scripts/install-local.js",
 		"build:binary-linux-arm64": "node scripts/build-binary.js --target linux-arm64",
 		"build:binary-linux-x64": "node scripts/build-binary.js --target linux-x64",
+		"build:binary-windows-x64": "node scripts/build-binary.js --target windows-x64",
 		"dev": "make -C tools/proxy-helper/ copy-for-dev && bun run --preload ./src/set-package-dir.ts src/entry.ts",
 		"dev:overlay": "scripts/dev-overlay.sh",
 		"dev:setup": "bun run --preload ./src/set-package-dir.ts src/entry.ts setup",

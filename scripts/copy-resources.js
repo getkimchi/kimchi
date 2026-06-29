@@ -10,7 +10,8 @@
 //                                   plus package.json → dist/share/kimchi/
 //                                   so the compiled binary resolves assets from the shared data directory
 
-import { cpSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs"
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs"
+import { platform } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -85,11 +86,16 @@ if (!isDev) {
 	mkdirSync(oauthDest, { recursive: true })
 	cpSync(oauthSrc, oauthDest, { recursive: true })
 
-	// Copy proxy-helper binary built by tools/proxy-helper/Makefile
-	const proxyHelperSrc = join(projectRoot, "tools", "proxy-helper", "bin", "proxy-helper")
+	// Copy proxy-helper binary built by scripts/build-proxy-helper.js.
+	const buildTargetOS = process.env.KIMCHI_BUILD_TARGET_OS || platform()
+	const proxyHelperName = buildTargetOS === "win32" || buildTargetOS === "windows" ? "proxy-helper.exe" : "proxy-helper"
+	const proxyHelperSrc = join(projectRoot, "tools", "proxy-helper", "bin", proxyHelperName)
 	const proxyHelperBinDest = join(projectRoot, "dist", "share", "kimchi", "bin")
+	if (!existsSync(proxyHelperSrc)) {
+		throw new Error(`proxy-helper binary not found: ${proxyHelperSrc}`)
+	}
 	mkdirSync(proxyHelperBinDest, { recursive: true })
-	cpSync(proxyHelperSrc, join(proxyHelperBinDest, "proxy-helper"))
+	cpSync(proxyHelperSrc, join(proxyHelperBinDest, proxyHelperName))
 
 	const superpowersSkillSrc = join(projectRoot, "vendor", "superpowers", "skills")
 	const superpowersSkillDst = join(projectRoot, "dist", "share", "kimchi", "vendor", "superpowers", "skills")

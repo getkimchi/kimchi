@@ -3,8 +3,8 @@ import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { resolveAuxiliaryFilesDir } from "../auxiliary-files/resolver.js"
 import { compareSemverGte } from "../integrations/opencode.js"
-import { extractTarGz, verifyChecksum } from "./extract.js"
-import { GitHubClient, KIMCHI_REPO, type Repo } from "./github.js"
+import { extractArchive, verifyChecksum } from "./extract.js"
+import { GitHubClient, KIMCHI_REPO, type Repo, assetName } from "./github.js"
 import { atomicInstall, copySupportingFiles, macosCodesignReSign, smokeTestBinary } from "./install.js"
 import { resolveExecutablePath } from "./paths.js"
 import { isStale, isUpdateCheckDisabled, loadRepoState, saveRepoState } from "./state.js"
@@ -44,6 +44,10 @@ function canaryVersionFromName(name: string): string {
 const SHA7_LEN = 7
 const SHA7_RE = /^[0-9a-f]{7}$/
 const CANARY_VERSION_RE = new RegExp(`^0\\.0\\.0-canary\\.\\d{8}\\.([0-9a-f]{${SHA7_LEN}})$`)
+
+function binaryFileName(repo: Repo): string {
+	return process.platform === "win32" ? `${repo.binary}.exe` : repo.binary
+}
 
 /**
  * Extract the SHA7 from a canary version string. Returns null for any input
@@ -157,7 +161,7 @@ export interface UpdateOptions {
  * Download → verify checksum → extract → smoke-test → atomic install.
  * Throws on any step's failure with the original error wrapped in context.
  *
- * Cleans up the temp tarball + extract dir even on failure (try/finally).
+ * Cleans up the temp archive + extract dir even on failure (try/finally).
  *
  * macOS Gatekeeper requires the new binary to be ad-hoc signed before the
  * swap; the binary's signature gets baked into the inode, so we sign at
@@ -174,16 +178,16 @@ export async function applyUpdate(opts: UpdateOptions): Promise<UpdateResult> {
 
 	const workDir = mkdtempSync(join(tmpdir(), "kimchi-update-"))
 	try {
-		const archiveName = `${repo.binary}.archive`
+		const archiveName = assetName(repo)
 		const archivePath = join(workDir, archiveName)
 
 		const expectedChecksum = await client.fetchChecksum(repo, opts.tag)
 		await client.downloadArchive(repo, opts.tag, archivePath)
 		await verifyChecksum(archivePath, expectedChecksum)
 
-		const extractedRoot = await extractTarGz(archivePath)
+		const extractedRoot = await extractArchive(archivePath)
 		try {
-			const binaryPath = join("bin", repo.binary)
+			const binaryPath = join("bin", binaryFileName(repo))
 			const newBinaryPath = join(extractedRoot, binaryPath)
 			macosCodesignReSign(newBinaryPath)
 			smokeTestBinary(newBinaryPath)
