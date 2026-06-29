@@ -67,8 +67,15 @@ export async function runManualUpdate(): Promise<ManualUpdateResult> {
 	}
 }
 
-const AUTO_UPDATE_ON = (toggle: "on" | "off") => `Auto-update: ON (toggle ${toggle})`
-const AUTO_UPDATE_OFF = (toggle: "on" | "off") => `Auto-update: OFF (toggle ${toggle})`
+// Single source of truth for the auto-update menu item label. The same
+// prefix is matched against in showUpdateMenu below — keep both in sync
+// if you ever rename the visible text. ctx.ui.select in pi-coding-agent
+// only accepts string[] options (no separate id field), so we can't
+// fully decouple display text from branch identity.
+const AUTO_UPDATE_LABEL_PREFIX = "Auto-update:"
+
+const AUTO_UPDATE_ON = (toggle: "on" | "off") => `${AUTO_UPDATE_LABEL_PREFIX} ON (toggle ${toggle})`
+const AUTO_UPDATE_OFF = (toggle: "on" | "off") => `${AUTO_UPDATE_LABEL_PREFIX} OFF (toggle ${toggle})`
 
 function autoUpdateLabel(): string {
 	return loadAutoUpdateSetting() ? AUTO_UPDATE_ON("off") : AUTO_UPDATE_OFF("on")
@@ -78,7 +85,7 @@ async function showUpdateMenu(ctx: ExtensionCommandContext): Promise<void> {
 	const choice = await ctx.ui.select("Update", [autoUpdateLabel(), "Update kimchi now", "View current version", "Back"])
 	if (!choice) return
 
-	if (choice.startsWith("Auto-update:")) {
+	if (choice.startsWith(AUTO_UPDATE_LABEL_PREFIX)) {
 		const next = !loadAutoUpdateSetting()
 		saveAutoUpdateSetting(next)
 		ctx.ui.notify(`Auto-update set to ${next ? "on" : "off"}`, "info")

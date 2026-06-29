@@ -121,7 +121,7 @@ describe("auto-update setting reflects in the toggle label state", () => {
 	// the menu handler relies on. Booting the TUI select list in vitest
 	// is out of scope.
 
-	it("returns true on init (opt-out default — label would read 'Auto-update: ON')", () => {
+	it("returns true when the toggle is on — label would read 'Auto-update: ON'", () => {
 		mockLoadAutoUpdateSetting.mockReturnValue(true)
 		expect(loadAutoUpdateSetting()).toBe(true)
 	})

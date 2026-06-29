@@ -60,10 +60,13 @@ installProxyAgent()
 // import keeps the network deps in ./update/workflow.js out of every test
 // that touches entry.ts. The call never throws (see auto-update.ts).
 //
-// We race the call against a short deadline so a slow network or large
-// download can't block TUI startup indefinitely. If the deadline expires,
-// maybeAutoUpdateOnLaunch skips the re-exec swap and the current process
-// boots normally on the existing binary — the next launch will retry.
+// Two layers cap the startup budget, because the inner calls
+// (checkForUpdate / applyUpdate) don't accept an AbortSignal and would
+// otherwise block on slow network I/O:
+//   1. Promise.race with a hard timeout — abandons the await at the
+//      deadline regardless of inner state.
+//   2. AbortSignal checkpoints inside maybeAutoUpdateOnLaunch — prevents
+//      the re-exec swap if applyUpdate finishes after the deadline.
 const { maybeAutoUpdateOnLaunch, DEFAULT_AUTO_UPDATE_TIMEOUT_MS } = await import("./update/auto-update.js")
 const autoUpdateController = new AbortController()
 const autoUpdateTimeout = setTimeout(() => autoUpdateController.abort(), DEFAULT_AUTO_UPDATE_TIMEOUT_MS)
@@ -71,7 +74,10 @@ const autoUpdateTimeout = setTimeout(() => autoUpdateController.abort(), DEFAULT
 // + cli.js have taken over stdin, this timer is irrelevant.
 ;(autoUpdateTimeout as { unref?: () => void }).unref?.()
 try {
-	await maybeAutoUpdateOnLaunch({ signal: autoUpdateController.signal })
+	await Promise.race([
+		maybeAutoUpdateOnLaunch({ signal: autoUpdateController.signal }),
+		new Promise<void>((resolve) => setTimeout(resolve, DEFAULT_AUTO_UPDATE_TIMEOUT_MS)),
+	])
 } catch (err) {
 	console.warn(`[kimchi-auto-update] failed: ${(err as Error).message}`)
 } finally {

@@ -13,10 +13,11 @@ const UPDATE_STATUS_KEY = "update-available"
  *
  * The message is displayed via setStatus and read by the footer renderer.
  *
- * When auto-update is enabled (default-on), the footer hint is suppressed —
- * users get updates silently on next launch. The first launch after this
- * ships also emits a one-time onboarding toast explaining the new behavior
- * and how to opt out via `/update`.
+ * When auto-update is enabled (opt-in default — the toggle defaults to
+ * off, so most users land here), the footer hint is suppressed — users
+ * get updates silently on next launch. The first launch after a user
+ * enables the toggle also emits a one-time onboarding toast explaining
+ * the behavior and how to opt out via `/update`.
  */
 export default function startupUpdateExtension(pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx: ExtensionContext) => {
@@ -52,6 +53,8 @@ export default function startupUpdateExtension(pi: ExtensionAPI) {
 		try {
 			const result = await checkForUpdate({ currentVersion: current, skipCache: false })
 			if (result.hasUpdate) {
+				// Homebrew-managed installs live outside kimchi's swap path —
+				// point the user at `brew upgrade` rather than `kimchi update`.
 				const updateCmd = ctx.ui.theme.bold(isHomebrewInstall() ? "brew upgrade kimchi" : "kimchi update")
 				ctx.ui.setStatus(UPDATE_STATUS_KEY, `Update available! Run ${updateCmd}`)
 			}
