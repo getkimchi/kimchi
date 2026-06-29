@@ -287,6 +287,10 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	}
 
 	const queueBlockedTodoQuestions = (askPolicies: readonly TodoQuestionAskPolicy[]) => {
+		if (!latestCtx?.hasUI) {
+			lastBlockedTodoQuestionKey = undefined
+			return false
+		}
 		const followUp = currentBlockedTodoQuestionFollowUp(askPolicies)
 		if (!followUp) {
 			lastBlockedTodoQuestionKey = undefined

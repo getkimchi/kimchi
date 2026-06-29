@@ -298,6 +298,25 @@ test("ask-now blocked todo opens questionnaire follow-up", async ({ terminal }) 
 						},
 					],
 				},
+				{
+					toolCalls: [
+						{
+							function: {
+								name: "update_todos",
+								arguments: JSON.stringify({
+									todos: [
+										{
+											id: 1,
+											content: "Get approval code",
+											status: "in_progress",
+											note: "APPROVED-123",
+										},
+									],
+								}),
+							},
+						},
+					],
+				},
 			],
 		},
 		async (_fixture, trace) => {
@@ -309,6 +328,14 @@ test("ask-now blocked todo opens questionnaire follow-up", async ({ terminal }) 
 
 			await waitForText(terminal, "Please provide: Get approval code", { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("questionnaire opened from blocker follow-up")
+
+			terminal.write("APPROVED-123")
+			terminal.submit("")
+			trace.step("answered blocker questionnaire")
+
+			await waitForText(terminal, "▶ Get approval code", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			expect(viewText(terminal)).not.toContain("1 blocked")
+			trace.step("blocked todo updated after answer")
 		},
 	)
 })

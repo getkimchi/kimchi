@@ -65,6 +65,13 @@ function createContext(
 	} as unknown as ExtensionContext
 }
 
+function createUiContext(sessionId: string, branch: SessionEntry[] = []): ExtensionContext {
+	return createContext(sessionId, branch, {
+		hasUI: true,
+		ui: { theme, setWidget: vi.fn(), setStatus: vi.fn() } as unknown as ExtensionContext["ui"],
+	})
+}
+
 function terminalTurn(stopReason = "end_turn"): unknown {
 	return { message: { role: "assistant", content: [], stopReason }, toolResults: [] }
 }
@@ -451,7 +458,7 @@ describe("todos extension session state", () => {
 
 	it("does not repeat the same blocked todo question follow-up", async () => {
 		const harness = createTodosHarness()
-		const ctx = createContext("session", [])
+		const ctx = createUiContext("session")
 		await harness.fire("session_start", { reason: "new" }, ctx)
 		applyWriteTodos({
 			todos: [
@@ -472,7 +479,7 @@ describe("todos extension session state", () => {
 
 	it("queues ask-now blocked todo questions immediately after todo writes", async () => {
 		const harness = createTodosHarness()
-		const ctx = createContext("session", [])
+		const ctx = createUiContext("session")
 		await harness.fire("session_start", { reason: "new" }, ctx)
 
 		applyWriteTodos({
@@ -500,9 +507,42 @@ describe("todos extension session state", () => {
 		expect(message.content[0].text).toContain('"prompt":"Please provide: Get production approval"')
 	})
 
-	it("does not auto-ask later-policy blocked todo questions", async () => {
+	it("does not queue blocked todo questionnaires without an interactive UI", async () => {
 		const harness = createTodosHarness()
 		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+
+		applyWriteTodos({
+			todos: [
+				{
+					id: 1,
+					content: "Get production approval",
+					status: "blocked",
+					note: JSON.stringify({ ask: "now", question: { label: "Approval", type: "text" } }),
+				},
+			],
+		})
+
+		expect(harness.sendMessage).not.toHaveBeenCalled()
+
+		applyWriteTodos({
+			todos: [
+				{
+					id: 1,
+					content: "Get approval code",
+					status: "blocked",
+					note: JSON.stringify({ question: { label: "Approval", type: "text" } }),
+				},
+			],
+		})
+		await harness.fire("turn_end", terminalTurnWithText("Need input."), ctx)
+
+		expect(harness.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("does not auto-ask later-policy blocked todo questions", async () => {
+		const harness = createTodosHarness()
+		const ctx = createUiContext("session")
 		await harness.fire("session_start", { reason: "new" }, ctx)
 
 		applyWriteTodos({
@@ -522,7 +562,7 @@ describe("todos extension session state", () => {
 
 	it("does not route non-global blocked todo questions through questionnaire", async () => {
 		const harness = createTodosHarness()
-		const ctx = createContext("session", [])
+		const ctx = createUiContext("session")
 		registerActiveTodoScopeProvider(() => ({ kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" }))
 		await harness.fire("session_start", { reason: "new" }, ctx)
 
