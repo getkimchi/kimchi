@@ -1,12 +1,36 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
+import { execSync } from "node:child_process"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { FermentError, FermentStorage, clearFermentCache, detectProjectRoot, resolveFermentsDir } from "./store.js"
 import type { FermentV3, Phase, Step } from "./types.js"
+import { createFermentWorktree, removeFermentWorktree } from "./worktree-lifecycle.js"
 
 function createTempDir() {
 	return mkdtempSync(join(tmpdir(), "ferment-v4-test-"))
+}
+
+const GIT_TIMEOUT = 10_000
+
+function git(command: string, cwd: string): string {
+	return execSync(command, {
+		cwd,
+		encoding: "utf-8",
+		timeout: GIT_TIMEOUT,
+		stdio: ["ignore", "pipe", "ignore"],
+	}).trim()
+}
+
+function initTempRepo(): string {
+	const dir = mkdtempSync(join(tmpdir(), "store-resolve-worktree-"))
+	git("git init", dir)
+	git("git config user.name Tester", dir)
+	git("git config user.email tester@example.com", dir)
+	writeFileSync(join(dir, "README.md"), "hello\n")
+	git("git add README.md", dir)
+	git("git commit -m initial", dir)
+	return dir
 }
 
 describe("FermentStorage v4", () => {
@@ -422,8 +446,9 @@ describe("FermentStorage v4", () => {
 		})
 	})
 
-	describe("resolveFermentsDir env override", () => {
+	describe("resolveFermentsDir", () => {
 		const previous = process.env.KIMCHI_FERMENTS_DIR
+		const tempRepos: string[] = []
 
 		afterEach(() => {
 			if (previous === undefined) {
@@ -431,7 +456,17 @@ describe("FermentStorage v4", () => {
 			} else {
 				process.env.KIMCHI_FERMENTS_DIR = previous
 			}
+			for (const dir of tempRepos) {
+				rmSync(dir, { recursive: true, force: true })
+			}
+			tempRepos.length = 0
 		})
+
+		function tempRepo(): string {
+			const dir = initTempRepo()
+			tempRepos.push(dir)
+			return dir
+		}
 
 		it("honors KIMCHI_FERMENTS_DIR when set", () => {
 			const dir = createTempDir()
@@ -444,6 +479,45 @@ describe("FermentStorage v4", () => {
 			const root = createTempDir()
 			mkdirSync(join(root, ".git"))
 			expect(resolveFermentsDir(root)).toBe(join(root, ".kimchi", "ferments"))
+		})
+
+		it("pins ferments dir to the main repo root when cwd is a linked worktree", () => {
+			Reflect.deleteProperty(process.env, "KIMCHI_FERMENTS_DIR")
+			const repoRoot = realpathSync(tempRepo())
+			const worktree = createFermentWorktree(repoRoot, "pinned")
+
+			const fromWorktree = resolveFermentsDir(worktree.path)
+			const fromMain = resolveFermentsDir(repoRoot)
+			const expected = join(repoRoot, ".kimchi", "ferments")
+
+			expect(fromWorktree).toBe(expected)
+			expect(fromMain).toBe(expected)
+		})
+
+		it("returns the same store dir from a worktree and the main checkout", () => {
+			Reflect.deleteProperty(process.env, "KIMCHI_FERMENTS_DIR")
+			const repoRoot = realpathSync(tempRepo())
+			const worktree = createFermentWorktree(repoRoot, "shared")
+
+			const fromWorktree = resolveFermentsDir(worktree.path)
+			const fromMain = resolveFermentsDir(repoRoot)
+
+			expect(fromWorktree).toBe(fromMain)
+		})
+
+		it("cleans up the worktree after removal", () => {
+			Reflect.deleteProperty(process.env, "KIMCHI_FERMENTS_DIR")
+			const repoRoot = tempRepo()
+			const worktree = createFermentWorktree(repoRoot, "cleanup")
+
+			const removal = removeFermentWorktree(repoRoot, worktree.path, worktree.branch)
+			expect(removal.removed).toBe(true)
+
+			const worktrees = git("git worktree list --porcelain", repoRoot)
+			expect(worktrees).not.toContain(worktree.path)
+
+			const branches = git(`git branch --list ${worktree.branch}`, repoRoot)
+			expect(branches).toBe("")
 		})
 	})
 

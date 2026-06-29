@@ -11,6 +11,7 @@ import {
 	readGitToken,
 	readHideTips,
 	readTelemetryConfig,
+	readWorktreeEnabled,
 	writeApiKey,
 	writeDeviceId,
 	writeGitToken,
@@ -116,6 +117,63 @@ describe("loadConfig", () => {
 
 		rmSync(globalDir, { recursive: true, force: true })
 		rmSync(projectDir, { recursive: true, force: true })
+	})
+
+	describe("ferments.worktree.enabled", () => {
+		let globalDir: string
+		let projectDir: string
+		let globalPath: string
+		let projectPath: string
+
+		beforeEach(() => {
+			globalDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+			projectDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+			globalPath = join(globalDir, "config.json")
+			projectPath = join(projectDir, ".kimchi", "config.json")
+			mkdirSync(dirname(projectPath), { recursive: true })
+		})
+
+		afterEach(() => {
+			rmSync(globalDir, { recursive: true, force: true })
+			rmSync(projectDir, { recursive: true, force: true })
+		})
+
+		it("defaults to false when ferments key is absent", () => {
+			writeFileSync(globalPath, JSON.stringify({ apiKey: "k" }))
+			const config = loadConfig({ configPath: globalPath, cwd: projectDir })
+			expect(config.ferments.worktree.enabled).toBe(false)
+			expect(readWorktreeEnabled({ configPath: globalPath, cwd: projectDir })).toBe(false)
+		})
+
+		it("reads enabled=true from global config", () => {
+			writeFileSync(globalPath, JSON.stringify({ ferments: { worktree: { enabled: true } } }))
+			const config = loadConfig({ configPath: globalPath, cwd: projectDir })
+			expect(config.ferments.worktree.enabled).toBe(true)
+			expect(readWorktreeEnabled({ configPath: globalPath, cwd: projectDir })).toBe(true)
+		})
+
+		it("project .kimchi/config.json overrides global (project false / global true)", () => {
+			writeFileSync(globalPath, JSON.stringify({ ferments: { worktree: { enabled: true } } }))
+			writeFileSync(projectPath, JSON.stringify({ ferments: { worktree: { enabled: false } } }))
+			expect(readWorktreeEnabled({ configPath: globalPath, cwd: projectDir })).toBe(false)
+		})
+
+		it("project .kimchi/config.json overrides global (project true / global false)", () => {
+			writeFileSync(globalPath, JSON.stringify({ apiKey: "k" }))
+			writeFileSync(projectPath, JSON.stringify({ ferments: { worktree: { enabled: true } } }))
+			expect(readWorktreeEnabled({ configPath: globalPath, cwd: projectDir })).toBe(true)
+		})
+
+		it("falls back to global when project config omits ferments", () => {
+			writeFileSync(globalPath, JSON.stringify({ ferments: { worktree: { enabled: true } } }))
+			writeFileSync(projectPath, JSON.stringify({ apiKey: "project-key" }))
+			expect(readWorktreeEnabled({ configPath: globalPath, cwd: projectDir })).toBe(true)
+		})
+
+		it("defaults to false when enabled is a non-boolean value", () => {
+			writeFileSync(globalPath, JSON.stringify({ ferments: { worktree: { enabled: "yes" } } }))
+			expect(readWorktreeEnabled({ configPath: globalPath, cwd: projectDir })).toBe(false)
+		})
 	})
 
 	it("falls back to global when .kimchi/config.json does not exist", () => {

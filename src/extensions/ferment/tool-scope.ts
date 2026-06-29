@@ -4,6 +4,7 @@ import * as ToolProfileManager from "../../shared/planning/tool-profile-manager.
 import { isAgentWorker } from "../agent-worker-context.js"
 import type { FermentRuntime } from "./runtime.js"
 import { FERMENT_TOOLS } from "./tool-names.js"
+import { maybeSwitchToFermentWorktree } from "./worktree.js"
 
 /**
  * When `propose_ferment_scoping` returns "Plan ready for review" the host
@@ -172,5 +173,6 @@ export function setActiveFermentAndApplyProfile(
 	ferment: Ferment | undefined,
 ): void {
 	runtime.setActive(ferment)
+	maybeSwitchToFermentWorktree(ferment)
 	applyFermentToolProfile(pi, profileForFerment(ferment))
 }

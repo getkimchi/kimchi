@@ -117,6 +117,19 @@ export interface PreferencesConfig {
 	hideTips?: boolean
 }
 
+export interface FermentsWorktreeConfig {
+	/** When true, each ferment gets a dedicated git worktree for isolation. Default false. */
+	enabled: boolean
+}
+
+export interface FermentsConfig {
+	worktree: FermentsWorktreeConfig
+}
+
+export const FERMENTS_DEFAULTS: FermentsConfig = {
+	worktree: { enabled: false },
+}
+
 export interface RetryConfig {
 	maxRetries: number
 }
@@ -150,6 +163,8 @@ export interface KimchiConfig {
 	migrationState?: MigrationState
 	onboarding: OnboardingConfig
 	deviceId: string
+	/** Per-ferment behavior options. When absent, defaults to worktree isolation OFF. */
+	ferments: FermentsConfig
 }
 
 /**
@@ -184,6 +199,7 @@ function readConfigExtras(configPath: string): {
 	onboarding?: OnboardingConfig
 	preferences?: PreferencesConfig
 	deviceId?: string
+	ferments?: Partial<FermentsConfig>
 } {
 	try {
 		const raw = readFileSync(configPath, "utf-8")
@@ -256,6 +272,19 @@ function readConfigExtras(configPath: string): {
 			(typeof parsed.device_id === "string" && parsed.device_id.length > 0 && parsed.device_id) ||
 			undefined
 
+		// Read ferments.worktree.enabled (tolerant of missing keys)
+		let ferments: Partial<FermentsConfig> | undefined
+		const fm = parsed.ferments
+		if (fm && typeof fm === "object" && !Array.isArray(fm)) {
+			const w = (fm as Record<string, unknown>).worktree
+			let worktree: FermentsWorktreeConfig | undefined
+			if (w && typeof w === "object" && !Array.isArray(w)) {
+				const enabled = (w as Record<string, unknown>).enabled
+				worktree = typeof enabled === "boolean" ? { enabled } : undefined
+			}
+			ferments = worktree ? { worktree } : undefined
+		}
+
 		return {
 			apiKey,
 			llmEndpoint,
@@ -268,6 +297,7 @@ function readConfigExtras(configPath: string): {
 			onboarding,
 			deviceId,
 			preferences,
+			ferments,
 		}
 	} catch {
 		return {}
@@ -418,6 +448,8 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		migrationState: projectExtras.migrationState ?? globalExtras.migrationState,
 		onboarding: globalExtras.onboarding,
 		deviceId: projectExtras.deviceId ?? globalExtras.deviceId,
+		// Project config completely replaces global ferments config (mirrors scalar semantics)
+		ferments: projectExtras.ferments ?? globalExtras.ferments,
 	}
 
 	return {
@@ -433,11 +465,26 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		migrationState: extras.migrationState,
 		onboarding: extras.onboarding ?? {},
 		deviceId: extras.deviceId ?? "",
+		ferments: {
+			worktree: {
+				enabled: extras.ferments?.worktree?.enabled ?? FERMENTS_DEFAULTS.worktree.enabled,
+			},
+		},
 	}
 }
 
 export function getAgentConfigDir(): string {
 	return AGENT_CONFIG_DIR
+}
+
+/**
+ * Whether per-ferment git worktree isolation is enabled. Resolves with the same
+ * precedence as loadConfig: KIMCHI_API_KEY env is irrelevant here, but project
+ * `.kimchi/config.json` overrides global `~/.config/kimchi/config.json`, and the
+ * option defaults to false when neither is set.
+ */
+export function readWorktreeEnabled(options?: { configPath?: string; cwd?: string }): boolean {
+	return loadConfig(options).ferments.worktree.enabled === true
 }
 
 function writeConfigObject(configPath: string, raw: Record<string, unknown>): void {
