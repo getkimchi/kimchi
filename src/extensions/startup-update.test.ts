@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const checkForUpdateMock = vi.fn()
 const getVersionMock = vi.fn()
@@ -221,6 +221,64 @@ describe("startupUpdateExtension", () => {
 			expect(key).toBe("update-available")
 			expect(notify).not.toHaveBeenCalled()
 			expect(markAutoUpdateNoticeShownMock).not.toHaveBeenCalled()
+		})
+	})
+
+	describe("auto-update settings error handling", () => {
+		let stderrSpy: ReturnType<typeof vi.spyOn>
+
+		beforeEach(() => {
+			stderrSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+		})
+
+		afterEach(() => {
+			stderrSpy.mockRestore()
+		})
+
+		it("swallows errors from loadAutoUpdateSetting and returns early without setStatus", async () => {
+			getVersionMock.mockReturnValue("v0.0.23")
+			loadAutoUpdateSettingMock.mockImplementation(() => {
+				throw new Error("settings dir unwritable")
+			})
+			const { handlers, api } = createMockApi()
+			startupUpdateExtension(api)
+			const handler = handlers.get("session_start")
+			if (!handler) throw new Error("no session_start handler")
+
+			const { ctx, setStatus, notify } = makeCtx({ hasUI: true })
+			await expect(handler({}, ctx)).resolves.toBeUndefined()
+
+			// Nothing should render, and the existing checkForUpdate path
+			// must NOT run when the settings layer is broken.
+			expect(checkForUpdateMock).not.toHaveBeenCalled()
+			expect(setStatus).not.toHaveBeenCalled()
+			expect(notify).not.toHaveBeenCalled()
+			expect(markAutoUpdateNoticeShownMock).not.toHaveBeenCalled()
+			expect(stderrSpy).toHaveBeenCalledOnce()
+			expect(stderrSpy.mock.calls[0][0]).toContain("settings dir unwritable")
+		})
+
+		it("swallows errors from markAutoUpdateNoticeShown", async () => {
+			getVersionMock.mockReturnValue("v0.0.23")
+			loadAutoUpdateSettingMock.mockReturnValue(true)
+			loadAutoUpdateNoticeShownMock.mockReturnValue(false)
+			markAutoUpdateNoticeShownMock.mockImplementation(() => {
+				throw new Error("disk full")
+			})
+			const { handlers, api } = createMockApi()
+			startupUpdateExtension(api)
+			const handler = handlers.get("session_start")
+			if (!handler) throw new Error("no session_start handler")
+
+			const { ctx, notify } = makeCtx({ hasUI: true })
+			await expect(handler({}, ctx)).resolves.toBeUndefined()
+
+			// The notify ran, but the throw happened AFTER notify. The
+			// catch must swallow the error so session_start doesn't crash.
+			expect(notify).toHaveBeenCalledOnce()
+			expect(checkForUpdateMock).not.toHaveBeenCalled()
+			expect(stderrSpy).toHaveBeenCalledOnce()
+			expect(stderrSpy.mock.calls[0][0]).toContain("disk full")
 		})
 	})
 })

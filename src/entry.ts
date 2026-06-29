@@ -59,10 +59,23 @@ installProxyAgent()
 // Phase 2 of the auto-update plan: on-launch update check + swap. Dynamic
 // import keeps the network deps in ./update/workflow.js out of every test
 // that touches entry.ts. The call never throws (see auto-update.ts).
+//
+// We race the call against a short deadline so a slow network or large
+// download can't block TUI startup indefinitely. If the deadline expires,
+// maybeAutoUpdateOnLaunch skips the re-exec swap and the current process
+// boots normally on the existing binary — the next launch will retry.
+const { maybeAutoUpdateOnLaunch, DEFAULT_AUTO_UPDATE_TIMEOUT_MS } = await import("./update/auto-update.js")
+const autoUpdateController = new AbortController()
+const autoUpdateTimeout = setTimeout(() => autoUpdateController.abort(), DEFAULT_AUTO_UPDATE_TIMEOUT_MS)
+// Don't keep the event loop alive just for the watchdog — once installPasteInterceptor
+// + cli.js have taken over stdin, this timer is irrelevant.
+;(autoUpdateTimeout as { unref?: () => void }).unref?.()
 try {
-	await (await import("./update/auto-update.js")).maybeAutoUpdateOnLaunch()
+	await maybeAutoUpdateOnLaunch({ signal: autoUpdateController.signal })
 } catch (err) {
 	console.warn(`[kimchi-auto-update] failed: ${(err as Error).message}`)
+} finally {
+	clearTimeout(autoUpdateTimeout)
 }
 
 // Install before the dynamic cli.js import - the interceptor must wrap process.stdin.emit before any pi-* listener attaches. See src/paste-interceptor.ts for the rationale (LLM-1358).

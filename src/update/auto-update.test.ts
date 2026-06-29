@@ -16,6 +16,7 @@ const mockCheckForUpdate = vi.fn()
 const mockApplyUpdate = vi.fn()
 const mockLoadAutoUpdateSetting = vi.fn(() => true)
 const mockIsHomebrewInstall = vi.fn(() => false)
+const mockParseCanarySha7 = vi.fn(() => null as string | null)
 
 vi.mock("./paths.js", () => ({
 	isHomebrewInstall: mockIsHomebrewInstall,
@@ -25,6 +26,7 @@ vi.mock("./settings.js", () => ({ loadAutoUpdateSetting: mockLoadAutoUpdateSetti
 vi.mock("./workflow.js", () => ({
 	checkForUpdate: mockCheckForUpdate,
 	applyUpdate: mockApplyUpdate,
+	parseCanarySha7: mockParseCanarySha7,
 }))
 
 const autoUpdate = await import("./auto-update.js")
@@ -40,8 +42,10 @@ function resetMocks(): void {
 	mockApplyUpdate.mockReset()
 	mockLoadAutoUpdateSetting.mockReset()
 	mockIsHomebrewInstall.mockReset()
+	mockParseCanarySha7.mockReset()
 	mockLoadAutoUpdateSetting.mockReturnValue(true)
 	mockIsHomebrewInstall.mockReturnValue(false)
+	mockParseCanarySha7.mockReturnValue(null)
 	mockCheckForUpdate.mockResolvedValue({
 		currentVersion: "1.0.0",
 		latestVersion: "1.0.0",
@@ -113,6 +117,23 @@ describe("maybeAutoUpdateOnLaunch — skip gates", () => {
 	it("skips when isHomebrewInstall() returns true", async () => {
 		mockIsHomebrewInstall.mockReturnValue(true)
 		await maybeAutoUpdateOnLaunch()
+		expect(mockCheckForUpdate).not.toHaveBeenCalled()
+		expect(mockApplyUpdate).not.toHaveBeenCalled()
+		expect(execveSpy).not.toHaveBeenCalled()
+	})
+
+	it("skips when running on a canary build", async () => {
+		mockParseCanarySha7.mockReturnValue("abc1234")
+		await maybeAutoUpdateOnLaunch()
+		expect(mockCheckForUpdate).not.toHaveBeenCalled()
+		expect(mockApplyUpdate).not.toHaveBeenCalled()
+		expect(execveSpy).not.toHaveBeenCalled()
+	})
+
+	it("skips when caller signal is already aborted", async () => {
+		const controller = new AbortController()
+		controller.abort()
+		await maybeAutoUpdateOnLaunch({ signal: controller.signal })
 		expect(mockCheckForUpdate).not.toHaveBeenCalled()
 		expect(mockApplyUpdate).not.toHaveBeenCalled()
 		expect(execveSpy).not.toHaveBeenCalled()
@@ -270,6 +291,106 @@ describe("maybeAutoUpdateOnLaunch — happy path", () => {
 
 		await expect(maybeAutoUpdateOnLaunch()).resolves.toBeUndefined()
 		expect(execveSpy).not.toHaveBeenCalled()
+	})
+})
+
+describe("maybeAutoUpdateOnLaunch — deadline / abort handling", () => {
+	function makeStderrSpy() {
+		const originalWrite = process.stderr.write.bind(process.stderr)
+		const spy = vi.fn((_chunk: string | Uint8Array, _enc?: unknown, _cb?: unknown) => true)
+		;(process.stderr.write as unknown) = spy
+		return {
+			spy,
+			restore: () => {
+				;(process.stderr.write as unknown) = originalWrite
+			},
+			getLines: () => spy.mock.calls.map((c) => String(c[0])).join(""),
+		}
+	}
+
+	it("skips re-exec when signal aborts during checkForUpdate", async () => {
+		const controller = new AbortController()
+		mockCheckForUpdate.mockImplementation(async () => {
+			controller.abort()
+			return {
+				currentVersion: "1.0.0",
+				latestVersion: "1.1.0",
+				tag: "v1.1.0",
+				releaseUrl: "https://example/v1.1.0",
+				hasUpdate: true,
+				cached: false,
+			}
+		})
+
+		await expect(maybeAutoUpdateOnLaunch({ signal: controller.signal })).resolves.toBeUndefined()
+		expect(mockApplyUpdate).not.toHaveBeenCalled()
+		expect(execveSpy).not.toHaveBeenCalled()
+	})
+
+	it("skips re-exec when signal aborts during applyUpdate", async () => {
+		const controller = new AbortController()
+		mockCheckForUpdate.mockResolvedValue({
+			currentVersion: "1.0.0",
+			latestVersion: "1.1.0",
+			tag: "v1.1.0",
+			releaseUrl: "https://example/v1.1.0",
+			hasUpdate: true,
+			cached: false,
+		})
+		mockApplyUpdate.mockImplementation(async () => {
+			controller.abort()
+			return { from: "v1.1.0", to: "v1.1.0" }
+		})
+
+		await expect(maybeAutoUpdateOnLaunch({ signal: controller.signal })).resolves.toBeUndefined()
+		expect(mockApplyUpdate).toHaveBeenCalledOnce()
+		expect(execveSpy).not.toHaveBeenCalled()
+	})
+
+	it("logs an audit line with tag + releaseUrl before applying", async () => {
+		const stderr = makeStderrSpy()
+		try {
+			mockCheckForUpdate.mockResolvedValue({
+				currentVersion: "1.0.0",
+				latestVersion: "1.1.0",
+				tag: "v1.1.0",
+				releaseUrl: "https://github.com/getkimchi/kimchi/releases/tag/v1.1.0",
+				hasUpdate: true,
+				cached: false,
+			})
+			mockApplyUpdate.mockResolvedValue({ from: "v1.1.0", to: "v1.1.0" })
+
+			await maybeAutoUpdateOnLaunch()
+
+			const lines = stderr.getLines()
+			expect(lines).toContain(
+				"[kimchi-auto-update] applying update v1.1.0 from https://github.com/getkimchi/kimchi/releases/tag/v1.1.0\n",
+			)
+		} finally {
+			stderr.restore()
+		}
+	})
+
+	it("logs `<no url>` in the audit line when releaseUrl is empty", async () => {
+		const stderr = makeStderrSpy()
+		try {
+			mockCheckForUpdate.mockResolvedValue({
+				currentVersion: "1.0.0",
+				latestVersion: "1.1.0",
+				tag: "v1.1.0",
+				releaseUrl: "",
+				hasUpdate: true,
+				cached: false,
+			})
+			mockApplyUpdate.mockResolvedValue({ from: "v1.1.0", to: "v1.1.0" })
+
+			await maybeAutoUpdateOnLaunch()
+
+			const lines = stderr.getLines()
+			expect(lines).toContain("[kimchi-auto-update] applying update v1.1.0 from <no url>\n")
+		} finally {
+			stderr.restore()
+		}
 	})
 })
 
