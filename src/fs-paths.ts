@@ -87,10 +87,14 @@ export interface NormalizedAtFileArgs {
 	directoryArgs: string[]
 }
 
-export function normalizeAtFileArgs(args: string[], cwd: string): NormalizedAtFileArgs {
+export function normalizeAtFileArgs(
+	args: string[],
+	cwd: string,
+	isAtFileArg: (arg: string, index: number, args: string[]) => boolean = (arg) => arg.startsWith("@") && arg !== "@",
+): NormalizedAtFileArgs {
 	const directoryArgs: string[] = []
-	const normalized = args.map((arg) => {
-		if (!arg.startsWith("@") || arg === "@") return arg
+	const normalized = args.map((arg, index) => {
+		if (!isAtFileArg(arg, index, args)) return arg
 		const filePath = arg.slice(1)
 		const base = resolveUserPath(filePath, cwd)
 		for (const variant of VARIANTS) {

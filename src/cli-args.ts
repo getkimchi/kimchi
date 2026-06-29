@@ -23,8 +23,21 @@ const PRE_DISPATCH_VALUE_FLAGS = new Set([
 	"--theme",
 ])
 
+const AT_FILE_VALUE_FLAGS = new Set([
+	...PRE_DISPATCH_VALUE_FLAGS,
+	"--name",
+	"-n",
+	"--session-id",
+	"--exclude-tools",
+	"-xt",
+])
+
 export function isPreDispatchValueFlag(arg: string): boolean {
 	return PRE_DISPATCH_VALUE_FLAGS.has(arg)
+}
+
+export function isCliAtFileArg(arg: string, index: number, args: string[]): boolean {
+	return arg.startsWith("@") && arg !== "@" && !AT_FILE_VALUE_FLAGS.has(args[index - 1] ?? "")
 }
 
 export function getCliModeArg(args: string[]): string | undefined {

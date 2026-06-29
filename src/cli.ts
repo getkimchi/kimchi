@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url"
 import { AgentSession } from "@earendil-works/pi-coding-agent"
 import {
 	getCliModeArg,
+	isCliAtFileArg,
 	isExperimentalFeaturesArg,
 	isHelpOrVersionArgs,
 	isTerminalUiMode,
@@ -361,7 +362,11 @@ try {
 			: resolve(dirname(fileURLToPath(import.meta.url)), "../themes")
 		mkdirSync(themesDir, { recursive: true })
 
-		const atFileArgs = normalizeAtFileArgs(stripExperimentalFeaturesArg(process.argv.slice(2)), process.cwd())
+		const atFileArgs = normalizeAtFileArgs(
+			stripExperimentalFeaturesArg(process.argv.slice(2)),
+			process.cwd(),
+			isCliAtFileArg,
+		)
 		if (atFileArgs.directoryArgs.length > 0) {
 			console.error(`Error: @file path must be a file, not a directory: ${atFileArgs.directoryArgs[0]}`)
 			process.exit(1)

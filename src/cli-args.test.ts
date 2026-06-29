@@ -1,6 +1,10 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 import {
 	getCliModeArg,
+	isCliAtFileArg,
 	isExperimentalFeaturesArg,
 	isHelpOrVersionArgs,
 	isPreDispatchValueFlag,
@@ -8,6 +12,7 @@ import {
 	isTerminalUiMode,
 	stripExperimentalFeaturesArg,
 } from "./cli-args.js"
+import { normalizeAtFileArgs } from "./fs-paths.js"
 
 describe("getCliModeArg", () => {
 	it("reads --mode value", () => {
@@ -106,6 +111,47 @@ describe("isPreDispatchValueFlag", () => {
 			expect(isPreDispatchValueFlag(arg)).toBe(false)
 		},
 	)
+})
+
+describe("isCliAtFileArg", () => {
+	it("does not treat known option values as @file attachments", () => {
+		expect(isCliAtFileArg("@literal", 1, ["--system-prompt", "@literal"])).toBe(false)
+		expect(isCliAtFileArg("@scope/pkg", 1, ["--extension", "@scope/pkg"])).toBe(false)
+		expect(isCliAtFileArg("@release", 1, ["--name", "@release"])).toBe(false)
+	})
+
+	it("still treats standalone @file args as attachments", () => {
+		expect(isCliAtFileArg("@prompt.md", 0, ["@prompt.md"])).toBe(true)
+		expect(isCliAtFileArg("@prompt.md", 1, ["--print", "@prompt.md"])).toBe(true)
+	})
+})
+
+describe("normalizeAtFileArgs with CLI parsing", () => {
+	it("leaves @-prefixed option values unchanged", () => {
+		const tmp = mkdtempSync(join(tmpdir(), "cli-at-file-args-"))
+		try {
+			mkdirSync(join(tmp, "literal"))
+			mkdirSync(join(tmp, "scope", "pkg"), { recursive: true })
+			writeFileSync(join(tmp, "prompt.md"), "hi")
+
+			const result = normalizeAtFileArgs(
+				["--system-prompt", "@literal", "--extension", "@scope/pkg", "@prompt.md"],
+				tmp,
+				isCliAtFileArg,
+			)
+
+			expect(result.args).toEqual([
+				"--system-prompt",
+				"@literal",
+				"--extension",
+				"@scope/pkg",
+				`@${join(tmp, "prompt.md")}`,
+			])
+			expect(result.directoryArgs).toEqual([])
+		} finally {
+			rmSync(tmp, { recursive: true, force: true })
+		}
+	})
 })
 
 describe("isExperimentalFeaturesArg", () => {
