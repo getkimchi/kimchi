@@ -7,11 +7,46 @@ import { Value } from "typebox/value"
 import { describe, expect, it } from "vitest"
 import {
 	AskUserParams,
+	CompleteFermentParams,
+	CompletePhaseParams,
 	CompleteStepParams,
 	ConfirmCompletionCriteriaParams,
 	ProposeScopingParams,
 	ScopeParams,
 } from "./tool-schemas.js"
+
+const verdict = (id: string, value: string) => ({ id, verdict: value, rationale: "ok", evidence: "n/a" })
+
+describe("gate verdict schemas", () => {
+	it("accepts verification classification aliases only for step S2", () => {
+		expect(
+			Value.Check(CompleteStepParams, {
+				ferment_id: "f-1",
+				phase_id: "phase-1",
+				step_id: "step-1",
+				worker_agent_id: "agent-1",
+				gates: [verdict("S1", "pass"), verdict("S2", "test"), verdict("S3", "pass")],
+			}),
+		).toBe(true)
+	})
+
+	it("rejects verification classification aliases for phase and ferment gates", () => {
+		expect(
+			Value.Check(CompletePhaseParams, {
+				ferment_id: "f-1",
+				phase_id: "phase-1",
+				summary: "done",
+				gates: [verdict("F1", "test"), verdict("F2", "pass"), verdict("F3", "pass")],
+			}),
+		).toBe(false)
+		expect(
+			Value.Check(CompleteFermentParams, {
+				ferment_id: "f-1",
+				gates: [verdict("C1", "smoke"), verdict("C2", "pass"), verdict("C3", "pass")],
+			}),
+		).toBe(false)
+	})
+})
 
 // Minimal valid payload fixtures
 const passingGates = () => [
@@ -118,6 +153,18 @@ describe("ProposeScopingParams schema", () => {
 	it("accepts payload without questions (questions is optional)", () => {
 		const payload = {
 			ferment_id: "f-123",
+			title: "Test Ferment",
+			goal: "Do something",
+			success_criteria: ["Tests pass"],
+			phases: minimalPhases(),
+			gates: passingGates(),
+		}
+
+		expect(Value.Check(ProposeScopingParams, payload)).toBe(true)
+	})
+
+	it("accepts payload without ferment_id (ferment_id is optional)", () => {
+		const payload = {
 			title: "Test Ferment",
 			goal: "Do something",
 			success_criteria: ["Tests pass"],
@@ -431,6 +478,7 @@ describe("CompleteStepParams schema", () => {
 			ferment_id: "f-123",
 			phase_id: "phase-1",
 			step_id: "step-1",
+			worker_agent_id: "agent-123",
 			summary: "done",
 			gates: [
 				{ id: "S1", verdict: "pass", rationale: "ok", evidence: "n/a" },
@@ -440,6 +488,22 @@ describe("CompleteStepParams schema", () => {
 		}
 
 		expect(Value.Check(CompleteStepParams, payload)).toBe(true)
+	})
+
+	it("requires worker_agent_id because completion validates the linked worker report", () => {
+		const payload = {
+			ferment_id: "f-123",
+			phase_id: "phase-1",
+			step_id: "step-1",
+			summary: "done",
+			gates: [
+				{ id: "S1", verdict: "pass", rationale: "ok", evidence: "n/a" },
+				{ id: "S2", verdict: "pass", rationale: "ok", evidence: "n/a" },
+				{ id: "S3", verdict: "pass", rationale: "ok", evidence: "n/a" },
+			],
+		}
+
+		expect(Value.Check(CompleteStepParams, payload)).toBe(false)
 	})
 })
 

@@ -12,6 +12,9 @@ export type ContinuationDecision =
 
 const IDLE_ACTION_KINDS = new Set<DeclarativeAction["kind"]>(["pause", "complete_ferment"])
 
+// Pre-computed variant for treatCompleteFermentAsContinue callers.
+const IDLE_ACTION_KINDS_WITHOUT_COMPLETE = new Set([...IDLE_ACTION_KINDS].filter((k) => k !== "complete_ferment"))
+
 export function decideContinuation(
 	ferment: Ferment,
 	policy: ContinuationPolicy,
@@ -27,9 +30,7 @@ export function decideContinuation(
 		return { type: "idle" }
 	}
 
-	const idleKinds = opts.treatCompleteFermentAsContinue
-		? new Set([...IDLE_ACTION_KINDS].filter((k) => k !== "complete_ferment"))
-		: IDLE_ACTION_KINDS
+	const idleKinds = opts.treatCompleteFermentAsContinue ? IDLE_ACTION_KINDS_WITHOUT_COMPLETE : IDLE_ACTION_KINDS
 
 	if (idleKinds.has(action.kind)) {
 		return { type: "idle", action }

@@ -456,13 +456,14 @@ Stored in `~/.config/kimchi/config.json` (`migrationState: "skip-forever"`). Del
 ./scripts/dev-startup.sh
 ```
 
-This script checks and installs node, pnpm, and bun if missing, runs `pnpm install`, copies resources, and starts the harness with `pnpm run dev`.
+This script checks and installs node, pnpm, and bun if missing, initializes git submodules, runs `pnpm install`, copies resources, and starts the harness with `pnpm run dev`.
 
 ### Manual setup
 
 ```bash
 git clone git@github.com:getkimchi/kimchi.git
 cd kimchi
+git submodule update --init --recursive
 corepack enable
 pnpm install
 ```

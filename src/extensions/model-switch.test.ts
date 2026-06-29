@@ -1,8 +1,12 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { type MockedFunction, beforeEach, describe, expect, it, vi } from "vitest"
 import createModelGuardExtension from "./model-guard.js"
 import { __resetImagesDetectedForTest, __setLatestMessagesForTest, sessionHasImages } from "./model-guard.js"
-import modelSwitchExtension, { __resetModelSwitchStateForTest, getModelTier } from "./model-switch.js"
+import modelSwitchExtension, {
+	__resetModelSwitchStateForTest,
+	getModelTier,
+	withSuppressedModelSelectGuard,
+} from "./model-switch.js"
 import { getMultiModelEnabled, setMultiModelEnabled } from "./prompt-construction/prompt-enrichment.js"
 
 type RegisteredTool = {
@@ -410,6 +414,297 @@ describe("modelSwitchExtension", () => {
 			const text = textOf(result)
 			expect(text).not.toContain("tier")
 			expect(text).not.toContain("downgrade")
+		})
+	})
+
+	describe("metadata wizard removed", () => {
+		// The metadata wizard (promptAndSaveMetadata) was removed in the
+		// remove-metadata-wizard refactor. These tests confirm set_model never
+		// invokes ui.select or ui.input regardless of whether the target model
+		// has known metadata or not.
+
+		beforeEach(() => {
+			__resetImagesDetectedForTest()
+		})
+
+		it("does not call ctx.ui.select or ctx.ui.input on a known model", async () => {
+			const select = vi.fn()
+			const input = vi.fn()
+			const notify = vi.fn()
+			const { tool } = createHarness()
+			const ctx = {
+				modelRegistry: {
+					find: (_p: string, id: string) => MODELS.find((m) => m.id === id),
+					getAvailable: () => MODELS,
+				},
+				getContextUsage: () => undefined,
+				model: { id: MODELS[0].id, provider: MODELS[0].provider, input: ["text", "image"] },
+				hasUI: true,
+				ui: { select, input, notify },
+			}
+			await tool.execute("id", { model: "kimchi-dev/kimi-k2.6" }, undefined, undefined, ctx)
+			expect(select).not.toHaveBeenCalled()
+			expect(input).not.toHaveBeenCalled()
+		})
+
+		it("does not call ctx.ui.select or ctx.ui.input on an unknown model (no metadata)", async () => {
+			// A model unknown to MODEL_CAPABILITIES would previously have triggered
+			// the metadata wizard. Now it simply succeeds without any UI interaction.
+			const select = vi.fn()
+			const input = vi.fn()
+			const notify = vi.fn()
+			const unknownModel = {
+				id: "unknown-model-xyz",
+				provider: "some-provider",
+				name: "Unknown Model",
+				input: ["text"],
+				contextWindow: 50_000,
+			}
+			const setModel = vi.fn(async () => true)
+			let registeredTool: RegisteredTool | undefined
+			const pi = {
+				registerTool: (t: RegisteredTool) => {
+					registeredTool = t
+				},
+				setModel,
+				registerCommand: vi.fn(),
+			} as unknown as ExtensionAPI
+			modelSwitchExtension(pi)
+			if (!registeredTool) throw new Error("set_model not registered")
+			const ctx = {
+				modelRegistry: {
+					find: (p: string, id: string) =>
+						p === unknownModel.provider && id === unknownModel.id ? unknownModel : undefined,
+					getAvailable: () => [unknownModel],
+				},
+				getContextUsage: () => undefined,
+				model: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
+				hasUI: true,
+				ui: { select, input, notify },
+			}
+			const result = await registeredTool.execute(
+				"id",
+				{ model: "some-provider/unknown-model-xyz" },
+				undefined,
+				undefined,
+				ctx,
+			)
+			expect(select).not.toHaveBeenCalled()
+			expect(input).not.toHaveBeenCalled()
+			expect(textOf(result)).toContain("Switched to model some-provider/unknown-model-xyz")
+		})
+
+		it("does not call ctx.ui.select or ctx.ui.input when hasUI is false", async () => {
+			const select = vi.fn()
+			const input = vi.fn()
+			const { tool } = createHarness()
+			const ctx = {
+				modelRegistry: {
+					find: (_p: string, id: string) => MODELS.find((m) => m.id === id),
+					getAvailable: () => MODELS,
+				},
+				getContextUsage: () => undefined,
+				model: { id: MODELS[0].id, provider: MODELS[0].provider, input: ["text", "image"] },
+				hasUI: false,
+				ui: { select, input, notify: vi.fn() },
+			}
+			await tool.execute("id", { model: "kimchi-dev/kimi-k2.6" }, undefined, undefined, ctx)
+			expect(select).not.toHaveBeenCalled()
+			expect(input).not.toHaveBeenCalled()
+		})
+	})
+
+	describe("__resetModelSwitchStateForTest", () => {
+		// These tests verify the reset function returns the module to its
+		// documented default state (suppressModelSelectGuard=false,
+		// isRevertingModel=false) by observing behavioral effects.
+
+		beforeEach(() => {
+			__resetImagesDetectedForTest()
+		})
+
+		it("restores the model_select guard so it runs after being suppressed by set_model", async () => {
+			// set_model sets suppressModelSelectGuard=true then false, but if an
+			// exception leaves it true, __resetModelSwitchStateForTest clears it.
+			// We simulate the leaked state by calling withSuppressedModelSelectGuard
+			// with a function that throws, which leaves suppressModelSelectGuard=false
+			// thanks to .finally(). Then we reset and confirm the guard is active.
+			try {
+				await withSuppressedModelSelectGuard(async () => {
+					throw new Error("boom")
+				})
+			} catch {
+				/* expected */
+			}
+			// After the throw, .finally() restores suppressModelSelectGuard=false already.
+			// Now confirm reset + normal guard behavior by verifying model_select reverts.
+			__resetModelSwitchStateForTest()
+
+			const { pi, trigger, setModel } = createHarnessWithTrigger()
+			modelSwitchExtension(pi)
+			const notify = vi.fn()
+			// This should trigger the context overflow guard (tokens > safe window)
+			await trigger(
+				"model_select",
+				{
+					type: "model_select",
+					model: { id: "minimax-m2.7", provider: "kimchi-dev", input: ["text"], contextWindow: 100_000 },
+					previousModel: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
+					source: "set",
+				},
+				{
+					model: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
+					modelRegistry: { getAvailable: () => MODELS },
+					getContextUsage: () => ({ tokens: 150_000 }),
+					ui: { notify },
+				} as never,
+			)
+			// Guard is active → revert was called
+			expect(setModel).toHaveBeenCalledWith(expect.objectContaining({ id: "kimi-k2.6" }))
+			expect(notify).toHaveBeenCalledWith(expect.stringContaining("context"), "error")
+		})
+
+		it("after reset, model_select guard is skipped when suppressModelSelectGuard is set via set_model", async () => {
+			// Confirm the guard suppression path works correctly after a reset:
+			// set_model sets suppressModelSelectGuard=true, fires pi.setModel (which
+			// emits model_select internally), and the handler skips due to the flag.
+			__resetModelSwitchStateForTest()
+
+			const { pi, trigger, setModel } = createHarnessWithTrigger()
+			modelSwitchExtension(pi)
+
+			// Manually invoke model_select with suppressModelSelectGuard=true by
+			// wrapping in withSuppressedModelSelectGuard — the handler must skip.
+			let handlerCallCount = 0
+			const notify = vi.fn(() => {
+				handlerCallCount++
+			})
+			await withSuppressedModelSelectGuard(async () => {
+				await trigger(
+					"model_select",
+					{
+						type: "model_select",
+						model: { id: "minimax-m2.7", provider: "kimchi-dev", input: ["text"], contextWindow: 100_000 },
+						previousModel: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
+						source: "set",
+					},
+					{
+						model: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
+						modelRegistry: { getAvailable: () => MODELS },
+						getContextUsage: () => ({ tokens: 150_000 }),
+						ui: { notify },
+					} as never,
+				)
+			})
+			// Guard was suppressed → no revert, no notify
+			expect(setModel).not.toHaveBeenCalled()
+			expect(notify).not.toHaveBeenCalledWith(expect.stringContaining("context"), "error")
+		})
+
+		it("resets suppressModelSelectGuard to false so model_select guard is active on next call", async () => {
+			// Directly verify via withSuppressedModelSelectGuard that reset
+			// restores guard-active behavior between test runs.
+			__resetModelSwitchStateForTest()
+
+			const { pi, trigger, setModel } = createHarnessWithTrigger()
+			modelSwitchExtension(pi)
+			const notify = vi.fn()
+
+			// First trigger: guard active (no suppression) → revert fires for overflow
+			await trigger(
+				"model_select",
+				{
+					type: "model_select",
+					model: { id: "minimax-m2.7", provider: "kimchi-dev", input: ["text"], contextWindow: 100_000 },
+					previousModel: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
+					source: "set",
+				},
+				{
+					model: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
+					modelRegistry: { getAvailable: () => MODELS },
+					getContextUsage: () => ({ tokens: 150_000 }),
+					ui: { notify },
+				} as never,
+			)
+			expect(setModel).toHaveBeenCalledTimes(1)
+			expect(notify).toHaveBeenCalledTimes(1)
+
+			// Reset between test runs
+			__resetModelSwitchStateForTest()
+			setModel.mockClear()
+			notify.mockClear()
+
+			// Second trigger after reset: guard must still be active
+			await trigger(
+				"model_select",
+				{
+					type: "model_select",
+					model: { id: "minimax-m2.7", provider: "kimchi-dev", input: ["text"], contextWindow: 100_000 },
+					previousModel: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
+					source: "set",
+				},
+				{
+					model: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
+					modelRegistry: { getAvailable: () => MODELS },
+					getContextUsage: () => ({ tokens: 150_000 }),
+					ui: { notify },
+				} as never,
+			)
+			expect(setModel).toHaveBeenCalledTimes(1)
+			expect(notify).toHaveBeenCalledTimes(1)
+		})
+
+		it("resets isRevertingModel to false so a new revert cycle can execute after reset", async () => {
+			// isRevertingModel=true would cause the handler to skip entirely.
+			// After __resetModelSwitchStateForTest it must be false so the next
+			// revert-triggering model_select fires correctly.
+			const { pi: pi1, trigger: trigger1, setModel: setModel1 } = createHarnessWithTrigger()
+			modelSwitchExtension(pi1)
+			const notify1 = vi.fn()
+
+			// Fire an overflow event — this sets isRevertingModel=true mid-execution
+			// and resets it to false after the revert. Verify revert happened.
+			await trigger1(
+				"model_select",
+				{
+					type: "model_select",
+					model: { id: "minimax-m2.7", provider: "kimchi-dev", input: ["text"], contextWindow: 100_000 },
+					previousModel: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
+					source: "set",
+				},
+				{
+					model: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
+					modelRegistry: { getAvailable: () => MODELS },
+					getContextUsage: () => ({ tokens: 150_000 }),
+					ui: { notify: notify1 },
+				} as never,
+			)
+			expect(setModel1).toHaveBeenCalledTimes(1) // revert executed
+
+			// Now reset — this ensures isRevertingModel is false for the next harness
+			__resetModelSwitchStateForTest()
+
+			// Fresh harness: should revert again (isRevertingModel is false after reset)
+			const { pi: pi2, trigger: trigger2, setModel: setModel2 } = createHarnessWithTrigger()
+			modelSwitchExtension(pi2)
+			const notify2 = vi.fn()
+			await trigger2(
+				"model_select",
+				{
+					type: "model_select",
+					model: { id: "minimax-m2.7", provider: "kimchi-dev", input: ["text"], contextWindow: 100_000 },
+					previousModel: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
+					source: "set",
+				},
+				{
+					model: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
+					modelRegistry: { getAvailable: () => MODELS },
+					getContextUsage: () => ({ tokens: 150_000 }),
+					ui: { notify: notify2 },
+				} as never,
+			)
+			expect(setModel2).toHaveBeenCalledTimes(1) // revert executed again
+			expect(notify2).toHaveBeenCalledWith(expect.stringContaining("context"), "error")
 		})
 	})
 

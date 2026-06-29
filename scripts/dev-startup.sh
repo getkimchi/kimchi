@@ -38,6 +38,10 @@ else
     echo -e "${GREEN}   ✓ pnpm already installed ($(pnpm --version))${NC}"
 fi
 
+# Initialize submodules
+echo -e "${GREEN}📦 Initializing git submodules...${NC}"
+git submodule update --init --recursive
+
 # Install dependencies
 echo -e "${GREEN}📦 Installing dependencies with pnpm...${NC}"
 pnpm install

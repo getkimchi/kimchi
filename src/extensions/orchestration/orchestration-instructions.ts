@@ -8,6 +8,8 @@
  * is the module that knows about modes.
  */
 
+import { renderAgentWorkerBudgetTable } from "../agents/worker-budget-policy.js"
+import type { PromptMode } from "../prompt-construction/system-prompt.js"
 import type { ModelCustomMetadata } from "./model-metadata.js"
 import { buildOrchestrationGuidelinesSection } from "./model-registry/guidelines/guidelines-resolver.js"
 import type { ModelRegistry } from "./model-registry/index.js"
@@ -151,9 +153,9 @@ const AGENT_MANAGEMENT = `### Agent management
 - Write Agent prompts that are fully self-contained. Agents start with fresh context by default — include necessary instructions directly, or point them to a Markdown file containing larger context.
 - When delegating \`plan\` before \`build\`, have the Plan agent write a Markdown spec file (full method signatures, file paths, interfaces) to the Documents directory. Pass that file path to the build Agent — it must not rediscover what was already decided.
 - Spawn independent subtasks in parallel with \`run_in_background: true\`: do NOT run more than 3 concurrent Agents.
-- After an Agent returns, TRUST its output unless the subagent itself reported errors or produced obviously incomplete work. Do NOT re-read source files just to verify a successful subagent's findings — this is the most common source of wasted orchestrator turns. Instead, have the subagent write its substantive output to a Markdown file in the Documents directory and return the file path. Read ONLY that file (or pass it to the next subagent). For build agents specifically: if the agent reports tests pass and compilation succeeds, move on to the next chunk or to review. Do NOT re-read the code it wrote. For correction tasks, call Agent again with the correction task rather than fixing inline.
+- After an Agent returns, TRUST its output unless the subagent itself reported errors or produced obviously incomplete work. Do NOT re-read source files just to verify a successful subagent's findings — this is the most common source of wasted orchestrator turns. For artifact-producing agents (Plan, Reviewer, Fixer, and Researcher when the research is non-trivial), have the subagent write its substantive output to a Markdown file in the Documents directory and return the file path. Read ONLY that file (or pass it to the next subagent). Explore is the exception: Explore agents return decision-ready findings directly in the Agent result and must not be asked to write Markdown files, reports, docs, notes, or scratch files. For build agents specifically: if the agent reports tests pass and compilation succeeds, move on to the next chunk or to review. Do NOT re-read the code it wrote. For correction tasks, call Agent again with the correction task rather than fixing inline.
 - If an Agent call returns an error of any kind (including protocol violation, timeout, or exit error): do NOT attempt to implement or debug the work yourself. First assess whether the failure is retryable (e.g. transient timeouts or protocol violations) or not (e.g. missing files, permission errors, or invalid inputs). For retryable failures, call a replacement Agent with a corrected or simplified prompt — allow at most one retry per delegated step. For non-retryable failures, report the failure clearly and stop immediately without retrying.
-- **When a subagent aborts due to token budget or duration limit**: the work is likely partially done. Do NOT pick up the remaining work yourself — that defeats the purpose of delegation and wastes orchestrator tokens. Instead, spawn a NEW follow-up Agent scoped to ONLY the unfinished portion. List what the first agent completed (files created, tests passing) and what remains in the follow-up prompt. Use the same or higher budget tier if the original was undersized (see multi-file package tier in budget table). **Include dependency context**: paste the public type signatures and function signatures of packages the follow-up agent will import (e.g. structs, interfaces, exported functions from earlier chunks) directly in the prompt so it does not waste turns re-reading files.
+- **When a subagent returns agent_outcome.outcome other than "completed"**: the work is likely partial or invalid. Do NOT pick up the remaining work yourself — that defeats the purpose of delegation and wastes orchestrator tokens. Inspect agent_outcome.report before acting. Resume the same Agent only when remaining_steps are a direct continuation and preserving session context is valuable; use a changed-approach resume when the same thread still matters but the prior approach stalled; spawn a NEW follow-up Agent when remaining_steps have a clean narrower task boundary; run a short finalizer resume when the report is missing or the work appears finished but did not return completed; or stop/skip and report when blocked or unclear. Do not blindly retry the same prompt. **Include dependency context** in any replacement prompt: paste the public type signatures and function signatures of packages the follow-up agent will import (e.g. structs, interfaces, exported functions from earlier chunks) directly in the prompt so it does not waste turns re-reading files.
 - Do NOT call Agent for work you can do in a single tool call.
 - Use \`inherit_context: true\` only when the Agent needs the parent conversation history. Otherwise keep the default fresh context.
 - Inline images in your conversation are forwarded automatically to vision-capable Agents when needed. If no vision-capable model is available, the harness will automatically switch to one.
@@ -164,18 +166,12 @@ Always pass a \`model\` parameter on every Agent call — never omit it. Default
 
 const TOKEN_BUDGETS = `### Token budgets and turn caps
 
-Include a \`token_budget\` and \`max_turns\` for every Agent call. The token budget caps **cumulative output tokens** (tokens generated by the agent across all turns). It does not count input tokens, which grow as a side-effect of conversation length and are not controllable by the agent.
+Include a \`max_turns\` for every Agent call. Use \`token_budget\` when the caller or task scope needs an output-token cap; it caps **cumulative output tokens** (tokens generated by the agent across all turns). It does not count input tokens, which grow as a side-effect of conversation length and are not controllable by the agent.
 
 Match the budget to the **delegated task scope**, not the overall project complexity:
 If the user explicitly asks for the Agent tool with a specific \`token_budget\`, make that Agent call once with the requested value. Do not ask to increase the budget or substitute a larger budget before the tool runs.
 
-| Agent task scope | token_budget | max_turns | max_duration |
-|---|---|---|---|
-| Single file (one module, one test file, one doc) | 50000 | 12 | 300s |
-| Multi-file package (concurrent logic, worker pools, complex state) | 150000 | 30 | 600s |
-| Review (read code + write findings report) | 100000 | 20 | 600s |
-| Full project or large codebase exploration | 100000 | 25 | 300s |
-| Plan or research document (writing, not coding) | 60000 | 10 | 180s |
+${renderAgentWorkerBudgetTable()}
 
 **Always set \`max_duration\`** on every Agent call. Subagents can hang on blocking operations (deadlocked tests, infinite loops, stuck network calls) where token budget and turn limits do not trigger. The duration cap is the last line of defence against runaway agents.
 
@@ -183,7 +179,18 @@ If the user explicitly asks for the Agent tool with a specific \`token_budget\`,
 
 Use the **multi-file package** tier when a build chunk involves concurrency primitives, worker pools, channels, or complex state machines — these require more iterative test-fix cycles than simple CRUD code. When in doubt between single-file and multi-file, prefer the larger budget — an abort followed by a follow-up agent costs more total tokens than a generous initial budget.
 
-The turn cap prevents debug-loop budget exhaustion — an agent that hasn't converged in 12 turns is unlikely to converge in 20. If an Agent hits its budget or turn cap, spawn a follow-up with the remaining work rather than raising the budget. The follow-up prompt must list what the first agent completed and what remains.`
+The turn cap is the primary delegated-worker budget. If an Agent returns \`agent_outcome.outcome: "budget_exhausted"\`, do not mark the delegated work complete from that aborted result. Inspect \`agent_outcome.report\` and choose deliberately:
+
+| Signal | Action |
+|---|---|
+| Completed outcome + report.status completed | Use the result or complete the linked Ferment step. |
+| Missing report | Call \`resume_subagent\` with only \`agent_id\` and purpose \`finalize_report\`; the host supplies fixed report-only limits. |
+| Budget exhausted + direct continuation in remaining_steps | Call \`resume_subagent\` with a bounded fresh budget and steering prompt. |
+| Budget exhausted + same thread but stalled approach | Call \`resume_subagent\` once with a changed-approach steering prompt. |
+| Budget exhausted + separable remaining_steps | Spawn a narrower linked replacement Agent for the clean task boundary. |
+| Budget exhausted + appears finished | Run a short finalizer resume, then complete only from a completed outcome. |
+| Max duration or inactivity | Assume a possible hang or blocked operation; resume only if the steering prompt avoids the stall, otherwise spawn a narrower replacement or stop/report. |
+| Failed, stopped, blocked, or unclear report | Spawn a corrected replacement only if there is a clear task boundary; otherwise stop/skip and report the worker report. |`
 
 const PLAN_QUALITY_CHECKLIST = `### What makes a good plan
 
@@ -315,6 +322,9 @@ function buildExplorePhaseDirectives(ctx: PhaseDirectiveContext): string {
 		lines.push("- DO NOT explore the codebase yourself. You do not have the explorer role.")
 		lines.push(`- DO delegate to Agent(type: "Explore", model: ${models}).`)
 	}
+	lines.push(
+		"- DO ask Explore agents to return decision-ready findings directly in the Agent result. Do NOT ask Explore agents to write Markdown files, reports, docs, notes, or scratch files.",
+	)
 
 	return lines.join("\n")
 }
@@ -367,7 +377,7 @@ Before taking any action, silently reason through the steps below. Keep this rea
 
 Read **Your Capabilities** above. The sections below tell you exactly what to DO and what NOT to do for each pipeline phase. Follow them literally.
 
-Pass plans and structured findings as Markdown files in the Documents directory, not as inline blobs in prompts.`)
+Pass durable artifacts as Markdown files in the Documents directory: plans/specs, review findings, verification reports, and non-trivial research notes. Explore findings are not durable artifacts; consume them directly from the Agent result.`)
 
 	parts.push(buildPlanPhaseDirectives(ctx))
 	parts.push(buildBuildPhaseDirectives(ctx))

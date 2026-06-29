@@ -13,6 +13,7 @@ vi.mock("@earendil-works/pi-coding-agent", async () => {
 			create: vi.fn().mockReturnValue({ applyOverrides: vi.fn() }),
 		},
 		createAgentSession: vi.fn(),
+		defineTool: vi.fn((tool) => tool),
 		getAgentDir: vi.fn().mockReturnValue("/fake-agent-dir"),
 	}
 })
@@ -113,13 +114,14 @@ import {
 	createAgentSession,
 } from "@earendil-works/pi-coding-agent"
 import { readTelemetryConfig } from "../../../config.js"
+import { DEFAULT_BASH_TIMEOUT_SECONDS } from "../../bash-default-timeout.js"
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
 import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
 import telemetryExtension from "../../telemetry/index.js"
 import { getAgentConfig, getConfig, getToolNamesForType } from "../personas/agent-types.js"
 import { buildAgentPrompt } from "../prompt/prompts.js"
-import { type RunOptions, runAgent } from "./agent-runner.js"
+import { type RunOptions, resumeAgent, runAgent } from "./agent-runner.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "./constants.js"
 
 const mockCreateAgentSession = vi.mocked(createAgentSession)
@@ -148,6 +150,7 @@ function makeFakeSession({
 	events,
 	statsTokens,
 	activeToolNames = [],
+	promptAction,
 	registeredToolNames,
 }: {
 	promptTokens?: number
@@ -159,6 +162,7 @@ function makeFakeSession({
 	events?: SessionEvent[]
 	statsTokens?: { input: number; output: number; cacheRead: number; cacheWrite: number }
 	activeToolNames?: string[]
+	promptAction?: (emit: (event: SessionEvent) => void) => Promise<void>
 	registeredToolNames?: string[]
 } = {}) {
 	const subscribers: Subscriber[] = []
@@ -194,6 +198,12 @@ function makeFakeSession({
 		prompt: vi.fn().mockImplementation(async () => {
 			if (!promptCalled) {
 				promptCalled = true
+				if (promptAction) {
+					await promptAction((event) => {
+						for (const sub of subscribers) sub(event)
+					})
+					return
+				}
 				if (events) {
 					for (const event of events) {
 						for (const sub of subscribers) {
@@ -324,9 +334,121 @@ describe("runAgent — telemetry extension", () => {
 		const ctorArg = mockDefaultResourceLoader.mock.calls[0]?.[0]
 		expect(ctorArg).toHaveProperty("extensionFactories")
 		expect(Array.isArray(ctorArg?.extensionFactories)).toBe(true)
-		expect(ctorArg?.extensionFactories).toHaveLength(1)
+		expect(ctorArg?.extensionFactories).toHaveLength(2)
 		expect(mockReadTelemetryConfig).toHaveBeenCalled()
 		expect(mockTelemetryExtension).toHaveBeenCalledWith(mockReadTelemetryConfig.mock.results[0]?.value)
+	})
+
+	it("applies Kimchi's default bash timeout to subagent tool calls", async () => {
+		const session = makeFakeSession({})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "run a command", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		const workerFactories = mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories ?? []
+		const toolCallHandlers: Array<(event: unknown) => void> = []
+		for (const factory of workerFactories) {
+			factory({
+				on: (event: string, handler: (event: unknown) => void) => {
+					if (event === "tool_call") toolCallHandlers.push(handler)
+				},
+			} as never)
+		}
+
+		const event = { toolName: "bash", input: { command: "sleep 480" } }
+		for (const handler of toolCallHandlers) handler(event)
+
+		expect(event.input).toHaveProperty("timeout", DEFAULT_BASH_TIMEOUT_SECONDS)
+	})
+
+	it("adds a worker report capability only for Ferment-linked sessions", async () => {
+		const linkedSession = makeFakeSession({ activeToolNames: ["read", "submit_agent_report"] })
+		const ordinarySession = makeFakeSession({ activeToolNames: ["read"] })
+		mockCreateAgentSession
+			.mockResolvedValueOnce({
+				session: linkedSession as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+				extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+					ReturnType<typeof createAgentSession>
+				>["extensionsResult"],
+			})
+			.mockResolvedValueOnce({
+				session: ordinarySession as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+				extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+					ReturnType<typeof createAgentSession>
+				>["extensionsResult"],
+			})
+		mockGetConfig.mockReturnValue(makeTypeConfig({ extensions: true, skills: false }))
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "linked work", {
+			pi: pi as unknown as RunOptions["pi"],
+			workerReport: { submit: vi.fn(), isAccepted: vi.fn(() => false) },
+		})
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "ordinary work", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		const linkedLoaderOptions = mockDefaultResourceLoader.mock.calls[0]?.[0]
+		const ordinaryLoaderOptions = mockDefaultResourceLoader.mock.calls[1]?.[0]
+		expect(linkedLoaderOptions?.extensionFactories).toHaveLength(3)
+		expect(ordinaryLoaderOptions?.extensionFactories).toHaveLength(2)
+		expect(linkedSession.setActiveToolsByName).toHaveBeenCalledWith(["submit_agent_report"])
+		expect(ordinarySession.setActiveToolsByName).toHaveBeenCalledWith([])
+	})
+
+	it("stops a linked worker immediately after its host accepts the report", async () => {
+		const abortSpy = vi.fn()
+		let accepted = false
+		const submit = vi.fn(() => {
+			accepted = true
+			return { accepted: true, message: "accepted" }
+		})
+		const session = makeFakeSession({
+			abortSpy,
+			emitUsage: false,
+			promptAction: async (emit) => {
+				const factory = mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories?.[2]
+				const registerTool = vi.fn()
+				factory?.({ registerTool } as never)
+				const tool = registerTool.mock.calls[0]?.[0]
+				await tool.execute(
+					"report-1",
+					{
+						status: "completed",
+						summary: "done",
+						steps_completed: ["implemented"],
+						remaining_steps: [],
+					},
+					undefined,
+					undefined,
+					undefined,
+				)
+				emit({ type: "tool_execution_end", toolName: "submit_agent_report" })
+				await new Promise<void>((resolve) => queueMicrotask(() => resolve()))
+			},
+		})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+		mockGetConfig.mockReturnValue(makeTypeConfig({ extensions: true, skills: false }))
+
+		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "linked work", {
+			pi: pi as unknown as RunOptions["pi"],
+			workerReport: { submit, isAccepted: () => accepted },
+		})
+
+		expect(submit).toHaveBeenCalledOnce()
+		expect(abortSpy).toHaveBeenCalledOnce()
+		expect(result.aborted).toBe(false)
 	})
 
 	it("emits session_shutdown after prompt completes so telemetry flushes and timers are cleared", async () => {
@@ -896,6 +1018,103 @@ describe("runAgent — budget awareness steers", () => {
 	})
 })
 
+describe("runAgent — linked worker hard turn limit", () => {
+	it("completes when the host accepts a report on the final allowed turn", async () => {
+		const abortSpy = vi.fn()
+		const session = makeFakeSession({
+			abortSpy,
+			emitUsage: false,
+			events: [{ type: "tool_execution_end", toolName: "submit_agent_report" }, { type: "turn_end" }],
+		})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+		mockGetConfig.mockReturnValue(makeTypeConfig({ extensions: true, skills: false }))
+		mockGetAgentConfig.mockReturnValue(makeAgentConfig())
+
+		const result = await runAgent(
+			makeFakeCtx() as unknown as Parameters<typeof runAgent>[0],
+			"General-Purpose",
+			"work",
+			{
+				pi: makeFakePi() as unknown as RunOptions["pi"],
+				maxTurns: 1,
+				hardTurnLimit: true,
+				workerReport: { submit: vi.fn(), isAccepted: vi.fn(() => true) },
+			},
+		)
+
+		expect(abortSpy).toHaveBeenCalledOnce()
+		expect(result).toMatchObject({ aborted: false, abortReason: undefined, turnsUsed: 1 })
+	})
+
+	it("does not apply token-budget handling after the host accepts a report", async () => {
+		const abortSpy = vi.fn()
+		const session = makeFakeSession({
+			abortSpy,
+			events: [{ type: "tool_execution_end", toolName: "submit_agent_report" }, ...turnEvents(2_000)],
+		})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+		mockGetConfig.mockReturnValue(makeTypeConfig({ extensions: true, skills: false }))
+		mockGetAgentConfig.mockReturnValue(makeAgentConfig())
+
+		const result = await runAgent(
+			makeFakeCtx() as unknown as Parameters<typeof runAgent>[0],
+			"General-Purpose",
+			"work",
+			{
+				pi: makeFakePi() as unknown as RunOptions["pi"],
+				tokenBudget: 1_024,
+				workerReport: { submit: vi.fn(), isAccepted: vi.fn(() => true) },
+			},
+		)
+
+		expect(abortSpy).toHaveBeenCalledOnce()
+		expect(session.steer).not.toHaveBeenCalledWith(expect.stringContaining("output token limit"))
+		expect(result).toMatchObject({ aborted: false, abortReason: undefined })
+	})
+
+	it("aborts a Ferment-linked worker at max_turns without grace turns", async () => {
+		const abortSpy = vi.fn()
+		const session = makeFakeSession({
+			abortSpy,
+			emitUsage: false,
+			events: [{ type: "turn_end" }, { type: "turn_end" }],
+		})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+		mockGetConfig.mockReturnValue(makeTypeConfig({ extensions: true, skills: false }))
+		mockGetAgentConfig.mockReturnValue(makeAgentConfig())
+
+		const result = await runAgent(
+			makeFakeCtx() as unknown as Parameters<typeof runAgent>[0],
+			"General-Purpose",
+			"work",
+			{
+				pi: makeFakePi() as unknown as RunOptions["pi"],
+				maxTurns: 2,
+				hardTurnLimit: true,
+				workerReport: { submit: vi.fn(), isAccepted: vi.fn(() => false) },
+			},
+		)
+
+		expect(abortSpy).toHaveBeenCalledOnce()
+		expect(result).toMatchObject({ aborted: true, abortReason: "max_turns", turnsUsed: 2 })
+	})
+})
+
 describe("runAgent — maxDuration enforcement", () => {
 	let ctx: ReturnType<typeof makeFakeCtx>
 	let pi: ReturnType<typeof makeFakePi>
@@ -1057,6 +1276,68 @@ describe("runAgent — maxDuration enforcement", () => {
 		expect(abortSpy).toHaveBeenCalled()
 		expect(result.aborted).toBe(true)
 		expect(result.abortReason).toBe("max_duration")
+	})
+})
+
+describe("resumeAgent — maxDuration enforcement", () => {
+	beforeEach(() => {
+		vi.useFakeTimers()
+	})
+
+	afterEach(() => {
+		vi.useRealTimers()
+		vi.clearAllMocks()
+	})
+
+	it("classifies submit_agent_report as success even after maxDuration fires", async () => {
+		const abortSpy = vi.fn()
+		const subscribers: Subscriber[] = []
+		let resolvePrompt: (() => void) | undefined
+		const promptPromise = new Promise<void>((resolve) => {
+			resolvePrompt = resolve
+		})
+		const emit = (event: SessionEvent) => {
+			for (const subscriber of subscribers) subscriber(event)
+		}
+		const session = {
+			subscribe: vi.fn((cb: Subscriber) => {
+				subscribers.push(cb)
+				return () => {
+					const idx = subscribers.indexOf(cb)
+					if (idx !== -1) subscribers.splice(idx, 1)
+				}
+			}),
+			abort: abortSpy,
+			steer: vi.fn(),
+			messages: [],
+			getSessionStats: vi.fn().mockReturnValue({
+				tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			}),
+			prompt: vi.fn().mockImplementation(async () => {
+				await promptPromise
+			}),
+		}
+
+		const resultPromise = resumeAgent(session as unknown as AgentSession, "finish", {
+			maxTurns: 5,
+			maxDuration: 60,
+			shouldTerminateAfterTool: (toolName) => toolName === "submit_agent_report",
+		})
+
+		await vi.advanceTimersByTimeAsync(60_001)
+		expect(abortSpy).toHaveBeenCalledOnce()
+
+		emit({ type: "tool_execution_end", toolName: "submit_agent_report" })
+		emit({ type: "turn_end" })
+		resolvePrompt?.()
+
+		const result = await resultPromise
+		expect(result).toMatchObject({
+			aborted: false,
+			abortReason: undefined,
+			turnsUsed: 1,
+			maxTurns: 5,
+		})
 	})
 })
 
@@ -1359,6 +1640,71 @@ describe("steerAgent — explicit steering", () => {
 })
 
 describe("resumeAgent — inactivity steering", () => {
+	it("completes after a report on the resume's final turn and token boundary", async () => {
+		const { resumeAgent } = await import("./agent-runner.js")
+		const abortSpy = vi.fn()
+		const session = makeFakeSession({
+			abortSpy,
+			events: [{ type: "tool_execution_end", toolName: "submit_agent_report" }, ...turnEvents(2_000)],
+		})
+
+		const result = await resumeAgent(session as unknown as AgentSession, "submit report", {
+			maxTurns: 1,
+			hardTurnLimit: true,
+			tokenBudget: 1_024,
+			shouldTerminateAfterTool: (toolName) => toolName === "submit_agent_report",
+		})
+
+		expect(abortSpy).toHaveBeenCalledOnce()
+		expect(session.steer).not.toHaveBeenCalledWith(expect.stringContaining("output token limit"))
+		expect(result).toMatchObject({ aborted: false, abortReason: undefined, turnsUsed: 1 })
+	})
+
+	it("stops a resumed worker after an accepted report", async () => {
+		const { resumeAgent } = await import("./agent-runner.js")
+		const abortSpy = vi.fn()
+		const session = makeFakeSession({
+			abortSpy,
+			emitUsage: false,
+			promptAction: async (emit) => {
+				emit({ type: "tool_execution_end", toolName: "submit_agent_report" })
+				await new Promise<void>((resolve) => queueMicrotask(() => resolve()))
+			},
+		})
+
+		const result = await resumeAgent(session as unknown as AgentSession, "submit report", {
+			shouldTerminateAfterTool: (toolName) => toolName === "submit_agent_report",
+		})
+
+		expect(abortSpy).toHaveBeenCalledOnce()
+		expect(result.aborted).toBe(false)
+	})
+
+	it("charges resume usage from final session stats when message usage is missing", async () => {
+		const { resumeAgent } = await import("./agent-runner.js")
+		const onAssistantUsage = vi.fn()
+		const statsTokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+		const session = makeFakeSession({
+			emitUsage: false,
+			statsTokens,
+			promptAction: async () => {
+				statsTokens.input = 200
+				statsTokens.output = 1_500
+			},
+		})
+
+		const result = await resumeAgent(session as unknown as AgentSession, "resume prompt", {
+			tokenBudget: 1_024,
+			onAssistantUsage,
+		})
+
+		expect(onAssistantUsage).toHaveBeenCalledWith(
+			expect.objectContaining({ input: 200, output: 1_500, cacheRead: 0, cacheWrite: 0 }),
+		)
+		expect(result.aborted).toBe(true)
+		expect(result.abortReason).toBe("token_budget")
+	})
+
 	it("adds orchestrator prefix to automated inactivity steer", async () => {
 		const { resumeAgent } = await import("./agent-runner.js")
 		vi.useFakeTimers()

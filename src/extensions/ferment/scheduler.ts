@@ -10,12 +10,12 @@ export interface ScheduleNextFermentActionOptions {
 	allowManualPhaseBoundary?: boolean
 	treatCompleteFermentAsContinue?: boolean
 	tag?: string
-	deliverAsFollowUp?: boolean
+	deliverAs?: "steer" | "followUp"
 }
 
 export interface ScheduleFermentWakeUpOptions {
 	allowManualPhaseBoundary?: boolean
-	deliverAsFollowUp?: boolean
+	deliverAs?: "followUp"
 	fermentId?: string
 	tag?: string
 }
@@ -87,7 +87,7 @@ export function buildContextualNudge(ferment: Ferment, action: DeclarativeAction
 			const { step, stepLabel } = stepContext(phase, action.stepId)
 			const verifyHint = step?.verification?.command ? `\n  Verify command: ${step.verification.command}` : ""
 			return (
-				`Ferment "${fname}" has a running step — call complete_ferment_step once the work for ${stepLabel} is done.\n` +
+				`Ferment "${fname}" has a running step — call complete_ferment_step with worker_agent_id only after the linked worker for ${stepLabel} has a completed outcome and completed report.\n` +
 				`  ferment_id: "${fid}"\n` +
 				`  phase_id:   "${action.phaseId}"  (${phaseLabel})\n` +
 				`  step_id:    "${action.stepId}"${verifyHint}`
@@ -132,13 +132,6 @@ export function buildContextualNudge(ferment: Ferment, action: DeclarativeAction
 		default:
 			return formatActionNudgeLine(action)
 	}
-}
-
-/** @deprecated Use buildContextualNudge instead — kept for callers that have
- *  not yet been migrated. Produces bare tool-name + reason with no IDs or
- *  step description. */
-export function buildFermentWakeUpNudge(ferment: Ferment, action: DeclarativeAction): string {
-	return buildContextualNudge(ferment, action)
 }
 
 function freshFerment(runtime: FermentRuntime, fermentId?: string): Ferment | undefined {
@@ -197,7 +190,7 @@ export function scheduleNextFermentAction(
 			display: false,
 			details: { action: action.kind },
 		},
-		opts.deliverAsFollowUp ? { triggerTurn: true, deliverAs: "followUp" } : { triggerTurn: true },
+		opts.deliverAs ? { triggerTurn: true, deliverAs: opts.deliverAs } : { triggerTurn: true },
 	)
 }
 
@@ -224,10 +217,10 @@ export function scheduleFermentWakeUp(
 	void pi.sendMessage(
 		{
 			customType: "ferment_continuation_nudge",
-			content: [{ type: "text", text: buildFermentWakeUpNudge(ferment, decision.action) }],
+			content: [{ type: "text", text: buildContextualNudge(ferment, decision.action) }],
 			display: false,
 			details: { action: "wake_up", expectedAction: decision.action.kind },
 		},
-		opts.deliverAsFollowUp ? { triggerTurn: true, deliverAs: "followUp" } : { triggerTurn: true },
+		opts.deliverAs ? { triggerTurn: true, deliverAs: opts.deliverAs } : { triggerTurn: true },
 	)
 }

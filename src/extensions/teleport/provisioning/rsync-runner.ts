@@ -142,6 +142,15 @@ export class RsyncError extends Error {
 	}
 }
 
+/** Build a user-facing message for a failed rsync, including a head of its stderr. */
+export function formatRsyncFailure(err: unknown): string {
+	if (err instanceof RsyncError) {
+		const stderrHead = err.stderr?.trim().slice(0, 1500) ?? ""
+		return stderrHead ? `${err.message}\nstderr:\n${stderrHead}` : err.message
+	}
+	return err instanceof Error ? err.message : String(err)
+}
+
 interface BuildSshOptionInput {
 	proxyCommand: string
 	knownHostsFile: string

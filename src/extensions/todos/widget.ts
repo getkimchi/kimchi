@@ -11,6 +11,10 @@ const TODO_WIDGET_OPTIONS = { placement: "aboveEditor" } as const
 const TODO_STATUS_KEY = "todos"
 const TODO_LIST_HINT_TEXT = "F7 or enter '/todos' to collapse"
 const MAX_TODO_WIDGET_LINES = 14
+const TODO_WIDGET_BODY_LINES = 10
+const TODO_WIDGET_ROLL_THRESHOLD = TODO_WIDGET_BODY_LINES - 1
+const MAX_ROLLED_TODO_ROWS = 5
+const MAX_ROLLED_CONTEXT_ROWS = 2
 const TODO_SYMBOL: Record<TodoStatus, string> = {
 	pending: "○",
 	in_progress: "▶",
@@ -20,6 +24,7 @@ const TODO_SYMBOL: Record<TodoStatus, string> = {
 
 interface TodoWidgetState {
 	visible: boolean
+	expanded: boolean
 	collapsed: boolean
 	registered: boolean
 	registrationId: number
@@ -31,7 +36,7 @@ const todoWidgetStates = new Map<string, TodoWidgetState>()
 let activeTodoWidgetSessionId: string | undefined
 
 function createTodoWidgetState(): TodoWidgetState {
-	return { visible: false, collapsed: false, registered: false, registrationId: 0 }
+	return { visible: false, expanded: false, collapsed: false, registered: false, registrationId: 0 }
 }
 
 function todoWidgetSessionId(ctx: ExtensionContext): string {
@@ -68,8 +73,8 @@ function isFermentTodo(todo: TodoItem): boolean {
 	return todo.content.startsWith("↳ ") || todo.content.startsWith("[Phase ")
 }
 
-function todoLine(todo: TodoItem, _displayIndex: number, theme: Theme, scope: TodoScope): string {
-	const index = `${todo.id}`.padStart(2)
+function todoLine(todo: TodoItem, displayIndex: number, theme: Theme, scope: TodoScope): string {
+	const index = `${displayIndex + 1}`.padStart(2)
 	const symbol = TODO_SYMBOL[todo.status]
 	const isFerment = scope.kind === "ferment" || isFermentTodo(todo)
 
@@ -118,20 +123,79 @@ function summarizeTodosForScope(scope: TodoScope): string {
 	return summarizeTodoCounts(getTodoCountsForScope(scope))
 }
 
+function selectTodoWindow(todos: TodoItem[]): {
+	todos: TodoItem[]
+	startIndex: number
+	hiddenBefore: number
+	hiddenAfter: number
+} {
+	const firstActiveIndex = todos.findIndex((todo) => todo.status !== "completed")
+	const startIndex =
+		firstActiveIndex === -1
+			? Math.max(0, todos.length - TODO_WIDGET_ROLL_THRESHOLD)
+			: firstActiveIndex >= TODO_WIDGET_ROLL_THRESHOLD
+				? firstActiveIndex - MAX_ROLLED_CONTEXT_ROWS
+				: 0
+	const baseVisibleCount =
+		startIndex > 0 && firstActiveIndex !== -1 ? MAX_ROLLED_CONTEXT_ROWS + MAX_ROLLED_TODO_ROWS : TODO_WIDGET_BODY_LINES
+	const markerCount = (startIndex > 0 ? 1 : 0) + (todos.length > startIndex + baseVisibleCount ? 1 : 0)
+	const visibleCount = Math.min(baseVisibleCount, TODO_WIDGET_BODY_LINES - markerCount)
+	const visibleTodos = todos.slice(startIndex, startIndex + visibleCount)
+	return {
+		todos: visibleTodos,
+		startIndex,
+		hiddenBefore: startIndex,
+		hiddenAfter: Math.max(0, todos.length - startIndex - visibleTodos.length),
+	}
+}
+
+function todoWindowBeforeText(hiddenBefore: number): string | undefined {
+	return hiddenBefore > 0 ? `… ${hiddenBefore} completed` : undefined
+}
+
+function todoWindowAfterText(hiddenAfter: number): string | undefined {
+	return hiddenAfter > 0 ? `… ${hiddenAfter} more` : undefined
+}
+
 export function buildTodoLines(theme: Theme): string[] {
 	const scope = resolveTodoScope()
 	const todos = getTodosForScope(scope)
-	const lines: string[] = [theme.fg("accent", formatScopeHeader(scope)), ""]
 
 	if (todos.length === 0) {
-		lines.push(theme.fg("dim", "No todos yet. Add one with `/todos add <text>`."))
-		return lines
+		return [
+			theme.fg("accent", formatScopeHeader(scope)),
+			"",
+			theme.fg("dim", "No todos yet. Add one with `/todos add <text>`."),
+		]
 	}
 
-	lines.push(theme.fg("dim", summarizeTodosForScope(scope)))
-	lines.push("")
+	const lines = buildTodoListHeaderLines(theme, scope)
 	lines.push(...todos.map((todo, index) => todoLine(todo, index, theme, scope)))
 	return lines
+}
+
+function buildTodoListHeaderLines(theme: Theme, scope: TodoScope): string[] {
+	return [theme.fg("accent", formatScopeHeader(scope)), "", theme.fg("dim", summarizeTodosForScope(scope)), ""]
+}
+
+function buildTodoWidgetLines(theme: Theme, expanded: boolean): string[] {
+	const scope = resolveTodoScope()
+	const todos = getTodosForScope(scope)
+	const lines = buildTodoLines(theme)
+	const withHint = [...lines, "", theme.fg("dim", TODO_LIST_HINT_TEXT)]
+	if (expanded) return withHint
+	if (withHint.length <= MAX_TODO_WIDGET_LINES) return withHint
+	if (todos.length <= TODO_WIDGET_ROLL_THRESHOLD) return lines
+
+	const window = selectTodoWindow(todos)
+	const beforeText = todoWindowBeforeText(window.hiddenBefore)
+	const afterText = todoWindowAfterText(window.hiddenAfter)
+	return [
+		...buildTodoListHeaderLines(theme, scope),
+		...(beforeText ? [theme.fg("dim", beforeText)] : []),
+		...window.todos.map((todo, index) => todoLine(todo, window.startIndex + index, theme, scope)),
+		...(afterText ? [theme.fg("dim", afterText)] : []),
+	]
 }
 
 export function resetTodoWidgetState(): void {
@@ -173,16 +237,7 @@ export function ensureTodoWidget(ctx: ExtensionContext): void {
 		return {
 			render(width: number): string[] {
 				if (!state.visible) return []
-				const lines = buildTodoLines(theme)
-				const withHint = [...lines, "", theme.fg("dim", TODO_LIST_HINT_TEXT)]
-				const visibleLines =
-					withHint.length > MAX_TODO_WIDGET_LINES
-						? [
-								...withHint.slice(0, MAX_TODO_WIDGET_LINES - 1),
-								theme.fg("dim", `… ${withHint.length - MAX_TODO_WIDGET_LINES + 1} more`),
-							]
-						: withHint
-				return visibleLines.map((line) => truncateToWidth(line, Math.max(20, width - 4)))
+				return buildTodoWidgetLines(theme, state.expanded).map((line) => truncateToWidth(line, Math.max(20, width - 4)))
 			},
 			invalidate: unregister,
 			dispose: unregister,
@@ -212,9 +267,18 @@ export function openTodoWidget(ctx: ExtensionContext): void {
 	setTodosStatus(ctx)
 }
 
+export function expandTodoWidget(ctx: ExtensionContext): void {
+	if (!ctx.hasUI) return
+	const state = getTodoWidgetState(ctx)
+	state.expanded = true
+	openTodoWidget(ctx)
+}
+
 export function clearTodoWidget(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return
-	getTodoWidgetState(ctx).visible = false
+	const state = getTodoWidgetState(ctx)
+	state.visible = false
+	state.expanded = false
 	requestTodoRender(ctx)
 }
 

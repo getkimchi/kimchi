@@ -140,12 +140,13 @@ export function emitFermentDomainEvent(events: EventBus, cmd: Command, post: Fer
 				phaseIndex: phase.index,
 				phaseName: phase.name,
 				grade: cmd.type === "complete_phase" ? cmd.grade?.grade : undefined,
-				// Duration and delta tokens are computed by the telemetry subscriber
-				// using its own snapshots taken at phase activation.
+				// Duration, delta tokens, and steering count are computed by the
+				// telemetry subscriber using its own snapshots taken at phase activation.
 				durationMs: 0,
 				deltaInputTokens: 0,
 				deltaOutputTokens: 0,
 				blockRetries: cmd.type === "complete_phase" ? (cmd.blockRetries ?? 0) : 0,
+				steeringCount: 0,
 			}
 			events.emit(FERMENT_EVENTS.PHASE_COMPLETED, payload)
 			return
@@ -181,10 +182,12 @@ export function emitFermentDomainEvent(events: EventBus, cmd: Command, post: Fer
 				phaseId: phase.id,
 				stepId: step.id,
 				stepIndex: step.index,
-				// Duration computed by telemetry subscriber using its own start time snapshot.
+				// Duration and steering count are computed by the telemetry subscriber
+				// using its own snapshots taken at step start.
 				durationMs: 0,
 				grade: step.grade?.grade,
 				success: step.status === "done" || step.status === "verified",
+				steeringCount: 0,
 			}
 			events.emit(FERMENT_EVENTS.STEP_COMPLETED, payload)
 			return
@@ -222,6 +225,7 @@ export function emitFermentDomainEvent(events: EventBus, cmd: Command, post: Fer
 				stepIndex: step.index,
 				durationMs: 0,
 				success: true,
+				steeringCount: 0,
 			}
 			events.emit(FERMENT_EVENTS.STEP_COMPLETED, payload)
 			return

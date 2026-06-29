@@ -63,7 +63,7 @@ export function markInitialSurveySeen(options?: { configPath?: string; now?: () 
 }
 
 export async function showInitialSurvey(ctx: ExtensionContext, options: ShowInitialSurveyOptions): Promise<boolean> {
-	if (!ctx.hasUI) return false
+	if (ctx.mode !== "tui") return false
 	if (hasInitialSurveyBeenSeen(options.configPath)) return false
 	shownInProcess.add(INITIAL_SURVEY.id)
 	let markedRendered = false
