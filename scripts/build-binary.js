@@ -27,6 +27,11 @@ const TARGETS = {
 	"bun-linux-arm64": { bun: "bun-linux-arm64", os: "linux", binaryName: "kimchi" },
 	"bun-linux-x64": { bun: "bun-linux-x64", os: "linux", binaryName: "kimchi" },
 	"bun-windows-x64": { bun: "bun-windows-x64", os: "win32", binaryName: "kimchi.exe" },
+	// Native baseline build: runs on windows-latest with the baseline `bun` CLI
+	// already installed (see .github/actions/setup-bun-baseline). No --target=
+	// cross-compile flag is used, so Bun's broken cross-compile cache-move path
+	// (oven-sh/bun#13513) never gets hit.
+	"windows-x64-baseline": { bun: undefined, os: "win32", binaryName: "kimchi.exe", native: true },
 }
 
 const targetArg =
@@ -50,7 +55,7 @@ if (!target) {
 	throw new Error(`Unsupported build target: ${targetKey}`)
 }
 
-const crossTarget = targetArg ? target.bun : undefined
+const crossTarget = targetArg && !target.native ? target.bun : undefined
 const isCrossCompile = !!crossTarget
 process.env.KIMCHI_BUILD_TARGET_OS = target.os
 
