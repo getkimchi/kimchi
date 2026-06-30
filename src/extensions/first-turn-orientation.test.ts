@@ -3,56 +3,30 @@ import { FirstTurnOrientationGuard, ORIENTATION_BLOCK_MESSAGE } from "./first-tu
 
 describe("FirstTurnOrientationGuard", () => {
 	describe("evaluate", () => {
-		it("blocks the first tool_call on the first turn when no visible text has been emitted", () => {
+		it("is temporarily disabled and never blocks tool calls", () => {
 			const guard = new FirstTurnOrientationGuard()
 			guard.onTurnStart(0)
-			const decision = guard.evaluate()
-			expect(decision.block).toBe(true)
-			expect(decision.reason).toBe(ORIENTATION_BLOCK_MESSAGE)
+			expect(guard.evaluate()).toEqual({ block: false })
 		})
 
-		it("does not block when visible text was emitted before the tool_call", () => {
+		it("does not block even when no visible text has been emitted on the first turn", () => {
 			const guard = new FirstTurnOrientationGuard()
 			guard.onTurnStart(0)
-			guard.recordTextDelta()
 			const decision = guard.evaluate()
 			expect(decision.block).toBe(false)
+			expect(decision.reason).toBeUndefined()
 		})
 
-		it("does not block on subsequent turns (turnIndex > 0)", () => {
-			const guard = new FirstTurnOrientationGuard()
-			guard.onTurnStart(1)
-			const decision = guard.evaluate()
-			expect(decision.block).toBe(false)
-		})
-
-		it("does not block a second tool_call in the same turn after the first block (block-once-per-turn)", () => {
+		it("does not block even after multiple tool calls on the first turn without text", () => {
 			const guard = new FirstTurnOrientationGuard()
 			guard.onTurnStart(0)
-			const first = guard.evaluate()
-			expect(first.block).toBe(true)
-			const second = guard.evaluate()
-			expect(second.block).toBe(false)
-			const third = guard.evaluate()
-			expect(third.block).toBe(false)
+			expect(guard.evaluate().block).toBe(false)
+			expect(guard.evaluate().block).toBe(false)
+			expect(guard.evaluate().block).toBe(false)
 		})
 
-		it("does not block if text appears after the first block in the same turn", () => {
+		it("does not block on subsequent turns", () => {
 			const guard = new FirstTurnOrientationGuard()
-			guard.onTurnStart(0)
-			const first = guard.evaluate()
-			expect(first.block).toBe(true)
-			// Model retries, this time emitting visible text first
-			guard.recordTextDelta()
-			const second = guard.evaluate()
-			expect(second.block).toBe(false)
-		})
-
-		it("does not block on subsequent turns even after a first-turn block (resets per turn)", () => {
-			const guard = new FirstTurnOrientationGuard()
-			guard.onTurnStart(0)
-			expect(guard.evaluate().block).toBe(true)
-			// New turn — fresh state
 			guard.onTurnStart(1)
 			expect(guard.evaluate().block).toBe(false)
 		})
@@ -87,8 +61,8 @@ describe("FirstTurnOrientationGuard", () => {
 		it("resets blockedThisTurn so a new first turn can block again", () => {
 			const guard = new FirstTurnOrientationGuard()
 			guard.onTurnStart(0)
-			expect(guard.evaluate().block).toBe(true)
-			expect(guard._blockedThisTurn()).toBe(true)
+			guard.evaluate()
+			expect(guard._blockedThisTurn()).toBe(false)
 			guard.onTurnStart(0)
 			expect(guard._blockedThisTurn()).toBe(false)
 		})
@@ -115,7 +89,7 @@ describe("FirstTurnOrientationGuard", () => {
 		it("resets blockedThisTurn so a new session can block again", () => {
 			const guard = new FirstTurnOrientationGuard()
 			guard.onTurnStart(0)
-			expect(guard.evaluate().block).toBe(true)
+			guard.evaluate()
 			guard.resetSession()
 			expect(guard._blockedThisTurn()).toBe(false)
 		})

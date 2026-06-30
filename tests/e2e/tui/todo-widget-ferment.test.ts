@@ -81,8 +81,9 @@ test("todo tools are available during ferment execution", async ({ terminal }) =
 			artifactName: "todo-widget-ferment-visibility",
 			gitInit: true,
 			responses: [
-				// Turn 1: orientation text then propose_ferment_scoping (same contract
-				// as ferment-new-runs-planning.test.ts).
+				// Turn 1: orientation text then propose_ferment_scoping.
+				// The first-turn-orientation guard is temporarily disabled, so
+				// orientation text is not required; kept for natural flow.
 				{
 					stream: ["I'll outline the scope."],
 					toolCalls: [

@@ -83,16 +83,18 @@ export class FirstTurnOrientationGuard {
 
 	/**
 	 * Decide whether to block the current tool call.
-	 * Block-once-per-turn: first call on a first turn with no visible text
-	 * returns { block: true }; subsequent calls in the same turn return
-	 * { block: false } even if text is still missing. The loop-guard is
-	 * the safety net for "model genuinely cannot produce text" cases.
+	 *
+	 * TEMPORARILY DISABLED: the first-turn orientation guard is causing
+	 * problems in the harness (e.g. interrupting automated flows and
+	 * subagent tool calls). Keep the state machine intact so we can
+	 * re-enable quickly; for now always allow tool calls through.
+	 *
+	 * Original behaviour: first call on a first turn with no visible text
+	 * returned { block: true }; subsequent calls returned { block: false }.
+	 * The loop-guard remains the safety net for "model genuinely cannot
+	 * produce text" cases.
 	 */
 	evaluate(): FirstTurnOrientationDecision {
-		if (this.isFirstTurn && !this.visibleTextSeenThisTurn && !this.blockedThisTurn) {
-			this.blockedThisTurn = true
-			return { block: true, reason: ORIENTATION_BLOCK_MESSAGE }
-		}
 		return { block: false }
 	}
 
