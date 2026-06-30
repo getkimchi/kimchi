@@ -81,7 +81,7 @@ export function deterministicFallback(input: string): string {
  * Suggest a session name from the first user text.
  * When quiet is true, suppresses all user-facing error output.
  */
-export async function suggestSessionName(ctx: ExtensionContext, hint?: string, quiet = false): Promise<string> {
+export function suggestSessionName(ctx: ExtensionContext, hint?: string, quiet = false): string {
 	const base = basename(ctx.cwd)
 	const resolvedHint = hint ?? extractFirstUserMessage(ctx)
 
@@ -116,15 +116,10 @@ export default function sessionNameExtension() {
 				return
 			}
 			hasAutoNamed = true
-			suggestSessionName(ctx, hint, true)
-				.then((suggestion) => {
-					if (suggestion && !ctx.sessionManager.getSessionName()) {
-						pi.setSessionName(suggestion)
-					}
-				})
-				.catch(() => {
-					// Silently ignore background auto-naming failures
-				})
+			const suggestion = suggestSessionName(ctx, hint, true)
+			if (suggestion && !ctx.sessionManager.getSessionName()) {
+				pi.setSessionName(suggestion)
+			}
 		})
 	}
 }
