@@ -634,7 +634,7 @@ describe("confirm_ferment_completion_criteria via registerLifecycleTools", () =>
 	it("asks one inline question with yes/no style answers and no follow-up prompt on yes", async () => {
 		const { h, execute } = createConfirmCriteriaHarness()
 		const select = vi.fn<(title: string, options: string[]) => Promise<string>>(async (_title, options) =>
-			options.includes("Yes, looks good") ? "Yes, looks good" : "No (input what is wrong)",
+			options.includes("Yes, looks good") ? "Yes, looks good" : "Type your own answer",
 		)
 		const input = vi.fn<(title: string, placeholder?: string) => Promise<string>>(async () => "")
 
@@ -658,7 +658,7 @@ describe("confirm_ferment_completion_criteria via registerLifecycleTools", () =>
 		expect(text).toContain("Next action: continue to exploration.")
 		expect(select).toHaveBeenCalledWith(expect.stringContaining("Do these completion criteria look right?"), [
 			"Yes, looks good",
-			"No (input what is wrong)",
+			"Type your own answer",
 		])
 		expect(select.mock.calls[0]?.[0]).toContain("README.md exists at the project root")
 		expect(input).not.toHaveBeenCalled()
@@ -667,7 +667,7 @@ describe("confirm_ferment_completion_criteria via registerLifecycleTools", () =>
 	it("asks for inline text when criteria are rejected", async () => {
 		const { h, execute } = createConfirmCriteriaHarness()
 		const select = vi.fn<(title: string, options: string[]) => Promise<string>>(
-			async (_title, _options) => "No (input what is wrong)",
+			async (_title, _options) => "Type your own answer",
 		)
 		const input = vi.fn<(title: string, placeholder?: string) => Promise<string>>(
 			async () => "Add go test ./... as verification.",
@@ -690,7 +690,7 @@ describe("confirm_ferment_completion_criteria via registerLifecycleTools", () =>
 		expect(text).toContain(`call ${FERMENT_TOOLS.CONFIRM_COMPLETION_CRITERIA} again before exploration`)
 		expect(select).toHaveBeenCalledWith(expect.stringContaining("Do these completion criteria look right?"), [
 			"Yes, looks good",
-			"No (input what is wrong)",
+			"Type your own answer",
 		])
 		expect(input).toHaveBeenCalledWith(expect.stringContaining("Do these completion criteria look right?"), "")
 	})
@@ -715,7 +715,7 @@ describe("confirm_ferment_completion_criteria via registerLifecycleTools", () =>
 		expect(text).toContain("Confirmed: no")
 		expect(text).toContain("Changes: Add go test ./... as verification.")
 		expect(userMsg).toContain('option id="yes" label="Yes, looks good"')
-		expect(userMsg).toContain('custom label="No (input what is wrong)" value="<free-form text>"')
+		expect(userMsg).toContain('custom label="Type your own answer" value="<free-form text>"')
 	})
 
 	it("rejects criteria that normalize to empty strings", async () => {
@@ -751,24 +751,158 @@ describe("ask_user via registerLifecycleTools", () => {
 		return { h, execute }
 	}
 
-	it("allows pure confirm shorthand as a Yes/No question", async () => {
+	it("renders a confirm question as Yes/No via questions[]", async () => {
 		const { h, execute } = createAskUserHarness()
 		const select = vi.fn(async () => "Yes")
-
 		const result = await execute(
 			"tool-call-1",
 			{
 				ferment_id: h.fermentId,
-				question: "Sound right?",
-				response_type: "confirm",
+				questions: [{ id: "confirm", type: "confirm", prompt: "Sound right?" }],
 			},
 			undefined,
 			undefined,
 			{ ui: { select } },
 		)
-
-		expect(okText(result)).toContain("Choice: yes")
+		expect(okText(result)).toContain("- confirm: yes")
 		expect(select).toHaveBeenCalledWith("Sound right?", ["Yes", "No"])
+	})
+
+	it("infers ferment_id from runtime.getActiveId() when params.ferment_id is omitted", async () => {
+		const { h, execute } = createAskUserHarness()
+		const select = vi.fn(async () => "Yes")
+		vi.spyOn(h.runtime, "getActiveId").mockReturnValue(h.fermentId)
+		const result = await execute(
+			"tool-call-1",
+			{
+				questions: [{ id: "confirm", type: "confirm", prompt: "Sound right?" }],
+			},
+			undefined,
+			undefined,
+			{ ui: { select } },
+		)
+		expect(okText(result)).toContain("- confirm: yes")
+	})
+
+	it("returns an actionable error when ferment_id is omitted and no active ferment exists", async () => {
+		const { h, execute } = createAskUserHarness()
+		vi.spyOn(h.runtime, "getActiveId").mockReturnValue(undefined)
+		const result = await execute(
+			"tool-call-1",
+			{
+				questions: [{ id: "confirm", type: "confirm", prompt: "Sound right?" }],
+			},
+			undefined,
+			undefined,
+			undefined,
+		)
+		expect(errText(result)).toContain("No active ferment. Provide ferment_id or activate a ferment first.")
+	})
+
+	it("returns an actionable error when questions[] is empty", async () => {
+		const { h, execute } = createAskUserHarness()
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				questions: [],
+			},
+			undefined,
+			undefined,
+			undefined,
+		)
+		expect(errText(result)).toContain("ask_user requires a non-empty questions[] array")
+	})
+
+	it("rejects a question missing its id with an actionable message", async () => {
+		const { h, execute } = createAskUserHarness()
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				questions: [{ id: "", type: "single", prompt: "Which?", options: [{ id: "a", label: "A" }] }],
+			},
+			undefined,
+			undefined,
+			undefined,
+		)
+		expect(errText(result)).toContain('missing required field "id"')
+	})
+
+	it("rejects a question missing its prompt with an actionable message naming the id", async () => {
+		const { h, execute } = createAskUserHarness()
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				questions: [{ id: "q1", type: "single", prompt: "", options: [{ id: "a", label: "A" }] }],
+			},
+			undefined,
+			undefined,
+			undefined,
+		)
+		expect(errText(result)).toContain('Question "q1" is missing required field "prompt"')
+	})
+
+	it("rejects an unknown question type naming the id and valid types", async () => {
+		const { h, execute } = createAskUserHarness()
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				questions: [{ id: "bad", type: "bogus", prompt: "Which?", options: [{ id: "a", label: "A" }] }],
+			},
+			undefined,
+			undefined,
+			undefined,
+		)
+		expect(errText(result)).toContain('Question "bad" has unknown type "bogus"')
+		expect(errText(result)).toContain("single, multi, text, confirm")
+	})
+
+	it("rejects a confirm question that carries options", async () => {
+		const { h, execute } = createAskUserHarness()
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				questions: [{ id: "ok", type: "confirm", prompt: "Proceed?", options: [{ id: "ship", label: "Ship" }] }],
+			},
+			undefined,
+			undefined,
+			undefined,
+		)
+		expect(errText(result)).toContain('Question "ok" is type "confirm" and must not have options')
+	})
+
+	it("rejects a single question with no options and allowOther false", async () => {
+		const { h, execute } = createAskUserHarness()
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				questions: [{ id: "lonely", type: "single", prompt: "Pick one?" }],
+			},
+			undefined,
+			undefined,
+			undefined,
+		)
+		expect(errText(result)).toContain('Question "lonely" is type "single" but has no options')
+	})
+
+	it("rejects a multi question with no options and allowOther false", async () => {
+		const { h, execute } = createAskUserHarness()
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				questions: [{ id: "lonely", type: "multi", prompt: "Pick many?" }],
+			},
+			undefined,
+			undefined,
+			undefined,
+		)
+		expect(errText(result)).toContain('Question "lonely" is type "multi" but has no options')
 	})
 })
 

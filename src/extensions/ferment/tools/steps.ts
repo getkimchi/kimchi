@@ -11,7 +11,7 @@ import type { Static } from "typebox"
 import type { StepResult } from "../../../ferment/types.js"
 import { getAgentRecordForTaskValidation } from "../../agents/index.js"
 import { FERMENT_WORKER_BUDGETS, type FermentWorkerBudgetTier } from "../../agents/worker-budget-policy.js"
-import { askUser } from "../ask-user.js"
+import { askUserForm } from "../ask-user.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { renderGateGuidance } from "../gate-registry.js"
 import { assertGateFieldsPresent, validateGatesOrErr } from "../gate-validation.js"
@@ -208,12 +208,20 @@ export async function startStep(
 	const startCount = runtime.bumpStepStart(f.id, phase.id, step.id)
 	if (startCount >= 3) {
 		const title = `Step ${step.index}: "${step.description}" has been started ${startCount} times without completing.`
-		const response = await askUser(
+		const response = await askUserForm(
 			title,
+			undefined,
 			[
-				{ id: "retry", label: "Retry" },
-				{ id: "skip", label: "Skip step" },
-				{ id: "pause", label: "Pause ferment" },
+				{
+					id: "escalation",
+					type: "single",
+					prompt: title,
+					options: [
+						{ id: "retry", label: "Retry" },
+						{ id: "skip", label: "Skip step" },
+						{ id: "pause", label: "Pause ferment" },
+					],
+				},
 			],
 			{ ferment: f, pi, ctx, runtime },
 		)
@@ -233,13 +241,15 @@ Do NOT call start_ferment_step again without user input.`,
 			)
 		}
 
-		if (response.choice === "pause") {
+		const choice = response.answers?.[0]?.value
+
+		if (choice === "pause") {
 			const pauseOutcome = applyAndPersist(f.id, { type: "pause" })
 			if (!pauseOutcome.ok) return failedToolResult(pauseOutcome.error)
 			return toolOk(withNextActionHint("Ferment paused at user request.", pauseOutcome.ferment))
 		}
 
-		if (response.choice === "skip") {
+		if (choice === "skip") {
 			const skipOutcome = applyAndPersist(f.id, {
 				type: "skip_step",
 				phaseId: phase.id,

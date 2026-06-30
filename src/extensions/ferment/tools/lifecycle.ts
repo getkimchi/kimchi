@@ -27,13 +27,7 @@ import {
 } from "../../../ferment/types.js"
 import { createToolVisibility } from "../../prompt-construction/tool-visibility.js"
 import { YES_NO_OPTIONS } from "../../questionnaire/index.js"
-import {
-	type AskUserQuestion,
-	askUser,
-	askUserForm,
-	normalizeAskUserQuestions,
-	toScopingQuestionType,
-} from "../ask-user.js"
+import { type AskUserQuestion, askUserForm, normalizeAskUserQuestions, toScopingQuestionType } from "../ask-user.js"
 import { pr_bold, pr_dim } from "../colors.js"
 import { emitFermentCreated } from "../domain-events-emitter.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
@@ -550,7 +544,6 @@ async function confirmCompletionCriteria(
 				prompt: "Do these completion criteria look right?",
 				options: [{ id: "yes", label: "Yes, looks good" }],
 				allowOther: true,
-				otherLabel: "No (input what is wrong)",
 			},
 		],
 		askContext,
@@ -1203,7 +1196,7 @@ ${renderGateGuidance("complete_ferment")}`,
 
 The host renders one question:
   - "Yes, looks good"
-  - "No (input what is wrong)" with inline free-form text input for the explanation
+  - "Type your own answer" with inline free-form text input for the explanation
 
 Proceed to exploration only when Confirmed is yes and Changes is empty.
 If the user answers No, the follow-up captures textual changes and control returns here for revision.`,
@@ -1227,11 +1220,9 @@ Hard contract: in one-shot mode, if the judge is unreachable (no API key, timeou
 The agent should:
   1. Frame the question concretely. The user/judge sees only the question plus options/context in this call.
   2. Prefer questions[] for the full TUI: single, multi, text, confirm. allowOther is only for single/multi custom free-text options.
-  3. Use response_type="single" | "multi" | "text" | "confirm" only as a compatibility shorthand for one question.
-  4. Treat response_type="confirm" as strict Yes/No only. Use response_type="text" for one free-form question, or questions[] when multiple controls are needed.
-  5. For single/multi, provide stable snake-case option ids and short labels (confirm defaults to Yes/No).
-  6. Include "pause" or "abandon" as an explicit option when one is appropriate — the judge prefers these when uncertain.
-  7. Act on the returned \`answers\`, \`choice\`, \`choices\`, or \`text\` field.
+  3. For single/multi, provide stable snake-case option ids and short labels (confirm defaults to Yes/No).
+  4. Include "pause" or "abandon" as an explicit option when one is appropriate — the judge prefers these when uncertain.
+  5. Act on the returned \`answers\`, \`choice\`, \`choices\`, or \`text\` field.
 
 TUI controls for questions[]:
   - Tab / Shift+Tab moves between questions
@@ -1244,7 +1235,14 @@ Returns structured answer fields on success, or a tool error if no audience can 
 		parameters: AskUserParams,
 		async execute(_, params, _signal, _onUpdate, ctx) {
 			const applyAndPersist = createApplyAndPersist(runtime)
-			const ferment = runtime.getStorage().get(params.ferment_id)
+			const fermentId = params.ferment_id ?? runtime.getActiveId()
+			if (!fermentId) {
+				return toolErr("No active ferment. Provide ferment_id or activate a ferment first.")
+			}
+			if (!params.questions || params.questions.length === 0) {
+				return toolErr("ask_user requires a non-empty questions[] array.")
+			}
+			const ferment = runtime.getStorage().get(fermentId)
 			if (!ferment) return toolErr("Ferment not found.")
 
 			const askContext = {
@@ -1253,21 +1251,11 @@ Returns structured answer fields on success, or a tool error if no audience can 
 				ctx: ctx as { ui?: Partial<import("../ui.js").FermentUi> } | undefined,
 				runtime,
 			}
-			let normalizedQuestions: AskUserQuestion[] | undefined
-			if (params.questions && params.questions.length > 0) {
-				const normalizeResult = normalizeAskUserQuestions(params.questions)
-				if (!normalizeResult.ok) return toolErr(normalizeResult.error)
-				normalizedQuestions = normalizeResult.questions
-			}
-			const response = normalizedQuestions
-				? await askUserForm(params.title ?? params.question, params.description, normalizedQuestions, askContext)
-				: params.question
-					? await askUser(params.question, params.options ?? [], askContext, params.response_type ?? "single")
-					: undefined
+			const normalizeResult = normalizeAskUserQuestions(params.questions)
+			if (!normalizeResult.ok) return toolErr(normalizeResult.error)
+			const normalizedQuestions = normalizeResult.questions
 
-			if (!response) {
-				return toolErr("ask_user requires either question or questions[].")
-			}
+			const response = await askUserForm(params.title, params.description, normalizedQuestions, askContext)
 
 			if (response.failed) {
 				// One-shot hard-fail: when the judge is the only legitimate audience
@@ -1276,7 +1264,7 @@ Returns structured answer fields on success, or a tool error if no audience can 
 				const isJudgeFailure = response.reason === "judge_unavailable" || response.reason === "judge_unparseable"
 				const isOneShot = pi.getFlag?.("ferment-oneshot") === true
 				if (isJudgeFailure && isOneShot) {
-					const abandonOutcome = applyAndPersist(params.ferment_id, {
+					const abandonOutcome = applyAndPersist(fermentId, {
 						type: "abandon",
 						reason: `ask_user: ${response.detail}`,
 					})
