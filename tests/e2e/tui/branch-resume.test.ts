@@ -22,13 +22,13 @@ test("branch creates a named resumable session for -r", async ({ terminal }) => 
 		terminal.submit("hello")
 		await waitForText(terminal, "Hello from fake Kimchi.", { timeoutMs: STREAM_TIMEOUT_MS })
 
-		terminal.submit("/branch")
+		const branchName = "parser spike"
+		terminal.submit(`/branch ${branchName}`)
 		await waitForText(terminal, /You can resume a branch of this session with -r [0-9a-f-]{36}/)
 
 		const match = fullText(terminal).match(/You can resume a branch of this session with -r ([0-9a-f-]{36})/)
 		expect(match).not.toBeNull()
 		const sessionId = match![1]
-		const branchName = `Branch ${sessionId.slice(0, 8)}: hello`
 
 		terminal.submit("/session")
 		await waitForText(terminal, new RegExp(`Name:\\s*${escapeRegExp(branchName)}`), {

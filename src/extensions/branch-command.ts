@@ -3,7 +3,10 @@ import type { ExtensionAPI, ExtensionContext, SessionManager } from "@earendil-w
 const BRANCH_MESSAGE_TYPE = "kimchi-session-branch"
 type WritableSessionManager = Pick<SessionManager, "appendSessionInfo">
 
-export function branchSessionName(sessionId: string, parentName: string | undefined): string {
+export function branchSessionName(sessionId: string, parentName: string | undefined, requestedName?: string): string {
+	const explicitName = requestedName?.trim()
+	if (explicitName) return explicitName
+
 	const suffix = parentName?.trim()
 	return `Branch ${sessionId.slice(0, 8)}${suffix ? `: ${suffix}` : ""}`
 }
@@ -27,7 +30,7 @@ function appendBranchName(ctx: { sessionManager: unknown; ui: ExtensionContext["
 export default function branchCommandExtension(pi: ExtensionAPI): void {
 	pi.registerCommand("branch", {
 		description: "Branch the current session and print a resume command",
-		handler: async (_args, ctx) => {
+		handler: async (args, ctx) => {
 			await ctx.waitForIdle()
 
 			const leafId = ctx.sessionManager.getLeafId()
@@ -37,6 +40,7 @@ export default function branchCommandExtension(pi: ExtensionAPI): void {
 			}
 
 			const parentName = ctx.sessionManager.getSessionName()
+			const requestedName = args.trim()
 			const result = await ctx.fork(leafId, {
 				position: "at",
 				withSession: async (branchCtx) => {
@@ -45,7 +49,7 @@ export default function branchCommandExtension(pi: ExtensionAPI): void {
 						branchCtx.ui.notify("Failed to get branch session id", "error")
 						return
 					}
-					if (!appendBranchName(branchCtx, branchSessionName(sessionId, parentName))) return
+					if (!appendBranchName(branchCtx, branchSessionName(sessionId, parentName, requestedName))) return
 					await branchCtx.sendMessage(
 						{
 							customType: BRANCH_MESSAGE_TYPE,

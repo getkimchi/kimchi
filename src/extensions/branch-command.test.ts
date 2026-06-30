@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest"
 import branchCommandExtension, { branchSessionName } from "./branch-command.js"
 
 type BranchCommand = {
-	handler: (args: string[], ctx: ExtensionCommandContext) => Promise<void>
+	handler: (args: string, ctx: ExtensionCommandContext) => Promise<void>
 }
 
 function makePi(): { api: ExtensionAPI; command: () => BranchCommand } {
@@ -29,6 +29,10 @@ describe("branchSessionName", () => {
 
 	it("adds the short branch id to the parent name", () => {
 		expect(branchSessionName("abcdef12-3456-7890-abcd-ef1234567890", "hello")).toBe("Branch abcdef12: hello")
+	})
+
+	it("uses the requested branch name when present", () => {
+		expect(branchSessionName("abcdef12-3456-7890-abcd-ef1234567890", "hello", "parser spike")).toBe("parser spike")
 	})
 })
 
@@ -57,7 +61,7 @@ describe("branchCommandExtension", () => {
 			ui: { notify: vi.fn() },
 		} as unknown as ExtensionCommandContext
 
-		await command().handler([], ctx)
+		await command().handler("", ctx)
 
 		expect(ctx.fork).toHaveBeenCalledWith("leaf-1", expect.objectContaining({ position: "at" }))
 		expect(branchCtx.sessionManager.appendSessionInfo).toHaveBeenCalledWith("Branch abcdef12: hello")
@@ -67,6 +71,35 @@ describe("branchCommandExtension", () => {
 			}),
 			{ triggerTurn: false },
 		)
+	})
+
+	it("uses command args as the branch name", async () => {
+		const { api, command } = makePi()
+		branchCommandExtension(api)
+		const branchCtx = {
+			sessionManager: {
+				getSessionId: vi.fn(() => "abcdef12-3456-7890-abcd-ef1234567890"),
+				appendSessionInfo: vi.fn(),
+			},
+			ui: { notify: vi.fn() },
+			sendMessage: vi.fn(async () => {}),
+		}
+		const ctx = {
+			waitForIdle: vi.fn(async () => {}),
+			sessionManager: {
+				getLeafId: vi.fn(() => "leaf-1"),
+				getSessionName: vi.fn(() => "hello"),
+			},
+			fork: vi.fn(async (_entryId: string, options?: { withSession?: (ctx: typeof branchCtx) => Promise<void> }) => {
+				await options?.withSession?.(branchCtx)
+				return { cancelled: false }
+			}),
+			ui: { notify: vi.fn() },
+		} as unknown as ExtensionCommandContext
+
+		await command().handler("parser spike", ctx)
+
+		expect(branchCtx.sessionManager.appendSessionInfo).toHaveBeenCalledWith("parser spike")
 	})
 
 	it("notifies when the forked session id is missing", async () => {
@@ -93,7 +126,7 @@ describe("branchCommandExtension", () => {
 			ui: { notify: vi.fn() },
 		} as unknown as ExtensionCommandContext
 
-		await command().handler([], ctx)
+		await command().handler("", ctx)
 
 		expect(branchCtx.ui.notify).toHaveBeenCalledWith("Failed to get branch session id", "error")
 		expect(branchCtx.sessionManager.appendSessionInfo).not.toHaveBeenCalled()
@@ -123,7 +156,7 @@ describe("branchCommandExtension", () => {
 			ui: { notify: vi.fn() },
 		} as unknown as ExtensionCommandContext
 
-		await command().handler([], ctx)
+		await command().handler("", ctx)
 
 		expect(branchCtx.ui.notify).toHaveBeenCalledWith("Current session manager does not support session naming", "error")
 		expect(branchCtx.sendMessage).not.toHaveBeenCalled()
@@ -142,7 +175,7 @@ describe("branchCommandExtension", () => {
 			ui: { notify: vi.fn() },
 		} as unknown as ExtensionCommandContext
 
-		await command().handler([], ctx)
+		await command().handler("", ctx)
 
 		expect(ctx.fork).not.toHaveBeenCalled()
 		expect(ctx.ui.notify).toHaveBeenCalledWith("Nothing to branch yet", "info")
