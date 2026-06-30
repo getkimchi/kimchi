@@ -2,15 +2,9 @@
  * Unit tests for session-name extension
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { loadConfig } from "../config.js"
+import { describe, expect, it, vi } from "vitest"
 import { deterministicFallback, extractFirstUserMessage, suggestSessionName } from "./session-name.js"
 
-vi.mock("../utils/http.js", () => ({
-	fetchWithRetry: (url: string, init?: RequestInit) => globalThis.fetch(url, init),
-}))
-
-vi.mock("../config.js")
 vi.mock("node:path", async () => {
 	const actual = await vi.importActual<typeof import("node:path")>("node:path")
 	return { ...actual, basename: () => "my-project" }
@@ -129,102 +123,33 @@ describe("extractFirstUserMessage", () => {
 })
 
 describe("suggestSessionName", () => {
-	const mockFetch = vi.fn()
-	const ORIGINAL_FETCH = globalThis.fetch
-
-	beforeEach(() => {
-		vi.clearAllMocks()
-		globalThis.fetch = mockFetch
-		vi.mocked(loadConfig).mockReturnValue({
-			apiKey: "test-key",
-			llmEndpoint: "https://llm.cast.ai/openai/v1",
-			maxToolResultChars: 10_000,
-			mcpSearchLimit: 5,
-			mcpSearch: { maxDepth: 2, maxResults: 10 },
-			agentConfigDir: "/tmp",
-			skillPaths: [],
-		} as never)
-	})
-
-	afterEach(() => {
-		globalThis.fetch = ORIGINAL_FETCH
-		process.env.KIMCHI_API_KEY = ""
-	})
-
 	it("should fall back to basename when no hint and no user messages", async () => {
 		const ctx = createMockCtx([])
 		const result = await suggestSessionName(ctx as never, undefined, true)
 		expect(result).toBe("my-project")
-		expect(mockFetch).not.toHaveBeenCalled()
 	})
 
-	it("should fall back to basename when no API key", async () => {
-		vi.mocked(loadConfig).mockReturnValue({
-			apiKey: "",
-			llmEndpoint: "https://llm.cast.ai/openai/v1",
-			maxToolResultChars: 10_000,
-			mcpSearchLimit: 5,
-			mcpSearch: { maxDepth: 2, maxResults: 10 },
-			agentConfigDir: "/tmp",
-			skillPaths: [],
-		} as never)
+	it("should use the user message as the normal session name source", async () => {
 		const ctx = createMockCtx([{ type: "message", message: { role: "user", content: "Hello world" } }])
 		const result = await suggestSessionName(ctx as never, undefined, true)
-		expect(result).toBe("my-project")
-		expect(mockFetch).not.toHaveBeenCalled()
+		expect(result).toBe("Hello world")
 	})
 
-	it("should fall back to basename on API error", async () => {
-		mockFetch.mockResolvedValue({
-			ok: false,
-			status: 500,
-			statusText: "Internal Server Error",
-			text: () => Promise.resolve("fail"),
-		})
-		const ctx = createMockCtx([{ type: "message", message: { role: "user", content: "Hello world" } }])
+	it("should truncate long user messages", async () => {
+		const ctx = createMockCtx([
+			{
+				type: "message",
+				message: { role: "user", content: "this is a very long session name that should be truncated" },
+			},
+		])
 		const result = await suggestSessionName(ctx as never, undefined, true)
-		expect(result).toBe("my-project")
-		expect(mockFetch).toHaveBeenCalledOnce()
-	})
-
-	it("should fall back to basename on empty LLM suggestion", async () => {
-		mockFetch.mockResolvedValue({
-			ok: true,
-			json: () => Promise.resolve({ choices: [{ message: { content: "   " } }] }),
-		})
-		const ctx = createMockCtx([{ type: "message", message: { role: "user", content: "Hello world" } }])
-		const result = await suggestSessionName(ctx as never, undefined, true)
-		expect(result).toBe("my-project")
-	})
-
-	it("should return LLM suggestion when available", async () => {
-		mockFetch.mockResolvedValue({
-			ok: true,
-			json: () => Promise.resolve({ choices: [{ message: { content: "Refactor CLI" } }] }),
-		})
-		const ctx = createMockCtx([{ type: "message", message: { role: "user", content: "Hello world" } }])
-		const result = await suggestSessionName(ctx as never, undefined, true)
-		expect(result).toBe("Refactor CLI")
-	})
-
-	it("should fall back to basename on fetch exception", async () => {
-		mockFetch.mockRejectedValue(new Error("network down"))
-		const ctx = createMockCtx([{ type: "message", message: { role: "user", content: "Hello world" } }])
-		const result = await suggestSessionName(ctx as never, undefined, true)
-		expect(result).toBe("my-project")
+		expect(result).toBe("this is a very long session name")
 	})
 
 	it("should use provided hint instead of extracting from context", async () => {
-		mockFetch.mockResolvedValue({
-			ok: true,
-			json: () => Promise.resolve({ choices: [{ message: { content: "Custom Hint" } }] }),
-		})
 		const ctx = createMockCtx([])
 		const result = await suggestSessionName(ctx as never, "provided hint", true)
-		expect(result).toBe("Custom Hint")
-		// Verify the hint was used by checking the fetch body
-		const fetchBody = JSON.parse(mockFetch.mock.calls[0][1].body)
-		expect(fetchBody.messages[1].content).toContain("provided hint")
+		expect(result).toBe("provided hint")
 	})
 })
 

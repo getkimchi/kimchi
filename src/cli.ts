@@ -11,6 +11,7 @@ import {
 	isExperimentalFeaturesArg,
 	isHelpOrVersionArgs,
 	isTerminalUiMode,
+	normalizeResumeIdArgs,
 	stripExperimentalFeaturesArg,
 } from "./cli-args.js"
 import { dispatchSubcommand } from "./commands/dispatch.js"
@@ -34,6 +35,7 @@ import assistantPrefixExtension from "./extensions/assistant-prefix.js"
 import bashDefaultTimeoutExtension from "./extensions/bash-default-timeout.js"
 import bashToolGuardExtension from "./extensions/bash-tool-guard.js"
 import behavioursExtension from "./extensions/behaviours/index.js"
+import branchCommandExtension from "./extensions/branch-command.js"
 import claudeCodeHooksAdapter from "./extensions/claude-code-hook-adapter/index.js"
 import claudeCodeSkillsExtension from "./extensions/claude-code-skills/index.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
@@ -126,6 +128,8 @@ function getSubcommand(args: string[]): string {
 	return "harness"
 }
 
+const originalArgs = process.argv.slice(2)
+
 // --- Telemetry ---
 const telemetryConfig = readTelemetryConfig()
 
@@ -134,13 +138,13 @@ const telemetryConfig = readTelemetryConfig()
 // the chance of truncated HTTP requests.
 if (telemetryConfig.enabled) {
 	sendPreSessionEvent(telemetryConfig, "app_started", {
-		subcommand: getSubcommand(process.argv.slice(2)),
+		subcommand: getSubcommand(originalArgs),
 	})
 }
 
 // ACP mode runs JSON-RPC over stdio; interactive mode runs the standard TUI
 // harness. Decide once at module load, before anything else runs.
-const cliMode = getCliModeArg(process.argv.slice(2))
+const cliMode = getCliModeArg(originalArgs)
 const acpMode = cliMode === "acp"
 
 // Monkey-patch AgentSession.prototype.exportToJsonl so ALL JSONL exports
@@ -172,7 +176,7 @@ const _origExportToHtml = (AgentSession as any).prototype.exportToHtml
 	}
 	return filePath
 }
-const helpOrVersion = isHelpOrVersionArgs(process.argv.slice(2))
+const helpOrVersion = isHelpOrVersionArgs(originalArgs)
 
 // Internal control signal: setup cancellation must skip harness/extensions
 // without a hard process.exit(), so clack can restore terminal state normally.
@@ -183,7 +187,7 @@ try {
 	// top-level --help take ownership before any harness setup runs.
 	// `--version` falls through to pi-coding-agent's main below so it prints
 	// the version using piConfig.name = "kimchi".
-	const dispatch = await dispatchSubcommand(process.argv.slice(2))
+	const dispatch = await dispatchSubcommand(originalArgs)
 	if (dispatch.kind === "handled") {
 		await drainPreSessionTelemetry()
 		process.exit(dispatch.exitCode)
@@ -191,14 +195,14 @@ try {
 
 	if (helpOrVersion) {
 		const { main } = await import("@earendil-works/pi-coding-agent")
-		await main(process.argv.slice(2), { extensionFactories: [] })
+		await main(originalArgs, { extensionFactories: [] })
 	} else {
 		// Fire harness_launched (one shot per harness session; respects telemetry opt-out)
 		if (telemetryConfig.enabled) {
 			sendPreSessionEvent(telemetryConfig, "harness_launched", { version: getVersion() })
 		}
 
-		const experimentalFeatures = isExperimentalFeaturesArg(process.argv.slice(2))
+		const experimentalFeatures = isExperimentalFeaturesArg(originalArgs)
 		let config = loadConfig()
 
 		const envKey = process.env.KIMCHI_API_KEY || undefined
@@ -363,7 +367,7 @@ try {
 		mkdirSync(themesDir, { recursive: true })
 
 		const atFileArgs = normalizeAtFileArgs(
-			stripExperimentalFeaturesArg(process.argv.slice(2)),
+			normalizeResumeIdArgs(stripExperimentalFeaturesArg(originalArgs)),
 			process.cwd(),
 			isCliAtFileArg,
 		)
@@ -464,6 +468,7 @@ try {
 			sessionNameExtension(),
 			shutdownMarkerExtension,
 			statsExtension,
+			branchCommandExtension,
 			...terminalUiExtensionFactories,
 			loginExtension,
 			startupAuthGate,

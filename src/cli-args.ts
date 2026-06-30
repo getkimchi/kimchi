@@ -27,6 +27,20 @@ export function isPreDispatchValueFlag(arg: string): boolean {
 	return PRE_DISPATCH_VALUE_FLAGS.has(arg)
 }
 
+export function normalizeResumeIdArgs(args: string[]): string[] {
+	const normalized: string[] = []
+	for (let i = 0; i < args.length; i += 1) {
+		const arg = args[i]
+		if ((arg === "-r" || arg === "--resume") && i + 1 < args.length && !args[i + 1].startsWith("-")) {
+			normalized.push("--session", args[i + 1])
+			i += 1
+		} else {
+			normalized.push(arg)
+		}
+	}
+	return normalized
+}
+
 export function isCliAtFileArg(arg: string, index: number, args: string[]): boolean {
 	if (!arg.startsWith("@") || arg === "@") return false
 	// Use Pi's parser as the source of truth instead of mirroring every value-taking flag.

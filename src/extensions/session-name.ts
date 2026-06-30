@@ -8,21 +8,6 @@
 
 import { basename } from "node:path"
 import type { ExtensionAPI, ExtensionContext, TurnEndEvent } from "@earendil-works/pi-coding-agent"
-import { loadConfig } from "../config.js"
-import { fetchWithRetry } from "../utils/http.js"
-
-// System prompt for session name generation - keep it simple; cheap models choke
-// on negative constraints, formatting demands, and multi-step instructions.
-const SESSION_NAME_SYSTEM_PROMPT =
-	"You are a title generator. Respond with ONLY a short title. 1-5 words, no quotes, no explanation, no markdown."
-
-/** Max chars to feed from the user message so we don't bloat the prompt. */
-const HINT_MAX_LEN = 500
-
-function capHint(hint: string): string {
-	if (hint.length <= HINT_MAX_LEN) return hint
-	return `${hint.slice(0, HINT_MAX_LEN).trimEnd()}...`
-}
 
 /**
  * Extract the earliest user messages from the session.
@@ -82,7 +67,7 @@ function extractEarlyUserText(entries: SessionEntries): string | null {
 }
 
 /**
- * Deterministic fallback: truncate name at 35 chars at last space.
+ * Deterministic title: truncate name at 35 chars at last space.
  */
 export function deterministicFallback(input: string): string {
 	const max = 35
@@ -93,15 +78,13 @@ export function deterministicFallback(input: string): string {
 }
 
 /**
- * Suggest a session name using the cheap Cast AI LLM.
- * Falls back to deterministic truncation on any error, with diagnostics.
- * When quiet is true, suppresses all user-facing error output (for background auto-naming).
+ * Suggest a session name from the first user text.
+ * When quiet is true, suppresses all user-facing error output.
  */
 export async function suggestSessionName(ctx: ExtensionContext, hint?: string, quiet = false): Promise<string> {
 	const base = basename(ctx.cwd)
 	const resolvedHint = hint ?? extractFirstUserMessage(ctx)
 
-	// If there's no user message to work with, skip the LLM entirely.
 	if (!resolvedHint) {
 		if (!quiet) {
 			if (ctx.hasUI) {
@@ -113,92 +96,7 @@ export async function suggestSessionName(ctx: ExtensionContext, hint?: string, q
 		return deterministicFallback(base)
 	}
 
-	const config = loadConfig()
-	const apiKey = config.apiKey || process.env.KIMCHI_API_KEY || ""
-
-	if (!apiKey) {
-		if (!quiet) {
-			if (ctx.hasUI) {
-				ctx.ui.notify("Auto-naming: no API key configured.", "error")
-			} else {
-				console.error("[kimchi] auto-naming failed: no API key")
-			}
-		}
-		return deterministicFallback(base)
-	}
-
-	try {
-		const payload = {
-			model: "nemotron-3-ultra-fp4",
-			messages: [
-				{ role: "system", content: SESSION_NAME_SYSTEM_PROMPT },
-				// Frame the message exactly like shortenTitle does - cheap models need
-				// an explicit task, not raw text.
-				{ role: "user", content: `Short title for this conversation:\n\n${capHint(resolvedHint)}` },
-			],
-			// Cheap think-models spend tokens on reasoning before outputting.
-			// Give enough room for both reasoning and the final title.
-			max_tokens: 100,
-			temperature: 0,
-			reasoning_effort: "none",
-		}
-		const body = JSON.stringify(payload)
-
-		const response = await fetchWithRetry(
-			`${config.llmEndpoint}/chat/completions`,
-			{
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					Authorization: `Bearer ${apiKey}`,
-				},
-				body,
-			},
-			{ timeoutMs: 10_000, retry: { maxRetries: 3 } },
-		)
-
-		if (!response.ok) {
-			const errorBody = await response.text().catch(() => "")
-			if (!quiet) {
-				if (ctx.hasUI) {
-					ctx.ui.notify(
-						`Auto-naming: API error ${response.status} ${response.statusText}${errorBody ? ` — ${errorBody.slice(0, 200)}` : ""}`,
-						"error",
-					)
-				} else {
-					console.error(`[kimchi] auto-naming API error: ${response.status} ${response.statusText} ${errorBody}`)
-				}
-			}
-			return deterministicFallback(base)
-		}
-
-		const data = (await response.json()) as unknown
-
-		const cast = data as {
-			choices?: Array<{ message?: { content?: string } }>
-		}
-		const suggestion = cast.choices?.[0]?.message?.content?.trim() ?? ""
-		if (suggestion.length > 0) {
-			return suggestion
-		}
-		if (!quiet) {
-			if (ctx.hasUI) {
-				ctx.ui.notify("Auto-naming: LLM returned empty suggestion.", "error")
-			} else {
-				console.error("[kimchi] auto-naming: LLM returned empty suggestion")
-			}
-		}
-		return deterministicFallback(base)
-	} catch (err) {
-		if (!quiet) {
-			if (ctx.hasUI) {
-				ctx.ui.notify(`Auto-naming: ${err instanceof Error ? err.message : String(err)}`, "error")
-			} else {
-				console.error(`[kimchi] auto-naming exception: ${err}`)
-			}
-		}
-		return deterministicFallback(base)
-	}
+	return deterministicFallback(resolvedHint)
 }
 
 export default function sessionNameExtension() {
