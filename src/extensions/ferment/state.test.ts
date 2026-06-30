@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -93,6 +93,98 @@ describe("lockfile helpers", () => {
 			"utf8",
 		)
 		expect(isFermentLockedByLiveProcess("test-ferment-4")).toBe(false)
+	})
+
+	it("getFermentLockPath throws for invalid fermentIds", () => {
+		for (const bad of ["../evil", "a/b", "a\\b", ".", "..", ""]) {
+			expect(() => getFermentLockPath(bad), `expected throw for ${JSON.stringify(bad)}`).toThrow(/Invalid fermentId/)
+		}
+	})
+
+	it("getFermentLockPath returns a path inside the lock dir for valid ids", () => {
+		const p = getFermentLockPath("safe-id_123.test")
+		expect(p.startsWith(lockDir)).toBe(true)
+		expect(p.endsWith("safe-id_123.test.lock")).toBe(true)
+	})
+
+	it("writeFermentLock logs to console.error when mkdirSync fails", () => {
+		// Point the lock dir at a path under a regular file so mkdirSync fails
+		// with ENOTDIR — the canonical "lock dir unwritable" scenario.
+		const blockerFile = join(tmpdir(), `kimchi-lock-blocker-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+		writeFileSync(blockerFile, "")
+		vi.stubEnv("KIMCHI_FERMENT_LOCK_DIR", `${blockerFile}/subdir`)
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			writeFermentLock("ferment-write-fail")
+			expect(errorSpy).toHaveBeenCalled()
+			const msg = String(errorSpy.mock.calls[0]?.[0] ?? "")
+			expect(msg).toContain("[ferment]")
+			expect(msg).toContain("ferment-write-fail")
+		} finally {
+			errorSpy.mockRestore()
+			rmSync(blockerFile, { force: true })
+		}
+	})
+
+	it("removeFermentLock logs to console.error when rmSync fails", () => {
+		// Create a directory at the lockfile path. rmSync on a directory without
+		// {recursive:true} throws EISDIR, which force:true does NOT suppress (it
+		// only ignores ENOENT). This exercises the real rmSync error path without
+		// mocking the fs module (which is unreliable under ESM live bindings).
+		const lockPath = getFermentLockPath("ferment-rm-fail")
+		mkdirSync(lockPath)
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			removeFermentLock("ferment-rm-fail")
+			expect(errorSpy).toHaveBeenCalled()
+			const msg = String(errorSpy.mock.calls[0]?.[0] ?? "")
+			expect(msg).toContain("[ferment]")
+			expect(msg).toContain("ferment-rm-fail")
+		} finally {
+			errorSpy.mockRestore()
+			rmSync(lockPath, { recursive: true, force: true })
+		}
+	})
+
+	it("isFermentLockedByLiveProcess returns false when startedAt is older than KIMCHI_FERMENT_LOCK_MAX_AGE_MS", () => {
+		// Tiny max age so the staleness guard triggers with a comfortably-old
+		// timestamp; the lockfile's PID is still alive (process.pid).
+		vi.stubEnv("KIMCHI_FERMENT_LOCK_MAX_AGE_MS", "1000")
+		const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString()
+		const lockPath = getFermentLockPath("test-ferment-stale")
+		writeFileSync(
+			lockPath,
+			JSON.stringify({ pid: process.pid, startedAt: eightDaysAgo, fermentId: "test-ferment-stale" }),
+			"utf8",
+		)
+		expect(isFermentLockedByLiveProcess("test-ferment-stale")).toBe(false)
+	})
+
+	it("isFermentLockedByLiveProcess returns false when startedAt is missing", () => {
+		const lockPath = getFermentLockPath("test-ferment-missing-started")
+		writeFileSync(lockPath, JSON.stringify({ pid: process.pid, fermentId: "test-ferment-missing-started" }), "utf8")
+		expect(isFermentLockedByLiveProcess("test-ferment-missing-started")).toBe(false)
+	})
+
+	it("isFermentLockedByLiveProcess returns false when startedAt is unparseable", () => {
+		const lockPath = getFermentLockPath("test-ferment-bad-started")
+		writeFileSync(
+			lockPath,
+			JSON.stringify({ pid: process.pid, startedAt: "not-a-date", fermentId: "test-ferment-bad-started" }),
+			"utf8",
+		)
+		expect(isFermentLockedByLiveProcess("test-ferment-bad-started")).toBe(false)
+	})
+
+	it("isFermentLockedByLiveProcess returns false when startedAt is in the future", () => {
+		const futureStart = new Date(Date.now() + 60 * 60 * 1000).toISOString() // +1h
+		const lockPath = getFermentLockPath("test-ferment-future-started")
+		writeFileSync(
+			lockPath,
+			JSON.stringify({ pid: process.pid, startedAt: futureStart, fermentId: "test-ferment-future-started" }),
+			"utf8",
+		)
+		expect(isFermentLockedByLiveProcess("test-ferment-future-started")).toBe(false)
 	})
 })
 
