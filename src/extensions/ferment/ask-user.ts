@@ -160,6 +160,7 @@ export type NormalizeAskUserResult = { ok: true; questions: AskUserQuestion[] } 
  *  `propose_ferment_scoping` path. */
 export function normalizeAskUserQuestions(questions: ReadonlyArray<RawAskUserQuestion>): NormalizeAskUserResult {
 	const normalized: AskUserQuestion[] = []
+	const seen = new Set<string>()
 	for (const q of questions) {
 		if (!q.id || !q.id.trim()) {
 			return {
@@ -167,6 +168,13 @@ export function normalizeAskUserQuestions(questions: ReadonlyArray<RawAskUserQue
 				error: 'Question is missing required field "id" — a stable identifier returned with the answer.',
 			}
 		}
+		if (seen.has(q.id)) {
+			return {
+				ok: false,
+				error: `Question id "${q.id}" is duplicated — each question needs a unique id.`,
+			}
+		}
+		seen.add(q.id)
 		if (!q.prompt || !q.prompt.trim()) {
 			return {
 				ok: false,

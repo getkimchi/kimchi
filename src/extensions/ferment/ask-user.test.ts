@@ -214,6 +214,16 @@ describe("normalizeAskUserQuestions", () => {
 		if (result.ok) return
 		expect(result.error).toContain('Question "lonely" is type "multi" but has no options')
 	})
+
+	it("rejects duplicate question ids with an actionable message", () => {
+		const result = normalizeAskUserQuestions([
+			{ id: "dup", type: "single", prompt: "First?", options: [{ id: "a", label: "A" }] },
+			{ id: "dup", type: "single", prompt: "Second?", options: [{ id: "b", label: "B" }] },
+		])
+		expect(result.ok).toBe(false)
+		if (result.ok) return
+		expect(result.error).toContain('Question id "dup" is duplicated')
+	})
 })
 
 describe("askJudgeForm", () => {
