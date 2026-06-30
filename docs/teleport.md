@@ -2,15 +2,11 @@
 
 Teleport lets you spawn cloud sandboxes (workspaces) and run interactive PTY sessions inside them. You can open multiple sessions per workspace, sync files between your local machine and a sandbox, and switch between sessions with a tabbed terminal overlay.
 
-## Enabling teleport
+## Availability
 
-Teleport is available when the `KIMCHI_EXPERIMENTAL_TELEPORT` environment variable is set:
+Teleport is available by default — its slash commands are exposed in every interactive session.
 
-```bash
-KIMCHI_EXPERIMENTAL_TELEPORT=1 kimchi
-```
-
-This exposes the teleport slash commands in your interactive session.
+It is automatically disabled when kimchi runs inside a sandbox worker (detected via the `KIMCHI_SANDBOX` environment variable), since teleport is meant to spawn and connect into sandbox workspaces from your local machine.
 
 ## Prerequisites
 
