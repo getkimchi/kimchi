@@ -28,33 +28,73 @@ function warn(message: string): void {
 	process.stderr.write(`${LOG_PREFIX} ${message}\n`)
 }
 
+/** Thrown by performReExec when no re-exec primitive is available. Callers
+ *  treat this as "binary swapped on disk, but couldn't hand off in-process"
+ *  and fall back to a "restart your terminal" message instead of erroring. */
+export class ReExecUnavailableError extends Error {
+	constructor() {
+		super("no re-exec primitive available (process.execve and Bun.spawnSync both missing)")
+		this.name = "ReExecUnavailableError"
+	}
+}
+
 /**
- * Replace the running process with the same binary at `process.execPath`
- * using the supplied argv and env. Linux/macOS only.
+ * Replace the running process with the freshly-installed binary at
+ * `process.execPath`, passing the original user args (`userArgs`) and env.
+ * Linux/macOS only — Windows uses the `.old` rotation and never calls this.
  *
- * `process.execve` is a Node.js extension not in @types/node — we cast
- * through `unknown` to keep the call typed without an ambient declaration.
+ * Two mechanisms, in order:
+ *   1. `process.execve` — a true exec(2) syscall (Node.js 23+). Replaces the
+ *      process image; never returns on success. Not in @types/node, so we
+ *      cast through `unknown`.
+ *   2. `Bun.spawnSync` — the shipped artifact is a Bun-compiled binary, and
+ *      Bun does NOT implement `process.execve`. We launch the new binary as
+ *      a child with inherited stdio, wait for it, and exit with its code.
+ *      Not a real image replacement, but functionally equivalent for a CLI
+ *      that's about to hand control to the new version anyway.
+ *
+ * Note we re-launch `process.execPath` (the real binary) with `userArgs`
+ * only. In a Bun-compiled binary `process.argv[1]` is a virtual `/$bunfs/…`
+ * script path that must NOT be forwarded; the binary embeds its own entry.
  *
  * Exported so tests can spy on it. Production callers should invoke
  * `maybeAutoUpdateOnLaunch`, which gates platform + applies the update
- * first.
+ * first. Returns `never` on the success paths (process replaced or exited);
+ * throws `ReExecUnavailableError` when neither mechanism exists.
  */
-export function performReExec(argv: readonly string[], env: NodeJS.ProcessEnv): never {
+export function performReExec(userArgs: readonly string[], env: NodeJS.ProcessEnv): never {
 	const execve = (
 		process as unknown as {
 			execve?: (file: string, args: readonly string[], env: NodeJS.ProcessEnv) => never
 		}
 	).execve
-	if (typeof execve !== "function") {
-		// Unreachable in production: maybeAutoUpdateOnLaunch short-circuits
-		// on win32 before reaching here. Tests that stub execve via this
-		// helper will replace it with a spy and never fall through.
-		throw new Error("process.execve is not available on this platform")
+	if (typeof execve === "function") {
+		// execve's arg vector is the full argv INCLUDING argv[0]; convention
+		// is argv[0] === the program path.
+		execve(process.execPath, [process.execPath, ...userArgs], env)
+		// execve does not return on success.
+		throw new Error("process.execve returned unexpectedly")
 	}
-	execve(process.execPath, argv, env)
-	// execve does not return on success.
-	throw new Error("process.execve returned unexpectedly")
+
+	const bunSpawnSync = (globalThis as unknown as { Bun?: { spawnSync?: BunSpawnSync } }).Bun?.spawnSync
+	if (typeof bunSpawnSync === "function") {
+		const result = bunSpawnSync([process.execPath, ...userArgs], {
+			stdio: ["inherit", "inherit", "inherit"],
+			env,
+		})
+		// Mirror the child's exit so the terminal sees the same status.
+		process.exit(result.exitCode ?? 0)
+	}
+
+	throw new ReExecUnavailableError()
 }
+
+/** Minimal structural type for the slice of `Bun.spawnSync` we use — avoids a
+ *  hard dependency on @types/bun in a file that also builds under Node. */
+type BunSpawnSync = (
+	cmd: readonly string[],
+	opts: { stdio: [string, string, string]; env: NodeJS.ProcessEnv },
+) => { exitCode: number | null }
 
 /** Return true when any argv token should suppress auto-update. Exported so
  *  tests can drive it without mutating the worker's `process.argv` (vitest's
@@ -99,7 +139,10 @@ export interface MaybeAutoUpdateOnLaunchOptions {
  *   - applyUpdate throws (network, checksum, smoke-test failure)
  *   - opts.signal is already aborted (caller's deadline has passed)
  *
- * On success (Linux/macOS): re-exec into the new binary.
+ * On success (Linux/macOS): hand off to the new binary via performReExec
+ * (execve under Node, Bun.spawnSync under the compiled binary). If no
+ * re-exec primitive exists, the binary is still swapped on disk — we log a
+ * "restart your terminal" note and continue on the current version.
  * On success (Windows): `atomicInstall` rotates `kimchi.exe` → `kimchi.exe.old`
  * in-place, so the current run continues on the (still-current) binary; the
  * user's next terminal relaunch picks up the new version. We log a one-line
@@ -157,10 +200,22 @@ export async function maybeAutoUpdateOnLaunch(opts: MaybeAutoUpdateOnLaunchOptio
 			return
 		}
 
-		// argv[0] is the same script entry the current process was launched
-		// with. process.argv.slice(1) gives us exactly that — drop the
-		// leading "node" or "/path/to/kimchi" and keep the user args.
-		performReExec([process.execPath, ...process.argv.slice(1)], process.env)
+		// Hand off to the freshly-installed binary. We forward only the user
+		// args (process.argv.slice(2)); argv[1] is the launcher's own entry
+		// (a /$bunfs/… virtual path in the compiled binary) and must not be
+		// passed through. performReExec re-prepends process.execPath itself.
+		try {
+			performReExec(process.argv.slice(2), process.env)
+		} catch (err) {
+			if (err instanceof ReExecUnavailableError) {
+				// Update is on disk but we can't swap into it this launch
+				// (no exec primitive). Continue on the current version; the
+				// user's next launch picks up the new binary.
+				warn(`Update installed; restart your terminal to use ${check.latestVersion}.`)
+				return
+			}
+			throw err
+		}
 	} catch (err) {
 		// Defense in depth — should be unreachable given the inner
 		// try/catches, but if any helper throws unexpectedly we still
