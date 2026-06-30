@@ -179,12 +179,11 @@ describe("createSession", () => {
 	})
 })
 
-import { SESSION_CREATE_TIMEOUT_MS } from "../../extensions/teleport/commands/teleport.js"
-
 describe("createSession large-repo regression", () => {
-	// Real HTTP server: teleport on large repos (kubecast) aborted at the 30s
-	// WorkerClient default even though the session was created server-side.
-	// SESSION_CREATE_TIMEOUT_MS must exceed the server's response time.
+	// Real HTTP server: a per-call timeoutMs must outlast the worker's response
+	// time even when it exceeds the WorkerClient default. Regression for large
+	// repos (kubecast) where the 30s default aborted mid-flight while the
+	// session was created server-side.
 
 	let server: Server
 	let baseUrl: string
@@ -194,7 +193,6 @@ describe("createSession large-repo regression", () => {
 		serverDelayMs = 0
 		server = createServer((req, res) => {
 			if (req.method === "POST" && req.url?.startsWith("/session/")) {
-				// Drain the multipart body so the connection stays clean.
 				req.on("data", () => {})
 				req.on("end", () => {
 					setTimeout(() => {
@@ -221,23 +219,26 @@ describe("createSession large-repo regression", () => {
 		await new Promise<void>((resolve) => server.close(() => resolve()))
 	})
 
-	// 200ms > 50ms client default; SESSION_CREATE_TIMEOUT_MS must clear it.
-	it("teleport's session-create timeout outlasts large-repo session creation", async () => {
-		expect(SESSION_CREATE_TIMEOUT_MS).toBeGreaterThan(200)
-
+	it("succeeds when the per-call timeout outlasts the worker response", async () => {
+		// Server responds at 200ms — longer than the 50ms client default.
 		serverDelayMs = 200
 		const creds = { ...CREDS, wsUrl: baseUrl.replace("http://", "ws://") }
 		const client = new WorkerClient(creds, { timeoutMs: 50 })
 
-		const result = await createSession(
-			client,
-			"kubecast",
-			{ agentMode: "PTY" },
-			{ timeoutMs: SESSION_CREATE_TIMEOUT_MS },
-		)
+		const result = await createSession(client, "kubecast", { agentMode: "PTY" }, { timeoutMs: 1000 })
 
 		expect(result.name).toBe("kubecast")
 		expect(result.agentMode).toBe("PTY")
+	})
+
+	it("aborts when no per-call timeout overrides the client default", async () => {
+		// Without a per-call timeoutMs the client default (50ms) aborts a 200ms
+		// response — reproducing the original "The operation was aborted" bug.
+		serverDelayMs = 200
+		const creds = { ...CREDS, wsUrl: baseUrl.replace("http://", "ws://") }
+		const client = new WorkerClient(creds, { timeoutMs: 50 })
+
+		await expect(createSession(client, "kubecast", { agentMode: "PTY" })).rejects.toThrow(/aborted/i)
 	})
 })
 

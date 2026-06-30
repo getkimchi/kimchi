@@ -22,7 +22,8 @@ export async function createSession(
 	const s = await client.postMultipart<Omit<Session, "name">>(
 		`/session/${encodeURIComponent(name)}`,
 		{ request: req, sessionFile: opts.sessionFile },
-		{ signal: opts.signal, timeoutMs: opts.timeoutMs },
+		opts.signal,
+		opts.timeoutMs,
 	)
 	return { ...s, name }
 }

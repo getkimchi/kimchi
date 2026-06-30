@@ -106,7 +106,8 @@ export class WorkerClient {
 	async postMultipart<T>(
 		path: string,
 		parts: { request: unknown; sessionFile?: string },
-		opts: { signal?: AbortSignal; timeoutMs?: number } = {},
+		signal?: AbortSignal,
+		timeoutMs?: number,
 	): Promise<T> {
 		const url = this.#url(path)
 		const form = new FormData()
@@ -126,8 +127,8 @@ export class WorkerClient {
 				body: form,
 			},
 			this.#fetch,
-			opts.timeoutMs ?? this.#timeoutMs,
-			opts.signal,
+			timeoutMs ?? this.#timeoutMs,
+			signal,
 		)
 		await checkResponse(resp, url)
 		return (await resp.json()) as T
