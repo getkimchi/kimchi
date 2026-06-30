@@ -9,7 +9,7 @@
 #   CLAUDE_CODE_API_MAX_RETRIES=0 ./scripts/run-claude-code-kimchi.sh -i terminal-bench/fix-git
 set -euo pipefail
 
-DATASET="terminal-bench/terminal-bench-2"
+DATASET="${DATASET:-terminal-bench/terminal-bench-2-1}"
 
 : "${KIMCHI_API_KEY:?set KIMCHI_API_KEY in env}"
 
@@ -32,6 +32,7 @@ HARBOR_ARGS=(
     --config "$RETRY_CONFIG"
     --max-retries "${CLAUDE_CODE_API_MAX_RETRIES:-5}"
     -d "$DATASET"
+    --jobs-dir "${JOBS_DIR:-benchmark/${DATASET#terminal-bench/}/jobs}"
 )
 
 if [[ -n "${CLAUDE_CODE_VERSION:-}" ]]; then

@@ -134,6 +134,58 @@ def test_command_omits_job_name_flag_by_default() -> None:
     assert "--job-name" not in cmd
 
 
+# --- Terminal Bench 2.1 dataset support ---
+
+
+def test_command_includes_2_1_dataset() -> None:
+    """The 2.1 dataset slug is forwarded verbatim as the `-d` argument."""
+    cmd = build_harbor_command(
+        tasks=["task-a"],
+        agent_import_path="kimchi_agent:Kimchi",
+        model="kimchi-dev/kimi-k2.6",
+        dataset="terminal-bench/terminal-bench-2-1",
+        parallelism=1,
+        attempts=1,
+        timeout_multiplier=1.0,
+    )
+
+    assert "terminal-bench/terminal-bench-2-1" in cmd
+    assert "-d" in cmd
+
+
+def test_command_includes_jobs_dir_when_provided() -> None:
+    """--jobs-dir is forwarded as an adjacent flag+value pair when provided.
+
+    Mirrors test_command_omits_job_name_flag_by_default: the flag is present
+    only when the caller passes it (chunk_runner forwards the results dir as
+    --jobs-dir so Harbor writes into BENCHMARK_RESULTS_DIR).
+    """
+    cmd_with = build_harbor_command(
+        tasks=["task-a"],
+        agent_import_path="kimchi_agent:Kimchi",
+        model="kimchi-dev/kimi-k2.6",
+        dataset="terminal-bench/terminal-bench-2",
+        parallelism=1,
+        attempts=1,
+        timeout_multiplier=1.0,
+        jobs_dir="benchmark/terminal-bench-2-1/jobs",
+    )
+    pairs = list(itertools.pairwise(cmd_with))
+    assert ("--jobs-dir", "benchmark/terminal-bench-2-1/jobs") in pairs
+
+    # When omitted, the flag is absent (Harbor uses its default jobs dir).
+    cmd_without = build_harbor_command(
+        tasks=["task-a"],
+        agent_import_path="kimchi_agent:Kimchi",
+        model="kimchi-dev/kimi-k2.6",
+        dataset="terminal-bench/terminal-bench-2",
+        parallelism=1,
+        attempts=1,
+        timeout_multiplier=1.0,
+    )
+    assert "--jobs-dir" not in cmd_without
+
+
 # --- LLM sampling parameter forwarding ---
 
 

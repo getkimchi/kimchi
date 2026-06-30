@@ -9,7 +9,7 @@
 #   MODEL=multi-model ./scripts/run-release.sh -i terminal-bench/fix-git -k 3
 set -euo pipefail
 
-DATASET="terminal-bench/terminal-bench-2"
+DATASET="${DATASET:-terminal-bench/terminal-bench-2-1}"
 
 : "${KIMCHI_API_KEY:?set KIMCHI_API_KEY in env}"
 
@@ -25,4 +25,5 @@ exec uv run --python 3.14 harbor run \
     --model "${MODEL:-kimchi-dev/kimi-k2.5}" \
     --ae "KIMCHI_API_KEY=$KIMCHI_API_KEY" \
     -d "$DATASET" \
+    --jobs-dir "${JOBS_DIR:-benchmark/${DATASET#terminal-bench/}/jobs}" \
     "$@"

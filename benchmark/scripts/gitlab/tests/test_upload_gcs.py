@@ -130,3 +130,64 @@ def test_main_fails_when_metadata_missing_and_upload_required(
 
     assert rc != 0
     fake_run.assert_not_called()
+
+
+def test_main_uploads_to_2_1_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A 2.1 run's gcs.prefix routes jobs.tar.gz under runs/benchmark=terminal-bench-2-1/.
+
+    Mirrors test_main_uploads_consolidated_archive but with the run metadata's
+    `gcs.prefix` set to a 2.1 prefix, proving the upload lands in a namespace
+    disjoint from the 2.0 default.
+    """
+    metadata = {
+        "benchmark": "terminal-bench-2-1",
+        "coding_agent": "kimchi",
+        "model": "kimchi-dev/kimi-k2.6",
+        "model_provider": "kimchi-dev",
+        "model_name": "kimi-k2.6",
+        "configuration": "single-model",
+        "multi_mode": False,
+        "ferment": False,
+        "selected_tasks": ["task-a"],
+        "parameters": {},
+        "results_dir": str(tmp_path / "jobs"),
+        "gcs": {"prefix": "runs/benchmark=terminal-bench-2-1/run=gitlab-p1"},
+    }
+    metadata_path = tmp_path / "run-metadata.json"
+    metadata_path.write_text(json.dumps(metadata))
+
+    results_dir = Path(metadata["results_dir"])
+    results_dir.mkdir(parents=True)
+    for chunk in (0, 1, 2):
+        trial = results_dir / f"task-{chunk}__1"
+        trial.mkdir()
+        (trial / "result.json").write_text(json.dumps({"trial_name": f"task-{chunk}"}))
+    (results_dir / "chunk-meta").mkdir()
+    for chunk in (0, 1, 2):
+        (results_dir / "chunk-meta" / f"chunk-{chunk}.json").write_text("{}")
+
+    monkeypatch.setenv("BENCHMARK_GCS_BUCKET", "test-bucket")
+    monkeypatch.setenv("BENCHMARK_RUN_METADATA", str(metadata_path))
+    monkeypatch.setenv("GCS_UPLOAD_REQUIRED", "true")
+    # Keep work_dir inside tmp_path so the test doesn't leave a real
+    # .benchmark-upload/ behind in the caller's working directory.
+    monkeypatch.setenv("CI_PROJECT_DIR", str(tmp_path))
+
+    cp_calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str]) -> None:
+        cp_calls.append(cmd)
+
+    with patch.object(upload_gcs, "run", side_effect=fake_run):
+        rc = upload_gcs.main()
+
+    assert rc == 0
+    cp_strings = [" ".join(cmd) for cmd in cp_calls]
+    assert any("metadata.json" in s and "test-bucket" in s for s in cp_strings), cp_strings
+    archive_uploads = [s for s in cp_strings if "jobs.tar.gz" in s]
+    assert len(archive_uploads) == 1, (
+        f"Expected exactly one jobs.tar.gz upload, got {len(archive_uploads)}: {archive_uploads}"
+    )
+    assert "runs/benchmark=terminal-bench-2-1/run=gitlab-p1/jobs.tar.gz" in archive_uploads[0]

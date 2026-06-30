@@ -827,3 +827,118 @@ def test_write_run_metadata_is_pipeline_level(
     # traceability, not for the GCS prefix.
     assert metadata["gitlab"]["job_id"] == "9002"
     assert metadata["gitlab"]["pipeline_id"] == "1001"
+
+
+def test_build_gcs_key_prefix_uses_benchmark_name_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The GCS prefix honors BENCHMARK_NAME so 2.0 runs stay separate from 2.1.
+
+    With BENCHMARK_NAME=terminal-bench-2 the prefix is scoped to the 2.0
+    benchmark; with BENCHMARK_NAME unset, the 2.1 default (terminal-bench-2-1)
+    is used. This keeps per-trial result.json uploads from the two dataset
+    versions from colliding under the same GCS prefix.
+    """
+    minimal_env = {
+        "CODING_AGENT": "kimchi",
+        "MODEL": "kimchi-dev/kimi-k2.6",
+        "KIMCHI_MULTI_MODEL": "false",
+        "KIMCHI_FERMENT_ONESHOT": "false",
+        "CI_COMMIT_REF_NAME": "benchmarks",
+        "CI_COMMIT_SHA": "abc1234567890abcdef1234567890abcdef12345",
+        "CI_PIPELINE_ID": "1001",
+    }
+    # Mirror test_build_gcs_key_prefix_is_pipeline_level: wipe the vars the
+    # function consults so `minimal_env` is the full env, then freeze time.
+    for key in (
+        "BENCHMARK_NAME",
+        "CODING_AGENT",
+        "MODEL",
+        "KIMCHI_MULTI_MODEL",
+        "KIMCHI_FERMENT_ONESHOT",
+        "CI_COMMIT_REF_NAME",
+        "CI_COMMIT_SHA",
+        "CI_PIPELINE_ID",
+        "CI_JOB_ID",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr("chunk_runner.time.gmtime", lambda: _FROZEN_GMTIME)
+    for key, value in minimal_env.items():
+        monkeypatch.setenv(key, value)
+    # CI_JOB_ID intentionally absent: the prefix is pipeline-level, not job-level.
+    monkeypatch.delenv("CI_JOB_ID", raising=False)
+
+    # 2.0 benchmark: prefix scoped to terminal-bench-2.
+    monkeypatch.setenv("BENCHMARK_NAME", "terminal-bench-2")
+    prefix_2_0 = _build_gcs_key_prefix()
+    assert prefix_2_0.startswith("runs/benchmark=terminal-bench-2/"), prefix_2_0
+
+    # 2.1 default: BENCHMARK_NAME unset → terminal-bench-2-1.
+    monkeypatch.delenv("BENCHMARK_NAME")
+    prefix_default = _build_gcs_key_prefix()
+    assert prefix_default.startswith("runs/benchmark=terminal-bench-2-1/"), prefix_default
+
+
+@pytest.mark.parametrize(
+    ("current_job_name", "prior_job_names"),
+    [
+        # 2.1 current job: 2.0 prior attempts must NOT match.
+        (
+            "terminal-bench-2-1-chunks: [0]",
+            ["terminal-bench-2-chunks: [0]", "terminal-bench-2-chunks: [1]"],
+        ),
+        # 2.0 current job: 2.1 prior attempts must NOT match (vice versa).
+        (
+            "terminal-bench-2-chunks: [0]",
+            ["terminal-bench-2-1-chunks: [0]", "terminal-bench-2-1-chunks: [1]"],
+        ),
+    ],
+)
+def test_restore_prior_artifact_does_not_collide_across_dataset_versions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    current_job_name: str,
+    prior_job_names: list[str],
+) -> None:
+    """A 2.1 chunk job must NOT restore a 2.0 chunk's prior attempt (and vice versa).
+
+    The base job name differs across dataset versions
+    (terminal-bench-2-1-chunks vs terminal-bench-2-chunks), so the base-name
+    matcher in _restore_prior_artifact must reject prior attempts from the
+    other version. Otherwise a retry of a 2.1 chunk could silently pull in
+    2.0 trial results, or vice versa.
+    """
+    from chunk_runner import _restore_prior_artifact
+
+    monkeypatch.setenv("CI_JOB_TOKEN", "tok")
+    monkeypatch.setenv("CI_PROJECT_ID", "1")
+    monkeypatch.setenv("CI_PIPELINE_ID", "100")
+    monkeypatch.setenv("CI_JOB_ID", "200")
+    monkeypatch.setenv("CI_JOB_NAME", current_job_name)
+    monkeypatch.setenv("BENCH_CHUNK_INDEX", "0")  # current job is a chunk
+
+    class FakeResp:
+        def __init__(self, data: bytes) -> None:
+            self.data = data
+
+        def read(self) -> bytes:
+            return self.data
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        # Prior attempts exist, but ALL carry the OTHER version's base name.
+        jobs = [{"id": 200, "name": current_job_name}]  # current attempt
+        for offset, name in enumerate(prior_job_names, start=1):
+            jobs.append({"id": 200 - offset, "name": name})
+        return FakeResp(json.dumps(jobs).encode("utf-8"))
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        restored = _restore_prior_artifact(tmp_path, workspace=tmp_path)
+
+    assert restored is False
+    assert not any(tmp_path.iterdir())

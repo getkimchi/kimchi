@@ -7,17 +7,17 @@ include:
   - component: $CI_SERVER_FQDN/castai/tooling/gitlab-ci-components/auth@v0.0.29
 
 workflow:
-  name: 'Terminal Bench 2 — $[[ inputs.agent ]] · $[[ inputs.model ]] · $[[ inputs.target_ref ]] · multi-model=$[[ inputs.kimchi_multi_model ]] · ferment=$[[ inputs.kimchi_ferment_oneshot ]] · tasks_all=$[[ inputs.tasks_all ]]'
+  name: 'Terminal Bench $[[ inputs.dataset_version ]] — $[[ inputs.agent ]] · $[[ inputs.model ]] · $[[ inputs.target_ref ]] · multi-model=$[[ inputs.kimchi_multi_model ]] · ferment=$[[ inputs.kimchi_ferment_oneshot ]] · tasks_all=$[[ inputs.tasks_all ]]'
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       variables:
-        TERMINAL_BENCH_RESOURCE_GROUP: terminal-bench-2-$[[ inputs.agent ]]-scheduled
+        TERMINAL_BENCH_RESOURCE_GROUP: terminal-bench-$[[ inputs.dataset_version ]]-$[[ inputs.agent ]]-scheduled
     - if: '$CI_PIPELINE_SOURCE == "web"'
       variables:
-        TERMINAL_BENCH_RESOURCE_GROUP: 'terminal-bench-2-$[[ inputs.agent ]]-$[[ inputs.target_ref ]]'
+        TERMINAL_BENCH_RESOURCE_GROUP: 'terminal-bench-$[[ inputs.dataset_version ]]-$[[ inputs.agent ]]-$[[ inputs.target_ref ]]'
     - if: '$CI_PIPELINE_SOURCE == "api"'
       variables:
-        TERMINAL_BENCH_RESOURCE_GROUP: 'terminal-bench-2-$[[ inputs.agent ]]-$[[ inputs.target_ref ]]'
+        TERMINAL_BENCH_RESOURCE_GROUP: 'terminal-bench-$[[ inputs.dataset_version ]]-$[[ inputs.agent ]]-$[[ inputs.target_ref ]]'
     - when: never
 
 stages:
@@ -86,8 +86,9 @@ setup-image:
     BENCH_PARALLELISM: "$[[ inputs.parallelism ]]"
     BENCH_ATTEMPTS: "$[[ inputs.attempts ]]"
     BENCH_TIMEOUT_MULTIPLIER: "$[[ inputs.timeout_multiplier ]]"
-    BENCHMARK_NAME: terminal-bench-2
-    BENCHMARK_RESULTS_DIR: benchmark/terminal-bench-2/jobs
+    BENCHMARK_NAME: terminal-bench-$[[ inputs.dataset_version ]]
+    BENCHMARK_RESULTS_DIR: benchmark/terminal-bench-$[[ inputs.dataset_version ]]/jobs
+    DATASET: terminal-bench/terminal-bench-$[[ inputs.dataset_version ]]
     BENCHMARK_TARGET_REF: "$[[ inputs.target_ref ]]"
     CODING_AGENT: "$[[ inputs.agent ]]"
     MODEL: "$[[ inputs.model ]]"
@@ -113,7 +114,7 @@ setup-image:
     - export SELECTED_TASKS_JSON='$[[ inputs.tasks ]]'
     - |
       echo "=========================================="
-      echo "Terminal Bench 2 — CI inputs"
+      echo "Terminal Bench $[[ inputs.dataset_version ]] — CI inputs"
       echo "=========================================="
       echo "agent:                    ${CODING_AGENT}"
       echo "target_ref:               ${BENCHMARK_TARGET_REF}"
@@ -149,28 +150,28 @@ setup-image:
     when: always
     expire_in: 30 days
     paths:
-      - benchmark/terminal-bench-2/jobs/
+      - benchmark/terminal-bench-$[[ inputs.dataset_version ]]/jobs/
       - .benchmark/run-metadata.json
 
-terminal-bench-2-chunks:
+terminal-bench-$[[ inputs.dataset_version ]]-chunks:
   extends: .terminal-bench-2-chunk
   parallel:
     matrix:
       - CHUNK: [0, 1, 2]
 
-terminal-bench-2-summary:
+terminal-bench-$[[ inputs.dataset_version ]]-summary:
   stage: postprocess
   when: always
   image: mirror.gcr.io/library/node:22-bookworm
   id_tokens: !reference [.auth-gcp-id-tokens, id_tokens]
   needs:
-    - job: terminal-bench-2-chunks
+    - job: terminal-bench-$[[ inputs.dataset_version ]]-chunks
       artifacts: true
   tags:
     - runner::dind
   variables:
     <<: *gcp-auth-vars
-    BENCHMARK_RESULTS_DIR: benchmark/terminal-bench-2/jobs
+    BENCHMARK_RESULTS_DIR: benchmark/terminal-bench-$[[ inputs.dataset_version ]]/jobs
     BENCH_RETRY_AGENT_TIMEOUT: "$[[ inputs.retry_agent_timeout ]]"
     DEBIAN_FRONTEND: noninteractive
     FF_TIMESTAMPS: "true"
@@ -185,12 +186,12 @@ terminal-bench-2-summary:
   artifacts:
     when: always
     expire_in: 30 days
-    name: "terminal-bench-2-summary-$CI_COMMIT_REF_SLUG-$CI_PIPELINE_ID"
+    name: "terminal-bench-$[[ inputs.dataset_version ]]-summary-$CI_COMMIT_REF_SLUG-$CI_PIPELINE_ID"
     paths:
       - .benchmark/run-metadata.json
       - .benchmark/summary.json
 
-terminal-bench-2-analyze:
+terminal-bench-$[[ inputs.dataset_version ]]-analyze:
   stage: postprocess
   rules:
     - if: $[[ inputs.analyze_results ]] == true
@@ -200,14 +201,14 @@ terminal-bench-2-analyze:
   needs:
     - job: setup-image
       artifacts: true
-    - job: terminal-bench-2-chunks
+    - job: terminal-bench-$[[ inputs.dataset_version ]]-chunks
       artifacts: true
-    - job: terminal-bench-2-summary
+    - job: terminal-bench-$[[ inputs.dataset_version ]]-summary
       artifacts: true
   tags:
     - runner::dind
   variables:
-    BENCHMARK_RESULTS_DIR: benchmark/terminal-bench-2/jobs
+    BENCHMARK_RESULTS_DIR: benchmark/terminal-bench-$[[ inputs.dataset_version ]]/jobs
     DEBIAN_FRONTEND: noninteractive
     FF_TIMESTAMPS: "true"
     KIMCHI_ANALYSIS_MODEL: "kimchi-dev/glm-5.2-fp8"
@@ -218,11 +219,11 @@ terminal-bench-2-analyze:
   artifacts:
     when: always
     expire_in: 30 days
-    name: "terminal-bench-2-analysis-$CI_COMMIT_REF_SLUG-$CI_PIPELINE_ID"
+    name: "terminal-bench-$[[ inputs.dataset_version ]]-analysis-$CI_COMMIT_REF_SLUG-$CI_PIPELINE_ID"
     paths:
       - .benchmark/analysis.html
 
-terminal-bench-2-upload-analysis:
+terminal-bench-$[[ inputs.dataset_version ]]-upload-analysis:
   stage: postprocess
   rules:
     - if: $[[ inputs.analyze_results ]] == true
@@ -231,9 +232,9 @@ terminal-bench-2-upload-analysis:
   image: mirror.gcr.io/library/node:22-bookworm
   id_tokens: !reference [.auth-gcp-id-tokens, id_tokens]
   needs:
-    - job: terminal-bench-2-summary
+    - job: terminal-bench-$[[ inputs.dataset_version ]]-summary
       artifacts: true
-    - job: terminal-bench-2-analyze
+    - job: terminal-bench-$[[ inputs.dataset_version ]]-analyze
       artifacts: true
   tags:
     - runner::dind

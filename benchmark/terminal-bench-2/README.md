@@ -42,7 +42,43 @@ You will hit one of two failure modes:
 | `./scripts/run-claude-code-kimchi.sh` | Installs Claude Code in the task container and configures it to use the Kimchi gateway |
 | `./scripts/run-gsd-kimchi.sh` | Installs GSD in the task container and configures it to use one selected Kimchi model |
 
-All helper scripts target the `terminal-bench/terminal-bench-2` dataset. Extra arguments are forwarded to `harbor run`, so everything below works for any script.
+All helper scripts target the `terminal-bench/terminal-bench-2-1` dataset by default. Extra arguments are forwarded to `harbor run`, so everything below works for any script.
+
+## Terminal Bench 2.1
+
+Terminal Bench 2.1 (`terminal-bench/terminal-bench-2-1` on Harbor Hub) is a more-verified iteration of 2.0 with 26 modified tasks. It is the default dataset — same `kimchi_agent`, same shared `benchmark/terminal-bench-2/` project root. All scripts and CI defaults point at 2.1; selecting 2.0 changes only the dataset, results directory, and GCS path.
+
+### Local runs
+
+2.1 is the default for all 5 helper scripts — no env var needed:
+
+```bash
+./scripts/run-local.sh -i terminal-bench/fix-git
+```
+
+To run the original 2.0 dataset, set `DATASET=terminal-bench/terminal-bench-2`:
+
+```bash
+DATASET=terminal-bench/terminal-bench-2 ./scripts/run-local.sh -i terminal-bench/fix-git
+```
+
+### Results directory
+
+`--jobs-dir` is derived from `DATASET` as `benchmark/${DATASET#terminal-bench/}/jobs`, so the default 2.1 run writes results to `benchmark/terminal-bench-2-1/jobs/<timestamp>/...` while a 2.0 run writes to `benchmark/terminal-bench-2/jobs/...`.
+
+Override explicitly with `JOBS_DIR`:
+
+```bash
+JOBS_DIR=/tmp/tb2-jobs DATASET=terminal-bench/terminal-bench-2 ./scripts/run-local.sh ...
+```
+
+### GCS path
+
+Uploads land under `runs/benchmark=terminal-bench-2-1/coding_agent=<agent>/model_provider=<prov>/model=<model>/configuration=<cfg>/date=<YYYY-MM-DD>/run=<RUN_ID>/` — fully separated from 2.0's `runs/benchmark=terminal-bench-2/...` prefix. This is driven by the existing `_build_gcs_key_prefix()` reading `BENCHMARK_NAME` from env; no change to the prefix function.
+
+### 2.1 is the default
+
+Terminal Bench 2.1 is the default everywhere: local scripts and the `DATASET` / `BENCHMARK_NAME` / `BENCHMARK_RESULTS_DIR` defaults all point at 2.1. 2.0 is available as an opt-in — selecting it changes the dataset, results directory, and GCS path; it does not alter 2.1 behavior.
 
 ### Running a task
 
@@ -53,7 +89,7 @@ export KIMCHI_API_KEY=...
 
 ### Running the full dataset
 
-Drop `-i` to run all 89 tasks in `terminal-bench/terminal-bench-2`:
+Drop `-i` to run all tasks in `terminal-bench/terminal-bench-2-1`:
 
 ```bash
 ./scripts/run-local.sh -n 8

@@ -6,6 +6,7 @@ spec:
 include:
   - local: /.gitlab/ci/terminal-bench-2.yml
     inputs:
+      dataset_version: $[[ inputs.dataset_version ]]
       agent: $[[ inputs.agent ]]
       target_ref: $[[ inputs.target_ref ]]
       tasks: $[[ inputs.tasks ]]
