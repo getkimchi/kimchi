@@ -1,7 +1,8 @@
 import { mkdtempSync, writeFileSync } from "node:fs"
+import { type Server, createServer } from "node:http"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { WorkspaceCredentials } from "../cloud/types.js"
 import { HARNESS_CLIENT_TYPE } from "../constants.js"
 import { WorkerClient } from "./client.js"
@@ -175,6 +176,68 @@ describe("createSession", () => {
 			name: "WorkerError",
 			status: 409,
 		})
+	})
+})
+
+import { SESSION_CREATE_TIMEOUT_MS } from "../../extensions/teleport/commands/teleport.js"
+
+describe("createSession large-repo regression", () => {
+	// Real HTTP server: teleport on large repos (kubecast) aborted at the 30s
+	// WorkerClient default even though the session was created server-side.
+	// SESSION_CREATE_TIMEOUT_MS must exceed the server's response time.
+
+	let server: Server
+	let baseUrl: string
+	let serverDelayMs: number
+
+	beforeEach(async () => {
+		serverDelayMs = 0
+		server = createServer((req, res) => {
+			if (req.method === "POST" && req.url?.startsWith("/session/")) {
+				// Drain the multipart body so the connection stays clean.
+				req.on("data", () => {})
+				req.on("end", () => {
+					setTimeout(() => {
+						res.writeHead(201, { "Content-Type": "application/json" })
+						res.end(JSON.stringify(sessionFixture({ agentMode: "PTY" })))
+					}, serverDelayMs)
+				})
+				return
+			}
+			res.writeHead(404)
+			res.end()
+		})
+		await new Promise<void>((resolve) => {
+			server.listen(0, "127.0.0.1", () => {
+				const addr = server.address()
+				const port = typeof addr === "object" && addr ? addr.port : 0
+				baseUrl = `http://127.0.0.1:${port}`
+				resolve()
+			})
+		})
+	})
+
+	afterEach(async () => {
+		await new Promise<void>((resolve) => server.close(() => resolve()))
+	})
+
+	// 200ms > 50ms client default; SESSION_CREATE_TIMEOUT_MS must clear it.
+	it("teleport's session-create timeout outlasts large-repo session creation", async () => {
+		expect(SESSION_CREATE_TIMEOUT_MS).toBeGreaterThan(200)
+
+		serverDelayMs = 200
+		const creds = { ...CREDS, wsUrl: baseUrl.replace("http://", "ws://") }
+		const client = new WorkerClient(creds, { timeoutMs: 50 })
+
+		const result = await createSession(
+			client,
+			"kubecast",
+			{ agentMode: "PTY" },
+			{ timeoutMs: SESSION_CREATE_TIMEOUT_MS },
+		)
+
+		expect(result.name).toBe("kubecast")
+		expect(result.agentMode).toBe("PTY")
 	})
 })
 
