@@ -13,8 +13,6 @@ test("completed todos stop pinning the overlay", async ({ terminal }) => {
 			models: [{ slug: "basic", displayName: "Fake Basic", contextWindow: 1_000_000, maxTokens: 4096 }],
 			responses: [
 				{
-					// The first-turn-orientation guard is temporarily disabled, so
-					// orientation text is not required; kept for natural flow.
 					stream: ["Setting up todos."],
 					toolCalls: [
 						{
@@ -93,8 +91,6 @@ test("todo overlay reconciles stale active todos after non-todo work", async ({ 
 			models: [{ slug: "basic", displayName: "Fake Basic", contextWindow: 1_000_000, maxTokens: 4096 }],
 			responses: [
 				{
-					// The first-turn-orientation guard is temporarily disabled, so
-					// orientation text is not required; kept for natural flow.
 					stream: ["Reconciling the todo list."],
 					toolCalls: [
 						{

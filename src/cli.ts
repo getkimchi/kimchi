@@ -40,7 +40,6 @@ import clipboardImageExtension from "./extensions/clipboard-image.js"
 import customizeFooterExtension from "./extensions/customize-footer-command.js"
 import explorationGuardExtension from "./extensions/exploration-guard.js"
 import fermentExtension from "./extensions/ferment/index.js"
-import firstTurnOrientationExtension from "./extensions/first-turn-orientation.js"
 import helpExtension from "./extensions/help.js"
 import hideThinkingExtension from "./extensions/hide-thinking.js"
 import ideAdapterExtension from "./extensions/ide-adapter/index.js"
@@ -469,7 +468,6 @@ try {
 			startupAuthGate,
 			loopGuardExtension,
 			explorationGuardExtension,
-			firstTurnOrientationExtension,
 			reviewWriteGuardExtension,
 			lspExtension,
 			// Always registered — the tool_call handler checks isResourceEnabled

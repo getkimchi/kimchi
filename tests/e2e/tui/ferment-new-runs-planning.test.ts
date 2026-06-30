@@ -81,8 +81,6 @@ test("/ferment new runs planning and produces a scoped ferment artifact", async 
 			gitInit: true,
 			responses: [
 				// Turn 1: emit orientation text first then call propose_ferment_scoping.
-				// The first-turn-orientation guard is temporarily disabled, so
-				// orientation text is not required; kept for natural flow.
 				{
 					stream: ["I'll outline the scope."],
 					toolCalls: [

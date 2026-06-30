@@ -28,8 +28,6 @@ describe("ACP integration — all capabilities", () => {
 				{ stream: ["hello", " from", " full-cap", " client."] },
 				{
 					// Each ACP prompt starts a new agent run (turnIndex resets to 0).
-					// The first-turn-orientation guard is temporarily disabled, so
-					// orientation text is not required here; kept for natural flow.
 					stream: ["I'll run that command."],
 					toolCalls: [
 						{
