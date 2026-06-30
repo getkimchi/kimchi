@@ -65,12 +65,12 @@ describe("branchCommandExtension", () => {
 
 		expect(ctx.fork).toHaveBeenCalledWith("leaf-1", expect.objectContaining({ position: "at" }))
 		expect(branchCtx.sessionManager.appendSessionInfo).toHaveBeenCalledWith("Branch abcdef12: hello")
-		expect(branchCtx.sendMessage).toHaveBeenCalledWith(
-			expect.objectContaining({
-				content: "You can resume a branch of this session with -r abcdef12-3456-7890-abcd-ef1234567890",
-			}),
-			{ triggerTurn: false },
+		expect(branchCtx.ui.notify).toHaveBeenCalledWith(
+			"You can resume a branch of this session with -r abcdef12-3456-7890-abcd-ef1234567890",
+			"info",
 		)
+		expect(ctx.ui.notify).not.toHaveBeenCalled()
+		expect(branchCtx.sendMessage).not.toHaveBeenCalled()
 	})
 
 	it("uses command args as the branch name", async () => {
@@ -100,6 +100,12 @@ describe("branchCommandExtension", () => {
 		await command().handler("parser spike", ctx)
 
 		expect(branchCtx.sessionManager.appendSessionInfo).toHaveBeenCalledWith("parser spike")
+		expect(branchCtx.ui.notify).toHaveBeenCalledWith(
+			"You can resume a branch of this session with -r abcdef12-3456-7890-abcd-ef1234567890",
+			"info",
+		)
+		expect(ctx.ui.notify).not.toHaveBeenCalled()
+		expect(branchCtx.sendMessage).not.toHaveBeenCalled()
 	})
 
 	it("notifies when the forked session id is missing", async () => {

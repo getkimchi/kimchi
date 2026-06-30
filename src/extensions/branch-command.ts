@@ -1,6 +1,5 @@
 import type { ExtensionAPI, ExtensionContext, SessionManager } from "@earendil-works/pi-coding-agent"
 
-const BRANCH_MESSAGE_TYPE = "kimchi-session-branch"
 type WritableSessionManager = Pick<SessionManager, "appendSessionInfo">
 
 export function branchSessionName(sessionId: string, parentName: string | undefined, requestedName?: string): string {
@@ -41,6 +40,7 @@ export default function branchCommandExtension(pi: ExtensionAPI): void {
 
 			const parentName = ctx.sessionManager.getSessionName()
 			const requestedName = args.trim()
+			let notifyResume: (() => void) | undefined
 			const result = await ctx.fork(leafId, {
 				position: "at",
 				withSession: async (branchCtx) => {
@@ -50,17 +50,13 @@ export default function branchCommandExtension(pi: ExtensionAPI): void {
 						return
 					}
 					if (!appendBranchName(branchCtx, branchSessionName(sessionId, parentName, requestedName))) return
-					await branchCtx.sendMessage(
-						{
-							customType: BRANCH_MESSAGE_TYPE,
-							content: `You can resume a branch of this session with -r ${sessionId}`,
-							display: true,
-						},
-						{ triggerTurn: false },
-					)
+					notifyResume = () => {
+						branchCtx.ui.notify(`You can resume a branch of this session with -r ${sessionId}`, "info")
+					}
 				},
 			})
 			if (result.cancelled) return
+			notifyResume?.()
 		},
 	})
 }

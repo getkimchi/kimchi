@@ -117,16 +117,16 @@ describe("isPreDispatchValueFlag", () => {
 describe("normalizeResumeIdArgs", () => {
 	it.each([
 		[
-			["-r", "abc123"],
-			["--session", "abc123"],
+			["-r", "019f1780-8034-7435-85aa-3e86037676ee"],
+			["--session", "019f1780-8034-7435-85aa-3e86037676ee"],
 		],
 		[
-			["--resume", "abc123"],
-			["--session", "abc123"],
+			["--resume", "019f1780-8034-7435-85aa-3e86037676ee"],
+			["--session", "019f1780-8034-7435-85aa-3e86037676ee"],
 		],
 		[
-			["--provider", "fake", "-r", "abc123"],
-			["--provider", "fake", "--session", "abc123"],
+			["--provider", "fake", "-r", "./session.jsonl"],
+			["--provider", "fake", "--session", "./session.jsonl"],
 		],
 		[["--resume=abc123"], ["--session", "abc123"]],
 		[["-rabc123"], ["--session", "abc123"]],
@@ -134,7 +134,7 @@ describe("normalizeResumeIdArgs", () => {
 		expect(normalizeResumeIdArgs(input)).toEqual(expected)
 	})
 
-	it.each([[["-r"]], [["--resume"]], [["-r", "--model", "fake"]]])(
+	it.each([[["-r"]], [["--resume"]], [["-r", "--model", "fake"]], [["-r", "continue the review"]]])(
 		"leaves bare resume picker args unchanged",
 		(input) => {
 			expect(normalizeResumeIdArgs(input)).toEqual(input)

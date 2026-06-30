@@ -35,7 +35,7 @@ export function normalizeResumeIdArgs(args: string[]): string[] {
 			normalized.push("--session", arg.slice("--resume=".length))
 		} else if (arg.startsWith("-r") && arg.length > 2) {
 			normalized.push("--session", arg.slice(2))
-		} else if ((arg === "-r" || arg === "--resume") && i + 1 < args.length && !args[i + 1].startsWith("-")) {
+		} else if ((arg === "-r" || arg === "--resume") && i + 1 < args.length && isSessionSelector(args[i + 1])) {
 			normalized.push("--session", args[i + 1])
 			i += 1
 		} else {
@@ -43,6 +43,14 @@ export function normalizeResumeIdArgs(args: string[]): string[] {
 		}
 	}
 	return normalized
+}
+
+function isSessionSelector(value: string): boolean {
+	return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value) || isPathLike(value)
+}
+
+function isPathLike(value: string): boolean {
+	return value.startsWith("/") || value.startsWith("./") || value.startsWith("../") || value.startsWith("~/")
 }
 
 export function isCliAtFileArg(arg: string, index: number, args: string[]): boolean {

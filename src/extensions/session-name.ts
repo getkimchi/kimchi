@@ -8,6 +8,19 @@
 
 import { basename } from "node:path"
 import type { ExtensionAPI, ExtensionContext, TurnEndEvent } from "@earendil-works/pi-coding-agent"
+import { loadConfig } from "../config.js"
+import { fetchWithRetry } from "../utils/http.js"
+
+export const SESSION_NAME_MODEL = "deepseek-v4-flash"
+const SESSION_NAME_SYSTEM_PROMPT =
+	"You are a title generator. Respond with ONLY a short title. 1-5 words, no quotes, no explanation, no markdown."
+const HINT_MAX_LEN = 500
+const SESSION_NAME_TIMEOUT_MS = 10_000
+
+function capHint(hint: string): string {
+	if (hint.length <= HINT_MAX_LEN) return hint
+	return `${hint.slice(0, HINT_MAX_LEN).trimEnd()}...`
+}
 
 /**
  * Extract the earliest user messages from the session.
@@ -71,8 +84,9 @@ function extractEarlyUserText(entries: SessionEntries): string | null {
  */
 export function deterministicFallback(input: string): string {
 	const max = 35
-	if (input.length <= max) return input.trim()
-	const truncated = input.slice(0, max)
+	const normalized = input.trim().replace(/\s+/g, " ")
+	if (normalized.length <= max) return normalized
+	const truncated = normalized.slice(0, max)
 	const lastSpace = truncated.lastIndexOf(" ")
 	return (lastSpace > 0 ? truncated.slice(0, lastSpace) : truncated).trim()
 }
@@ -81,7 +95,7 @@ export function deterministicFallback(input: string): string {
  * Suggest a session name from the first user text.
  * When quiet is true, suppresses all user-facing error output.
  */
-export function suggestSessionName(ctx: ExtensionContext, hint?: string, quiet = false): string {
+export async function suggestSessionName(ctx: ExtensionContext, hint?: string, quiet = false): Promise<string> {
 	const base = basename(ctx.cwd)
 	const resolvedHint = hint ?? extractFirstUserMessage(ctx)
 
@@ -96,7 +110,55 @@ export function suggestSessionName(ctx: ExtensionContext, hint?: string, quiet =
 		return deterministicFallback(base)
 	}
 
-	return deterministicFallback(resolvedHint)
+	const fallback = deterministicFallback(resolvedHint)
+	const config = loadConfig({ cwd: ctx.cwd })
+	const apiKey = config.apiKey || process.env.KIMCHI_API_KEY || ""
+
+	if (!apiKey) return fallback
+
+	try {
+		const response = await fetchWithRetry(
+			`${config.llmEndpoint.replace(/\/+$/, "")}/chat/completions`,
+			{
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: `Bearer ${apiKey}`,
+				},
+				body: JSON.stringify({
+					model: SESSION_NAME_MODEL,
+					messages: [
+						{ role: "system", content: SESSION_NAME_SYSTEM_PROMPT },
+						{ role: "user", content: `Short title for this conversation:\n\n${capHint(resolvedHint)}` },
+					],
+					max_tokens: 32,
+					temperature: 0,
+				}),
+			},
+			{ timeoutMs: SESSION_NAME_TIMEOUT_MS, retry: { maxRetries: Math.min(config.retry.maxRetries, 2) } },
+		)
+
+		if (!response.ok) {
+			if (!quiet) {
+				const errorBody = await response.text().catch(() => "")
+				const message = `Auto-naming: API error ${response.status} ${response.statusText}${errorBody ? ` - ${errorBody.slice(0, 200)}` : ""}`
+				if (ctx.hasUI) ctx.ui.notify(message, "error")
+				else console.error(`[kimchi] ${message}`)
+			}
+			return fallback
+		}
+
+		const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> }
+		const suggestion = data.choices?.[0]?.message?.content?.trim()
+		return suggestion ? deterministicFallback(suggestion) : fallback
+	} catch (err) {
+		if (!quiet) {
+			const message = `Auto-naming: ${err instanceof Error ? err.message : String(err)}`
+			if (ctx.hasUI) ctx.ui.notify(message, "error")
+			else console.error(`[kimchi] ${message}`)
+		}
+		return fallback
+	}
 }
 
 export default function sessionNameExtension() {
@@ -104,7 +166,7 @@ export default function sessionNameExtension() {
 		let hasAutoNamed = false
 
 		// Auto-name sessions after the first turn when no name was set.
-		pi.on("turn_end", (_event: TurnEndEvent, ctx: ExtensionContext) => {
+		pi.on("turn_end", async (_event: TurnEndEvent, ctx: ExtensionContext) => {
 			if (hasAutoNamed) return
 			if (ctx.sessionManager.getSessionName()) {
 				hasAutoNamed = true
@@ -116,7 +178,7 @@ export default function sessionNameExtension() {
 				return
 			}
 			hasAutoNamed = true
-			const suggestion = suggestSessionName(ctx, hint, true)
+			const suggestion = await suggestSessionName(ctx, hint, true)
 			if (suggestion && !ctx.sessionManager.getSessionName()) {
 				pi.setSessionName(suggestion)
 			}

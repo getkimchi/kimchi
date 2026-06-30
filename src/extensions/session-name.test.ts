@@ -2,12 +2,39 @@
  * Unit tests for session-name extension
  */
 
-import { describe, expect, it, vi } from "vitest"
-import { deterministicFallback, extractFirstUserMessage, suggestSessionName } from "./session-name.js"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import {
+	SESSION_NAME_MODEL,
+	deterministicFallback,
+	extractFirstUserMessage,
+	suggestSessionName,
+} from "./session-name.js"
+
+const { mockLoadConfig } = vi.hoisted(() => ({
+	mockLoadConfig: vi.fn(),
+}))
+
+vi.mock("../config.js", () => ({
+	RETRY_DEFAULTS: { maxRetries: 1 },
+	loadConfig: mockLoadConfig,
+}))
 
 vi.mock("node:path", async () => {
 	const actual = await vi.importActual<typeof import("node:path")>("node:path")
 	return { ...actual, basename: () => "my-project" }
+})
+
+beforeEach(() => {
+	mockLoadConfig.mockReset()
+	mockLoadConfig.mockReturnValue({
+		apiKey: "",
+		llmEndpoint: "https://llm.test/openai/v1",
+		retry: { maxRetries: 1 },
+	})
+})
+
+afterEach(() => {
+	vi.unstubAllGlobals()
 })
 
 const createMockCtx = (entries: unknown[]) => {
@@ -43,6 +70,10 @@ describe("deterministicFallback", () => {
 
 	it("should trim whitespace", () => {
 		expect(deterministicFallback("  short  ")).toBe("short")
+	})
+
+	it("should collapse multiline whitespace", () => {
+		expect(deterministicFallback("review this\n\n```ts\nconst x = 1\n```")).toBe("review this ```ts const x = 1 ```")
 	})
 })
 
@@ -133,6 +164,35 @@ describe("suggestSessionName", () => {
 		const ctx = createMockCtx([{ type: "message", message: { role: "user", content: "Hello world" } }])
 		const result = await suggestSessionName(ctx as never, undefined, true)
 		expect(result).toBe("Hello world")
+	})
+
+	it("should use Deepseek Flash v4 for LLM session names", async () => {
+		const fetchMock = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => {
+			return new Response(JSON.stringify({ choices: [{ message: { content: "Review Branch" } }] }), { status: 200 })
+		})
+		vi.stubGlobal("fetch", fetchMock)
+		mockLoadConfig.mockReturnValue({
+			apiKey: "test-key",
+			llmEndpoint: "https://llm.test/openai/v1",
+			retry: { maxRetries: 1 },
+		})
+		const ctx = createMockCtx([{ type: "message", message: { role: "user", content: "Please review this branch" } }])
+
+		const result = await suggestSessionName(ctx as never, undefined, true)
+
+		expect(result).toBe("Review Branch")
+		expect(fetchMock).toHaveBeenCalledWith(
+			"https://llm.test/openai/v1/chat/completions",
+			expect.objectContaining({
+				method: "POST",
+				headers: expect.objectContaining({ Authorization: "Bearer test-key" }),
+			}),
+		)
+		const init = fetchMock.mock.calls[0]?.[1]
+		expect(init).toBeDefined()
+		const body = JSON.parse(init?.body as string) as { model: string }
+		expect(body.model).toBe(SESSION_NAME_MODEL)
+		expect(body.model).toBe("deepseek-v4-flash")
 	})
 
 	it("should truncate long user messages", async () => {
