@@ -1,4 +1,5 @@
 import { readTelemetryConfig, writeTelemetryEnabled } from "../config.js"
+import { sendPreSessionEvent } from "../extensions/telemetry/pre-session.js"
 
 const TELEMETRY_ENV = "KIMCHI_TELEMETRY_ENABLED"
 
@@ -49,6 +50,13 @@ function handleTelemetry(args: string[]): number {
 		return 2
 	}
 	writeTelemetryEnabled(enabled)
+	// Emit config_changed telemetry so we can track telemetry opt-in/out.
+	// Re-read config to pick up the updated state + auth headers.
+	const telemetryConfig = readTelemetryConfig()
+	sendPreSessionEvent(telemetryConfig, "config_changed", {
+		key: "telemetry.enabled",
+		value: enabled,
+	})
 	console.log(`Telemetry ${enabled ? "enabled" : "disabled"}`)
 	return 0
 }

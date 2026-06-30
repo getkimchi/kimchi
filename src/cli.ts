@@ -78,6 +78,7 @@ import stripImagesExtension from "./extensions/strip-images.js"
 import superpowersExtension from "./extensions/superpowers.js"
 import surveysExtension from "./extensions/surveys/index.js"
 import tagsExtension from "./extensions/tags.js"
+import { buildConfigSnapshot } from "./extensions/telemetry/config-snapshot.js"
 import telemetryExtension from "./extensions/telemetry/index.js"
 import { drain as drainPreSessionTelemetry, sendPreSessionEvent } from "./extensions/telemetry/pre-session.js"
 import teleportExtension from "./extensions/teleport/index.js"
@@ -199,11 +200,6 @@ try {
 		const { main } = await import("@earendil-works/pi-coding-agent")
 		await main(originalArgs, { extensionFactories: [] })
 	} else {
-		// Fire harness_launched (one shot per harness session; respects telemetry opt-out)
-		if (telemetryConfig.enabled) {
-			sendPreSessionEvent(telemetryConfig, "harness_launched", { version: getVersion() })
-		}
-
 		const experimentalFeatures = isExperimentalFeaturesArg(originalArgs)
 		let config = loadConfig()
 
@@ -213,6 +209,16 @@ try {
 		if (envKey && !config.apiKey) {
 			writeApiKey(envKey)
 			config = loadConfig()
+		}
+
+		// Fire harness_launched (one shot per harness session; respects telemetry opt-out).
+		// Sent after loadConfig() + env-key reload so the config snapshot reflects
+		// real values rather than defaults.
+		if (telemetryConfig.enabled) {
+			sendPreSessionEvent(telemetryConfig, "harness_launched", {
+				version: getVersion(),
+				...buildConfigSnapshot(config, telemetryConfig.enabled),
+			})
 		}
 
 		const apiKey = config.apiKey

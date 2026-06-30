@@ -25,6 +25,7 @@ import { handleAgentEnd, handleBeforeAgentStart, handleMessageEnd, handleMessage
 import { emitSessionStartEvent, handleSessionInitialized, handleSessionShutdown } from "./handlers/session.js"
 import { handleToolExecutionEnd, handleToolExecutionStart } from "./handlers/tools.js"
 import { SessionContext } from "./session-context.js"
+import { startSettingsChangeWatcher } from "./settings-change-emitter.js"
 import {
 	type SurveyAnsweredTelemetry,
 	type SurveyDismissedTelemetry,
@@ -516,6 +517,12 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		const ctx = new SessionContext(config, "cli")
 		_ctx = ctx
 
+		// Watch the settings file for changes and emit telemetry on modification.
+		// Bound to ctx.emit so changes flow through the same OTLP pipeline. The
+		// returned stop fn is invoked on session_shutdown to close the fs.watch
+		// handle and clear the debounce timer (prevents handle leak / hang).
+		const stopSettingsWatcher = startSettingsChangeWatcher((event, properties) => ctx.emit(event, properties))
+
 		// Subscribe to ferment domain events published via pi.events.
 		// This keeps telemetry decoupled from ferment internals — ferment
 		// publishes facts; telemetry translates them into OTLP records.
@@ -541,7 +548,10 @@ export default function telemetryExtension(config: TelemetryConfig) {
 			const modelId = (extCtx as { model?: { id?: string } } | undefined)?.model?.id
 			handleSessionInitialized(ctx, modelId)
 		})
-		pi.on("session_shutdown", async (event) => handleSessionShutdown(ctx, event as { reason?: string }))
+		pi.on("session_shutdown", async (event) => {
+			stopSettingsWatcher()
+			await handleSessionShutdown(ctx, event as { reason?: string })
+		})
 		pi.on("message_start", async (event) =>
 			handleMessageStart(ctx, event as { message: { role: string; responseId?: string; timestamp?: number } }),
 		)
