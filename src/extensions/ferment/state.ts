@@ -9,6 +9,9 @@
  * judge connection. Encapsulating in a class would add ceremony without value.
  */
 
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { homedir } from "node:os"
+import { dirname, join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { FermentEventStore } from "../../ferment/event-store.js"
@@ -64,14 +67,98 @@ function shouldElevatePermissions(f: Ferment | undefined): boolean {
 }
 
 export function setActive(f: Ferment | undefined): void {
+	// If the active ferment is changing, manage lockfiles: write a lock for the
+	// new active ferment, remove the lock for the old one. Best-effort — errors
+	// are swallowed so they never block a state transition.
+	if (activeFerment?.id && activeFerment.id !== f?.id) {
+		removeFermentLock(activeFerment.id)
+	}
 	activeFerment = f
 	const elevatePermissions = shouldElevatePermissions(f)
 	if (elevatePermissions && f) {
 		process.env.KIMCHI_ACTIVE_FERMENT = f.id
+		writeFermentLock(f.id)
 	} else {
 		clearActiveFermentId()
+		if (f?.id) removeFermentLock(f.id)
 	}
 	notifyFermentActive(elevatePermissions)
+}
+
+// ─── PID-based lockfiles ───────────────────────────────────────────────────────
+//
+// When a ferment is active in a session, a lockfile is written to a global
+// directory. This allows `recoverStuckFerments()` in events.ts to distinguish
+// between a genuinely crashed session (lockfile PID is dead or missing — safe
+// to pause and recover) and a ferment actively running in another live kimchi
+// session (lockfile PID is alive — do NOT pause).
+//
+// The lock directory is configurable via KIMCHI_FERMENT_LOCK_DIR for test
+// isolation. By default it lives under ~/.config/kimchi/harness/ferment-locks/.
+
+interface FermentLockInfo {
+	pid: number
+	startedAt: string
+	fermentId: string
+}
+
+function getFermentLockDir(): string {
+	const override = process.env.KIMCHI_FERMENT_LOCK_DIR?.trim()
+	if (override) return override
+	return join(homedir(), ".config", "kimchi", "harness", "ferment-locks")
+}
+
+export function getFermentLockPath(fermentId: string): string {
+	return join(getFermentLockDir(), `${fermentId}.lock`)
+}
+
+/** Write a best-effort PID lockfile for the given ferment. Swallows all errors
+ *  so it never blocks a state transition. */
+export function writeFermentLock(fermentId: string): void {
+	try {
+		const lockDir = getFermentLockDir()
+		mkdirSync(lockDir, { recursive: true })
+		const lockInfo: FermentLockInfo = {
+			pid: process.pid,
+			startedAt: new Date().toISOString(),
+			fermentId,
+		}
+		writeFileSync(getFermentLockPath(fermentId), JSON.stringify(lockInfo, null, 2), {
+			encoding: "utf8",
+			flag: "w",
+		})
+	} catch {
+		// Lockfile write failure is non-fatal — recovery will treat missing
+		// locks as "not locked" and pause, which is the safe default.
+	}
+}
+
+/** Remove the lockfile for the given ferment. Best-effort, swallows errors. */
+export function removeFermentLock(fermentId: string): void {
+	try {
+		rmSync(getFermentLockPath(fermentId), { force: true })
+	} catch {
+		// Non-fatal.
+	}
+}
+
+/** Check whether a ferment's lockfile points to a live (running) process.
+ *  Returns true if the lockfile exists and its PID is alive. Returns false if
+ *  the lockfile is missing, unreadable, or the PID is dead. */
+export function isFermentLockedByLiveProcess(fermentId: string): boolean {
+	try {
+		const lockPath = getFermentLockPath(fermentId)
+		if (!existsSync(lockPath)) return false
+		const raw = readFileSync(lockPath, "utf8")
+		const lockInfo = JSON.parse(raw) as FermentLockInfo
+		if (!lockInfo?.pid) return false
+		// process.kill(pid, 0) throws if the process doesn't exist (or we lack
+		// permission to signal it). A successful no-op return means it's alive.
+		process.kill(lockInfo.pid, 0)
+		return true
+	} catch {
+		return false
+	}
 }
 
 // ─── Runtime continuation policy ──────────────────────────────────────────────

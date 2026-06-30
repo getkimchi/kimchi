@@ -28,7 +28,7 @@ import { loadFermentSilently, resumeFerment } from "./resume.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { scheduleFermentWakeUp } from "./scheduler.js"
 import { confirmPendingScope } from "./scoping-confirmation.js"
-import { clearActiveFermentId, getActiveFermentId } from "./state.js"
+import { clearActiveFermentId, getActiveFermentId, isFermentLockedByLiveProcess, removeFermentLock } from "./state.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
 import {
 	applyFermentRuntimeToolProfile,
@@ -271,6 +271,9 @@ export function registerFermentEvents(
 		const applyAndPersist = createApplyAndPersist(runtime)
 		for (const f of runtime.getStorage().list()) {
 			if (f.status === "running" || f.status === "planned") {
+				// Skip ferments that are actively locked by a live process —
+				// they belong to another running kimchi session, not a crashed one.
+				if (isFermentLockedByLiveProcess(f.id)) continue
 				try {
 					const outcome = applyAndPersist(f.id, { type: "pause" })
 					if (!outcome.ok) {
@@ -379,6 +382,9 @@ export function registerFermentEvents(
 				// The startup scanner will recover the stale state on next launch.
 			}
 		}
+		// Remove the lockfile so a concurrent session doesn't think this
+		// ferment is still actively running here.
+		removeFermentLock(f.id)
 	})
 
 	pi.on("input", async (event) => {
