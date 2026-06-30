@@ -81,31 +81,55 @@ function autoUpdateLabel(): string {
 	return loadAutoUpdateSetting() ? AUTO_UPDATE_ON("off") : AUTO_UPDATE_OFF("on")
 }
 
+const UPDATE_NOW_LABEL = "Update kimchi now"
+
+/**
+ * Cheap "is an update available?" probe for deciding whether to show the
+ * "Update kimchi now" menu item. Uses the cached check (no `skipCache`) so
+ * opening `/update` doesn't block on the network, and never throws — a
+ * failed/disabled check simply hides the item.
+ */
+async function updateAvailable(): Promise<boolean> {
+	try {
+		const check = await checkForUpdate({ currentVersion: getVersion(), canary: false })
+		return check.hasUpdate
+	} catch {
+		return false
+	}
+}
+
 async function showUpdateMenu(ctx: ExtensionCommandContext): Promise<void> {
-	const choice = await ctx.ui.select("Update", [autoUpdateLabel(), "Update kimchi now", "View current version", "Back"])
-	if (!choice) return
+	// Only offer "Update kimchi now" when there's actually something to
+	// install; otherwise it's a no-op that reports "Already up to date".
+	const canUpdate = await updateAvailable()
 
-	if (choice.startsWith(AUTO_UPDATE_LABEL_PREFIX)) {
-		const next = !loadAutoUpdateSetting()
-		saveAutoUpdateSetting(next)
-		ctx.ui.notify(`Auto-update set to ${next ? "on" : "off"}`, "info")
-		// Loop so the user can flip it back without re-running /update.
-		await showUpdateMenu(ctx)
+	while (true) {
+		const options = [...(canUpdate ? [UPDATE_NOW_LABEL] : []), autoUpdateLabel(), "View current version", "Back"]
+		const choice = await ctx.ui.select("Update", options)
+		if (!choice) return
+
+		if (choice === UPDATE_NOW_LABEL) {
+			const result = await runManualUpdate()
+			ctx.ui.notify(result.message, result.ok ? "info" : "error")
+			return
+		}
+
+		if (choice.startsWith(AUTO_UPDATE_LABEL_PREFIX)) {
+			const next = !loadAutoUpdateSetting()
+			saveAutoUpdateSetting(next)
+			ctx.ui.notify(`Auto-update set to ${next ? "on" : "off"}`, "info")
+			// Loop so the user can flip it back without re-running /update.
+			continue
+		}
+
+		if (choice === "View current version") {
+			ctx.ui.notify(`kimchi ${getVersion()}`, "info")
+			return
+		}
+
+		// "Back" or anything else — exit the command.
 		return
 	}
-
-	if (choice === "Update kimchi now") {
-		const result = await runManualUpdate()
-		ctx.ui.notify(result.message, result.ok ? "info" : "error")
-		return
-	}
-
-	if (choice === "View current version") {
-		ctx.ui.notify(`kimchi ${getVersion()}`, "info")
-		return
-	}
-
-	// "Back" or anything else — exit the command.
 }
 
 export default function autoUpdateSettingsExtension(pi: ExtensionAPI) {
