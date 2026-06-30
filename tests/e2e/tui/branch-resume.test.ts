@@ -10,7 +10,7 @@ import {
 
 test.use(TUI_TEST_CONFIG)
 
-test("branch prints a resume command and -r resumes that branch", async ({ terminal }) => {
+test("branch creates a named resumable session for -r", async ({ terminal }) => {
 	const fixture = await createKimchiFixture({
 		responses: [{ stream: ["Hello", " from", " fake", " Kimchi."] }],
 	})
@@ -28,7 +28,13 @@ test("branch prints a resume command and -r resumes that branch", async ({ termi
 		const match = fullText(terminal).match(/You can resume a branch of this session with -r ([0-9a-f-]{36})/)
 		expect(match).not.toBeNull()
 		const sessionId = match![1]
-		const branchNamePrefix = `Branch ${sessionId.slice(0, 8)}`
+		const branchName = `Branch ${sessionId.slice(0, 8)}: hello`
+
+		terminal.submit("/session")
+		await waitForText(terminal, new RegExp(`Name:\\s*${escapeRegExp(branchName)}`), {
+			timeoutMs: STARTUP_TIMEOUT_MS,
+			full: false,
+		})
 
 		terminal.submit("/quit")
 		await new Promise((resolve) => setTimeout(resolve, 500))
@@ -41,7 +47,7 @@ test("branch prints a resume command and -r resumes that branch", async ({ termi
 			timeoutMs: STARTUP_TIMEOUT_MS,
 			full: false,
 		})
-		await waitForText(terminal, new RegExp(`Name:\\s*${escapeRegExp(branchNamePrefix)}`), {
+		await waitForText(terminal, new RegExp(`Name:\\s*${escapeRegExp(branchName)}`), {
 			timeoutMs: STARTUP_TIMEOUT_MS,
 			full: false,
 		})

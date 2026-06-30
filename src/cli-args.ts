@@ -31,7 +31,11 @@ export function normalizeResumeIdArgs(args: string[]): string[] {
 	const normalized: string[] = []
 	for (let i = 0; i < args.length; i += 1) {
 		const arg = args[i]
-		if ((arg === "-r" || arg === "--resume") && i + 1 < args.length && !args[i + 1].startsWith("-")) {
+		if (arg.startsWith("--resume=") && arg.length > "--resume=".length) {
+			normalized.push("--session", arg.slice("--resume=".length))
+		} else if (arg.startsWith("-r") && arg.length > 2) {
+			normalized.push("--session", arg.slice(2))
+		} else if ((arg === "-r" || arg === "--resume") && i + 1 < args.length && !args[i + 1].startsWith("-")) {
 			normalized.push("--session", args[i + 1])
 			i += 1
 		} else {

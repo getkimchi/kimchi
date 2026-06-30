@@ -1,30 +1,27 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext, SessionManager } from "@earendil-works/pi-coding-agent"
 
 const BRANCH_MESSAGE_TYPE = "kimchi-session-branch"
-const BRANCH_NAME_MAX_LENGTH = 50
+type WritableSessionManager = Pick<SessionManager, "appendSessionInfo">
 
-type SessionNameWriter = {
-	appendSessionInfo(name: string): string
+export function branchSessionName(sessionId: string, parentName: string | undefined): string {
+	const suffix = parentName?.trim()
+	return `Branch ${sessionId.slice(0, 8)}${suffix ? `: ${suffix}` : ""}`
 }
 
-export function formatBranchSessionName(parentName: string | undefined, sessionId: string): string {
-	const shortId = sessionId.slice(0, 8)
-	const prefix = `Branch ${shortId}`
-	const base = parentName?.trim()
-	if (!base) return prefix
-
-	const maxBaseLength = BRANCH_NAME_MAX_LENGTH - prefix.length - ": ".length
-	const trimmedBase =
-		base.length <= maxBaseLength ? base : `${base.slice(0, Math.max(0, maxBaseLength - 3)).trimEnd()}...`
-	return `${prefix}: ${trimmedBase}`
-}
-
-function appendSessionName(ctx: { sessionManager: unknown }, name: string): void {
-	const sessionManager = ctx.sessionManager as Partial<SessionNameWriter>
-	if (typeof sessionManager.appendSessionInfo !== "function") {
-		throw new Error("Current session manager does not support session naming")
+function appendBranchName(ctx: { sessionManager: unknown; ui: ExtensionContext["ui"] }, name: string): boolean {
+	const appendSessionInfo = (ctx.sessionManager as Partial<WritableSessionManager>).appendSessionInfo
+	if (typeof appendSessionInfo !== "function") {
+		ctx.ui.notify("Current session manager does not support session naming", "error")
+		return false
 	}
-	sessionManager.appendSessionInfo(name)
+
+	try {
+		appendSessionInfo.call(ctx.sessionManager, name)
+		return true
+	} catch (error) {
+		ctx.ui.notify(error instanceof Error ? error.message : String(error), "error")
+		return false
+	}
 }
 
 export default function branchCommandExtension(pi: ExtensionAPI): void {
@@ -40,11 +37,15 @@ export default function branchCommandExtension(pi: ExtensionAPI): void {
 			}
 
 			const parentName = ctx.sessionManager.getSessionName()
-			await ctx.fork(leafId, {
+			const result = await ctx.fork(leafId, {
 				position: "at",
 				withSession: async (branchCtx) => {
 					const sessionId = branchCtx.sessionManager.getSessionId()
-					appendSessionName(branchCtx, formatBranchSessionName(parentName, sessionId))
+					if (typeof sessionId !== "string" || !sessionId) {
+						branchCtx.ui.notify("Failed to get branch session id", "error")
+						return
+					}
+					if (!appendBranchName(branchCtx, branchSessionName(sessionId, parentName))) return
 					await branchCtx.sendMessage(
 						{
 							customType: BRANCH_MESSAGE_TYPE,
@@ -55,6 +56,7 @@ export default function branchCommandExtension(pi: ExtensionAPI): void {
 					)
 				},
 			})
+			if (result.cancelled) return
 		},
 	})
 }

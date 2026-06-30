@@ -128,6 +128,8 @@ describe("normalizeResumeIdArgs", () => {
 			["--provider", "fake", "-r", "abc123"],
 			["--provider", "fake", "--session", "abc123"],
 		],
+		[["--resume=abc123"], ["--session", "abc123"]],
+		[["-rabc123"], ["--session", "abc123"]],
 	])("rewrites %j to %j", (input, expected) => {
 		expect(normalizeResumeIdArgs(input)).toEqual(expected)
 	})
