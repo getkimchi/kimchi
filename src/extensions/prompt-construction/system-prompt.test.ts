@@ -128,7 +128,7 @@ describe("buildSystemPrompt", () => {
 			})
 
 			expect(result).not.toContain("Phase Tagging for Analytics")
-			expect(result).not.toContain("You must call `set_phase`")
+			expect(result).not.toContain("Call `set_phase`")
 		})
 
 		it("handles empty tools list", () => {

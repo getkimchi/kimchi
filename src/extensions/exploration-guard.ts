@@ -23,7 +23,7 @@ export const DEFAULT_READ_TOOLS = new Set([
 
 export const DEFAULT_WRITE_TOOLS = new Set(["edit", "write", "lsp_rename", "ask_user", "steer_subagent", "Agent"])
 
-export const DEFAULT_NEUTRAL_TOOLS = new Set(["set_phase", "set_model"])
+export const DEFAULT_NEUTRAL_TOOLS = new Set(["set_model"])
 
 export interface ExplorationGuardOptions {
 	/** Tools that count as read-only (default: common inspection tools). */

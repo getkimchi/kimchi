@@ -96,7 +96,6 @@ describe("registerFermentEvents", () => {
 			{ name: "read" },
 			{ name: "Agent" },
 			{ name: "get_subagent_result" },
-			{ name: "set_phase" },
 			{ name: "list_ferments" },
 			{ name: "scope_ferment" },
 			{ name: "activate_ferment_phase" },

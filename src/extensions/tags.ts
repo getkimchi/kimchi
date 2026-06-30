@@ -20,8 +20,7 @@ import type {
 	Theme,
 	ThemeColor,
 } from "@earendil-works/pi-coding-agent"
-import { Container, Text } from "@earendil-works/pi-tui"
-import { Type } from "typebox"
+import { Container } from "@earendil-works/pi-tui"
 import { createSystemPromptBlocks } from "./prompt-construction/index.js"
 import { isStaleCtxError } from "./stale-ctx.js"
 
@@ -51,10 +50,6 @@ const TAG_COLORS: ThemeColor[] = ["accent", "mdLink", "success", "warning"]
 // Valid phases for phase tracking
 const VALID_PHASES = ["explore", "plan", "build", "review", "research"] as const
 type Phase = (typeof VALID_PHASES)[number]
-
-const PHASE_TAGGING_PROMPT = `## Phase Tagging for Analytics
-
-The session starts in \`explore\` phase by default. Call \`set_phase\` when the work type changes — pick one of \`explore\`, \`research\`, \`plan\`, \`build\`, or \`review\`. Only one phase is active at a time; the most recent call wins. Subagents set their phase automatically from their persona, so this tool is for tagging the main thread's work.`
 
 export function isValidPhase(phase: string): phase is Phase {
 	return VALID_PHASES.includes(phase as Phase)
@@ -305,65 +300,6 @@ function subcommandArgs(args: string, subcommand: string): string {
 	return normalised.slice(subcommand.length).trim()
 }
 
-async function handlePhaseCommand(args: string, ctx: ExtensionCommandContext, tagManager: TagManager): Promise<void> {
-	const trimmed = args.trim().toLowerCase()
-
-	// No arg → show current phase + offer interactive selector when there's a UI.
-	if (!trimmed) {
-		const current = tagManager.getPhase()
-		const currentLabel = current ? `current phase: ${current}` : "no phase set"
-
-		if (!ctx.hasUI) {
-			console.log(`${currentLabel}\nValid phases: ${VALID_PHASES.join(", ")}, none`)
-			return
-		}
-
-		const choice = await ctx.ui.select(`Phase — ${currentLabel}`, [...VALID_PHASES, "none (clear)"])
-		if (!choice) return
-
-		if (choice === "none (clear)") {
-			tagManager.setPhase(undefined)
-			updateFooterStatus(tagManager, ctx)
-			ctx.ui.notify("Phase cleared", "info")
-			return
-		}
-
-		const next = choice as Phase
-		tagManager.setPhase(next)
-		updateFooterStatus(tagManager, ctx)
-		ctx.ui.notify(`Phase changed to: ${next}`, "info")
-		return
-	}
-
-	// Explicit clear.
-	if (trimmed === "none" || trimmed === "clear" || trimmed === "off") {
-		tagManager.setPhase(undefined)
-		if (ctx.hasUI) {
-			updateFooterStatus(tagManager, ctx)
-			ctx.ui.notify("Phase cleared", "info")
-		} else {
-			console.log("Phase cleared")
-		}
-		return
-	}
-
-	// Direct switch via /phase <name>.
-	if (!isValidPhase(trimmed)) {
-		const msg = `Invalid phase "${args.trim()}". Valid: ${VALID_PHASES.join(", ")}, none`
-		if (ctx.hasUI) ctx.ui.notify(msg, "error")
-		else console.error(msg)
-		return
-	}
-
-	tagManager.setPhase(trimmed)
-	if (ctx.hasUI) {
-		updateFooterStatus(tagManager, ctx)
-		ctx.ui.notify(`Phase changed to: ${trimmed}`, "info")
-	} else {
-		console.log(`Phase changed to: ${trimmed}`)
-	}
-}
-
 function handleTagsCommand(args: string, ctx: ExtensionCommandContext, tagManager: TagManager): void {
 	const trimmed = args.trim().toLowerCase()
 
@@ -502,15 +438,6 @@ function handleTagsCommand(args: string, ctx: ExtensionCommandContext, tagManage
 	ctx.ui.notify(helpLines.join("\n"), "info")
 }
 
-// ─── Phase Tool Parameters ─────────────────────────────────────────────────────
-
-const SetPhaseParams = Type.Object({
-	phase: Type.String({
-		description: "The phase to set. Valid phases: explore, plan, build, review, research",
-		enum: ["explore", "plan", "build", "review", "research"],
-	}),
-})
-
 // ─── Extension entry point ─────────────────────────────────────────────────────
 
 let tagManagerInstance: TagManager | undefined
@@ -545,68 +472,6 @@ export default function tagsExtension(pi: ExtensionAPI) {
 		},
 	})
 
-	// Register the /phase slash command — manual phase switch (mirrors set_phase tool).
-	pi.registerCommand("phase", {
-		description: `Show or change the current work phase (${VALID_PHASES.join(", ")})`,
-		getArgumentCompletions: (prefix) => {
-			const lower = prefix.toLowerCase()
-			return VALID_PHASES.filter((p) => p.startsWith(lower)).map((value) => ({
-				value,
-				label: value,
-				description: `Switch to ${value} phase`,
-			}))
-		},
-		handler: async (args, ctx) => {
-			await handlePhaseCommand(args, ctx, tagManager)
-		},
-	})
-
-	// Register the set_phase tool
-	pi.registerTool({
-		name: "set_phase",
-		label: "Set Phase",
-		description:
-			"Set the current work phase for usage tracking and analytics. The session starts in explore. Call when transitioning between phases (e.g., exploration to planning, or planning to building). The phase is included as a tag in subsequent LLM requests.",
-		parameters: SetPhaseParams,
-
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const phase = params.phase as Phase
-
-			tagManager.setPhase(phase)
-
-			if (ctx.hasUI) {
-				updateFooterStatus(tagManager, ctx)
-			}
-
-			return {
-				content: [{ type: "text", text: `Phase changed to: ${phase}` }],
-				details: { phase, model: ctx.model?.id },
-			}
-		},
-
-		renderCall(_args, _theme) {
-			return new Text("", 0, 0)
-		},
-
-		renderResult(result, _options, theme) {
-			if (readHidePhaseChanges()) {
-				return new Text("", 0, 0)
-			}
-			const details = result.details as { phase: string; model?: string } | undefined
-			const phase = details?.phase ?? "unknown"
-			const model = details?.model
-			const dash = theme.fg("dim", "- ")
-			const label = theme.bold(theme.fg("toolTitle", `Phase changed: ${phase}`))
-			const modelSuffix = model ? theme.fg("dim", ` [${model}]`) : ""
-			return new Text(dash + label + modelSuffix, 0, 0)
-		},
-	})
-
-	createSystemPromptBlocks(pi, "tags").register({
-		id: "phase-tagging",
-		render: () => PHASE_TAGGING_PROMPT,
-	})
-
 	// Initialize footer status and default phase on session start
 	pi.on("session_start", async (_event, ctx) => {
 		tagManager.setPhase("explore")
@@ -632,17 +497,13 @@ export default function tagsExtension(pi: ExtensionAPI) {
 
 		const allTags = tagManager.getAllTags()
 
-		// Build reserved tags first (model + phase) so they are never dropped by the cap
+		// Reserve the model tag so it is never dropped by the cap
 		const reservedTags: string[] = []
 		if (model?.id) {
 			reservedTags.push(`model:${model.id}`)
 		}
-		const phaseTag = tagManager.getPhaseTag()
-		if (phaseTag) {
-			reservedTags.push(phaseTag)
-		}
 
-		// User tags are capped at 10; reserved tags (model, phase) ride on top of that cap
+		// User tags are capped at 10; reserved tags (model) ride on top of that cap
 		const finalTags = [...reservedTags, ...allTags.slice(0, 10)]
 
 		if (finalTags.length === 0) return

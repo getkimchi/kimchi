@@ -18,8 +18,14 @@ Run these commands and read these files to build your evidence base. Do NOT skip
    - Extract all entries, noting their type, id, parentId, and timestamp
 2. Build the phase timeline:
    a. The initial phase is always "explore" (set at session_start)
-   b. Scan all "message" entries for assistant tool_use blocks with name: "set_phase"
-   c. Extract the phase parameter from each set_phase call and its timestamp
+   b. Phases are inferred from the dominant tool family called on each assistant turn (the model no longer has a set_phase tool):
+      - read, grep, find, ls → explore
+      - web_search, web_fetch → research
+      - edit/write of `.md` spec files, explicit planning tool calls → plan
+      - edit, write, bash (compilation / test execution) → build
+      - lsp_diagnostics, review comments → review
+      - Agent, start_ferment_step, complete_ferment_step, get_subagent_result → orchestration
+   c. Tag each turn with its inferred phase and timestamp
    d. Build a chronological map: [timestamp_range] -> phase
 3. Extract model changes:
    - Scan for all "model_change" entries (type: "model_change")
@@ -344,7 +350,7 @@ For the first turn of each model, annotate that this is a **switch boundary**.
 
 ### Step 5: Routing Decision Rationale
 
-When a new model appears (model_change), look backward for the preceding assistant message that contains clues about why the switch happened (e.g. tool calls `Agent`/`set_phase`, deployment rules in system prompts, explicit orchestration text).
+When a new model appears (model_change), look backward for the preceding assistant message that contains clues about why the switch happened (e.g. tool calls `Agent`, deployment rules in system prompts, explicit orchestration text).
 
 Record:
 
@@ -410,11 +416,11 @@ Map each assistant turn to a **task class** based on the dominant activity in th
 | Task Class | Detection heuristics |
 |------------|---------------------|
 | `explore` | `read`, `grep`, `find`, `ls` tool calls dominate |
-| `plan` | `edit`/`write` of `.md` spec files, `set_phase("plan")`, or explicit planning tool calls |
+| `plan` | `edit`/`write` of `.md` spec files or explicit planning tool calls |
 | `build` | `edit`, `write`, `bash` (compilation / test execution) dominates |
-| `review` | `lsp_diagnostics`, review comments, `set_phase("review")` |
+| `review` | `lsp_diagnostics`, review comments |
 | `research` | `web_search`, `web_fetch` calls |
-| `orchestration` | `Agent`, `set_phase`, `start_ferment_step`, `complete_ferment_step`, `get_subagent_result` |
+| `orchestration` | `Agent`, `start_ferment_step`, `complete_ferment_step`, `get_subagent_result` |
 
 If a turn has mixed tools, classify by the most frequent tool family. If tie, prefer: orchestration > plan > build > review > research > explore.
 
@@ -435,7 +441,7 @@ Aggregate token usage per class across all turns and per-model:
 ### Step 9: Cost per Completed Task
 
 A "task" is defined as a contiguous block of turns bounded by:
-- A phase switch (set_phase to a different phase), OR
+- A phase switch (inferred from a shift in the dominant tool family), OR
 - A terminal outcome (all tests passing, human-explicit completion, or branch commit/push)
 
 Compute cost per task = sum of `usage.cost.total` for all turns within the block.

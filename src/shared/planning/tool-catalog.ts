@@ -129,9 +129,6 @@ export const ADHOC_MODE_TOOLS: ToolEntry[] = [
 export const FERMENT_MODE_TOOLS: ToolEntry[] = [
 	// -- planning phase (before any phase is activated) --
 
-	// Phase tracker injected by the ferment planner supplement
-	{ name: "set_phase", modes: ["ferment"], phases: ["planning"] },
-
 	// Draft scoping surface
 	{ name: "propose_ferment_scoping", modes: ["ferment"], phases: ["planning"] },
 	{ name: "scope_ferment", modes: ["ferment"], phases: ["planning"] },

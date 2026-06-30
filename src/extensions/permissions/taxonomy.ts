@@ -14,7 +14,6 @@ const STATIC_CATEGORIES: Record<string, ToolCategory> = {
 	web_search: "readOnly",
 	web_fetch: "readOnly",
 	questionnaire: "readOnly",
-	set_phase: "readOnly",
 }
 
 const READ_ONLY_NAME_HINT = /^(read|get|list|search|query|describe|find|grep|ls|loki_|view|show)/i

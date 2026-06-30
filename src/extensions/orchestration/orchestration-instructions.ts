@@ -140,7 +140,7 @@ The review agent runs tests, checks lint, and verifies the implementation matche
 - After round 2, STOP regardless of outcome. If failures remain, report them to the user as unresolved. Do NOT attempt a third round. Do NOT debug manually. Do NOT write smoke tests. Do NOT run the binary.
 - If remaining failures are tests that assert specific ordering of concurrently-executed operations (e.g. checking which goroutine/thread finishes first), these are non-deterministic test design flaws, not implementation bugs. Report them as known flaky tests and stop — do not attempt to fix non-deterministic ordering assertions.
 
-**Review phase turn budget:** The entire review phase (from \`set_phase(review)\` to final summary) should complete in at most 10 orchestrator turns. If you are approaching 10 turns in the review phase, stop immediately and produce the summary with whatever state you have.
+**Review phase turn budget:** The entire review phase (from entering review to final summary) should complete in at most 10 orchestrator turns. If you are approaching 10 turns in the review phase, stop immediately and produce the summary with whatever state you have.
 
 **Review verdicts are final**: Never edit a review report to change its verdict. If a flag is genuinely wrong, add a separate rationale note alongside the original review — do not alter the reviewer's output.`
 

@@ -625,7 +625,7 @@ function persistFerment(fermentId: string): void {
 
 // ─── Scoping exploration turn counter ─────────────────────────────────────────
 // Tracks consecutive turns during draft scoping where the model only called
-// read-like tools (read, grep, ls, find, bash, web_search, web_fetch, set_phase)
+// read-like tools (read, grep, ls, find, bash, web_search, web_fetch)
 // without calling any scoping-progression tool (ask_user,
 // confirm_ferment_completion_criteria, propose_ferment_scoping, scope_ferment, Agent).
 // After MAX_SCOPING_EXPLORE_TURNS, the turn_end handler injects a nudge
