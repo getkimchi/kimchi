@@ -101,10 +101,6 @@ export interface AskUserFailure {
 
 export type AskUserResponse = AskUserSuccess | AskUserFailure
 
-export interface AskUserOverrides {
-	askJudgeForm?: typeof askJudgeForm
-}
-
 export interface AskUserContext {
 	ferment: Ferment
 	pi: ExtensionAPI
@@ -507,7 +503,12 @@ export async function askJudgeForm(
 			attempt > 1
 				? `${ASK_USER_FORM_SYSTEM}\n\nWARNING: Your previous response was not valid or did not match the expected schema. Return ONLY a JSON object: {"answers":[{"id":"<question_id>","value":"<answer>"}],"rationale":"..."}. No markdown, no prose.`
 				: ASK_USER_FORM_SYSTEM
-		const result = await apiCall(systemPrompt, userMsg, maxTokens)
+		let result: JudgeApiResult
+		try {
+			result = await apiCall(systemPrompt, userMsg, maxTokens)
+		} catch {
+			continue
+		}
 		if (!result.ok) {
 			continue
 		}
@@ -535,7 +536,6 @@ export async function askUserForm(
 	description: string | undefined,
 	questions: ReadonlyArray<AskUserQuestion>,
 	context: AskUserContext,
-	overrides?: AskUserOverrides,
 ): Promise<AskUserResponse> {
 	const validationError = validateFormQuestions(questions)
 	if (validationError) {
@@ -544,8 +544,7 @@ export async function askUserForm(
 
 	const oneShot = isOneShotSession(context.pi)
 	if (oneShot) {
-		const judge = overrides?.askJudgeForm ?? askJudgeForm
-		return judge(title, description, questions, context.ferment)
+		return askJudgeForm(title, description, questions, context.ferment)
 	}
 
 	const ui = context.ctx?.ui

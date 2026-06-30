@@ -760,4 +760,79 @@ describe("askJudgeForm", () => {
 		expect(result.answers?.[0]?.value).toBe("first")
 		expect(result.answers?.[0]?.label).toBe("First")
 	})
+
+	it("falls back to defaults when apiCall throws on every attempt (network errors)", async () => {
+		const apiCall = vi.fn(async () => {
+			throw new Error("network timeout")
+		})
+		const result = await askJudgeForm(
+			undefined,
+			undefined,
+			[
+				{
+					id: "ok",
+					type: "confirm",
+					prompt: "Proceed?",
+					options: [
+						{ id: "yes", label: "Yes" },
+						{ id: "no", label: "No" },
+					],
+				},
+				{
+					id: "approach",
+					type: "single",
+					prompt: "Which approach?",
+					options: [
+						{ id: "safe", label: "Safe path" },
+						{ id: "fast", label: "Fast path" },
+					],
+				},
+			],
+			makeFerment(),
+			apiCall,
+		)
+		expect(apiCall).toHaveBeenCalledTimes(3)
+		expect(result.failed).toBeFalsy()
+		if (result.failed) return
+		expect(result.answered_by).toBe("judge")
+		expect(result.rationale?.toLowerCase()).toContain("default")
+		expect(result.answers?.[0]?.value).toBe("yes")
+		expect(result.answers?.[0]?.label).toBe("Yes")
+		expect(result.answers?.[1]?.value).toBe("safe")
+		expect(result.answers?.[1]?.label).toBe("Safe path")
+	})
+
+	it("treats a thrown apiCall as a failed attempt and recovers on the next attempt", async () => {
+		const apiCall = vi
+			.fn<() => Promise<{ ok: true; text: string }>>()
+			.mockImplementationOnce(async () => {
+				throw new Error("transient network error")
+			})
+			.mockResolvedValue({
+				ok: true as const,
+				text: '{"answers":[{"id":"approach","value":"safe"}],"rationale":"ok"}',
+			})
+		const result = await askJudgeForm(
+			undefined,
+			undefined,
+			[
+				{
+					id: "approach",
+					type: "single",
+					prompt: "Which approach?",
+					options: [{ id: "safe", label: "Safe path" }],
+				},
+			],
+			makeFerment(),
+			apiCall,
+		)
+		expect(apiCall).toHaveBeenCalledTimes(2)
+		expect(result.failed).toBeFalsy()
+		if (result.failed) return
+		expect(result.answered_by).toBe("judge")
+		expect(result.answers).toEqual([
+			{ id: "approach", type: "single", value: "safe", label: "Safe path", wasCustom: false },
+		])
+		expect(result.rationale).toBe("ok")
+	})
 })

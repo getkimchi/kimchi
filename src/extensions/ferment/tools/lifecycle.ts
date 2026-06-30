@@ -1215,7 +1215,7 @@ Behavior depends on session mode:
   - Interactive (with TUI): the user answers in a structured TUI. Returns { choice | choices | text | answers, answered_by: "user" }.
   - One-shot (no human attached): the configured judge model stands in for the user. Returns { choice | choices | text | answers, answered_by: "judge", rationale }.
 
-Hard contract: in one-shot mode, if the judge is unreachable (no API key, timeout, unparseable response) the ferment is ABANDONED — there is no fallback. False-pass is the worst outcome.
+Fail-soft contract: in one-shot mode, if the judge is unreachable (no API key, timeout, unparseable response) after 3 retry attempts, the tool falls back to conservative default answers so the ferment can proceed rather than stall. Confirm defaults to "yes"; single/multi default to the first listed option; text defaults to a placeholder string. The rationale field notes when defaults were used.
 
 The agent should:
   1. Frame the question concretely. The user/judge sees only the question plus options/context in this call.
@@ -1234,7 +1234,6 @@ TUI controls for questions[]:
 Returns structured answer fields on success, or a tool error if no audience can be reached.`,
 		parameters: AskUserParams,
 		async execute(_, params, _signal, _onUpdate, ctx) {
-			const applyAndPersist = createApplyAndPersist(runtime)
 			const fermentId = params.ferment_id ?? runtime.getActiveId()
 			if (!fermentId) {
 				return toolErr("No active ferment. Provide ferment_id or activate a ferment first.")
@@ -1258,21 +1257,6 @@ Returns structured answer fields on success, or a tool error if no audience can 
 			const response = await askUserForm(params.title, params.description, normalizedQuestions, askContext)
 
 			if (response.failed) {
-				// One-shot hard-fail: when the judge is the only legitimate audience
-				// and it can't be reached, the ferment must abandon. Per the design
-				// contract, false-pass is unacceptable in unattended runs.
-				const isJudgeFailure = response.reason === "judge_unavailable" || response.reason === "judge_unparseable"
-				const isOneShot = pi.getFlag?.("ferment-oneshot") === true
-				if (isJudgeFailure && isOneShot) {
-					const abandonOutcome = applyAndPersist(fermentId, {
-						type: "abandon",
-						reason: `ask_user: ${response.detail}`,
-					})
-					if (abandonOutcome.ok) runtime.setActive(abandonOutcome.ferment)
-					return toolErr(
-						`ask_user failed in one-shot mode — ferment abandoned. ${response.detail}\n\nThe ferment cannot continue without user input or a reachable judge. Restart with a valid API key, or run in interactive mode.`,
-					)
-				}
 				return toolErr(`ask_user could not route the question (${response.reason}): ${response.detail}`)
 			}
 
