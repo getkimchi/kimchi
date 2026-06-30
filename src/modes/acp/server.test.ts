@@ -1212,6 +1212,32 @@ describe("KimchiAcpAgent messageId on streaming chunks", () => {
 		expect(result.stopReason).toBe("end_turn")
 		expect(messageIdsFor("agent_thought_chunk")).toEqual(["kimchi_msg_0", "kimchi_msg_0", "kimchi_msg_0"])
 	})
+
+	it("advances the counter across turns so two turns both starting at contentIndex=0 get distinct ids", async () => {
+		// Regression guard for the ACP "change in messageId indicates a new
+		// message" contract. pi-mono resets contentIndex to 0 on each new
+		// assistant message; without a session-wide counter, turn 2's first
+		// block would re-use turn 1's first block's messageId and a client
+		// would merge two separate replies into one bubble.
+		fake.promptImpl = async () => {
+			// Turn 1: one text block at index 0.
+			fake.emit({ type: "agent_start" })
+			emitTextDeltas(0, ["hello"])
+			fake.emit(agentEnd())
+			// Turn 2 (chained continue): another text block at index 0 again.
+			// contentIndex resets per assistant message, but the session-wide
+			// counter must keep advancing.
+			fake.emit({ type: "agent_start" })
+			emitTextDeltas(0, ["world"])
+			fake.emit(agentEnd())
+		}
+		const result = await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "two turns" }],
+		})
+		expect(result.stopReason).toBe("end_turn")
+		expect(messageIdsFor("agent_message_chunk")).toEqual(["kimchi_msg_0", "kimchi_msg_1"])
+	})
 })
 
 // Streaming tools (bash in particular) emit tool_execution_update with a

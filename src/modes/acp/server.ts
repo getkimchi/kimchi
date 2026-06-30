@@ -124,6 +124,23 @@ type SessionRecord = {
 	session: AgentSession
 	unsubscribe: () => void
 	turn?: TurnContext
+	/**
+	 * Session-wide monotonic counter for ACP messageIds. Every distinct
+	 * content block (text or thinking) across every assistant message in
+	 * the session gets a fresh value — so two turns whose first text block
+	 * both sit at contentIndex=0 still get distinct ids, satisfying the
+	 * ACP contract "a change in messageId indicates a new message has
+	 * started" without depending on contentIndex (which resets per turn).
+	 * Seeded from the branch on loadSession so replay emits matching ids.
+	 */
+	nextBlockId: number
+	/**
+	 * Per-assistant-message map from pi-mono's contentIndex → assigned
+	 * messageId. Cleared on each agent_start so a new assistant message
+	 * starts a fresh contentIndex namespace without colliding with the
+	 * previous message's assignments.
+	 */
+	contentIndexToBlockId: Map<number, string>
 }
 
 export class KimchiAcpAgent implements Agent {
@@ -253,7 +270,12 @@ export class KimchiAcpAgent implements Agent {
 			await this.bindAcpExtensions(session, uiContext)
 
 			const unsubscribe = session.subscribe((event) => this.onSessionEvent(sessionId, event))
-			this.sessions.set(sessionId, { session, unsubscribe })
+			this.sessions.set(sessionId, {
+				session,
+				unsubscribe,
+				nextBlockId: 0,
+				contentIndexToBlockId: new Map(),
+			})
 
 			this.sendAvailableCommandsUpdate(sessionId)
 
@@ -416,7 +438,18 @@ export class KimchiAcpAgent implements Agent {
 			await this.bindAcpExtensions(session, uiContext)
 
 			const unsubscribe = session.subscribe((event) => this.onSessionEvent(sid, event))
-			this.sessions.set(sid, { session, unsubscribe })
+			const record: SessionRecord = {
+				session,
+				unsubscribe,
+				nextBlockId: 0,
+				contentIndexToBlockId: new Map(),
+			}
+			this.sessions.set(sid, record)
+
+			// Seed the block counter from the persisted branch so replay emits the
+			// same messageIds the live turn would have — and so any new block the
+			// user creates after the load gets a fresh, non-colliding id.
+			this.seedBlockCounterFromBranch(session, record)
 
 			// Replay BEFORE the response resolves so client sees a coherent transcript
 			// when the loadSession promise settles. No turn context is created, so a
@@ -605,28 +638,29 @@ export class KimchiAcpAgent implements Agent {
 		if (!entry) return
 		const turn = entry.turn
 		switch (event.type) {
-			case "agent_start": {
+			case "agent_start":
+			case "message_start": {
+				// New assistant message → contentIndex restarts from 0. Wipe the
+				// per-message map so a fresh block at index 0 gets a fresh id
+				// instead of inheriting the previous message's assignment.
+				entry.contentIndexToBlockId.clear()
 				return
 			}
 			case "message_update": {
 				if (!turn) return
 				const ame = event.assistantMessageEvent
-				if (ame.type === "text_delta" && ame.delta) {
+				if ((ame.type === "text_delta" || ame.type === "thinking_delta") && ame.delta) {
+					let messageId = entry.contentIndexToBlockId.get(ame.contentIndex)
+					if (messageId === undefined) {
+						messageId = `kimchi_msg_${entry.nextBlockId++}`
+						entry.contentIndexToBlockId.set(ame.contentIndex, messageId)
+					}
 					this.send({
 						sessionId,
 						update: {
-							sessionUpdate: "agent_message_chunk",
+							sessionUpdate: ame.type === "text_delta" ? "agent_message_chunk" : "agent_thought_chunk",
 							content: { type: "text", text: ame.delta },
-							messageId: `kimchi_msg_${ame.contentIndex}`,
-						},
-					})
-				} else if (ame.type === "thinking_delta" && ame.delta) {
-					this.send({
-						sessionId,
-						update: {
-							sessionUpdate: "agent_thought_chunk",
-							content: { type: "text", text: ame.delta },
-							messageId: `kimchi_msg_${ame.contentIndex}`,
+							messageId,
 						},
 					})
 				}
@@ -694,13 +728,6 @@ export class KimchiAcpAgent implements Agent {
 				})
 				return
 			}
-			case "agent_end": {
-				// No-op: turn finalization is driven by session.prompt()'s resolution
-				// in prompt(), NOT by agent_end. See comment in prompt() for the
-				// chained-agent.continue scenario. Just guard against stray agent_end
-				// events that arrive after the turn was finalized.
-				return
-			}
 			default:
 				return
 		}
@@ -741,10 +768,66 @@ export class KimchiAcpAgent implements Agent {
 					},
 				})
 			} else if (msg.role === "assistant") {
-				this.replayAssistantBlocks(sessionId, msg.content, toolResults, emitThinking)
+				this.replayAssistantBlocks(sessionId, msg.content, toolResults, emitThinking, this.sessions.get(sessionId))
 			}
 			// toolResult: handled inline alongside its originating toolCall above.
 		}
+	}
+
+	/**
+	 * Walk the persisted branch and count how many ACP content chunks the
+	 * replay would emit (text segments + dimmed text parts + non-redacted
+	 * thinking blocks). Sets `record.nextBlockId` so that:
+	 *   - replayTranscript emits the same messageIds a live turn would have
+	 *     for the historical blocks, and
+	 *   - any new block the user creates after the load gets a fresh, non-
+	 *     colliding id.
+	 *
+	 * Mirrors replayAssistantBlocks' emission logic exactly — coalescing
+	 * contiguous text blocks into one chunk, and gating thinking emission on
+	 * the hideThinkingBlock setting. If these drift, messageIds replayed
+	 * after a load won't line up with what the client saw during the live
+	 * turn.
+	 */
+	private seedBlockCounterFromBranch(session: AgentSession, record: SessionRecord): void {
+		const entries = session.sessionManager.getBranch()
+		const emitThinking = shouldEmitThinking("")
+
+		let count = 0
+		for (const entry of entries) {
+			if (!entry || entry.type !== "message" || entry.message.role !== "assistant") continue
+
+			let inTextSegment = false
+			const countTextSegment = () => {
+				if (!inTextSegment) {
+					count++
+					inTextSegment = true
+				}
+			}
+
+			const content = entry.message.content
+			for (const block of content) {
+				if (block.type === "text") {
+					if (!block.text) continue
+					countTextSegment()
+					if (emitThinking) {
+						for (const part of replayTextParts(block.text)) {
+							if (part.kind === "thinking") count++
+						}
+					}
+				} else if (block.type === "thinking") {
+					inTextSegment = false
+					if (!emitThinking || block.redacted || !block.thinking) continue
+					count++
+				} else {
+					// toolCall / unknown: replay flushes the text buffer before
+					// emitting the structural block, which terminates any open
+					// text segment.
+					inTextSegment = false
+				}
+			}
+		}
+		record.nextBlockId = count + 1
 	}
 
 	private replayAssistantBlocks(
@@ -752,8 +835,16 @@ export class KimchiAcpAgent implements Agent {
 		content: unknown,
 		toolResults: Map<string, ReplayToolResult>,
 		emitThinking: boolean,
+		record: SessionRecord | undefined,
 	): void {
 		if (!Array.isArray(content)) return
+		// Allocates a fresh session-unique messageId for every emitted chunk
+		// and leaves it off the wire if the SessionRecord isn't loaded (e.g.
+		// the unit-test harness wiring a partial replay path).
+		const nextMessageId = () => {
+			if (!record) return undefined
+			return `kimchi_msg_${record.nextBlockId++}`
+		}
 		// Buffer contiguous text blocks so a single assistant message renders as
 		// one agent_message_chunk per natural text segment — emit the full
 		// message as a single chunk, no per-token chunking. When a thinking or
@@ -762,11 +853,13 @@ export class KimchiAcpAgent implements Agent {
 		let textBuffer = ""
 		const flushText = () => {
 			if (textBuffer.length === 0) return
+			const messageId = nextMessageId()
 			this.send({
 				sessionId,
 				update: {
 					sessionUpdate: "agent_message_chunk",
 					content: { type: "text", text: textBuffer },
+					...(messageId !== undefined ? { messageId } : {}),
 				},
 			})
 			textBuffer = ""
@@ -782,11 +875,13 @@ export class KimchiAcpAgent implements Agent {
 						textBuffer += part.text
 					} else if (emitThinking) {
 						flushText()
+						const messageId = nextMessageId()
 						this.send({
 							sessionId,
 							update: {
 								sessionUpdate: "agent_thought_chunk",
 								content: { type: "text", text: part.text },
+								...(messageId !== undefined ? { messageId } : {}),
 							},
 						})
 					}
@@ -800,11 +895,13 @@ export class KimchiAcpAgent implements Agent {
 				if (redacted) continue
 				if (typeof thinking !== "string" || thinking.length === 0) continue
 				if (!emitThinking) continue
+				const messageId = nextMessageId()
 				this.send({
 					sessionId,
 					update: {
 						sessionUpdate: "agent_thought_chunk",
 						content: { type: "text", text: stripAnsi(thinking) },
+						...(messageId !== undefined ? { messageId } : {}),
 					},
 				})
 			} else if (b.type === "toolCall") {
