@@ -21,6 +21,7 @@ This module exposes two kinds of values:
 from __future__ import annotations
 
 import os
+from typing import Any
 
 from outcome import Outcome
 
@@ -124,3 +125,71 @@ def is_retryable(outcome: Outcome, error_category: str | None) -> bool:
     if outcome == Outcome.AGENT_TIMEOUT:
         return should_retry_agent_timeout()
     return outcome == Outcome.ERROR and error_category == "infra"
+
+
+# --- LLM sampling parameters ---
+# Individual env vars set from typed CI inputs (number type avoids the
+# $[[ inputs.X ]] curly-brace interpolation bug for string inputs).
+ENV_BENCH_LLM_TEMPERATURE = "BENCH_LLM_TEMPERATURE"
+ENV_BENCH_LLM_TOP_P = "BENCH_LLM_TOP_P"
+ENV_BENCH_LLM_TOP_K = "BENCH_LLM_TOP_K"
+ENV_BENCH_LLM_MAX_TOKENS = "BENCH_LLM_MAX_TOKENS"
+
+
+def _read_optional_float(env_var: str, low: float, high: float) -> float | None:
+    """Read a float env var; return None if unset or zero (sentinel for 'not set')."""
+    raw = os.environ.get(env_var, "").strip()
+    if not raw or raw == "0" or raw == "0.0":
+        return None
+    try:
+        v = float(raw)
+    except ValueError:
+        raise ValueError(f"{env_var}={raw!r} is not a valid number") from None
+    if not low <= v <= high:
+        raise ValueError(f"{env_var}={v} is out of range [{low}, {high}]")
+    return v
+
+
+def _read_optional_int(env_var: str) -> int | None:
+    """Read a positive-int env var; return None if unset or zero (sentinel for 'not set')."""
+    raw = os.environ.get(env_var, "").strip()
+    if not raw or raw == "0":
+        return None
+    try:
+        v = int(float(raw))  # GitLab number inputs may have trailing .0
+    except ValueError:
+        raise ValueError(f"{env_var}={raw!r} is not a valid integer") from None
+    if v <= 0:
+        raise ValueError(f"{env_var}={v} must be a positive integer")
+    return v
+
+
+def load_llm_params() -> tuple[dict[str, float | int], dict[str, dict[str, float | int]]]:
+    """Return (global_params, per_model_params) from individual env vars.
+
+    CI inputs use number type to work around GitLab's $[[ inputs.X ]]
+    interpolation bug that drops string values containing curly braces.
+    Zero (the default) means "not set" for each parameter.
+
+    Per-model overrides are not supported via CI inputs; the second
+    return value is always an empty dict.
+    """
+    global_params: dict[str, float | int] = {}
+
+    temperature = _read_optional_float(ENV_BENCH_LLM_TEMPERATURE, 0.0, 1.0)
+    if temperature is not None:
+        global_params["temperature"] = temperature
+
+    top_p = _read_optional_float(ENV_BENCH_LLM_TOP_P, 0.0, 1.0)
+    if top_p is not None:
+        global_params["top_p"] = top_p
+
+    top_k = _read_optional_int(ENV_BENCH_LLM_TOP_K)
+    if top_k is not None:
+        global_params["top_k"] = top_k
+
+    max_tokens = _read_optional_int(ENV_BENCH_LLM_MAX_TOKENS)
+    if max_tokens is not None:
+        global_params["max_tokens"] = max_tokens
+
+    return global_params, {}

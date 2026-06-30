@@ -49,6 +49,7 @@ from bench_config import (
     ENV_KIMCHI_MULTI_MODEL,
     ENV_MODEL,
     is_retryable,
+    load_llm_params,
     parse_model,
     should_retry_agent_timeout,
 )
@@ -320,7 +321,13 @@ def _build_gcs_key_prefix() -> str:
     )
 
 
-def _write_run_metadata(results_dir: Path, selected_tasks: list[str]) -> None:
+def _write_run_metadata(
+    results_dir: Path,
+    selected_tasks: list[str],
+    *,
+    llm_params: dict[str, float | int] | None = None,
+    llm_per_model_params: dict[str, dict[str, float | int]] | None = None,
+) -> None:
     """Write .benchmark/run-metadata.json if it doesn't already exist.
 
     All chunks share the same pipeline-level values, so whichever chunk runs
@@ -359,6 +366,8 @@ def _write_run_metadata(results_dir: Path, selected_tasks: list[str]) -> None:
             "parallelism": os.environ.get("BENCH_PARALLELISM", "1"),
             "timeout_multiplier": os.environ.get("BENCH_TIMEOUT_MULTIPLIER", "1.0"),
             "retry_agent_timeout": should_retry_agent_timeout(),
+            "llm_params": llm_params or {},
+            "llm_per_model_params": llm_per_model_params or {},
         },
         "results_dir": str(results_dir),
         "runner": {
@@ -731,7 +740,13 @@ def main() -> int:
         if not selected_tasks:
             selected_tasks = _fetch_all_tasks(dataset, bench_dir=Path.cwd())
 
-    _write_run_metadata(results_dir, selected_tasks)
+    llm_params, llm_per_model_params = load_llm_params()
+    _write_run_metadata(
+        results_dir,
+        selected_tasks,
+        llm_params=llm_params,
+        llm_per_model_params=llm_per_model_params,
+    )
 
     expected = _expected_tasks_for_chunk(selected_tasks, chunk_index, chunk_count)
 
@@ -797,6 +812,8 @@ def main() -> int:
         kimchi_multi_model=kimchi_multi_model,
         kimchi_ferment_oneshot=kimchi_ferment_oneshot,
         coding_agent=coding_agent,
+        llm_params=llm_params,
+        llm_per_model_params=llm_per_model_params,
     )
     print(f"[chunk-{chunk_index}] command: {format_command_for_log(cmd)}", flush=True)
 

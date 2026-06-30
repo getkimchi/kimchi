@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import os
 import secrets
@@ -46,6 +47,39 @@ MULTI_MODEL = "multi-model"
 KIMCHI_INFRA_BREAKER_THRESHOLD_ENV = "KIMCHI_INFRA_BREAKER_THRESHOLD"
 KIMCHI_BENCHMARK_INFRA_BREAKER_DEFAULT_ATTEMPTS = "3"
 KIMCHI_EXIT_OUTPUT_TAIL_LINES = 20
+
+# Benchmark-only extension for injecting LLM sampling parameters.
+# It lives in the benchmarks branch and is installed into the container's
+# ~/.config/kimchi/extensions/ auto-discovery directory at runtime.
+HOST_EXTENSION_DIR = Path(__file__).parent / "extensions" / "llm-sampling-params"
+CONTAINER_EXTENSION_STAGE_DIR = "/tmp/kimchi-llm-ext"
+CONTAINER_EXTENSION_INSTALL_DIR = "$HOME/.config/kimchi/extensions/llm-sampling-params"
+
+
+def _decode_agent_kwarg(value: object) -> dict[str, Any]:
+    """Decode a base64-encoded JSON agent kwarg value into a dict."""
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str):
+        raise ValueError(f"Expected string or dict for LLM params kwarg, got {type(value).__name__}")
+    value = value.strip()
+    if not value:
+        return {}
+    # Harbor may pass the value with base64 padding stripped.
+    padded = value + "=" * (-len(value) % 4)
+    try:
+        raw = base64.urlsafe_b64decode(padded.encode("ascii"))
+    except Exception as exc:
+        raise ValueError(f"Invalid base64 LLM params kwarg: {exc}") from exc
+    try:
+        decoded = json.loads(raw.decode("utf-8"))
+    except Exception as exc:
+        raise ValueError(f"Invalid JSON in LLM params kwarg: {exc}") from exc
+    if not isinstance(decoded, dict):
+        raise ValueError("LLM params kwarg must decode to an object")
+    return decoded
 
 
 def _coerce_bool_kwarg(value: object, name: str) -> bool:
@@ -158,6 +192,9 @@ class Kimchi(BaseInstalledAgent):
             kwargs.pop("disable-compaction", False), "disable-compaction"
         )
 
+        llm_params = _decode_agent_kwarg(kwargs.pop("llm-params", None))
+        llm_per_model_params = _decode_agent_kwarg(kwargs.pop("llm-per-model-params", None))
+
         super().__init__(*args, **kwargs)
         selected_multi_model = self.model_name == MULTI_MODEL
         legacy_multi_model = (
@@ -173,6 +210,8 @@ class Kimchi(BaseInstalledAgent):
             )
         self._multi_model_enabled = selected_multi_model
         self._disable_compaction = disable_compaction
+        self._llm_params = llm_params
+        self._llm_per_model_params = llm_per_model_params
         config_kwargs = {}
         api_key = self._get_env(KIMCHI_API_KEY_ENV)
         if api_key is not None:
@@ -214,6 +253,21 @@ class Kimchi(BaseInstalledAgent):
         # Upload the stage dir verbatim. It contains bin/kimchi and
         # share/kimchi/{package.json, theme/, export-html/} — resolved at runtime via PI_PACKAGE_DIR.
         await environment.upload_dir(source_dir=host_stage_dir, target_dir=UPLOAD_STAGE_DIR)
+
+        # Upload the runtime LLM-sampling extension if params were requested.
+        # It is staged to /tmp and copied into the binary's auto-discovery directory
+        # ($HOME/.config/kimchi/extensions/) at launch time.
+        if self._llm_params or self._llm_per_model_params:
+            if not HOST_EXTENSION_DIR.is_dir():
+                raise RuntimeError(
+                    f"LLM sampling extension not found at {HOST_EXTENSION_DIR}. "
+                    "Required because llm-params or llm-per-model-params were set."
+                )
+            await environment.upload_dir(
+                source_dir=HOST_EXTENSION_DIR,
+                target_dir=CONTAINER_EXTENSION_STAGE_DIR,
+            )
+
         await self.exec_as_root(
             environment,
             command=(
@@ -309,6 +363,10 @@ class Kimchi(BaseInstalledAgent):
             "PI_PACKAGE_DIR": PI_PACKAGE_DIR,
             **ferment_env,
         }
+        if self._llm_params:
+            env["KIMCHI_LLM_PARAMS_JSON"] = json.dumps(self._llm_params)
+        if self._llm_per_model_params:
+            env["KIMCHI_LLM_PER_MODEL_PARAMS_JSON"] = json.dumps(self._llm_per_model_params)
 
         # Pipe the prompt via stdin instead of as a positional arg: pi-coding-agent's
         # parseArgs treats any token starting with `-` as a flag (no `--` end-of-options
@@ -339,6 +397,14 @@ class Kimchi(BaseInstalledAgent):
             # mounted logs directory.
             f"rm -f {shlex.quote(CONTAINER_AGENT_PGID_FILE)}",
         ]
+        # Copy the staged LLM-sampling extension into the binary's auto-discovery
+        # directory so the extension is loaded at startup without a --extension flag.
+        if self._llm_params or self._llm_per_model_params:
+            parts.append(
+                'ext_dir="$HOME/.config/kimchi/extensions/llm-sampling-params"; '
+                'mkdir -p "$ext_dir" && '
+                f'cp -a {shlex.quote(CONTAINER_EXTENSION_STAGE_DIR)}/. "$ext_dir/"'
+            )
         harness_settings = self._harness_settings_command()
         if harness_settings:
             parts.append(harness_settings)

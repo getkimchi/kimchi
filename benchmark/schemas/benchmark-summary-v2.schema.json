@@ -209,6 +209,66 @@
         "retry_agent_timeout": {
           "description": "Whether agent_timeout verdicts were retried by chunk_runner.",
           "type": "boolean"
+        },
+        "parameters": {
+          "description": "LLM sampling parameters applied to the agent at runtime. Optional: present only when BENCH_LLM_PARAMS_JSON or BENCH_LLM_PER_MODEL_PARAMS_JSON were set.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "llm_params": {
+              "description": "Global LLM sampling parameters forwarded to every LLM call.",
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "temperature": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "top_p": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "top_k": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "max_tokens": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
+            "llm_per_model_params": {
+              "description": "Per-model LLM sampling parameter overrides keyed by 'provider/model'.",
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "temperature": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1
+                  },
+                  "top_p": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1
+                  },
+                  "top_k": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "max_tokens": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              }
+            }
+          }
         }
       }
     },

@@ -132,3 +132,58 @@ def test_command_omits_job_name_flag_by_default() -> None:
     )
 
     assert "--job-name" not in cmd
+
+
+# --- LLM sampling parameter forwarding ---
+
+
+def test_command_forwards_llm_params_as_base64_kwargs() -> None:
+    """LLM params are base64-encoded as --agent-kwarg values."""
+    import base64
+    import json
+
+    cmd = build_harbor_command(
+        tasks=["task-a"],
+        agent_import_path="kimchi_agent:Kimchi",
+        model="kimchi-dev/kimi-k2.6",
+        dataset="terminal-bench/terminal-bench-2",
+        parallelism=1,
+        attempts=1,
+        timeout_multiplier=1.0,
+        coding_agent="kimchi",
+        llm_params={"temperature": 0.7, "top_p": 0.9, "top_k": 40, "max_tokens": 4096},
+        llm_per_model_params={"kimchi-dev/kimi-k2.6": {"temperature": 0.2, "top_k": 20}},
+    )
+
+    def _find_kwarg(prefix: str) -> str:
+        for i, arg in enumerate(cmd):
+            if arg == "--agent-kwarg" and i + 1 < len(cmd) and cmd[i + 1].startswith(prefix):
+                return cmd[i + 1]
+        raise AssertionError(f"Missing kwarg {prefix!r} in {cmd}")
+
+    params_arg = _find_kwarg("llm-params=")
+    encoded = params_arg.split("=", 1)[1]
+    padded = encoded + "=" * (-len(encoded) % 4)
+    decoded = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
+    assert decoded == {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "max_tokens": 4096}
+
+    per_model_arg = _find_kwarg("llm-per-model-params=")
+    encoded_per_model = per_model_arg.split("=", 1)[1]
+    padded_per_model = encoded_per_model + "=" * (-len(encoded_per_model) % 4)
+    decoded_per_model = json.loads(base64.urlsafe_b64decode(padded_per_model.encode("ascii")))
+    assert decoded_per_model == {"kimchi-dev/kimi-k2.6": {"temperature": 0.2, "top_k": 20}}
+
+
+def test_command_omits_llm_params_when_empty() -> None:
+    """When llm_params are empty/None, no llm-params kwargs are added."""
+    cmd = build_harbor_command(
+        tasks=["task-a"],
+        agent_import_path="kimchi_agent:Kimchi",
+        model="kimchi-dev/kimi-k2.6",
+        dataset="terminal-bench/terminal-bench-2",
+        parallelism=1,
+        attempts=1,
+        timeout_multiplier=1.0,
+        coding_agent="kimchi",
+    )
+    assert not any(arg.startswith("llm-params=") or arg.startswith("llm-per-model-params=") for arg in cmd)

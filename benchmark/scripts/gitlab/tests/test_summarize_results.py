@@ -656,5 +656,75 @@ class SummarySchemaValidationTest(unittest.TestCase):
                 self.fail(f"summary.json does not validate against v2 schema: {exc.message} at {list(exc.path)}")
 
 
+class BuildRunLLMParametersTest(unittest.TestCase):
+    """build_run must surface LLM sampling parameters into the summary's run.parameters."""
+
+    GENERATED_AT = "2026-06-26T00:00:00Z"
+
+    def test_build_run_includes_llm_parameters(self) -> None:
+        metadata = {
+            "benchmark": "terminal-bench-2",
+            "coding_agent": "kimchi",
+            "model": "kimchi-dev/kimi-k2.6",
+            "configuration": "multi-mode",
+            "parameters": {
+                "llm_params": {"temperature": 0.7},
+                "llm_per_model_params": {"kimchi-dev/kimi-k2.6": {"max_tokens": 8192}},
+            },
+            "gitlab": {"ref": "benchmarks", "commit_sha": "abc123"},
+        }
+        run = summarize_results.build_run(metadata, "2026-06-26T00:00:00Z", "2026-06-26T01:00:00Z", "2026-06-26T01:00:00Z")
+        self.assertEqual(run["parameters"]["llm_params"], {"temperature": 0.7})
+        self.assertEqual(run["parameters"]["llm_per_model_params"], {"kimchi-dev/kimi-k2.6": {"max_tokens": 8192}})
+
+    def test_build_run_defaults_llm_parameters_to_empty(self) -> None:
+        metadata = {
+            "benchmark": "terminal-bench-2",
+            "coding_agent": "kimchi",
+            "model": "kimchi-dev/kimi-k2.6",
+            "configuration": "single-model",
+            "parameters": {},
+            "gitlab": {"ref": "benchmarks", "commit_sha": "abc123"},
+        }
+        run = summarize_results.build_run(metadata, None, None, self.GENERATED_AT)
+        self.assertEqual(run["parameters"]["llm_params"], {})
+        self.assertEqual(run["parameters"]["llm_per_model_params"], {})
+
+    def test_build_run_llm_params_with_decimal_values_are_json_serializable(self) -> None:
+        """Reproduce CI failure: metadata loaded with parse_float=Decimal.
+
+        When run-metadata.json contains llm_params with float values like
+        temperature and top_p, load_json() (which uses parse_float=Decimal)
+        produces Decimal objects.  build_run must convert them to native
+        floats so json.dumps(summary) does not raise TypeError.
+        """
+        metadata = {
+            "benchmark": "terminal-bench-2",
+            "coding_agent": "kimchi",
+            "model": "kimchi-dev/glm-5.2-fp8",
+            "configuration": "multi-mode",
+            "parameters": {
+                "llm_params": {
+                    "temperature": Decimal("0.7"),
+                    "top_p": Decimal("0.95"),
+                    "max_tokens": 4096,
+                },
+                "llm_per_model_params": {
+                    "kimchi-dev/glm-5.2-fp8": {"temperature": Decimal("0.8")}
+                },
+            },
+            "gitlab": {"ref": "benchmarks", "commit_sha": "abc123"},
+        }
+        run = summarize_results.build_run(
+            metadata, "2026-06-26T00:00:00Z", "2026-06-26T01:00:00Z", self.GENERATED_AT
+        )
+        # Must not raise TypeError: Object of type Decimal is not JSON serializable
+        serialized = json.dumps(run)
+        deserialized = json.loads(serialized)
+        self.assertEqual(deserialized["parameters"]["llm_params"]["temperature"], 0.7)
+        self.assertEqual(deserialized["parameters"]["llm_params"]["top_p"], 0.95)
+        self.assertEqual(deserialized["parameters"]["llm_per_model_params"]["kimchi-dev/glm-5.2-fp8"]["temperature"], 0.8)
+
+
 if __name__ == "__main__":
     unittest.main()

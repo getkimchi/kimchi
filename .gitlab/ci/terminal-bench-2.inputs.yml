@@ -147,3 +147,19 @@ inputs:
     description: "Scales each task timeout. Use 1 for the benchmark default."
     type: number
     default: 1
+  temperature:
+    description: "LLM sampling temperature applied to every call (0.0–1.0). Leave unset (0) to use the model default."
+    type: number
+    default: 0
+  top_p:
+    description: "LLM nucleus sampling top_p applied to every call (0.0–1.0). Leave unset (0) to use the model default."
+    type: number
+    default: 0
+  top_k:
+    description: "LLM top-k sampling applied to every call (positive int). Leave unset (0) to use the model default."
+    type: number
+    default: 0
+  max_tokens:
+    description: "Maximum output tokens per LLM call (positive int). Leave unset (0) to use the model default."
+    type: number
+    default: 0

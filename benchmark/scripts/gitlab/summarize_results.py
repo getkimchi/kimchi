@@ -834,6 +834,10 @@ def build_run(
             "retry_agent_timeout",
             default=should_retry_agent_timeout(),
         ),
+        "parameters": {
+            "llm_params": _convert_decimals(metadata_dict(metadata, "parameters").get("llm_params", {})),
+            "llm_per_model_params": _convert_decimals(metadata_dict(metadata, "parameters").get("llm_per_model_params", {})),
+        },
     }
 
 

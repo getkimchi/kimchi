@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -40,6 +42,7 @@ def kimchi_test_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("KIMCHI_TAGS", raising=False)
     monkeypatch.delenv("RUN_ID", raising=False)
     monkeypatch.delenv(KIMCHI_INFRA_BREAKER_THRESHOLD_ENV, raising=False)
+
 
 async def test_run_uses_shell_process_group_cleanup_on_cancellation(tmp_path: Path) -> None:
     agent = RecordingKimchi(
@@ -390,3 +393,80 @@ def test_merge_kimchi_tags_user_run_id_overrides_auto(tmp_path: Path, monkeypatc
     assert "run_id:gitlab-p9999999999" not in merged
     assert "task:task" in merged
     assert "trial:task__trial-suffix" in merged
+
+
+def test_llm_params_kwargs_forwarded_as_env(tmp_path: Path) -> None:
+    params = {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "max_tokens": 4096}
+    per_model = {"kimchi-dev/kimi-k2.6": {"temperature": 0.2, "top_k": 20}}
+
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="kimchi-dev/kimi-k2.6",
+        **{"llm-params": params, "llm-per-model-params": per_model},
+    )
+
+    assert agent._llm_params == params
+    assert agent._llm_per_model_params == per_model
+
+
+def test_llm_params_base64_kwargs_decoded(tmp_path: Path) -> None:
+    params = {"temperature": 0.7}
+    encoded = base64.urlsafe_b64encode(json.dumps(params).encode("utf-8")).decode("ascii").rstrip("=")
+
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="kimchi-dev/kimi-k2.6",
+        **{"llm-params": encoded},
+    )
+
+    assert agent._llm_params == params
+
+
+async def test_llm_params_installs_extension_in_discovery_dir(tmp_path: Path) -> None:
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="kimchi-dev/kimi-k2.6",
+        **{"llm-params": {"temperature": 0.7}},
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await agent.run("test instruction", object(), AgentContext())
+
+    command = agent.agent_commands[0]
+    assert ".config/kimchi/extensions/llm-sampling-params" in command
+    assert 'cp -a /tmp/kimchi-llm-ext/. "$ext_dir/"' in command
+    assert "--extension" not in agent._kimchi_command("")
+
+
+async def test_llm_params_omits_extension_install_when_empty(tmp_path: Path) -> None:
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="kimchi-dev/kimi-k2.6",
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await agent.run("test instruction", object(), AgentContext())
+
+    command = agent.agent_commands[0]
+    assert ".config/kimchi/extensions/llm-sampling-params" not in command
+
+
+async def test_llm_params_env_vars_forwarded_in_run(tmp_path: Path) -> None:
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="kimchi-dev/kimi-k2.6",
+        **{
+            "llm-params": {"temperature": 0.7},
+            "llm-per-model-params": {"kimchi-dev/kimi-k2.6": {"top_k": 20}},
+        },
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await agent.run("test instruction", object(), AgentContext())
+
+    env = agent.agent_envs[0]
+    assert env is not None
+    assert "KIMCHI_LLM_PARAMS_JSON" in env
+    assert "KIMCHI_LLM_PER_MODEL_PARAMS_JSON" in env
+    assert json.loads(env["KIMCHI_LLM_PARAMS_JSON"]) == {"temperature": 0.7}
+    assert json.loads(env["KIMCHI_LLM_PER_MODEL_PARAMS_JSON"]) == {"kimchi-dev/kimi-k2.6": {"top_k": 20}}

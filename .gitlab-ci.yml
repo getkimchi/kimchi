@@ -18,3 +18,7 @@ include:
       parallelism: $[[ inputs.parallelism ]]
       attempts: $[[ inputs.attempts ]]
       timeout_multiplier: $[[ inputs.timeout_multiplier ]]
+      temperature: $[[ inputs.temperature ]]
+      top_p: $[[ inputs.top_p ]]
+      top_k: $[[ inputs.top_k ]]
+      max_tokens: $[[ inputs.max_tokens ]]

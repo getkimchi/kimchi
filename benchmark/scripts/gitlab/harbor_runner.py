@@ -6,9 +6,12 @@ Pure-function command construction plus a thin subprocess wrapper.
 
 from __future__ import annotations
 
+import base64
+import json
 import shlex
 import subprocess
 from pathlib import Path
+from typing import Any
 
 
 def build_harbor_command(
@@ -28,6 +31,8 @@ def build_harbor_command(
     coding_agent: str = "kimchi",
     opencode_version: str | None = None,
     claude_code_version: str | None = None,
+    llm_params: dict[str, Any] | None = None,
+    llm_per_model_params: dict[str, dict[str, Any]] | None = None,
 ) -> list[str]:
     """Build the `harbor run` command as a list of args (suitable for subprocess)."""
     cmd = [
@@ -56,6 +61,15 @@ def build_harbor_command(
         cmd.extend(["--agent-kwarg", "multi-model=true"])
     if coding_agent == "kimchi" and kimchi_ferment_oneshot:
         cmd.extend(["--agent-kwarg", "ferment-oneshot=true"])
+
+    if coding_agent == "kimchi":
+        encoded_params = _encode_agent_kwargs(llm_params)
+        if encoded_params:
+            cmd.extend(["--agent-kwarg", f"llm-params={encoded_params}"])
+        encoded_per_model = _encode_agent_kwargs(llm_per_model_params)
+        if encoded_per_model:
+            cmd.extend(["--agent-kwarg", f"llm-per-model-params={encoded_per_model}"])
+
     if coding_agent == "opencode" and opencode_version:
         cmd.extend(["--agent-kwarg", f"version={opencode_version}"])
     if coding_agent == "claude-code" and claude_code_version:
@@ -81,6 +95,13 @@ def run_harbor(
 def format_command_for_log(cmd: list[str]) -> str:
     """Format a command for human-readable log output."""
     return shlex.join(cmd)
+
+
+def _encode_agent_kwargs(value: dict[str, Any] | None) -> str | None:
+    """Base64-encode a dict for passing as a Harbor --agent-kwarg value."""
+    if not value:
+        return None
+    return base64.urlsafe_b64encode(json.dumps(value).encode("utf-8")).decode("ascii").rstrip("=")
 
 
 __all__ = ["build_harbor_command", "format_command_for_log", "run_harbor"]

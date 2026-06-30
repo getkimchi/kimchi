@@ -100,6 +100,10 @@ setup-image:
     BENCH_CHUNK_COUNT: 3
     BENCH_JOB_MAX_RETRIES: 2
     BENCH_RETRY_AGENT_TIMEOUT: "$[[ inputs.retry_agent_timeout ]]"
+    BENCH_LLM_TEMPERATURE: "$[[ inputs.temperature ]]"
+    BENCH_LLM_TOP_P: "$[[ inputs.top_p ]]"
+    BENCH_LLM_TOP_K: "$[[ inputs.top_k ]]"
+    BENCH_LLM_MAX_TOKENS: "$[[ inputs.max_tokens ]]"
     DOCKER_HOST: tcp://docker:2375
     DOCKER_TLS_CERTDIR: ""
   before_script:
@@ -122,6 +126,10 @@ setup-image:
       echo "attempts:                 ${BENCH_ATTEMPTS}"
       echo "timeout_multiplier:       ${BENCH_TIMEOUT_MULTIPLIER}"
       echo "retry_agent_timeout:      ${BENCH_RETRY_AGENT_TIMEOUT}"
+      echo "temperature:               ${BENCH_LLM_TEMPERATURE}"
+      echo "top_p:                     ${BENCH_LLM_TOP_P}"
+      echo "top_k:                     ${BENCH_LLM_TOP_K}"
+      echo "max_tokens:                ${BENCH_LLM_MAX_TOKENS}"
       echo "chunk:                    ${BENCH_CHUNK_INDEX}/${BENCH_CHUNK_COUNT}"
       echo "------------------------------------------"
       if [ "${CODING_AGENT}" = "kimchi" ]; then
