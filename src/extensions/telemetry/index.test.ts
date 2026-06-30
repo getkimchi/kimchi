@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { TelemetryConfig } from "../../config.js"
+import { TOOL_CALL_EVENTS } from "../tool-call-events.js"
 import telemetryExtension, {
 	trackSubagentSpawned,
 	trackSurveyAnswered,
@@ -1166,5 +1167,144 @@ describe("bash-tool-guard telemetry via pi.events", () => {
 			count: 1,
 		})
 		expect(fetchMock).not.toHaveBeenCalled()
+	})
+})
+
+// ---------------------------------------------------------------------------
+// First-turn orientation block → tool_failure suppression
+// ---------------------------------------------------------------------------
+
+describe("first-turn orientation block suppresses tool_failure error record", () => {
+	let fetchMock: ReturnType<typeof vi.fn>
+	let originalFetch: typeof globalThis.fetch
+
+	beforeEach(() => {
+		fetchMock = vi.fn().mockResolvedValue({ ok: true, text: async () => "" })
+		originalFetch = globalThis.fetch
+		// biome-ignore lint/suspicious/noExplicitAny: test mock
+		globalThis.fetch = fetchMock as any
+	})
+
+	afterEach(async () => {
+		globalThis.fetch = originalFetch
+		_resetSharedAccumulators()
+		const { _resetFermentTrackingState, _resetBlockedToolCallIds } = await import("./index.js")
+		_resetFermentTrackingState()
+		_resetBlockedToolCallIds()
+		vi.restoreAllMocks()
+	})
+
+	function extractRecords() {
+		const logCalls = fetchMock.mock.calls.filter(([url]: unknown[]) => String(url).includes("/logs"))
+		return logCalls.flatMap(([, opts]: unknown[]) => {
+			const body = JSON.parse((opts as { body: string }).body)
+			return body.resourceLogs[0].scopeLogs[0].logRecords as Array<{
+				eventName: string
+				attributes: Array<{ key: string; value: { stringValue: string } }>
+			}>
+		})
+	}
+
+	it("does NOT emit error record for a blocked toolCallId, but DOES emit tool_result", async () => {
+		const { handlers, events, api } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, { model: { id: "claude-opus-4-6" } })
+
+		// Simulate the orientation guard blocking a tool call before its
+		// tool_execution_end fires (isError: true comes from upstream loop).
+		events.emit(TOOL_CALL_EVENTS.BLOCK, {
+			toolCallId: "tc-block-1",
+			toolName: "bash",
+			reason: "orientation guard",
+			guard: "first_turn_orientation",
+		})
+
+		getHandler(
+			handlers,
+			"tool_execution_start",
+		)({ toolCallId: "tc-block-1", toolName: "bash", args: { command: "ls" } })
+		await getHandler(
+			handlers,
+			"tool_execution_end",
+		)({
+			toolCallId: "tc-block-1",
+			isError: true,
+			result: { content: [{ type: "text", text: "blocked by harness" }] },
+		})
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const records = extractRecords()
+		const errorRecords = records.filter((r) => r.eventName === "error")
+		const toolResultRecords = records.filter((r) => r.eventName === "tool_result")
+		expect(errorRecords).toHaveLength(0)
+		expect(toolResultRecords).toHaveLength(1)
+		const toolResultAttrs = Object.fromEntries(toolResultRecords[0].attributes.map((a) => [a.key, a.value.stringValue]))
+		expect(toolResultAttrs.tool_name).toBe("bash")
+		expect(toolResultAttrs.success).toBe("false")
+	})
+
+	it("DOES emit error record for a non-blocked toolCallId when isError is true", async () => {
+		const { handlers, events, api } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, { model: { id: "claude-opus-4-6" } })
+
+		// No block event emitted for this id — it's a genuine tool failure.
+		getHandler(
+			handlers,
+			"tool_execution_start",
+		)({ toolCallId: "tc-real-err", toolName: "bash", args: { command: "false" } })
+		await getHandler(
+			handlers,
+			"tool_execution_end",
+		)({
+			toolCallId: "tc-real-err",
+			isError: true,
+			result: { content: [{ type: "text", text: "exit code 1" }] },
+		})
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const records = extractRecords()
+		const errorRecords = records.filter((r) => r.eventName === "error")
+		expect(errorRecords).toHaveLength(1)
+		const attrs = Object.fromEntries(errorRecords[0].attributes.map((a) => [a.key, a.value.stringValue]))
+		expect(attrs.error_type).toBe("tool_failure")
+		expect(attrs.tool_name).toBe("bash")
+	})
+
+	it("clears the blocked-id set on session_start", async () => {
+		const { handlers, events, api } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+
+		// First session: block a toolCallId.
+		await getHandler(handlers, "session_start")({}, { model: { id: "claude-opus-4-6" } })
+		events.emit(TOOL_CALL_EVENTS.BLOCK, { toolCallId: "tc-x", reason: "r" })
+		getHandler(handlers, "tool_execution_start")({ toolCallId: "tc-x", toolName: "bash", args: { command: "ls" } })
+		await getHandler(
+			handlers,
+			"tool_execution_end",
+		)({
+			toolCallId: "tc-x",
+			isError: true,
+			result: { content: [] },
+		})
+
+		// Reset session — blocked ids should be cleared.
+		await getHandler(handlers, "session_start")({}, { model: { id: "claude-opus-4-6" } })
+
+		// Same id, no new block event — should now produce an error record.
+		getHandler(handlers, "tool_execution_start")({ toolCallId: "tc-x", toolName: "bash", args: { command: "ls" } })
+		await getHandler(
+			handlers,
+			"tool_execution_end",
+		)({
+			toolCallId: "tc-x",
+			isError: true,
+			result: { content: [{ type: "text", text: "boom" }] },
+		})
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const records = extractRecords()
+		const errorRecords = records.filter((r) => r.eventName === "error")
+		expect(errorRecords.length).toBeGreaterThanOrEqual(1)
 	})
 })

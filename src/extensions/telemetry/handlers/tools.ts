@@ -33,6 +33,11 @@ export function handleToolExecutionStart(
 export function handleToolExecutionEnd(
 	ctx: SessionContext,
 	event: { toolCallId: string; isError?: boolean; result?: unknown },
+	/** Returns true when the given toolCallId is a known harness-level block
+	 * (e.g. first-turn orientation guard). When true, the tool_result record
+	 * is still emitted (with success: false), but the tool_failure error
+	 * record is skipped — the block is a policy decision, not a tool error. */
+	isHarnessBlock: (toolCallId: string) => boolean = () => false,
 ): void {
 	const pending = ctx.pendingArgs.get(event.toolCallId)
 	if (!pending) return
@@ -146,7 +151,7 @@ export function handleToolExecutionEnd(
 	}
 
 	// --- Error tracking -------------------------------------------------------
-	if (event.isError) {
+	if (event.isError && !isHarnessBlock(event.toolCallId)) {
 		let errorMsg = "unknown tool error"
 		if (
 			event.result &&

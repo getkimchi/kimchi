@@ -20,6 +20,7 @@ import {
 	type FermentStepFailedPayload,
 	type FermentStepStartedPayload,
 } from "../ferment/domain-events.js"
+import { TOOL_CALL_EVENTS, type ToolCallBlockPayload } from "../tool-call-events.js"
 
 import { handleAgentEnd, handleBeforeAgentStart, handleMessageEnd, handleMessageStart } from "./handlers/messages.js"
 import { emitSessionStartEvent, handleSessionInitialized, handleSessionShutdown } from "./handlers/session.js"
@@ -105,6 +106,35 @@ export function _resetFermentTrackingState(): void {
 /** @internal — exposed for testing only */
 export function _getBashGuardCounts(): { warn: number; block: number; allowedByUserRequest: number } {
 	return { ...bashGuardCounts }
+}
+
+// ---------------------------------------------------------------------------
+// First-turn-orientation blocked-id tracking
+// ---------------------------------------------------------------------------
+
+/**
+ * toolCallIds blocked by harness-level guards during the current session.
+ * Cleared on session_start. Used by the tools handler to suppress the
+ * tool_failure error record for harness-level blocks while still emitting a
+ * tool_result record (with success: false).
+ */
+const blockedToolCallIds = new Set<string>()
+
+/** @internal — exposed for testing only */
+export function _isBlockedToolCall(toolCallId: string): boolean {
+	return blockedToolCallIds.has(toolCallId)
+}
+
+/** @internal — exposed for testing only */
+export function _resetBlockedToolCallIds(): void {
+	blockedToolCallIds.clear()
+}
+
+function onToolCallBlock(raw: unknown): void {
+	const payload = raw as ToolCallBlockPayload
+	if (payload?.toolCallId) {
+		blockedToolCallIds.add(payload.toolCallId)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -536,8 +566,16 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		pi.events.on(BASH_TOOL_GUARD_EVENTS.BLOCK, onBashGuardBlock)
 		pi.events.on(BASH_TOOL_GUARD_EVENTS.ALLOWED_BY_USER_REQUEST, onBashGuardAllowedByUserRequest)
 
+		// Subscribe to harness-level tool_call block events. We only need the
+		// toolCallId so the tools handler can distinguish harness-level
+		// blocks from real tool failures in tool_execution_end. No OTLP
+		// record is emitted here — the block is counted via tool_result
+		// (success: false).
+		pi.events.on(TOOL_CALL_EVENTS.BLOCK, onToolCallBlock)
+
 		pi.on("session_start", async (_event, extCtx) => {
 			resetBashGuardCounts()
+			blockedToolCallIds.clear()
 			const modelId = (extCtx as { model?: { id?: string } } | undefined)?.model?.id
 			handleSessionInitialized(ctx, modelId)
 		})
@@ -564,7 +602,11 @@ export default function telemetryExtension(config: TelemetryConfig) {
 			handleToolExecutionStart(ctx, event as { toolCallId: string; toolName: string; args: unknown }),
 		)
 		pi.on("tool_execution_end", async (event) => {
-			handleToolExecutionEnd(ctx, event as { toolCallId: string; isError?: boolean; result?: unknown })
+			handleToolExecutionEnd(
+				ctx,
+				event as { toolCallId: string; isError?: boolean; result?: unknown },
+				_isBlockedToolCall,
+			)
 		})
 		pi.on("before_agent_start", async (event, extCtx) => {
 			if (!sessionStartEmitted) {

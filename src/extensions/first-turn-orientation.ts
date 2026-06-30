@@ -27,6 +27,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { TOOL_CALL_EVENTS } from "./tool-call-events.js"
 
 export const ORIENTATION_BLOCK_MESSAGE =
 	"Your first response to a complex task must include a brief visible text message orienting the user (what you intend to do and why) before any tool call. Thinking alone is not enough — emit visible text first, then call tools."
@@ -134,7 +135,20 @@ export default function firstTurnOrientationExtension(pi: ExtensionAPI): void {
 		if (!event.toolName) return
 		const decision = guard.evaluate()
 		if (decision.block) {
-			return { block: true, reason: decision.reason ?? ORIENTATION_BLOCK_MESSAGE }
+			const reason = decision.reason ?? ORIENTATION_BLOCK_MESSAGE
+			// Publish a domain event so downstream subscribers (e.g. telemetry)
+			// can distinguish harness-level blocks from real tool failures.
+			// The upstream agent loop will still emit tool_execution_end with
+			// isError: true for blocked calls, so telemetry needs to know
+			// which toolCallIds were blocked here in order to avoid emitting
+			// a tool_failure error record for them.
+			pi.events.emit(TOOL_CALL_EVENTS.BLOCK, {
+				toolCallId: event.toolCallId,
+				toolName: event.toolName,
+				reason,
+				guard: "first_turn_orientation",
+			})
+			return { block: true, reason }
 		}
 	})
 }
