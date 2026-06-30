@@ -27,7 +27,7 @@ import { parseTeleportArgs } from "./args.js"
 import { refuse, warn } from "./errors.js"
 import { resolveWorkspaceRef } from "./workspace-ref.js"
 
-/** Per-call timeout for createSession: 5min — the 30s WorkerClient default aborts mid-flight on large repos (kubecast). */
+/** Per-call timeout for createSession: 5min — the 30s WorkerClient default aborts mid-flight on large repos. */
 export const SESSION_CREATE_TIMEOUT_MS = 5 * 60_000
 
 export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promise<void> {

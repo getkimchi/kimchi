@@ -182,7 +182,7 @@ describe("createSession", () => {
 describe("createSession large-repo regression", () => {
 	// Real HTTP server: a per-call timeoutMs must outlast the worker's response
 	// time even when it exceeds the WorkerClient default. Regression for large
-	// repos (kubecast) where the 30s default aborted mid-flight while the
+	// repos where the 30s default aborted mid-flight while the
 	// session was created server-side.
 
 	let server: Server
@@ -225,9 +225,9 @@ describe("createSession large-repo regression", () => {
 		const creds = { ...CREDS, wsUrl: baseUrl.replace("http://", "ws://") }
 		const client = new WorkerClient(creds, { timeoutMs: 50 })
 
-		const result = await createSession(client, "kubecast", { agentMode: "PTY" }, { timeoutMs: 1000 })
+		const result = await createSession(client, "large-repo", { agentMode: "PTY" }, { timeoutMs: 1000 })
 
-		expect(result.name).toBe("kubecast")
+		expect(result.name).toBe("large-repo")
 		expect(result.agentMode).toBe("PTY")
 	})
 
@@ -238,7 +238,7 @@ describe("createSession large-repo regression", () => {
 		const creds = { ...CREDS, wsUrl: baseUrl.replace("http://", "ws://") }
 		const client = new WorkerClient(creds, { timeoutMs: 50 })
 
-		await expect(createSession(client, "kubecast", { agentMode: "PTY" })).rejects.toThrow(/aborted/i)
+		await expect(createSession(client, "large-repo", { agentMode: "PTY" })).rejects.toThrow(/aborted/i)
 	})
 })
 
