@@ -30,7 +30,7 @@ vi.mock("./workflow.js", () => ({
 }))
 
 const autoUpdate = await import("./auto-update.js")
-const { maybeAutoUpdateOnLaunch, performReExec, argvHasSkipTrigger } = autoUpdate
+const { maybeAutoUpdateOnLaunch, performReExec, argvHasSkipTrigger, ReExecUnavailableError } = autoUpdate
 
 const originalEnvNoCheck = process.env.KIMCHI_NO_UPDATE_CHECK
 const originalPlatform = process.platform
@@ -248,12 +248,14 @@ describe("maybeAutoUpdateOnLaunch — happy path", () => {
 		expect(mockApplyUpdate).toHaveBeenCalledWith({ tag: "v1.1.0" })
 		expect(execveSpy).toHaveBeenCalledTimes(1)
 		// execve(file, args, env): file is process.execPath; args is
-		// [process.execPath, ...process.argv.slice(1)] — argv[0] re-states
-		// the executable and the rest is the user's original argv.
+		// [process.execPath, ...userArgs] where userArgs is process.argv.slice(2)
+		// — argv[0] re-states the executable, argv[1] (the launcher's own
+		// entry / a /$bunfs/… virtual path) is intentionally dropped, and the
+		// rest is the user's original args.
 		const [file, args, env] = execveSpy?.mock.calls[0] as [string, string[], NodeJS.ProcessEnv]
 		expect(file).toBe(process.execPath)
 		expect(args[0]).toBe(process.execPath)
-		expect(args.slice(1)).toEqual(process.argv.slice(1))
+		expect(args.slice(1)).toEqual(process.argv.slice(2))
 		expect(env).toBe(process.env)
 	})
 
@@ -394,11 +396,125 @@ describe("maybeAutoUpdateOnLaunch — deadline / abort handling", () => {
 	})
 })
 
-describe("performReExec", () => {
-	it("exists and is callable with argv + env", () => {
-		// Sanity: confirm the helper is exported. Calling it directly
-		// would attempt execve and never return on a real Linux runner.
-		// The happy-path tests above cover execve invocation indirectly.
-		expect(typeof performReExec).toBe("function")
+describe("performReExec — re-exec primitive selection", () => {
+	// These tests drive performReExec directly with controlled
+	// process.execve / globalThis.Bun state. beforeEach installs an execve
+	// stub + spy (see top of file); we override per-test as needed and the
+	// global afterEach restores execve. We additionally save/restore
+	// globalThis.Bun and process.exit here.
+	const hadBun = Object.hasOwn(globalThis, "Bun")
+	const originalBun = (globalThis as unknown as { Bun?: unknown }).Bun
+	let exitSpy: MockInstance<(code?: number) => never> | undefined
+
+	afterEach(() => {
+		if (hadBun) (globalThis as unknown as { Bun?: unknown }).Bun = originalBun
+		else (globalThis as unknown as { Bun?: unknown }).Bun = undefined
+		exitSpy?.mockRestore()
+		exitSpy = undefined
+	})
+
+	function removeExecve(): void {
+		// Simulate the Bun-compiled runtime where process.execve is absent.
+		// Restore the beforeEach spy first (it installs a configurable stub via
+		// vi.spyOn, which can leave a non-writable property), then forcibly
+		// redefine the slot as undefined so performReExec's `typeof === "function"`
+		// guard is false.
+		execveSpy?.mockRestore()
+		execveSpy = undefined
+		Object.defineProperty(process, "execve", { value: undefined, writable: true, configurable: true })
+	}
+
+	it("prefers process.execve, passing [execPath, ...userArgs]", () => {
+		// execveSpy (from beforeEach) is a no-op returning undefined, so the
+		// call falls through to the post-execve throw — that's expected.
+		expect(() => performReExec(["--foo", "bar"], process.env)).toThrow(/execve returned unexpectedly/)
+		expect(execveSpy).toHaveBeenCalledTimes(1)
+		const [file, args] = execveSpy?.mock.calls[0] as [string, string[], NodeJS.ProcessEnv]
+		expect(file).toBe(process.execPath)
+		expect(args).toEqual([process.execPath, "--foo", "bar"])
+	})
+
+	it("falls back to Bun.spawnSync when execve is absent, and exits with the child code", () => {
+		removeExecve()
+		const spawnSync = vi.fn((_cmd: readonly string[], _opts: { stdio: string[]; env: unknown }) => ({ exitCode: 0 }))
+		;(globalThis as unknown as { Bun?: unknown }).Bun = { spawnSync }
+		// process.exit really terminates in production (performReExec is typed
+		// `never`); the test mock must also halt control flow, otherwise
+		// execution falls through to the ReExecUnavailableError throw. We make
+		// the mock throw a sentinel to model the non-return.
+		const exitSentinel = new Error("__exit__")
+		exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {
+			throw exitSentinel
+		}) as never)
+
+		expect(() => performReExec(["--foo"], process.env)).toThrow(exitSentinel)
+
+		expect(spawnSync).toHaveBeenCalledTimes(1)
+		const [cmd, opts] = spawnSync.mock.calls[0] as [string[], { stdio: string[]; env: unknown }]
+		expect(cmd).toEqual([process.execPath, "--foo"])
+		expect(opts.stdio).toEqual(["inherit", "inherit", "inherit"])
+		expect(exitSpy).toHaveBeenCalledWith(0)
+	})
+
+	it("propagates the child's non-zero exit code", () => {
+		removeExecve()
+		;(globalThis as unknown as { Bun?: unknown }).Bun = { spawnSync: vi.fn(() => ({ exitCode: 42 })) }
+		const exitSentinel = new Error("__exit__")
+		exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {
+			throw exitSentinel
+		}) as never)
+
+		expect(() => performReExec([], process.env)).toThrow(exitSentinel)
+		expect(exitSpy).toHaveBeenCalledWith(42)
+	})
+
+	it("throws ReExecUnavailableError when neither execve nor Bun.spawnSync exists", () => {
+		removeExecve()
+		;(globalThis as unknown as { Bun?: unknown }).Bun = undefined
+		expect(() => performReExec([], process.env)).toThrow(ReExecUnavailableError)
+	})
+})
+
+describe("maybeAutoUpdateOnLaunch — re-exec unavailable fallback", () => {
+	// When performReExec can't hand off (no execve, no Bun), the binary is
+	// still swapped on disk; maybeAutoUpdateOnLaunch must swallow the
+	// ReExecUnavailableError, log a restart hint, and NOT surface it as an
+	// "unexpected" error.
+	const hadBun = Object.hasOwn(globalThis, "Bun")
+	const originalBun = (globalThis as unknown as { Bun?: unknown }).Bun
+
+	afterEach(() => {
+		if (hadBun) (globalThis as unknown as { Bun?: unknown }).Bun = originalBun
+		else (globalThis as unknown as { Bun?: unknown }).Bun = undefined
+	})
+
+	it("logs a restart hint (not 'unexpected') and resolves when no re-exec primitive exists", async () => {
+		const originalWrite = process.stderr.write.bind(process.stderr)
+		const writeSpy = vi.fn((_chunk: string | Uint8Array, _enc?: unknown, _cb?: unknown) => true)
+		;(process.stderr.write as unknown) = writeSpy
+		try {
+			// Drop execve robustly: the beforeEach spy may leave a non-writable
+			// slot, so redefine rather than assign.
+			Object.defineProperty(process, "execve", { value: undefined, writable: true, configurable: true })
+			;(globalThis as unknown as { Bun?: unknown }).Bun = undefined
+			mockCheckForUpdate.mockResolvedValue({
+				currentVersion: "1.0.0",
+				latestVersion: "1.1.0",
+				tag: "v1.1.0",
+				releaseUrl: "https://example/v1.1.0",
+				hasUpdate: true,
+				cached: false,
+			})
+			mockApplyUpdate.mockResolvedValue({ from: "v1.1.0", to: "v1.1.0" })
+
+			await expect(maybeAutoUpdateOnLaunch()).resolves.toBeUndefined()
+
+			const lines = writeSpy.mock.calls.map((c) => String(c[0])).join("")
+			// Message uses check.latestVersion ("1.1.0"), mirroring the win32 branch.
+			expect(lines).toContain("restart your terminal to use 1.1.0")
+			expect(lines).not.toContain("unexpected")
+		} finally {
+			;(process.stderr.write as unknown) = originalWrite
+		}
 	})
 })
