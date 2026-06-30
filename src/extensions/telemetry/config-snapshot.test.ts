@@ -154,4 +154,26 @@ describe("buildConfigSnapshot", () => {
 			expect(Object.keys(snapshot)).toHaveLength(7)
 		})
 	})
+
+	describe("error handling", () => {
+		it("returns a safe fallback snapshot when a helper throws", () => {
+			// Force discoverAgent to throw — simulates a corrupted agent config
+			vi.spyOn(agentDiscovery, "discoverAgent").mockImplementation(() => {
+				throw new Error("corrupted agent config")
+			})
+
+			const snapshot = buildConfigSnapshot(makeConfig(), true)
+
+			// Must still have exactly the 7 expected keys.
+			expect(Object.keys(snapshot).sort()).toEqual(EXPECTED_KEYS)
+			// Fallback values are safe defaults.
+			expect(snapshot["config.model"]).toBe("unknown")
+			expect(snapshot["config.provider"]).toBe("cast-ai")
+			expect(snapshot["config.search_provider"]).toBe("unknown")
+			expect(snapshot["config.telemetry_enabled"]).toBe(true)
+			expect(snapshot["config.permission_mode"]).toBe("default")
+			expect(snapshot["config.agents_enabled"]).toBe(false)
+			expect(snapshot["config.mcp_server_count"]).toBe(0)
+		})
+	})
 })

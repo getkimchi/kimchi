@@ -100,21 +100,42 @@ function countMcpServers(): number {
 	return count
 }
 
+/** Safe fallback snapshot returned when building fails. */
+function fallbackSnapshot(telemetryEnabled: boolean): ConfigSnapshot {
+	return {
+		"config.model": "unknown",
+		"config.provider": DEFAULT_PROVIDER,
+		"config.search_provider": "unknown",
+		"config.telemetry_enabled": telemetryEnabled,
+		"config.permission_mode": "default",
+		"config.agents_enabled": false,
+		"config.mcp_server_count": 0,
+	}
+}
+
 /**
  * Build the launch-time config snapshot for the `harness_launched` event.
  *
  * `telemetryEnabled` is passed in explicitly because it originates from the
  * separate `TelemetryConfig` rather than `KimchiConfig`.
+ *
+ * Wraps all work in a try/catch so a failure in any helper (e.g.
+ * `discoverAgent`) can never crash the CLI launch — returns a minimal safe
+ * fallback snapshot on any error.
  */
 export function buildConfigSnapshot(config: KimchiConfig, telemetryEnabled: boolean): ConfigSnapshot {
-	const settings = readAgentSettings()
-	return {
-		"config.model": resolveModel(settings),
-		"config.provider": resolveProvider(settings),
-		"config.search_provider": config.mcpSearch.strategy,
-		"config.telemetry_enabled": telemetryEnabled,
-		"config.permission_mode": resolvePermissionMode(),
-		"config.agents_enabled": getMultiModelEnabled(),
-		"config.mcp_server_count": countMcpServers(),
+	try {
+		const settings = readAgentSettings()
+		return {
+			"config.model": resolveModel(settings),
+			"config.provider": resolveProvider(settings),
+			"config.search_provider": config.mcpSearch.strategy,
+			"config.telemetry_enabled": telemetryEnabled,
+			"config.permission_mode": resolvePermissionMode(),
+			"config.agents_enabled": getMultiModelEnabled(),
+			"config.mcp_server_count": countMcpServers(),
+		}
+	} catch {
+		return fallbackSnapshot(telemetryEnabled)
 	}
 }

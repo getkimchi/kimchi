@@ -87,6 +87,13 @@ describe("kimchi config telemetry — config_changed event", () => {
 			event: "config_changed",
 			properties: { key: "telemetry.enabled", value: false },
 		})
+		// When turning telemetry OFF, the re-read config has enabled=false, which
+		// would cause sendPreSessionEvent to no-op and drop the opt-out signal.
+		// The config command forces enabled=true on the passed config so the
+		// event reaches the backend, while `value` carries the actual new state.
+		// biome-ignore lint/style/noNonNullAssertion: length asserted above
+		const configArg = vi.mocked(sendPreSessionEvent).mock.calls[0]![0]
+		expect(configArg.enabled).toBe(true)
 	})
 
 	it("accepts the common on/true/yes/1/enable spellings", async () => {

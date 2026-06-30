@@ -40,8 +40,9 @@ export function redactValue(key: string, value: unknown): string | number | bool
 		if (/^https?:\/\//i.test(value)) return "redacted:url"
 		if (/^\S+@\S+\.\S+$/.test(value)) return "redacted:email"
 		if (/(key|token|secret|password|apikey|credential)/i.test(key)) return "redacted:secret"
-		// Long high-entropy strings are likely tokens.
-		if (value.length >= 32 && /^[a-zA-Z0-9_\-]+$/.test(value)) return "redacted:secret"
+		// Token-like strings with known prefixes (sk-, pk-, Bearer , etc.)
+		// are almost certainly API keys or auth tokens.
+		if (/^(sk-|pk[-_]|bearer\s|gh[ps]_|xox[bap]-)/i.test(value)) return "redacted:secret"
 		return value
 	}
 	return "redacted:object"
@@ -96,7 +97,13 @@ export function startSettingsChangeWatcher(emit: EmitFn): () => void {
 	}
 
 	try {
-		watcher = watch(resolve(agentDir, "settings.json"), () => {
+		// Watch the parent directory rather than the file itself. Editors that
+		// replace settings.json atomically (write temp + rename) create a new
+		// inode; watching the file directly on Linux would lose the watcher.
+		// Directory-level watching survives inode replacement.
+		const settingsPath = resolve(agentDir, "settings.json")
+		watcher = watch(agentDir, (eventType, filename) => {
+			if (filename !== "settings.json") return
 			if (debounceTimer) clearTimeout(debounceTimer)
 			debounceTimer = setTimeout(fire, DEBOUNCE_MS)
 		})
@@ -104,8 +111,11 @@ export function startSettingsChangeWatcher(emit: EmitFn): () => void {
 			watcher?.close()
 			watcher = undefined
 		})
+		// Reference settingsPath to keep the linter happy — the path is only
+		// used implicitly via the directory watcher + readSettings inside fire().
+		void settingsPath
 	} catch {
-		// settings.json may not exist yet — watcher just won't fire.
+		// settings.json (or its parent dir) may not exist yet.
 	}
 
 	return () => {

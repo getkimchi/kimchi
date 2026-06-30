@@ -46,14 +46,18 @@ describe("redactValue", () => {
 		expect(redactValue("credential", "wibble")).toBe("redacted:secret")
 	})
 
-	it("redacts long high-entropy alphanumeric strings (likely tokens)", () => {
-		const token = "sk-abcdef0123456789abcdef0123456789"
-		expect(redactValue("model", token)).toBe("redacted:secret")
+	it("redacts token-like strings with known prefixes (sk-, pk-, ghp_, xox)", () => {
+		expect(redactValue("model", "sk-abcdef0123456789abcdef0123456789")).toBe("redacted:secret")
+		expect(redactValue("endpoint", "pk_live_abc123")).toBe("redacted:secret")
+		expect(redactValue("auth", "Bearer abc123")).toBe("redacted:secret")
+		expect(redactValue("token", "ghp_secrettoken")).toBe("redacted:secret")
 	})
 
-	it("passes through safe config identifiers", () => {
+	it("passes through safe config identifiers including long model IDs", () => {
 		expect(redactValue("theme", "dark")).toBe("dark")
 		expect(redactValue("model", "kimi-k2")).toBe("kimi-k2")
+		expect(redactValue("model", "gemini-1-5-pro-002")).toBe("gemini-1-5-pro-002")
+		expect(redactValue("model", "claude-sonnet-4-20250514")).toBe("claude-sonnet-4-20250514")
 	})
 
 	it("redacts objects, arrays, and null as 'redacted:object'", () => {
