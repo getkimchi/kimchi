@@ -26,11 +26,7 @@ const PROPOSE_SCOPING_PAYLOAD = JSON.stringify({
 	ferment_id: "__FERMENT_ID__",
 	title: "Worktree Isolation Check",
 	goal: "Verify that a dedicated git worktree is created when worktree isolation is enabled.",
-	success_criteria: [
-		"Dedicated worktree exists on disk",
-		"Ferment JSON records the worktree path, branch, and commit",
-		"The worktree and branch are cleaned up after terminal state",
-	],
+	success_criteria: ["Dedicated worktree exists on disk", "Ferment JSON records the worktree path, branch, and commit"],
 	constraints: [],
 	assumptions: "The repo has an initial commit so the ferment branch can be created.",
 	phases: [
