@@ -31,6 +31,7 @@ import {
 	getClientSupportsElicitation,
 	getClientSupportsMethod,
 } from "./capabilities.js"
+import { ACP_ELICIT_FORM, type AcpElicitationUIContext } from "./structured-elicitation.js"
 import { requestWithAbort } from "./utils.js"
 
 type DialogResponse = {
@@ -177,7 +178,7 @@ export function createAcpUIContext(
 		}
 	}
 
-	const ui: ExtensionUIContext = {
+	const ui: ExtensionUIContext & Partial<AcpElicitationUIContext> = {
 		async select(title, options, opts) {
 			if (options.length === 0) return undefined
 
@@ -430,6 +431,10 @@ export function createAcpUIContext(
 		get theme() {
 			return NOOP_THEME
 		},
+	}
+
+	if (supportsElicitation) {
+		ui[ACP_ELICIT_FORM] = elicitForm
 	}
 
 	return ui
