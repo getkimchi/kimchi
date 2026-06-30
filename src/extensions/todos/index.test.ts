@@ -1,8 +1,12 @@
 import type { ExtensionAPI, ExtensionContext, SessionEntry, Theme } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
-import todosExtension, { TODO_CHECKPOINT_MESSAGE, TODO_RECONCILE_MESSAGE } from "./index.js"
-import { __resetTodoStore, applyWriteTodos, getTodosForScope } from "./store.js"
+import todosExtension, {
+	TODO_BLOCKED_QUESTIONS_MESSAGE,
+	TODO_CHECKPOINT_MESSAGE,
+	TODO_RECONCILE_MESSAGE,
+} from "./index.js"
+import { __resetTodoStore, applyWriteTodos, getTodosForScope, registerActiveTodoScopeProvider } from "./store.js"
 import { TODO_TOOL_NAMES, UPDATE_TODOS_TOOL_NAME } from "./tool.js"
 import { TODO_TOOL_RESULT_SCHEMA_VERSION, type TodoStatus } from "./types.js"
 
@@ -59,6 +63,13 @@ function createContext(
 			getBranch: () => branch,
 		},
 	} as unknown as ExtensionContext
+}
+
+function createUiContext(sessionId: string, branch: SessionEntry[] = []): ExtensionContext {
+	return createContext(sessionId, branch, {
+		hasUI: true,
+		ui: { theme, setWidget: vi.fn(), setStatus: vi.fn() } as unknown as ExtensionContext["ui"],
+	})
 }
 
 function terminalTurn(stopReason = "end_turn"): unknown {
@@ -327,6 +338,40 @@ describe("todos extension session state", () => {
 		expect(checkpoint.messages[0].content[0].text).toContain("still active")
 	})
 
+	it("suppresses premature final assistant text while stale todos remain", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+
+		applyWriteTodos({ todos: [{ content: "report package name", status: "in_progress" }] })
+		await harness.fire("tool_execution_end", { toolName: "read", isError: false }, ctx)
+
+		const message = {
+			role: "assistant" as const,
+			content: [{ type: "text" as const, text: "@kimchi-dev/cli" }],
+			stopReason: "stop",
+		}
+
+		await harness.fire("message_update", { message, assistantMessageEvent: {} }, ctx)
+		expect(message.content[0].text).toBe("")
+
+		message.content[0].text = "@kimchi-dev/cli"
+		const result = (await harness.fire("message_end", { message }, ctx)) as {
+			message?: { content: unknown[] }
+		}
+		expect(message.content[0].text).toBe("")
+		expect(result.message?.content).toEqual([])
+
+		await harness.fire("turn_end", { message, toolResults: [] }, ctx)
+		expect(harness.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				details: { reason: "reconcile_todos" },
+				content: [expect.objectContaining({ text: expect.stringContaining("report package name") })],
+			}),
+			{ deliverAs: "followUp" },
+		)
+	})
+
 	it("does not reconcile immediately after only writing todos", async () => {
 		const harness = createTodosHarness()
 		const ctx = createContext("session", [])
@@ -355,6 +400,198 @@ describe("todos extension session state", () => {
 		await harness.fire("turn_end", terminalTurn(), ctx)
 
 		expect(setWidget).toHaveBeenCalledTimes(2)
+		expect(harness.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("queues a questionnaire follow-up for blocked todos with question notes", async () => {
+		const harness = createTodosHarness()
+		const custom = vi.fn(async () => ({ questions: [], answers: [], cancelled: true }))
+		const ctx = createContext("session", [], {
+			hasUI: true,
+			ui: {
+				theme,
+				setWidget: vi.fn(),
+				setStatus: vi.fn(),
+				custom,
+			} as unknown as ExtensionContext["ui"],
+		})
+		await harness.fire("session_start", { reason: "new" }, ctx)
+
+		applyWriteTodos({
+			todos: [
+				{
+					id: 1,
+					content: "Get approval code",
+					status: "blocked",
+					note: JSON.stringify({ question: { label: "Approval code", type: "text" } }),
+				},
+				{
+					id: 2,
+					content: "Pick target environment",
+					status: "blocked",
+					note: JSON.stringify({
+						question: { label: "Target", type: "single", options: ["Production", { id: "staging", label: "Staging" }] },
+					}),
+				},
+			],
+		})
+
+		await harness.fire("turn_end", terminalTurnWithText("Need input."), ctx)
+
+		expect(custom).not.toHaveBeenCalled()
+		expect(harness.sendMessage).toHaveBeenCalledWith(
+			{
+				customType: TODO_CUSTOM_ENTRY_TYPE,
+				content: [{ type: "text", text: expect.stringContaining(TODO_BLOCKED_QUESTIONS_MESSAGE) }],
+				display: false,
+				details: { reason: "blocked_todo_questions" },
+			},
+			{ deliverAs: "followUp" },
+		)
+		const message = vi.mocked(harness.sendMessage).mock.calls[0]?.[0] as { content: Array<{ text: string }> }
+		expect(message.content[0].text).toContain('"header":"Blocked todos need your input"')
+		expect(message.content[0].text).toContain('"id":"todo_1"')
+		expect(message.content[0].text).toContain('"prompt":"Please provide: Get approval code"')
+		expect(message.content[0].text).toContain('"type":"single"')
+		expect(message.content[0].text).toContain('"id":"staging"')
+	})
+
+	it("does not repeat the same blocked todo question follow-up", async () => {
+		const harness = createTodosHarness()
+		const ctx = createUiContext("session")
+		await harness.fire("session_start", { reason: "new" }, ctx)
+		applyWriteTodos({
+			todos: [
+				{
+					id: 1,
+					content: "Get approval code",
+					status: "blocked",
+					note: JSON.stringify({ question: { label: "Approval code", type: "text" } }),
+				},
+			],
+		})
+
+		await harness.fire("turn_end", terminalTurnWithText("Need input."), ctx)
+		await harness.fire("turn_end", terminalTurnWithText("Still need input."), ctx)
+
+		expect(harness.sendMessage).toHaveBeenCalledTimes(1)
+	})
+
+	it("queues ask-now blocked todo questions immediately after todo writes", async () => {
+		const harness = createTodosHarness()
+		const ctx = createUiContext("session")
+		await harness.fire("session_start", { reason: "new" }, ctx)
+
+		applyWriteTodos({
+			todos: [
+				{
+					id: 1,
+					content: "Get production approval",
+					status: "blocked",
+					note: JSON.stringify({ ask: "now", question: { label: "Approval", type: "text" } }),
+				},
+			],
+		})
+
+		expect(harness.sendMessage).toHaveBeenCalledWith(
+			{
+				customType: TODO_CUSTOM_ENTRY_TYPE,
+				content: [{ type: "text", text: expect.stringContaining(TODO_BLOCKED_QUESTIONS_MESSAGE) }],
+				display: false,
+				details: { reason: "blocked_todo_questions" },
+			},
+			{ deliverAs: "followUp" },
+		)
+		const message = vi.mocked(harness.sendMessage).mock.calls[0]?.[0] as { content: Array<{ text: string }> }
+		expect(message.content[0].text).toContain('"id":"todo_1"')
+		expect(message.content[0].text).toContain('"prompt":"Please provide: Get production approval"')
+	})
+
+	it("does not queue blocked todo questionnaires without an interactive UI", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+
+		applyWriteTodos({
+			todos: [
+				{
+					id: 1,
+					content: "Get production approval",
+					status: "blocked",
+					note: JSON.stringify({ ask: "now", question: { label: "Approval", type: "text" } }),
+				},
+			],
+		})
+
+		expect(harness.sendMessage).not.toHaveBeenCalled()
+
+		applyWriteTodos({
+			todos: [
+				{
+					id: 1,
+					content: "Get approval code",
+					status: "blocked",
+					note: JSON.stringify({ question: { label: "Approval", type: "text" } }),
+				},
+			],
+		})
+		await harness.fire("turn_end", terminalTurnWithText("Need input."), ctx)
+
+		expect(harness.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("does not auto-ask later-policy blocked todo questions", async () => {
+		const harness = createTodosHarness()
+		const ctx = createUiContext("session")
+		await harness.fire("session_start", { reason: "new" }, ctx)
+
+		applyWriteTodos({
+			todos: [
+				{
+					id: 1,
+					content: "Capture nice-to-have metric",
+					status: "blocked",
+					note: JSON.stringify({ ask: "later", question: { label: "Metric", type: "text" } }),
+				},
+			],
+		})
+		await harness.fire("turn_end", terminalTurnWithText("Done for now."), ctx)
+
+		expect(harness.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("does not route non-global blocked todo questions through questionnaire", async () => {
+		const harness = createTodosHarness()
+		const ctx = createUiContext("session")
+		registerActiveTodoScopeProvider(() => ({ kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" }))
+		await harness.fire("session_start", { reason: "new" }, ctx)
+
+		applyWriteTodos({
+			todos: [
+				{
+					id: 1,
+					content: "Ask ferment question",
+					status: "blocked",
+					note: JSON.stringify({ ask: "now", question: { label: "Ferment blocker", type: "text" } }),
+				},
+			],
+		})
+		await harness.fire("turn_end", terminalTurnWithText("Ferment is blocked."), ctx)
+
+		expect(harness.sendMessage).not.toHaveBeenCalledWith(
+			expect.objectContaining({ details: { reason: "blocked_todo_questions" } }),
+			expect.anything(),
+		)
+	})
+
+	it("does not queue blocker questions for blocked todos without question notes", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+		applyWriteTodos({ todos: [{ id: 1, content: "Get approval code", status: "blocked" }] })
+
+		await harness.fire("turn_end", terminalTurnWithText("Need input."), ctx)
+
 		expect(harness.sendMessage).not.toHaveBeenCalled()
 	})
 

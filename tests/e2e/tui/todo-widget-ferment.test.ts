@@ -1,11 +1,5 @@
 import { expect, test } from "@microsoft/tui-test"
-import {
-	INPUT_TIMEOUT_MS,
-	STARTUP_TIMEOUT_MS,
-	STREAM_TIMEOUT_MS,
-	viewText,
-	waitForText,
-} from "./support/assertions.js"
+import { INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, viewText, waitForText } from "./support/assertions.js"
 import { TUI_TEST_CONFIG, runKimchiSession } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -54,7 +48,10 @@ test("todo widget renders global scope with status symbols", async ({ terminal }
 			trace.step("todo items visible")
 
 			// Status symbols: ▶ for in_progress, ○ for pending.
-			const text = terminal.getViewableBuffer().map((r) => r.join("")).join("\n")
+			const text = terminal
+				.getViewableBuffer()
+				.map((r) => r.join(""))
+				.join("\n")
 			expect(text).toContain("▶")
 			expect(text).toContain("○")
 		},
@@ -99,9 +96,7 @@ test("todo tools are available during ferment execution", async ({ terminal }) =
 										{
 											name: "Implementation",
 											goal: "Call update_todos during the ferment.",
-											steps: [
-												{ description: "Write a todo list via update_todos.", verify: "true" },
-											],
+											steps: [{ description: "Write a todo list via update_todos.", verify: "true" }],
 										},
 									],
 									questions: [],
@@ -253,6 +248,93 @@ test("todo widget summary reflects mixed-status counts", async ({ terminal }) =>
 			await waitForText(terminal, "blocked item", { timeoutMs: INPUT_TIMEOUT_MS })
 			await waitForText(terminal, "done item", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("all items visible")
+		},
+	)
+})
+
+test("ask-now blocked todo opens questionnaire follow-up", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "todo-blocker-question-follow-up",
+			responses: [
+				{
+					stream: ["I'll", " track", " the", " blocker."],
+					toolCalls: [
+						{
+							function: {
+								name: "update_todos",
+								arguments: JSON.stringify({
+									todos: [
+										{
+											content: "Get approval code",
+											status: "blocked",
+											note: JSON.stringify({ ask: "now", question: { label: "Approval code", type: "text" } }),
+										},
+									],
+								}),
+							},
+						},
+					],
+				},
+				{
+					toolCalls: [
+						{
+							function: {
+								name: "questionnaire",
+								arguments: JSON.stringify({
+									header: "Blocked todos need your input",
+									questions: [
+										{
+											id: "todo_1",
+											label: "Approval code",
+											prompt: "Please provide: Get approval code",
+											type: "text",
+										},
+									],
+								}),
+							},
+						},
+					],
+				},
+				{
+					toolCalls: [
+						{
+							function: {
+								name: "update_todos",
+								arguments: JSON.stringify({
+									todos: [
+										{
+											id: 1,
+											content: "Get approval code",
+											status: "in_progress",
+											note: "APPROVED-123",
+										},
+									],
+								}),
+							},
+						},
+					],
+				},
+			],
+		},
+		async (_fixture, trace) => {
+			terminal.submit("Deploy needs approval")
+			trace.step("submitted prompt")
+
+			await waitForText(terminal, "Get approval code", { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("blocked todo visible")
+
+			await waitForText(terminal, "Please provide: Get approval code", { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("questionnaire opened from blocker follow-up")
+
+			terminal.write("APPROVED-123")
+			terminal.submit("")
+			trace.step("answered blocker questionnaire")
+
+			await waitForText(terminal, "▶ Get approval code", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			expect(viewText(terminal)).not.toContain("1 blocked")
+			trace.step("blocked todo updated after answer")
 		},
 	)
 })

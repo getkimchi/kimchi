@@ -56,6 +56,51 @@ describe("todo widget helpers", () => {
 		])
 	})
 
+	it("renders blocked todos in the regular list without the hand-hold panel", () => {
+		applyWriteTodos({
+			todos: [
+				{ content: "Deploy approval code", status: "blocked" },
+				{ content: "Production target", status: "blocked" },
+				{ content: "Rollback owner", status: "blocked" },
+				{ content: "Incident channel", status: "blocked" },
+			],
+		})
+
+		const lines = __test_buildTodoLines(theme)
+
+		expect(lines).not.toContain("Kimchi needs your input")
+		expect(lines).toContain("0/4 done · 4 active · 4 blocked")
+		expect(lines).toContain("  1.  ! Deploy approval code")
+		expect(lines).toContain("  2.  ! Production target")
+		expect(lines).toContain("  3.  ! Rollback owner")
+		expect(lines).toContain("  4.  ! Incident channel")
+	})
+
+	it("surfaces one blocked todo in the footer status", () => {
+		const setWidget = vi.fn()
+		const ctx = createUiContext("session", setWidget)
+		applyWriteTodos({ todos: [{ content: "needs answer", status: "blocked" }] })
+
+		syncTodoWidget(ctx)
+
+		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("todos", "1 blocked todo -> F7")
+	})
+
+	it("surfaces multiple blocked todos in the footer status", () => {
+		const setWidget = vi.fn()
+		const ctx = createUiContext("session", setWidget)
+		applyWriteTodos({
+			todos: [
+				{ content: "needs answer", status: "blocked" },
+				{ content: "needs approval", status: "blocked" },
+			],
+		})
+
+		syncTodoWidget(ctx)
+
+		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("todos", "2 blocked todos -> F7")
+	})
+
 	it("renders command positions instead of stored todo ids", () => {
 		applyWriteTodos({
 			todos: [
@@ -81,6 +126,19 @@ describe("todo widget helpers", () => {
 		const instance = component({ requestRender: vi.fn() }, theme)
 		expect(instance.render(80)).toContain("Todos · Global")
 		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("todos", "0/1 done · 1 active -> F7")
+	})
+
+	it("keeps Enter as collapse-only for non-blocked active todos", () => {
+		const setWidget = vi.fn()
+		const ctx = createUiContext("session", setWidget)
+		applyWriteTodos({ todos: [{ content: "pending", status: "pending" }] })
+		openTodoWidget(ctx)
+		const component = setWidget.mock.calls[0][1]
+		const instance = component({ requestRender: vi.fn() }, theme)
+
+		instance.handleInput("\r")
+
+		expect(instance.render(80)).toEqual([])
 	})
 
 	it("auto-hides when all todos are completed", () => {
