@@ -1,13 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
 import type { Ferment } from "../../ferment/types.js"
-import {
-	type AskUserOption,
-	askJudgeForm,
-	askUserForm,
-	normalizeAskUserQuestions,
-	toScopingQuestionType,
-} from "./ask-user.js"
+import { askJudgeForm, askUserForm, normalizeAskUserQuestions, toScopingQuestionType } from "./ask-user.js"
 
 function makeFerment(overrides: Partial<Ferment> = {}): Ferment {
 	return {
@@ -317,7 +311,7 @@ describe("askJudgeForm", () => {
 		])
 	})
 
-	it("rejects form judge responses with invalid non-custom options", async () => {
+	it("falls back to default when judge returns invalid non-custom options", async () => {
 		const apiCall = vi.fn(async () => ok('{"answers":[{"id":"approach","value":"made_up"}],"rationale":"bad"}'))
 		const result = await askJudgeForm(
 			"Clarify plan",
@@ -333,8 +327,437 @@ describe("askJudgeForm", () => {
 			makeFerment(),
 			apiCall,
 		)
-		expect(result.failed).toBe(true)
-		if (!result.failed) return
-		expect(result.reason).toBe("judge_unparseable")
+		expect(apiCall).toHaveBeenCalledTimes(3)
+		expect(result.failed).toBeFalsy()
+		if (result.failed) return
+		expect(result.answered_by).toBe("judge")
+		expect(result.answers?.[0]?.value).toBe("safe")
+	})
+
+	it("retries on empty_response and succeeds on the third attempt", async () => {
+		const apiCall = vi
+			.fn<() => Promise<{ ok: true; text: string } | { ok: false; reason: "empty_response" }>>()
+			.mockResolvedValueOnce({ ok: false, reason: "empty_response" })
+			.mockResolvedValueOnce({ ok: false, reason: "empty_response" })
+			.mockResolvedValueOnce({ ok: true, text: '{"answers":[{"id":"approach","value":"safe"}],"rationale":"ok"}' })
+		const result = await askJudgeForm(
+			undefined,
+			undefined,
+			[
+				{
+					id: "approach",
+					type: "single",
+					prompt: "Which approach?",
+					options: [{ id: "safe", label: "Safe path" }],
+				},
+			],
+			makeFerment(),
+			apiCall,
+		)
+		expect(apiCall).toHaveBeenCalledTimes(3)
+		expect(result.failed).toBeFalsy()
+		if (result.failed) return
+		expect(result.answers).toEqual([
+			{ id: "approach", type: "single", value: "safe", label: "Safe path", wasCustom: false },
+		])
+	})
+
+	it("retries on unparseable output and succeeds on the third attempt", async () => {
+		const apiCall = vi
+			.fn<() => Promise<{ ok: true; text: string }>>()
+			.mockResolvedValueOnce({ ok: true, text: "garbage no json at all" })
+			.mockResolvedValueOnce({ ok: true, text: "still not json" })
+			.mockResolvedValueOnce({ ok: true, text: '{"answers":[{"id":"approach","value":"safe"}],"rationale":"ok"}' })
+		const result = await askJudgeForm(
+			undefined,
+			undefined,
+			[
+				{
+					id: "approach",
+					type: "single",
+					prompt: "Which approach?",
+					options: [{ id: "safe", label: "Safe path" }],
+				},
+			],
+			makeFerment(),
+			apiCall,
+		)
+		expect(apiCall).toHaveBeenCalledTimes(3)
+		expect(result.failed).toBeFalsy()
+		if (result.failed) return
+		expect(result.answers).toEqual([
+			{ id: "approach", type: "single", value: "safe", label: "Safe path", wasCustom: false },
+		])
+	})
+
+	it("falls back to defaults after exhausting retries on persistent empty_response", async () => {
+		const apiCall = vi
+			.fn<() => Promise<{ ok: false; reason: "empty_response" }>>()
+			.mockResolvedValue({ ok: false, reason: "empty_response" })
+		const result = await askJudgeForm(
+			undefined,
+			undefined,
+			[
+				{
+					id: "approach",
+					type: "single",
+					prompt: "Which approach?",
+					options: [{ id: "safe", label: "Safe path" }],
+				},
+			],
+			makeFerment(),
+			apiCall,
+		)
+		expect(apiCall).toHaveBeenCalledTimes(3)
+		expect(result.failed).toBeFalsy()
+		if (result.failed) return
+		expect(result.answered_by).toBe("judge")
+		expect(result.rationale).toContain("unavailable")
+		expect(result.answers?.[0]?.value).toBe("safe")
+	})
+
+	it("falls back to defaults after exhausting retries on persistent unparseable output", async () => {
+		const apiCall = vi.fn<() => Promise<{ ok: true; text: string }>>().mockResolvedValue({ ok: true, text: "garbage" })
+		const result = await askJudgeForm(
+			undefined,
+			undefined,
+			[
+				{
+					id: "approach",
+					type: "single",
+					prompt: "Which approach?",
+					options: [{ id: "safe", label: "Safe path" }],
+				},
+			],
+			makeFerment(),
+			apiCall,
+		)
+		expect(apiCall).toHaveBeenCalledTimes(3)
+		expect(result.failed).toBeFalsy()
+		if (result.failed) return
+		expect(result.answered_by).toBe("judge")
+		expect(result.rationale).toContain("unavailable")
+	})
+
+	it("parses alternative judge format where answers are at the top level keyed by question id", async () => {
+		const apiCall = vi.fn(async () => ok('{"approach":"safe","note":"Keep it simple.","rationale":"less risky"}'))
+		const result = await askJudgeForm(
+			undefined,
+			undefined,
+			[
+				{
+					id: "approach",
+					type: "single",
+					prompt: "Which approach?",
+					options: [{ id: "safe", label: "Safe path" }],
+				},
+				{ id: "note", type: "text", prompt: "Any notes?" },
+			],
+			makeFerment(),
+			apiCall,
+		)
+		expect(result.failed).toBeFalsy()
+		if (result.failed) return
+		expect(result.answers).toEqual([
+			{ id: "approach", type: "single", value: "safe", label: "Safe path", wasCustom: false },
+			{ id: "note", type: "text", value: "Keep it simple.", label: "Keep it simple.", wasCustom: true },
+		])
+	})
+
+	it("skips an invalid answer for an optional question without failing the whole form", async () => {
+		const apiCall = vi.fn(async () =>
+			ok('{"answers":[{"id":"approach","value":"safe"},{"id":"scope","value":"not_in_list"}],"rationale":"ok"}'),
+		)
+		const result = await askJudgeForm(
+			undefined,
+			undefined,
+			[
+				{
+					id: "approach",
+					type: "single",
+					prompt: "Which approach?",
+					options: [{ id: "safe", label: "Safe path" }],
+				},
+				{
+					id: "scope",
+					type: "single",
+					prompt: "What scope?",
+					options: [{ id: "tests", label: "Tests" }],
+					required: false,
+				},
+			],
+			makeFerment(),
+			apiCall,
+		)
+		expect(result.failed).toBeFalsy()
+		if (result.failed) return
+		expect(result.answers).toEqual([
+			{ id: "approach", type: "single", value: "safe", label: "Safe path", wasCustom: false },
+		])
+	})
+
+	it("scales maxTokens with question count so multi-question forms are not truncated", async () => {
+		const apiCall = vi.fn(async () =>
+			ok(
+				'{"answers":[{"id":"q1","value":"a"},{"id":"q2","value":"b"},{"id":"q3","value":"c"},{"id":"q4","value":"d"},{"id":"q5","value":"e"}],"rationale":"ok"}',
+			),
+		)
+		const result = await askJudgeForm(
+			undefined,
+			undefined,
+			[
+				{ id: "q1", type: "single", prompt: "1?", options: [{ id: "a", label: "A" }] },
+				{ id: "q2", type: "single", prompt: "2?", options: [{ id: "b", label: "B" }] },
+				{ id: "q3", type: "single", prompt: "3?", options: [{ id: "c", label: "C" }] },
+				{ id: "q4", type: "single", prompt: "4?", options: [{ id: "d", label: "D" }] },
+				{ id: "q5", type: "single", prompt: "5?", options: [{ id: "e", label: "E" }] },
+			],
+			makeFerment(),
+			apiCall,
+		)
+		expect(apiCall).toHaveBeenCalledTimes(1)
+		const calls = apiCall.mock.calls as unknown as Array<[string, string, number | undefined]>
+		expect(calls.length).toBeGreaterThan(0)
+		const maxTokens = calls[0]?.[2]
+		expect(typeof maxTokens).toBe("number")
+		expect(maxTokens).toBeGreaterThan(500)
+		expect(maxTokens).toBeLessThanOrEqual(2000)
+		expect(result.failed).toBeFalsy()
+	})
+
+	it("falls back to defaults when judge is unavailable due to no_auth", async () => {
+		const apiCall = vi.fn(async () => ({ ok: false as const, reason: "no_auth" as const }))
+		const result = await askJudgeForm(
+			undefined,
+			undefined,
+			[
+				{
+					id: "approach",
+					type: "single",
+					prompt: "Which approach?",
+					options: [{ id: "safe", label: "Safe path" }],
+				},
+			],
+			makeFerment(),
+			apiCall,
+		)
+		expect(result.failed).toBeFalsy()
+		if (result.failed) return
+		expect(result.answered_by).toBe("judge")
+		expect(result.rationale).toContain("unavailable")
+	})
+
+	it("parses confirm questions where the judge answers yes", async () => {
+		const apiCall = vi.fn(async () => ok('{"answers":[{"id":"ok","value":"yes"}],"rationale":"proceed"}'))
+		const result = await askJudgeForm(
+			undefined,
+			undefined,
+			[
+				{
+					id: "ok",
+					type: "confirm",
+					prompt: "Proceed?",
+					options: [
+						{ id: "yes", label: "Yes" },
+						{ id: "no", label: "No" },
+					],
+				},
+			],
+			makeFerment(),
+			apiCall,
+		)
+		expect(result.failed).toBeFalsy()
+		if (result.failed) return
+		expect(result.answers).toEqual([{ id: "ok", type: "confirm", value: "yes", label: "Yes", wasCustom: false }])
+	})
+
+	it("parses multi answers supplied as a comma-separated string", async () => {
+		const apiCall = vi.fn(async () => ok('{"answers":[{"id":"scope","value":"a,b"}],"rationale":"ok"}'))
+		const result = await askJudgeForm(
+			undefined,
+			undefined,
+			[
+				{
+					id: "scope",
+					type: "multi",
+					prompt: "Pick?",
+					options: [
+						{ id: "a", label: "A" },
+						{ id: "b", label: "B" },
+					],
+				},
+			],
+			makeFerment(),
+			apiCall,
+		)
+		expect(result.failed).toBeFalsy()
+		if (result.failed) return
+		expect(result.answers?.[0]?.values).toEqual(["a", "b"])
+		expect(result.answers?.[0]?.labels).toEqual(["A", "B"])
+	})
+
+	it("parses multi answers supplied as a JSON array", async () => {
+		const apiCall = vi.fn(async () => ok('{"answers":[{"id":"scope","value":["a","b"]}],"rationale":"ok"}'))
+		const result = await askJudgeForm(
+			undefined,
+			undefined,
+			[
+				{
+					id: "scope",
+					type: "multi",
+					prompt: "Pick?",
+					options: [
+						{ id: "a", label: "A" },
+						{ id: "b", label: "B" },
+					],
+				},
+			],
+			makeFerment(),
+			apiCall,
+		)
+		expect(result.failed).toBeFalsy()
+		if (result.failed) return
+		expect(result.answers?.[0]?.values).toEqual(["a", "b"])
+		expect(result.answers?.[0]?.labels).toEqual(["A", "B"])
+	})
+
+	it("parses judge output wrapped in a markdown code fence", async () => {
+		const apiCall = vi.fn(async () =>
+			ok('```json\n{"answers":[{"id":"approach","value":"safe"}],"rationale":"ok"}\n```'),
+		)
+		const result = await askJudgeForm(
+			undefined,
+			undefined,
+			[
+				{
+					id: "approach",
+					type: "single",
+					prompt: "Which approach?",
+					options: [{ id: "safe", label: "Safe path" }],
+				},
+			],
+			makeFerment(),
+			apiCall,
+		)
+		expect(result.failed).toBeFalsy()
+		if (result.failed) return
+		expect(result.answers).toEqual([
+			{ id: "approach", type: "single", value: "safe", label: "Safe path", wasCustom: false },
+		])
+	})
+
+	it("parses judge output wrapped in prose via the regex fallback", async () => {
+		const apiCall = vi.fn(async () =>
+			ok('Here is my response:\n{"answers":[{"id":"approach","value":"safe"}],"rationale":"ok"}'),
+		)
+		const result = await askJudgeForm(
+			undefined,
+			undefined,
+			[
+				{
+					id: "approach",
+					type: "single",
+					prompt: "Which approach?",
+					options: [{ id: "safe", label: "Safe path" }],
+				},
+			],
+			makeFerment(),
+			apiCall,
+		)
+		expect(result.failed).toBeFalsy()
+		if (result.failed) return
+		expect(result.answers).toEqual([
+			{ id: "approach", type: "single", value: "safe", label: "Safe path", wasCustom: false },
+		])
+	})
+
+	it("falls back to default answers when judge is always unavailable", async () => {
+		const apiCall = vi.fn(async () => ({ ok: false as const, reason: "api_error" as const }))
+		const result = await askJudgeForm(
+			undefined,
+			undefined,
+			[
+				{
+					id: "q1",
+					type: "single",
+					prompt: "Pick?",
+					options: [
+						{ id: "a", label: "A" },
+						{ id: "b", label: "B" },
+					],
+				},
+			],
+			makeFerment(),
+			apiCall,
+		)
+		expect(result.failed).toBeFalsy()
+		if (result.failed) return
+		expect(result.answered_by).toBe("judge")
+		expect(result.rationale).toContain("unavailable")
+		expect(result.answers?.[0]?.value).toBe("a")
+	})
+
+	it("falls back to default answers when judge output is always unparseable", async () => {
+		const apiCall = vi.fn(async () => ({ ok: true as const, text: "garbage" }))
+		const result = await askJudgeForm(
+			undefined,
+			undefined,
+			[{ id: "q1", type: "single", prompt: "Pick?", options: [{ id: "a", label: "A" }] }],
+			makeFerment(),
+			apiCall,
+		)
+		expect(result.failed).toBeFalsy()
+		if (result.failed) return
+		expect(result.answers?.[0]?.value).toBe("a")
+	})
+
+	it("fallback confirm defaults to 'yes'", async () => {
+		const apiCall = vi.fn(async () => ({ ok: false as const, reason: "api_error" as const }))
+		const result = await askJudgeForm(
+			undefined,
+			undefined,
+			[
+				{
+					id: "ok",
+					type: "confirm",
+					prompt: "Proceed?",
+					options: [
+						{ id: "yes", label: "Yes" },
+						{ id: "no", label: "No" },
+					],
+				},
+			],
+			makeFerment(),
+			apiCall,
+		)
+		expect(result.failed).toBeFalsy()
+		if (result.failed) return
+		expect(result.answers?.[0]?.value).toBe("yes")
+		expect(result.answers?.[0]?.label).toBe("Yes")
+	})
+
+	it("fallback single defaults to first option", async () => {
+		const apiCall = vi.fn(async () => ({ ok: false as const, reason: "empty_response" as const }))
+		const result = await askJudgeForm(
+			undefined,
+			undefined,
+			[
+				{
+					id: "q",
+					type: "single",
+					prompt: "Pick?",
+					options: [
+						{ id: "first", label: "First" },
+						{ id: "second", label: "Second" },
+					],
+				},
+			],
+			makeFerment(),
+			apiCall,
+		)
+		expect(result.failed).toBeFalsy()
+		if (result.failed) return
+		expect(result.answers?.[0]?.value).toBe("first")
+		expect(result.answers?.[0]?.label).toBe("First")
 	})
 })

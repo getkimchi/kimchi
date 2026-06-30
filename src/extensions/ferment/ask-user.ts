@@ -218,6 +218,8 @@ export function normalizeAskUserQuestions(questions: ReadonlyArray<RawAskUserQue
 	return { ok: true, questions: normalized }
 }
 
+const ASK_USER_FORM_MAX_ATTEMPTS = 3
+
 const ASK_USER_FORM_SYSTEM = `You are standing in for the user during an autonomous ferment run. A planner agent has reached decision points it cannot resolve from context alone and is asking a structured form. There is no human available — you decide.
 
 Your bias:
@@ -232,7 +234,11 @@ For single questions, "value" MUST be one provided option id unless allowOther i
 For confirm questions, "value" MUST be "yes" or "no".
 For multi questions, "value" MUST be an array of one or more provided option ids unless allowOther is true.
 For text questions, "value" MUST be a concise directly usable string.
-Optional questions may be omitted. Required questions must be answered.`
+Optional questions may be omitted. Required questions must be answered.
+
+Example:
+Questions: [{"id":"approach","type":"single","prompt":"Which approach?","options":[{"id":"safe","label":"Safe path"},{"id":"fast","label":"Fast path"}]},{"id":"note","type":"text","prompt":"Any notes?"}]
+Correct response: {"answers":[{"id":"approach","value":"safe"},{"id":"note","value":"Keep it reversible."}],"rationale":"Safe path is more reversible."}`
 
 function buildAskJudgeFormUserMsg(
 	title: string | undefined,
@@ -377,17 +383,70 @@ function answerFromValue(q: AskUserQuestion, rawValue: unknown): AskUserAnswer |
 	}
 }
 
+/** Choose a reasonable default answer for a question when the judge is
+ *  completely unavailable. The defaults allow the ferment to proceed —
+ *  confirm → "yes", single → first listed option (presumed highest priority),
+ *  multi → first listed option, text → a placeholder so the form can still be
+ *  consumed. */
+function defaultAnswerForQuestion(q: AskUserQuestion): AskUserAnswer {
+	if (q.type === "confirm") {
+		// Default to "yes" — let the ferment proceed rather than stall.
+		const yesOption = q.options?.find((o) => o.id === "yes")
+		return { id: q.id, type: "confirm", value: "yes", label: yesOption?.label ?? "Yes", wasCustom: false }
+	}
+	if (q.type === "single" && q.options && q.options.length > 0) {
+		// Default to the first option (the agent presumably listed them in priority order).
+		const first = q.options[0]
+		return { id: q.id, type: "single", value: first.id, label: first.label, wasCustom: false }
+	}
+	if (q.type === "multi" && q.options && q.options.length > 0) {
+		// Default to the first option only.
+		const first = q.options[0]
+		return {
+			id: q.id,
+			type: "multi",
+			value: first.id,
+			label: first.label,
+			wasCustom: false,
+			values: [first.id],
+			labels: [first.label],
+		}
+	}
+	// For text questions (or malformed single/multi with no options), default
+	// to an empty-but-valid answer.
+	return {
+		id: q.id,
+		type: "text",
+		value: "(no answer — judge was unavailable)",
+		label: "(no answer)",
+		wasCustom: true,
+	}
+}
+
 function parseJudgeFormAnswer(
 	text: string,
 	questions: ReadonlyArray<AskUserQuestion>,
 ): Pick<AskUserSuccess, "answers" | "rationale"> | undefined {
 	const parsed = parseJudgeJson(text)
 	if (!parsed || typeof parsed !== "object") return undefined
-	const obj = parsed as { answers?: unknown; rationale?: unknown }
-	if (!Array.isArray(obj.answers)) return undefined
+	const obj = parsed as { answers?: unknown; rationale?: unknown; [key: string]: unknown }
 	const rationale = typeof obj.rationale === "string" ? obj.rationale : "(no rationale provided)"
+
+	let rawAnswers: unknown[]
+	if (Array.isArray(obj.answers)) {
+		rawAnswers = obj.answers
+	} else {
+		// Alternative format: question-id keys directly on the top-level object,
+		// e.g. {"approach":"safe","note":"Keep it simple."}. Accept it when at
+		// least one key matches a known question id.
+		const questionIds = new Set(questions.map((q) => q.id))
+		const matchedKeys = Object.keys(obj).filter((k) => k !== "rationale" && questionIds.has(k))
+		if (matchedKeys.length === 0) return undefined
+		rawAnswers = matchedKeys.map((id) => ({ id, value: obj[id] }))
+	}
+
 	const byId = new Map<string, unknown>()
-	for (const rawAnswer of obj.answers) {
+	for (const rawAnswer of rawAnswers) {
 		if (!rawAnswer || typeof rawAnswer !== "object") return undefined
 		const answer = rawAnswer as { id?: unknown; value?: unknown }
 		if (typeof answer.id !== "string") return undefined
@@ -441,23 +500,34 @@ export async function askJudgeForm(
 		return { failed: true, reason: "invalid_choice", detail: validationError }
 	}
 	const userMsg = buildAskJudgeFormUserMsg(title, description, questions, ferment)
-	const result = await apiCall(ASK_USER_FORM_SYSTEM, userMsg, 500)
-	if (!result.ok) {
-		return {
-			failed: true,
-			reason: "judge_unavailable",
-			detail: `Judge unreachable (${result.reason}${result.detail ? `: ${result.detail}` : ""}).`,
+	const maxTokens = Math.min(2000, Math.max(500, questions.length * 200 + 200))
+
+	for (let attempt = 1; attempt <= ASK_USER_FORM_MAX_ATTEMPTS; attempt++) {
+		const systemPrompt =
+			attempt > 1
+				? `${ASK_USER_FORM_SYSTEM}\n\nWARNING: Your previous response was not valid or did not match the expected schema. Return ONLY a JSON object: {"answers":[{"id":"<question_id>","value":"<answer>"}],"rationale":"..."}. No markdown, no prose.`
+				: ASK_USER_FORM_SYSTEM
+		const result = await apiCall(systemPrompt, userMsg, maxTokens)
+		if (!result.ok) {
+			continue
 		}
-	}
-	const parsed = parseJudgeFormAnswer(result.text, questions)
-	if (!parsed) {
-		return {
-			failed: true,
-			reason: "judge_unparseable",
-			detail: `Judge returned unparseable output: ${result.text.slice(0, 200)}`,
+		const parsed = parseJudgeFormAnswer(result.text, questions)
+		if (!parsed) {
+			continue
 		}
+		return { ...parsed, response_type: "form", answered_by: "judge" }
 	}
-	return { ...parsed, response_type: "form", answered_by: "judge" }
+
+	// Fallback: if the judge completely fails after all retries, choose reasonable
+	// defaults rather than abandoning the ferment. This prevents transient judge
+	// failures from killing a ferment run.
+	const fallbackAnswers = questions.map((q) => defaultAnswerForQuestion(q))
+	return {
+		response_type: "form",
+		answers: fallbackAnswers,
+		answered_by: "judge",
+		rationale: `Judge was unavailable after ${ASK_USER_FORM_MAX_ATTEMPTS} attempts; using conservative defaults.`,
+	}
 }
 
 export async function askUserForm(
