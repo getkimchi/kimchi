@@ -24,6 +24,7 @@ test("branch creates a named resumable session for -r", async ({ terminal }) => 
 
 		const branchName = "parser spike"
 		terminal.submit(`/branch ${branchName}`)
+		await waitForText(terminal, "[kimchi-session-branch]")
 		await waitForText(terminal, /You can resume a branch of this session with -r [0-9a-f-]{36}/)
 
 		const match = fullText(terminal).match(/You can resume a branch of this session with -r ([0-9a-f-]{36})/)

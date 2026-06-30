@@ -1,6 +1,10 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
-import branchCommandExtension, { branchSessionName } from "./branch-command.js"
+import branchCommandExtension, {
+	BRANCH_RESUME_CUSTOM_TYPE,
+	branchResumeMessage,
+	branchSessionName,
+} from "./branch-command.js"
 
 type BranchCommand = {
 	handler: (args: string, ctx: ExtensionCommandContext) => Promise<void>
@@ -12,6 +16,7 @@ function makePi(): { api: ExtensionAPI; command: () => BranchCommand } {
 		registerCommand: vi.fn((_name: string, config: BranchCommand) => {
 			command = config
 		}),
+		registerMessageRenderer: vi.fn(),
 	} as unknown as ExtensionAPI
 	return {
 		api,
@@ -65,12 +70,17 @@ describe("branchCommandExtension", () => {
 
 		expect(ctx.fork).toHaveBeenCalledWith("leaf-1", expect.objectContaining({ position: "at" }))
 		expect(branchCtx.sessionManager.appendSessionInfo).toHaveBeenCalledWith("Branch abcdef12: hello")
-		expect(branchCtx.ui.notify).toHaveBeenCalledWith(
-			"You can resume a branch of this session with -r abcdef12-3456-7890-abcd-ef1234567890",
-			"info",
+		expect(branchCtx.sendMessage).toHaveBeenCalledWith(
+			{
+				customType: BRANCH_RESUME_CUSTOM_TYPE,
+				content: "",
+				display: true,
+				details: { message: "You can resume a branch of this session with -r abcdef12-3456-7890-abcd-ef1234567890" },
+			},
+			{ triggerTurn: false },
 		)
+		expect(branchCtx.ui.notify).not.toHaveBeenCalled()
 		expect(ctx.ui.notify).not.toHaveBeenCalled()
-		expect(branchCtx.sendMessage).not.toHaveBeenCalled()
 	})
 
 	it("uses command args as the branch name", async () => {
@@ -100,12 +110,21 @@ describe("branchCommandExtension", () => {
 		await command().handler("parser spike", ctx)
 
 		expect(branchCtx.sessionManager.appendSessionInfo).toHaveBeenCalledWith("parser spike")
-		expect(branchCtx.ui.notify).toHaveBeenCalledWith(
-			"You can resume a branch of this session with -r abcdef12-3456-7890-abcd-ef1234567890",
-			"info",
+		expect(branchCtx.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				content: "",
+				details: { message: "You can resume a branch of this session with -r abcdef12-3456-7890-abcd-ef1234567890" },
+			}),
+			{ triggerTurn: false },
 		)
+		expect(branchCtx.ui.notify).not.toHaveBeenCalled()
 		expect(ctx.ui.notify).not.toHaveBeenCalled()
-		expect(branchCtx.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("formats the branch resume message", () => {
+		expect(branchResumeMessage("abcdef12-3456-7890-abcd-ef1234567890")).toBe(
+			"You can resume a branch of this session with -r abcdef12-3456-7890-abcd-ef1234567890",
+		)
 	})
 
 	it("notifies when the forked session id is missing", async () => {

@@ -1,6 +1,27 @@
-import type { ExtensionAPI, ExtensionContext, SessionManager } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext, MessageRenderer, SessionManager } from "@earendil-works/pi-coding-agent"
+import { Box, Spacer, Text } from "@earendil-works/pi-tui"
 
 type WritableSessionManager = Pick<SessionManager, "appendSessionInfo">
+export const BRANCH_RESUME_CUSTOM_TYPE = "kimchi-session-branch"
+
+interface BranchResumeDetails {
+	message: string
+}
+
+export function branchResumeMessage(sessionId: string): string {
+	return `You can resume a branch of this session with -r ${sessionId}`
+}
+
+const branchResumeRenderer: MessageRenderer<BranchResumeDetails> = (message, _options, theme) => {
+	const details = message.details as BranchResumeDetails | undefined
+	if (!details?.message) return undefined
+
+	const box = new Box(1, 1, (text) => theme.fg("accent", text))
+	box.addChild(new Text(theme.bold(theme.fg("customMessageLabel", `[${BRANCH_RESUME_CUSTOM_TYPE}]`)), 0, 0))
+	box.addChild(new Spacer(1))
+	box.addChild(new Text(theme.fg("customMessageText", details.message), 0, 0))
+	return box
+}
 
 export function branchSessionName(sessionId: string, parentName: string | undefined, requestedName?: string): string {
 	const explicitName = requestedName?.trim()
@@ -27,6 +48,8 @@ function appendBranchName(ctx: { sessionManager: unknown; ui: ExtensionContext["
 }
 
 export default function branchCommandExtension(pi: ExtensionAPI): void {
+	pi.registerMessageRenderer(BRANCH_RESUME_CUSTOM_TYPE, branchResumeRenderer)
+
 	pi.registerCommand("branch", {
 		description: "Branch the current session and print a resume command",
 		handler: async (args, ctx) => {
@@ -40,7 +63,6 @@ export default function branchCommandExtension(pi: ExtensionAPI): void {
 
 			const parentName = ctx.sessionManager.getSessionName()
 			const requestedName = args.trim()
-			let notifyResume: (() => void) | undefined
 			const result = await ctx.fork(leafId, {
 				position: "at",
 				withSession: async (branchCtx) => {
@@ -50,13 +72,18 @@ export default function branchCommandExtension(pi: ExtensionAPI): void {
 						return
 					}
 					if (!appendBranchName(branchCtx, branchSessionName(sessionId, parentName, requestedName))) return
-					notifyResume = () => {
-						branchCtx.ui.notify(`You can resume a branch of this session with -r ${sessionId}`, "info")
-					}
+					await branchCtx.sendMessage<BranchResumeDetails>(
+						{
+							customType: BRANCH_RESUME_CUSTOM_TYPE,
+							content: "",
+							display: true,
+							details: { message: branchResumeMessage(sessionId) },
+						},
+						{ triggerTurn: false },
+					)
 				},
 			})
 			if (result.cancelled) return
-			notifyResume?.()
 		},
 	})
 }
