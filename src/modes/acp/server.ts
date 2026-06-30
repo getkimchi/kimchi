@@ -617,6 +617,7 @@ export class KimchiAcpAgent implements Agent {
 						update: {
 							sessionUpdate: "agent_message_chunk",
 							content: { type: "text", text: ame.delta },
+							messageId: `kimchi_msg_${ame.contentIndex}`,
 						},
 					})
 				} else if (ame.type === "thinking_delta" && ame.delta) {
@@ -625,6 +626,7 @@ export class KimchiAcpAgent implements Agent {
 						update: {
 							sessionUpdate: "agent_thought_chunk",
 							content: { type: "text", text: ame.delta },
+							messageId: `kimchi_msg_${ame.contentIndex}`,
 						},
 					})
 				}
