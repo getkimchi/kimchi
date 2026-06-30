@@ -77,23 +77,6 @@ describe("resolveOrchestrationInstructions", () => {
 		expect(result).toContain("#### Research phase")
 	})
 
-	it("transfers phase guideline content into Step 3", () => {
-		const result = resolveAsString({
-			currentModelId: "kimi-k2.6",
-			registry,
-			roles: DEFAULT_MODEL_ROLES,
-		})
-		// Explore guidelines
-		expect(result).toContain("Skip explore for greenfield projects")
-		expect(result).toContain("Hypothesis testing")
-		// Research guidelines
-		expect(result).toContain("Do not rely on training memory")
-		expect(result).toContain("Graceful degradation")
-		// Plan guidelines
-		expect(result).toContain("Design BEFORE coding")
-		expect(result).toContain("Decision Log")
-	})
-
 	it("exempts Explore from markdown artifact handoff rules", () => {
 		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",

@@ -268,6 +268,7 @@ describe("buildSystemPrompt", () => {
 				mode: "orchestrator",
 			})
 			expect(result).not.toContain("## Phase Guidelines (build)")
+			expect(result).toContain("## Working Guidelines")
 		})
 
 		it("includes orchestration guidelines when model is provided", () => {
@@ -282,7 +283,7 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain("MiniMax M2 family")
 		})
 
-		it("includes orchestration guidelines but not phase guidelines in orchestrator mode", () => {
+		it("includes orchestration and working guidelines but not phase guidelines in orchestrator mode", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
@@ -292,6 +293,7 @@ describe("buildSystemPrompt", () => {
 				mode: "orchestrator",
 			})
 			expect(result).not.toContain("## Phase Guidelines (build)")
+			expect(result).toContain("## Working Guidelines")
 			expect(result).toContain("### Orchestration Guidelines")
 		})
 	})
@@ -340,7 +342,7 @@ describe("buildSystemPrompt", () => {
 			expect(result).not.toContain("Model selection for delegation")
 		})
 
-		it("includes phase guidelines when phase and model are provided", () => {
+		it("includes working guidelines instead of phase guidelines", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
@@ -349,8 +351,9 @@ describe("buildSystemPrompt", () => {
 				registry,
 				mode: "subagent",
 			})
-			expect(result).toContain("## Phase Guidelines (build)")
-			expect(result).toContain("Outline-then-diff")
+			expect(result).not.toContain("## Phase Guidelines (build)")
+			expect(result).toContain("## Working Guidelines")
+			expect(result).toContain("Understand before acting")
 		})
 
 		it("handles tools list with only delegation tools", () => {
@@ -466,7 +469,7 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain('<tool name="Agent">')
 		})
 
-		it("includes phase guidelines when phase and model are provided", () => {
+		it("includes working guidelines instead of phase guidelines", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
@@ -475,54 +478,9 @@ describe("buildSystemPrompt", () => {
 				registry,
 				mode: "single",
 			})
-			expect(result).toContain("## Phase Guidelines (build)")
-			expect(result).toContain("Outline-then-diff")
-		})
-
-		it("includes default research nudges for a non-OSS model in research phase", () => {
-			const result = buildSystemPrompt({
-				tools,
-				env: testEnv,
-				currentModelId: "claude-opus-4-6-20250514",
-				currentPhase: "research",
-				registry,
-				mode: "single",
-			})
-			expect(result).toContain("## Phase Guidelines (research)")
-			expect(result).toContain("version you are assuming")
-			expect(result).toContain("version/API assumption")
-			expect(result).toContain("do not bluff")
-			expect(result).toContain("Do not rely on training memory")
-			expect(result).not.toContain("AT MOST one")
-		})
-
-		it("includes default and family research nudges for an OSS model in research phase", () => {
-			const result = buildSystemPrompt({
-				tools,
-				env: testEnv,
-				currentModelId: "minimax-m3",
-				currentPhase: "research",
-				registry,
-				mode: "single",
-			})
-			expect(result).toContain("## Phase Guidelines (research)")
-			expect(result).toContain("MiniMax family")
-			expect(result).toContain("hallucinating APIs")
-			expect(result).toContain("version you are assuming")
-		})
-
-		it("includes build-phase research nudge for an OSS model in build phase", () => {
-			const result = buildSystemPrompt({
-				tools,
-				env: testEnv,
-				currentModelId: "minimax-m3",
-				currentPhase: "build",
-				registry,
-				mode: "single",
-			})
-			expect(result).toContain("## Phase Guidelines (build)")
-			expect(result).toContain("uncertain about a library API")
-			expect(result).toContain("assume your knowledge may be stale")
+			expect(result).not.toContain("## Phase Guidelines (build)")
+			expect(result).toContain("## Working Guidelines")
+			expect(result).toContain("Understand before acting")
 		})
 	})
 })

@@ -243,18 +243,6 @@ function buildPlanPhaseDirectives(ctx: PhaseDirectiveContext): string {
 	}
 
 	lines.push("")
-	lines.push("Planning process guidelines:")
-	lines.push("- Design BEFORE coding: file paths, interfaces, function signatures, data flow.")
-	lines.push(
-		"- Use the standard plan structure: Goal, Constraints, Chunks (with Files Changed, Depends On, Accept When, Test Coverage, Open Questions), Verification Strategy, Decision Log, Risks.",
-	)
-	lines.push("- Every chunk must list concrete file paths in Files Changed — not globs, not vague descriptions.")
-	lines.push("- Identify test files that need creation or update in each chunk's Test Coverage field.")
-	lines.push(
-		"- Call out non-obvious decisions and the alternatives you rejected in the Decision Log. Any library, runtime, or build-tool version assumption must either be verified with `web_search`/`web_fetch` or recorded as an explicit assumption in the Decision Log with a request for user confirmation.",
-	)
-	lines.push("- Keep the spec focused. Interfaces and file paths beat prose. Long plans waste downstream tokens.")
-	lines.push("")
 	lines.push(PLAN_SPEC_REQUIREMENTS)
 	lines.push("")
 	lines.push(PLAN_VERIFICATION)
@@ -337,29 +325,6 @@ function buildExplorePhaseDirectives(ctx: PhaseDirectiveContext): string {
 		"- DO ask Explore agents to return decision-ready findings directly in the Agent result. Do NOT ask Explore agents to write Markdown files, reports, docs, notes, or scratch files.",
 	)
 
-	lines.push("")
-	lines.push("Operational guidelines for exploration (applies whether you explore yourself or brief an agent):")
-	lines.push("- Goal: build a mental map, not a solution. Do NOT modify files. Do NOT write a plan yet.")
-	lines.push(
-		"- **Skip explore for greenfield projects** (empty directory, no existing code). There is nothing to explore — proceed directly to plan. A trivial 1-turn explore that only runs `ls` on an empty directory wastes a turn and adds no value.",
-	)
-	lines.push("- Start broad with `grep`/`find`/`ls`; then `read` the 3–5 most relevant files in full.")
-	lines.push(
-		"- Trace imports and call chains across module boundaries — note the actual entry points and seams, not every file you saw.",
-	)
-	lines.push(
-		'- If you encounter an unfamiliar library, tool, file format, or config schema — or a familiar one whose version or current practice you are assuming (language runtime version, build-tool default, framework convention) — run ONE targeted `web_search` (or switch to `research` phase) before forming a hypothesis. "I know this" is not the same as "this is current"; stale version assumptions are as dangerous as unknown ones.',
-	)
-	lines.push(
-		"- When the task names a specific library, framework, build tool, vendor kit, or protocol you will rely on, run ONE targeted `web_search` to confirm the version, install steps, or protocol details before you act. Treat named third-party dependencies as suspect until confirmed, even if they feel familiar.",
-	)
-	lines.push("- Batch independent reads in a single turn to minimise round-trips.")
-	lines.push(
-		"- **Hypothesis testing**: After 5 consecutive read-only turns without a concrete hypothesis, state your hypothesis and run ONE targeted command to test it. Exploration without a hypothesis wastes tokens.",
-	)
-	lines.push("- Stop as soon as you have enough context to plan. Over-exploring wastes tokens.")
-	lines.push("- Output: a tight summary (paths, key types, integration points) — what matters, not everything you saw.")
-
 	return lines.join("\n")
 }
 
@@ -383,24 +348,6 @@ function buildResearchPhaseDirectives(ctx: PhaseDirectiveContext): string {
 		lines.push("- DO NOT perform deep research yourself. You do not have the researcher role.")
 		lines.push(`- DO delegate deep research to Agent(type: "Researcher", model: ${models}).`)
 	}
-
-	lines.push("")
-	lines.push("Operational guidelines for research:")
-	lines.push(
-		'- Use `web_search` when your knowledge might be stale. Triggers: a library/framework version you are assuming but have not verified; an API you are not 100% sure exists in the version in use; an error message or behaviour you do not recognise; a "best practice" claim that may be more than ~18 months old; breaking changes, deprecations, or new runtime/build-tool defaults.',
-	)
-	lines.push(
-		"- Do not rely on training memory for the specifics of named libraries, kits, or old framework versions. If the task names a version, vendor, or exact product, verify it before you use it.",
-	)
-	lines.push(
-		"- Prefer `web_search` over delegating a simple lookup. Prefer primary sources (official docs, GitHub READMEs, RFCs). Then use `web_fetch` on the primary source to confirm details, especially for official docs, changelogs, migration guides, or GitHub source files.",
-	)
-	lines.push(
-		"- If research output is non-trivial (more than one fact), save a short markdown note to the Documents directory and reference it from the next phase.",
-	)
-	lines.push(
-		"- Graceful degradation: if `web_search` and `web_fetch` are not available in your tool list, do not bluff. State the version/API assumption you are relying on explicitly and ask the user to confirm it before continuing.",
-	)
 
 	return lines.join("\n")
 }
