@@ -822,13 +822,13 @@ describe("FermentEventStore", () => {
 			clearFermentCache()
 		})
 
-		it("removes dedicated worktree and branch on complete when enabled", () => {
+		it("preserves dedicated worktree and branch on complete when enabled", () => {
 			enableWorktree(repoRoot, true)
 			const fermentsDir = join(repoRoot, ".kimchi", "ferments")
 			mkdirSync(fermentsDir, { recursive: true })
 			const store = new FermentEventStore(fermentsDir)
 
-			const ferment = store.create("Cleanup complete")
+			const ferment = store.create("Preserve complete")
 			const shortId = ferment.id.slice(0, 8)
 			const { path, branch } = createFermentWorktree(repoRoot, shortId)
 			store.updateWorktree(ferment.id, { path, branch })
@@ -848,8 +848,8 @@ describe("FermentEventStore", () => {
 			exec(store, ferment.id, { type: "complete_ferment" })
 
 			expect(store.get(ferment.id)?.status).toBe("complete")
-			expect(worktreeList(repoRoot)).not.toContain(path)
-			expect(branchList(repoRoot)).not.toContain(branch)
+			expect(worktreeList(repoRoot)).toContain(path)
+			expect(branchList(repoRoot)).toContain(branch)
 		})
 
 		it("removes dedicated worktree and branch on abandon when enabled", () => {

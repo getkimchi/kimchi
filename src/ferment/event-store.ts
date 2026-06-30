@@ -414,12 +414,12 @@ export class FermentEventStore {
 	}
 
 	/**
-	 * Best-effort cleanup of a dedicated git worktree when a ferment reaches a
-	 * terminal state and worktree isolation is enabled. Skips legacy ferments
-	 * (no branch), non-dedicated worktrees, and failures are logged and swallowed.
+	 * Best-effort cleanup of a dedicated git worktree when a ferment is abandoned
+	 * and worktree isolation is enabled. Skips legacy ferments (no branch),
+	 * non-dedicated worktrees, and failures are logged and swallowed.
 	 */
 	private maybeCleanupFermentWorktree(ferment: Ferment): void {
-		if (ferment.status !== "complete" && ferment.status !== "abandoned") return
+		if (ferment.status !== "abandoned") return
 		const repoRoot = detectProjectRoot(this.dir ?? process.cwd())
 		const shortId = ferment.id.slice(0, 8)
 		const expectedPath = resolve(repoRoot, ".worktrees", `ferment-${shortId}`)
