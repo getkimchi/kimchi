@@ -58,6 +58,7 @@ import modelGuardExtension from "./extensions/model-guard.js"
 import modelSwitchExtension from "./extensions/model-switch.js"
 import { createSessionModeOnboardingForStartup } from "./extensions/onboarding/session-mode-startup.js"
 import { applyRoleAugmentation } from "./extensions/orchestration/model-roles.js"
+import orphanToolResultSanitizerExtension from "./extensions/orphan-tool-result-sanitizer.js"
 import permissionsExtension from "./extensions/permissions/index.js"
 import { writeKimchiKeybindingDefaults } from "./extensions/permissions/keybindings.js"
 import { installPiNativeCompatibilityShim } from "./extensions/pi-package-lookup/native-compat.js"
@@ -69,6 +70,7 @@ import reportBugExtension from "./extensions/report-bug.js"
 import reviewWriteGuardExtension from "./extensions/review-write-guard.js"
 import rtkRewriteExtension from "./extensions/rtk-rewrite.js"
 import sessionNameExtension from "./extensions/session-name.js"
+import orphanToolResultRepairExtension from "./extensions/session-repair/orphan-tool-result-repair.js"
 import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
@@ -537,6 +539,8 @@ try {
 			] satisfies ManagedExtensionFactory[]),
 			modelSwitchExtension,
 			modelGuardExtension,
+			orphanToolResultRepairExtension,
+			orphanToolResultSanitizerExtension,
 			stripImagesExtension,
 			traceIdExtension,
 			llmResponseLogExtension,
