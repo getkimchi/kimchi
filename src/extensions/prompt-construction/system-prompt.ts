@@ -81,7 +81,11 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 		customConfigs: options.customConfigs,
 	})
 
-	const phaseSection = buildPhaseGuidelinesSection(currentModelId, currentPhase, registry)
+	// Phase-guideline block is only rendered for subagent/single modes. Orchestrator mode
+	// already has phase-specific DOs/DONTs inside Step 3 of the orchestration instructions,
+	// so a separate Phase Guidelines section would be redundant there.
+	const phaseSection =
+		mode === "orchestrator" ? "" : buildPhaseGuidelinesSection(currentModelId, currentPhase, registry)
 	const blocks = sessionId ? renderSystemPromptBlocks(sessionId, { mode }) : []
 	const suppressed = new Set<SuppressibleSection>()
 	for (const block of blocks) {

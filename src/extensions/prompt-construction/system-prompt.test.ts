@@ -258,7 +258,7 @@ describe("buildSystemPrompt", () => {
 			expect(envPos).toBeLessThan(contextPos)
 		})
 
-		it("includes phase guidelines when phase is provided", () => {
+		it("does not include phase guidelines in orchestrator mode", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
@@ -267,7 +267,7 @@ describe("buildSystemPrompt", () => {
 				registry,
 				mode: "orchestrator",
 			})
-			expect(result).toContain("## Phase Guidelines (build)")
+			expect(result).not.toContain("## Phase Guidelines (build)")
 		})
 
 		it("includes orchestration guidelines when model is provided", () => {
@@ -282,7 +282,7 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain("MiniMax M2 family")
 		})
 
-		it("includes both phase guidelines and orchestration guidelines in orchestrator mode", () => {
+		it("includes orchestration guidelines but not phase guidelines in orchestrator mode", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
@@ -291,7 +291,7 @@ describe("buildSystemPrompt", () => {
 				registry,
 				mode: "orchestrator",
 			})
-			expect(result).toContain("## Phase Guidelines (build)")
+			expect(result).not.toContain("## Phase Guidelines (build)")
 			expect(result).toContain("### Orchestration Guidelines")
 		})
 	})
