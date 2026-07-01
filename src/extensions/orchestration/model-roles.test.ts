@@ -211,8 +211,8 @@ describe("modelIdFromRef", () => {
 })
 
 describe("DEFAULT_MODEL_ROLES", () => {
-	it("orchestrator is kimi-k2.7", () => {
-		expect(DEFAULT_MODEL_ROLES.orchestrator).toBe("kimchi-dev/kimi-k2.7")
+	it("orchestrator is minimax-m3", () => {
+		expect(DEFAULT_MODEL_ROLES.orchestrator).toBe("kimchi-dev/minimax-m3")
 	})
 
 	it("builder pool contains the build role but not nemotron", () => {
@@ -237,9 +237,16 @@ describe("DEFAULT_MODEL_ROLES", () => {
 		expect(planners).toContain("kimchi-dev/kimi-k2.7")
 	})
 
-	it("judge defaults to orchestrator model", () => {
+	it("judge stays on kimi-k2.7 even after the orchestrator default changes", () => {
+		// Judge was previously the same as the orchestrator default
+		// ("kimchi-dev/kimi-k2.7"). After the orchestrator default moved to
+		// minimax-m3, judge is intentionally left on kimi-k2.7 so the
+		// evaluator stays on a different model than the model being
+		// evaluated. If judge should follow orchestrator again, set it via
+		// `modelRoles.judge` in harness settings or update this default.
 		const judges = normalizeRoleModels(DEFAULT_MODEL_ROLES.judge)
-		expect(judges).toContain(DEFAULT_MODEL_ROLES.orchestrator)
+		expect(judges).toContain("kimchi-dev/kimi-k2.7")
+		expect(judges).not.toContain(DEFAULT_MODEL_ROLES.orchestrator)
 	})
 
 	it("all defaults contain a provider prefix", () => {

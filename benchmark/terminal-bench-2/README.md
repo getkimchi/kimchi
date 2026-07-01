@@ -188,7 +188,7 @@ To run kimchi's multi-model orchestrator, opt into the adapter-level kwarg. In t
 ./scripts/run-local.sh -n 8 -k 3 --agent-kwarg multi-model=true
 ```
 
-With no custom role config in the task container, the orchestrator model defaults to `kimchi-dev/kimi-k2.6`. The adapter writes `{"multiModel":true}` to the in-container harness settings before launching kimchi so orchestration is enabled even in a fresh benchmark image.
+With no custom role config in the task container, the orchestrator model defaults to `kimchi-dev/minimax-m3`. The adapter writes `{"multiModel":true}` to the in-container harness settings before launching kimchi so orchestration is enabled even in a fresh benchmark image.
 
 ### One-shot ferment per task
 
