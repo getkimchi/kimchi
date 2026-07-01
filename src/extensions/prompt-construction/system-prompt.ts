@@ -12,6 +12,7 @@ import type { ModelCustomMetadata } from "../orchestration/model-metadata.js"
 
 import type { ModelRegistry } from "../orchestration/model-registry/index.js"
 
+import { buildExecutionGuidelinesSection } from "../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import type { ModelRoles } from "../orchestration/model-roles.js"
 import { resolveOrchestrationInstructions } from "../orchestration/orchestration-instructions.js"
 import type { OrchestrationInstructionsResult } from "../orchestration/orchestration-instructions.js"
@@ -80,6 +81,9 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 		customConfigs: options.customConfigs,
 	})
 
+	const executionGuidelinesSection =
+		mode === "orchestrator" || mode === "single" ? buildExecutionGuidelinesSection(currentModelId, registry) : ""
+
 	const blocks = sessionId ? renderSystemPromptBlocks(sessionId, { mode }) : []
 	const suppressed = new Set<SuppressibleSection>()
 	for (const block of blocks) {
@@ -94,6 +98,7 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 		projectContext,
 		skillsSection,
 		orchestrationSection,
+		executionGuidelinesSection,
 		systemPromptBlocks: blocks.map((block) => block.content).join("\n\n"),
 		suppressed,
 	})
@@ -111,6 +116,7 @@ interface PromptParts {
 	projectContext: string
 	skillsSection: string
 	orchestrationSection: string
+	executionGuidelinesSection: string
 	systemPromptBlocks: string
 	suppressed: ReadonlySet<SuppressibleSection>
 }
@@ -235,10 +241,15 @@ function buildPrompt(parts: PromptParts): string {
 	// 5. Working guidelines
 	sections.push(`## Working Guidelines\n\n${WORKING_GUIDELINES}`)
 
-	// 6. Documents
+	// 6. Execution guidelines (orchestrator + single only)
+	if (parts.executionGuidelinesSection) {
+		sections.push(parts.executionGuidelinesSection)
+	}
+
+	// 7. Documents
 	sections.push(`## Documents\n\n${DOCUMENTS_SECTION}`)
 
-	// 7. Rest: system prompt blocks, tools, skills, environment, project context
+	// 8. Rest: system prompt blocks, tools, skills, environment, project context
 	if (parts.systemPromptBlocks) {
 		sections.push(parts.systemPromptBlocks)
 	}

@@ -294,6 +294,48 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain("## Working Guidelines")
 			expect(result).toContain("### Orchestration Guidelines")
 		})
+
+		it("includes the execution guidelines section in orchestrator mode", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				mode: "orchestrator",
+			})
+			expect(result).toContain("## Execution Guidelines")
+		})
+
+		it("includes all five phase subheadings in the execution guidelines section", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				mode: "orchestrator",
+			})
+			expect(result).toContain("When you are exploring the codebase:")
+			expect(result).toContain("When you are researching:")
+			expect(result).toContain("When you are planning:")
+			expect(result).toContain("When you are building:")
+			expect(result).toContain("When you are reviewing:")
+		})
+
+		it("includes default guideline content in the execution guidelines section", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				mode: "orchestrator",
+			})
+			expect(result).toContain("Never run interactive commands")
+		})
+
+		it("includes model-family overrides in the execution guidelines section when a model id is provided", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				currentModelId: "minimax-m3",
+				registry,
+				mode: "orchestrator",
+			})
+			expect(result).toContain("Outline-then-diff")
+		})
 	})
 
 	describe("subagent mode", () => {
@@ -425,6 +467,25 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain("Git branch: feature/my-branch")
 			expect(result).toContain("Git remote: https://github.com/org/repo.git")
 		})
+
+		it("does not include the execution guidelines section", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				mode: "subagent",
+			})
+			expect(result).not.toContain("## Execution Guidelines")
+		})
+
+		it("still includes the working guidelines and guidelines sections", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				mode: "subagent",
+			})
+			expect(result).toContain("## Working Guidelines")
+			expect(result).toContain("## Guidelines")
+		})
 	})
 
 	describe("single-model mode", () => {
@@ -477,6 +538,15 @@ describe("buildSystemPrompt", () => {
 			expect(result).not.toContain("## Phase Guidelines (build)")
 			expect(result).toContain("## Working Guidelines")
 			expect(result).toContain("Understand before acting")
+		})
+
+		it("includes the execution guidelines section in single-model mode", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				mode: "single",
+			})
+			expect(result).toContain("## Execution Guidelines")
 		})
 	})
 })

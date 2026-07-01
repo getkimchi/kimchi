@@ -12,11 +12,17 @@
  */
 export type ModelTier = "light" | "standard" | "heavy"
 
+export type Phase = "explore" | "research" | "plan" | "build" | "review"
+
 /** Injected into the Orchestrator LLM's context to steer model selection. */
 export interface ModelCapabilities {
 	vision: boolean
 	tier: ModelTier
 	description: string
+	/** Phase-specific guideline annexes. If a phase key is present, its value
+	 *  REPLACES the default guideline for that phase. If absent, the default
+	 *  guideline is used. */
+	guidelines?: Partial<Readonly<Record<Phase, string>>>
 	/** Orchestration-specific guideline annex. Appended to the system prompt
 	 *  when this model acts as the orchestrator. If absent, the default
 	 *  orchestration guideline is used. */
