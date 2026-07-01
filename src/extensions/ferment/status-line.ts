@@ -5,12 +5,12 @@ import type { ContinuationPolicy } from "./state.js"
 export const FERMENT_STOP_POLICY_SHORTCUT = "f6"
 export const FERMENT_STOP_POLICY_SHORTCUT_LABEL = "F6"
 
-interface FermentFooterStyle {
+interface FermentStatusLineStyle {
 	dim(text: string): string
 	accent(text: string): string
 }
 
-export interface FermentFooterDisplay {
+export interface FermentStatusLineDisplay {
 	text: string
 	width: number
 	prefix: string
@@ -34,11 +34,11 @@ export function getFermentStopLabel(policy: ContinuationPolicy): string {
 	return policy === "manual" ? "Phase Boundary" : "Completion"
 }
 
-export function formatFermentFooterDisplay(
+export function formatFermentStatusLineDisplay(
 	ferment: Ferment | undefined,
 	policy: ContinuationPolicy,
-	style: FermentFooterStyle,
-): FermentFooterDisplay | null {
+	style: FermentStatusLineStyle,
+): FermentStatusLineDisplay | null {
 	if (!ferment || ferment.status === "complete" || ferment.status === "abandoned") return null
 
 	const prefix = style.dim("Ferment: ")
