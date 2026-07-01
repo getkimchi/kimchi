@@ -68,6 +68,7 @@ import questionnaireExtension from "./extensions/questionnaire/index.js"
 import reportBugExtension from "./extensions/report-bug.js"
 import reviewWriteGuardExtension from "./extensions/review-write-guard.js"
 import rtkRewriteExtension from "./extensions/rtk-rewrite.js"
+import sessionMetadataExtension from "./extensions/session-metadata/index.js"
 import sessionNameExtension from "./extensions/session-name.js"
 import orphanToolResultRepairExtension from "./extensions/session-repair/orphan-tool-result-repair.js"
 import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
@@ -117,6 +118,7 @@ import { probeTerminalBackground } from "./terminal-bg-probe.js"
 import { installCloudflare524RetryPatch } from "./upstream-retry-patch.js"
 import { getVersion } from "./utils.js"
 import { postProcessHtmlExport, postProcessJsonlExport } from "./utils/export-post-process.js"
+import { captureSessionStart } from "./utils/session-metadata-store.js"
 
 installCloudflare524RetryPatch()
 installPiNativeCompatibilityShim()
@@ -209,6 +211,12 @@ try {
 			writeApiKey(envKey)
 			config = loadConfig()
 		}
+
+		// Capture the frozen launch-time metadata (OS + config snapshot incl.
+		// multimodel) for injection into JSONL/HTML exports. Decoupled from the
+		// telemetry opt-in below — exports must surface this even when telemetry
+		// is disabled.
+		captureSessionStart(config, telemetryConfig.enabled)
 
 		// Fire harness_launched (one shot per harness session; respects telemetry opt-out).
 		// Sent after loadConfig() + env-key reload so the config snapshot reflects
@@ -534,6 +542,7 @@ try {
 			tagsExtension,
 			teleportExtension,
 			telemetryExtension(telemetryConfig),
+			sessionMetadataExtension(),
 			surveysExtension(),
 			toolRenderingExtension,
 			toolGroupingExtension,

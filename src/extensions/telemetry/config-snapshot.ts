@@ -2,6 +2,8 @@ import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
 import { AGENT_DEFINITIONS, discoverAgent } from "../../agent-discovery/index.js"
 import type { KimchiConfig } from "../../config.js"
+import { getModelRoles, normalizeRoleModels } from "../orchestration/model-roles.js"
+import type { RoleModelAssignment } from "../orchestration/model-roles.js"
 import { PERMISSIONS_ENV_KEY } from "../permissions/constants.js"
 import { getDisplayPermissionMode } from "../permissions/index.js"
 import { getMultiModelEnabled } from "../prompt-construction/prompt-enrichment.js"
@@ -22,6 +24,14 @@ export interface ConfigSnapshot {
 	"config.permission_mode": string
 	"config.agents_enabled": boolean
 	"config.mcp_server_count": number
+	"config.multi_model_enabled": boolean
+	"config.model_roles.orchestrator": string
+	"config.model_roles.planner": string
+	"config.model_roles.builder": string
+	"config.model_roles.reviewer": string
+	"config.model_roles.explorer": string
+	"config.model_roles.researcher": string
+	"config.model_roles.judge": string
 }
 
 /** Default provider for this harness. */
@@ -100,6 +110,15 @@ function countMcpServers(): number {
 	return count
 }
 
+/**
+ * Serialize a role model assignment into a single primitive string so the
+ * primitive-only snapshot invariant is preserved. A single model ref is
+ * returned unchanged; an ordered candidate list is joined with commas.
+ */
+function serializeRole(value: RoleModelAssignment): string {
+	return normalizeRoleModels(value).join(",")
+}
+
 /** Safe fallback snapshot returned when building fails. */
 function fallbackSnapshot(telemetryEnabled: boolean): ConfigSnapshot {
 	return {
@@ -110,6 +129,14 @@ function fallbackSnapshot(telemetryEnabled: boolean): ConfigSnapshot {
 		"config.permission_mode": "default",
 		"config.agents_enabled": false,
 		"config.mcp_server_count": 0,
+		"config.multi_model_enabled": false,
+		"config.model_roles.orchestrator": "unknown",
+		"config.model_roles.planner": "unknown",
+		"config.model_roles.builder": "unknown",
+		"config.model_roles.reviewer": "unknown",
+		"config.model_roles.explorer": "unknown",
+		"config.model_roles.researcher": "unknown",
+		"config.model_roles.judge": "unknown",
 	}
 }
 
@@ -126,6 +153,7 @@ function fallbackSnapshot(telemetryEnabled: boolean): ConfigSnapshot {
 export function buildConfigSnapshot(config: KimchiConfig, telemetryEnabled: boolean): ConfigSnapshot {
 	try {
 		const settings = readAgentSettings()
+		const roles = getModelRoles()
 		return {
 			"config.model": resolveModel(settings),
 			"config.provider": resolveProvider(settings),
@@ -134,6 +162,14 @@ export function buildConfigSnapshot(config: KimchiConfig, telemetryEnabled: bool
 			"config.permission_mode": resolvePermissionMode(),
 			"config.agents_enabled": getMultiModelEnabled(),
 			"config.mcp_server_count": countMcpServers(),
+			"config.multi_model_enabled": getMultiModelEnabled(),
+			"config.model_roles.orchestrator": serializeRole(roles.orchestrator),
+			"config.model_roles.planner": serializeRole(roles.planner),
+			"config.model_roles.builder": serializeRole(roles.builder),
+			"config.model_roles.reviewer": serializeRole(roles.reviewer),
+			"config.model_roles.explorer": serializeRole(roles.explorer),
+			"config.model_roles.researcher": serializeRole(roles.researcher),
+			"config.model_roles.judge": serializeRole(roles.judge),
 		}
 	} catch {
 		return fallbackSnapshot(telemetryEnabled)
