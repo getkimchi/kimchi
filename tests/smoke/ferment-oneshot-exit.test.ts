@@ -5,6 +5,7 @@ import { join, resolve } from "node:path"
 import { describe, expect, it } from "vitest"
 import {
 	DEFAULT_MODEL,
+	type FakeOpenAiServer,
 	type FakeResponseScript,
 	type RecordedRequest,
 	resolveModels,
@@ -28,6 +29,7 @@ interface ProcessResult {
 interface JsonlEntry {
 	type?: string
 	customType?: string
+	raw?: string
 	message?: {
 		role?: string
 		toolName?: string
@@ -46,9 +48,10 @@ describe("--ferment-oneshot process lifecycle", () => {
 
 async function expectOneshotLifecycleToExit(): Promise<void> {
 	const tempRoot = mkdtempSync(join(tmpdir(), "kimchi-ferment-oneshot-exit-"))
-	const fake = await startFakeOpenAiServer({ responses: oneShotCompletionScript() })
+	let fake: FakeOpenAiServer | undefined
 
 	try {
+		fake = await startFakeOpenAiServer({ responses: oneShotCompletionScript() })
 		const homeDir = join(tempRoot, "home")
 		const workDir = join(tempRoot, "work")
 		const sessionDir = join(tempRoot, "sessions")
@@ -68,7 +71,7 @@ async function expectOneshotLifecycleToExit(): Promise<void> {
 			prompt: "Exercise the one-shot ferment process lifecycle and then finish.",
 		})
 		const sessionEntries = readJsonl(sessionPath)
-		const failure = formatFailure(result, sessionEntries, fermentsDir, fake.requests)
+		const failure = formatFailure(result, sessionEntries, fermentsDir, fake?.requests ?? [])
 
 		expect(hasFermentCompleted(fermentsDir), failure).toBe(true)
 		expect(
@@ -87,7 +90,7 @@ async function expectOneshotLifecycleToExit(): Promise<void> {
 		expect(result.timedOut, failure).toBe(false)
 		expect(result.code, failure).toBe(0)
 	} finally {
-		await fake.stop().catch(() => {})
+		await fake?.stop().catch(() => {})
 		rmSync(tempRoot, { recursive: true, force: true })
 	}
 }
@@ -95,6 +98,7 @@ async function expectOneshotLifecycleToExit(): Promise<void> {
 function oneShotCompletionScript(): FakeResponseScript[] {
 	return [
 		{
+			// Scope a one-phase Ferment. The fake server substitutes the runtime ferment id.
 			stream: ["Starting the linked-worker one-shot lifecycle."],
 			toolCalls: [
 				{
@@ -125,6 +129,7 @@ function oneShotCompletionScript(): FakeResponseScript[] {
 			],
 		},
 		{
+			// Activate the scoped phase so implementation tools and Agent workers unlock.
 			toolCalls: [
 				{
 					id: "call_activate",
@@ -139,6 +144,7 @@ function oneShotCompletionScript(): FakeResponseScript[] {
 			],
 		},
 		{
+			// Start the only step; the tool response instructs the model to spawn a linked Agent.
 			toolCalls: [
 				{
 					id: "call_start_step",
@@ -155,6 +161,7 @@ function oneShotCompletionScript(): FakeResponseScript[] {
 			],
 		},
 		{
+			// Spawn the linked worker with task_ref so complete_ferment_step can validate it.
 			toolCalls: [
 				{
 					id: "call_worker_agent",
@@ -181,6 +188,7 @@ function oneShotCompletionScript(): FakeResponseScript[] {
 			],
 		},
 		{
+			// Simulate the linked worker reporting success through the extension tool.
 			stream: ["Submitting the linked worker report."],
 			toolCalls: [
 				{
@@ -200,9 +208,11 @@ function oneShotCompletionScript(): FakeResponseScript[] {
 			],
 		},
 		{
+			// Give the parent turn one plain assistant response after the worker report.
 			stream: ["Linked worker report submitted."],
 		},
 		{
+			// Complete the step using the real Agent id returned by the Agent tool result.
 			toolCalls: [
 				{
 					id: "call_complete_step",
@@ -221,6 +231,7 @@ function oneShotCompletionScript(): FakeResponseScript[] {
 			],
 		},
 		{
+			// Close the active phase after the single step has completed.
 			toolCalls: [
 				{
 					id: "call_complete_phase",
@@ -237,6 +248,7 @@ function oneShotCompletionScript(): FakeResponseScript[] {
 			],
 		},
 		{
+			// Complete the Ferment; the following request is the judge response.
 			toolCalls: [
 				{
 					id: "call_complete_ferment",
@@ -252,9 +264,11 @@ function oneShotCompletionScript(): FakeResponseScript[] {
 			],
 		},
 		{
+			// Return the one-shot judge JSON that Ferment expects after completion.
 			stream: ['{"grade":"A","rationale":"The linked-worker one-shot lifecycle completed cleanly."}'],
 		},
 		{
+			// Final assistant text must be emitted before agent_end and process exit.
 			stream: [FINAL_TEXT],
 		},
 	]
@@ -397,7 +411,13 @@ function readJsonl(path: string): JsonlEntry[] {
 	return readFileSync(path, "utf-8")
 		.split("\n")
 		.filter((line) => line.trim().length > 0)
-		.map((line) => JSON.parse(line) as JsonlEntry)
+		.map((line) => {
+			try {
+				return JSON.parse(line) as JsonlEntry
+			} catch {
+				return { type: "parse_error", raw: line }
+			}
+		})
 }
 
 function hasFermentCompleted(fermentsDir: string): boolean {

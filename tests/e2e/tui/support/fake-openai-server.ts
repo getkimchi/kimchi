@@ -284,12 +284,57 @@ function extractFermentId(body: unknown): string | undefined {
 
 /** Pull the Agent id from prior Agent tool output (`Agent ID: <id>` or `agent_id`). */
 function extractAgentId(body: unknown): string | undefined {
-	const raw = JSON.stringify(body ?? "")
-	return (
-		raw.match(/Agent ID:\s*([0-9a-fA-F-]{8,})/)?.[1] ??
-		raw.match(/agent_id[\\"\s:]+([0-9a-fA-F-]{8,})/)?.[1] ??
-		raw.match(/agentId[\\"\s:]+([0-9a-fA-F-]{8,})/)?.[1]
-	)
+	const messages = asRecord(body).messages
+	if (Array.isArray(messages)) {
+		for (const message of [...messages].reverse()) {
+			const fromMessage = extractAgentIdFromValue(message)
+			if (fromMessage) return fromMessage
+			const content = asRecord(message).content
+			const fromContent = extractAgentIdFromText(readMessageContent(content))
+			if (fromContent) return fromContent
+		}
+	}
+	return extractAgentIdFromText(JSON.stringify(body ?? ""))
+}
+
+function extractAgentIdFromValue(value: unknown): string | undefined {
+	if (Array.isArray(value)) {
+		for (const item of value) {
+			const found = extractAgentIdFromValue(item)
+			if (found) return found
+		}
+		return undefined
+	}
+	const record = asRecord(value)
+	for (const key of ["agent_id", "agentId"]) {
+		const found = parseAgentId(record[key])
+		if (found) return found
+	}
+	return undefined
+}
+
+function readMessageContent(content: unknown): string {
+	if (typeof content === "string") return content
+	if (!Array.isArray(content)) return ""
+	return content
+		.map((part) => {
+			if (typeof part === "string") return part
+			const record = asRecord(part)
+			return typeof record.text === "string" ? record.text : ""
+		})
+		.join("\n")
+}
+
+function extractAgentIdFromText(text: string): string | undefined {
+	return text.match(/Agent ID:\s*([0-9a-fA-F-]{8,})/)?.[1] ?? text.match(/agent_?id[\\"\s:]+([0-9a-fA-F-]{8,})/i)?.[1]
+}
+
+function parseAgentId(value: unknown): string | undefined {
+	return typeof value === "string" && /^[0-9a-fA-F-]{8,}$/.test(value) ? value : undefined
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+	return value && typeof value === "object" ? (value as Record<string, unknown>) : {}
 }
 
 function unixNow(): number {
