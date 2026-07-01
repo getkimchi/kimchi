@@ -10,7 +10,7 @@
  *     available so the model can request them.
  */
 
-import { resolve } from "node:path"
+import { basename, resolve } from "node:path"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import { discoverCursorRules } from "./discovery.js"
@@ -40,6 +40,7 @@ export default function cursorRulesExtension(pi: ExtensionAPI): void {
 	})
 
 	pi.on("tool_call", async (event) => {
+		if (!cwd) return
 		const input = event.input as Record<string, unknown>
 		const filePath = extractToolPath(event.toolName, input)
 		if (filePath === undefined) return
@@ -83,12 +84,17 @@ function formatInjectedRule(rule: ParsedCursorRule, appliesTo?: string): string 
 	const header = appliesTo
 		? `<project_rule path="${rule.path}" applies_to="${appliesTo}">`
 		: `<project_rule path="${rule.path}">`
-	return `${header}\n${rule.body}\n</project_rule>`
+	return `${header}\n${escapeRuleBody(rule.body)}\n</project_rule>`
+}
+
+function escapeRuleBody(body: string): string {
+	// Prevent a rule body from prematurely closing the <project_rule> envelope.
+	return body.replace(/<\/project_rule>/g, "&lt;/project_rule&gt;")
 }
 
 function formatAvailableRules(available: ParsedCursorRule[]): string {
 	const lines = available.map((rule) => {
-		const name = rule.path.split("/").pop() ?? rule.path
+		const name = basename(rule.path)
 		const desc = rule.description ?? "Manual rule — request it explicitly if relevant."
 		return `- \`${name}\`: ${desc}`
 	})

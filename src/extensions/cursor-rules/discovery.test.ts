@@ -112,4 +112,9 @@ describe("discoverCursorRules", () => {
 		const rulePath = join(tmpBase, ".agents", "rules", "api.mdc")
 		expect(getRuleBaseDir(rulePath)).toBe(tmpBase)
 	})
+
+	it("computes base dir correctly for nested rules", () => {
+		const rulePath = join(tmpBase, ".cursor", "rules", "frontend", "react.mdc")
+		expect(getRuleBaseDir(rulePath)).toBe(tmpBase)
+	})
 })

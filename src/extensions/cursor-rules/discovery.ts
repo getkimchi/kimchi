@@ -108,10 +108,14 @@ function tryReadFile(filePath: string): string | null {
 }
 
 export function getRuleBaseDir(rulePath: string): string {
-	// `.cursor/rules/<name>.mdc` or `.agents/rules/<name>.mdc` -> directory
-	// containing `.cursor/` or `.agents/`.
-	if (rulePath.endsWith(RULES_EXTENSION)) {
-		return dirname(dirname(dirname(rulePath)))
+	// Strip the `.cursor/rules/...` or `.agents/rules/...` suffix so rules
+	// nested in subdirectories resolve relative to the project directory.
+	const normalized = rulePath.replace(/\\/g, "/")
+	for (const marker of ["/.cursor/rules/", "/.agents/rules/"]) {
+		const index = normalized.lastIndexOf(marker)
+		if (index !== -1) {
+			return rulePath.slice(0, index)
+		}
 	}
 	// Legacy `.cursorrules` at project root.
 	return dirname(rulePath)
