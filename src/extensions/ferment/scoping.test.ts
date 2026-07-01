@@ -271,6 +271,15 @@ function enableWorktreeConfig(repoRoot: string): void {
 	)
 }
 
+function disableWorktreeConfig(repoRoot: string): void {
+	const configDir = resolve(repoRoot, ".kimchi")
+	mkdirSync(configDir, { recursive: true })
+	writeFileSync(
+		resolve(configDir, "config.json"),
+		JSON.stringify({ ferments: { worktree: { enabled: false } } }, null, 2),
+	)
+}
+
 function createRuntimeInRepo(repoRoot: string): { runtime: FermentRuntime; storage: FermentEventStore } {
 	const storage = new FermentEventStore(resolve(repoRoot, ".kimchi", "ferments"))
 	const runtime: FermentRuntime = {
@@ -364,7 +373,9 @@ describe("worktree", () => {
 
 	it("does not create a worktree when worktree isolation is disabled", () => {
 		const repoRoot = tempRepo()
-		// No project config; readWorktreeEnabled defaults to false.
+		// Explicitly disable in project config so a global `ferments.worktree.enabled: true`
+		// does not leak into this test.
+		disableWorktreeConfig(repoRoot)
 		const { runtime, storage } = createRuntimeInRepo(repoRoot)
 		const ferment = createFermentInRepo(storage, repoRoot, "Worktree Off")
 		runtime.setPendingScope(ferment.id, {
@@ -439,5 +450,42 @@ describe("worktree", () => {
 		expect(saved?.worktree.branch).toBeUndefined()
 		const worktrees = runGit("git worktree list --porcelain", repoRoot)
 		expect(worktrees).not.toContain(resolve(repoRoot, ".worktrees"))
+	})
+
+	it("proceeds without a dedicated worktree when createFermentWorktree fails", () => {
+		const repoRoot = tempRepo()
+		enableWorktreeConfig(repoRoot)
+		const { runtime, storage } = createRuntimeInRepo(repoRoot)
+		const ferment = createFermentInRepo(storage, repoRoot, "Worktree Fail")
+		runtime.setPendingScope(ferment.id, {
+			goal: "Goal",
+			successCriteria: ["Works"],
+			constraints: [],
+			phases: [{ name: "P1", goal: "Build", steps: [{ description: "Do it" }] }],
+		})
+
+		// Pre-create the ferment branch so createFermentWorktree will fail with
+		// "branch already exists" — simulating a real failure.
+		const shortId = ferment.id.slice(0, 8)
+		runGit(`git branch ferment/${shortId} HEAD`, repoRoot)
+
+		// Suppress the expected console.warn from the try/catch so test output stays clean.
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+		try {
+			const result = confirmPendingScope(runtime, ferment.id, undefined, "turn_end", undefined)
+
+			// The ferment still proceeds as planned — no uncaught throw.
+			expect(result.ok).toBe(true)
+			const saved = storage.get(ferment.id)
+			// Worktree stays as the main checkout (no dedicated worktree created).
+			expect(saved?.worktree.path).toBe(repoRoot)
+			expect(saved?.worktree.branch).not.toBe(`ferment/${shortId}`)
+			// The warning was logged.
+			expect(warnSpy).toHaveBeenCalled()
+			const warnMsg = String(warnSpy.mock.calls[0]?.[0] ?? "")
+			expect(warnMsg).toContain(ferment.id)
+		} finally {
+			warnSpy.mockRestore()
+		}
 	})
 })

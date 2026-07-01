@@ -9,7 +9,7 @@
  * `ferment/<shortId>` branched from the current HEAD of `repoRoot`.
  */
 
-import { execSync } from "node:child_process"
+import { spawnSync } from "node:child_process"
 import { resolve } from "node:path"
 
 export interface CreatedWorktree {
@@ -30,13 +30,23 @@ export interface RemovalResult {
 
 const GIT_TIMEOUT = 10_000
 
-function git(args: string, opts: { cwd: string }): string {
-	return execSync(args, {
+/**
+ * Run `git` with an argument array (no shell) and return trimmed stdout.
+ * Throws on non-zero exit or spawn failure.
+ */
+function git(args: string[], opts: { cwd: string }): string {
+	const result = spawnSync("git", args, {
 		cwd: opts.cwd,
 		encoding: "utf-8",
 		timeout: GIT_TIMEOUT,
+		shell: false,
 		stdio: ["ignore", "pipe", "ignore"],
-	}).trim()
+	})
+	if (result.error) throw result.error
+	if (result.status !== 0) {
+		throw new Error(`git ${args.join(" ")} exited with ${result.status}: ${result.stderr?.trim() ?? ""}`)
+	}
+	return (result.stdout ?? "").trim()
 }
 
 /**
@@ -50,8 +60,8 @@ function git(args: string, opts: { cwd: string }): string {
  */
 export function isInsideLinkedWorktree(cwd: string = process.cwd()): boolean {
 	try {
-		const gitDir = git("git rev-parse --git-dir", { cwd })
-		const commonDir = git("git rev-parse --git-common-dir", { cwd })
+		const gitDir = git(["rev-parse", "--git-dir"], { cwd })
+		const commonDir = git(["rev-parse", "--git-common-dir"], { cwd })
 		if (!gitDir || !commonDir) return false
 		// Resolve both to absolute, normalizing for relative output (".git" vs
 		// an absolute path) so the comparison is stable.
@@ -65,6 +75,16 @@ export function isInsideLinkedWorktree(cwd: string = process.cwd()): boolean {
 }
 
 /**
+ * Reject a `shortId` that could escape the intended `.worktrees/ferment-<shortId>`
+ * path or branch namespace. Even though spawnSync arg arrays prevent shell
+ * injection, a `shortId` containing `/` or `..` could traverse out of the
+ * worktree directory, and other characters are invalid in git branch names.
+ *
+ * Allowed: alphanumeric, `-`, and `_` (the shape of a UUIDv7 prefix).
+ */
+const SAFE_SHORT_ID = /^[A-Za-z0-9_-]+$/
+
+/**
  * Create a dedicated worktree for a ferment at
  * `<repoRoot>/.worktrees/ferment-<shortId>` on a new branch
  * `ferment/<shortId>` branched from the current HEAD of `repoRoot`.
@@ -73,11 +93,16 @@ export function isInsideLinkedWorktree(cwd: string = process.cwd()): boolean {
  * is unavailable). Callers that want best-effort semantics should catch.
  */
 export function createFermentWorktree(repoRoot: string, shortId: string): CreatedWorktree {
+	if (!shortId || !SAFE_SHORT_ID.test(shortId)) {
+		throw new Error(
+			`Invalid shortId for ferment worktree: ${JSON.stringify(shortId)}. Only alphanumeric, '-', and '_' are allowed.`,
+		)
+	}
 	const branch = `ferment/${shortId}`
 	const path = resolve(repoRoot, ".worktrees", `ferment-${shortId}`)
-	const commit = git("git rev-parse HEAD", { cwd: repoRoot })
+	const commit = git(["rev-parse", "HEAD"], { cwd: repoRoot })
 	// `git worktree add -b <branch> <path> <start-point>`
-	git(`git worktree add -b ${branch} ${JSON.stringify(path)} HEAD`, { cwd: repoRoot })
+	git(["worktree", "add", "-b", branch, path, "HEAD"], { cwd: repoRoot })
 	return { path, branch, commit }
 }
 
@@ -92,10 +117,10 @@ export function removeFermentWorktree(repoRoot: string, path: string, branch?: s
 	// 1. Remove the worktree checkout. Use --force only as a fallback so a
 	//    dirty tree surfaces first (we prefer to leave it intact in that case).
 	try {
-		git(`git worktree remove ${JSON.stringify(path)}`, { cwd: repoRoot })
+		git(["worktree", "remove", path], { cwd: repoRoot })
 	} catch {
 		try {
-			git(`git worktree remove --force ${JSON.stringify(path)}`, { cwd: repoRoot })
+			git(["worktree", "remove", "--force", path], { cwd: repoRoot })
 		} catch (e) {
 			steps.push(`worktree remove failed: ${e instanceof Error ? e.message : String(e)}`)
 		}
@@ -104,10 +129,10 @@ export function removeFermentWorktree(repoRoot: string, path: string, branch?: s
 	//    make the branch deletable with -d; fall back to -D for force-delete.
 	if (branch) {
 		try {
-			git(`git branch -d ${JSON.stringify(branch)}`, { cwd: repoRoot })
+			git(["branch", "-d", branch], { cwd: repoRoot })
 		} catch {
 			try {
-				git(`git branch -D ${JSON.stringify(branch)}`, { cwd: repoRoot })
+				git(["branch", "-D", branch], { cwd: repoRoot })
 			} catch (e) {
 				steps.push(`branch delete failed: ${e instanceof Error ? e.message : String(e)}`)
 			}

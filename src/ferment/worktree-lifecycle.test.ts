@@ -65,6 +65,22 @@ describe("worktree-lifecycle", () => {
 			const worktreeHead = run("git rev-parse HEAD", expectedPath)
 			expect(worktreeHead).toBe(expectedCommit)
 		})
+
+		it("throws when called twice with the same shortId (branch already exists)", () => {
+			const repoRoot = tempRepo()
+			const shortId = "dup0001"
+
+			// First call succeeds.
+			const first = createFermentWorktree(repoRoot, shortId)
+			expect(first.branch).toBe(`ferment/${shortId}`)
+
+			// Second call with the same shortId must throw — the branch already exists.
+			expect(() => createFermentWorktree(repoRoot, shortId)).toThrow()
+
+			// The original worktree is still intact (not corrupted by the failed second call).
+			const worktrees = run("git worktree list --porcelain", repoRoot)
+			expect(worktrees).toContain(first.path)
+		})
 	})
 
 	describe("removeFermentWorktree", () => {

@@ -417,6 +417,16 @@ export class FermentEventStore {
 	 * Best-effort cleanup of a dedicated git worktree when a ferment is abandoned
 	 * and worktree isolation is enabled. Skips legacy ferments (no branch),
 	 * non-dedicated worktrees, and failures are logged and swallowed.
+	 *
+	 * Retention policy:
+	 * - **Abandoned** ferments: the dedicated worktree and its `ferment/<shortId>`
+	 *   branch are removed (best-effort) so abandoned experiments don't litter
+	 *   the repo.
+	 * - **Completed** ferments: the worktree and branch are intentionally
+	 *   *retained* so the user can inspect or cherry-pick from the completed work.
+	 *   These are NOT auto-removed. To reclaim disk space from stale completed
+	 *   worktrees, run `git worktree prune` and `git branch -D ferment/<shortId>`
+	 *   manually once the work is no longer needed.
 	 */
 	private maybeCleanupFermentWorktree(ferment: Ferment): void {
 		if (ferment.status !== "abandoned") return
