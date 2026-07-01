@@ -1344,6 +1344,41 @@ describe("runAgent — runtime cleanup", () => {
 		const result = await resultPromise
 		expect(result.aborted).toBe(false)
 	})
+
+	it("registered runtime cleanup clears the resume inactivity interval before the prompt settles", async () => {
+		const abortSpy = vi.fn()
+		let resolvePrompt: (() => void) | undefined
+		const promptPromise = new Promise<void>((resolve) => {
+			resolvePrompt = resolve
+		})
+		const session = makeFakeSession({
+			abortSpy,
+			emitUsage: false,
+			promptAction: async () => {
+				await promptPromise
+			},
+		})
+		let cleanup: (() => void) | undefined
+
+		const resultPromise = resumeAgent(session as unknown as AgentSession, "continue", {
+			inactivityTimeout: 10,
+			maxDuration: 0,
+			onRuntimeCleanupRegistered: (fn) => {
+				cleanup = fn
+			},
+		})
+		await vi.waitFor(() => expect(cleanup).toBeDefined())
+
+		cleanup?.()
+		await vi.advanceTimersByTimeAsync(25_000)
+
+		expect(session.steer).not.toHaveBeenCalled()
+		expect(abortSpy).not.toHaveBeenCalled()
+
+		resolvePrompt?.()
+		const result = await resultPromise
+		expect(result.aborted).toBe(false)
+	})
 })
 
 describe("resumeAgent — maxDuration enforcement", () => {

@@ -121,6 +121,7 @@ Do not perform more task work, edit files, explore, or run verification. Based o
 export class AgentManager {
 	private agents = new Map<string, AgentRecord>()
 	private runtimeCleanups = new WeakMap<AgentRecord, () => void>()
+	private activeResumePromises = new WeakMap<AgentRecord, Promise<unknown>>()
 	private cleanupInterval: ReturnType<typeof setInterval>
 	private onComplete?: OnAgentComplete
 	private onStart?: OnAgentStart
@@ -422,35 +423,41 @@ export class AgentManager {
 		if (options.signal?.aborted) abortController.abort()
 		else options.signal?.addEventListener("abort", onCallerAbort, { once: true })
 
+		const attemptPrompt =
+			purpose === "finalize_report" && record.taskRef
+				? reportFinalizationPrompt(record.taskRef)
+				: withAgentReportProtocol(prompt ?? "", record.taskRef)
+		const resumePromise = resumeAgent(record.session, attemptPrompt, {
+			onToolActivity: (activity) => {
+				if (activity.type === "end") record.toolUses++
+			},
+			onTurnEnd: (turnCount) => {
+				record.lastTurnCount = turnCount
+			},
+			onAssistantUsage: (usage) => {
+				addUsage(record.lifetimeUsage, usage)
+			},
+			onCompaction: (info) => {
+				record.compactionCount++
+				this.onCompact?.(record, info)
+			},
+			signal: abortController.signal,
+			maxTurns: attemptLimits.maxTurns,
+			tokenBudget: attemptTokenBudget,
+			minTokenBudget: purpose === "finalize_report" ? MIN_FINALIZE_TOKEN_BUDGET : undefined,
+			inactivityTimeout: options.inactivityTimeout,
+			maxDuration: attemptLimits.maxDuration,
+			hardTurnLimit: record.taskRef?.kind === "ferment_step",
+			shouldTerminateAfterTool: (toolName) =>
+				toolName === "submit_agent_report" && record.agentReport?.attempt_id === record.currentAttemptId,
+			onRuntimeCleanupRegistered: (cleanup) => {
+				this.runtimeCleanups.set(record, cleanup)
+			},
+		})
+		this.activeResumePromises.set(record, resumePromise)
+
 		try {
-			const attemptPrompt =
-				purpose === "finalize_report" && record.taskRef
-					? reportFinalizationPrompt(record.taskRef)
-					: withAgentReportProtocol(prompt ?? "", record.taskRef)
-			const result = await resumeAgent(record.session, attemptPrompt, {
-				onToolActivity: (activity) => {
-					if (activity.type === "end") record.toolUses++
-				},
-				onTurnEnd: (turnCount) => {
-					record.lastTurnCount = turnCount
-				},
-				onAssistantUsage: (usage) => {
-					addUsage(record.lifetimeUsage, usage)
-				},
-				onCompaction: (info) => {
-					record.compactionCount++
-					this.onCompact?.(record, info)
-				},
-				signal: abortController.signal,
-				maxTurns: attemptLimits.maxTurns,
-				tokenBudget: attemptTokenBudget,
-				minTokenBudget: purpose === "finalize_report" ? MIN_FINALIZE_TOKEN_BUDGET : undefined,
-				inactivityTimeout: options.inactivityTimeout,
-				maxDuration: attemptLimits.maxDuration,
-				hardTurnLimit: record.taskRef?.kind === "ferment_step",
-				shouldTerminateAfterTool: (toolName) =>
-					toolName === "submit_agent_report" && record.agentReport?.attempt_id === record.currentAttemptId,
-			})
+			const result = await resumePromise
 			if ((record.status as AgentRecord["status"]) !== "stopped") {
 				record.status = result.aborted ? "aborted" : result.steered ? "steered" : "completed"
 			}
@@ -467,6 +474,8 @@ export class AgentManager {
 			record.completedAt = Date.now()
 		} finally {
 			options.signal?.removeEventListener("abort", onCallerAbort)
+			this.activeResumePromises.delete(record)
+			this.cleanupRecordRuntime(record)
 		}
 		attempt.completedAt = record.completedAt
 		attempt.outcome = classifyAgentOutcome(record)
@@ -624,7 +633,9 @@ export class AgentManager {
 	async waitForAll(): Promise<void> {
 		while (true) {
 			this.drainQueue()
-			const pending = [...this.agents.values()].map((r) => r.promise).filter(Boolean)
+			const pending = [...this.agents.values()].flatMap((r) =>
+				[r.promise, this.activeResumePromises.get(r)].filter(Boolean),
+			)
 			if (pending.length === 0) break
 			await Promise.allSettled(pending)
 		}

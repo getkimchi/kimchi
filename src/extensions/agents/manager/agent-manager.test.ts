@@ -778,6 +778,62 @@ describe("AgentManager", () => {
 		}
 	})
 
+	it("waits for active resume promises to settle so resume runner cleanup can run", async () => {
+		const session = { dispose: vi.fn() } as unknown as AgentSession
+		mockRunAgent.mockResolvedValueOnce({
+			responseText: "checkpoint",
+			session,
+			aborted: true,
+			abortReason: "token_budget",
+			steered: false,
+		})
+		const releaseResume = deferred<void>()
+		const runnerCleanup = vi.fn()
+		mockResumeAgent.mockImplementationOnce((_session, _prompt, options) => {
+			const result = deferred<Awaited<ReturnType<typeof resumeAgent>>>()
+			options?.signal?.addEventListener(
+				"abort",
+				() => {
+					void releaseResume.promise.then(() => {
+						runnerCleanup()
+						result.resolve({
+							responseText: "resumed partial",
+							session,
+							aborted: true,
+							abortReason: "token_budget",
+							steered: false,
+						})
+					})
+				},
+				{ once: true },
+			)
+			return result.promise
+		})
+		manager = new AgentManager()
+		const record = await manager.spawnAndWait(fakePi(), fakeCtx(), "Explore", "inspect", {
+			description: "inspect",
+		})
+
+		const resume = manager.resume(record.id, "continue", { tokenBudget: 2048 })
+		await vi.waitFor(() => expect(mockResumeAgent).toHaveBeenCalledTimes(1))
+		manager.abortAll()
+		const wait = manager.waitForAll()
+
+		try {
+			await expectStillPending(wait)
+
+			releaseResume.resolve()
+			await wait
+			await resume
+
+			expect(runnerCleanup).toHaveBeenCalledTimes(1)
+		} finally {
+			releaseResume.resolve()
+			await wait.catch(() => {})
+			await resume.catch(() => {})
+		}
+	})
+
 	it("clears registered runner inactivity cleanup during dispose as a hard fallback", () => {
 		const runnerCleanup = vi.fn()
 		mockRunAgent.mockImplementationOnce((_ctx, _type, _prompt, options) => {
