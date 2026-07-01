@@ -183,7 +183,6 @@ const READ_ONLY_SUBCOMMANDS: Record<string, Set<string> | Record<string, string[
 		"config",
 		"tag",
 		"stash",
-		"worktree",
 		"reflog",
 		"shortlog",
 		"fsck",

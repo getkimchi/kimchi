@@ -115,10 +115,6 @@ describe("isReadOnlyBashCommand", () => {
 		expect(isReadOnlyBashCommand("git diff HEAD")).toBe(true)
 	})
 
-	it("allows git worktree list", () => {
-		expect(isReadOnlyBashCommand("git worktree list")).toBe(true)
-	})
-
 	it("blocks git subcommands outside allowlist", () => {
 		expect(isReadOnlyBashCommand("git push")).toBe(false)
 		expect(isReadOnlyBashCommand("git commit -am x")).toBe(false)
