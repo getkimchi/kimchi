@@ -1,26 +1,34 @@
 diff --git a/dist/providers/openai-completions.js b/dist/providers/openai-completions.js
-index 423825a3dcf189304e3112bf68c6d8f89cb2ec44..c3bcb486fcd7431da53e8a792fb7bdfb3fd0d931 100644
+index 423825a3dcf189304e3112bf68c6d8f89cb2ec44..2be802d01acbe4111e3212dab713250c8f1c6af2 100644
 --- a/dist/providers/openai-completions.js
 +++ b/dist/providers/openai-completions.js
-@@ -68,6 +68,32 @@ export const streamOpenAICompletions = (model, context, options) => {
+@@ -68,6 +68,40 @@ export const streamOpenAICompletions = (model, context, options) => {
              stopReason: "stop",
              timestamp: Date.now(),
          };
-+        // kimchi-dev patch: stream-level AbortController timeout.
++        // kimchi-dev patch: stream idle timeout via AbortController.
 +        // The OpenAI SDK clears its internal timeout after headers arrive (fetchWithTimeout
 +        // finally block), leaving the SSE stream body unprotected. This controller stays
-+        // active through the entire for-await loop.
++        // active through the entire for-await loop and resets on every chunk received —
++        // so a call streaming tokens for 10 minutes is fine, but a call that goes silent
++        // for timeoutMs gets aborted.
 +        // Tracking: https://github.com/earendil-works/pi/issues/3020
 +        // Remove when #3020 ships a stream-level timeout upstream.
 +        let _streamTimeoutController = null;
 +        let _streamTimeoutId = null;
++        const _resetStreamTimeout = () => {
++            if (_streamTimeoutId) clearTimeout(_streamTimeoutId);
++            if (options?.timeoutMs && options?.timeoutMs > 0 && _streamTimeoutController) {
++                _streamTimeoutId = setTimeout(() => {
++                    _streamTimeoutController.abort(
++                        new Error("Stream idle timeout after " + options.timeoutMs + "ms")
++                    );
++                }, options.timeoutMs);
++            }
++        };
 +        if (options?.timeoutMs && options?.timeoutMs > 0) {
 +            _streamTimeoutController = new AbortController();
-+            _streamTimeoutId = setTimeout(() => {
-+                _streamTimeoutController.abort(
-+                    new Error("Request timed out after " + options.timeoutMs + "ms")
-+                );
-+            }, options.timeoutMs);
++            _resetStreamTimeout();
 +            if (options.signal) {
 +                if (options.signal.aborted) {
 +                    _streamTimeoutController.abort(options.signal.reason);
@@ -35,7 +43,7 @@ index 423825a3dcf189304e3112bf68c6d8f89cb2ec44..c3bcb486fcd7431da53e8a792fb7bdfb
          try {
              const apiKey = options?.apiKey;
              if (!apiKey) {
-@@ -83,7 +109,7 @@ export const streamOpenAICompletions = (model, context, options) => {
+@@ -83,7 +117,7 @@ export const streamOpenAICompletions = (model, context, options) => {
                  params = nextParams;
              }
              const requestOptions = {
@@ -44,7 +52,15 @@ index 423825a3dcf189304e3112bf68c6d8f89cb2ec44..c3bcb486fcd7431da53e8a792fb7bdfb
                  ...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
                  maxRetries: options?.maxRetries ?? 0,
              };
-@@ -314,22 +340,31 @@ export const streamOpenAICompletions = (model, context, options) => {
+@@ -192,6 +226,7 @@ export const streamOpenAICompletions = (model, context, options) => {
+                 return block;
+             };
+             for await (const chunk of openaiStream) {
++                if (_streamTimeoutId) _resetStreamTimeout();
+                 if (!chunk || typeof chunk !== "object")
+                     continue;
+                 // OpenAI documents ChatCompletionChunk.id as the unique chat completion identifier,
+@@ -314,22 +349,31 @@ export const streamOpenAICompletions = (model, context, options) => {
              if (!hasFinishReason) {
                  throw new Error("Stream ended without finish_reason");
              }
@@ -70,7 +86,7 @@ index 423825a3dcf189304e3112bf68c6d8f89cb2ec44..c3bcb486fcd7431da53e8a792fb7bdfb
 +                && !(options?.signal?.aborted);
 +            if (_isStreamTimeout) {
 +                output.stopReason = "error";
-+                output.errorMessage = "Request timed out after " + options?.timeoutMs + "ms";
++                output.errorMessage = "Stream idle timeout after " + options?.timeoutMs + "ms";
 +            } else {
 +                output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 +                output.errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
@@ -82,7 +98,7 @@ index 423825a3dcf189304e3112bf68c6d8f89cb2ec44..c3bcb486fcd7431da53e8a792fb7bdfb
              stream.push({ type: "error", reason: output.stopReason, error: output });
              stream.end();
          }
-@@ -825,10 +860,11 @@ function convertTools(tools, compat) {
+@@ -825,10 +869,11 @@ function convertTools(tools, compat) {
  function parseChunkUsage(rawUsage, model) {
      const promptTokens = rawUsage.prompt_tokens || 0;
      const cacheReadTokens = rawUsage.prompt_tokens_details?.cached_tokens ?? rawUsage.prompt_cache_hit_tokens ?? 0;
