@@ -81,13 +81,22 @@ export function confirmPendingScope(
 		planned.worktree.branch &&
 		!planned.worktree.branch.startsWith("ferment/")
 	if (guard) {
-		const { path, branch, commit } = createFermentWorktree(repoRoot, shortId)
-		const updated = storage.updateWorktree(planned.id, { path, branch, commit })
-		storage.addDecision(planned.id, "Created ferment worktree", `Dedicated worktree at ${path} on branch ${branch}.`)
-		const reloaded = storage.get(planned.id)
-		if (reloaded) {
-			planned = reloaded
-			outcome.ferment = reloaded
+		try {
+			const { path, branch, commit } = createFermentWorktree(repoRoot, shortId)
+			storage.updateWorktree(planned.id, { path, branch, commit })
+			storage.addDecision(planned.id, "Created ferment worktree", `Dedicated worktree at ${path} on branch ${branch}.`)
+			const reloaded = storage.get(planned.id)
+			if (reloaded) {
+				planned = reloaded
+				outcome.ferment = reloaded
+			}
+		} catch (err) {
+			// Worktree creation failed (e.g. branch already exists, disk full, git
+			// unavailable). The ferment is already persisted as planned — proceed
+			// without a dedicated worktree so the agent runs in the main checkout.
+			console.warn(
+				`Failed to create dedicated worktree for ferment ${planned.id}: ${err instanceof Error ? err.message : String(err)}`,
+			)
 		}
 	}
 
