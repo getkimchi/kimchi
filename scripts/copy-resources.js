@@ -97,8 +97,7 @@ if (!isDev) {
 	mkdirSync(proxyHelperBinDest, { recursive: true })
 	cpSync(proxyHelperSrc, join(proxyHelperBinDest, proxyHelperName))
 
-	const superpowersSkillSrc = join(projectRoot, "vendor", "superpowers", "skills")
-	const superpowersSkillDst = join(projectRoot, "dist", "share", "kimchi", "vendor", "superpowers", "skills")
-	mkdirSync(superpowersSkillDst, { recursive: true })
-	cpSync(superpowersSkillSrc, superpowersSkillDst, { recursive: true })
+	// Vendored skills (currently empty) used to be copied here. The
+	// bench/exclude-vendor-skills experiment disables the default superpowers
+	// bundle; see src/config.ts VENDOR_SKILL_PATHS for the matching change.
 }
