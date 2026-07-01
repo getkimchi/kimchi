@@ -183,6 +183,7 @@ const READ_ONLY_SUBCOMMANDS: Record<string, Set<string> | Record<string, string[
 		"config",
 		"tag",
 		"stash",
+		"worktree",
 		"reflog",
 		"shortlog",
 		"fsck",
@@ -200,7 +201,18 @@ const READ_ONLY_SUBCOMMANDS: Record<string, Set<string> | Record<string, string[
 	pip: new Set(["list", "show", "search", "freeze", "--version"]),
 	cargo: new Set(["tree", "search", "--version"]),
 	docker: new Set(["ps", "images", "logs", "inspect", "version", "info"]),
-	kubectl: new Set(["get", "describe", "logs", "top", "version", "config"]),
+	kubectl: new Set([
+		"get",
+		"describe",
+		"logs",
+		"top",
+		"version",
+		"config",
+		"cluster-info",
+		"api-resources",
+		"api-versions",
+		"explain",
+	]),
 	// `gh` and `glab` use the fine-grained form (per-sub-sub-command
 	// allowlist) because both CLIs have mutation-capable sub-sub-commands
 	// under each parent (e.g. `gh pr create`, `glab mr create`, `gh repo
@@ -252,6 +264,26 @@ const READ_ONLY_SUBCOMMANDS: Record<string, Set<string> | Record<string, string[
 		user: "*",
 		status: "*",
 		search: "*",
+	},
+	// gcloud uses the fine-grained form because most groups have both safe
+	// and unsafe sub-sub-commands. The matcher inspects tokens[2] only, so
+	// for gcloud's three-level structure (`gcloud <group> <resource> <action>`)
+	// the safety distinction lives at tokens[3] — beyond the matcher's reach.
+	// Parents whose sub-sub-commands include mutations (e.g. `container clusters`
+	// has both `list` and `get-credentials`/`delete`) are omitted entirely,
+	// following the same rule as `glab cluster`.
+	//
+	// Intentionally NOT included:
+	//   - `artifacts`: `docker` → tokens[2] allows `images delete` etc.
+	//   - `container`: `clusters` → allows `get-credentials` (writes kubeconfig)
+	//      and `delete` (destroys clusters).
+	//   - `compute`: `instances`/`zones` → allows `delete`/`start`/`stop`.
+	//   - `auth configure-docker`: writes docker credential helper config.
+	gcloud: {
+		auth: ["list"],
+		config: ["get-value", "list"],
+		projects: ["list", "describe"],
+		services: ["list"],
 	},
 }
 

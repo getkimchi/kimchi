@@ -115,6 +115,10 @@ describe("isReadOnlyBashCommand", () => {
 		expect(isReadOnlyBashCommand("git diff HEAD")).toBe(true)
 	})
 
+	it("allows git worktree list", () => {
+		expect(isReadOnlyBashCommand("git worktree list")).toBe(true)
+	})
+
 	it("blocks git subcommands outside allowlist", () => {
 		expect(isReadOnlyBashCommand("git push")).toBe(false)
 		expect(isReadOnlyBashCommand("git commit -am x")).toBe(false)
@@ -329,6 +333,49 @@ describe("isReadOnlyBashCommand", () => {
 			expect(isReadOnlyBashCommand("npm install foo")).toBe(false)
 			expect(isReadOnlyBashCommand("kubectl delete pod foo")).toBe(false)
 			expect(isReadOnlyBashCommand("docker rm foo")).toBe(false)
+		})
+
+		it("allows kubectl cluster-info and other read-only discovery commands", () => {
+			expect(isReadOnlyBashCommand("kubectl cluster-info")).toBe(true)
+			expect(isReadOnlyBashCommand("kubectl api-resources")).toBe(true)
+			expect(isReadOnlyBashCommand("kubectl api-versions")).toBe(true)
+			expect(isReadOnlyBashCommand("kubectl explain pods")).toBe(true)
+		})
+
+		it("allows gcloud read-only subcommands", () => {
+			expect(isReadOnlyBashCommand("gcloud auth list")).toBe(true)
+			expect(isReadOnlyBashCommand("gcloud config get-value project")).toBe(true)
+			expect(isReadOnlyBashCommand("gcloud config list")).toBe(true)
+			expect(isReadOnlyBashCommand("gcloud projects list")).toBe(true)
+			expect(isReadOnlyBashCommand("gcloud projects describe my-project")).toBe(true)
+			expect(isReadOnlyBashCommand("gcloud services list")).toBe(true)
+		})
+
+		it("blocks gcloud mutating subcommands", () => {
+			// auth configure-docker writes docker credential helper config
+			expect(isReadOnlyBashCommand("gcloud auth configure-docker")).toBe(false)
+			// config set mutates config
+			expect(isReadOnlyBashCommand("gcloud config set project foo")).toBe(false)
+			// services enable mutates state
+			expect(isReadOnlyBashCommand("gcloud services enable sql.googleapis.com")).toBe(false)
+		})
+
+		it("blocks gcloud three-level commands whose parents have unsafe children", () => {
+			// `gcloud artifacts docker` would allow `images delete` — too broad
+			expect(isReadOnlyBashCommand("gcloud artifacts docker images list")).toBe(false)
+			// `gcloud container clusters` would allow `get-credentials` (writes
+			// kubeconfig) and `delete` (destroys cluster) — too broad
+			expect(isReadOnlyBashCommand("gcloud container clusters get-credentials my-cluster")).toBe(false)
+			expect(isReadOnlyBashCommand("gcloud container clusters list")).toBe(false)
+		})
+
+		it("blocks bare gcloud with no subcommand", () => {
+			expect(isReadOnlyBashCommand("gcloud")).toBe(false)
+		})
+
+		it("blocks gcloud subcommands not in the allowlist", () => {
+			expect(isReadOnlyBashCommand("gcloud compute instances list")).toBe(false)
+			expect(isReadOnlyBashCommand("gcloud iam roles list")).toBe(false)
 		})
 	})
 
