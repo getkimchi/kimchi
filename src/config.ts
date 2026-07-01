@@ -6,7 +6,7 @@ import { getVersion } from "./utils.js"
 
 const KIMCHI_CONFIG_PATH = resolve(homedir(), ".config", "kimchi", "config.json")
 const AGENT_CONFIG_DIR = resolve(homedir(), ".config", "kimchi", "harness")
-const CAST_AI_LLM_ENDPOINT = "https://llm.cast.ai/openai/v1"
+const KIMCHI_LLM_ENDPOINT = "https://llm.kimchi.dev/openai/v1"
 const DEFAULT_TELEMETRY_LOGS_ENDPOINT = "https://api.cast.ai/ai-optimizer/v1beta/logs:ingest"
 const DEFAULT_TELEMETRY_METRICS_ENDPOINT = "https://api.cast.ai/ai-optimizer/v1beta/metrics:ingest"
 
@@ -423,7 +423,7 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 	return {
 		apiKey: extras.apiKey ?? "",
 		agentConfigDir: AGENT_CONFIG_DIR,
-		llmEndpoint: extras.llmEndpoint ?? CAST_AI_LLM_ENDPOINT,
+		llmEndpoint: extras.llmEndpoint ?? KIMCHI_LLM_ENDPOINT,
 		customLlmEndpoint: extras.llmEndpoint,
 		maxToolResultChars: extras.maxToolResultChars ?? 10_000,
 		mcpSearchLimit: extras.mcpSearchLimit ?? 5,
