@@ -367,6 +367,16 @@ describe("buildGroupSummaryText", () => {
 		const run = [mockToolFull("read", { path: "a.ts" })]
 		expect(buildGroupSummaryText(run, false)).toBe("read 1 file")
 	})
+
+	it("renders a single generic bash command as 'ran 1 command'", () => {
+		const run = [mockToolFull("bash", { command: "echo hello" })]
+		expect(buildGroupSummaryText(run, false)).toBe("ran 1 command")
+	})
+
+	it("renders a single in-progress generic bash command as 'running 1 command'", () => {
+		const run = [mockToolFull("bash", { command: "echo hello" }, { isPartial: true })]
+		expect(buildGroupSummaryText(run, true)).toBe("running 1 command")
+	})
 })
 
 describe("buildCurrentToolLine", () => {

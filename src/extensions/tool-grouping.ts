@@ -361,10 +361,15 @@ export function patchToolGroupRendering(): void {
 
 		const run = findToolGroup(this, parent.children)
 		// Collapse when there are 2+ groupable tools, OR when there is exactly 1
-		// tool AND it is describable (describeTool returns a non-undefined string).
-		// A lone git commit should render as "committed abc1234", not the full block.
-		const isDescribableSingle = run.length === 1 && describeTool(run[0]) !== undefined
-		if (run.length < 2 && !isDescribableSingle) return originalRender.call(this, width)
+		// tool whose category is not "operation". Operation tools (write/edit)
+		// never collapse — they need full diffs. This means a lone bash command
+		// collapses to "ran 1 command", a lone read to "read 1 file", and a lone
+		// git commit to "committed abc1234" (describeTool overrides the summary).
+		const isCollapsibleSingle =
+			run.length === 1 &&
+			isToolLike(run[0]) &&
+			classifyTool(run[0].toolName, run[0].args) !== "operation"
+		if (run.length < 2 && !isCollapsibleSingle) return originalRender.call(this, width)
 
 		// ctrl+o wires to component.setExpanded() on ALL tools globally.
 		// Use the last tool's .expanded field as the group's expand state.
