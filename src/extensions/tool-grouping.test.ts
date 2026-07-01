@@ -454,6 +454,19 @@ describe("describeTool", () => {
 		)
 	})
 
+	it("parses rtk commit output format: 'ok <sha>'", () => {
+		expect(describeTool(makeBashTool("rtk git commit -m foo", { stdout: "ok 9cbcbc1" }))).toBe("committed 9cbcbc1")
+	})
+
+	it("parses rtk push output format: 'ok <branch>'", () => {
+		expect(describeTool(makeBashTool("rtk git push", { stdout: "ok master" }))).toBe("pushed master")
+	})
+
+	it("parses plain (non-rtk) git commit when output uses rtk format", () => {
+		// If someone aliases git to rtk, the command is 'git commit' but output is rtk format
+		expect(describeTool(makeBashTool("git commit -m foo", { stdout: "ok abc1234" }))).toBe("committed abc1234")
+	})
+
 	it("returns undefined for unrecognized bash commands", () => {
 		expect(describeTool(makeBashTool("ls -la", { stdout: "file1\nfile2" }))).toBeUndefined()
 	})

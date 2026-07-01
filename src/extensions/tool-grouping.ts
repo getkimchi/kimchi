@@ -217,12 +217,15 @@ function getBashStdout(tool: any): string | undefined {
 	return typeof block?.text === "string" ? block.text : undefined
 }
 
-// Matches `[branch sha]` at the start of a line. Git commit stdout looks like:
-//   [main abc1234] commit message
+// Standard git commit stdout: `[main abc1234] commit message`
 const GIT_COMMIT_SHA_RE = /^\[[^\s]+\s+([0-9a-f]{7,40})\]/m
+// rtk git commit stdout: `ok abc1234`
+const RTK_COMMIT_SHA_RE = /^ok\s+([0-9a-f]{7,40})\b/m
 
-// Matches `<old>..<new>  ref -> ref` — capture group 2 is the NEW sha.
+// Standard git push stdout: `abc1234..def5678  branch -> branch` — group 2 is NEW sha
 const GIT_PUSH_SHA_RE = /([0-9a-f]{7,40})\.\.([0-9a-f]{7,40})\s+\S+ -> \S+/
+// rtk git push stdout: `ok <branch>` — we use the branch name as the descriptor
+const RTK_PUSH_RE = /^ok\s+(\S+)/m
 
 /**
  * Produce a short human description of a completed tool call, when one can be
@@ -254,12 +257,14 @@ export function describeTool(tool: object): string | undefined {
 	if (stdout === undefined) return undefined
 
 	if (subcommand === "commit") {
-		const match = stdout.match(GIT_COMMIT_SHA_RE)
+		const match = stdout.match(GIT_COMMIT_SHA_RE) ?? stdout.match(RTK_COMMIT_SHA_RE)
 		return match ? `committed ${match[1]}` : undefined
 	}
 	// subcommand === "push"
 	const match = stdout.match(GIT_PUSH_SHA_RE)
-	return match ? `pushed ${match[2]}` : undefined
+	if (match) return `pushed ${match[2]}`
+	const rtkMatch = stdout.match(RTK_PUSH_RE)
+	return rtkMatch ? `pushed ${rtkMatch[1]}` : undefined
 }
 
 // ---------------------------------------------------------------------------
