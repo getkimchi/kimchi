@@ -677,9 +677,12 @@ describe("getActiveVendorSkillPaths", () => {
 		rmSync(mockHome, { recursive: true, force: true })
 	})
 
-	it("returns vendor paths when vendor dir exists and no sentinel", () => {
-		mkdirSync(join(mockHome, ".config", "kimchi", "vendor", "superpowers", "skills"), { recursive: true })
-		expect(getActiveVendorSkillPaths()).toEqual(VENDOR_SKILL_PATHS)
+	it("returns empty array when no vendor paths are configured", () => {
+		// bench/exclude-vendor-skills: VENDOR_SKILL_PATHS is intentionally empty.
+		// Previously this test asserted the superpowers dir was returned; that
+		// behaviour is being benchmarked against this empty default.
+		expect(VENDOR_SKILL_PATHS).toEqual([])
+		expect(getActiveVendorSkillPaths()).toEqual([])
 	})
 
 	it("returns empty array when sentinel exists in harness skills dir", () => {

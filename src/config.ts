@@ -1,7 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join, relative, resolve } from "node:path"
-import { SUPERPOWERS_SKILL_PATH } from "./extensions/superpowers/config.js"
 import { getVersion } from "./utils.js"
 
 const KIMCHI_CONFIG_PATH = resolve(homedir(), ".config", "kimchi", "config.json")
@@ -17,8 +16,12 @@ export const OPTIONAL_SKILL_PATHS = [join(".pi", "agent", "skills"), join(".clau
 /**
  * Relative-to-home skill paths for auto-installed vendor packages.
  * Resolved to absolute by expandSkillPaths() at runtime.
+ *
+ * Empty as of the bench/exclude-vendor-skills experiment. Previously contained
+ * `SUPERPOWERS_SKILL_PATH` so superpowers shipped by default; that decision is
+ * being benchmarked against this baseline. To re-enable, restore the entry.
  */
-export const VENDOR_SKILL_PATHS = [SUPERPOWERS_SKILL_PATH]
+export const VENDOR_SKILL_PATHS: string[] = []
 
 /**
  * Returns vendor skill paths that aren't already covered by the user's harness
