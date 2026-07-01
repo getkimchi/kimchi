@@ -136,7 +136,7 @@ type SessionRecord = {
 	nextBlockId: number
 	/**
 	 * Per-assistant-message map from pi-mono's contentIndex → assigned
-	 * messageId. Cleared on each agent_start so a new assistant message
+	 * messageId. Cleared on each agent_start/message_start so a new assistant message
 	 * starts a fresh contentIndex namespace without colliding with the
 	 * previous message's assignments.
 	 */
