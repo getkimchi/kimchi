@@ -39,6 +39,7 @@ import branchCommandExtension from "./extensions/branch-command.js"
 import claudeCodeHooksAdapter from "./extensions/claude-code-hook-adapter/index.js"
 import claudeCodeSkillsExtension from "./extensions/claude-code-skills/index.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
+import cursorRulesExtension from "./extensions/cursor-rules/index.js"
 import customizeFooterExtension from "./extensions/customize-footer-command.js"
 import explorationGuardExtension from "./extensions/exploration-guard.js"
 import fermentExtension from "./extensions/ferment/index.js"
@@ -529,6 +530,9 @@ try {
 			thinkingStepsExtension,
 			assistantPrefixExtension,
 			clipboardImageExtension,
+			...enabledExtensionFactories([
+				{ id: "extensions.cursor-rules", factory: cursorRulesExtension },
+			] satisfies ManagedExtensionFactory[]),
 			sessionModeOnboarding,
 			tipsExtension(),
 			...enabledExtensionFactories([
