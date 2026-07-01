@@ -215,14 +215,23 @@ describe("findToolGroup", () => {
 		expect(group).not.toContain(spacer)
 	})
 
-	it("non-tool, non-spacer breaks the run", () => {
+	it("non-tool components are transparent — do not break the run", () => {
 		const a = mockTool("a")
 		const b = mockTool("b")
 		const other = { render: () => [], invalidate: () => {} }
 		const c = mockTool("c")
 		const children = [a, b, other, c]
-		expect(findToolGroup(a, children)).toEqual([a, b])
-		expect(findToolGroup(c, children)).toEqual([c])
+		expect(findToolGroup(a, children)).toEqual([a, b, c])
+		expect(findToolGroup(c, children)).toEqual([a, b, c])
+	})
+
+	it("non-tool components are not included in the returned run array", () => {
+		const a = mockTool("a")
+		const other = { render: () => [], invalidate: () => {} }
+		const b = mockTool("b")
+		const children = [a, other, b]
+		const group = findToolGroup(a, children)
+		expect(group).not.toContain(other)
 	})
 
 	it("failed tool (isError) breaks the run — excluded from group", () => {

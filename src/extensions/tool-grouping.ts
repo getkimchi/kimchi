@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { ToolExecutionComponent } from "@earendil-works/pi-coding-agent"
-import { Container, Spacer } from "@earendil-works/pi-tui"
+import { Container } from "@earendil-works/pi-tui"
 import { ToolBlockView } from "../components/tool-block.js"
 import { formatToolTimer } from "./tool-rendering.js"
 
@@ -123,7 +123,8 @@ function isUngroupableTool(v: unknown): boolean {
 }
 
 function breaksRun(child: unknown): boolean {
-	return !isToolLike(child) || isFailedTool(child) || isUngroupableTool(child)
+	if (!isToolLike(child)) return false // non-tool components don't break runs — they're skipped
+	return isFailedTool(child) || isUngroupableTool(child)
 }
 
 export function findToolGroup(self: object, children: object[]): object[] {
@@ -137,7 +138,7 @@ export function findToolGroup(self: object, children: object[]): object[] {
 	let start = selfIdx
 	for (let i = selfIdx - 1; i >= 0; i--) {
 		const child = children[i]
-		if (child instanceof Spacer) continue
+		if (!isToolLike(child)) continue // skip non-tool components (Spacers, borders, etc.)
 		if (breaksRun(child)) break
 		start = i
 	}
@@ -146,16 +147,16 @@ export function findToolGroup(self: object, children: object[]): object[] {
 	let end = selfIdx
 	for (let i = selfIdx + 1; i < children.length; i++) {
 		const child = children[i]
-		if (child instanceof Spacer) continue
+		if (!isToolLike(child)) continue // skip non-tool components (Spacers, borders, etc.)
 		if (breaksRun(child)) break
 		end = i
 	}
 
-	// Collect tools in [start..end], excluding Spacers and run-breakers
+	// Collect tools in [start..end], excluding non-tools and run-breakers
 	const tools: object[] = []
 	for (let i = start; i <= end; i++) {
 		const child = children[i]
-		if (child instanceof Spacer) continue
+		if (!isToolLike(child)) continue
 		if (breaksRun(child)) continue
 		tools.push(child)
 	}
@@ -366,9 +367,7 @@ export function patchToolGroupRendering(): void {
 		// collapses to "ran 1 command", a lone read to "read 1 file", and a lone
 		// git commit to "committed abc1234" (describeTool overrides the summary).
 		const isCollapsibleSingle =
-			run.length === 1 &&
-			isToolLike(run[0]) &&
-			classifyTool(run[0].toolName, run[0].args) !== "operation"
+			run.length === 1 && isToolLike(run[0]) && classifyTool(run[0].toolName, run[0].args) !== "operation"
 		if (run.length < 2 && !isCollapsibleSingle) return originalRender.call(this, width)
 
 		// ctrl+o wires to component.setExpanded() on ALL tools globally.
