@@ -84,6 +84,19 @@ describe("resource definitions", () => {
 		// required when the user flips the /resources toggle.
 		expect(resource?.restartRequired).toBeFalsy()
 	})
+
+	it("registers cursor-rules as a toggleable extension", () => {
+		const resources = getResourceDefinitions()
+		const resource = resources.find((r) => r.id === "extensions.cursor-rules")
+		expect(resource).toMatchObject({
+			kind: "extensions",
+			label: "Cursor rules",
+			defaultEnabled: true,
+		})
+		// Toggling is dynamic — rules are only discovered/injected when the
+		// resource is enabled, so no restart is required.
+		expect(resource?.restartRequired).toBeFalsy()
+	})
 })
 
 function writeJson(path: string, data: unknown): void {
