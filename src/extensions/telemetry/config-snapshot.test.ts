@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import * as agentDiscovery from "../../agent-discovery/index.js"
 import type { AgentDiscovery } from "../../agent-discovery/index.js"
-import type { KimchiConfig, SearchStrategyConfig } from "../../config.js"
+import { FERMENTS_DEFAULTS, type KimchiConfig, type SearchStrategyConfig } from "../../config.js"
 import * as modelRoles from "../orchestration/model-roles.js"
 import type { ModelRoles } from "../orchestration/model-roles.js"
 import * as permissions from "../permissions/index.js"
@@ -27,6 +27,7 @@ function makeConfig(overrides: Partial<KimchiConfig> = {}): KimchiConfig {
 		retry: { maxRetries: 10 },
 		onboarding: {},
 		deviceId: "test-device-id",
+		ferments: FERMENTS_DEFAULTS,
 		...overrides,
 	}
 }
