@@ -156,15 +156,16 @@ const FIND_EXECUTION_FLAGS = new Set([
 /** Allowed subcommands for a program in plan mode.
  *  Two shapes are supported:
  *  - `Set<string>` (legacy): the first subcommand must be in the set; sub-sub-
- *    commands are NOT checked. Used by `git`, `npm`, `kubectl`, etc., whose
+ *    commands are NOT checked. Used by `npm`, `kubectl`, etc., whose
  *    listed subcommands have no mutation-capable sub-sub-commands worth
- *    distinguishing, OR where the team has accepted the trade-off (e.g. `git
- *    branch <new>` creates a branch but is rarely abused in plan mode).
+ *    distinguishing, OR where the team has accepted the trade-off.
  *  - `Record<subcommand, string[] | "*">` (fine-grained): the first subcommand
  *    must be a key, then `tokens[2]` is matched against the array, or the value
  *    `"*"` allows any sub-sub-command. Absent sub-sub-command (e.g. bare
  *    `gh pr`) is blocked. Used by CLIs whose parent commands have both safe
- *    and unsafe children (e.g. `gh pr`, `glab mr`).
+ *    and unsafe children (e.g. `gh pr`, `glab mr`), or where a single
+ *    subcommand needs sub-sub-command scoping (e.g. `git worktree` →
+ *    `list`-only while all other git subcommands are wildcarded).
  */
 const READ_ONLY_SUBCOMMANDS: Record<string, Set<string> | Record<string, string[] | "*">> = {
 	// git uses the fine-grained Record form (not the legacy Set) so that
