@@ -343,8 +343,20 @@ try {
 		try {
 			const existing = JSON.parse(readFileSync(settingsPath, "utf-8"))
 			const sdkRetry = existing.retry
-			if (!sdkRetry || sdkRetry.maxRetries !== config.retry.maxRetries) {
-				existing.retry = { ...sdkRetry, maxRetries: config.retry.maxRetries }
+			const sdkProviderTimeoutMs = sdkRetry?.provider?.timeoutMs
+			if (
+				!sdkRetry ||
+				sdkRetry.maxRetries !== config.retry.maxRetries ||
+				sdkProviderTimeoutMs !== config.retry.providerTimeoutMs
+			) {
+				existing.retry = {
+					...sdkRetry,
+					maxRetries: config.retry.maxRetries,
+					provider: {
+						...(sdkRetry?.provider ?? {}),
+						timeoutMs: config.retry.providerTimeoutMs,
+					},
+				}
 				writeFileSync(settingsPath, `${JSON.stringify(existing, null, 2)}\n`)
 			}
 		} catch {

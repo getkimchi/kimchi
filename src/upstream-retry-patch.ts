@@ -12,7 +12,7 @@ type PatchableAgentSession = {
 // Covers Cloudflare 524 timeouts and Node fetch connection-level failures that
 // warrant a retry (socket closed mid-stream, pipe broken, connection reset, etc.)
 const RETRYABLE_NETWORK_ERROR_RE =
-	/\b524\b|cloudflare.*timeout|timeout.*cloudflare|socket connection was closed|unexpectedly|EPIPE|ERR_SOCKET_CLOSED|ERR_STREAM_PREMATURE_CLOSE|ECONNRESET|connection reset/i
+	/\b524\b|cloudflare.*timeout|timeout.*cloudflare|timed out after|socket connection was closed|unexpectedly|EPIPE|ERR_SOCKET_CLOSED|ERR_STREAM_PREMATURE_CLOSE|ECONNRESET|connection reset/i
 
 export function isNetworkErrorRetryable(message: RetryableMessage): boolean {
 	return (

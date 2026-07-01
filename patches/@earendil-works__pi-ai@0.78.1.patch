@@ -1,8 +1,88 @@
 diff --git a/dist/providers/openai-completions.js b/dist/providers/openai-completions.js
-index 423825a3dcf189304e3112bf68c6d8f89cb2ec44..038eddc8e9e62d850c63da3876383964f14573d1 100644
+index 423825a3dcf189304e3112bf68c6d8f89cb2ec44..c3bcb486fcd7431da53e8a792fb7bdfb3fd0d931 100644
 --- a/dist/providers/openai-completions.js
 +++ b/dist/providers/openai-completions.js
-@@ -825,10 +825,11 @@ function convertTools(tools, compat) {
+@@ -68,6 +68,32 @@ export const streamOpenAICompletions = (model, context, options) => {
+             stopReason: "stop",
+             timestamp: Date.now(),
+         };
++        // kimchi-dev patch: stream-level AbortController timeout.
++        // The OpenAI SDK clears its internal timeout after headers arrive (fetchWithTimeout
++        // finally block), leaving the SSE stream body unprotected. This controller stays
++        // active through the entire for-await loop.
++        // Tracking: https://github.com/earendil-works/pi/issues/3020
++        // Remove when #3020 ships a stream-level timeout upstream.
++        let _streamTimeoutController = null;
++        let _streamTimeoutId = null;
++        if (options?.timeoutMs && options?.timeoutMs > 0) {
++            _streamTimeoutController = new AbortController();
++            _streamTimeoutId = setTimeout(() => {
++                _streamTimeoutController.abort(
++                    new Error("Request timed out after " + options.timeoutMs + "ms")
++                );
++            }, options.timeoutMs);
++            if (options.signal) {
++                if (options.signal.aborted) {
++                    _streamTimeoutController.abort(options.signal.reason);
++                } else {
++                    options.signal.addEventListener("abort", () => {
++                        _streamTimeoutController.abort(options.signal.reason);
++                    }, { once: true });
++                }
++            }
++        }
++        const _combinedSignal = _streamTimeoutController?.signal ?? options?.signal;
+         try {
+             const apiKey = options?.apiKey;
+             if (!apiKey) {
+@@ -83,7 +109,7 @@ export const streamOpenAICompletions = (model, context, options) => {
+                 params = nextParams;
+             }
+             const requestOptions = {
+-                ...(options?.signal ? { signal: options.signal } : {}),
++                ...(_combinedSignal ? { signal: _combinedSignal } : {}),
+                 ...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
+                 maxRetries: options?.maxRetries ?? 0,
+             };
+@@ -314,22 +340,31 @@ export const streamOpenAICompletions = (model, context, options) => {
+             if (!hasFinishReason) {
+                 throw new Error("Stream ended without finish_reason");
+             }
++            if (_streamTimeoutId) clearTimeout(_streamTimeoutId);
+             stream.push({ type: "done", reason: output.stopReason, message: output });
+             stream.end();
+         }
+         catch (error) {
++            if (_streamTimeoutId) clearTimeout(_streamTimeoutId);
+             for (const block of output.content) {
+                 delete block.index;
+                 // Streaming scratch buffers are only used during parsing; never persist them.
+                 delete block.partialArgs;
+                 delete block.streamIndex;
+             }
+-            output.stopReason = options?.signal?.aborted ? "aborted" : "error";
+-            output.errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
+-            // Some providers via OpenRouter give additional information in this field.
+-            const rawMetadata = error?.error?.metadata?.raw;
+-            if (rawMetadata)
+-                output.errorMessage += `\n${rawMetadata}`;
++            const _isStreamTimeout = _streamTimeoutController?.signal.aborted
++                && !(options?.signal?.aborted);
++            if (_isStreamTimeout) {
++                output.stopReason = "error";
++                output.errorMessage = "Request timed out after " + options?.timeoutMs + "ms";
++            } else {
++                output.stopReason = options?.signal?.aborted ? "aborted" : "error";
++                output.errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
++                // Some providers via OpenRouter give additional information in this field.
++                const rawMetadata = error?.error?.metadata?.raw;
++                if (rawMetadata)
++                    output.errorMessage += `\n${rawMetadata}`;
++            }
+             stream.push({ type: "error", reason: output.stopReason, error: output });
+             stream.end();
+         }
+@@ -825,10 +860,11 @@ function convertTools(tools, compat) {
  function parseChunkUsage(rawUsage, model) {
      const promptTokens = rawUsage.prompt_tokens || 0;
      const cacheReadTokens = rawUsage.prompt_tokens_details?.cached_tokens ?? rawUsage.prompt_cache_hit_tokens ?? 0;
