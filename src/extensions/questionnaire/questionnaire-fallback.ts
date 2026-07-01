@@ -137,7 +137,7 @@ export async function promptQuestionnaireFallback(
 			}
 			case "single": {
 				if (acpElicitForm) {
-					const answer = await promptAcpSingleChoice(ui, acpElicitForm, question, questionText)
+					const answer = await promptAcpSingleChoice(acpElicitForm, question, questionText)
 					if (answer === "cancelled") return { questions, answers, cancelled: true }
 					if (answer) answers.push(answer)
 					continue
@@ -185,7 +185,7 @@ export async function promptQuestionnaireFallback(
 			}
 			case "multi": {
 				if (acpElicitForm) {
-					const answer = await promptAcpMultiChoice(ui, acpElicitForm, question, questionText)
+					const answer = await promptAcpMultiChoice(acpElicitForm, question, questionText)
 					if (answer === "cancelled") return { questions, answers, cancelled: true }
 					if (answer) answers.push(answer)
 					continue
@@ -297,8 +297,21 @@ async function promptAcpFreeTextAnswer(
 	}
 }
 
+async function promptAcpCustomText(
+	elicitForm: AcpElicitForm,
+	question: Question,
+	questionText: string,
+	required: boolean,
+): Promise<string | "cancelled" | undefined> {
+	const response = await elicitForm(`${questionText}\n\nYour answer:`, undefined, freeTextSchema(required), undefined)
+	if (response === "aborted" || response === undefined) return required ? "cancelled" : undefined
+
+	const value = response.value
+	if (typeof value !== "string" || !value) return required ? "cancelled" : undefined
+	return value
+}
+
 async function promptAcpSingleChoice(
-	ui: ExtensionUIContext,
 	elicitForm: AcpElicitForm,
 	question: Question,
 	questionText: string,
@@ -319,8 +332,8 @@ async function promptAcpSingleChoice(
 	if (!option) return question.required ? "cancelled" : undefined
 
 	if (option.id === CUSTOM_OPTION_ID) {
-		const custom = await ui.input(`${questionText}\n\nYour answer:`)
-		if (!custom && question.required) return "cancelled"
+		const custom = await promptAcpCustomText(elicitForm, question, questionText, question.required)
+		if (custom === "cancelled") return "cancelled"
 		if (!custom) return undefined
 		return {
 			id: question.id,
@@ -341,7 +354,6 @@ async function promptAcpSingleChoice(
 }
 
 async function promptAcpMultiChoice(
-	ui: ExtensionUIContext,
 	elicitForm: AcpElicitForm,
 	question: Question,
 	questionText: string,
@@ -366,7 +378,7 @@ async function promptAcpMultiChoice(
 		if (!option) continue
 
 		if (option.id === CUSTOM_OPTION_ID) {
-			const custom = await ui.input(`${questionText}\n\nYour answer:`)
+			const custom = await promptAcpCustomText(elicitForm, question, questionText, false)
 			if (custom) {
 				choices.push({
 					id: CUSTOM_OPTION_ID,

@@ -38,11 +38,13 @@ function makeUI(handlers: UIHandlers): ExtensionUIContext {
 }
 
 type AcpResponse = Awaited<ReturnType<AcpElicitForm>>
+type AcpResponseInput = AcpResponse | AcpResponse[]
 type QuestionInput = Partial<Question> & Pick<Question, "id" | "prompt" | "type">
 
-function makeAcpUI(elicitResponse: AcpResponse, inputResponse: string | undefined = "should not be called") {
+function makeAcpUI(elicitResponse: AcpResponseInput, inputResponse: string | undefined = "should not be called") {
 	const inputSpy = vi.fn(async () => inputResponse)
-	const elicitSpy = vi.fn<AcpElicitForm>(async () => elicitResponse)
+	const responses = Array.isArray(elicitResponse) ? [...elicitResponse] : [elicitResponse]
+	const elicitSpy = vi.fn<AcpElicitForm>(async () => responses.shift())
 	const ui = {
 		input: inputSpy,
 		[ACP_ELICIT_FORM]: elicitSpy,
@@ -53,7 +55,7 @@ function makeAcpUI(elicitResponse: AcpResponse, inputResponse: string | undefine
 
 async function runAcpQuestionnaire(
 	question: QuestionInput,
-	elicitResponse: AcpResponse,
+	elicitResponse: AcpResponseInput,
 	inputResponse?: string | undefined,
 ) {
 	const { ui, inputSpy, elicitSpy } = makeAcpUI(elicitResponse, inputResponse)
@@ -497,13 +499,14 @@ describe("promptQuestionnaireFallback — ACP structured choices", () => {
 	})
 
 	it("asks for free text after ACP single-choice chooses Other", async () => {
-		const { result, inputSpy } = await runAcpQuestionnaire(
-			acpSingleQuestion({ allowOther: true }),
+		const { result, inputSpy, elicitSpy } = await runAcpQuestionnaire(acpSingleQuestion({ allowOther: true }), [
 			{ value: "__other__" },
-			"Custom answer",
-		)
+			{ value: "Custom answer" },
+		])
 
-		expect(inputSpy).toHaveBeenCalledWith("Pick scope\n\nYour answer:")
+		expect(inputSpy).not.toHaveBeenCalled()
+		expect(elicitSpy).toHaveBeenCalledTimes(2)
+		expect(elicitSpy.mock.calls[1]).toEqual(["Pick scope\n\nYour answer:", undefined, freeTextSchema(true), undefined])
 		expect(result.answers).toEqual([
 			{
 				id: "scope",
@@ -535,13 +538,19 @@ describe("promptQuestionnaireFallback — ACP structured choices", () => {
 	})
 
 	it("asks for free text only after ACP multi-select chooses Other", async () => {
-		const { result, inputSpy } = await runAcpQuestionnaire(
-			acpMultiQuestion({ allowOther: true }),
+		const { result, inputSpy, elicitSpy } = await runAcpQuestionnaire(acpMultiQuestion({ allowOther: true }), [
 			{ value: ["a", "__other__"] },
-			"Custom answer",
-		)
+			{ value: "Custom answer" },
+		])
 
-		expect(inputSpy).toHaveBeenCalledWith("Pick features\n\nYour answer:")
+		expect(inputSpy).not.toHaveBeenCalled()
+		expect(elicitSpy).toHaveBeenCalledTimes(2)
+		expect(elicitSpy.mock.calls[1]).toEqual([
+			"Pick features\n\nYour answer:",
+			undefined,
+			freeTextSchema(false),
+			undefined,
+		])
 		expect(result.answers).toEqual([
 			{
 				id: "features",
@@ -636,13 +645,19 @@ describe("promptQuestionnaireFallback — ACP structured choices", () => {
 	})
 
 	it("drops empty multi-select Other text when normal ACP choices remain", async () => {
-		const { result, inputSpy } = await runAcpQuestionnaire(
-			acpMultiQuestion({ allowOther: true }),
+		const { result, inputSpy, elicitSpy } = await runAcpQuestionnaire(acpMultiQuestion({ allowOther: true }), [
 			{ value: ["a", "__other__"] },
-			"",
-		)
+			{ value: "" },
+		])
 
-		expect(inputSpy).toHaveBeenCalledWith("Pick features\n\nYour answer:")
+		expect(inputSpy).not.toHaveBeenCalled()
+		expect(elicitSpy).toHaveBeenCalledTimes(2)
+		expect(elicitSpy.mock.calls[1]).toEqual([
+			"Pick features\n\nYour answer:",
+			undefined,
+			freeTextSchema(false),
+			undefined,
+		])
 		expect(result.cancelled).toBe(false)
 		expect(result.answers).toEqual([
 			{
@@ -658,13 +673,19 @@ describe("promptQuestionnaireFallback — ACP structured choices", () => {
 	})
 
 	it("cancels required multi-select when empty Other text leaves no ACP choices", async () => {
-		const { result, inputSpy } = await runAcpQuestionnaire(
-			acpMultiQuestion({ allowOther: true }),
+		const { result, inputSpy, elicitSpy } = await runAcpQuestionnaire(acpMultiQuestion({ allowOther: true }), [
 			{ value: ["__other__"] },
-			"",
-		)
+			{ value: "" },
+		])
 
-		expect(inputSpy).toHaveBeenCalledWith("Pick features\n\nYour answer:")
+		expect(inputSpy).not.toHaveBeenCalled()
+		expect(elicitSpy).toHaveBeenCalledTimes(2)
+		expect(elicitSpy.mock.calls[1]).toEqual([
+			"Pick features\n\nYour answer:",
+			undefined,
+			freeTextSchema(false),
+			undefined,
+		])
 		expect(result.cancelled).toBe(true)
 		expect(result.answers).toEqual([])
 	})
