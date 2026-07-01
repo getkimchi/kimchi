@@ -1,0 +1,25 @@
+# Harbor retry configuration for Claude Code + Kimchi gateway runs.
+#
+# Cloudflare returns HTTP 524 ("A timeout occurred") when the Kimchi gateway
+# origin does not produce a response (or a streaming chunk) within Cloudflare's
+# ~100s window. These are transient — the same request typically succeeds on
+# the next attempt — so they must be retried with enough attempts and a
+# backoff curve that gives the upstream time to recover.
+#
+# Harbor's CLI exposes --max-retries / --retry-include / --retry-exclude but
+# NOT the backoff timing parameters (wait_multiplier, min_wait_sec, max_wait_sec).
+# Those can only be set via this config file, loaded with `--config`.
+#
+# The CLI's --max-retries flag overrides retry.max_retries below at runtime,
+# so the env-var override (CLAUDE_CODE_API_MAX_RETRIES) still works when the
+# run script passes --max-retries. The backoff curve below is always applied.
+retry:
+  max_retries: 5
+  include_exceptions:
+    - RetryableApiError
+  # Exponential backoff: 10s → 20s → 40s → 80s → 120s (capped).
+  # Total wait across 5 retries: ~270s (~4.5 min), giving the upstream
+  # ample time to recover from transient 524s between full-trial restarts.
+  wait_multiplier: 2.0
+  min_wait_sec: 10.0
+  max_wait_sec: 120.0

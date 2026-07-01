@@ -21,6 +21,14 @@ CLAUDE_CODE_OUTPUT_RESERVE_TOKENS = 32_768
 CLAUDE_CODE_CONTEXT_SAFETY_MARGIN_TOKENS = 8_192
 CLAUDE_CODE_OUTPUT_PATH = "/logs/agent/claude-code.txt"
 CLAUDE_CODE_INSTALL_RETRY_DELAYS_SEC = (5, 15)
+# Default API timeout for Claude Code when no API_TIMEOUT_MS is passed through
+# the environment. Long enough that a slow first streaming token from the
+# Kimchi gateway (or a legitimately long reasoning model) won't trigger a
+# client-side timeout before Cloudflare's own 524 fires. Cloudflare's origin
+# timeout is ~100s, so 300s gives a comfortable margin for the origin to
+# begin streaming and for retryable 524s to surface as RetryableApiError
+# rather than as a client-side abort.
+CLAUDE_CODE_DEFAULT_API_TIMEOUT_MS = "300000"
 RETRYABLE_API_STATUSES = frozenset({408, 409, 425, 429, 500, 502, 503, 504, 524, 529})
 RETRYABLE_API_ERROR_MESSAGE_LIMIT = 2_000
 CLAUDE_PASSTHROUGH_ENV_PREFIXES = ("CLAUDE_CODE_", "OTEL_")
@@ -177,6 +185,12 @@ class ClaudeCodeKimchi(KimchiGatewayMixin, ClaudeCode):
             "FORCE_AUTO_BACKGROUND_TASKS": "1",
             "IS_SANDBOX": "1",
         })
+        # Default API_TIMEOUT_MS only if the caller did not pass one through
+        # (via API_TIMEOUT_MS in the passthrough env). A long timeout prevents
+        # Claude Code from aborting on slow first-token responses from the
+        # Kimchi gateway; retryable Cloudflare 524s still surface as
+        # RetryableApiError via the stream-log classifier.
+        env.setdefault("API_TIMEOUT_MS", CLAUDE_CODE_DEFAULT_API_TIMEOUT_MS)
         env.update({key: "" for key in DENIED_ENV_KEYS})
 
         # Harbor merges _extra_env over env=. Remove keys from that channel so
