@@ -17,6 +17,8 @@ import { getAvailableModels } from "../../../startup-context.js"
 import { runAsAgentWorker } from "../../agent-worker-context.js"
 import bashDefaultTimeoutExtension from "../../bash-default-timeout.js"
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
+import { buildExecutionGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
+import { ModelRegistry } from "../../orchestration/model-registry/index.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
 import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import telemetryExtension from "../../telemetry/index.js"
@@ -182,6 +184,13 @@ function resolveDefaultModel(
 	}
 
 	return parentModel
+}
+
+let cachedGuidelinesRegistry: ModelRegistry | undefined
+
+function getGuidelinesRegistry(): ModelRegistry {
+	cachedGuidelinesRegistry ??= new ModelRegistry(getAvailableModels())
+	return cachedGuidelinesRegistry
 }
 
 /** Info about a tool event in the subagent. */
@@ -363,6 +372,10 @@ async function runAgentInner(
 	}
 
 	const disallowedSet = agentConfig?.disallowedTools ? new Set(agentConfig.disallowedTools) : undefined
+
+	const modelId = (options.model as { id?: string } | undefined)?.id
+	const guidelinesBlock = buildExecutionGuidelinesSection(modelId, getGuidelinesRegistry())
+	if (guidelinesBlock) extras.guidelinesBlock = guidelinesBlock
 
 	const effectiveMaxTurns = normalizeMaxTurns(options.maxTurns ?? agentConfig?.maxTurns ?? defaultMaxTurns)
 	const MIN_TOKEN_BUDGET = 1024

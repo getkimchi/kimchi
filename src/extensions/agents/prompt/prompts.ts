@@ -23,6 +23,8 @@ export interface PromptExtras {
 	contextFiles?: ContextFile[]
 	/** Tool names this subagent is expected to have available. */
 	activeToolNames?: string[]
+	/** Execution guidelines block (combined phase guidelines) for the subagent. */
+	guidelinesBlock?: string
 }
 
 /**
@@ -48,6 +50,9 @@ Platform: ${env.platform}`
 	const extraSections: string[] = []
 	const budgetBlock = buildBudgetBlock(extras?.budget)
 	if (budgetBlock) extraSections.push(budgetBlock)
+	if (extras?.guidelinesBlock) {
+		extraSections.push(extras.guidelinesBlock)
+	}
 	if (extras?.memoryBlock) {
 		extraSections.push(extras.memoryBlock)
 	}

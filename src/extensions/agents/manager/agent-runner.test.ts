@@ -103,6 +103,10 @@ vi.mock("../../../config.js", () => ({
 	}),
 }))
 
+vi.mock("../../orchestration/model-registry/guidelines/guidelines-resolver.js", () => ({
+	buildExecutionGuidelinesSection: vi.fn().mockReturnValue(""),
+}))
+
 import {
 	type AgentSession,
 	type CreateAgentSessionResult,
@@ -112,6 +116,7 @@ import {
 import { readTelemetryConfig } from "../../../config.js"
 import { DEFAULT_BASH_TIMEOUT_SECONDS } from "../../bash-default-timeout.js"
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
+import { buildExecutionGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
 import telemetryExtension from "../../telemetry/index.js"
 import { getAgentConfig, getConfig, getToolNamesForType } from "../personas/agent-types.js"
@@ -125,6 +130,7 @@ const mockGetAgentConfig = vi.mocked(getAgentConfig)
 const mockGetToolNamesForType = vi.mocked(getToolNamesForType)
 const mockLoadProjectContextFiles = vi.mocked(loadProjectContextFiles)
 const mockBuildAgentPrompt = vi.mocked(buildAgentPrompt)
+const mockBuildExecutionGuidelinesSection = vi.mocked(buildExecutionGuidelinesSection)
 const mockDefaultResourceLoader = vi.mocked(DefaultResourceLoader)
 const mockTelemetryExtension = vi.mocked(telemetryExtension)
 const mockReadTelemetryConfig = vi.mocked(readTelemetryConfig)
@@ -1415,6 +1421,49 @@ describe("runAgent — includeContextFiles", () => {
 		expect(mockLoadProjectContextFiles).not.toHaveBeenCalled()
 		const extras = mockBuildAgentPrompt.mock.calls[0]?.[4]
 		expect(extras?.contextFiles).toBeUndefined()
+	})
+
+	it("attaches the full Execution Guidelines block (all phases) to subagent prompts", async () => {
+		mockGetAgentConfig.mockReturnValue(
+			makeAgentConfig({ name: "Builder", description: "Build agent", roles: ["build"] }),
+		)
+		mockBuildExecutionGuidelinesSection.mockReturnValue("## Execution Guidelines\n\nCombined builder guideline")
+
+		mockCreateAgentSession.mockResolvedValue({
+			session: makeFakeSession() as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Builder", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		expect(mockBuildExecutionGuidelinesSection).toHaveBeenCalledWith(undefined, expect.anything())
+		const extras = mockBuildAgentPrompt.mock.calls[0]?.[4]
+		expect(extras?.guidelinesBlock).toContain("## Execution Guidelines")
+		expect(extras?.guidelinesBlock).toContain("Combined builder guideline")
+	})
+
+	it("omits guidelines when the resolver returns an empty block", async () => {
+		mockGetAgentConfig.mockReturnValue(makeAgentConfig({ name: "General-Purpose" }))
+		mockBuildExecutionGuidelinesSection.mockReturnValue("")
+
+		mockCreateAgentSession.mockResolvedValue({
+			session: makeFakeSession() as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		expect(mockBuildExecutionGuidelinesSection).toHaveBeenCalledWith(undefined, expect.anything())
+		const extras = mockBuildAgentPrompt.mock.calls[0]?.[4]
+		expect(extras?.guidelinesBlock).toBeUndefined()
 	})
 })
 
