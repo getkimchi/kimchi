@@ -1,6 +1,10 @@
-import type { ElicitationSchema } from "@agentclientprotocol/sdk"
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent"
-import { type AcpElicitForm, getAcpElicitForm } from "../../modes/acp/structured-elicitation.js"
+import {
+	type AcpElicitForm,
+	choiceSchema,
+	freeTextSchema,
+	getAcpElicitForm,
+} from "../../modes/acp/structured-elicitation.js"
 import { CUSTOM_OPTION_ID, CUSTOM_OPTION_LABEL } from "./constants.js"
 import type { Answer, Question, QuestionOption } from "./questionnaire-reducer.js"
 
@@ -257,39 +261,6 @@ function optionsForQuestion(question: Question): QuestionOption[] {
 		})
 	}
 	return options
-}
-
-function choiceSchema(options: QuestionOption[], required: boolean, multi: boolean): ElicitationSchema {
-	return {
-		type: "object",
-		properties: {
-			value: multi
-				? {
-						type: "array",
-						items: {
-							anyOf: options.map((option) => ({ const: option.id, title: option.label })),
-						},
-						...(required ? { minItems: 1 } : {}),
-					}
-				: {
-						type: "string",
-						oneOf: options.map((option) => ({ const: option.id, title: option.label })),
-					},
-		},
-		required: required ? ["value"] : [],
-	}
-}
-
-function freeTextSchema(required: boolean): ElicitationSchema {
-	return {
-		type: "object",
-		properties: {
-			value: {
-				type: "string",
-			},
-		},
-		required: required ? ["value"] : [],
-	}
 }
 
 async function promptAcpFreeTextAnswer(

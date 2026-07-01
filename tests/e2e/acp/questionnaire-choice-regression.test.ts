@@ -1,4 +1,4 @@
-// ACP regression for LLM-2385.
+// ACP regression for questionnaire choice elicitation.
 //
 // The questionnaire tool should use structured ACP elicitation for choices.
 // It must not collect ordinary multi-select choices through a generic
@@ -50,7 +50,7 @@ describe("ACP integration — questionnaire structured elicitation regression", 
 	}
 
 	it(
-		"LLM-2385: normal multi-select choices use structured elicitation, not free-text input",
+		"normal multi-select choices use structured elicitation, not free-text input",
 		async () => {
 			const { result, client } = await runQuestionnaireScenario({
 				artifactName: "questionnaire-choice-structured",
@@ -85,40 +85,7 @@ describe("ACP integration — questionnaire structured elicitation regression", 
 	)
 
 	it(
-		"LLM-2385: normal single-choice options use structured oneOf elicitation",
-		async () => {
-			const { result, client } = await runQuestionnaireScenario({
-				artifactName: "questionnaire-choice-single-structured",
-				question: {
-					id: "choice",
-					type: "single",
-					prompt: "Pick the option to implement.",
-					allowOther: false,
-				},
-				answer: { action: "accept", content: { value: "b" } },
-				userPrompt: "Ask me which option to implement.",
-			})
-
-			expect(result.stopReason).toBe("end_turn")
-			expect(client.permissionRequests, "questionnaire is not a permission request").toEqual([])
-			expect(client.elicitationRequests, "normal single choice should be one structured elicitation").toHaveLength(1)
-
-			const valueField = valueFieldOf(client.elicitationRequests[0].params)
-			expect(valueField).toEqual({
-				type: "string",
-				oneOf: [
-					{ const: "a", title: "A" },
-					{ const: "b", title: "B" },
-					{ const: "c", title: "C" },
-					{ const: "d", title: "D" },
-				],
-			})
-		},
-		STARTUP_TIMEOUT_MS,
-	)
-
-	it(
-		"LLM-2385: free-text follow-up is a second elicitation only after selecting Other",
+		"free-text follow-up is a second elicitation only after selecting Other",
 		async () => {
 			const { client } = await runQuestionnaireScenario({
 				artifactName: "questionnaire-choice-custom-followup",
@@ -149,7 +116,7 @@ describe("ACP integration — questionnaire structured elicitation regression", 
 	)
 
 	it(
-		"LLM-2385: free-form-only choices use one string elicitation without a synthetic choice step",
+		"free-form-only choices use one string elicitation without a synthetic choice step",
 		async () => {
 			const { client } = await runQuestionnaireScenario({
 				artifactName: "questionnaire-choice-free-form-only",

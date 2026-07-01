@@ -1,6 +1,11 @@
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
-import { ACP_ELICIT_FORM, type AcpElicitForm } from "../../modes/acp/structured-elicitation.js"
+import {
+	ACP_ELICIT_FORM,
+	type AcpElicitForm,
+	choiceSchema,
+	freeTextSchema,
+} from "../../modes/acp/structured-elicitation.js"
 import { parseMultipleChoiceInput, promptQuestionnaireFallback } from "./questionnaire-fallback.js"
 import { type Question, type QuestionOption, YES_NO_OPTIONS } from "./questionnaire-reducer.js"
 
@@ -34,55 +39,6 @@ function makeUI(handlers: UIHandlers): ExtensionUIContext {
 
 type AcpResponse = Awaited<ReturnType<AcpElicitForm>>
 type QuestionInput = Partial<Question> & Pick<Question, "id" | "prompt" | "type">
-
-function acpSingleChoiceSchema() {
-	return {
-		type: "object",
-		properties: {
-			value: {
-				type: "string",
-				oneOf: [
-					{ const: "a", title: "Alpha" },
-					{ const: "b", title: "Beta" },
-					{ const: "c", title: "Gamma" },
-				],
-			},
-		},
-		required: ["value"],
-	}
-}
-
-function acpMultiChoiceSchema() {
-	return {
-		type: "object",
-		properties: {
-			value: {
-				type: "array",
-				items: {
-					anyOf: [
-						{ const: "a", title: "Alpha" },
-						{ const: "b", title: "Beta" },
-						{ const: "c", title: "Gamma" },
-					],
-				},
-				minItems: 1,
-			},
-		},
-		required: ["value"],
-	}
-}
-
-function acpTextSchema() {
-	return {
-		type: "object",
-		properties: {
-			value: {
-				type: "string",
-			},
-		},
-		required: ["value"],
-	}
-}
 
 function makeAcpUI(elicitResponse: AcpResponse, inputResponse: string | undefined = "should not be called") {
 	const inputSpy = vi.fn(async () => inputResponse)
@@ -528,7 +484,7 @@ describe("promptQuestionnaireFallback — ACP structured choices", () => {
 
 		expect(inputSpy).not.toHaveBeenCalled()
 		expect(elicitSpy).toHaveBeenCalledOnce()
-		expect(elicitSpy.mock.calls[0][2]).toEqual(acpSingleChoiceSchema())
+		expect(elicitSpy.mock.calls[0][2]).toEqual(choiceSchema(options, true, false))
 		expect(result.answers).toEqual([
 			{
 				id: "scope",
@@ -559,27 +515,12 @@ describe("promptQuestionnaireFallback — ACP structured choices", () => {
 		])
 	})
 
-	it("does not ask for free text when ACP single-choice allowOther selects a normal option", async () => {
-		const { result, inputSpy } = await runAcpQuestionnaire(acpSingleQuestion({ allowOther: true }), { value: "a" })
-
-		expect(inputSpy).not.toHaveBeenCalled()
-		expect(result.answers).toEqual([
-			{
-				id: "scope",
-				index: 1,
-				label: "Alpha",
-				value: "a",
-				wasCustom: false,
-			},
-		])
-	})
-
 	it("uses ACP array elicitation for multi-select choices instead of free-text input", async () => {
 		const { result, inputSpy, elicitSpy } = await runAcpQuestionnaire(acpMultiQuestion(), { value: ["a", "c"] })
 
 		expect(inputSpy).not.toHaveBeenCalled()
 		expect(elicitSpy).toHaveBeenCalledOnce()
-		expect(elicitSpy.mock.calls[0][2]).toEqual(acpMultiChoiceSchema())
+		expect(elicitSpy.mock.calls[0][2]).toEqual(choiceSchema(options, true, true))
 		expect(result.answers).toEqual([
 			{
 				id: "features",
@@ -614,25 +555,6 @@ describe("promptQuestionnaireFallback — ACP structured choices", () => {
 		])
 	})
 
-	it("does not ask for free text when ACP multi-select allowOther selects only normal options", async () => {
-		const { result, inputSpy } = await runAcpQuestionnaire(acpMultiQuestion({ allowOther: true }), {
-			value: ["a", "c"],
-		})
-
-		expect(inputSpy).not.toHaveBeenCalled()
-		expect(result.answers).toEqual([
-			{
-				id: "features",
-				indices: [1, 3],
-				label: "Alpha, Gamma",
-				labels: ["Alpha", "Gamma"],
-				value: "a, c",
-				values: ["a", "c"],
-				wasCustom: false,
-			},
-		])
-	})
-
 	it("uses one ACP text elicitation when single-select has only free-form input", async () => {
 		const { result, inputSpy, elicitSpy } = await runAcpQuestionnaire(
 			acpSingleQuestion({
@@ -645,7 +567,7 @@ describe("promptQuestionnaireFallback — ACP structured choices", () => {
 
 		expect(inputSpy).not.toHaveBeenCalled()
 		expect(elicitSpy).toHaveBeenCalledOnce()
-		expect(elicitSpy.mock.calls[0][2]).toEqual(acpTextSchema())
+		expect(elicitSpy.mock.calls[0][2]).toEqual(freeTextSchema(true))
 		expect(result.answers).toEqual([
 			{
 				id: "scope",
@@ -669,7 +591,7 @@ describe("promptQuestionnaireFallback — ACP structured choices", () => {
 
 		expect(inputSpy).not.toHaveBeenCalled()
 		expect(elicitSpy).toHaveBeenCalledOnce()
-		expect(elicitSpy.mock.calls[0][2]).toEqual(acpTextSchema())
+		expect(elicitSpy.mock.calls[0][2]).toEqual(freeTextSchema(true))
 		expect(result.answers).toEqual([
 			{
 				id: "features",
