@@ -155,9 +155,24 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 		planReviewRunning = true
 		try {
 			const outcome = await promptPlanReview(ctx, { planMarkdown: review.planMarkdown })
-			if (!outcome) return
+			if (!outcome) {
+				// promptPlanReview resolved to undefined (e.g. UI dismissed without
+				// an explicit choice). Treat it the same as cancellation: clear the
+				// pending review and restore the tool profile so the model is not
+				// left with all tools suppressed.
+				runtime.clearPendingPlanReview(review.fermentId)
+				applyFermentRuntimeToolProfile(pi, runtime)
+				return
+			}
 			if (outcome.kind === "cancelled") {
+				// Delete the persisted proposal and clear the in-memory pending
+				// review, then restore the planning-ferment tool profile. Without
+				// this, `hasPendingPlanReview` in tool-scope.ts keeps all tools
+				// suppressed, leaving the model unable to call any tools after
+				// the user cancels the review.
 				deletePendingProposal(review.fermentId)
+				runtime.clearPendingPlanReview(review.fermentId)
+				applyFermentRuntimeToolProfile(pi, runtime)
 				return
 			}
 
@@ -171,10 +186,10 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 				}
 				if (outcome.kind === "start_auto") {
 					runtime.setContinuationPolicy("automated")
-					applyFermentRuntimeToolProfile(pi, runtime)
 					requestSharedFooterRender()
 				}
 				runtime.clearPendingPlanReview(review.fermentId)
+				applyFermentRuntimeToolProfile(pi, runtime)
 				scheduleFermentWakeUp(pi, runtime, {
 					deliverAs: "followUp",
 					fermentId: review.fermentId,
@@ -183,6 +198,14 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 				return
 			}
 
+			// Clear the pending review before triggering the revision turn.
+			// The model needs its full toolset to revise the plan (read files,
+			// ask_user, etc.). If the pending review were left set, tool-scope.ts
+			// would suppress all tools via `hasPendingPlanReview`, blocking the
+			// revision. The model will set a new pending review by calling
+			// `propose_ferment_scoping` again once the revision is complete.
+			runtime.clearPendingPlanReview(review.fermentId)
+			applyFermentRuntimeToolProfile(pi, runtime)
 			void pi.sendMessage(
 				{
 					content: buildFreeformScopingFeedbackMessage(review.fermentId, outcome.text),
@@ -191,6 +214,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 				},
 				{ triggerTurn: true, deliverAs: "followUp" },
 			)
+			runtime.clearPendingPlanReview(review.fermentId)
 		} finally {
 			planReviewRunning = false
 		}

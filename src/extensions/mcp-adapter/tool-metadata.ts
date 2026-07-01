@@ -1,9 +1,41 @@
 import { getToolUiResourceUri } from "@modelcontextprotocol/ext-apps/app-bridge"
+import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js"
 import { resourceNameToToolName } from "./resource-tools.js"
 import type { McpExtensionState } from "./state.js"
 import type { McpResource, McpTool, ServerEntry, ToolMetadata } from "./types.js"
 import { formatToolName, isToolExcluded } from "./types.js"
 import { extractToolUiStreamMode } from "./utils.js"
+
+/**
+ * Heuristic name prefixes that indicate a read-only MCP tool when the server
+ * does not populate `annotations.readOnlyHint`.
+ */
+const READ_ONLY_NAME_PREFIXES = /^(get_|search_|list_|read_|fetch_)/
+
+/**
+ * Returns true when an MCP tool is safe to call during read-only (scoping)
+ * contexts. A tool qualifies when its `annotations.readOnlyHint` is explicitly
+ * `true`, OR when annotations are absent and the tool's original name matches a
+ * read-only heuristic prefix (`get_`, `search_`, `list_`, `read_`, `fetch_`).
+ *
+ * A tool with `readOnlyHint: false` (or any annotations present) is never
+ * promoted by the heuristic — the explicit annotation wins.
+ */
+export function isReadOnlyMcpTool(meta: {
+	originalName: string
+	annotations?: ToolAnnotations
+}): boolean {
+	if (meta.annotations?.readOnlyHint === true) return true
+	if (meta.annotations === undefined && READ_ONLY_NAME_PREFIXES.test(meta.originalName)) {
+		// The name heuristic is best-effort: a tool with no annotations but a
+		// read-only-prefixed name (e.g. `get_reset_database`) cannot be proven
+		// safe, so we promote it and surface a warning so operators can audit
+		// the classification. Servers SHOULD set readOnlyHint explicitly.
+		console.warn(`[mcp] Tool "${meta.originalName}" promoted to read-only via name heuristic (no annotations)`)
+		return true
+	}
+	return false
+}
 
 export function buildToolMetadata(
 	tools: McpTool[],
@@ -37,6 +69,7 @@ export function buildToolMetadata(
 			inputSchema: tool.inputSchema,
 			uiResourceUri,
 			uiStreamMode: extractToolUiStreamMode(tool._meta),
+			annotations: tool.annotations,
 		})
 	}
 

@@ -15,7 +15,7 @@ import {
 } from "./init.js"
 import { authenticate, supportsOAuth } from "./mcp-auth-flow.js"
 import type { McpExtensionState } from "./state.js"
-import { buildToolMetadata, findToolByName, formatSchema, getToolNames } from "./tool-metadata.js"
+import { buildToolMetadata, findToolByName, formatSchema, getToolNames, isReadOnlyMcpTool } from "./tool-metadata.js"
 import { transformMcpContent } from "./tool-registrar.js"
 import type { DirectToolSpec, McpContent, ToolMetadata } from "./types.js"
 import { getServerPrefix, parseUiPromptHandoff } from "./types.js"
@@ -339,6 +339,9 @@ export function executeDescribe(
 	if (toolMeta.resourceUri) {
 		text += `Type: Resource (reads from ${toolMeta.resourceUri})\n`
 	}
+	if (isReadOnlyMcpTool(toolMeta)) {
+		text += `Read-only: safe to call during planning/scoping\n`
+	}
 	text += `\n${toolMeta.description || "(no description)"}\n`
 
 	if (toolMeta.inputSchema && !toolMeta.resourceUri) {
@@ -507,7 +510,7 @@ export function executeSearch(
 
 	for (const match of limitedMatches) {
 		if (showSchemas) {
-			text += `${match.tool.name}\n`
+			text += `${match.tool.name}${isReadOnlyMcpTool(match.tool) ? " [read-only]" : ""}\n`
 			text += `  ${match.tool.description || "(no description)"}\n`
 			if (match.tool.inputSchema && !match.tool.resourceUri) {
 				text += `\n  Parameters:\n${formatSchema(match.tool.inputSchema, "    ")}\n`
@@ -516,7 +519,7 @@ export function executeSearch(
 			}
 			text += "\n"
 		} else {
-			text += `- ${match.tool.name}`
+			text += `- ${match.tool.name}${isReadOnlyMcpTool(match.tool) ? " [read-only]" : ""}`
 			if (match.tool.description) {
 				text += ` - ${truncateAtWord(match.tool.description, 50)}`
 			}

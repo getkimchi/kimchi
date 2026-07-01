@@ -13,7 +13,7 @@ const theme = {
 	bold: (text: string) => text,
 } as Theme
 
-function createTodosHarness() {
+function createTodosHarness(activeTools: string[] = [...TODO_TOOL_NAMES]) {
 	const handlers = new Map<string, ExtensionHandler[]>()
 	const pi = {
 		registerTool: vi.fn(),
@@ -21,7 +21,7 @@ function createTodosHarness() {
 		registerShortcut: vi.fn(),
 		appendEntry: vi.fn(),
 		sendMessage: vi.fn(),
-		getActiveTools: vi.fn(() => [...TODO_TOOL_NAMES]),
+		getActiveTools: vi.fn(() => activeTools),
 		on: vi.fn((event: string, handler: ExtensionHandler) => {
 			const list = handlers.get(event) ?? []
 			list.push(handler)
@@ -41,6 +41,7 @@ function createTodosHarness() {
 		},
 		appendEntry: pi.appendEntry,
 		sendMessage: pi.sendMessage,
+		getActiveTools: pi.getActiveTools,
 	}
 }
 
@@ -370,5 +371,35 @@ describe("todos extension session state", () => {
 		await harness.fire("turn_end", terminalTurn(), createContext("session", [], { hasPendingMessages: true }))
 
 		expect(harness.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("does not send reconciliation follow-ups when todo tools are not available (e.g. ferment plan review)", async () => {
+		// Simulates the plan-review-pending state where the ferment extension
+		// suppresses ALL tools via pi.setActiveTools([]). The model cannot
+		// reconcile todos, so sending a follow-up would create an infinite loop.
+		const harness = createTodosHarness([])
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+
+		applyWriteTodos({ todos: [{ content: "still active", status: "in_progress" }] })
+		await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+		await harness.fire("turn_end", terminalTurnWithText(), ctx)
+
+		expect(harness.sendMessage).not.toHaveBeenCalled()
+		// workSinceTodoWrite should be reset so the next turn also doesn't loop.
+		await harness.fire("turn_end", terminalTurnWithText(), ctx)
+		expect(harness.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("does not inject context checkpoints when todo tools are not available", async () => {
+		const harness = createTodosHarness([])
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+
+		applyWriteTodos({ todos: [{ content: "still active", status: "in_progress" }] })
+		await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+
+		const result = await harness.fire("context", { messages: [] }, ctx)
+		expect(result).toBeUndefined()
 	})
 })

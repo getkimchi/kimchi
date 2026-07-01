@@ -12,6 +12,7 @@ from harbor.models.agent.context import AgentContext
 
 from kimchi_agent.claude_code_kimchi import (
     CLAUDE_CODE_CONTEXT_SAFETY_MARGIN_TOKENS,
+    CLAUDE_CODE_DEFAULT_API_TIMEOUT_MS,
     CLAUDE_CODE_INSTALL_RETRY_DELAYS_SEC,
     CLAUDE_CODE_OUTPUT_RESERVE_TOKENS,
     KIMCHI_ANTHROPIC_BASE_URL,
@@ -219,6 +220,7 @@ class ClaudeCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
             196608 - CLAUDE_CODE_OUTPUT_RESERVE_TOKENS - CLAUDE_CODE_CONTEXT_SAFETY_MARGIN_TOKENS,
         )
         self.assertNotIn("MAX_THINKING_TOKENS", env)
+        self.assertEqual(env["API_TIMEOUT_MS"], CLAUDE_CODE_DEFAULT_API_TIMEOUT_MS)
         self.assertEqual(env["IS_SANDBOX"], "1")
         self.assertEqual(agent.agent_envs[1], env)
         self.assertEqual(agent.metadata_fetch_count, 1)
@@ -237,6 +239,36 @@ class ClaudeCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(agent.agent_envs[0]["ANTHROPIC_AUTH_TOKEN"], "extra-key")
         self.assertEqual(agent.fetched_with_api_key, "extra-key")
+
+    async def test_api_timeout_passthrough_overrides_default(self) -> None:
+        with patch.dict(os.environ, {"API_TIMEOUT_MS": "120000"}), tempfile.TemporaryDirectory() as tmp:
+            agent = RecordingClaudeCodeKimchi(
+                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                model_name="kimchi-dev/kimi-k2.5",
+            )
+
+            await agent.run("solve it", object(), AgentContext())
+
+        env = agent.agent_envs[0]
+        self.assertEqual(env["API_TIMEOUT_MS"], "120000")
+
+    async def test_api_timeout_extra_env_overrides_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = RecordingClaudeCodeKimchi(
+                logs_dir=Path(tmp) / "jobs" / "run-1" / "task__trial" / "agent",
+                model_name="kimchi-dev/kimi-k2.5",
+                extra_env={"API_TIMEOUT_MS": "1200000"},
+            )
+
+            await agent.run("solve it", object(), AgentContext())
+
+        env = agent.agent_envs[0]
+        self.assertEqual(env["API_TIMEOUT_MS"], "1200000")
+
+    def test_default_api_timeout_exceeds_claude_code_builtin(self) -> None:
+        # Claude Code's built-in default is 600000ms; our default must be
+        # strictly higher so we don't shorten the client-side timeout.
+        self.assertGreater(int(CLAUDE_CODE_DEFAULT_API_TIMEOUT_MS), 600_000)
 
     async def test_rejects_non_kimchi_provider(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

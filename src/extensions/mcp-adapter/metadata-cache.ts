@@ -3,6 +3,7 @@ import { createHash } from "node:crypto"
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { getToolUiResourceUri } from "@modelcontextprotocol/ext-apps/app-bridge"
+import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js"
 import { logger } from "./logger.js"
 import { resourceNameToToolName } from "./resource-tools.js"
 import type { McpResource, McpTool, ServerEntry, ToolMetadata } from "./types.js"
@@ -22,6 +23,7 @@ export interface CachedTool {
 	inputSchema?: unknown
 	uiResourceUri?: string
 	uiStreamMode?: "eager" | "stream-first"
+	annotations?: ToolAnnotations // Read-only/destructive hints from the MCP protocol
 }
 
 export interface CachedResource {
@@ -252,6 +254,7 @@ export function reconstructToolMetadata(
 			inputSchema: tool.inputSchema,
 			uiResourceUri: tool.uiResourceUri,
 			uiStreamMode: tool.uiStreamMode,
+			annotations: tool.annotations,
 		})
 
 		if (toolMetadata) {
@@ -293,6 +296,7 @@ export function serializeTools(tools: McpTool[]): CachedTool[] {
 			inputSchema: t.inputSchema,
 			uiResourceUri: tryGetToolUiResourceUri(t),
 			uiStreamMode: extractToolUiStreamMode(t._meta),
+			annotations: t.annotations,
 		}))
 }
 

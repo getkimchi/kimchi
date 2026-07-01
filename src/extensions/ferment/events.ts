@@ -33,6 +33,7 @@ import { createApplyAndPersist } from "./tool-helpers.js"
 import {
 	applyFermentRuntimeToolProfile,
 	applyFermentToolProfile,
+	hasPendingPlanReview,
 	setActiveFermentAndApplyProfile,
 } from "./tool-scope.js"
 
@@ -539,6 +540,28 @@ export function registerFermentEvents(
 		// Only acts on tool-use turns; stop/error/aborted are handled elsewhere.
 		if (event.message.role === "assistant" && event.message.stopReason === "toolUse") {
 			maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, event.message.usage?.totalTokens ?? 0)
+		}
+
+		// After a turn ends, `prepareNextTurn` in pi-mono builds the next turn's
+		// context using `this.activeToolNames` (the snapshot set by
+		// `pi.setActiveTools`). This happens AFTER `turn_end` fires but BEFORE
+		// the next `turn_start`. So to suppress tools for the next LLM call (e.g.
+		// after `propose_ferment_scoping` sets a pending plan review), we must
+		// apply the tool profile here in `turn_end` — not `turn_start`, which
+		// fires too late (the context is already built).
+		//
+		// When `propose_ferment_scoping` sets a pending review mid-turn,
+		// `applyFermentRuntimeToolProfile` suppresses all tools via
+		// `pi.setActiveTools([])`. The next LLM call sees an empty toolset,
+		// produces text-only output (stopReason: "stop"), ending the turn and
+		// firing `agent_end` which triggers the review dialog.
+		//
+		// This is placed at the end of the handler so that the nudge/dropdown
+		// logic above runs first. Those early-return paths still suppress tools
+		// when a pending review exists, which is correct — the model should not
+		// have tools until the review is resolved.
+		if (hasPendingPlanReview(runtime)) {
+			applyFermentRuntimeToolProfile(pi, runtime)
 		}
 	})
 }

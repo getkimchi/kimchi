@@ -27,7 +27,9 @@ import {
 	executeStatus,
 	executeUiMessages,
 } from "./proxy-modes.js"
+import { registerReadOnlyToolProvider } from "../../shared/planning/read-only-tool-registry.js"
 import type { McpExtensionState } from "./state.js"
+import { isReadOnlyMcpTool } from "./tool-metadata.js"
 import { getConfigPathFromArgv, truncateAtWord } from "./utils.js"
 
 const TOOL_AND_MCP_DISCOVERY_PROMPT = `## Tool and MCP Discovery
@@ -112,6 +114,29 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 	const registeredToolNames = new Set<string>()
 	const directToolVisibility = createDirectToolVisibility(pi)
 
+	/**
+	 * Read-only-tool provider for the planning-ferment (scoping) profile.
+	 *
+	 * Iterates the live `state.toolMetadata` map (keyed on server name) and
+	 * returns the prefixed tool names (`meta.name`) for tools that qualify as
+	 * read-only via `isReadOnlyMcpTool`. Called lazily by the shared/planning
+	 * layer's `getReadOnlyToolNames` during `applyCore`, so it always reflects
+	 * the current tool-metadata state — including direct tools registered after
+	 * a cache bootstrap. Returns an empty array before MCP init completes, so
+	 * the planning-ferment profile simply skips MCP tools during that window.
+	 */
+	const readOnlyToolProvider = (): string[] => {
+		if (!state) return []
+		const names: string[] = []
+		for (const tools of state.toolMetadata.values()) {
+			for (const meta of tools) {
+				if (isReadOnlyMcpTool(meta)) names.push(meta.name)
+			}
+		}
+		return names
+	}
+	registerReadOnlyToolProvider(pi, readOnlyToolProvider)
+
 	for (const spec of directSpecs) {
 		const cachedServer = earlyCache?.servers?.[spec.serverName]
 		const cachedTool = cachedServer?.tools?.find((t) => t.name === spec.originalName)
@@ -123,6 +148,7 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 					inputSchema: cachedTool.inputSchema,
 					uiResourceUri: cachedTool.uiResourceUri,
 					uiStreamMode: cachedTool.uiStreamMode,
+					annotations: cachedTool.annotations,
 				}
 			: undefined
 		pi.registerTool({

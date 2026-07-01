@@ -3,6 +3,7 @@ import type { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js
 // types.ts - Core type definitions
 import type { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import type { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
+import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js"
 import type { UiStreamMode } from "./ui-stream-types.js"
 
 // Transport type (stdio + HTTP)
@@ -17,6 +18,7 @@ export interface McpTool {
 	title?: string
 	description?: string
 	inputSchema?: unknown // JSON Schema
+	annotations?: ToolAnnotations // Read-only/destructive hints from the MCP protocol
 	_meta?: Record<string, unknown>
 }
 
@@ -331,6 +333,7 @@ export interface ToolMetadata {
 	uiResourceUri?: string // For app-enabled tools: the UI resource URI
 	inputSchema?: unknown // JSON Schema for parameters (stored for describe/errors)
 	uiStreamMode?: UiStreamMode
+	annotations?: ToolAnnotations // Read-only/destructive hints from the MCP protocol
 }
 
 export interface DirectToolSpec {
@@ -342,6 +345,7 @@ export interface DirectToolSpec {
 	resourceUri?: string
 	uiResourceUri?: string
 	uiStreamMode?: UiStreamMode
+	annotations?: ToolAnnotations // Read-only/destructive hints from the MCP protocol
 	/** Cached schema for auto-fill and retry decisions */
 	metadata?: ToolMetadata
 }
