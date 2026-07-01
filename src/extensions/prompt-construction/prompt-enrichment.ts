@@ -67,7 +67,6 @@ import {
 	splitModelRef,
 	validateModelRoles,
 } from "../orchestration/model-roles.js"
-import { getCurrentPhase } from "../tags.js"
 import { type ContextFile, loadGlobalContextFiles, loadProjectContextFiles } from "./context-files.js"
 import {
 	DELEGATION_TOOL_NAMES,
@@ -546,7 +545,6 @@ export default function (skillPaths: string[]) {
 				contextFiles: cachedContextFiles,
 				skills: cachedSkills,
 				currentModelId: mode === "orchestrator" ? getOrchestratorModelId() : ctx.model?.id,
-				currentPhase: getCurrentPhase(),
 				registry: registry,
 				mode,
 				roles,

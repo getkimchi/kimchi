@@ -69,7 +69,7 @@ describe("default agents — subagent system prompt snapshot", () => {
 
 ## Available Tools
 - Agent
-- set_phase
+- get_subagent_result
 - read
 
 ### Local Notes
@@ -86,7 +86,7 @@ Keep these parent rules.`
 		)
 		expect(output).toContain("## Available Tools\n- read\n- bash")
 		expect(output).not.toContain("- Agent")
-		expect(output).not.toContain("set_phase")
+		expect(output).not.toContain("get_subagent_result")
 	})
 
 	it("Explore agent assembles expected prompt (replace mode)", () => {

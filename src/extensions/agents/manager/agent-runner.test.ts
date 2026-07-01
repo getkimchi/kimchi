@@ -1423,11 +1423,11 @@ describe("runAgent — includeContextFiles", () => {
 		expect(extras?.contextFiles).toBeUndefined()
 	})
 
-	it("resolves guidelines from agent persona role, not orchestrator phase", async () => {
+	it("attaches the phase-specific Phase Guidelines section matching the persona to subagent prompts", async () => {
 		mockGetAgentConfig.mockReturnValue(
 			makeAgentConfig({ name: "Builder", description: "Build agent", roles: ["build"] }),
 		)
-		mockBuildPhaseGuidelinesSection.mockReturnValue("## Model Guidelines\n\nBuilder guideline")
+		mockBuildPhaseGuidelinesSection.mockReturnValue("## Phase Guidelines (build)\n\nBuilder-only guideline")
 
 		mockCreateAgentSession.mockResolvedValue({
 			session: makeFakeSession() as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
@@ -1442,10 +1442,11 @@ describe("runAgent — includeContextFiles", () => {
 
 		expect(mockBuildPhaseGuidelinesSection).toHaveBeenCalledWith(undefined, "build", expect.anything())
 		const extras = mockBuildAgentPrompt.mock.calls[0]?.[4]
-		expect(extras?.guidelinesBlock).toContain("Builder guideline")
+		expect(extras?.guidelinesBlock).toContain("## Phase Guidelines (build)")
+		expect(extras?.guidelinesBlock).toContain("Builder-only guideline")
 	})
 
-	it("omits guidelines when agent has no persona role", async () => {
+	it("omits guidelines when the resolver returns an empty block", async () => {
 		mockGetAgentConfig.mockReturnValue(makeAgentConfig({ name: "General-Purpose" }))
 		mockBuildPhaseGuidelinesSection.mockReturnValue("")
 
@@ -1461,6 +1462,8 @@ describe("runAgent — includeContextFiles", () => {
 		})
 
 		expect(mockBuildPhaseGuidelinesSection).toHaveBeenCalledWith(undefined, undefined, expect.anything())
+		const extras = mockBuildAgentPrompt.mock.calls[0]?.[4]
+		expect(extras?.guidelinesBlock).toBeUndefined()
 	})
 })
 

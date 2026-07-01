@@ -97,7 +97,7 @@ After \`propose_ferment_scoping\` returns "Plan saved", the host confirmation al
 You are the PLANNER for ferment "${f.name}". Your job is to manage the task graph and delegate all implementation work to subagent workers. ${delegationCheckpoint}
 
 **State machine — toolset follows the ferment lifecycle:**
-- **Planning phase** (no phase activated yet): your toolset is the read-only research set — \`read\`, \`grep\`, \`find\`, \`ls\`, \`web_fetch\`, \`web_search\`, \`set_phase\` — plus the ferment planning tools (\`propose_ferment_scoping\`, ${isOneshot ? "`scope_ferment`, " : ""}\`update_ferment_scope_field\`, \`confirm_ferment_completion_criteria\`, \`list_ferments\`, \`ask_user\`). Use these to draft the plan${isOneshot ? " and call \\`scope_ferment\\`" : ""}.
+- **Planning phase** (no phase activated yet): your toolset is the read-only research set — \`read\`, \`grep\`, \`find\`, \`ls\`, \`web_fetch\`, \`web_search\` — plus the ferment planning tools (\`propose_ferment_scoping\`, ${isOneshot ? "`scope_ferment`, " : ""}\`update_ferment_scope_field\`, \`confirm_ferment_completion_criteria\`, \`list_ferments\`, \`ask_user\`). Use these to draft the plan${isOneshot ? " and call \\`scope_ferment\\`" : ""}.
 - **Implementation phase** (after \`activate_ferment_phase\` returns success): the full toolset unlocks — \`bash\`, \`edit\`, \`write\`, \`Agent\`, \`resume_subagent\`, \`get_subagent_result\`, and the ferment lifecycle tools (\`refine_ferment_phase\`, \`complete_ferment_phase\`, \`start_ferment_step\`, \`complete_ferment_step\`, \`verify_ferment_step\`, \`skip_ferment_step\`, \`fail_ferment_step\`, \`add_ferment_decision\`, \`add_ferment_memory\`, \`complete_ferment\`, etc.). pi-mono snapshots the active tool list at the start of each agent run, so the transition is visible on the turn AFTER the first successful \`activate_ferment_phase\`.
 - The host manages all tool transitions automatically. Never discuss your current tool availability, what tools are "missing", or session capabilities with the user. If a tool is unavailable, it is by design — the host unlocks it at the appropriate lifecycle stage. Do not suggest the user take action to unlock tools or resume in a different session.
 - Every tool result ends with a "Next action:" line — execute that action immediately in the same turn, do not defer it${stateMachineContinuationRule}
@@ -129,9 +129,9 @@ You are the PLANNER for ferment "${f.name}". Your job is to manage the task grap
 
 **Phase tracking (advisory):**
 - Phase tags feed two consumers: analytics for per-phase cost attribution, and the orchestrator's per-phase guideline selection
-- Consider calling set_phase when the type of work changes — e.g. moving from exploration to implementation, or from build to review
+- Phases are set by the active subagent persona or by internal mechanisms — not by a tool the parent calls directly. If you spawn a subagent, that agent's persona wires the phase for its own run.
 - Valid phases: explore, research, plan, build, review
-- This is a metadata-only call decoupled from ferment state transitions; it doesn't have to line up with activate_ferment_phase
+- Phase tags are metadata-only; they are decoupled from ferment state transitions (activate_ferment_phase) and do not need to line up with them
 
 **Parallel phases:**
 - When activate_ferment_phase returns parallel_group, all listed phase_ids are active simultaneously

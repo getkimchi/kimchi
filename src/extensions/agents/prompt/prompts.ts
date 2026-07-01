@@ -17,14 +17,14 @@ export interface PromptExtras {
 	memoryBlock?: string
 	/** Preloaded skill contents to inject. */
 	skillBlocks?: { name: string; content: string }[]
-	/** Model-specific phase guidelines resolved from the model registry. */
-	guidelinesBlock?: string
 	/** Turn and token budget limits for agent self-regulation. */
 	budget?: BudgetInfo
 	/** Project context files (AGENTS.md, CLAUDE.md) to inject. */
 	contextFiles?: ContextFile[]
 	/** Tool names this subagent is expected to have available. */
 	activeToolNames?: string[]
+	/** Execution guidelines block (combined phase guidelines) for the subagent. */
+	guidelinesBlock?: string
 }
 
 /**

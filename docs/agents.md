@@ -9,7 +9,7 @@ child session with its own system prompt, model, and tool restrictions.
 Kimchi has a separate phase system that gates the **parent session's** autonomy
 (read-only vs full edit, etc.). Phases and agents are independent:
 
-- **Phases** (managed by kimchi's `behaviours` extension and `set_phase` tool)
+- **Phases** (managed by kimchi's `behaviours` extension and subagent persona wiring)
   control what the parent session is allowed to do.
 - **Agents** (this extension) handle delegation. Each persona declares its own
   tool set independently of the parent's phase.

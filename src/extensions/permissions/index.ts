@@ -116,13 +116,13 @@ const PLAN_MODE_TOOLS = [
 const PLAN_MODE_TOOL_SET = new Set<string>(PLAN_MODE_TOOLS)
 
 // Tools that auto-approve in headless/auto modes without LLM classification.
-// `set_phase` is a kimchi built-in. `agent`/`get_subagent_result`/`steer_subagent`
+// `agent`/`get_subagent_result`/`steer_subagent`
 // are the agents-extension surface — `agent` is the canonical delegation tool,
 // the other two are read-only/control-plane operations on already-approved spawns.
 //
 // Names are lowercased because the tool_call handler lowercases event.toolName
 // before comparing (see `const toolName = event.toolName.toLowerCase()` below).
-const BUILTIN_ALLOW_TOOL_NAMES = ["set_phase", "agent", "get_subagent_result", "steer_subagent", ...TODO_TOOL_NAMES]
+const BUILTIN_ALLOW_TOOL_NAMES = ["agent", "get_subagent_result", "steer_subagent", ...TODO_TOOL_NAMES]
 
 const MODES: Array<{
 	mode: PermissionMode
@@ -591,7 +591,6 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			//   - ask_user               (interactive routing — TUI in interactive mode,
 			//                              judge model in oneshot via ferment/ask-user.ts)
 			//   - confirm_ferment_completion_criteria (interactive routing, planning)
-			//   - set_phase              (planning — phase tracker)
 			//   - propose_ferment_scoping / scope_ferment / update_ferment_scope_field
 			//                            (planning — scoping surface)
 			//   - list_ferments          (always-both discovery)

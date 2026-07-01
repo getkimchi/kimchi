@@ -21,22 +21,19 @@
 export const KIMI_FAMILY_EXPLORE = ""
 
 /** Kimi family research: assume training knowledge is older than current ecosystem defaults. */
-export const KIMI_FAMILY_RESEARCH = `During **research** phase (Kimi family):
-- Your training knowledge predates current library, runtime, framework, and build-tool defaults. Treat any version assumption as suspect until verified with \`web_search\`/\`web_fetch\`.
+export const KIMI_FAMILY_RESEARCH = `- Your training knowledge predates current library, runtime, framework, and build-tool defaults. Treat any version assumption as suspect until verified with \`web_search\`/\`web_fetch\`.
 - When an API feels familiar but you cannot quote the exact current signature from the version in use, search the official docs before using it.
 - Do not treat a library or kit as "known" just because you have used it before. If the task names a version or vendor, verify the current install/API/protocol details before relying on memory.`
 
 /** Kimi family plan: chunk-based specs for delegation.
  * When the orchestrator lacks build strength, the plan must be delegation-ready. */
-export const KIMI_FAMILY_PLAN = `During **plan** phase (Kimi family):
-- Structure the spec with a numbered **Chunks** section. Each chunk is one self-contained unit of work that a subagent can complete independently.
+export const KIMI_FAMILY_PLAN = `- Structure the spec with a numbered **Chunks** section. Each chunk is one self-contained unit of work that a subagent can complete independently.
 - Every chunk must list: (1) the files it creates or modifies, (2) a one-sentence goal, (3) acceptance criteria the orchestrator can verify.
 - Keep each chunk small — ideally 1–2 files. A subagent with a 150k token budget must be able to finish the chunk in one pass.
 - Order chunks so later ones can build on earlier ones. Mark chunks that are independent of each other so the orchestrator can run them in parallel.`
 
 /** Kimi family build: plan-first and chunked goals. */
-export const KIMI_FAMILY_BUILD = `During **build** phase (Kimi family):
-- Plan-first: outline your intended approach before the first tool call.
+export const KIMI_FAMILY_BUILD = `- Plan-first: outline your intended approach before the first tool call.
 - Avoid big mixed-goal turns — Kimi models hesitate on turns with multiple unrelated goals. Split into separate steps.`
 
 /** Reserved: no family-level review override identified yet. */
@@ -58,12 +55,10 @@ export const KIMI_K25_ORCHESTRATION = `When orchestrating (kimi-k2.5 specific):
 - If a subagent fails, do NOT attempt the work yourself — you will waste tokens duplicating effort. Spawn a replacement subagent with a simpler, corrected prompt.`
 
 /** K2.5 build: tool-call reliability fixes (K2.5-specific bugs). */
-export const KIMI_K25_BUILD = `During **build** phase (kimi-k2.5 specific):
-- Emit complete, well-formed tool calls only. Never output partial fragments, raw JSON snippets, or "(m"-style stubs as if they were tool calls.`
+export const KIMI_K25_BUILD = `- Emit complete, well-formed tool calls only. Never output partial fragments, raw JSON snippets, or "(m"-style stubs as if they were tool calls.`
 
 /** K2.5 explore: chunk inputs and plan reads upfront. */
-export const KIMI_K25_EXPLORE = `During **explore** phase (kimi-k2.5 specific):
-- Plan-first: state in 3–5 bullets what you intend to read and why, then batch the reads in a single turn.
+export const KIMI_K25_EXPLORE = `- Plan-first: state in 3–5 bullets what you intend to read and why, then batch the reads in a single turn.
 - Chunk and label long inputs — do NOT pour an entire codebase into one mental pass; group by module.`
 
 // ── Kimi K2.6 per-model overrides ─────────────────────────────────────
@@ -77,13 +72,11 @@ export const KIMI_K26_ORCHESTRATION = `When orchestrating (kimi-k2.6 specific):
 - Trust your built-in context compressor between delegation steps — do NOT manually summarise subagent results before deciding next steps.`
 
 /** K2.6 plan: queue-based decomposition for long-horizon orchestration. */
-export const KIMI_K26_PLAN = `During **plan** phase (kimi-k2.6 specific):
-- You are tuned for long-horizon orchestration: open with a numbered 3–7 step plan before any tool call.
+export const KIMI_K26_PLAN = `- You are tuned for long-horizon orchestration: open with a numbered 3–7 step plan before any tool call.
 - Write the spec with a clear **Chunks** section — each chunk maps to exactly one subagent call in the build phase.
 - Include per-chunk acceptance criteria so the orchestrator can verify completion without re-reading all code.
 - Mark independent chunks as parallelisable.`
 
 /** K2.6 explore: leverage long context and built-in compressor. */
-export const KIMI_K26_EXPLORE = `During **explore** phase (kimi-k2.6 specific):
-- Use your long-context strength: prefer reading 3–5 files in full over many partial reads.
+export const KIMI_K26_EXPLORE = `- Use your long-context strength: prefer reading 3–5 files in full over many partial reads.
 - Trust the built-in context compressor — do NOT manually summarise mid-exploration.`

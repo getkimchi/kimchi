@@ -45,8 +45,6 @@ export const PLANNING_TOOL_NAMES: ReadonlySet<string> = new Set([
 	"ls",
 	"web_fetch",
 	"web_search",
-	// Phase tracker injected by the ferment planner supplement
-	"set_phase",
 	// Ferment planning tools
 	FERMENT_TOOLS.PROPOSE_SCOPING,
 	FERMENT_TOOLS.SCOPE,

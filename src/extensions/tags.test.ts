@@ -140,42 +140,31 @@ describe("tags system prompt block", () => {
 		tagsExtension(pi)
 		return pi
 	}
-	const setPhase = (pi: ReturnType<typeof makeTagsPi>, phase = "explore") =>
-		pi.tools.get("set_phase")?.execute("call-1", { phase }, undefined, undefined, { hasUI: false })
 
-	it("registers phase tagging instructions with the extension that owns set_phase", async () => {
+	it("does not register a phase tagging system prompt block (set_phase tool was removed)", async () => {
 		const pi = makeTagsPi()
 
 		try {
 			const result = buildSystemPrompt({
 				tools: [
 					{ name: "read", description: "Read file contents" },
-					{ name: "set_phase", description: "Set the current work phase" },
+					{ name: "set_model", description: "Set the current model" },
 				],
 				env: testEnv,
 				mode: "orchestrator",
 				sessionId: TEST_SESSION_ID,
 			})
 
-			expect(result).toContain("## Phase Tagging for Analytics")
-			expect(result).toContain("Call `set_phase` when the work type changes")
-			expect(result).toContain("Subagents set their phase automatically from their persona")
-			expect(result).not.toContain("questionnaire")
-			expect(result.indexOf("## Phase Tagging for Analytics")).toBeLessThan(result.indexOf("## Available Tools"))
+			// The phase-tagging system prompt block was removed together with the
+			// set_phase tool. The tags extension still owns phase state internally
+			// (for analytics and the footer) but no longer instructs the model to
+			// call a tool to change the phase.
+			expect(result).not.toContain("## Phase Tagging for Analytics")
+			expect(result).not.toContain("Call `set_phase`")
+			expect(result).not.toContain("You must call `set_phase`")
 		} finally {
 			pi.fireShutdown()
 		}
-	})
-
-	it("set_phase changes the current phase", async () => {
-		const pi = makeTagsPi()
-
-		const result = await setPhase(pi)
-
-		expect(result).toMatchObject({
-			content: [{ type: "text", text: "Phase changed to: explore" }],
-			details: { phase: "explore" },
-		})
 	})
 })
 

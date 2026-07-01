@@ -983,7 +983,7 @@ describe("registerFermentCommands", () => {
 		expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("run /ferment resume"))
 		// paused ferment with no phase activated => profileForFerment returns "planning"
 		// => planning-ferment tools via the shared catalog (read, grep, find, ls,
-		// web_fetch, web_search, set_phase, propose_ferment_scoping, scope_ferment,
+		// web_fetch, web_search, propose_ferment_scoping, scope_ferment,
 		// update_ferment_scope_field, confirm_ferment_completion_criteria,
 		// list_ferments, ask_user, activate_ferment_phase).
 		const planningTools = getToolsForProfile("planning-ferment").map((t) => t.name)

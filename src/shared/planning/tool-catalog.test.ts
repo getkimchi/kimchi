@@ -17,7 +17,6 @@ const TOOL_NAMES = {
 	sharedCore: ["read", "grep", "find", "ls", "web_fetch", "web_search", ...TODO_TOOL_NAMES],
 	adhocOnly: ["questionnaire"],
 	fermentPlanningTools: [
-		"set_phase",
 		"propose_ferment_scoping",
 		"scope_ferment",
 		"update_ferment_scope_field",
@@ -60,7 +59,7 @@ describe("ADHOC_MODE_TOOLS", () => {
 	})
 
 	it("does not contain ferment-mode tools", () => {
-		const fermentTools = ["ask_user", "confirm_ferment_completion_criteria", "set_phase", "activate_ferment_phase"]
+		const fermentTools = ["ask_user", "confirm_ferment_completion_criteria", "activate_ferment_phase"]
 		for (const name of fermentTools) {
 			expect(namesOf(ADHOC_MODE_TOOLS)).not.toContain(name)
 		}
@@ -71,7 +70,6 @@ describe("FERMENT_MODE_TOOLS", () => {
 	const allNames = namesOf(FERMENT_MODE_TOOLS)
 
 	const expectedPlanningTools = [
-		"set_phase",
 		"propose_ferment_scoping",
 		"scope_ferment",
 		"update_ferment_scope_field",
@@ -116,7 +114,6 @@ describe("FERMENT_MODE_TOOLS", () => {
 		}
 
 		// planning-only
-		expect(byName("set_phase").phases).toEqual(["planning"])
 		expect(byName("propose_ferment_scoping").phases).toEqual(["planning"])
 		expect(byName("confirm_ferment_completion_criteria").phases).toEqual(["planning"])
 		expect(byName("activate_ferment_phase").phases).toEqual(["planning"])
@@ -199,7 +196,6 @@ describe("getToolsForProfile", () => {
 			const fermentOnly = [
 				"ask_user",
 				"confirm_ferment_completion_criteria",
-				"set_phase",
 				"propose_ferment_scoping",
 				"scope_ferment",
 				"activate_ferment_phase",
