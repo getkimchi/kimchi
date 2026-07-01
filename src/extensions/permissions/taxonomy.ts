@@ -167,33 +167,44 @@ const FIND_EXECUTION_FLAGS = new Set([
  *    and unsafe children (e.g. `gh pr`, `glab mr`).
  */
 const READ_ONLY_SUBCOMMANDS: Record<string, Set<string> | Record<string, string[] | "*">> = {
-	git: new Set([
-		"status",
-		"log",
-		"diff",
-		"show",
-		"branch",
-		"remote",
-		"ls-files",
-		"ls-tree",
-		"ls-remote",
-		"rev-parse",
-		"describe",
-		"blame",
-		"config",
-		"tag",
-		"stash",
-		"reflog",
-		"shortlog",
-		"fsck",
-		"verify-pack",
-		"count-objects",
-		"for-each-ref",
-		"show-ref",
-		"symbolic-ref",
-		"name-rev",
-		"rev-list",
-	]),
+	// git uses the fine-grained Record form (not the legacy Set) so that
+	// `worktree` can be scoped to read-only actions only. All other
+	// subcommands use the `"*"` wildcard, which short-circuits before the
+	// tokens[2] check — preserving the exact same behavior as the old Set
+	// (any sub-sub-command allowed, including bare `git status`).
+	//
+	// `worktree` is scoped because `git worktree add`/`remove`/`move`
+	// mutate the filesystem (create/delete/relocate directories on disk),
+	// unlike e.g. `git branch <name>` which is a local, easily-reversible
+	// ref operation already accepted as a trade-off.
+	git: {
+		status: "*",
+		log: "*",
+		diff: "*",
+		show: "*",
+		branch: "*",
+		remote: "*",
+		"ls-files": "*",
+		"ls-tree": "*",
+		"ls-remote": "*",
+		"rev-parse": "*",
+		describe: "*",
+		blame: "*",
+		config: "*",
+		tag: "*",
+		stash: "*",
+		worktree: ["list"],
+		reflog: "*",
+		shortlog: "*",
+		fsck: "*",
+		"verify-pack": "*",
+		"count-objects": "*",
+		"for-each-ref": "*",
+		"show-ref": "*",
+		"symbolic-ref": "*",
+		"name-rev": "*",
+		"rev-list": "*",
+	},
 	npm: new Set(["list", "ls", "view", "info", "search", "outdated", "audit", "--version", "-v"]),
 	yarn: new Set(["list", "info", "why", "audit", "--version", "-v"]),
 	pnpm: new Set(["list", "ls", "view", "info", "outdated", "audit", "--version", "-v"]),

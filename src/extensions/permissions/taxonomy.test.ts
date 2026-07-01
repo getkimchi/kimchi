@@ -115,6 +115,14 @@ describe("isReadOnlyBashCommand", () => {
 		expect(isReadOnlyBashCommand("git diff HEAD")).toBe(true)
 	})
 
+	it("allows git worktree list but blocks mutating worktree subcommands", () => {
+		expect(isReadOnlyBashCommand("git worktree list")).toBe(true)
+		expect(isReadOnlyBashCommand("git worktree add ../foo")).toBe(false)
+		expect(isReadOnlyBashCommand("git worktree remove ../foo")).toBe(false)
+		expect(isReadOnlyBashCommand("git worktree move ../foo ../bar")).toBe(false)
+		expect(isReadOnlyBashCommand("git worktree prune")).toBe(false)
+	})
+
 	it("blocks git subcommands outside allowlist", () => {
 		expect(isReadOnlyBashCommand("git push")).toBe(false)
 		expect(isReadOnlyBashCommand("git commit -am x")).toBe(false)
@@ -306,10 +314,11 @@ describe("isReadOnlyBashCommand", () => {
 		})
 	})
 
-	describe("legacy Set<string> subcommand allowlist (git / npm / kubectl / etc.)", () => {
+	describe("Set<string> and wildcard subcommand allowlist (git / npm / kubectl / etc.)", () => {
 		it("preserves backwards-compatible behavior — any sub-sub-command allowed", () => {
-			// These all rely on the Set-based form. The matcher must NOT
-			// require a sub-sub-command token for them.
+			// git uses the Record form with "*" wildcards (except `worktree`);
+			// npm/kubectl/docker still use the legacy Set. Both paths must NOT
+			// require a sub-sub-command token for wildcard/Set entries.
 			expect(isReadOnlyBashCommand("git status")).toBe(true)
 			expect(isReadOnlyBashCommand("git log --oneline -n 20")).toBe(true)
 			expect(isReadOnlyBashCommand("git diff HEAD")).toBe(true)
