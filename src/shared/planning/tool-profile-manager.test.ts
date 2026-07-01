@@ -9,6 +9,7 @@ import {
 	applyCooperativeTweak,
 	installTurnBoundaryReset,
 	isSnapshotAppliedThisTurn,
+	reapplyCurrentProfile,
 	resetAll,
 } from "./tool-profile-manager.js"
 
@@ -247,6 +248,61 @@ describe("installTurnBoundaryReset", () => {
 
 		// Flag must be cleared.
 		expect(isSnapshotAppliedThisTurn()).toBe(false)
+	})
+})
+
+describe("reapplyCurrentProfile", () => {
+	it("re-applies the last profile, picking up newly-registered read-only tools", () => {
+		// Simulate the real-world timing gap: the planning snapshot is applied
+		// while the MCP read-only-tool provider returns [] (state not yet
+		// populated). After init completes the provider starts returning tool
+		// names; reapplyCurrentProfile must re-run applyCore so those names
+		// enter the active set.
+		const pi = makeMockPi()
+		let providerResult: string[] = []
+		registerReadOnlyToolProvider(pi, () => providerResult)
+
+		// First apply — provider returns nothing (MCP not yet initialized)
+		apply("planning-ferment", "ferment", pi)
+		let calledWith = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.calls[0][0] as string[]
+		expect(calledWith).not.toContain("server_get_record")
+
+		// MCP init completes — provider now returns a read-only tool
+		providerResult = ["server_get_record"]
+		vi.clearAllMocks()
+
+		const reapplied = reapplyCurrentProfile(pi)
+
+		expect(reapplied).toBe(true)
+		expect(pi.setActiveTools).toHaveBeenCalledOnce()
+		calledWith = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.calls[0][0] as string[]
+		expect(calledWith).toContain("server_get_record")
+		expect(calledWith).toContain("read")
+	})
+
+	it("returns false and does not call setActiveTools when no profile was applied", () => {
+		const pi = makeMockPi()
+
+		const reapplied = reapplyCurrentProfile(pi)
+
+		expect(reapplied).toBe(false)
+		expect(pi.setActiveTools).not.toHaveBeenCalled()
+	})
+
+	it("re-applies the idle profile, picking up newly-registered tools", () => {
+		// idle uses pi.getAllTools() as its base. If a tool is registered after
+		// the initial apply(), reapplyCurrentProfile must pick it up.
+		const pi = makeMockPi({ allTools: [{ name: "read" }] })
+		apply("idle", "ferment", pi)
+
+		// A new tool appears (simulated by updating getAllTools)
+		;(pi.getAllTools as ReturnType<typeof vi.fn>).mockReturnValue([{ name: "read" }, { name: "server_get_record" }])
+		vi.clearAllMocks()
+
+		reapplyCurrentProfile(pi)
+
+		const calledWith = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.calls[0][0] as string[]
+		expect(calledWith).toContain("server_get_record")
 	})
 })
 

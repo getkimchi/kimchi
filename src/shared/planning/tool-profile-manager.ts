@@ -57,6 +57,18 @@ let snapshotAppliedThisTurn = false
 /** Guards `installTurnBoundaryReset` so the `turn_start` listener is registered at most once. */
 let turnListenerInstalled = false
 
+/**
+ * Tracks the last profile applied per session so extensions that register
+ * tools asynchronously (e.g. mcp-adapter after its SSE/OAuth init completes)
+ * can ask the profile manager to re-derive the active set without knowing
+ * which profile is active. Without this, late-registered read-only MCP tools
+ * are silently dropped: the cooperative-layer no-op guard
+ * (`isSnapshotAppliedThisTurn`) swallows the `expose()` call the adapter makes
+ * after registration, and the snapshot itself was computed before init
+ * finished so `getReadOnlyToolNames` returned `[]`.
+ */
+let lastProfileByPi = new WeakMap<ExtensionAPI, ToolProfile>()
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -137,6 +149,7 @@ export function applyCore(profile: ToolProfile, pi: ExtensionAPI): void {
 
 	pi.setActiveTools(allowedNames)
 	snapshotAppliedThisTurn = true
+	lastProfileByPi.set(pi, profile)
 }
 
 /**
@@ -193,6 +206,7 @@ export function resetSnapshotFlag(): void {
 export function resetAll(): void {
 	snapshotAppliedThisTurn = false
 	turnListenerInstalled = false
+	lastProfileByPi = new WeakMap()
 }
 
 /**
@@ -240,4 +254,28 @@ export function installTurnBoundaryReset(pi: ExtensionAPI): void {
 
 	pi.on("turn_start", () => resetSnapshotFlag())
 	turnListenerInstalled = true
+}
+
+/**
+ * Re-apply the last profile that was applied via `apply()`/`applyCore()`.
+ *
+ * Extensions that register tools asynchronously (notably mcp-adapter, whose
+ * direct tools are registered after SSE/OAuth init completes) need a way to
+ * surface those tools into the active set without calling `apply()` themselves
+ * (they don't know which profile is active). This function re-runs `applyCore`
+ * with the stored profile, re-evaluating `getReadOnlyToolNames` against the
+ * now-populated tool-metadata state.
+ *
+ * Safe to call at any time. Returns `false` (no-op) when no profile has been
+ * applied yet for this session.
+ *
+ * @param pi - The pi-mono `ExtensionAPI` instance.
+ * @returns `true` if the profile was re-applied; `false` if no profile was
+ *          stored for this session.
+ */
+export function reapplyCurrentProfile(pi: ExtensionAPI): boolean {
+	const profile = lastProfileByPi.get(pi)
+	if (!profile) return false
+	applyCore(profile, pi)
+	return true
 }

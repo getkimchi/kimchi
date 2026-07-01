@@ -109,6 +109,7 @@ const PLAN_MODE_TOOLS = [
 	"ls",
 	"web_search",
 	"web_fetch",
+	"mcp",
 	"questionnaire",
 	"bash",
 	...TODO_TOOL_NAMES,

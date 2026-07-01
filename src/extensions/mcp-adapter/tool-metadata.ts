@@ -10,7 +10,7 @@ import { extractToolUiStreamMode } from "./utils.js"
  * Heuristic name prefixes that indicate a read-only MCP tool when the server
  * does not populate `annotations.readOnlyHint`.
  */
-const READ_ONLY_NAME_PREFIXES = /^(get_|search_|list_|read_|fetch_)/
+const READ_ONLY_NAME_PREFIXES = /^(get|search|list|read|fetch)/
 
 /**
  * Returns true when an MCP tool is safe to call during read-only (scoping)

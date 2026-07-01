@@ -28,6 +28,7 @@ import {
 	executeUiMessages,
 } from "./proxy-modes.js"
 import { registerReadOnlyToolProvider } from "../../shared/planning/read-only-tool-registry.js"
+import { reapplyCurrentProfile } from "../../shared/planning/tool-profile-manager.js"
 import type { McpExtensionState } from "./state.js"
 import { isReadOnlyMcpTool } from "./tool-metadata.js"
 import { getConfigPathFromArgv, truncateAtWord } from "./utils.js"
@@ -219,6 +220,12 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 			markDynamic,
 			dynamicToolNames: state?.dynamicToolNames,
 		})
+		// Re-snapshot the active tool profile so late-registered read-only MCP
+		// tools surface during planning. Without this, the cooperative-layer
+		// no-op guard (isSnapshotAppliedThisTurn) swallows the expose() call,
+		// and the snapshot was computed before the tool existed. Safe no-op when
+		// no profile has been applied yet (e.g. during early bootstrap).
+		reapplyCurrentProfile(pi)
 		return allInjected
 	}
 
@@ -293,6 +300,15 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 				state = nextState
 				updateStatusBar(nextState)
 				initPromise = null
+
+				// Re-snapshot the active tool profile now that state is populated.
+				// During planning, the initial snapshot ran before MCP init finished,
+				// so getReadOnlyToolNames returned [] and read-only direct tools
+				// (e.g. atlassian_getJiraIssue) were excluded. Re-applying the
+				// profile re-evaluates the read-only registry against the now-
+				// populated state.toolMetadata. Also picks up the `mcp` gateway if
+				// it was registered after the initial snapshot.
+				reapplyCurrentProfile(pi)
 
 				// Build search strategy from live tool metadata
 				try {
