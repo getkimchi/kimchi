@@ -1,8 +1,8 @@
 diff --git a/dist/providers/openai-completions.js b/dist/providers/openai-completions.js
-index 423825a3dcf189304e3112bf68c6d8f89cb2ec44..2be802d01acbe4111e3212dab713250c8f1c6af2 100644
+index 423825a3dcf189304e3112bf68c6d8f89cb2ec44..78941206ed25bde9faca3e068afe955359737aa0 100644
 --- a/dist/providers/openai-completions.js
 +++ b/dist/providers/openai-completions.js
-@@ -68,6 +68,40 @@ export const streamOpenAICompletions = (model, context, options) => {
+@@ -68,6 +68,42 @@ export const streamOpenAICompletions = (model, context, options) => {
              stopReason: "stop",
              timestamp: Date.now(),
          };
@@ -16,6 +16,7 @@ index 423825a3dcf189304e3112bf68c6d8f89cb2ec44..2be802d01acbe4111e3212dab713250c
 +        // Remove when #3020 ships a stream-level timeout upstream.
 +        let _streamTimeoutController = null;
 +        let _streamTimeoutId = null;
++        let _onExternalAbort = null;
 +        const _resetStreamTimeout = () => {
 +            if (_streamTimeoutId) clearTimeout(_streamTimeoutId);
 +            if (options?.timeoutMs && options?.timeoutMs > 0 && _streamTimeoutController) {
@@ -33,9 +34,10 @@ index 423825a3dcf189304e3112bf68c6d8f89cb2ec44..2be802d01acbe4111e3212dab713250c
 +                if (options.signal.aborted) {
 +                    _streamTimeoutController.abort(options.signal.reason);
 +                } else {
-+                    options.signal.addEventListener("abort", () => {
++                    _onExternalAbort = () => {
 +                        _streamTimeoutController.abort(options.signal.reason);
-+                    }, { once: true });
++                    };
++                    options.signal.addEventListener("abort", _onExternalAbort, { once: true });
 +                }
 +            }
 +        }
@@ -43,7 +45,7 @@ index 423825a3dcf189304e3112bf68c6d8f89cb2ec44..2be802d01acbe4111e3212dab713250c
          try {
              const apiKey = options?.apiKey;
              if (!apiKey) {
-@@ -83,7 +117,7 @@ export const streamOpenAICompletions = (model, context, options) => {
+@@ -83,7 +119,7 @@ export const streamOpenAICompletions = (model, context, options) => {
                  params = nextParams;
              }
              const requestOptions = {
@@ -52,7 +54,7 @@ index 423825a3dcf189304e3112bf68c6d8f89cb2ec44..2be802d01acbe4111e3212dab713250c
                  ...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
                  maxRetries: options?.maxRetries ?? 0,
              };
-@@ -192,6 +226,7 @@ export const streamOpenAICompletions = (model, context, options) => {
+@@ -192,6 +228,7 @@ export const streamOpenAICompletions = (model, context, options) => {
                  return block;
              };
              for await (const chunk of openaiStream) {
@@ -60,16 +62,18 @@ index 423825a3dcf189304e3112bf68c6d8f89cb2ec44..2be802d01acbe4111e3212dab713250c
                  if (!chunk || typeof chunk !== "object")
                      continue;
                  // OpenAI documents ChatCompletionChunk.id as the unique chat completion identifier,
-@@ -314,22 +349,31 @@ export const streamOpenAICompletions = (model, context, options) => {
+@@ -314,22 +351,33 @@ export const streamOpenAICompletions = (model, context, options) => {
              if (!hasFinishReason) {
                  throw new Error("Stream ended without finish_reason");
              }
 +            if (_streamTimeoutId) clearTimeout(_streamTimeoutId);
++            if (_onExternalAbort && options?.signal) options.signal.removeEventListener("abort", _onExternalAbort);
              stream.push({ type: "done", reason: output.stopReason, message: output });
              stream.end();
          }
          catch (error) {
 +            if (_streamTimeoutId) clearTimeout(_streamTimeoutId);
++            if (_onExternalAbort && options?.signal) options.signal.removeEventListener("abort", _onExternalAbort);
              for (const block of output.content) {
                  delete block.index;
                  // Streaming scratch buffers are only used during parsing; never persist them.
@@ -98,7 +102,7 @@ index 423825a3dcf189304e3112bf68c6d8f89cb2ec44..2be802d01acbe4111e3212dab713250c
              stream.push({ type: "error", reason: output.stopReason, error: output });
              stream.end();
          }
-@@ -825,10 +869,11 @@ function convertTools(tools, compat) {
+@@ -825,10 +873,11 @@ function convertTools(tools, compat) {
  function parseChunkUsage(rawUsage, model) {
      const promptTokens = rawUsage.prompt_tokens || 0;
      const cacheReadTokens = rawUsage.prompt_tokens_details?.cached_tokens ?? rawUsage.prompt_cache_hit_tokens ?? 0;

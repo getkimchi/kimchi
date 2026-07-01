@@ -31,8 +31,8 @@ describe("stream timeout config → settings.json wiring", () => {
 		rmSync(tempDir, { recursive: true, force: true })
 	})
 
-	it("providerTimeoutMs defaults to 180000 (3 min)", () => {
-		expect(RETRY_DEFAULTS.providerTimeoutMs).toBe(180_000)
+	it("providerTimeoutMs defaults to 60000 (1 min)", () => {
+		expect(RETRY_DEFAULTS.providerTimeoutMs).toBe(60_000)
 	})
 
 	it("loadConfig returns providerTimeoutMs from config file", () => {
@@ -44,7 +44,7 @@ describe("stream timeout config → settings.json wiring", () => {
 	it("loadConfig falls back to default when providerTimeoutMs is not set", () => {
 		writeFileSync(configPath, JSON.stringify({ apiKey: "test" }))
 		const config = loadConfig({ configPath })
-		expect(config.retry.providerTimeoutMs).toBe(180_000)
+		expect(config.retry.providerTimeoutMs).toBe(60_000)
 	})
 
 	it("settings.json retry.provider.timeoutMs is written from config", () => {
@@ -80,7 +80,7 @@ describe("stream timeout config → settings.json wiring", () => {
 
 describe("stream timeout error classification", () => {
 	it("idle timeout error string from the patch is retryable", () => {
-		const errorMessage = "Stream idle timeout after 180000ms"
+		const errorMessage = "Stream idle timeout after 60000ms"
 		expect(isNetworkErrorRetryable({ stopReason: "error", errorMessage })).toBe(true)
 	})
 
