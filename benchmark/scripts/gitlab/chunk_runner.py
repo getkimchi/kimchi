@@ -21,6 +21,7 @@ source of truth. Resume state lives in the local artifact.
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import os
 import re
@@ -100,7 +101,7 @@ def _fetch_all_tasks(dataset: str, bench_dir: Path) -> list[str]:  # noqa: ARG00
         "gpt2-codegolf",
         "headless-terminal",
         "hf-model-inference",
-        "install-windows-3-11",
+        "install-windows-3?11",
         "kv-store-grpc",
         "large-scale-text-editing",
         "largest-eigenval",
@@ -179,13 +180,13 @@ def _trial_dir_for_task(results_dir: Path, task_name: str) -> Path | None:
     """
     if not results_dir.is_dir():
         return None
-    prefix = f"{task_name}__"
+    pattern = f"{task_name}__*"
     matches: list[Path] = []
     for run_dir in results_dir.iterdir():
         if not run_dir.is_dir():
             continue
         for trial_dir in run_dir.iterdir():
-            if trial_dir.is_dir() and trial_dir.name.startswith(prefix):
+            if trial_dir.is_dir() and fnmatch.fnmatch(trial_dir.name, pattern):
                 matches.append(trial_dir)
     if not matches:
         return None

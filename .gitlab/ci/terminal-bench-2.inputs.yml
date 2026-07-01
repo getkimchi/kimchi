@@ -64,7 +64,7 @@ inputs:
       - gpt2-codegolf
       - headless-terminal
       - hf-model-inference
-      - install-windows-3-11
+      - install-windows-3?11
       - kv-store-grpc
       - large-scale-text-editing
       - largest-eigenval
