@@ -40,21 +40,18 @@ const PROPOSE_SCOPING_PAYLOAD = JSON.stringify({
 
 /** Shared boilerplate to drive a ferment from cold-start through the plan-review confirm.
  *
- * NOTE: the plan-review dialog ("Proceed with this plan?" / "Start execution") does not
- * reliably render its text in the tui-test buffer (see plan-to-ferment-promo.test.ts
- * lines 35-40). The dialog IS shown and accepts Enter — we just can't observe its text
- * directly. So instead of waiting for dialog text, we wait for the model's turn 1 stream
- * (which confirms propose_ferment_scoping completed), give the dialog a moment to be
- * presented, press Enter to accept "Start execution" (the default first option), and
- * then wait for the model's turn 2 stream text to confirm the ferment started and turn 2
- * is executing.
+ * Turn sequence (with tool suppression):
+ *   Turn 1: propose_ferment_scoping → sets pending plan review
+ *   Turn 2: text-only (tools suppressed by hasPendingPlanReview) → agent_end fires
+ *           → review dialog appears → user confirms → tools restored
+ *   Turn 3: ask_user / confirm_ferment_completion_criteria (the stream we wait for)
  *
- * @param turn2Stream the turn-2 stream text to wait for — differs per test
+ * @param nextStream the post-confirmation stream text to wait for — differs per test
  */
 async function startFerment(
 	terminal: import("@microsoft/tui-test").Terminal,
 	trace: import("./support/kimchi-fixture.js").TuiScenarioTrace,
-	turn2Stream: string,
+	nextStream: string,
 ) {
 	// Stage 1: enter ferment. Type then Enter separately — one-shot "/ferment\r" can
 	// race startup and skip the intent prompt.
@@ -74,18 +71,25 @@ async function startFerment(
 	await waitForText(terminal, "I'll outline the scope.", { timeoutMs: STREAM_TIMEOUT_MS })
 	trace.step("turn 1 stream received — propose_ferment_scoping completed")
 
-	// Give the plan-review dialog a moment to be presented (text won't appear in buffer,
-	// but the host shows it and awaits Enter).
-	await new Promise((resolve) => setTimeout(resolve, 500))
+	// Turn 2 is the suppression turn: tools are suppressed (pi.setActiveTools([]))
+	// because a pending plan review exists. The model produces a text-only response,
+	// firing agent_end → the review dialog appears.
+	// We don't wait for the Turn 2 stream text — go straight to the dialog.
+
+	// Wait for the plan-review dialog to appear (triggered by agent_end after
+	// the suppression turn).
+	await waitForText(terminal, "Proceed with this plan?", { timeoutMs: STREAM_TIMEOUT_MS })
+	await waitForText(terminal, "Start execution", { timeoutMs: INPUT_TIMEOUT_MS })
+	trace.step("plan-review dialog visible")
 
 	// Press Enter to accept "Start execution" (default first option in the dialog).
 	terminal.submit("")
 	trace.step("confirmed 'Start execution' (Enter on default option)")
 
-	// Wait for the model's turn 2 stream to confirm the ferment started and turn 2 is
-	// executing (i.e. ask_user / confirm_ferment_completion_criteria is about to be called).
-	await waitForText(terminal, turn2Stream, { timeoutMs: STREAM_TIMEOUT_MS })
-	trace.step(`turn 2 stream received: ${turn2Stream}`)
+	// Wait for the model's turn 3 stream — tools are restored after confirmation,
+	// so ask_user / confirm_ferment_completion_criteria is now available.
+	await waitForText(terminal, nextStream, { timeoutMs: STREAM_TIMEOUT_MS })
+	trace.step(`post-confirmation stream received: ${nextStream}`)
 }
 
 test("ask_user renders a single-choice question and accepts selection", async ({ terminal }) => {
@@ -107,7 +111,13 @@ test("ask_user renders a single-choice question and accepts selection", async ({
 						},
 					],
 				},
-				// Turn 2: ask the user a single-choice question.
+				// Turn 2 (suppression): tools are suppressed after propose_ferment_scoping
+				// sets a pending plan review. The model produces a text-only response,
+				// ending the turn so agent_end fires and the review dialog appears.
+				{ stream: ["Plan ready for review."] },
+				// Compaction request (consumed by auto-compaction before the post-confirmation turn).
+				{ stream: ["Summary."] },
+				// Turn 3: ask the user a single-choice question (tools restored after confirm).
 				{
 					stream: ["Let me ask the user."],
 					toolCalls: [
@@ -131,7 +141,7 @@ test("ask_user renders a single-choice question and accepts selection", async ({
 						},
 					],
 				},
-				// Turn 3: stream a follow-up after the user picks Vanilla.
+				// Turn 4: stream a follow-up after the user picks Vanilla.
 				{ stream: ["Thanks! I'll use vanilla."] },
 			],
 		},
@@ -185,7 +195,13 @@ test("confirm_ferment_completion_criteria shows 'Type your own answer' label", a
 						},
 					],
 				},
-				// Turn 2: confirm completion criteria (uses askUserForm internally with allowOther).
+				// Turn 2 (suppression): tools are suppressed after propose_ferment_scoping
+				// sets a pending plan review. The model produces a text-only response,
+				// ending the turn so agent_end fires and the review dialog appears.
+				{ stream: ["Plan ready for review."] },
+				// Compaction request (consumed by auto-compaction before the post-confirmation turn).
+				{ stream: ["Summary."] },
+				// Turn 3: confirm completion criteria (tools restored after confirm).
 				{
 					stream: ["Let me confirm the criteria."],
 					toolCalls: [
@@ -200,7 +216,7 @@ test("confirm_ferment_completion_criteria shows 'Type your own answer' label", a
 						},
 					],
 				},
-				// Turn 3: stream after the user confirms.
+				// Turn 4: stream after the user confirms.
 				{ stream: ["Great, criteria confirmed."] },
 			],
 		},
@@ -243,7 +259,13 @@ test("ask_user with a confirm question renders Yes/No options", async ({ termina
 						},
 					],
 				},
-				// Turn 2: ask_user with a confirm question (fixed Yes/No).
+				// Turn 2 (suppression): tools are suppressed after propose_ferment_scoping
+				// sets a pending plan review. The model produces a text-only response,
+				// ending the turn so agent_end fires and the review dialog appears.
+				{ stream: ["Plan ready for review."] },
+				// Compaction request (consumed by auto-compaction before the post-confirmation turn).
+				{ stream: ["Summary."] },
+				// Turn 3: ask_user with a confirm question (tools restored after confirm).
 				{
 					stream: ["Let me confirm."],
 					toolCalls: [
@@ -263,7 +285,7 @@ test("ask_user with a confirm question renders Yes/No options", async ({ termina
 						},
 					],
 				},
-				// Turn 3: stream after the user confirms.
+				// Turn 4: stream after the user confirms.
 				{ stream: ["Proceeding."] },
 			],
 		},
