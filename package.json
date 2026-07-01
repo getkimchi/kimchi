@@ -1,7 +1,7 @@
 {
 	"name": "@kimchi-dev/cli",
 	"version": "0.0.0",
-	"description": "kimchi — a coding agent CLI powered by Cast AI",
+	"description": "kimchi \u2014 a coding agent CLI powered by Cast AI",
 	"type": "module",
 	"license": "Apache-2.0",
 	"bin": {
