@@ -426,7 +426,8 @@ describe("postProcessHtmlExport", () => {
 		const result = readFileSync(outputPath, "utf-8")
 		const match = result.match(/<script id="session-data" type="application\/json">([\s\S]*?)<\/script>/)
 		expect(match).not.toBeNull()
-		const data = JSON.parse(Buffer.from(match[1] ?? "", "base64").toString("utf-8")) as Record<string, unknown>
+		if (!match) throw new Error("session-data script not found")
+		const data = JSON.parse(Buffer.from(match[1], "base64").toString("utf-8")) as Record<string, unknown>
 		expect(data.hostMetadata).toBeDefined()
 		const hostMetadata = data.hostMetadata as Record<string, unknown>
 		const os = hostMetadata.os as Record<string, unknown>
@@ -456,7 +457,8 @@ describe("postProcessHtmlExport", () => {
 		const result = readFileSync(outputPath, "utf-8")
 		const match = result.match(/<script id="session-data" type="application\/json">([\s\S]*?)<\/script>/)
 		expect(match).not.toBeNull()
-		const data = JSON.parse(Buffer.from(match[1] ?? "", "base64").toString("utf-8")) as {
+		if (!match) throw new Error("session-data script not found")
+		const data = JSON.parse(Buffer.from(match[1], "base64").toString("utf-8")) as {
 			entries: Array<Record<string, unknown>>
 		}
 		expect(data.entries.length).toBe(2)
@@ -514,7 +516,8 @@ describe("postProcessHtmlExport", () => {
 		expect(result.split('id="trace-id-renderer"').length - 1).toBe(1)
 		const match = result.match(/<script id="session-data" type="application\/json">([\s\S]*?)<\/script>/)
 		expect(match).not.toBeNull()
-		const data = JSON.parse(Buffer.from(match[1] ?? "", "base64").toString("utf-8")) as {
+		if (!match) throw new Error("session-data script not found")
+		const data = JSON.parse(Buffer.from(match[1], "base64").toString("utf-8")) as {
 			entries: Array<Record<string, unknown>>
 			hostMetadata?: unknown
 		}
