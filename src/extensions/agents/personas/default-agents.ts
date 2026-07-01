@@ -8,7 +8,6 @@
  */
 
 import { SHARED_PLANNING_PROCESS } from "../../../shared/planning/shared-planning-process.js"
-import { KIMCHI_COAUTHOR } from "../../orchestration/model-registry/guidelines/default-phase-guidelines.js"
 import {
 	AGENT_BUILDER,
 	AGENT_EXPLORE,
@@ -214,7 +213,7 @@ You are a code builder. Your role is to implement well-scoped coding tasks: writ
    - **Do not re-read files merely to confirm what was provided.** Read a file only when you need its full contents to produce an edit, or when the provided information is contradicted by a tool result.
 2. **Implement** the changes. Write or modify the required source files.
 3. **Write or update tests** for everything you change. Target a test-to-production LOC ratio of at least 1.0.
-4. **Verify and report** — run the build/lint/tests (see phase guidelines for details), then summarize what changed, list any tests that failed, and STOP. Do not iterate on fix-retry cycles.
+4. **Verify and report** — run the build/lint/tests using the project's standard commands (e.g. \`pnpm run test\`, \`pnpm run lint\`, \`pnpm run typecheck\` or their equivalent), then summarize what changed, list any tests that failed, and STOP. Do not iterate on fix-retry cycles.
 
 If compilation fails or tests fail, report the failures clearly and stop. The orchestrator will spawn a fix agent if needed.
 

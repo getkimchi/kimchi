@@ -1,7 +1,7 @@
 /**
  * Default orchestration guidelines appended to the system prompt when a model
  * acts as the orchestrator. Model-specific overrides in builtin-models.ts
- * REPLACE this default (same semantics as phase guidelines).
+ * REPLACE this default with model-specific orchestration guidance when needed.
  *
  * The orchestrator system-prompt template already contains comprehensive
  * delegation rules, token-budget tables, and model-selection guidance.

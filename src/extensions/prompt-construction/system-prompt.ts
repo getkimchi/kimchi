@@ -11,7 +11,6 @@ import { type Skill, formatSkillsForPrompt } from "@earendil-works/pi-coding-age
 import type { ModelCustomMetadata } from "../orchestration/model-metadata.js"
 
 import type { ModelRegistry } from "../orchestration/model-registry/index.js"
-import type { Phase } from "../orchestration/model-registry/types.js"
 
 import type { ModelRoles } from "../orchestration/model-roles.js"
 import { resolveOrchestrationInstructions } from "../orchestration/orchestration-instructions.js"
@@ -49,7 +48,6 @@ export interface SystemPromptBuildOptions {
 	contextFiles?: readonly ContextFile[]
 	skills?: readonly Skill[]
 	currentModelId?: string
-	currentPhase?: Phase
 	registry?: ModelRegistry
 	mode: PromptMode
 	/** Role-based model assignments for orchestrator mode. */

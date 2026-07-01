@@ -263,7 +263,6 @@ describe("buildSystemPrompt", () => {
 				tools,
 				env: testEnv,
 				currentModelId: "minimax-m2.7",
-				currentPhase: "build",
 				registry,
 				mode: "orchestrator",
 			})
@@ -288,7 +287,6 @@ describe("buildSystemPrompt", () => {
 				tools,
 				env: testEnv,
 				currentModelId: "minimax-m3",
-				currentPhase: "build",
 				registry,
 				mode: "orchestrator",
 			})
@@ -347,7 +345,6 @@ describe("buildSystemPrompt", () => {
 				tools,
 				env: testEnv,
 				currentModelId: "minimax-m3",
-				currentPhase: "build",
 				registry,
 				mode: "subagent",
 			})
@@ -474,7 +471,6 @@ describe("buildSystemPrompt", () => {
 				tools,
 				env: testEnv,
 				currentModelId: "minimax-m3",
-				currentPhase: "build",
 				registry,
 				mode: "single",
 			})

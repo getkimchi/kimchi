@@ -1,41 +1,8 @@
 import { DEFAULT_ORCHESTRATION_GUIDELINES } from "./guidelines/default-orchestration-guidelines.js"
-import {
-	DEFAULT_BUILD_GUIDELINES,
-	DEFAULT_EXPLORE_GUIDELINES,
-	DEFAULT_PLAN_GUIDELINES,
-	DEFAULT_RESEARCH_GUIDELINES,
-	DEFAULT_REVIEW_GUIDELINES,
-} from "./guidelines/default-phase-guidelines.js"
-import {
-	KIMI_FAMILY_BUILD,
-	KIMI_FAMILY_ORCHESTRATION,
-	KIMI_FAMILY_PLAN,
-	KIMI_FAMILY_RESEARCH,
-	KIMI_FAMILY_REVIEW,
-	KIMI_K26_ORCHESTRATION,
-	KIMI_K26_PLAN,
-} from "./guidelines/kimi-family.js"
-import {
-	MINIMAX_FAMILY_BUILD,
-	MINIMAX_FAMILY_ORCHESTRATION,
-	MINIMAX_FAMILY_PLAN,
-	MINIMAX_FAMILY_RESEARCH,
-	MINIMAX_FAMILY_REVIEW,
-	MINIMAX_M27_BUILD,
-	MINIMAX_M27_ORCHESTRATION,
-	MINIMAX_M27_REVIEW,
-} from "./guidelines/minimax-family.js"
-import {
-	NEMOTRON_3_ULTRA_BUILD,
-	NEMOTRON_3_ULTRA_EXPLORE,
-	NEMOTRON_3_ULTRA_ORCHESTRATION,
-	NEMOTRON_3_ULTRA_RESEARCH,
-	NEMOTRON_FAMILY_BUILD,
-	NEMOTRON_FAMILY_EXPLORE,
-	NEMOTRON_FAMILY_ORCHESTRATION,
-	NEMOTRON_FAMILY_RESEARCH,
-} from "./guidelines/nemotron-family.js"
-import type { ModelCapabilities, Phase } from "./types.js"
+import { KIMI_FAMILY_ORCHESTRATION, KIMI_K26_ORCHESTRATION } from "./guidelines/kimi-family.js"
+import { MINIMAX_FAMILY_ORCHESTRATION, MINIMAX_M27_ORCHESTRATION } from "./guidelines/minimax-family.js"
+import { NEMOTRON_3_ULTRA_ORCHESTRATION, NEMOTRON_FAMILY_ORCHESTRATION } from "./guidelines/nemotron-family.js"
+import type { ModelCapabilities } from "./types.js"
 
 /**
  * This map is a local capability knowledge-base keyed by model ID. It acts
@@ -103,16 +70,6 @@ function optionalGuidelines(...layers: string[]): string | undefined {
 	return concatGuidelines(...layers) || undefined
 }
 
-/** Build a guidelines record, omitting entries where all layers are empty. */
-function guidelinesMap(entries: Record<string, string[]>): Partial<Readonly<Record<Phase, string>>> | undefined {
-	const result: Record<string, string> = {}
-	for (const [phase, layers] of Object.entries(entries)) {
-		const value = concatGuidelines(...layers)
-		if (value) result[phase] = value
-	}
-	return Object.keys(result).length > 0 ? result : undefined
-}
-
 // TODO: these capabilities could be returned by our models metadata API.
 /**
  * Capability knowledge-base keyed by model ID. Used to enrich the dynamic
@@ -133,12 +90,6 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 			vision: true,
 			tier: "heavy",
 			description: KIMI_K26_DESCRIPTION,
-			guidelines: guidelinesMap({
-				research: [DEFAULT_RESEARCH_GUIDELINES, KIMI_FAMILY_RESEARCH],
-				plan: [DEFAULT_PLAN_GUIDELINES, KIMI_FAMILY_PLAN, KIMI_K26_PLAN],
-				build: [DEFAULT_BUILD_GUIDELINES, KIMI_FAMILY_BUILD],
-				review: [DEFAULT_REVIEW_GUIDELINES, KIMI_FAMILY_REVIEW],
-			}),
 			orchestrationGuidelines: optionalGuidelines(
 				DEFAULT_ORCHESTRATION_GUIDELINES,
 				KIMI_FAMILY_ORCHESTRATION,
@@ -152,12 +103,6 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 			vision: true,
 			tier: "heavy",
 			description: KIMI_K27_DESCRIPTION,
-			guidelines: guidelinesMap({
-				research: [DEFAULT_RESEARCH_GUIDELINES, KIMI_FAMILY_RESEARCH],
-				plan: [DEFAULT_PLAN_GUIDELINES, KIMI_FAMILY_PLAN],
-				build: [DEFAULT_BUILD_GUIDELINES, KIMI_FAMILY_BUILD],
-				review: [DEFAULT_REVIEW_GUIDELINES, KIMI_FAMILY_REVIEW],
-			}),
 			orchestrationGuidelines: optionalGuidelines(DEFAULT_ORCHESTRATION_GUIDELINES, KIMI_FAMILY_ORCHESTRATION),
 		},
 	],
@@ -168,12 +113,6 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 			vision: true,
 			tier: "heavy",
 			description: MINIMAX_M3_DESCRIPTION,
-			guidelines: guidelinesMap({
-				research: [DEFAULT_RESEARCH_GUIDELINES, MINIMAX_FAMILY_RESEARCH],
-				plan: [DEFAULT_PLAN_GUIDELINES, MINIMAX_FAMILY_PLAN],
-				build: [DEFAULT_BUILD_GUIDELINES, MINIMAX_FAMILY_BUILD],
-				review: [DEFAULT_REVIEW_GUIDELINES, MINIMAX_FAMILY_REVIEW],
-			}),
 			orchestrationGuidelines: optionalGuidelines(DEFAULT_ORCHESTRATION_GUIDELINES, MINIMAX_FAMILY_ORCHESTRATION),
 		},
 	],
@@ -183,10 +122,6 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 			vision: false,
 			tier: "standard",
 			description: MINIMAX_M27_DESCRIPTION,
-			guidelines: guidelinesMap({
-				build: [DEFAULT_BUILD_GUIDELINES, MINIMAX_FAMILY_BUILD, MINIMAX_M27_BUILD],
-				review: [DEFAULT_REVIEW_GUIDELINES, MINIMAX_FAMILY_REVIEW, MINIMAX_M27_REVIEW],
-			}),
 			orchestrationGuidelines: optionalGuidelines(
 				DEFAULT_ORCHESTRATION_GUIDELINES,
 				MINIMAX_FAMILY_ORCHESTRATION,
@@ -200,11 +135,6 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 			vision: false,
 			tier: "light",
 			description: NEMOTRON_3_ULTRA_DESCRIPTION,
-			guidelines: guidelinesMap({
-				build: [DEFAULT_BUILD_GUIDELINES, NEMOTRON_FAMILY_BUILD, NEMOTRON_3_ULTRA_BUILD],
-				research: [DEFAULT_RESEARCH_GUIDELINES, NEMOTRON_FAMILY_RESEARCH, NEMOTRON_3_ULTRA_RESEARCH],
-				explore: [DEFAULT_EXPLORE_GUIDELINES, NEMOTRON_FAMILY_EXPLORE, NEMOTRON_3_ULTRA_EXPLORE],
-			}),
 			orchestrationGuidelines: optionalGuidelines(
 				DEFAULT_ORCHESTRATION_GUIDELINES,
 				NEMOTRON_FAMILY_ORCHESTRATION,

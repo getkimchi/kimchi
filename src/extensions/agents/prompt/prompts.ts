@@ -17,8 +17,6 @@ export interface PromptExtras {
 	memoryBlock?: string
 	/** Preloaded skill contents to inject. */
 	skillBlocks?: { name: string; content: string }[]
-	/** Model-specific phase guidelines resolved from the model registry. */
-	guidelinesBlock?: string
 	/** Turn and token budget limits for agent self-regulation. */
 	budget?: BudgetInfo
 	/** Project context files (AGENTS.md, CLAUDE.md) to inject. */
@@ -50,9 +48,6 @@ Platform: ${env.platform}`
 	const extraSections: string[] = []
 	const budgetBlock = buildBudgetBlock(extras?.budget)
 	if (budgetBlock) extraSections.push(budgetBlock)
-	if (extras?.guidelinesBlock) {
-		extraSections.push(extras.guidelinesBlock)
-	}
 	if (extras?.memoryBlock) {
 		extraSections.push(extras.memoryBlock)
 	}
