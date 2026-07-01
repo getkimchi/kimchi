@@ -18,6 +18,7 @@ import { dispatchSubcommand } from "./commands/dispatch.js"
 // before any module can construct an InteractiveMode instance.
 import "./login-command-patch.js"
 import "./paste-to-editor-patch.js"
+import goalExtension from "@narumitw/pi-goal/src/goal.js"
 import {
 	DEFAULT_SKILL_PATHS,
 	getActiveVendorSkillPaths,
@@ -481,6 +482,7 @@ try {
 				{ id: "plugins.mcp-apps", factory: mcpAdapterExtension },
 			] satisfies ManagedExtensionFactory[]),
 			ideAdapterExtension,
+			goalExtension,
 			// Ferment must see raw input before prompt enrichment rewrites print-mode text.
 			...enabledExtensionFactories([
 				{ id: "extensions.ferment", factory: fermentExtension },
