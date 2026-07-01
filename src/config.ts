@@ -124,7 +124,7 @@ export interface RetryConfig {
 
 export const RETRY_DEFAULTS: RetryConfig = {
 	maxRetries: 10,
-	providerTimeoutMs: 180_000,
+	providerTimeoutMs: 60_000,
 }
 
 export const THIRD_PARTY_MAX_RETRIES = 4

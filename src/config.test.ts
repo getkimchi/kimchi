@@ -691,8 +691,8 @@ describe("getActiveVendorSkillPaths", () => {
 })
 
 describe("RETRY_DEFAULTS", () => {
-	it("providerTimeoutMs defaults to 180000", () => {
-		expect(RETRY_DEFAULTS.providerTimeoutMs).toBe(180_000)
+	it("providerTimeoutMs defaults to 60000", () => {
+		expect(RETRY_DEFAULTS.providerTimeoutMs).toBe(60_000)
 	})
 })
 
@@ -709,10 +709,10 @@ describe("loadConfig retry.providerTimeoutMs", () => {
 		rmSync(tempDir, { recursive: true, force: true })
 	})
 
-	it("defaults to 180000 when not specified", () => {
+	it("defaults to 60000 when not specified", () => {
 		writeFileSync(configPath, JSON.stringify({ apiKey: "test-key" }))
 		const config = loadConfig({ configPath })
-		expect(config.retry.providerTimeoutMs).toBe(180_000)
+		expect(config.retry.providerTimeoutMs).toBe(60_000)
 	})
 
 	it("reads providerTimeoutMs from config file", () => {
@@ -724,7 +724,7 @@ describe("loadConfig retry.providerTimeoutMs", () => {
 	it("ignores non-positive providerTimeoutMs", () => {
 		writeFileSync(configPath, JSON.stringify({ retry: { providerTimeoutMs: 0 } }))
 		const config = loadConfig({ configPath })
-		expect(config.retry.providerTimeoutMs).toBe(180_000)
+		expect(config.retry.providerTimeoutMs).toBe(60_000)
 	})
 })
 
