@@ -17,6 +17,7 @@
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs"
 import { join } from "node:path"
+import type { Terminal } from "@microsoft/tui-test/lib/terminal/term.js"
 import { expect, test } from "@microsoft/tui-test"
 import { INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, viewText, waitForText } from "./support/assertions.js"
 import { TUI_TEST_CONFIG, runKimchiSession } from "./support/kimchi-fixture.js"
@@ -81,12 +82,39 @@ async function findScopedFermentArtifact(
 	return undefined
 }
 
+/**
+ * Poll until the plan-review dialog is no longer visible in the terminal.
+ *
+ * Waiting for the startup prompt copy ("ask anything or type / for commands")
+ * is unreliable — after a completed turn the idle prompt can render as a
+ * bare ❯ with footer text. Instead, poll for the absence of the dialog's
+ * signature strings.
+ */
+async function waitForPlanReviewClosed(terminal: Terminal, timeoutMs = INPUT_TIMEOUT_MS): Promise<void> {
+	const deadline = Date.now() + timeoutMs
+	while (Date.now() < deadline) {
+		const text = viewText(terminal)
+		if (
+			!text.includes("Proceed with this plan?") &&
+			!text.includes("Start execution in auto mode") &&
+			!text.includes("Let me say something")
+		) {
+			return
+		}
+		await new Promise((resolve) => setTimeout(resolve, 100))
+	}
+	throw new Error(`Timed out waiting for plan review to close.\n\nTerminal:\n${viewText(terminal)}`)
+}
+
 test("plan review dialog does not re-appear after Esc dismissal", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		{
 			artifactName: "plan-review-dismissal-esc",
 			gitInit: true,
+			// Large context window prevents pi-mono's built-in compaction from
+			// firing mid-test and consuming scripted responses.
+			models: [{ slug: "basic", displayName: "Fake Basic", contextWindow: 200_000, maxTokens: 8192 }],
 			responses: [
 				// Turn 1: model calls propose_ferment_scoping.
 				{
@@ -99,6 +127,8 @@ test("plan review dialog does not re-appear after Esc dismissal", async ({ termi
 						},
 					],
 				},
+				// Turn 1 continuation after the tool result is sent back.
+				{ stream: ["Plan ready for review."] },
 				// Turn 2 (after the new user turn): short text response.
 				{ stream: ["Understood, I'll wait for your direction."] },
 			],
@@ -139,11 +169,12 @@ test("plan review dialog does not re-appear after Esc dismissal", async ({ termi
 			terminal.keyEscape()
 			trace.step("pressed Esc")
 
-			// Stage 7: prompt returns to ready state.
-			await waitForText(terminal, "ask anything or type / for commands", {
-				timeoutMs: INPUT_TIMEOUT_MS,
-			})
-			trace.step("prompt returned after Esc")
+			// Stage 7: wait for the plan-review dialog to close. Waiting for
+			// the startup prompt copy is unreliable — the idle prompt can
+			// render as a bare ❯ with footer text. Instead, poll until the
+			// dialog's signature strings are gone from the viewable buffer.
+			await waitForPlanReviewClosed(terminal)
+			trace.step("plan-review dialog closed")
 
 			// Stage 8: trigger a new turn. If pendingPlanReview was not cleared,
 			// agent_end → setTimeout(0) will re-present the dialog here.
@@ -176,6 +207,9 @@ test("plan review dialog does not re-appear after feedback", async ({ terminal }
 		{
 			artifactName: "plan-review-dismissal-feedback",
 			gitInit: true,
+			// Large context window prevents pi-mono's built-in compaction from
+			// firing mid-test and consuming scripted responses.
+			models: [{ slug: "basic", displayName: "Fake Basic", contextWindow: 200_000, maxTokens: 8192 }],
 			responses: [
 				// Turn 1: model calls propose_ferment_scoping.
 				{
@@ -188,6 +222,8 @@ test("plan review dialog does not re-appear after feedback", async ({ terminal }
 						},
 					],
 				},
+				// Turn 1 continuation after the tool result is sent back.
+				{ stream: ["Plan ready for review."] },
 				// Turn 2 (after the feedback): short text response.
 				{ stream: ["Got it — I'll revise the plan based on your feedback."] },
 			],
