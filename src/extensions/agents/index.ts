@@ -91,6 +91,10 @@ import {
 
 // ---- Shared helpers ----
 
+// Give aborted sub-agents a bounded chance to reach runner finally blocks.
+// If they do not settle, manager.dispose() still runs hard-fallback cleanup.
+const SUBAGENT_SHUTDOWN_WAIT_MS = 5_000
+
 export const AGENT_TOOL_GUIDELINES = `Guidelines:
 - If the user explicitly asks to use the Agent tool, call Agent exactly once with the requested agent type and token_budget. Do not refuse or preflight the budget in prose; let the tool enforce it.
 - For parallel work, use run_in_background: true on each agent. Foreground calls run sequentially — only one executes at a time.
@@ -788,16 +792,18 @@ export default function (pi: ExtensionAPI) {
 
 	pi.events.emit("subagents:ready", {})
 
+	const widget = new AgentWidget(manager, agentActivity)
+	const listUserVisibleAgents = () => manager.listAgents().filter((a) => a.visibility !== "system")
+
 	pi.on("session_shutdown", async () => {
 		manager.abortAll()
 		budgetRetryCandidates.clear()
 		for (const timer of pendingNudges.values()) clearTimeout(timer)
 		pendingNudges.clear()
+		await waitForSubagentShutdown(manager)
+		widget.dispose()
 		manager.dispose()
 	})
-
-	const widget = new AgentWidget(manager, agentActivity)
-	const listUserVisibleAgents = () => manager.listAgents().filter((a) => a.visibility !== "system")
 
 	let defaultJoinMode: JoinMode = "smart"
 	function getDefaultJoinMode(): JoinMode {
@@ -2202,4 +2208,19 @@ ${systemPrompt}
 			await showAgentsMenu(ctx)
 		},
 	})
+}
+
+async function waitForSubagentShutdown(manager: AgentManager): Promise<void> {
+	let timeout: ReturnType<typeof setTimeout> | undefined
+	try {
+		await Promise.race([
+			manager.waitForAll(),
+			new Promise<void>((resolve) => {
+				timeout = setTimeout(resolve, SUBAGENT_SHUTDOWN_WAIT_MS)
+				timeout.unref?.()
+			}),
+		])
+	} finally {
+		if (timeout) clearTimeout(timeout)
+	}
 }

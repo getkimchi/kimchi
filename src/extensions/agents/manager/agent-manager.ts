@@ -120,6 +120,7 @@ Do not perform more task work, edit files, explore, or run verification. Based o
 
 export class AgentManager {
 	private agents = new Map<string, AgentRecord>()
+	private runtimeCleanups = new WeakMap<AgentRecord, () => void>()
 	private cleanupInterval: ReturnType<typeof setInterval>
 	private onComplete?: OnAgentComplete
 	private onStart?: OnAgentStart
@@ -264,6 +265,9 @@ export class AgentManager {
 				this.onCompact?.(record, info)
 				options.onCompaction?.(info)
 			},
+			onRuntimeCleanupRegistered: (cleanup) => {
+				this.runtimeCleanups.set(record, cleanup)
+			},
 			onSessionCreated: (session) => {
 				record.session = session
 				if (record.pendingSteers?.length) {
@@ -288,17 +292,6 @@ export class AgentManager {
 				record.completedAt ??= Date.now()
 				record.latestOutcome = buildAgentOutcome(record)
 
-				detach()
-
-				if (record.outputCleanup) {
-					try {
-						record.outputCleanup()
-					} catch {
-						/* ignore */
-					}
-					record.outputCleanup = undefined
-				}
-
 				if (options.isBackground) {
 					this.runningBackground--
 					this.onComplete?.(record)
@@ -314,23 +307,17 @@ export class AgentManager {
 				record.completedAt ??= Date.now()
 				record.latestOutcome = buildAgentOutcome(record)
 
-				detach()
-
-				if (record.outputCleanup) {
-					try {
-						record.outputCleanup()
-					} catch {
-						/* ignore */
-					}
-					record.outputCleanup = undefined
-				}
-
 				if (options.isBackground) {
 					this.runningBackground--
 					this.onComplete?.(record)
 					this.drainQueue()
 				}
 				return ""
+			})
+			.finally(() => {
+				detach()
+				this.cleanupRecordRuntime(record)
+				record.promise = undefined
 			})
 
 		record.promise = promise
@@ -557,7 +544,28 @@ export class AgentManager {
 		return true
 	}
 
+	private cleanupRecordRuntime(record: AgentRecord): void {
+		if (record.outputCleanup) {
+			try {
+				record.outputCleanup()
+			} catch {
+				/* ignore */
+			}
+			record.outputCleanup = undefined
+		}
+		const runtimeCleanup = this.runtimeCleanups.get(record)
+		if (runtimeCleanup) {
+			try {
+				runtimeCleanup()
+			} catch {
+				/* ignore */
+			}
+			this.runtimeCleanups.delete(record)
+		}
+	}
+
 	private removeRecord(id: string, record: AgentRecord): void {
+		this.cleanupRecordRuntime(record)
 		record.session?.dispose?.()
 		record.session = undefined
 		this.agents.delete(id)
@@ -616,10 +624,7 @@ export class AgentManager {
 	async waitForAll(): Promise<void> {
 		while (true) {
 			this.drainQueue()
-			const pending = [...this.agents.values()]
-				.filter((r) => r.status === "running" || r.status === "queued")
-				.map((r) => r.promise)
-				.filter(Boolean)
+			const pending = [...this.agents.values()].map((r) => r.promise).filter(Boolean)
 			if (pending.length === 0) break
 			await Promise.allSettled(pending)
 		}
@@ -629,6 +634,7 @@ export class AgentManager {
 		clearInterval(this.cleanupInterval)
 		this.queue = []
 		for (const record of this.agents.values()) {
+			this.cleanupRecordRuntime(record)
 			record.session?.dispose()
 		}
 		this.agents.clear()
