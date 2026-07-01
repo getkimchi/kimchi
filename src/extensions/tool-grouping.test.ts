@@ -5,6 +5,7 @@ import {
 	buildGroupSummaryText,
 	buildGroupView,
 	classifyTool,
+	describeTool,
 	findToolGroup,
 	formatSummary,
 	getParent,
@@ -28,14 +29,14 @@ describe("classifyTool", () => {
 	it("classifies ls as directory", () => {
 		expect(classifyTool("ls", {})).toBe("directory")
 	})
-	it("classifies write as edit", () => {
-		expect(classifyTool("write", { file_path: "foo.ts" })).toBe("edit")
+	it("classifies write as operation", () => {
+		expect(classifyTool("write", { file_path: "foo.ts" })).toBe("operation")
 	})
-	it("classifies edit as edit", () => {
-		expect(classifyTool("edit", { file_path: "foo.ts" })).toBe("edit")
+	it("classifies edit as operation", () => {
+		expect(classifyTool("edit", { file_path: "foo.ts" })).toBe("operation")
 	})
-	it("classifies multiedit as edit", () => {
-		expect(classifyTool("multiedit", {})).toBe("edit")
+	it("classifies multiedit as operation", () => {
+		expect(classifyTool("multiedit", {})).toBe("operation")
 	})
 	it("classifies bash ls as directory", () => {
 		expect(classifyTool("bash", { command: "ls src/" })).toBe("directory")
@@ -61,8 +62,11 @@ describe("classifyTool", () => {
 	it("classifies bash tail as file", () => {
 		expect(classifyTool("bash", { command: "tail -f log" })).toBe("file")
 	})
-	it("classifies unrecognized bash as operation", () => {
-		expect(classifyTool("bash", { command: "git status" })).toBe("operation")
+	it("classifies unrecognized bash as command", () => {
+		expect(classifyTool("bash", { command: "git status" })).toBe("command")
+	})
+	it("classifies git commit bash as command", () => {
+		expect(classifyTool("bash", { command: "git commit -m foo" })).toBe("command")
 	})
 	it("classifies rtk grep as pattern", () => {
 		expect(classifyTool("bash", { command: 'rtk grep -n "foo" src/' })).toBe("pattern")
@@ -70,8 +74,8 @@ describe("classifyTool", () => {
 	it("classifies rtk read as file", () => {
 		expect(classifyTool("bash", { command: "rtk read src/foo.ts" })).toBe("file")
 	})
-	it("classifies rtk with unrecognized subcommand as operation", () => {
-		expect(classifyTool("bash", { command: "rtk git status" })).toBe("operation")
+	it("classifies rtk with unrecognized subcommand as command", () => {
+		expect(classifyTool("bash", { command: "rtk git status" })).toBe("command")
 	})
 	it("classifies unknown tool as operation", () => {
 		expect(classifyTool("some_mcp_tool", {})).toBe("operation")
@@ -97,9 +101,6 @@ describe("formatSummary", () => {
 	it("formats past tense directory plural", () => {
 		expect(formatSummary(new Map([["directory", 2]]), false)).toBe("listed 2 directories")
 	})
-	it("formats past tense edit", () => {
-		expect(formatSummary(new Map([["edit", 1]]), false)).toBe("made 1 edit")
-	})
 	it("formats past tense command", () => {
 		expect(formatSummary(new Map([["command", 3]]), false)).toBe("ran 3 commands")
 	})
@@ -117,9 +118,6 @@ describe("formatSummary", () => {
 	})
 	it("formats continuous tense command", () => {
 		expect(formatSummary(new Map([["command", 1]]), true)).toBe("running 1 command")
-	})
-	it("formats continuous tense edit", () => {
-		expect(formatSummary(new Map([["edit", 1]]), true)).toBe("editing 1 file")
 	})
 	it("formats continuous tense operation", () => {
 		expect(formatSummary(new Map([["operation", 2]]), true)).toBe("2 operations")
@@ -284,6 +282,18 @@ function mockToolFull(toolName: string, args: Record<string, unknown>, opts: { i
 	}
 }
 
+function mockBashResult(command: string, stdout: string, opts: { isPartial?: boolean } = {}): object {
+	return {
+		toolName: "bash",
+		toolCallId: Math.random().toString(36),
+		args: { command },
+		isPartial: opts.isPartial ?? false,
+		result: { isError: false, content: [{ type: "text", text: stdout }] },
+		render: (_width: number) => [],
+		invalidate: () => {},
+	}
+}
+
 describe("buildGroupSummaryText", () => {
 	it("aggregates by category, first-appearance order", () => {
 		const run = [
@@ -298,6 +308,64 @@ describe("buildGroupSummaryText", () => {
 	it("uses continuous tense when isInProgress is true", () => {
 		const run = [mockToolFull("read", { path: "a.ts" }), mockToolFull("bash", { command: "ls src/" })]
 		expect(buildGroupSummaryText(run, true)).toBe("reading 1 file, listing 1 directory")
+	})
+
+	it("emits describable segment after flushing preceding counts", () => {
+		const run = [
+			mockToolFull("read", { path: "a.ts" }),
+			mockToolFull("read", { path: "b.ts" }),
+			mockBashResult("git commit -m foo", "[main abc1234] foo\n 1 file changed"),
+		]
+		expect(buildGroupSummaryText(run, false)).toBe("read 2 files, committed abc1234")
+	})
+
+	it("emits describable segment before following counts", () => {
+		const run = [mockBashResult("git commit -m foo", "[main abc1234] foo"), mockToolFull("read", { path: "a.ts" })]
+		expect(buildGroupSummaryText(run, false)).toBe("committed abc1234, read 1 file")
+	})
+
+	it("flushes between two describable segments", () => {
+		const run = [
+			mockToolFull("read", { path: "a.ts" }),
+			mockBashResult("git commit -m foo", "[main abc1234] foo"),
+			mockToolFull("read", { path: "b.ts" }),
+		]
+		expect(buildGroupSummaryText(run, false)).toBe("read 1 file, committed abc1234, read 1 file")
+	})
+
+	it("emits multiple describable segments consecutively", () => {
+		const run = [
+			mockBashResult("git commit -m foo", "[main abc1234] foo"),
+			mockBashResult("git push", "   0001111..def5678  main -> origin/main"),
+		]
+		expect(buildGroupSummaryText(run, false)).toBe("committed abc1234, pushed def5678")
+	})
+
+	it("aggregates count-based tools between describable segments", () => {
+		const run = [
+			mockToolFull("ls", { path: "x" }),
+			mockBashResult("git commit -m foo", "[main abc1234] foo"),
+			mockBashResult("git push", "   0001111..def5678  main -> origin/main"),
+			mockToolFull("ls", { path: "y" }),
+		]
+		expect(buildGroupSummaryText(run, false)).toBe(
+			"listed 1 directory, committed abc1234, pushed def5678, listed 1 directory",
+		)
+	})
+
+	it("aggregates in-progress describable tools as commands", () => {
+		const run = [mockBashResult("git commit -m foo", "[main abc1234] foo", { isPartial: true })]
+		expect(buildGroupSummaryText(run, true)).toBe("running 1 command")
+	})
+
+	it("renders a single describable tool as a lone segment", () => {
+		const run = [mockBashResult("git commit -m foo", "[main abc1234] foo")]
+		expect(buildGroupSummaryText(run, false)).toBe("committed abc1234")
+	})
+
+	it("renders a single non-describable tool as a count segment", () => {
+		const run = [mockToolFull("read", { path: "a.ts" })]
+		expect(buildGroupSummaryText(run, false)).toBe("read 1 file")
 	})
 })
 
@@ -338,6 +406,92 @@ describe("buildCurrentToolLine", () => {
 	it("unknown tool shows toolName …", () => {
 		const tool = mockToolFull("some_mcp_tool", {})
 		expect(buildCurrentToolLine(tool)).toBe("some_mcp_tool …")
+	})
+})
+
+function makeBashTool(command: string, opts: { isPartial?: boolean; stdout?: string; isError?: boolean } = {}): object {
+	const result =
+		opts.stdout !== undefined || opts.isError
+			? { isError: opts.isError ?? false, content: [{ type: "text", text: opts.stdout ?? "" }] }
+			: undefined
+	return {
+		toolName: "bash",
+		toolCallId: "call_1",
+		isPartial: opts.isPartial ?? false,
+		args: { command },
+		...(result ? { result } : {}),
+	}
+}
+
+describe("describeTool", () => {
+	it("returns undefined for in-progress tools", () => {
+		expect(describeTool(makeBashTool("git commit -m foo", { isPartial: true }))).toBeUndefined()
+	})
+
+	it("returns undefined for tools with no result", () => {
+		expect(describeTool(makeBashTool("git commit -m foo"))).toBeUndefined()
+	})
+
+	it("returns 'committed <sha>' for git commit", () => {
+		const stdout = "[main abc1234] foo\n 1 file changed, 2 insertions(+)"
+		expect(describeTool(makeBashTool("git commit -m foo", { stdout }))).toBe("committed abc1234")
+	})
+
+	it("returns 'pushed <sha>' for git push", () => {
+		const stdout = "To github.com:user/repo.git\n   abc1234..def5678  main -> origin/main"
+		expect(describeTool(makeBashTool("git push", { stdout }))).toBe("pushed def5678")
+	})
+
+	it("handles rtk prefix for git commit", () => {
+		expect(describeTool(makeBashTool("rtk git commit -m foo", { stdout: "[main abc1234] foo" }))).toBe(
+			"committed abc1234",
+		)
+	})
+
+	it("handles rtk prefix for git push", () => {
+		expect(describeTool(makeBashTool("rtk git push", { stdout: "   abc1234..def5678  main -> origin/main" }))).toBe(
+			"pushed def5678",
+		)
+	})
+
+	it("returns undefined for unrecognized bash commands", () => {
+		expect(describeTool(makeBashTool("ls -la", { stdout: "file1\nfile2" }))).toBeUndefined()
+	})
+
+	it("returns undefined for non-bash tools", () => {
+		expect(
+			describeTool({ toolName: "read", toolCallId: "c1", isPartial: false, args: { path: "foo.ts" } }),
+		).toBeUndefined()
+	})
+
+	it("returns undefined for git commit with unparseable stdout", () => {
+		expect(describeTool(makeBashTool("git commit -m foo", { stdout: "nothing matched here" }))).toBeUndefined()
+	})
+
+	it("returns undefined for git push with unparseable stdout", () => {
+		expect(describeTool(makeBashTool("git push", { stdout: "Everything up-to-date" }))).toBeUndefined()
+	})
+
+	it("a lone completed git commit is describable (enables single-tool collapse)", () => {
+		const tool = mockBashResult("git commit -m foo", "[main abc1234] foo")
+		expect(describeTool(tool)).toBe("committed abc1234")
+	})
+
+	it("returns undefined for failed git commit (isError: true)", () => {
+		const tool = mockBashResult("git commit -m foo", "[main abc1234] foo")
+		// biome-ignore lint/suspicious/noExplicitAny: override result on mock to simulate failure
+		;(tool as any).result = { isError: true, content: [{ type: "text", text: "[main abc1234] foo" }] }
+		expect(describeTool(tool)).toBeUndefined()
+	})
+
+	it("returns undefined for failed git push (isError: true)", () => {
+		const tool = mockBashResult("git push", "   abc1234..def5678  main -> origin/main")
+		// biome-ignore lint/suspicious/noExplicitAny: override result on mock to simulate failure
+		;(tool as any).result = {
+			isError: true,
+			content: [{ type: "text", text: "   abc1234..def5678  main -> origin/main" }],
+		}
+		expect(describeTool(tool)).toBeUndefined()
 	})
 })
 

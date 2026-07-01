@@ -8,7 +8,7 @@ import { formatToolTimer } from "./tool-rendering.js"
 // Types
 // ---------------------------------------------------------------------------
 
-export type Category = "file" | "pattern" | "directory" | "edit" | "command" | "operation"
+export type Category = "file" | "pattern" | "directory" | "command" | "operation"
 
 // ---------------------------------------------------------------------------
 // classifyTool
@@ -30,7 +30,7 @@ export function classifyTool(toolName: string, args: Record<string, unknown>): C
 		case "write":
 		case "edit":
 		case "multiedit":
-			return "edit"
+			return "operation"
 		case "bash": {
 			const command = typeof args.command === "string" ? args.command.trim() : ""
 			const words = command.split(/\s+/)
@@ -40,7 +40,7 @@ export function classifyTool(toolName: string, args: Record<string, unknown>): C
 			if (BASH_DIRECTORY_CMDS.has(effectiveWord)) return "directory"
 			if (BASH_PATTERN_CMDS.has(effectiveWord)) return "pattern"
 			if (BASH_FILE_CMDS.has(effectiveWord)) return "file"
-			return "operation"
+			return "command"
 		}
 		default:
 			return "operation"
@@ -55,7 +55,6 @@ const PAST: Record<Category, (n: number) => string> = {
 	file: (n) => `read ${n} ${n === 1 ? "file" : "files"}`,
 	pattern: (n) => `searched for ${n} ${n === 1 ? "pattern" : "patterns"}`,
 	directory: (n) => `listed ${n} ${n === 1 ? "directory" : "directories"}`,
-	edit: (n) => `made ${n} ${n === 1 ? "edit" : "edits"}`,
 	command: (n) => `ran ${n} ${n === 1 ? "command" : "commands"}`,
 	operation: (n) => `${n} ${n === 1 ? "operation" : "operations"}`,
 }
@@ -64,7 +63,6 @@ const CONTINUOUS: Record<Category, (n: number) => string> = {
 	file: (n) => `reading ${n} ${n === 1 ? "file" : "files"}`,
 	pattern: (n) => `searching for ${n} ${n === 1 ? "pattern" : "patterns"}`,
 	directory: (n) => `listing ${n} ${n === 1 ? "directory" : "directories"}`,
-	edit: (n) => `editing ${n} ${n === 1 ? "file" : "files"}`,
 	command: (n) => `running ${n} ${n === 1 ? "command" : "commands"}`,
 	operation: (n) => `${n} ${n === 1 ? "operation" : "operations"}`,
 }
@@ -170,16 +168,98 @@ export function findToolGroup(self: object, children: object[]): object[] {
 // ---------------------------------------------------------------------------
 
 export function buildGroupSummaryText(run: object[], isInProgress: boolean): string {
+	// Hybrid segments: describable tools (describeTool returns a string) become
+	// individual segments; the rest are aggregated by category with counts. To
+	// preserve chronological order, any pending count-based aggregate is flushed
+	// (emitted) BEFORE a describable segment is appended. Segments are joined
+	// with ", " in order of first appearance.
+	const segments: string[] = []
 	const order: Category[] = []
 	const counts = new Map<Category, number>()
+
+	const flush = () => {
+		if (counts.size === 0) return
+		const orderedCounts = new Map(order.map((cat) => [cat, counts.get(cat) ?? 0]))
+		segments.push(formatSummary(orderedCounts, isInProgress))
+		order.length = 0
+		counts.clear()
+	}
+
 	for (const tool of run) {
 		if (!isToolLike(tool)) continue
+		const desc = describeTool(tool)
+		if (desc !== undefined) {
+			flush()
+			segments.push(desc)
+			continue
+		}
 		const cat = classifyTool(tool.toolName, tool.args)
 		if (!counts.has(cat)) order.push(cat)
 		counts.set(cat, (counts.get(cat) ?? 0) + 1)
 	}
-	const orderedCounts = new Map(order.map((cat) => [cat, counts.get(cat) ?? 0]))
-	return formatSummary(orderedCounts, isInProgress)
+	flush()
+	return segments.join(", ")
+}
+
+// ---------------------------------------------------------------------------
+// describeTool
+// ---------------------------------------------------------------------------
+
+// Safely extract the first text block from a bash tool's result. Returns
+// undefined when there is no result, no content array, or no text block.
+// biome-ignore lint/suspicious/noExplicitAny: duck-typed runtime tool object
+// biome-ignore lint/suspicious/noExplicitAny: duck-typed runtime tool object, matches isFailedTool precedent
+function getBashStdout(tool: any): string | undefined {
+	const content = tool?.result?.content
+	if (!Array.isArray(content)) return undefined
+	// biome-ignore lint/suspicious/noExplicitAny: content blocks are untyped at runtime
+	const block = content.find((b: any) => b?.type === "text")
+	return typeof block?.text === "string" ? block.text : undefined
+}
+
+// Matches `[branch sha]` at the start of a line. Git commit stdout looks like:
+//   [main abc1234] commit message
+const GIT_COMMIT_SHA_RE = /^\[[^\s]+\s+([0-9a-f]{7,40})\]/m
+
+// Matches `<old>..<new>  ref -> ref` — capture group 2 is the NEW sha.
+const GIT_PUSH_SHA_RE = /([0-9a-f]{7,40})\.\.([0-9a-f]{7,40})\s+\S+ -> \S+/
+
+/**
+ * Produce a short human description of a completed tool call, when one can be
+ * inferred from its output. Returns `undefined` for in-progress tools, non-bash
+ * tools, or bash commands whose output cannot be parsed.
+ *
+ * Currently describes `git commit` ("committed <sha>") and `git push"
+ * ("pushed <new-sha>"). The `rtk ` prefix is handled consistently with
+ * `classifyTool`.
+ */
+export function describeTool(tool: object): string | undefined {
+	if (!isToolLike(tool)) return undefined
+	if (tool.isPartial === true) return undefined
+	// biome-ignore lint/suspicious/noExplicitAny: duck-typed runtime result, matches getBashStdout/isFailedTool precedent
+	if ((tool as any).result?.isError === true) return undefined
+	if (tool.toolName !== "bash") return undefined
+
+	const command = typeof tool.args.command === "string" ? tool.args.command.trim() : ""
+	const words = command.split(/\s+/)
+	const firstWord = words[0] ?? ""
+	// rtk wraps known tools: "rtk git commit ..." — treat like "git commit ..."
+	const effectiveWord = firstWord === "rtk" ? (words[1] ?? "") : firstWord
+	if (effectiveWord !== "git") return undefined
+
+	const subcommand = words[firstWord === "rtk" ? 2 : 1] ?? ""
+	if (subcommand !== "commit" && subcommand !== "push") return undefined
+
+	const stdout = getBashStdout(tool)
+	if (stdout === undefined) return undefined
+
+	if (subcommand === "commit") {
+		const match = stdout.match(GIT_COMMIT_SHA_RE)
+		return match ? `committed ${match[1]}` : undefined
+	}
+	// subcommand === "push"
+	const match = stdout.match(GIT_PUSH_SHA_RE)
+	return match ? `pushed ${match[2]}` : undefined
 }
 
 // ---------------------------------------------------------------------------
@@ -275,7 +355,11 @@ export function patchToolGroupRendering(): void {
 		if (!parent) return originalRender.call(this, width)
 
 		const run = findToolGroup(this, parent.children)
-		if (run.length < 2) return originalRender.call(this, width)
+		// Collapse when there are 2+ groupable tools, OR when there is exactly 1
+		// tool AND it is describable (describeTool returns a non-undefined string).
+		// A lone git commit should render as "committed abc1234", not the full block.
+		const isDescribableSingle = run.length === 1 && describeTool(run[0]) !== undefined
+		if (run.length < 2 && !isDescribableSingle) return originalRender.call(this, width)
 
 		// ctrl+o wires to component.setExpanded() on ALL tools globally.
 		// Use the last tool's .expanded field as the group's expand state.
