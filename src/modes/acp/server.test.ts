@@ -1108,6 +1108,138 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 	})
 })
 
+// ACP ContentChunk contract (src/modes/acp/server.ts onSessionEvent):
+// "All chunks belonging to the same message share the same messageId.
+// A change in messageId indicates a new message has started." pi-mono
+// streams one text_delta / thinking_delta event per chunk, but every delta
+// within a content block shares its contentIndex — so the server can collapse
+// them onto a single messageId without coordinating across events. The block
+// below exercises both branches directly so a regression that drops the field
+// or breaks its stability surfaces as a test failure rather than a quiet
+// client-side bug.
+describe("KimchiAcpAgent messageId on streaming chunks", () => {
+	let fake: FakeAgentSession
+	let agent: KimchiAcpAgent
+	let sessionId: string
+	let updates: SessionNotification[]
+
+	beforeEach(async () => {
+		fake = new FakeAgentSession("session-msgid")
+		const rec = makeRecordingConn()
+		updates = rec.updates
+		agent = new KimchiAcpAgent(rec.conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		sessionId = res.sessionId
+	})
+
+	function emitTextDeltas(contentIndex: number, deltas: string[]): void {
+		for (const delta of deltas) {
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "text_delta",
+					delta,
+					contentIndex,
+					partial: {} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+		}
+	}
+
+	function emitThinkingDeltas(contentIndex: number, deltas: string[]): void {
+		for (const delta of deltas) {
+			fake.emit({
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "thinking_delta",
+					delta,
+					contentIndex,
+					partial: {} as unknown as AssistantMessage,
+				},
+				message: {} as unknown as AssistantMessage,
+			})
+		}
+	}
+
+	function messageIdsFor(update: string): Array<string | null | undefined> {
+		return updates
+			.filter((u) => u.update.sessionUpdate === update)
+			.map((u) => (u.update as { messageId?: string | null }).messageId)
+	}
+
+	it("keeps messageId stable across deltas within a block and flips it when contentIndex advances", async () => {
+		// Two text blocks back-to-back. The first three deltas share index 0
+		// (one messageId); the next three share index 1 (a different one).
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			emitTextDeltas(0, ["a", "b", "c"])
+			emitTextDeltas(1, ["d", "e", "f"])
+			fake.emit(agentEnd())
+		}
+		const result = await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "two blocks" }],
+		})
+		expect(result.stopReason).toBe("end_turn")
+		expect(messageIdsFor("agent_message_chunk")).toEqual([
+			"kimchi_msg_0",
+			"kimchi_msg_0",
+			"kimchi_msg_0",
+			"kimchi_msg_1",
+			"kimchi_msg_1",
+			"kimchi_msg_1",
+		])
+	})
+
+	it("emits messageId on agent_thought_chunk the same way (same contentIndex → same id)", async () => {
+		// Smoke test for the thought branch: the formula is identical to the
+		// text branch, so a regression that drops the field on either side
+		// surfaces in at least one of the two tests.
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			emitThinkingDeltas(0, ["hmm", " ", "ok"])
+			fake.emit(agentEnd())
+		}
+		const result = await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "think" }],
+		})
+		expect(result.stopReason).toBe("end_turn")
+		expect(messageIdsFor("agent_thought_chunk")).toEqual(["kimchi_msg_0", "kimchi_msg_0", "kimchi_msg_0"])
+	})
+
+	it("advances the counter across turns so two turns both starting at contentIndex=0 get distinct ids", async () => {
+		// Regression guard for the ACP "change in messageId indicates a new
+		// message" contract. pi-mono resets contentIndex to 0 on each new
+		// assistant message; without a session-wide counter, turn 2's first
+		// block would re-use turn 1's first block's messageId and a client
+		// would merge two separate replies into one bubble.
+		fake.promptImpl = async () => {
+			// Turn 1: one text block at index 0.
+			fake.emit({ type: "agent_start" })
+			emitTextDeltas(0, ["hello"])
+			fake.emit(agentEnd())
+			// Turn 2 (chained continue): another text block at index 0 again.
+			// contentIndex resets per assistant message, but the session-wide
+			// counter must keep advancing.
+			fake.emit({ type: "agent_start" })
+			emitTextDeltas(0, ["world"])
+			fake.emit(agentEnd())
+		}
+		const result = await agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "two turns" }],
+		})
+		expect(result.stopReason).toBe("end_turn")
+		expect(messageIdsFor("agent_message_chunk")).toEqual(["kimchi_msg_0", "kimchi_msg_1"])
+	})
+})
+
 // Streaming tools (bash in particular) emit tool_execution_update with a
 // partialResult payload for every output chunk. The ACP server translates each
 // of these into a tool_call_update with status="in_progress" and content carrying
