@@ -102,11 +102,12 @@ export function startSettingsChangeWatcher(emit: EmitFn): () => void {
 		// inode; watching the file directly on Linux would lose the watcher.
 		// Directory-level watching survives inode replacement.
 		const settingsPath = resolve(agentDir, "settings.json")
-		watcher = watch(agentDir, (eventType, filename) => {
+		watcher = watch(agentDir, { persistent: false }, (eventType, filename) => {
 			if (filename !== "settings.json") return
 			if (debounceTimer) clearTimeout(debounceTimer)
 			debounceTimer = setTimeout(fire, DEBOUNCE_MS)
 		})
+		watcher.unref?.()
 		watcher.on("error", () => {
 			watcher?.close()
 			watcher = undefined

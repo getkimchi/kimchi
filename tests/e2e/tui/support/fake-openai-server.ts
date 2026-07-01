@@ -246,12 +246,13 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 		}
 	}
 
-	// Substitute the `__FERMENT_ID__` token in tool args with the real id from the request.
+	// Substitute dynamic ids from previous tool results into scripted tool args.
 	const fermentId = extractFermentId(body)
+	const agentId = extractAgentId(body)
 	for (const toolCall of script.toolCalls ?? []) {
-		const fn = fermentId
-			? { ...toolCall.function, arguments: toolCall.function.arguments.replaceAll("__FERMENT_ID__", fermentId) }
-			: toolCall.function
+		const fn = { ...toolCall.function }
+		if (fermentId) fn.arguments = fn.arguments.replaceAll("__FERMENT_ID__", fermentId)
+		if (agentId) fn.arguments = fn.arguments.replaceAll("__AGENT_ID__", agentId)
 		chunk([
 			{
 				index: 0,
@@ -279,6 +280,16 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 function extractFermentId(body: unknown): string | undefined {
 	const match = JSON.stringify(body ?? "").match(/ferment_id[\\"\s:]+([0-9a-fA-F-]{8,})/)
 	return match?.[1]
+}
+
+/** Pull the Agent id from prior Agent tool output (`Agent ID: <id>` or `agent_id`). */
+function extractAgentId(body: unknown): string | undefined {
+	const raw = JSON.stringify(body ?? "")
+	return (
+		raw.match(/Agent ID:\s*([0-9a-fA-F-]{8,})/)?.[1] ??
+		raw.match(/agent_id[\\"\s:]+([0-9a-fA-F-]{8,})/)?.[1] ??
+		raw.match(/agentId[\\"\s:]+([0-9a-fA-F-]{8,})/)?.[1]
+	)
 }
 
 function unixNow(): number {
