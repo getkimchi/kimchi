@@ -1,7 +1,6 @@
 import type { Phase } from "../types.js"
 
-export const DEFAULT_EXPLORE_GUIDELINES = `During **explore** phase:
-- Goal: build a mental map, not a solution. Do NOT modify files. Do NOT write a plan yet.
+export const DEFAULT_EXPLORE_GUIDELINES = `- Goal: build a mental map, not a solution. Do NOT modify files. Do NOT write a plan yet.
 - **Skip explore for greenfield projects** (empty directory, no existing code). There is nothing to explore — proceed directly to plan. A trivial 1-turn explore that only runs \`ls\` on an empty directory wastes a turn and adds no value.
 - Start broad with \`grep\`/\`find\`/\`ls\`; then \`read\` the 3–5 most relevant files in full.
 - Trace imports and call chains across module boundaries — note the actual entry points and seams, not every file you saw.
@@ -12,15 +11,13 @@ export const DEFAULT_EXPLORE_GUIDELINES = `During **explore** phase:
 - Stop as soon as you have enough context to plan. Over-exploring wastes tokens.
 - Output: a tight summary (paths, key types, integration points) — what matters, not everything you saw.`
 
-export const DEFAULT_RESEARCH_GUIDELINES = `During **research** phase:
-- Use \`web_search\` when your knowledge might be stale. Triggers: a library/framework version you are assuming but have not verified; an API you are not 100% sure exists in the version in use; an error message or behaviour you do not recognise; a "best practice" claim that may be more than ~18 months old; breaking changes, deprecations, or new runtime/build-tool defaults.
+export const DEFAULT_RESEARCH_GUIDELINES = `- Use \`web_search\` when your knowledge might be stale. Triggers: a library/framework version you are assuming but have not verified; an API you are not 100% sure exists in the version in use; an error message or behaviour you do not recognise; a "best practice" claim that may be more than ~18 months old; breaking changes, deprecations, or new runtime/build-tool defaults.
 - Do not rely on training memory for the specifics of named libraries, kits, or old framework versions. If the task names a version, vendor, or exact product, verify it before you use it.
 - Prefer \`web_search\` over delegating a simple lookup. Prefer primary sources (official docs, GitHub READMEs, RFCs). Then use \`web_fetch\` on the primary source to confirm details, especially for official docs, changelogs, migration guides, or GitHub source files.
 - If research output is non-trivial (more than one fact), save a short markdown note to the Documents directory and reference it from the next phase.
 - Graceful degradation: if \`web_search\` and \`web_fetch\` are not available in your tool list, do not bluff. State the version/API assumption you are relying on explicitly and ask the user to confirm it before continuing.`
 
-export const DEFAULT_PLAN_GUIDELINES = `During **plan** phase:
-- Design BEFORE coding: file paths, interfaces, function signatures, data flow.
+export const DEFAULT_PLAN_GUIDELINES = `- Design BEFORE coding: file paths, interfaces, function signatures, data flow.
 - Save the spec as a markdown file in the Documents directory. The build phase reads from there — do not redo discovery in build.
 - Use the standard plan structure: Goal, Constraints, Chunks (with Files Changed, Depends On, Accept When, Test Coverage, Open Questions), Verification Strategy, Decision Log, Risks.
 - Every chunk must list concrete file paths in Files Changed — not globs, not vague descriptions. Interfaces and file paths beat prose.
@@ -36,8 +33,7 @@ export const DEFAULT_PLAN_GUIDELINES = `During **plan** phase:
  *  it can be referenced consistently from any guideline that mentions commits. */
 export const KIMCHI_COAUTHOR = "Co-Authored-By: Kimchi <noreply@kimchi.dev>"
 
-export const DEFAULT_BUILD_GUIDELINES = `During **build** phase:
-- Read a file before modifying it — unless the orchestrator already provided its contents and path in the task spec, in which case you may proceed directly to editing.
+export const DEFAULT_BUILD_GUIDELINES = `- Read a file before modifying it — unless the orchestrator already provided its contents and path in the task spec, in which case you may proceed directly to editing.
 - Batch independent tool calls in a single turn — fewer turns = less context accumulation.
 - Prefer \`edit\` over \`write\` for files >30 lines. Reserve \`write\` for new files or full rewrites.
 - Stay in scope: do NOT add features, refactors, or "improvements" beyond what the spec asks for.
@@ -51,8 +47,7 @@ export const DEFAULT_BUILD_GUIDELINES = `During **build** phase:
 - Keep diffs minimal and reviewable.
 - **Git commits**: Always end every commit message with a blank line followed by \`${KIMCHI_COAUTHOR}\`.`
 
-export const DEFAULT_REVIEW_GUIDELINES = `During **review** phase:
-- Read the diff or changed files first; then read the surrounding context for any touched function.
+export const DEFAULT_REVIEW_GUIDELINES = `- Read the diff or changed files first; then read the surrounding context for any touched function.
 - Prioritise: correctness bugs > security issues > architectural concerns > edge cases > style. Skip nits.
 - Be specific: quote the exact line and propose the concrete fix.
 - Flag missing tests for behaviour the diff introduces or changes.

@@ -21,8 +21,7 @@
 export const MINIMAX_FAMILY_EXPLORE = ""
 
 /** MiniMax family research: verify APIs before relying on memory. */
-export const MINIMAX_FAMILY_RESEARCH = `During **research** phase (MiniMax family):
-- Your known failure mode is hallucinating APIs. If you cannot point to the exact official source for a method signature, run \`web_search\` + \`web_fetch\` on the primary docs before using it.
+export const MINIMAX_FAMILY_RESEARCH = `- Your known failure mode is hallucinating APIs. If you cannot point to the exact official source for a method signature, run \`web_search\` + \`web_fetch\` on the primary docs before using it.
 - Prefer verifying version-specific behaviour over relying on "this feels right".
 - Do not treat named libraries, vendor kits, or old framework versions as "known". If the task names a specific product or version, verify it with \`web_search\`/\`web_fetch\` before relying on it.`
 
@@ -37,15 +36,13 @@ export const MINIMAX_FAMILY_ORCHESTRATION = `When orchestrating (MiniMax M2 fami
 - Each subagent prompt should target a single focused goal — do not ask a subagent to do multiple unrelated things.`
 
 /** M2 family build: architecture-level traits (outline-then-diff, scope, APIs, step-limit). */
-export const MINIMAX_FAMILY_BUILD = `During **build** phase (MiniMax M2 family):
-- Outline-then-diff: state the change in 1–3 bullets, then emit the minimal diff. No "clever" refactors, no surprise restructuring.
+export const MINIMAX_FAMILY_BUILD = `- Outline-then-diff: state the change in 1–3 bullets, then emit the minimal diff. No "clever" refactors, no surprise restructuring.
 - STAY IN SCOPE. Do NOT add features, error handling, concurrency primitives, or abstractions the task did not explicitly ask for. M2's known failure mode is over-reaching — resist it.
 - Verify library methods exist before calling them — do NOT hallucinate APIs.
 - Limit each turn to a single focused goal. M2 has excellent state tracking when goals are limited per turn; it degrades when asked to do everything in parallel.`
 
 /** M2 family review: flag architecture-level failure modes in reviewed code. */
-export const MINIMAX_FAMILY_REVIEW = `During **review** phase (MiniMax M2 family):
-- Flag scope creep aggressively — added features, unsolicited refactors, or new abstractions that the task did not ask for. This is M2's most common failure mode.
+export const MINIMAX_FAMILY_REVIEW = `- Flag scope creep aggressively — added features, unsolicited refactors, or new abstractions that the task did not ask for. This is M2's most common failure mode.
 - Flag hallucinated APIs (calls to methods that do not exist on the library version in use).`
 
 // ── MiniMax M2.7 per-model overrides ──────────────────────────────────
@@ -60,9 +57,9 @@ export const MINIMAX_M27_ORCHESTRATION = `When orchestrating (minimax-m2.7 speci
 - After delegating, do NOT re-read the files the subagent created or re-run its tests. Trust the subagent result unless it explicitly reported an error.`
 
 /** M2.7 build: Go-specific concurrency pattern observed in M2.7. */
-export const MINIMAX_M27_BUILD = `During **build** phase (minimax-m2.7 specific):
-- Do NOT default to mutex-based concurrency in Go (or any pattern not specified). Use exactly the concurrency primitive the task names; if none is named, ask.`
+export const MINIMAX_M27_BUILD =
+	"- Do NOT default to mutex-based concurrency in Go (or any pattern not specified). Use exactly the concurrency primitive the task names; if none is named, ask."
 
 /** M2.7 review: flag Go-specific concurrency issues. */
-export const MINIMAX_M27_REVIEW = `During **review** phase (minimax-m2.7 specific):
-- Flag inappropriate concurrency choices (e.g. mutex spam in Go where none was requested).`
+export const MINIMAX_M27_REVIEW =
+	"- Flag inappropriate concurrency choices (e.g. mutex spam in Go where none was requested)."
