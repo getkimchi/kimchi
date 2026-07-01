@@ -79,13 +79,13 @@ describe("stream timeout config → settings.json wiring", () => {
 })
 
 describe("stream timeout error classification", () => {
-	it("timeout error string from the patch is retryable", () => {
-		const errorMessage = "Request timed out after 180000ms"
+	it("idle timeout error string from the patch is retryable", () => {
+		const errorMessage = "Stream idle timeout after 180000ms"
 		expect(isNetworkErrorRetryable({ stopReason: "error", errorMessage })).toBe(true)
 	})
 
-	it("timeout error string with custom timeout value is retryable", () => {
-		const errorMessage = "Request timed out after 60000ms"
+	it("idle timeout error string with custom timeout value is retryable", () => {
+		const errorMessage = "Stream idle timeout after 60000ms"
 		expect(isNetworkErrorRetryable({ stopReason: "error", errorMessage })).toBe(true)
 	})
 
@@ -122,6 +122,14 @@ describe("patched openai-completions.js contains AbortController code", () => {
 		// _isStreamTimeout detection in catch block
 		const isStreamTimeoutIdx = source.indexOf("const _isStreamTimeout", catchIdx)
 		expect(isStreamTimeoutIdx).toBeGreaterThan(catchIdx)
+
+		// idle timeout: _resetStreamTimeout called inside the for-await loop
+		const loopIdx = source.indexOf("for await (const chunk of openaiStream)", tryIdx)
+		expect(loopIdx).toBeGreaterThan(tryIdx)
+		const resetInLoop = source.indexOf("_resetStreamTimeout()", loopIdx)
+		expect(resetInLoop).toBeGreaterThan(loopIdx)
+		const resetAfterLoop = source.indexOf("_resetStreamTimeout()", resetInLoop + 1)
+		expect(resetAfterLoop).toBe(-1) // no reset after loop (only in loop body)
 	})
 
 	it("preserves existing patch hunks (cache_write_tokens, validation.js)", () => {
