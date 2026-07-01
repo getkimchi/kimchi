@@ -18,8 +18,13 @@
  */
 
 type KimchiProcess = NodeJS.Process & {
-	__kimchiMultiModelEnabled?: boolean
-	__kimchiOrchestratorRef?: string
+	__kimchiMultiModelSettings?: Map<
+		string,
+		{
+			multiModelEnabled?: boolean
+			orchestratorRef?: string
+		}
+	>
 }
 
 const proc = process as KimchiProcess
@@ -28,22 +33,40 @@ const proc = process as KimchiProcess
 // __kimchiMultiModelEnabled
 // ---------------------------------------------------------------------------
 
-export function getProcessMultiModelEnabled(): boolean | undefined {
-	return proc.__kimchiMultiModelEnabled
+export function getSessionMultiModelEnabled(sessionId: string): boolean | undefined {
+	return proc.__kimchiMultiModelSettings?.get(sessionId)?.multiModelEnabled
 }
 
-export function setProcessMultiModelEnabled(enabled: boolean): void {
-	proc.__kimchiMultiModelEnabled = enabled
+export function setSessionMultiModelEnabled(sessionId: string, enabled: boolean): void {
+	if (!proc.__kimchiMultiModelSettings) {
+		proc.__kimchiMultiModelSettings = new Map()
+	}
+	const settings = proc.__kimchiMultiModelSettings
+	const sessionSettings = settings.get(sessionId)
+	if (!sessionSettings) {
+		settings.set(sessionId, { multiModelEnabled: enabled })
+	} else {
+		sessionSettings.multiModelEnabled = enabled
+	}
 }
 
 // ---------------------------------------------------------------------------
 // __kimchiOrchestratorRef
 // ---------------------------------------------------------------------------
 
-export function getProcessOrchestratorRef(): string | undefined {
-	return proc.__kimchiOrchestratorRef
+export function getSessionOrchestratorRef(sessionId: string): string | undefined {
+	return proc.__kimchiMultiModelSettings?.get(sessionId)?.orchestratorRef
 }
 
-export function setProcessOrchestratorRef(ref: string): void {
-	proc.__kimchiOrchestratorRef = ref
+export function setSessionOrchestratorRef(sessionId: string, ref: string): void {
+	if (!proc.__kimchiMultiModelSettings) {
+		proc.__kimchiMultiModelSettings = new Map()
+	}
+	const settings = proc.__kimchiMultiModelSettings
+	const sessionSettings = settings.get(sessionId)
+	if (!sessionSettings) {
+		settings.set(sessionId, { orchestratorRef: ref })
+	} else {
+		sessionSettings.orchestratorRef = ref
+	}
 }

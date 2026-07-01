@@ -44,12 +44,11 @@ import {
 } from "../claude-code-skills/definition.js"
 import { bumpStallCounter } from "../ferment/todo-sync.js"
 import {
-	getProcessMultiModelEnabled,
-	setProcessMultiModelEnabled,
-	setProcessOrchestratorRef,
+	getSessionMultiModelEnabled,
+	setSessionMultiModelEnabled,
+	setSessionOrchestratorRef,
 } from "../kimchi-process.js"
 import {
-	CONTINUATION_NUDGE_TEXT,
 	ContinuationNudge,
 	EMPTY_TURN_NUDGE_TEXT,
 	EmptyTurnNudge,
@@ -136,8 +135,8 @@ function hasExplicitModelFlag(): boolean {
 
 const initialMultiModel = hasExplicitModelFlag() ? false : readMultiModelSetting()
 let multiModelEnabled = initialMultiModel
-setProcessMultiModelEnabled(initialMultiModel)
-setProcessOrchestratorRef(getOrchestratorModelRef())
+setSessionMultiModelEnabled(initialMultiModel)
+setSessionOrchestratorRef(getOrchestratorModelRef())
 
 /**
  * Orchestrator model ID (without provider prefix).
@@ -244,8 +243,8 @@ export function stripEmptyToolCalls(messages: OrchestratorMessages): Orchestrato
 	return changed ? filtered : messages
 }
 
-export function getMultiModelEnabled(): boolean {
-	const processFlag = getProcessMultiModelEnabled()
+export function getMultiModelEnabled(sessionId: string): boolean {
+	const processFlag = getSessionMultiModelEnabled(sessionId)
 	if (processFlag !== undefined && processFlag !== multiModelEnabled) {
 		multiModelEnabled = processFlag
 		writeMultiModelSetting(processFlag)
@@ -253,11 +252,11 @@ export function getMultiModelEnabled(): boolean {
 	return multiModelEnabled
 }
 
-export function setMultiModelEnabled(enabled: boolean): void {
+export function setMultiModelEnabled(sessionId: string, enabled: boolean): void {
 	multiModelEnabled = enabled
 	// Only update the enabled flag — the orchestrator ref is managed separately
-	// via setProcessOrchestratorRef() when roles actually change, not here.
-	setProcessMultiModelEnabled(enabled)
+	// via setSessionOrchestratorRef() when roles actually change, not here.
+	setSessionMultiModelEnabled(sessionId, enabled)
 	writeMultiModelSetting(enabled)
 }
 
