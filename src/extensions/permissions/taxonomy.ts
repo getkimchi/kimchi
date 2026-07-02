@@ -156,51 +156,74 @@ const FIND_EXECUTION_FLAGS = new Set([
 /** Allowed subcommands for a program in plan mode.
  *  Two shapes are supported:
  *  - `Set<string>` (legacy): the first subcommand must be in the set; sub-sub-
- *    commands are NOT checked. Used by `git`, `npm`, `kubectl`, etc., whose
+ *    commands are NOT checked. Used by `npm`, `kubectl`, etc., whose
  *    listed subcommands have no mutation-capable sub-sub-commands worth
- *    distinguishing, OR where the team has accepted the trade-off (e.g. `git
- *    branch <new>` creates a branch but is rarely abused in plan mode).
+ *    distinguishing, OR where the team has accepted the trade-off.
  *  - `Record<subcommand, string[] | "*">` (fine-grained): the first subcommand
  *    must be a key, then `tokens[2]` is matched against the array, or the value
  *    `"*"` allows any sub-sub-command. Absent sub-sub-command (e.g. bare
  *    `gh pr`) is blocked. Used by CLIs whose parent commands have both safe
- *    and unsafe children (e.g. `gh pr`, `glab mr`).
+ *    and unsafe children (e.g. `gh pr`, `glab mr`), or where a single
+ *    subcommand needs sub-sub-command scoping (e.g. `git worktree` →
+ *    `list`-only while all other git subcommands are wildcarded).
  */
 const READ_ONLY_SUBCOMMANDS: Record<string, Set<string> | Record<string, string[] | "*">> = {
-	git: new Set([
-		"status",
-		"log",
-		"diff",
-		"show",
-		"branch",
-		"remote",
-		"ls-files",
-		"ls-tree",
-		"ls-remote",
-		"rev-parse",
-		"describe",
-		"blame",
-		"config",
-		"tag",
-		"stash",
-		"reflog",
-		"shortlog",
-		"fsck",
-		"verify-pack",
-		"count-objects",
-		"for-each-ref",
-		"show-ref",
-		"symbolic-ref",
-		"name-rev",
-		"rev-list",
-	]),
+	// git uses the fine-grained Record form (not the legacy Set) so that
+	// `worktree` can be scoped to read-only actions only. All other
+	// subcommands use the `"*"` wildcard, which short-circuits before the
+	// tokens[2] check — preserving the exact same behavior as the old Set
+	// (any sub-sub-command allowed, including bare `git status`).
+	//
+	// `worktree` is scoped because `git worktree add`/`remove`/`move`
+	// mutate the filesystem (create/delete/relocate directories on disk),
+	// unlike e.g. `git branch <name>` which is a local, easily-reversible
+	// ref operation already accepted as a trade-off.
+	git: {
+		status: "*",
+		log: "*",
+		diff: "*",
+		show: "*",
+		branch: "*",
+		remote: "*",
+		"ls-files": "*",
+		"ls-tree": "*",
+		"ls-remote": "*",
+		"rev-parse": "*",
+		describe: "*",
+		blame: "*",
+		config: "*",
+		tag: "*",
+		stash: "*",
+		worktree: ["list"],
+		reflog: "*",
+		shortlog: "*",
+		fsck: "*",
+		"verify-pack": "*",
+		"count-objects": "*",
+		"for-each-ref": "*",
+		"show-ref": "*",
+		"symbolic-ref": "*",
+		"name-rev": "*",
+		"rev-list": "*",
+	},
 	npm: new Set(["list", "ls", "view", "info", "search", "outdated", "audit", "--version", "-v"]),
 	yarn: new Set(["list", "info", "why", "audit", "--version", "-v"]),
 	pnpm: new Set(["list", "ls", "view", "info", "outdated", "audit", "--version", "-v"]),
 	pip: new Set(["list", "show", "search", "freeze", "--version"]),
 	cargo: new Set(["tree", "search", "--version"]),
 	docker: new Set(["ps", "images", "logs", "inspect", "version", "info"]),
-	kubectl: new Set(["get", "describe", "logs", "top", "version", "config"]),
+	kubectl: new Set([
+		"get",
+		"describe",
+		"logs",
+		"top",
+		"version",
+		"config",
+		"cluster-info",
+		"api-resources",
+		"api-versions",
+		"explain",
+	]),
 	// `gh` and `glab` use the fine-grained form (per-sub-sub-command
 	// allowlist) because both CLIs have mutation-capable sub-sub-commands
 	// under each parent (e.g. `gh pr create`, `glab mr create`, `gh repo
@@ -252,6 +275,26 @@ const READ_ONLY_SUBCOMMANDS: Record<string, Set<string> | Record<string, string[
 		user: "*",
 		status: "*",
 		search: "*",
+	},
+	// gcloud uses the fine-grained form because most groups have both safe
+	// and unsafe sub-sub-commands. The matcher inspects tokens[2] only, so
+	// for gcloud's three-level structure (`gcloud <group> <resource> <action>`)
+	// the safety distinction lives at tokens[3] — beyond the matcher's reach.
+	// Parents whose sub-sub-commands include mutations (e.g. `container clusters`
+	// has both `list` and `get-credentials`/`delete`) are omitted entirely,
+	// following the same rule as `glab cluster`.
+	//
+	// Intentionally NOT included:
+	//   - `artifacts`: `docker` → tokens[2] allows `images delete` etc.
+	//   - `container`: `clusters` → allows `get-credentials` (writes kubeconfig)
+	//      and `delete` (destroys clusters).
+	//   - `compute`: `instances`/`zones` → allows `delete`/`start`/`stop`.
+	//   - `auth configure-docker`: writes docker credential helper config.
+	gcloud: {
+		auth: ["list"],
+		config: ["get-value", "list"],
+		projects: ["list", "describe"],
+		services: ["list"],
 	},
 }
 

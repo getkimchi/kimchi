@@ -5,7 +5,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../../ferment/event-store.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "../runtime.js"
-import { clearAllStepStarts } from "../state.js"
+import { clearAllStepStarts, clearPendingCompaction, getPendingCompaction } from "../state.js"
 import { createApplyAndPersist } from "../tool-helpers.js"
 
 const mockAgentRecords = vi.hoisted(() => new Map<string, unknown>())
@@ -761,6 +761,89 @@ describe("completeStep", () => {
 
 			expect(errText(result)).toContain("exhausted its budget")
 		})
+	})
+
+	// ── Auto-compaction dedup regression tests ────────────────────────────
+	// The last step of a phase must NOT record a step-level pending compaction:
+	// determineNextAction returns complete_phase, so the phase-level compaction
+	// (fired by completePhase) handles the boundary. Mid-phase steps still record
+	// a step-level pending compaction.
+	beforeEach(() => {
+		clearPendingCompaction("ferment-steps-test")
+	})
+
+	it("records a step-level pending compaction for a mid-phase step", async () => {
+		const h = createHarness()
+		const services = createServices()
+		const start = h.applyAndPersist(h.fermentId, { type: "start_step", phaseId: "phase-1", stepId: "step-1" })
+		if (!start.ok) throw new Error(start.error.message)
+
+		const result = await completeStep(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				phase_id: "phase-1",
+				step_id: "step-1",
+				worker_agent_id: linkedWorker(h.fermentId),
+				summary: "done",
+				gates: passingStepGates(),
+			},
+			{ pi: h.pi },
+			services,
+		)
+
+		expect(okText(result)).toContain("done")
+		// step-1 is NOT the last step (step-2 remains) → step compaction recorded.
+		const pending = getPendingCompaction(h.fermentId)
+		expect(pending).toBeDefined()
+		expect(pending?.kind).toBe("step")
+		expect(pending?.stepId).toBe("step-1")
+	})
+
+	it("skips the step-level pending compaction on the last step of a phase", async () => {
+		const h = createHarness()
+		const services = createServices()
+		// Complete step-1 first so step-2 becomes the last pending step.
+		const start1 = h.applyAndPersist(h.fermentId, { type: "start_step", phaseId: "phase-1", stepId: "step-1" })
+		if (!start1.ok) throw new Error(start1.error.message)
+		const complete1 = await completeStep(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				phase_id: "phase-1",
+				step_id: "step-1",
+				worker_agent_id: linkedWorker(h.fermentId),
+				summary: "done",
+				gates: passingStepGates(),
+			},
+			{ pi: h.pi },
+			services,
+		)
+		expect(okText(complete1)).toContain("done")
+		// Drain the step-1 pending compaction so it doesn't mask the step-2 result.
+		clearPendingCompaction(h.fermentId)
+
+		// Now start + complete step-2 (the last step of the phase).
+		const start2 = h.applyAndPersist(h.fermentId, { type: "start_step", phaseId: "phase-1", stepId: "step-2" })
+		if (!start2.ok) throw new Error(start2.error.message)
+		const result = await completeStep(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				phase_id: "phase-1",
+				step_id: "step-2",
+				worker_agent_id: linkedWorker(h.fermentId, "phase-1", "step-2"),
+				summary: "done",
+				gates: passingStepGates(),
+			},
+			{ pi: h.pi },
+			services,
+		)
+
+		expect(okText(result)).toContain("done")
+		// step-2 is the last step → determineNextAction returns complete_phase →
+		// step-level compaction must be skipped (deferred to the phase compaction).
+		expect(getPendingCompaction(h.fermentId)).toBeUndefined()
 	})
 })
 

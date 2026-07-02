@@ -1,10 +1,8 @@
 // ACP integration: client advertises `elicitation.form` but NO
 // `_kimchi.dev/pi_*` methods. Expected: basic ACP flows (text, tool calls,
 // permissions) still work via `requestPermission`; fire-and-forget UI calls
-// surface as `[ACP]` agent_message_chunk warnings instead of vanishing.
-// (The elicitation capability is not on the permission path in ACP mode —
-// it would only matter for explicit `ctx.ui.confirm`/`select`/`input`
-// calls, which the harness doesn't issue in these scenarios.)
+// are sent unconditionally via `_kimchi.dev/pi_notify` (no capability gate,
+// no `[ACP]` warnings).
 
 import type { ClientCapabilities } from "@agentclientprotocol/sdk"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -48,7 +46,7 @@ describe("ACP integration — elicitation only", () => {
 		await fixture.stop()
 	})
 
-	it("surfaces fire-and-forget UI calls as agent_message_chunk warnings instead of dropping them", async () => {
+	it("sends fire-and-forget UI calls via pi_notify even without pi_* capabilities advertised", async () => {
 		const sessionId = await newSession(fixture, fixture.workDir)
 
 		const t1 = await prompt(fixture, sessionId, "Reply with the words: hello world")
@@ -69,17 +67,10 @@ describe("ACP integration — elicitation only", () => {
 		expect(fixture.client.permissionRequests.length, "request_permission call").toBeGreaterThanOrEqual(1)
 		expect(t2.chunks, "turn 2 agent text contains tool output").toContain("done")
 
+		// Fire-and-forget UI calls (notify + setStatus) are sent
+		// unconditionally via pi_notify — no capability gate.
 		const piNotifications = fixture.client.extNotifications.filter((n) => n.method.startsWith("_kimchi.dev/pi_"))
-		expect(piNotifications, "no _kimchi.dev/pi_* extNotifications").toEqual([])
-
-		const warnings = fixture.client.acpWarnings()
-		expect(warnings.length, "at least one [ACP] warning").toBeGreaterThanOrEqual(2)
-
-		const notifyWarning = warnings.find((w) => /notify/i.test(w))
-		const setStatusWarning = warnings.find((w) => /setStatus/i.test(w))
-		expect(notifyWarning, "notify method named in warning text").toBeDefined()
-		expect(setStatusWarning, "setStatus method named in warning text").toBeDefined()
-		// Dedup means the first notify survives in the single emitted warning.
-		expect(notifyWarning, "notify warning includes the message body").toContain("test-notify")
+		expect(piNotifications.length, "pi_notify extNotifications arrive even without advertised capabilities").toBeGreaterThanOrEqual(2)
+		expect(fixture.client.acpWarnings(), "no [ACP] warnings (capability gate removed)").toEqual([])
 	})
 })

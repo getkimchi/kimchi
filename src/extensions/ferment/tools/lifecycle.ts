@@ -27,13 +27,7 @@ import {
 } from "../../../ferment/types.js"
 import { createToolVisibility } from "../../prompt-construction/tool-visibility.js"
 import { YES_NO_OPTIONS } from "../../questionnaire/index.js"
-import {
-	type AskUserQuestion,
-	askUser,
-	askUserForm,
-	normalizeAskUserQuestions,
-	toScopingQuestionType,
-} from "../ask-user.js"
+import { type AskUserQuestion, askUserForm, normalizeAskUserQuestions, toScopingQuestionType } from "../ask-user.js"
 import { pr_bold, pr_dim } from "../colors.js"
 import { emitFermentCreated } from "../domain-events-emitter.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
@@ -42,6 +36,7 @@ import { assertGateFieldsPresent, validateGatesOrErr } from "../gate-validation.
 import { ensureGitRepo } from "../git-init.js"
 import { judgeJourneyGrade } from "../judge.js"
 import { appendRefEntry, resetReactiveContinuationNudgeCount } from "../nudge.js"
+import { PENDING_PROPOSAL_SCHEMA_VERSION, savePendingProposal } from "../pending-proposal-store.js"
 import { gatherPhaseEvidence } from "../phase-evidence.js"
 import { getPromptUi, promptEditor, promptForm, promptSelect } from "../prompt-ui.js"
 import { readLatestPhaseReviews } from "../review-evidence.js"
@@ -550,7 +545,6 @@ async function confirmCompletionCriteria(
 				prompt: "Do these completion criteria look right?",
 				options: [{ id: "yes", label: "Yes, looks good" }],
 				allowOther: true,
-				otherLabel: "No (input what is wrong)",
 			},
 		],
 		askContext,
@@ -935,6 +929,21 @@ ${renderGateGuidance("scope_ferment")}`,
 					fermentId,
 					planMarkdown: planEntry,
 				})
+				// Persist the pending proposal to disk so a session restart can
+				// re-arm this review instead of nudging the LLM to re-scope.
+				savePendingProposal(fermentId, {
+					schemaVersion: PENDING_PROPOSAL_SCHEMA_VERSION,
+					fermentId,
+					title: params.title,
+					goal: params.goal,
+					successCriteria: params.success_criteria ?? [],
+					constraints: params.constraints ?? [],
+					assumptions: params.assumptions ?? "",
+					phases: params.phases,
+					planMarkdown: planEntry,
+					proposeIterations: nextIterations,
+					savedAt: new Date().toISOString(),
+				})
 				return planToolOk("Plan ready for review. The review dialog will open when this turn finishes.")
 			}
 
@@ -1203,7 +1212,7 @@ ${renderGateGuidance("complete_ferment")}`,
 
 The host renders one question:
   - "Yes, looks good"
-  - "No (input what is wrong)" with inline free-form text input for the explanation
+  - "Type your own answer" with inline free-form text input for the explanation
 
 Proceed to exploration only when Confirmed is yes and Changes is empty.
 If the user answers No, the follow-up captures textual changes and control returns here for revision.`,
@@ -1222,16 +1231,14 @@ Behavior depends on session mode:
   - Interactive (with TUI): the user answers in a structured TUI. Returns { choice | choices | text | answers, answered_by: "user" }.
   - One-shot (no human attached): the configured judge model stands in for the user. Returns { choice | choices | text | answers, answered_by: "judge", rationale }.
 
-Hard contract: in one-shot mode, if the judge is unreachable (no API key, timeout, unparseable response) the ferment is ABANDONED — there is no fallback. False-pass is the worst outcome.
+Fail-soft contract: in one-shot mode, if the judge is unreachable (no API key, timeout, unparseable response) after 3 retry attempts, the tool falls back to conservative default answers so the ferment can proceed rather than stall. Confirm defaults to "yes"; single/multi default to the first listed option; text defaults to a placeholder string. The rationale field notes when defaults were used.
 
 The agent should:
   1. Frame the question concretely. The user/judge sees only the question plus options/context in this call.
   2. Prefer questions[] for the full TUI: single, multi, text, confirm. allowOther is only for single/multi custom free-text options.
-  3. Use response_type="single" | "multi" | "text" | "confirm" only as a compatibility shorthand for one question.
-  4. Treat response_type="confirm" as strict Yes/No only. Use response_type="text" for one free-form question, or questions[] when multiple controls are needed.
-  5. For single/multi, provide stable snake-case option ids and short labels (confirm defaults to Yes/No).
-  6. Include "pause" or "abandon" as an explicit option when one is appropriate — the judge prefers these when uncertain.
-  7. Act on the returned \`answers\`, \`choice\`, \`choices\`, or \`text\` field.
+  3. For single/multi, provide stable snake-case option ids and short labels (confirm defaults to Yes/No).
+  4. Include "pause" or "abandon" as an explicit option when one is appropriate — the judge prefers these when uncertain.
+  5. Act on the returned \`answers\`, \`choice\`, \`choices\`, or \`text\` field.
 
 TUI controls for questions[]:
   - Tab / Shift+Tab moves between questions
@@ -1243,8 +1250,14 @@ TUI controls for questions[]:
 Returns structured answer fields on success, or a tool error if no audience can be reached.`,
 		parameters: AskUserParams,
 		async execute(_, params, _signal, _onUpdate, ctx) {
-			const applyAndPersist = createApplyAndPersist(runtime)
-			const ferment = runtime.getStorage().get(params.ferment_id)
+			const fermentId = params.ferment_id ?? runtime.getActiveId()
+			if (!fermentId) {
+				return toolErr("No active ferment. Provide ferment_id or activate a ferment first.")
+			}
+			if (!params.questions || params.questions.length === 0) {
+				return toolErr("ask_user requires a non-empty questions[] array.")
+			}
+			const ferment = runtime.getStorage().get(fermentId)
 			if (!ferment) return toolErr("Ferment not found.")
 
 			const askContext = {
@@ -1253,38 +1266,13 @@ Returns structured answer fields on success, or a tool error if no audience can 
 				ctx: ctx as { ui?: Partial<import("../ui.js").FermentUi> } | undefined,
 				runtime,
 			}
-			let normalizedQuestions: AskUserQuestion[] | undefined
-			if (params.questions && params.questions.length > 0) {
-				const normalizeResult = normalizeAskUserQuestions(params.questions)
-				if (!normalizeResult.ok) return toolErr(normalizeResult.error)
-				normalizedQuestions = normalizeResult.questions
-			}
-			const response = normalizedQuestions
-				? await askUserForm(params.title ?? params.question, params.description, normalizedQuestions, askContext)
-				: params.question
-					? await askUser(params.question, params.options ?? [], askContext, params.response_type ?? "single")
-					: undefined
+			const normalizeResult = normalizeAskUserQuestions(params.questions)
+			if (!normalizeResult.ok) return toolErr(normalizeResult.error)
+			const normalizedQuestions = normalizeResult.questions
 
-			if (!response) {
-				return toolErr("ask_user requires either question or questions[].")
-			}
+			const response = await askUserForm(params.title, params.description, normalizedQuestions, askContext)
 
 			if (response.failed) {
-				// One-shot hard-fail: when the judge is the only legitimate audience
-				// and it can't be reached, the ferment must abandon. Per the design
-				// contract, false-pass is unacceptable in unattended runs.
-				const isJudgeFailure = response.reason === "judge_unavailable" || response.reason === "judge_unparseable"
-				const isOneShot = pi.getFlag?.("ferment-oneshot") === true
-				if (isJudgeFailure && isOneShot) {
-					const abandonOutcome = applyAndPersist(params.ferment_id, {
-						type: "abandon",
-						reason: `ask_user: ${response.detail}`,
-					})
-					if (abandonOutcome.ok) runtime.setActive(abandonOutcome.ferment)
-					return toolErr(
-						`ask_user failed in one-shot mode — ferment abandoned. ${response.detail}\n\nThe ferment cannot continue without user input or a reachable judge. Restart with a valid API key, or run in interactive mode.`,
-					)
-				}
 				return toolErr(`ask_user could not route the question (${response.reason}): ${response.detail}`)
 			}
 

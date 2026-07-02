@@ -51,7 +51,7 @@ export interface MetricData {
 	name: string
 	type: "Sum" | "Gauge"
 	value: number
-	attrs: Record<string, string | number>
+	attrs: Record<string, string | number | boolean>
 }
 
 // ---------------------------------------------------------------------------
@@ -62,7 +62,7 @@ export async function sendLog(
 	config: TelemetryConfig,
 	sessionId: string,
 	eventName: string,
-	attrs: Record<string, string | number>,
+	attrs: Record<string, string | number | boolean>,
 	userEmail?: string,
 ): Promise<void> {
 	const record = buildLogRecord(sessionId, eventName, attrs)
@@ -72,7 +72,7 @@ export async function sendLog(
 export function buildLogRecord(
 	sessionId: string,
 	eventName: string,
-	attrs: Record<string, string | number>,
+	attrs: Record<string, string | number | boolean>,
 ): LogRecord {
 	const now = nowNano()
 	return {

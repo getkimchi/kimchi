@@ -249,6 +249,21 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).toContain('After `propose_ferment_scoping` returns "Plan saved"')
 		})
 
+		it("tells planner the host takes over completely after 'Plan ready for review'", () => {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime()) ?? ""
+			expect(out).toContain('After `propose_ferment_scoping` returns "Plan ready for review"')
+			expect(out).toContain("the host takes over completely")
+			expect(out).toContain("automatically unlocks the implementation toolset")
+			expect(out).toContain("End your turn")
+		})
+
+		it("prohibits discussing tool availability or session capabilities with the user", () => {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime()) ?? ""
+			expect(out).toContain("Never discuss your current tool availability")
+			expect(out).toContain("Do not suggest the user take action to unlock tools")
+			expect(out).toContain("Do not discuss your session capabilities")
+		})
+
 		it("guides orient-interview discovery before proposing scoping", () => {
 			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime()) ?? ""
 			expect(out).toContain("follow the shared discovery guidance in the Upfront Contract")

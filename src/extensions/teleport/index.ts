@@ -1,5 +1,7 @@
+import os from "node:os"
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
+import { isInSandboxCluster } from "../../utils/sandbox.js"
 import { TeleportRefusal } from "./commands/errors.js"
 import { runRemoteSessions } from "./commands/remote-sessions.js"
 import { runSshConfig } from "./commands/ssh-config.js"
@@ -9,6 +11,10 @@ import { runTerminal } from "./commands/terminal.js"
 import type { TeleportContext } from "./types.js"
 
 type CommandFn = (args: string, ctx: TeleportContext) => Promise<void>
+
+function isWindows(): boolean {
+	return os.type() === "Windows_NT"
+}
 
 function makeHandler(run: CommandFn) {
 	return async (args: string, ctx: ExtensionCommandContext): Promise<void> => {
@@ -32,7 +38,9 @@ function makeHandler(run: CommandFn) {
 }
 
 export default function teleportExtension(pi: ExtensionAPI): void {
-	if (process.env.KIMCHI_EXPERIMENTAL_TELEPORT === undefined || process.env.KIMCHI_EXPERIMENTAL_TELEPORT === "") {
+	// Teleport spawns/connects into sandbox workspaces from a local machine; it has
+	// no meaning inside a sandbox worker, so disable it there.
+	if (isInSandboxCluster() || isWindows()) {
 		return
 	}
 	pi.registerCommand("teleport", {

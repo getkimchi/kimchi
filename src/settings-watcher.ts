@@ -50,11 +50,12 @@ function ensureWatcher(): void {
 	if (!agentDir) return
 	lastSeenTheme = getActiveThemeName()
 	try {
-		watcher = watch(resolve(agentDir, "settings.json"), () => {
+		watcher = watch(resolve(agentDir, "settings.json"), { persistent: false }, () => {
 			// fs.watch fires multiple events per write on macOS; debounce to one.
 			if (debounceTimer) clearTimeout(debounceTimer)
 			debounceTimer = setTimeout(fire, 30)
 		})
+		watcher.unref?.()
 		watcher.on("error", (err) => {
 			console.warn("[settings-watcher] watch error:", err)
 			watcher?.close()

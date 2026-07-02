@@ -32,10 +32,8 @@ export interface PromptFormQuestion {
 	label?: string
 	options?: ReadonlyArray<PromptFormOption>
 	allowOther?: boolean
-	otherLabel?: string
 	required?: boolean
 	default?: string | string[]
-	placeholder?: string
 }
 
 export interface PromptFormSpec {
@@ -135,7 +133,6 @@ export async function promptForm(
 
 function normalizePromptFormQuestion(q: PromptFormQuestion, index: number): Question {
 	const type = normalizePromptFormQuestionType(q.type)
-	const otherLabel = q.otherLabel?.trim()
 	return {
 		id: q.id,
 		label: q.label || `Q${index + 1}`,
@@ -143,7 +140,6 @@ function normalizePromptFormQuestion(q: PromptFormQuestion, index: number): Ques
 		type,
 		options: (q.options ?? []).map((o) => ({ id: o.id, label: o.label, description: o.description })),
 		allowOther: q.allowOther ?? false,
-		otherLabel: otherLabel && otherLabel.length > 0 ? otherLabel : undefined,
 		required: q.required !== false,
 	}
 }
@@ -173,8 +169,8 @@ async function promptFormFallback(
 		}
 
 		const choices: PromptChoiceOption[] = question.options.map((o) => ({ label: o.label, description: o.description }))
-		const otherLabel = question.otherLabel ?? "Type your own answer"
-		if (question.allowOther) choices.push({ label: otherLabel })
+		const customLabel = "Type your own answer"
+		if (question.allowOther) choices.push({ label: customLabel })
 		if (question.type === "multi") {
 			const selected = await promptMultiChoiceWithUi(ui, promptTitle, choices)
 			if ((!selected || selected.length === 0) && question.required) return { questions, answers, cancelled: true }
@@ -183,7 +179,7 @@ async function promptFormFallback(
 			const labels: string[] = []
 			const indices: number[] = []
 			for (const label of selected) {
-				if (label === otherLabel && question.allowOther) {
+				if (label === customLabel && question.allowOther) {
 					const custom = await withWorkingHidden(
 						ui,
 						() => ui.input?.(`${promptTitle}\n\nYour answer:`, "") ?? Promise.resolve(undefined),
@@ -208,7 +204,7 @@ async function promptFormFallback(
 					id: question.id,
 					value: values.join(", "),
 					label: labels.join(", "),
-					wasCustom: selected.includes(otherLabel),
+					wasCustom: selected.includes(customLabel),
 					values,
 					labels,
 					indices,
@@ -220,7 +216,7 @@ async function promptFormFallback(
 		const selected = await promptChoiceWithUi(ui, promptTitle, choices)
 		if (!selected && question.required) return { questions, answers, cancelled: true }
 		if (!selected) continue
-		if (selected === otherLabel && question.allowOther) {
+		if (selected === customLabel && question.allowOther) {
 			const custom = await withWorkingHidden(
 				ui,
 				() => ui.input?.(`${promptTitle}\n\nYour answer:`, "") ?? Promise.resolve(undefined),

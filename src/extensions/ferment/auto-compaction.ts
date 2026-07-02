@@ -50,6 +50,77 @@ function compactionThreshold(contextWindow: number): number {
 	return Math.max(0, contextWindow - COMPACTION_RESERVE_TOKENS)
 }
 
+// ─── In-flight tool-call guard ────────────────────────────────────────────────
+
+/**
+ * Pure helper: return true if any assistant `toolCall` block `id` in `messages`
+ * has NO matching `toolResult` (by `toolCallId`) anywhere in the array.
+ *
+ * This is the compaction-timing root-cause signal: when the trailing session
+ * entries form an incomplete assistant toolCall -> toolResult pair, compacting
+ * would summarise away the assistant toolCall while its toolResult is appended
+ * later — creating the exact orphaned-toolResult condition phase 1 defends
+ * against. By deferring compaction until the pair completes, orphans are never
+ * created at the compaction boundary in the first place.
+ *
+ * Pure, total, never throws: unknown shapes are skipped defensively. Mirrors
+ * the structural-guard style of `findOrphanedToolResults` (phase 1) but
+ * inverts the question (toolCall without toolResult, not toolResult without
+ * toolCall).
+ */
+export function isToolCallInFlight(messages: ReadonlyArray<unknown>): boolean {
+	const callIds = new Set<string>()
+	const resultIds = new Set<string>()
+
+	for (const raw of messages) {
+		if (!raw || typeof raw !== "object") continue
+		const msg = raw as { role?: string; content?: unknown; toolCallId?: string }
+		if (msg.role === "assistant") {
+			const content = msg.content
+			if (!Array.isArray(content)) continue
+			for (const block of content) {
+				if (!block || typeof block !== "object") continue
+				const b = block as { type?: string; id?: unknown }
+				if (b.type === "toolCall" && typeof b.id === "string") {
+					callIds.add(b.id)
+				}
+			}
+		} else if (msg.role === "toolResult") {
+			if (typeof msg.toolCallId === "string") {
+				resultIds.add(msg.toolCallId)
+			}
+		}
+	}
+
+	for (const id of callIds) {
+		if (!resultIds.has(id)) return true
+	}
+	return false
+}
+
+/**
+ * Thin wrapper: read the live session entries from `ctx.sessionManager` and
+ * delegate to `isToolCallInFlight`. Returns false on any access failure so a
+ * broken/missing sessionManager never blocks compaction spuriously — the
+ * phase-1 sanitizer remains the hard guarantee.
+ */
+export function isToolCallInFlightInSession(ctx: ExtensionContext): boolean {
+	try {
+		const entries = ctx?.sessionManager?.getEntries?.() ?? []
+		const messages: unknown[] = []
+		for (const entry of entries) {
+			if (!entry || typeof entry !== "object") continue
+			const e = entry as { type?: string; message?: unknown }
+			if (e.type === "message" && e.message && typeof e.message === "object") {
+				messages.push(e.message)
+			}
+		}
+		return isToolCallInFlight(messages)
+	} catch {
+		return false
+	}
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /**
@@ -252,6 +323,13 @@ function isExpectedCompactionError(error: Error): boolean {
 export function maybeTriggerFermentCompaction(pi: ExtensionAPI, ctx: ExtensionContext, runtime: FermentRuntime): void {
 	if (pi.getFlag?.("ferment-oneshot") === true) return
 
+	// Root-cause guard: defer compaction while a tool call is in flight (the
+	// trailing assistant toolCall has no matching toolResult yet). Compacting
+	// now would summarise away the toolCall and orphan the toolResult appended
+	// later. Leave the pending entry in the map for a later turn_end / agent_end
+	// to pick up once the pair completes.
+	if (isToolCallInFlightInSession(ctx)) return
+
 	// drainPendingCompactions() skips in-flight ferments — their entries stay in
 	// the map for the next turn_end / agent_end to pick up.
 	const ready = runtime.drainPendingCompactions()
@@ -395,6 +473,13 @@ export function maybeTriggerMidTurnFermentCompaction(
 
 	const fermentId = activeFerment.id
 	if (runtime.isCompactionInFlight(fermentId)) return
+
+	// Root-cause guard: a mid-turn compaction fires on token overrun, which can
+	// land exactly when an assistant toolCall is awaiting its toolResult.
+	// Compacting then would summarise away the toolCall and orphan the
+	// toolResult appended after compaction. Defer — the context may be large,
+	// but emitting an orphan is worse; phase 1 still catches any that slip past.
+	if (isToolCallInFlightInSession(ctx)) return
 
 	runtime.markCompactionInFlight(fermentId)
 

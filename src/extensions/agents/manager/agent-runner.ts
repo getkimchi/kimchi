@@ -236,6 +236,8 @@ export interface RunOptions {
 	workerReport?: WorkerReportCapability
 	/** Enforce maxTurns as a hard cap instead of allowing ordinary-agent grace turns. */
 	hardTurnLimit?: boolean
+	/** Registers a hard-fallback cleanup for runner-owned resources. */
+	onRuntimeCleanupRegistered?: (cleanup: () => void) => void
 }
 
 export interface RunResult {
@@ -633,7 +635,7 @@ async function runAgentInner(
 		}
 	})
 
-	const inactivityInterval = setInterval(() => {
+	let inactivityInterval: ReturnType<typeof setInterval> | undefined = setInterval(() => {
 		const elapsed = Date.now() - inactivity.lastActivityAt
 		if (inactivity.steered && elapsed >= inactivityTimeout) {
 			aborted = true
@@ -644,6 +646,12 @@ async function runAgentInner(
 			steerAsOrchestrator(session, "You appear to be stalled. Resume work immediately or summarize your progress.")
 		}
 	}, INACTIVITY_CHECK_INTERVAL)
+	const cleanupInactivityInterval = () => {
+		if (!inactivityInterval) return
+		clearInterval(inactivityInterval)
+		inactivityInterval = undefined
+	}
+	options.onRuntimeCleanupRegistered?.(cleanupInactivityInterval)
 
 	const effectiveMaxDuration = options.maxDuration ?? agentConfig?.maxDuration ?? DEFAULT_MAX_DURATION
 	const durationTimer = effectiveMaxDuration
@@ -681,7 +689,7 @@ async function runAgentInner(
 	try {
 		await session.prompt(effectivePrompt)
 	} finally {
-		clearInterval(inactivityInterval)
+		cleanupInactivityInterval()
 		if (durationTimer) clearTimeout(durationTimer)
 		unsubTurns()
 		collector.unsubscribe()
@@ -752,6 +760,8 @@ export async function resumeAgent(
 		maxDuration?: number
 		hardTurnLimit?: boolean
 		shouldTerminateAfterTool?: (toolName: string) => boolean
+		/** Registers a hard-fallback cleanup for runner-owned resources. */
+		onRuntimeCleanupRegistered?: (cleanup: () => void) => void
 	} = {},
 ): Promise<RunResult> {
 	const collector = collectResponseText(session)
@@ -850,7 +860,7 @@ export async function resumeAgent(
 		}
 	})
 
-	const resumeInactivityInterval = setInterval(() => {
+	let resumeInactivityInterval: ReturnType<typeof setInterval> | undefined = setInterval(() => {
 		const elapsed = Date.now() - resumeInactivity.lastActivityAt
 		if (resumeInactivity.steered && elapsed >= resumeInactivityTimeout) {
 			aborted = true
@@ -861,6 +871,12 @@ export async function resumeAgent(
 			steerAsOrchestrator(session, "You appear to be stalled. Resume work immediately or summarize your progress.")
 		}
 	}, INACTIVITY_CHECK_INTERVAL)
+	const cleanupResumeInactivityInterval = () => {
+		if (!resumeInactivityInterval) return
+		clearInterval(resumeInactivityInterval)
+		resumeInactivityInterval = undefined
+	}
+	options.onRuntimeCleanupRegistered?.(cleanupResumeInactivityInterval)
 	const durationTimer = effectiveMaxDuration
 		? setTimeout(() => {
 				aborted = true
@@ -872,7 +888,7 @@ export async function resumeAgent(
 	try {
 		await session.prompt(prompt)
 	} finally {
-		clearInterval(resumeInactivityInterval)
+		cleanupResumeInactivityInterval()
 		if (durationTimer) clearTimeout(durationTimer)
 		collector.unsubscribe()
 		unsubEvents()

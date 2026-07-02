@@ -1,8 +1,10 @@
-// ACP integration: client advertises every `_kimchi.dev/pi_*` method and
-// `elicitation.form`. Expected: fire-and-forget UI calls route through
-// extNotifications (no `[ACP]` warnings), and tool-call permissions go
-// through `requestPermission` (the ACP prompter always uses that, regardless
-// of elicitation capability — `ctx.ui.confirm` is not on this path).
+// ACP integration: client advertises `_kimchi.dev/pi_notify` and
+// `elicitation.form`. Expected: every fire-and-forget UI call (notify,
+// setStatus, …) is routed through a single `_kimchi.dev/pi_notify`
+// extNotification with a `method` discriminator in the payload (no
+// `[ACP]` warnings). Tool-call permissions go through `requestPermission`
+// (the ACP prompter always uses that, regardless of elicitation capability
+// — `ctx.ui.confirm` is not on this path).
 
 import type { ClientCapabilities } from "@agentclientprotocol/sdk"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -28,8 +30,6 @@ describe("ACP integration — all capabilities", () => {
 				{ stream: ["hello", " from", " full-cap", " client."] },
 				{
 					// Each ACP prompt starts a new agent run (turnIndex resets to 0).
-					// Emit orientation text before the tool call so first-turn-orientation
-					// does not block before permissions run.
 					stream: ["I'll run that command."],
 					toolCalls: [
 						{
@@ -88,16 +88,15 @@ describe("ACP integration — all capabilities", () => {
 		expect(fixture.client.permissionRequests.length, "request_permission call").toBeGreaterThanOrEqual(1)
 		expect(t2.chunks, "turn 2 agent text contains tool output").toContain("done")
 
-		// session_start fires on newSession, so both notifications arrive
-		// before turn 1's prompt resolves.
+		// session_start fires on newSession, so both notifications (notify +
+		// setStatus) arrive before turn 1's prompt resolves — both routed
+		// through a single `_kimchi.dev/pi_notify` extNotification.
+		const piNotifications = fixture.client.extNotifications.filter((n) => n.method.startsWith("_kimchi.dev/pi_"))
+		expect(piNotifications.length, "pi_notify extNotifications arrived (notify + setStatus)").toBeGreaterThanOrEqual(2)
 		expect(
-			fixture.client.hasNotification("_kimchi.dev/pi_notify"),
-			`_kimchi.dev/pi_notify extNotification arrived (saw: ${fixture.client.extNotifications.map((n) => n.method).join(", ")})`,
+			piNotifications.every((n) => n.method === "_kimchi.dev/pi_notify"),
+			"all fire-and-forget notifications use _kimchi.dev/pi_notify",
 		).toBe(true)
-		expect(
-			fixture.client.hasNotification("_kimchi.dev/pi_setStatus"),
-			"_kimchi.dev/pi_setStatus extNotification arrived",
-		).toBe(true)
-		expect(fixture.client.acpWarnings(), "no [ACP] warnings when client advertises every pi_* method").toEqual([])
+		expect(fixture.client.acpWarnings(), "no [ACP] warnings when client advertises pi_notify").toEqual([])
 	})
 })

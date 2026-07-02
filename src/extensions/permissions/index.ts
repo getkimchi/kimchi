@@ -5,6 +5,7 @@ import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedSemanticFg } from "../../ansi.js"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { resolveFermentsDir } from "../../ferment/store.js"
+import { isExistingDirectory } from "../../fs-paths.js"
 import { getAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
 import * as EntryTriggerRegistry from "../../shared/planning/entry-trigger-registry.js"
 import { parseSharedPlan } from "../../shared/planning/plan-decomposition.js"
@@ -108,6 +109,7 @@ const PLAN_MODE_TOOLS = [
 	"ls",
 	"web_search",
 	"web_fetch",
+	"mcp",
 	"questionnaire",
 	"bash",
 	...TODO_TOOL_NAMES,
@@ -747,6 +749,17 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	pi.on("tool_call", async (event, ctx) => {
 		const toolName = event.toolName.toLowerCase()
 		const input = event.input as Record<string, unknown>
+
+		if (toolName === "read") {
+			const filePath =
+				typeof input.path === "string" ? input.path : typeof input.file_path === "string" ? input.file_path : ""
+			if (filePath && isExistingDirectory(filePath, ctx.cwd)) {
+				return {
+					block: true,
+					reason: "Path is a directory; read only accepts files. List or search the directory instead.",
+				}
+			}
+		}
 
 		// Plan persona path-scope enforcement: when KIMCHI_AGENT_PERSONA=plan (case-insensitive),
 		// write and edit are only allowed for .kimchi/plans/* paths.

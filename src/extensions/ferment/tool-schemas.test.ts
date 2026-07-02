@@ -510,36 +510,12 @@ describe("CompleteStepParams schema", () => {
 describe("AskUserParams schema", () => {
 	const base = (questions: unknown) => ({ ferment_id: "f-1", questions })
 
-	it("accepts confirm response_type for the top-level shorthand", () => {
-		const payload = {
-			ferment_id: "f-1",
-			question:
-				"I'll consider this done when the script continuously prints CPU temperature and exits cleanly. Sound right?",
-			response_type: "confirm",
-		}
-		expect(Value.Check(AskUserParams, payload)).toBe(true)
-	})
-
 	it("accepts the single/multi/text/confirm question vocabulary", () => {
 		const payload = base([
 			{ id: "approach", type: "single", prompt: "Which?", options: [{ id: "a", label: "A" }] },
 			{ id: "areas", type: "multi", prompt: "Which areas?", options: [{ id: "x", label: "X" }] },
 			{ id: "note", type: "text", prompt: "Anything else?" },
 			{ id: "ship", type: "confirm", prompt: "Ship behind a flag?" },
-		])
-		expect(Value.Check(AskUserParams, payload)).toBe(true)
-	})
-
-	it("accepts a custom otherLabel for allowOther questions", () => {
-		const payload = base([
-			{
-				id: "changes",
-				type: "single",
-				prompt: "Any additions or changes?",
-				options: [{ id: "no", label: "No" }],
-				allowOther: true,
-				otherLabel: "Yes (Type in your answer)",
-			},
 		])
 		expect(Value.Check(AskUserParams, payload)).toBe(true)
 	})
@@ -561,6 +537,32 @@ describe("AskUserParams schema", () => {
 	it("rejects an invented question type", () => {
 		const payload = base([{ id: "ship", type: "confirmation", prompt: "Ship?" }])
 		expect(Value.Check(AskUserParams, payload)).toBe(false)
+	})
+
+	it("requires questions (rejects when questions is missing)", () => {
+		const payload = { ferment_id: "f-1" }
+		expect(Value.Check(AskUserParams, payload)).toBe(false)
+	})
+
+	it("rejects an empty questions array (minItems: 1)", () => {
+		const payload = { ferment_id: "f-1", questions: [] }
+		expect(Value.Check(AskUserParams, payload)).toBe(false)
+	})
+
+	it("accepts params without ferment_id (ferment_id is optional)", () => {
+		const payload = {
+			questions: [{ id: "ok", type: "confirm", prompt: "Proceed?" }],
+		}
+		expect(Value.Check(AskUserParams, payload)).toBe(true)
+	})
+
+	it("AskUserQuestionSchema does not expose otherLabel or placeholder", () => {
+		const questionsProperty = (
+			AskUserParams as unknown as { properties: { questions: { items: { properties: Record<string, unknown> } } } }
+		).properties.questions
+		const questionProperties = questionsProperty.items.properties
+		expect(questionProperties).not.toHaveProperty("otherLabel")
+		expect(questionProperties).not.toHaveProperty("placeholder")
 	})
 })
 

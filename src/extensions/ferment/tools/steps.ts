@@ -8,10 +8,11 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Static } from "typebox"
-import type { StepResult } from "../../../ferment/types.js"
+import { determineNextAction } from "../../../ferment/engine.js"
+import type { Ferment, Phase, Step, StepResult } from "../../../ferment/types.js"
 import { getAgentRecordForTaskValidation } from "../../agents/index.js"
 import { FERMENT_WORKER_BUDGETS, type FermentWorkerBudgetTier } from "../../agents/worker-budget-policy.js"
-import { askUser } from "../ask-user.js"
+import { askUserForm } from "../ask-user.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { renderGateGuidance } from "../gate-registry.js"
 import { assertGateFieldsPresent, validateGatesOrErr } from "../gate-validation.js"
@@ -55,6 +56,35 @@ type CompleteStepArgs = Static<typeof CompleteStepParams>
 type ToolResult = ReturnType<typeof toolOk> | ReturnType<typeof toolErr>
 
 type StepUiContext = Omit<Partial<FermentUiContext>, "ui"> & { ui?: Partial<FermentUi> }
+
+/**
+ * Record a step-level pending compaction unless this was the last step of its
+ * phase. When determineNextAction returns complete_phase for the same phase,
+ * the phase-level compaction (recorded by completePhase) will fire at the next
+ * turn_end and summarise the same session — firing a step-level compaction now
+ * would produce a redundant back-to-back compaction with only a one-turn
+ * delta, so skip it. The handoff entry for the phase boundary is still
+ * appended by the phase-compaction path.
+ *
+ * Invariant: the `ferment` argument MUST be the post-completion ferment
+ * returned by `applyAndPersist` (completeOutcome.ferment or
+ * verifyOutcome.ferment), not the pre-completion copy. determineNextAction is
+ * a pure function of ferment state, so calling it on the post-completion
+ * ferment yields the same next-action decision the broader completeStep logic
+ * will act upon — if it says complete_phase, the phase IS complete and the
+ * phase-compaction path WILL fire.
+ */
+function maybeRecordStepCompaction(runtime: FermentRuntime, ferment: Ferment, phase: Phase, step: Step): void {
+	const next = determineNextAction(ferment)
+	if (next?.kind === "complete_phase" && next.phaseId === phase.id) return
+	runtime.setPendingCompaction(ferment.id, {
+		kind: "step",
+		fermentId: ferment.id,
+		phaseId: phase.id,
+		stepId: step.id,
+		completedAt: runtime.nowIso(),
+	})
+}
 
 export interface VerificationExecution {
 	command: string
@@ -208,12 +238,20 @@ export async function startStep(
 	const startCount = runtime.bumpStepStart(f.id, phase.id, step.id)
 	if (startCount >= 3) {
 		const title = `Step ${step.index}: "${step.description}" has been started ${startCount} times without completing.`
-		const response = await askUser(
+		const response = await askUserForm(
 			title,
+			undefined,
 			[
-				{ id: "retry", label: "Retry" },
-				{ id: "skip", label: "Skip step" },
-				{ id: "pause", label: "Pause ferment" },
+				{
+					id: "escalation",
+					type: "single",
+					prompt: title,
+					options: [
+						{ id: "retry", label: "Retry" },
+						{ id: "skip", label: "Skip step" },
+						{ id: "pause", label: "Pause ferment" },
+					],
+				},
 			],
 			{ ferment: f, pi, ctx, runtime },
 		)
@@ -233,13 +271,15 @@ Do NOT call start_ferment_step again without user input.`,
 			)
 		}
 
-		if (response.choice === "pause") {
+		const choice = response.answers?.[0]?.value
+
+		if (choice === "pause") {
 			const pauseOutcome = applyAndPersist(f.id, { type: "pause" })
 			if (!pauseOutcome.ok) return failedToolResult(pauseOutcome.error)
 			return toolOk(withNextActionHint("Ferment paused at user request.", pauseOutcome.ferment))
 		}
 
-		if (response.choice === "skip") {
+		if (choice === "skip") {
 			const skipOutcome = applyAndPersist(f.id, {
 				type: "skip_step",
 				phaseId: phase.id,
@@ -389,13 +429,7 @@ export async function completeStep(
 		if (!completeOutcome.ok) return failedToolResult(completeOutcome.error, f)
 		runtime.clearStepStart(f.id, phase.id, step.id)
 		runtime.bumpStepCompleteAttempt(f.id, phase.id, step.id)
-		runtime.setPendingCompaction(f.id, {
-			kind: "step",
-			fermentId: f.id,
-			phaseId: phase.id,
-			stepId: step.id,
-			completedAt: runtime.nowIso(),
-		})
+		maybeRecordStepCompaction(runtime, completeOutcome.ferment, phase, step)
 		services.onStepCompleted(runtime)
 		sendStepBreadcrumb(pi, `Step ${step.index} ✓ ${step.description}`)
 		return toolOk(
@@ -433,13 +467,7 @@ export async function completeStep(
 	if (exitCode === 0) {
 		// Verification passed + all gates pass → silent advance. No LLM call.
 		runtime.bumpStepCompleteAttempt(f.id, phase.id, step.id)
-		runtime.setPendingCompaction(f.id, {
-			kind: "step",
-			fermentId: f.id,
-			phaseId: phase.id,
-			stepId: step.id,
-			completedAt: runtime.nowIso(),
-		})
+		maybeRecordStepCompaction(runtime, verifyOutcome.ferment, phase, step)
 		services.onStepCompleted(runtime)
 		sendStepBreadcrumb(pi, `Step ${step.index} ✓ verified - ${step.description}`)
 		return toolOk(
@@ -462,13 +490,7 @@ export async function completeStep(
 		// is acceptable (e.g. linter noise on an unrelated file). Gate
 		// verdicts already passed above, so advance.
 		runtime.bumpStepCompleteAttempt(f.id, phase.id, step.id)
-		runtime.setPendingCompaction(f.id, {
-			kind: "step",
-			fermentId: f.id,
-			phaseId: phase.id,
-			stepId: step.id,
-			completedAt: runtime.nowIso(),
-		})
+		maybeRecordStepCompaction(runtime, verifyOutcome.ferment, phase, step)
 		services.onStepCompleted(runtime)
 		sendStepBreadcrumb(pi, `Step ${step.index} ✓  Judge passed: ${judgeVerdict.reason}`)
 		return toolOk(

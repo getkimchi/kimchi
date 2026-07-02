@@ -7,9 +7,11 @@ import { fileURLToPath } from "node:url"
 import { AgentSession } from "@earendil-works/pi-coding-agent"
 import {
 	getCliModeArg,
+	isCliAtFileArg,
 	isExperimentalFeaturesArg,
 	isHelpOrVersionArgs,
 	isTerminalUiMode,
+	normalizeResumeIdArgs,
 	stripExperimentalFeaturesArg,
 } from "./cli-args.js"
 import { dispatchSubcommand } from "./commands/dispatch.js"
@@ -33,13 +35,13 @@ import assistantPrefixExtension from "./extensions/assistant-prefix.js"
 import bashDefaultTimeoutExtension from "./extensions/bash-default-timeout.js"
 import bashToolGuardExtension from "./extensions/bash-tool-guard.js"
 import behavioursExtension from "./extensions/behaviours/index.js"
+import branchCommandExtension from "./extensions/branch-command.js"
 import claudeCodeHooksAdapter from "./extensions/claude-code-hook-adapter/index.js"
 import claudeCodeSkillsExtension from "./extensions/claude-code-skills/index.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
 import customizeFooterExtension from "./extensions/customize-footer-command.js"
 import explorationGuardExtension from "./extensions/exploration-guard.js"
 import fermentExtension from "./extensions/ferment/index.js"
-import firstTurnOrientationExtension from "./extensions/first-turn-orientation.js"
 import helpExtension from "./extensions/help.js"
 import hideThinkingExtension from "./extensions/hide-thinking.js"
 import ideAdapterExtension from "./extensions/ide-adapter/index.js"
@@ -55,6 +57,7 @@ import modelGuardExtension from "./extensions/model-guard.js"
 import modelSwitchExtension from "./extensions/model-switch.js"
 import { createSessionModeOnboardingForStartup } from "./extensions/onboarding/session-mode-startup.js"
 import { applyRoleAugmentation } from "./extensions/orchestration/model-roles.js"
+import orphanToolResultSanitizerExtension from "./extensions/orphan-tool-result-sanitizer.js"
 import permissionsExtension from "./extensions/permissions/index.js"
 import { writeKimchiKeybindingDefaults } from "./extensions/permissions/keybindings.js"
 import { installPiNativeCompatibilityShim } from "./extensions/pi-package-lookup/native-compat.js"
@@ -65,7 +68,9 @@ import questionnaireExtension from "./extensions/questionnaire/index.js"
 import reportBugExtension from "./extensions/report-bug.js"
 import reviewWriteGuardExtension from "./extensions/review-write-guard.js"
 import rtkRewriteExtension from "./extensions/rtk-rewrite.js"
+import sessionMetadataExtension from "./extensions/session-metadata/index.js"
 import sessionNameExtension from "./extensions/session-name.js"
+import orphanToolResultRepairExtension from "./extensions/session-repair/orphan-tool-result-repair.js"
 import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
@@ -73,6 +78,7 @@ import stripImagesExtension from "./extensions/strip-images.js"
 import superpowersExtension from "./extensions/superpowers.js"
 import surveysExtension from "./extensions/surveys/index.js"
 import tagsExtension from "./extensions/tags.js"
+import { buildConfigSnapshot } from "./extensions/telemetry/config-snapshot.js"
 import telemetryExtension from "./extensions/telemetry/index.js"
 import { drain as drainPreSessionTelemetry, sendPreSessionEvent } from "./extensions/telemetry/pre-session.js"
 import teleportExtension from "./extensions/teleport/index.js"
@@ -89,6 +95,7 @@ import traceIdExtension from "./extensions/trace-id.js"
 import uiExtension from "./extensions/ui.js"
 import webFetchExtension from "./extensions/web-fetch/index.js"
 import webSearchExtension from "./extensions/web-search/index.js"
+import { normalizeAtFileArgs } from "./fs-paths.js"
 import {
 	injectExperimentalProvider,
 	isTransientModelsError,
@@ -111,6 +118,7 @@ import { probeTerminalBackground } from "./terminal-bg-probe.js"
 import { installCloudflare524RetryPatch } from "./upstream-retry-patch.js"
 import { getVersion } from "./utils.js"
 import { postProcessHtmlExport, postProcessJsonlExport } from "./utils/export-post-process.js"
+import { captureSessionStart } from "./utils/session-metadata-store.js"
 
 installCloudflare524RetryPatch()
 installPiNativeCompatibilityShim()
@@ -124,6 +132,8 @@ function getSubcommand(args: string[]): string {
 	return "harness"
 }
 
+const originalArgs = process.argv.slice(2)
+
 // --- Telemetry ---
 const telemetryConfig = readTelemetryConfig()
 
@@ -132,13 +142,13 @@ const telemetryConfig = readTelemetryConfig()
 // the chance of truncated HTTP requests.
 if (telemetryConfig.enabled) {
 	sendPreSessionEvent(telemetryConfig, "app_started", {
-		subcommand: getSubcommand(process.argv.slice(2)),
+		subcommand: getSubcommand(originalArgs),
 	})
 }
 
 // ACP mode runs JSON-RPC over stdio; interactive mode runs the standard TUI
 // harness. Decide once at module load, before anything else runs.
-const cliMode = getCliModeArg(process.argv.slice(2))
+const cliMode = getCliModeArg(originalArgs)
 const acpMode = cliMode === "acp"
 
 // Monkey-patch AgentSession.prototype.exportToJsonl so ALL JSONL exports
@@ -170,7 +180,7 @@ const _origExportToHtml = (AgentSession as any).prototype.exportToHtml
 	}
 	return filePath
 }
-const helpOrVersion = isHelpOrVersionArgs(process.argv.slice(2))
+const helpOrVersion = isHelpOrVersionArgs(originalArgs)
 
 // Internal control signal: setup cancellation must skip harness/extensions
 // without a hard process.exit(), so clack can restore terminal state normally.
@@ -181,7 +191,7 @@ try {
 	// top-level --help take ownership before any harness setup runs.
 	// `--version` falls through to pi-coding-agent's main below so it prints
 	// the version using piConfig.name = "kimchi".
-	const dispatch = await dispatchSubcommand(process.argv.slice(2))
+	const dispatch = await dispatchSubcommand(originalArgs)
 	if (dispatch.kind === "handled") {
 		await drainPreSessionTelemetry()
 		process.exit(dispatch.exitCode)
@@ -189,14 +199,9 @@ try {
 
 	if (helpOrVersion) {
 		const { main } = await import("@earendil-works/pi-coding-agent")
-		await main(process.argv.slice(2), { extensionFactories: [] })
+		await main(originalArgs, { extensionFactories: [] })
 	} else {
-		// Fire harness_launched (one shot per harness session; respects telemetry opt-out)
-		if (telemetryConfig.enabled) {
-			sendPreSessionEvent(telemetryConfig, "harness_launched", { version: getVersion() })
-		}
-
-		const experimentalFeatures = isExperimentalFeaturesArg(process.argv.slice(2))
+		const experimentalFeatures = isExperimentalFeaturesArg(originalArgs)
 		let config = loadConfig()
 
 		const envKey = process.env.KIMCHI_API_KEY || undefined
@@ -205,6 +210,22 @@ try {
 		if (envKey && !config.apiKey) {
 			writeApiKey(envKey)
 			config = loadConfig()
+		}
+
+		// Capture the frozen launch-time metadata (OS + config snapshot incl.
+		// multimodel) for injection into JSONL/HTML exports. Decoupled from the
+		// telemetry opt-in below — exports must surface this even when telemetry
+		// is disabled.
+		captureSessionStart(config, telemetryConfig.enabled)
+
+		// Fire harness_launched (one shot per harness session; respects telemetry opt-out).
+		// Sent after loadConfig() + env-key reload so the config snapshot reflects
+		// real values rather than defaults.
+		if (telemetryConfig.enabled) {
+			sendPreSessionEvent(telemetryConfig, "harness_launched", {
+				version: getVersion(),
+				...buildConfigSnapshot(config, telemetryConfig.enabled),
+			})
 		}
 
 		const apiKey = config.apiKey
@@ -360,14 +381,23 @@ try {
 			: resolve(dirname(fileURLToPath(import.meta.url)), "../themes")
 		mkdirSync(themesDir, { recursive: true })
 
-		// Probe runs here (before pi-mono takes stdin) so the result is cached for
-		// the kimchi-minimal-tints and terminal-colors extensions. Skip non-TUI
-		// modes: stdout belongs to the caller, and OSC escapes corrupt it.
-		const rawArgs = stripExperimentalFeaturesArg(process.argv.slice(2))
+		const atFileArgs = normalizeAtFileArgs(
+			normalizeResumeIdArgs(stripExperimentalFeaturesArg(originalArgs)),
+			process.cwd(),
+			isCliAtFileArg,
+		)
+		if (atFileArgs.directoryArgs.length > 0) {
+			console.error(`Error: @file path must be a file, not a directory: ${atFileArgs.directoryArgs[0]}`)
+			process.exit(1)
+		}
+		const rawArgs = atFileArgs.args
 		const terminalIo = {
 			stdinIsTTY: process.stdin.isTTY === true,
 			stdoutIsTTY: process.stdout.isTTY === true,
 		}
+		// Probe runs here (before pi-mono takes stdin) so the result is cached for
+		// the kimchi-minimal-tints and terminal-colors extensions. Skip non-TUI
+		// modes: stdout belongs to the caller, and OSC escapes corrupt it.
 		const terminalStartupOutputAllowed = isTerminalUiMode(rawArgs, terminalIo)
 		if (terminalStartupOutputAllowed) {
 			await probeTerminalBackground()
@@ -453,12 +483,12 @@ try {
 			sessionNameExtension(),
 			shutdownMarkerExtension,
 			statsExtension,
+			branchCommandExtension,
 			...terminalUiExtensionFactories,
 			loginExtension,
 			startupAuthGate,
 			loopGuardExtension,
 			explorationGuardExtension,
-			firstTurnOrientationExtension,
 			reviewWriteGuardExtension,
 			lspExtension,
 			// Always registered — the tool_call handler checks isResourceEnabled
@@ -512,6 +542,7 @@ try {
 			tagsExtension,
 			teleportExtension,
 			telemetryExtension(telemetryConfig),
+			sessionMetadataExtension(),
 			surveysExtension(),
 			toolRenderingExtension,
 			toolGroupingExtension,
@@ -521,6 +552,8 @@ try {
 			] satisfies ManagedExtensionFactory[]),
 			modelSwitchExtension,
 			modelGuardExtension,
+			orphanToolResultRepairExtension,
+			orphanToolResultSanitizerExtension,
 			stripImagesExtension,
 			traceIdExtension,
 			llmResponseLogExtension,

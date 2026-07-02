@@ -30,11 +30,18 @@ import { loadFermentSilently, resumeFerment } from "./resume.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { scheduleFermentWakeUp } from "./scheduler.js"
 import { confirmPendingScope } from "./scoping-confirmation.js"
-import { clearActiveFermentId, getActiveFermentId, resetScopingExploreTurns } from "./state.js"
+import {
+	clearActiveFermentId,
+	getActiveFermentId,
+	isFermentLockedByLiveProcess,
+	removeFermentLock,
+	resetScopingExploreTurns,
+} from "./state.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
 import {
 	applyFermentRuntimeToolProfile,
 	applyFermentToolProfile,
+	hasPendingPlanReview,
 	setActiveFermentAndApplyProfile,
 } from "./tool-scope.js"
 
@@ -273,6 +280,9 @@ export function registerFermentEvents(
 		const applyAndPersist = createApplyAndPersist(runtime)
 		for (const f of runtime.getStorage().list()) {
 			if (f.status === "running" || f.status === "planned") {
+				// Skip ferments that are actively locked by a live process —
+				// they belong to another running kimchi session, not a crashed one.
+				if (isFermentLockedByLiveProcess(f.id)) continue
 				try {
 					const outcome = applyAndPersist(f.id, { type: "pause" })
 					if (!outcome.ok) {
@@ -381,6 +391,9 @@ export function registerFermentEvents(
 				// The startup scanner will recover the stale state on next launch.
 			}
 		}
+		// Remove the lockfile so a concurrent session doesn't think this
+		// ferment is still actively running here.
+		removeFermentLock(f.id)
 	})
 
 	pi.on("input", async (event) => {
@@ -445,16 +458,10 @@ export function registerFermentEvents(
 			// strip all tools from the subagent on the first turn.
 			return {}
 		}
-		// Only apply a ferment profile when a ferment is active. In normal chat
-		// mode (no active ferment) leave the toolset untouched so the user gets
-		// the full tool set. The idle profile (discovery-only) is applied by
-		// command handlers when entering/exiting ferment mode, not here.
-		if (!runtime.getActive()) {
-			return {}
-		}
-		// One-shot and interactive flows share the unified profile model: derive
-		// the profile from the active ferment's lifecycle state (planning vs.
-		// implementation). Both modes drive off the same runtime.
+		// One-shot, interactive, and normal chat share the unified profile model:
+		// derive the profile from runtime state. With no active ferment this
+		// resolves to the idle profile, which preserves normal tools and
+		// list_ferments while hiding ferment workflow tools.
 		applyFermentRuntimeToolProfile(pi, runtime)
 		return {}
 	})
@@ -557,6 +564,28 @@ export function registerFermentEvents(
 		// Only acts on tool-use turns; stop/error/aborted are handled elsewhere.
 		if (event.message.role === "assistant" && event.message.stopReason === "toolUse") {
 			maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, event.message.usage?.totalTokens ?? 0)
+		}
+
+		// After a turn ends, `prepareNextTurn` in pi-mono builds the next turn's
+		// context using `this.activeToolNames` (the snapshot set by
+		// `pi.setActiveTools`). This happens AFTER `turn_end` fires but BEFORE
+		// the next `turn_start`. So to suppress tools for the next LLM call (e.g.
+		// after `propose_ferment_scoping` sets a pending plan review), we must
+		// apply the tool profile here in `turn_end` — not `turn_start`, which
+		// fires too late (the context is already built).
+		//
+		// When `propose_ferment_scoping` sets a pending review mid-turn,
+		// `applyFermentRuntimeToolProfile` suppresses all tools via
+		// `pi.setActiveTools([])`. The next LLM call sees an empty toolset,
+		// produces text-only output (stopReason: "stop"), ending the turn and
+		// firing `agent_end` which triggers the review dialog.
+		//
+		// This is placed at the end of the handler so that the nudge/dropdown
+		// logic above runs first. Those early-return paths still suppress tools
+		// when a pending review exists, which is correct — the model should not
+		// have tools until the review is resolved.
+		if (hasPendingPlanReview(runtime)) {
+			applyFermentRuntimeToolProfile(pi, runtime)
 		}
 	})
 }

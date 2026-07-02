@@ -356,6 +356,34 @@ describe("permissions plan-mode tool visibility", () => {
 		}
 	})
 
+	it("allows the mcp gateway tool under explicit --plan", async () => {
+		const harness = createPermissionsHarness(["read", "mcp"], { plan: true })
+
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		// mcp must be in the active set (cataloged as shared core)
+		expect(harness.activeTools().sort()).toEqual(["mcp", "read"])
+		// And the tool_call gate must not block it
+		await expect(
+			harness.fire("tool_call", { toolName: "mcp", input: { search: "jira" } }, createMockContext([])),
+		).resolves.toBeUndefined()
+	})
+
+	it("blocks read calls targeting directories before upstream read", async () => {
+		const tmp = mkdtempSync(join(tmpdir(), "kimchi-read-dir-"))
+		try {
+			const harness = createPermissionsHarness(["read"])
+			const result = await harness.fire("tool_call", { toolName: "read", input: { path: tmp } }, createMockContext([]))
+
+			expect(result).toEqual({
+				block: true,
+				reason: "Path is a directory; read only accepts files. List or search the directory instead.",
+			})
+		} finally {
+			rmSync(tmp, { recursive: true, force: true })
+		}
+	})
+
 	it("leaving plan mode does not restore tools hidden by another extension", async () => {
 		const harness = createPermissionsHarness(["read", "bash", "write", "edit", "grep"], { plan: true })
 		const peerVisibility = createToolVisibility(harness.pi)

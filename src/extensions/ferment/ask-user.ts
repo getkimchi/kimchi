@@ -55,9 +55,7 @@ export interface AskUserQuestion {
 	label?: string
 	options?: AskUserOption[]
 	allowOther?: boolean
-	otherLabel?: string
 	required?: boolean
-	placeholder?: string
 }
 
 export interface AskUserAnswer {
@@ -102,11 +100,6 @@ export interface AskUserFailure {
 }
 
 export type AskUserResponse = AskUserSuccess | AskUserFailure
-
-export interface AskUserOverrides {
-	askJudge?: typeof askJudge
-	askJudgeForm?: typeof askJudgeForm
-}
 
 export interface AskUserContext {
 	ferment: Ferment
@@ -163,12 +156,35 @@ export type NormalizeAskUserResult = { ok: true; questions: AskUserQuestion[] } 
  *  `propose_ferment_scoping` path. */
 export function normalizeAskUserQuestions(questions: ReadonlyArray<RawAskUserQuestion>): NormalizeAskUserResult {
 	const normalized: AskUserQuestion[] = []
+	const seen = new Set<string>()
 	for (const q of questions) {
+		if (!q.id || !q.id.trim()) {
+			return {
+				ok: false,
+				error: 'Question is missing required field "id" — a stable identifier returned with the answer.',
+			}
+		}
+		if (seen.has(q.id)) {
+			return {
+				ok: false,
+				error: `Question id "${q.id}" is duplicated — each question needs a unique id.`,
+			}
+		}
+		seen.add(q.id)
+		if (!q.prompt || !q.prompt.trim()) {
+			return {
+				ok: false,
+				error: `Question "${q.id}" is missing required field "prompt" — the question text shown to the user.`,
+			}
+		}
 		let normalizedType: NormalizedScopingType
 		try {
 			normalizedType = toScopingQuestionType(q.type)
 		} catch (error) {
-			return { ok: false, error: error instanceof Error ? error.message : String(error) }
+			return {
+				ok: false,
+				error: `Question "${q.id}" has unknown type "${q.type}" — must be one of: single, multi, text, confirm.`,
+			}
 		}
 		const { type, isConfirm } = normalizedType
 		if (isConfirm) {
@@ -187,39 +203,18 @@ export function normalizeAskUserQuestions(questions: ReadonlyArray<RawAskUserQue
 			normalized.push({ ...q, type, options: [...YES_NO_OPTIONS] })
 			continue
 		}
+		if ((type === "single" || type === "multi") && (q.options?.length ?? 0) === 0 && !q.allowOther) {
+			return {
+				ok: false,
+				error: `Question "${q.id}" is type "${type}" but has no options and allowOther is false — provide options or set allowOther: true.`,
+			}
+		}
 		normalized.push({ ...q, type })
 	}
 	return { ok: true, questions: normalized }
 }
 
-const ASK_USER_SYSTEM = `You are standing in for the user during an autonomous ferment run. A planner agent has reached a decision point it cannot resolve from context alone and is asking the user. There is no human available — you decide.
-
-Your bias:
-- Choose the option that best serves the ferment's stated goal and success criteria, NOT whatever moves work forward fastest.
-- When two options seem equivalent, prefer the more conservative one (less destructive, more revertible).
-- When you genuinely cannot tell which option is best, choose the option that explicitly preserves optionality (pause / revise / abandon).
-
-You will be given:
-- The ferment goal and success criteria.
-- The current phase and step (when applicable).
-- The question the agent is asking.
-- The set of options, each with an id and a label (sometimes a description).
-
-Return EXACTLY one JSON object, no markdown, no prose:
-For single-choice and confirm questions return:
-{"choice":"<option_id>","rationale":"<one sentence justifying the choice>"}
-
-The "choice" MUST be one of the provided option ids verbatim. If you cannot in good faith pick any option, choose the option whose id contains "pause", "abandon", or "cancel" — falling back to the FIRST option only as a last resort.
-
-For multi-select questions return:
-{"choices":["<option_id>"],"rationale":"<one sentence justifying the choices>"}
-
-Every item in "choices" MUST be one of the provided option ids verbatim. Choose one or more.
-
-For text questions return:
-{"text":"<answer>","rationale":"<one sentence justifying the answer>"}
-
-The text answer should be concise and directly usable by the planner.`
+const ASK_USER_FORM_MAX_ATTEMPTS = 3
 
 const ASK_USER_FORM_SYSTEM = `You are standing in for the user during an autonomous ferment run. A planner agent has reached decision points it cannot resolve from context alone and is asking a structured form. There is no human available — you decide.
 
@@ -235,35 +230,11 @@ For single questions, "value" MUST be one provided option id unless allowOther i
 For confirm questions, "value" MUST be "yes" or "no".
 For multi questions, "value" MUST be an array of one or more provided option ids unless allowOther is true.
 For text questions, "value" MUST be a concise directly usable string.
-Optional questions may be omitted. Required questions must be answered.`
+Optional questions may be omitted. Required questions must be answered.
 
-function buildAskJudgeUserMsg(
-	question: string,
-	options: ReadonlyArray<AskUserOption>,
-	ferment: Ferment,
-	responseType: AskUserResponseType,
-): string {
-	const activePhase = ferment.phases.find((p) => p.status === "active")
-	const activeStep = activePhase?.steps.find((s) => s.status === "running")
-	const optionLines = options
-		.map((o) => `  - id="${o.id}"  label="${o.label}"${o.description ? `  description="${o.description}"` : ""}`)
-		.join("\n")
-	const parts: string[] = []
-	parts.push(`Ferment: "${ferment.name}"`)
-	parts.push(`Goal: ${ferment.goal ?? "(none specified)"}`)
-	parts.push(renderLabeledSuccessCriteria("Success criteria", ferment.successCriteria))
-	if (activePhase) parts.push(`Active phase: ${activePhase.index}. "${activePhase.name}" — ${activePhase.goal}`)
-	if (activeStep) parts.push(`Active step: ${activeStep.index}. "${activeStep.description}"`)
-	parts.push("")
-	parts.push(`Requested response type: ${responseType}`)
-	parts.push(`Question: ${question}`)
-	if (options.length > 0) {
-		parts.push("")
-		parts.push("Options:")
-		parts.push(optionLines)
-	}
-	return parts.join("\n")
-}
+Example:
+Questions: [{"id":"approach","type":"single","prompt":"Which approach?","options":[{"id":"safe","label":"Safe path"},{"id":"fast","label":"Fast path"}]},{"id":"note","type":"text","prompt":"Any notes?"}]
+Correct response: {"answers":[{"id":"approach","value":"safe"},{"id":"note","value":"Keep it reversible."}],"rationale":"Safe path is more reversible."}`
 
 function buildAskJudgeFormUserMsg(
 	title: string | undefined,
@@ -295,7 +266,7 @@ function buildAskJudgeFormUserMsg(
 			}
 		}
 		if ((q.type === "single" || q.type === "multi") && q.allowOther) {
-			parts.push(`      custom label="${q.otherLabel ?? "Type your own answer"}" value="<free-form text>"`)
+			parts.push(`      custom label="Type your own answer" value="<free-form text>"`)
 		}
 	}
 	return parts.join("\n")
@@ -320,34 +291,6 @@ function parseJudgeJson(text: string): unknown {
 			return undefined
 		}
 	}
-}
-
-function parseJudgeAnswer(
-	text: string,
-	options: ReadonlyArray<AskUserOption>,
-	responseType: AskUserResponseType,
-): Omit<AskUserSuccess, "answered_by" | "response_type"> | undefined {
-	const parsed = parseJudgeJson(text)
-	if (!parsed || typeof parsed !== "object") return undefined
-	const obj = parsed as { choice?: unknown; choices?: unknown; text?: unknown; rationale?: unknown }
-	const rationale = typeof obj.rationale === "string" ? obj.rationale : "(no rationale provided)"
-
-	if (responseType === "text") {
-		if (typeof obj.text !== "string" || obj.text.trim() === "") return undefined
-		return { text: obj.text.trim().slice(0, 4000), rationale: rationale.slice(0, 400) }
-	}
-
-	if (responseType === "multi") {
-		if (!Array.isArray(obj.choices)) return undefined
-		const choices = obj.choices.filter((choice): choice is string => typeof choice === "string")
-		if (choices.length === 0) return undefined
-		if (choices.some((choice) => !options.some((o) => o.id === choice))) return undefined
-		return { choices: Array.from(new Set(choices)), rationale: rationale.slice(0, 400) }
-	}
-
-	if (typeof obj.choice !== "string") return undefined
-	if (!options.some((o) => o.id === obj.choice)) return undefined
-	return { choice: obj.choice, rationale: rationale.slice(0, 400) }
 }
 
 function validateFormQuestions(questions: ReadonlyArray<AskUserQuestion>): string | undefined {
@@ -436,17 +379,70 @@ function answerFromValue(q: AskUserQuestion, rawValue: unknown): AskUserAnswer |
 	}
 }
 
+/** Choose a reasonable default answer for a question when the judge is
+ *  completely unavailable. The defaults allow the ferment to proceed —
+ *  confirm → "yes", single → first listed option (presumed highest priority),
+ *  multi → first listed option, text → a placeholder so the form can still be
+ *  consumed. */
+function defaultAnswerForQuestion(q: AskUserQuestion): AskUserAnswer {
+	if (q.type === "confirm") {
+		// Default to "yes" — let the ferment proceed rather than stall.
+		const yesOption = q.options?.find((o) => o.id === "yes")
+		return { id: q.id, type: "confirm", value: "yes", label: yesOption?.label ?? "Yes", wasCustom: false }
+	}
+	if (q.type === "single" && q.options && q.options.length > 0) {
+		// Default to the first option (the agent presumably listed them in priority order).
+		const first = q.options[0]
+		return { id: q.id, type: "single", value: first.id, label: first.label, wasCustom: false }
+	}
+	if (q.type === "multi" && q.options && q.options.length > 0) {
+		// Default to the first option only.
+		const first = q.options[0]
+		return {
+			id: q.id,
+			type: "multi",
+			value: first.id,
+			label: first.label,
+			wasCustom: false,
+			values: [first.id],
+			labels: [first.label],
+		}
+	}
+	// For text questions (or malformed single/multi with no options), default
+	// to an empty-but-valid answer.
+	return {
+		id: q.id,
+		type: "text",
+		value: "(no answer — judge was unavailable)",
+		label: "(no answer)",
+		wasCustom: true,
+	}
+}
+
 function parseJudgeFormAnswer(
 	text: string,
 	questions: ReadonlyArray<AskUserQuestion>,
 ): Pick<AskUserSuccess, "answers" | "rationale"> | undefined {
 	const parsed = parseJudgeJson(text)
 	if (!parsed || typeof parsed !== "object") return undefined
-	const obj = parsed as { answers?: unknown; rationale?: unknown }
-	if (!Array.isArray(obj.answers)) return undefined
+	const obj = parsed as { answers?: unknown; rationale?: unknown; [key: string]: unknown }
 	const rationale = typeof obj.rationale === "string" ? obj.rationale : "(no rationale provided)"
+
+	let rawAnswers: unknown[]
+	if (Array.isArray(obj.answers)) {
+		rawAnswers = obj.answers
+	} else {
+		// Alternative format: question-id keys directly on the top-level object,
+		// e.g. {"approach":"safe","note":"Keep it simple."}. Accept it when at
+		// least one key matches a known question id.
+		const questionIds = new Set(questions.map((q) => q.id))
+		const matchedKeys = Object.keys(obj).filter((k) => k !== "rationale" && questionIds.has(k))
+		if (matchedKeys.length === 0) return undefined
+		rawAnswers = matchedKeys.map((id) => ({ id, value: obj[id] }))
+	}
+
 	const byId = new Map<string, unknown>()
-	for (const rawAnswer of obj.answers) {
+	for (const rawAnswer of rawAnswers) {
 		if (!rawAnswer || typeof rawAnswer !== "object") return undefined
 		const answer = rawAnswer as { id?: unknown; value?: unknown }
 		if (typeof answer.id !== "string") return undefined
@@ -488,74 +484,6 @@ function mapPromptFormAnswers(
 	})
 }
 
-/** Ask the judge as a stand-in user. Returns a structured success or a typed
- *  failure. Callers decide whether failure is fatal (one-shot mode) or
- *  recoverable (interactive degrade). */
-export async function askJudge(
-	question: string,
-	options: ReadonlyArray<AskUserOption>,
-	ferment: Ferment,
-	responseTypeOrApiCall:
-		| AskUserResponseType
-		| ((sys: string, msg: string, maxTokens?: number) => Promise<JudgeApiResult>) = "single",
-	apiCallOverride?: (sys: string, msg: string, maxTokens?: number) => Promise<JudgeApiResult>,
-): Promise<AskUserResponse> {
-	const responseType = typeof responseTypeOrApiCall === "string" ? responseTypeOrApiCall : "single"
-	const apiCall =
-		typeof responseTypeOrApiCall === "function" ? responseTypeOrApiCall : (apiCallOverride ?? judgeApiCall)
-	const normalizedOptions = normalizeShorthandOptions(responseType, options)
-	if (!normalizedOptions.ok) return normalizedOptions.failure
-	const userMsg = buildAskJudgeUserMsg(question, normalizedOptions.options, ferment, responseType)
-	const result = await apiCall(ASK_USER_SYSTEM, userMsg, 200)
-	if (!result.ok) {
-		return {
-			failed: true,
-			reason: "judge_unavailable",
-			detail: `Judge unreachable (${result.reason}${result.detail ? `: ${result.detail}` : ""}).`,
-		}
-	}
-	const parsed = parseJudgeAnswer(result.text, normalizedOptions.options, responseType)
-	if (!parsed) {
-		return {
-			failed: true,
-			reason: "judge_unparseable",
-			detail: `Judge returned unparseable output: ${result.text.slice(0, 200)}`,
-		}
-	}
-	return { ...parsed, response_type: responseType, answered_by: "judge" }
-}
-
-function normalizeShorthandOptions(
-	responseType: AskUserResponseType,
-	options: ReadonlyArray<AskUserOption>,
-): { ok: true; options: ReadonlyArray<AskUserOption> } | { ok: false; failure: AskUserFailure } {
-	if (responseType === "text") return { ok: true, options }
-	if (responseType === "confirm") {
-		if (options.length > 0) {
-			return {
-				ok: false,
-				failure: {
-					failed: true,
-					reason: "invalid_choice",
-					detail: "askUser confirm shorthand must not provide options — confirm is always Yes/No.",
-				},
-			}
-		}
-		return { ok: true, options: YES_NO_OPTIONS }
-	}
-	if (options.length === 0) {
-		return {
-			ok: false,
-			failure: {
-				failed: true,
-				reason: "invalid_choice",
-				detail: `askUser called with empty options array for ${responseType} question.`,
-			},
-		}
-	}
-	return { ok: true, options }
-}
-
 export async function askJudgeForm(
 	title: string | undefined,
 	description: string | undefined,
@@ -568,23 +496,39 @@ export async function askJudgeForm(
 		return { failed: true, reason: "invalid_choice", detail: validationError }
 	}
 	const userMsg = buildAskJudgeFormUserMsg(title, description, questions, ferment)
-	const result = await apiCall(ASK_USER_FORM_SYSTEM, userMsg, 500)
-	if (!result.ok) {
-		return {
-			failed: true,
-			reason: "judge_unavailable",
-			detail: `Judge unreachable (${result.reason}${result.detail ? `: ${result.detail}` : ""}).`,
+	const maxTokens = Math.min(2000, Math.max(500, questions.length * 200 + 200))
+
+	for (let attempt = 1; attempt <= ASK_USER_FORM_MAX_ATTEMPTS; attempt++) {
+		const systemPrompt =
+			attempt > 1
+				? `${ASK_USER_FORM_SYSTEM}\n\nWARNING: Your previous response was not valid or did not match the expected schema. Return ONLY a JSON object: {"answers":[{"id":"<question_id>","value":"<answer>"}],"rationale":"..."}. No markdown, no prose.`
+				: ASK_USER_FORM_SYSTEM
+		let result: JudgeApiResult
+		try {
+			result = await apiCall(systemPrompt, userMsg, maxTokens)
+		} catch {
+			continue
 		}
-	}
-	const parsed = parseJudgeFormAnswer(result.text, questions)
-	if (!parsed) {
-		return {
-			failed: true,
-			reason: "judge_unparseable",
-			detail: `Judge returned unparseable output: ${result.text.slice(0, 200)}`,
+		if (!result.ok) {
+			continue
 		}
+		const parsed = parseJudgeFormAnswer(result.text, questions)
+		if (!parsed) {
+			continue
+		}
+		return { ...parsed, response_type: "form", answered_by: "judge" }
 	}
-	return { ...parsed, response_type: "form", answered_by: "judge" }
+
+	// Fallback: if the judge completely fails after all retries, choose reasonable
+	// defaults rather than abandoning the ferment. This prevents transient judge
+	// failures from killing a ferment run.
+	const fallbackAnswers = questions.map((q) => defaultAnswerForQuestion(q))
+	return {
+		response_type: "form",
+		answers: fallbackAnswers,
+		answered_by: "judge",
+		rationale: `Judge was unavailable after ${ASK_USER_FORM_MAX_ATTEMPTS} attempts; using conservative defaults.`,
+	}
 }
 
 export async function askUserForm(
@@ -592,7 +536,6 @@ export async function askUserForm(
 	description: string | undefined,
 	questions: ReadonlyArray<AskUserQuestion>,
 	context: AskUserContext,
-	overrides?: AskUserOverrides,
 ): Promise<AskUserResponse> {
 	const validationError = validateFormQuestions(questions)
 	if (validationError) {
@@ -601,8 +544,7 @@ export async function askUserForm(
 
 	const oneShot = isOneShotSession(context.pi)
 	if (oneShot) {
-		const judge = overrides?.askJudgeForm ?? askJudgeForm
-		return judge(title, description, questions, context.ferment)
+		return askJudgeForm(title, description, questions, context.ferment)
 	}
 
 	const ui = context.ctx?.ui
@@ -623,94 +565,5 @@ export async function askUserForm(
 		failed: true,
 		reason: "no_ui_no_judge",
 		detail: "No TUI attached and not in one-shot mode — cannot route the questions to any audience.",
-	}
-}
-
-/** Routing entry point. Picks the right audience for the question, returns
- *  a uniform response shape. Read the file header for the routing rules. */
-export async function askUser(
-	question: string,
-	options: ReadonlyArray<AskUserOption>,
-	context: AskUserContext,
-	responseTypeOrOverrides: AskUserResponseType | AskUserOverrides = "single",
-	overrides?: AskUserOverrides,
-): Promise<AskUserResponse> {
-	const responseType = typeof responseTypeOrOverrides === "string" ? responseTypeOrOverrides : "single"
-	const effectiveOverrides = typeof responseTypeOrOverrides === "string" ? overrides : responseTypeOrOverrides
-	const normalizedOptions = normalizeShorthandOptions(responseType, options)
-	if (!normalizedOptions.ok) return normalizedOptions.failure
-
-	const oneShot = isOneShotSession(context.pi)
-
-	if (oneShot) {
-		// One-shot: judge is the only legitimate audience. No fallback to TUI
-		// even if a UI happens to be attached — the contract says one-shot
-		// runs are unattended, and we don't want to half-prompt a CLI user.
-		const judge = effectiveOverrides?.askJudge ?? askJudge
-		return judge(question, options, context.ferment, responseType)
-	}
-
-	// Interactive: route to TUI when available.
-	const ui = context.ctx?.ui
-	if (ui) {
-		const result = await promptForm(context.ctx, {
-			questions: [
-				{
-					id: "answer",
-					type: responseType,
-					prompt: question,
-					options: normalizedOptions.options,
-					allowOther: false,
-				},
-			],
-		})
-		if (!result || result.cancelled || result.answers.length === 0) {
-			if (result && !result.cancelled && result.answers.length === 0) {
-				return { failed: true, reason: "invalid_choice", detail: "UI returned no valid answer." }
-			}
-			return { failed: true, reason: "user_cancelled", detail: "User cancelled the prompt." }
-		}
-		const answer = result.answers[0]
-		if (!answer) {
-			return { failed: true, reason: "user_cancelled", detail: "User cancelled the prompt." }
-		}
-		if (responseType === "text") {
-			context.runtime?.markHumanInput()
-			return { text: answer.value, response_type: "text", answered_by: "user" }
-		}
-		if (responseType === "multi") {
-			const choices = answer.values ?? answer.value.split(",").map((value) => value.trim())
-			if (choices.length === 0 || choices.some((choice) => !normalizedOptions.options.some((o) => o.id === choice))) {
-				return {
-					failed: true,
-					reason: "invalid_choice",
-					detail: `UI returned a value not in the options set: ${choices.join(", ")}`,
-				}
-			}
-			context.runtime?.markHumanInput()
-			return { choices, response_type: "multi", answered_by: "user" }
-		}
-		if (!normalizedOptions.options.some((o) => o.id === answer.value)) {
-			return {
-				failed: true,
-				reason: "invalid_choice",
-				detail: `UI returned a value not in the options set: ${answer.value}`,
-			}
-		}
-		// Side effect: mark human input so downstream signals (nudge throttling,
-		// prompt-block freshness) reflect that the user just interacted.
-		// Skipped for judge-answered responses since no human was involved.
-		context.runtime?.markHumanInput()
-		return {
-			choice: answer.value,
-			response_type: responseType === "confirm" ? "confirm" : "single",
-			answered_by: "user",
-		}
-	}
-
-	return {
-		failed: true,
-		reason: "no_ui_no_judge",
-		detail: "No TUI attached and not in one-shot mode — cannot route the question to any audience.",
 	}
 }

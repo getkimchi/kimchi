@@ -13,28 +13,12 @@
  * `process.exit()` to reduce the chance of truncated HTTP requests.
  */
 
-import { arch, platform } from "node:os"
 import { getMe } from "../../api/me.js"
 import type { TelemetryConfig } from "../../config.js"
 import { ensureDeviceId } from "../../posthog-device.js"
 import { getVersion } from "../../utils.js"
+import { getOsMetadata } from "../../utils/os-metadata.js"
 import { sendLog } from "./transport.js"
-
-// ---------------------------------------------------------------------------
-// Arch mapping (Node → Go-compatible names for historical compatibility)
-// ---------------------------------------------------------------------------
-
-function goArch(): string {
-	const a = arch()
-	switch (a) {
-		case "x64":
-			return "amd64"
-		case "ia32":
-			return "386"
-		default:
-			return a
-	}
-}
 
 // ---------------------------------------------------------------------------
 // User identity cache — fetched once per process via /v1/me
@@ -111,7 +95,7 @@ export async function drain(): Promise<void> {
 export function sendPreSessionEvent(
 	config: TelemetryConfig,
 	event: string,
-	properties?: Record<string, string | number>,
+	properties?: Record<string, string | number | boolean>,
 ): void {
 	const hasAuth = Object.keys(config.headers).some((k) => k.toLowerCase() === "authorization")
 	if (!config.enabled || !hasAuth) return
@@ -123,16 +107,15 @@ export function sendPreSessionEvent(
 async function doSend(
 	config: TelemetryConfig,
 	event: string,
-	properties?: Record<string, string | number>,
+	properties?: Record<string, string | number | boolean>,
 ): Promise<void> {
 	try {
 		await ensureUserIdentity(config.apiKey)
 
 		const deviceId = ensureDeviceId()
-		const attrs: Record<string, string | number> = {
+		const attrs: Record<string, string | number | boolean> = {
 			"telemetry.cli_version": getVersion(),
-			"telemetry.os": platform(),
-			"telemetry.arch": goArch(),
+			...getOsMetadata(),
 		}
 
 		if (cachedUserId) {

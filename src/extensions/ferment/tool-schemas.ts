@@ -393,18 +393,11 @@ const AskUserQuestionSchema = Type.Object({
 				"For single/multi questions only. When true, the TUI adds an Other/free-text option and the judge may return a custom value. Must be omitted for confirm. Default: false.",
 		}),
 	),
-	otherLabel: Type.Optional(
-		Type.String({
-			description:
-				"For single/multi questions with allowOther=true, optional custom label for the free-text option. Default: 'Type your own answer'.",
-		}),
-	),
 	required: Type.Optional(Type.Boolean({ description: "Whether this question must be answered. Default: true." })),
-	placeholder: Type.Optional(Type.String({ description: "Optional placeholder hint for text/custom answers." })),
 })
 
 export const AskUserParams = Type.Object({
-	ferment_id: Type.String(),
+	ferment_id: Type.Optional(Type.String()),
 	title: Type.Optional(
 		Type.String({
 			description: "Optional title for a multi-question form. Use with questions[].",
@@ -415,30 +408,11 @@ export const AskUserParams = Type.Object({
 			description: "Optional short context shown above a multi-question form and given to the judge.",
 		}),
 	),
-	response_type: Type.Optional(
-		Type.Union([Type.Literal("single"), Type.Literal("multi"), Type.Literal("text"), Type.Literal("confirm")], {
-			description:
-				"Compatibility shorthand for a single question. single returns choice, multi returns choices, text returns text, and confirm returns choice. confirm is strict Yes/No only and must not provide options. Use response_type='text' for one free-form question, or questions[] when multiple controls are needed. Default: single.",
-		}),
-	),
-	question: Type.Optional(
-		Type.String({
-			description:
-				"Compatibility shorthand for one question. For 1:1 TUI behavior, prefer questions[] with single/multi/text/confirm. Use response_type='text' for free-form input; confirm is Yes/No only.",
-		}),
-	),
-	options: Type.Optional(
-		Type.Array(AskUserOptionSchema, {
-			description:
-				"Compatibility shorthand options for single/multi questions. Each option needs a stable id and a human label. Omit for text and confirm questions.",
-		}),
-	),
-	questions: Type.Optional(
-		Type.Array(AskUserQuestionSchema, {
-			description:
-				"One or more form questions. Supports single, multi, text, and confirm; single/multi support allowOther. Use text questions for free-form input. Multiple questions use Tab/Shift+Tab navigation and a Submit tab.",
-		}),
-	),
+	questions: Type.Array(AskUserQuestionSchema, {
+		minItems: 1,
+		description:
+			"One or more form questions. Supports single, multi, text, and confirm; single/multi support allowOther. Use text questions for free-form input. Multiple questions use Tab/Shift+Tab navigation and a Submit tab.",
+	}),
 })
 
 export const ConfirmCompletionCriteriaParams = Type.Object({
@@ -448,7 +422,7 @@ export const ConfirmCompletionCriteriaParams = Type.Object({
 		{
 			minItems: 1,
 			description:
-				"Draft completion criteria to present for confirmation. The host asks one combined prompt with a Yes selection and an inline free-form 'No (input what is wrong)' path.",
+				"Draft completion criteria to present for confirmation. The host asks one combined prompt with a Yes selection and an inline free-form 'Type your own answer' path.",
 		},
 	),
 })
