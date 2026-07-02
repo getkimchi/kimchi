@@ -408,7 +408,7 @@ export function createAcpUIContext(
 	return ui
 }
 
-const THEME_OVERRIDES: Partial<Record<keyof ThemeType, (...args: unknown[]) => unknown>> = {
+const THEME_OVERRIDES: Partial<ThemeType> = {
 	fg: (_color, text) => text,
 	bg: (_color, text) => text,
 	bold: (text) => text,
