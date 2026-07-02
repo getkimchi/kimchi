@@ -58,26 +58,34 @@ describe("apply", () => {
 		expect(isSnapshotAppliedThisTurn()).toBe(true)
 	})
 
-	it("idle profile restores all registered tools minus ferment-only tools", () => {
-		// Simulate a real-world toolset: shared core tools + bash + write + a
-		// ferment-only tool. The idle profile should keep everything except the
-		// ferment-only tool — mirroring the pre-unification behaviour where
-		// exiting a ferment returned the user to their normal chat toolset.
+	it("idle profile keeps ask_user + propose_ferment_scoping but filters other ferment-only tools", () => {
+		// ask_user and propose_ferment_scoping are idle-allowed so the agent
+		// can offer a ferment (via ask_user) and bootstrap one on acceptance
+		// (via propose_ferment_scoping). All other ferment-only lifecycle
+		// tools (e.g. start_ferment_step) stay filtered out of idle.
 		const pi = makeMockPi({
 			allTools: [
 				{ name: "read" },
 				{ name: "bash" },
 				{ name: "write" },
 				{ name: "edit" },
-				{ name: "propose_ferment_scoping" }, // ferment-only — filtered out
-				{ name: "start_ferment_step" }, // ferment-only — filtered out
+				{ name: "ask_user" }, // idle-allowed — kept
+				{ name: "propose_ferment_scoping" }, // idle-allowed — kept
+				{ name: "start_ferment_step" }, // ferment-only lifecycle — filtered out
 			],
 		})
 
 		apply("idle", "ferment", pi)
 
 		expect(pi.setActiveTools).toHaveBeenCalledOnce()
-		expect(pi.setActiveTools).toHaveBeenCalledWith(["read", "bash", "write", "edit"])
+		expect(pi.setActiveTools).toHaveBeenCalledWith([
+			"read",
+			"bash",
+			"write",
+			"edit",
+			"ask_user",
+			"propose_ferment_scoping",
+		])
 	})
 
 	it("idle profile returns an empty array when no tools are registered", () => {

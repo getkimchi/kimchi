@@ -5,6 +5,7 @@ import {
 	FERMENT_TOOL_NAMES,
 	isClassifiedFermentToolName,
 	isFermentToolName,
+	isIdleAllowedFermentToolName,
 	isUserFacingFermentToolName,
 } from "./tool-names.js"
 import { registerKnowledgeTools } from "./tools/knowledge.js"
@@ -51,5 +52,12 @@ describe("ferment tool name constants", () => {
 
 	it("classifies criteria confirmation as user-facing", () => {
 		expect(isUserFacingFermentToolName(FERMENT_TOOLS.CONFIRM_COMPLETION_CRITERIA)).toBe(true)
+	})
+
+	it("allows ask_user and propose_ferment_scoping to survive the idle filter", () => {
+		expect(isIdleAllowedFermentToolName(FERMENT_TOOLS.ASK_USER)).toBe(true)
+		expect(isIdleAllowedFermentToolName(FERMENT_TOOLS.PROPOSE_SCOPING)).toBe(true)
+		expect(isIdleAllowedFermentToolName(FERMENT_TOOLS.START_STEP)).toBe(false)
+		expect(isIdleAllowedFermentToolName(FERMENT_TOOLS.COMPLETE)).toBe(false)
 	})
 })

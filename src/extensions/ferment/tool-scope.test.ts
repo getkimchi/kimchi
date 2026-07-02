@@ -226,19 +226,21 @@ describe("worker profile", () => {
 })
 
 describe("idle profile", () => {
-	it("restores the user's full base toolset minus ferment-only tools", () => {
+	it("keeps ask_user + propose_ferment_scoping in idle but strips other ferment-only tools", () => {
 		// The idle profile is a special case: rather than returning the catalog's
 		// fixed SHARED_CORE_TOOLS list, it derives from the registered toolset so
 		// users keep access to bash, edit, write, third-party tools, etc. when
-		// they exit a ferment back to normal chat. Only ferment-only tools are
-		// filtered out. See PR #683 review feedback for the rationale.
+		// they exit a ferment back to normal chat. ask_user + propose_ferment_scoping
+		// survive the idle filter (so the agent can offer/bootstrap a ferment);
+		// all other ferment-only tools are filtered out. See PR #683 review feedback
+		// for the original idle-snapshot rationale.
 		const allTools = [
 			"read",
 			"bash",
 			"edit",
 			"write",
 			"list_ferments", // ferment-mode but not planner-only; remains visible
-			"propose_ferment_scoping", // ferment-only: filtered out
+			"propose_ferment_scoping", // idle-allowed: kept (ferment offer/bootstrap)
 			"start_ferment_step", // ferment-only: filtered out
 			"activate_ferment_phase", // ferment-only: filtered out
 		]
@@ -253,8 +255,9 @@ describe("idle profile", () => {
 		expect(lastCall).toContain("list_ferments")
 		expect(lastCall).toContain("edit")
 		expect(lastCall).toContain("write")
-		// Ferment-only planner tools stripped
-		expect(lastCall).not.toContain("propose_ferment_scoping")
+		// Idle-allowed ferment tools retained
+		expect(lastCall).toContain("propose_ferment_scoping")
+		// Other ferment-only planner tools stripped
 		expect(lastCall).not.toContain("start_ferment_step")
 		expect(lastCall).not.toContain("activate_ferment_phase")
 	})
