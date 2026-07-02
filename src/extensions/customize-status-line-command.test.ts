@@ -2,17 +2,21 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import type { ExtensionContext, ReadonlyFooterDataProvider, Theme } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { StatsFooter } from "../components/footer.js"
-import { DEFAULT_FOOTER_PINNED, _invalidateFooterConfigCache, setPinned } from "../config/footer-config.js"
+import { StatusLine } from "../components/status-line.js"
+import {
+	DEFAULT_STATUS_LINE_PINNED,
+	_invalidateStatusLineConfigCache,
+	setStatusLineElementPinned,
+} from "../config/status-line-config.js"
 import * as AGENTS from "./agents/index.js"
-import { CustomizeFooterComponent } from "./customize-footer-command.js"
+import { CustomizeStatusLineComponent } from "./customize-status-line-command.js"
 import * as FERMENT from "./ferment/index.js"
 import * as ORCHESTRATION from "./prompt-construction/prompt-enrichment.js"
 import * as TAGS from "./tags.js"
 
-// ── Real footer-config backed by in-memory JSON storage ───────────────────────
-// We don't mock footer-config.js itself — tests go through the real read/write
-// logic so that toggling via setPinned or handleInput(" ") is reflected in the
+// ── Real status-line-config backed by in-memory JSON storage ──────────────────
+// We don't mock status-line-config.js itself — tests go through the real read/write
+// logic so that toggling via setStatusLineElementPinned or handleInput(" ") is reflected in the
 // next render() call, exactly as it would be at runtime.
 
 const memfs = new Map<string, string>()
@@ -32,7 +36,7 @@ vi.mock("../config/json.js", () => ({
 	},
 }))
 
-vi.mock("./shared-footer.js", () => ({ requestSharedFooterRender: vi.fn() }))
+vi.mock("./shared-status-line.js", () => ({ requestSharedStatusLineRender: vi.fn() }))
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -93,7 +97,7 @@ function createMockContext(opts?: MockContextOpts): ExtensionContext {
 	} as unknown as ExtensionContext
 }
 
-function createMockFooterData(): ReadonlyFooterDataProvider {
+function createMockStatusLineData(): ReadonlyFooterDataProvider {
 	return {
 		getExtensionStatuses: vi.fn(() => new Map()),
 	} as unknown as ReadonlyFooterDataProvider
@@ -110,8 +114,8 @@ let restorePlatform: () => void
 
 beforeEach(() => {
 	memfs.clear()
-	memfs.set(SETTINGS_PATH, "{}") // no footer key → defaults apply
-	_invalidateFooterConfigCache()
+	memfs.set(SETTINGS_PATH, "{}") // no statusLine key → defaults apply
+	_invalidateStatusLineConfigCache()
 	theme = createMockTheme()
 	restorePlatform = stubPlatform("darwin")
 	vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(0)
@@ -128,60 +132,60 @@ afterEach(() => {
 	memfs.clear()
 })
 
-/** Render the footer bar at width 200 and strip ANSI codes. */
-function renderFooter(ctxOpts?: MockContextOpts): string {
-	const lines = new StatsFooter(createMockContext(ctxOpts), theme, createMockFooterData()).render(200)
+/** Render the status line bar at width 200 and strip ANSI codes. */
+function renderStatusLine(ctxOpts?: MockContextOpts): string {
+	const lines = new StatusLine(createMockContext(ctxOpts), theme, createMockStatusLineData()).render(200)
 	return strip(lines[lines.length - 1] ?? "")
 }
 
 /** Render the customize popover at width 80. */
-function makeComponent(selectedIndex = 2): CustomizeFooterComponent {
-	return new CustomizeFooterComponent(selectedIndex, { requestRender: vi.fn() }, vi.fn(), theme)
+function makeComponent(selectedIndex = 2): CustomizeStatusLineComponent {
+	return new CustomizeStatusLineComponent(selectedIndex, { requestRender: vi.fn() }, vi.fn(), theme)
 }
 
-// ── 1. Footer bar: default content ───────────────────────────────────────────
+// ── 1. Status line bar: default content ──────────────────────────────────────
 
-describe("footer bar: default content", () => {
+describe("status line bar: default content", () => {
 	it("shows context bar (pinned by default)", () => {
-		expect(renderFooter()).toContain("ctx")
+		expect(renderStatusLine()).toContain("ctx")
 	})
 
 	it("shows agents count when agents are active (pinned by default)", () => {
 		vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(2)
-		expect(renderFooter()).toContain("2 agents")
+		expect(renderStatusLine()).toContain("2 agents")
 	})
 
 	it("shows token usage arrows when there is activity (pinned by default)", () => {
-		const visible = renderFooter({ assistantMessages: [{ input: 1200, output: 340 }] })
+		const visible = renderStatusLine({ assistantMessages: [{ input: 1200, output: 340 }] })
 		expect(visible).toContain("↑")
 		expect(visible).toContain("↓")
 	})
 
 	it("does not show ferment section without an active ferment", () => {
-		expect(renderFooter()).not.toContain("Ferment:")
+		expect(renderStatusLine()).not.toContain("Ferment:")
 	})
 
 	it("does not show tags section without active tags", () => {
-		expect(renderFooter()).not.toContain("env:")
+		expect(renderStatusLine()).not.toContain("env:")
 	})
 })
 
-// ── 2. Footer bar: toggling ───────────────────────────────────────────────────
+// ── 2. Status line bar: toggling ──────────────────────────────────────────────
 
-describe("footer bar: toggling", () => {
+describe("status line bar: toggling", () => {
 	it("unpinning context removes the ctx segment", () => {
-		setPinned("context", false)
-		expect(renderFooter()).not.toContain("ctx")
+		setStatusLineElementPinned("context", false)
+		expect(renderStatusLine()).not.toContain("ctx")
 	})
 
 	it("re-pinning context after unpinning restores the ctx segment", () => {
-		setPinned("context", false)
-		expect(renderFooter()).not.toContain("ctx")
-		setPinned("context", true)
-		expect(renderFooter()).toContain("ctx")
+		setStatusLineElementPinned("context", false)
+		expect(renderStatusLine()).not.toContain("ctx")
+		setStatusLineElementPinned("context", true)
+		expect(renderStatusLine()).toContain("ctx")
 	})
 
-	it("pinning ferment with an active ferment shows it in the footer", () => {
+	it("pinning ferment with an active ferment shows it in the status line", () => {
 		const ferment = {
 			id: "f-1",
 			name: "my-ferment",
@@ -193,20 +197,20 @@ describe("footer bar: toggling", () => {
 		vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(ferment)
 		vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
 		vi.spyOn(FERMENT, "getFermentContinuationPolicy").mockReturnValue("manual")
-		setPinned("ferment", true)
-		expect(renderFooter()).toContain("Ferment:")
+		setStatusLineElementPinned("ferment", true)
+		expect(renderStatusLine()).toContain("Ferment:")
 	})
 
 	it("unpinning all three defaults shows none of their segments", () => {
-		for (const id of DEFAULT_FOOTER_PINNED) setPinned(id, false)
-		const visible = renderFooter()
+		for (const id of DEFAULT_STATUS_LINE_PINNED) setStatusLineElementPinned(id, false)
+		const visible = renderStatusLine()
 		expect(visible).not.toContain("ctx")
 	})
 })
 
-// ── 3. Customize-footer popover ───────────────────────────────────────────────
+// ── 3. Customize-status-line popover ──────────────────────────────────────────
 
-describe("customize-footer popover", () => {
+describe("customize-status-line popover", () => {
 	it("default state: default-pinned elements show '● ElementLabel'", () => {
 		const text = strip(makeComponent().render(80).join("\n"))
 		expect(text).toContain("● Context")
@@ -228,7 +232,7 @@ describe("customize-footer popover", () => {
 		expect(text).toContain("× Model")
 	})
 
-	it("pressing space on ferment pins it: popover shows '● Ferment' AND footer bar shows ferment", () => {
+	it("pressing space on ferment pins it: popover shows '● Ferment' AND status line bar shows ferment", () => {
 		const ferment = {
 			id: "f-1",
 			name: "my-ferment",
@@ -241,18 +245,18 @@ describe("customize-footer popover", () => {
 		vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
 		vi.spyOn(FERMENT, "getFermentContinuationPolicy").mockReturnValue("manual")
 
-		const component = makeComponent(2) // ferment at FOOTER_ELEMENTS index 2
+		const component = makeComponent(2) // ferment at STATUS_LINE_ELEMENTS index 2
 		component.handleInput(" ") // pin ferment
 
 		expect(strip(component.render(80).join("\n"))).toContain("● Ferment")
-		expect(renderFooter()).toContain("Ferment:")
+		expect(renderStatusLine()).toContain("Ferment:")
 	})
 
-	it("pressing space on context unpins it: popover shows '○ Context' AND footer bar loses ctx", () => {
-		const component = makeComponent(4) // context at FOOTER_ELEMENTS index 4
+	it("pressing space on context unpins it: popover shows '○ Context' AND status line bar loses ctx", () => {
+		const component = makeComponent(4) // context at STATUS_LINE_ELEMENTS index 4
 		component.handleInput(" ") // unpin context (was default-pinned)
 
 		expect(strip(component.render(80).join("\n"))).toContain("○ Context")
-		expect(renderFooter()).not.toContain("ctx")
+		expect(renderStatusLine()).not.toContain("ctx")
 	})
 })

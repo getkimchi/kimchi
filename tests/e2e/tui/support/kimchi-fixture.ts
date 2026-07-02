@@ -139,12 +139,12 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 			"utf-8",
 		)
 
-		// Explicitly pin nothing so footer segments don't appear in the terminal during
-		// E2E tests. Without this, readFooterConfig() would return DEFAULT_FOOTER_PINNED
+		// Explicitly pin nothing so status line segments don't appear in the terminal during
+		// E2E tests. Without this, readStatusLineConfig() would return DEFAULT_STATUS_LINE_PINNED
 		// (context, agents, phase, usage) and change the terminal layout for every test.
 		writeFileSync(
 			join(agentDir, "settings.json"),
-			JSON.stringify({ footer: { pinned: [] } }, null, "\t"),
+			JSON.stringify({ statusLine: { pinned: [] } }, null, "\t"),
 			"utf-8",
 		)
 

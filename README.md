@@ -43,7 +43,7 @@ The supported model list is fetched at startup from the kimchi metadata service.
 
 Kimchi operates in one of two modes:
 
-| Mode | Footer indicator | Behavior |
+| Mode | Status line indicator | Behavior |
 |------|-----------------|----------|
 | **Multi-model** | `multi-model (orchestrator-id)` | The orchestrator delegates each task to the model assigned for that role |
 | **Single-model** | model name | All work runs on the selected model directly |
@@ -123,7 +123,7 @@ Metadata can also be managed interactively via `/multi-model` → "Edit model me
 
 ### Phase tracking
 
-Kimchi tags every LLM request with a `phase:{name}` label for usage analytics and cost attribution. The orchestrator sets the phase as work progresses and it is displayed in the footer.
+Kimchi tags every LLM request with a `phase:{name}` label for usage analytics and cost attribution. The orchestrator sets the phase as work progresses and it is displayed in the status line.
 
 | Phase | Description |
 |-------|-------------|
@@ -137,7 +137,7 @@ Subagents inherit the current phase from the orchestrator but cannot change it.
 
 ## Tags
 
-Kimchi supports tagging LLM requests for usage tracking and cost attribution. Tags are included with every request and displayed in the footer, grouped by key with color coding.
+Kimchi supports tagging LLM requests for usage tracking and cost attribution. Tags are included with every request and displayed in the status line, grouped by key with color coding.
 
 ### Commands
 

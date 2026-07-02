@@ -280,7 +280,7 @@ describe.each(["none", "server", "short"] as const)("inject-path (toolPrefix=%s)
 		expect(injectedNames).toHaveLength(1)
 		// The displayed name (metadata.name) appears in the output body
 		expect(text).toContain(meta.name)
-		// The injected name footer references the exact same name
+		// The injected name suffix references the exact same name
 		expect(text).toContain(injectedNames[0])
 		expect(injectedNames[0]).toBe(meta.name)
 	})

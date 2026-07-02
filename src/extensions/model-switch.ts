@@ -215,7 +215,7 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 		// process.__kimchiMultiModelEnabled.  getMultiModelEnabled() detects a
 		// mismatch between the process flag and the extension variable and
 		// persists it to disk.  Without this, the disk value can go stale if the
-		// session ends before the footer polls the flag.
+		// session ends before the status line polls the flag.
 		getMultiModelEnabled()
 
 		// Nothing to revert to

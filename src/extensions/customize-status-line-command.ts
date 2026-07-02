@@ -1,12 +1,12 @@
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent"
 import type { Component } from "@earendil-works/pi-tui"
 import { Key, isKeyRelease, matchesKey, visibleWidth } from "@earendil-works/pi-tui"
-import { FOOTER_ELEMENTS, readFooterConfig, setPinned } from "../config/footer-config.js"
-import { requestSharedFooterRender } from "./shared-footer.js"
+import { STATUS_LINE_ELEMENTS, readStatusLineConfig, setStatusLineElementPinned } from "../config/status-line-config.js"
+import { requestSharedStatusLineRender } from "./shared-status-line.js"
 
 /** Component holds only transient UI state (selectedIndex).
  *  Checked state is NEVER stored here — render() always reads from the config cache (always current). */
-export class CustomizeFooterComponent implements Component {
+export class CustomizeStatusLineComponent implements Component {
 	private selectedIndex: number
 	private readonly tui: { requestRender: (force?: boolean) => void }
 	private readonly done: () => void
@@ -38,19 +38,19 @@ export class CustomizeFooterComponent implements Component {
 		}
 
 		if (matchesKey(data, Key.down) || data === "j") {
-			this.selectedIndex = Math.min(FOOTER_ELEMENTS.length - 1, this.selectedIndex + 1)
+			this.selectedIndex = Math.min(STATUS_LINE_ELEMENTS.length - 1, this.selectedIndex + 1)
 			this.tui.requestRender()
 			return
 		}
 
 		if (matchesKey(data, "space") || matchesKey(data, "return") || matchesKey(data, Key.enter)) {
-			const el = FOOTER_ELEMENTS[this.selectedIndex]
+			const el = STATUS_LINE_ELEMENTS[this.selectedIndex]
 			if (!el) return
 			// Cannot toggle permissions or model — they are always visible.
 			if (el.canPin === false) return
-			setPinned(el.id, !readFooterConfig().pinned.includes(el.id))
+			setStatusLineElementPinned(el.id, !readStatusLineConfig().pinned.includes(el.id))
 			this.tui.requestRender()
-			requestSharedFooterRender()
+			requestSharedStatusLineRender()
 			return
 		}
 
@@ -62,7 +62,7 @@ export class CustomizeFooterComponent implements Component {
 
 	render(width: number): string[] {
 		// Always reads from the config cache (always current; updated by every setPinned write).
-		const pinned = new Set(readFooterConfig().pinned)
+		const pinned = new Set(readStatusLineConfig().pinned)
 
 		const b = (s: string) => this.theme.fg("border", s)
 		const accent = (s: string) => this.theme.fg("accent", s)
@@ -79,21 +79,21 @@ export class CustomizeFooterComponent implements Component {
 		const out: string[] = []
 
 		// ── top border with title ────────────────────────────────────────────
-		const titleText = " Customize Footer "
+		const titleText = " Customize Status Line "
 		const borderLen = innerW - titleText.length
 		const leftB = Math.floor(borderLen / 2)
 		const rightB = borderLen - leftB
 		out.push(`${b(`╭${"─".repeat(leftB)}`)}${dimText(titleText)}${b(`${"─".repeat(rightB)}╮`)}`)
 
 		// ── header row ───────────────────────────────────────────────────────
-		const maxLabelW = Math.max(...FOOTER_ELEMENTS.map((e) => visibleWidth(e.label)))
+		const maxLabelW = Math.max(...STATUS_LINE_ELEMENTS.map((e) => visibleWidth(e.label)))
 		out.push(wrapRow(`  ${dimText("● ")}${dimText("ELEMENT".padEnd(maxLabelW))}  ${dimText("DESCRIPTION")}`))
 		out.push(b(`├${"─".repeat(innerW)}┤`))
 
-		// ── element rows — always exactly 9 (FOOTER_ELEMENTS is a fixed constant) ──
+		// ── element rows — always exactly 9 (STATUS_LINE_ELEMENTS is a fixed constant) ──
 
-		for (let i = 0; i < FOOTER_ELEMENTS.length; i++) {
-			const el = FOOTER_ELEMENTS[i]
+		for (let i = 0; i < STATUS_LINE_ELEMENTS.length; i++) {
+			const el = STATUS_LINE_ELEMENTS[i]
 			const isSelected = i === this.selectedIndex
 			const isNonPinnable = el.canPin === false
 
@@ -112,7 +112,7 @@ export class CustomizeFooterComponent implements Component {
 			out.push(wrapRow(`${prefix}${checkMark}${labelStyled}  ${descStyled}`))
 		}
 
-		// ── footer hint ──────────────────────────────────────────────────────
+		// ── hint row ─────────────────────────────────────────────────────────
 		out.push(b(`├${"─".repeat(innerW)}┤`))
 		out.push(wrapRow(dimText("  Space / Enter to toggle  ·  ↑↓ to navigate  ·  Esc to close")))
 
@@ -123,14 +123,14 @@ export class CustomizeFooterComponent implements Component {
 	}
 }
 
-export default function customizeFooterExtension(pi: ExtensionAPI): void {
-	pi.registerCommand("customize-footer", {
-		description: "Customize which footer elements are pinned",
+export default function customizeStatusLineExtension(pi: ExtensionAPI): void {
+	pi.registerCommand("customize-status-line", {
+		description: "Customize which status line elements are pinned",
 		handler: async (_args, ctx) => {
 			if (!ctx.hasUI) {
-				const pinned = new Set(readFooterConfig().pinned)
-				const lines: string[] = ["Customize Footer"]
-				for (const el of FOOTER_ELEMENTS) {
+				const pinned = new Set(readStatusLineConfig().pinned)
+				const lines: string[] = ["Customize Status Line"]
+				for (const el of STATUS_LINE_ELEMENTS) {
 					const mark = el.canPin === false ? "[×]" : pinned.has(el.id) ? "[●]" : "[○]"
 					lines.push(`  ${mark} ${el.label}  —  ${el.description}`)
 				}
@@ -142,9 +142,9 @@ export default function customizeFooterExtension(pi: ExtensionAPI): void {
 				(tui, theme, _keybindings, done) => {
 					const firstInteractive = Math.max(
 						0,
-						FOOTER_ELEMENTS.findIndex((e) => e.canPin !== false),
+						STATUS_LINE_ELEMENTS.findIndex((e) => e.canPin !== false),
 					)
-					return new CustomizeFooterComponent(
+					return new CustomizeStatusLineComponent(
 						firstInteractive,
 						{ requestRender: (force) => tui.requestRender(force) },
 						done,
