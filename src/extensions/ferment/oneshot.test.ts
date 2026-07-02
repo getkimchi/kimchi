@@ -1,5 +1,14 @@
-import { describe, expect, it } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { Ferment } from "../../ferment/types.js"
+
+const getMultiModelEnabledMock = vi.fn(() => true)
+vi.mock("../prompt-construction/prompt-enrichment.js", (importOriginal) => {
+	return importOriginal<typeof import("../prompt-construction/prompt-enrichment.js")>().then((mod) => ({
+		...mod,
+		getMultiModelEnabled: () => getMultiModelEnabledMock(),
+	}))
+})
+
 import { buildOneshotNudge } from "./oneshot.js"
 
 const NOW = "2026-01-01T00:00:00.000Z"
@@ -111,5 +120,28 @@ describe("buildOneshotNudge", () => {
 		expect(out).not.toContain('"Agent"')
 		expect(out).not.toContain('"get_subagent_result"')
 		expect(out).not.toContain('"read"')
+	})
+})
+
+describe("buildOneshotNudge — single-model (relaxed) delegation mode", () => {
+	beforeEach(() => {
+		getMultiModelEnabledMock.mockReturnValue(false)
+	})
+
+	it("allows direct execution instead of mandating delegation", () => {
+		const out = buildOneshotNudge(makeFerment(), INTENT)
+		expect(out).toContain("OR execute the step directly")
+		expect(out).toContain("bash/edit/write")
+	})
+
+	it("relaxes turn discipline — no MUST end with tool call", () => {
+		const out = buildOneshotNudge(makeFerment(), INTENT)
+		expect(out).not.toContain("Every turn MUST end with a ferment lifecycle tool call or an Agent spawn")
+		expect(out).toContain("may take a brief thinking or assessment turn")
+	})
+
+	it("mentions worker_agent_id is optional", () => {
+		const out = buildOneshotNudge(makeFerment(), INTENT)
+		expect(out).toContain("worker_agent_id is optional")
 	})
 })

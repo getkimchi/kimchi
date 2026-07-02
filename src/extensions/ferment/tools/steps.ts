@@ -137,8 +137,10 @@ const validateFsmTransition = (
 ): string | null => validateFsmTransitionWithFerment(f, event, params).error ?? null
 
 function validateLinkedWorker(params: CompleteStepArgs): string | null {
+	// When worker_agent_id is omitted, the orchestrator executed the step
+	// directly (no subagent was spawned). Skip worker validation in that case.
 	if (!params.worker_agent_id) {
-		return "complete_ferment_step requires worker_agent_id. Use the Agent ID returned by the linked worker for this step."
+		return null
 	}
 	const record = getAgentRecordForTaskValidation(params.worker_agent_id)
 	if (!record) {

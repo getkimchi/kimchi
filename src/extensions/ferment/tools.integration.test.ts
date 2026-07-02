@@ -664,7 +664,7 @@ describe("complete_ferment_step", () => {
 		expect(step.summary).toBe("summary text")
 	})
 
-	it("rejects completion without worker_agent_id", async () => {
+	it("allows completion without worker_agent_id (orchestrator executed directly)", async () => {
 		const id = await setupRunningStep()
 		const result = await h.call("complete_ferment_step", {
 			ferment_id: id,
@@ -673,8 +673,10 @@ describe("complete_ferment_step", () => {
 			summary: "summary text",
 			gates: passingStepGates(),
 		})
-		expect(err(result)).toContain("worker_agent_id")
-		expect(loadFerment(id).phases[0].steps[0].status).toBe("running")
+		// worker_agent_id is now optional — when omitted, the orchestrator
+		// executed the step directly and the step should complete successfully.
+		expect(result.isError).toBeFalsy()
+		expect(loadFerment(id).phases[0].steps[0].status).toBe("done")
 	})
 
 	it("rejects a worker linked to a different step", async () => {
