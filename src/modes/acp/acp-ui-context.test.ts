@@ -742,7 +742,7 @@ describe("createAcpUIContext — fire-and-forget notifications", () => {
 		await new Promise((r) => setImmediate(r))
 	})
 
-	it("setStatus sends _kimchi.dev/pi_setStatus via extNotification", async () => {
+	it("setStatus sends _kimchi.dev/pi_notify via extNotification", async () => {
 		const {
 			conn,
 			extNotification: n,
@@ -755,7 +755,7 @@ describe("createAcpUIContext — fire-and-forget notifications", () => {
 		await new Promise((r) => setImmediate(r))
 		expect(n).toHaveBeenCalledTimes(1)
 		const [method, params] = n.mock.calls[0]
-		expect(method).toBe("_kimchi.dev/pi_setStatus")
+		expect(method).toBe("_kimchi.dev/pi_notify")
 		expect(params).toEqual({
 			id: expect.any(String),
 			type: "extension_ui_request",
@@ -780,43 +780,7 @@ describe("createAcpUIContext — fire-and-forget notifications", () => {
 		expect(n.mock.calls[0][1].statusText).toBeUndefined()
 	})
 
-	it("setStatus warns via agent_message_chunk when the client doesn't advertise support", () => {
-		const {
-			conn,
-			extNotification: n,
-			send,
-		} = makeConn({
-			extNotification: extNotification as unknown as ExtNotification,
-		})
-		const real = createAcpUIContext(conn, "sess-1", elicitationClientCapabilities(), send)
-		real.setStatus("k", "v")
-		expect(n).not.toHaveBeenCalled()
-		expect(send).toHaveBeenCalledTimes(1)
-		const params = send.mock.calls[0][0]
-		expect(params).toEqual({
-			sessionId: "sess-1",
-			update: {
-				content: {
-					text: '[ACP] setStatus: Extension tried to set status "k" but the client doesn\'t advertise _kimchi.dev/pi_setStatus. The update was dropped.',
-					type: "text",
-				},
-				sessionUpdate: "agent_message_chunk",
-			},
-		})
-	})
-
-	it("setStatus warns only once per session (extensions often probe on every model token)", () => {
-		const { conn, send } = makeConn({
-			extNotification: extNotification as unknown as ExtNotification,
-		})
-		const real = createAcpUIContext(conn, "sess-1", elicitationClientCapabilities(), send)
-		real.setStatus("k1", "v1")
-		real.setStatus("k2", "v2")
-		real.setStatus("k3", "v3")
-		expect(send).toHaveBeenCalledTimes(1)
-	})
-
-	it("setEditorText sends _kimchi.dev/pi_set_editor_text via extNotification", async () => {
+	it("setEditorText sends _kimchi.dev/pi_notify via extNotification", async () => {
 		const {
 			conn,
 			extNotification: n,
@@ -829,54 +793,13 @@ describe("createAcpUIContext — fire-and-forget notifications", () => {
 		await new Promise((r) => setImmediate(r))
 		expect(n).toHaveBeenCalledTimes(1)
 		const [method, params] = n.mock.calls[0]
-		expect(method).toBe("_kimchi.dev/pi_set_editor_text")
+		expect(method).toBe("_kimchi.dev/pi_notify")
 		expect(params).toEqual({
 			id: expect.any(String),
 			type: "extension_ui_request",
 			method: "set_editor_text",
 			sessionId: "sess-1",
 			text: "draft message",
-		})
-	})
-
-	it("setEditorText warns via agent_message_chunk when the client doesn't advertise support", () => {
-		const {
-			conn,
-			extNotification: n,
-			send,
-		} = makeConn({
-			extNotification: extNotification as unknown as ExtNotification,
-		})
-		const real = createAcpUIContext(conn, "sess-1", elicitationClientCapabilities(), send)
-		real.setEditorText("draft")
-		expect(n).not.toHaveBeenCalled()
-		expect(send).toHaveBeenCalledTimes(1)
-		expect(send.mock.calls[0][0].update.sessionUpdate).toBe("agent_message_chunk")
-	})
-
-	it("notify warns via agent_message_chunk and includes the message text", () => {
-		const {
-			conn,
-			extNotification: n,
-			send,
-		} = makeConn({
-			extNotification: extNotification as unknown as ExtNotification,
-		})
-		const real = createAcpUIContext(conn, "sess-1", elicitationClientCapabilities(), send)
-		real.notify("first try")
-		real.notify("second try") // dedup: second call should not re-emit
-		expect(n).not.toHaveBeenCalled()
-		expect(send).toHaveBeenCalledTimes(1)
-		const params = send.mock.calls[0][0]
-		expect(params).toEqual({
-			sessionId: "sess-1",
-			update: {
-				content: {
-					text: "[ACP] notify: Extension notification dropped (client doesn't advertise _kimchi.dev/pi_notify): first try",
-					type: "text",
-				},
-				sessionUpdate: "agent_message_chunk",
-			},
 		})
 	})
 
@@ -895,7 +818,7 @@ describe("createAcpUIContext — fire-and-forget notifications", () => {
 		expect(n.mock.calls[0][1].text).toBe("pasted")
 	})
 
-	it("setWidget (string[] branch) forwards to _kimchi.dev/pi_setWidget", async () => {
+	it("setWidget (string[] branch) forwards to _kimchi.dev/pi_notify", async () => {
 		const {
 			conn,
 			extNotification: n,
@@ -908,7 +831,7 @@ describe("createAcpUIContext — fire-and-forget notifications", () => {
 		await new Promise((r) => setImmediate(r))
 		expect(n).toHaveBeenCalledTimes(1)
 		const [method, params] = n.mock.calls[0]
-		expect(method).toBe("_kimchi.dev/pi_setWidget")
+		expect(method).toBe("_kimchi.dev/pi_notify")
 		expect(params).toEqual({
 			id: expect.any(String),
 			type: "extension_ui_request",
@@ -955,31 +878,6 @@ describe("createAcpUIContext — fire-and-forget notifications", () => {
 		)
 		await new Promise((r) => setImmediate(r))
 		expect(n).not.toHaveBeenCalled()
-	})
-
-	it("setWidget warns via agent_message_chunk when the client doesn't advertise support", () => {
-		const {
-			conn,
-			extNotification: n,
-			send,
-		} = makeConn({
-			extNotification: extNotification as unknown as ExtNotification,
-		})
-		const real = createAcpUIContext(conn, "sess-1", elicitationClientCapabilities(), send)
-		real.setWidget("todo", ["line 1", "line 2"])
-		expect(n).not.toHaveBeenCalled()
-		expect(send).toHaveBeenCalledTimes(1)
-		const params = send.mock.calls[0][0]
-		expect(params).toEqual({
-			sessionId: "sess-1",
-			update: {
-				content: {
-					text: '[ACP] setWidget: Extension tried to set widget "todo" but the client doesn\'t advertise _kimchi.dev/pi_setWidget. The widget was dropped.',
-					type: "text",
-				},
-				sessionUpdate: "agent_message_chunk",
-			},
-		})
 	})
 
 	it("setTitle emits a session_info_update via send (deliberate divergence from rpc-mode)", () => {
