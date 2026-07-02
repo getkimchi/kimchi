@@ -55,12 +55,12 @@ describe("resolveOrchestrationInstructions", () => {
 
 	it("shows Your Capabilities section with orchestrator roles", () => {
 		const result = resolveAsString({
-			currentModelId: "minimax-m3",
+			currentModelId: "kimi-k2.7",
 			registry,
 			roles: DEFAULT_MODEL_ROLES,
 		})
 		expect(result).toContain("## Your Capabilities")
-		expect(result).toContain("You have these roles: **planner, builder, reviewer, researcher**")
+		expect(result).toContain("You have these roles: **planner, reviewer**")
 	})
 
 	it("uses DO/DONT directives in Step 3", () => {
@@ -75,6 +75,24 @@ describe("resolveOrchestrationInstructions", () => {
 		expect(result).toContain("#### Review phase")
 		expect(result).toContain("#### Explore phase")
 		expect(result).toContain("#### Research phase")
+	})
+
+	it("exempts Explore from markdown artifact handoff rules", () => {
+		const result = resolveAsString({
+			currentModelId: "kimi-k2.6",
+			registry,
+			roles: DEFAULT_MODEL_ROLES,
+		})
+
+		expect(result).toContain("Explore findings are not durable artifacts")
+		expect(result).toContain("Explore agents return decision-ready findings directly in the Agent result")
+		expect(result).toContain(
+			"Do NOT ask Explore agents to write Markdown files, reports, docs, notes, or scratch files",
+		)
+		expect(result).toContain(
+			"For artifact-producing agents (Plan, Reviewer, Fixer, and Researcher when the research is non-trivial)",
+		)
+		expect(result).not.toContain("Pass plans and structured findings as Markdown files")
 	})
 
 	it("instructs to use matching persona for each step", () => {
@@ -111,7 +129,7 @@ describe("resolveOrchestrationInstructions", () => {
 
 	it("generates DO directive for plan when orchestrator is planner", () => {
 		const result = resolveAsString({
-			currentModelId: "minimax-m3",
+			currentModelId: "kimi-k2.7",
 			registry,
 			roles: DEFAULT_MODEL_ROLES,
 		})
@@ -154,7 +172,6 @@ describe("resolveOrchestrationInstructions", () => {
 		expect(result).toContain("Orchestrate the work")
 		expect(result).toContain("Token budgets")
 		expect(result).toContain("token_budget")
-		expect(result).toContain("Plan self-validation")
 		expect(result).toContain("Plan verification")
 		expect(result).toContain("What makes a good plan")
 		expect(result).toContain("Skip verification when")

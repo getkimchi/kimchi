@@ -21,6 +21,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { CompactionResult } from "@earendil-works/pi-coding-agent"
 import { determineNextAction } from "../../ferment/engine.js"
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
+import { COMPACTION_RESERVE_TOKENS } from "../compaction-thresholds.js"
 import type { FermentRuntime } from "./runtime.js"
 import { scheduleNextFermentAction } from "./scheduler.js"
 import type { PendingCompaction } from "./state.js"
@@ -40,6 +41,84 @@ export interface FermentHandoffDetails {
 	completedPhaseSummary?: string
 	/** Number of tokens in the session before compaction was triggered (from CompactionResult.tokensBefore) */
 	compactionTokensBefore?: number
+}
+
+/** Return the token count at which we should trigger auto-compaction.
+ *  Clamped to zero so tiny context windows never produce a negative threshold
+ *  that would spuriously match any non-negative token count. */
+function compactionThreshold(contextWindow: number): number {
+	return Math.max(0, contextWindow - COMPACTION_RESERVE_TOKENS)
+}
+
+// ─── In-flight tool-call guard ────────────────────────────────────────────────
+
+/**
+ * Pure helper: return true if any assistant `toolCall` block `id` in `messages`
+ * has NO matching `toolResult` (by `toolCallId`) anywhere in the array.
+ *
+ * This is the compaction-timing root-cause signal: when the trailing session
+ * entries form an incomplete assistant toolCall -> toolResult pair, compacting
+ * would summarise away the assistant toolCall while its toolResult is appended
+ * later — creating the exact orphaned-toolResult condition phase 1 defends
+ * against. By deferring compaction until the pair completes, orphans are never
+ * created at the compaction boundary in the first place.
+ *
+ * Pure, total, never throws: unknown shapes are skipped defensively. Mirrors
+ * the structural-guard style of `findOrphanedToolResults` (phase 1) but
+ * inverts the question (toolCall without toolResult, not toolResult without
+ * toolCall).
+ */
+export function isToolCallInFlight(messages: ReadonlyArray<unknown>): boolean {
+	const callIds = new Set<string>()
+	const resultIds = new Set<string>()
+
+	for (const raw of messages) {
+		if (!raw || typeof raw !== "object") continue
+		const msg = raw as { role?: string; content?: unknown; toolCallId?: string }
+		if (msg.role === "assistant") {
+			const content = msg.content
+			if (!Array.isArray(content)) continue
+			for (const block of content) {
+				if (!block || typeof block !== "object") continue
+				const b = block as { type?: string; id?: unknown }
+				if (b.type === "toolCall" && typeof b.id === "string") {
+					callIds.add(b.id)
+				}
+			}
+		} else if (msg.role === "toolResult") {
+			if (typeof msg.toolCallId === "string") {
+				resultIds.add(msg.toolCallId)
+			}
+		}
+	}
+
+	for (const id of callIds) {
+		if (!resultIds.has(id)) return true
+	}
+	return false
+}
+
+/**
+ * Thin wrapper: read the live session entries from `ctx.sessionManager` and
+ * delegate to `isToolCallInFlight`. Returns false on any access failure so a
+ * broken/missing sessionManager never blocks compaction spuriously — the
+ * phase-1 sanitizer remains the hard guarantee.
+ */
+export function isToolCallInFlightInSession(ctx: ExtensionContext): boolean {
+	try {
+		const entries = ctx?.sessionManager?.getEntries?.() ?? []
+		const messages: unknown[] = []
+		for (const entry of entries) {
+			if (!entry || typeof entry !== "object") continue
+			const e = entry as { type?: string; message?: unknown }
+			if (e.type === "message" && e.message && typeof e.message === "object") {
+				messages.push(e.message)
+			}
+		}
+		return isToolCallInFlight(messages)
+	} catch {
+		return false
+	}
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -104,6 +183,12 @@ function findStepById(ferment: Ferment, phaseId: string, stepId: string): Step |
 	return findPhaseById(ferment, phaseId)?.steps.find((s) => s.id === stepId)
 }
 
+function findActivePhaseAndStep(ferment: Ferment): { phase?: Phase; step?: Step } {
+	const phase = ferment.phases.find((p) => p.status === "active")
+	const step = phase?.steps.find((s) => s.status === "running")
+	return { phase, step }
+}
+
 /** Build the custom instructions string passed to ctx.compact(). */
 export function buildCustomInstructions(ferment: Ferment, pending: PendingCompaction): string {
 	const completedPhase = findCompletedPhase(ferment, pending)
@@ -155,7 +240,39 @@ export function buildCustomInstructions(ferment: Ferment, pending: PendingCompac
 	return lines.join("\n")
 }
 
-/** Build the FermentHandoffDetails payload written to the hidden session entry. */
+/** Build custom instructions for a mid-turn compaction that must resume an
+ *  in-progress step. Emphasises the active phase/step so the summary preserves
+ *  the exact work being done when the context filled. */
+export function buildMidTurnCustomInstructions(
+	ferment: Ferment,
+	phase: Phase | undefined,
+	step: Step | undefined,
+): string {
+	const lines: string[] = [
+		"The context filled while a ferment step was in progress. Preserve the plan and resume the step:",
+	]
+
+	lines.push(`- Ferment: ${ferment.name}${ferment.goal ? ` — ${ferment.goal}` : ""}`)
+
+	if (ferment.successCriteria && ferment.successCriteria.length > 0) {
+		lines.push(`- Success criteria: ${ferment.successCriteria.join("; ")}`)
+	}
+
+	if (phase) {
+		lines.push(`- Active phase: ${phase.name} — ${phase.goal}`)
+	}
+
+	if (step) {
+		lines.push(`- In-progress step: ${step.description}${step.summary ? ` (${step.summary})` : ""}`)
+	}
+
+	lines.push(
+		"- On resume: continue the in-progress step from where it left off. Do NOT restart it or switch to a different step.",
+	)
+
+	return lines.join("\n")
+}
+
 export function buildHandoffDetails(
 	result: CompactionResult,
 	ferment: Ferment,
@@ -181,6 +298,14 @@ export function buildHandoffDetails(
 	}
 }
 
+// Error messages that upstream treats as routine "no-op" compaction outcomes.
+// Kept as a single source of truth so the two compaction paths stay consistent.
+const EXPECTED_COMPACTION_ERROR_MESSAGES = ["too small", "Already compacted", "Compaction cancelled"]
+
+function isExpectedCompactionError(error: Error): boolean {
+	return EXPECTED_COMPACTION_ERROR_MESSAGES.some((message) => error.message.includes(message))
+}
+
 // ─── Main entry point ─────────────────────────────────────────────────────────
 
 /**
@@ -197,6 +322,13 @@ export function buildHandoffDetails(
  */
 export function maybeTriggerFermentCompaction(pi: ExtensionAPI, ctx: ExtensionContext, runtime: FermentRuntime): void {
 	if (pi.getFlag?.("ferment-oneshot") === true) return
+
+	// Root-cause guard: defer compaction while a tool call is in flight (the
+	// trailing assistant toolCall has no matching toolResult yet). Compacting
+	// now would summarise away the toolCall and orphan the toolResult appended
+	// later. Leave the pending entry in the map for a later turn_end / agent_end
+	// to pick up once the pair completes.
+	if (isToolCallInFlightInSession(ctx)) return
 
 	// drainPendingCompactions() skips in-flight ferments — their entries stay in
 	// the map for the next turn_end / agent_end to pick up.
@@ -251,46 +383,143 @@ function triggerCompactionForPending(
 		)
 	}
 
-	ctx.compact({
-		customInstructions,
-		onComplete: (result: CompactionResult) => {
-			runtime.clearCompactionInFlight(fermentId)
-			appendHandoffEntry(result)
+	try {
+		ctx.compact({
+			customInstructions,
+			onComplete: (result: CompactionResult) => {
+				runtime.clearCompactionInFlight(fermentId)
+				appendHandoffEntry(result)
 
-			// After compaction the session is idle. The LLM's previous
-			// next-action reasoning was discarded with the old history, so
-			// schedule the next ferment action as a follow-up turn to keep
-			// automated ferments moving forward without user intervention.
-			try {
+				// After compaction the session is idle. The LLM's previous
+				// next-action reasoning was discarded with the old history, so
+				// schedule the next ferment action as a follow-up turn to keep
+				// automated ferments moving forward without user intervention.
+				try {
+					const freshFerment = runtime.getStorage().get(fermentId)
+					if (freshFerment && (freshFerment.status === "running" || freshFerment.status === "planned")) {
+						runtime.setActive(freshFerment)
+						scheduleNextFermentAction(pi, freshFerment, runtime, {
+							tag: "Auto-compaction continuation",
+							deliverAs: "followUp",
+						})
+					}
+				} catch {
+					// Best-effort: scheduler errors must not propagate from a compaction callback.
+				}
+			},
+			onError: (error: Error) => {
+				try {
+					runtime.clearCompactionInFlight(fermentId)
+					// Silently skip expected non-errors: session too small, already
+					// compacted, cancelled. These are routine when steps are short.
+					if (!isExpectedCompactionError(error)) {
+						ctx.ui?.notify?.(`Stage compaction failed: ${error.message}`, "warning")
+					}
+					// Always append the handoff entry even when compaction fails/is skipped.
+					appendHandoffEntry()
+				} catch {
+					// Best-effort: never let onError propagate and crash the extension.
+				}
+			},
+		})
+	} catch (error) {
+		// ctx.compact should never throw, but if it does before invoking callbacks
+		// the in-flight flag must be cleared so future compactions are not blocked.
+		runtime.clearCompactionInFlight(fermentId)
+		if (error instanceof Error && !isExpectedCompactionError(error)) {
+			ctx.ui?.notify?.(`Stage compaction failed: ${error.message}`, "warning")
+		}
+	}
+}
+
+/**
+ * Trigger mid-turn compaction for an active ferment when the context crosses
+ * the upstream auto-compaction threshold. Unlike the post-step path, this
+ * path is driven directly by turn_end token usage and must resume the
+ * in-progress step after compaction.
+ *
+ * @param totalTokens - Current session token count from the assistant usage event.
+ */
+export function maybeTriggerMidTurnFermentCompaction(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	runtime: FermentRuntime,
+	totalTokens: number,
+): void {
+	if (pi.getFlag?.("ferment-oneshot") === true) {
+		const active = runtime.getActive()
+		if (active && totalTokens > compactionThreshold(ctx.model?.contextWindow ?? Number.MAX_SAFE_INTEGER)) {
+			const warnKey = active.id
+			if (!runtime.hasMidTurnOneshotWarning(warnKey)) {
+				runtime.markMidTurnOneshotWarning(warnKey)
+				pi.appendEntry("ferment_breadcrumb", {
+					text: `Mid-turn context overrun in oneshot ferment "${active.name}" — treating as planning failure`,
+				})
+			}
+		}
+		return
+	}
+
+	const model = ctx.model
+	if (!model) return
+	if (totalTokens <= compactionThreshold(model.contextWindow)) return
+
+	const activeFerment = runtime.getActive()
+	if (!activeFerment) return
+	if (activeFerment.status !== "running") return
+
+	const { phase: activePhase, step: activeStep } = findActivePhaseAndStep(activeFerment)
+	if (!activePhase || !activeStep) return
+
+	const fermentId = activeFerment.id
+	if (runtime.isCompactionInFlight(fermentId)) return
+
+	// Root-cause guard: a mid-turn compaction fires on token overrun, which can
+	// land exactly when an assistant toolCall is awaiting its toolResult.
+	// Compacting then would summarise away the toolCall and orphan the
+	// toolResult appended after compaction. Defer — the context may be large,
+	// but emitting an orphan is worse; phase 1 still catches any that slip past.
+	if (isToolCallInFlightInSession(ctx)) return
+
+	runtime.markCompactionInFlight(fermentId)
+
+	const customInstructions = buildMidTurnCustomInstructions(activeFerment, activePhase, activeStep)
+
+	try {
+		ctx.compact({
+			customInstructions,
+			onComplete: (result: CompactionResult) => {
+				runtime.clearCompactionInFlight(fermentId)
+
 				const freshFerment = runtime.getStorage().get(fermentId)
-				if (freshFerment && (freshFerment.status === "running" || freshFerment.status === "planned")) {
+				if (!freshFerment) return
+
+				const { phase, step } = findActivePhaseAndStep(freshFerment)
+				pi.appendEntry("ferment_breadcrumb", {
+					text: `Mid-turn compaction resume: ferment "${freshFerment.name}" · phase ${phase?.index ?? "?"}/${freshFerment.phases.length} "${phase?.name ?? "unknown"}" · step ${step?.index ?? "?"}/${phase?.steps.length ?? 0} · ${(result.tokensBefore ?? 0).toLocaleString()} tokens before compaction`,
+				})
+
+				if (freshFerment.status === "running") {
 					runtime.setActive(freshFerment)
 					scheduleNextFermentAction(pi, freshFerment, runtime, {
 						tag: "Auto-compaction continuation",
-						deliverAsFollowUp: true,
+						deliverAs: "followUp",
 					})
 				}
-			} catch {
-				// Best-effort: scheduler errors must not propagate from a compaction callback.
-			}
-		},
-		onError: (error: Error) => {
-			try {
+			},
+			onError: (error: Error) => {
 				runtime.clearCompactionInFlight(fermentId)
-				// Silently skip expected non-errors: session too small, already
-				// compacted, cancelled. These are routine when steps are short.
-				const isExpected =
-					error.message.includes("too small") ||
-					error.message.includes("Already compacted") ||
-					error.message.includes("Compaction cancelled")
-				if (!isExpected) {
-					ctx.ui?.notify?.(`Stage compaction failed: ${error.message}`, "warning")
+				if (!isExpectedCompactionError(error)) {
+					ctx.ui?.notify?.(`Mid-turn compaction failed: ${error.message}`, "warning")
 				}
-				// Always append the handoff entry even when compaction fails/is skipped.
-				appendHandoffEntry()
-			} catch {
-				// Best-effort: never let onError propagate and crash the extension.
-			}
-		},
-	})
+			},
+		})
+	} catch (error) {
+		// ctx.compact should never throw, but if it does before invoking callbacks
+		// the in-flight flag must be cleared so future compactions are not blocked.
+		runtime.clearCompactionInFlight(fermentId)
+		if (error instanceof Error && !isExpectedCompactionError(error)) {
+			ctx.ui?.notify?.(`Mid-turn compaction failed: ${error.message}`, "warning")
+		}
+	}
 }

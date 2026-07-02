@@ -8,8 +8,11 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Static } from "typebox"
-import type { StepResult } from "../../../ferment/types.js"
-import { askUser } from "../ask-user.js"
+import { determineNextAction } from "../../../ferment/engine.js"
+import type { Ferment, Phase, Step, StepResult } from "../../../ferment/types.js"
+import { getAgentRecordForTaskValidation } from "../../agents/index.js"
+import { FERMENT_WORKER_BUDGETS, type FermentWorkerBudgetTier } from "../../agents/worker-budget-policy.js"
+import { askUserForm } from "../ask-user.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { renderGateGuidance } from "../gate-registry.js"
 import { assertGateFieldsPresent, validateGatesOrErr } from "../gate-validation.js"
@@ -53,6 +56,35 @@ type CompleteStepArgs = Static<typeof CompleteStepParams>
 type ToolResult = ReturnType<typeof toolOk> | ReturnType<typeof toolErr>
 
 type StepUiContext = Omit<Partial<FermentUiContext>, "ui"> & { ui?: Partial<FermentUi> }
+
+/**
+ * Record a step-level pending compaction unless this was the last step of its
+ * phase. When determineNextAction returns complete_phase for the same phase,
+ * the phase-level compaction (recorded by completePhase) will fire at the next
+ * turn_end and summarise the same session — firing a step-level compaction now
+ * would produce a redundant back-to-back compaction with only a one-turn
+ * delta, so skip it. The handoff entry for the phase boundary is still
+ * appended by the phase-compaction path.
+ *
+ * Invariant: the `ferment` argument MUST be the post-completion ferment
+ * returned by `applyAndPersist` (completeOutcome.ferment or
+ * verifyOutcome.ferment), not the pre-completion copy. determineNextAction is
+ * a pure function of ferment state, so calling it on the post-completion
+ * ferment yields the same next-action decision the broader completeStep logic
+ * will act upon — if it says complete_phase, the phase IS complete and the
+ * phase-compaction path WILL fire.
+ */
+function maybeRecordStepCompaction(runtime: FermentRuntime, ferment: Ferment, phase: Phase, step: Step): void {
+	const next = determineNextAction(ferment)
+	if (next?.kind === "complete_phase" && next.phaseId === phase.id) return
+	runtime.setPendingCompaction(ferment.id, {
+		kind: "step",
+		fermentId: ferment.id,
+		phaseId: phase.id,
+		stepId: step.id,
+		completedAt: runtime.nowIso(),
+	})
+}
 
 export interface VerificationExecution {
 	command: string
@@ -104,6 +136,43 @@ const validateFsmTransition = (
 	params?: Parameters<typeof validateFsmTransitionWithFerment>[2],
 ): string | null => validateFsmTransitionWithFerment(f, event, params).error ?? null
 
+function validateLinkedWorker(params: CompleteStepArgs): string | null {
+	if (!params.worker_agent_id) {
+		return "complete_ferment_step requires worker_agent_id. Use the Agent ID returned by the linked worker for this step."
+	}
+	const record = getAgentRecordForTaskValidation(params.worker_agent_id)
+	if (!record) {
+		return `Worker Agent "${params.worker_agent_id}" was not found. Spawn a linked Agent with task_ref for this ferment step, or retrieve the correct background Agent ID.`
+	}
+	const ref = record.taskRef
+	if (
+		!ref ||
+		ref.kind !== "ferment_step" ||
+		ref.ferment_id !== params.ferment_id ||
+		ref.phase_id !== params.phase_id ||
+		ref.step_id !== params.step_id
+	) {
+		return `Worker Agent "${params.worker_agent_id}" is not linked to this Ferment step. Spawn a new Agent with task_ref { kind: "ferment_step", ferment_id: "${params.ferment_id}", phase_id: "${params.phase_id}", step_id: "${params.step_id}" }.`
+	}
+	const latest = record.latestOutcome
+	if (!latest) {
+		return `Worker Agent "${params.worker_agent_id}" has no recorded outcome yet. Use get_subagent_result with wait: true, then retry complete_ferment_step.`
+	}
+	if (latest.outcome === "completed") {
+		if (!latest.report) {
+			return `Worker Agent "${params.worker_agent_id}" completed without submit_agent_report. Call resume_subagent with only agent_id and purpose "finalize_report"; the host supplies its fixed report-only prompt and limits.`
+		}
+		if (latest.report.status !== "completed") {
+			return `Worker Agent "${params.worker_agent_id}" outcome is completed, but submit_agent_report status is "${latest.report.status}". Complete requires report.status "completed"; inspect remaining_steps and resume, spawn a linked replacement, or stop/report.`
+		}
+		return null
+	}
+	if (latest.outcome === "budget_exhausted") {
+		return `Worker Agent "${params.worker_agent_id}" exhausted its budget (${latest.reason ?? "budget"}). Do not complete this step from an aborted result. Inspect agent_outcome.report first: call resume_subagent with a bounded steering prompt when remaining_steps are a direct continuation; use a changed-approach continuation when the same thread still matters but the prior approach stalled; spawn a new linked Agent when remaining_steps have a clean narrower task boundary; use purpose "finalize_report" if the report is missing; or stop/report if blocked. Complete only from a linked worker whose latest outcome and report.status are completed.`
+	}
+	return `Worker Agent "${params.worker_agent_id}" outcome is ${latest.outcome}${latest.reason ? ` (${latest.reason})` : ""}. Complete requires a linked worker whose latest outcome is completed. Spawn a corrected linked replacement Agent or stop and report the failure.`
+}
+
 async function runVerificationCommand({
 	command,
 	signal,
@@ -136,42 +205,13 @@ async function runVerificationCommand({
 	return { exitCode, stdout, stderr }
 }
 
-/**
- * Heuristic worker limits for a ferment step.
- *
- * The returned values are *suggestions* embedded in the start_step tool result.
- * The orchestrator is expected to adjust them based on its judgment of the
- * actual work involved - these defaults prevent runaway workers without
- * requiring the model to reason about limits from scratch each time.
- *
- * Tiers:
- *  - heavy: compilation, multi-file rewrites, iterative debugging - 80 turns / 900s
- *  - standard: typical implementation steps - 50 turns / 600s
- *  - light: single-file edits, config changes, research - 25 turns / 300s
- */
+/** Shared conservative default; callers may select another centralized tier. */
 export function suggestWorkerLimits(
-	description: string,
-	verifyCommand?: string,
-): { maxTurns: number; maxDuration: number } {
-	const desc = description.toLowerCase()
-	const verify = (verifyCommand ?? "").toLowerCase()
-
-	// Heavy indicators: compile, build, install, train, run, boot, migration
-	// Use prefix matching (no trailing \b) so "compile", "compilation", "building" all match.
-	const heavyPattern =
-		/\b(compil|build|install|train|boot|qemu|docker|make|cmake|cargo|mvn|gradle|bazel|webpack|migrat|setup|configur)/
-	if (heavyPattern.test(desc) || heavyPattern.test(verify)) {
-		return { maxTurns: 80, maxDuration: 900 }
-	}
-
-	// Light indicators: read, check, verify, update config, rename, add test
-	// Use prefix matching for consistency.
-	const lightPattern = /\b(read|check|verif|renam|config|lint|format|comment|document)/
-	if (lightPattern.test(desc) && !verify.includes("test")) {
-		return { maxTurns: 25, maxDuration: 300 }
-	}
-
-	return { maxTurns: 50, maxDuration: 600 }
+	_description: string,
+	_verifyCommand?: string,
+	tier: FermentWorkerBudgetTier = "standard",
+) {
+	return { ...FERMENT_WORKER_BUDGETS[tier] }
 }
 
 export async function startStep(
@@ -198,12 +238,20 @@ export async function startStep(
 	const startCount = runtime.bumpStepStart(f.id, phase.id, step.id)
 	if (startCount >= 3) {
 		const title = `Step ${step.index}: "${step.description}" has been started ${startCount} times without completing.`
-		const response = await askUser(
+		const response = await askUserForm(
 			title,
+			undefined,
 			[
-				{ id: "retry", label: "Retry" },
-				{ id: "skip", label: "Skip step" },
-				{ id: "pause", label: "Pause ferment" },
+				{
+					id: "escalation",
+					type: "single",
+					prompt: title,
+					options: [
+						{ id: "retry", label: "Retry" },
+						{ id: "skip", label: "Skip step" },
+						{ id: "pause", label: "Pause ferment" },
+					],
+				},
 			],
 			{ ferment: f, pi, ctx, runtime },
 		)
@@ -223,13 +271,15 @@ Do NOT call start_ferment_step again without user input.`,
 			)
 		}
 
-		if (response.choice === "pause") {
+		const choice = response.answers?.[0]?.value
+
+		if (choice === "pause") {
 			const pauseOutcome = applyAndPersist(f.id, { type: "pause" })
 			if (!pauseOutcome.ok) return failedToolResult(pauseOutcome.error)
 			return toolOk(withNextActionHint("Ferment paused at user request.", pauseOutcome.ferment))
 		}
 
-		if (response.choice === "skip") {
+		if (choice === "skip") {
 			const skipOutcome = applyAndPersist(f.id, {
 				type: "skip_step",
 				phaseId: phase.id,
@@ -295,13 +345,16 @@ Do NOT call start_ferment_step again without user input.`,
 	const workerContext =
 		freshPhase && freshStep ? services.buildWorkerContext(outcome.ferment, freshPhase, freshStep) : ""
 	const contextBlock = workerContext ? `\n\nWorker context (pass to subagent verbatim):\n${workerContext}` : ""
+	const taskRef = {
+		kind: "ferment_step" as const,
+		ferment_id: outcome.ferment.id,
+		phase_id: phase.id,
+		step_id: step.id,
+		budget_tier: params.budget_tier ?? "standard",
+	}
 
-	const workerLimits = suggestWorkerLimits(step.description, step.verification?.command)
-	// Guidance only — don't quote exact numbers. Models interpret max_turns/max_duration
-	// literally and either exceed them trying to "finish" or hallucinate extra bullets to
-	// justify a different count. The exact values are still in the tool schema.
-	const limitsHint =
-		"\n\nSet sensible worker limits on the Agent call (use max_turns and max_duration, tuned to step complexity). When the worker exhausts its budget, call complete_ferment_step with whatever it produced and spawn a scoped follow-up for remaining work - do NOT raise the budget and retry the same broad task."
+	const workerLimits = suggestWorkerLimits(step.description, step.verification?.command, taskRef.budget_tier)
+	const limitsHint = `\n\nSelected worker budget: budget_tier=${taskRef.budget_tier}, max_turns=${workerLimits.maxTurns}, max_duration=${workerLimits.maxDuration}s, token_budget=${workerLimits.tokenBudget}, cumulative_token_budget=${workerLimits.cumulativeTokenBudget}. Set all three execution limits exactly on the Agent call. Select the tier explicitly on start_ferment_step from the scoped work shape; never infer it from description keywords. Do not complete the step from an exhausted worker. Inspect its structured report, then use resume_subagent for a bounded direct continuation, spawn a narrower linked replacement for separable remaining work, or stop/report when blocked. Do not raise the limits and retry the same broad task.`
 
 	// Build a condensed summary of prior steps so the orchestrator's planning
 	// is informed by what previous steps completed.
@@ -317,14 +370,14 @@ Do NOT call start_ferment_step again without user input.`,
 		completedPriorSteps.length > 0 ? `\n• Prior steps: ${completedPriorSteps.join("; ")}. Build on their output.` : ""
 
 	const planFirstPreamble = `📋 Plan first (every start of this step):
-• Write a brief 2-4 bullet inline plan for this step’s work.
-• Include a verification sub-task that checks exact expected output, not just substring grep. Match the verify command’s precision.
+• Write a brief 2-4 bullet inline plan for this step's work.
+• Include a verification sub-task that checks exact expected output, not just substring grep. Match the verify command's precision.
 • If the step compiles or builds artifacts, include a cleanup sub-task to remove intermediate files from output directories.
-• Embed the plan in the worker Agent’s prompt at dispatch time.${priorContext}`
+• Embed the plan in the worker Agent's prompt at dispatch time.${priorContext}`
 
 	return toolOk(
 		withNextActionHint(
-			`${planFirstPreamble}\n\nStep ${step.index}: "${step.description}" started. Spawn a subagent with the persona that matches this step's intent. When it returns, call complete_ferment_step with its summary.${lowGradeCaution}${parallelNote}${limitsHint}${contextBlock}`,
+			`${planFirstPreamble}\n\nStep ${step.index}: "${step.description}" started. Spawn a subagent with the persona that matches this step's intent. Pass task_ref: ${JSON.stringify(taskRef)} and use the selected limits. The worker will receive its Agent ID and must call submit_agent_report before its final answer. When it returns with agent_outcome.outcome "completed" and agent_outcome.report.status "completed", call complete_ferment_step with worker_agent_id and the report summary.${lowGradeCaution}${parallelNote}${limitsHint}${contextBlock}`,
 			outcome.ferment,
 		),
 	)
@@ -348,6 +401,9 @@ export async function completeStep(
 
 	const fsmError = validateFsmTransition(f, "COMPLETE_STEP", { phaseId: phase.id, stepId: step.id })
 	if (fsmError) return toolErrWithNextAction(fsmError, f)
+
+	const workerError = validateLinkedWorker(params)
+	if (workerError) return toolErrWithNextAction(workerError, f)
 
 	// Gate validation runs BEFORE any state mutation. Step-level flags don't
 	// feed the phase retry/escalation pipeline - they just refuse this single
@@ -373,13 +429,7 @@ export async function completeStep(
 		if (!completeOutcome.ok) return failedToolResult(completeOutcome.error, f)
 		runtime.clearStepStart(f.id, phase.id, step.id)
 		runtime.bumpStepCompleteAttempt(f.id, phase.id, step.id)
-		runtime.setPendingCompaction(f.id, {
-			kind: "step",
-			fermentId: f.id,
-			phaseId: phase.id,
-			stepId: step.id,
-			completedAt: runtime.nowIso(),
-		})
+		maybeRecordStepCompaction(runtime, completeOutcome.ferment, phase, step)
 		services.onStepCompleted(runtime)
 		sendStepBreadcrumb(pi, `Step ${step.index} ✓ ${step.description}`)
 		return toolOk(
@@ -417,13 +467,7 @@ export async function completeStep(
 	if (exitCode === 0) {
 		// Verification passed + all gates pass → silent advance. No LLM call.
 		runtime.bumpStepCompleteAttempt(f.id, phase.id, step.id)
-		runtime.setPendingCompaction(f.id, {
-			kind: "step",
-			fermentId: f.id,
-			phaseId: phase.id,
-			stepId: step.id,
-			completedAt: runtime.nowIso(),
-		})
+		maybeRecordStepCompaction(runtime, verifyOutcome.ferment, phase, step)
 		services.onStepCompleted(runtime)
 		sendStepBreadcrumb(pi, `Step ${step.index} ✓ verified - ${step.description}`)
 		return toolOk(
@@ -446,13 +490,7 @@ export async function completeStep(
 		// is acceptable (e.g. linter noise on an unrelated file). Gate
 		// verdicts already passed above, so advance.
 		runtime.bumpStepCompleteAttempt(f.id, phase.id, step.id)
-		runtime.setPendingCompaction(f.id, {
-			kind: "step",
-			fermentId: f.id,
-			phaseId: phase.id,
-			stepId: step.id,
-			completedAt: runtime.nowIso(),
-		})
+		maybeRecordStepCompaction(runtime, verifyOutcome.ferment, phase, step)
 		services.onStepCompleted(runtime)
 		sendStepBreadcrumb(pi, `Step ${step.index} ✓  Judge passed: ${judgeVerdict.reason}`)
 		return toolOk(

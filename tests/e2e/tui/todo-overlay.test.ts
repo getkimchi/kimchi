@@ -13,6 +13,7 @@ test("completed todos stop pinning the overlay", async ({ terminal }) => {
 			models: [{ slug: "basic", displayName: "Fake Basic", contextWindow: 1_000_000, maxTokens: 4096 }],
 			responses: [
 				{
+					stream: ["Setting up todos."],
 					toolCalls: [
 						{
 							id: "call_create_todos",
@@ -90,6 +91,7 @@ test("todo overlay reconciles stale active todos after non-todo work", async ({ 
 			models: [{ slug: "basic", displayName: "Fake Basic", contextWindow: 1_000_000, maxTokens: 4096 }],
 			responses: [
 				{
+					stream: ["Reconciling the todo list."],
 					toolCalls: [
 						{
 							id: "call_leave_active_todo",

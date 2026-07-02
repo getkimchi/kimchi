@@ -17,7 +17,7 @@ import {
 	normalizeSuccessCriteriaInput,
 	renderSuccessCriteria,
 } from "../../../ferment/success-criteria.js"
-import { normalizeFermentTitle } from "../../../ferment/title.js"
+import { deriveDraftFermentTitle, normalizeFermentTitle } from "../../../ferment/title.js"
 import {
 	DEFAULT_SCOPING_QUESTION_TYPE,
 	type Grade,
@@ -26,20 +26,17 @@ import {
 	type ScopingQuestionType,
 } from "../../../ferment/types.js"
 import { createToolVisibility } from "../../prompt-construction/tool-visibility.js"
-import { YES_NO_OPTIONS } from "../../questionnaire-reducer.js"
-import {
-	type AskUserQuestion,
-	askUser,
-	askUserForm,
-	normalizeAskUserQuestions,
-	toScopingQuestionType,
-} from "../ask-user.js"
+import { YES_NO_OPTIONS } from "../../questionnaire/index.js"
+import { type AskUserQuestion, askUserForm, normalizeAskUserQuestions, toScopingQuestionType } from "../ask-user.js"
 import { pr_bold, pr_dim } from "../colors.js"
+import { emitFermentCreated } from "../domain-events-emitter.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { renderGateGuidance } from "../gate-registry.js"
 import { assertGateFieldsPresent, validateGatesOrErr } from "../gate-validation.js"
+import { ensureGitRepo } from "../git-init.js"
 import { judgeJourneyGrade } from "../judge.js"
-import { resetReactiveContinuationNudgeCount } from "../nudge.js"
+import { appendRefEntry, resetReactiveContinuationNudgeCount } from "../nudge.js"
+import { PENDING_PROPOSAL_SCHEMA_VERSION, savePendingProposal } from "../pending-proposal-store.js"
 import { gatherPhaseEvidence } from "../phase-evidence.js"
 import { getPromptUi, promptEditor, promptForm, promptSelect } from "../prompt-ui.js"
 import { readLatestPhaseReviews } from "../review-evidence.js"
@@ -64,6 +61,8 @@ import {
 	ScopeParams,
 	UpdateScopeFieldParams,
 } from "../tool-schemas.js"
+import { setActiveFermentAndApplyProfile } from "../tool-scope.js"
+import type { FermentUi } from "../ui.js"
 
 type ScopeArgs = Static<typeof ScopeParams>
 type ProposeScopingArgs = Static<typeof ProposeScopingParams>
@@ -471,6 +470,46 @@ export function buildFreeformScopingFeedbackMessage(fermentId: string, userText:
 	].join("\n")
 }
 
+type ResolveProposeTargetResult =
+	| { ok: true; fermentId: string; created: boolean }
+	| { ok: false; error: ReturnType<typeof toolErr> }
+
+async function resolveProposeFermentTarget(
+	runtime: FermentRuntime,
+	pi: ExtensionAPI,
+	ctx: unknown,
+	rawId: string | undefined,
+	title: string,
+	goal: string,
+): Promise<ResolveProposeTargetResult> {
+	const storage = runtime.getStorage()
+	if (rawId) {
+		const existing = storage.get(rawId)
+		if (existing) return { ok: true, fermentId: existing.id, created: false }
+		if (runtime.getActive()) {
+			return { ok: false, error: toolErr(`Ferment "${rawId}" not found.`) }
+		}
+		// Unknown id with no active ferment: fall through and create a new draft.
+	}
+
+	const active = runtime.getActive()
+	if (active) return { ok: true, fermentId: active.id, created: false }
+
+	// Bootstrap a new draft ferment from the proposal, mirroring /ferment new.
+	const ui = (ctx as { ui?: FermentUi } | undefined)?.ui
+	await ensureGitRepo({ ui })
+	const shortName = deriveDraftFermentTitle(title)
+	const f = storage.create(shortName, goal)
+	setActiveFermentAndApplyProfile(pi, runtime, f)
+	if (pi.events) {
+		emitFermentCreated(pi.events, f)
+	}
+	appendRefEntry(pi, f.id)
+	runtime.markScopingInteractive(f.id)
+	runtime.setPendingScope(f.id, { goal: "", successCriteria: [], constraints: [] })
+	return { ok: true, fermentId: f.id, created: true }
+}
+
 function formatCompletionCriteriaForReview(criteria: readonly string[]): string {
 	return [`I'll consider this done when:`, ...criteria.map((criterion, index) => `${index + 1}. ${criterion}`)].join(
 		"\n",
@@ -506,7 +545,6 @@ async function confirmCompletionCriteria(
 				prompt: "Do these completion criteria look right?",
 				options: [{ id: "yes", label: "Yes, looks good" }],
 				allowOther: true,
-				otherLabel: "No (input what is wrong)",
 			},
 		],
 		askContext,
@@ -758,7 +796,7 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 	pi.registerTool({
 		name: FERMENT_TOOLS.PROPOSE_SCOPING,
 		label: "Propose Scoping",
-		description: `Emit the full scoping draft: title, goal, success_criteria (array of acceptance criteria), constraints, assumptions, 1-7 phases, questions, and gates. title is required and must be a concise 3-5 word Ferment name. If the agent has decision-blocking scoping questions, they must be included in the questions array in this tool call; each question should use the canonical field name question for the user-visible question sentence; do not ask scoping questions in chat after calling this tool. For broad discovery or planning over an existing codebase, multiple plausible work areas are an outcome/scope boundary; ask one multi question unless the user explicitly asked to implement all of them. Example: "Which improvement areas should this ferment include?" Use questions: [] when no decision-blocking question remains. Questions pause planning; after answers, re-emit the updated proposal with questions: []. If questions is non-empty, keep phases provisional and answer-agnostic. Every call must include the full gates array: exactly P1, P2, and P3, each with id, verdict, rationale, and evidence. Partial gates are rejected. Prefer one phase for simple tasks and assumptions over default-choice questions.
+		description: `Emit the full scoping draft: title, goal, success_criteria (array of acceptance criteria), constraints, assumptions, 1-7 phases, questions, and gates. title is required and must be a concise 3-5 word Ferment name. ferment_id is optional; omit it when no ferment is active and the host will create a new draft ferment from this proposal. If the agent has decision-blocking scoping questions, they must be included in the questions array in this tool call; each question should use the canonical field name question for the user-visible question sentence; do not ask scoping questions in chat after calling this tool. For broad discovery or planning over an existing codebase, multiple plausible work areas are an outcome/scope boundary; ask one multi question unless the user explicitly asked to implement all of them. Example: "Which improvement areas should this ferment include?" Use questions: [] when no decision-blocking question remains. Questions pause planning; after answers, re-emit the updated proposal with questions: []. If questions is non-empty, keep phases provisional and answer-agnostic. Every call must include the full gates array: exactly P1, P2, and P3, each with id, verdict, rationale, and evidence. Partial gates are rejected. Prefer one phase for simple tasks and assumptions over default-choice questions.
 
 ${renderGateGuidance("scope_ferment")}`,
 		parameters: ProposeScopingParams,
@@ -787,9 +825,22 @@ ${renderGateGuidance("scope_ferment")}`,
 			const questionValidationError = validateScopingQuestions(questions)
 			if (questionValidationError) return toolErr(questionValidationError)
 
-			// 3. Replace pending buffer wholesale.
-			const ferment = runtime.getStorage().get(params.ferment_id)
-			if (!ferment) return toolErr(`Ferment "${params.ferment_id}" not found.`)
+			// 3. Resolve the target ferment. If no id is given and no active ferment
+			// exists, bootstrap a new draft from the proposal.
+			const resolveResult = await resolveProposeFermentTarget(
+				runtime,
+				pi,
+				ctx,
+				params.ferment_id,
+				params.title,
+				params.goal,
+			)
+			if (!resolveResult.ok) return resolveResult.error
+			const { fermentId, created: createdFerment } = resolveResult
+
+			// 4. Replace pending buffer wholesale.
+			const ferment = runtime.getStorage().get(fermentId)
+			if (!ferment) return toolErr(`Ferment "${fermentId}" not found.`)
 			if (ferment.status !== "draft") {
 				const nextAction =
 					ferment.status === "planned" ? "call activate_ferment_phase" : "continue the current ferment action"
@@ -801,12 +852,12 @@ ${renderGateGuidance("scope_ferment")}`,
 				)
 			}
 
-			const pending = runtime.getPendingScope(params.ferment_id)
+			const pending = runtime.getPendingScope(fermentId)
 			if (!pending) {
 				// Seed an empty buffer so attachPendingProposal can replace it.
-				runtime.setPendingScope(params.ferment_id, { goal: "", successCriteria: [], constraints: [] })
+				runtime.setPendingScope(fermentId, { goal: "", successCriteria: [], constraints: [] })
 			}
-			const pendingAfterSeed: PendingScope = runtime.getPendingScope(params.ferment_id) ?? {
+			const pendingAfterSeed: PendingScope = runtime.getPendingScope(fermentId) ?? {
 				goal: "",
 				successCriteria: [],
 				constraints: [],
@@ -821,7 +872,7 @@ ${renderGateGuidance("scope_ferment")}`,
 				)
 			}
 
-			runtime.attachPendingProposal(params.ferment_id, {
+			runtime.attachPendingProposal(fermentId, {
 				title: params.title,
 				goal: params.goal,
 				successCriteria: params.success_criteria,
@@ -841,13 +892,7 @@ ${renderGateGuidance("scope_ferment")}`,
 			// 5. Headless path.
 			if (!promptUi?.select && !promptUi?.custom) {
 				if (questions.length === 0) {
-					const scopeOutcome = confirmPendingScope(
-						runtime,
-						params.ferment_id,
-						params.phases,
-						"propose_ferment_scoping",
-						pi,
-					)
+					const scopeOutcome = confirmPendingScope(runtime, fermentId, params.phases, "propose_ferment_scoping", pi)
 					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error, ferment)
 					return planToolOk(withNextActionHint("Plan saved.", scopeOutcome.outcome.ferment), { includePlan: true })
 				}
@@ -869,13 +914,7 @@ ${renderGateGuidance("scope_ferment")}`,
 			if (questions.length === 0) {
 				if (!promptUi?.custom) {
 					// Some hosts expose select/input without custom components; keep them on the pre-review confirmation path.
-					const scopeOutcome = confirmPendingScope(
-						runtime,
-						params.ferment_id,
-						params.phases,
-						"propose_ferment_scoping",
-						pi,
-					)
+					const scopeOutcome = confirmPendingScope(runtime, fermentId, params.phases, "propose_ferment_scoping", pi)
 					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error, ferment)
 					return planToolOk(
 						withNextActionHint(
@@ -887,8 +926,23 @@ ${renderGateGuidance("scope_ferment")}`,
 				}
 
 				runtime.setPendingPlanReview({
-					fermentId: params.ferment_id,
+					fermentId,
 					planMarkdown: planEntry,
+				})
+				// Persist the pending proposal to disk so a session restart can
+				// re-arm this review instead of nudging the LLM to re-scope.
+				savePendingProposal(fermentId, {
+					schemaVersion: PENDING_PROPOSAL_SCHEMA_VERSION,
+					fermentId,
+					title: params.title,
+					goal: params.goal,
+					successCriteria: params.success_criteria ?? [],
+					constraints: params.constraints ?? [],
+					assumptions: params.assumptions ?? "",
+					phases: params.phases,
+					planMarkdown: planEntry,
+					proposeIterations: nextIterations,
+					savedAt: new Date().toISOString(),
 				})
 				return planToolOk("Plan ready for review. The review dialog will open when this turn finishes.")
 			}
@@ -1032,7 +1086,7 @@ ${renderGateGuidance("scope_ferment")}`,
 					if (!userText) {
 						return planToolOk(`${answersEntry}\n\nNo changes made. Waiting for your next instruction.`)
 					}
-					const sayMoreContent = buildFreeformScopingFeedbackMessage(params.ferment_id, userText)
+					const sayMoreContent = buildFreeformScopingFeedbackMessage(fermentId, userText)
 					void pi.sendMessage(
 						{ content: sayMoreContent, customType: "ferment_scoping_iteration", display: false },
 						{ triggerTurn: true },
@@ -1158,7 +1212,7 @@ ${renderGateGuidance("complete_ferment")}`,
 
 The host renders one question:
   - "Yes, looks good"
-  - "No (input what is wrong)" with inline free-form text input for the explanation
+  - "Type your own answer" with inline free-form text input for the explanation
 
 Proceed to exploration only when Confirmed is yes and Changes is empty.
 If the user answers No, the follow-up captures textual changes and control returns here for revision.`,
@@ -1177,16 +1231,14 @@ Behavior depends on session mode:
   - Interactive (with TUI): the user answers in a structured TUI. Returns { choice | choices | text | answers, answered_by: "user" }.
   - One-shot (no human attached): the configured judge model stands in for the user. Returns { choice | choices | text | answers, answered_by: "judge", rationale }.
 
-Hard contract: in one-shot mode, if the judge is unreachable (no API key, timeout, unparseable response) the ferment is ABANDONED — there is no fallback. False-pass is the worst outcome.
+Fail-soft contract: in one-shot mode, if the judge is unreachable (no API key, timeout, unparseable response) after 3 retry attempts, the tool falls back to conservative default answers so the ferment can proceed rather than stall. Confirm defaults to "yes"; single/multi default to the first listed option; text defaults to a placeholder string. The rationale field notes when defaults were used.
 
 The agent should:
   1. Frame the question concretely. The user/judge sees only the question plus options/context in this call.
   2. Prefer questions[] for the full TUI: single, multi, text, confirm. allowOther is only for single/multi custom free-text options.
-  3. Use response_type="single" | "multi" | "text" | "confirm" only as a compatibility shorthand for one question.
-  4. Treat response_type="confirm" as strict Yes/No only. Use response_type="text" for one free-form question, or questions[] when multiple controls are needed.
-  5. For single/multi, provide stable snake-case option ids and short labels (confirm defaults to Yes/No).
-  6. Include "pause" or "abandon" as an explicit option when one is appropriate — the judge prefers these when uncertain.
-  7. Act on the returned \`answers\`, \`choice\`, \`choices\`, or \`text\` field.
+  3. For single/multi, provide stable snake-case option ids and short labels (confirm defaults to Yes/No).
+  4. Include "pause" or "abandon" as an explicit option when one is appropriate — the judge prefers these when uncertain.
+  5. Act on the returned \`answers\`, \`choice\`, \`choices\`, or \`text\` field.
 
 TUI controls for questions[]:
   - Tab / Shift+Tab moves between questions
@@ -1198,8 +1250,14 @@ TUI controls for questions[]:
 Returns structured answer fields on success, or a tool error if no audience can be reached.`,
 		parameters: AskUserParams,
 		async execute(_, params, _signal, _onUpdate, ctx) {
-			const applyAndPersist = createApplyAndPersist(runtime)
-			const ferment = runtime.getStorage().get(params.ferment_id)
+			const fermentId = params.ferment_id ?? runtime.getActiveId()
+			if (!fermentId) {
+				return toolErr("No active ferment. Provide ferment_id or activate a ferment first.")
+			}
+			if (!params.questions || params.questions.length === 0) {
+				return toolErr("ask_user requires a non-empty questions[] array.")
+			}
+			const ferment = runtime.getStorage().get(fermentId)
 			if (!ferment) return toolErr("Ferment not found.")
 
 			const askContext = {
@@ -1208,38 +1266,13 @@ Returns structured answer fields on success, or a tool error if no audience can 
 				ctx: ctx as { ui?: Partial<import("../ui.js").FermentUi> } | undefined,
 				runtime,
 			}
-			let normalizedQuestions: AskUserQuestion[] | undefined
-			if (params.questions && params.questions.length > 0) {
-				const normalizeResult = normalizeAskUserQuestions(params.questions)
-				if (!normalizeResult.ok) return toolErr(normalizeResult.error)
-				normalizedQuestions = normalizeResult.questions
-			}
-			const response = normalizedQuestions
-				? await askUserForm(params.title ?? params.question, params.description, normalizedQuestions, askContext)
-				: params.question
-					? await askUser(params.question, params.options ?? [], askContext, params.response_type ?? "single")
-					: undefined
+			const normalizeResult = normalizeAskUserQuestions(params.questions)
+			if (!normalizeResult.ok) return toolErr(normalizeResult.error)
+			const normalizedQuestions = normalizeResult.questions
 
-			if (!response) {
-				return toolErr("ask_user requires either question or questions[].")
-			}
+			const response = await askUserForm(params.title, params.description, normalizedQuestions, askContext)
 
 			if (response.failed) {
-				// One-shot hard-fail: when the judge is the only legitimate audience
-				// and it can't be reached, the ferment must abandon. Per the design
-				// contract, false-pass is unacceptable in unattended runs.
-				const isJudgeFailure = response.reason === "judge_unavailable" || response.reason === "judge_unparseable"
-				const isOneShot = pi.getFlag?.("ferment-oneshot") === true
-				if (isJudgeFailure && isOneShot) {
-					const abandonOutcome = applyAndPersist(params.ferment_id, {
-						type: "abandon",
-						reason: `ask_user: ${response.detail}`,
-					})
-					if (abandonOutcome.ok) runtime.setActive(abandonOutcome.ferment)
-					return toolErr(
-						`ask_user failed in one-shot mode — ferment abandoned. ${response.detail}\n\nThe ferment cannot continue without user input or a reachable judge. Restart with a valid API key, or run in interactive mode.`,
-					)
-				}
 				return toolErr(`ask_user could not route the question (${response.reason}): ${response.detail}`)
 			}
 

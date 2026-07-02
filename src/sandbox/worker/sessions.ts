@@ -1,8 +1,10 @@
+import { HARNESS_CLIENT_TYPE } from "../constants.js"
 import type { WorkerClient } from "./client.js"
 import type { CreateSessionRequest, Session } from "./types.js"
 
 export async function listSessions(client: WorkerClient, signal?: AbortSignal): Promise<Session[]> {
-	const map = await client.get<Record<string, Omit<Session, "name">>>("/session", signal)
+	const params = new URLSearchParams({ clientType: HARNESS_CLIENT_TYPE })
+	const map = await client.get<Record<string, Omit<Session, "name">>>(`/session?${params.toString()}`, signal)
 	return Object.entries(map).map(([name, s]) => ({ ...s, name }))
 }
 

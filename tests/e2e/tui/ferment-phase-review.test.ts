@@ -15,6 +15,7 @@ test.fail("ferment phase-review separator is not selectable", async ({ terminal 
 			responses: [
 				// Scoping nudge -> model proposes scoping.
 				{
+					stream: ["I'll outline the scope."],
 					toolCalls: [
 						{
 							id: "call_scope",

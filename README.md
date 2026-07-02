@@ -14,10 +14,16 @@ Install the latest release:
 brew install getkimchi/tap/kimchi
 ```
 
-**Install script:**
+**Install script (macOS / Linux):**
 
 ```bash
 curl -fsSL https://github.com/getkimchi/kimchi/releases/latest/download/install.sh | bash
+```
+
+**PowerShell (Windows):**
+
+```powershell
+irm https://github.com/getkimchi/kimchi/releases/latest/download/install.ps1 | iex
 ```
 
 Then configure your API key and launch:
@@ -456,13 +462,14 @@ Stored in `~/.config/kimchi/config.json` (`migrationState: "skip-forever"`). Del
 ./scripts/dev-startup.sh
 ```
 
-This script checks and installs node, pnpm, and bun if missing, runs `pnpm install`, copies resources, and starts the harness with `pnpm run dev`.
+This script checks and installs node, pnpm, and bun if missing, initializes git submodules, runs `pnpm install`, copies resources, and starts the harness with `pnpm run dev`.
 
 ### Manual setup
 
 ```bash
 git clone git@github.com:getkimchi/kimchi.git
 cd kimchi
+git submodule update --init --recursive
 corepack enable
 pnpm install
 ```
@@ -550,8 +557,11 @@ Supported platforms:
 
 - macOS (amd64, arm64)
 - Linux (amd64, arm64)
+- Windows (amd64)
 
-Release assets follow the naming convention `kimchi_{os}_{arch}.tar.gz` with a `checksums.txt` (SHA256) for verification.
+Release assets follow the naming convention `kimchi_{os}_{arch}.tar.gz` for macOS/Linux and `kimchi_windows_amd64.zip` for Windows, with a `checksums.txt` (SHA256) for verification.
+
+Windows build and local VM testing notes live in [`docs/windows/README.md`](docs/windows/README.md).
 
 ## License
 

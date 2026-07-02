@@ -8,10 +8,18 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import type { CompactionResult } from "@earendil-works/pi-coding-agent"
+import type { CompactionResult, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
-import { buildCustomInstructions, buildHandoffDetails, maybeTriggerFermentCompaction } from "./auto-compaction.js"
+import {
+	buildCustomInstructions,
+	buildHandoffDetails,
+	buildMidTurnCustomInstructions,
+	isToolCallInFlight,
+	isToolCallInFlightInSession,
+	maybeTriggerFermentCompaction,
+	maybeTriggerMidTurnFermentCompaction,
+} from "./auto-compaction.js"
 import type { FermentRuntime } from "./runtime.js"
 import { createDefaultFermentRuntime } from "./runtime.js"
 import { type PendingCompaction, clearPendingCompaction, setPendingCompaction } from "./state.js"
@@ -84,6 +92,9 @@ function makeCtx(): ExtensionContext {
 		ui: {
 			notify: vi.fn(),
 		},
+		sessionManager: {
+			getEntries: vi.fn(() => []),
+		},
 	} as unknown as ExtensionContext
 }
 
@@ -142,6 +153,16 @@ function makePendingStep(fermentId = "ferment-1", phaseId = "phase-1", stepId = 
 
 function makePendingPhase(fermentId = "ferment-1", phaseId = "phase-1"): PendingCompaction {
 	return { kind: "phase", fermentId, phaseId, completedAt: NOW }
+}
+
+function makeSessionMessageEntry(message: unknown): SessionEntry {
+	return {
+		type: "message",
+		id: `entry-${Math.random().toString(36).slice(2)}`,
+		parentId: null,
+		timestamp: NOW,
+		message,
+	} as unknown as SessionEntry
 }
 
 // ─── Test suite ───────────────────────────────────────────────────────────────
@@ -562,5 +583,351 @@ describe("maybeTriggerFermentCompaction", () => {
 
 		expect(() => maybeTriggerFermentCompaction(pi, ctx, runtime)).not.toThrow()
 		expect(ctx.compact).not.toHaveBeenCalled()
+	})
+})
+
+describe("buildMidTurnCustomInstructions", () => {
+	it("includes ferment name, goal, and success criteria", () => {
+		const ferment = makeFerment({ name: "Test Ferment", goal: "Test the thing" })
+		const phase = makePhase({ id: "phase-1", name: "Implementation", goal: "Write code" })
+		const step = makeStep({ id: "step-1", description: "Write tests" })
+
+		const instructions = buildMidTurnCustomInstructions(ferment, phase, step)
+
+		expect(instructions).toContain("Test Ferment")
+		expect(instructions).toContain("Test the thing")
+		expect(instructions).toContain("Tests pass")
+		expect(instructions).toContain("Lint clean")
+	})
+
+	it("includes active phase and in-progress step", () => {
+		const ferment = makeFerment()
+		const phase = makePhase({ id: "phase-1", name: "Implementation", goal: "Write code" })
+		const step = makeStep({ id: "step-1", description: "Write tests" })
+
+		const instructions = buildMidTurnCustomInstructions(ferment, phase, step)
+
+		expect(instructions).toContain("Implementation")
+		expect(instructions).toContain("Write code")
+		expect(instructions).toContain("Write tests")
+		expect(instructions).toContain("continue the in-progress step")
+	})
+})
+
+describe("maybeTriggerMidTurnFermentCompaction", () => {
+	const CONTEXT_WINDOW = 100_000
+
+	function makeMidTurnRuntime(ferment: Ferment): FermentRuntime {
+		const runtime = makeRuntime()
+		runtime.getActive = vi.fn(() => ferment)
+		runtime.getStorage = vi.fn(
+			() => makeMockStorage(new Map([[ferment.id, ferment]])) as unknown as ReturnType<typeof runtime.getStorage>,
+		)
+		return runtime
+	}
+
+	function makeMidTurnCtx(): ExtensionContext {
+		return {
+			...makeCtx(),
+			model: { contextWindow: CONTEXT_WINDOW },
+		} as unknown as ExtensionContext
+	}
+
+	it("no-ops when total tokens are below the threshold", () => {
+		const ferment = makeFermentWithPhase()
+		ferment.phases[0].status = "active"
+		ferment.phases[0].steps[0].status = "running"
+		const runtime = makeMidTurnRuntime(ferment)
+		const pi = makePi()
+		const ctx = makeMidTurnCtx()
+
+		maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, 1000)
+
+		expect(ctx.compact).not.toHaveBeenCalled()
+	})
+
+	it("compacts and schedules resume when the threshold is exceeded with an active step", () => {
+		const ferment = makeFermentWithPhase()
+		ferment.phases[0].status = "active"
+		ferment.phases[0].steps[0].status = "running"
+		const runtime = makeMidTurnRuntime(ferment)
+		const pi = makePi()
+		const ctx = makeMidTurnCtx()
+
+		maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, CONTEXT_WINDOW - 1)
+
+		expect(ctx.compact).toHaveBeenCalledOnce()
+
+		const compactArgs = vi.mocked(ctx.compact).mock.calls[0]?.[0]
+		expect(compactArgs).toBeDefined()
+		compactArgs?.onComplete?.({ summary: "", firstKeptEntryId: "", tokensBefore: 99_000 })
+
+		expect(pi.appendEntry).toHaveBeenCalledWith(
+			"ferment_breadcrumb",
+			expect.objectContaining({
+				text: expect.stringContaining("Mid-turn compaction resume"),
+			}),
+		)
+	})
+
+	it("no-ops when no ferment is active", () => {
+		const runtime = makeRuntime()
+		runtime.getActive = vi.fn(() => undefined)
+		const pi = makePi()
+		const ctx = makeMidTurnCtx()
+
+		maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, CONTEXT_WINDOW - 1)
+
+		expect(ctx.compact).not.toHaveBeenCalled()
+	})
+
+	it("no-ops when no step is in progress", () => {
+		const ferment = makeFermentWithPhase()
+		ferment.phases[0].status = "active"
+		ferment.phases[0].steps[0].status = "done"
+		const runtime = makeMidTurnRuntime(ferment)
+		const pi = makePi()
+		const ctx = makeMidTurnCtx()
+
+		maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, CONTEXT_WINDOW - 1)
+
+		expect(ctx.compact).not.toHaveBeenCalled()
+	})
+
+	it("no-ops when a compaction is already in-flight", () => {
+		const ferment = makeFermentWithPhase()
+		ferment.phases[0].status = "active"
+		ferment.phases[0].steps[0].status = "running"
+		const runtime = makeMidTurnRuntime(ferment)
+		runtime.markCompactionInFlight(ferment.id)
+		const pi = makePi()
+		const ctx = makeMidTurnCtx()
+
+		maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, CONTEXT_WINDOW - 1)
+
+		expect(ctx.compact).not.toHaveBeenCalled()
+	})
+
+	it("no-ops in oneshot mode and emits a single planning-failure breadcrumb", () => {
+		const ferment = makeFermentWithPhase()
+		ferment.phases[0].status = "active"
+		ferment.phases[0].steps[0].status = "running"
+		const runtime = makeMidTurnRuntime(ferment)
+		const pi = makePi()
+		pi.getFlag = vi.fn((name) => (name === "ferment-oneshot" ? true : undefined))
+		const ctx = makeMidTurnCtx()
+
+		maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, CONTEXT_WINDOW - 1)
+		maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, CONTEXT_WINDOW - 1)
+
+		expect(ctx.compact).not.toHaveBeenCalled()
+		expect(pi.appendEntry).toHaveBeenCalledTimes(1)
+		expect(pi.appendEntry).toHaveBeenCalledWith(
+			"ferment_breadcrumb",
+			expect.objectContaining({
+				text: expect.stringContaining("Mid-turn context overrun in oneshot"),
+			}),
+		)
+	})
+
+	it("onError with an expected error clears in-flight without notifying", () => {
+		const ferment = makeFermentWithPhase()
+		ferment.phases[0].status = "active"
+		ferment.phases[0].steps[0].status = "running"
+		const runtime = makeMidTurnRuntime(ferment)
+		runtime.clearCompactionInFlight(ferment.id)
+		const pi = makePi()
+		const ctx = makeMidTurnCtx()
+
+		maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, CONTEXT_WINDOW - 1)
+		expect(runtime.isCompactionInFlight(ferment.id)).toBe(true)
+
+		const compactArgs = vi.mocked(ctx.compact).mock.calls[0]?.[0]
+		compactArgs?.onError?.(new Error("Compaction cancelled"))
+
+		expect(runtime.isCompactionInFlight(ferment.id)).toBe(false)
+		expect(ctx.ui?.notify).not.toHaveBeenCalled()
+	})
+
+	it("onError with an unexpected error clears in-flight and notifies", () => {
+		const ferment = makeFermentWithPhase()
+		ferment.phases[0].status = "active"
+		ferment.phases[0].steps[0].status = "running"
+		const runtime = makeMidTurnRuntime(ferment)
+		runtime.clearCompactionInFlight(ferment.id)
+		const pi = makePi()
+		const ctx = makeMidTurnCtx()
+
+		maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, CONTEXT_WINDOW - 1)
+		const compactArgs = vi.mocked(ctx.compact).mock.calls[0]?.[0]
+		compactArgs?.onError?.(new Error("disk full"))
+
+		expect(runtime.isCompactionInFlight(ferment.id)).toBe(false)
+		expect(ctx.ui?.notify).toHaveBeenCalledWith(expect.stringContaining("disk full"), "warning")
+	})
+
+	it("clears in-flight and notifies when ctx.compact throws synchronously", () => {
+		const ferment = makeFermentWithPhase()
+		ferment.phases[0].status = "active"
+		ferment.phases[0].steps[0].status = "running"
+		const runtime = makeMidTurnRuntime(ferment)
+		runtime.clearCompactionInFlight(ferment.id)
+		const pi = makePi()
+		const ctx = makeMidTurnCtx()
+		ctx.compact = vi.fn(() => {
+			throw new Error("sync compact failure")
+		})
+
+		expect(() => maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, CONTEXT_WINDOW - 1)).not.toThrow()
+		expect(runtime.isCompactionInFlight(ferment.id)).toBe(false)
+		expect(ctx.ui?.notify).toHaveBeenCalledWith(expect.stringContaining("sync compact failure"), "warning")
+	})
+})
+
+describe("in-flight tool-call guard", () => {
+	let storageMap: Map<string, Ferment>
+	let mockStorage: ReturnType<typeof makeMockStorage>
+	let runtime: FermentRuntime
+	let pi: ExtensionAPI
+	let ctx: ExtensionContext
+
+	beforeEach(() => {
+		storageMap = new Map()
+		mockStorage = makeMockStorage(storageMap)
+		runtime = makeRuntime({
+			getStorage: () => mockStorage as unknown as import("../../ferment/event-store.js").FermentEventStore,
+		})
+		pi = makePi()
+		ctx = makeCtx()
+	})
+
+	afterEach(() => {
+		runtime.clearCompactionInFlight("ferment-1")
+		clearPendingCompaction("ferment-1")
+		vi.restoreAllMocks()
+	})
+
+	describe("isToolCallInFlight", () => {
+		it("returns true when a toolCall has no matching toolResult", () => {
+			const messages = [
+				{
+					role: "assistant",
+					content: [{ type: "toolCall", id: "call-1" }],
+				},
+			]
+			expect(isToolCallInFlight(messages)).toBe(true)
+		})
+
+		it("returns false when the matching toolResult is present", () => {
+			const messages = [
+				{
+					role: "assistant",
+					content: [{ type: "toolCall", id: "call-1" }],
+				},
+				{ role: "toolResult", toolCallId: "call-1" },
+			]
+			expect(isToolCallInFlight(messages)).toBe(false)
+		})
+
+		it("returns false for empty arrays and messages with no tool calls", () => {
+			expect(isToolCallInFlight([])).toBe(false)
+			expect(isToolCallInFlight([{ role: "user", content: "hi" }])).toBe(false)
+			expect(isToolCallInFlight([{ role: "assistant", content: [{ type: "text" }] }])).toBe(false)
+		})
+
+		it("returns true when only some toolCalls have matching toolResults", () => {
+			const messages = [
+				{
+					role: "assistant",
+					content: [
+						{ type: "toolCall", id: "call-1" },
+						{ type: "toolCall", id: "call-2" },
+					],
+				},
+				{ role: "toolResult", toolCallId: "call-1" },
+			]
+			expect(isToolCallInFlight(messages)).toBe(true)
+		})
+
+		it("returns false for malformed input without throwing", () => {
+			const malformed = [null, { role: "user" }, { role: "assistant", content: "not-an-array" }]
+			expect(() => isToolCallInFlight(malformed)).not.toThrow()
+			expect(isToolCallInFlight(malformed)).toBe(false)
+		})
+	})
+
+	describe("isToolCallInFlightInSession", () => {
+		it("returns true when the session contains an in-flight toolCall", () => {
+			ctx.sessionManager.getEntries = vi.fn(() => [
+				makeSessionMessageEntry({
+					role: "assistant",
+					content: [{ type: "toolCall", id: "call-1" }],
+				}),
+			])
+			expect(isToolCallInFlightInSession(ctx)).toBe(true)
+		})
+
+		it("returns false when the session has a completed toolCall pair", () => {
+			ctx.sessionManager.getEntries = vi.fn(() => [
+				makeSessionMessageEntry({
+					role: "assistant",
+					content: [{ type: "toolCall", id: "call-1" }],
+				}),
+				makeSessionMessageEntry({ role: "toolResult", toolCallId: "call-1" }),
+			])
+			expect(isToolCallInFlightInSession(ctx)).toBe(false)
+		})
+
+		it("returns false when sessionManager is unavailable", () => {
+			const ctxWithoutSessionManager = { ...makeCtx(), sessionManager: undefined } as unknown as ExtensionContext
+			expect(isToolCallInFlightInSession(ctxWithoutSessionManager)).toBe(false)
+		})
+	})
+
+	describe("maybeTriggerFermentCompaction", () => {
+		it("does not compact while a toolCall is in flight", () => {
+			const ferment = makeFermentWithPhase(
+				{ id: "phase-1", name: "Phase", goal: "Goal" },
+				{ id: "step-1", description: "Step" },
+			)
+			storageMap.set(ferment.id, ferment)
+			runtime.setActive(ferment)
+			setPendingCompaction(ferment.id, makePendingStep(ferment.id, "phase-1", "step-1"))
+
+			ctx.sessionManager.getEntries = vi.fn(() => [
+				makeSessionMessageEntry({
+					role: "assistant",
+					content: [{ type: "toolCall", id: "call-in-flight" }],
+				}),
+			])
+
+			maybeTriggerFermentCompaction(pi, ctx, runtime)
+
+			expect(ctx.compact).not.toHaveBeenCalled()
+			expect(runtime.getPendingCompaction(ferment.id)).toBeDefined()
+		})
+
+		it("compacts normally once the matching toolResult lands", () => {
+			const ferment = makeFermentWithPhase(
+				{ id: "phase-1", name: "Phase", goal: "Goal" },
+				{ id: "step-1", description: "Step" },
+			)
+			storageMap.set(ferment.id, ferment)
+			runtime.setActive(ferment)
+			setPendingCompaction(ferment.id, makePendingStep(ferment.id, "phase-1", "step-1"))
+
+			ctx.sessionManager.getEntries = vi.fn(() => [
+				makeSessionMessageEntry({
+					role: "assistant",
+					content: [{ type: "toolCall", id: "call-done" }],
+				}),
+				makeSessionMessageEntry({ role: "toolResult", toolCallId: "call-done" }),
+			])
+
+			maybeTriggerFermentCompaction(pi, ctx, runtime)
+
+			expect(ctx.compact).toHaveBeenCalledOnce()
+			expect(runtime.getPendingCompaction(ferment.id)).toBeUndefined()
+		})
 	})
 })

@@ -98,6 +98,7 @@ describe("initial survey UI", () => {
 		})
 		const ctx = {
 			hasUI: true,
+			mode: "tui",
 			ui: {
 				custom,
 				notify: vi.fn(),
@@ -136,6 +137,7 @@ describe("initial survey UI", () => {
 		try {
 			const ctx = {
 				hasUI: true,
+				mode: "tui",
 				ui: {
 					custom: vi.fn(async () => {
 						throw new Error("boom")

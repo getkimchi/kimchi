@@ -452,7 +452,7 @@ describe("fermentExtension question dropdown", () => {
 				customType: "ferment_continuation_nudge",
 				content: [expect.objectContaining({ text: expect.stringContaining("activate_ferment_phase") })],
 			}),
-			{ triggerTurn: true, deliverAs: "followUp" },
+			{ triggerTurn: true, deliverAs: "steer" },
 		)
 	})
 
@@ -504,7 +504,86 @@ describe("fermentExtension question dropdown", () => {
 				customType: "ferment_continuation_nudge",
 				content: [expect.objectContaining({ text: expect.stringContaining("activate_ferment_phase") })],
 			}),
+			{ triggerTurn: true, deliverAs: "steer" },
+		)
+	})
+
+	it("keeps final completion pending when the agent ends before calling complete_ferment", async () => {
+		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-index-final-completion-test-")))
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: () => storage,
+		}
+		runtime.setContinuationPolicy("automated")
+		const applyAndPersist = createApplyAndPersist(runtime)
+		const draft = storage.create("Final Completion")
+		const scoped = applyAndPersist(draft.id, {
+			type: "scope",
+			goal: "Goal",
+			successCriteria: ["Works"],
+			constraints: [],
+			phases: [{ name: "Phase", goal: "Build", steps: [] }],
+		})
+		if (!scoped.ok) throw new Error(scoped.error.message)
+		const activated = applyAndPersist(draft.id, { type: "activate_phase", phaseId: "phase-1" })
+		if (!activated.ok) throw new Error(activated.error.message)
+		const completedPhase = applyAndPersist(draft.id, {
+			type: "complete_phase",
+			phaseId: "phase-1",
+			summary: "done",
+		})
+		if (!completedPhase.ok) throw new Error(completedPhase.error.message)
+		runtime.setActive(completedPhase.ferment)
+
+		const { handlers, pi } = registerFermentExtension(runtime)
+		const turnEnd = handlers.get("turn_end")
+		const agentEnd = handlers.get("agent_end")
+		if (!turnEnd || !agentEnd) throw new Error("ferment lifecycle handlers were not registered")
+
+		await turnEnd(
+			{
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "Now complete the ferment." }],
+				},
+			},
+			{},
+		)
+		await agentEnd({ type: "agent_end" }, {})
+
+		expect(storage.get(draft.id)?.status).not.toBe("complete")
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_continuation_nudge",
+				content: [expect.objectContaining({ text: expect.stringContaining("complete_ferment") })],
+				details: expect.objectContaining({ action: "complete_ferment" }),
+			}),
 			{ triggerTurn: true, deliverAs: "followUp" },
+		)
+
+		vi.mocked(pi.sendMessage).mockClear()
+		await turnEnd(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "stop",
+					content: [
+						{ type: "toolCall", name: "complete_ferment_phase" },
+						{ type: "text", text: "Phase complete." },
+					],
+				},
+			},
+			{},
+		)
+		await agentEnd({ type: "agent_end" }, {})
+
+		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_continuation_nudge",
+				content: [expect.objectContaining({ text: expect.stringContaining("complete_ferment") })],
+			}),
+			expect.anything(),
 		)
 	})
 
@@ -1049,7 +1128,9 @@ describe("fermentExtension question dropdown", () => {
 			await vi.runOnlyPendingTimersAsync()
 
 			expect(storage.get(draft.id)?.status).toBe("draft")
-			expect(getPendingPlanReview(draft.id)).toBeDefined()
+			// Feedback path clears the pending review so the model regains its
+			// full toolset to revise the plan (tool-scope suppression is lifted).
+			expect(getPendingPlanReview(draft.id)).toBeUndefined()
 			expect(pi.sendMessage).toHaveBeenCalledWith(
 				expect.objectContaining({
 					customType: "ferment_scoping_iteration",
@@ -1075,7 +1156,7 @@ describe("fermentExtension question dropdown", () => {
 		}
 	})
 
-	it("keeps pending plan review when the review dialog is cancelled", async () => {
+	it("clears pending plan review when the review dialog is cancelled", async () => {
 		vi.useFakeTimers()
 		try {
 			const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-index-plan-review-cancel-test-")))
@@ -1110,7 +1191,10 @@ describe("fermentExtension question dropdown", () => {
 			await vi.runOnlyPendingTimersAsync()
 
 			expect(storage.get(draft.id)?.status).toBe("draft")
-			expect(getPendingPlanReview(draft.id)).toBeDefined()
+			// Cancel path clears the pending review and restores the planning
+			// tool profile so the model can continue working (re-propose, etc.).
+			expect(getPendingPlanReview(draft.id)).toBeUndefined()
+			expect(pi.setActiveTools).toHaveBeenCalled()
 			expect(pi.sendMessage).not.toHaveBeenCalled()
 		} finally {
 			vi.useRealTimers()
@@ -1306,5 +1390,50 @@ Does this plan look right?`,
 
 			expect(compact).not.toHaveBeenCalled()
 		})
+	})
+})
+
+describe("agent-spawn-guard integration", () => {
+	it("redirects an orchestrator that tries to spawn before starting the step", async () => {
+		const { allHandlers } = registerFermentExtension()
+
+		setActive(
+			makeActivePlanFerment({
+				activePhaseId: "phase-1",
+				phases: [
+					{
+						id: "phase-1",
+						index: 1,
+						name: "Phase",
+						goal: "Build",
+						status: "active",
+						steps: [{ id: "step-1", index: 1, description: "Implement guard", status: "pending" }],
+					},
+				],
+			}),
+		)
+
+		// Walk every tool_call handler the broadcast fixture collected and find
+		// the first one that returns a block. We do NOT assume the guard is
+		// last — we just assert that SOMEONE in the chain blocks with a reason
+		// that points at start_ferment_step.
+		const toolCall = { toolName: "Agent", input: { subagent_type: "Builder", prompt: "implement it" } }
+		let redirect: { block: boolean; reason?: string } | undefined
+		for (const handler of allHandlers.get("tool_call") ?? []) {
+			const r = (await handler(toolCall, {})) as { block: boolean; reason?: string } | undefined
+			if (r?.block) {
+				redirect = r
+				break
+			}
+		}
+
+		expect(redirect).toBeDefined()
+		// Assert on the guard's exact phrasing rather than just /start_ferment_step/.
+		// Other tool_call handlers (permissions, loop-guard) could in principle
+		// block with a different reason that happens to mention the tool name;
+		// matching the guard-specific sentence proves the agent-spawn guard is the
+		// one that fired.
+		expect(redirect?.reason ?? "").toContain("has a pending step that has not been started")
+		expect(redirect?.reason ?? "").toContain("start_ferment_step")
 	})
 })

@@ -48,6 +48,21 @@ function isWriteTodosDetails(value: unknown): value is WriteTodosDetails {
 
 const TODO_REPLAY_TOOL_NAME_SET = new Set<string>([...TODO_TOOL_NAMES, "write_todos"])
 
+/**
+ * Checks whether any todo tool is currently available to the model.
+ *
+ * Other extensions (e.g. ferment plan review) suppress ALL tools via
+ * `pi.setActiveTools([])`. In that state the model cannot reconcile todos —
+ * sending `reconcile_todos` follow-ups or `todo_checkpoint` context messages
+ * would create an infinite loop: the model tries to call todo tools, fails
+ * (tools unavailable), produces text-only output, `turn_end` fires, and the
+ * checkpoint fires again because `workSinceTodoWrite` was never cleared.
+ */
+function anyTodoToolsAvailable(pi: ExtensionAPI): boolean {
+	const active = pi.getActiveTools()
+	return TODO_TOOL_NAMES.some((name) => active.includes(name))
+}
+
 function getWriteTodosDetails(entry: SessionEntry): WriteTodosDetails | undefined {
 	if (entry.type === "custom" && entry.customType === TODO_CUSTOM_ENTRY_TYPE) {
 		return isWriteTodosDetails(entry.data) ? entry.data : undefined
@@ -94,6 +109,15 @@ function hiddenTodoMessage(reason: string, text: string) {
 	}
 }
 
+function hasVisibleText(message: unknown): boolean {
+	if (!isRecord(message)) return false
+	const content = message.content
+	if (!Array.isArray(content)) return false
+	return content.some(
+		(part) => isRecord(part) && part.type === "text" && typeof part.text === "string" && part.text.trim(),
+	)
+}
+
 function isTerminalAssistantTurn(
 	event: { message: unknown; toolResults: readonly unknown[] },
 	ctx: ExtensionContext,
@@ -122,15 +146,24 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		workSinceTodoWrite = false
 	}
 
-	const maybeSteerTodoReconciliation = () => {
+	const maybeSteerTodoReconciliation = (message: unknown) => {
 		if (!workSinceTodoWrite) return
+		if (!hasVisibleText(message)) return
+		// If the model has no todo tools available (e.g. during a ferment plan
+		// review where all tools are suppressed), it cannot reconcile todos.
+		// Sending a follow-up would trap it in a text-only loop. Reset the flag
+		// and defer reconciliation until tools are restored.
+		if (!anyTodoToolsAvailable(pi)) {
+			resetTodoProcessState()
+			return
+		}
 		if (!currentTodoStateKey()) {
 			resetTodoProcessState()
 			return
 		}
 		const stateText = currentTodoStateText()
-		const message = stateText ? `${TODO_RECONCILE_MESSAGE}\n\n${stateText}` : TODO_RECONCILE_MESSAGE
-		pi.sendMessage(hiddenTodoMessage("reconcile_todos", message), { deliverAs: "followUp" })
+		const promptText = stateText ? `${TODO_RECONCILE_MESSAGE}\n\n${stateText}` : TODO_RECONCILE_MESSAGE
+		pi.sendMessage(hiddenTodoMessage("reconcile_todos", promptText), { deliverAs: "followUp" })
 	}
 
 	registerTodosCommand(pi)
@@ -172,6 +205,9 @@ export default function todosExtension(pi: ExtensionAPI): void {
 
 	pi.on("context", (event) => {
 		if (!workSinceTodoWrite) return undefined
+		// Same guard as maybeSteerTodoReconciliation: if todo tools are not
+		// available (e.g. ferment plan review), skip checkpoint injection.
+		if (!anyTodoToolsAvailable(pi)) return undefined
 		const stateText = currentTodoStateText()
 		if (!stateText) return resetTodoProcessState()
 		return {
@@ -189,7 +225,7 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	pi.on("turn_end", (event, ctx) => {
 		if (!isTerminalAssistantTurn(event, ctx)) return
 		syncTodoWidget(ctx)
-		maybeSteerTodoReconciliation()
+		maybeSteerTodoReconciliation(event.message)
 	})
 
 	pi.on("session_shutdown", (_event, ctx) => {

@@ -478,5 +478,51 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain("## Phase Guidelines (build)")
 			expect(result).toContain("Outline-then-diff")
 		})
+
+		it("includes default research nudges for a non-OSS model in research phase", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				currentModelId: "claude-opus-4-6-20250514",
+				currentPhase: "research",
+				registry,
+				mode: "single",
+			})
+			expect(result).toContain("## Phase Guidelines (research)")
+			expect(result).toContain("version you are assuming")
+			expect(result).toContain("version/API assumption")
+			expect(result).toContain("do not bluff")
+			expect(result).toContain("Do not rely on training memory")
+			expect(result).not.toContain("AT MOST one")
+		})
+
+		it("includes default and family research nudges for an OSS model in research phase", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				currentModelId: "minimax-m3",
+				currentPhase: "research",
+				registry,
+				mode: "single",
+			})
+			expect(result).toContain("## Phase Guidelines (research)")
+			expect(result).toContain("MiniMax family")
+			expect(result).toContain("hallucinating APIs")
+			expect(result).toContain("version you are assuming")
+		})
+
+		it("includes build-phase research nudge for an OSS model in build phase", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				currentModelId: "minimax-m3",
+				currentPhase: "build",
+				registry,
+				mode: "single",
+			})
+			expect(result).toContain("## Phase Guidelines (build)")
+			expect(result).toContain("uncertain about a library API")
+			expect(result).toContain("assume your knowledge may be stale")
+		})
 	})
 })

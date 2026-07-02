@@ -13,8 +13,10 @@
  *
  * Subagent mode:
  * - "input": passes through unchanged.
- * - "before_agent_start": injects the pure worker system prompt. Filters out
- *   delegation tools to prevent infinite delegation chains.
+ * - "before_agent_start": delegates to buildSystemPrompt in system-prompt.ts,
+ *   which produces the worker system prompt and filters out delegation tools
+ *   (to prevent infinite delegation chains). This file only strips phantom
+ *   empty-name tool calls from the subagent context.
  *
  * Steering messages are excluded — when the agent is streaming, the handler
  * returns "continue" so the message passes through unchanged.
@@ -67,7 +69,13 @@ import {
 } from "../orchestration/model-roles.js"
 import { getCurrentPhase } from "../tags.js"
 import { type ContextFile, loadGlobalContextFiles, loadProjectContextFiles } from "./context-files.js"
-import { type EnvironmentInfo, type PromptMode, type ToolInfo, buildSystemPrompt } from "./system-prompt.js"
+import {
+	DELEGATION_TOOL_NAMES,
+	type EnvironmentInfo,
+	type PromptMode,
+	type ToolInfo,
+	buildSystemPrompt,
+} from "./system-prompt.js"
 
 function safeUsername(): string {
 	try {
@@ -146,7 +154,7 @@ export function getOrchestratorModelId(): string {
 export function getOrchestratorModelRef(): string {
 	return getModelRoles().orchestrator
 }
-const DELEGATION_TOOL_NAMES = new Set(["Agent", "subagent"])
+// DELEGATION_TOOL_NAMES is imported from system-prompt.js — the canonical set.
 
 // Tracks sessions that have already received a deprecation notification to avoid duplicate alerts.
 const deprecatedNotificationFired = new Set<string>()

@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
-import { expandUserPath, findExistingFile, resolveUserPath, stripAtPrefix } from "./fs-paths.js"
+import { expandUserPath, findExistingFile, normalizeAtFileArgs, resolveUserPath, stripAtPrefix } from "./fs-paths.js"
 
 describe("resolveUserPath", () => {
 	it("expands bare ~ to the user's home directory", () => {
@@ -83,5 +83,22 @@ describe("findExistingFile", () => {
 		writeFileSync(join(tmp, storedName), "x")
 		const queried = findExistingFile("Capture d'\u00E9cran.png", tmp)
 		expect(queried).toBe(join(tmp, storedName))
+	})
+})
+
+describe("normalizeAtFileArgs", () => {
+	it("normalizes @file args to regular files and reports directories", () => {
+		const tmp = mkdtempSync(join(tmpdir(), "fs-paths-at-file-test-"))
+		try {
+			writeFileSync(join(tmp, "present.txt"), "hi")
+			mkdirSync(join(tmp, "a-directory"))
+
+			const result = normalizeAtFileArgs(["--model", "x", "@present.txt", "@a-directory"], tmp)
+
+			expect(result.args).toEqual(["--model", "x", `@${join(tmp, "present.txt")}`, "@a-directory"])
+			expect(result.directoryArgs).toEqual([join(tmp, "a-directory")])
+		} finally {
+			rmSync(tmp, { recursive: true, force: true })
+		}
 	})
 })

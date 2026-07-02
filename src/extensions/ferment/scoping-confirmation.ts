@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { ScopePhaseInput } from "../../ferment/state-machine.js"
 import { normalizeFermentTitle } from "../../ferment/title.js"
+import { deletePendingProposal } from "./pending-proposal-store.js"
 import type { FermentRuntime } from "./runtime.js"
 import { type ApplyOutcome, createApplyAndPersist } from "./tool-helpers.js"
 
@@ -62,6 +63,9 @@ export function confirmPendingScope(
 	})
 	if (!outcome.ok) return { ok: false, error: outcome.error }
 	runtime.clearPendingScope(fermentId)
+	// The user confirmed the plan; remove the persisted pending proposal so a
+	// later session restart cannot re-arm a stale review.
+	deletePendingProposal(fermentId)
 
 	if (pi) {
 		runtime.setActive(outcome.ferment)

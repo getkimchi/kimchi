@@ -17,9 +17,15 @@
 //          platform.minimax.io best-practices (step-limit, state tracking),
 //          Verdent failure-mode analysis (scope creep, hallucinated APIs)
 
-/** Reserved: no family-level explore/research/plan overrides identified yet. */
+/** Reserved: no family-level explore/plan overrides identified yet. */
 export const MINIMAX_FAMILY_EXPLORE = ""
-export const MINIMAX_FAMILY_RESEARCH = ""
+
+/** MiniMax family research: verify APIs before relying on memory. */
+export const MINIMAX_FAMILY_RESEARCH = `During **research** phase (MiniMax family):
+- Your known failure mode is hallucinating APIs. If you cannot point to the exact official source for a method signature, run \`web_search\` + \`web_fetch\` on the primary docs before using it.
+- Prefer verifying version-specific behaviour over relying on "this feels right".
+- Do not treat named libraries, vendor kits, or old framework versions as "known". If the task names a specific product or version, verify it with \`web_search\`/\`web_fetch\` before relying on it.`
+
 export const MINIMAX_FAMILY_PLAN = ""
 
 /** M2 family orchestration: direct web_search, short prompts, single-goal subagents.

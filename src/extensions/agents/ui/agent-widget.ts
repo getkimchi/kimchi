@@ -7,7 +7,7 @@ import { remountTipWidget } from "../../tips/index.js"
 import type { AgentManager } from "../manager/agent-manager.js"
 import { type LifetimeUsage, type SessionLike, getLifetimeTotal, getSessionContextPercent } from "../manager/usage.js"
 import { getConfig } from "../personas/agent-types.js"
-import type { AgentAbortReason, SubagentType } from "../personas/types.js"
+import type { AgentAbortReason, AgentOutcome, SubagentType } from "../personas/types.js"
 
 const MAX_WIDGET_LINES = 12
 
@@ -69,6 +69,7 @@ export interface AgentDetails {
 	sessionFile?: string
 	error?: string
 	abortReason?: AgentAbortReason
+	agentOutcome?: AgentOutcome
 }
 
 export function formatTokens(count: number): string {

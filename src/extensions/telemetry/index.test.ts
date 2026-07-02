@@ -846,6 +846,71 @@ describe("edge case coverage", () => {
 		expect(rec).toBeDefined()
 		expect(attrsOf(rec as NonNullable<typeof rec>).success).toBe("true")
 	})
+
+	it("ferment.phase.completed includes steering_count for steerings during that phase", async () => {
+		const { handlers, events } = await setup()
+		const { FERMENT_EVENTS } = await import("../ferment/domain-events.js")
+
+		// Steering before the phase starts — must not be counted in the phase.
+		events.emit(FERMENT_EVENTS.STEERING, { fermentId: "f-steer-phase" })
+
+		events.emit(FERMENT_EVENTS.PHASE_STARTED, {
+			fermentId: "f-steer-phase",
+			phaseId: "ph-1",
+			phaseIndex: 1,
+			phaseName: "Build",
+		})
+		// Two steerings during the phase.
+		events.emit(FERMENT_EVENTS.STEERING, { fermentId: "f-steer-phase" })
+		events.emit(FERMENT_EVENTS.STEERING, { fermentId: "f-steer-phase" })
+		events.emit(FERMENT_EVENTS.PHASE_COMPLETED, {
+			fermentId: "f-steer-phase",
+			phaseId: "ph-1",
+			phaseIndex: 1,
+			phaseName: "Build",
+			durationMs: 0,
+			deltaInputTokens: 0,
+			deltaOutputTokens: 0,
+			blockRetries: 0,
+			steeringCount: 0,
+		})
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const rec = extractRecords().find((r) => r.eventName === "ferment.phase.completed")
+		expect(rec).toBeDefined()
+		expect(attrsOf(rec as NonNullable<typeof rec>).steering_count).toBe("2")
+	})
+
+	it("ferment.step.completed includes steering_count for steerings during that step", async () => {
+		const { handlers, events } = await setup()
+		const { FERMENT_EVENTS } = await import("../ferment/domain-events.js")
+
+		// Steering before the step starts — must not be counted in the step.
+		events.emit(FERMENT_EVENTS.STEERING, { fermentId: "f-steer-step" })
+
+		events.emit(FERMENT_EVENTS.STEP_STARTED, {
+			fermentId: "f-steer-step",
+			phaseId: "ph-1",
+			stepId: "step-1",
+			stepIndex: 1,
+		})
+		// One steering during the step.
+		events.emit(FERMENT_EVENTS.STEERING, { fermentId: "f-steer-step" })
+		events.emit(FERMENT_EVENTS.STEP_COMPLETED, {
+			fermentId: "f-steer-step",
+			phaseId: "ph-1",
+			stepId: "step-1",
+			stepIndex: 1,
+			durationMs: 0,
+			success: true,
+			steeringCount: 0,
+		})
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const rec = extractRecords().find((r) => r.eventName === "ferment.step.completed")
+		expect(rec).toBeDefined()
+		expect(attrsOf(rec as NonNullable<typeof rec>).steering_count).toBe("1")
+	})
 })
 
 describe("token accounting regression tests", () => {

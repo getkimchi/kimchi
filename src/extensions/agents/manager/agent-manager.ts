@@ -1,8 +1,26 @@
 import { randomUUID } from "node:crypto"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import type { AgentRecord, AgentVisibility, IsolationMode, SubagentType, ThinkingLevel } from "../personas/types.js"
-import { type ToolActivity, resumeAgent, runAgent } from "./agent-runner.js"
+import type {
+	AgentOutcome,
+	AgentRecord,
+	AgentReport,
+	AgentResumeAttempt,
+	AgentTaskRef,
+	AgentVisibility,
+	IsolationMode,
+	SubagentType,
+	ThinkingLevel,
+} from "../personas/types.js"
+import { FERMENT_WORKER_BUDGETS } from "../worker-budget-policy.js"
+import type { WorkerReportSubmission } from "../worker-report.js"
+import {
+	MIN_FINALIZE_TOKEN_BUDGET,
+	MIN_TOKEN_BUDGET,
+	type ToolActivity,
+	resumeAgent,
+	runAgent,
+} from "./agent-runner.js"
 import { type LifetimeUsage, addUsage } from "./usage.js"
 
 export type OnAgentComplete = (record: AgentRecord) => void
@@ -12,6 +30,9 @@ export type CompactionInfo = { reason: "manual" | "threshold" | "overflow"; toke
 
 /** Default max concurrent background agents. */
 const DEFAULT_MAX_CONCURRENT = 4
+const DEFAULT_MAX_CONTINUATION_RESUMES = 2
+const DEFAULT_MAX_REPORT_FINALIZERS = 1
+const REPORT_FINALIZATION_LIMITS = { maxTurns: 2, maxDuration: 30, tokenBudget: 8192 } as const
 
 interface SpawnArgs {
 	pi: ExtensionAPI
@@ -40,6 +61,7 @@ interface SpawnOptions {
 	sessionDir?: string
 	signal?: AbortSignal
 	tokenBudget?: number
+	taskRef?: AgentTaskRef
 	inactivityTimeout?: number
 	maxDuration?: number
 	onToolActivity?: (activity: ToolActivity) => void
@@ -50,8 +72,56 @@ interface SpawnOptions {
 	onCompaction?: (info: CompactionInfo) => void
 }
 
+function formatTaskRef(ref: AgentTaskRef): string {
+	return JSON.stringify(ref)
+}
+
+function cumulativeTokenBudget(taskRef: AgentTaskRef): number {
+	return FERMENT_WORKER_BUDGETS[taskRef.budget_tier ?? "standard"].cumulativeTokenBudget
+}
+
+function applyLinkedWorkerLimits(options: SpawnOptions): SpawnOptions {
+	if (!options.taskRef) return options
+	const budget = FERMENT_WORKER_BUDGETS[options.taskRef.budget_tier ?? "standard"]
+	return {
+		...options,
+		maxTurns: Math.min(options.maxTurns ?? budget.maxTurns, budget.maxTurns),
+		maxDuration: Math.min(options.maxDuration ?? budget.maxDuration, budget.maxDuration),
+		tokenBudget: Math.min(options.tokenBudget ?? budget.tokenBudget, budget.tokenBudget),
+	}
+}
+
+function withAgentReportProtocol(prompt: string, taskRef: AgentTaskRef | undefined): string {
+	if (!taskRef) return prompt
+	return `You are a Ferment-linked worker Agent.
+
+Task ref: ${formatTaskRef(taskRef)}
+
+Call submit_agent_report alone as your final action. The host binds the report to this worker and ends the run after accepting it, so finish all intended edits and verification before calling it. Report factual progress only:
+- status "completed" when the assigned work is complete
+- status "partial" when useful work remains
+- status "blocked" when external input or an unresolved blocker prevents progress
+- steps_completed: concrete steps you finished
+- remaining_steps: concrete work still left, or [] when complete
+- blockers: blockers only, not generic uncertainty
+
+If you receive a budget warning, use the remaining headroom deliberately. If there is enough room to safely finish and verify the current unit, do that first, then call submit_agent_report. If the budget is nearly exhausted or uncertain, stop work and submit your current state immediately.
+
+${prompt}`
+}
+
+function reportFinalizationPrompt(taskRef: AgentTaskRef): string {
+	return `You are finalizing the report for this Ferment-linked worker attempt.
+
+Task ref: ${formatTaskRef(taskRef)}
+
+Do not perform more task work, edit files, explore, or run verification. Based only on the work already present in this session, call submit_agent_report alone as your next and final action. Report factual progress. Use status "completed" only if the assigned work is complete; otherwise use "partial" or "blocked", with concrete remaining_steps or blockers.`
+}
+
 export class AgentManager {
 	private agents = new Map<string, AgentRecord>()
+	private runtimeCleanups = new WeakMap<AgentRecord, () => void>()
+	private activeResumePromises = new WeakMap<AgentRecord, Promise<unknown>>()
 	private cleanupInterval: ReturnType<typeof setInterval>
 	private onComplete?: OnAgentComplete
 	private onStart?: OnAgentStart
@@ -84,27 +154,42 @@ export class AgentManager {
 	}
 
 	spawn(pi: ExtensionAPI, ctx: ExtensionContext, type: SubagentType, prompt: string, options: SpawnOptions): string {
+		const effectiveOptions = applyLinkedWorkerLimits(options)
 		const id = randomUUID().slice(0, 17)
 		const abortController = new AbortController()
 		const record: AgentRecord = {
 			id,
 			type,
-			description: options.description,
-			visibility: options.visibility ?? "user",
-			status: options.isBackground ? "queued" : "running",
-			modelId: (options.model as { id?: string } | undefined)?.id,
+			description: effectiveOptions.description,
+			visibility: effectiveOptions.visibility ?? "user",
+			status: effectiveOptions.isBackground ? "queued" : "running",
+			modelId: (effectiveOptions.model as { id?: string } | undefined)?.id,
 			toolUses: 0,
 			startedAt: Date.now(),
 			abortController,
-			sessionFile: options.sessionFile,
+			sessionFile: effectiveOptions.sessionFile,
+			taskRef: effectiveOptions.taskRef,
+			currentAttemptId: 0,
+			maxTurns: effectiveOptions.maxTurns,
+			resumeAttempts: [],
 			lifetimeUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			compactionCount: 0,
 		}
 		this.agents.set(id, record)
 
-		const args: SpawnArgs = { pi, ctx, type, prompt, options }
+		const args: SpawnArgs = {
+			pi,
+			ctx,
+			type,
+			prompt: withAgentReportProtocol(prompt, effectiveOptions.taskRef),
+			options: effectiveOptions,
+		}
 
-		if (options.isBackground && !options.bypassQueue && this.runningBackground >= this.maxConcurrent) {
+		if (
+			effectiveOptions.isBackground &&
+			!effectiveOptions.bypassQueue &&
+			this.runningBackground >= this.maxConcurrent
+		) {
 			this.queue.push({ id, args })
 			return id
 		}
@@ -147,6 +232,21 @@ export class AgentManager {
 			tokenBudget: options.tokenBudget,
 			inactivityTimeout: options.inactivityTimeout,
 			maxDuration: options.maxDuration,
+			workerReport: record.taskRef
+				? {
+						isAccepted: () => record.agentReport?.attempt_id === record.currentAttemptId,
+						submit: (report) => {
+							const accepted = this.submitReport(id, report) != null
+							return {
+								accepted,
+								message: accepted
+									? "Agent report recorded. Worker run complete."
+									: "Agent report rejected because this worker is no longer active.",
+							}
+						},
+					}
+				: undefined,
+			hardTurnLimit: record.taskRef?.kind === "ferment_step",
 			isolated: options.isolated,
 			inheritContext: options.inheritContext,
 			thinkingLevel: options.thinkingLevel,
@@ -157,7 +257,10 @@ export class AgentManager {
 				if (activity.type === "end") record.toolUses++
 				options.onToolActivity?.(activity)
 			},
-			onTurnEnd: options.onTurnEnd,
+			onTurnEnd: (turnCount) => {
+				record.lastTurnCount = turnCount
+				options.onTurnEnd?.(turnCount)
+			},
 			onTextDelta: options.onTextDelta,
 			onAssistantUsage: (usage) => {
 				addUsage(record.lifetimeUsage, usage)
@@ -167,6 +270,9 @@ export class AgentManager {
 				record.compactionCount++
 				this.onCompact?.(record, info)
 				options.onCompaction?.(info)
+			},
+			onRuntimeCleanupRegistered: (cleanup) => {
+				this.runtimeCleanups.set(record, cleanup)
 			},
 			onSessionCreated: (session) => {
 				record.session = session
@@ -179,25 +285,18 @@ export class AgentManager {
 				options.onSessionCreated?.(session)
 			},
 		})
-			.then(({ responseText, session, aborted, abortReason, steered }) => {
+			.then(({ responseText, session, aborted, abortReason, steered, turnsUsed, maxTurns }) => {
 				if (record.status !== "stopped") {
 					record.status = aborted ? "aborted" : steered ? "steered" : "completed"
 				}
 				record.abortReason = abortReason
 				record.result = responseText
 				record.session = session
+				record.lastTurnCount = turnsUsed
+				// Preserve the effective, normalized turn cap returned by the runner.
+				record.maxTurns = maxTurns ?? options.maxTurns
 				record.completedAt ??= Date.now()
-
-				detach()
-
-				if (record.outputCleanup) {
-					try {
-						record.outputCleanup()
-					} catch {
-						/* ignore */
-					}
-					record.outputCleanup = undefined
-				}
+				record.latestOutcome = buildAgentOutcome(record)
 
 				if (record.isBackground) {
 					this.runningBackground--
@@ -209,20 +308,10 @@ export class AgentManager {
 			.catch((err) => {
 				if (record.status !== "stopped") {
 					record.status = "error"
+					record.error = err instanceof Error ? err.message : String(err)
 				}
-				record.error = err instanceof Error ? err.message : String(err)
 				record.completedAt ??= Date.now()
-
-				detach()
-
-				if (record.outputCleanup) {
-					try {
-						record.outputCleanup()
-					} catch {
-						/* ignore */
-					}
-					record.outputCleanup = undefined
-				}
+				record.latestOutcome = buildAgentOutcome(record)
 
 				if (record.isBackground) {
 					this.runningBackground--
@@ -230,6 +319,11 @@ export class AgentManager {
 					this.drainQueue()
 				}
 				return ""
+			})
+			.finally(() => {
+				detach()
+				this.cleanupRecordRuntime(record)
+				record.promise = undefined
 			})
 
 		record.promise = promise
@@ -276,12 +370,6 @@ export class AgentManager {
 	detachToBackground(id: string): boolean {
 		const record = this.agents.get(id)
 		if (!record || record.status !== "running" || record.isBackground) return false
-		// If there is no detachResolver, the foreground execute path is not
-		// awaiting a detach race (e.g. it hasn't set the resolver yet, or the
-		// caller used spawnAndWait). Detaching in that case would flip
-		// isBackground and bump runningBackground but leave the foreground path
-		// blocked on the agent's own promise — producing inconsistent state.
-		// Bail out so the keystroke becomes a no-op until the foreground path is ready.
 		if (!record.detachResolver) return false
 
 		record.isBackground = true
@@ -294,40 +382,168 @@ export class AgentManager {
 		return true
 	}
 
-	async resume(id: string, prompt: string, signal?: AbortSignal): Promise<AgentRecord | undefined> {
+	async resume(
+		id: string,
+		prompt: string | undefined,
+		options: {
+			signal?: AbortSignal
+			maxTurns?: number
+			tokenBudget?: number
+			inactivityTimeout?: number
+			maxDuration?: number
+			purpose?: "continuation" | "finalize_report"
+		} = {},
+	): Promise<AgentRecord | undefined> {
 		const record = this.agents.get(id)
 		if (!record?.session) return undefined
+		const purpose = options.purpose ?? "continuation"
+		if (this.getResumeBlockReason(id, purpose)) return record
+		const tierBudget = record.taskRef ? FERMENT_WORKER_BUDGETS[record.taskRef.budget_tier ?? "standard"] : undefined
+		const attemptLimits =
+			purpose === "finalize_report"
+				? REPORT_FINALIZATION_LIMITS
+				: tierBudget
+					? {
+							...options,
+							maxTurns: Math.min(options.maxTurns ?? tierBudget.maxTurns, tierBudget.maxTurns),
+							maxDuration: Math.min(options.maxDuration ?? tierBudget.maxDuration, tierBudget.maxDuration),
+							tokenBudget: Math.min(options.tokenBudget ?? tierBudget.tokenBudget, tierBudget.tokenBudget),
+						}
+					: options
+		const remainingTokenBudget = record.taskRef
+			? Math.max(0, cumulativeTokenBudget(record.taskRef) - record.lifetimeUsage.output)
+			: undefined
+		const attemptTokenBudget =
+			remainingTokenBudget == null
+				? attemptLimits.tokenBudget
+				: Math.min(attemptLimits.tokenBudget ?? remainingTokenBudget, remainingTokenBudget)
 
 		record.status = "running"
-		record.startedAt = Date.now()
 		record.completedAt = undefined
 		record.result = undefined
 		record.error = undefined
 		record.abortReason = undefined
+		record.maxTurns = attemptLimits.maxTurns
+		record.lastTurnCount = 0
+		record.currentAttemptId++
+		record.agentReport = undefined
+		const attemptStartedAt = Date.now()
+		const attempt: AgentResumeAttempt = {
+			attempt_id: record.currentAttemptId,
+			purpose,
+			startedAt: attemptStartedAt,
+			maxTurns: attemptLimits.maxTurns,
+			tokenBudget: attemptTokenBudget,
+		}
+		record.resumeAttempts ??= []
+		record.resumeAttempts.push(attempt)
+		const abortController = new AbortController()
+		record.abortController = abortController
+		const onCallerAbort = () => abortController.abort()
+		if (options.signal?.aborted) abortController.abort()
+		else options.signal?.addEventListener("abort", onCallerAbort, { once: true })
+
+		const attemptPrompt =
+			purpose === "finalize_report" && record.taskRef
+				? reportFinalizationPrompt(record.taskRef)
+				: withAgentReportProtocol(prompt ?? "", record.taskRef)
+		const resumePromise = resumeAgent(record.session, attemptPrompt, {
+			onToolActivity: (activity) => {
+				if (activity.type === "end") record.toolUses++
+			},
+			onTurnEnd: (turnCount) => {
+				record.lastTurnCount = turnCount
+			},
+			onAssistantUsage: (usage) => {
+				addUsage(record.lifetimeUsage, usage)
+			},
+			onCompaction: (info) => {
+				record.compactionCount++
+				this.onCompact?.(record, info)
+			},
+			signal: abortController.signal,
+			maxTurns: attemptLimits.maxTurns,
+			tokenBudget: attemptTokenBudget,
+			minTokenBudget: purpose === "finalize_report" ? MIN_FINALIZE_TOKEN_BUDGET : undefined,
+			inactivityTimeout: options.inactivityTimeout,
+			maxDuration: attemptLimits.maxDuration,
+			hardTurnLimit: record.taskRef?.kind === "ferment_step",
+			shouldTerminateAfterTool: (toolName) =>
+				toolName === "submit_agent_report" && record.agentReport?.attempt_id === record.currentAttemptId,
+			onRuntimeCleanupRegistered: (cleanup) => {
+				this.runtimeCleanups.set(record, cleanup)
+			},
+		})
+		this.activeResumePromises.set(record, resumePromise)
 
 		try {
-			const responseText = await resumeAgent(record.session, prompt, {
-				onToolActivity: (activity) => {
-					if (activity.type === "end") record.toolUses++
-				},
-				onAssistantUsage: (usage) => {
-					addUsage(record.lifetimeUsage, usage)
-				},
-				onCompaction: (info) => {
-					record.compactionCount++
-					this.onCompact?.(record, info)
-				},
-				signal,
-			})
-			record.status = "completed"
-			record.result = responseText
+			const result = await resumePromise
+			if ((record.status as AgentRecord["status"]) !== "stopped") {
+				record.status = result.aborted ? "aborted" : result.steered ? "steered" : "completed"
+			}
+			record.abortReason = result.abortReason
+			record.result = result.responseText
+			record.lastTurnCount = result.turnsUsed
+			record.maxTurns = result.maxTurns ?? attemptLimits.maxTurns
 			record.completedAt = Date.now()
 		} catch (err) {
-			record.status = "error"
-			record.error = err instanceof Error ? err.message : String(err)
+			if ((record.status as AgentRecord["status"]) !== "stopped") {
+				record.status = "error"
+				record.error = err instanceof Error ? err.message : String(err)
+			}
 			record.completedAt = Date.now()
+		} finally {
+			options.signal?.removeEventListener("abort", onCallerAbort)
+			this.activeResumePromises.delete(record)
+			this.cleanupRecordRuntime(record)
 		}
+		attempt.completedAt = record.completedAt
+		attempt.outcome = classifyAgentOutcome(record)
+		attempt.reason = record.status === "error" ? "error" : record.abortReason
+		record.latestOutcome = buildAgentOutcome(record)
 
+		return record
+	}
+
+	getResumeBlockReason(id: string, purpose: "continuation" | "finalize_report"): string | undefined {
+		const record = this.agents.get(id)
+		if (!record?.session) return `Agent "${id}" has no active session to resume.`
+		if (purpose === "finalize_report" && record.taskRef?.kind !== "ferment_step") {
+			return `Agent "${id}" is not a Ferment-linked worker and cannot finalize a worker report.`
+		}
+		if (record.agentReport?.attempt_id === record.currentAttemptId && record.agentReport.status === "completed") {
+			return `Agent "${id}" already has an accepted completed report for its current attempt.`
+		}
+		const attemptsForPurpose = record.resumeAttempts?.filter((attempt) => attempt.purpose === purpose).length ?? 0
+		const attemptLimit =
+			purpose === "finalize_report" ? DEFAULT_MAX_REPORT_FINALIZERS : DEFAULT_MAX_CONTINUATION_RESUMES
+		if (record.taskRef?.kind === "ferment_step" && attemptsForPurpose >= attemptLimit) {
+			return `Agent "${id}" has already used the Ferment worker ${purpose} resume limit (${attemptLimit}). Spawn a new linked worker for remaining work.`
+		}
+		if (record.taskRef && record.lifetimeUsage.output >= cumulativeTokenBudget(record.taskRef)) {
+			return `Agent "${id}" exhausted the cumulative ${record.taskRef.budget_tier ?? "standard"} Ferment worker output budget (${cumulativeTokenBudget(record.taskRef)} tokens).`
+		}
+		if (record.taskRef) {
+			const remaining = cumulativeTokenBudget(record.taskRef) - record.lifetimeUsage.output
+			const minBudget = purpose === "finalize_report" ? MIN_FINALIZE_TOKEN_BUDGET : MIN_TOKEN_BUDGET
+			if (remaining < minBudget) {
+				return purpose === "finalize_report"
+					? `Agent "${id}" has only ${remaining} output tokens remaining, below the minimum report-finalization budget (${minBudget} tokens). The session retains its work but cannot produce a structured report. Inspect the raw output and either spawn a replacement worker or stop and report the step as incomplete.`
+					: `Agent "${id}" has only ${remaining} output tokens remaining, below the minimum enforceable resume budget (${minBudget} tokens). Spawn a new linked worker for remaining work.`
+			}
+		}
+		return undefined
+	}
+
+	submitReport(agentId: string, report: WorkerReportSubmission): AgentRecord | undefined {
+		const record = this.agents.get(agentId)
+		if (!record || record.visibility === "system" || record.taskRef?.kind !== "ferment_step") return undefined
+		record.agentReport = {
+			...report,
+			attempt_id: record.currentAttemptId,
+			submitted_at: Date.now(),
+		}
+		record.latestOutcome = buildAgentOutcome(record)
 		return record
 	}
 
@@ -357,7 +573,28 @@ export class AgentManager {
 		return true
 	}
 
+	private cleanupRecordRuntime(record: AgentRecord): void {
+		if (record.outputCleanup) {
+			try {
+				record.outputCleanup()
+			} catch {
+				/* ignore */
+			}
+			record.outputCleanup = undefined
+		}
+		const runtimeCleanup = this.runtimeCleanups.get(record)
+		if (runtimeCleanup) {
+			try {
+				runtimeCleanup()
+			} catch {
+				/* ignore */
+			}
+			this.runtimeCleanups.delete(record)
+		}
+	}
+
 	private removeRecord(id: string, record: AgentRecord): void {
+		this.cleanupRecordRuntime(record)
 		record.session?.dispose?.()
 		record.session = undefined
 		this.agents.delete(id)
@@ -416,10 +653,9 @@ export class AgentManager {
 	async waitForAll(): Promise<void> {
 		while (true) {
 			this.drainQueue()
-			const pending = [...this.agents.values()]
-				.filter((r) => r.status === "running" || r.status === "queued")
-				.map((r) => r.promise)
-				.filter(Boolean)
+			const pending = [...this.agents.values()].flatMap((r) =>
+				[r.promise, this.activeResumePromises.get(r)].filter(Boolean),
+			)
 			if (pending.length === 0) break
 			await Promise.allSettled(pending)
 		}
@@ -429,8 +665,70 @@ export class AgentManager {
 		clearInterval(this.cleanupInterval)
 		this.queue = []
 		for (const record of this.agents.values()) {
+			this.cleanupRecordRuntime(record)
 			record.session?.dispose()
 		}
 		this.agents.clear()
+	}
+}
+
+export function classifyAgentOutcome(record: Pick<AgentRecord, "status" | "abortReason">): AgentOutcome["outcome"] {
+	if (record.status === "completed" || record.status === "steered") return "completed"
+	if (record.status === "stopped") return "stopped"
+	if (record.status === "aborted" && (record.abortReason === "max_turns" || record.abortReason === "token_budget")) {
+		return "budget_exhausted"
+	}
+	return "failed"
+}
+
+function buildRemainingWorkGuidance(
+	outcome: AgentOutcome["outcome"],
+	reason: AgentOutcome["reason"],
+): string | undefined {
+	if (outcome === "budget_exhausted") {
+		return `Inspect the worker report before deciding what to do. Do not assume that steps_completed is correct or that remaining_steps is necessary. Compare both with the assigned step, success criteria, files touched, and verification evidence. Then choose:
+- Call resume_subagent with a fresh, bounded budget if it only needs to continue valid work using the same approach.
+- Call resume_subagent once with explicit new instructions if its approach was wrong but its context is still useful.
+- Spawn a new linked Agent if the necessary remaining work is a separate, narrower task.
+- Stop and report if the work is unnecessary, out of scope, or going in the wrong direction.
+If the report is missing, call resume_subagent with purpose finalize_report before deciding.`
+	}
+	if (outcome === "failed" && (reason === "max_duration" || reason === "inactivity")) {
+		return "Inspect the worker report before acting; this may indicate a hang, blocked command, or stalled investigation. Resume only with a steering prompt that avoids the stalled operation and continues the same thread. Otherwise spawn a narrower linked replacement Agent, or stop/report the blocker."
+	}
+	if (outcome === "failed") {
+		return "Inspect the failure and worker report before acting. Spawn a corrected replacement Agent when remaining_steps have a clear task boundary, or stop/report if the failure is not recoverable through bounded delegation."
+	}
+	return undefined
+}
+
+export function buildAgentOutcome(record: AgentRecord): AgentOutcome {
+	const outcome = classifyAgentOutcome(record)
+	const reason = record.status === "error" ? "error" : record.abortReason
+	const durationMs = (record.completedAt ?? Date.now()) - record.startedAt
+	const text = record.result?.trim() || record.error?.trim()
+	const resumable =
+		record.session != null &&
+		outcome !== "completed" &&
+		outcome !== "stopped" &&
+		(record.taskRef?.kind !== "ferment_step" ||
+			(record.resumeAttempts?.filter((attempt) => attempt.purpose === "continuation").length ?? 0) <
+				DEFAULT_MAX_CONTINUATION_RESUMES)
+	const recoveryGuidance = buildRemainingWorkGuidance(outcome, reason)
+	return {
+		agent_id: record.id,
+		status: record.status,
+		outcome,
+		reason,
+		resumable,
+		turns_used: record.lastTurnCount,
+		max_turns: record.maxTurns,
+		token_usage: { ...record.lifetimeUsage },
+		duration_ms: durationMs,
+		report: record.agentReport?.attempt_id === record.currentAttemptId ? record.agentReport : undefined,
+		summary: record.agentReport?.attempt_id === record.currentAttemptId ? undefined : text,
+		recovery_guidance: recoveryGuidance,
+		task_ref: record.taskRef,
+		resume_attempts: record.resumeAttempts?.length ?? 0,
 	}
 }

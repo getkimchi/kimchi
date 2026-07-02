@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
+import { HARNESS_CLIENT_TYPE } from "../constants.js"
 import { RemoteAuthError, RemoteNetworkError } from "./types.js"
 import { deleteWorkspace, listWorkspaces } from "./workspaces.js"
 
@@ -15,6 +16,7 @@ function verifyResponse() {
 function listUrl(cursor?: string) {
 	const params = new URLSearchParams()
 	params.set("page.limit", "200")
+	params.set("clientType", HARNESS_CLIENT_TYPE)
 	if (cursor) params.set("page.cursor", cursor)
 	return `${BASE}/ai-optimizer/v1beta/organizations/${ORG_ID}/workspaces?${params.toString()}`
 }

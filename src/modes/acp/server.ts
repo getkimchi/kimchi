@@ -1,5 +1,5 @@
 // ACP (Agent Client Protocol) mode: JSON-RPC 2.0 over stdio using
-// @agentclientprotocol/sdk. Lets Zed / openclaw drive kimchi in-process.
+// @agentclientprotocol/sdk. Lets IDE extensions, Zed, openclaw drive kimchi in-process.
 
 import { closeSync, openSync, readFileSync, readSync, readdirSync } from "node:fs"
 import { join } from "node:path"
@@ -11,6 +11,7 @@ import {
 	type AuthenticateRequest,
 	type AuthenticateResponse,
 	type CancelNotification,
+	type ClientCapabilities,
 	type CloseSessionRequest,
 	type CloseSessionResponse,
 	type ContentBlock,
@@ -42,7 +43,6 @@ import {
 import type { ImageContent } from "@earendil-works/pi-ai"
 import {
 	type AgentSession,
-	type AgentSessionEvent,
 	AuthStorage,
 	DefaultResourceLoader,
 	type ExtensionFactory,
@@ -54,6 +54,7 @@ import {
 	createAgentSession,
 	initTheme,
 } from "@earendil-works/pi-coding-agent"
+import type { AgentSessionEvent, ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 import { isHideThinkingEnabled } from "../../extensions/hide-thinking.js"
 import { loadConfig } from "../../extensions/permissions/config.js"
 import { PERMISSIONS_ENV_KEY } from "../../extensions/permissions/constants.js"
@@ -74,6 +75,9 @@ import {
 	type SessionPermissionFlagController,
 } from "../../extensions/permissions/types.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
+import { createAcpUIContext } from "./acp-ui-context.js"
+import { ADVERTISED_CAPABILITIES, CAPABILITIES_KEY } from "./capabilities.js"
+import { AVAILABLE_COMMANDS } from "./commands.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
 
 /**
@@ -112,14 +116,6 @@ export interface RunAcpOptions {
 type TurnContext = {
 	cancelled: boolean
 	hiddenToolCallIds: Set<string>
-	// True once ANY turn-lifecycle event has been delivered to our subscriber
-	// (agent_start, message_update, tool_execution_start, tool_execution_update).
-	// Used by prompt()'s short-circuit detector to tell "session.prompt() ran
-	// agent.prompt and events are flowing" from "session.prompt() short-circuited
-	// before agent events ever fired". Originally this tracked only agent_start —
-	// defensive widening so a future pi-mono emit-order change can't make real
-	// turns look like short-circuits.
-	turnActive: boolean
 	resolve: (res: PromptResponse) => void
 	reject: (err: unknown) => void
 }
@@ -128,6 +124,23 @@ type SessionRecord = {
 	session: AgentSession
 	unsubscribe: () => void
 	turn?: TurnContext
+	/**
+	 * Session-wide monotonic counter for ACP messageIds. Every distinct
+	 * content block (text or thinking) across every assistant message in
+	 * the session gets a fresh value — so two turns whose first text block
+	 * both sit at contentIndex=0 still get distinct ids, satisfying the
+	 * ACP contract "a change in messageId indicates a new message has
+	 * started" without depending on contentIndex (which resets per turn).
+	 * Seeded from the branch on loadSession so replay emits matching ids.
+	 */
+	nextBlockId: number
+	/**
+	 * Per-assistant-message map from pi-mono's contentIndex → assigned
+	 * messageId. Cleared on each agent_start/message_start so a new assistant message
+	 * starts a fresh contentIndex namespace without colliding with the
+	 * previous message's assignments.
+	 */
+	contentIndexToBlockId: Map<number, string>
 }
 
 export class KimchiAcpAgent implements Agent {
@@ -137,6 +150,7 @@ export class KimchiAcpAgent implements Agent {
 	private readonly sessionLister: AcpSessionLister
 	private readonly sessionLoader: AcpSessionLoader
 	private readonly permissionsEnvFlag = process.env[PERMISSIONS_ENV_KEY]
+	private clientCapabilities: ClientCapabilities | undefined
 	// Track non-text prompt block types we've already warned about so a
 	// misbehaving client that sends 1000 image blocks doesn't flood stderr.
 	private warnedBlockTypes = new Set<string>()
@@ -174,7 +188,9 @@ export class KimchiAcpAgent implements Agent {
 		this.sessionLoader = options.sessionLoader ?? defaultSessionLoader(options)
 	}
 
-	async initialize(_: InitializeRequest): Promise<InitializeResponse> {
+	async initialize(request: InitializeRequest): Promise<InitializeResponse> {
+		this.clientCapabilities = request.clientCapabilities
+
 		const authStorage = AuthStorage.create(join(this.agentDir, "auth.json"))
 		const modelRegistry = ModelRegistry.create(authStorage, join(this.agentDir, "models.json"))
 		const supportsImages = modelRegistry.getAvailable().some((m) => m.input?.includes("image"))
@@ -188,6 +204,8 @@ export class KimchiAcpAgent implements Agent {
 				// the spec hasn't unified it under sessionCapabilities yet.
 				sessionCapabilities: { list: {}, close: {} },
 				promptCapabilities: { image: supportsImages, audio: false, embeddedContext: false },
+				// Extended capabilities
+				_meta: { [CAPABILITIES_KEY]: ADVERTISED_CAPABILITIES },
 			},
 			authMethods: [],
 		}
@@ -242,21 +260,28 @@ export class KimchiAcpAgent implements Agent {
 		// dispose it — so make ownership transfer atomic.
 		try {
 			assertSessionHasModel(session)
-			const sessionId = session.sessionId
-			registerAcpPrompter(sessionId, createAcpPermissionPrompter(this.conn, sessionId, buildToolCallUpdate))
 
+			const sessionId = session.sessionId
+			const uiContext = this.createUiContext(session)
 			const permissionFlagController = registerPermissionFlagController(sessionId, initialMode, (params) =>
 				this.send(params),
 			)
+			registerAcpPrompter(sessionId, createAcpPermissionPrompter(this.conn, sessionId, uiContext, buildToolCallUpdate))
+			await this.bindAcpExtensions(session, uiContext)
 
-			await bindAcpExtensions(session)
 			const unsubscribe = session.subscribe((event) => this.onSessionEvent(sessionId, event))
-			this.sessions.set(sessionId, { session, unsubscribe })
+			this.sessions.set(sessionId, {
+				session,
+				unsubscribe,
+				nextBlockId: 0,
+				contentIndexToBlockId: new Map(),
+			})
 
-			const models = buildSessionModelState(session)
+			this.sendAvailableCommandsUpdate(sessionId)
+
 			return {
 				sessionId,
-				models,
+				models: buildSessionModelState(session),
 				configOptions: [buildPermissionsConfigOption(permissionFlagController.getMode()?.mode)],
 			}
 		} catch (err) {
@@ -267,6 +292,27 @@ export class KimchiAcpAgent implements Agent {
 			session.dispose()
 			throw err
 		}
+	}
+
+	private createUiContext(session: AgentSession): ExtensionUIContext {
+		// Build the ExtensionUIContext that pi's runner routes `ctx.ui.*` calls
+		// through. Bound to a single session for its lifetime — the connection,
+		// capabilities, and `send` callback are all session-scoped state.
+		return createAcpUIContext(this.conn, session.sessionId, this.clientCapabilities, (params) => this.send(params))
+	}
+
+	private async bindAcpExtensions(session: AgentSession, uiContext: ExtensionUIContext): Promise<void> {
+		await session.bindExtensions({
+			uiContext,
+			// Mode is "rpc" so extensions can branch on `ctx.mode === "rpc"` to detect
+			// this transport (added in pi-coding-agent 0.78.1). `ctx.hasUI` is derived
+			// from the uiContext by the runner, so extensions that only check the
+			// legacy boolean keep working too.
+			mode: "rpc",
+			onError: (err) => {
+				process.stderr.write(`acp ext error [${err.extensionPath}] ${err.event}: ${err.error}\n`)
+			},
+		})
 	}
 
 	async unstable_setSessionModel(params: SetSessionModelRequest): Promise<SetSessionModelResponse> {
@@ -328,34 +374,32 @@ export class KimchiAcpAgent implements Agent {
 				"mcpServers is not supported; configure MCP servers via kimchi config",
 			)
 		}
-		const existing = this.sessions.get(params.sessionId)
+		const sessionId = params.sessionId
+		const existing = this.sessions.get(sessionId)
 		if (existing) {
 			if (existing.turn) {
-				throw RequestError.invalidRequest(
-					undefined,
-					`session ${params.sessionId} has a turn in progress; cancel it first`,
-				)
+				throw RequestError.invalidRequest(undefined, `session ${sessionId} has a turn in progress; cancel it first`)
 			}
 			this.replayTranscript(existing.session)
+			this.sendAvailableCommandsUpdate(sessionId)
+
 			return {
 				models: this.modelStateForSession(existing.session),
 				configOptions: [
-					buildPermissionsConfigOption(
-						getPermissionMode(params.sessionId)?.mode ?? this.resolveInitialMode(params.cwd),
-					),
+					buildPermissionsConfigOption(getPermissionMode(sessionId)?.mode ?? this.resolveInitialMode(params.cwd)),
 				],
 			}
 		}
-		const loading = this.loadingSessions.get(params.sessionId)
+		const loading = this.loadingSessions.get(sessionId)
 		if (loading) return loading
 
 		const loadingPromise = this.loadSessionFresh(params)
-		this.loadingSessions.set(params.sessionId, loadingPromise)
+		this.loadingSessions.set(sessionId, loadingPromise)
 		try {
 			return await loadingPromise
 		} finally {
-			if (this.loadingSessions.get(params.sessionId) === loadingPromise) {
-				this.loadingSessions.delete(params.sessionId)
+			if (this.loadingSessions.get(sessionId) === loadingPromise) {
+				this.loadingSessions.delete(sessionId)
 			}
 		}
 	}
@@ -387,19 +431,33 @@ export class KimchiAcpAgent implements Agent {
 		}
 		try {
 			assertSessionHasModel(session)
-			registerAcpPrompter(sid, createAcpPermissionPrompter(this.conn, sid, buildToolCallUpdate))
 
+			const uiContext = this.createUiContext(session)
 			const permissionFlagController = registerPermissionFlagController(sid, initialMode, (params) => this.send(params))
+			registerAcpPrompter(sid, createAcpPermissionPrompter(this.conn, sid, uiContext, buildToolCallUpdate))
+			await this.bindAcpExtensions(session, uiContext)
 
-			await bindAcpExtensions(session)
 			const unsubscribe = session.subscribe((event) => this.onSessionEvent(sid, event))
-			this.sessions.set(sid, { session, unsubscribe })
+			const record: SessionRecord = {
+				session,
+				unsubscribe,
+				nextBlockId: 0,
+				contentIndexToBlockId: new Map(),
+			}
+			this.sessions.set(sid, record)
 
-			// Replay BEFORE the response resolves so Zed sees a coherent transcript
+			// Seed the block counter from the persisted branch so replay emits the
+			// same messageIds the live turn would have — and so any new block the
+			// user creates after the load gets a fresh, non-colliding id.
+			this.seedBlockCounterFromBranch(session, record)
+
+			// Replay BEFORE the response resolves so client sees a coherent transcript
 			// when the loadSession promise settles. No turn context is created, so a
 			// concurrent session/cancel during replay is a no-op — a turn must not
 			// be considered active during replay.
 			this.replayTranscript(session)
+			this.sendAvailableCommandsUpdate(sid)
+
 			return {
 				models: this.modelStateForSession(session),
 				configOptions: [buildPermissionsConfigOption(permissionFlagController.getMode()?.mode)],
@@ -469,7 +527,6 @@ export class KimchiAcpAgent implements Agent {
 		entry.turn = {
 			cancelled: false,
 			hiddenToolCallIds: new Set(),
-			turnActive: false,
 			resolve: turnResolve,
 			reject: turnReject,
 		}
@@ -481,20 +538,18 @@ export class KimchiAcpAgent implements Agent {
 		// propagates to the caller regardless of whether session.prompt ever resolves.
 		entry.session.prompt(text, { source: "rpc", images }).then(
 			() => {
-				// pi-coding-agent's session.prompt() short-circuits for extension commands,
-				// input-handler intercepts, and no-op paths — in those cases agent.prompt()
-				// never runs and no agent events fire. For real turns it awaits agent.prompt()
-				// which emits agent_start first and agent_end last (pi-agent-core contract:
-				// types.d.ts "agent_end is the last event emitted for a run"). By the time
-				// agent.prompt() resolves, our subscriber has been called with at least
-				// agent_start — agent.prompt awaits the LLM call, draining the microtask
-				// queue. agent_end delivery can still race with session.prompt()'s resolution
-				// because _processAgentEvent awaits extension handlers before calling our
-				// listener. So: if ANY turn-lifecycle event was observed (turnActive), trust
-				// the agent_end contract and let the subscriber finalize the turn. Otherwise
-				// the turn short-circuited and we synthesize end_turn here.
-				if (entry.turn && !entry.turn.turnActive) {
-					this.finalizeTurn(entry, "end_turn")
+				// session.prompt() is the source of truth for "turn is done". We
+				// deliberately do NOT finalize on agent_end: pi-mono's _runAgentPrompt
+				// (agent-session.js) chains multiple agent.prompt / agent.continue
+				// calls — each emits its own agent_start + agent_end — when retries,
+				// queued follow-up messages, or compaction are pending. If we finalized
+				// on the first agent_end, end_turn would be sent mid-stream and the
+				// client's subsequent prompt would hit pi-mono's
+				// "Agent is already processing" throw because session.prompt is still
+				// running the chained continues. session.prompt() resolves only after
+				// ALL chained calls complete.
+				if (entry.turn) {
+					this.finalizeTurn(entry, entry.turn.cancelled ? "cancelled" : "end_turn")
 				}
 			},
 			(err) => {
@@ -583,28 +638,29 @@ export class KimchiAcpAgent implements Agent {
 		if (!entry) return
 		const turn = entry.turn
 		switch (event.type) {
-			case "agent_start": {
-				if (turn) turn.turnActive = true
+			case "agent_start":
+			case "message_start": {
+				// New assistant message → contentIndex restarts from 0. Wipe the
+				// per-message map so a fresh block at index 0 gets a fresh id
+				// instead of inheriting the previous message's assignment.
+				entry.contentIndexToBlockId.clear()
 				return
 			}
 			case "message_update": {
 				if (!turn) return
-				turn.turnActive = true
 				const ame = event.assistantMessageEvent
-				if (ame.type === "text_delta" && ame.delta) {
+				if ((ame.type === "text_delta" || ame.type === "thinking_delta") && ame.delta) {
+					let messageId = entry.contentIndexToBlockId.get(ame.contentIndex)
+					if (messageId === undefined) {
+						messageId = `kimchi_msg_${entry.nextBlockId++}`
+						entry.contentIndexToBlockId.set(ame.contentIndex, messageId)
+					}
 					this.send({
 						sessionId,
 						update: {
-							sessionUpdate: "agent_message_chunk",
+							sessionUpdate: ame.type === "text_delta" ? "agent_message_chunk" : "agent_thought_chunk",
 							content: { type: "text", text: ame.delta },
-						},
-					})
-				} else if (ame.type === "thinking_delta" && ame.delta) {
-					this.send({
-						sessionId,
-						update: {
-							sessionUpdate: "agent_thought_chunk",
-							content: { type: "text", text: ame.delta },
+							messageId,
 						},
 					})
 				}
@@ -616,7 +672,6 @@ export class KimchiAcpAgent implements Agent {
 				// tool_call notifications the client would have to reconcile against
 				// a turn it already considers over.
 				if (!turn) return
-				turn.turnActive = true
 				if (isHiddenToolCall(event.toolName, event.args)) {
 					turn.hiddenToolCallIds.add(event.toolCallId)
 					return
@@ -638,7 +693,6 @@ export class KimchiAcpAgent implements Agent {
 			}
 			case "tool_execution_update": {
 				if (!turn) return
-				turn.turnActive = true
 				if (turn.hiddenToolCallIds.has(event.toolCallId) || isHiddenToolCall(event.toolName, event.args)) {
 					turn.hiddenToolCallIds.add(event.toolCallId)
 					return
@@ -672,14 +726,6 @@ export class KimchiAcpAgent implements Agent {
 						rawOutput: event.result,
 					},
 				})
-				return
-			}
-			case "agent_end": {
-				// If no turn is active, this is a late agent_end after the prompt
-				// handler already synthesized end_turn (short-circuit path that
-				// nevertheless emitted events somehow) — safe to drop.
-				if (!turn) return
-				this.finalizeTurn(entry, turn.cancelled ? "cancelled" : "end_turn")
 				return
 			}
 			default:
@@ -722,10 +768,66 @@ export class KimchiAcpAgent implements Agent {
 					},
 				})
 			} else if (msg.role === "assistant") {
-				this.replayAssistantBlocks(sessionId, msg.content, toolResults, emitThinking)
+				this.replayAssistantBlocks(sessionId, msg.content, toolResults, emitThinking, this.sessions.get(sessionId))
 			}
 			// toolResult: handled inline alongside its originating toolCall above.
 		}
+	}
+
+	/**
+	 * Walk the persisted branch and count how many ACP content chunks the
+	 * replay would emit (text segments + dimmed text parts + non-redacted
+	 * thinking blocks). Sets `record.nextBlockId` so that:
+	 *   - replayTranscript emits the same messageIds a live turn would have
+	 *     for the historical blocks, and
+	 *   - any new block the user creates after the load gets a fresh, non-
+	 *     colliding id.
+	 *
+	 * Mirrors replayAssistantBlocks' emission logic exactly — coalescing
+	 * contiguous text blocks into one chunk, and gating thinking emission on
+	 * the hideThinkingBlock setting. If these drift, messageIds replayed
+	 * after a load won't line up with what the client saw during the live
+	 * turn.
+	 */
+	private seedBlockCounterFromBranch(session: AgentSession, record: SessionRecord): void {
+		const entries = session.sessionManager.getBranch()
+		const emitThinking = shouldEmitThinking("")
+
+		let count = 0
+		for (const entry of entries) {
+			if (!entry || entry.type !== "message" || entry.message.role !== "assistant") continue
+
+			let inTextSegment = false
+			const countTextSegment = () => {
+				if (!inTextSegment) {
+					count++
+					inTextSegment = true
+				}
+			}
+
+			const content = entry.message.content
+			for (const block of content) {
+				if (block.type === "text") {
+					if (!block.text) continue
+					countTextSegment()
+					if (emitThinking) {
+						for (const part of replayTextParts(block.text)) {
+							if (part.kind === "thinking") count++
+						}
+					}
+				} else if (block.type === "thinking") {
+					inTextSegment = false
+					if (!emitThinking || block.redacted || !block.thinking) continue
+					count++
+				} else {
+					// toolCall / unknown: replay flushes the text buffer before
+					// emitting the structural block, which terminates any open
+					// text segment.
+					inTextSegment = false
+				}
+			}
+		}
+		record.nextBlockId = count + 1
 	}
 
 	private replayAssistantBlocks(
@@ -733,8 +835,16 @@ export class KimchiAcpAgent implements Agent {
 		content: unknown,
 		toolResults: Map<string, ReplayToolResult>,
 		emitThinking: boolean,
+		record: SessionRecord | undefined,
 	): void {
 		if (!Array.isArray(content)) return
+		// Allocates a fresh session-unique messageId for every emitted chunk
+		// and leaves it off the wire if the SessionRecord isn't loaded (e.g.
+		// the unit-test harness wiring a partial replay path).
+		const nextMessageId = () => {
+			if (!record) return undefined
+			return `kimchi_msg_${record.nextBlockId++}`
+		}
 		// Buffer contiguous text blocks so a single assistant message renders as
 		// one agent_message_chunk per natural text segment — emit the full
 		// message as a single chunk, no per-token chunking. When a thinking or
@@ -743,11 +853,13 @@ export class KimchiAcpAgent implements Agent {
 		let textBuffer = ""
 		const flushText = () => {
 			if (textBuffer.length === 0) return
+			const messageId = nextMessageId()
 			this.send({
 				sessionId,
 				update: {
 					sessionUpdate: "agent_message_chunk",
 					content: { type: "text", text: textBuffer },
+					...(messageId !== undefined ? { messageId } : {}),
 				},
 			})
 			textBuffer = ""
@@ -763,11 +875,13 @@ export class KimchiAcpAgent implements Agent {
 						textBuffer += part.text
 					} else if (emitThinking) {
 						flushText()
+						const messageId = nextMessageId()
 						this.send({
 							sessionId,
 							update: {
 								sessionUpdate: "agent_thought_chunk",
 								content: { type: "text", text: part.text },
+								...(messageId !== undefined ? { messageId } : {}),
 							},
 						})
 					}
@@ -781,11 +895,13 @@ export class KimchiAcpAgent implements Agent {
 				if (redacted) continue
 				if (typeof thinking !== "string" || thinking.length === 0) continue
 				if (!emitThinking) continue
+				const messageId = nextMessageId()
 				this.send({
 					sessionId,
 					update: {
 						sessionUpdate: "agent_thought_chunk",
 						content: { type: "text", text: stripAnsi(thinking) },
+						...(messageId !== undefined ? { messageId } : {}),
 					},
 				})
 			} else if (b.type === "toolCall") {
@@ -847,6 +963,16 @@ export class KimchiAcpAgent implements Agent {
 		// _processAgentEvent does not expect.
 		this.conn.sessionUpdate(params).catch((err: unknown) => {
 			process.stderr.write(`acp sessionUpdate failed: ${String(err)}\n`)
+		})
+	}
+
+	private sendAvailableCommandsUpdate(sessionId: string): void {
+		this.send({
+			sessionId,
+			update: {
+				sessionUpdate: "available_commands_update",
+				availableCommands: AVAILABLE_COMMANDS,
+			},
 		})
 	}
 
@@ -940,14 +1066,6 @@ export function assertSessionHasModel(session: Pick<AgentSession, "model">): voi
 
 export function initializeHeadlessTheme(settingsManager: Pick<SettingsManager, "getTheme">): void {
 	initTheme(settingsManager.getTheme(), false)
-}
-
-async function bindAcpExtensions(session: AgentSession): Promise<void> {
-	await session.bindExtensions({
-		onError: (err) => {
-			process.stderr.write(`acp ext error [${err.extensionPath}] ${err.event}: ${err.error}\n`)
-		},
-	})
 }
 
 function registerPermissionFlagController(
@@ -1390,20 +1508,27 @@ export function shouldEmitThinking(_thinking: string): boolean {
 }
 
 function toolResultContent(result: unknown): ToolCallContent[] {
-	// TODO: non-text blocks are silently dropped here. web_fetch can in principle
-	// return image blocks, and MCP tools may return resource blocks — clients
-	// would see a completed tool call with empty content. Safe today because no
-	// registered tool emits non-text blocks in practice, but revisit when
-	// web_fetch or an MCP tool starts returning them.
+	// Tool results carry pi-ai content blocks, typed as (TextContent |
+	// ImageContent)[] on pi-ai's ToolResultMessage. Forward both, so a tool that
+	// emits an image (e.g. web_fetch, or an MCP image tool whose block survives
+	// transformMcpContent) doesn't surface to the client as a completed call with
+	// empty content.
+	//
+	// resource / resource_link / audio blocks never reach here: the MCP bridge
+	// (transformMcpContent) already flattens them to text, because pi-ai tool
+	// results only model text and image. Forwarding them as native ACP resource
+	// blocks would require widening pi-ai's tool-result content type upstream.
 	const r = result as { content?: unknown } | null | undefined
 	const content = r?.content
 	if (!Array.isArray(content)) return []
 	const out: ToolCallContent[] = []
 	for (const block of content) {
 		if (!block || typeof block !== "object") continue
-		const b = block as { type?: string; text?: string }
+		const b = block as { type?: string; text?: string; data?: string; mimeType?: string }
 		if (b.type === "text" && typeof b.text === "string") {
 			out.push({ type: "content", content: { type: "text", text: b.text } })
+		} else if (b.type === "image" && typeof b.data === "string" && typeof b.mimeType === "string") {
+			out.push({ type: "content", content: { type: "image", data: b.data, mimeType: b.mimeType } })
 		}
 	}
 	return out
@@ -1423,7 +1548,7 @@ export async function runAcpMode(options: RunAcpOptions): Promise<void> {
 	const stream = ndJsonStream(writable, readable)
 
 	let agentInstance: KimchiAcpAgent | undefined
-	const conn = new AgentSideConnection((c: AgentSideConnection) => {
+	const conn = new AgentSideConnection((c) => {
 		agentInstance = new KimchiAcpAgent(c, options)
 		return agentInstance
 	}, stream)

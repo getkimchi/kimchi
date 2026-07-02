@@ -249,6 +249,21 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).toContain('After `propose_ferment_scoping` returns "Plan saved"')
 		})
 
+		it("tells planner the host takes over completely after 'Plan ready for review'", () => {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime()) ?? ""
+			expect(out).toContain('After `propose_ferment_scoping` returns "Plan ready for review"')
+			expect(out).toContain("the host takes over completely")
+			expect(out).toContain("automatically unlocks the implementation toolset")
+			expect(out).toContain("End your turn")
+		})
+
+		it("prohibits discussing tool availability or session capabilities with the user", () => {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime()) ?? ""
+			expect(out).toContain("Never discuss your current tool availability")
+			expect(out).toContain("Do not suggest the user take action to unlock tools")
+			expect(out).toContain("Do not discuss your session capabilities")
+		})
+
 		it("guides orient-interview discovery before proposing scoping", () => {
 			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime()) ?? ""
 			expect(out).toContain("follow the shared discovery guidance in the Upfront Contract")
@@ -263,18 +278,14 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).toContain("STEP 4")
 			expect(out).toContain("DEEP EXPLORATION")
 			expect(out).toContain("MAX 2 TURNS")
-			expect(out).toContain("targeted search to find the")
+			expect(out).toContain("Prefer targeted search over reading entire files line by line")
 			expect(out).toContain("Skip this step for greenfield tasks")
 			expect(out).toContain("record why in assumptions")
-			expect(out).toContain("Use Explore subagents for broader or parallel discovery")
+			expect(out).toContain("spawn Explore subagents instead of reading files yourself")
 			expect(out).toContain('subagent_type: "Explore"')
 			expect(out).toContain("token_budget: 120000")
 			expect(out).toContain("run_in_background: true")
-			expect(out).toContain("do not retry the same broad task")
-			expect(out).toContain("spawn a narrower replacement only if that missing fact is plan-blocking")
-			expect(out).toContain("continue with direct targeted reads")
-			expect(out).toContain('otherwise become an "explore", "find the existing pattern"')
-			expect(out).toContain("The plan you propose should reflect the discovered files")
+			expect(out).toContain("Skip entirely if you have enough context from Steps 1-3")
 			expect(out).toContain("P1/P2/P3")
 		})
 
@@ -284,6 +295,19 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).toContain("ask the user before activating the next phase")
 			expect(out).toContain("do not call `activate_ferment_phase` until they say continue")
 			expect(out).not.toContain("do not ask the user to confirm phase advancement")
+		})
+
+		it("omits turn discipline section under manual continuation policy", () => {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime({ status: "running" }, "manual")) ?? ""
+			expect(out).not.toContain("Turn discipline (automated ferment)")
+			expect(out).not.toContain("Every turn MUST end with a ferment lifecycle tool call")
+		})
+
+		it("includes turn discipline section under automated continuation policy", () => {
+			const out =
+				buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime({ status: "running" }, "automated")) ?? ""
+			expect(out).toContain("Turn discipline (automated ferment)")
+			expect(out).toContain("Every turn MUST end with a ferment lifecycle tool call")
 		})
 
 		it("uses automated cross-phase instructions under automated continuation policy", () => {
@@ -404,5 +428,74 @@ describe("buildFermentPromptBlock", () => {
 		expect(out).toContain("activate_ferment_phase")
 		// It must NOT contain the old "does not narrow" text.
 		expect(out).not.toContain("does not narrow")
+	})
+
+	it("combines bounded worker limits with report-aware exhaustion recovery", () => {
+		const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime({ status: "running" }, "automated")) ?? ""
+
+		expect(out).toContain("max_turns")
+		expect(out).toContain("max_duration")
+		expect(out).toContain("budget_tier")
+		expect(out).toContain("narrow | standard | complex")
+		expect(out).toContain("exact task_ref")
+		expect(out).toContain("submit_agent_report")
+		expect(out).toContain("complete_ferment_step automatically runs the scoped verification command")
+		expect(out).toContain("Do not rerun it with bash")
+		expect(out).toContain("do not mark the step complete")
+		expect(out).toContain("narrower linked replacement")
+		expect(out).toContain("Every turn MUST end with a ferment lifecycle tool call or an Agent spawn")
+		expect(out).not.toContain("call complete_ferment_step with whatever it produced")
+	})
+
+	// Unify Planning Pipeline Prompts — verify shared process steps live in ferment
+	// planner supplement AND that ferment-specific sections absent from plan mode are present.
+	describe("shared process steps — parity with plan-mode-supplement", () => {
+		it("ferment planner supplement contains all five shared step headers", () => {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime()) ?? ""
+			// These must match what plan-mode-supplement also renders (both source from SHARED_PLANNING_PROCESS)
+			expect(out).toContain("STEP 1")
+			expect(out).toContain("ORIENT")
+			expect(out).toContain("STEP 2")
+			expect(out).toContain("INTERVIEW")
+			expect(out).toContain("STEP 3")
+			expect(out).toContain("COMPLETION CRITERIA")
+			expect(out).toContain("STEP 4")
+			expect(out).toContain("DEEP EXPLORATION")
+			expect(out).toContain("STEP 5")
+		})
+
+		it("ferment planner supplement contains shared process core behaviour", () => {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime()) ?? ""
+			expect(out).toContain("iterative rounds")
+			expect(out).toContain("REFLECT before continuing")
+			expect(out).toContain("MAX 2 TURNS")
+			expect(out).toContain("Prefer targeted search over reading entire files line by line")
+		})
+
+		it("ferment planner supplement contains ferment-specific sections absent from plan mode", () => {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime()) ?? ""
+			// Ferment lifecycle tools — not present in plan-mode-supplement
+			expect(out).toContain("propose_ferment_scoping")
+			expect(out).toContain("ask_user")
+			expect(out).toContain("confirm_ferment_completion_criteria")
+			// P-gates — ferment-only validation gates
+			expect(out).toContain("P1")
+			expect(out).toContain("P2")
+			expect(out).toContain("P3")
+			expect(out).toContain("exactly P1, P2, and P3")
+			// Phase/step mechanics — ferment lifecycle concepts not in plan mode
+			expect(out).toContain("activate_ferment_phase")
+			expect(out).toContain("scope_ferment")
+		})
+
+		it("ferment planner supplement does NOT contain plan-mode-only markers", () => {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime()) ?? ""
+			// Plan-mode completion markers must not bleed into ferment supplement
+			expect(out).not.toContain("PLAN_COMPLETE")
+			// Plan-mode read-only constraint
+			expect(out).not.toContain("read-only access to this codebase")
+			// Plan-mode questionnaire tool must not appear in ferment supplement
+			expect(out).not.toContain("questionnaire tool")
+		})
 	})
 })

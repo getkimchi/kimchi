@@ -37,7 +37,7 @@ export default function surveysExtension(options: SurveysExtensionOptions = {}) 
 				pendingSurveyTrigger = undefined
 				return
 			}
-			if (!ctx.hasUI) return
+			if (ctx.mode !== "tui") return
 			const trigger = pendingSurveyTrigger
 			surveyShowing = true
 			const submissionId = randomUUID()

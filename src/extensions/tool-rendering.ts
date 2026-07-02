@@ -3810,7 +3810,7 @@ export default function (pi: ExtensionAPI) {
 				.split(/\s+/)
 				.filter((p) => p.length > 0)
 			const sub = (parts[0] ?? "").toLowerCase()
-			const theme = ctx.hasUI ? (ctx.ui.theme as any) : null
+			const theme = ctx.hasUI ? ctx.ui.theme : null
 			const settings = readSettings()
 			const currentVerb = settings.spinnerVerbColor || "borderAccent"
 			const currentStatus = settings.spinnerStatusColor || "muted"
