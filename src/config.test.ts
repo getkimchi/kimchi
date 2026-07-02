@@ -3,6 +3,7 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import {
+	RETRY_DEFAULTS,
 	VENDOR_SKILL_PATHS,
 	buildSkillPathOptions,
 	clearApiKey,
@@ -686,6 +687,44 @@ describe("getActiveVendorSkillPaths", () => {
 		mkdirSync(join(mockHome, ".config", "kimchi", "harness", "skills", "using-superpowers"), { recursive: true })
 		writeFileSync(join(mockHome, ".config", "kimchi", "harness", "skills", "using-superpowers", "SKILL.md"), "")
 		expect(getActiveVendorSkillPaths()).toEqual([])
+	})
+})
+
+describe("RETRY_DEFAULTS", () => {
+	it("providerTimeoutMs defaults to 60000", () => {
+		expect(RETRY_DEFAULTS.providerTimeoutMs).toBe(60_000)
+	})
+})
+
+describe("loadConfig retry.providerTimeoutMs", () => {
+	let tempDir: string
+	let configPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		configPath = join(tempDir, "config.json")
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+	})
+
+	it("defaults to 60000 when not specified", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "test-key" }))
+		const config = loadConfig({ configPath })
+		expect(config.retry.providerTimeoutMs).toBe(60_000)
+	})
+
+	it("reads providerTimeoutMs from config file", () => {
+		writeFileSync(configPath, JSON.stringify({ retry: { providerTimeoutMs: 60_000 } }))
+		const config = loadConfig({ configPath })
+		expect(config.retry.providerTimeoutMs).toBe(60_000)
+	})
+
+	it("ignores non-positive providerTimeoutMs", () => {
+		writeFileSync(configPath, JSON.stringify({ retry: { providerTimeoutMs: 0 } }))
+		const config = loadConfig({ configPath })
+		expect(config.retry.providerTimeoutMs).toBe(60_000)
 	})
 })
 

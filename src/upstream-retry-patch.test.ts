@@ -74,4 +74,10 @@ describe("isNetworkErrorRetryable", () => {
 		expect(isNetworkErrorRetryable({ stopReason: "error", errorMessage: "Socket Connection Was Closed" })).toBe(true)
 		expect(isNetworkErrorRetryable({ stopReason: "error", errorMessage: "Connection Reset" })).toBe(true)
 	})
+
+	it("matches stream idle timeout errors from the AbortController patch", () => {
+		expect(isNetworkErrorRetryable({ stopReason: "error", errorMessage: "Stream idle timeout after 60000ms" })).toBe(
+			true,
+		)
+	})
 })
