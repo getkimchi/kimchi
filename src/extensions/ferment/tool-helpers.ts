@@ -58,11 +58,11 @@ export function formatNextActionHint(ferment: Ferment): string | undefined {
 		}
 		case "start_step": {
 			const label = stepLabel ?? `step "${action.stepId}"`
-			return `Next action: call \`${toolName}\` to begin ${label}, then immediately spawn an Agent worker for the implementation \u2014 ferment_id "${ferment.id}", phase_id "${action.phaseId}", step_id "${action.stepId}"${verifyHint}.`
+			return `Next action: call \`${toolName}\` to begin ${label} \u2014 ferment_id "${ferment.id}", phase_id "${action.phaseId}", step_id "${action.stepId}"${verifyHint}. Then either spawn an Agent worker for the implementation, or execute the step directly — choose whichever is more efficient.`
 		}
 		case "complete_step": {
 			const label = stepLabel ?? `step "${action.stepId}"`
-			return `Next action: call \`${toolName}\` with worker_agent_id only after the linked worker for ${label} has a completed outcome and completed report \u2014 ferment_id "${ferment.id}", phase_id "${action.phaseId}", step_id "${action.stepId}"${verifyHint}.`
+			return `Next action: call \`${toolName}\` with worker_agent_id after the linked worker for ${label} has a completed outcome and completed report — ferment_id "${ferment.id}", phase_id "${action.phaseId}", step_id "${action.stepId}"${verifyHint}. If you executed the step directly (no subagent), omit worker_agent_id and include just the summary and gates.`
 		}
 		case "verify_step": {
 			const label = stepLabel ?? `step "${action.stepId}"`

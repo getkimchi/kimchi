@@ -1,9 +1,22 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Ferment, FermentStatus } from "../../ferment/types.js"
 import { runAsAgentWorker } from "../agent-worker-context.js"
 import { registerAgents } from "../agents/personas/agent-types.js"
 import { setPermissionMode } from "../permissions/mode-controller.js"
+
+// Mock getMultiModelEnabled so tests can control delegationMode (strict vs relaxed)
+// without depending on real config state. Default to true (multi-model / strict)
+// so existing assertions for strict-mode content continue to pass. Individual
+// tests can override via `setMultiModelEnabled(false)`.
+const getMultiModelEnabledMock = vi.fn(() => true)
+vi.mock("../prompt-construction/prompt-enrichment.js", (importOriginal) => {
+	return importOriginal<typeof import("../prompt-construction/prompt-enrichment.js")>().then((mod) => ({
+		...mod,
+		getMultiModelEnabled: () => getMultiModelEnabledMock(),
+	}))
+})
+
 import { buildFermentPromptBlock } from "./prompt-block.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
 import type { ContinuationPolicy } from "./state.js"
@@ -93,6 +106,12 @@ const PAUSED_HEADER = "## Ferment Paused"
 const PAUSED_RULE = "Do NOT call any ferment tools"
 
 describe("buildFermentPromptBlock", () => {
+	beforeEach(() => {
+		// Default to multi-model (strict) so existing assertions pass.
+		// Individual tests override with getMultiModelEnabledMock(false).
+		getMultiModelEnabledMock.mockReturnValue(true)
+	})
+
 	afterEach(() => {
 		registerAgents(new Map())
 	})
@@ -307,7 +326,8 @@ describe("buildFermentPromptBlock", () => {
 			const out =
 				buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime({ status: "running" }, "automated")) ?? ""
 			expect(out).toContain("Turn discipline (automated ferment)")
-			expect(out).toContain("Every turn MUST end with a ferment lifecycle tool call")
+			expect(out).toContain("may take a brief thinking or assessment turn")
+			expect(out).not.toContain("Every turn MUST end with a ferment lifecycle tool call or an Agent spawn")
 		})
 
 		it("uses automated cross-phase instructions under automated continuation policy", () => {
@@ -443,7 +463,6 @@ describe("buildFermentPromptBlock", () => {
 		expect(out).toContain("Do not rerun it with bash")
 		expect(out).toContain("do not mark the step complete")
 		expect(out).toContain("narrower linked replacement")
-		expect(out).toContain("Every turn MUST end with a ferment lifecycle tool call or an Agent spawn")
 		expect(out).not.toContain("call complete_ferment_step with whatever it produced")
 	})
 
@@ -496,6 +515,33 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).not.toContain("read-only access to this codebase")
 			// Plan-mode questionnaire tool must not appear in ferment supplement
 			expect(out).not.toContain("questionnaire tool")
+		})
+	})
+
+	describe("single-model (relaxed) delegation mode", () => {
+		beforeEach(() => {
+			getMultiModelEnabledMock.mockReturnValue(false)
+		})
+
+		it("does NOT mandate delegation — allows direct execution", () => {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status: "running" })) ?? ""
+			expect(out).not.toContain("NEVER implement a step inline")
+			expect(out).not.toContain("NEVER write, edit, or read files yourself")
+			expect(out).toContain("may execute steps directly")
+		})
+
+		it("contains delegation guidance for when to delegate vs work directly", () => {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status: "running" })) ?? ""
+			expect(out).toContain("Prefer direct execution for narrow fixes")
+			expect(out).toContain("Prefer delegation for parallel work")
+			expect(out).toContain("If a subagent aborts on a step")
+		})
+
+		it("relaxes turn discipline — allows thinking turns", () => {
+			const out =
+				buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status: "running" }, "automated")) ?? ""
+			expect(out).toContain("may take a brief thinking or assessment turn")
+			expect(out).not.toContain("Every turn MUST end with a ferment lifecycle tool call or an Agent spawn")
 		})
 	})
 })

@@ -526,7 +526,7 @@ describe("completeStep", () => {
 	})
 
 	describe("validateLinkedWorker rejection paths", () => {
-		it("rejects when worker_agent_id is omitted", async () => {
+		it("allows completion without worker_agent_id (orchestrator executed directly)", async () => {
 			const h = createHarness()
 			h.applyAndPersist(h.fermentId, { type: "start_step", phaseId: "phase-1", stepId: "step-1" })
 
@@ -536,17 +536,16 @@ describe("completeStep", () => {
 					ferment_id: h.fermentId,
 					phase_id: "phase-1",
 					step_id: "step-1",
-					summary: "done",
+					summary: "done directly by orchestrator",
 					gates: passingStepGates(),
-					// Cast: this test intentionally omits `worker_agent_id` to verify
-					// runtime validation rejects the missing field. TS would otherwise
-					// flag the call because the field is required by CompleteStepParams.
-				} as unknown as Parameters<typeof completeStep>[1],
+				},
 				{ pi: h.pi },
 				createServices(),
 			)
 
-			expect(errText(result)).toContain("requires worker_agent_id")
+			// Success result has no `isError` property (only error results do).
+			// If completeStep didn't throw and returned content, the step completed.
+			expect(result.content[0]?.text).toContain("done")
 		})
 
 		it("rejects when the agent record is not found", async () => {
