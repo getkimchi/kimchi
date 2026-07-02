@@ -120,7 +120,9 @@ setup-image:
       echo "dataset:                  ${DATASET:-terminal-bench/terminal-bench-2}"
       echo "target_ref:               ${BENCHMARK_TARGET_REF}"
       echo "tasks_all:                ${BENCH_TASKS_ALL}"
-      echo "tasks:                    ${SELECTED_TASKS_JSON:-}"
+      if [ "${BENCH_TASKS_ALL}" != "true" ]; then
+        echo "tasks:                    ${SELECTED_TASKS_JSON:-}"
+      fi
       echo "model:                    ${MODEL}"
       echo "kimchi_multi_model:       ${KIMCHI_MULTI_MODEL}"
       echo "kimchi_ferment_oneshot:   ${KIMCHI_FERMENT_ONESHOT}"
