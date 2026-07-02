@@ -52,16 +52,16 @@ test("Ctrl+B detaches a running foreground agent to background", async ({ termin
 		},
 		async (_fixture, trace) => {
 			terminal.submit("please spawn a slow agent")
-			await waitForText(terminal, "ctrl+b to run in background", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, "ctrl+shift+b to run in background", { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("foreground agent running")
 
-			terminal.keyPress("b", { ctrl: true })
+			terminal.keyPress("b", { ctrl: true, shift: true })
 			await waitForText(terminal, "[background]", { timeoutMs: 5_000 })
 			await waitForText(terminal, PROMPT_READY, { timeoutMs: 5_000 })
 
 			const view = viewText(terminal)
 			expect(view).toContain("[background]")
-			expect(view).not.toContain("ctrl+b to run in background")
+			expect(view).not.toContain("ctrl+shift+b to run in background")
 			trace.step("detached: [background] tag shown, hint gone, editor returned")
 		},
 	)
@@ -79,7 +79,7 @@ test("Ctrl+B with no foreground agent is a no-op", async ({ terminal }) => {
 			terminal.submit("just say hi")
 			await waitForText(terminal, "simple reply", { timeoutMs: STREAM_TIMEOUT_MS })
 
-			terminal.keyPress("b", { ctrl: true })
+			terminal.keyPress("b", { ctrl: true, shift: true })
 			// Wait long enough for any erroneous detach output to render on a slow
 			// CI runner. 800ms covers the 200ms nudge delay + render latency.
 			await new Promise((resolve) => setTimeout(resolve, 800))
@@ -109,9 +109,9 @@ test("completion notification fires after detached agent finishes", async ({ ter
 		},
 		async (_fixture, trace) => {
 			terminal.submit("spawn a long task")
-			await waitForText(terminal, "ctrl+b to run in background", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, "ctrl+shift+b to run in background", { timeoutMs: STREAM_TIMEOUT_MS })
 
-			terminal.keyPress("b", { ctrl: true })
+			terminal.keyPress("b", { ctrl: true, shift: true })
 			await waitForText(terminal, "[background]", { timeoutMs: 5_000 })
 			trace.step("detached to background")
 

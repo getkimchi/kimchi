@@ -294,7 +294,8 @@ export class AgentWidget {
 
 			const modelTag = a.modelId ? ` ${theme.fg("dim", `[${a.modelId}]`)}` : ""
 			const bgTag = a.isBackground ? ` ${theme.fg("muted", "[background]")}` : ""
-			const bgHint = !hintShown && !a.isBackground ? `  ${theme.fg("muted", "(ctrl+b to run in background)")}` : ""
+			const bgHint =
+				!hintShown && !a.isBackground ? `  ${theme.fg("muted", "(ctrl+shift+b to run in background)")}` : ""
 			if (bgHint) hintShown = true
 			runningLines.push([
 				truncate(

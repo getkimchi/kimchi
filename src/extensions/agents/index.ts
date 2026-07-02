@@ -835,7 +835,7 @@ export default function (pi: ExtensionAPI) {
 				currentUi = newUi
 				unsubCtrlB = newUi.onTerminalInput((data) => {
 					if (isRawInputCaptureActive()) return undefined
-					if (!matchesKey(data, Key.ctrl("b")) || isKeyRelease(data)) return undefined
+					if (!matchesKey(data, Key.ctrlShift("b")) || isKeyRelease(data)) return undefined
 
 					const foreground = manager.listAgents().filter((a) => a.status === "running" && !a.isBackground)
 					if (foreground.length === 0) return undefined
@@ -1031,7 +1031,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 					const frame = SPINNER[details.spinnerFrame ?? 0]
 					const s = stats(details)
 					let line = theme.fg("accent", frame) + (s ? ` ${s}` : "")
-					line += `\n${theme.fg("dim", `  ⎿  ${details.activity ?? "thinking..."}`)}  ${theme.fg("muted", "(ctrl+b to run in background)")}`
+					line += `\n${theme.fg("dim", `  ⎿  ${details.activity ?? "thinking..."}`)}  ${theme.fg("muted", "(ctrl+shift+b to run in background)")}`
 					return new Text(line, 0, 0)
 				}
 
