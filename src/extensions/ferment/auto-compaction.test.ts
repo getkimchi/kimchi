@@ -426,26 +426,26 @@ describe("maybeTriggerFermentCompaction", () => {
 		vi.restoreAllMocks()
 	})
 
-	it("returns immediately when no ferment is active", () => {
+	it("returns immediately when no ferment is active", async () => {
 		runtime = makeRuntime({
 			getStorage: () => mockStorage as unknown as import("../../ferment/event-store.js").FermentEventStore,
 			getActiveId: () => undefined,
 		})
 
-		maybeTriggerFermentCompaction(pi, ctx, runtime)
+		await maybeTriggerFermentCompaction(pi, ctx, runtime)
 
 		expect(ctx.compact).not.toHaveBeenCalled()
 	})
 
-	it("returns immediately when no pending compaction exists", () => {
+	it("returns immediately when no pending compaction exists", async () => {
 		runtime.setActive(makeFerment({ id: "ferment-1", name: "No Pending" }))
 
-		maybeTriggerFermentCompaction(pi, ctx, runtime)
+		await maybeTriggerFermentCompaction(pi, ctx, runtime)
 
 		expect(ctx.compact).not.toHaveBeenCalled()
 	})
 
-	it("calls ctx.compact() with customInstructions when pending compaction exists", () => {
+	it("calls ctx.compact() with customInstructions when pending compaction exists and inlineCompact is unavailable", async () => {
 		const ferment = makeFermentWithPhase(
 			{ id: "phase-1", name: "Phase", goal: "Goal" },
 			{ id: "step-1", description: "Do it" },
@@ -454,7 +454,7 @@ describe("maybeTriggerFermentCompaction", () => {
 		runtime.setActive(ferment)
 		setPendingCompaction(ferment.id, makePendingStep(ferment.id, "phase-1", "step-1"))
 
-		maybeTriggerFermentCompaction(pi, ctx, runtime)
+		await maybeTriggerFermentCompaction(pi, ctx, runtime)
 
 		expect(ctx.compact).toHaveBeenCalledTimes(1)
 		const call = (ctx.compact as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
@@ -465,7 +465,107 @@ describe("maybeTriggerFermentCompaction", () => {
 		expect(call.customInstructions).toContain("Do it")
 	})
 
-	it("clears pending compaction after triggering", () => {
+	it("keeps one-shot stage compaction disabled when inlineCompact is unavailable", async () => {
+		const ferment = makeFermentWithPhase(
+			{ id: "phase-1", name: "Phase", goal: "Goal" },
+			{ id: "step-1", description: "Do it" },
+		)
+		storageMap.set(ferment.id, ferment)
+		runtime.setActive(ferment)
+		setPendingCompaction(ferment.id, makePendingStep(ferment.id, "phase-1", "step-1"))
+		pi.getFlag = vi.fn((name) => (name === "ferment-oneshot" ? true : undefined))
+
+		await maybeTriggerFermentCompaction(pi, ctx, runtime)
+
+		expect(ctx.compact).not.toHaveBeenCalled()
+		expect(runtime.getPendingCompaction(ferment.id)).toBeDefined()
+	})
+
+	it("awaits one-shot inline compaction before appending handoff and scheduling continuation", async () => {
+		const ferment = makeFermentWithPhase(
+			{ id: "phase-1", name: "Phase", goal: "Goal" },
+			{ id: "step-1", description: "Do it" },
+		)
+		storageMap.set(ferment.id, ferment)
+		runtime.setActive(ferment)
+		setPendingCompaction(ferment.id, makePendingStep(ferment.id, "phase-1", "step-1"))
+		pi.getFlag = vi.fn((name) => (name === "ferment-oneshot" ? true : undefined))
+
+		let resolveInline!: (result: CompactionResult) => void
+		const inlineResult = new Promise<CompactionResult>((resolve) => {
+			resolveInline = resolve
+		})
+		ctx.inlineCompact = vi.fn(() => inlineResult)
+
+		const run = maybeTriggerFermentCompaction(pi, ctx, runtime)
+		await Promise.resolve()
+
+		expect(ctx.compact).not.toHaveBeenCalled()
+		expect(ctx.inlineCompact).toHaveBeenCalledWith({
+			customInstructions: expect.stringContaining("Ferment: My Ferment"),
+			force: true,
+		})
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+
+		resolveInline({
+			summary: "compacted ferment",
+			firstKeptEntryId: "entry-1",
+			tokensBefore: 123_456,
+		})
+		await run
+
+		expect(pi.sendMessage).toHaveBeenCalledTimes(2)
+		const calls = vi.mocked(pi.sendMessage).mock.calls
+		expect(calls[0][0]).toMatchObject({
+			customType: "ferment_stage_handoff",
+			display: false,
+			details: expect.objectContaining({
+				fermentName: "My Ferment",
+				compactionTokensBefore: 123_456,
+			}),
+		})
+		expect(calls[0][1]).toMatchObject({ triggerTurn: false })
+		expect(calls[1][0]).toMatchObject({ customType: "ferment_continuation_nudge" })
+		expect(calls[1][1]).toMatchObject({ triggerTurn: true })
+	})
+
+	it("continues one-shot ferment after inline compaction is skipped", async () => {
+		const ferment = makeFermentWithPhase(
+			{ id: "phase-1", name: "Phase", goal: "Goal" },
+			{ id: "step-1", description: "Do it" },
+		)
+		storageMap.set(ferment.id, ferment)
+		runtime.setActive(ferment)
+		setPendingCompaction(ferment.id, makePendingStep(ferment.id, "phase-1", "step-1"))
+		pi.getFlag = vi.fn((name) => (name === "ferment-oneshot" ? true : undefined))
+		ctx.inlineCompact = vi.fn(async () => {
+			throw new Error("Nothing to compact (session too small)")
+		})
+
+		await maybeTriggerFermentCompaction(pi, ctx, runtime)
+
+		expect(ctx.inlineCompact).toHaveBeenCalledWith({
+			customInstructions: expect.stringContaining("Ferment: My Ferment"),
+			force: true,
+		})
+		expect(ctx.ui.notify).not.toHaveBeenCalled()
+		expect(runtime.isCompactionInFlight(ferment.id)).toBe(false)
+		expect(pi.sendMessage).toHaveBeenCalledTimes(2)
+		const calls = vi.mocked(pi.sendMessage).mock.calls
+		expect(calls[0][0]).toMatchObject({
+			customType: "ferment_stage_handoff",
+			display: false,
+			details: expect.objectContaining({
+				fermentName: "My Ferment",
+				compactionTokensBefore: 0,
+			}),
+		})
+		expect(calls[0][1]).toMatchObject({ triggerTurn: false })
+		expect(calls[1][0]).toMatchObject({ customType: "ferment_continuation_nudge" })
+		expect(calls[1][1]).toMatchObject({ triggerTurn: true })
+	})
+
+	it("clears pending compaction after triggering", async () => {
 		const ferment = makeFermentWithPhase(
 			{ id: "phase-1", name: "Phase", goal: "Goal" },
 			{ id: "step-1", description: "Step" },
@@ -474,12 +574,12 @@ describe("maybeTriggerFermentCompaction", () => {
 		runtime.setActive(ferment)
 		setPendingCompaction(ferment.id, makePendingStep(ferment.id, "phase-1", "step-1"))
 
-		maybeTriggerFermentCompaction(pi, ctx, runtime)
+		await maybeTriggerFermentCompaction(pi, ctx, runtime)
 
 		expect(runtime.getPendingCompaction(ferment.id)).toBeUndefined()
 	})
 
-	it("onComplete calls pi.sendMessage with ferment_stage_handoff and display: false", () => {
+	it("onComplete calls pi.sendMessage with ferment_stage_handoff and display: false", async () => {
 		const ferment = makeFermentWithPhase(
 			{ id: "phase-1", name: "Phase", goal: "Goal" },
 			{ id: "step-1", description: "Step" },
@@ -488,7 +588,7 @@ describe("maybeTriggerFermentCompaction", () => {
 		runtime.setActive(ferment)
 		setPendingCompaction(ferment.id, makePendingStep(ferment.id, "phase-1", "step-1"))
 
-		maybeTriggerFermentCompaction(pi, ctx, runtime)
+		await maybeTriggerFermentCompaction(pi, ctx, runtime)
 
 		const compactCall = (ctx.compact as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
 			onComplete: (result: CompactionResult) => void
@@ -516,7 +616,7 @@ describe("maybeTriggerFermentCompaction", () => {
 		expect(sendMsgCalls[1][1]).toMatchObject({ triggerTurn: true })
 	})
 
-	it("onError calls ctx.ui.notify with a warning and does not throw", () => {
+	it("onError calls ctx.ui.notify with a warning and does not throw", async () => {
 		const ferment = makeFermentWithPhase(
 			{ id: "phase-1", name: "Phase", goal: "Goal" },
 			{ id: "step-1", description: "Step" },
@@ -525,7 +625,7 @@ describe("maybeTriggerFermentCompaction", () => {
 		runtime.setActive(ferment)
 		setPendingCompaction(ferment.id, makePendingStep(ferment.id, "phase-1", "step-1"))
 
-		maybeTriggerFermentCompaction(pi, ctx, runtime)
+		await maybeTriggerFermentCompaction(pi, ctx, runtime)
 
 		const compactCall = (ctx.compact as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
 			onComplete: (result: CompactionResult) => void
@@ -539,7 +639,7 @@ describe("maybeTriggerFermentCompaction", () => {
 		expect(notifyCall[1]).toBe("warning")
 	})
 
-	it("in-flight guard: a new pending while compaction is running is left for the next tick", () => {
+	it("in-flight guard: a new pending while compaction is running is left for the next tick", async () => {
 		const ferment = makeFermentWithPhase(
 			{ id: "phase-1", name: "Phase", goal: "Goal" },
 			{ id: "step-1", description: "Step" },
@@ -549,7 +649,7 @@ describe("maybeTriggerFermentCompaction", () => {
 		setPendingCompaction(ferment.id, makePendingStep(ferment.id, "phase-1", "step-1"))
 
 		// First call — starts compaction, marks ferment in-flight.
-		maybeTriggerFermentCompaction(pi, ctx, runtime)
+		await maybeTriggerFermentCompaction(pi, ctx, runtime)
 		expect(ctx.compact).toHaveBeenCalledTimes(1)
 
 		// A new pending arrives while the first compaction is still running
@@ -558,7 +658,7 @@ describe("maybeTriggerFermentCompaction", () => {
 
 		// Second call — ferment is in-flight so drainPendingCompactions skips it;
 		// no additional compact() call is made.
-		maybeTriggerFermentCompaction(pi, ctx, runtime)
+		await maybeTriggerFermentCompaction(pi, ctx, runtime)
 		expect(ctx.compact).toHaveBeenCalledTimes(1)
 
 		// After onComplete fires, the in-flight flag is cleared.
@@ -568,11 +668,11 @@ describe("maybeTriggerFermentCompaction", () => {
 		compactCall.onComplete({ tokensBefore: 1000 } as unknown as CompactionResult)
 
 		// Now step-2 pending is still in the map and will fire on the next tick.
-		maybeTriggerFermentCompaction(pi, ctx, runtime)
+		await maybeTriggerFermentCompaction(pi, ctx, runtime)
 		expect(ctx.compact).toHaveBeenCalledTimes(2)
 	})
 
-	it("returns early when ferment is not found in storage after reload", () => {
+	it("returns early when ferment is not found in storage after reload", async () => {
 		runtime = makeRuntime({
 			getStorage: () => mockStorage as unknown as import("../../ferment/event-store.js").FermentEventStore,
 			getActiveId: () => "missing-ferment-id",
@@ -580,7 +680,7 @@ describe("maybeTriggerFermentCompaction", () => {
 		// Inject a pending compaction for a non-existent ferment
 		setPendingCompaction("missing-ferment-id", makePendingStep("missing-ferment-id", "phase-1", "step-1"))
 
-		expect(() => maybeTriggerFermentCompaction(pi, ctx, runtime)).not.toThrow()
+		await expect(maybeTriggerFermentCompaction(pi, ctx, runtime)).resolves.toBe(false)
 		expect(ctx.compact).not.toHaveBeenCalled()
 	})
 })
@@ -884,7 +984,7 @@ describe("in-flight tool-call guard", () => {
 	})
 
 	describe("maybeTriggerFermentCompaction", () => {
-		it("does not compact while a toolCall is in flight", () => {
+		it("does not compact while a toolCall is in flight", async () => {
 			const ferment = makeFermentWithPhase(
 				{ id: "phase-1", name: "Phase", goal: "Goal" },
 				{ id: "step-1", description: "Step" },
@@ -900,13 +1000,13 @@ describe("in-flight tool-call guard", () => {
 				}),
 			])
 
-			maybeTriggerFermentCompaction(pi, ctx, runtime)
+			await maybeTriggerFermentCompaction(pi, ctx, runtime)
 
 			expect(ctx.compact).not.toHaveBeenCalled()
 			expect(runtime.getPendingCompaction(ferment.id)).toBeDefined()
 		})
 
-		it("compacts normally once the matching toolResult lands", () => {
+		it("compacts normally once the matching toolResult lands", async () => {
 			const ferment = makeFermentWithPhase(
 				{ id: "phase-1", name: "Phase", goal: "Goal" },
 				{ id: "step-1", description: "Step" },
@@ -923,7 +1023,7 @@ describe("in-flight tool-call guard", () => {
 				makeSessionMessageEntry({ role: "toolResult", toolCallId: "call-done" }),
 			])
 
-			maybeTriggerFermentCompaction(pi, ctx, runtime)
+			await maybeTriggerFermentCompaction(pi, ctx, runtime)
 
 			expect(ctx.compact).toHaveBeenCalledOnce()
 			expect(runtime.getPendingCompaction(ferment.id)).toBeUndefined()

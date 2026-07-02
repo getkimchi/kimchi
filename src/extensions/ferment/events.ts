@@ -628,7 +628,7 @@ export function registerFermentEvents(
 		// Trigger compaction after any turn that completed a step or phase.
 		// Fires between turns in automated-continuation mode, so the next
 		// phase starts with a fresh compacted session.
-		maybeTriggerFermentCompaction(pi, ctx, runtime)
+		await maybeTriggerFermentCompaction(pi, ctx, runtime)
 
 		// Mid-turn guard: if the context crossed the auto-compaction threshold
 		// while a step is still in progress, compact now and resume the step.
