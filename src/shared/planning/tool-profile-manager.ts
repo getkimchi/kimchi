@@ -34,7 +34,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 
-import { isFermentOnlyToolName } from "../../extensions/ferment/tool-names.js"
+import { isFermentOnlyToolName, isIdleAllowedFermentToolName } from "../../extensions/ferment/tool-names.js"
 import { getDisabledToolNames } from "../../extensions/prompt-construction/tool-visibility.js"
 import { getReadOnlyToolNames } from "./read-only-tool-registry.js"
 import { getToolsForProfile } from "./tool-catalog.js"
@@ -108,7 +108,10 @@ export function applyCore(profile: ToolProfile, pi: ExtensionAPI): void {
 		allowedNames = pi
 			.getAllTools()
 			.map((t) => t.name)
-			.filter((name) => !isFermentOnlyToolName(name) && !disabled.has(name))
+			.filter(
+				(name) =>
+					(!isFermentOnlyToolName(name) || isIdleAllowedFermentToolName(name)) && !disabled.has(name),
+			)
 	} else if (profile === "implementation-ferment") {
 		// Implementation phase: start from the full registered toolset so
 		// MCP/custom/third-party tools are preserved, then merge in the

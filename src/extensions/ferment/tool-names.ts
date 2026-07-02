@@ -52,6 +52,21 @@ const USER_FACING_FERMENT_TOOL_NAMES = new Set<string>([
 	FERMENT_TOOLS.ASK_USER,
 ])
 
+/**
+ * Ferment tools that are normally planner-only but MUST remain visible in the
+ * idle (no active ferment) profile so the agent can (a) ask the user a
+ * structured yes/no question when offering a ferment and (b) bootstrap a
+ * draft ferment via `propose_ferment_scoping` only after the user accepts.
+ * These survive the idle filter in `applyCore`; all other planner-only tools
+ * (start_ferment_step, complete_ferment, etc.) stay filtered out.
+ */
+const IDLE_ALLOWED_FERMENT_TOOL_NAMES = new Set<string>([FERMENT_TOOLS.PROPOSE_SCOPING, FERMENT_TOOLS.ASK_USER])
+
+/** Returns true for ferment tools that must remain visible even in the idle profile. */
+export function isIdleAllowedFermentToolName(name: string): boolean {
+	return IDLE_ALLOWED_FERMENT_TOOL_NAMES.has(name)
+}
+
 export function isFermentToolName(name: string): boolean {
 	return FERMENT_TOOL_NAME_SET.has(name)
 }

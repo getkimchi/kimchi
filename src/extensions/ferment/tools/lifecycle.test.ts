@@ -610,6 +610,43 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 	})
 })
 
+describe("propose_ferment_scoping description (neutral-static)", () => {
+	function createProposeDescriptionHarness() {
+		const h = createHarness()
+		const tools = new Map<string, RegisteredTool & { description?: string }>()
+		const pi = {
+			...h.pi,
+			registerTool: (tool: RegisteredTool & { description?: string }) => {
+				tools.set(tool.name, tool)
+		},
+			getActiveTools: vi.fn(() => ["read", "bash"]),
+			getAllTools: vi.fn(() => [{ name: "read" }, { name: "bash" }]),
+			setActiveTools: vi.fn(),
+		} as unknown as ExtensionAPI
+		registerLifecycleTools(pi, h.runtime)
+		return { h, tools }
+	}
+
+	it("does NOT invite creating a new draft ferment via omitted id", () => {
+		const { tools } = createProposeDescriptionHarness()
+		const tool = tools.get("propose_ferment_scoping")
+		if (!tool) throw new Error("propose_ferment_scoping not registered")
+		const description = tool.description ?? ""
+
+		expect(description).not.toContain("omit it when no ferment is active")
+		expect(description).not.toContain("create a new draft ferment from this proposal")
+	})
+
+	it("retains substantive scoping guidance (success_criteria)", () => {
+		const { tools } = createProposeDescriptionHarness()
+		const tool = tools.get("propose_ferment_scoping")
+		if (!tool) throw new Error("propose_ferment_scoping not registered")
+		const description = tool.description ?? ""
+
+		expect(description).toContain("success_criteria")
+	})
+})
+
 describe("confirm_ferment_completion_criteria via registerLifecycleTools", () => {
 	function createConfirmCriteriaHarness(options?: { oneShot?: boolean }) {
 		const h = createHarness()

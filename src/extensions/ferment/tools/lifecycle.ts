@@ -28,6 +28,7 @@ import {
 import { createToolVisibility } from "../../prompt-construction/tool-visibility.js"
 import { YES_NO_OPTIONS } from "../../questionnaire/index.js"
 import { type AskUserQuestion, askUserForm, normalizeAskUserQuestions, toScopingQuestionType } from "../ask-user.js"
+import type { AskUserResponse } from "../ask-user.js"
 import { pr_bold, pr_dim } from "../colors.js"
 import { emitFermentCreated } from "../domain-events-emitter.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
@@ -36,6 +37,7 @@ import { assertGateFieldsPresent, validateGatesOrErr } from "../gate-validation.
 import { ensureGitRepo } from "../git-init.js"
 import { judgeJourneyGrade } from "../judge.js"
 import { appendRefEntry, resetReactiveContinuationNudgeCount } from "../nudge.js"
+import { markDeclined } from "../offer-decline-store.js"
 import { PENDING_PROPOSAL_SCHEMA_VERSION, savePendingProposal } from "../pending-proposal-store.js"
 import { gatherPhaseEvidence } from "../phase-evidence.js"
 import { getPromptUi, promptEditor, promptForm, promptSelect } from "../prompt-ui.js"
@@ -102,6 +104,36 @@ function clearScopingStatus(ctx: unknown): void {
 		SCOPING_STATUS_KEY,
 		undefined,
 	)
+}
+
+// Decline-like option ids/values for idle-offer decline detection. When the
+// agent offers a ferment via ask_user in an idle session and the user picks
+// one of these (confirm "no", or a single/multi option id reading as a
+// decline), the session is marked declined so the offer-policy block
+// suppresses re-offering.
+const DECLINE_TOKENS = new Set(["no", "decline", "declined", "cancel", "cancelled", "pause", "abandon", "later", "not_now", "nope"])
+
+/** Returns true when the ask_user response reads as a ferment-offer decline.
+ *  Used ONLY in the idle path (no active ferment). A confirm "no" or any
+ *  single/multi/text answer whose value/id matches a decline token counts. */
+function detectOfferDecline(questions: ReadonlyArray<AskUserQuestion>, response: AskUserResponse): boolean {
+	if (response.failed) return false
+	if (response.response_type === "form") {
+		return (response.answers ?? []).some((a) => {
+			const q = questions.find((qq) => qq.id === a.id)
+			if (q?.type === "confirm") return a.value === "no"
+			return (
+				DECLINE_TOKENS.has(a.value.trim().toLowerCase()) ||
+				(a.values ?? []).some((v) => DECLINE_TOKENS.has(v.trim().toLowerCase()))
+			)
+		})
+	}
+	if (response.response_type === "single") return DECLINE_TOKENS.has((response.choice ?? "").trim().toLowerCase())
+	if (response.response_type === "multi")
+		return (response.choices ?? []).some((c) => DECLINE_TOKENS.has(c.trim().toLowerCase()))
+	if (response.response_type === "text") return DECLINE_TOKENS.has((response.text ?? "").trim().toLowerCase())
+	if (response.response_type === "confirm") return response.choice === "no"
+	return false
 }
 
 const validateFsmTransition = (
@@ -796,7 +828,7 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 	pi.registerTool({
 		name: FERMENT_TOOLS.PROPOSE_SCOPING,
 		label: "Propose Scoping",
-		description: `Emit the full scoping draft: title, goal, success_criteria (array of acceptance criteria), constraints, assumptions, 1-7 phases, questions, and gates. title is required and must be a concise 3-5 word Ferment name. ferment_id is optional; omit it when no ferment is active and the host will create a new draft ferment from this proposal. If the agent has decision-blocking scoping questions, they must be included in the questions array in this tool call; each question should use the canonical field name question for the user-visible question sentence; do not ask scoping questions in chat after calling this tool. For broad discovery or planning over an existing codebase, multiple plausible work areas are an outcome/scope boundary; ask one multi question unless the user explicitly asked to implement all of them. Example: "Which improvement areas should this ferment include?" Use questions: [] when no decision-blocking question remains. Questions pause planning; after answers, re-emit the updated proposal with questions: []. If questions is non-empty, keep phases provisional and answer-agnostic. Every call must include the full gates array: exactly P1, P2, and P3, each with id, verdict, rationale, and evidence. Partial gates are rejected. Prefer one phase for simple tasks and assumptions over default-choice questions.
+		description: `Emit the full scoping draft: title, goal, success_criteria (array of acceptance criteria), constraints, assumptions, 1-7 phases, questions, and gates. title is required and must be a concise 3-5 word Ferment name. ferment_id identifies the ferment to scope; provide the active ferment's id. If the agent has decision-blocking scoping questions, they must be included in the questions array in this tool call; each question should use the canonical field name question for the user-visible question sentence; do not ask scoping questions in chat after calling this tool. For broad discovery or planning over an existing codebase, multiple plausible work areas are an outcome/scope boundary; ask one multi question unless the user explicitly asked to implement all of them. Example: "Which improvement areas should this ferment include?" Use questions: [] when no decision-blocking question remains. Questions pause planning; after answers, re-emit the updated proposal with questions: []. If questions is non-empty, keep phases provisional and answer-agnostic. Every call must include the full gates array: exactly P1, P2, and P3, each with id, verdict, rationale, and evidence. Partial gates are rejected. Prefer one phase for simple tasks and assumptions over default-choice questions.
 
 ${renderGateGuidance("scope_ferment")}`,
 		parameters: ProposeScopingParams,
@@ -1274,6 +1306,23 @@ Returns structured answer fields on success, or a tool error if no audience can 
 
 			if (response.failed) {
 				return toolErr(`ask_user could not route the question (${response.reason}): ${response.detail}`)
+			}
+
+			// Idle-offer decline detection: when ask_user is invoked with NO
+			// active ferment (the idle offer path — ask_user is only exposed in
+			// idle for the ferment-offer flow), and the user's answer reads as a
+			// decline, record the session-scoped decline so the offer-policy
+			// block suppresses re-offering for the rest of the session. This is
+			// heuristic by design: in idle, ask_user is primarily the ferment-
+			// offer surface, so a "no" / decline / cancel / pause answer means
+			// the user does not want a ferment for this task.
+			if (!runtime.getActive()) {
+				const declined = detectOfferDecline(normalizedQuestions, response)
+				if (declined) {
+					const sid = (ctx as { sessionManager?: { getSessionId?: () => string } } | undefined)
+						?.sessionManager?.getSessionId?.()
+					if (sid) markDeclined(sid)
+				}
 			}
 
 			const rationaleLine = response.rationale ? `\nRationale: ${response.rationale}` : ""

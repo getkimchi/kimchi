@@ -27,6 +27,7 @@ import { decideContinuation } from "./continuation.js"
 import { registerFermentEvents } from "./events.js"
 import { FERMENT_STOP_POLICY_SHORTCUT, canToggleFermentStopPolicy } from "./footer-status.js"
 import { deletePendingProposal } from "./pending-proposal-store.js"
+import { registerOfferPolicyBlock } from "./offer-policy-block.js"
 import { setPendingPlanReviewTrigger } from "./plan-review-trigger.js"
 import { type PendingPlanReview, promptPlanReview } from "./plan-review.js"
 import { buildFermentPromptBlock } from "./prompt-block.js"
@@ -311,6 +312,14 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 		modes: ["ferment"],
 	})
 	createSystemPromptBlocks(pi, "ferment").register(fermentPlanningBlock)
+
+	// Permissive offer-policy block: injected ONLY when no ferment is active
+	// (and not plan mode / not worker / not declined this session). Tells the
+	// agent Ferment is optional, how/when it may offer one via ask_user, to
+	// respect a decline and not re-offer, and to bootstrap via
+	// propose_ferment_scoping only on an explicit yes. The getCtx closure
+	// captures the ExtensionContext populated on session_start.
+	registerOfferPolicyBlock(pi, runtime, () => ctx)
 
 	// ─── Entry triggers (planning mode routing) ───────────────────────────
 	// The actual ferment-creation logic lives in commands.ts (slash command
