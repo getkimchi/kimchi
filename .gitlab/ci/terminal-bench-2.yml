@@ -43,7 +43,7 @@ setup-image:
     - name: mirror.gcr.io/library/docker:27.5.1-dind
       alias: docker
   tags:
-    - runner::dind
+    - runner::experimental
   timeout: 30 min
   interruptible: false
   resource_group: "$TERMINAL_BENCH_RESOURCE_GROUP"
@@ -76,7 +76,7 @@ setup-image:
       alias: docker
       command: ["--registry-mirror", "https://mirror.gcr.io"]
   tags:
-    - runner::dind
+    - runner::experimental
   timeout: 12 hours
   retry: 2
   allow_failure: true
@@ -110,6 +110,7 @@ setup-image:
   before_script:
     - !reference [.auth-gcp-script]
     - !reference [.gcloud-setup, script]
+    - benchmark/scripts/gitlab/wait_for_docker.sh
   script:
     - export SELECTED_TASKS_JSON='$[[ inputs.tasks ]]'
     - |
@@ -172,7 +173,7 @@ terminal-bench-$[[ inputs.dataset_version ]]-summary:
     - job: terminal-bench-$[[ inputs.dataset_version ]]-chunks
       artifacts: true
   tags:
-    - runner::dind
+    - runner::experimental
   variables:
     <<: *gcp-auth-vars
     BENCHMARK_RESULTS_DIR: benchmark/terminal-bench-$[[ inputs.dataset_version ]]/jobs
@@ -210,7 +211,7 @@ terminal-bench-$[[ inputs.dataset_version ]]-analyze:
     - job: terminal-bench-$[[ inputs.dataset_version ]]-summary
       artifacts: true
   tags:
-    - runner::dind
+    - runner::experimental
   timeout: 70 min
   variables:
     BENCHMARK_RESULTS_DIR: benchmark/terminal-bench-$[[ inputs.dataset_version ]]/jobs
@@ -242,7 +243,7 @@ terminal-bench-$[[ inputs.dataset_version ]]-upload-analysis:
     - job: terminal-bench-$[[ inputs.dataset_version ]]-analyze
       artifacts: true
   tags:
-    - runner::dind
+    - runner::experimental
   variables:
     <<: *gcp-auth-vars
     DEBIAN_FRONTEND: noninteractive
