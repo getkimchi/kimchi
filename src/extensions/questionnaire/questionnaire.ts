@@ -57,7 +57,7 @@ const QuestionSchema = Type.Object({
 	allowOther: Type.Optional(
 		Type.Boolean({
 			description:
-				"For single/multi questions only. Add a 'Type your own answer' option. Must be omitted for confirm. Default: true for single, false for others.",
+				"For single/multi questions only. Add a 'Type your own answer' option. Must be omitted for confirm. Default: true for single, false for others. When true, custom input is captured inline — do NOT add a separate follow-up text question for 'Other'.",
 		}),
 	),
 	required: Type.Optional(Type.Boolean({ description: "Whether an answer is required. Default: true." })),
