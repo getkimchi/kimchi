@@ -9,6 +9,9 @@
  * judge connection. Encapsulating in a class would add ceremony without value.
  */
 
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { homedir } from "node:os"
+import { dirname, join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { FermentEventStore } from "../../ferment/event-store.js"
@@ -64,14 +67,137 @@ function shouldElevatePermissions(f: Ferment | undefined): boolean {
 }
 
 export function setActive(f: Ferment | undefined): void {
+	// If the active ferment is changing, manage lockfiles: write a lock for the
+	// new active ferment, remove the lock for the old one. Best-effort — errors
+	// are swallowed so they never block a state transition.
+	if (activeFerment?.id && activeFerment.id !== f?.id) {
+		removeFermentLock(activeFerment.id)
+	}
 	activeFerment = f
 	const elevatePermissions = shouldElevatePermissions(f)
 	if (elevatePermissions && f) {
 		process.env.KIMCHI_ACTIVE_FERMENT = f.id
+		writeFermentLock(f.id)
 	} else {
 		clearActiveFermentId()
+		if (f?.id) removeFermentLock(f.id)
 	}
 	notifyFermentActive(elevatePermissions)
+}
+
+// ─── PID-based lockfiles ───────────────────────────────────────────────────────
+//
+// When a ferment is active in a session, a lockfile is written to a global
+// directory. This allows `recoverStuckFerments()` in events.ts to distinguish
+// between a genuinely crashed session (lockfile PID is dead or missing — safe
+// to pause and recover) and a ferment actively running in another live kimchi
+// session (lockfile PID is alive — do NOT pause).
+//
+// The lock directory is configurable via KIMCHI_FERMENT_LOCK_DIR for test
+// isolation. By default it lives under ~/.config/kimchi/harness/ferment-locks/.
+
+interface FermentLockInfo {
+	pid: number
+	startedAt: string
+	fermentId: string
+}
+
+const SAFE_FERMENT_ID = /^[A-Za-z0-9._-]+$/
+
+function getFermentLockDir(): string {
+	const override = process.env.KIMCHI_FERMENT_LOCK_DIR?.trim()
+	if (override) return override
+	return join(homedir(), ".config", "kimchi", "harness", "ferment-locks")
+}
+
+export function getFermentLockPath(fermentId: string): string {
+	if (!fermentId || !SAFE_FERMENT_ID.test(fermentId) || fermentId === "." || fermentId === "..") {
+		throw new Error(`Invalid fermentId for lockfile: ${JSON.stringify(fermentId)}`)
+	}
+	return join(getFermentLockDir(), `${fermentId}.lock`)
+}
+
+/** Write a best-effort PID lockfile for the given ferment. Swallows all errors
+ *  so it never blocks a state transition. */
+export function writeFermentLock(fermentId: string): void {
+	try {
+		const lockDir = getFermentLockDir()
+		mkdirSync(lockDir, { recursive: true })
+		const lockInfo: FermentLockInfo = {
+			pid: process.pid,
+			startedAt: new Date().toISOString(),
+			fermentId,
+		}
+		writeFileSync(getFermentLockPath(fermentId), JSON.stringify(lockInfo, null, 2), {
+			encoding: "utf8",
+			flag: "w",
+		})
+	} catch (err) {
+		// Lockfile write failure is non-fatal — recovery will treat missing
+		// locks as "not locked" and pause, which is the safe default. Log so
+		// operators can detect when the cross-session protection is absent.
+		console.error(`[ferment] failed to write lockfile for ${fermentId}:`, err)
+	}
+}
+
+/** Remove the lockfile for the given ferment. Best-effort, swallows errors. */
+export function removeFermentLock(fermentId: string): void {
+	try {
+		rmSync(getFermentLockPath(fermentId), { force: true })
+	} catch (err) {
+		// Non-fatal, but log so operators can detect lingering lockfiles.
+		console.error(`[ferment] failed to remove lockfile for ${fermentId}:`, err)
+	}
+}
+
+/** Default staleness ceiling for the PID-reuse guard (7 days). Generous enough
+ *  that legitimate long-running sessions are unaffected; a ferment left active
+ *  for longer than this is treated as abandoned and may be paused by recovery. */
+const DEFAULT_LOCK_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
+
+function getLockMaxAgeMs(): number {
+	const raw = process.env.KIMCHI_FERMENT_LOCK_MAX_AGE_MS?.trim()
+	if (!raw) return DEFAULT_LOCK_MAX_AGE_MS
+	const n = Number(raw)
+	return Number.isFinite(n) && n > 0 ? n : DEFAULT_LOCK_MAX_AGE_MS
+}
+
+/** Check whether a ferment's lockfile points to a live (running) process.
+ *
+ *  Returns true if the lockfile exists, its `startedAt` is within the staleness
+ *  window (see `KIMCHI_FERMENT_LOCK_MAX_AGE_MS`, default 7 days), and its PID is
+ *  alive. Returns false if the lockfile is missing, unreadable, stale, has an
+ *  invalid `startedAt`, or the PID is dead.
+ *
+ *  NOTE: `process.kill(pid, 0)` only proves that *some* process with that PID
+ *  exists — it does NOT prove it is the original kimchi session. PIDs are
+ *  recycled by the OS, so a crashed session whose PID is later reused by an
+ *  unrelated process will be falsely reported as alive by the kernel check.
+ *  The `startedAt` staleness guard above mitigates this by treating locks older
+ *  than the configured max age as abandoned, but it cannot fully eliminate
+ *  PID-reuse risk within that window. Operators relying on cross-session
+ *  isolation should keep session lifetimes well below the max age. */
+export function isFermentLockedByLiveProcess(fermentId: string): boolean {
+	try {
+		const lockPath = getFermentLockPath(fermentId)
+		if (!existsSync(lockPath)) return false
+		const raw = readFileSync(lockPath, "utf8")
+		const lockInfo = JSON.parse(raw) as FermentLockInfo
+		if (!lockInfo?.pid) return false
+		// Staleness guard: if the lock predates the max session age, treat it
+		// as stale even if the PID happens to be alive (PID-reuse mitigation).
+		const startedAt = Date.parse(lockInfo.startedAt ?? "")
+		if (!Number.isFinite(startedAt)) return false
+		const now = Date.now()
+		if (startedAt > now) return false // future timestamp → corrupt/stale
+		if (now - startedAt > getLockMaxAgeMs()) return false
+		// process.kill(pid, 0) throws if the process doesn't exist (or we lack
+		// permission to signal it). A successful no-op return means it's alive.
+		process.kill(lockInfo.pid, 0)
+		return true
+	} catch {
+		return false
+	}
 }
 
 // ─── Runtime continuation policy ──────────────────────────────────────────────

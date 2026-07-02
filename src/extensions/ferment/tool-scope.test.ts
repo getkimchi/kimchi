@@ -2,10 +2,13 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
 import type { Ferment, Phase } from "../../ferment/types.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
+import type { PendingPlanReview } from "./plan-review.js"
+import type { FermentRuntime } from "./runtime.js"
 import { FERMENT_TOOL_NAMES } from "./tool-names.js"
 import {
 	IMPLEMENTATION_TOOL_NAMES,
 	PLANNING_TOOL_NAMES,
+	applyFermentRuntimeToolProfile,
 	applyFermentToolProfile,
 	profileForFerment,
 } from "./tool-scope.js"
@@ -254,5 +257,117 @@ describe("idle profile", () => {
 		expect(lastCall).not.toContain("propose_ferment_scoping")
 		expect(lastCall).not.toContain("start_ferment_step")
 		expect(lastCall).not.toContain("activate_ferment_phase")
+	})
+})
+
+// ─── applyFermentRuntimeToolProfile: pending plan review suppression ───────
+// When `propose_ferment_scoping` returns "Plan ready for review" a pending
+// plan review is set. To force the turn to end (so `agent_end` fires and the
+// review dialog appears), ALL tools are suppressed via `pi.setActiveTools([])`.
+// Once the review is confirmed or cancelled, the caller clears the pending
+// review and re-applies the normal profile.
+
+function createMinimalRuntime(
+	activeFerment: Ferment | undefined,
+	pendingReview: PendingPlanReview | undefined,
+): FermentRuntime {
+	return {
+		getActiveId: vi.fn(() => activeFerment?.id),
+		getActive: vi.fn(() => activeFerment),
+		getPendingPlanReview: vi.fn(() => pendingReview),
+	} as unknown as FermentRuntime
+}
+
+const draftFerment: Ferment = {
+	id: "ferment-draft",
+	name: "Draft Ferment",
+	status: "running",
+	worktree: { path: "/tmp" },
+	scoping: {},
+	phases: [],
+	decisions: [],
+	memories: [],
+	createdAt: "2026-01-01T00:00:00.000Z",
+	updatedAt: "2026-01-01T00:00:00.000Z",
+}
+
+const sampleReview: PendingPlanReview = {
+	fermentId: "ferment-draft",
+	planMarkdown: "# Plan",
+}
+
+describe("applyFermentRuntimeToolProfile: pending plan review suppression", () => {
+	it("suppresses all tools (setActiveTools([])) when a pending plan review exists", () => {
+		// After propose_ferment_scoping returns "Plan ready for review", the
+		// pending review is set. The model must have NO tools so its next LLM
+		// call is text-only (stopReason: "stop"), ending the turn and firing
+		// agent_end which triggers the review dialog.
+		const pi = createPi(["read", "bash"], ["read", "bash", "edit", "propose_ferment_scoping"])
+		const runtime = createMinimalRuntime(draftFerment, sampleReview)
+
+		applyFermentRuntimeToolProfile(pi, runtime)
+
+		expect(pi.setActiveTools).toHaveBeenLastCalledWith([])
+	})
+
+	it("restores the planning profile after the pending review is cleared (confirm/cancel)", () => {
+		// After confirmPendingScope or review cancellation, the caller clears
+		// the pending review. The ferment is still in draft (planning) phase,
+		// so the planning-ferment profile is re-applied.
+		const pi = createPi(["read"], ["read", "grep", "propose_ferment_scoping"])
+		const runtime = createMinimalRuntime(draftFerment, undefined) // review cleared
+
+		applyFermentRuntimeToolProfile(pi, runtime)
+
+		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
+		// Planning tools are restored (not empty)
+		expect(lastCall).toContain("read")
+		expect(lastCall).toContain("propose_ferment_scoping")
+		// Execution tools are NOT present in planning profile
+		expect(lastCall).not.toContain("bash")
+	})
+
+	it("restores the implementation profile when an activated ferment has no pending review", () => {
+		// If a phase was activated (implementation) and the review is cleared,
+		// the implementation profile is restored with execution tools.
+		const implFerment: Ferment = {
+			...draftFerment,
+			phases: [{ id: "phase-1", index: 1, name: "Build", goal: "Build it", status: "active", steps: [] }],
+		}
+		const pi = createPi(["read"], ["read", "bash", "edit", "write", "Agent", ...PLANNING_TOOL_NAMES])
+		const runtime = createMinimalRuntime(implFerment, undefined)
+
+		applyFermentRuntimeToolProfile(pi, runtime)
+
+		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
+		expect(lastCall).toContain("bash")
+		expect(lastCall).toContain("edit")
+		expect(lastCall).toContain("Agent")
+	})
+
+	it("does NOT suppress tools when no pending review exists (no regression)", () => {
+		// Normal planning flow: no pending review. The profile is applied as
+		// before — planning tools are available, execution tools are not.
+		const pi = createPi(["read"], [...PLANNING_TOOL_NAMES, "bash", "edit"])
+		const runtime = createMinimalRuntime(draftFerment, undefined)
+
+		applyFermentRuntimeToolProfile(pi, runtime)
+
+		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
+		expect(lastCall).not.toEqual([])
+		expect(lastCall).toContain("read")
+		expect(lastCall).toContain("propose_ferment_scoping")
+		expect(lastCall).not.toContain("bash")
+	})
+
+	it("does NOT suppress tools when no active ferment exists", () => {
+		// Idle: no active ferment. No pending review possible.
+		const pi = createPi(["read", "bash"], ["read", "bash", "edit"])
+		const runtime = createMinimalRuntime(undefined, undefined)
+
+		applyFermentRuntimeToolProfile(pi, runtime)
+
+		const lastCall = (pi.setActiveTools as ReturnType<typeof vi.fn>).mock.lastCall?.[0] as string[]
+		expect(lastCall).not.toEqual([])
 	})
 })

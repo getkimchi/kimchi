@@ -3,6 +3,8 @@ import { determineNextAction, getScopingProgress } from "../../ferment/engine.js
 import type { Ferment } from "../../ferment/types.js"
 import { formatActionNudgeLine } from "./action-tool-names.js"
 import { appendRefEntry } from "./nudge.js"
+import { loadPendingProposal } from "./pending-proposal-store.js"
+import { triggerPendingPlanReview } from "./plan-review-trigger.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { scheduleFermentWakeUp } from "./scheduler.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
@@ -97,6 +99,52 @@ export function resumeFerment(
 
 	if (existing.status === "draft" && ctx?.hasUI) {
 		runtime.markScopingInteractive(existing.id)
+	}
+
+	// Hydrate a persisted pending proposal: if the previous session deferred
+	// plan review (questions=[] path) and ended before the user reviewed it,
+	// re-arm the plan review dialog instead of nudging the LLM to re-scope.
+	if (existing.status === "draft") {
+		const persisted = loadPendingProposal(existing.id)
+		if (persisted) {
+			runtime.setPendingScope(existing.id, {
+				title: persisted.title,
+				goal: persisted.goal,
+				successCriteria: persisted.successCriteria,
+				constraints: persisted.constraints,
+				assumptions: persisted.assumptions,
+				phases: persisted.phases,
+				proposeIterations: persisted.proposeIterations,
+			})
+			runtime.setPendingPlanReview({
+				fermentId: existing.id,
+				planMarkdown: persisted.planMarkdown,
+			})
+			const breadcrumb = `Resumed ferment: "${existing.name}" [${existing.status}] · plan review re-armed from saved proposal`
+			void pi.sendMessage(
+				{
+					customType: "ferment_breadcrumb",
+					content: [{ type: "text", text: breadcrumb }],
+					display: true,
+					details: { text: breadcrumb, variant: "step" },
+				},
+				{ triggerTurn: false },
+			)
+			// Re-arming the review in memory is not enough: the plan-review dialog
+			// is rendered by `runPendingPlanReview`, which the `agent_end` handler
+			// normally triggers via planReviewTimer. On a session restart no agent
+			// turn fires naturally, so invoke the registered trigger directly —
+			// this presents the saved proposal for review WITHOUT spinning up an
+			// LLM turn (no scoping nudge, no re-propose risk).
+			//
+			// Early return is intentional: for a draft with a persisted proposal,
+			// `determineNextAction` would return { kind: "scope" } (no phases yet)
+			// which triggers a scoping nudge we explicitly want to suppress.
+			// `scheduleFermentWakeUp` would schedule a wake-up that also nudges
+			// the LLM — both are undesirable while a plan review is pending.
+			triggerPendingPlanReview(ctx)
+			return
+		}
 	}
 
 	const action = determineNextAction(existing)

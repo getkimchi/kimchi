@@ -246,12 +246,13 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 		}
 	}
 
-	// Substitute the `__FERMENT_ID__` token in tool args with the real id from the request.
+	// Substitute dynamic ids from previous tool results into scripted tool args.
 	const fermentId = extractFermentId(body)
+	const agentId = extractAgentId(body)
 	for (const toolCall of script.toolCalls ?? []) {
-		const fn = fermentId
-			? { ...toolCall.function, arguments: toolCall.function.arguments.replaceAll("__FERMENT_ID__", fermentId) }
-			: toolCall.function
+		const fn = { ...toolCall.function }
+		if (fermentId) fn.arguments = fn.arguments.replaceAll("__FERMENT_ID__", fermentId)
+		if (agentId) fn.arguments = fn.arguments.replaceAll("__AGENT_ID__", agentId)
 		chunk([
 			{
 				index: 0,
@@ -279,6 +280,61 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 function extractFermentId(body: unknown): string | undefined {
 	const match = JSON.stringify(body ?? "").match(/ferment_id[\\"\s:]+([0-9a-fA-F-]{8,})/)
 	return match?.[1]
+}
+
+/** Pull the Agent id from prior Agent tool output (`Agent ID: <id>` or `agent_id`). */
+function extractAgentId(body: unknown): string | undefined {
+	const messages = asRecord(body).messages
+	if (Array.isArray(messages)) {
+		for (const message of [...messages].reverse()) {
+			const fromMessage = extractAgentIdFromValue(message)
+			if (fromMessage) return fromMessage
+			const content = asRecord(message).content
+			const fromContent = extractAgentIdFromText(readMessageContent(content))
+			if (fromContent) return fromContent
+		}
+	}
+	return extractAgentIdFromText(JSON.stringify(body ?? ""))
+}
+
+function extractAgentIdFromValue(value: unknown): string | undefined {
+	if (Array.isArray(value)) {
+		for (const item of value) {
+			const found = extractAgentIdFromValue(item)
+			if (found) return found
+		}
+		return undefined
+	}
+	const record = asRecord(value)
+	for (const key of ["agent_id", "agentId"]) {
+		const found = parseAgentId(record[key])
+		if (found) return found
+	}
+	return undefined
+}
+
+function readMessageContent(content: unknown): string {
+	if (typeof content === "string") return content
+	if (!Array.isArray(content)) return ""
+	return content
+		.map((part) => {
+			if (typeof part === "string") return part
+			const record = asRecord(part)
+			return typeof record.text === "string" ? record.text : ""
+		})
+		.join("\n")
+}
+
+function extractAgentIdFromText(text: string): string | undefined {
+	return text.match(/Agent ID:\s*([0-9a-fA-F-]{8,})/)?.[1] ?? text.match(/agent_?id[\\"\s:]+([0-9a-fA-F-]{8,})/i)?.[1]
+}
+
+function parseAgentId(value: unknown): string | undefined {
+	return typeof value === "string" && /^[0-9a-fA-F-]{8,}$/.test(value) ? value : undefined
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+	return value && typeof value === "object" ? (value as Record<string, unknown>) : {}
 }
 
 function unixNow(): number {

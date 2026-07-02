@@ -48,13 +48,14 @@ function ensureWatcher(): void {
 	lastActiveTheme = getActiveThemeName()
 
 	try {
-		watcher = watch(themesDir, (_event, filename) => {
+		watcher = watch(themesDir, { persistent: false }, (_event, filename) => {
 			// Only respond to JSON files that aren't settings.json (handled elsewhere).
 			if (!filename || !filename.endsWith(".json") || filename === "settings.json") return
 			// fs.watch fires multiple events per write on macOS; debounce to one.
 			if (debounceTimer) clearTimeout(debounceTimer)
 			debounceTimer = setTimeout(() => fire(filename), 30)
 		})
+		watcher.unref?.()
 		watcher.on("error", (err) => {
 			console.warn("[theme-file-watcher] watch error:", err)
 			watcher?.close()

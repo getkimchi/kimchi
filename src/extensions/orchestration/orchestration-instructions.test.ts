@@ -175,7 +175,6 @@ describe("resolveOrchestrationInstructions", () => {
 		expect(result).toContain("Orchestrate the work")
 		expect(result).toContain("Token budgets")
 		expect(result).toContain("token_budget")
-		expect(result).toContain("Plan self-validation")
 		expect(result).toContain("Plan verification")
 		expect(result).toContain("What makes a good plan")
 		expect(result).toContain("Skip verification when")

@@ -1,7 +1,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { createPromptFormComponent, promptEditor, promptInput, promptSelect } from "./prompt-ui.js"
+import { createPromptFormComponent, promptEditor, promptForm, promptInput, promptSelect } from "./prompt-ui.js"
 
 const tipWidgetLocationMock = vi.hoisted(() => ({
 	restore: vi.fn(),
@@ -94,6 +94,19 @@ describe("ferment prompt UI", () => {
 		expect(ui.setWorkingVisible).toHaveBeenNthCalledWith(1, false)
 		expect(ui.setWorkingVisible).toHaveBeenNthCalledWith(2, true)
 		expect(tipWidgetLocationMock.restore).toHaveBeenCalledTimes(1)
+	})
+})
+
+describe("promptForm fallback customLabel", () => {
+	it("uses 'Type your own answer' as the allowOther label in fallback mode", async () => {
+		const select = vi.fn(async () => "Option A")
+		const ctx = { ui: { select } }
+		await promptForm(ctx, {
+			questions: [
+				{ id: "q1", type: "single", prompt: "Pick one?", options: [{ id: "a", label: "Option A" }], allowOther: true },
+			],
+		})
+		expect(select).toHaveBeenCalledWith("Pick one?", ["Option A", "Type your own answer"])
 	})
 })
 

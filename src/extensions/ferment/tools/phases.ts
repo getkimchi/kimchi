@@ -11,7 +11,7 @@ import { Markdown } from "@earendil-works/pi-tui"
 import type { Static } from "typebox"
 import { findFirstPlannedPhase } from "../../../ferment/engine.js"
 import type { Ferment, Phase } from "../../../ferment/types.js"
-import { askUser } from "../ask-user.js"
+import { askUserForm } from "../ask-user.js"
 import { gradeColor, pr_bold } from "../colors.js"
 import { decideContinuation } from "../continuation.js"
 import { formatDecisionsAndMemories } from "../format.js"
@@ -364,20 +364,30 @@ export async function completePhase(
 				"Block flags:",
 				...blockFlags.map((fl) => `  - ${fl.problem}`),
 			].join("\n")
-			const escalationResponse = await askUser(
+			const escalationResponse = await askUserForm(
 				reviewTitle,
+				undefined,
 				[
-					{ id: "override", label: "Override and proceed (mark phase done)" },
-					{ id: "pause", label: "Pause ferment for manual fix" },
-					{ id: "abandon", label: "Abandon ferment" },
+					{
+						id: "escalation",
+						type: "single",
+						prompt: reviewTitle,
+						options: [
+							{ id: "override", label: "Override and proceed (mark phase done)" },
+							{ id: "pause", label: "Pause ferment for manual fix" },
+							{ id: "abandon", label: "Abandon ferment" },
+						],
+					},
 				],
 				{ ferment: f, pi, ctx, runtime },
 			)
 
-			if (!escalationResponse.failed && escalationResponse.choice === "override") {
+			const escalationChoice = escalationResponse.failed ? undefined : escalationResponse.answers?.[0]?.value
+
+			if (!escalationResponse.failed && escalationChoice === "override") {
 				runtime.clearBlockRetry(params.ferment_id, phase.id)
 				// fall through to "advance phase" path below
-			} else if (!escalationResponse.failed && escalationResponse.choice === "abandon") {
+			} else if (!escalationResponse.failed && escalationChoice === "abandon") {
 				const abandonOutcome = applyAndPersist(params.ferment_id, {
 					type: "abandon",
 					reason: "user abandoned after block retries exhausted",

@@ -1,15 +1,17 @@
-import { mkdtempSync } from "node:fs"
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ModelRegistry } from "@earendil-works/pi-coding-agent"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
+import { commandToEvents } from "../../ferment/event-mapper.js"
 import { FermentEventStore } from "../../ferment/event-store.js"
+import { applyCommand } from "../../ferment/state-machine.js"
 import type { Ferment, Phase } from "../../ferment/types.js"
 import { registerFermentEvents } from "./events.js"
 import type { FermentRuntime } from "./runtime.js"
 import { createDefaultFermentRuntime } from "./runtime.js"
-import { clearActiveFermentId } from "./state.js"
+import { clearActiveFermentId, getFermentLockPath, writeFermentLock } from "./state.js"
 import { FERMENT_TOOL_NAMES } from "./tool-names.js"
 import { applyFermentToolProfile, profileForFerment } from "./tool-scope.js"
 
@@ -426,5 +428,122 @@ describe("registerFermentEvents", () => {
 		expect(lastCall).toContain("write")
 		expect(lastCall).toContain("Agent")
 		expect(lastCall).toContain("activate_ferment_phase")
+	})
+})
+
+describe("recoverStuckFerments lockfile awareness", () => {
+	let lockDir: string
+	let storageDir: string
+
+	beforeAll(() => {
+		lockDir = mkdtempSync(join(tmpdir(), "kimchi-ferment-lock-"))
+		storageDir = mkdtempSync(join(tmpdir(), "kimchi-ferment-storage-"))
+	})
+
+	beforeEach(() => {
+		vi.stubEnv("KIMCHI_FERMENT_LOCK_DIR", lockDir)
+		for (const file of readdirSync(lockDir)) {
+			rmSync(join(lockDir, file), { force: true })
+		}
+		for (const file of readdirSync(storageDir)) {
+			rmSync(join(storageDir, file), { recursive: true, force: true })
+		}
+	})
+
+	afterAll(() => {
+		rmSync(lockDir, { recursive: true, force: true })
+		rmSync(storageDir, { recursive: true, force: true })
+	})
+
+	function createStorageWithRunningFerment(): { storage: FermentEventStore; id: string } {
+		const storage = new FermentEventStore(storageDir)
+		const ferment = storage.create("Test")
+		const phaseId = "phase-1"
+
+		storage.mutateWithEvents(ferment.id, (current) => {
+			if (!current) throw new Error("missing ferment")
+			const now = new Date().toISOString()
+			const cmd = {
+				type: "scope" as const,
+				title: "Test",
+				goal: "Test goal",
+				successCriteria: ["Test criterion"],
+				constraints: [],
+				phases: [{ name: "Build", goal: "Build it", steps: [{ description: "step 1" }] }],
+			}
+			const result = applyCommand(current, cmd, { now })
+			if (!result.ok) throw new Error(`scope failed: ${result.error.message}`)
+			const events = commandToEvents(cmd, current, result.ferment, { now })
+			return { write: true, ferment: result.ferment, events, value: undefined }
+		})
+
+		storage.mutateWithEvents(ferment.id, (current) => {
+			if (!current) throw new Error("missing ferment")
+			const now = new Date().toISOString()
+			const cmd = { type: "activate_phase" as const, phaseId }
+			const result = applyCommand(current, cmd, { now })
+			if (!result.ok) throw new Error(`activate failed: ${result.error.message}`)
+			const events = commandToEvents(cmd, current, result.ferment, { now })
+			return { write: true, ferment: result.ferment, events, value: undefined }
+		})
+
+		return { storage, id: ferment.id }
+	}
+
+	it("skips pausing a running ferment when another live process holds its lockfile", async () => {
+		const { storage, id } = createStorageWithRunningFerment()
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: () => storage,
+			setActive: vi.fn(),
+		}
+		const { handlers, pi } = createPi()
+		registerFermentEvents(pi, runtime)
+		writeFermentLock(id)
+
+		const sessionStart = handlers.get("session_start")
+		if (!sessionStart) throw new Error("session_start handler was not registered")
+		await sessionStart({}, { hasUI: false })
+
+		expect(storage.get(id)?.status).toBe("running")
+	})
+
+	it("still pauses a running ferment when the lockfile PID is dead", async () => {
+		const { storage, id } = createStorageWithRunningFerment()
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: () => storage,
+			setActive: vi.fn(),
+		}
+		const { handlers, pi } = createPi()
+		registerFermentEvents(pi, runtime)
+		writeFileSync(
+			getFermentLockPath(id),
+			JSON.stringify({ pid: 999999999, startedAt: new Date().toISOString(), fermentId: id }),
+			"utf8",
+		)
+
+		const sessionStart = handlers.get("session_start")
+		if (!sessionStart) throw new Error("session_start handler was not registered")
+		await sessionStart({}, { hasUI: false })
+
+		expect(storage.get(id)?.status).toBe("paused")
+	})
+
+	it("still pauses a running ferment when no lockfile exists", async () => {
+		const { storage, id } = createStorageWithRunningFerment()
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: () => storage,
+			setActive: vi.fn(),
+		}
+		const { handlers, pi } = createPi()
+		registerFermentEvents(pi, runtime)
+
+		const sessionStart = handlers.get("session_start")
+		if (!sessionStart) throw new Error("session_start handler was not registered")
+		await sessionStart({}, { hasUI: false })
+
+		expect(storage.get(id)?.status).toBe("paused")
 	})
 })

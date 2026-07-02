@@ -36,6 +36,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 
 import { isFermentOnlyToolName } from "../../extensions/ferment/tool-names.js"
 import { getDisabledToolNames } from "../../extensions/prompt-construction/tool-visibility.js"
+import { getReadOnlyToolNames } from "./read-only-tool-registry.js"
 import { getToolsForProfile } from "./tool-catalog.js"
 import type { ToolProfile } from "./tool-catalog.js"
 
@@ -55,6 +56,18 @@ let snapshotAppliedThisTurn = false
 
 /** Guards `installTurnBoundaryReset` so the `turn_start` listener is registered at most once. */
 let turnListenerInstalled = false
+
+/**
+ * Tracks the last profile applied per session so extensions that register
+ * tools asynchronously (e.g. mcp-adapter after its SSE/OAuth init completes)
+ * can ask the profile manager to re-derive the active set without knowing
+ * which profile is active. Without this, late-registered read-only MCP tools
+ * are silently dropped: the cooperative-layer no-op guard
+ * (`isSnapshotAppliedThisTurn`) swallows the `expose()` call the adapter makes
+ * after registration, and the snapshot itself was computed before init
+ * finished so `getReadOnlyToolNames` returned `[]`.
+ */
+let lastProfileByPi = new WeakMap<ExtensionAPI, ToolProfile>()
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -109,15 +122,34 @@ export function applyCore(profile: ToolProfile, pi: ExtensionAPI): void {
 		allowedNames = merged.filter((name) => !disabled.has(name))
 	} else {
 		const tools = getToolsForProfile(profile)
+		allowedNames = tools.map((t) => t.name)
+
+		// During planning (both planning-ferment and planning-adhoc), union in
+		// read-only-qualified tools registered by extensions (e.g. mcp-adapter's
+		// read-only MCP tools). Write tools remain excluded — the model cannot
+		// call them during planning, mirroring the hard filter on edit/write.
+		// worker is intentionally NOT modified here so the worker phase keeps
+		// its catalog.
+		if (profile === "planning-ferment" || profile === "planning-adhoc") {
+			const readOnlyExtra = getReadOnlyToolNames(pi)
+			if (readOnlyExtra.length > 0) {
+				const existing = new Set(allowedNames)
+				for (const name of readOnlyExtra) {
+					if (!existing.has(name)) allowedNames.push(name)
+				}
+			}
+		}
+
 		// Filter out tools that the cooperative visibility layer has voted to
 		// hide.  Without this, a snapshot apply would re-surface tools that
 		// another extension disabled (e.g. ask_user / confirm_ferment_completion_
 		// criteria hidden when no UI is attached), undoing the cooperative vote.
-		allowedNames = tools.map((t) => t.name).filter((name) => !disabled.has(name))
+		allowedNames = allowedNames.filter((name) => !disabled.has(name))
 	}
 
 	pi.setActiveTools(allowedNames)
 	snapshotAppliedThisTurn = true
+	lastProfileByPi.set(pi, profile)
 }
 
 /**
@@ -174,6 +206,7 @@ export function resetSnapshotFlag(): void {
 export function resetAll(): void {
 	snapshotAppliedThisTurn = false
 	turnListenerInstalled = false
+	lastProfileByPi = new WeakMap()
 }
 
 /**
@@ -221,4 +254,28 @@ export function installTurnBoundaryReset(pi: ExtensionAPI): void {
 
 	pi.on("turn_start", () => resetSnapshotFlag())
 	turnListenerInstalled = true
+}
+
+/**
+ * Re-apply the last profile that was applied via `apply()`/`applyCore()`.
+ *
+ * Extensions that register tools asynchronously (notably mcp-adapter, whose
+ * direct tools are registered after SSE/OAuth init completes) need a way to
+ * surface those tools into the active set without calling `apply()` themselves
+ * (they don't know which profile is active). This function re-runs `applyCore`
+ * with the stored profile, re-evaluating `getReadOnlyToolNames` against the
+ * now-populated tool-metadata state.
+ *
+ * Safe to call at any time. Returns `false` (no-op) when no profile has been
+ * applied yet for this session.
+ *
+ * @param pi - The pi-mono `ExtensionAPI` instance.
+ * @returns `true` if the profile was re-applied; `false` if no profile was
+ *          stored for this session.
+ */
+export function reapplyCurrentProfile(pi: ExtensionAPI): boolean {
+	const profile = lastProfileByPi.get(pi)
+	if (!profile) return false
+	applyCore(profile, pi)
+	return true
 }

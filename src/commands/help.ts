@@ -24,7 +24,7 @@ const KIMCHI_FLAGS: FlagDoc[] = [
 	{ name: "--mode <mode>", description: "Output mode: text (default), json, rpc, acp" },
 	{ name: "--print, -p", description: "Non-interactive mode: process prompt and exit" },
 	{ name: "--continue, -c", description: "Resume the most recent session" },
-	{ name: "--resume, -r", description: "Pick a previous session interactively" },
+	{ name: "--resume, -r [id]", description: "Resume by id, or pick a previous session interactively when omitted" },
 	{ name: "--session <path>", description: "Resume a specific session file (full path or partial UUID)" },
 	{ name: "--no-session", description: "Run ephemerally — don't write a session file" },
 	{ name: "--export <file>", description: "Export a session to HTML and exit" },

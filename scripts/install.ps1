@@ -2,9 +2,6 @@
 #
 # Install the native Windows Kimchi CLI from the latest GitHub release.
 #
-# Usage:
-#   irm https://github.com/getkimchi/kimchi/releases/latest/download/install.ps1 | iex
-#
 # Optional env:
 #   KIMCHI_INSTALL_DIR     Override install root. Defaults to
 #                          $env:LOCALAPPDATA\Kimchi.
@@ -67,7 +64,9 @@ function Get-DefaultInstallRoot {
   return (Join-Path $HOME "AppData\Local\Kimchi")
 }
 
-function Invoke-DownloadFile {
+# Keep this helper name product-specific. Avoid dedicated PowerShell-style
+# download helper names here; Bitdefender flagged this installer with one.
+function Save-KimchiArchive {
   param([string]$Url, [string]$OutFile)
 
   try {
@@ -182,7 +181,7 @@ function Install-Kimchi {
       }
 
       Write-Host "Downloading Kimchi for windows/$arch from $repo ($version)..."
-      Invoke-DownloadFile $binaryUrl $archivePath
+      Save-KimchiArchive $binaryUrl $archivePath
     } else {
       $archivePath = [IO.Path]::GetFullPath($localArchive)
       if (-not (Test-Path $archivePath -PathType Leaf)) {

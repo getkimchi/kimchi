@@ -728,6 +728,129 @@ describe("AgentManager", () => {
 		expect(outcome.recovery_guidance).toContain("stalled operation")
 		expect(outcome.recovery_guidance).toContain("narrower linked replacement")
 	})
+
+	it("waits for aborted subagent promises to settle so runner cleanup can run", async () => {
+		const releaseRun = deferred<void>()
+		const runnerCleanup = vi.fn()
+		mockRunAgent.mockImplementationOnce((_ctx, _type, _prompt, options) => {
+			const result = deferred<Awaited<ReturnType<typeof runAgent>>>()
+			options.signal?.addEventListener(
+				"abort",
+				() => {
+					// In the real runner, aborting the session does not clear timers by itself.
+					// The inactivity interval is cleared only when runAgent reaches its finally block.
+					void releaseRun.promise.then(() => {
+						runnerCleanup()
+						result.resolve({
+							responseText: "partial",
+							session: { dispose: vi.fn() } as unknown as AgentSession,
+							aborted: true,
+							abortReason: "token_budget",
+							steered: false,
+						})
+					})
+				},
+				{ once: true },
+			)
+			return result.promise
+		})
+		manager = new AgentManager()
+		manager.spawn(fakePi(), fakeCtx(), "Explore", "inspect", {
+			description: "inspect",
+			isBackground: true,
+		})
+
+		manager.abortAll()
+		const wait = manager.waitForAll()
+
+		try {
+			// waitForAll must keep waiting for the aborted runAgent promise, because
+			// that promise settling is what lets the runner's timer cleanup execute.
+			await expectStillPending(wait)
+
+			releaseRun.resolve()
+			await wait
+
+			expect(runnerCleanup).toHaveBeenCalledTimes(1)
+		} finally {
+			releaseRun.resolve()
+			await wait.catch(() => {})
+		}
+	})
+
+	it("waits for active resume promises to settle so resume runner cleanup can run", async () => {
+		const session = { dispose: vi.fn() } as unknown as AgentSession
+		mockRunAgent.mockResolvedValueOnce({
+			responseText: "checkpoint",
+			session,
+			aborted: true,
+			abortReason: "token_budget",
+			steered: false,
+		})
+		const releaseResume = deferred<void>()
+		const runnerCleanup = vi.fn()
+		mockResumeAgent.mockImplementationOnce((_session, _prompt, options) => {
+			const result = deferred<Awaited<ReturnType<typeof resumeAgent>>>()
+			options?.signal?.addEventListener(
+				"abort",
+				() => {
+					void releaseResume.promise.then(() => {
+						runnerCleanup()
+						result.resolve({
+							responseText: "resumed partial",
+							session,
+							aborted: true,
+							abortReason: "token_budget",
+							steered: false,
+						})
+					})
+				},
+				{ once: true },
+			)
+			return result.promise
+		})
+		manager = new AgentManager()
+		const record = await manager.spawnAndWait(fakePi(), fakeCtx(), "Explore", "inspect", {
+			description: "inspect",
+		})
+
+		const resume = manager.resume(record.id, "continue", { tokenBudget: 2048 })
+		await vi.waitFor(() => expect(mockResumeAgent).toHaveBeenCalledTimes(1))
+		manager.abortAll()
+		const wait = manager.waitForAll()
+
+		try {
+			await expectStillPending(wait)
+
+			releaseResume.resolve()
+			await wait
+			await resume
+
+			expect(runnerCleanup).toHaveBeenCalledTimes(1)
+		} finally {
+			releaseResume.resolve()
+			await wait.catch(() => {})
+			await resume.catch(() => {})
+		}
+	})
+
+	it("clears registered runner inactivity cleanup during dispose as a hard fallback", () => {
+		const runnerCleanup = vi.fn()
+		mockRunAgent.mockImplementationOnce((_ctx, _type, _prompt, options) => {
+			options.onRuntimeCleanupRegistered?.(runnerCleanup)
+			return new Promise<never>(() => {})
+		})
+		manager = new AgentManager()
+		manager.spawn(fakePi(), fakeCtx(), "Explore", "inspect", {
+			description: "inspect",
+			isBackground: true,
+		})
+
+		manager.dispose()
+
+		expect(runnerCleanup).toHaveBeenCalledTimes(1)
+		manager = undefined
+	})
 })
 
 describe("AgentManager visibility", () => {
@@ -752,3 +875,22 @@ describe("AgentManager visibility", () => {
 		}
 	})
 })
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (reason?: unknown) => void } {
+	let resolve!: (value: T) => void
+	let reject!: (reason?: unknown) => void
+	const promise = new Promise<T>((res, rej) => {
+		resolve = res
+		reject = rej
+	})
+	return { promise, resolve, reject }
+}
+
+async function expectStillPending(promise: Promise<unknown>): Promise<void> {
+	let settled = false
+	promise.then(() => {
+		settled = true
+	})
+	await Promise.resolve()
+	expect(settled).toBe(false)
+}

@@ -6,6 +6,28 @@ import type { FermentRuntime } from "./runtime.js"
 import { FERMENT_TOOLS } from "./tool-names.js"
 
 /**
+ * When `propose_ferment_scoping` returns "Plan ready for review" the host
+ * defers the review dialog until `agent_end` fires. If the model keeps
+ * calling tools in the same turn, `agent_end` never fires and the review
+ * dialog never appears — the ferment is stuck in "draft" with a pending
+ * plan review.
+ *
+ * To force the turn to end, suppress ALL tools whenever a pending plan
+ * review exists for the active ferment. With no tools available the model's
+ * next LLM call produces a text-only response (`stopReason: "stop"`), which
+ * ends the turn and fires `agent_end`, which triggers the review dialog.
+ *
+ * Once the review is confirmed (`confirmPendingScope`) or cancelled, the
+ * caller re-applies the normal profile via `applyFermentRuntimeToolProfile`,
+ * which clears the pending review and restores the toolset.
+ */
+export function hasPendingPlanReview(runtime: FermentRuntime): boolean {
+	const activeId = runtime.getActiveId()
+	if (!activeId) return false
+	return runtime.getPendingPlanReview(activeId) !== undefined
+}
+
+/**
  * Tools available during the planning phase of a ferment lifecycle.
  * Includes read-only discovery tools, web search, and the ferment scoping surface.
  *
@@ -132,6 +154,15 @@ export function applyFermentToolProfile(pi: ExtensionAPI, profile: FermentToolPr
 }
 
 export function applyFermentRuntimeToolProfile(pi: ExtensionAPI, runtime: FermentRuntime): void {
+	// If a plan review is pending (propose_ferment_scoping returned "Plan ready
+	// for review"), suppress ALL tools. This forces the model's next LLM call
+	// to be text-only (stopReason: "stop"), ending the turn so `agent_end` fires
+	// and the review dialog is shown via the setTimeout(0) in index.ts.
+	// Restored by the caller after confirmPendingScope() or review cancellation.
+	if (hasPendingPlanReview(runtime)) {
+		pi.setActiveTools([])
+		return
+	}
 	applyFermentToolProfile(pi, profileForFerment(runtime.getActive()))
 }
 

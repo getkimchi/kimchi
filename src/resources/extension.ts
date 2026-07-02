@@ -43,6 +43,7 @@ async function ensureRtkOnStartup(ctx: ExtensionContext): Promise<void> {
 	if (!isResourceEnabled("hooks.rtk-rewrite")) return
 	if (process.env.KIMCHI_RTK_AUTO_INSTALL === "0") return
 
+	const notify = createSafeNotifier(ctx)
 	ensureRtkPath()
 	const missing = !isRtkInstalled()
 	const commandMissing = !isRtkCommandAvailable()
@@ -51,12 +52,23 @@ async function ensureRtkOnStartup(ctx: ExtensionContext): Promise<void> {
 	try {
 		const result = await installRtk()
 		markRtkAutoInstallChecked()
-		if ((missing || commandMissing) && ctx.hasUI) ctx.ui.notify(`RTK ready at ${result.linkPath}`, "info")
+		if ((missing || commandMissing) && notify) notify(`RTK ready at ${result.linkPath}`, "info")
 	} catch (err) {
 		markRtkAutoInstallChecked()
-		if ((missing || commandMissing) && ctx.hasUI)
-			ctx.ui.notify(`RTK install failed: ${(err as Error).message}`, "warning")
+		if ((missing || commandMissing) && notify) notify(`RTK install failed: ${(err as Error).message}`, "warning")
 	}
+}
+
+function createSafeNotifier(ctx: ExtensionContext): ExtensionContext["ui"]["notify"] | undefined {
+	if (!ctx.hasUI) return undefined
+	const notify = ctx.ui.notify.bind(ctx.ui)
+	return ((...args: Parameters<ExtensionContext["ui"]["notify"]>) => {
+		try {
+			notify(...args)
+		} catch {
+			/* Notification is best-effort; startup cleanup must not fail because the UI was replaced. */
+		}
+	}) as ExtensionContext["ui"]["notify"]
 }
 
 async function handleResourcesCommand(args: string, ctx: ExtensionContext): Promise<void> {

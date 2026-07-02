@@ -49,6 +49,10 @@ export interface KimchiFixture {
 	agentDir: string
 	fake: FakeOpenAiServer
 	ollama?: { baseUrl: string; requests: RecordedRequest[] }
+	/** Value returned by the `seedHome` option, if used; else undefined. */
+	seedResult?: unknown
+	/** Env vars returned by `seedHome`, merged into the launched process env. */
+	seedEnv: Record<string, string>
 	stop(): Promise<void>
 }
 
@@ -62,6 +66,14 @@ interface TuiStepSnapshot {
 	view: string
 }
 
+/** Result a `seedHome` hook may return to influence the launched process. */
+export interface SeedHomeResult {
+	/** Merged into the launched process env (alongside HOME, etc.). */
+	env?: Record<string, string>
+	/** Exposed on the fixture as `seedResult` for the test body to read. */
+	data?: unknown
+}
+
 interface CreateKimchiFixtureOptions {
 	models?: FakeModel[]
 	responses: FakeResponseScript[]
@@ -73,6 +85,23 @@ interface CreateKimchiFixtureOptions {
 	 * without having to commit fixture data alongside the harness.
 	 */
 	extraArgs?: string[]
+	/**
+	 * Extra environment variables merged into the launched process env (alongside
+	 * HOME, PI_PACKAGE_DIR, KIMCHI_PERMISSIONS, TERM). Used to seed e.g.
+	 * `KIMCHI_ACTIVE_FERMENT` so session_start auto-resumes a pre-seeded draft
+	 * without the model having to create one.
+	 */
+	env?: Record<string, string>
+	/**
+	 * Runs AFTER homeDir/workDir are created (and git init, if requested) but
+	 * BEFORE kimchi is launched. Use to seed on-disk state (ferment event
+	 * store, sidecar files) that the session must see at startup. Receives the
+	 * resolved homeDir and workDir. May return `{ env, data }` where `env` is
+	 * merged into the launched process env (e.g. `KIMCHI_ACTIVE_FERMENT`) and
+	 * `data` is exposed on the fixture as `seedResult`. Returning a plain
+	 * object without this shape is treated as `data` for back-compat.
+	 */
+	seedHome?: (homeDir: string, workDir: string) => SeedHomeResult | unknown
 	/** When provided, start a fake Ollama server alongside the OpenAI fake. The
 	 *  server handles startup model discovery (/api/tags + /api/show) and chat
 	 *  completions (/v1/chat/completions) so the TUI E2E can run without a real
@@ -121,12 +150,22 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 
 		writeModelsConfig(join(agentDir, "models.json"), fake.baseUrl, options.models)
 
+		const rawSeed = options.seedHome?.(homeDir, workDir)
+		const seedIsResult =
+			rawSeed !== null &&
+			typeof rawSeed === "object" &&
+			("env" in (rawSeed as SeedHomeResult) || "data" in (rawSeed as SeedHomeResult))
+		const seedEnv = seedIsResult ? ((rawSeed as SeedHomeResult).env ?? {}) : {}
+		const seedResult = seedIsResult ? (rawSeed as SeedHomeResult).data : rawSeed
+
 		return {
 			homeDir,
 			workDir,
 			agentDir,
 			fake,
 			ollama: ollama ? { baseUrl: ollama.baseUrl, requests: ollama.requests } : undefined,
+			seedResult,
+			seedEnv,
 			async stop() {
 				// Run both server stops even if one throws, so a failing OpenAI
 				// fake doesn't leak an Ollama fake listening on a port.
@@ -149,13 +188,19 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 	}
 }
 
-export function launchKimchi(terminal: Terminal, fixture: KimchiFixture, extraArgs: string[] = []): void {
+export function launchKimchi(
+	terminal: Terminal,
+	fixture: KimchiFixture,
+	extraArgs: string[] = [],
+	extraEnv: Record<string, string> = {},
+): void {
 	// KIMCHI_PERMISSIONS=yolo skips every permission check (rules, denylist,
 	// classifier, prompts) so tool calls execute without blocking on the TUI
 	// permission prompt — no test driver is wired to answer it. TUI E2E
 	// should not depend on permission UX; permission flows are covered by
 	// unit tests in src/extensions/permissions/. Tests that deliberately
 	// exercise the prompt UI should override via `extraArgs` (e.g. `--plan`).
+	const envEntries = Object.entries(extraEnv).map(([key, value]) => `${key}=${sh(value)}`)
 	terminal.submit(
 		[
 			`cd ${sh(fixture.workDir)} &&`,
@@ -164,6 +209,7 @@ export function launchKimchi(terminal: Terminal, fixture: KimchiFixture, extraAr
 			`PI_PACKAGE_DIR=${sh(PACKAGE_DIR)}`,
 			"KIMCHI_PERMISSIONS=yolo",
 			...((fixture.ollama ? [`OLLAMA_HOST=${sh(fixture.ollama.baseUrl)}`] : []) as string[]),
+			...envEntries,
 			"TERM=xterm-256color",
 			sh(BINARY_PATH),
 			`--provider ${FAKE_PROVIDER}`,
@@ -198,7 +244,7 @@ export async function runKimchiSession(
 	}
 
 	try {
-		launchKimchi(terminal, fixture, fixtureOptions.extraArgs ?? [])
+		launchKimchi(terminal, fixture, fixtureOptions.extraArgs ?? [], { ...fixtureOptions.env, ...fixture.seedEnv })
 		await waitForText(terminal, PROMPT_READY, { timeoutMs: STARTUP_TIMEOUT_MS })
 		trace.step("ready prompt visible")
 		await body(fixture, trace)

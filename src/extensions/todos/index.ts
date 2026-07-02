@@ -48,6 +48,21 @@ function isWriteTodosDetails(value: unknown): value is WriteTodosDetails {
 
 const TODO_REPLAY_TOOL_NAME_SET = new Set<string>([...TODO_TOOL_NAMES, "write_todos"])
 
+/**
+ * Checks whether any todo tool is currently available to the model.
+ *
+ * Other extensions (e.g. ferment plan review) suppress ALL tools via
+ * `pi.setActiveTools([])`. In that state the model cannot reconcile todos —
+ * sending `reconcile_todos` follow-ups or `todo_checkpoint` context messages
+ * would create an infinite loop: the model tries to call todo tools, fails
+ * (tools unavailable), produces text-only output, `turn_end` fires, and the
+ * checkpoint fires again because `workSinceTodoWrite` was never cleared.
+ */
+function anyTodoToolsAvailable(pi: ExtensionAPI): boolean {
+	const active = pi.getActiveTools()
+	return TODO_TOOL_NAMES.some((name) => active.includes(name))
+}
+
 function getWriteTodosDetails(entry: SessionEntry): WriteTodosDetails | undefined {
 	if (entry.type === "custom" && entry.customType === TODO_CUSTOM_ENTRY_TYPE) {
 		return isWriteTodosDetails(entry.data) ? entry.data : undefined
@@ -134,6 +149,14 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	const maybeSteerTodoReconciliation = (message: unknown) => {
 		if (!workSinceTodoWrite) return
 		if (!hasVisibleText(message)) return
+		// If the model has no todo tools available (e.g. during a ferment plan
+		// review where all tools are suppressed), it cannot reconcile todos.
+		// Sending a follow-up would trap it in a text-only loop. Reset the flag
+		// and defer reconciliation until tools are restored.
+		if (!anyTodoToolsAvailable(pi)) {
+			resetTodoProcessState()
+			return
+		}
 		if (!currentTodoStateKey()) {
 			resetTodoProcessState()
 			return
@@ -182,6 +205,9 @@ export default function todosExtension(pi: ExtensionAPI): void {
 
 	pi.on("context", (event) => {
 		if (!workSinceTodoWrite) return undefined
+		// Same guard as maybeSteerTodoReconciliation: if todo tools are not
+		// available (e.g. ferment plan review), skip checkpoint injection.
+		if (!anyTodoToolsAvailable(pi)) return undefined
 		const stateText = currentTodoStateText()
 		if (!stateText) return resetTodoProcessState()
 		return {

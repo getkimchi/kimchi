@@ -30,6 +30,7 @@ vi.mock("./transport.js", () => ({
 import { getMe } from "../../api/me.js"
 import { ensureDeviceId } from "../../posthog-device.js"
 import { getVersion } from "../../utils.js"
+import * as osMetadata from "../../utils/os-metadata.js"
 import { _resetUserCache, drain, sendPreSessionEvent } from "./pre-session.js"
 import { sendLog } from "./transport.js"
 
@@ -117,6 +118,22 @@ describe("sendPreSessionEvent", () => {
 		// arch mapping: x64 → amd64
 		const expectedArch = process.arch === "x64" ? "amd64" : process.arch
 		expect(attrs["telemetry.arch"]).toBe(expectedArch)
+		expect(attrs["telemetry.host_os"]).toBe(process.platform) // non-WSL by default in test env
+		expect(attrs["telemetry.is_wsl"]).toBe(false)
+	})
+
+	it("includes all four OS metadata keys including host_os and is_wsl", async () => {
+		sendPreSessionEvent(makeConfig(), "app_started")
+		await drain()
+
+		const { attrs } = lastSendLogCall()
+		expect(attrs["telemetry.os"]).toBe(process.platform)
+		const expectedArch = process.arch === "x64" ? "amd64" : process.arch
+		expect(attrs["telemetry.arch"]).toBe(expectedArch)
+		expect(attrs["telemetry.host_os"]).toBeDefined()
+		expect(attrs["telemetry.is_wsl"]).toBe(false)
+		// On non-WSL, host_os should equal os
+		expect(attrs["telemetry.host_os"]).toBe(attrs["telemetry.os"])
 	})
 
 	it("maps event properties to event.* attributes", async () => {
@@ -283,6 +300,58 @@ describe("sendPreSessionEvent", () => {
 		// The transport's sendLog puts event name in the body/eventName field.
 		// User properties go into attrs with event.* prefix.
 		expect(attrs["event.name"]).toBe("foo")
+	})
+})
+
+// ---------------------------------------------------------------------------
+// Parametrized WSL/non-WSL OS metadata. The non-WSL cases are covered above
+// (asserting telemetry.is_wsl === false and host_os === os). These tests add
+// the WSL case: getOsMetadata is forced to report a WSL environment.
+// ---------------------------------------------------------------------------
+
+describe("sendPreSessionEvent OS metadata under WSL", () => {
+	beforeEach(() => {
+		_resetUserCache()
+		vi.clearAllMocks()
+		vi.mocked(ensureDeviceId).mockReturnValue(testDeviceId)
+		vi.mocked(getVersion).mockReturnValue("1.0.0-test")
+		vi.mocked(getMe).mockResolvedValue({ id: "user-123", email: "alice@cast.ai", name: "Alice" })
+		vi.mocked(sendLog).mockResolvedValue(undefined)
+		// Force WSL metadata — under WSL, os stays "linux" but host_os becomes "win32".
+		vi.spyOn(osMetadata, "getOsMetadata").mockReturnValue({
+			"telemetry.os": "linux",
+			"telemetry.arch": "amd64",
+			"telemetry.host_os": "win32",
+			"telemetry.is_wsl": true,
+		})
+	})
+
+	afterEach(() => {
+		vi.restoreAllMocks()
+	})
+
+	it("reports host_os=win32 and is_wsl=true when /proc/version contains microsoft", async () => {
+		sendPreSessionEvent(makeConfig(), "app_started")
+		await drain()
+
+		const { attrs } = lastSendLogCall()
+		// Under WSL, os stays linux, but host_os becomes win32.
+		expect(attrs["telemetry.os"]).toBe("linux")
+		expect(attrs["telemetry.host_os"]).toBe("win32")
+		expect(attrs["telemetry.is_wsl"]).toBe(true)
+		expect(attrs["telemetry.arch"]).toBe("amd64")
+	})
+
+	it("keeps os and host_os distinct under WSL (host_os !== os)", async () => {
+		sendPreSessionEvent(makeConfig(), "app_started")
+		await drain()
+
+		const { attrs } = lastSendLogCall()
+		expect(attrs["telemetry.os"]).toBe("linux")
+		expect(attrs["telemetry.host_os"]).toBe("win32")
+		// Under WSL host_os diverges from os — the inverse of the non-WSL
+		// assertion (host_os === os) in the describe block above.
+		expect(attrs["telemetry.host_os"]).not.toBe(attrs["telemetry.os"])
 	})
 })
 

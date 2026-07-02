@@ -27,6 +27,32 @@ export function isPreDispatchValueFlag(arg: string): boolean {
 	return PRE_DISPATCH_VALUE_FLAGS.has(arg)
 }
 
+export function normalizeResumeIdArgs(args: string[]): string[] {
+	const normalized: string[] = []
+	for (let i = 0; i < args.length; i += 1) {
+		const arg = args[i]
+		if (arg.startsWith("--resume=") && arg.length > "--resume=".length) {
+			normalized.push("--session", arg.slice("--resume=".length))
+		} else if (arg.startsWith("-r") && arg.length > 2) {
+			normalized.push("--session", arg.slice(2))
+		} else if ((arg === "-r" || arg === "--resume") && i + 1 < args.length && isSessionSelector(args[i + 1])) {
+			normalized.push("--session", args[i + 1])
+			i += 1
+		} else {
+			normalized.push(arg)
+		}
+	}
+	return normalized
+}
+
+function isSessionSelector(value: string): boolean {
+	return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value) || isPathLike(value)
+}
+
+function isPathLike(value: string): boolean {
+	return value.startsWith("/") || value.startsWith("./") || value.startsWith("../") || value.startsWith("~/")
+}
+
 export function isCliAtFileArg(arg: string, index: number, args: string[]): boolean {
 	if (!arg.startsWith("@") || arg === "@") return false
 	// Use Pi's parser as the source of truth instead of mirroring every value-taking flag.

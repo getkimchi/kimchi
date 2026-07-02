@@ -96,6 +96,11 @@ export const SHARED_CORE_TOOLS: ToolEntry[] = [
 	{ name: "ls", modes: ["shared"] },
 	{ name: "web_fetch", modes: ["shared"] },
 	{ name: "web_search", modes: ["shared"] },
+	// MCP gateway — discovery + proxy for MCP server tools. Treated as a
+	// shared discovery tool (analogous to read/grep/find): harmless when no
+	// servers are configured, and required during planning so the model can
+	// search/describe/call read-only MCP tools (e.g. Atlassian Jira).
+	{ name: "mcp", modes: ["shared"] },
 	// Todo lifecycle tools — must mirror TODO_TOOL_NAMES in src/extensions/todos/tool.ts
 	// These are general-purpose session tools used in all modes (adhoc chat,
 	// ferment planning, and ferment implementation). The system prompt,

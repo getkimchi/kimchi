@@ -151,6 +151,16 @@ function buildRedirectIfStartStepPending(
 	// Be permissive on data drift; don't block if we can't describe the step.
 	if (!phase || !step) return { block: false }
 
+	// If a step in this phase is already running, the engine's start_step action
+	// is forward-suggesting the NEXT pending step (engine branch 9 fires before
+	// branch 10's complete_step). That is not a precondition for this spawn —
+	// the orchestrator may be delegating the running step's work to a worker.
+	// Blocking here would deadlock the orchestrator out of spawning workers for
+	// any step that isn't the last in its phase. See engine.test.ts:248 for the
+	// running+pending ordering, and the JSONL session 019f0397 for the stuck
+	// repro.
+	if (phase.steps.some((s) => s.status === "running")) return { block: false }
+
 	return {
 		block: true,
 		reason: `Active ferment "${ferment.name}" has a pending step that has not been started yet.\n\nStep ${step.index} of phase ${phase.index}: "${step.description}"\n\nCall start_ferment_step first, then re-call Agent. The orchestrator owns ferment state transitions; a worker cannot start or complete steps on the ledger's behalf.`,

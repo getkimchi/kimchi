@@ -10,6 +10,7 @@ import {
 	isPreDispatchValueFlag,
 	isProtocolOrPrintMode,
 	isTerminalUiMode,
+	normalizeResumeIdArgs,
 	stripExperimentalFeaturesArg,
 } from "./cli-args.js"
 import { normalizeAtFileArgs } from "./fs-paths.js"
@@ -109,6 +110,34 @@ describe("isPreDispatchValueFlag", () => {
 		"does not treat %s as a value flag",
 		(arg) => {
 			expect(isPreDispatchValueFlag(arg)).toBe(false)
+		},
+	)
+})
+
+describe("normalizeResumeIdArgs", () => {
+	it.each([
+		[
+			["-r", "019f1780-8034-7435-85aa-3e86037676ee"],
+			["--session", "019f1780-8034-7435-85aa-3e86037676ee"],
+		],
+		[
+			["--resume", "019f1780-8034-7435-85aa-3e86037676ee"],
+			["--session", "019f1780-8034-7435-85aa-3e86037676ee"],
+		],
+		[
+			["--provider", "fake", "-r", "./session.jsonl"],
+			["--provider", "fake", "--session", "./session.jsonl"],
+		],
+		[["--resume=abc123"], ["--session", "abc123"]],
+		[["-rabc123"], ["--session", "abc123"]],
+	])("rewrites %j to %j", (input, expected) => {
+		expect(normalizeResumeIdArgs(input)).toEqual(expected)
+	})
+
+	it.each([[["-r"]], [["--resume"]], [["-r", "--model", "fake"]], [["-r", "continue the review"]]])(
+		"leaves bare resume picker args unchanged",
+		(input) => {
+			expect(normalizeResumeIdArgs(input)).toEqual(input)
 		},
 	)
 })

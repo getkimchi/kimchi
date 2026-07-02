@@ -1,6 +1,7 @@
 import crypto from "node:crypto"
 import { getMe } from "../../api/me.js"
 import type { TelemetryConfig } from "../../config.js"
+import { getOsMetadata } from "../../utils/os-metadata.js"
 import { getActiveFerment } from "../ferment/index.js"
 import { type CumulativeState, collectMetrics, createCumulativeState } from "./accumulator.js"
 import { toAttrs } from "./helpers.js"
@@ -76,6 +77,8 @@ export class SessionContext {
 	lastSessionType: string | undefined
 	/** Number of context compactions in the current session. */
 	compactionCount = 0
+	/** Cached OS metadata — computed once per SessionContext instance. */
+	private osMetadata: ReturnType<typeof getOsMetadata>
 
 	/** Cached user email from /v1/me — populated once in the background. */
 	userEmail: string | undefined
@@ -88,6 +91,7 @@ export class SessionContext {
 	constructor(config: TelemetryConfig, source: string) {
 		this.config = config
 		this.source = source
+		this.osMetadata = getOsMetadata()
 		if (!rootSessionId) rootSessionId = crypto.randomUUID()
 		this.sessionId = rootSessionId
 		this.sessionStartMs = Date.now()
@@ -148,6 +152,7 @@ export class SessionContext {
 		const merged: Record<string, string | number | boolean> = {
 			source: this.source,
 			session_type: sessionType,
+			...this.osMetadata,
 			...ids,
 			...attrs,
 			"user.account_uuid": this.userId ?? "",
@@ -173,6 +178,7 @@ export class SessionContext {
 
 		const merged = {
 			...attrs,
+			...this.osMetadata,
 			source: this.source,
 			session_type: sessionType,
 			ferment_id: ferment?.id ?? "",

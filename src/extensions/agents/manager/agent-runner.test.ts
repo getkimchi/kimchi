@@ -1279,6 +1279,108 @@ describe("runAgent — maxDuration enforcement", () => {
 	})
 })
 
+describe("runAgent — runtime cleanup", () => {
+	let ctx: ReturnType<typeof makeFakeCtx>
+	let pi: ReturnType<typeof makeFakePi>
+
+	beforeEach(() => {
+		vi.useFakeTimers()
+		ctx = makeFakeCtx()
+		pi = makeFakePi()
+		mockCreateAgentSession.mockReset()
+		mockGetConfig.mockReturnValue(makeTypeConfig({ extensions: false, skills: false }))
+		mockGetAgentConfig.mockReturnValue(makeAgentConfig())
+		mockGetToolNamesForType.mockReturnValue([])
+	})
+
+	afterEach(() => {
+		vi.useRealTimers()
+		vi.clearAllMocks()
+	})
+
+	it("registered runtime cleanup clears the inactivity interval before the prompt settles", async () => {
+		const abortSpy = vi.fn()
+		let resolvePrompt: (() => void) | undefined
+		const promptPromise = new Promise<void>((resolve) => {
+			resolvePrompt = resolve
+		})
+		const session = makeFakeSession({
+			abortSpy,
+			emitUsage: false,
+			promptAction: async () => {
+				await promptPromise
+			},
+		})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+		let cleanup: (() => void) | undefined
+
+		const resultPromise = runAgent(
+			ctx as unknown as Parameters<typeof runAgent>[0],
+			"General-Purpose",
+			"do something",
+			{
+				pi: pi as unknown as RunOptions["pi"],
+				inactivityTimeout: 10,
+				maxDuration: 0,
+				onRuntimeCleanupRegistered: (fn) => {
+					cleanup = fn
+				},
+			},
+		)
+		await vi.waitFor(() => expect(cleanup).toBeDefined())
+
+		cleanup?.()
+		await vi.advanceTimersByTimeAsync(25_000)
+
+		expect(session.steer).not.toHaveBeenCalled()
+		expect(abortSpy).not.toHaveBeenCalled()
+
+		resolvePrompt?.()
+		const result = await resultPromise
+		expect(result.aborted).toBe(false)
+	})
+
+	it("registered runtime cleanup clears the resume inactivity interval before the prompt settles", async () => {
+		const abortSpy = vi.fn()
+		let resolvePrompt: (() => void) | undefined
+		const promptPromise = new Promise<void>((resolve) => {
+			resolvePrompt = resolve
+		})
+		const session = makeFakeSession({
+			abortSpy,
+			emitUsage: false,
+			promptAction: async () => {
+				await promptPromise
+			},
+		})
+		let cleanup: (() => void) | undefined
+
+		const resultPromise = resumeAgent(session as unknown as AgentSession, "continue", {
+			inactivityTimeout: 10,
+			maxDuration: 0,
+			onRuntimeCleanupRegistered: (fn) => {
+				cleanup = fn
+			},
+		})
+		await vi.waitFor(() => expect(cleanup).toBeDefined())
+
+		cleanup?.()
+		await vi.advanceTimersByTimeAsync(25_000)
+
+		expect(session.steer).not.toHaveBeenCalled()
+		expect(abortSpy).not.toHaveBeenCalled()
+
+		resolvePrompt?.()
+		const result = await resultPromise
+		expect(result.aborted).toBe(false)
+	})
+})
+
 describe("resumeAgent — maxDuration enforcement", () => {
 	beforeEach(() => {
 		vi.useFakeTimers()
