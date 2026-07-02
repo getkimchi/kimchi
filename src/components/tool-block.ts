@@ -55,7 +55,7 @@ export class ToolBlockView extends Container {
 		this.showDivider = false
 	}
 
-	setBottom(left: string, right: string): void {
+	setBottomRow(left: string, right: string): void {
 		this.bottomLeft = left
 		this.bottomRight = right
 	}
@@ -154,7 +154,7 @@ export function buildToolCallHeader(
 
 	view.setHeader(left, right)
 	view.hideDivider()
-	view.setBottom("", "")
+	view.setBottomRow("", "")
 	view.setExtra([])
 }
 
