@@ -206,7 +206,8 @@ export class AgentManager {
 	private startAgent(id: string, record: AgentRecord, { pi, ctx, type, prompt, options }: SpawnArgs) {
 		record.status = "running"
 		record.startedAt = Date.now()
-		if (options.isBackground) this.runningBackground++
+		record.isBackground = options.isBackground ?? false
+		if (record.isBackground) this.runningBackground++
 		this.onStart?.(record)
 
 		let detachParentSignal: (() => void) | undefined
@@ -215,9 +216,13 @@ export class AgentManager {
 			options.signal.addEventListener("abort", onParentAbort, { once: true })
 			detachParentSignal = () => options.signal?.removeEventListener("abort", onParentAbort)
 		}
-		const detach = () => {
+		record.detachFromParent = () => {
 			detachParentSignal?.()
 			detachParentSignal = undefined
+		}
+		const detach = () => {
+			record.detachFromParent?.()
+			record.detachFromParent = undefined
 		}
 
 		const promise = runAgent(ctx, type, prompt, {
@@ -293,7 +298,7 @@ export class AgentManager {
 				record.completedAt ??= Date.now()
 				record.latestOutcome = buildAgentOutcome(record)
 
-				if (options.isBackground) {
+				if (record.isBackground) {
 					this.runningBackground--
 					this.onComplete?.(record)
 					this.drainQueue()
@@ -308,7 +313,7 @@ export class AgentManager {
 				record.completedAt ??= Date.now()
 				record.latestOutcome = buildAgentOutcome(record)
 
-				if (options.isBackground) {
+				if (record.isBackground) {
 					this.runningBackground--
 					this.onComplete?.(record)
 					this.drainQueue()
@@ -360,6 +365,21 @@ export class AgentManager {
 		const record = this.agents.get(id)!
 		await record.promise
 		return record
+	}
+
+	detachToBackground(id: string): boolean {
+		const record = this.agents.get(id)
+		if (!record || record.status !== "running" || record.isBackground) return false
+		if (!record.detachResolver) return false
+
+		record.isBackground = true
+		this.runningBackground++
+		record.detachFromParent?.()
+		record.detachFromParent = undefined
+		record.detachResolver?.()
+		record.detachResolver = undefined
+
+		return true
 	}
 
 	async resume(

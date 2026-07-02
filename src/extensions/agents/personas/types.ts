@@ -194,6 +194,12 @@ export interface AgentRecord {
 	sessionFile?: string
 	/** Cleanup function for the output file stream subscription. */
 	outputCleanup?: () => void
+	/** Whether this agent is (or has been converted to) a background agent. */
+	isBackground?: boolean
+	/** Resolver to call when this foreground agent is detached to background via Ctrl+B. */
+	detachResolver?: () => void
+	/** Removes the parent abort signal listener so the agent survives after detach. */
+	detachFromParent?: () => void
 	/**
 	 * Lifetime usage breakdown, accumulated via `message_end` events. Survives
 	 * compaction. Total = input + output + cacheWrite (cacheRead deliberately
