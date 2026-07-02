@@ -27,6 +27,9 @@ import { parseTeleportArgs } from "./args.js"
 import { refuse, warn } from "./errors.js"
 import { resolveWorkspaceRef } from "./workspace-ref.js"
 
+/** Per-call timeout for createSession: 5min — the 30s WorkerClient default aborts mid-flight on large repos. */
+export const SESSION_CREATE_TIMEOUT_MS = 5 * 60_000
+
 export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promise<void> {
 	if (hasHelpFlag(rawArgs)) {
 		await promptTeleportHelp(ctx.ui)
@@ -271,6 +274,7 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 			initialSession = await createSession(client, sessionName, req, {
 				sessionFile: sessionFileToUpload,
 				signal,
+				timeoutMs: SESSION_CREATE_TIMEOUT_MS,
 			})
 		} catch (err) {
 			if (signal.aborted) throw err
