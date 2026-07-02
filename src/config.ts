@@ -680,6 +680,32 @@ export function readGitToken(host: string, configPath?: string): string | undefi
 }
 
 /**
+ * Read all stored git tokens from the global config.
+ * Returns a map of host → token, or undefined if the config file
+ * or gitTokens field is missing.
+ */
+export function readAllGitTokens(configPath?: string): Record<string, string> | undefined {
+	const path = configPath ?? KIMCHI_CONFIG_PATH
+	try {
+		const raw = readFileSync(path, "utf-8")
+		const parsed = JSON.parse(raw)
+		const tokens = parsed.gitTokens
+		if (tokens && typeof tokens === "object" && !Array.isArray(tokens)) {
+			const result: Record<string, string> = {}
+			for (const [host, token] of Object.entries(tokens)) {
+				if (typeof token === "string") {
+					result[host] = token
+				}
+			}
+			return result
+		}
+		return undefined
+	} catch {
+		return undefined
+	}
+}
+
+/**
  * Persist a git token for a specific host in the global config.
  * Stored under `gitTokens.<host>` alongside the API key, following the same
  * security model (plaintext in `~/.config/kimchi/config.json`).
