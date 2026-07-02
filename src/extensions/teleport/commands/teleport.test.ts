@@ -202,7 +202,7 @@ afterEach(() => {
 })
 
 describe("runTeleport", () => {
-	it("shows an inline footer status while resolving the workspace, and clears it before the overlay opens", async () => {
+	it("shows an inline status line message while resolving the workspace, and clears it before the overlay opens", async () => {
 		const { ctx, ui } = makeCtx()
 		const setStatusMock = ui.setStatus as unknown as ReturnType<typeof vi.fn>
 
