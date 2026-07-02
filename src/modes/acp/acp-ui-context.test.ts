@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { createAcpUIContext } from "./acp-ui-context.js"
 import { ADVERTISED_CAPABILITIES, CAPABILITIES_KEY } from "./capabilities.js"
+import { choiceSchema, confirmSchema, freeTextSchema, getAcpElicitForm } from "./structured-elicitation.js"
 
 type ExtMethod = (method: string, params: Record<string, unknown>) => Promise<Record<string, unknown>>
 type ExtNotification = (method: string, params: Record<string, unknown>) => Promise<void>
@@ -94,16 +95,7 @@ describe("createAcpUIContext — confirm via elicitation", () => {
 			mode: "form",
 			requestId: expect.any(String),
 			sessionId: "sess-1",
-			requestedSchema: {
-				type: "object",
-				properties: {
-					confirmed: {
-						default: false,
-						type: "boolean",
-					},
-				},
-				required: ["confirmed"],
-			},
+			requestedSchema: confirmSchema(),
 		})
 	})
 
@@ -295,29 +287,15 @@ describe("createAcpUIContext — select via elicitation", () => {
 			mode: "form",
 			requestId: expect.any(String),
 			sessionId: "sess-1",
-			requestedSchema: {
-				properties: {
-					value: {
-						oneOf: [
-							{
-								const: "a",
-								title: "a",
-							},
-							{
-								const: "b",
-								title: "b",
-							},
-							{
-								const: "c",
-								title: "c",
-							},
-						],
-						type: "string",
-					},
-				},
-				required: ["value"],
-				type: "object",
-			},
+			requestedSchema: choiceSchema(
+				[
+					{ id: "a", label: "a" },
+					{ id: "b", label: "b" },
+					{ id: "c", label: "c" },
+				],
+				true,
+				false,
+			),
 		})
 	})
 
@@ -452,16 +430,7 @@ describe("createAcpUIContext — input via elicitation", () => {
 			mode: "form",
 			requestId: expect.any(String),
 			sessionId: "sess-1",
-			requestedSchema: {
-				properties: {
-					value: {
-						description: "Enter your name",
-						type: "string",
-					},
-				},
-				required: ["value"],
-				type: "object",
-			},
+			requestedSchema: freeTextSchema(true, "Enter your name"),
 		})
 	})
 
@@ -570,6 +539,15 @@ describe("createAcpUIContext — capability gating", () => {
 		const real = createAcpUIContext(conn, "sess-1", caps, send)
 		await expect(real.select("Pick", ["x", "y"])).resolves.toBe("x")
 		expect(elicit).toHaveBeenCalledTimes(1)
+	})
+
+	it("exposes the structured elicitation helper only when form elicitation is supported", () => {
+		const { conn, send } = makeConn()
+		const withForm = createAcpUIContext(conn, "sess-1", elicitationClientCapabilities(), send)
+		const withoutForm = createAcpUIContext(conn, "sess-2", uiMethodsClientCapabilities(), send)
+
+		expect(getAcpElicitForm(withForm)).toEqual(expect.any(Function))
+		expect(getAcpElicitForm(withoutForm)).toBeUndefined()
 	})
 
 	it("treats elicitation.form undefined as not supporting form elicitation (falls back to request_permission)", async () => {

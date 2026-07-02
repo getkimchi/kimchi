@@ -1,5 +1,11 @@
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
+import {
+	ACP_ELICIT_FORM,
+	type AcpElicitForm,
+	choiceSchema,
+	freeTextSchema,
+} from "../../modes/acp/structured-elicitation.js"
 import { parseMultipleChoiceInput, promptQuestionnaireFallback } from "./questionnaire-fallback.js"
 import { type Question, type QuestionOption, YES_NO_OPTIONS } from "./questionnaire-reducer.js"
 
@@ -29,6 +35,32 @@ function makeUI(handlers: UIHandlers): ExtensionUIContext {
 		confirm: handlers.confirm,
 		select: handlers.select,
 	} as unknown as ExtensionUIContext
+}
+
+type AcpResponse = Awaited<ReturnType<AcpElicitForm>>
+type AcpResponseInput = AcpResponse | AcpResponse[]
+type QuestionInput = Partial<Question> & Pick<Question, "id" | "prompt" | "type">
+
+function makeAcpUI(elicitResponse: AcpResponseInput, inputResponse: string | undefined = "should not be called") {
+	const inputSpy = vi.fn(async () => inputResponse)
+	const responses = Array.isArray(elicitResponse) ? [...elicitResponse] : [elicitResponse]
+	const elicitSpy = vi.fn<AcpElicitForm>(async () => responses.shift())
+	const ui = {
+		input: inputSpy,
+		[ACP_ELICIT_FORM]: elicitSpy,
+	} as unknown as ExtensionUIContext
+
+	return { ui, inputSpy, elicitSpy }
+}
+
+async function runAcpQuestionnaire(
+	question: QuestionInput,
+	elicitResponse: AcpResponseInput,
+	inputResponse?: string | undefined,
+) {
+	const { ui, inputSpy, elicitSpy } = makeAcpUI(elicitResponse, inputResponse)
+	const result = await promptQuestionnaireFallback(ui, [makeQuestion(question)])
+	return { result, inputSpy, elicitSpy }
 }
 
 // ─── text type ────────────────────────────────────────────────────────────────
@@ -417,6 +449,245 @@ describe("promptQuestionnaireFallback — multi type", () => {
 				wasCustom: false,
 			},
 		])
+	})
+})
+
+describe("promptQuestionnaireFallback — ACP structured choices", () => {
+	const options = [
+		{ id: "a", label: "Alpha" },
+		{ id: "b", label: "Beta" },
+		{ id: "c", label: "Gamma" },
+	]
+
+	function acpSingleQuestion(overrides: Partial<QuestionInput> = {}): QuestionInput {
+		return {
+			id: "scope",
+			type: "single",
+			prompt: "Pick scope",
+			options,
+			...overrides,
+		}
+	}
+
+	function acpMultiQuestion(overrides: Partial<QuestionInput> = {}): QuestionInput {
+		return {
+			id: "features",
+			type: "multi",
+			prompt: "Pick features",
+			options,
+			...overrides,
+		}
+	}
+
+	it("uses ACP single-choice elicitation and records the selected option", async () => {
+		const { result, inputSpy, elicitSpy } = await runAcpQuestionnaire(acpSingleQuestion({ allowOther: false }), {
+			value: "b",
+		})
+
+		expect(inputSpy).not.toHaveBeenCalled()
+		expect(elicitSpy).toHaveBeenCalledOnce()
+		expect(elicitSpy.mock.calls[0][2]).toEqual(choiceSchema(options, true, false))
+		expect(result.answers).toEqual([
+			{
+				id: "scope",
+				index: 2,
+				label: "Beta",
+				value: "b",
+				wasCustom: false,
+			},
+		])
+	})
+
+	it("asks for free text after ACP single-choice chooses Other", async () => {
+		const { result, inputSpy, elicitSpy } = await runAcpQuestionnaire(acpSingleQuestion({ allowOther: true }), [
+			{ value: "__other__" },
+			{ value: "Custom answer" },
+		])
+
+		expect(inputSpy).not.toHaveBeenCalled()
+		expect(elicitSpy).toHaveBeenCalledTimes(2)
+		expect(elicitSpy.mock.calls[1]).toEqual(["Pick scope\n\nYour answer:", undefined, freeTextSchema(true), undefined])
+		expect(result.answers).toEqual([
+			{
+				id: "scope",
+				index: 4,
+				label: "Custom answer",
+				value: "Custom answer",
+				wasCustom: true,
+			},
+		])
+	})
+
+	it("uses ACP array elicitation for multi-select choices instead of free-text input", async () => {
+		const { result, inputSpy, elicitSpy } = await runAcpQuestionnaire(acpMultiQuestion(), { value: ["a", "c"] })
+
+		expect(inputSpy).not.toHaveBeenCalled()
+		expect(elicitSpy).toHaveBeenCalledOnce()
+		expect(elicitSpy.mock.calls[0][2]).toEqual(choiceSchema(options, true, true))
+		expect(result.answers).toEqual([
+			{
+				id: "features",
+				indices: [1, 3],
+				label: "Alpha, Gamma",
+				labels: ["Alpha", "Gamma"],
+				value: "a, c",
+				values: ["a", "c"],
+				wasCustom: false,
+			},
+		])
+	})
+
+	it("asks for free text only after ACP multi-select chooses Other", async () => {
+		const { result, inputSpy, elicitSpy } = await runAcpQuestionnaire(acpMultiQuestion({ allowOther: true }), [
+			{ value: ["a", "__other__"] },
+			{ value: "Custom answer" },
+		])
+
+		expect(inputSpy).not.toHaveBeenCalled()
+		expect(elicitSpy).toHaveBeenCalledTimes(2)
+		expect(elicitSpy.mock.calls[1]).toEqual([
+			"Pick features\n\nYour answer:",
+			undefined,
+			freeTextSchema(false),
+			undefined,
+		])
+		expect(result.answers).toEqual([
+			{
+				id: "features",
+				indices: [1, 4],
+				label: "Alpha, Custom answer",
+				labels: ["Alpha", "Custom answer"],
+				value: "a, Custom answer",
+				values: ["a", "Custom answer"],
+				wasCustom: true,
+			},
+		])
+	})
+
+	it("uses one ACP text elicitation when single-select has only free-form input", async () => {
+		const { result, inputSpy, elicitSpy } = await runAcpQuestionnaire(
+			acpSingleQuestion({
+				prompt: "Describe the scope",
+				options: [],
+				allowOther: true,
+			}),
+			{ value: "Custom answer" },
+		)
+
+		expect(inputSpy).not.toHaveBeenCalled()
+		expect(elicitSpy).toHaveBeenCalledOnce()
+		expect(elicitSpy.mock.calls[0][2]).toEqual(freeTextSchema(true))
+		expect(result.answers).toEqual([
+			{
+				id: "scope",
+				index: 1,
+				label: "Custom answer",
+				value: "Custom answer",
+				wasCustom: true,
+			},
+		])
+	})
+
+	it("uses one ACP text elicitation when multi-select has only free-form input", async () => {
+		const { result, inputSpy, elicitSpy } = await runAcpQuestionnaire(
+			acpMultiQuestion({
+				prompt: "Describe the features",
+				options: [],
+				allowOther: true,
+			}),
+			{ value: "Custom answer" },
+		)
+
+		expect(inputSpy).not.toHaveBeenCalled()
+		expect(elicitSpy).toHaveBeenCalledOnce()
+		expect(elicitSpy.mock.calls[0][2]).toEqual(freeTextSchema(true))
+		expect(result.answers).toEqual([
+			{
+				id: "features",
+				indices: [1],
+				label: "Custom answer",
+				labels: ["Custom answer"],
+				value: "Custom answer",
+				values: ["Custom answer"],
+				wasCustom: true,
+			},
+		])
+	})
+
+	it("cancels required ACP single-choice when the structured elicitation is dismissed", async () => {
+		const { result } = await runAcpQuestionnaire(acpSingleQuestion(), undefined)
+
+		expect(result.cancelled).toBe(true)
+		expect(result.answers).toEqual([])
+	})
+
+	it("cancels required ACP multi-select when the structured elicitation aborts", async () => {
+		const { result } = await runAcpQuestionnaire(acpMultiQuestion(), "aborted")
+
+		expect(result.cancelled).toBe(true)
+		expect(result.answers).toEqual([])
+	})
+
+	it("skips optional ACP questions when the structured elicitation is dismissed", async () => {
+		const elicitSpy = vi.fn<AcpElicitForm>(async () => undefined)
+		const ui = {
+			[ACP_ELICIT_FORM]: elicitSpy,
+		} as unknown as ExtensionUIContext
+
+		const result = await promptQuestionnaireFallback(ui, [
+			makeQuestion(acpSingleQuestion({ required: false })),
+			makeQuestion(acpMultiQuestion({ required: false })),
+		])
+
+		expect(result.cancelled).toBe(false)
+		expect(result.answers).toEqual([])
+		expect(elicitSpy).toHaveBeenCalledTimes(2)
+	})
+
+	it("drops empty multi-select Other text when normal ACP choices remain", async () => {
+		const { result, inputSpy, elicitSpy } = await runAcpQuestionnaire(acpMultiQuestion({ allowOther: true }), [
+			{ value: ["a", "__other__"] },
+			{ value: "" },
+		])
+
+		expect(inputSpy).not.toHaveBeenCalled()
+		expect(elicitSpy).toHaveBeenCalledTimes(2)
+		expect(elicitSpy.mock.calls[1]).toEqual([
+			"Pick features\n\nYour answer:",
+			undefined,
+			freeTextSchema(false),
+			undefined,
+		])
+		expect(result.cancelled).toBe(false)
+		expect(result.answers).toEqual([
+			{
+				id: "features",
+				indices: [1],
+				label: "Alpha",
+				labels: ["Alpha"],
+				value: "a",
+				values: ["a"],
+				wasCustom: false,
+			},
+		])
+	})
+
+	it("cancels required multi-select when empty Other text leaves no ACP choices", async () => {
+		const { result, inputSpy, elicitSpy } = await runAcpQuestionnaire(acpMultiQuestion({ allowOther: true }), [
+			{ value: ["__other__"] },
+			{ value: "" },
+		])
+
+		expect(inputSpy).not.toHaveBeenCalled()
+		expect(elicitSpy).toHaveBeenCalledTimes(2)
+		expect(elicitSpy.mock.calls[1]).toEqual([
+			"Pick features\n\nYour answer:",
+			undefined,
+			freeTextSchema(false),
+			undefined,
+		])
+		expect(result.cancelled).toBe(true)
+		expect(result.answers).toEqual([])
 	})
 })
 

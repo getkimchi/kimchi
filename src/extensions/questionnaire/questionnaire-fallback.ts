@@ -1,4 +1,10 @@
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent"
+import {
+	type AcpElicitForm,
+	choiceSchema,
+	freeTextSchema,
+	getAcpElicitForm,
+} from "../../modes/acp/structured-elicitation.js"
 import { CUSTOM_OPTION_ID, CUSTOM_OPTION_LABEL } from "./constants.js"
 import type { Answer, Question, QuestionOption } from "./questionnaire-reducer.js"
 
@@ -99,6 +105,7 @@ export async function promptQuestionnaireFallback(
 	questions: Question[],
 ): Promise<QuestionnaireResult> {
 	const answers: Answer[] = []
+	const acpElicitForm = getAcpElicitForm(ui)
 
 	for (const question of questions) {
 		const questionText = question.prompt
@@ -129,6 +136,13 @@ export async function promptQuestionnaireFallback(
 				continue
 			}
 			case "single": {
+				if (acpElicitForm) {
+					const answer = await promptAcpSingleChoice(acpElicitForm, question, questionText)
+					if (answer === "cancelled") return { questions, answers, cancelled: true }
+					if (answer) answers.push(answer)
+					continue
+				}
+
 				const options = [...question.options]
 				if (question.allowOther) {
 					options.push({
@@ -170,6 +184,13 @@ export async function promptQuestionnaireFallback(
 				continue
 			}
 			case "multi": {
+				if (acpElicitForm) {
+					const answer = await promptAcpMultiChoice(acpElicitForm, question, questionText)
+					if (answer === "cancelled") return { questions, answers, cancelled: true }
+					if (answer) answers.push(answer)
+					continue
+				}
+
 				let customOption: QuestionOption
 				const options = [...question.options]
 				if (question.allowOther) {
@@ -227,4 +248,165 @@ export async function promptQuestionnaireFallback(
 	}
 
 	return { questions, answers, cancelled: false }
+}
+
+type PromptAnswer = Answer | "cancelled" | undefined
+
+function optionsForQuestion(question: Question): QuestionOption[] {
+	const options = [...question.options]
+	if (question.allowOther) {
+		options.push({
+			id: CUSTOM_OPTION_ID,
+			label: question.otherLabel ?? CUSTOM_OPTION_LABEL,
+		})
+	}
+	return options
+}
+
+async function promptAcpFreeTextAnswer(
+	elicitForm: AcpElicitForm,
+	question: Question,
+	questionText: string,
+	multi: boolean,
+	index: number,
+): Promise<PromptAnswer> {
+	const response = await elicitForm(questionText, undefined, freeTextSchema(question.required), undefined)
+	if (response === "aborted" || response === undefined) return question.required ? "cancelled" : undefined
+
+	const value = response.value
+	if (typeof value !== "string" || !value) return question.required ? "cancelled" : undefined
+
+	if (multi) {
+		return {
+			id: question.id,
+			value,
+			values: [value],
+			label: value,
+			labels: [value],
+			indices: [index],
+			wasCustom: true,
+		}
+	}
+
+	return {
+		id: question.id,
+		value,
+		label: value,
+		index,
+		wasCustom: true,
+	}
+}
+
+async function promptAcpCustomText(
+	elicitForm: AcpElicitForm,
+	question: Question,
+	questionText: string,
+	required: boolean,
+): Promise<string | "cancelled" | undefined> {
+	const response = await elicitForm(`${questionText}\n\nYour answer:`, undefined, freeTextSchema(required), undefined)
+	if (response === "aborted" || response === undefined) return required ? "cancelled" : undefined
+
+	const value = response.value
+	if (typeof value !== "string" || !value) return required ? "cancelled" : undefined
+	return value
+}
+
+async function promptAcpSingleChoice(
+	elicitForm: AcpElicitForm,
+	question: Question,
+	questionText: string,
+): Promise<PromptAnswer> {
+	if (question.options.length === 0 && question.allowOther) {
+		return promptAcpFreeTextAnswer(elicitForm, question, questionText, false, 1)
+	}
+
+	const options = optionsForQuestion(question)
+	const response = await elicitForm(questionText, undefined, choiceSchema(options, question.required, false), undefined)
+	if (response === "aborted" || response === undefined) return question.required ? "cancelled" : undefined
+
+	const value = response.value
+	if (typeof value !== "string") return question.required ? "cancelled" : undefined
+
+	const index = options.findIndex((option) => option.id === value)
+	const option = options[index]
+	if (!option) return question.required ? "cancelled" : undefined
+
+	if (option.id === CUSTOM_OPTION_ID) {
+		const custom = await promptAcpCustomText(elicitForm, question, questionText, question.required)
+		if (custom === "cancelled") return "cancelled"
+		if (!custom) return undefined
+		return {
+			id: question.id,
+			value: custom,
+			label: custom,
+			index: index + 1,
+			wasCustom: true,
+		}
+	}
+
+	return {
+		id: question.id,
+		value: option.id,
+		label: option.label,
+		index: index + 1,
+		wasCustom: false,
+	}
+}
+
+async function promptAcpMultiChoice(
+	elicitForm: AcpElicitForm,
+	question: Question,
+	questionText: string,
+): Promise<PromptAnswer> {
+	if (question.options.length === 0 && question.allowOther) {
+		return promptAcpFreeTextAnswer(elicitForm, question, questionText, true, 1)
+	}
+
+	const options = optionsForQuestion(question)
+	const response = await elicitForm(questionText, undefined, choiceSchema(options, question.required, true), undefined)
+	if (response === "aborted" || response === undefined) return question.required ? "cancelled" : undefined
+
+	const selectedIds = Array.isArray(response.value)
+		? response.value.filter((value): value is string => typeof value === "string")
+		: []
+	if (selectedIds.length === 0) return question.required ? "cancelled" : undefined
+
+	const choices: Array<{ id: string; value: string; label: string; index: number }> = []
+	for (const selectedId of selectedIds) {
+		const index = options.findIndex((option) => option.id === selectedId)
+		const option = options[index]
+		if (!option) continue
+
+		if (option.id === CUSTOM_OPTION_ID) {
+			const custom = await promptAcpCustomText(elicitForm, question, questionText, false)
+			if (custom) {
+				choices.push({
+					id: CUSTOM_OPTION_ID,
+					value: custom,
+					label: custom,
+					index: index + 1,
+				})
+			}
+			continue
+		}
+
+		choices.push({
+			id: option.id,
+			value: option.id,
+			label: option.label,
+			index: index + 1,
+		})
+	}
+
+	if (!choices.length) return question.required ? "cancelled" : undefined
+
+	return {
+		id: question.id,
+		value: choices.map((item) => item.value).join(", "),
+		values: choices.map((item) => item.value),
+		label: choices.map((item) => item.label).join(", "),
+		labels: choices.map((item) => item.label),
+		indices: choices.map((item) => item.index),
+		wasCustom: choices.some((item) => item.id === CUSTOM_OPTION_ID),
+	}
 }

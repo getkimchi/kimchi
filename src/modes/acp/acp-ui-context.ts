@@ -31,6 +31,13 @@ import {
 	getClientSupportsElicitation,
 	getClientSupportsMethod,
 } from "./capabilities.js"
+import {
+	ACP_ELICIT_FORM,
+	type AcpElicitationUIContext,
+	choiceSchema,
+	confirmSchema,
+	freeTextSchema,
+} from "./structured-elicitation.js"
 import { requestWithAbort } from "./utils.js"
 
 type DialogResponse = {
@@ -177,21 +184,16 @@ export function createAcpUIContext(
 		}
 	}
 
-	const ui: ExtensionUIContext = {
+	const ui: ExtensionUIContext & Partial<AcpElicitationUIContext> = {
 		async select(title, options, opts) {
 			if (options.length === 0) return undefined
 
 			if (supportsElicitation) {
-				const schema: ElicitationSchema = {
-					type: "object",
-					properties: {
-						value: {
-							type: "string",
-							oneOf: options.map((opt) => ({ const: opt, title: opt })),
-						},
-					},
-					required: ["value"],
-				}
+				const schema = choiceSchema(
+					options.map((option) => ({ id: option, label: option })),
+					true,
+					false,
+				)
 				const response = await elicitForm(title, undefined, schema, opts?.signal)
 				if (response === "aborted" || response === undefined) return undefined
 				const value = response.value
@@ -216,19 +218,7 @@ export function createAcpUIContext(
 
 		async confirm(title, message, opts) {
 			if (supportsElicitation) {
-				const schema: ElicitationSchema = {
-					type: "object",
-					properties: {
-						confirmed: {
-							type: "boolean",
-							// Default is always false as Pi has no way of distinguishing
-							// a confirm result as cancelled (e.g. user didn't select explicitly)
-							default: false,
-						},
-					},
-					required: ["confirmed"],
-				}
-				const response = await elicitForm(title, message, schema, opts?.signal)
+				const response = await elicitForm(title, message, confirmSchema(), opts?.signal)
 				if (response === "aborted" || response === undefined) return false
 				return response.confirmed === true
 			}
@@ -260,17 +250,7 @@ export function createAcpUIContext(
 				return undefined
 			}
 
-			const schema: ElicitationSchema = {
-				type: "object",
-				properties: {
-					value: {
-						type: "string",
-						description: placeholder,
-					},
-				},
-				required: ["value"],
-			}
-			const response = await elicitForm(title, undefined, schema, opts?.signal)
+			const response = await elicitForm(title, undefined, freeTextSchema(true, placeholder), opts?.signal)
 			if (response === "aborted" || response === undefined) return undefined
 			const value = response.value
 			return typeof value === "string" ? value : undefined
@@ -430,6 +410,10 @@ export function createAcpUIContext(
 		get theme() {
 			return NOOP_THEME
 		},
+	}
+
+	if (supportsElicitation) {
+		ui[ACP_ELICIT_FORM] = elicitForm
 	}
 
 	return ui
