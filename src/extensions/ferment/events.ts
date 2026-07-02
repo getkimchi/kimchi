@@ -489,6 +489,10 @@ export function registerFermentEvents(
 				if (outcome.ok) {
 					setActiveFermentAndApplyProfile(pi, runtime, outcome.ferment)
 					ctx?.ui?.notify?.(`Paused "${outcome.ferment.name}" after user abort. Run /ferment resume to continue.`)
+				} else {
+					ctx?.ui?.notify?.(
+						`Failed to pause "${abortedFerment.name}" after user abort: ${outcome.error.message}. Run /ferment pause manually if needed.`,
+					)
 				}
 			}
 			if (activeId) {

@@ -1522,6 +1522,34 @@ describe("fermentExtension abort handling", () => {
 
 		expect(select).not.toHaveBeenCalled()
 	})
+
+	it("notifies the user when pause fails on abort", async () => {
+		const fakeStorage = {
+			mutateWithEvents: () => ({ ok: false, error: { code: "TEST", message: "simulated storage failure" } }),
+		} as unknown as FermentEventStore
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: () => fakeStorage,
+		}
+		const ferment = makeActiveFerment("running")
+		setActive(ferment)
+		const { handlers, pi } = registerFermentExtension(runtime)
+		const turnEnd = handlers.get("turn_end")
+		if (!turnEnd) throw new Error("turn_end handler was not registered")
+		const notify = vi.fn()
+		const ctx = { ui: { notify, select: vi.fn(), input: vi.fn() } }
+
+		await turnEnd({ message: abortedMessage([{ type: "text", text: "x" }]) }, ctx)
+
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("Failed to pause"))
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("simulated storage failure"))
+		expect(notify).not.toHaveBeenCalledWith(expect.stringContaining("/ferment resume"))
+		// Nudge paths still skipped despite the failure.
+		expect(pi.sendMessage).not.toHaveBeenCalledWith(
+			expect.objectContaining({ customType: "ferment_continuation_nudge" }),
+			expect.anything(),
+		)
+	})
 })
 
 describe("agent-spawn-guard integration", () => {
