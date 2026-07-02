@@ -408,11 +408,22 @@ export function createAcpUIContext(
 	return ui
 }
 
+const THEME_OVERRIDES: Partial<ThemeType> = {
+	fg: (_color, text) => text,
+	bg: (_color, text) => text,
+	bold: (text) => text,
+	italic: (text) => text,
+	underline: (text) => text,
+	inverse: (text) => text,
+	strikethrough: (text) => text,
+}
+
 /** Theme-shaped object whose every property access is a no-op. */
 function createNoopTheme(): ThemeType {
 	return new Proxy({} as ThemeType, {
 		get(_target, prop) {
 			if (prop === "then" || prop === "catch") return undefined
+			if (prop in THEME_OVERRIDES) return THEME_OVERRIDES[prop as keyof ThemeType]
 			return () => undefined
 		},
 	})
