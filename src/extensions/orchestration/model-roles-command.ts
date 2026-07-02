@@ -259,7 +259,7 @@ function createToggleSelect(
 		add(theme.fg("accent", "\u2500".repeat(width)))
 		// The title embeds the current selection count, so it must be built
 		// inside render() rather than interpolated at call-time. Otherwise
-		// Space toggles update the footer count but leave the title frozen
+		// Space toggles update the selection count but leave the title frozen
 		// at the initial value (a confusing cosmetic mismatch).
 		const title = `${label} — toggle models (${selected.size} selected)`
 		add(` ${theme.fg("text", theme.bold(title))}`)
