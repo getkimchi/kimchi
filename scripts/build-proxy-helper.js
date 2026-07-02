@@ -26,7 +26,9 @@ const TARGETS = {
 	"bun-darwin-x64": { goos: "darwin", goarch: "amd64", helperName: "proxy-helper" },
 	"bun-linux-arm64": { goos: "linux", goarch: "arm64", helperName: "proxy-helper" },
 	"bun-linux-x64": { goos: "linux", goarch: "amd64", helperName: "proxy-helper" },
+	// Both windows targets map to the same Go amd64 binary — Go has no AVX2 distinction.
 	"bun-windows-x64": { goos: "windows", goarch: "amd64", helperName: "proxy-helper.exe" },
+	"windows-x64-baseline": { goos: "windows", goarch: "amd64", helperName: "proxy-helper.exe" },
 }
 
 const targetArg =

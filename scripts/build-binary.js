@@ -20,13 +20,18 @@ const TARGETS = {
 	"darwin-x64": { bun: "bun-darwin-x64", os: "darwin", binaryName: "kimchi" },
 	"linux-arm64": { bun: "bun-linux-arm64", os: "linux", binaryName: "kimchi" },
 	"linux-x64": { bun: "bun-linux-x64", os: "linux", binaryName: "kimchi" },
-	"windows-x64": { bun: "bun-windows-x64", os: "win32", binaryName: "kimchi.exe" },
-	"win-x64": { bun: "bun-windows-x64", os: "win32", binaryName: "kimchi.exe" },
+	"windows-x64": { os: "win32", binaryName: "kimchi.exe", native: true },
+	"win-x64": { os: "win32", binaryName: "kimchi.exe", native: true },
 	"bun-darwin-arm64": { bun: "bun-darwin-arm64", os: "darwin", binaryName: "kimchi" },
 	"bun-darwin-x64": { bun: "bun-darwin-x64", os: "darwin", binaryName: "kimchi" },
 	"bun-linux-arm64": { bun: "bun-linux-arm64", os: "linux", binaryName: "kimchi" },
 	"bun-linux-x64": { bun: "bun-linux-x64", os: "linux", binaryName: "kimchi" },
-	"bun-windows-x64": { bun: "bun-windows-x64", os: "win32", binaryName: "kimchi.exe" },
+	// Windows x64 builds always use the baseline toolchain (no AVX2 requirement)
+	// installed natively on the runner via .github/actions/setup-bun-baseline.
+	// This ensures kimchi.exe runs on all x64 CPUs, including pre-Haswell (Intel)
+	// and pre-Zen (AMD) without maintaining a separate modern/baseline binary pair.
+	"bun-windows-x64": { os: "win32", binaryName: "kimchi.exe", native: true },
+	"windows-x64-baseline": { os: "win32", binaryName: "kimchi.exe", native: true },
 }
 
 const targetArg =
@@ -50,7 +55,7 @@ if (!target) {
 	throw new Error(`Unsupported build target: ${targetKey}`)
 }
 
-const crossTarget = targetArg ? target.bun : undefined
+const crossTarget = targetArg && !target.native ? target.bun : undefined
 const isCrossCompile = !!crossTarget
 process.env.KIMCHI_BUILD_TARGET_OS = target.os
 

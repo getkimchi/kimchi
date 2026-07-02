@@ -1,0 +1,28 @@
+name: Setup baseline Bun (Windows, no AVX2)
+description: >
+  Downloads the official bun-windows-x64-baseline release zip and prepends
+  its bun.exe to PATH, so a subsequent `bun build --compile` (without
+  --target=) performs a native compile against the baseline toolchain
+  instead of cross-compiling. This avoids a known Bun bug where
+  --target=bun-windows-x64-baseline cross-compiles fail to move the
+  downloaded toolchain into Bun's cache on GitHub Actions windows-latest
+  runners (oven-sh/bun#13513).
+
+runs:
+  using: composite
+  steps:
+    - name: Install baseline Bun
+      shell: pwsh
+      run: |
+        $url = "https://github.com/oven-sh/bun/releases/latest/download/bun-windows-x64-baseline.zip"
+        $dest = "$env:RUNNER_TEMP\bun-baseline"
+        New-Item -ItemType Directory -Force -Path $dest | Out-Null
+        Invoke-WebRequest -Uri $url -OutFile "$dest\bun.zip"
+        Expand-Archive -Path "$dest\bun.zip" -DestinationPath $dest -Force
+        $binDir = Get-ChildItem -Path $dest -Directory | Where-Object { $_.Name -like "bun-windows-x64-baseline*" } | Select-Object -First 1
+        if ($null -eq $binDir) {
+          throw "Could not find extracted bun-windows-x64-baseline directory in $dest"
+        }
+        Copy-Item "$($binDir.FullName)\bun.exe" "$dest\bun.exe"
+        Add-Content $env:GITHUB_PATH $dest
+        & "$dest\bun.exe" --version

@@ -108,7 +108,7 @@ jobs:
             os: linux
             arch: arm64
             runner: ubuntu-24.04-arm
-          - target: bun-windows-x64
+          - target: windows-x64-baseline
             os: windows
             arch: amd64
             runner: windows-latest
@@ -136,6 +136,10 @@ jobs:
         env:
           GOOS: ${{ matrix.os }}
           GOARCH: ${{ matrix.arch }}
+
+      - name: Install baseline Bun (Windows, no AVX2)
+        if: ${{ matrix.os == 'windows' }}
+        uses: ./.github/actions/setup-bun-baseline
 
       - name: Build Windows proxy-helper
         if: ${{ matrix.os == 'windows' }}
