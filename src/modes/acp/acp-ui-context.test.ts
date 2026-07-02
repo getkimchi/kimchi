@@ -945,3 +945,57 @@ describe("createAcpUIContext — TUI-only no-op stubs", () => {
 		return expect(real.custom(customFactory)).resolves.toBeUndefined()
 	})
 })
+
+describe("createAcpUIContext — noop theme preserves text", () => {
+	const { conn, send } = makeConn()
+	const theme = createAcpUIContext(conn, "sess-1", fullClientCapabilities(), send).theme
+
+	it("fg passes the text through unchanged regardless of color", () => {
+		expect(theme.fg("accent", "keep me")).toBe("keep me")
+		expect(theme.fg("error", "keep me")).toBe("keep me")
+		expect(theme.fg("mdCode" as never, "keep me")).toBe("keep me")
+	})
+
+	it("bg passes the text through unchanged regardless of color", () => {
+		expect(theme.bg("selectedBg", "keep me")).toBe("keep me")
+		expect(theme.bg("toolErrorBg", "keep me")).toBe("keep me")
+	})
+
+	it("bold, italic, underline, inverse, strikethrough all return the original text", () => {
+		expect(theme.bold("keep me")).toBe("keep me")
+		expect(theme.italic("keep me")).toBe("keep me")
+		expect(theme.underline("keep me")).toBe("keep me")
+		expect(theme.inverse("keep me")).toBe("keep me")
+		expect(theme.strikethrough("keep me")).toBe("keep me")
+	})
+
+	it("empty string text is preserved (not coerced to undefined)", () => {
+		expect(theme.fg("accent", "")).toBe("")
+		expect(theme.bold("")).toBe("")
+		expect(theme.bg("selectedBg", "")).toBe("")
+	})
+
+	it("text containing ANSI escapes is preserved verbatim", () => {
+		const escaped = "\u001b[31mred\u001b[0m"
+		expect(theme.fg("accent", escaped)).toBe(escaped)
+		expect(theme.bold(escaped)).toBe(escaped)
+	})
+
+	it("text can be chained through multiple style methods without loss", () => {
+		const styled = theme.bold(theme.italic(theme.fg("accent", "keep me")))
+		expect(styled).toBe("keep me")
+	})
+
+	it("non-styling Theme methods still return undefined (no passthrough)", () => {
+		expect(theme.getFgAnsi("accent")).toBeUndefined()
+		expect(theme.getBgAnsi("selectedBg")).toBeUndefined()
+		expect(theme.getColorMode()).toBeUndefined()
+		expect(theme.getThinkingBorderColor("high")).toBeUndefined()
+		expect(theme.getBashModeBorderColor()).toBeUndefined()
+	})
+
+	it("the theme proxy is not thenable (no accidental promise wrapping)", () => {
+		expect((theme as unknown as { then?: unknown }).then).toBeUndefined()
+		expect((theme as unknown as { catch?: unknown }).catch).toBeUndefined()
+	})
+})
