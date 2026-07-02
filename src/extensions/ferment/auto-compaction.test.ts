@@ -526,10 +526,10 @@ describe("maybeTriggerFermentCompaction", () => {
 		})
 		expect(calls[0][1]).toMatchObject({ triggerTurn: false })
 		expect(calls[1][0]).toMatchObject({ customType: "ferment_continuation_nudge" })
-		expect(calls[1][1]).toMatchObject({ triggerTurn: true })
+		expect(calls[1][1]).toMatchObject({ triggerTurn: true, deliverAs: "steer" })
 	})
 
-	it("continues one-shot ferment after inline compaction is skipped", async () => {
+	it("appends a handoff without continuing when one-shot inline compaction is skipped", async () => {
 		const ferment = makeFermentWithPhase(
 			{ id: "phase-1", name: "Phase", goal: "Goal" },
 			{ id: "step-1", description: "Do it" },
@@ -550,7 +550,7 @@ describe("maybeTriggerFermentCompaction", () => {
 		})
 		expect(ctx.ui.notify).not.toHaveBeenCalled()
 		expect(runtime.isCompactionInFlight(ferment.id)).toBe(false)
-		expect(pi.sendMessage).toHaveBeenCalledTimes(2)
+		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
 		const calls = vi.mocked(pi.sendMessage).mock.calls
 		expect(calls[0][0]).toMatchObject({
 			customType: "ferment_stage_handoff",
@@ -561,8 +561,6 @@ describe("maybeTriggerFermentCompaction", () => {
 			}),
 		})
 		expect(calls[0][1]).toMatchObject({ triggerTurn: false })
-		expect(calls[1][0]).toMatchObject({ customType: "ferment_continuation_nudge" })
-		expect(calls[1][1]).toMatchObject({ triggerTurn: true })
 	})
 
 	it("clears pending compaction after triggering", async () => {
@@ -613,7 +611,7 @@ describe("maybeTriggerFermentCompaction", () => {
 		expect(sendMsgCalls[1][0]).toMatchObject({
 			customType: "ferment_continuation_nudge",
 		})
-		expect(sendMsgCalls[1][1]).toMatchObject({ triggerTurn: true })
+		expect(sendMsgCalls[1][1]).toMatchObject({ triggerTurn: true, deliverAs: "steer" })
 	})
 
 	it("onError calls ctx.ui.notify with a warning and does not throw", async () => {

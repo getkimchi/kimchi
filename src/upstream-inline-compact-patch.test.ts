@@ -266,6 +266,34 @@ describe("installInlineCompactPatch", () => {
 		})
 	})
 
+	it("rejects an empty compaction preparation without saving a compaction", async () => {
+		const prepareCompaction = vi.fn(() => ({
+			firstKeptEntryId: "m1",
+			messagesToSummarize: [],
+			tokensBefore: 42,
+			turnPrefixMessages: [],
+		}))
+		const compact = vi.fn()
+		const module = makeCompactionModule({ prepareCompaction, compact })
+		installWith(module)
+		const session = new FakeSession()
+
+		await expect(inlineSession(session).inlineCompact({ force: true })).rejects.toThrow(
+			"Nothing to compact (no summarizable messages)",
+		)
+
+		expect(prepareCompaction).toHaveBeenCalledOnce()
+		expect(compact).not.toHaveBeenCalled()
+		expect(session.sessionManager.appendCompaction).not.toHaveBeenCalled()
+		expect(session.events).toContainEqual(
+			expect.objectContaining({
+				type: "compaction_end",
+				aborted: false,
+				errorMessage: expect.stringContaining("no summarizable messages"),
+			}),
+		)
+	})
+
 	it("rejects cancellation from session_before_compact", async () => {
 		const module = makeCompactionModule()
 		installWith(module)

@@ -301,7 +301,12 @@ export function buildHandoffDetails(
 
 // Error messages that upstream treats as routine "no-op" compaction outcomes.
 // Kept as a single source of truth so the two compaction paths stay consistent.
-const EXPECTED_COMPACTION_ERROR_MESSAGES = ["too small", "Already compacted", "Compaction cancelled"]
+const EXPECTED_COMPACTION_ERROR_MESSAGES = [
+	"too small",
+	"Already compacted",
+	"Compaction cancelled",
+	"no summarizable messages",
+]
 
 function isExpectedCompactionError(error: Error): boolean {
 	return EXPECTED_COMPACTION_ERROR_MESSAGES.some((message) => error.message.includes(message))
@@ -393,16 +398,16 @@ async function triggerCompactionForPending(
 	}
 
 	function scheduleContinuationBestEffort(): void {
-		// After compaction the session is idle. The LLM's previous next-action
-		// reasoning was discarded with the old history, so schedule the next
-		// ferment action as a follow-up turn to keep automated ferments moving.
+		// After compaction the LLM's previous next-action reasoning was discarded
+		// with the old history, so steer the next action into the current drain
+		// path instead of queueing a follow-up that can go stale.
 		try {
 			const freshFerment = runtime.getStorage().get(fermentId)
 			if (freshFerment && (freshFerment.status === "running" || freshFerment.status === "planned")) {
 				runtime.setActive(freshFerment)
 				scheduleNextFermentAction(pi, freshFerment, runtime, {
 					tag: "Auto-compaction continuation",
-					deliverAs: "followUp",
+					deliverAs: "steer",
 				})
 			}
 		} catch {
@@ -424,8 +429,9 @@ async function triggerCompactionForPending(
 			ctx.ui?.notify?.(`Stage compaction failed: ${error.message}`, "warning")
 		}
 		// Always append the handoff entry even when compaction fails/is skipped.
+		// Do not schedule a continuation without a saved compaction summary; the
+		// normal reactive/stop nudges can recover without adding duplicate stale turns.
 		appendHandoffEntry()
-		scheduleContinuationBestEffort()
 	}
 
 	if (typeof ctx.inlineCompact === "function") {
@@ -538,7 +544,7 @@ export function maybeTriggerMidTurnFermentCompaction(
 					runtime.setActive(freshFerment)
 					scheduleNextFermentAction(pi, freshFerment, runtime, {
 						tag: "Auto-compaction continuation",
-						deliverAs: "followUp",
+						deliverAs: "steer",
 					})
 				}
 			},

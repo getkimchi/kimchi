@@ -164,6 +164,10 @@ function isCompactionResult(value: unknown): value is CompactionResult {
 	)
 }
 
+function isEmptyCompactionPreparation(value: unknown): boolean {
+	return isRecord(value) && Array.isArray(value.messagesToSummarize) && value.messagesToSummarize.length === 0
+}
+
 function asBeforeCompactResult(value: unknown): SessionBeforeCompactResultLike | undefined {
 	if (!isRecord(value)) return undefined
 	return {
@@ -232,6 +236,9 @@ async function runInlineCompact(
 			if (!preparation) {
 				throw new Error("Nothing to compact (no valid cut point)")
 			}
+		}
+		if (isEmptyCompactionPreparation(preparation)) {
+			throw new Error("Nothing to compact (no summarizable messages)")
 		}
 
 		let compactionResult: CompactionResult | undefined
