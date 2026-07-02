@@ -19,7 +19,9 @@ import {
 	maybeInjectScopingProgressNudge,
 	maybeInjectScopingStopNudge,
 	onFermentToolCallSeen,
+	resetFermentStopNudgeCount,
 	resetReactiveContinuationNudgeCount,
+	resetScopingStopNudgeCount,
 } from "./nudge.js"
 import { buildOneshotNudge } from "./oneshot.js"
 import { editPhaseProposal } from "./phase-editor.js"
@@ -28,7 +30,7 @@ import { loadFermentSilently, resumeFerment } from "./resume.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { scheduleFermentWakeUp } from "./scheduler.js"
 import { confirmPendingScope } from "./scoping-confirmation.js"
-import { clearActiveFermentId, getActiveFermentId } from "./state.js"
+import { clearActiveFermentId, getActiveFermentId, resetScopingExploreTurns } from "./state.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
 import {
 	applyFermentRuntimeToolProfile,
@@ -469,6 +471,28 @@ export function registerFermentEvents(
 		const activeId = runtime.getActiveId()
 		const toolCallSeen = hasAnyToolCall(content)
 		const stopReason = (event.message as { stopReason?: string }).stopReason
+
+		// User abort (Esc/Ctrl+C): pause the active ferment and reset all
+		// nudge counters so the agent loop actually stops. Mirrors the
+		// abort guard in orchestration/continuation-nudge.ts.
+		if (stopReason === "aborted") {
+			const abortedFerment = runtime.getActive()
+			if (abortedFerment && (abortedFerment.status === "running" || abortedFerment.status === "planned")) {
+				const outcome = applyAndPersist(abortedFerment.id, { type: "pause" })
+				if (outcome.ok) {
+					setActiveFermentAndApplyProfile(pi, runtime, outcome.ferment)
+					ctx?.ui?.notify?.(`Paused "${outcome.ferment.name}" after user abort. Run /ferment resume to continue.`)
+				}
+			}
+			if (activeId) {
+				resetReactiveContinuationNudgeCount(activeId)
+				resetFermentStopNudgeCount(activeId)
+				resetScopingStopNudgeCount(activeId)
+				resetScopingExploreTurns(activeId)
+			}
+			return
+		}
+
 		if (toolCallSeen && activeId) {
 			resetReactiveContinuationNudgeCount(activeId)
 			// A normal tool-use turn means the model is still progressing, so reset

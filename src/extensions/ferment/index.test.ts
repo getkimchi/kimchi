@@ -1388,6 +1388,137 @@ Does this plan look right?`,
 	})
 })
 
+describe("fermentExtension abort handling", () => {
+	function abortedMessage(
+		content: Array<{ type: string; text?: string; name?: string; id?: string; arguments?: unknown }> = [],
+	) {
+		return { role: "assistant", stopReason: "aborted", content }
+	}
+
+	function setupAbortFixture(name: string) {
+		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), `ferment-abort-${name}-`)))
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: () => storage,
+		}
+		const { handlers, pi } = registerFermentExtension(runtime)
+		const turnEnd = handlers.get("turn_end")
+		if (!turnEnd) throw new Error("turn_end handler was not registered")
+		const notify = vi.fn()
+		const select = vi.fn()
+		const ctx = { ui: { notify, select, input: vi.fn() } }
+		const applyAndPersist = createApplyAndPersist(runtime)
+
+		const scopeAndPlan = (label: string): Ferment => {
+			const draft = storage.create(label)
+			const scoped = applyAndPersist(draft.id, {
+				type: "scope",
+				goal: "Goal",
+				successCriteria: ["Works"],
+				constraints: [],
+				phases: [{ name: "Phase", goal: "Build", steps: [{ description: "Do it" }] }],
+			})
+			if (!scoped.ok) throw new Error(scoped.error.message)
+			return scoped.ferment
+		}
+		const activate = (planned: Ferment): Ferment => {
+			const out = applyAndPersist(planned.id, { type: "activate_phase", phaseId: "phase-1" })
+			if (!out.ok) throw new Error(out.error.message)
+			return out.ferment
+		}
+		const pause = (ferment: Ferment): Ferment => {
+			const out = applyAndPersist(ferment.id, { type: "pause" })
+			if (!out.ok) throw new Error(out.error.message)
+			return out.ferment
+		}
+		const complete = (running: Ferment): Ferment => {
+			const c1 = applyAndPersist(running.id, {
+				type: "complete_phase",
+				phaseId: "phase-1",
+				summary: "done",
+			})
+			if (!c1.ok) throw new Error(c1.error.message)
+			const c2 = applyAndPersist(running.id, { type: "complete_ferment" })
+			if (!c2.ok) throw new Error(c2.error.message)
+			return c2.ferment
+		}
+		return { storage, runtime, pi, turnEnd, ctx, notify, select, scopeAndPlan, activate, pause, complete }
+	}
+
+	it.each(["running", "planned"] as const)(
+		"pauses a %s ferment on abort, notifies, and skips nudges",
+		async (status) => {
+			const { storage, runtime, pi, turnEnd, ctx, notify, scopeAndPlan, activate } = setupAbortFixture("pause")
+			const planned = scopeAndPlan("Abort")
+			const ferment = status === "running" ? activate(planned) : planned
+			setActive(ferment)
+
+			await turnEnd({ message: abortedMessage([{ type: "text", text: "x" }]) }, ctx)
+
+			expect(storage.get(ferment.id)?.status).toBe("paused")
+			expect(notify).toHaveBeenCalledWith(expect.stringContaining("/ferment resume"))
+			expect(pi.sendMessage).not.toHaveBeenCalledWith(
+				expect.objectContaining({ customType: "ferment_continuation_nudge" }),
+				expect.anything(),
+			)
+		},
+	)
+
+	it.each(["draft", "paused", "complete"] as const)("does not mutate a %s ferment on abort", async (status) => {
+		const { storage, pi, turnEnd, ctx, notify, scopeAndPlan, activate, pause, complete } = setupAbortFixture("noop")
+		let ferment: Ferment
+		if (status === "draft") ferment = storage.create("Abort")
+		else if (status === "paused") ferment = pause(scopeAndPlan("Abort"))
+		else ferment = complete(activate(scopeAndPlan("Abort")))
+		setActive(ferment)
+
+		await turnEnd({ message: abortedMessage([{ type: "text", text: "x" }]) }, ctx)
+
+		expect(storage.get(ferment.id)?.status).toBe(status)
+		expect(notify).not.toHaveBeenCalledWith(expect.stringContaining("/ferment resume"))
+		expect(pi.sendMessage).not.toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: expect.stringMatching(/ferment_(continuation|scoping_)/),
+			}),
+			expect.anything(),
+		)
+	})
+
+	it("does not fire any nudge on an aborted turn (reactive or scoping)", async () => {
+		const { pi, runtime, turnEnd, ctx, scopeAndPlan } = setupAbortFixture("no-nudge")
+		runtime.setContinuationPolicy("automated")
+		setActive(scopeAndPlan("Abort No Nudge"))
+
+		await turnEnd({ message: abortedMessage([{ type: "text", text: "I am waiting." }]) }, ctx)
+
+		for (const customType of [
+			"ferment_continuation_nudge",
+			"ferment_scoping_progress_nudge",
+			"ferment_scoping_stop_nudge",
+		]) {
+			expect(pi.sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({ customType }), expect.anything())
+		}
+		// Suppression breadcrumb is part of the reactive-nudge path; it would
+		// otherwise restart the loop after the cap.
+		expect(pi.sendMessage).not.toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_breadcrumb",
+				details: expect.objectContaining({ text: expect.stringContaining("suppressed") }),
+			}),
+			expect.anything(),
+		)
+	})
+
+	it("does not show the user-input dropdown on abort even with a trailing question", async () => {
+		const { turnEnd, ctx, select, scopeAndPlan } = setupAbortFixture("dropdown")
+		setActive(scopeAndPlan("Abort Dropdown"))
+
+		await turnEnd({ message: abortedMessage([{ type: "text", text: "Does this plan look right?" }]) }, ctx)
+
+		expect(select).not.toHaveBeenCalled()
+	})
+})
+
 describe("agent-spawn-guard integration", () => {
 	it("redirects an orchestrator that tries to spawn before starting the step", async () => {
 		const { allHandlers } = registerFermentExtension()

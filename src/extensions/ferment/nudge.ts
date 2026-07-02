@@ -18,6 +18,8 @@
  * Action nudges use `deliverAs: "steer"` so they are consumed at the next
  * agent-loop boundary. A follow-up waits until the current loop drains; by then
  * the ferment may have advanced and the eagerly-rendered action can be stale.
+ *
+ * User abort (Esc/Ctrl+C) is handled at the `turn_end` boundary in `events.ts`.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
