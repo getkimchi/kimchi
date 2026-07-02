@@ -376,11 +376,17 @@ function formatTaskNotification(record: AgentRecord, resultMaxLen: number): stri
 			: record.result
 		: "No output."
 
+	const note =
+		record.status === "stopped"
+			? "The user stopped this agent manually (Ctrl+X). Do not retry or reason about the stop — continue with other work or return control to the user."
+			: null
+
 	return [
 		"<task-notification>",
 		`<task-id>${record.id}</task-id>`,
 		record.toolCallId ? `<tool-use-id>${escapeXml(record.toolCallId)}</tool-use-id>` : null,
 		record.outputFile ? `<output-file>${escapeXml(record.outputFile)}</output-file>` : null,
+		note ? `<note>${escapeXml(note)}</note>` : null,
 		`<status>${escapeXml(status)}</status>`,
 		`<summary>Agent "${escapeXml(record.description)}" ${record.status}</summary>`,
 		`<result>${escapeXml(resultPreview)}</result>`,
@@ -795,6 +801,7 @@ export default function (pi: ExtensionAPI) {
 	pi.events.emit("subagents:ready", {})
 
 	let unsubCtrlB: (() => void) | undefined
+	let unsubKill: (() => void) | undefined
 	let currentUi: ExtensionUIContext | undefined
 
 	const widget = new AgentWidget(manager, agentActivity)
@@ -803,6 +810,8 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_shutdown", async () => {
 		unsubCtrlB?.()
 		unsubCtrlB = undefined
+		unsubKill?.()
+		unsubKill = undefined
 		currentUi = undefined
 		manager.abortAll()
 		budgetRetryCandidates.clear()
@@ -832,24 +841,35 @@ export default function (pi: ExtensionAPI) {
 			// stale closure captured from the first invocation.
 			if (newUi !== currentUi) {
 				unsubCtrlB?.()
+				unsubKill?.()
 				currentUi = newUi
 				unsubCtrlB = newUi.onTerminalInput((data) => {
 					if (isRawInputCaptureActive()) return undefined
-					if (!matchesKey(data, Key.ctrlShift("b")) || isKeyRelease(data)) return undefined
+					if (!matchesKey(data, Key.ctrl("b")) || isKeyRelease(data)) return undefined
 
 					const foreground = manager.listAgents().filter((a) => a.status === "running" && !a.isBackground)
 					if (foreground.length === 0) return undefined
 
-					// Detach every running foreground agent. Multiple foreground
-					// agents are possible via nested spawning (parent → agent A →
-					// agent B). The loop covers that case and the plural "s"
-					// below reflects it.
 					let detached = 0
 					for (const a of foreground) {
 						if (manager.detachToBackground(a.id)) detached++
 					}
 					if (detached === 0) return undefined
 					currentUi?.notify(`${detached} agent${detached > 1 ? "s" : ""} sent to background`, "info")
+					return { consume: true }
+				})
+
+				// Ctrl+X: kill the most recently spawned running background agent.
+				unsubKill = newUi.onTerminalInput((data) => {
+					if (isRawInputCaptureActive()) return undefined
+					if (!matchesKey(data, Key.ctrl("x")) || isKeyRelease(data)) return undefined
+
+					const bgRunning = manager.listAgents().filter((a) => a.status === "running" && a.isBackground)
+					if (bgRunning.length === 0) return undefined
+
+					const target = bgRunning[0]
+					manager.abort(target.id)
+					currentUi?.notify(`Stopped ${getDisplayName(target.type)} agent`, "info")
 					return { consume: true }
 				})
 			}
@@ -1031,7 +1051,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 					const frame = SPINNER[details.spinnerFrame ?? 0]
 					const s = stats(details)
 					let line = theme.fg("accent", frame) + (s ? ` ${s}` : "")
-					line += `\n${theme.fg("dim", `  ⎿  ${details.activity ?? "thinking..."}`)}  ${theme.fg("muted", "(ctrl+shift+b to run in background)")}`
+					line += `\n${theme.fg("dim", `  ⎿  ${details.activity ?? "thinking..."}`)}  ${theme.fg("muted", "(ctrl+b to run in background)")}`
 					return new Text(line, 0, 0)
 				}
 
