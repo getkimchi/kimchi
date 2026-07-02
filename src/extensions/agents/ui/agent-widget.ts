@@ -269,6 +269,9 @@ export class AgentWidget {
 		}
 
 		const runningLines: string[][] = []
+		// Show the Ctrl+B hint only once (on the first running foreground agent)
+		// instead of repeating it on every running line.
+		let hintShown = false
 		for (const a of running) {
 			const name = getDisplayName(a.type)
 			const elapsed = formatMs(Date.now() - a.startedAt)
@@ -289,11 +292,14 @@ export class AgentWidget {
 			const activity = bg ? describeActivity(bg.activeTools, bg.responseText) : "thinking…"
 
 			const modelTag = a.modelId ? ` ${theme.fg("dim", `[${a.modelId}]`)}` : ""
+			const bgTag = a.isBackground ? ` ${theme.fg("muted", "[background]")}` : ""
+			const bgHint = !hintShown && !a.isBackground ? `  ${theme.fg("muted", "(ctrl+b to run in background)")}` : ""
+			if (bgHint) hintShown = true
 			runningLines.push([
 				truncate(
-					`${theme.fg("dim", "├─")} ${theme.fg("accent", frame)} ${theme.bold(name)}${modelTag}  ${theme.fg("muted", a.description)} ${theme.fg("dim", "·")} ${theme.fg("dim", statsText)}`,
+					`${theme.fg("dim", "├─")} ${theme.fg("accent", frame)} ${theme.bold(name)}${modelTag}${bgTag}  ${theme.fg("muted", a.description)} ${theme.fg("dim", "·")} ${theme.fg("dim", statsText)}`,
 				),
-				truncate(theme.fg("dim", "│  ") + theme.fg("dim", `  ⎿  ${activity}`)),
+				truncate(theme.fg("dim", "│  ") + theme.fg("dim", `  ⎿  ${activity}`) + bgHint),
 			])
 		}
 

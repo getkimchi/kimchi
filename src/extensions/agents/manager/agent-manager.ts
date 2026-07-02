@@ -121,7 +121,8 @@ export class AgentManager {
 	private startAgent(id: string, record: AgentRecord, { pi, ctx, type, prompt, options }: SpawnArgs) {
 		record.status = "running"
 		record.startedAt = Date.now()
-		if (options.isBackground) this.runningBackground++
+		record.isBackground = options.isBackground ?? false
+		if (record.isBackground) this.runningBackground++
 		this.onStart?.(record)
 
 		let detachParentSignal: (() => void) | undefined
@@ -130,9 +131,13 @@ export class AgentManager {
 			options.signal.addEventListener("abort", onParentAbort, { once: true })
 			detachParentSignal = () => options.signal?.removeEventListener("abort", onParentAbort)
 		}
-		const detach = () => {
+		record.detachFromParent = () => {
 			detachParentSignal?.()
 			detachParentSignal = undefined
+		}
+		const detach = () => {
+			record.detachFromParent?.()
+			record.detachFromParent = undefined
 		}
 
 		const promise = runAgent(ctx, type, prompt, {
@@ -194,7 +199,7 @@ export class AgentManager {
 					record.outputCleanup = undefined
 				}
 
-				if (options.isBackground) {
+				if (record.isBackground) {
 					this.runningBackground--
 					this.onComplete?.(record)
 					this.drainQueue()
@@ -219,7 +224,7 @@ export class AgentManager {
 					record.outputCleanup = undefined
 				}
 
-				if (options.isBackground) {
+				if (record.isBackground) {
 					this.runningBackground--
 					this.onComplete?.(record)
 					this.drainQueue()
@@ -266,6 +271,27 @@ export class AgentManager {
 		const record = this.agents.get(id)!
 		await record.promise
 		return record
+	}
+
+	detachToBackground(id: string): boolean {
+		const record = this.agents.get(id)
+		if (!record || record.status !== "running" || record.isBackground) return false
+		// If there is no detachResolver, the foreground execute path is not
+		// awaiting a detach race (e.g. it hasn't set the resolver yet, or the
+		// caller used spawnAndWait). Detaching in that case would flip
+		// isBackground and bump runningBackground but leave the foreground path
+		// blocked on the agent's own promise — producing inconsistent state.
+		// Bail out so the keystroke becomes a no-op until the foreground path is ready.
+		if (!record.detachResolver) return false
+
+		record.isBackground = true
+		this.runningBackground++
+		record.detachFromParent?.()
+		record.detachFromParent = undefined
+		record.detachResolver?.()
+		record.detachResolver = undefined
+
+		return true
 	}
 
 	async resume(id: string, prompt: string, signal?: AbortSignal): Promise<AgentRecord | undefined> {
