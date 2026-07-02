@@ -53,14 +53,9 @@ jobs:
             os: linux
             arch: arm64
             runner: ubuntu-24.04-arm
-          - target: bun-windows-x64
-            os: windows
-            arch: amd64
-            runner: windows-latest
           - target: windows-x64-baseline
             os: windows
             arch: amd64
-            asset_suffix: _baseline
             runner: windows-latest
 
     runs-on: ${{ matrix.runner }}
@@ -82,7 +77,7 @@ jobs:
           go-version-file: tools/proxy-helper/go.mod
 
       - name: Install baseline Bun (Windows, no AVX2)
-        if: ${{ matrix.target == 'windows-x64-baseline' }}
+        if: ${{ matrix.os == 'windows' }}
         uses: ./.github/actions/setup-bun-baseline
 
       - name: Build proxy-helper
@@ -142,13 +137,13 @@ jobs:
           }
 
       - name: Package release asset
-        run: node scripts/package-release-asset.js --os ${{ matrix.os }} --arch ${{ matrix.arch }}${{ matrix.asset_suffix }}
+        run: node scripts/package-release-asset.js --os ${{ matrix.os }} --arch ${{ matrix.arch }}
 
       - name: Verify Windows installer
         if: ${{ matrix.os == 'windows' }}
         shell: pwsh
         env:
-          KIMCHI_ARCHIVE_PATH: kimchi_${{ matrix.os }}_${{ matrix.arch }}${{ matrix.asset_suffix }}.zip
+          KIMCHI_ARCHIVE_PATH: kimchi_${{ matrix.os }}_${{ matrix.arch }}.zip
           KIMCHI_INSTALL_DIR: ${{ runner.temp }}\kimchi-install
           KIMCHI_SKIP_PATH_UPDATE: "1"
         run: |
@@ -158,8 +153,8 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: kimchi_${{ matrix.os }}_${{ matrix.arch }}${{ matrix.asset_suffix }}
-          path: kimchi_${{ matrix.os }}_${{ matrix.arch }}${{ matrix.asset_suffix }}.*
+          name: kimchi_${{ matrix.os }}_${{ matrix.arch }}
+          path: kimchi_${{ matrix.os }}_${{ matrix.arch }}.*
 
   smoke-test:
     needs: [build]

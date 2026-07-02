@@ -60,16 +60,6 @@ function Get-WindowsArch {
   }
 }
 
-function Test-Avx2Supported {
-  try {
-    return [System.Runtime.Intrinsics.X86.Avx2]::IsSupported
-  } catch {
-    # Older .NET / PowerShell hosts that lack the Intrinsics API: assume no AVX2
-    # and fall back to the baseline build to be safe.
-    return $false
-  }
-}
-
 function Get-DefaultInstallRoot {
   if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
     return (Join-Path $env:LOCALAPPDATA "Kimchi")
@@ -174,15 +164,7 @@ function Install-Kimchi {
   $version = Get-EnvOrDefault "KIMCHI_VERSION" "latest"
   $installRoot = Get-EnvOrDefault "KIMCHI_INSTALL_DIR" (Get-DefaultInstallRoot)
   $arch = Get-WindowsArch
-  # NOTE: the "_baseline" suffix here must exactly match the asset_suffix
-  # used for the windows-x64-baseline matrix entry in
-  # .github/workflows/release.yml and canary.yml (kimchi_<os>_<arch><asset_suffix>.zip).
-  # If that suffix or separator ever changes, update both places together.
-  $assetName = if (Test-Avx2Supported) {
-    "kimchi_windows_${arch}.zip"
-  } else {
-    "kimchi_windows_${arch}_baseline.zip"
-  }
+  $assetName = "kimchi_windows_${arch}.zip"
   $tmpDir = Join-Path ([IO.Path]::GetTempPath()) "kimchi-installer-$PID"
   $extractDir = Join-Path $tmpDir "extract"
 
