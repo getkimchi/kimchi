@@ -19,8 +19,10 @@ import json
 import os
 import re
 import shlex
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
@@ -125,9 +127,11 @@ def run_kimchi_attempt(
             text=True,
             timeout=timeout_seconds,
             check=False,
+            start_new_session=True,
         )
     except subprocess.TimeoutExpired as exc:
         print(f"Kimchi analysis timed out after {timeout_seconds}s", file=sys.stderr, flush=True)
+        _kill_process_group(exc.pid)
         if exc.stdout:
             print(exc.stdout, file=sys.stderr)
         if exc.stderr:
@@ -144,6 +148,29 @@ def run_kimchi_attempt(
         return False
 
     return True
+
+
+def _kill_process_group(pid: int) -> None:
+    """Kill the entire process group of *pid* (SIGTERM → SIGKILL escalation).
+
+    ``subprocess.run(start_new_session=True, ...)`` puts the child in its own
+    session/process group so we can reap kimchi and all its descendants
+    (bash-tool children, MCP servers, detached hooks) on timeout — preventing
+    orphaned processes that linger after the parent is killed.
+    """
+    try:
+        pgid = os.getpgid(pid)
+    except ProcessLookupError:
+        return
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+        time.sleep(2)
+    except ProcessLookupError:
+        return
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
 
 
 def read_analysis_draft(draft_path: Path) -> tuple[str | None, str | None]:
@@ -216,7 +243,9 @@ def run_kimchi_analysis(
 def validate_analysis_json(content: str) -> str | None:
     """Return a validation error, or None when content is valid analysis JSON.
 
-    Loose schema: must be a JSON object with a 'findings' key containing a list.
+    Must be a JSON object with a 'findings' key containing a list.
+    All other fields are optional — the prompt encourages richer structure
+    but we don't hard-fail on missing keys or sub-field validation.
     """
     if not content:
         return "analysis JSON is empty"

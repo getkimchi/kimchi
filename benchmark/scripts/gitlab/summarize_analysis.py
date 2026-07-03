@@ -30,12 +30,14 @@ from urllib import error, request
 OPUS_MODEL = "claude-opus-4-6"
 OPUS_API_URL = "https://llm.kimchi.dev/openai/v1/chat/completions"
 OPUS_SYSTEM_PROMPT = (
-    "You are a benchmark analysis assistant. "
-    "Summarize the following benchmark analysis reports. "
-    "Sort findings by descending criticality. "
-    "Keep your response under 2000 characters."
+    "Analyze Terminal-Bench 2.1 benchmark results across multiple model runs "
+    "on the same 89-task suite. Context: each task has a fixed wall-clock timeout "
+    "invisible to the agent. Timeout retries are disabled. "
+    "Output a single list of issues, most critical first. For each issue, note "
+    "which models are affected and frequency with real numbers from the data. "
+    "Be quantitative, not hedgy. Critical: keep under 1900 characters."
 )
-MAX_SUMMARY_CHARS = 2000
+DISCORD_MAX_CHARS = 2000  # Used by _post_long_message for chunking
 MAX_RETRIES = 3
 DISCORD_API_BASE = "https://discord.com/api/v10"
 
@@ -131,18 +133,6 @@ def split_by_ferment(runs: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], 
 
 # --- Opus summarization ---
 
-def truncate_to_2000(text: str) -> str:
-    """Truncate text to 2000 chars at the last sentence boundary if possible."""
-    if len(text) <= MAX_SUMMARY_CHARS:
-        return text
-    truncated = text[:MAX_SUMMARY_CHARS]
-    # Find the last sentence boundary
-    last_period = truncated.rfind(". ")
-    if last_period > MAX_SUMMARY_CHARS // 2:
-        return truncated[: last_period + 1]
-    return truncated
-
-
 def call_opus(user_content: str, api_key: str) -> str | None:
     """Call Claude Opus via the OpenAI-compatible API and return the summary text.
 
@@ -175,7 +165,7 @@ def call_opus(user_content: str, api_key: str) -> str | None:
                 data = json.loads(response.read().decode())
                 content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
                 if content:
-                    return truncate_to_2000(content.strip())
+                    return content.strip()
                 print("Opus API returned empty content", file=sys.stderr, flush=True)
         except (error.URLError, error.HTTPError, OSError) as exc:
             print(f"Opus API attempt {attempt + 1} failed: {exc}", file=sys.stderr, flush=True)
@@ -193,6 +183,7 @@ def _discord_post(url: str, bot_token: str, payload: dict[str, Any]) -> dict[str
     headers = {
         "Authorization": f"Bot {bot_token}",
         "Content-Type": "application/json",
+        "User-Agent": "curl/8.7.1",
     }
     try:
         req = request.Request(url, data=data, headers=headers, method="POST")
@@ -204,50 +195,70 @@ def _discord_post(url: str, bot_token: str, payload: dict[str, Any]) -> dict[str
         return None
 
 
-def post_to_discord(bot_token: str, channel_id: str, headline: str, thread_name: str, summary: str) -> bool:
-    """Post a headline message to a channel, create a thread from it, then post the summary in the thread.
+def _post_long_message(url: str, bot_token: str, content: str) -> bool:
+    """Post a message that may exceed Discord's 2000-char limit by splitting into multiple messages."""
+    chunks = []
+    remaining = content
+    while len(remaining) > DISCORD_MAX_CHARS:
+        # Try to split at the last paragraph boundary (\n\n) within the limit
+        split_at = remaining.rfind("\n\n", 0, DISCORD_MAX_CHARS)
+        if split_at >= DISCORD_MAX_CHARS // 2:
+            split_at += 2  # include the \n\n in the first chunk
+        else:
+            # Fall back to single newline
+            split_at = remaining.rfind("\n", 0, DISCORD_MAX_CHARS)
+            if split_at >= DISCORD_MAX_CHARS // 2:
+                split_at += 1
+            else:
+                # Fall back to sentence boundary
+                split_at = remaining.rfind(". ", 0, DISCORD_MAX_CHARS)
+                if split_at >= DISCORD_MAX_CHARS // 2:
+                    split_at += 2
+                else:
+                    # Hard cut
+                    split_at = DISCORD_MAX_CHARS
+        chunks.append(remaining[:split_at])
+        remaining = remaining[split_at:]
+    chunks.append(remaining)
 
-    Uses the Discord Bot API (v10) — same approach as kubecast's discord client.
+    for chunk in chunks:
+        resp = _discord_post(url, bot_token, {"content": chunk})
+        if resp is None:
+            return False
+    return True
+
+
+def post_to_discord(bot_token: str, channel_id: str, headline: str, thread_name: str, summary: str) -> bool:
+    """Create a thread in the channel, then post the headline and summary inside it.
+
+    Uses the Discord Bot API (v10). Creates a standalone thread (not attached to a message)
+    to avoid requiring READ_MESSAGE_HISTORY permission.
     Returns True on success, False on failure.
     """
-    # Step 1: Post the headline message to the channel
-    messages_url = f"{DISCORD_API_BASE}/channels/{channel_id}/messages"
-    print(f"Discord: posting headline to {messages_url}", flush=True)
-    headline_resp = _discord_post(messages_url, bot_token, {"content": headline})
-    if headline_resp is None:
-        return False
-
-    message_id = str(headline_resp.get("id", ""))
-    if not message_id:
-        print("Discord did not return a message id; skipping thread creation", file=sys.stderr, flush=True)
-        return False
-    print(f"Discord: headline posted, message_id={message_id}", flush=True)
-
-    # Step 2: Create a thread from the headline message
-    thread_url = f"{DISCORD_API_BASE}/channels/{channel_id}/messages/{message_id}/threads"
-    print(f"Discord: creating thread '{thread_name}' from message {message_id}", flush=True)
-    thread_resp = _discord_post(thread_url, bot_token, {"name": thread_name})
+    # Step 1: Create a thread (type 11 = PUBLIC_THREAD, no message reference needed)
+    thread_url = f"{DISCORD_API_BASE}/channels/{channel_id}/threads"
+    print(f"Discord: creating thread '{thread_name}' in channel {channel_id}", flush=True)
+    thread_resp = _discord_post(thread_url, bot_token, {"name": thread_name, "type": 11})
     if thread_resp is None:
-        print("Discord thread creation failed; posting summary as channel reply", file=sys.stderr, flush=True)
-        # Fall back: post summary as a regular message in the channel
-        _discord_post(messages_url, bot_token, {"content": summary})
-        return False
+        print("Discord thread creation failed; posting summary as channel messages", file=sys.stderr, flush=True)
+        # Fall back: post summary as regular messages in the channel (split if needed)
+        messages_url = f"{DISCORD_API_BASE}/channels/{channel_id}/messages"
+        return _post_long_message(messages_url, bot_token, summary)
 
     thread_channel_id = str(thread_resp.get("id", ""))
     if not thread_channel_id:
-        print("Discord thread creation returned no channel id; skipping thread reply", file=sys.stderr, flush=True)
+        print("Discord thread creation returned no channel id", file=sys.stderr, flush=True)
         return False
     print(f"Discord: thread created, thread_channel_id={thread_channel_id}", flush=True)
 
-    # Step 3: Post the full summary in the thread
+    # Step 2: Post the headline and full summary in the thread (split if > 2000 chars)
     thread_messages_url = f"{DISCORD_API_BASE}/channels/{thread_channel_id}/messages"
-    print(f"Discord: posting summary ({len(summary)} chars) to thread {thread_channel_id}", flush=True)
-    reply_resp = _discord_post(thread_messages_url, bot_token, {"content": summary})
-    if reply_resp is None:
-        return False
-
-    print("Discord: summary posted successfully", flush=True)
-    return True
+    full_content = f"{headline}\n\n{summary}"
+    print(f"Discord: posting summary ({len(full_content)} chars) to thread {thread_channel_id}", flush=True)
+    success = _post_long_message(thread_messages_url, bot_token, full_content)
+    if success:
+        print("Discord: summary posted successfully", flush=True)
+    return success
 
 
 # --- Main ---

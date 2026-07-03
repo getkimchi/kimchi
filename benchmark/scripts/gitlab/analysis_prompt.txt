@@ -54,7 +54,35 @@ The HTML report must be a complete, valid HTML document using this report struct
 
 The report must be self-contained and must not contain scripts, inline event handlers, or externally loaded resources.
 
-After writing the HTML report, also write a structured JSON file to the same directory as {draft_path}, named analysis.json. This file should contain a loose JSON object with at minimum these fields: run_id (string), model (string), configuration (string), summary (string — one-line description of overall run health), and findings (array of objects, each with task, severity (one of: critical, warning, info), category (string), and finding (string description)). Severity levels in descending criticality: critical, warning, info. The JSON will be consumed by a downstream summarization step; keep it self-contained and do not reference external files.
+After writing the HTML report, also write a structured JSON file to the same directory as {draft_path}, named analysis.json. This file will be consumed by a downstream summarization step that feeds all runs to Claude Opus; keep it self-contained and do not reference external files. All numeric values must be JSON numbers (not strings). Do not include raw control characters in string values — escape newlines as \n.
+
+The JSON object must have these fields:
+
+- run_id (string): pipeline run identifier, e.g. "gitlab-p12345".
+- model (string): the model used for the run.
+- configuration (string): e.g. "single-model", "multi-mode-ferment".
+- summary (string): one-line description of overall run health.
+- run_stats (object): quantitative run-level aggregates derived from summary.json:
+    - verdicts (object): {"pass": int, "fail": int, "timeout": int, "error": int}
+    - total_trials (int)
+    - pass_rate (number): fraction 0.0–1.0
+    - tokens (object): {"input": int, "cache_read": int, "output": int, "avg_input_per_trial": int, "avg_output_per_trial": int}
+    - llm_rounds (object): {"total": int, "avg_per_trial": number}
+    - avg_duration_seconds (number)
+    - longest_trials (array of objects): up to 5, each with task (string), duration_seconds (int), verdict (string), rounds (int)
+- timeout_breakdown (array of objects): subclassify timeouts by mechanism. Each object has mechanism (string — one of: "tool_returned", "agent_in_flight", "inference_hang", "tool_hang"), count (int), example_tasks (array of strings).
+- findings (array of objects): cross-cutting harness issues. Each object has:
+    - task (string): task name or "cross-run" for run-wide patterns
+    - severity (string): one of "critical", "warning", "info" (descending criticality)
+    - category (string): e.g. "timeout policy", "delegation protocol", "model routing"
+    - finding (string): description of the issue
+    - evidence_path (string): relative path to the artifact that supports this finding
+    - suspected_layer (string): one of: orchestrator prompt, subagent prompt, delegation protocol, timeout policy, tool availability, tool-use guidance, verifier integration, environment setup, model routing, benchmark/task-specific, unknown
+    - confidence (string): one of "high", "medium", "low"
+    - recommendation (string): suggested fix or next step
+- task_notes (array of objects): per-task granularity for near-misses and partial progress. Each object has task (string), note (string), artifact_path (string — relative path to session file).
+- plan_churn (object): ferment orchestration counts from event streams: fail_ferment_step (int), refine_ferment_phase (int), skip (int), resume (int), ask_user (int), total (int). Set all to 0 for non-ferment runs.
+- open_questions (array of objects): follow-up investigations. Each object has question (string), requires (string — what's needed: harness code, re-run, instrumentation, etc.).
 
 Write the HTML report to: {draft_path}
 Also write the JSON summary to: {json_path}

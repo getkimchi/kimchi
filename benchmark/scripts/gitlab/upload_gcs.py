@@ -135,6 +135,19 @@ def main() -> int:
     metadata_file = work_dir / "metadata.json"
     archive_file = work_dir / "jobs.tar.gz"
 
+    # The chunk job sets BENCHMARK_TARGET_REF and writes it into
+    # run-metadata.json. The summary job does not have that env var, so fall
+    # back to the value stored in run_metadata.gitlab.target_ref.
+    # Never fall back to CI_COMMIT_REF_NAME — that is the branch the pipeline
+    # ran on (e.g. "benchmarks"), not the target ref being benchmarked.
+    chunk_gitlab = metadata_dict(run_metadata, "gitlab")
+    target_ref = getenv("BENCHMARK_TARGET_REF") or optional_metadata_string(chunk_gitlab, "target_ref")
+    if not target_ref:
+        return skip_upload("No target_ref found in BENCHMARK_TARGET_REF or run_metadata.gitlab.target_ref; skipping GCS upload.")
+    target_commit_sha = getenv("BENCHMARK_TARGET_SHA") or optional_metadata_string(chunk_gitlab, "target_commit_sha")
+    if not target_commit_sha:
+        return skip_upload("No target_commit_sha found in BENCHMARK_TARGET_SHA or run_metadata.gitlab.target_commit_sha; skipping GCS upload.")
+
     metadata = {
         "schema_version": 1,
         "created_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -165,8 +178,8 @@ def main() -> int:
             "ref_slug": getenv("CI_COMMIT_REF_SLUG"),
             "commit_sha": getenv("CI_COMMIT_SHA"),
             "commit_short_sha": getenv("CI_COMMIT_SHORT_SHA"),
-            "target_ref": getenv("BENCHMARK_TARGET_REF", getenv("CI_COMMIT_REF_NAME")),
-            "target_commit_sha": getenv("BENCHMARK_TARGET_SHA", getenv("CI_COMMIT_SHA")),
+            "target_ref": target_ref,
+            "target_commit_sha": target_commit_sha,
         },
     }
     metadata_file.write_text(json.dumps(metadata, indent=2) + "\n")

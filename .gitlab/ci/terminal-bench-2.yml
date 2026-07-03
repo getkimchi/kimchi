@@ -189,6 +189,7 @@ terminal-bench-$[[ inputs.dataset_version ]]-summary:
   variables:
     <<: *gcp-auth-vars
     BENCHMARK_RESULTS_DIR: benchmark/terminal-bench-$[[ inputs.dataset_version ]]/jobs
+    BENCHMARK_TARGET_REF: "$[[ inputs.target_ref ]]"
     BENCH_RETRY_AGENT_TIMEOUT: "$[[ inputs.retry_agent_timeout ]]"
     DEBIAN_FRONTEND: noninteractive
     FF_TIMESTAMPS: "true"

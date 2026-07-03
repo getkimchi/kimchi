@@ -36,10 +36,14 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 ANALYZE_SCRIPT="$SCRIPT_DIR/analyze_sessions.py"
 WORK_DIR="$(mktemp -d -t "analysis-${PIPELINE_ID}-XXXXXX")"
 FINAL_REPORT="$(pwd)/analysis-${PIPELINE_ID}.html"
+FINAL_JSON="$(pwd)/analysis-${PIPELINE_ID}.json"
 
 cleanup() {
   if [[ -f "$WORK_DIR/repo/.benchmark/analysis.html" ]]; then
     cp "$WORK_DIR/repo/.benchmark/analysis.html" "$FINAL_REPORT"
+  fi
+  if [[ -f "$WORK_DIR/repo/.benchmark/analysis.json" ]]; then
+    cp "$WORK_DIR/repo/.benchmark/analysis.json" "$FINAL_JSON"
   fi
   rm -rf "$WORK_DIR"
 }
@@ -289,7 +293,18 @@ print(gcs.get('prefix', ''))
   DESTINATION="gs://$BUCKET/$GCS_PREFIX/analysis.html"
   echo "   Destination: $DESTINATION"
   gcloud storage cp "$ANALYSIS_OUTPUT" "$DESTINATION" --quiet
-  echo "   Upload complete!"
+  echo "   analysis.html uploaded"
+
+  # Upload analysis.json if it exists (needed by summarize_analysis.py)
+  JSON_OUTPUT="$WORK_DIR/repo/.benchmark/analysis.json"
+  if [[ -f "$JSON_OUTPUT" ]]; then
+    JSON_DESTINATION="gs://$BUCKET/$GCS_PREFIX/analysis.json"
+    echo "   Destination: $JSON_DESTINATION"
+    gcloud storage cp "$JSON_OUTPUT" "$JSON_DESTINATION" --quiet
+    echo "   analysis.json uploaded"
+  else
+    echo "   WARNING: analysis.json not found; skipping JSON upload"
+  fi
 fi
 
 # Copy now so the trap has it even if something goes wrong after
@@ -300,6 +315,11 @@ echo "=== Done ==="
 echo "Pipeline:  $PIPELINE_ID"
 echo "Report:    $FINAL_REPORT"
 echo "Size:      $HTML_SIZE bytes"
+if [[ -f "$FINAL_JSON" ]]; then
+  echo "JSON:      $FINAL_JSON"
+else
+  echo "JSON:      not produced"
+fi
 if $UPLOAD; then
   echo "Uploaded:  yes"
 else

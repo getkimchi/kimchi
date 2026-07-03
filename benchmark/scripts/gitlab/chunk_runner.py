@@ -392,8 +392,8 @@ def _write_run_metadata(
             "ref_slug": os.environ.get("CI_COMMIT_REF_SLUG", ""),
             "commit_sha": pipeline_sha,
             "commit_short_sha": os.environ.get("CI_COMMIT_SHORT_SHA", ""),
-            "target_ref": os.environ.get("BENCHMARK_TARGET_REF", pipeline_ref),
-            "target_commit_sha": os.environ.get("BENCHMARK_TARGET_SHA", pipeline_sha),
+            "target_ref": os.environ.get(ENV_BENCHMARK_TARGET_REF, ""),
+            "target_commit_sha": os.environ.get("BENCHMARK_TARGET_SHA", ""),
         },
     }
     metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")

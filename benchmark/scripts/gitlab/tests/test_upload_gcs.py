@@ -191,3 +191,65 @@ def test_main_uploads_to_2_1_prefix(
         f"Expected exactly one jobs.tar.gz upload, got {len(archive_uploads)}: {archive_uploads}"
     )
     assert "runs/benchmark=terminal-bench-2-1/run=gitlab-p1/jobs.tar.gz" in archive_uploads[0]
+
+
+def test_main_target_ref_from_run_metadata_when_env_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """target_ref falls back to run_metadata.gitlab.target_ref when BENCHMARK_TARGET_REF is unset.
+
+    The summary job does not have BENCHMARK_TARGET_REF (only the chunk job does).
+    upload_gcs.py must read it from the run-metadata.json written by chunk_runner.py
+    rather than falling back to CI_COMMIT_REF_NAME (which would be 'benchmarks').
+    """
+    metadata = {
+        "benchmark": "terminal-bench-2-1",
+        "coding_agent": "kimchi",
+        "model": "kimchi-dev/minimax-m3",
+        "model_provider": "kimchi-dev",
+        "model_name": "minimax-m3",
+        "configuration": "single-model",
+        "multi_mode": False,
+        "ferment": False,
+        "selected_tasks": ["task-a"],
+        "parameters": {},
+        "results_dir": str(tmp_path / "jobs"),
+        "gcs": {"prefix": "runs/benchmark=terminal-bench-2-1/run=gitlab-p1"},
+        "gitlab": {
+            "target_ref": "master",
+            "target_commit_sha": "abc123",
+        },
+    }
+    metadata_path = tmp_path / "run-metadata.json"
+    metadata_path.write_text(json.dumps(metadata))
+
+    results_dir = Path(metadata["results_dir"])
+    results_dir.mkdir(parents=True)
+    (results_dir / "task-a__1").mkdir()
+    (results_dir / "task-a__1" / "result.json").write_text('{}')
+
+    monkeypatch.setenv("BENCHMARK_GCS_BUCKET", "test-bucket")
+    monkeypatch.setenv("BENCHMARK_RUN_METADATA", str(metadata_path))
+    monkeypatch.setenv("GCS_UPLOAD_REQUIRED", "true")
+    monkeypatch.setenv("CI_PROJECT_DIR", str(tmp_path))
+    # Simulate the summary job: BENCHMARK_TARGET_REF is NOT set
+    monkeypatch.delenv("BENCHMARK_TARGET_REF", raising=False)
+    monkeypatch.delenv("BENCHMARK_TARGET_SHA", raising=False)
+    monkeypatch.setenv("CI_COMMIT_REF_NAME", "benchmarks")
+    monkeypatch.setenv("CI_COMMIT_SHA", "deadbeef")
+
+    uploaded_metadata = {}
+
+    def fake_run(cmd: list[str]) -> None:
+        if "metadata.json" in " ".join(cmd):
+            # The metadata.json is written to a work_dir; find it
+            for arg in cmd:
+                if arg.endswith("metadata.json") and Path(arg).exists():
+                    uploaded_metadata.update(json.loads(Path(arg).read_text()))
+
+    with patch.object(upload_gcs, "run", side_effect=fake_run):
+        rc = upload_gcs.main()
+
+    assert rc == 0
+    assert uploaded_metadata["gitlab"]["target_ref"] == "master"
+    assert uploaded_metadata["gitlab"]["target_commit_sha"] == "abc123"
