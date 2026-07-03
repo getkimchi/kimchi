@@ -1,3 +1,64 @@
+# Patch: kimchi-dev runtime extensions for pi-coding-agent
+#
+# NOTE for upgraders: `pnpm patch-commit` regenerates this file and STRIPS this
+# header — re-add it (and re-run `pnpm install` to refresh the lockfile hash)
+# after every regeneration. Patches port textually but can break semantically:
+# verify that every symbol referenced by added lines still exists in the new
+# upstream version (e.g. 0.79.10 removed the `setTheme` import from
+# interactive-mode.js, which previewTheme used to call).
+#
+# Changes included:
+#   1. dist/cli/args.js         — expose KIMCHI_API_KEY in --help env-var block
+#   2. dist/core/extensions/runner.js — add emitBeforeProviderHeaders(headers) method,
+#                                       mirroring emitBeforeProviderRequest pattern
+#   3. dist/core/sdk.js         — call emitBeforeProviderHeaders in streamFn after
+#                                 static header assembly, so extensions can inject
+#                                 per-request dynamic headers (X-Session-Id, X-Turn-Index)
+#   4. dist/core/agent-session.js — set agent.prepareNextTurn to refresh context.tools
+#                                   from state.tools after each tool batch, enabling
+#                                   mid-run setActiveTools() calls to take effect on
+#                                   the next model response within the same agent run.
+#   5. dist/modes/interactive/  — miscellaneous upstream UI fixes bundled in this patch
+#   6. dist/modes/interactive/interactive-mode.js — add previewTheme(name) and
+#      dist/core/extensions/types.d.ts              showError(message) to createExtensionUIContext,
+#                                                   and their type declarations to ExtensionUIContext.
+#
+#                                 previewTheme applies a theme live by delegating to
+#                                 InteractiveThemeController.preview() (the same path as
+#                                 the internal onThemePreview callback used by /settings),
+#                                 WITHOUT the settingsManager.setTheme() persistence that
+#                                 the public ui.setTheme() includes.
+#
+#                                 Why a patch is required: the public ExtensionUIContext conflates
+#                                 "change the rendered theme" and "persist to settingsManager" — the
+#                                 public ui.setTheme() always does both. Theme preview already exists
+#                                 inside InteractiveMode (used by /settings via the private
+#                                 themeController.preview()); the patch simply promotes it to the
+#                                 extension API surface. There is no public-API-only workaround: the
+#                                 only alternative is ui.setTheme() on each arrow-key press, which
+#                                 writes to disk every keystroke and leaves a dirty settings state
+#                                 if the user cancels.
+#
+#                                 showError delegates to the inherited SessionMode.showError so
+#                                 extensions can surface error overlays (not toasts).
+#
+# Tracking: open an upstream PR against pi-mono to ship before_provider_headers as
+# a first-class extension hook in ExtensionRunner and ExtensionAPI. Also track a
+# separate PR to add previewTheme + showError to ExtensionUIContext.
+# Issue: TODO — file against https://github.com/earendil-works/pi-mono once the
+# API design is confirmed stable.
+#
+# Removal criteria:
+#   - Items 1-3 (before_provider_headers): upstream pi-mono ships BeforeProviderHeadersEvent
+#     and ExtensionAPI.on("before_provider_headers", ...) as a first-class hook, and
+#     the fixed version is pinned in package.json.
+#   - Item 4 (prepareNextTurn): upstream pi-mono wires agent.prepareNextTurn in
+#     AgentSession._installAgentToolHooks() so context.tools refreshes after each tool
+#     batch without a patch.
+#   - Item 5: individual fixes land upstream and the patched version is updated.
+#   - Item 6 (previewTheme + showError): upstream pi-coding-agent ships previewTheme
+#     and showError on ExtensionUIContext and the fixed version is pinned in package.json.
+#
 diff --git a/dist/cli/args.js b/dist/cli/args.js
 index 6bd8f43b4402dbd24f9262c4c059b2c06693a79c..ad705421fb9087efd8ad2cfbfe8709d198245751 100644
 --- a/dist/cli/args.js
@@ -420,7 +481,7 @@ index 0e85e9006835b754e38a7af725b4f1ca18eb3a61..94ea3d983a2abe039a7729d452f60c32
              color: (content) => theme.fg("userMessageText", content),
          }, { preserveOrderedListMarkers: true }));
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index 85c551f8630bc7d021825359095a8b552cbfb518..d6258e0bcaedc8fe5808c3b8e080c01e78b6a0a4 100644
+index 85c551f8630bc7d021825359095a8b552cbfb518..3b97e69d382bb0315b4907568fddb446e6cefe56 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
 @@ -1592,6 +1592,7 @@ export class InteractiveMode {
@@ -440,22 +501,24 @@ index 85c551f8630bc7d021825359095a8b552cbfb518..d6258e0bcaedc8fe5808c3b8e080c01e
              setEditorText: (text) => this.editor.setText(text),
              getEditorText: () => this.editor.getExpandedText?.() ?? this.editor.getText(),
              editor: (title, prefill) => this.showExtensionEditor(title, prefill),
-@@ -1637,6 +1638,14 @@ export class InteractiveMode {
+@@ -1637,6 +1638,16 @@ export class InteractiveMode {
              },
              getToolsExpanded: () => this.toolOutputExpanded,
              setToolsExpanded: (expanded) => this.setToolsExpanded(expanded),
 +            previewTheme: (themeName) => {
-+                const result = setTheme(themeName, true);
-+                if (result.success) {
-+                    this.ui.invalidate();
-+                    this.ui.requestRender();
++                // Delegates to the same controller path as the internal
++                // onThemePreview callback used by /settings; preview() applies
++                // the theme live without persisting or touching auto-sync.
++                if (!getThemeByName(themeName)) {
++                    return { success: false, error: `Unknown theme: ${themeName}` };
 +                }
-+                return result;
++                this.themeController.preview(themeName);
++                return { success: true };
 +            },
          };
      }
      /**
-@@ -3425,6 +3434,29 @@ export class InteractiveMode {
+@@ -3425,6 +3436,29 @@ export class InteractiveMode {
              this.showModelSelector();
              return;
          }
