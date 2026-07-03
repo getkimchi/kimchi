@@ -144,12 +144,37 @@ describe("prompt summary stale-ctx crash prevention", () => {
 		await harness.emit("message_end", {
 			message: { role: "assistant", usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 } },
 		})
-		await harness.emit("agent_end")
+		await harness.emit("agent_end", {}, { isIdle: () => true })
 
 		await vi.advanceTimersByTimeAsync(0)
 
 		expect(harness.sent).toHaveLength(0)
 		expect(errorSpy).not.toHaveBeenCalled()
+		errorSpy.mockRestore()
+	})
+
+	it("logs non-stale errors to console.error", async () => {
+		const harness = createStaleCtxHarness()
+		const nonStaleError = new Error("something went wrong")
+		const piWithThrowingSend = {
+			...harness.pi,
+			sendMessage() {
+				throw nonStaleError
+			},
+		}
+		promptSummaryExtension(piWithThrowingSend as never)
+
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+
+		await harness.emit("agent_start")
+		await harness.emit("message_end", {
+			message: { role: "assistant", usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 } },
+		})
+		await harness.emit("agent_end", {}, { isIdle: () => true })
+
+		await vi.advanceTimersByTimeAsync(0)
+
+		expect(errorSpy).toHaveBeenCalledWith("[prompt-summary] Failed to send:", nonStaleError)
 		errorSpy.mockRestore()
 	})
 })
