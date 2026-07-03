@@ -463,6 +463,27 @@ export default function uiExtension(pi: ExtensionAPI) {
 
 	let stopWorkingAnimation: (() => void) | undefined
 
+	// ── Indicator lifecycle ──────────────────────────────────────────────────
+	//
+	// The cooking animation is ON whenever the assistant is mid-turn. It starts
+	// at turn_start and stops at message_end / turn_end / agent_end.
+	// tool_execution_end is a no-op — the indicator keeps running through the
+	// tool-result gap because the turn is still active.
+	//
+	// Interactive prompts (ui.custom, ui.select, ui.input, ui.confirm) are the
+	// one exception: while they have keyboard focus the spinner must be hidden
+	// so it doesn't show behind the form. Each tool that shows an interactive
+	// prompt during a turn is responsible for calling setWorkingVisible(false)
+	// before the prompt and setWorkingVisible(true) after it resolves (use
+	// try/finally to cover cancellation/errors). Currently:
+	//   - questionnaire       (questionnaire.ts)
+	//   - ask_user / confirm  (ferment/prompt-ui.ts → withWorkingHidden)
+	//   - permission prompts   (permissions/prompts.ts → withWorkingHidden)
+	//   - step recovery        (ferment/tools/steps.ts)
+	//   - phase boundary       (ferment/tools/phases.ts)
+	// Command handlers (/agents, /theme, /mcp, etc.) do NOT need this — they run
+	// when the agent is idle, so the indicator is already off.
+
 	const startIndicator = (ctx: ExtensionContext) => {
 		ctx.ui.setWorkingVisible(true)
 		stopWorkingAnimation?.()

@@ -520,7 +520,14 @@ export async function completeStep(
 		const abandonLabel = "Abandon phase"
 		const cancelLabel = "Cancel (keep step failed)"
 		const title = `Step ${step.index} "${step.description}" failed verification.\nJudge: ${judgeVerdict.reason}`
-		const choice = await ctx.ui.select(title, [retryLabel, skipLabel, editLabel, abandonLabel, cancelLabel])
+		// Hide the cooking animation while the recovery dropdown is shown.
+		ctx.ui.setWorkingVisible?.(false)
+		let choice: string | undefined
+		try {
+			choice = await ctx.ui.select(title, [retryLabel, skipLabel, editLabel, abandonLabel, cancelLabel])
+		} finally {
+			ctx.ui.setWorkingVisible?.(true)
+		}
 		runtime.markHumanInput()
 
 		if (choice === retryLabel) {

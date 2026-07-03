@@ -221,10 +221,17 @@ async function maybeCompleteManualPhaseBoundary(
 	if (!nextPhase) return undefined
 	const summaryLine = copy?.summaryLine ?? `Phase "${completedPhase.name}" done.`
 	if (ctx?.ui?.select) {
-		const choice = await ctx.ui.select(`${summaryLine}\nContinue "${ferment.name}" to "${nextPhase.name}"?`, [
-			"Continue to next phase",
-			"Pause here",
-		])
+		// Hide the cooking animation while the phase-boundary prompt is shown.
+		ctx.ui.setWorkingVisible?.(false)
+		let choice: string | undefined
+		try {
+			choice = await ctx.ui.select(`${summaryLine}\nContinue "${ferment.name}" to "${nextPhase.name}"?`, [
+				"Continue to next phase",
+				"Pause here",
+			])
+		} finally {
+			ctx.ui.setWorkingVisible?.(true)
+		}
 		if (choice === "Continue to next phase") {
 			return toolOk(
 				formatManualPhaseBoundaryContinue(
