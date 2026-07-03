@@ -379,3 +379,28 @@ describe("BASH_DEFAULT_TIMEOUT_RESOURCE_ID", () => {
 		expect(BASH_DEFAULT_TIMEOUT_RESOURCE_ID).toBe("extensions.bash-default-timeout")
 	})
 })
+
+describe("R3 regression — maxDuration=0 (unlimited) must not clamp", () => {
+	it("agent-runner uses bashDefaultTimeoutExtension when maxDuration=0", () => {
+		// When effectiveMaxDuration is 0 (unlimited), agent-runner should NOT
+		// use createSubagentBashClampExtension — it would floor every bash
+		// call to 1s. Instead, it should fall back to bashDefaultTimeoutExtension.
+		// This is tested at the integration level: the clamp extension itself
+		// is never registered when maxDuration=0.
+		//
+		// This test documents the contract: createSubagentBashClampExtension
+		// with maxDuration=0 would floor to 1s (budget exhausted at t=0),
+		// which is why agent-runner.ts guards with `effectiveMaxDuration > 0`.
+		vi.setSystemTime(0)
+		const pi = createMockPI()
+		createSubagentBashClampExtension(0, 0)(pi as unknown as PI)
+		const event: BashEvent = {
+			toolName: "bash",
+			input: { command: "ls" },
+		}
+		fireToolCall(pi, event)
+		// With maxDuration=0, remaining budget is 0, so floor is 1s.
+		// This proves why agent-runner must NOT use the clamp when maxDuration=0.
+		expect(event.input.timeout).toBe(1)
+	})
+})

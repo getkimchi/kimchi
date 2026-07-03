@@ -15,7 +15,7 @@ import {
 import { loadConfig, readTelemetryConfig } from "../../../config.js"
 import { getAvailableModels } from "../../../startup-context.js"
 import { runAsAgentWorker } from "../../agent-worker-context.js"
-import { createSubagentBashClampExtension } from "../../bash-default-timeout.js"
+import bashDefaultTimeoutExtension, { createSubagentBashClampExtension } from "../../bash-default-timeout.js"
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
 import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
@@ -434,10 +434,13 @@ async function runAgentInner(
 	// Repo-native extensions registered directly by the Kimchi CLI are not
 	// discovered by a child session's DefaultResourceLoader. Register this
 	// safety hook explicitly so worker bash calls get the same default timeout.
-	const extensionFactories = [
-		telemetryExtension(readTelemetryConfig()),
-		createSubagentBashClampExtension(effectiveMaxDuration, Date.now()),
-	]
+	// When max_duration is 0 (unlimited), skip the clamp and use the plain
+	// default-timeout extension so bash calls keep their unlimited semantics.
+	const bashExtension =
+		effectiveMaxDuration > 0
+			? createSubagentBashClampExtension(effectiveMaxDuration, Date.now())
+			: bashDefaultTimeoutExtension
+	const extensionFactories = [telemetryExtension(readTelemetryConfig()), bashExtension]
 	if (options.workerReport) {
 		extensionFactories.push(createWorkerReportExtension(options.workerReport))
 	}
