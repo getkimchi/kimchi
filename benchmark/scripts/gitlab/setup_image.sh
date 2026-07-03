@@ -35,41 +35,37 @@ export PATH="$HOME/.bun/bin:$PATH"
 # etc.). The target_ref provides the kimchi source under test. We build the
 # kimchi binary in a worktree so CI_PROJECT_DIR stays on the pipeline branch
 # (the docker build context needs docker/Dockerfile.bench to exist).
-if [ "${CODING_AGENT:-kimchi}" = "kimchi" ]; then
-  KIMCHI_BUILD_DIR="${KIMCHI_BUILD_DIR:-${CI_PROJECT_DIR}}"
-  if [ -n "${BENCHMARK_TARGET_REF:-}" ]; then
-    echo "==> Fetching benchmark target ref: ${BENCHMARK_TARGET_REF}"
-    git fetch --depth="${GIT_DEPTH:-20}" origin "${BENCHMARK_TARGET_REF}"
-    KIMCHI_BUILD_DIR="$(mktemp -d)"
-    git worktree add --detach "${KIMCHI_BUILD_DIR}" FETCH_HEAD
-    # `git worktree add` does not initialize submodules; the build needs
-    # vendor/superpowers/skills (submodule), so populate it here.
-    git -C "${KIMCHI_BUILD_DIR}" submodule update --init --recursive
-  fi
-  echo "==> Building Kimchi binary in ${KIMCHI_BUILD_DIR}"
-  (
-    cd "${KIMCHI_BUILD_DIR}"
-    corepack enable
-    corepack prepare pnpm@10.8.1 --activate
-    pnpm install --frozen-lockfile
-    GOOS=linux GOARCH=amd64 make -C tools/proxy-helper build
-    pnpm run build:binary-linux-x64
-    git rev-parse HEAD > "${CI_PROJECT_DIR}/.bench_target_sha"
-  )
-  export BENCHMARK_TARGET_SHA="$(cat .bench_target_sha)"
-  rm -f .bench_target_sha
+KIMCHI_BUILD_DIR="${KIMCHI_BUILD_DIR:-${CI_PROJECT_DIR}}"
+if [ -n "${BENCHMARK_TARGET_REF:-}" ]; then
+  echo "==> Fetching benchmark target ref: ${BENCHMARK_TARGET_REF}"
+  git fetch --depth="${GIT_DEPTH:-20}" origin "${BENCHMARK_TARGET_REF}"
+  KIMCHI_BUILD_DIR="$(mktemp -d)"
+  git worktree add --detach "${KIMCHI_BUILD_DIR}" FETCH_HEAD
+  # `git worktree add` does not initialize submodules; the build needs
+  # vendor/superpowers/skills (submodule), so populate it here.
+  git -C "${KIMCHI_BUILD_DIR}" submodule update --init --recursive
+fi
+echo "==> Building Kimchi binary in ${KIMCHI_BUILD_DIR}"
+(
+  cd "${KIMCHI_BUILD_DIR}"
+  corepack enable
+  corepack prepare pnpm@10.8.1 --activate
+  pnpm install --frozen-lockfile
+  GOOS=linux GOARCH=amd64 make -C tools/proxy-helper build
+  pnpm run build:binary-linux-x64
+  git rev-parse HEAD > "${CI_PROJECT_DIR}/.bench_target_sha"
+)
+export BENCHMARK_TARGET_SHA="$(cat .bench_target_sha)"
+rm -f .bench_target_sha
 
-  # Stage the built binary inside CI_PROJECT_DIR so it lives inside the docker
-  # build context (Dockerfile COPY paths must be relative to the context).
-  if [ "${KIMCHI_BUILD_DIR}" != "${CI_PROJECT_DIR}" ]; then
-    mkdir -p "${CI_PROJECT_DIR}/dist/bin"
-    cp "${KIMCHI_BUILD_DIR}/dist/bin/kimchi" "${CI_PROJECT_DIR}/dist/bin/kimchi"
-    chmod +x "${CI_PROJECT_DIR}/dist/bin/kimchi"
-    cp -r "${KIMCHI_BUILD_DIR}/dist/share" "${CI_PROJECT_DIR}/dist/share"
-    git worktree remove --force "${KIMCHI_BUILD_DIR}"
-  fi
-else
-  export BENCHMARK_TARGET_SHA="$(git rev-parse HEAD)"
+# Stage the built binary inside CI_PROJECT_DIR so it lives inside the docker
+# build context (Dockerfile COPY paths must be relative to the context).
+if [ "${KIMCHI_BUILD_DIR}" != "${CI_PROJECT_DIR}" ]; then
+  mkdir -p "${CI_PROJECT_DIR}/dist/bin"
+  cp "${KIMCHI_BUILD_DIR}/dist/bin/kimchi" "${CI_PROJECT_DIR}/dist/bin/kimchi"
+  chmod +x "${CI_PROJECT_DIR}/dist/bin/kimchi"
+  cp -r "${KIMCHI_BUILD_DIR}/dist/share" "${CI_PROJECT_DIR}/dist/share"
+  git worktree remove --force "${KIMCHI_BUILD_DIR}"
 fi
 echo "Benchmark target: ${BENCHMARK_TARGET_REF:-HEAD}@${BENCHMARK_TARGET_SHA}"
 
