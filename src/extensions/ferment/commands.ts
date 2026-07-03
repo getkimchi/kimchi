@@ -27,6 +27,7 @@ import {
 import { promptEditor } from "./prompt-ui.js"
 import { resumeFerment } from "./resume.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
+import { safeSendMessage } from "./safe-send.js"
 import { scheduleFermentWakeUp } from "./scheduler.js"
 import { runScopingFlow, sendFermentRequestMessage } from "./scoping.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
@@ -44,7 +45,8 @@ function sendBreadcrumb(
 		| "ferment_worktree_warning"
 		| "ferment_oneshot_failed" = "ferment_breadcrumb",
 ): void {
-	void pi.sendMessage(
+	safeSendMessage(
+		pi,
 		{
 			customType,
 			content: [{ type: "text", text }],
@@ -937,7 +939,8 @@ export class FermentCommandController {
 				)
 				const nudge = buildOneshotNudge(updated, resolvedIntent)
 
-				void pi.sendMessage(
+				safeSendMessage(
+					pi,
 					{
 						customType: "ferment_oneshot_nudge",
 						content: [{ type: "text", text: nudge }],

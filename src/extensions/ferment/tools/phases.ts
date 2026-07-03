@@ -24,6 +24,7 @@ import { type PhaseEvidence, captureGitHead, gatherPhaseEvidence } from "../phas
 import { type ProjectCheckResult, runProjectChecks, summarizeProjectChecks } from "../project-tests.js"
 import { hashFlags, writeEscalationArtifact, writeReviewEvidence } from "../review-evidence.js"
 import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
+import { safeSendMessage } from "../safe-send.js"
 import { MAX_BLOCK_RETRIES } from "../state.js"
 import {
 	createApplyAndPersist,
@@ -40,7 +41,8 @@ import { applyFermentToolProfile, profileForFerment } from "../tool-scope.js"
 import type { FermentUi, FermentUiContext } from "../ui.js"
 
 function sendPhaseAck(pi: ExtensionAPI, text: string): void {
-	void pi.sendMessage(
+	safeSendMessage(
+		pi,
 		{
 			customType: "ferment_ack",
 			content: [{ type: "text", text }],

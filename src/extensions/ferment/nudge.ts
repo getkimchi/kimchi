@@ -33,11 +33,12 @@ import {
 } from "../../shared/planning/planning-stop-nudge.js"
 import { decideContinuation } from "./continuation.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
+import { safeSendMessage } from "./safe-send.js"
 import { scheduleNextFermentAction } from "./scheduler.js"
 import { MAX_SCOPING_EXPLORE_TURNS, bumpScopingExploreTurns, resetScopingExploreTurns } from "./state.js"
 
 export function appendRefEntry(pi: ExtensionAPI, fermentId: string): void {
-	void pi.sendMessage({
+	safeSendMessage(pi, {
 		customType: "ferment_reference",
 		content: [{ type: "text", text: `active: ${fermentId}` }],
 		display: false,
@@ -98,7 +99,8 @@ export function maybeInjectReactiveContinuationNudge(
 	const count = reactiveNudgeCounts.get(fresh.id) ?? 0
 	if (count >= MAX_CONSECUTIVE_REACTIVE_NUDGES) {
 		const suppressionText = `Continuation nudge suppressed after ${count} consecutive text-only assistant turns for "${fresh.name}".`
-		void pi.sendMessage(
+		safeSendMessage(
+			pi,
 			{
 				customType: "ferment_breadcrumb",
 				content: [{ type: "text", text: suppressionText }],
@@ -159,7 +161,8 @@ export function maybeInjectFermentStopNudge(
 	const count = stopNudgeCounts.get(fresh.id) ?? 0
 	if (count >= MAX_CONSECUTIVE_STOP_NUDGES) {
 		const suppressionText = `Ferment stop nudge suppressed after ${count} consecutive early-stop turns for "${fresh.name}".`
-		void pi.sendMessage(
+		safeSendMessage(
+			pi,
 			{
 				customType: "ferment_breadcrumb",
 				content: [{ type: "text", text: suppressionText }],
@@ -265,7 +268,8 @@ export function maybeInjectScopingProgressNudge(
 - Otherwise call scope_ferment with the complete payload: goal, success_criteria, constraints, assumptions, phases, and the P1/P2/P3 gates array.
 - Record any remaining uncertainty in assumptions rather than continuing to explore.`
 
-	void pi.sendMessage(
+	safeSendMessage(
+		pi,
 		{
 			customType: "ferment_scoping_progress_nudge",
 			content: [
@@ -321,7 +325,8 @@ export function maybeInjectScopingStopNudge(
 	if (isNudgeSuppressed(count)) return false
 
 	const nudgeText = opts.interactive ? FERMENT_SCOPING_STOP_NUDGE_INTERACTIVE : FERMENT_SCOPING_STOP_NUDGE_ONESHOT
-	void pi.sendMessage(
+	safeSendMessage(
+		pi,
 		{
 			customType: "ferment_scoping_stop_nudge",
 			content: [{ type: "text", text: nudgeText }],

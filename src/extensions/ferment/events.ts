@@ -28,6 +28,7 @@ import { editPhaseProposal } from "./phase-editor.js"
 import { promptEditor, promptSelect } from "./prompt-ui.js"
 import { loadFermentSilently, resumeFerment } from "./resume.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
+import { safeSendMessage } from "./safe-send.js"
 import { scheduleFermentWakeUp } from "./scheduler.js"
 import { confirmPendingScope } from "./scoping-confirmation.js"
 import {
@@ -422,7 +423,8 @@ export function registerFermentEvents(
 			emitFermentCreated(pi.events, updated)
 			appendRefEntry(pi, updated.id)
 			const ackText = `One-shot ferment: "${updated.name}"\nBranch: ${updated.worktree.branch ?? "n/a"}\nPolicy: automated`
-			void pi.sendMessage(
+			safeSendMessage(
+				pi,
 				{
 					customType: "ferment_ack",
 					content: [{ type: "text", text: ackText }],
@@ -434,7 +436,8 @@ export function registerFermentEvents(
 			return { action: "transform" as const, text: buildOneshotNudge(updated, intent), images: event.images }
 		} catch (err) {
 			const failText = `One-shot ferment bootstrap failed: ${err instanceof Error ? err.message : String(err)}`
-			void pi.sendMessage(
+			safeSendMessage(
+				pi,
 				{
 					customType: "ferment_oneshot_failed",
 					content: [{ type: "text", text: failText }],

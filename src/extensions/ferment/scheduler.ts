@@ -5,6 +5,7 @@ import type { Ferment, Phase, Step } from "../../ferment/types.js"
 import { formatActionNudgeLine } from "./action-tool-names.js"
 import { decideContinuation } from "./continuation.js"
 import type { FermentRuntime } from "./runtime.js"
+import { safeSendMessage, tryPiAction } from "./safe-send.js"
 import type { ContinuationPolicy } from "./state.js"
 
 export interface ScheduleNextFermentActionOptions {
@@ -172,8 +173,10 @@ export function scheduleNextFermentAction(
 ): void {
 	const decision = decideContinuation(ferment, runtime.getContinuationPolicy(), opts)
 	if (decision.type === "wait_manual_boundary") {
-		pi.appendEntry("ferment_breadcrumb", {
-			text: `Manual policy waiting at phase boundary for "${ferment.name}".`,
+		tryPiAction(() => {
+			pi.appendEntry("ferment_breadcrumb", {
+				text: `Manual policy waiting at phase boundary for "${ferment.name}".`,
+			})
 		})
 		return
 	}
@@ -198,18 +201,21 @@ export function scheduleNextFermentAction(
 			: ""
 	const messageText = `${interruptedPrefix}${baseMsg}`
 
-	pi.appendEntry("ferment_breadcrumb", {
-		text: `${breadcrumb} · policy ${runtime.getContinuationPolicy()} · scoping ${scopeProgress.answered}/${scopeProgress.total}`,
+	tryPiAction(() => {
+		pi.appendEntry("ferment_breadcrumb", {
+			text: `${breadcrumb} · policy ${runtime.getContinuationPolicy()} · scoping ${scopeProgress.answered}/${scopeProgress.total}`,
+		})
+		safeSendMessage(
+			pi,
+			{
+				customType: "ferment_continuation_nudge",
+				content: [{ type: "text", text: messageText }],
+				display: false,
+				details: { action: action.kind },
+			},
+			opts.deliverAs ? { triggerTurn: true, deliverAs: opts.deliverAs } : { triggerTurn: true },
+		)
 	})
-	void pi.sendMessage(
-		{
-			customType: "ferment_continuation_nudge",
-			content: [{ type: "text", text: messageText }],
-			display: false,
-			details: { action: action.kind },
-		},
-		opts.deliverAs ? { triggerTurn: true, deliverAs: opts.deliverAs } : { triggerTurn: true },
-	)
 }
 
 export function scheduleFermentWakeUp(
@@ -230,16 +236,19 @@ export function scheduleFermentWakeUp(
 
 	const scopeProgress = getScopingProgress(ferment)
 	const tag = opts.tag ?? "Wake-up"
-	pi.appendEntry("ferment_breadcrumb", {
-		text: `${tag} [${decision.action.kind}]: "${ferment.name}" [${ferment.status}] · policy ${runtime.getContinuationPolicy()} · scoping ${scopeProgress.answered}/${scopeProgress.total}`,
+	tryPiAction(() => {
+		pi.appendEntry("ferment_breadcrumb", {
+			text: `${tag} [${decision.action.kind}]: "${ferment.name}" [${ferment.status}] · policy ${runtime.getContinuationPolicy()} · scoping ${scopeProgress.answered}/${scopeProgress.total}`,
+		})
+		safeSendMessage(
+			pi,
+			{
+				customType: "ferment_continuation_nudge",
+				content: [{ type: "text", text: buildContextualNudge(ferment, decision.action) }],
+				display: false,
+				details: { action: "wake_up", expectedAction: decision.action.kind },
+			},
+			opts.deliverAs ? { triggerTurn: true, deliverAs: opts.deliverAs } : { triggerTurn: true },
+		)
 	})
-	void pi.sendMessage(
-		{
-			customType: "ferment_continuation_nudge",
-			content: [{ type: "text", text: buildContextualNudge(ferment, decision.action) }],
-			display: false,
-			details: { action: "wake_up", expectedAction: decision.action.kind },
-		},
-		opts.deliverAs ? { triggerTurn: true, deliverAs: opts.deliverAs } : { triggerTurn: true },
-	)
 }

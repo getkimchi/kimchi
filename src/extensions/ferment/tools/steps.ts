@@ -22,6 +22,7 @@ import { onStepCompleted } from "../nudge.js"
 import { type PhaseEvidence, captureGitHead, gatherPhaseEvidence } from "../phase-evidence.js"
 import { promptEditor } from "../prompt-ui.js"
 import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
+import { safeSendMessage } from "../safe-send.js"
 import {
 	createApplyAndPersist,
 	failedToolResult,
@@ -40,7 +41,8 @@ import { buildWorkerContext } from "../worker-prompt.js"
 const VERIFY_TIMEOUT_MS = 60_000
 
 function sendStepBreadcrumb(pi: ExtensionAPI, text: string, variant: "step" | "warning" = "step"): void {
-	void pi.sendMessage(
+	safeSendMessage(
+		pi,
 		{
 			customType: "ferment_breadcrumb",
 			content: [{ type: "text", text }],

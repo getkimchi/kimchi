@@ -23,6 +23,7 @@ import { determineNextAction } from "../../ferment/engine.js"
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
 import { COMPACTION_RESERVE_TOKENS } from "../compaction-thresholds.js"
 import type { FermentRuntime } from "./runtime.js"
+import { safeSendMessage, tryPiAction } from "./safe-send.js"
 import { scheduleNextFermentAction } from "./scheduler.js"
 import type { PendingCompaction } from "./state.js"
 
@@ -372,7 +373,8 @@ function triggerCompactionForPending(
 			ferment,
 			pending,
 		)
-		pi.sendMessage(
+		safeSendMessage(
+			pi,
 			{
 				customType: "ferment_stage_handoff",
 				content: [{ type: "text", text: JSON.stringify(handoff) }],
@@ -452,8 +454,10 @@ export function maybeTriggerMidTurnFermentCompaction(
 			const warnKey = active.id
 			if (!runtime.hasMidTurnOneshotWarning(warnKey)) {
 				runtime.markMidTurnOneshotWarning(warnKey)
-				pi.appendEntry("ferment_breadcrumb", {
-					text: `Mid-turn context overrun in oneshot ferment "${active.name}" — treating as planning failure`,
+				tryPiAction(() => {
+					pi.appendEntry("ferment_breadcrumb", {
+						text: `Mid-turn context overrun in oneshot ferment "${active.name}" — treating as planning failure`,
+					})
 				})
 			}
 		}
@@ -495,8 +499,10 @@ export function maybeTriggerMidTurnFermentCompaction(
 				if (!freshFerment) return
 
 				const { phase, step } = findActivePhaseAndStep(freshFerment)
-				pi.appendEntry("ferment_breadcrumb", {
-					text: `Mid-turn compaction resume: ferment "${freshFerment.name}" · phase ${phase?.index ?? "?"}/${freshFerment.phases.length} "${phase?.name ?? "unknown"}" · step ${step?.index ?? "?"}/${phase?.steps.length ?? 0} · ${(result.tokensBefore ?? 0).toLocaleString()} tokens before compaction`,
+				tryPiAction(() => {
+					pi.appendEntry("ferment_breadcrumb", {
+						text: `Mid-turn compaction resume: ferment "${freshFerment.name}" · phase ${phase?.index ?? "?"}/${freshFerment.phases.length} "${phase?.name ?? "unknown"}" · step ${step?.index ?? "?"}/${phase?.steps.length ?? 0} · ${(result.tokensBefore ?? 0).toLocaleString()} tokens before compaction`,
+					})
 				})
 
 				if (freshFerment.status === "running") {
