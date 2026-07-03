@@ -29,6 +29,7 @@ export function readJson(path: string): Record<string, unknown> {
 	}
 
 	const stripped = stripJsoncComments(raw)
+	if (stripped.trim() === "") return {}
 	const parsed = JSON.parse(stripped)
 	// `null` parses to null, not {}. Normalise so callers can always
 	// `obj[key] = …` without a nil check.
