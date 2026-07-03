@@ -7,7 +7,7 @@
  * `ctx.reload()`), the captured `pi` is stale and `sendMessage` throws an
  * `assertActive()` error synchronously. When this happens inside a `void`-
  * discarded expression or a setTimeout callback, the throw is uncaught and
- * crashes the process (LLM-2430).
+ * crashes the process.
  *
  * This helper mirrors the established guard pattern from `prompt-summary.ts`:
  * wrap `sendMessage` in try/catch and silently bail when `isStaleCtxError`

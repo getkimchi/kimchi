@@ -16,7 +16,7 @@ type EventHandler = (event: unknown, ctx: unknown) => Promise<unknown> | unknown
 const STALE_CTX_MESSAGE =
 	"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload()."
 
-describe("LLM-2430 stale-ctx crash on ferment oneshot transition", () => {
+describe("stale-ctx crash on ferment oneshot transition", () => {
 	let tmpDir: string
 
 	beforeEach(() => {
