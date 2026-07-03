@@ -25,8 +25,9 @@ import { resolve } from "node:path"
 import { lockSync, unlockSync } from "proper-lockfile"
 import { v7 as uuidv7 } from "uuid"
 
+import { readWorktreeEnabled } from "../config.js"
 import { activateSinglePhase, settleAfterPhaseTerminal } from "./lifecycle.js"
-import { FermentStorage, resolveFermentsDir } from "./store.js"
+import { FermentStorage, detectProjectRoot, resolveFermentsDir } from "./store.js"
 import { normalizeSuccessCriteria } from "./success-criteria.js"
 import type {
 	Decision,
@@ -40,6 +41,7 @@ import type {
 	Step,
 	StepResult,
 } from "./types.js"
+import { removeFermentWorktree } from "./worktree-lifecycle.js"
 
 // ─── Deterministic state hash ─────────────────────────────────────────────────
 
@@ -411,6 +413,38 @@ export class FermentEventStore {
 		return resolve(baseDir, `${id}.json`)
 	}
 
+	/**
+	 * Best-effort cleanup of a dedicated git worktree when a ferment is abandoned
+	 * and worktree isolation is enabled. Skips legacy ferments (no branch),
+	 * non-dedicated worktrees, and failures are logged and swallowed.
+	 *
+	 * Retention policy:
+	 * - **Abandoned** ferments: the dedicated worktree and its `ferment/<shortId>`
+	 *   branch are removed (best-effort) so abandoned experiments don't litter
+	 *   the repo.
+	 * - **Completed** ferments: the worktree and branch are intentionally
+	 *   *retained* so the user can inspect or cherry-pick from the completed work.
+	 *   These are NOT auto-removed. To reclaim disk space from stale completed
+	 *   worktrees, run `git worktree prune` and `git branch -D ferment/<shortId>`
+	 *   manually once the work is no longer needed.
+	 */
+	private maybeCleanupFermentWorktree(ferment: Ferment): void {
+		if (ferment.status !== "abandoned") return
+		const repoRoot = detectProjectRoot(this.dir ?? process.cwd())
+		const shortId = ferment.id.slice(0, 8)
+		const expectedPath = resolve(repoRoot, ".worktrees", `ferment-${shortId}`)
+		if (ferment.worktree.path !== expectedPath) return
+		if (!ferment.worktree.branch) return
+		if (!readWorktreeEnabled({ cwd: repoRoot })) return
+
+		const result = removeFermentWorktree(repoRoot, ferment.worktree.path, ferment.worktree.branch)
+		if (!result.removed) {
+			console.warn(
+				`Failed to clean up ferment worktree for ${ferment.id} at ${ferment.worktree.path}: ${result.reason ?? "unknown reason"}`,
+			)
+		}
+	}
+
 	private hasEvents(id: string): boolean {
 		return existsSync(this.eventsPath(id))
 	}
@@ -568,6 +602,7 @@ export class FermentEventStore {
 			for (const event of events) {
 				this.appendEvent(post.id, event)
 			}
+			this.maybeCleanupFermentWorktree(post)
 			return post
 		})
 	}
@@ -593,6 +628,7 @@ export class FermentEventStore {
 				for (const event of result.events) {
 					this.appendEvent(result.ferment.id, event)
 				}
+				this.maybeCleanupFermentWorktree(result.ferment)
 			}
 			return result.value
 		})

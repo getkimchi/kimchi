@@ -963,6 +963,7 @@ describe("continuation nudge turn_end handler", () => {
 			retry: { maxRetries: 10 },
 			onboarding: {},
 			deviceId: "test",
+			ferments: { worktree: { enabled: false } },
 		})
 
 		const pi = {

@@ -1,10 +1,12 @@
-import { mkdtempSync } from "node:fs"
+import { execSync } from "node:child_process"
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
+import { confirmPendingScope } from "./scoping-confirmation.js"
 import { runScopingFlow } from "./scoping.js"
 
 function createRuntime(): { runtime: FermentRuntime; storage: FermentEventStore } {
@@ -231,5 +233,259 @@ describe("runScopingFlow", () => {
 		const msg = nudgeCall?.[0] as { content: { type: string; text: string }[] }
 		const text = msg.content.map((c) => c.text).join("")
 		expect(text).toContain("Pre-captured intent text")
+	})
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Worktree creation hook at scope-save time
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const GIT_TIMEOUT = 10_000
+
+function runGit(command: string, cwd: string): string {
+	return execSync(command, {
+		cwd,
+		encoding: "utf-8",
+		timeout: GIT_TIMEOUT,
+		stdio: ["ignore", "pipe", "ignore"],
+	}).trim()
+}
+
+function initTempRepo(): string {
+	const dir = mkdtempSync(resolve(tmpdir(), "ferment-scoping-worktree-"))
+	runGit("git init", dir)
+	runGit("git config user.name Tester", dir)
+	runGit("git config user.email tester@example.com", dir)
+	writeFileSync(resolve(dir, "README.md"), "hello\n")
+	runGit("git add README.md", dir)
+	runGit("git commit -m initial", dir)
+	return dir
+}
+
+function enableWorktreeConfig(repoRoot: string): void {
+	const configDir = resolve(repoRoot, ".kimchi")
+	mkdirSync(configDir, { recursive: true })
+	writeFileSync(
+		resolve(configDir, "config.json"),
+		JSON.stringify({ ferments: { worktree: { enabled: true } } }, null, 2),
+	)
+}
+
+function disableWorktreeConfig(repoRoot: string): void {
+	const configDir = resolve(repoRoot, ".kimchi")
+	mkdirSync(configDir, { recursive: true })
+	writeFileSync(
+		resolve(configDir, "config.json"),
+		JSON.stringify({ ferments: { worktree: { enabled: false } } }, null, 2),
+	)
+}
+
+function createRuntimeInRepo(repoRoot: string): { runtime: FermentRuntime; storage: FermentEventStore } {
+	const storage = new FermentEventStore(resolve(repoRoot, ".kimchi", "ferments"))
+	const runtime: FermentRuntime = {
+		...createDefaultFermentRuntime(),
+		getStorage: () => storage,
+	}
+	return { runtime, storage }
+}
+
+function createFermentInRepo(storage: FermentEventStore, repoRoot: string, name: string) {
+	const ferment = storage.create(name)
+	// FermentStorage.create captures worktree from process.cwd(), which in tests
+	// is the real project root. Pin the ferment to the temp repo instead.
+	const commit = runGit("git rev-parse HEAD", repoRoot)
+	const branch = runGit("git rev-parse --abbrev-ref HEAD", repoRoot)
+	storage.updateWorktree(ferment.id, { path: repoRoot, branch, commit })
+	return storage.get(ferment.id) ?? ferment
+}
+
+describe("worktree", () => {
+	const tempDirs: string[] = []
+
+	afterEach(() => {
+		for (const dir of tempDirs) {
+			rmSync(dir, { recursive: true, force: true })
+		}
+		tempDirs.length = 0
+	})
+
+	function tempRepo(): string {
+		const dir = initTempRepo()
+		tempDirs.push(dir)
+		return dir
+	}
+
+	function readEvents(storage: FermentEventStore, fermentId: string): Array<{ type?: string; payload?: unknown }> {
+		// The event store writes to <fermentId>.events.jsonl inside its dir.
+		// Reach through the private-ish storage dir using a known file path.
+		const dir = resolve(tmpdir())
+		for (const tempDir of tempDirs) {
+			const eventsPath = resolve(tempDir, ".kimchi", "ferments", `${fermentId}.events.jsonl`)
+			try {
+				return readFileSync(eventsPath, "utf-8")
+					.split("\n")
+					.filter((line) => line.trim() !== "")
+					.map((line) => JSON.parse(line) as { type?: string; payload?: unknown })
+			} catch {
+				// try next temp dir
+			}
+		}
+		return []
+	}
+
+	it("creates a dedicated worktree when worktree isolation is enabled", () => {
+		const repoRoot = tempRepo()
+		enableWorktreeConfig(repoRoot)
+		const { runtime, storage } = createRuntimeInRepo(repoRoot)
+		const ferment = createFermentInRepo(storage, repoRoot, "Worktree On")
+		runtime.setPendingScope(ferment.id, {
+			goal: "Goal",
+			successCriteria: ["Works"],
+			constraints: [],
+			phases: [{ name: "P1", goal: "Build", steps: [{ description: "Do it" }] }],
+		})
+
+		const result = confirmPendingScope(runtime, ferment.id, undefined, "turn_end", undefined)
+
+		expect(result.ok).toBe(true)
+		const scoped = result.ok ? result.outcome.ferment : undefined
+		const saved = storage.get(ferment.id)
+		const shortId = ferment.id.slice(0, 8)
+		const expectedPath = resolve(repoRoot, ".worktrees", `ferment-${shortId}`)
+		const expectedBranch = `ferment/${shortId}`
+
+		expect(scoped?.worktree.path).toBe(expectedPath)
+		expect(scoped?.worktree.branch).toBe(expectedBranch)
+		expect(saved?.worktree.path).toBe(expectedPath)
+		expect(saved?.worktree.branch).toBe(expectedBranch)
+		expect(saved?.worktree.commit).toBeDefined()
+
+		const worktrees = runGit("git worktree list --porcelain", repoRoot)
+		expect(worktrees).toContain(expectedPath)
+
+		const decisions = saved?.decisions ?? []
+		expect(decisions.some((d) => d.title === "Created ferment worktree")).toBe(true)
+
+		const events = readEvents(storage, ferment.id)
+		expect(events.some((e) => e.type === "worktree_updated")).toBe(true)
+		expect(events.some((e) => e.type === "decision_added")).toBe(true)
+	})
+
+	it("does not create a worktree when worktree isolation is disabled", () => {
+		const repoRoot = tempRepo()
+		// Explicitly disable in project config so a global `ferments.worktree.enabled: true`
+		// does not leak into this test.
+		disableWorktreeConfig(repoRoot)
+		const { runtime, storage } = createRuntimeInRepo(repoRoot)
+		const ferment = createFermentInRepo(storage, repoRoot, "Worktree Off")
+		runtime.setPendingScope(ferment.id, {
+			goal: "Goal",
+			successCriteria: ["Works"],
+			constraints: [],
+			phases: [{ name: "P1", goal: "Build", steps: [{ description: "Do it" }] }],
+		})
+
+		const result = confirmPendingScope(runtime, ferment.id, undefined, "turn_end", undefined)
+
+		expect(result.ok).toBe(true)
+		const saved = storage.get(ferment.id)
+		expect(saved?.worktree.path).toBe(repoRoot)
+		expect(saved?.worktree.branch).toMatch(/^master|main$/)
+
+		const worktrees = runGit("git worktree list --porcelain", repoRoot)
+		expect(worktrees).not.toContain(resolve(repoRoot, ".worktrees"))
+	})
+
+	it("skips worktree creation when already inside a linked worktree", () => {
+		const repoRoot = tempRepo()
+		enableWorktreeConfig(repoRoot)
+		// Pre-create a linked worktree and treat it as the agent cwd.
+		const existingWorktree = resolve(repoRoot, ".worktrees", "existing")
+		runGit(`git worktree add -b existing/branch ${JSON.stringify(existingWorktree)} HEAD`, repoRoot)
+		const { runtime, storage } = createRuntimeInRepo(repoRoot)
+		const ferment = createFermentInRepo(storage, repoRoot, "Already In Worktree")
+		runtime.setPendingScope(ferment.id, {
+			goal: "Goal",
+			successCriteria: ["Works"],
+			constraints: [],
+			phases: [{ name: "P1", goal: "Build", steps: [{ description: "Do it" }] }],
+		})
+
+		const originalCwd = process.cwd()
+		try {
+			process.chdir(existingWorktree)
+			const result = confirmPendingScope(runtime, ferment.id, undefined, "turn_end", undefined)
+
+			expect(result.ok).toBe(true)
+			const saved = storage.get(ferment.id)
+			expect(saved?.worktree.path).toBe(repoRoot)
+			// Only the pre-existing linked worktree should exist.
+			const worktrees = runGit("git worktree list --porcelain", repoRoot)
+			const fermentWorktree = resolve(repoRoot, ".worktrees", `ferment-${ferment.id.slice(0, 8)}`)
+			expect(worktrees).not.toContain(fermentWorktree)
+		} finally {
+			process.chdir(originalCwd)
+		}
+	})
+
+	it("does not create a worktree for legacy ferments that lack a branch", () => {
+		const repoRoot = tempRepo()
+		enableWorktreeConfig(repoRoot)
+		const { runtime, storage } = createRuntimeInRepo(repoRoot)
+		const ferment = createFermentInRepo(storage, repoRoot, "Legacy")
+		// Simulate legacy snapshot: path only, no branch/commit.
+		storage.updateWorktree(ferment.id, { path: repoRoot })
+		runtime.setPendingScope(ferment.id, {
+			goal: "Goal",
+			successCriteria: ["Works"],
+			constraints: [],
+			phases: [{ name: "P1", goal: "Build", steps: [{ description: "Do it" }] }],
+		})
+
+		const result = confirmPendingScope(runtime, ferment.id, undefined, "turn_end", undefined)
+
+		expect(result.ok).toBe(true)
+		const saved = storage.get(ferment.id)
+		expect(saved?.worktree.path).toBe(repoRoot)
+		expect(saved?.worktree.branch).toBeUndefined()
+		const worktrees = runGit("git worktree list --porcelain", repoRoot)
+		expect(worktrees).not.toContain(resolve(repoRoot, ".worktrees"))
+	})
+
+	it("proceeds without a dedicated worktree when createFermentWorktree fails", () => {
+		const repoRoot = tempRepo()
+		enableWorktreeConfig(repoRoot)
+		const { runtime, storage } = createRuntimeInRepo(repoRoot)
+		const ferment = createFermentInRepo(storage, repoRoot, "Worktree Fail")
+		runtime.setPendingScope(ferment.id, {
+			goal: "Goal",
+			successCriteria: ["Works"],
+			constraints: [],
+			phases: [{ name: "P1", goal: "Build", steps: [{ description: "Do it" }] }],
+		})
+
+		// Pre-create the ferment branch so createFermentWorktree will fail with
+		// "branch already exists" — simulating a real failure.
+		const shortId = ferment.id.slice(0, 8)
+		runGit(`git branch ferment/${shortId} HEAD`, repoRoot)
+
+		// Suppress the expected console.warn from the try/catch so test output stays clean.
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+		try {
+			const result = confirmPendingScope(runtime, ferment.id, undefined, "turn_end", undefined)
+
+			// The ferment still proceeds as planned — no uncaught throw.
+			expect(result.ok).toBe(true)
+			const saved = storage.get(ferment.id)
+			// Worktree stays as the main checkout (no dedicated worktree created).
+			expect(saved?.worktree.path).toBe(repoRoot)
+			expect(saved?.worktree.branch).not.toBe(`ferment/${shortId}`)
+			// The warning was logged.
+			expect(warnSpy).toHaveBeenCalled()
+			const warnMsg = String(warnSpy.mock.calls[0]?.[0] ?? "")
+			expect(warnMsg).toContain(ferment.id)
+		} finally {
+			warnSpy.mockRestore()
+		}
 	})
 })

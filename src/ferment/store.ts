@@ -31,6 +31,7 @@ import type {
 	Step,
 	StepResult,
 } from "./types.js"
+import { isInsideLinkedWorktree } from "./worktree-lifecycle.js"
 
 export interface FermentListItem {
 	id: string
@@ -57,7 +58,39 @@ export class FermentError extends Error {
 // calls walking up the tree, and is invoked on every `new FermentStorage()`.
 const projectRootCache = new Map<string, string>()
 
+/**
+ * If `cwd` is inside a linked git worktree, return the main repository root
+ * (the parent of `git rev-parse --git-common-dir`). Otherwise return undefined.
+ */
+function resolveMainRepoRoot(cwd: string): string | undefined {
+	if (!isInsideLinkedWorktree(cwd)) return undefined
+	try {
+		const commonDir = execSync("git rev-parse --git-common-dir", {
+			cwd,
+			encoding: "utf-8",
+			timeout: 1000,
+			stdio: ["ignore", "pipe", "ignore"],
+		}).trim()
+		if (!commonDir) return undefined
+		// The common git directory lives inside the main repository root, so its
+		// parent directory is the root we want to pin storage to.
+		return dirname(resolve(cwd, commonDir))
+	} catch {
+		return undefined
+	}
+}
+
 export function detectProjectRoot(cwd: string = process.cwd()): string {
+	// If running inside a linked git worktree, pin storage to the main repository
+	// root rather than the worktree checkout so parallel ferments share one store.
+	const mainRoot = resolveMainRepoRoot(cwd)
+	if (mainRoot) {
+		const cached = projectRootCache.get(mainRoot)
+		if (cached !== undefined) return cached
+		projectRootCache.set(mainRoot, mainRoot)
+		return mainRoot
+	}
+
 	const key = resolve(cwd)
 	const cached = projectRootCache.get(key)
 	if (cached !== undefined) return cached

@@ -107,6 +107,13 @@ interface CreateKimchiFixtureOptions {
 	 *  completions (/v1/chat/completions) so the TUI E2E can run without a real
 	 *  `ollama serve` running. */
 	ollama?: StartFakeOllamaServerOptions
+	/**
+	 * Optional setup hook invoked after the temp dirs are created (and after
+	 * `gitInit`, if enabled) but before the kimchi binary is launched. Use this
+	 * to write project-level config, seed files, or make commits that the TUI
+	 * must see from startup.
+	 */
+	preLaunch?: (fixture: Pick<KimchiFixture, "homeDir" | "workDir" | "agentDir">) => void | Promise<void>
 }
 
 export async function createKimchiFixture(options: CreateKimchiFixtureOptions): Promise<KimchiFixture> {
@@ -115,10 +122,12 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 	const homeDir = mkdtempSync(join(tmpdir(), "kimchi-tui-home-"))
 	const workDir = mkdtempSync(join(tmpdir(), "kimchi-tui-work-"))
 	// Tear down server + temp dirs if any setup step throws.
+	const configDir = join(homeDir, ".config", "kimchi")
+	const agentDir = join(configDir, "harness")
+	// Tear down server + temp dirs if any setup step throws.
 	try {
 		if (options.gitInit) execFileSync("git", ["init", "-q"], { cwd: workDir })
-		const configDir = join(homeDir, ".config", "kimchi")
-		const agentDir = join(configDir, "harness")
+		if (options.preLaunch) await options.preLaunch({ homeDir, workDir, agentDir })
 		mkdirSync(agentDir, { recursive: true })
 
 		writeFileSync(
@@ -136,15 +145,6 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 				null,
 				"\t",
 			),
-			"utf-8",
-		)
-
-		// Explicitly pin nothing so footer segments don't appear in the terminal during
-		// E2E tests. Without this, readFooterConfig() would return DEFAULT_FOOTER_PINNED
-		// (context, agents, phase, usage) and change the terminal layout for every test.
-		writeFileSync(
-			join(agentDir, "settings.json"),
-			JSON.stringify({ footer: { pinned: [] } }, null, "\t"),
 			"utf-8",
 		)
 
