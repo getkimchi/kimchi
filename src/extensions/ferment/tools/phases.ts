@@ -6,6 +6,7 @@
  * policy at phase boundaries.
  */
 
+import { safeSendMessage } from "../safe-send.js"
 import { type ExtensionAPI, getMarkdownTheme } from "@earendil-works/pi-coding-agent"
 import { Markdown } from "@earendil-works/pi-tui"
 import type { Static } from "typebox"
@@ -40,7 +41,7 @@ import { applyFermentToolProfile, profileForFerment } from "../tool-scope.js"
 import type { FermentUi, FermentUiContext } from "../ui.js"
 
 function sendPhaseAck(pi: ExtensionAPI, text: string): void {
-	void pi.sendMessage(
+	safeSendMessage(pi, 
 		{
 			customType: "ferment_ack",
 			content: [{ type: "text", text }],

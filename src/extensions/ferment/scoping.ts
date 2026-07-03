@@ -17,6 +17,7 @@
  * unchanged — the LLM handles scoping conversationally.
  */
 
+import { safeSendMessage } from "./safe-send.js"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { determineNextAction } from "../../ferment/engine.js"
 import type { ScopePhaseInput } from "../../ferment/state-machine.js"
@@ -34,7 +35,7 @@ function setCookingStatus(ctx: FermentUiContext, message: string | undefined): v
 }
 
 function sendScopingBreadcrumb(pi: ExtensionAPI, text: string): void {
-	void pi.sendMessage(
+	safeSendMessage(pi, 
 		{
 			customType: "ferment_breadcrumb",
 			content: [{ type: "text", text }],
@@ -112,7 +113,7 @@ export interface FermentRequestMessageDetails {
 }
 
 export function sendFermentRequestMessage(pi: ExtensionAPI, intent: string): void {
-	void pi.sendMessage<FermentRequestMessageDetails>(
+	safeSendMessage(pi, 
 		{
 			customType: FERMENT_REQUEST_MESSAGE_TYPE,
 			content: [{ type: "text", text: `User entered ferment request: ${intent}` }],
@@ -142,7 +143,7 @@ export async function runScopingFlow(
 	if (!ctx.ui.editor && !ctx.ui.input) {
 		// Headless fallback: let the LLM handle scoping conversationally
 		const prompt = buildScopePrompt(runtime, f.id)
-		void pi.sendMessage(
+		safeSendMessage(pi, 
 			{
 				customType: "ferment_created_nudge",
 				content: [{ type: "text", text: prompt }],
@@ -172,7 +173,7 @@ export async function runScopingFlow(
 	setCookingStatus(ctx, "Fermenting · drafting scope…")
 	sendScopingBreadcrumb(pi, "Scoping · drafting…")
 
-	void pi.sendMessage(
+	safeSendMessage(pi, 
 		{
 			customType: "ferment_created_nudge",
 			content: [

@@ -1,3 +1,4 @@
+import { safeSendMessage } from "./safe-send.js"
 import { writeFileSync } from "node:fs"
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
 import { computeStats, serializeStats } from "../../ferment/stats.js"
@@ -44,7 +45,7 @@ function sendBreadcrumb(
 		| "ferment_worktree_warning"
 		| "ferment_oneshot_failed" = "ferment_breadcrumb",
 ): void {
-	void pi.sendMessage(
+	safeSendMessage(pi, 
 		{
 			customType,
 			content: [{ type: "text", text }],
@@ -937,7 +938,7 @@ export class FermentCommandController {
 				)
 				const nudge = buildOneshotNudge(updated, resolvedIntent)
 
-				void pi.sendMessage(
+				safeSendMessage(pi, 
 					{
 						customType: "ferment_oneshot_nudge",
 						content: [{ type: "text", text: nudge }],

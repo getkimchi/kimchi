@@ -1,3 +1,4 @@
+import { safeSendMessage } from "./safe-send.js"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { ScopePhaseInput } from "../../ferment/state-machine.js"
 import { normalizeFermentTitle } from "../../ferment/title.js"
@@ -71,7 +72,7 @@ export function confirmPendingScope(
 		runtime.setActive(outcome.ferment)
 		if (previous && previous.name !== outcome.ferment.name) {
 			const text = `Named ferment "${outcome.ferment.name}" (was "${previous.name}").`
-			void pi.sendMessage(
+			safeSendMessage(pi, 
 				{
 					customType: "ferment_ack",
 					content: [{ type: "text", text }],

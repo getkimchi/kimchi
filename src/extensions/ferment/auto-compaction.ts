@@ -17,6 +17,7 @@
  * Failures warn via `ctx.ui.notify` and never block the pipeline.
  */
 
+import { safeSendMessage } from "./safe-send.js"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import type { CompactionResult } from "@earendil-works/pi-coding-agent"
 import { determineNextAction } from "../../ferment/engine.js"
@@ -372,7 +373,7 @@ function triggerCompactionForPending(
 			ferment,
 			pending,
 		)
-		pi.sendMessage(
+		safeSendMessage(pi, 
 			{
 				customType: "ferment_stage_handoff",
 				content: [{ type: "text", text: JSON.stringify(handoff) }],

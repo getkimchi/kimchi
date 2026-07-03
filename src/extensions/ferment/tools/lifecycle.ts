@@ -8,6 +8,7 @@
  *   4. Format result text — host concern
  */
 
+import { safeSendMessage } from "../safe-send.js"
 import { type ExtensionAPI, getMarkdownTheme } from "@earendil-works/pi-coding-agent"
 import { Markdown } from "@earendil-works/pi-tui"
 import { type Static, Type } from "typebox"
@@ -1060,7 +1061,7 @@ ${renderGateGuidance("scope_ferment")}`,
 				const answersEntry = buildAnswersEntry(questions, answers)
 				if (getPromptUi(ctx)?.custom) {
 					const content = buildScopingIterationMessage(questions, answers)
-					void pi.sendMessage(
+					safeSendMessage(pi, 
 						{ content, customType: "ferment_scoping_iteration", display: false },
 						{ triggerTurn: true },
 					)
@@ -1087,7 +1088,7 @@ ${renderGateGuidance("scope_ferment")}`,
 						return planToolOk(`${answersEntry}\n\nNo changes made. Waiting for your next instruction.`)
 					}
 					const sayMoreContent = buildFreeformScopingFeedbackMessage(fermentId, userText)
-					void pi.sendMessage(
+					safeSendMessage(pi, 
 						{ content: sayMoreContent, customType: "ferment_scoping_iteration", display: false },
 						{ triggerTurn: true },
 					)
@@ -1095,7 +1096,7 @@ ${renderGateGuidance("scope_ferment")}`,
 				}
 
 				const content = buildScopingIterationMessage(questions, answers)
-				void pi.sendMessage({ content, customType: "ferment_scoping_iteration", display: false }, { triggerTurn: true })
+				safeSendMessage(pi, { content, customType: "ferment_scoping_iteration", display: false }, { triggerTurn: true })
 				return planToolOk(`${answersEntry}\n\nAnswers recorded. Updating the plan with your choices...`)
 			}
 		},
