@@ -9,14 +9,8 @@ describe("SHARED_PLANNING_PROCESS", () => {
 		expect(SHARED_PLANNING_PROCESS.length).toBeGreaterThan(0)
 	})
 
-	it("contains all five planning steps in order", () => {
-		const steps = [
-			"STEP 1 — ORIENT",
-			"STEP 2 — INTERVIEW",
-			"STEP 3 — COMPLETION CRITERIA",
-			"STEP 4 — DEEP EXPLORATION",
-			"STEP 5 — PLAN",
-		]
+	it("contains all four planning steps in order", () => {
+		const steps = ["STEP 1 — INVESTIGATE", "STEP 2 — INTERVIEW", "STEP 3 — COMPLETION CRITERIA", "STEP 4 — PLAN"]
 
 		for (const step of steps) {
 			expect(SHARED_PLANNING_PROCESS).toContain(step)
@@ -30,7 +24,6 @@ describe("SHARED_PLANNING_PROCESS", () => {
 	})
 
 	it("is mode-agnostic and contains no ferment-specific tool references", () => {
-		// Should NOT reference ferment-specific tools
 		const fermentTools = ["propose_ferment_scoping", "confirm_ferment_completion_criteria", "ask_user"]
 
 		for (const tool of fermentTools) {
@@ -39,7 +32,6 @@ describe("SHARED_PLANNING_PROCESS", () => {
 	})
 
 	it("is mode-agnostic and contains no plan-mode-specific tool references", () => {
-		// Should NOT reference plan-mode-specific markers or tools
 		const planModeSpecifics = ["PLAN_COMPLETE", "questionnaire", "<done>", "<!-- PLAN_COMPLETE -->"]
 
 		for (const specific of planModeSpecifics) {
@@ -48,88 +40,60 @@ describe("SHARED_PLANNING_PROCESS", () => {
 	})
 
 	it("uses generic placeholders for mode-specific tooling", () => {
-		// Should use generic language that can be substituted by each mode
 		expect(SHARED_PLANNING_PROCESS).toContain("your mode's")
 	})
 
-	it("includes ORIENT step guidance", () => {
-		const orientSection = SHARED_PLANNING_PROCESS
-
-		// Key ORIENT concepts
-		expect(orientSection).toContain("lightweight research")
-		expect(orientSection).toContain("MAX 2 TURNS")
-		expect(orientSection).toContain("quick project scan")
-		expect(orientSection).toContain("file listing")
-		expect(orientSection).toContain("README")
-		expect(orientSection).toContain("mental model")
-		expect(orientSection).toContain("Identify your unknowns")
-		expect(orientSection).toContain("greenfield")
-		expect(orientSection).toContain("non-code")
-		expect(orientSection).toContain("1-2 turns")
-		expect(orientSection).toContain("3-5 targeted files")
-		expect(orientSection).toContain("Do NOT read")
-		expect(orientSection).toContain("implementation files line by line")
-		expect(orientSection).toContain("This step is about YOUR understanding")
+	it("includes INVESTIGATE step guidance", () => {
+		expect(SHARED_PLANNING_PROCESS).toContain("scan + explore the codebase")
+		expect(SHARED_PLANNING_PROCESS).toContain("MAX 4 TURNS")
+		expect(SHARED_PLANNING_PROCESS).toContain("answer every question you possibly can yourself")
+		expect(SHARED_PLANNING_PROCESS).toContain("project scan")
+		expect(SHARED_PLANNING_PROCESS).toContain("README")
+		expect(SHARED_PLANNING_PROCESS).toContain("mental model")
+		expect(SHARED_PLANNING_PROCESS).toContain("greenfield")
+		expect(SHARED_PLANNING_PROCESS).toContain("Explore subagents")
+		expect(SHARED_PLANNING_PROCESS).toContain("package.json")
+		expect(SHARED_PLANNING_PROCESS).toContain("Don't Hand-Roll")
+		expect(SHARED_PLANNING_PROCESS).toContain("Common Pitfalls")
+		expect(SHARED_PLANNING_PROCESS).toContain("This step is about YOUR understanding")
+		expect(SHARED_PLANNING_PROCESS).toContain("Do not ask questions yet")
 	})
 
 	it("includes INTERVIEW step guidance", () => {
-		const interviewSection = SHARED_PLANNING_PROCESS
-
-		// Key INTERVIEW concepts
-		expect(interviewSection).toContain("iterative rounds")
-		expect(interviewSection).toContain("Round structure")
-		expect(interviewSection).toContain("1-3 focused questions")
-		expect(interviewSection).toContain("REFLECT")
-		expect(interviewSection).toContain("When to ask")
-		expect(interviewSection).toContain("When NOT to ask")
-		expect(interviewSection).toContain("Exit criteria")
-		expect(interviewSection).toContain("assumption that could be wrong")
-		expect(interviewSection).toContain("safe, reversible default")
-		expect(interviewSection).toContain("don't manufacture questions")
+		expect(SHARED_PLANNING_PROCESS).toContain("only ask what the code couldn't answer")
+		expect(SHARED_PLANNING_PROCESS).toContain("Round structure")
+		expect(SHARED_PLANNING_PROCESS).toContain("1-3 focused questions")
+		expect(SHARED_PLANNING_PROCESS).toContain("REFLECT")
+		expect(SHARED_PLANNING_PROCESS).toContain("When to ask")
+		expect(SHARED_PLANNING_PROCESS).toContain("When NOT to ask")
+		expect(SHARED_PLANNING_PROCESS).toContain("Exit criteria")
+		expect(SHARED_PLANNING_PROCESS).toContain("assumption that could be wrong")
+		expect(SHARED_PLANNING_PROCESS).toContain("safe, reversible default")
+		expect(SHARED_PLANNING_PROCESS).toContain("don't manufacture questions")
+		expect(SHARED_PLANNING_PROCESS).toContain("Could I answer this by reading the code?")
+		expect(SHARED_PLANNING_PROCESS).toContain("Go read the code instead")
 	})
 
 	it("includes COMPLETION CRITERIA step guidance", () => {
-		const criteriaSection = SHARED_PLANNING_PROCESS
-
-		// Key COMPLETION CRITERIA concepts
-		expect(criteriaSection).toContain("Draft concrete completion criteria")
-		expect(criteriaSection).toContain('what "done" looks like')
-		expect(criteriaSection).toContain("specific, testable terms")
-		expect(criteriaSection).toContain("verification method")
-		expect(criteriaSection).toContain("test command")
-		expect(criteriaSection).toContain("manual check")
-		expect(criteriaSection).toContain("linter")
-		expect(criteriaSection).toContain("confirm with the user")
-		expect(criteriaSection).toContain("mode's confirmation mechanism")
-		expect(criteriaSection).toContain("Proceed only when user confirms")
-		expect(criteriaSection).toContain("BEFORE proceeding to exploration")
-	})
-
-	it("includes DEEP EXPLORATION step guidance", () => {
-		const explorationSection = SHARED_PLANNING_PROCESS
-
-		// Key DEEP EXPLORATION concepts
-		expect(explorationSection).toContain("targeted, not broad")
-		expect(explorationSection).toContain("MAX 2 TURNS of direct reads")
-		expect(explorationSection).toContain("Focus ONLY on unknowns")
-		expect(explorationSection).toContain("after the interview")
-		expect(explorationSection).toContain("targeted search")
-		expect(explorationSection).toContain("line by line")
-		expect(explorationSection).toContain("Skip this step for greenfield")
-		expect(explorationSection).toContain("Skip entirely if you have enough context")
-		expect(explorationSection).toContain("verify your understanding")
-		expect(explorationSection).toContain("look for gaps")
+		expect(SHARED_PLANNING_PROCESS).toContain("Draft concrete completion criteria")
+		expect(SHARED_PLANNING_PROCESS).toContain('what "done" looks like')
+		expect(SHARED_PLANNING_PROCESS).toContain("specific, testable terms")
+		expect(SHARED_PLANNING_PROCESS).toContain("verification method")
+		expect(SHARED_PLANNING_PROCESS).toContain("test command")
+		expect(SHARED_PLANNING_PROCESS).toContain("manual check")
+		expect(SHARED_PLANNING_PROCESS).toContain("linter")
+		expect(SHARED_PLANNING_PROCESS).toContain("confirm with the user")
+		expect(SHARED_PLANNING_PROCESS).toContain("mode's confirmation mechanism")
+		expect(SHARED_PLANNING_PROCESS).toContain("Proceed only when user confirms")
 	})
 
 	it("includes PLAN step guidance", () => {
-		const planSection = SHARED_PLANNING_PROCESS
+		const planSection = SHARED_PLANNING_PROCESS.slice(SHARED_PLANNING_PROCESS.indexOf("STEP 4 — PLAN"))
 
-		// Key PLAN concepts
 		expect(planSection).toContain("Synthesize everything")
-		expect(planSection).toContain("orient findings")
+		expect(planSection).toContain("investigation findings")
 		expect(planSection).toContain("interview answers")
 		expect(planSection).toContain("confirmed criteria")
-		expect(planSection).toContain("exploration results")
 		expect(planSection).toContain("structured plan")
 		expect(planSection).toContain("## Goal")
 		expect(planSection).toContain("One-sentence statement")
@@ -146,26 +110,26 @@ describe("SHARED_PLANNING_PROCESS", () => {
 		expect(planSection).toContain("mitigation")
 		expect(planSection).toContain("Open Question remains unresolved")
 		expect(planSection).toContain("mode's completion mechanism")
+		expect(planSection).toContain("Ensure completion criteria were confirmed")
+		expect(planSection).toContain("before finalizing")
 	})
 
 	it("emphasizes workflow discipline and anti-patterns", () => {
-		// Process discipline
 		expect(SHARED_PLANNING_PROCESS).toContain("IN ORDER")
 		expect(SHARED_PLANNING_PROCESS).toContain("Do NOT get stuck")
-
-		// Anti-patterns
 		expect(SHARED_PLANNING_PROCESS).toContain("don't manufacture questions")
-		expect(SHARED_PLANNING_PROCESS).toContain("don't re-explore")
 		expect(SHARED_PLANNING_PROCESS).toContain("Do not ask questions yet")
+		// New anti-pattern: don't ask what you can read yourself
+		expect(SHARED_PLANNING_PROCESS).toContain(
+			"always investigate first, interview only about what the code can't tell you",
+		)
 	})
 
 	it("provides concrete budget and scope guidance", () => {
-		// Time/turn budgets
-		expect(SHARED_PLANNING_PROCESS).toContain("MAX 2 TURNS")
-		expect(SHARED_PLANNING_PROCESS).toContain("1-2 turns")
-		expect(SHARED_PLANNING_PROCESS).toContain("3-5 targeted files")
+		expect(SHARED_PLANNING_PROCESS).toContain("MAX 4 TURNS")
+		expect(SHARED_PLANNING_PROCESS).toContain("3-5 turns")
+		expect(SHARED_PLANNING_PROCESS).toContain("5-8 targeted files")
 		expect(SHARED_PLANNING_PROCESS).toContain("1-3 focused questions")
-		expect(SHARED_PLANNING_PROCESS).toContain("at most 2 turns")
 	})
 
 	it("addresses both code and non-code scenarios", () => {
@@ -174,18 +138,8 @@ describe("SHARED_PLANNING_PROCESS", () => {
 		expect(SHARED_PLANNING_PROCESS).toContain("writing, strategy, general planning")
 	})
 
-	it("requires criteria confirmation before exploration", () => {
-		const text = SHARED_PLANNING_PROCESS
-		const criteriaIndex = text.indexOf("STEP 3 — COMPLETION CRITERIA")
-		const explorationIndex = text.indexOf("STEP 4 — DEEP EXPLORATION")
-
-		// Find the "BEFORE proceeding to exploration" text in the criteria section
-		const beforeText = text.slice(criteriaIndex, explorationIndex)
-		expect(beforeText).toContain("BEFORE proceeding to exploration")
-	})
-
 	it("requires criteria confirmation before finalizing plan", () => {
-		const planSection = SHARED_PLANNING_PROCESS.slice(SHARED_PLANNING_PROCESS.indexOf("STEP 5 — PLAN"))
+		const planSection = SHARED_PLANNING_PROCESS.slice(SHARED_PLANNING_PROCESS.indexOf("STEP 4 — PLAN"))
 
 		expect(planSection).toContain("Ensure completion criteria were confirmed")
 		expect(planSection).toContain("before finalizing")
@@ -201,22 +155,28 @@ describe("SHARED_PLANNING_PROCESS", () => {
 	})
 
 	it("flows the step-sizing guidance into the ferment scoping prompt", () => {
-		// SCOPING_DISCOVERY_GUIDANCE embeds SHARED_PLANNING_PROCESS, so the same
-		// step-sizing sentence reaches the ferment planner.
 		expect(SCOPING_DISCOVERY_GUIDANCE).toContain(
 			"every step should fit within ~25% of the active model's context window when implemented",
 		)
 	})
 
-	it("is under 7000 characters — process guidance plus shared plan template", () => {
-		// The shared module now includes both the five-step process guidance and the
-		// canonical plan template (Goal/Constraints/Chunks/etc.), so the budget is
-		// larger than the process-only version.
-		expect(SHARED_PLANNING_PROCESS.length).toBeLessThan(7000)
+	it("includes must-haves and boundary map fields in the plan template", () => {
+		expect(SHARED_PLANNING_PROCESS).toContain("**Produces**")
+		expect(SHARED_PLANNING_PROCESS).toContain("**Consumes**")
+		expect(SHARED_PLANNING_PROCESS).toContain("**Demo**")
+		expect(SHARED_PLANNING_PROCESS).toContain("**Must-Haves**")
+		expect(SHARED_PLANNING_PROCESS).toContain("**Truths**")
+		expect(SHARED_PLANNING_PROCESS).toContain("**Artifacts**")
+		expect(SHARED_PLANNING_PROCESS).toContain("**Key Links**")
+	})
+
+	it("includes don't-hand-roll and common pitfalls guidance in investigation", () => {
+		expect(SHARED_PLANNING_PROCESS).toContain("Don't Hand-Roll")
+		expect(SHARED_PLANNING_PROCESS).toContain("Common Pitfalls")
+		expect(SHARED_PLANNING_PROCESS).toContain("Risks section, not as implementation chunks")
 	})
 
 	it("can be imported and used in other modules", () => {
-		// This is a smoke test to ensure the export works correctly
 		const imported = SHARED_PLANNING_PROCESS
 		expect(imported).toBeDefined()
 		expect(imported.length).toBeGreaterThan(1000)

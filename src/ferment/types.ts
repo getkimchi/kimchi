@@ -96,6 +96,24 @@ export interface Ferment {
 
 export type PhaseStatus = "planned" | "active" | "completed" | "skipped" | "failed"
 
+/** Structured verification targets for a step. */
+export interface MustHaves {
+	/** Observable behaviors that must be true when the step is done. */
+	truths?: string[]
+	/** Files that must exist with real implementation (not stubs). */
+	artifacts?: string[]
+	/** Critical wiring between artifacts that must be connected. */
+	keyLinks?: string[]
+}
+
+/** Interface contract for a phase — what it produces and consumes. */
+export interface BoundaryMap {
+	/** Interfaces this phase exports for downstream phases. Format: "file.ts → funcA, TypeB" */
+	produces?: string[]
+	/** What this phase needs from upstream phases. Format: "from phase N → funcA" */
+	consumes?: string[]
+}
+
 export interface Phase {
 	id: string
 	index: number // 1-based for display
@@ -104,6 +122,11 @@ export interface Phase {
 	goal: string // what THIS phase delivers
 	constraints?: string[] // per-phase boundaries
 	budget?: string // e.g. "200k tokens"
+
+	/** User-facing outcome sentence: what the user can see/do when this phase is done. */
+	demo?: string
+	/** Interface contract: what this phase produces and consumes. */
+	boundary?: BoundaryMap
 
 	status: PhaseStatus
 	startedAt?: string
@@ -178,6 +201,11 @@ export interface Step {
 	verification?: Verification
 	result?: StepResult // populated on completion/verification
 	grade?: JudgeGrade // set by judge after step completes
+
+	/** Structured verification targets (truths/artifacts/key_links). When
+	 *  present, the S2 gate checks whether the verify command actually
+	 *  exercised these, not just whether it ran. */
+	mustHaves?: MustHaves
 
 	/** Short summary of what the worker accomplished. Set by complete_step.
 	 *  Surfaced in worker context for subsequent steps in the same phase

@@ -27,7 +27,35 @@ export function buildWorkerContext(ferment: Ferment, phase: Phase, step: Step, o
 	lines.push("## Worker Context")
 	lines.push(`Ferment: ${ferment.name}`)
 	lines.push(`Phase ${phase.index}: ${phase.name} — ${phase.goal}`)
+
+	// Boundary map context: what this phase produces and consumes
+	if (phase.boundary?.produces?.length) {
+		lines.push(`Produces: ${phase.boundary.produces.join("; ")}`)
+	}
+	if (phase.boundary?.consumes?.length) {
+		lines.push(`Consumes: ${phase.boundary.consumes.join("; ")}`)
+	}
+
+	// User-facing demo sentence
+	if (phase.demo) {
+		lines.push(`Demo: ${phase.demo}`)
+	}
 	lines.push(`Step ${step.index}: ${step.description}`)
+
+	// Must-haves: structured verification targets so the worker knows what
+	// constitutes done — not just "run the verify command".
+	if (step.mustHaves) {
+		const mh = step.mustHaves
+		if (mh.truths?.length) {
+			lines.push(`Truths: ${mh.truths.join("; ")}`)
+		}
+		if (mh.artifacts?.length) {
+			lines.push(`Artifacts: ${mh.artifacts.join("; ")}`)
+		}
+		if (mh.keyLinks?.length) {
+			lines.push(`Key links: ${mh.keyLinks.join("; ")}`)
+		}
+	}
 	if (step.verification?.command) {
 		lines.push(`verify: ${step.verification.command}`)
 	}

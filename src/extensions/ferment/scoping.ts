@@ -184,7 +184,7 @@ export async function runScopingFlow(
 				{
 					type: "text",
 					text: `Task:
-Scope a Ferment through a structured orient-interview-plan flow.
+Scope a Ferment through a structured investigate-interview-plan flow.
 
 Context:
 - User wants to ferment "${f.name}".

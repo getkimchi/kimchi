@@ -244,7 +244,7 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).toContain("Ask clarifying questions only when the answer is decision-blocking")
 			expect(out).toContain('<scoping_sequence required="true">')
 			expect(out).toContain("STEP 1")
-			expect(out).toContain("ORIENT")
+			expect(out).toContain("INVESTIGATE")
 			expect(out).toContain("STEP 2")
 			expect(out).toContain("INTERVIEW")
 			expect(out).toContain("STEP 3")
@@ -283,28 +283,28 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).toContain("Do not discuss your session capabilities")
 		})
 
-		it("guides orient-interview discovery before proposing scoping", () => {
+		it("guides investigate-interview discovery before proposing scoping", () => {
 			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime()) ?? ""
 			expect(out).toContain("follow the shared discovery guidance in the Upfront Contract")
 			// Orient-interview scoping sequence
 			expect(out).toContain('<scoping_sequence required="true">')
 			expect(out).toContain("STEP 1")
-			expect(out).toContain("ORIENT")
+			expect(out).toContain("INVESTIGATE")
 			expect(out).toContain("STEP 2")
 			expect(out).toContain("INTERVIEW")
 			expect(out).toContain("iterative rounds")
 			expect(out).toContain("REFLECT before continuing")
 			expect(out).toContain("STEP 4")
-			expect(out).toContain("DEEP EXPLORATION")
-			expect(out).toContain("MAX 2 TURNS")
+
+			expect(out).toContain("MAX 4 TURNS")
 			expect(out).toContain("Prefer targeted search over reading entire files line by line")
-			expect(out).toContain("Skip this step for greenfield tasks")
-			expect(out).toContain("record why in assumptions")
-			expect(out).toContain("spawn Explore subagents instead of reading files yourself")
+			expect(out).toContain("If the project is greenfield")
+			expect(out).toContain("note that and move to Step 2")
+
 			expect(out).toContain('subagent_type: "Explore"')
 			expect(out).toContain("token_budget: 120000")
 			expect(out).toContain("run_in_background: true")
-			expect(out).toContain("Skip entirely if you have enough context from Steps 1-3")
+
 			expect(out).toContain("P1/P2/P3")
 		})
 
@@ -469,25 +469,23 @@ describe("buildFermentPromptBlock", () => {
 	// Unify Planning Pipeline Prompts — verify shared process steps live in ferment
 	// planner supplement AND that ferment-specific sections absent from plan mode are present.
 	describe("shared process steps — parity with plan-mode-supplement", () => {
-		it("ferment planner supplement contains all five shared step headers", () => {
+		it("ferment planner supplement contains all four shared step headers", () => {
 			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime()) ?? ""
 			// These must match what plan-mode-supplement also renders (both source from SHARED_PLANNING_PROCESS)
 			expect(out).toContain("STEP 1")
-			expect(out).toContain("ORIENT")
+			expect(out).toContain("INVESTIGATE")
 			expect(out).toContain("STEP 2")
 			expect(out).toContain("INTERVIEW")
 			expect(out).toContain("STEP 3")
 			expect(out).toContain("COMPLETION CRITERIA")
 			expect(out).toContain("STEP 4")
-			expect(out).toContain("DEEP EXPLORATION")
-			expect(out).toContain("STEP 5")
 		})
 
 		it("ferment planner supplement contains shared process core behaviour", () => {
 			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime()) ?? ""
 			expect(out).toContain("iterative rounds")
 			expect(out).toContain("REFLECT before continuing")
-			expect(out).toContain("MAX 2 TURNS")
+			expect(out).toContain("MAX 4 TURNS")
 			expect(out).toContain("Prefer targeted search over reading entire files line by line")
 		})
 

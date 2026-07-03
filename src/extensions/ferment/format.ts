@@ -95,6 +95,30 @@ export function formatScopingContext(f: Ferment): string {
 	if (f.scoping.criteria) lines.push(`Success criteria: ${f.scoping.criteria.answer}`)
 	if (f.scoping.constraints) lines.push(`Constraints: ${f.scoping.constraints.answer}`)
 	if (f.scoping.assumptions) lines.push(`Assumptions: ${f.scoping.assumptions.answer}`)
+
+	// Boundary map summary for multi-phase ferments — makes interface
+	// contracts between phases visible in the planner context.
+	if (f.phases.length > 1) {
+		const boundaryLines: string[] = []
+		for (const p of f.phases) {
+			if (p.boundary?.produces?.length || p.boundary?.consumes?.length) {
+				const parts: string[] = [`Phase ${p.index}: ${p.name}`]
+				if (p.boundary?.produces?.length) {
+					parts.push(`  produces: ${p.boundary.produces.join(", ")}`)
+				}
+				if (p.boundary?.consumes?.length) {
+					parts.push(`  consumes: ${p.boundary.consumes.join(", ")}`)
+				}
+				boundaryLines.push(parts.join("\n"))
+			}
+		}
+		if (boundaryLines.length > 0) {
+			lines.push("")
+			lines.push("## Boundary Map")
+			lines.push(boundaryLines.join("\n"))
+		}
+	}
+
 	return lines.length > 0 ? `## Ferment Specification\n${lines.join("\n")}` : ""
 }
 

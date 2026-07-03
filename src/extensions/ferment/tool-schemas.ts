@@ -68,6 +68,35 @@ const SuccessCriteriaSchema = Type.Array(Type.String(), {
 	description: "Observable acceptance criteria. Each item must be one concrete, verifiable criterion.",
 })
 
+/** Structured verification targets for a step. When present, the S2 gate checks
+ *  whether the verify command actually exercised these, not just whether it ran. */
+const MustHavesSchema = Type.Object(
+	{
+		truths: Type.Optional(
+			Type.Array(Type.String(), {
+				description:
+					'Observable behaviors that must be true when this step is done. Each should be checkable by running a command or reading output. Example: "User can sign up with email and password"',
+			}),
+		),
+		artifacts: Type.Optional(
+			Type.Array(Type.String(), {
+				description:
+					"Files that must exist with real implementation (not stubs). Format: 'path/to/file.ts — description (min N lines, exports: funcA, funcB)'. Example: \"src/lib/auth.ts — JWT helpers (min 30 lines, exports: generateToken, verifyToken)\"",
+			}),
+		),
+		key_links: Type.Optional(
+			Type.Array(Type.String(), {
+				description:
+					"Critical wiring between artifacts that must be connected. Format: 'from.ts → to.ts via import of functionName'. Example: \"login/route.ts → auth.ts via import of generateToken\"",
+			}),
+		),
+	},
+	{
+		description:
+			"Structured verification targets. When present, the S2 gate checks whether the verify command actually exercised these, not just whether it ran.",
+	},
+)
+
 // Shared phase schema — used by both scope_ferment (headless path) and
 // propose_ferment_scoping (interactive path). Keep them identical so a proposed plan
 // can be applied verbatim.
@@ -75,6 +104,24 @@ export const PhaseProposalSchema = Type.Object({
 	name: Type.String(),
 	goal: Type.String(),
 	description: Type.Optional(Type.String()),
+	demo: Type.Optional(
+		Type.String({
+			description:
+				'One sentence: what the user can see or do when this phase is done. Forces user-facing thinking. Omit for non-user-facing phases (infra, refactoring). Example: "User can sign up and receive a JWT authentication token".',
+		}),
+	),
+	produces: Type.Optional(
+		Type.Array(Type.String(), {
+			description:
+				"Interfaces this phase exports for downstream phases to consume. Format: 'file.ts → functionName, TypeName'. Example: \"src/lib/auth.ts → generateToken(), verifyToken(), AuthToken interface\". Forces interface thinking before implementation. Omit for leaf phases with no downstream consumers.",
+		}),
+	),
+	consumes: Type.Optional(
+		Type.Array(Type.String(), {
+			description:
+				"What this phase needs from upstream phases. Format: 'from phase N → functionName'. Example: \"from phase 1 → generateToken(), verifyToken()\". Omit for first/independent phases.",
+		}),
+	),
 	constraints: Type.Optional(Type.Array(Type.String())),
 	budget: Type.Optional(Type.String({ description: "e.g. '200k tokens'" })),
 	parallel_group: Type.Optional(
@@ -88,6 +135,7 @@ export const PhaseProposalSchema = Type.Object({
 			Type.Object({
 				description: Type.String(),
 				verify: Type.Optional(Type.String({ description: "bash command that exits 0 on success" })),
+				must_haves: Type.Optional(MustHavesSchema),
 				parallel_group: Type.Optional(
 					Type.Number({
 						description:
@@ -245,6 +293,7 @@ export const RefineParams = Type.Object({
 					description: "Bash command that exits 0 on success. Run automatically after complete_ferment_step.",
 				}),
 			),
+			must_haves: Type.Optional(MustHavesSchema),
 			parallel_group: Type.Optional(
 				Type.Number({
 					description:

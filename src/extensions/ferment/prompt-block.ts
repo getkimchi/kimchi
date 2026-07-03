@@ -86,6 +86,27 @@ Every phase step requires a \`description\` field. \`verify\` is an OPTIONAL sib
 
 Phases are executable implementation slices after answers are incorporated. Do not create phases for asking or reading scoping answers, deciding scope, writing the plan, or creating a design note just to resolve the plan.
 
+## Must-Haves and Boundary Maps
+
+For implementation phases, populate \`produces\`/\`consumes\` on each phase and \`must_haves\`
+on each step. These are optional but strongly recommended for non-trivial work:
+
+- **produces/consumes** form the boundary map: they force interface thinking between phases
+  before implementation. Phase N+1's \`consumes\` should reference exactly what phase N's
+  \`produces\` declares.
+- **must_haves** give the S2 gate concrete targets: instead of just "did a verify command
+  run?", the gate checks "did the verify command actually exercise the truths, check the
+  artifacts, and verify the key links?"
+
+For simple tasks (single-file edits, config changes, doc-only work), omit these — the
+overhead isn't worth it. Use them when:
+- A phase produces interfaces that downstream phases consume
+- A step creates files whose exports need to be verified
+- Wiring between modules is load-bearing and could silently break
+
+Populating must_haves does NOT replace the \`verify\` command — it complements it. The verify
+command proves the must-haves are met; the must-haves tell you what the verify should check.
+
 Every \`propose_ferment_scoping\` call must include the full \`gates\` array for plan review: exactly P1, P2, and P3. Each gate object must include \`id\`, \`verdict\`, \`rationale\`, and \`evidence\`. Never emit a partial gates array, never include only P1, and never omit \`rationale\` or \`evidence\`.
 
 ${scopeFermentDirectCallRule}

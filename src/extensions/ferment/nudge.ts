@@ -256,12 +256,14 @@ export function maybeInjectScopingProgressNudge(
 	resetScopingExploreTurns(fermentId)
 
 	const nudgeText = opts.interactive
-		? `SCOPING PROGRESS CHECK: You have spent ${count} turns reading files. Are you ready to move to the next scoping step? If not, resolve any missing context and then move on.
+		? `SCOPING PROGRESS CHECK: You have spent ${count} turns reading files. Are you ready to move to the next step?
 
-- Step 2 — Interview: if you still need information from the user, call ask_user.
-- Step 3 — Completion criteria: once the interview is done, call confirm_ferment_completion_criteria to confirm the completion criteria with the user.
-- Step 5 — Plan: once completion criteria are confirmed, call propose_ferment_scoping with the full plan (this proposes the full scoping to the user for approval; it is separate from Step 3 which only confirms the completion criteria).
-- If you still need more context, take one targeted action to get it, then advance.`
+- Step 1 — Investigate: have you explored the codebase enough to answer your own questions?
+  If you still need to check something specific, do one targeted action, then advance.
+- Step 2 — Interview: only ask about what the code couldn't tell you. Call ask_user.
+- Step 3 — Completion criteria: call confirm_ferment_completion_criteria to confirm with the user.
+- Step 4 — Plan: call propose_ferment_scoping with the full plan.
+- If you're still investigating, finish quickly and move on.`
 		: `SCOPING PROGRESS CHECK: You have spent ${count} turns exploring without finalising the plan. Are you ready to call scope_ferment?
 
 - If you still need information, call ask_user — questions route automatically to the judge.

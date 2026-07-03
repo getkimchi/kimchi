@@ -1,28 +1,48 @@
 /**
  * Shared planning process guidance for both ferment and plan modes.
- * This is the canonical five-step Orient→Interview→Criteria→Explore→Plan process
+ * This is the canonical four-step Investigate→Interview→Criteria→Plan process
  * that is mode-agnostic and extended by mode-specific tooling.
  */
 
-export const SHARED_PLANNING_PROCESS = `Follow five steps IN ORDER. Do NOT get stuck on any step.
+export const SHARED_PLANNING_PROCESS = `Follow four steps IN ORDER. Do NOT get stuck on any step.
 Your goal is to reach a complete, well-scoped plan, not to understand every file in the project.
 
-STEP 1 — ORIENT (lightweight research, MAX 2 TURNS)
-Read the user's intent. Before asking anything, build MINIMAL context:
-- Do a quick project scan: file listing, README, package/config files (1-2 tool calls).
-- Form an initial mental model: what kind of task is this? What technology and patterns?
-- Identify your unknowns: what assumptions are you making? What decisions can only the user make?
-- If the project is greenfield (no existing codebase) or the task is non-code (writing, strategy, general planning), note that and move on immediately.
+STEP 1 — INVESTIGATE (scan + explore the codebase, MAX 4 TURNS)
+Before asking the user anything, investigate the codebase to answer your own questions:
+- Do a project scan: file listing, README, package/config files, existing patterns.
+- Then go deeper: read the specific files relevant to the task — existing implementations,
+  test setup, API routes, auth config, database schema. Don't stop at the surface.
+- Form a mental model: what technology and patterns does this project use? What already
+  exists that you can build on? What conventions are established?
+- Identify what you STILL don't know after exploring — these are your interview candidates.
+- If the project is greenfield (no existing codebase) or the task is non-code (writing, strategy, general planning), note that and move to Step 2 immediately.
 
-Default budget: spend about 1-2 turns on Orient and aim for 3-5 targeted files. Exceed this only
-for a specific unknown that would materially change the interview questions or plan. Do NOT read
-implementation files line by line — save that for Step 4 (Deep Exploration) which happens AFTER
-the interview and criteria confirmation.
+The goal is to answer every question you possibly can yourself, so Step 2 only asks
+about things the code genuinely cannot tell you.
 
-This step is about YOUR understanding, not the user's. Do not ask questions yet.
+Spend 3-5 turns and aim for 5-8 targeted files. Use Explore subagents for parallel
+discovery of independent unknowns. Prefer targeted search over reading entire files line by line — find the specific lines you need. Do NOT read every file — target
+what's relevant to the task. But DO read enough that you're not about to ask the
+user something you could have found by checking package.json or grepping for
+existing patterns.
 
-STEP 2 — INTERVIEW (iterative rounds)
-Ask the user about the unknowns you identified in Step 1. Run in rounds:
+During investigation, watch for these planning traps:
+- **Don't Hand-Roll**: if you find a problem that looks simple but has an established
+  library solution (auth, validation, date parsing, state management), note it. The plan
+  should use the library, not reimplement it. Example: "JWT handling → use jsonwebtoken,
+  not hand-rolled crypto."
+- **Common Pitfalls**: if you spot a known trap in the codebase or technology (e.g., "this
+  ORM doesn't support transactions the way we need"), note it as a risk in the plan.
+
+These belong in the plan's ## Risks section, not as implementation chunks.
+
+This step is about YOUR understanding. Do not ask questions yet.
+
+STEP 2 — INTERVIEW (only ask what the code couldn't answer)
+Ask the user about the unknowns that REMAIN after investigation. Run in iterative rounds:
+
+Before asking any question, ask yourself: "Could I answer this by reading the code?"
+If yes — go back and read it. Don't ask the user what you can find yourself.
 
 Round structure:
   a. Ask 1-3 focused questions using your mode's structured Q&A tool.
@@ -37,21 +57,25 @@ Round structure:
   d. If scope is clear and no question would change the approach, exit the loop.
 
 When to ask:
-- You are making an assumption that could be wrong and would change the approach.
+- You are making an assumption that could be wrong and would change the approach,
+  AND you cannot resolve it by reading the code.
   Surface it explicitly: "I'm assuming X — is that right, or should I do Y instead?"
-- The intent is ambiguous between 2+ interpretations you genuinely can't resolve.
-- There is a decision only the user can make (auth provider, DB choice, public vs internal, etc.).
+- The intent is ambiguous between 2+ interpretations you genuinely can't resolve
+  from the codebase.
+- There is a decision only the user can make (auth provider, DB choice, public vs
+  internal, deployment target, etc.).
 
 When NOT to ask:
 - The intent is already clear and specific — don't make the user repeat themselves.
 - There is a safe, reversible default. Pick it, note it in assumptions, move on.
 - The question is generic ("Any edge cases?", "What about error handling?").
   If you suspect a specific edge case, name it and ask about THAT.
+- You could answer it by reading the code. Go read the code instead.
 
 Exit criteria: you can explain in one sentence what you're building, why, and how
 you'll know it's done — and no remaining question would change the approach.
-If the intent was unambiguous from Step 1 and you have no genuine uncertainties,
-skip this step entirely — don't manufacture questions.
+If the intent was unambiguous and you have no genuine uncertainties after
+investigation, skip this step entirely — don't manufacture questions.
 
 STEP 3 — COMPLETION CRITERIA
 Draft concrete completion criteria and validation steps, then confirm with the user.
@@ -61,23 +85,11 @@ Draft concrete completion criteria and validation steps, then confirm with the u
 - Proceed only when user confirms criteria are correct.
 - If the user already stated clear acceptance criteria in their intent, confirm them
   rather than rephrasing. Don't over-formalize obvious criteria.
-- Confirm criteria with the user BEFORE proceeding to exploration.
 
-STEP 4 — DEEP EXPLORATION (targeted, not broad, MAX 2 TURNS of direct reads)
-Now investigate the codebase for implementation-specific details.
-- Focus ONLY on unknowns that remain after the interview — don't re-explore what you
-  already learned in Step 1.
-- Prefer targeted search over reading entire files line by line. Find the specific
-  lines you need.
-- If you read files directly, limit to at most 2 turns of reads.
-- Skip this step for greenfield tasks with no existing codebase; record why in assumptions.
-- Skip entirely if you have enough context from Steps 1-3 to write a plan.
-- After exploration, verify your understanding and look for gaps.
-
-STEP 5 — PLAN
-Synthesize everything — orient findings, interview answers, confirmed criteria,
-and exploration results — into a structured plan.
-- Ensure completion criteria were confirmed with the user before finalizing.
+STEP 4 — PLAN
+Synthesize everything — investigation findings, interview answers, and confirmed criteria
+— into a structured plan.
+- Ensure completion criteria were confirmed by the user before finalizing.
 - Do NOT finalize the plan while any open question remains unresolved.
 - Use your mode's completion mechanism to submit the plan for user review.
 
@@ -93,7 +105,19 @@ List non-negotiable requirements (e.g., "no new dependencies", "preserve existin
 Ordered, independently-verifiable units of work. Each chunk has:
 - **Scope**: what it covers (file paths, components)
 - **Files Changed**: every file created, modified, or deleted — use concrete paths, not globs
+- **Produces**: interfaces this chunk exports for downstream chunks (omit for leaf chunks)
+  Format: "file.ts → functionName, TypeName"
+- **Consumes**: what this chunk needs from upstream chunks (omit for first chunk)
+  Format: "from chunk N → functionName"
 - **Depends On**: which prior chunk(s) it requires
+- **Demo**: one sentence — what the user can see/do when this chunk is done (omit for non-user-facing)
+- **Must-Haves** (recommended for implementation chunks):
+  - **Truths**: observable behaviors that must be true when done
+    Example: "User can sign up with email and password"
+  - **Artifacts**: files that must exist with real implementation (not stubs)
+    Example: "src/lib/auth.ts — JWT helpers (min 30 lines, exports: generateToken, verifyToken)"
+  - **Key Links**: critical wiring that must connect
+    Example: "login/route.ts → auth.ts via import of generateToken"
 - **Accept When**: 2-3 concrete, verifiable criteria
 - **Test Coverage**: which test files need creation or update for this chunk
 - **Open Questions**: explicitly list any unknowns or assumptions (never leave implicit)
@@ -124,5 +148,12 @@ Common plan anti-patterns to avoid:
 - Chunks that say "refactor X" without listing which files change and how
 - Accept When criteria that are just "it works" or "tests pass" without naming the specific test
 - Every chunk depending on the previous one when some could be parallel
-- Exploration or discovery as an implementation chunk — that belongs in Steps 1/4, not in the plan
-- Verification Strategy that is identical for every chunk instead of chunk-specific`
+- Exploration or discovery as an implementation chunk — that belongs in Step 1 (Investigate), not in the plan
+- Verification Strategy that is identical for every chunk instead of chunk-specific
+- Chunks with no Produces/Consumes when downstream chunks clearly depend on their interfaces
+- Must-Haves that are just "it works" without naming specific behavioral truths or artifact exports
+- Artifacts without minimum line counts or named exports — "src/auth.ts" alone doesn't tell you what's inside
+- Key Links that describe file paths but not the specific import/function that connects them
+- Demo sentences that describe implementation ("uses JWT") instead of user outcomes ("user can log in")
+- Asking the user a question you could have answered by reading the code —
+  always investigate first, interview only about what the code can't tell you`

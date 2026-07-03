@@ -236,6 +236,75 @@ describe("buildWorkerContext", () => {
 		expect(ctx).not.toContain("Decision 2")
 	})
 
+	it("includes must_haves truths, artifacts, and key_links when present", () => {
+		const step = makeStep({
+			mustHaves: {
+				truths: ["User can sign up with email"],
+				artifacts: ["src/lib/auth.ts — JWT helpers (min 30 lines, exports: generateToken)"],
+				keyLinks: ["login/route.ts → auth.ts via import of generateToken"],
+			},
+		})
+		const phase = makePhase({ steps: [step] })
+		const f = makeFerment({ phases: [phase] })
+
+		const ctx = buildWorkerContext(f, phase, step)
+		expect(ctx).toContain("Truths:")
+		expect(ctx).toContain("User can sign up with email")
+		expect(ctx).toContain("Artifacts:")
+		expect(ctx).toContain("src/lib/auth.ts")
+		expect(ctx).toContain("Key links:")
+		expect(ctx).toContain("login/route.ts → auth.ts")
+	})
+
+	it("omits must_haves section when step has no mustHaves", () => {
+		const phase = makePhase({ steps: [makeStep()] })
+		const f = makeFerment({ phases: [phase] })
+
+		const ctx = buildWorkerContext(f, phase, phase.steps[0])
+		expect(ctx).not.toContain("Truths:")
+		expect(ctx).not.toContain("Artifacts:")
+		expect(ctx).not.toContain("Key links:")
+	})
+
+	it("includes boundary map produces/consumes when present", () => {
+		const phase = makePhase({
+			boundary: {
+				produces: ["src/lib/auth.ts → generateToken(), verifyToken()"],
+				consumes: ["from phase 1 → generateToken()"],
+			},
+			steps: [makeStep()],
+		})
+		const f = makeFerment({ phases: [phase] })
+
+		const ctx = buildWorkerContext(f, phase, phase.steps[0])
+		expect(ctx).toContain("Produces:")
+		expect(ctx).toContain("generateToken(), verifyToken()")
+		expect(ctx).toContain("Consumes:")
+		expect(ctx).toContain("from phase 1")
+	})
+
+	it("includes demo sentence when present", () => {
+		const phase = makePhase({
+			demo: "User can sign up and receive a JWT token",
+			steps: [makeStep()],
+		})
+		const f = makeFerment({ phases: [phase] })
+
+		const ctx = buildWorkerContext(f, phase, phase.steps[0])
+		expect(ctx).toContain("Demo:")
+		expect(ctx).toContain("User can sign up and receive a JWT token")
+	})
+
+	it("omits boundary map and demo when absent", () => {
+		const phase = makePhase({ steps: [makeStep()] })
+		const f = makeFerment({ phases: [phase] })
+
+		const ctx = buildWorkerContext(f, phase, phase.steps[0])
+		expect(ctx).not.toContain("Produces:")
+		expect(ctx).not.toContain("Consumes:")
+		expect(ctx).not.toContain("Demo:")
+	})
+
 	it("opts.includeDecisions=false suppresses the decisions section", () => {
 		const decisions: Decision[] = [{ id: "d1", title: "Use Zod", description: "DX", createdAt: "2026-05-09T00:00:00Z" }]
 		const phase = makePhase({ steps: [makeStep()] })
