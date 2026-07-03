@@ -35,8 +35,7 @@ function backgroundAgentCall(id: string, description: string, prompt: string) {
 	}
 }
 
-const SLOW_STREAM = { stream: ["chunk ", "one ", "chunk ", "two"], textDelayMs: 2_500 }
-const SLOWER_STREAM = { stream: ["working", " working", " working", " working"], textDelayMs: 5_000 }
+const SLOW_STREAM = { stream: ["working", " working", " working", " working"], textDelayMs: 5_000 }
 
 test("Ctrl+B detaches a running foreground agent to background", async ({ terminal }) => {
 	await runKimchiSession(
@@ -124,10 +123,14 @@ test("Ctrl+X kills background agents one by one", async ({ terminal }) => {
 			artifactName: "agent-kill-ctrl-x-two",
 			models: [{ slug: "basic", displayName: "Fake Basic", input: ["text"] }],
 			responses: [
-				// Orchestrator spawns first background agent
+				// Orchestrator turn 1: spawn first bg
 				{ toolCalls: [backgroundAgentCall("call_kill_1", "first bg", "Reply with: working")] },
-				// Orchestrator spawns second background agent
+				// Inner agent "first bg" — slow stream so it's still running when we kill
+				SLOW_STREAM,
+				// Orchestrator turn 2: spawn second bg
 				{ toolCalls: [backgroundAgentCall("call_kill_2", "second bg", "Reply with: working")] },
+				// Inner agent "second bg" — slow stream
+				SLOW_STREAM,
 				// Orchestrator follow-up
 				{ stream: ["acknowledged"] },
 			],
