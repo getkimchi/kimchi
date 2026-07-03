@@ -17,13 +17,13 @@
  * Failures warn via `ctx.ui.notify` and never block the pipeline.
  */
 
-import { safeSendMessage } from "./safe-send.js"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import type { CompactionResult } from "@earendil-works/pi-coding-agent"
 import { determineNextAction } from "../../ferment/engine.js"
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
 import { COMPACTION_RESERVE_TOKENS } from "../compaction-thresholds.js"
 import type { FermentRuntime } from "./runtime.js"
+import { safeSendMessage } from "./safe-send.js"
 import { scheduleNextFermentAction } from "./scheduler.js"
 import type { PendingCompaction } from "./state.js"
 
@@ -373,7 +373,8 @@ function triggerCompactionForPending(
 			ferment,
 			pending,
 		)
-		safeSendMessage(pi, 
+		safeSendMessage(
+			pi,
 			{
 				customType: "ferment_stage_handoff",
 				content: [{ type: "text", text: JSON.stringify(handoff) }],

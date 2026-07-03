@@ -6,7 +6,6 @@
  * classification, then grades the step.
  */
 
-import { safeSendMessage } from "../safe-send.js"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Static } from "typebox"
 import { determineNextAction } from "../../../ferment/engine.js"
@@ -23,6 +22,7 @@ import { onStepCompleted } from "../nudge.js"
 import { type PhaseEvidence, captureGitHead, gatherPhaseEvidence } from "../phase-evidence.js"
 import { promptEditor } from "../prompt-ui.js"
 import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
+import { safeSendMessage } from "../safe-send.js"
 import {
 	createApplyAndPersist,
 	failedToolResult,
@@ -41,7 +41,8 @@ import { buildWorkerContext } from "../worker-prompt.js"
 const VERIFY_TIMEOUT_MS = 60_000
 
 function sendStepBreadcrumb(pi: ExtensionAPI, text: string, variant: "step" | "warning" = "step"): void {
-	safeSendMessage(pi, 
+	safeSendMessage(
+		pi,
 		{
 			customType: "ferment_breadcrumb",
 			content: [{ type: "text", text }],

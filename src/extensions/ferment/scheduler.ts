@@ -1,4 +1,3 @@
-import { safeSendMessage } from "./safe-send.js"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { getScopingProgress } from "../../ferment/engine.js"
 import type { DeclarativeAction } from "../../ferment/engine.js"
@@ -6,6 +5,7 @@ import type { Ferment, Phase, Step } from "../../ferment/types.js"
 import { formatActionNudgeLine } from "./action-tool-names.js"
 import { decideContinuation } from "./continuation.js"
 import type { FermentRuntime } from "./runtime.js"
+import { safeSendMessage } from "./safe-send.js"
 import type { ContinuationPolicy } from "./state.js"
 
 export interface ScheduleNextFermentActionOptions {
@@ -202,7 +202,8 @@ export function scheduleNextFermentAction(
 	pi.appendEntry("ferment_breadcrumb", {
 		text: `${breadcrumb} · policy ${runtime.getContinuationPolicy()} · scoping ${scopeProgress.answered}/${scopeProgress.total}`,
 	})
-	safeSendMessage(pi, 
+	safeSendMessage(
+		pi,
 		{
 			customType: "ferment_continuation_nudge",
 			content: [{ type: "text", text: messageText }],
@@ -234,7 +235,8 @@ export function scheduleFermentWakeUp(
 	pi.appendEntry("ferment_breadcrumb", {
 		text: `${tag} [${decision.action.kind}]: "${ferment.name}" [${ferment.status}] · policy ${runtime.getContinuationPolicy()} · scoping ${scopeProgress.answered}/${scopeProgress.total}`,
 	})
-	safeSendMessage(pi, 
+	safeSendMessage(
+		pi,
 		{
 			customType: "ferment_continuation_nudge",
 			content: [{ type: "text", text: buildContextualNudge(ferment, decision.action) }],

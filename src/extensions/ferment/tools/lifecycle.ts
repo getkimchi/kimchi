@@ -8,7 +8,6 @@
  *   4. Format result text — host concern
  */
 
-import { safeSendMessage } from "../safe-send.js"
 import { type ExtensionAPI, getMarkdownTheme } from "@earendil-works/pi-coding-agent"
 import { Markdown } from "@earendil-works/pi-tui"
 import { type Static, Type } from "typebox"
@@ -42,6 +41,7 @@ import { gatherPhaseEvidence } from "../phase-evidence.js"
 import { getPromptUi, promptEditor, promptForm, promptSelect } from "../prompt-ui.js"
 import { readLatestPhaseReviews } from "../review-evidence.js"
 import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
+import { safeSendMessage } from "../safe-send.js"
 import { confirmPendingScope } from "../scoping-confirmation.js"
 import type { PendingScope } from "../scoping.js"
 import {
@@ -1061,7 +1061,8 @@ ${renderGateGuidance("scope_ferment")}`,
 				const answersEntry = buildAnswersEntry(questions, answers)
 				if (getPromptUi(ctx)?.custom) {
 					const content = buildScopingIterationMessage(questions, answers)
-					safeSendMessage(pi, 
+					safeSendMessage(
+						pi,
 						{ content, customType: "ferment_scoping_iteration", display: false },
 						{ triggerTurn: true },
 					)
@@ -1088,7 +1089,8 @@ ${renderGateGuidance("scope_ferment")}`,
 						return planToolOk(`${answersEntry}\n\nNo changes made. Waiting for your next instruction.`)
 					}
 					const sayMoreContent = buildFreeformScopingFeedbackMessage(fermentId, userText)
-					safeSendMessage(pi, 
+					safeSendMessage(
+						pi,
 						{ content: sayMoreContent, customType: "ferment_scoping_iteration", display: false },
 						{ triggerTurn: true },
 					)

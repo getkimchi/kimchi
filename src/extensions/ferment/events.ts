@@ -1,4 +1,3 @@
-import { safeSendMessage } from "./safe-send.js"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { clearFermentCache } from "../../ferment/store.js"
 import { deriveDraftFermentTitle } from "../../ferment/title.js"
@@ -27,6 +26,7 @@ import { editPhaseProposal } from "./phase-editor.js"
 import { promptEditor, promptSelect } from "./prompt-ui.js"
 import { loadFermentSilently, resumeFerment } from "./resume.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
+import { safeSendMessage } from "./safe-send.js"
 import { scheduleFermentWakeUp } from "./scheduler.js"
 import { confirmPendingScope } from "./scoping-confirmation.js"
 import { clearActiveFermentId, getActiveFermentId, isFermentLockedByLiveProcess, removeFermentLock } from "./state.js"
@@ -415,7 +415,8 @@ export function registerFermentEvents(
 			emitFermentCreated(pi.events, updated)
 			appendRefEntry(pi, updated.id)
 			const ackText = `One-shot ferment: "${updated.name}"\nBranch: ${updated.worktree.branch ?? "n/a"}\nPolicy: automated`
-			safeSendMessage(pi, 
+			safeSendMessage(
+				pi,
 				{
 					customType: "ferment_ack",
 					content: [{ type: "text", text: ackText }],
@@ -427,7 +428,8 @@ export function registerFermentEvents(
 			return { action: "transform" as const, text: buildOneshotNudge(updated, intent), images: event.images }
 		} catch (err) {
 			const failText = `One-shot ferment bootstrap failed: ${err instanceof Error ? err.message : String(err)}`
-			safeSendMessage(pi, 
+			safeSendMessage(
+				pi,
 				{
 					customType: "ferment_oneshot_failed",
 					content: [{ type: "text", text: failText }],

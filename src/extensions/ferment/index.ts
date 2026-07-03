@@ -10,7 +10,6 @@
  * Public exports re-export from ./state.ts for cli.ts and components/footer.ts.
  */
 
-import { safeSendMessage } from "./safe-send.js"
 import type { ExtensionAPI, ExtensionContext, MessageRenderer } from "@earendil-works/pi-coding-agent"
 import { Container, Text } from "@earendil-works/pi-tui"
 import type { Step } from "../../ferment/types.js"
@@ -32,6 +31,7 @@ import { setPendingPlanReviewTrigger } from "./plan-review-trigger.js"
 import { type PendingPlanReview, promptPlanReview } from "./plan-review.js"
 import { buildFermentPromptBlock } from "./prompt-block.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
+import { safeSendMessage } from "./safe-send.js"
 import { scheduleFermentWakeUp, scheduleNextFermentAction } from "./scheduler.js"
 import { confirmPendingScope } from "./scoping-confirmation.js"
 import { FERMENT_REQUEST_MESSAGE_TYPE, type FermentRequestMessageDetails } from "./scoping.js"
@@ -207,7 +207,8 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 			// `propose_ferment_scoping` again once the revision is complete.
 			runtime.clearPendingPlanReview(review.fermentId)
 			applyFermentRuntimeToolProfile(pi, runtime)
-			safeSendMessage(pi, 
+			safeSendMessage(
+				pi,
 				{
 					content: buildFreeformScopingFeedbackMessage(review.fermentId, outcome.text),
 					customType: "ferment_scoping_iteration",

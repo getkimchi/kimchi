@@ -1,4 +1,3 @@
-import { safeSendMessage } from "./safe-send.js"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { determineNextAction, getScopingProgress } from "../../ferment/engine.js"
 import type { Ferment } from "../../ferment/types.js"
@@ -7,6 +6,7 @@ import { appendRefEntry } from "./nudge.js"
 import { loadPendingProposal } from "./pending-proposal-store.js"
 import { triggerPendingPlanReview } from "./plan-review-trigger.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
+import { safeSendMessage } from "./safe-send.js"
 import { scheduleFermentWakeUp } from "./scheduler.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
 import { setActiveFermentAndApplyProfile } from "./tool-scope.js"
@@ -34,7 +34,8 @@ export function loadFermentSilently(
 
 	const wtCheck = checkWorktree(existing)
 	if (wtCheck.severity !== "ok" && wtCheck.message) {
-		safeSendMessage(pi, 
+		safeSendMessage(
+			pi,
 			{
 				customType: "ferment_worktree_warning",
 				content: [{ type: "text", text: wtCheck.message }],
@@ -84,7 +85,8 @@ export function resumeFerment(
 
 	const wtCheck = checkWorktree(existing)
 	if (wtCheck.severity !== "ok" && wtCheck.message) {
-		safeSendMessage(pi, 
+		safeSendMessage(
+			pi,
 			{
 				customType: "ferment_worktree_warning",
 				content: [{ type: "text", text: wtCheck.message }],
@@ -122,7 +124,8 @@ export function resumeFerment(
 				planMarkdown: persisted.planMarkdown,
 			})
 			const breadcrumb = `Resumed ferment: "${existing.name}" [${existing.status}] · plan review re-armed from saved proposal`
-			safeSendMessage(pi, 
+			safeSendMessage(
+				pi,
 				{
 					customType: "ferment_breadcrumb",
 					content: [{ type: "text", text: breadcrumb }],
@@ -158,7 +161,8 @@ export function resumeFerment(
 			? `RESUMING ferment "${existing.name}" — the previous session was interrupted. Pick up the work immediately. Do NOT explain or summarize — execute the next action below.\n\n${baseMsg}`
 			: baseMsg
 
-	safeSendMessage(pi, 
+	safeSendMessage(
+		pi,
 		{
 			customType: "ferment_breadcrumb",
 			content: [{ type: "text", text: breadcrumb }],
@@ -167,7 +171,8 @@ export function resumeFerment(
 		},
 		{ triggerTurn: false },
 	)
-	safeSendMessage(pi, 
+	safeSendMessage(
+		pi,
 		{
 			customType: "ferment_resume_nudge",
 			content: [{ type: "text", text: imperative }],
