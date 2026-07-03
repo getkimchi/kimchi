@@ -25,6 +25,7 @@ import type { CompactionResult, ExtensionAPI, ExtensionContext } from "@earendil
 import { determineNextAction } from "../../ferment/engine.js"
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
 import { COMPACTION_RESERVE_TOKENS } from "../compaction-thresholds.js"
+import { getModelRoles, splitModelRef } from "../orchestration/model-roles.js"
 import type { FermentRuntime } from "./runtime.js"
 import { safeSendMessage, tryPiAction } from "./safe-send.js"
 import { scheduleNextFermentAction } from "./scheduler.js"
@@ -205,6 +206,27 @@ function findActivePhaseAndStep(ferment: Ferment): { phase?: Phase; step?: Step 
 	const phase = ferment.phases.find((p) => p.status === "active")
 	const step = phase?.steps.find((s) => s.status === "running")
 	return { phase, step }
+}
+
+/**
+ * Resolve the `modelRoles.compactor` override (see model-roles.ts) into a
+ * registered model, mirroring judge.ts's role-to-model resolution. Returns
+ * undefined when the role is unset, unparseable, or not in the registry —
+ * inlineCompact() then falls back to the session's active model, so a bad
+ * or missing config never blocks compaction.
+ */
+function resolveCompactorModel(
+	ctx: ExtensionContext,
+): ReturnType<NonNullable<ExtensionContext["modelRegistry"]>["find"]> {
+	try {
+		const ref = getModelRoles().compactor
+		if (!ref) return undefined
+		const parsed = splitModelRef(ref)
+		if (!parsed) return undefined
+		return ctx.modelRegistry?.find(parsed.provider, parsed.modelId)
+	} catch {
+		return undefined
+	}
 }
 
 /** Build the custom instructions string passed to compaction. */
@@ -473,6 +495,17 @@ async function triggerCompactionForPending(
 		try {
 			const result = await ctx.inlineCompact({
 				customInstructions,
+				// Optional override so compaction's summarization call can run on a
+				// separate (e.g. cheaper) model instead of the session's active one.
+				// Undefined when unconfigured/unavailable — inlineCompact falls back
+				// to the session model exactly as before.
+				model: resolveCompactorModel(ctx),
+				// Compaction is pure summarization and never benefits from extended
+				// thinking. Every model in Kimchi's catalog currently reports
+				// `reasoning: true`, so picking a different `model` above does not by
+				// itself skip reasoning — force it off here regardless of which model
+				// (configured compactor or session default) ends up handling the call.
+				thinkingLevel: "off",
 				// Ferment compaction is stage-boundary driven, not threshold driven.
 				// Force keeps automated runs compacting proactively between stages.
 				force: true,

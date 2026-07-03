@@ -10,6 +10,7 @@
 import type { CompactionResult, ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
+import { applyRoleAugmentation, resetModelRolesCache } from "../orchestration/model-roles.js"
 import {
 	buildCustomInstructions,
 	buildHandoffDetails,
@@ -434,6 +435,7 @@ describe("maybeTriggerFermentCompaction", () => {
 		runtime.clearCompactionInFlight("ferment-2")
 		clearPendingCompaction("ferment-1")
 		clearPendingCompaction("ferment-2")
+		resetModelRolesCache()
 		vi.restoreAllMocks()
 	})
 
@@ -523,6 +525,7 @@ describe("maybeTriggerFermentCompaction", () => {
 		expect(ctx.inlineCompact).toHaveBeenCalledWith({
 			customInstructions: expect.stringContaining("Ferment: My Ferment"),
 			force: true,
+			thinkingLevel: "off",
 		})
 		// The handoff must already be in the session while compaction runs: it is
 		// the newest valid cut point, so the cut lands on it and the next stage
@@ -555,6 +558,63 @@ describe("maybeTriggerFermentCompaction", () => {
 		expect(nudgeCall[1]).toMatchObject({ triggerTurn: true, deliverAs: "steer" })
 	})
 
+	it("resolves modelRoles.compactor into ctx.inlineCompact's model option", async () => {
+		const ferment = makeFermentWithPhase(
+			{ id: "phase-1", name: "Phase", goal: "Goal" },
+			{ id: "step-1", description: "Do it" },
+		)
+		storageMap.set(ferment.id, ferment)
+		runtime.setActive(ferment)
+		setPendingCompaction(ferment.id, makePendingStep(ferment.id, "phase-1", "step-1"))
+
+		applyRoleAugmentation((roles) => ({ ...roles, compactor: "kimchi-dev/non-reasoning-model" }))
+		const compactorModel = { provider: "kimchi-dev", id: "non-reasoning-model" }
+		const find = vi.fn(() => compactorModel)
+		ctx.modelRegistry = { find } as unknown as ExtensionContext["modelRegistry"]
+		ctx.inlineCompact = vi.fn(async () => ({
+			summary: "compacted",
+			firstKeptEntryId: "entry-1",
+			tokensBefore: 10,
+		}))
+
+		await maybeTriggerFermentCompaction(pi, ctx, runtime)
+
+		expect(find).toHaveBeenCalledWith("kimchi-dev", "non-reasoning-model")
+		expect(ctx.inlineCompact).toHaveBeenCalledWith(
+			expect.objectContaining({ model: compactorModel, force: true, thinkingLevel: "off" }),
+		)
+	})
+
+	it("omits the model override when modelRoles.compactor is unset", async () => {
+		const ferment = makeFermentWithPhase(
+			{ id: "phase-1", name: "Phase", goal: "Goal" },
+			{ id: "step-1", description: "Do it" },
+		)
+		storageMap.set(ferment.id, ferment)
+		runtime.setActive(ferment)
+		setPendingCompaction(ferment.id, makePendingStep(ferment.id, "phase-1", "step-1"))
+
+		// Force compactor unset regardless of the real ~/.config/kimchi/harness/settings.json
+		// on the machine running this test — getModelRoles() reads that file directly
+		// (same as judge.ts), so a locally configured compactor role would otherwise
+		// leak into this "unset" scenario.
+		applyRoleAugmentation((roles) => ({ ...roles, compactor: undefined }))
+
+		const find = vi.fn()
+		ctx.modelRegistry = { find } as unknown as ExtensionContext["modelRegistry"]
+		ctx.inlineCompact = vi.fn(async () => ({
+			summary: "compacted",
+			firstKeptEntryId: "entry-1",
+			tokensBefore: 10,
+		}))
+
+		await maybeTriggerFermentCompaction(pi, ctx, runtime)
+
+		expect(find).not.toHaveBeenCalled()
+		const call = (ctx.inlineCompact as ReturnType<typeof vi.fn>).mock.calls[0][0] as { model?: unknown }
+		expect(call.model).toBeUndefined()
+	})
+
 	it("appends a handoff without continuing when one-shot inline compaction is skipped", async () => {
 		const ferment = makeFermentWithPhase(
 			{ id: "phase-1", name: "Phase", goal: "Goal" },
@@ -573,6 +633,7 @@ describe("maybeTriggerFermentCompaction", () => {
 		expect(ctx.inlineCompact).toHaveBeenCalledWith({
 			customInstructions: expect.stringContaining("Ferment: My Ferment"),
 			force: true,
+			thinkingLevel: "off",
 		})
 		expect(ctx.ui.notify).not.toHaveBeenCalled()
 		expect(runtime.isCompactionInFlight(ferment.id)).toBe(false)

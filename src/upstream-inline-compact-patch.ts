@@ -4,6 +4,7 @@
  * reuses PI's internal prepare/compact functions and extension events, but skips
  * the manual compact path's session disconnect + abort.
  */
+import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai"
 import {
 	AgentSession,
 	type CompactionResult,
@@ -19,6 +20,19 @@ import {
 export interface InlineCompactOptions {
 	customInstructions?: string
 	force?: boolean
+	/** Override model for the summarization call. Falls back to the session's
+	 *  active model when omitted (prior behavior). Lets callers (e.g. Ferment's
+	 *  stage-boundary compaction) point summarization at a separate, cheaper or
+	 *  non-reasoning model — upstream's summarizer already gates thinkingLevel
+	 *  on `model.reasoning`, so a non-reasoning model here needs no other patch. */
+	model?: Model<Api>
+	/** Override thinking level for the summarization call. Falls back to the
+	 *  session's current thinking level when omitted. Every model in Kimchi's
+	 *  catalog today reports `reasoning: true` (some hybrid, some just not yet
+	 *  gated off at the compat layer), so picking a different `model` above does
+	 *  not by itself guarantee no reasoning tokens are spent — this is the actual
+	 *  lever for that. */
+	thinkingLevel?: ModelThinkingLevel
 }
 
 type CompactionSettingsLike = {
@@ -203,11 +217,12 @@ async function runInlineCompact(
 		if (signal.aborted) {
 			throw new Error("Compaction cancelled")
 		}
-		if (!session.model) {
+		const compactionModel = options.model ?? session.model
+		if (!compactionModel) {
 			throw new Error("No model selected")
 		}
 
-		const { apiKey, headers } = await session._getCompactionRequestAuth(session.model)
+		const { apiKey, headers } = await session._getCompactionRequestAuth(compactionModel)
 		const pathEntries = session.sessionManager.getBranch()
 		const settings = session.settingsManager.getCompactionSettings()
 		// force means "compact everything before the newest valid cut point", so
@@ -254,12 +269,12 @@ async function runInlineCompact(
 		if (!compactionResult) {
 			compactionResult = await compact(
 				preparation,
-				session.model,
+				compactionModel,
 				apiKey,
 				headers,
 				customInstructions,
 				signal,
-				session.thinkingLevel,
+				options.thinkingLevel ?? session.thinkingLevel,
 				session.agent.streamFn,
 			)
 		}

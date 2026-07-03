@@ -1,3 +1,4 @@
+import type { Api, Model } from "@earendil-works/pi-ai"
 import type { CompactionResult } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import {
@@ -213,6 +214,120 @@ describe("installInlineCompactPatch", () => {
 				expect.objectContaining({ type: "compaction_start", reason: "threshold" }),
 				expect.objectContaining({ type: "compaction_end", reason: "threshold", aborted: false }),
 			]),
+		)
+	})
+
+	it("uses options.model for auth and compaction instead of the session model when provided", async () => {
+		const compact = vi.fn(async () => ({
+			summary: "summary",
+			firstKeptEntryId: "m1",
+			tokensBefore: 42,
+			details: { source: "llm" },
+		}))
+		const module = makeCompactionModule({ compact })
+		installWith(module)
+		const session = new FakeSession()
+		const overrideModel: Model<Api> = {
+			id: "non-reasoning-model",
+			name: "Non-Reasoning Model",
+			api: "openai-completions",
+			provider: "kimchi-dev",
+			baseUrl: "https://example.test",
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 128_000,
+			maxTokens: 8_192,
+		}
+
+		await inlineSession(session).inlineCompact({ customInstructions: "keep ferment", model: overrideModel })
+
+		expect(session._getCompactionRequestAuth).toHaveBeenCalledWith(overrideModel)
+		expect(compact).toHaveBeenCalledWith(
+			expect.anything(),
+			overrideModel,
+			"key",
+			{ "x-test": "1" },
+			"keep ferment",
+			expect.any(AbortSignal),
+			"low",
+			session.agent.streamFn,
+		)
+	})
+
+	it("falls back to the session model when options.model is omitted", async () => {
+		const compact = vi.fn(async () => ({
+			summary: "summary",
+			firstKeptEntryId: "m1",
+			tokensBefore: 42,
+			details: { source: "llm" },
+		}))
+		const module = makeCompactionModule({ compact })
+		installWith(module)
+		const session = new FakeSession()
+
+		await inlineSession(session).inlineCompact({ customInstructions: "keep ferment" })
+
+		expect(session._getCompactionRequestAuth).toHaveBeenCalledWith(session.model)
+		expect(compact).toHaveBeenCalledWith(
+			expect.anything(),
+			session.model,
+			"key",
+			{ "x-test": "1" },
+			"keep ferment",
+			expect.any(AbortSignal),
+			"low",
+			session.agent.streamFn,
+		)
+	})
+
+	it("uses options.thinkingLevel for the compaction call instead of the session thinking level when provided", async () => {
+		const compact = vi.fn(async () => ({
+			summary: "summary",
+			firstKeptEntryId: "m1",
+			tokensBefore: 42,
+			details: { source: "llm" },
+		}))
+		const module = makeCompactionModule({ compact })
+		installWith(module)
+		const session = new FakeSession()
+
+		await inlineSession(session).inlineCompact({ customInstructions: "keep ferment", thinkingLevel: "off" })
+
+		expect(compact).toHaveBeenCalledWith(
+			expect.anything(),
+			session.model,
+			"key",
+			{ "x-test": "1" },
+			"keep ferment",
+			expect.any(AbortSignal),
+			"off",
+			session.agent.streamFn,
+		)
+	})
+
+	it("falls back to the session thinking level when options.thinkingLevel is omitted", async () => {
+		const compact = vi.fn(async () => ({
+			summary: "summary",
+			firstKeptEntryId: "m1",
+			tokensBefore: 42,
+			details: { source: "llm" },
+		}))
+		const module = makeCompactionModule({ compact })
+		installWith(module)
+		const session = new FakeSession()
+
+		await inlineSession(session).inlineCompact({ customInstructions: "keep ferment" })
+
+		expect(compact).toHaveBeenCalledWith(
+			expect.anything(),
+			session.model,
+			"key",
+			{ "x-test": "1" },
+			"keep ferment",
+			expect.any(AbortSignal),
+			session.thinkingLevel,
+			session.agent.streamFn,
 		)
 	})
 

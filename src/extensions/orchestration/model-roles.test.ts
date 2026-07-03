@@ -27,8 +27,9 @@ import {
 	DEFAULT_MODEL_ROLES,
 	extractCustomConfigs,
 	getAllowedMultiModelRefs,
-	type ModelRoles,
+	getModelRoles,
 	modelIdFromRef,
+	type ModelRoles,
 	normalizeRoleModels,
 	parseModelRoles,
 	resetModelRolesCache,
@@ -560,5 +561,87 @@ describe("getAllowedMultiModelRefs", () => {
 			"provider-e/model-5",
 			"provider-f/model-6",
 		])
+	})
+})
+
+describe("compactor role", () => {
+	it("has no hardcoded default — unset means no override", () => {
+		expect(DEFAULT_MODEL_ROLES.compactor).toBeUndefined()
+	})
+
+	it("parses a valid compactor override", () => {
+		const { roles, warnings } = parseModelRoles({ compactor: "kimchi-dev/kimi-k2.6" })
+		expect(roles.compactor).toBe("kimchi-dev/kimi-k2.6")
+		expect(warnings).toHaveLength(0)
+	})
+
+	it("trims whitespace from a valid compactor override", () => {
+		const { roles } = parseModelRoles({ compactor: "  kimchi-dev/kimi-k2.6  " })
+		expect(roles.compactor).toBe("kimchi-dev/kimi-k2.6")
+	})
+
+	it("warns and ignores a non-string compactor value", () => {
+		const { roles, warnings } = parseModelRoles({ compactor: 42 })
+		expect(roles.compactor).toBeUndefined()
+		expect(warnings).toHaveLength(1)
+		expect(warnings[0].role).toBe("compactor")
+	})
+
+	it("warns and ignores an empty-string compactor value", () => {
+		const { roles, warnings } = parseModelRoles({ compactor: "" })
+		expect(roles.compactor).toBeUndefined()
+		expect(warnings).toHaveLength(1)
+	})
+
+	it("leaves compactor unset when absent from raw settings", () => {
+		const { roles } = parseModelRoles({ orchestrator: "kimchi-dev/kimi-k2.7" })
+		expect(roles.compactor).toBeUndefined()
+	})
+
+	it("validateModelRoles flags an unavailable compactor model", () => {
+		const roles: ModelRoles = { ...DEFAULT_MODEL_ROLES, compactor: "kimchi-dev/does-not-exist" }
+		const result = validateModelRoles(roles, new Set(["kimi-k2.7"]))
+		expect(result.unavailable).toContainEqual({ role: "compactor", configuredModel: "kimchi-dev/does-not-exist" })
+	})
+
+	it("validateModelRoles does not flag compactor when unset", () => {
+		const result = validateModelRoles(DEFAULT_MODEL_ROLES, new Set())
+		expect(result.unavailable.some((u) => u.role === "compactor")).toBe(false)
+	})
+
+	describe("saveModelRoles", () => {
+		const testDir = join(tmpdir(), `kimchi-model-roles-compactor-test-${process.pid}`)
+		const testPath = join(testDir, "settings.json")
+
+		afterEach(() => {
+			try {
+				rmSync(testDir, { recursive: true, force: true })
+			} catch {}
+		})
+
+		it("persists a configured compactor override", () => {
+			saveModelRoles({ ...DEFAULT_MODEL_ROLES, compactor: "kimchi-dev/kimi-k2.6" }, testPath)
+			const saved = JSON.parse(readFileSync(testPath, "utf-8"))
+			expect(saved.modelRoles.compactor).toBe("kimchi-dev/kimi-k2.6")
+		})
+
+		it("omits compactor from the saved file when unset", () => {
+			saveModelRoles({ ...DEFAULT_MODEL_ROLES, builder: "anthropic/claude-sonnet-4-5" }, testPath)
+			const saved = JSON.parse(readFileSync(testPath, "utf-8"))
+			expect(saved.modelRoles.compactor).toBeUndefined()
+		})
+	})
+})
+
+describe("applyRoleAugmentation", () => {
+	it("persists a transform that only changes compactor", () => {
+		applyRoleAugmentation((roles) => ({ ...roles, compactor: "kimchi-dev/kimi-k2.6" }))
+		expect(getModelRoles().compactor).toBe("kimchi-dev/kimi-k2.6")
+	})
+
+	it("is a no-op when the transform returns an equal ModelRoles", () => {
+		const before = getModelRoles()
+		applyRoleAugmentation((roles) => ({ ...roles }))
+		expect(getModelRoles()).toEqual(before)
 	})
 })
