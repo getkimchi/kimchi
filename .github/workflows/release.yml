@@ -4,6 +4,16 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      publish_github_release:
+        description: "Create the GitHub release and upload release assets"
+        type: boolean
+        default: false
+      publish_homebrew:
+        description: "Update getkimchi/homebrew-tap after publishing the GitHub release (requires publish_github_release)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -59,6 +69,8 @@ jobs:
             runner: windows-latest
 
     runs-on: ${{ matrix.runner }}
+    env:
+      RELEASE_VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('0.0.0-dry-run.{0}', github.sha) }}
 
     steps:
       - uses: actions/checkout@v4
@@ -71,11 +83,11 @@ jobs:
 
       - name: Set version from tag
         if: ${{ matrix.os != 'windows' }}
-        run: node scripts/set-version.js "$GITHUB_REF_NAME"
+        run: node scripts/set-version.js "$RELEASE_VERSION"
 
       - name: Set version from tag - windows
         if: ${{ matrix.os == 'windows' }}
-        run: node scripts/set-version.js $env:GITHUB_REF_NAME
+        run: node scripts/set-version.js $env:RELEASE_VERSION
 
       - uses: actions/setup-go@v5
         with:
@@ -186,6 +198,7 @@ jobs:
 
   release:
     needs: [smoke-test]
+    if: ${{ startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || inputs.publish_github_release) }}
     runs-on: ubuntu-latest
 
     steps:
@@ -215,7 +228,7 @@ jobs:
 
   homebrew:
     needs: [release]
-    if: ${{ !contains(github.ref_name, '.rc.') }}
+    if: ${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '.rc.') && (github.event_name == 'push' || (inputs.publish_github_release && inputs.publish_homebrew)) }}
     runs-on: ubuntu-latest
 
     steps:
