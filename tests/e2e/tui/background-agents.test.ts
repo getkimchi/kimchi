@@ -124,13 +124,10 @@ test("Ctrl+X kills background agents one by one", async ({ terminal }) => {
 			artifactName: "agent-kill-ctrl-x-two",
 			models: [{ slug: "basic", displayName: "Fake Basic", input: ["text"] }],
 			responses: [
-				// Orchestrator spawns two background agents in one turn
-				{
-					toolCalls: [
-						backgroundAgentCall("call_kill_1", "first bg", "Reply with: working"),
-						backgroundAgentCall("call_kill_2", "second bg", "Reply with: working"),
-					],
-				},
+				// Orchestrator spawns first background agent
+				{ toolCalls: [backgroundAgentCall("call_kill_1", "first bg", "Reply with: working")] },
+				// Orchestrator spawns second background agent
+				{ toolCalls: [backgroundAgentCall("call_kill_2", "second bg", "Reply with: working")] },
 				// Orchestrator follow-up
 				{ stream: ["acknowledged"] },
 			],
