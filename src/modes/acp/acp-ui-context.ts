@@ -43,8 +43,6 @@ const REQUEST_TYPE = "extension_ui_request"
 
 const NOOP_THEME = createNoopTheme()
 
-type MethodType = PiMethod
-
 /**
  * Build an `ExtensionUIContext` that proxies all interaction through the ACP
  * connection. Bound to a single session — do not share across sessions.
@@ -63,13 +61,13 @@ export function createAcpUIContext(
 	const supportsMethod = (method: PiMethod) => getClientSupportsMethod(clientCapabilities, method)
 
 	async function requestDialog<T extends DialogResponse>(
-		method: MethodType,
+		acpMethod: "pi_editor",
 		payload: Record<string, unknown>,
 		signal: AbortSignal | undefined,
 	): Promise<T | "aborted"> {
 		try {
 			return await requestWithAbort(
-				conn.extMethod(AVAILABLE_METHODS[method], {
+				conn.extMethod(AVAILABLE_METHODS[acpMethod], {
 					type: REQUEST_TYPE,
 					id: randomUUID(),
 					sessionId,
@@ -78,22 +76,25 @@ export function createAcpUIContext(
 				signal,
 			)
 		} catch (err) {
-			logError(AVAILABLE_METHODS[method], err)
+			logError(AVAILABLE_METHODS[acpMethod], err)
 			return { cancelled: true } as T
 		}
 	}
 
-	function notify(method: MethodType, payload: Record<string, unknown>): void {
-		// Rejections are logged but never surface — `notify` returns void.
-		const wire = AVAILABLE_METHODS[method]
+	function notify(
+		payload: Record<string, unknown> & {
+			method: "notify" | "setStatus" | "setWidget" | "set_editor_text"
+		},
+	): void {
+		const acpMethod = AVAILABLE_METHODS.pi_notify
 		conn
-			.extNotification(wire, {
+			.extNotification(acpMethod, {
 				type: REQUEST_TYPE,
 				id: randomUUID(),
 				sessionId,
 				...payload,
 			})
-			.catch((err) => logError(wire, err))
+			.catch((err) => logError(acpMethod, err))
 	}
 
 	// One warning per method per session — extensions probe setStatus/setWidget
@@ -291,39 +292,48 @@ export function createAcpUIContext(
 		},
 
 		notify(message, type) {
-			if (!supportsMethod("pi_notify")) {
-				warnUnsupportedMethod(
-					"notify",
-					`Extension notification dropped (client doesn't advertise _kimchi.dev/pi_notify): ${message}`,
-				)
-				return undefined
+			notify({ method: "notify", message, notifyType: type })
+		},
+
+		setEditorText(text) {
+			notify({ method: "set_editor_text", text })
+		},
+
+		setStatus(key, text) {
+			notify({
+				method: "setStatus",
+				statusKey: key,
+				statusText: text,
+			})
+		},
+
+		setTitle(title) {
+			send({
+				sessionId,
+				update: { sessionUpdate: "session_info_update", title },
+			})
+		},
+
+		setWidget: (key, content, options) => {
+			// Component factories are silently dropped — no ACP equivalent for TUI trees.
+			if (typeof content !== "function") {
+				notify({
+					method: "setWidget",
+					widgetKey: key,
+					widgetLines: content,
+					widgetPlacement: options?.placement,
+				})
 			}
-			notify("pi_notify", { method: "notify", message, notifyType: type })
 		},
 
 		showError(message) {
-			this.notify(message, "error")
+			notify({ method: "notify", message, notifyType: "error" })
 		},
 
 		// TUI-only stubs below — extensions probe these in conditional branches.
 
 		onTerminalInput(_handler) {
 			return () => {}
-		},
-
-		setStatus(key, text) {
-			if (!supportsMethod("pi_setStatus")) {
-				warnUnsupportedMethod(
-					"setStatus",
-					`Extension tried to set status "${key}" but the client doesn't advertise _kimchi.dev/pi_setStatus. The update was dropped.`,
-				)
-				return
-			}
-			notify("pi_setStatus", {
-				method: "setStatus",
-				statusKey: key,
-				statusText: text,
-			})
 		},
 
 		setWorkingMessage(_message) {
@@ -336,25 +346,6 @@ export function createAcpUIContext(
 
 		setHiddenThinkingLabel(_label) {},
 
-		setWidget: (key, content, options) => {
-			// Component factories are silently dropped — no ACP equivalent for TUI trees.
-			if (!supportsMethod("pi_setWidget")) {
-				warnUnsupportedMethod(
-					"setWidget",
-					`Extension tried to set widget "${key}" but the client doesn't advertise _kimchi.dev/pi_setWidget. The widget was dropped.`,
-				)
-				return
-			}
-			if (typeof content !== "function") {
-				notify("pi_setWidget", {
-					method: "setWidget",
-					widgetKey: key,
-					widgetLines: content,
-					widgetPlacement: options?.placement,
-				})
-			}
-		},
-
 		setFooter(factory) {
 			void factory
 		},
@@ -363,30 +354,12 @@ export function createAcpUIContext(
 			void factory
 		},
 
-		setTitle(title) {
-			send({
-				sessionId,
-				update: { sessionUpdate: "session_info_update", title },
-			})
-		},
-
 		custom<T>(_factory: unknown, _options: unknown): Promise<T> {
 			return Promise.resolve(undefined as T)
 		},
 
 		pasteToEditor(text) {
 			ui.setEditorText(text)
-		},
-
-		setEditorText(text) {
-			if (!supportsMethod("pi_set_editor_text")) {
-				warnUnsupportedMethod(
-					"setEditorText",
-					`Extension tried to set editor text but the client doesn't advertise _kimchi.dev/pi_set_editor_text. The update was dropped.`,
-				)
-				return
-			}
-			notify("pi_set_editor_text", { method: "set_editor_text", text })
 		},
 
 		getEditorText() {
@@ -435,11 +408,22 @@ export function createAcpUIContext(
 	return ui
 }
 
+const THEME_OVERRIDES: Partial<ThemeType> = {
+	fg: (_color, text) => text,
+	bg: (_color, text) => text,
+	bold: (text) => text,
+	italic: (text) => text,
+	underline: (text) => text,
+	inverse: (text) => text,
+	strikethrough: (text) => text,
+}
+
 /** Theme-shaped object whose every property access is a no-op. */
 function createNoopTheme(): ThemeType {
 	return new Proxy({} as ThemeType, {
 		get(_target, prop) {
 			if (prop === "then" || prop === "catch") return undefined
+			if (prop in THEME_OVERRIDES) return THEME_OVERRIDES[prop as keyof ThemeType]
 			return () => undefined
 		},
 	})

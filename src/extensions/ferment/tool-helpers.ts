@@ -12,6 +12,7 @@ import { commandToEvents } from "../../ferment/event-mapper.js"
 import type { Command, TransitionError } from "../../ferment/state-machine.js"
 import { applyCommand } from "../../ferment/state-machine.js"
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
+import { getMultiModelEnabled } from "../prompt-construction/prompt-enrichment.js"
 import { publicToolNameForActionKind } from "./action-tool-names.js"
 import { emitFermentDomainEvent } from "./domain-events-emitter.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
@@ -58,11 +59,19 @@ export function formatNextActionHint(ferment: Ferment): string | undefined {
 		}
 		case "start_step": {
 			const label = stepLabel ?? `step "${action.stepId}"`
-			return `Next action: call \`${toolName}\` to begin ${label}, then immediately spawn an Agent worker for the implementation \u2014 ferment_id "${ferment.id}", phase_id "${action.phaseId}", step_id "${action.stepId}"${verifyHint}.`
+			const relaxed = !getMultiModelEnabled()
+			const startStepSuffix = relaxed
+				? ". Then either spawn an Agent worker for the implementation, or execute the step directly - choose whichever is more efficient."
+				: ", then immediately spawn an Agent worker for the implementation."
+			return `Next action: call \`${toolName}\` to begin ${label} \u2014 ferment_id "${ferment.id}", phase_id "${action.phaseId}", step_id "${action.stepId}"${verifyHint}${startStepSuffix}`
 		}
 		case "complete_step": {
 			const label = stepLabel ?? `step "${action.stepId}"`
-			return `Next action: call \`${toolName}\` with worker_agent_id only after the linked worker for ${label} has a completed outcome and completed report \u2014 ferment_id "${ferment.id}", phase_id "${action.phaseId}", step_id "${action.stepId}"${verifyHint}.`
+			const relaxed = !getMultiModelEnabled()
+			const completeStepSuffix = relaxed
+				? " If you executed the step directly (no subagent), omit worker_agent_id and include just the summary and gates."
+				: ""
+			return `Next action: call \`${toolName}\` with worker_agent_id after the linked worker for ${label} has a completed outcome and completed report \u2014 ferment_id "${ferment.id}", phase_id "${action.phaseId}", step_id "${action.stepId}"${verifyHint}.${completeStepSuffix}`
 		}
 		case "verify_step": {
 			const label = stepLabel ?? `step "${action.stepId}"`

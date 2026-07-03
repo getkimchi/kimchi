@@ -5,6 +5,7 @@ export const FILE_TOOLS = new Set(["read", "write", "edit", "ls", "grep", "find"
 
 const STATIC_CATEGORIES: Record<string, ToolCategory> = {
 	read: "readOnly",
+	skill: "readOnly",
 	grep: "readOnly",
 	find: "readOnly",
 	ls: "readOnly",

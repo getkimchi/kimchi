@@ -176,5 +176,9 @@ export function resumeFerment(
 		{ triggerTurn: true },
 	)
 
-	scheduleFermentWakeUp(pi, runtime, { ...opts, fermentId: existing.id, tag: "Resume wake-up" })
+	// `resumeFerment` already sent a `ferment_resume_nudge` with triggerTurn for
+	// this ferment. Passing `skipNudge` prevents `scheduleFermentWakeUp` from
+	// queuing a duplicate `ferment_continuation_nudge` for the same scope action
+	// (only affects draft ferments where determineNextAction returns { kind: "scope" }).
+	scheduleFermentWakeUp(pi, runtime, { ...opts, fermentId: existing.id, tag: "Resume wake-up", skipNudge: true })
 }

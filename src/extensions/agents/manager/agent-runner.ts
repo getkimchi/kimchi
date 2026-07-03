@@ -15,7 +15,7 @@ import {
 import { loadConfig, readTelemetryConfig } from "../../../config.js"
 import { getAvailableModels } from "../../../startup-context.js"
 import { runAsAgentWorker } from "../../agent-worker-context.js"
-import bashDefaultTimeoutExtension from "../../bash-default-timeout.js"
+import bashDefaultTimeoutExtension, { createSubagentBashClampExtension } from "../../bash-default-timeout.js"
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
 import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
@@ -293,9 +293,20 @@ function resetUsage(usage: LifetimeUsage): void {
 	usage.cacheWrite = 0
 }
 
+/**
+ * Hard-abort the session: kill any in-flight bash process tree, then abort the agent loop.
+ * session.abort() alone does NOT kill in-flight bash (upstream gap), so we call abortBash()
+ * to trigger killProcessTree on the bash subprocess. Uses optional chaining so test mocks
+ * without abortBash don't break.
+ */
+function hardAbort(session: AgentSession): void {
+	session.abortBash?.()
+	session.abort()
+}
+
 function forwardAbortSignal(session: AgentSession, signal?: AbortSignal): () => void {
 	if (!signal) return () => {}
-	const onAbort = () => session.abort()
+	const onAbort = () => hardAbort(session)
 	signal.addEventListener("abort", onAbort, { once: true })
 	return () => signal.removeEventListener("abort", onAbort)
 }
@@ -415,10 +426,21 @@ async function runAgentInner(
 
 	const agentDir = getAgentDir()
 
+	// The subagent budget clamp must be wired with the deadline computed
+	// at run time (startTimeMs + maxDuration). Resolve the effective
+	// max_duration here so the bash clamp extension sees it at registration.
+	const effectiveMaxDuration = options.maxDuration ?? agentConfig?.maxDuration ?? DEFAULT_MAX_DURATION
+
 	// Repo-native extensions registered directly by the Kimchi CLI are not
 	// discovered by a child session's DefaultResourceLoader. Register this
 	// safety hook explicitly so worker bash calls get the same default timeout.
-	const extensionFactories = [telemetryExtension(readTelemetryConfig()), bashDefaultTimeoutExtension]
+	// When max_duration is 0 (unlimited), skip the clamp and use the plain
+	// default-timeout extension so bash calls keep their unlimited semantics.
+	const bashExtension =
+		effectiveMaxDuration > 0
+			? createSubagentBashClampExtension(effectiveMaxDuration, Date.now())
+			: bashDefaultTimeoutExtension
+	const extensionFactories = [telemetryExtension(readTelemetryConfig()), bashExtension]
 	if (options.workerReport) {
 		extensionFactories.push(createWorkerReportExtension(options.workerReport))
 	}
@@ -557,7 +579,7 @@ async function runAgentInner(
 				if (options.hardTurnLimit && turnCount >= effectiveMaxTurns) {
 					aborted = true
 					abortReason = "max_turns"
-					session.abort()
+					hardAbort(session)
 				} else if (!softLimitReached && turnCount >= effectiveMaxTurns) {
 					softLimitReached = true
 					steerAsOrchestrator(
@@ -567,7 +589,7 @@ async function runAgentInner(
 				} else if (softLimitReached && turnCount >= effectiveMaxTurns + graceTurns) {
 					aborted = true
 					abortReason = "max_turns"
-					session.abort()
+					hardAbort(session)
 				} else if (!softLimitReached && nextProgressIdx < PROGRESS_STEER_POINTS.length) {
 					const point = PROGRESS_STEER_POINTS[nextProgressIdx]
 					if (point && turnCount >= effectiveMaxTurns * point.threshold) {
@@ -585,13 +607,19 @@ async function runAgentInner(
 			options.onTextDelta?.(event.assistantMessageEvent.delta, currentMessageText)
 		}
 		if (event.type === "tool_execution_start") {
-			options.onToolActivity?.({ type: "start", toolName: event.toolName })
+			if (budgetAborted) {
+				// R2: token_budget was exceeded on a previous message_end. Re-abort
+				// to ensure the agent loop halts and this tool call is skipped.
+				hardAbort(session)
+			} else {
+				options.onToolActivity?.({ type: "start", toolName: event.toolName })
+			}
 		}
 		if (event.type === "tool_execution_end") {
 			options.onToolActivity?.({ type: "end", toolName: event.toolName })
 			if (event.toolName === WORKER_REPORT_TOOL_NAME && options.workerReport?.isAccepted()) {
 				reportAccepted = true
-				queueMicrotask(() => session.abort())
+				queueMicrotask(() => hardAbort(session))
 			}
 		}
 		if (event.type === "message_end" && event.message.role === "assistant") {
@@ -618,7 +646,7 @@ async function runAgentInner(
 						console.warn(
 							`[agent-runner] token budget exceeded (cumulative=${cumulativeTokens}, budget=${effectiveTokenBudget}); aborting`,
 						)
-						session.abort()
+						hardAbort(session)
 					} else if (!tokenSoftLimitSteered && cumulativeTokens >= effectiveTokenBudget * 0.8) {
 						tokenSoftLimitSteered = true
 						steerAsOrchestrator(
@@ -640,7 +668,7 @@ async function runAgentInner(
 		if (inactivity.steered && elapsed >= inactivityTimeout) {
 			aborted = true
 			abortReason = "inactivity"
-			session.abort()
+			hardAbort(session)
 		} else if (!inactivity.steered && elapsed >= inactivityTimeout) {
 			inactivity.steered = true
 			steerAsOrchestrator(session, "You appear to be stalled. Resume work immediately or summarize your progress.")
@@ -653,12 +681,11 @@ async function runAgentInner(
 	}
 	options.onRuntimeCleanupRegistered?.(cleanupInactivityInterval)
 
-	const effectiveMaxDuration = options.maxDuration ?? agentConfig?.maxDuration ?? DEFAULT_MAX_DURATION
 	const durationTimer = effectiveMaxDuration
 		? setTimeout(() => {
 				aborted = true
 				abortReason = "max_duration"
-				session.abort()
+				hardAbort(session)
 			}, effectiveMaxDuration * 1000)
 		: undefined
 
@@ -799,7 +826,7 @@ export async function resumeAgent(
 				if (options.hardTurnLimit && turnCount >= effectiveMaxTurns) {
 					aborted = true
 					abortReason = "max_turns"
-					session.abort()
+					hardAbort(session)
 				} else if (!softLimitReached && turnCount >= effectiveMaxTurns) {
 					softLimitReached = true
 					steerAsOrchestrator(
@@ -809,16 +836,22 @@ export async function resumeAgent(
 				} else if (softLimitReached && turnCount >= effectiveMaxTurns + graceTurns) {
 					aborted = true
 					abortReason = "max_turns"
-					session.abort()
+					hardAbort(session)
 				}
 			}
 		}
-		if (event.type === "tool_execution_start") options.onToolActivity?.({ type: "start", toolName: event.toolName })
+		if (event.type === "tool_execution_start") {
+			if (budgetAborted) {
+				hardAbort(session)
+			} else {
+				options.onToolActivity?.({ type: "start", toolName: event.toolName })
+			}
+		}
 		if (event.type === "tool_execution_end") {
 			options.onToolActivity?.({ type: "end", toolName: event.toolName })
 			if (options.shouldTerminateAfterTool?.(event.toolName)) {
 				terminationToolCompleted = true
-				queueMicrotask(() => session.abort())
+				queueMicrotask(() => hardAbort(session))
 			}
 		}
 		if (event.type === "message_end" && event.message.role === "assistant") {
@@ -844,7 +877,7 @@ export async function resumeAgent(
 						console.warn(
 							`[agent-runner] resume token budget exceeded (cumulative=${cumulativeTokens}, budget=${effectiveTokenBudget}); aborting`,
 						)
-						session.abort()
+						hardAbort(session)
 					} else if (!tokenSoftLimitSteered && cumulativeTokens >= effectiveTokenBudget * 0.8) {
 						tokenSoftLimitSteered = true
 						steerAsOrchestrator(
@@ -865,7 +898,7 @@ export async function resumeAgent(
 		if (resumeInactivity.steered && elapsed >= resumeInactivityTimeout) {
 			aborted = true
 			abortReason = "inactivity"
-			session.abort()
+			hardAbort(session)
 		} else if (!resumeInactivity.steered && elapsed >= resumeInactivityTimeout) {
 			resumeInactivity.steered = true
 			steerAsOrchestrator(session, "You appear to be stalled. Resume work immediately or summarize your progress.")
@@ -881,7 +914,7 @@ export async function resumeAgent(
 		? setTimeout(() => {
 				aborted = true
 				abortReason = "max_duration"
-				session.abort()
+				hardAbort(session)
 			}, effectiveMaxDuration * 1000)
 		: undefined
 

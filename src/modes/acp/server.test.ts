@@ -4169,7 +4169,7 @@ describe("KimchiAcpAgent loadSession", () => {
 // BEFORE bindAcpExtensions is called. This ensures that when upstream
 // bindExtensions() emits session_start, the permissions extension already
 // has access to the shared controller and doesn't create a duplicate one.
-describe("permission flag controller registration ordering", () => {
+describe("KimchiAcpAgent permission flag controller registration ordering", () => {
 	it("registers permission flag controller before bindAcpExtensions in newSession", async () => {
 		const ordering: string[] = []
 		const fake = new FakeAgentSession("session-ordering-test")
@@ -4323,6 +4323,57 @@ describe("permission flag controller registration ordering", () => {
 		expect(finalController?.getMode()).toEqual({ mode: "plan", source: "user" })
 
 		await agent.shutdown()
+	})
+})
+
+describe("KimchiAcpAgent session event handlers", () => {
+	let fake: FakeAgentSession
+	let agent: KimchiAcpAgent
+	let sessionId: string
+	let updates: SessionNotification[]
+
+	beforeEach(async () => {
+		fake = new FakeAgentSession("session-title")
+		const { conn, updates: recorded } = makeRecordingConn()
+		updates = recorded
+		agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		sessionId = res.sessionId
+		updates.length = 0 // clear the available_commands_update from newSession
+	})
+
+	describe("session_info_changed event", () => {
+		it("emits session_info_update when session_info_changed fires with a name", () => {
+			fake.emit({ type: "session_info_changed", name: "Fix the login bug" })
+
+			const titleUpdates = updates.filter((u) => u.update.sessionUpdate === "session_info_update")
+			expect(titleUpdates).toHaveLength(1)
+			expect(titleUpdates[0]).toMatchObject({
+				sessionId,
+				update: { sessionUpdate: "session_info_update", title: "Fix the login bug" },
+			})
+		})
+
+		it("does not emit session_info_update when name is undefined", () => {
+			fake.emit({ type: "session_info_changed", name: undefined })
+
+			const titleUpdates = updates.filter((u) => u.update.sessionUpdate === "session_info_update")
+			expect(titleUpdates).toHaveLength(0)
+		})
+
+		it("emits the latest name when session_info_changed fires multiple times", () => {
+			fake.emit({ type: "session_info_changed", name: "Draft title" })
+			fake.emit({ type: "session_info_changed", name: "Final title" })
+
+			const titleUpdates = updates.filter((u) => u.update.sessionUpdate === "session_info_update")
+			expect(titleUpdates).toHaveLength(2)
+			expect((titleUpdates[0].update as { title?: string }).title).toBe("Draft title")
+			expect((titleUpdates[1].update as { title?: string }).title).toBe("Final title")
+		})
 	})
 })
 

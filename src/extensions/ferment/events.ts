@@ -450,16 +450,10 @@ export function registerFermentEvents(
 			// strip all tools from the subagent on the first turn.
 			return {}
 		}
-		// Only apply a ferment profile when a ferment is active. In normal chat
-		// mode (no active ferment) leave the toolset untouched so the user gets
-		// the full tool set. The idle profile (discovery-only) is applied by
-		// command handlers when entering/exiting ferment mode, not here.
-		if (!runtime.getActive()) {
-			return {}
-		}
-		// One-shot and interactive flows share the unified profile model: derive
-		// the profile from the active ferment's lifecycle state (planning vs.
-		// implementation). Both modes drive off the same runtime.
+		// One-shot, interactive, and normal chat share the unified profile model:
+		// derive the profile from runtime state. With no active ferment this
+		// resolves to the idle profile, which preserves normal tools and
+		// list_ferments while hiding ferment workflow tools.
 		applyFermentRuntimeToolProfile(pi, runtime)
 		return {}
 	})

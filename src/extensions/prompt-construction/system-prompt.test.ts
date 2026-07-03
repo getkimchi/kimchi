@@ -524,5 +524,27 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain("uncertain about a library API")
 			expect(result).toContain("assume your knowledge may be stale")
 		})
+
+		it("makes subagent spawning opt-in and defaults to the current model", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				currentModelId: "minimax-m3",
+				mode: "single",
+			})
+			// New behavior: default is to handle work directly, do not spawn subagents.
+			expect(result).toContain("Handle tasks directly yourself.")
+			expect(result).toContain("Do not spawn subagents")
+			expect(result).toContain("only do so when the user explicitly asks for delegation")
+			// When a subagent IS spawned, default to the parent's model and only
+			// use a different model if the user explicitly instructs it.
+			expect(result).toContain("pass your own model ID")
+			expect(result).toContain("by default")
+			expect(result).toContain("only use a different model if the user explicitly instructs")
+			// Old autonomous-delegate phrasing must be gone.
+			expect(result).not.toContain("clearly beneficial")
+			expect(result).not.toContain("MUST always pass")
+			expect(result).not.toContain("never delegate to a different model")
+		})
 	})
 })

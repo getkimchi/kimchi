@@ -728,6 +728,18 @@ export class KimchiAcpAgent implements Agent {
 				})
 				return
 			}
+			case "session_info_changed": {
+				const name = event.name
+				if (!name) return
+				this.send({
+					sessionId,
+					update: {
+						sessionUpdate: "session_info_update",
+						title: name,
+					},
+				})
+				return
+			}
 			default:
 				return
 		}

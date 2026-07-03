@@ -503,7 +503,23 @@ describe("CompleteStepParams schema", () => {
 			],
 		}
 
-		expect(Value.Check(CompleteStepParams, payload)).toBe(false)
+		expect(Value.Check(CompleteStepParams, payload)).toBe(true)
+	})
+
+	it("accepts payload without worker_agent_id (orchestrator executed directly)", () => {
+		const payload = {
+			ferment_id: "f-123",
+			phase_id: "phase-1",
+			step_id: "step-1",
+			summary: "done directly",
+			gates: [
+				{ id: "S1", verdict: "pass", rationale: "ok", evidence: "n/a" },
+				{ id: "S2", verdict: "pass", rationale: "ok", evidence: "n/a" },
+				{ id: "S3", verdict: "pass", rationale: "ok", evidence: "n/a" },
+			],
+		}
+
+		expect(Value.Check(CompleteStepParams, payload)).toBe(true)
 	})
 })
 
