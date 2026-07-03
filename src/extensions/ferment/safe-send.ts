@@ -12,6 +12,11 @@
  * This helper mirrors the established guard pattern from `prompt-summary.ts`:
  * wrap `sendMessage` in try/catch and silently bail when `isStaleCtxError`
  * fires. Non-stale errors are re-thrown so genuine failures still surface.
+ *
+ * Note: `ExtensionAPI.sendMessage` returns `void`, not a `Promise` — the
+ * stale-ctx `assertActive()` throw is synchronous. This guard only covers
+ * synchronous throws; if a future upstream change makes `sendMessage` async,
+ * callers that await it should handle async rejections separately.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { isStaleCtxError } from "../stale-ctx.js"
