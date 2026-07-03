@@ -1,7 +1,8 @@
 // ACP integration: client advertises neither `elicitation.form` nor any
 // `_kimchi.dev/pi_*` method. Expected: basic ACP flows still work; tool-call
 // permissions fall back to `requestPermission`; fire-and-forget UI calls
-// surface as `[ACP]` agent_message_chunk warnings.
+// are sent unconditionally via `_kimchi.dev/pi_notify` (no capability gate,
+// no `[ACP]` warnings).
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { type AcpFixture, startAcpFixture } from "./support/acp-fixture.js"
@@ -61,16 +62,10 @@ describe("ACP integration — no capabilities", () => {
 		).toBeGreaterThanOrEqual(1)
 		expect(t2.chunks, "turn 2 agent text contains tool output").toContain("done")
 
+		// Fire-and-forget UI calls (notify + setStatus) are sent
+		// unconditionally via pi_notify — no capability gate.
 		const piNotifications = fixture.client.extNotifications.filter((n) => n.method.startsWith("_kimchi.dev/pi_"))
-		expect(piNotifications, "no _kimchi.dev/pi_* extNotifications").toEqual([])
-
-		const warnings = fixture.client.acpWarnings()
-		expect(warnings.length, "at least one [ACP] warning (notify + setStatus)").toBeGreaterThanOrEqual(2)
-		const notifyWarning = warnings.find((w) => w.includes("test-notify"))
-		const setStatusWarning = warnings.find((w) => w.includes("test-key"))
-		expect(notifyWarning, "notify warning found by test-notify marker").toBeDefined()
-		expect(setStatusWarning, "setStatus warning found by test-key marker").toBeDefined()
-		expect(notifyWarning, "notify warning references missing capability").toContain("_kimchi.dev/pi_notify")
-		expect(setStatusWarning, "setStatus warning references missing capability").toContain("_kimchi.dev/pi_setStatus")
+		expect(piNotifications.length, "pi_notify extNotifications arrive even without advertised capabilities").toBeGreaterThanOrEqual(2)
+		expect(fixture.client.acpWarnings(), "no [ACP] warnings (capability gate removed)").toEqual([])
 	})
 })
