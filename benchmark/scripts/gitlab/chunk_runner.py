@@ -48,6 +48,7 @@ from bench_config import (
     ENV_CODING_AGENT,
     ENV_KIMCHI_FERMENT_ONESHOT,
     ENV_KIMCHI_MULTI_MODEL,
+    ENV_BENCHMARK_TARGET_REF,
     ENV_MODEL,
     is_retryable,
     load_llm_params,
