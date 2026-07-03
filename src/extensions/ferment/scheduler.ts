@@ -5,6 +5,7 @@ import type { Ferment, Phase, Step } from "../../ferment/types.js"
 import { formatActionNudgeLine } from "./action-tool-names.js"
 import { decideContinuation } from "./continuation.js"
 import type { FermentRuntime } from "./runtime.js"
+import type { ContinuationPolicy } from "./state.js"
 
 export interface ScheduleNextFermentActionOptions {
 	allowManualPhaseBoundary?: boolean
@@ -17,6 +18,7 @@ export interface ScheduleFermentWakeUpOptions {
 	allowManualPhaseBoundary?: boolean
 	deliverAs?: "followUp"
 	fermentId?: string
+	skipNudge?: boolean
 	tag?: string
 }
 
@@ -142,8 +144,24 @@ function freshFerment(runtime: FermentRuntime, fermentId?: string): Ferment | un
 	return fresh
 }
 
-function shouldSuppressHiddenNudge(action: DeclarativeAction): boolean {
-	return action.kind === "scope"
+/**
+ * Whether the given action's hidden continuation nudge should be suppressed.
+ *
+ * Scope nudges are suppressed in *interactive* (manual policy) mode only. There
+ * the user drives the propose_ferment_scoping → TUI review → scope_ferment
+ * sequence by hand, so an injected "call scope_ferment now" nudge would race
+ * the user and corrupt the interactive flow (PR #289).
+ *
+ * In *automated* / one-shot mode there is no human driving scoping — the nudge
+ * is the only thing keeping the session alive. Suppressing it there leaves the
+ * model stranded on a text-only stop during draft scoping, which was the single
+ * largest correctable failure mode in terminal-bench-2-1 (16 of 31
+ * scored fails). So for scope actions we suppress only when the continuation
+ * policy is not automated.
+ */
+function shouldSuppressHiddenNudge(action: DeclarativeAction, policy: ContinuationPolicy): boolean {
+	if (action.kind === "scope") return policy !== "automated"
+	return false
 }
 
 export function scheduleNextFermentAction(
@@ -162,7 +180,7 @@ export function scheduleNextFermentAction(
 	if (decision.type !== "continue") return
 
 	const action = decision.action
-	if (shouldSuppressHiddenNudge(action)) return
+	if (shouldSuppressHiddenNudge(action, runtime.getContinuationPolicy())) return
 	const actionPhase = "phaseId" in action ? ferment.phases.find((p) => p.id === action.phaseId) : undefined
 	const activePhase = ferment.phases.find((p) => p.id === ferment.activePhaseId)
 	const displayPhase = actionPhase ?? activePhase
@@ -207,7 +225,8 @@ export function scheduleFermentWakeUp(
 
 	const decision = decideContinuation(ferment, runtime.getContinuationPolicy(), opts)
 	if (decision.type !== "continue") return
-	if (shouldSuppressHiddenNudge(decision.action)) return
+	if (opts.skipNudge && decision.action.kind === "scope") return
+	if (shouldSuppressHiddenNudge(decision.action, runtime.getContinuationPolicy())) return
 
 	const scopeProgress = getScopingProgress(ferment)
 	const tag = opts.tag ?? "Wake-up"

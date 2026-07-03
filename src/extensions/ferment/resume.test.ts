@@ -216,3 +216,18 @@ describe("resumeFerment pending-proposal hydration", () => {
 		deletePendingProposal(ferment.id, h.fermentsDir)
 	})
 })
+
+describe("resumeFerment automated scope-nudge dedup", () => {
+	it("automated draft resume without a persisted proposal does not queue duplicate scoping nudges", () => {
+		const ferment = h.eventStorage.create("Automated Untouched Draft")
+		h.runtime.setContinuationPolicy("automated")
+		h.runtime.setActive(ferment)
+
+		resumeFerment(h.pi, ferment.id, { hasUI: false } as ExtensionCommandContext, h.runtime)
+
+		const hiddenNudges = h.sentMessages
+			.filter((m) => m.customType === "ferment_resume_nudge" || m.customType === "ferment_continuation_nudge")
+			.map((m) => m.customType)
+		expect(hiddenNudges).toEqual(["ferment_resume_nudge"])
+	})
+})
