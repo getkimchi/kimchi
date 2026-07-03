@@ -33,9 +33,12 @@ describe("stale-ctx crash on ferment oneshot transition", () => {
 		vi.useRealTimers()
 	})
 
-	it("does not crash when a continuation sendMessage fires against a stale ctx", async () => {
+	it("does not crash when continuation sendMessage and appendEntry fire against a stale ctx", async () => {
 		const handlers = new Map<string, EventHandler>()
 		const sendMessage = vi.fn(() => {
+			throw new Error(STALE_CTX_MESSAGE)
+		})
+		const appendEntry = vi.fn(() => {
 			throw new Error(STALE_CTX_MESSAGE)
 		})
 		let activeTools = ["read", "bash", "start_ferment_step"]
@@ -61,7 +64,7 @@ describe("stale-ctx crash on ferment oneshot transition", () => {
 			setActiveTools: vi.fn((tools: string[]) => {
 				activeTools = tools
 			}),
-			appendEntry: vi.fn(),
+			appendEntry,
 			sendMessage,
 			sendUserMessage: vi.fn(),
 			setModel: vi.fn(),
@@ -111,9 +114,10 @@ describe("stale-ctx crash on ferment oneshot transition", () => {
 
 		// Text-only assistant turn, stopReason "stop", no tool calls. This routes
 		// through maybeInjectReactiveContinuationNudge → scheduleNextFermentAction
-		// → `void pi.sendMessage(...)`. When sendMessage throws synchronously the
-		// void expression rejects the surrounding async turn_end handler,
-		// surfacing the stale-ctx error as an uncaught rejection.
+		// → `tryPiAction(() => { pi.appendEntry(...); safeSendMessage(...) })`.
+		// When appendEntry or sendMessage throw synchronously the surrounding
+		// tryPiAction must catch the stale-ctx error; otherwise it propagates as
+		// an uncaught rejection from the turn_end handler.
 		await turnEnd(
 			{
 				type: "turn_end",
@@ -127,6 +131,6 @@ describe("stale-ctx crash on ferment oneshot transition", () => {
 			{ isIdle: () => true },
 		)
 
-		expect(sendMessage).toHaveBeenCalled()
+		expect(appendEntry).toHaveBeenCalled()
 	})
 })
