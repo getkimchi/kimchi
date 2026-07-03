@@ -788,8 +788,8 @@ describe("plan mode assumption detection", () => {
 			await fireTurnEnd(harness, SHARED_PLAN_TEXT, ctx)
 
 			// appendRefEntry calls pi.sendMessage with customType 'ferment_reference'.
-			// It uses void pi.sendMessage(msg) with no second arg.
-			expect(harness.pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: "ferment_reference" }))
+			// safeSendMessage passes (message, options) — options may be undefined.
+			expect(harness.pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: "ferment_reference" }), undefined)
 		} finally {
 			rmSync(tmpDir, { recursive: true, force: true })
 			const { defaultFermentRuntime } = await import("../ferment/runtime.js")
