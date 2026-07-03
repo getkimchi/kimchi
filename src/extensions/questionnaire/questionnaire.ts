@@ -185,7 +185,7 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 		name: "questionnaire",
 		label: "Questionnaire",
 		description:
-			"Ask the user one or more structured questions. Use for clarifying requirements, getting preferences, or confirming decisions before acting. Supports single-select, multi-select, free-text input, and yes/no confirmation. For a single question, shows a simple option list. For multiple questions, shows a tab-based interface. Prefer this over outputting questions as plain text.",
+			"Ask the user one or more structured questions. Use for clarifying requirements, getting preferences, or confirming decisions before acting. Supports single-select, multi-select, free-text input, and yes/no confirmation. For a single question, shows a simple option list. For multiple questions, shows a tab-based interface. Every question in a multi-question form is shown; ask conditional follow-ups in a later call after reading the user's answer. Prefer this over outputting questions as plain text.",
 		parameters: QuestionnaireParams,
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
