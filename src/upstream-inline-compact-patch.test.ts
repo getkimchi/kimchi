@@ -247,22 +247,39 @@ describe("installInlineCompactPatch", () => {
 		)
 	})
 
-	it("honors force by retrying preparation with keepRecentTokens set to zero", async () => {
-		const prepareCompaction = vi
-			.fn()
-			.mockReturnValueOnce(undefined)
-			.mockReturnValueOnce({ firstKeptEntryId: "m1", tokensBefore: 42 })
+	it("honors force by preparing with keepRecentTokens set to zero", async () => {
+		// force must not rely on an undefined-preparation retry: a session smaller
+		// than keepRecentTokens returns a DEFINED preparation with zero
+		// summarizable messages, so force prepares with keepRecentTokens: 0
+		// directly to compact everything before the newest valid cut point.
+		const prepareCompaction = vi.fn(() => ({ firstKeptEntryId: "m1", tokensBefore: 42 }))
 		const module = makeCompactionModule({ prepareCompaction })
 		installWith(module)
 		const session = new FakeSession()
 
 		await inlineSession(session).inlineCompact({ force: true })
 
-		expect(prepareCompaction).toHaveBeenCalledTimes(2)
-		expect(prepareCompaction).toHaveBeenLastCalledWith(session.branch, {
+		expect(prepareCompaction).toHaveBeenCalledTimes(1)
+		expect(prepareCompaction).toHaveBeenCalledWith(session.branch, {
 			enabled: true,
 			reserveTokens: 16_384,
 			keepRecentTokens: 0,
+		})
+	})
+
+	it("keeps default preparation settings when force is not set", async () => {
+		const prepareCompaction = vi.fn(() => ({ firstKeptEntryId: "m1", tokensBefore: 42 }))
+		const module = makeCompactionModule({ prepareCompaction })
+		installWith(module)
+		const session = new FakeSession()
+
+		await inlineSession(session).inlineCompact()
+
+		expect(prepareCompaction).toHaveBeenCalledTimes(1)
+		expect(prepareCompaction).toHaveBeenCalledWith(session.branch, {
+			enabled: true,
+			reserveTokens: 16_384,
+			keepRecentTokens: 20_000,
 		})
 	})
 

@@ -58,6 +58,13 @@
 # separate PR to add previewTheme + showError to ExtensionUIContext.
 # Issue: TODO — file against https://github.com/earendil-works/pi-mono once the
 # API design is confirmed stable.
+#   9. dist/index.js, dist/index.d.ts — re-export prepareCompaction from the package
+#                                 root. Kimchi's inline compaction (src/upstream-inline-compact-patch.ts)
+#                                 needs it, and the package exports map blocks deep imports.
+#                                 A runtime dynamic import of dist/core/compaction/index.js is
+#                                 not an option: it breaks in the Bun-compiled binary (no
+#                                 node_modules on disk) and Bun rejects detached import.meta.resolve.
+#
 #
 # Removal criteria:
 #   - Items 1-3 (before_provider_headers): upstream pi-mono ships BeforeProviderHeadersEvent
@@ -74,7 +81,9 @@
 #     createLocalBashOperations destroys child stdio after a timeout kill (or
 #     waitForChildProcess gains a max-wait that forces resolution), and the
 #     fixed version is pinned in package.json.
-
+#   - Item 9 (prepareCompaction export): upstream pi-coding-agent exports prepareCompaction
+#     from its root entry (or a public subpath) and the fixed version is pinned in package.json.
+#
 diff --git a/dist/cli/args.js b/dist/cli/args.js
 index 6bd8f43b4402dbd24f9262c4c059b2c06693a79c..ad705421fb9087efd8ad2cfbfe8709d198245751 100644
 --- a/dist/cli/args.js
@@ -327,6 +336,28 @@ index bf8a79ebfdbe23415cd1effdd3db0b9ebfd804bc..f69116ceafe8ee7f1e2dbfeaa37f60c5
  }
  function buildEditCallComponent(component, args, theme, cwd) {
      component.setBgFn(getEditHeaderBg(component.preview, component.settledError, theme));
+diff --git a/dist/index.d.ts b/dist/index.d.ts
+index 9258752ae4c5e67408c12d060da02675082d13c4..a91910ce4daad14aa98b99f34b9331a620d2b28d 100644
+--- a/dist/index.d.ts
++++ b/dist/index.d.ts
+@@ -28,4 +28,5 @@ export { parseFrontmatter, stripFrontmatter } from "./utils/frontmatter.ts";
+ export { convertToPng } from "./utils/image-convert.ts";
+ export { formatDimensionNote, type ResizedImage, resizeImage } from "./utils/image-resize.ts";
+ export { getShellConfig } from "./utils/shell.ts";
++export { prepareCompaction } from "./core/compaction/compaction.ts";
+ //# sourceMappingURL=index.d.ts.map
+\ No newline at end of file
+diff --git a/dist/index.js b/dist/index.js
+index f88223cbb2ef8a290b4793755f92a8199edc0520..ac40b0d9b34689ba5463e3c61610748036de3588 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -41,4 +41,5 @@ export { convertToPng } from "./utils/image-convert.js";
+ export { formatDimensionNote, resizeImage } from "./utils/image-resize.js";
+ // Shell utilities
+ export { getShellConfig } from "./utils/shell.js";
++export { prepareCompaction } from "./core/compaction/compaction.js";
+ //# sourceMappingURL=index.js.map
+\ No newline at end of file
 diff --git a/dist/modes/interactive/components/branch-summary-message.js b/dist/modes/interactive/components/branch-summary-message.js
 index e23ca6db02a29814112dd4945bd868604eb6676f..d0f6fd7aeb79c6a20655805152a30970f1b4cc2a 100644
 --- a/dist/modes/interactive/components/branch-summary-message.js

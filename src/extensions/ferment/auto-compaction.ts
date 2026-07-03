@@ -6,10 +6,13 @@
  * The `turn_end` and `agent_end` hooks call `maybeTriggerFermentCompaction` to:
  *   1. Drain ready (non-in-flight) pending entries from the map.
  *   2. Build custom instructions highlighting the ferment plan and stage.
- *   3. Fire `ctx.inlineCompact()` when available, or `ctx.compact()` as a legacy fallback,
- *      to summarise the session.
- *   4. On completion, append a hidden `ferment_stage_handoff` session entry
- *      so the next stage has all context it needs to resume cleanly.
+ *   3. Append a hidden `ferment_stage_handoff` session entry so the next stage
+ *      has all context it needs to resume cleanly. On the inline path this
+ *      happens BEFORE compaction: the handoff is the newest valid cut point,
+ *      so the compaction keeps summary + handoff for the next stage.
+ *   4. Fire `ctx.inlineCompact()` when available, or `ctx.compact()` as a legacy
+ *      fallback (which appends the handoff on completion instead), to summarise
+ *      the session.
  *
  * In-flight tracking lives in `state.ts` (via `FermentRuntime`) so it is
  * scoped to the runtime instance and resets on session_start, not leaked across
@@ -42,6 +45,20 @@ export interface FermentHandoffDetails {
 	completedPhaseSummary?: string
 	/** Number of tokens in the session before compaction was triggered (from CompactionResult.tokensBefore) */
 	compactionTokensBefore?: number
+	/** Why compaction produced no result (skipped or failed). Absent on success.
+	 *  Persisted so headless runs (where ctx.ui.notify is a no-op) remain diagnosable
+	 *  from session files alone. */
+	compactionError?: string
+}
+
+type HandoffContent = Array<{ type: "text"; text: string }>
+type InlineHandoffSessionManager = {
+	appendCustomMessageEntry?: (
+		customType: string,
+		content: HandoffContent,
+		display: boolean,
+		details?: FermentHandoffDetails,
+	) => unknown
 }
 
 /** Return the token count at which we should trigger auto-compaction.
@@ -275,7 +292,7 @@ export function buildMidTurnCustomInstructions(
 }
 
 export function buildHandoffDetails(
-	result: CompactionResult,
+	result: CompactionResult | undefined,
 	ferment: Ferment,
 	pending: PendingCompaction,
 ): FermentHandoffDetails {
@@ -295,7 +312,10 @@ export function buildHandoffDetails(
 		nextPhaseGoal: nextAction?.nextPhaseGoal,
 		completedStepSummary: completedStep?.summary,
 		completedPhaseSummary: completedPhase?.summary,
-		compactionTokensBefore: result.tokensBefore,
+		// Only set when a compaction result exists (legacy ctx.compact path). The
+		// inline path appends the handoff BEFORE compacting, so success there is
+		// signalled by the compaction entry itself, which records tokensBefore.
+		compactionTokensBefore: result?.tokensBefore,
 	}
 }
 
@@ -379,17 +399,24 @@ async function triggerCompactionForPending(
 	/** Append the hidden handoff entry so the next stage always receives
 	 *  plan + stage context, even when compaction is skipped (session too
 	 *  small, already compacted, no model, etc.). */
-	function appendHandoffEntry(result?: CompactionResult): void {
-		const handoff = buildHandoffDetails(
-			result ?? { summary: "", firstKeptEntryId: "", tokensBefore: 0 },
-			ferment,
-			pending,
-		)
+	function appendHandoffEntry(result?: CompactionResult, errorMessage?: string, synchronous = false): void {
+		const handoff = buildHandoffDetails(result, ferment, pending)
+		if (!result && errorMessage) {
+			handoff.compactionError = errorMessage
+		}
+		const content: HandoffContent = [{ type: "text", text: JSON.stringify(handoff) }]
+		const directAppend = synchronous
+			? (ctx.sessionManager as InlineHandoffSessionManager | undefined)?.appendCustomMessageEntry
+			: undefined
+		if (directAppend) {
+			directAppend.call(ctx.sessionManager, "ferment_stage_handoff", content, false, handoff)
+			return
+		}
 		safeSendMessage(
 			pi,
 			{
 				customType: "ferment_stage_handoff",
-				content: [{ type: "text", text: JSON.stringify(handoff) }],
+				content,
 				display: false,
 				details: handoff,
 			},
@@ -431,23 +458,49 @@ async function triggerCompactionForPending(
 		// Always append the handoff entry even when compaction fails/is skipped.
 		// Do not schedule a continuation without a saved compaction summary; the
 		// normal reactive/stop nudges can recover without adding duplicate stale turns.
-		appendHandoffEntry()
+		appendHandoffEntry(undefined, error instanceof Error ? error.message : String(error))
 	}
 
 	if (typeof ctx.inlineCompact === "function") {
-		let result: CompactionResult
+		// Append the handoff BEFORE compacting. At a stage boundary the session
+		// tail is assistant → toolResult, and upstream cannot place a compaction
+		// cut point after a toolResult — without a trailing custom_message entry,
+		// a forced compaction prepares zero summarizable messages and no-ops
+		// (the exact failure observed across whole benchmark runs). The handoff
+		// is a valid cut point, so the cut lands here and the next stage keeps
+		// exactly what it needs: compaction summary + plan handoff.
+		appendHandoffEntry(undefined, undefined, true)
 		try {
-			result = await ctx.inlineCompact({
+			const result = await ctx.inlineCompact({
 				customInstructions,
 				// Ferment compaction is stage-boundary driven, not threshold driven.
 				// Force keeps automated runs compacting proactively between stages.
 				force: true,
 			})
+			runtime.clearCompactionInFlight(fermentId)
+			tryPiAction(() => {
+				pi.appendEntry("ferment_breadcrumb", {
+					text: `Stage compaction complete: ${(result.tokensBefore ?? 0).toLocaleString()} tokens before compaction`,
+				})
+			})
+			scheduleContinuationBestEffort()
 		} catch (error) {
-			handleCompactionFailure(error)
-			return true
+			runtime.clearCompactionInFlight(fermentId)
+			const message = error instanceof Error ? error.message : String(error)
+			// The handoff entry is already appended; persist the skip reason
+			// separately so headless runs (where ui.notify is a no-op) remain
+			// diagnosable from session files alone.
+			tryPiAction(() => {
+				pi.appendEntry("ferment_breadcrumb", {
+					text: `Stage compaction skipped: ${message}`,
+				})
+			})
+			if (error instanceof Error && !isExpectedCompactionError(error)) {
+				ctx.ui?.notify?.(`Stage compaction failed: ${error.message}`, "warning")
+			}
+			// Do not schedule a continuation without a saved compaction summary; the
+			// normal reactive/stop nudges can recover without adding duplicate stale turns.
 		}
-		finishCompaction(result)
 		return true
 	}
 
@@ -552,6 +605,11 @@ export function maybeTriggerMidTurnFermentCompaction(
 				runtime.clearCompactionInFlight(fermentId)
 				if (!isExpectedCompactionError(error)) {
 					ctx.ui?.notify?.(`Mid-turn compaction failed: ${error.message}`, "warning")
+					// ui.notify is a no-op in headless runs — persist the failure so
+					// archives show why the context kept growing past the threshold.
+					pi.appendEntry("ferment_breadcrumb", {
+						text: `Mid-turn compaction failed: ${error.message}`,
+					})
 				}
 			},
 		})

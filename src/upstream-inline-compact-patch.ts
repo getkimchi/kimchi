@@ -4,14 +4,16 @@
  * reuses PI's internal prepare/compact functions and extension events, but skips
  * the manual compact path's session disconnect + abort.
  */
-import { existsSync } from "node:fs"
-import { dirname, join, parse } from "node:path"
-import { fileURLToPath, pathToFileURL } from "node:url"
 import {
 	AgentSession,
 	type CompactionResult,
 	ExtensionRunner,
 	compact as piCompact,
+	// Re-exported from the package root by patches/@earendil-works__pi-coding-agent@0.78.1.patch
+	// (item 7). A static import is required: the Bun-compiled binary has no node_modules on
+	// disk, so any runtime module resolution (import.meta.resolve, dynamic deep imports,
+	// directory walks) fails there even though it works in dev under Node.
+	prepareCompaction as piPrepareCompaction,
 } from "@earendil-works/pi-coding-agent"
 
 export interface InlineCompactOptions {
@@ -116,39 +118,25 @@ export interface InlineCompactPatchOptions {
 	loadCompactionModule?: () => Promise<InlineCompactCompactionModule>
 }
 
-let defaultCompactionModulePromise: Promise<InlineCompactCompactionModule> | undefined
-
-function resolveCodingAgentEntryUrl(): string {
-	const resolver = (import.meta as ImportMeta & { resolve?: (specifier: string) => string }).resolve
-	if (typeof resolver === "function") {
-		return resolver("@earendil-works/pi-coding-agent")
+/** Throw at patch-install time (i.e. process startup) when the statically imported
+ *  compaction internals are missing — a regression here must abort the process, not
+ *  silently skip every compaction at stage boundaries. */
+function assertCompactionInternalsAvailable(): void {
+	if (typeof piPrepareCompaction !== "function" || typeof piCompact !== "function") {
+		throw new Error(
+			"pi-coding-agent compaction internals are incompatible with Kimchi inline compaction " +
+				"(prepareCompaction is not exported from the package root — check that " +
+				"patches/@earendil-works__pi-coding-agent applied)",
+		)
 	}
-
-	let current = dirname(fileURLToPath(import.meta.url))
-	const root = parse(current).root
-	while (true) {
-		const entry = join(current, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "index.js")
-		if (existsSync(entry)) return pathToFileURL(entry).href
-		if (current === root) break
-		current = dirname(current)
-	}
-	throw new Error("Unable to resolve pi-coding-agent from Kimchi inline compaction")
 }
 
 export async function loadDefaultCompactionModule(): Promise<InlineCompactCompactionModule> {
-	defaultCompactionModulePromise ??= (async () => {
-		const packageRoot = resolveCodingAgentEntryUrl()
-		const moduleUrl = new URL("./core/compaction/index.js", packageRoot)
-		const mod = (await import(moduleUrl.href)) as Partial<Pick<InlineCompactCompactionModule, "prepareCompaction">>
-		if (typeof mod.prepareCompaction !== "function") {
-			throw new Error("pi-coding-agent compaction internals are incompatible with Kimchi inline compaction")
-		}
-		return {
-			prepareCompaction: mod.prepareCompaction,
-			compact: piCompact as InlineCompactCompactionModule["compact"],
-		}
-	})()
-	return defaultCompactionModulePromise
+	assertCompactionInternalsAvailable()
+	return {
+		prepareCompaction: piPrepareCompaction as unknown as InlineCompactCompactionModule["prepareCompaction"],
+		compact: piCompact as InlineCompactCompactionModule["compact"],
+	}
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -222,20 +210,21 @@ async function runInlineCompact(
 		const { apiKey, headers } = await session._getCompactionRequestAuth(session.model)
 		const pathEntries = session.sessionManager.getBranch()
 		const settings = session.settingsManager.getCompactionSettings()
-		let preparation = prepareCompaction(pathEntries, settings)
+		// force means "compact everything before the newest valid cut point", so
+		// prepare with keepRecentTokens: 0 directly. Falling back to 0 only when
+		// preparation is undefined is not enough: a session smaller than
+		// keepRecentTokens returns a *defined* preparation with zero summarizable
+		// messages, which turned every small-session forced compaction into a no-op.
+		const preparation = prepareCompaction(pathEntries, options.force ? { ...settings, keepRecentTokens: 0 } : settings)
 
 		if (!preparation) {
 			const lastEntry = pathEntries[pathEntries.length - 1]
 			if (isRecord(lastEntry) && lastEntry.type === "compaction") {
 				throw new Error("Already compacted")
 			}
-			if (!options.force) {
-				throw new Error("Nothing to compact (session too small)")
-			}
-			preparation = prepareCompaction(pathEntries, { ...settings, keepRecentTokens: 0 })
-			if (!preparation) {
-				throw new Error("Nothing to compact (no valid cut point)")
-			}
+			throw new Error(
+				options.force ? "Nothing to compact (no valid cut point)" : "Nothing to compact (session too small)",
+			)
 		}
 		if (isEmptyCompactionPreparation(preparation)) {
 			throw new Error("Nothing to compact (no summarizable messages)")
@@ -322,6 +311,11 @@ export function installInlineCompactPatch(options: InlineCompactPatchOptions = {
 	const sessionClass = options.sessionClass ?? (AgentSession as unknown as PatchableSessionClass)
 	const runnerClass = options.runnerClass ?? (ExtensionRunner as unknown as PatchableRunnerClass)
 	const loadCompactionModule = options.loadCompactionModule ?? loadDefaultCompactionModule
+	// Fail at startup, not at first compaction: a missing prepareCompaction export
+	// once turned every stage-boundary compaction in a benchmark run into a silent no-op.
+	if (!options.loadCompactionModule) {
+		assertCompactionInternalsAvailable()
+	}
 
 	const sessionProto = sessionClass.prototype
 	if (!sessionProto._bindExtensionCore || !sessionProto.abortCompaction || !sessionProto.abort) {

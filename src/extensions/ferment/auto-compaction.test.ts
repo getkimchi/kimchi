@@ -93,8 +93,19 @@ function makeCtx(): ExtensionContext {
 		},
 		sessionManager: {
 			getEntries: vi.fn(() => []),
+			appendCustomMessageEntry: vi.fn(),
 		},
 	} as unknown as ExtensionContext
+}
+
+type AppendCustomMessageEntryMock = ReturnType<typeof vi.fn>
+
+function appendCustomMessageEntryMock(ctx: ExtensionContext): AppendCustomMessageEntryMock {
+	return (
+		ctx.sessionManager as unknown as {
+			appendCustomMessageEntry: AppendCustomMessageEntryMock
+		}
+	).appendCustomMessageEntry
 }
 
 // Simple in-memory storage for maybeTriggerFermentCompaction tests.
@@ -481,7 +492,7 @@ describe("maybeTriggerFermentCompaction", () => {
 		expect(runtime.getPendingCompaction(ferment.id)).toBeDefined()
 	})
 
-	it("awaits one-shot inline compaction before appending handoff and scheduling continuation", async () => {
+	it("appends the handoff before one-shot inline compaction and schedules continuation after", async () => {
 		const ferment = makeFermentWithPhase(
 			{ id: "phase-1", name: "Phase", goal: "Goal" },
 			{ id: "step-1", description: "Do it" },
@@ -495,7 +506,15 @@ describe("maybeTriggerFermentCompaction", () => {
 		const inlineResult = new Promise<CompactionResult>((resolve) => {
 			resolveInline = resolve
 		})
-		ctx.inlineCompact = vi.fn(() => inlineResult)
+		ctx.inlineCompact = vi.fn(() => {
+			expect(appendCustomMessageEntryMock(ctx)).toHaveBeenCalledWith(
+				"ferment_stage_handoff",
+				expect.any(Array),
+				false,
+				expect.objectContaining({ fermentName: "My Ferment" }),
+			)
+			return inlineResult
+		})
 
 		const run = maybeTriggerFermentCompaction(pi, ctx, runtime)
 		await Promise.resolve()
@@ -505,7 +524,20 @@ describe("maybeTriggerFermentCompaction", () => {
 			customInstructions: expect.stringContaining("Ferment: My Ferment"),
 			force: true,
 		})
+		// The handoff must already be in the session while compaction runs: it is
+		// the newest valid cut point, so the cut lands on it and the next stage
+		// keeps summary + handoff.
+		expect(appendCustomMessageEntryMock(ctx)).toHaveBeenCalledTimes(1)
+		const handoffCall = appendCustomMessageEntryMock(ctx).mock.calls[0]
+		expect(handoffCall[0]).toBe("ferment_stage_handoff")
+		expect(handoffCall[1]).toEqual([{ type: "text", text: expect.stringContaining('"fermentName":"My Ferment"') }])
+		expect(handoffCall[2]).toBe(false)
+		expect(handoffCall[3]).toMatchObject({ fermentName: "My Ferment" })
+		// Pre-compaction handoffs carry no token count — success is signalled by
+		// the compaction entry itself.
+		expect((handoffCall[3] as { compactionTokensBefore?: number }).compactionTokensBefore).toBeUndefined()
 		expect(pi.sendMessage).not.toHaveBeenCalled()
+		expect(pi.appendEntry).not.toHaveBeenCalled()
 
 		resolveInline({
 			summary: "compacted ferment",
@@ -514,19 +546,13 @@ describe("maybeTriggerFermentCompaction", () => {
 		})
 		await run
 
-		expect(pi.sendMessage).toHaveBeenCalledTimes(2)
-		const calls = vi.mocked(pi.sendMessage).mock.calls
-		expect(calls[0][0]).toMatchObject({
-			customType: "ferment_stage_handoff",
-			display: false,
-			details: expect.objectContaining({
-				fermentName: "My Ferment",
-				compactionTokensBefore: 123_456,
-			}),
+		expect(pi.appendEntry).toHaveBeenCalledWith("ferment_breadcrumb", {
+			text: expect.stringContaining("Stage compaction complete: 123,456 tokens"),
 		})
-		expect(calls[0][1]).toMatchObject({ triggerTurn: false })
-		expect(calls[1][0]).toMatchObject({ customType: "ferment_continuation_nudge" })
-		expect(calls[1][1]).toMatchObject({ triggerTurn: true, deliverAs: "steer" })
+		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+		const nudgeCall = vi.mocked(pi.sendMessage).mock.calls[0]
+		expect(nudgeCall[0]).toMatchObject({ customType: "ferment_continuation_nudge" })
+		expect(nudgeCall[1]).toMatchObject({ triggerTurn: true, deliverAs: "steer" })
 	})
 
 	it("appends a handoff without continuing when one-shot inline compaction is skipped", async () => {
@@ -550,17 +576,52 @@ describe("maybeTriggerFermentCompaction", () => {
 		})
 		expect(ctx.ui.notify).not.toHaveBeenCalled()
 		expect(runtime.isCompactionInFlight(ferment.id)).toBe(false)
-		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
-		const calls = vi.mocked(pi.sendMessage).mock.calls
-		expect(calls[0][0]).toMatchObject({
-			customType: "ferment_stage_handoff",
-			display: false,
-			details: expect.objectContaining({
-				fermentName: "My Ferment",
-				compactionTokensBefore: 0,
-			}),
+		expect(appendCustomMessageEntryMock(ctx)).toHaveBeenCalledWith(
+			"ferment_stage_handoff",
+			expect.any(Array),
+			false,
+			expect.objectContaining({ fermentName: "My Ferment" }),
+		)
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+		// The skip reason is persisted as a breadcrumb so headless runs stay
+		// diagnosable from session files alone.
+		expect(pi.appendEntry).toHaveBeenCalledWith("ferment_breadcrumb", {
+			text: "Stage compaction skipped: Nothing to compact (session too small)",
 		})
-		expect(calls[0][1]).toMatchObject({ triggerTurn: false })
+	})
+
+	it("persists unexpected inline compaction failures as a breadcrumb and warns", async () => {
+		const ferment = makeFermentWithPhase(
+			{ id: "phase-1", name: "Phase", goal: "Goal" },
+			{ id: "step-1", description: "Do it" },
+		)
+		storageMap.set(ferment.id, ferment)
+		runtime.setActive(ferment)
+		setPendingCompaction(ferment.id, makePendingStep(ferment.id, "phase-1", "step-1"))
+		pi.getFlag = vi.fn((name) => (name === "ferment-oneshot" ? true : undefined))
+		ctx.inlineCompact = vi.fn(async () => {
+			throw new Error("provider exploded")
+		})
+
+		await maybeTriggerFermentCompaction(pi, ctx, runtime)
+
+		// Unexpected errors still warn via the UI when one exists…
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("provider exploded"), "warning")
+		// …but the message must also land in a persisted breadcrumb so headless
+		// runs (ui.notify is a no-op there) stay diagnosable from session files.
+		expect(pi.appendEntry).toHaveBeenCalledWith("ferment_breadcrumb", {
+			text: "Stage compaction skipped: provider exploded",
+		})
+		// The handoff was appended before the compaction attempt and no
+		// continuation is scheduled without a saved summary.
+		expect(appendCustomMessageEntryMock(ctx)).toHaveBeenCalledWith(
+			"ferment_stage_handoff",
+			expect.any(Array),
+			false,
+			expect.objectContaining({ fermentName: "My Ferment" }),
+		)
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+		expect(runtime.isCompactionInFlight(ferment.id)).toBe(false)
 	})
 
 	it("clears pending compaction after triggering", async () => {
