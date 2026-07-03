@@ -218,9 +218,17 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 			if (ctx.mode !== "tui") {
 				result = await promptQuestionnaireFallback(ctx.ui, questions)
 			} else {
-				result = await ctx.ui.custom<QuestionnaireResult>((tui, theme, _kb, done) =>
-					createQuestionForm(tui, theme, questions, { title: params.header }, done),
-				)
+				// Hide the cooking animation while the form has keyboard focus —
+				// showing a spinner behind an interactive prompt is misleading.
+				// Restore it on exit (the turn is still in flight).
+				ctx.ui.setWorkingVisible(false)
+				try {
+					result = await ctx.ui.custom<QuestionnaireResult>((tui, theme, _kb, done) =>
+						createQuestionForm(tui, theme, questions, { title: params.header }, done),
+					)
+				} finally {
+					ctx.ui.setWorkingVisible(true)
+				}
 			}
 
 			if (result.cancelled) {
