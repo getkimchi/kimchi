@@ -22,6 +22,8 @@ import { TUI_TEST_CONFIG, runKimchiSession } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
+const NO_COMPACTION_MODEL = { slug: "basic", displayName: "Fake Basic", contextWindow: 200_000, maxTokens: 8192 }
+
 const PROPOSE_SCOPING_PAYLOAD = JSON.stringify({
 	ferment_id: "__FERMENT_ID__",
 	title: "Test Feature",
@@ -114,6 +116,7 @@ test("plan review: model stops after propose, review dialog appears, user confir
 		{
 			artifactName: "plan-review-confirm",
 			gitInit: true,
+			models: [NO_COMPACTION_MODEL],
 			responses: [
 				// Turn 1: model calls propose_ferment_scoping (questions=[]).
 				{
@@ -128,8 +131,6 @@ test("plan review: model stops after propose, review dialog appears, user confir
 				},
 				// Turn 2: tools suppressed → model produces text-only response (no tool calls).
 				{ stream: ["I've submitted the plan for your review."] },
-				// Compaction request (consumed by auto-compaction before the post-confirmation turn).
-				{ stream: ["Summary."] },
 				// Turn 3: post-confirmation, keeps session alive.
 				{ stream: ["Starting execution now."] },
 			],
@@ -204,6 +205,7 @@ test("plan review: cancel restores planning tools, model can re-propose, ferment
 		{
 			artifactName: "plan-review-cancel",
 			gitInit: true,
+			models: [NO_COMPACTION_MODEL],
 			responses: [
 				// Turn 1: model calls propose_ferment_scoping (questions=[]).
 				{
@@ -218,8 +220,6 @@ test("plan review: cancel restores planning tools, model can re-propose, ferment
 				},
 				// Turn 2: tools suppressed → text-only response.
 				{ stream: ["Plan is ready for review."] },
-				// Compaction request (consumed by auto-compaction before the next agent run).
-				{ stream: ["Summary."] },
 				// Turn 3: after cancel, tools restored → model calls propose_ferment_scoping again.
 				{
 					toolCalls: [
@@ -320,6 +320,7 @@ test("plan review: existing zero-questions scoping flow still works (no regressi
 		{
 			artifactName: "plan-review-regression",
 			gitInit: true,
+			models: [NO_COMPACTION_MODEL],
 			responses: [
 				// Turn 1: model calls propose_ferment_scoping (questions=[]).
 				{
@@ -334,8 +335,6 @@ test("plan review: existing zero-questions scoping flow still works (no regressi
 				},
 				// Turn 2: tools suppressed → text-only response (proves suppression works).
 				{ stream: ["I've outlined the scope for the test feature."] },
-				// Compaction request (consumed by auto-compaction before the post-confirmation turn).
-				{ stream: ["Summary."] },
 				// Turn 3: post-confirmation.
 				{ stream: ["Proceeding with execution."] },
 			],

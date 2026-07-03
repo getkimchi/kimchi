@@ -17,6 +17,8 @@ import { TUI_TEST_CONFIG, runKimchiSession } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
+const NO_COMPACTION_MODEL = { slug: "basic", displayName: "Fake Basic", contextWindow: 200_000, maxTokens: 8192 }
+
 // Minimal propose_ferment_scoping payload used by all three tests to start the ferment.
 const PROPOSE_SCOPING_PAYLOAD = JSON.stringify({
 	ferment_id: "__FERMENT_ID__",
@@ -98,6 +100,7 @@ test("ask_user renders a single-choice question and accepts selection", async ({
 		{
 			artifactName: "ask-user-single-choice",
 			gitInit: true,
+			models: [NO_COMPACTION_MODEL],
 			responses: [
 				// Turn 1: propose scoping so the ferment starts in planning phase.
 				{
@@ -115,8 +118,6 @@ test("ask_user renders a single-choice question and accepts selection", async ({
 				// sets a pending plan review. The model produces a text-only response,
 				// ending the turn so agent_end fires and the review dialog appears.
 				{ stream: ["Plan ready for review."] },
-				// Compaction request (consumed by auto-compaction before the post-confirmation turn).
-				{ stream: ["Summary."] },
 				// Turn 3: ask the user a single-choice question (tools restored after confirm).
 				{
 					stream: ["Let me ask the user."],
@@ -182,6 +183,7 @@ test("confirm_ferment_completion_criteria shows 'Type your own answer' label", a
 		{
 			artifactName: "ask-user-confirm-criteria",
 			gitInit: true,
+			models: [NO_COMPACTION_MODEL],
 			responses: [
 				// Turn 1: propose scoping.
 				{
@@ -199,8 +201,6 @@ test("confirm_ferment_completion_criteria shows 'Type your own answer' label", a
 				// sets a pending plan review. The model produces a text-only response,
 				// ending the turn so agent_end fires and the review dialog appears.
 				{ stream: ["Plan ready for review."] },
-				// Compaction request (consumed by auto-compaction before the post-confirmation turn).
-				{ stream: ["Summary."] },
 				// Turn 3: confirm completion criteria (tools restored after confirm).
 				{
 					stream: ["Let me confirm the criteria."],
@@ -246,6 +246,7 @@ test("ask_user with a confirm question renders Yes/No options", async ({ termina
 		{
 			artifactName: "ask-user-confirm-question",
 			gitInit: true,
+			models: [NO_COMPACTION_MODEL],
 			responses: [
 				// Turn 1: propose scoping.
 				{
@@ -263,8 +264,6 @@ test("ask_user with a confirm question renders Yes/No options", async ({ termina
 				// sets a pending plan review. The model produces a text-only response,
 				// ending the turn so agent_end fires and the review dialog appears.
 				{ stream: ["Plan ready for review."] },
-				// Compaction request (consumed by auto-compaction before the post-confirmation turn).
-				{ stream: ["Summary."] },
 				// Turn 3: ask_user with a confirm question (tools restored after confirm).
 				{
 					stream: ["Let me confirm."],
