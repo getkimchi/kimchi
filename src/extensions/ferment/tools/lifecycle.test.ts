@@ -618,7 +618,7 @@ describe("propose_ferment_scoping description (neutral-static)", () => {
 			...h.pi,
 			registerTool: (tool: RegisteredTool & { description?: string }) => {
 				tools.set(tool.name, tool)
-		},
+			},
 			getActiveTools: vi.fn(() => ["read", "bash"]),
 			getAllTools: vi.fn(() => [{ name: "read" }, { name: "bash" }]),
 			setActiveTools: vi.fn(),

@@ -108,10 +108,7 @@ export function applyCore(profile: ToolProfile, pi: ExtensionAPI): void {
 		allowedNames = pi
 			.getAllTools()
 			.map((t) => t.name)
-			.filter(
-				(name) =>
-					(!isFermentOnlyToolName(name) || isIdleAllowedFermentToolName(name)) && !disabled.has(name),
-			)
+			.filter((name) => (!isFermentOnlyToolName(name) || isIdleAllowedFermentToolName(name)) && !disabled.has(name))
 	} else if (profile === "implementation-ferment") {
 		// Implementation phase: start from the full registered toolset so
 		// MCP/custom/third-party tools are preserved, then merge in the

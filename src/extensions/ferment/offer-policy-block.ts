@@ -16,9 +16,9 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { getPermissionMode } from "../permissions/mode-controller.js"
-import type { FermentRuntime } from "./runtime.js"
-import { isDeclined } from "./offer-decline-store.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
+import { isDeclined } from "./offer-decline-store.js"
+import type { FermentRuntime } from "./runtime.js"
 
 const POLICY_TEXT = `## Ferment Offer Policy
 

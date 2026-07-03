@@ -111,7 +111,18 @@ function clearScopingStatus(ctx: unknown): void {
 // one of these (confirm "no", or a single/multi option id reading as a
 // decline), the session is marked declined so the offer-policy block
 // suppresses re-offering.
-const DECLINE_TOKENS = new Set(["no", "decline", "declined", "cancel", "cancelled", "pause", "abandon", "later", "not_now", "nope"])
+const DECLINE_TOKENS = new Set([
+	"no",
+	"decline",
+	"declined",
+	"cancel",
+	"cancelled",
+	"pause",
+	"abandon",
+	"later",
+	"not_now",
+	"nope",
+])
 
 /** Returns true when the ask_user response reads as a ferment-offer decline.
  *  Used ONLY in the idle path (no active ferment). A confirm "no" or any
@@ -1319,8 +1330,9 @@ Returns structured answer fields on success, or a tool error if no audience can 
 			if (!runtime.getActive()) {
 				const declined = detectOfferDecline(normalizedQuestions, response)
 				if (declined) {
-					const sid = (ctx as { sessionManager?: { getSessionId?: () => string } } | undefined)
-						?.sessionManager?.getSessionId?.()
+					const sid = (
+						ctx as { sessionManager?: { getSessionId?: () => string } } | undefined
+					)?.sessionManager?.getSessionId?.()
 					if (sid) markDeclined(sid)
 				}
 			}
