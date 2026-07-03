@@ -11,6 +11,7 @@ import { Markdown } from "@earendil-works/pi-tui"
 import type { Static } from "typebox"
 import { findFirstPlannedPhase } from "../../../ferment/engine.js"
 import type { Ferment, Phase } from "../../../ferment/types.js"
+import { withWorkingHidden } from "../../ui.js"
 import { askUserForm } from "../ask-user.js"
 import { gradeColor, pr_bold } from "../colors.js"
 import { decideContinuation } from "../continuation.js"
@@ -221,17 +222,14 @@ async function maybeCompleteManualPhaseBoundary(
 	if (!nextPhase) return undefined
 	const summaryLine = copy?.summaryLine ?? `Phase "${completedPhase.name}" done.`
 	if (ctx?.ui?.select) {
-		// Hide the cooking animation while the phase-boundary prompt is shown.
-		ctx.ui.setWorkingVisible?.(false)
-		let choice: string | undefined
-		try {
-			choice = await ctx.ui.select(`${summaryLine}\nContinue "${ferment.name}" to "${nextPhase.name}"?`, [
-				"Continue to next phase",
-				"Pause here",
-			])
-		} finally {
-			ctx.ui.setWorkingVisible?.(true)
-		}
+		const choice = await withWorkingHidden(
+			ctx,
+			() =>
+				ctx.ui?.select?.(`${summaryLine}\nContinue "${ferment.name}" to "${nextPhase.name}"?`, [
+					"Continue to next phase",
+					"Pause here",
+				]) ?? Promise.resolve(undefined),
+		)
 		if (choice === "Continue to next phase") {
 			return toolOk(
 				formatManualPhaseBoundaryContinue(

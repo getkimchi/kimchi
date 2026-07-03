@@ -20,6 +20,7 @@ import { Text, truncateToWidth } from "@earendil-works/pi-tui"
 import { type Static, Type } from "typebox"
 
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
+import { withWorkingHidden } from "../ui.js"
 import { type QuestionnaireResult, promptQuestionnaireFallback } from "./questionnaire-fallback.js"
 import { createQuestionForm } from "./questionnaire-form.js"
 import { type Answer, type Question, type QuestionType, YES_NO_OPTIONS } from "./questionnaire-reducer.js"
@@ -218,17 +219,11 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 			if (ctx.mode !== "tui") {
 				result = await promptQuestionnaireFallback(ctx.ui, questions)
 			} else {
-				// Hide the cooking animation while the form has keyboard focus —
-				// showing a spinner behind an interactive prompt is misleading.
-				// Restore it on exit (the turn is still in flight).
-				ctx.ui.setWorkingVisible(false)
-				try {
-					result = await ctx.ui.custom<QuestionnaireResult>((tui, theme, _kb, done) =>
+				result = await withWorkingHidden(ctx, () =>
+					ctx.ui.custom<QuestionnaireResult>((tui, theme, _kb, done) =>
 						createQuestionForm(tui, theme, questions, { title: params.header }, done),
-					)
-				} finally {
-					ctx.ui.setWorkingVisible(true)
-				}
+					),
+				)
 			}
 
 			if (result.cancelled) {

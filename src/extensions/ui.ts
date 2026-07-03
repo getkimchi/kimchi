@@ -213,6 +213,29 @@ function runScript(scriptPath: string, payload: object, tui: TUI, footer: Script
 	})
 }
 
+/**
+ * Hide the cooking animation while an interactive prompt (ui.custom,
+ * ui.select, ui.input, ui.confirm) has keyboard focus, then restore it.
+ *
+ * Only needed for prompts shown *during a turn* (tool execute(),
+ * permission prompts, ferment step recovery). Command handlers run when the
+ * agent is idle and don't need this.
+ *
+ * Uses try/finally so the indicator is restored even if the prompt throws
+ * or the user cancels.
+ */
+export async function withWorkingHidden<T>(
+	ctx: Pick<ExtensionContext, "ui"> | { ui?: { setWorkingVisible?: (visible: boolean) => void } },
+	fn: () => Promise<T>,
+): Promise<T> {
+	ctx.ui?.setWorkingVisible?.(false)
+	try {
+		return await fn()
+	} finally {
+		ctx.ui?.setWorkingVisible?.(true)
+	}
+}
+
 export default function uiExtension(pi: ExtensionAPI) {
 	let unsubModelCycleInput: (() => void) | null = null
 	let scriptFooter: ScriptFooter | null = null
@@ -473,12 +496,12 @@ export default function uiExtension(pi: ExtensionAPI) {
 	// Interactive prompts (ui.custom, ui.select, ui.input, ui.confirm) are the
 	// one exception: while they have keyboard focus the spinner must be hidden
 	// so it doesn't show behind the form. Each tool that shows an interactive
-	// prompt during a turn is responsible for calling setWorkingVisible(false)
-	// before the prompt and setWorkingVisible(true) after it resolves (use
-	// try/finally to cover cancellation/errors). Currently:
+	// prompt during a turn wraps the call in `withWorkingHidden(ctx, fn)`
+	// (exported below) — it calls setWorkingVisible(false), runs the prompt, then
+	// restores setWorkingVisible(true) in a finally block. Currently:
 	//   - questionnaire       (questionnaire.ts)
-	//   - ask_user / confirm  (ferment/prompt-ui.ts → withWorkingHidden)
-	//   - permission prompts   (permissions/prompts.ts → withWorkingHidden)
+	//   - ask_user / confirm  (ferment/prompt-ui.ts)
+	//   - permission prompts   (permissions/prompts.ts)
 	//   - step recovery        (ferment/tools/steps.ts)
 	//   - phase boundary       (ferment/tools/phases.ts)
 	// Command handlers (/agents, /theme, /mcp, etc.) do NOT need this — they run
