@@ -27,6 +27,13 @@ describe("classifyTool", () => {
 		expect(classifyTool("get_cluster_details")).toBe("readOnly")
 	})
 
+	it("classifies the claude-code-skills `skill` loader as read-only", () => {
+		expect(classifyTool("skill")).toBe("readOnly")
+		expect(classifyTool("Skill")).toBe("readOnly") // case-insensitive
+		expect(classifyTool("skill_view")).toBe("readOnly")
+		expect(classifyTool("skill_manage")).toBe("unknown")
+	})
+
 	it("classifies mcp read tools by trailing segment", () => {
 		expect(classifyTool("mcp__castai_prod_eu__list_clusters")).toBe("readOnly")
 		expect(classifyTool("mcp__castai_prod_eu__get_cluster_details")).toBe("readOnly")
