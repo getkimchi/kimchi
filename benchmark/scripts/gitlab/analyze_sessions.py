@@ -15,6 +15,7 @@ without touching Python string syntax.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shlex
@@ -58,13 +59,15 @@ def build_analysis_prompt(
     results_dir: Path,
     summary_path: Path,
     draft_path: Path,
+    json_path: Path,
 ) -> str:
-    """Build the prompt that instructs Kimchi to analyze sessions and write HTML."""
+    """Build the prompt that instructs Kimchi to analyze sessions and write HTML + JSON."""
     return _load_prompt(
         "analysis_prompt.txt",
         results_dir=results_dir,
         summary_path=summary_path,
         draft_path=draft_path,
+        json_path=json_path,
     )
 
 
@@ -144,7 +147,7 @@ def run_kimchi_attempt(
 
 
 def read_analysis_draft(draft_path: Path) -> tuple[str | None, str | None]:
-    """Read and validate the draft, returning its content and any validation error."""
+    """Read and validate the HTML draft, returning its content and any validation error."""
     try:
         content = draft_path.read_text(encoding="utf-8").strip()
     except OSError:
@@ -152,20 +155,34 @@ def read_analysis_draft(draft_path: Path) -> tuple[str | None, str | None]:
     return content, validate_analysis_html(content)
 
 
+def read_analysis_json(json_path: Path) -> tuple[str | None, str | None]:
+    """Read and validate the JSON draft, returning its content and any validation error."""
+    try:
+        content = json_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None, f"analysis JSON was not written at {json_path}"
+    return content, validate_analysis_json(content)
+
+
 def run_kimchi_analysis(
     *,
     results_dir: Path,
     summary_path: Path,
     draft_path: Path,
+    json_draft_path: Path,
     session_dir: Path,
     timeout_seconds: int,
     max_retries: int,
-) -> str | None:
-    """Run the analysis and resume the session to repair invalid drafts."""
+) -> tuple[str | None, str | None]:
+    """Run the analysis and resume the session to repair invalid drafts.
+
+    Returns (html_content, json_content) — either may be None on failure.
+    """
     prompt = build_analysis_prompt(
         results_dir=results_dir,
         summary_path=summary_path,
         draft_path=draft_path,
+        json_path=json_draft_path,
     )
 
     for attempt in range(max_retries + 1):
@@ -175,21 +192,45 @@ def run_kimchi_analysis(
             timeout_seconds=timeout_seconds,
             continue_session=attempt > 0,
         ):
-            return None
+            return None, None
 
-        content, validation_error = read_analysis_draft(draft_path)
-        if validation_error is None:
-            return content
+        html_content, html_error = read_analysis_draft(draft_path)
+        json_content, json_error = read_analysis_json(json_draft_path)
 
+        if html_error is None and json_error is None:
+            return html_content, json_content
+
+        combined_error = f"HTML: {html_error}; JSON: {json_error}"
         print(
-            f"Analysis draft validation failed after attempt {attempt + 1}/{max_retries + 1}: {validation_error}",
+            f"Analysis draft validation failed after attempt {attempt + 1}/{max_retries + 1}: {combined_error}",
             file=sys.stderr,
             flush=True,
         )
         if attempt == max_retries:
-            return None
-        prompt = build_retry_prompt(draft_path=draft_path, validation_error=validation_error)
+            return None, None
+        prompt = build_retry_prompt(draft_path=draft_path, validation_error=combined_error)
 
+    return None, None
+
+
+def validate_analysis_json(content: str) -> str | None:
+    """Return a validation error, or None when content is valid analysis JSON.
+
+    Loose schema: must be a JSON object with a 'findings' key containing a list.
+    """
+    if not content:
+        return "analysis JSON is empty"
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError as exc:
+        return f"analysis JSON is not valid JSON: {exc}"
+    if not isinstance(data, dict):
+        return "analysis JSON must be a JSON object, not an array or scalar"
+    findings = data.get("findings")
+    if findings is None:
+        return "analysis JSON must contain a 'findings' key"
+    if not isinstance(findings, list):
+        return "analysis JSON 'findings' must be a list"
     return None
 
 
@@ -260,6 +301,18 @@ def main() -> int:
         help="Isolated Kimchi session directory used for corrective retries.",
     )
     parser.add_argument(
+        "--json-output",
+        type=Path,
+        default=Path(getenv("BENCHMARK_ANALYSIS_JSON_OUTPUT", ".benchmark/analysis.json")),
+        help="Path where the JSON analysis summary will be written.",
+    )
+    parser.add_argument(
+        "--json-draft",
+        type=Path,
+        default=Path(getenv("BENCHMARK_ANALYSIS_JSON_DRAFT", ".benchmark/analysis-work/analysis.json")),
+        help="Path Kimchi uses to write the JSON summary draft.",
+    )
+    parser.add_argument(
         "--timeout",
         type=int,
         default=int(getenv("KIMCHI_ANALYSIS_TIMEOUT_SECONDS", "3600")),
@@ -295,6 +348,18 @@ def main() -> int:
     draft_path.parent.mkdir(parents=True, exist_ok=True)
     draft_path.unlink(missing_ok=True)
 
+    json_draft_path = args.json_draft
+    if not json_draft_path.is_absolute():
+        json_draft_path = Path.cwd() / json_draft_path
+    json_draft_path.parent.mkdir(parents=True, exist_ok=True)
+    json_draft_path.unlink(missing_ok=True)
+
+    json_output_path = args.json_output
+    if not json_output_path.is_absolute():
+        json_output_path = Path.cwd() / json_output_path
+    json_output_path.parent.mkdir(parents=True, exist_ok=True)
+    json_output_path.unlink(missing_ok=True)
+
     session_dir = args.session_dir
     if not session_dir.is_absolute():
         session_dir = Path.cwd() / session_dir
@@ -310,10 +375,11 @@ def main() -> int:
         print("Error: no session files found; nothing to analyze", file=sys.stderr, flush=True)
         return 1
 
-    analysis_html = run_kimchi_analysis(
+    analysis_html, analysis_json = run_kimchi_analysis(
         results_dir=results_dir,
         summary_path=summary_path,
         draft_path=draft_path,
+        json_draft_path=json_draft_path,
         session_dir=session_dir,
         timeout_seconds=args.timeout,
         max_retries=max(0, args.max_retries),
@@ -327,6 +393,14 @@ def main() -> int:
         return 1
 
     write_analysis_html(output_path, analysis_html)
+
+    if analysis_json is not None:
+        json_validation_error = validate_analysis_json(analysis_json)
+        if json_validation_error is None:
+            json_output_path.write_text(f"{analysis_json}\n", encoding="utf-8")
+            print(f"Analysis JSON written to {json_output_path}", flush=True)
+        else:
+            print(f"Warning: analysis JSON validation failed: {json_validation_error}", file=sys.stderr, flush=True)
 
     print(f"Analysis HTML written to {output_path}", flush=True)
     return 0

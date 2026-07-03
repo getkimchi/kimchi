@@ -25,6 +25,7 @@ stages:
   - benchmark
   - postprocess
   - notify
+  - summarize
 
 .gcloud-setup:
   script:
@@ -47,6 +48,10 @@ setup-image:
   timeout: 30 min
   interruptible: false
   resource_group: "$TERMINAL_BENCH_RESOURCE_GROUP"
+  rules:
+    - if: '$SUMMARY_ONLY == "true"'
+      when: never
+    - when: on_success
   variables:
     <<: *gcp-auth-vars
     BENCHMARK_TARGET_REF: "$[[ inputs.target_ref ]]"
@@ -81,6 +86,10 @@ setup-image:
   retry: 2
   allow_failure: true
   interruptible: false
+  rules:
+    - if: '$SUMMARY_ONLY == "true"'
+      when: never
+    - when: on_success
   variables:
     <<: *gcp-auth-vars
     BENCH_PARALLELISM: "$[[ inputs.parallelism ]]"
@@ -166,7 +175,10 @@ terminal-bench-$[[ inputs.dataset_version ]]-chunks:
 
 terminal-bench-$[[ inputs.dataset_version ]]-summary:
   stage: postprocess
-  when: always
+  rules:
+    - if: '$SUMMARY_ONLY == "true"'
+      when: never
+    - when: always
   image: mirror.gcr.io/library/node:22-bookworm
   id_tokens: !reference [.auth-gcp-id-tokens, id_tokens]
   needs:
@@ -199,6 +211,8 @@ terminal-bench-$[[ inputs.dataset_version ]]-summary:
 terminal-bench-$[[ inputs.dataset_version ]]-analyze:
   stage: postprocess
   rules:
+    - if: '$SUMMARY_ONLY == "true"'
+      when: never
     - if: $[[ inputs.analyze_results ]] == true
       when: always
     - when: never
@@ -228,10 +242,13 @@ terminal-bench-$[[ inputs.dataset_version ]]-analyze:
     name: "terminal-bench-$[[ inputs.dataset_version ]]-analysis-$CI_COMMIT_REF_SLUG-$CI_PIPELINE_ID"
     paths:
       - .benchmark/analysis.html
+      - .benchmark/analysis.json
 
 terminal-bench-$[[ inputs.dataset_version ]]-upload-analysis:
   stage: postprocess
   rules:
+    - if: '$SUMMARY_ONLY == "true"'
+      when: never
     - if: $[[ inputs.analyze_results ]] == true
       when: on_success
     - when: never
@@ -254,3 +271,22 @@ terminal-bench-$[[ inputs.dataset_version ]]-upload-analysis:
     - !reference [.gcloud-setup, script]
   script:
     - python3 benchmark/scripts/gitlab/upload_analysis_gcs.py
+
+summarize-benchmark-analysis:
+  stage: summarize
+  image: mirror.gcr.io/library/node:22-bookworm
+  id_tokens: !reference [.auth-gcp-id-tokens, id_tokens]
+  tags:
+    - runner::dind
+  variables:
+    <<: *gcp-auth-vars
+    DEBIAN_FRONTEND: noninteractive
+  before_script:
+    - !reference [.auth-gcp-script]
+    - !reference [.gcloud-setup, script]
+  script:
+    - python3 benchmark/scripts/gitlab/summarize_analysis.py
+  rules:
+    - if: '$SUMMARY_ONLY == "true"'
+      when: always
+    - when: never

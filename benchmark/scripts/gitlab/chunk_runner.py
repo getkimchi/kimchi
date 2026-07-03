@@ -361,6 +361,7 @@ def _write_run_metadata(
         "configuration": _derive_configuration(),
         "multi_mode": _env_bool("KIMCHI_MULTI_MODEL", True),
         "ferment": _env_bool("KIMCHI_FERMENT_ONESHOT", False),
+        "tasks_all": _env_bool(ENV_BENCH_TASKS_ALL, False),
         "selected_tasks": selected_tasks,
         "parameters": {
             "attempts": os.environ.get("BENCH_ATTEMPTS", "1"),

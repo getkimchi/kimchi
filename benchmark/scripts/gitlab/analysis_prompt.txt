@@ -53,5 +53,9 @@ The HTML report must be a complete, valid HTML document using this report struct
 5. Open Questions / Follow-up Checks: concrete checks that would require harness code, another run, or more instrumentation.
 
 The report must be self-contained and must not contain scripts, inline event handlers, or externally loaded resources.
-Write the report to: {draft_path}
-Use the write and edit tools to refine the report. Before finishing, read the completed file back and verify that it starts with <!doctype html>, is complete, and satisfies every requirement above. Do not write or modify any other files. Your final response should only confirm that the report file has been written and verified; do not include the report itself.
+
+After writing the HTML report, also write a structured JSON file to the same directory as {draft_path}, named analysis.json. This file should contain a loose JSON object with at minimum these fields: run_id (string), model (string), configuration (string), summary (string — one-line description of overall run health), and findings (array of objects, each with task, severity (one of: critical, warning, info), category (string), and finding (string description)). Severity levels in descending criticality: critical, warning, info. The JSON will be consumed by a downstream summarization step; keep it self-contained and do not reference external files.
+
+Write the HTML report to: {draft_path}
+Also write the JSON summary to: {json_path}
+Use the write and edit tools to refine both files. Before finishing, read the HTML report back and verify that it starts with <!doctype html>, is complete, and satisfies every requirement above. Read the JSON file back and verify it is valid JSON with the fields described above. Do not write or modify any other files. Your final response should only confirm that both files have been written and verified; do not include their contents.

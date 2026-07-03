@@ -78,6 +78,15 @@ def main() -> int:
     print(f"Uploading benchmark analysis to {destination}")
     run(["gcloud", "storage", "cp", str(analysis_path), destination, "--quiet"])
 
+    # Upload analysis.json if it exists
+    json_analysis_path = Path(getenv("BENCHMARK_ANALYSIS_JSON_OUTPUT", ".benchmark/analysis.json"))
+    if json_analysis_path.is_file():
+        json_destination = f"gs://{bucket}/{gcs_prefix}/analysis.json"
+        print(f"Uploading benchmark analysis JSON to {json_destination}")
+        run(["gcloud", "storage", "cp", str(json_analysis_path), json_destination, "--quiet"])
+    else:
+        print(f"Analysis JSON not found at {json_analysis_path}; skipping JSON upload.")
+
     return 0
 
 

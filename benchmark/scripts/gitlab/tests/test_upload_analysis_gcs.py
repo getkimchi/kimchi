@@ -44,6 +44,7 @@ def test_main_uploads_analysis_html(tmp_path: Path) -> None:
             {
                 "BENCHMARK_RUN_METADATA": str(metadata_path),
                 "BENCHMARK_ANALYSIS_OUTPUT": str(analysis_path),
+                "BENCHMARK_ANALYSIS_JSON_OUTPUT": str(tmp_path / "missing.json"),
                 "BENCHMARK_GCS_BUCKET": "test-bucket",
                 "GCS_UPLOAD_REQUIRED": "true",
             },
@@ -181,6 +182,7 @@ def test_main_uploads_analysis_html_to_2_1_prefix(tmp_path: Path) -> None:
             {
                 "BENCHMARK_RUN_METADATA": str(metadata_path),
                 "BENCHMARK_ANALYSIS_OUTPUT": str(analysis_path),
+                "BENCHMARK_ANALYSIS_JSON_OUTPUT": str(tmp_path / "missing.json"),
                 "BENCHMARK_GCS_BUCKET": "test-bucket",
                 "GCS_UPLOAD_REQUIRED": "true",
             },
@@ -199,3 +201,87 @@ def test_main_uploads_analysis_html_to_2_1_prefix(tmp_path: Path) -> None:
         == "gs://test-bucket/runs/benchmark=terminal-bench-2-1/coding_agent=kimchi/"
         "model_provider=dev/model=m/date=2026-01-01/run=gitlab-p1-j2/analysis.html"
     )
+
+
+def test_main_uploads_analysis_json_alongside_html(tmp_path: Path) -> None:
+    metadata_path = tmp_path / "run-metadata.json"
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "gcs": {
+                    "prefix": "runs/benchmark=tb2/coding_agent=kimchi/model_provider=dev/"
+                    "model=m/date=2026-01-01/run=gitlab-p1-j2"
+                },
+            }
+        )
+    )
+    analysis_html_path = tmp_path / "analysis.html"
+    analysis_html_path.write_text("<html><body>Analysis</body></html>")
+
+    analysis_json_path = tmp_path / "analysis.json"
+    analysis_json_path.write_text(json.dumps({"summary": "ok", "findings": []}))
+
+    captured: list[list[str]] = []
+
+    def fake_run(cmd: list[str]) -> None:
+        captured.append(cmd)
+
+    with (
+        patch.dict(
+            os.environ,
+            {
+                "BENCHMARK_RUN_METADATA": str(metadata_path),
+                "BENCHMARK_ANALYSIS_OUTPUT": str(analysis_html_path),
+                "BENCHMARK_ANALYSIS_JSON_OUTPUT": str(analysis_json_path),
+                "BENCHMARK_GCS_BUCKET": "test-bucket",
+                "GCS_UPLOAD_REQUIRED": "true",
+            },
+            clear=False,
+        ),
+        patch("upload_analysis_gcs.run", side_effect=fake_run),
+    ):
+        assert main() == 0
+
+    # Should have uploaded both HTML and JSON
+    assert len(captured) == 2
+    assert captured[0][4].endswith("/analysis.html")
+    assert captured[1][4].endswith("/analysis.json")
+    assert captured[1][3] == str(analysis_json_path)
+    assert (
+        captured[1][4]
+        == "gs://test-bucket/runs/benchmark=tb2/coding_agent=kimchi/model_provider=dev/"
+        "model=m/date=2026-01-01/run=gitlab-p1-j2/analysis.json"
+    )
+
+
+def test_main_uploads_html_only_when_json_missing(tmp_path: Path) -> None:
+    """When analysis.json doesn't exist, still upload HTML successfully."""
+    metadata_path = tmp_path / "run-metadata.json"
+    metadata_path.write_text(json.dumps({"gcs": {"prefix": "runs/prefix"}}))
+    analysis_html_path = tmp_path / "analysis.html"
+    analysis_html_path.write_text("<html></html>")
+
+    captured: list[list[str]] = []
+
+    def fake_run(cmd: list[str]) -> None:
+        captured.append(cmd)
+
+    with (
+        patch.dict(
+            os.environ,
+            {
+                "BENCHMARK_RUN_METADATA": str(metadata_path),
+                "BENCHMARK_ANALYSIS_OUTPUT": str(analysis_html_path),
+                "BENCHMARK_ANALYSIS_JSON_OUTPUT": str(tmp_path / "missing.json"),
+                "BENCHMARK_GCS_BUCKET": "test-bucket",
+                "GCS_UPLOAD_REQUIRED": "true",
+            },
+            clear=False,
+        ),
+        patch("upload_analysis_gcs.run", side_effect=fake_run),
+    ):
+        assert main() == 0
+
+    # Only HTML uploaded
+    assert len(captured) == 1
+    assert captured[0][4].endswith("/analysis.html")

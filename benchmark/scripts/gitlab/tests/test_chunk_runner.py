@@ -829,6 +829,30 @@ def test_write_run_metadata_is_pipeline_level(
     assert metadata["gitlab"]["pipeline_id"] == "1001"
 
 
+def test_write_run_metadata_includes_tasks_all(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_write_run_metadata must include tasks_all so downstream consumers can filter full runs."""
+    metadata_path = tmp_path / "run-metadata.json"
+    monkeypatch.setenv("BENCHMARK_RUN_METADATA", str(metadata_path))
+    monkeypatch.setenv("BENCHMARK_NAME", "terminal-bench-2")
+    monkeypatch.setenv("CODING_AGENT", "kimchi")
+    monkeypatch.setenv("MODEL", "anthropic/claude-sonnet-4-20250514")
+    monkeypatch.setenv("KIMCHI_MULTI_MODEL", "true")
+    monkeypatch.setenv("KIMCHI_FERMENT_ONESHOT", "false")
+    monkeypatch.setenv("BENCH_TASKS_ALL", "true")
+    monkeypatch.setenv("CI_COMMIT_REF_NAME", "benchmarks")
+    monkeypatch.setenv("CI_COMMIT_SHA", "abc1234567890abcdef1234567890abcdef12345")
+    monkeypatch.setenv("CI_PIPELINE_ID", "1001")
+    monkeypatch.setenv("CI_JOB_ID", "9002")
+    monkeypatch.setattr("chunk_runner.time.gmtime", lambda: _FROZEN_GMTIME)
+
+    _write_run_metadata(tmp_path, [f"task-{i}" for i in range(89)])
+
+    metadata = json.loads(metadata_path.read_text())
+    assert metadata["tasks_all"] is True
+
+
 def test_build_gcs_key_prefix_uses_benchmark_name_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
