@@ -1,7 +1,12 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { classifyToolCall, parseClassifierOutput } from "./classifier.js"
+import {
+	CLASSIFIER_FALLBACK_MODEL_ID,
+	CLASSIFIER_PRIMARY_MODEL_ID,
+	classifyToolCall,
+	parseClassifierOutput,
+} from "./classifier.js"
 
 const completeMock = vi.fn()
 
@@ -17,8 +22,12 @@ function fakeModel(id = "test-model"): Model<Api> {
 	return { provider: "openai", id, api: "openai-completions" } as Model<Api>
 }
 
-function fakeRegistry(apiKey = "fake-key"): ModelRegistry {
+function fakeRegistry(
+	available: Model<Api>[] = [fakeModel(CLASSIFIER_PRIMARY_MODEL_ID)],
+	apiKey = "fake-key",
+): ModelRegistry {
 	return {
+		getAvailable: vi.fn(() => available),
 		getApiKeyAndHeaders: vi.fn().mockResolvedValue({ ok: true, apiKey, headers: {} }),
 	} as unknown as ModelRegistry
 }
@@ -46,8 +55,6 @@ describe("classifyToolCall", () => {
 		completeMock.mockResolvedValue(fakeResponse({ stopReason: "stop", content: '{"verdict":"safe","reason":"fine"}' }))
 
 		const result = await classifyToolCall(
-			fakeModel(),
-			undefined,
 			fakeRegistry(),
 			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
 			{ timeoutMs: 5000 },
@@ -62,8 +69,6 @@ describe("classifyToolCall", () => {
 		completeMock.mockResolvedValue(fakeResponse({ stopReason: "aborted" }))
 
 		const promise = classifyToolCall(
-			fakeModel("nemotron-test"),
-			undefined,
 			fakeRegistry(),
 			{ toolName: "edit", input: { path: "foo.ts" }, cwd: "/tmp" },
 			{ timeoutMs: 5000 },
@@ -75,7 +80,7 @@ describe("classifyToolCall", () => {
 		expect(result.verdict).toBe("requires-confirmation")
 		expect(result.ok).toBe(false)
 		expect(result.reason).toContain("classifier timeout")
-		expect(result.reason).toContain("nemotron-test")
+		expect(result.reason).toContain(CLASSIFIER_PRIMARY_MODEL_ID)
 		expect(completeMock).toHaveBeenCalledTimes(3)
 	})
 
@@ -85,8 +90,6 @@ describe("classifyToolCall", () => {
 			.mockResolvedValueOnce(fakeResponse({ stopReason: "stop", content: '{"verdict":"safe","reason":"fine"}' }))
 
 		const promise = classifyToolCall(
-			fakeModel(),
-			undefined,
 			fakeRegistry(),
 			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
 			{ timeoutMs: 5000 },
@@ -107,8 +110,6 @@ describe("classifyToolCall", () => {
 			.mockResolvedValueOnce(fakeResponse({ stopReason: "stop", content: '{"verdict":"safe","reason":"fine"}' }))
 
 		const promise = classifyToolCall(
-			fakeModel(),
-			undefined,
 			fakeRegistry(),
 			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
 			{ timeoutMs: 5000 },
@@ -130,9 +131,7 @@ describe("classifyToolCall", () => {
 			.mockResolvedValueOnce(fakeResponse({ stopReason: "stop", content: '{"verdict":"safe","reason":"fine"}' }))
 
 		const promise = classifyToolCall(
-			fakeModel("primary-model"),
-			fakeModel("backoff-model"),
-			fakeRegistry(),
+			fakeRegistry([fakeModel(CLASSIFIER_PRIMARY_MODEL_ID), fakeModel(CLASSIFIER_FALLBACK_MODEL_ID)]),
 			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
 			{ timeoutMs: 5000 },
 		)
@@ -149,9 +148,7 @@ describe("classifyToolCall", () => {
 		completeMock.mockResolvedValue(fakeResponse({ stopReason: "aborted" }))
 
 		const promise = classifyToolCall(
-			fakeModel("primary-model"),
-			undefined,
-			fakeRegistry(),
+			fakeRegistry([fakeModel(CLASSIFIER_PRIMARY_MODEL_ID)]),
 			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
 			{ timeoutMs: 5000 },
 		)
@@ -180,8 +177,6 @@ describe("classifyToolCall", () => {
 		})
 
 		const promise = classifyToolCall(
-			fakeModel(),
-			undefined,
 			fakeRegistry(),
 			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
 			{ timeoutMs: 5000 },
@@ -202,8 +197,6 @@ describe("classifyToolCall", () => {
 		controller.abort()
 
 		const result = await classifyToolCall(
-			fakeModel(),
-			undefined,
 			fakeRegistry(),
 			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
 			{ timeoutMs: 5000 },
@@ -218,8 +211,6 @@ describe("classifyToolCall", () => {
 		completeMock.mockResolvedValue(fakeResponse({ stopReason: "error", errorMessage: "rate limit exceeded" }))
 
 		const result = await classifyToolCall(
-			fakeModel(),
-			undefined,
 			fakeRegistry(),
 			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
 			{ timeoutMs: 5000 },
@@ -235,8 +226,6 @@ describe("classifyToolCall", () => {
 		completeMock.mockResolvedValue(fakeResponse({ stopReason: "stop", content: "not json at all" }))
 
 		const result = await classifyToolCall(
-			fakeModel(),
-			undefined,
 			fakeRegistry(),
 			{ toolName: "bash", input: { command: "ls" }, cwd: "/tmp" },
 			{ timeoutMs: 5000 },
@@ -330,5 +319,15 @@ describe("parseClassifierOutput", () => {
 		const r = parseClassifierOutput(raw)
 		expect(r.ok).toBe(true)
 		expect(r.verdict).toBe("safe")
+	})
+})
+
+describe("classifier model ids", () => {
+	it("primary is deepseek-v4-flash", () => {
+		expect(CLASSIFIER_PRIMARY_MODEL_ID).toBe("deepseek-v4-flash")
+	})
+
+	it("fallback is minimax-m3", () => {
+		expect(CLASSIFIER_FALLBACK_MODEL_ID).toBe("minimax-m3")
 	})
 })

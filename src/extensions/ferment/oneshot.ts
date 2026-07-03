@@ -1,5 +1,6 @@
 import type { Ferment } from "../../ferment/types.js"
 import { SHARED_PLANNING_PROCESS } from "../../shared/planning/shared-planning-process.js"
+import { getMultiModelEnabled } from "../prompt-construction/prompt-enrichment.js"
 
 /**
  * Build the one-shot envelope sent to the planner. Shared by the `/ferment one-shot`
@@ -7,6 +8,17 @@ import { SHARED_PLANNING_PROCESS } from "../../shared/planning/shared-planning-p
  * exercise the identical instruction set.
  */
 export function buildOneshotNudge(ferment: Ferment, intent: string): string {
+	const delegationMode: "strict" | "relaxed" = getMultiModelEnabled() ? "strict" : "relaxed"
+
+	const step2Delegation =
+		delegationMode === "strict"
+			? "- spawn an Agent worker with the exact task_ref returned by start_ferment_step and explicit max_turns, max_duration, and token_budget — always set all three to the selected limits returned by the tool"
+			: "- either spawn an Agent worker with the exact task_ref returned by start_ferment_step and explicit max_turns, max_duration, and token_budget, OR execute the step directly using bash/edit/write. Choose whichever is more efficient. When delegating, always set all three limits to the selected values returned by the tool."
+
+	const turnDiscipline = `## Turn discipline
+
+Keep the ferment moving — do not stall between steps. But you may take a brief thinking or assessment turn when deciding whether to delegate or work directly, or after a subagent aborts to assess strategy. After any tool result that includes a "Next action:" line, execute that action in the same turn unless you have a reason to deviate. The only time you should produce a text-only turn and stop is the single final message after complete_ferment returns.`
+
 	return `You are running a one-shot ferment: "${ferment.name}" (ID: ${ferment.id}).
 
 User intent: "${intent}"
@@ -32,16 +44,14 @@ ${SHARED_PLANNING_PROCESS}
 
 2. **For each phase**, call activate_ferment_phase, then for each step:
    - call start_ferment_step with an explicit budget_tier chosen from the scoped work shape: narrow, standard (normal implementation default), or complex
-   - spawn an Agent worker with the exact task_ref returned by start_ferment_step and explicit max_turns, max_duration, and token_budget — always set all three to the selected limits returned by the tool
+   - ${step2Delegation}
    - require the worker to call submit_agent_report before its final answer
-   - inspect agent_outcome when the worker returns. Call complete_ferment_step with worker_agent_id and the report summary only when outcome is "completed" and report.status is "completed"
+   - inspect agent_outcome when the worker returns. Call complete_ferment_step with worker_agent_id and the report summary only when outcome is "completed" and report.status is "completed". If you executed the step directly (no subagent), call complete_ferment_step with just the summary and gates — worker_agent_id is optional.
    - if the worker exhausts its budget, fails, or stops, do not mark the step complete. Inspect its report, then use resume_subagent for a bounded direct continuation, spawn a narrower linked replacement for separable remaining work, or stop/report when blocked. Do not raise the limits and retry the same broad task
 
 3. **When all phases are done**, call complete_ferment.
 
-## Turn discipline
-
-Every turn MUST end with a ferment lifecycle tool call or an Agent spawn. Do not produce a summary and stop — that leaves the ferment stalled. The only permitted text-only turn is the single final message after complete_ferment returns.
+${turnDiscipline}
 
 ## Toolset
 

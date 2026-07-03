@@ -7,6 +7,9 @@ import type { ClassifierResult, ClassifierVerdict } from "./types.js"
 /** Tag added to every classifier LLM request for cost tracking. */
 export const CLASSIFIER_REQUEST_TAG = "source:classifier"
 
+export const CLASSIFIER_PRIMARY_MODEL_ID = "deepseek-v4-flash"
+export const CLASSIFIER_FALLBACK_MODEL_ID = "minimax-m3"
+
 export interface ClassifyInput {
 	toolName: string
 	input: Record<string, unknown>
@@ -21,13 +24,16 @@ export interface ClassifierOptions {
 type InternalResult = ClassifierResult & { retryable: boolean }
 
 export async function classifyToolCall(
-	primaryModel: Model<Api>,
-	fallbackModel: Model<Api> | undefined,
 	modelRegistry: ModelRegistry,
 	call: ClassifyInput,
 	options: ClassifierOptions,
 	signal?: AbortSignal,
 ): Promise<ClassifierResult> {
+	const available = modelRegistry.getAvailable()
+	const primaryModel = available.find((m) => m.id === CLASSIFIER_PRIMARY_MODEL_ID)
+	if (!primaryModel) return unavailable("no model available for classifier")
+	const fallbackModel = available.find((m) => m.id === CLASSIFIER_FALLBACK_MODEL_ID)
+
 	const auth = await modelRegistry.getApiKeyAndHeaders(primaryModel)
 	if (!auth.ok || !auth.apiKey) return unavailable("no API key for classifier")
 

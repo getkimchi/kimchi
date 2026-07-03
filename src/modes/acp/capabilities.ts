@@ -9,9 +9,6 @@ export const CAPABILITIES_KEY = "kimchi.dev"
 // become `[ACP]` agent_message_chunk diagnostics instead of method-not-found.
 export const AVAILABLE_METHODS = {
 	pi_notify: `_${CAPABILITIES_KEY}/pi_notify`,
-	pi_setStatus: `_${CAPABILITIES_KEY}/pi_setStatus`,
-	pi_setWidget: `_${CAPABILITIES_KEY}/pi_setWidget`,
-	pi_set_editor_text: `_${CAPABILITIES_KEY}/pi_set_editor_text`,
 	pi_editor: `_${CAPABILITIES_KEY}/pi_editor`,
 } as const
 

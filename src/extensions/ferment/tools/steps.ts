@@ -12,6 +12,7 @@ import { determineNextAction } from "../../../ferment/engine.js"
 import type { Ferment, Phase, Step, StepResult } from "../../../ferment/types.js"
 import { getAgentRecordForTaskValidation } from "../../agents/index.js"
 import { FERMENT_WORKER_BUDGETS, type FermentWorkerBudgetTier } from "../../agents/worker-budget-policy.js"
+import { getMultiModelEnabled } from "../../prompt-construction/prompt-enrichment.js"
 import { askUserForm } from "../ask-user.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { renderGateGuidance } from "../gate-registry.js"
@@ -137,8 +138,10 @@ const validateFsmTransition = (
 ): string | null => validateFsmTransitionWithFerment(f, event, params).error ?? null
 
 function validateLinkedWorker(params: CompleteStepArgs): string | null {
+	// When worker_agent_id is omitted, the orchestrator executed the step
+	// directly (no subagent was spawned). Skip worker validation in that case.
 	if (!params.worker_agent_id) {
-		return "complete_ferment_step requires worker_agent_id. Use the Agent ID returned by the linked worker for this step."
+		return null
 	}
 	const record = getAgentRecordForTaskValidation(params.worker_agent_id)
 	if (!record) {
@@ -377,7 +380,7 @@ Do NOT call start_ferment_step again without user input.`,
 
 	return toolOk(
 		withNextActionHint(
-			`${planFirstPreamble}\n\nStep ${step.index}: "${step.description}" started. Spawn a subagent with the persona that matches this step's intent. Pass task_ref: ${JSON.stringify(taskRef)} and use the selected limits. The worker will receive its Agent ID and must call submit_agent_report before its final answer. When it returns with agent_outcome.outcome "completed" and agent_outcome.report.status "completed", call complete_ferment_step with worker_agent_id and the report summary.${lowGradeCaution}${parallelNote}${limitsHint}${contextBlock}`,
+			`${planFirstPreamble}\n\nStep ${step.index}: "${step.description}" started. ${getMultiModelEnabled() ? `Spawn a subagent with the persona that matches this step's intent. Pass task_ref: ${JSON.stringify(taskRef)} and use the selected limits. The worker will receive its Agent ID and must call submit_agent_report before its final answer. When it returns with agent_outcome.outcome "completed" and agent_outcome.report.status "completed", call complete_ferment_step with worker_agent_id and the report summary.` : `Either spawn a subagent with the persona that matches this step's intent (pass task_ref: ${JSON.stringify(taskRef)} and use the selected limits; the worker will receive its Agent ID and must call submit_agent_report before its final answer), or execute the step directly using bash/edit/write. When a subagent returns with agent_outcome.outcome "completed" and agent_outcome.report.status "completed", call complete_ferment_step with worker_agent_id and the report summary. If you executed directly, call complete_ferment_step with just the summary and gates (worker_agent_id is optional).`}${lowGradeCaution}${parallelNote}${limitsHint}${contextBlock}`,
 			outcome.ferment,
 		),
 	)

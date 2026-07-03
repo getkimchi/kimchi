@@ -10,12 +10,10 @@
 // asserts the contract on the wire shape the client observes.
 //
 // Note: the fixture loads test-ui-extension.js, which exercises fire-and-
-// forget UI methods (notify / setStatus / setWidget). Because this test
-// doesn't advertise the corresponding `_kimchi.dev/pi_*` client capabilities,
-// the harness emits `[ACP]` warning chunks as a fallback. Those go through a
-// different code path than LLM-streamed deltas (so they have no messageId),
-// and `isAcpWarning` filters them out so the assertion is only on streamed
-// chunks.
+// forget UI methods (notify / setStatus). These are sent unconditionally as
+// `_kimchi.dev/pi_notify` extNotifications (no capability gate). The
+// `isAcpWarning` filter is kept defensively but no `[ACP]` warnings are
+// emitted in this scenario.
 
 import type { ContentChunk } from "@agentclientprotocol/sdk"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"

@@ -3,6 +3,7 @@ import type { ExtensionAPI, MessageRenderer, Theme } from "@earendil-works/pi-co
 import { Container, Text } from "@earendil-works/pi-tui"
 import { formatCount } from "./format.js"
 import { getMultiModelEnabled, getOrchestratorModelId, isSubagent } from "./prompt-construction/prompt-enrichment.js"
+import { isStaleCtxError } from "./stale-ctx.js"
 
 interface UsageTotals {
 	input: number
@@ -230,14 +231,19 @@ export default function promptSummaryExtension(pi: ExtensionAPI) {
 		// Poll until the agent is idle before sending — a plain setTimeout(0)
 		// is not enough because isStreaming can still be true when agent_end fires,
 		// causing sendMessage to take the steer path and trigger a new LLM turn.
+		//
+		// The entire body is wrapped in try/catch because ctx.isIdle() can throw
+		// a stale-ctx error when the session is torn down between agent_end and
+		// the timer callback. Without this guard, the throw is an uncaught
+		// exception in a setTimeout callback that crashes the process.
 		let attempts = 0
 		const MAX_ATTEMPTS = 100 // 5s max
 		const trySend = () => {
-			if (ctx?.isIdle() === false && attempts++ < MAX_ATTEMPTS) {
-				setTimeout(trySend, 50)
-				return
-			}
 			try {
+				if (ctx?.isIdle() === false && attempts++ < MAX_ATTEMPTS) {
+					setTimeout(trySend, 50)
+					return
+				}
 				pi.sendMessage(
 					{
 						customType: "prompt-summary",
@@ -250,6 +256,7 @@ export default function promptSummaryExtension(pi: ExtensionAPI) {
 					{ triggerTurn: false },
 				)
 			} catch (err) {
+				if (isStaleCtxError(err)) return
 				console.error("[prompt-summary] Failed to send:", err)
 			}
 		}
