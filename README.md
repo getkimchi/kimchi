@@ -370,10 +370,13 @@ kimchi resources disable extensions.pi-package-lookup
 Update packages with:
 
 ```bash
-kimchi update                  # update installed packages, then Kimchi itself
-kimchi update --extensions     # update installed packages only
-kimchi update context-mode     # update one package by source or display name
-kimchi update self             # update Kimchi itself only
+kimchi update                       # update installed packages, then Kimchi itself
+kimchi update --extensions          # update installed packages only
+kimchi update context-mode          # update one package by source or display name
+kimchi update self                  # update Kimchi itself only
+kimchi update v1.2.3                # install a specific Kimchi release (downgrades work too)
+kimchi update v1.2.3-rc.1           # install a release candidate
+kimchi update --canary              # install the latest canary build from master
 ```
 
 ### HTTP proxy
