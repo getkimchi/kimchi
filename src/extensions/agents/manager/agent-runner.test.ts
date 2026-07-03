@@ -733,6 +733,116 @@ describe("runAgent — tokenBudget forwarding", () => {
 	})
 })
 
+describe("runAgent — token_budget tool skip (R2)", () => {
+	let ctx: ReturnType<typeof makeFakeCtx>
+	let pi: ReturnType<typeof makeFakePi>
+
+	beforeEach(() => {
+		ctx = makeFakeCtx()
+		pi = makeFakePi()
+		mockCreateAgentSession.mockReset()
+		mockGetConfig.mockReturnValue(
+			makeTypeConfig({
+				extensions: false,
+				skills: false,
+			}),
+		)
+		mockGetAgentConfig.mockReturnValue(makeAgentConfig())
+		mockGetToolNamesForType.mockReturnValue([])
+	})
+
+	afterEach(() => {
+		vi.clearAllMocks()
+	})
+
+	it("runAgent: skips tool calls from over-budget message (not mid-stream abort)", async () => {
+		const abortSpy = vi.fn()
+		const toolActivities: Array<{ type: string; toolName: string }> = []
+		const session = makeFakeSession({
+			abortSpy,
+			promptAction: async (emit) => {
+				emit({
+					type: "message_end",
+					message: {
+						role: "assistant",
+						usage: { input: 1_000, output: 6_000, cacheRead: 0, cacheWrite: 0 },
+					},
+				})
+				emit({ type: "tool_execution_start", toolName: "bash" })
+				emit({ type: "turn_end" })
+			},
+		})
+
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+			tokenBudget: 5_000,
+			onToolActivity: (activity) => {
+				toolActivities.push(activity)
+			},
+		})
+
+		expect(toolActivities).toHaveLength(0)
+		expect(abortSpy).toHaveBeenCalled()
+		expect(result.aborted).toBe(true)
+		expect(result.abortReason).toBe("token_budget")
+	})
+
+	it("resumeAgent: skips tool calls from over-budget message", async () => {
+		const abortSpy = vi.fn()
+		const toolActivities: Array<{ type: string; toolName: string }> = []
+		const subscribers: Subscriber[] = []
+		const session = {
+			subscribe: vi.fn((cb: Subscriber) => {
+				subscribers.push(cb)
+				return () => {
+					const idx = subscribers.indexOf(cb)
+					if (idx !== -1) subscribers.splice(idx, 1)
+				}
+			}),
+			abort: abortSpy,
+			steer: vi.fn(),
+			messages: [],
+			getSessionStats: vi.fn().mockReturnValue({
+				tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			}),
+			prompt: vi.fn().mockImplementation(async () => {
+				const emit = (event: SessionEvent) => {
+					for (const subscriber of subscribers) subscriber(event)
+				}
+				emit({
+					type: "message_end",
+					message: {
+						role: "assistant",
+						usage: { input: 1_000, output: 6_000, cacheRead: 0, cacheWrite: 0 },
+					},
+				})
+				emit({ type: "tool_execution_start", toolName: "bash" })
+				emit({ type: "turn_end" })
+			}),
+		}
+
+		const result = await resumeAgent(session as unknown as AgentSession, "finish", {
+			tokenBudget: 5_000,
+			maxTurns: 5,
+			onToolActivity: (activity) => {
+				toolActivities.push(activity)
+			},
+		})
+
+		expect(toolActivities).toHaveLength(0)
+		expect(abortSpy).toHaveBeenCalled()
+		expect(result.aborted).toBe(true)
+		expect(result.abortReason).toBe("token_budget")
+	})
+})
+
 describe("runAgent — profile tool access", () => {
 	let ctx: ReturnType<typeof makeFakeCtx>
 	let pi: ReturnType<typeof makeFakePi>
@@ -1274,6 +1384,130 @@ describe("runAgent — maxDuration enforcement", () => {
 		const result = await resultPromise
 
 		expect(abortSpy).toHaveBeenCalled()
+		expect(result.aborted).toBe(true)
+		expect(result.abortReason).toBe("max_duration")
+	})
+
+	it("calls abortBash when max_duration fires to hard-kill in-flight bash", async () => {
+		const abortSpy = vi.fn()
+		const abortBashSpy = vi.fn()
+		let resolvePrompt: (() => void) | undefined
+		const promptPromise = new Promise<void>((resolve) => {
+			resolvePrompt = resolve
+		})
+
+		const session = {
+			subscribe: vi.fn((_cb: Subscriber) => () => {}),
+			abort: abortSpy.mockImplementation(() => {
+				resolvePrompt?.()
+			}),
+			abortBash: abortBashSpy,
+			steer: vi.fn(),
+			getActiveToolNames: vi.fn().mockReturnValue([]),
+			setActiveToolsByName: vi.fn(),
+			bindExtensions: vi.fn().mockResolvedValue(undefined),
+			messages: [],
+			getSessionStats: vi.fn().mockReturnValue({
+				tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			}),
+			prompt: vi.fn().mockImplementation(async () => {
+				await promptPromise
+			}),
+		}
+
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		const resultPromise = runAgent(
+			ctx as unknown as Parameters<typeof runAgent>[0],
+			"General-Purpose",
+			"do something",
+			{
+				pi: pi as unknown as RunOptions["pi"],
+				maxDuration: 30,
+			},
+		)
+
+		await vi.advanceTimersByTimeAsync(31_000)
+		const result = await resultPromise
+
+		expect(abortSpy).toHaveBeenCalled()
+		expect(abortBashSpy).toHaveBeenCalled()
+		expect(result.aborted).toBe(true)
+		expect(result.abortReason).toBe("max_duration")
+	})
+
+	it("runAgent promise unblocks when max_duration fires during in-flight bash (simulated hang)", async () => {
+		// Regression for subagent budget bug: a subagent running a blocking bash command
+		// (e.g. `sleep 3600`) would hang forever if max_duration didn't
+		// hard-kill bash. We simulate that by making session.prompt() resolve
+		// ONLY when abortBash() is called — mimicking killProcessTree unblocking
+		// the tool execution. abort() alone does NOT resolve the prompt, so if
+		// abortBash were never called the promise would hang and the test would
+		// time out (proving the bug).
+		const abortSpy = vi.fn()
+		const abortBashSpy = vi.fn()
+		let resolvePrompt: (() => void) | undefined
+		const promptPromise = new Promise<void>((resolve) => {
+			resolvePrompt = resolve
+		})
+
+		const session = {
+			subscribe: vi.fn((_cb: Subscriber) => () => {}),
+			// abort() calls agent.abort() + waitForIdle() but does NOT kill bash.
+			// In the real bug the promise hangs because bash is still running.
+			// Only abortBash() (hard-kill) should unblock the prompt here.
+			abort: abortSpy.mockImplementation(() => {
+				// Intentionally do NOT resolve the prompt — bash keeps the loop blocked.
+			}),
+			abortBash: abortBashSpy.mockImplementation(() => {
+				resolvePrompt?.()
+			}),
+			steer: vi.fn(),
+			getActiveToolNames: vi.fn().mockReturnValue([]),
+			setActiveToolsByName: vi.fn(),
+			bindExtensions: vi.fn().mockResolvedValue(undefined),
+			messages: [],
+			getSessionStats: vi.fn().mockReturnValue({
+				tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			}),
+			prompt: vi.fn().mockImplementation(async () => {
+				await promptPromise
+			}),
+		}
+
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		const resultPromise = runAgent(
+			ctx as unknown as Parameters<typeof runAgent>[0],
+			"General-Purpose",
+			"do something",
+			{
+				pi: pi as unknown as RunOptions["pi"],
+				maxDuration: 30,
+			},
+		)
+
+		// Advance past max_duration — the durationTimer fires hardAbort(session)
+		// which calls abortBash() → resolves prompt → runAgent unblocks.
+		await vi.advanceTimersByTimeAsync(31_000)
+
+		// If the bug were present (abortBash not called), this await would hang
+		// and the test would fail on the vitest test timeout. Because abortBash
+		// resolves the prompt at 31s, the promise resolves here.
+		const result = await resultPromise
+
+		expect(abortSpy).toHaveBeenCalled()
+		expect(abortBashSpy).toHaveBeenCalled()
 		expect(result.aborted).toBe(true)
 		expect(result.abortReason).toBe("max_duration")
 	})
