@@ -71,3 +71,39 @@ export default function bashDefaultTimeoutExtension(pi: ExtensionAPI): void {
 		bashEvent.input.timeout = resolveBashTimeout(bashEvent.input)
 	})
 }
+
+/**
+ * Subagent-aware bash timeout extension. Behaves like
+ * `bashDefaultTimeoutExtension` (fills in the default when `timeout` is
+ * absent) but additionally clamps the resolved timeout to the subagent's
+ * remaining wall-clock budget so a bash call can never block past
+ * `max_duration`.
+ *
+ * The deadline is computed lazily inside the `tool_call` handler so the
+ * clamp reflects the budget remaining at execution time, not at
+ * registration time.
+ *
+ * @param maxDurationSeconds  The subagent's max_duration in seconds.
+ * @param startTimeMs          Wall-clock timestamp (ms) when the subagent started.
+ */
+export function createSubagentBashClampExtension(maxDurationSeconds: number, startTimeMs: number) {
+	return function subagentBashClampExtension(pi: ExtensionAPI): void {
+		pi.on("tool_call", (event) => {
+			if (event.toolName !== "bash") return
+			if (!isResourceEnabled(BASH_DEFAULT_TIMEOUT_RESOURCE_ID)) return
+
+			const bashEvent = event as BashToolCallEvent
+			const resolved = resolveBashTimeout(bashEvent.input)
+			const remainingMs = startTimeMs + maxDurationSeconds * 1000 - Date.now()
+			const remainingSeconds = Math.floor(remainingMs / 1000)
+			if (remainingSeconds <= 0) {
+				// Budget exhausted — the max_duration timer should already be
+				// firing. Floor at 1s so the command gets a chance to run
+				// briefly rather than being killed instantly.
+				bashEvent.input.timeout = 1
+				return
+			}
+			bashEvent.input.timeout = Math.min(resolved, remainingSeconds)
+		})
+	}
+}
