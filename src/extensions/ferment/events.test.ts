@@ -282,7 +282,10 @@ describe("registerFermentEvents", () => {
 		expect(lastCall).toContain("bash")
 		expect(lastCall).toContain("list_ferments")
 		for (const name of FERMENT_TOOL_NAMES) {
-			if (name === "list_ferments") continue
+			// list_ferments, propose_ferment_scoping, and ask_user are intentionally
+			// kept in idle so the agent can offer a ferment via ask_user and
+			// bootstrap via propose_ferment_scoping when the user accepts.
+			if (name === "list_ferments" || name === "propose_ferment_scoping" || name === "ask_user") continue
 			expect(lastCall).not.toContain(name)
 		}
 	})
