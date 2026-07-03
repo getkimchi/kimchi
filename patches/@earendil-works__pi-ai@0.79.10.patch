@@ -1,8 +1,8 @@
 diff --git a/dist/providers/openai-completions.js b/dist/providers/openai-completions.js
-index 423825a3dcf189304e3112bf68c6d8f89cb2ec44..038eddc8e9e62d850c63da3876383964f14573d1 100644
+index b519e02d589507a283e136a96c79cf3cf9d757ad..586c3c473c5685c4db93df2a6d3fe8175765fd3b 100644
 --- a/dist/providers/openai-completions.js
 +++ b/dist/providers/openai-completions.js
-@@ -825,10 +825,11 @@ function convertTools(tools, compat) {
+@@ -904,10 +904,11 @@ function convertTools(tools, compat) {
  function parseChunkUsage(rawUsage, model) {
      const promptTokens = rawUsage.prompt_tokens || 0;
      const cacheReadTokens = rawUsage.prompt_tokens_details?.cached_tokens ?? rawUsage.prompt_cache_hit_tokens ?? 0;
