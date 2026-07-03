@@ -177,4 +177,34 @@ describe("prompt summary stale-ctx crash prevention", () => {
 		expect(errorSpy).toHaveBeenCalledWith("[prompt-summary] Failed to send:", nonStaleError)
 		errorSpy.mockRestore()
 	})
+
+	it("polls until isIdle returns true, then sends the summary", async () => {
+		vi.useRealTimers()
+		const harness = createStaleCtxHarness()
+		promptSummaryExtension(harness.pi as never)
+
+		let idleCalls = 0
+		await harness.emit("agent_start")
+		await harness.emit("message_end", {
+			message: { role: "assistant", usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 } },
+		})
+		await harness.emit(
+			"agent_end",
+			{},
+			{
+				isIdle: () => {
+					idleCalls++
+					return idleCalls >= 3 // false twice, then true on third call
+				},
+			},
+		)
+
+		// Wait for polling to complete (2 retries × 50ms + buffer)
+		await new Promise((resolve) => setTimeout(resolve, 200))
+
+		expect(harness.sent).toHaveLength(1)
+		expect(idleCalls).toBe(3)
+		const message = harness.sent[0] as { customType: string }
+		expect(message.customType).toBe("prompt-summary")
+	})
 })
