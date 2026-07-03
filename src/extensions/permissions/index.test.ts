@@ -40,9 +40,13 @@ vi.mock("node:fs", async (importOriginal) => {
 	}
 })
 
-vi.mock("./classifier.js", () => ({
-	classifyToolCall: vi.fn(async () => ({ verdict: "safe", reason: "mock safe" })),
-}))
+vi.mock("./classifier.js", async () => {
+	const actual = await vi.importActual<typeof import("./classifier.js")>("./classifier.js")
+	return {
+		...actual,
+		classifyToolCall: vi.fn(async () => ({ verdict: "safe", reason: "mock safe" })),
+	}
+})
 
 const testEnv: EnvironmentInfo = {
 	os: "Linux",
@@ -98,15 +102,19 @@ function createMockContext(
 }
 
 function createClassifierContext(): ExtensionContext {
-	const model = { provider: "test-provider", id: "test-model" }
+	// Expose the deterministic classifier models so resolveClassifierModels
+	// finds both primary (deepseek-v4-flash) and fallback (minimax-m3).
+	const primaryModel = { provider: "test-provider", id: "deepseek-v4-flash" }
+	const fallbackModel = { provider: "test-provider", id: "minimax-m3" }
+	const model = primaryModel
 	return {
 		...createMockContext([]),
 		hasUI: false,
 		cwd: "/test",
 		model,
 		modelRegistry: {
-			getAvailable: vi.fn(() => [model]),
-			find: vi.fn(() => model),
+			getAvailable: vi.fn(() => [primaryModel, fallbackModel]),
+			find: vi.fn(() => primaryModel),
 		},
 	} as unknown as ExtensionContext
 }
@@ -978,7 +986,7 @@ describe("permissions ferment tool classification", () => {
 
 		expect(result).toBeUndefined()
 		expect(classifyToolCall).toHaveBeenCalledTimes(1)
-		expect(vi.mocked(classifyToolCall).mock.calls[0]?.[3]).toMatchObject({
+		expect(vi.mocked(classifyToolCall).mock.calls[0]?.[1]).toMatchObject({
 			toolName: "unknown_tool",
 			input: { value: 1 },
 			cwd: "/test",
