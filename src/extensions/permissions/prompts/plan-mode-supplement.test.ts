@@ -3,23 +3,21 @@ import planModeSupplement from "./plan-mode-supplement.js"
 
 describe("plan-mode-supplement", () => {
 	describe("shared process steps", () => {
-		it("contains all five planning step headers", () => {
+		it("contains all four planning step headers", () => {
 			expect(planModeSupplement).toContain("STEP 1")
-			expect(planModeSupplement).toContain("ORIENT")
+			expect(planModeSupplement).toContain("INVESTIGATE")
 			expect(planModeSupplement).toContain("STEP 2")
 			expect(planModeSupplement).toContain("INTERVIEW")
 			expect(planModeSupplement).toContain("STEP 3")
 			expect(planModeSupplement).toContain("COMPLETION CRITERIA")
 			expect(planModeSupplement).toContain("STEP 4")
-			expect(planModeSupplement).toContain("DEEP EXPLORATION")
-			expect(planModeSupplement).toContain("STEP 5")
 			expect(planModeSupplement).toContain("PLAN")
 		})
 
 		it("contains shared process core behaviour", () => {
 			expect(planModeSupplement).toContain("iterative rounds")
 			expect(planModeSupplement).toContain("REFLECT before continuing")
-			expect(planModeSupplement).toContain("MAX 2 TURNS")
+			expect(planModeSupplement).toContain("MAX 4 TURNS")
 			expect(planModeSupplement).toContain("Prefer targeted search over reading entire files line by line")
 		})
 	})

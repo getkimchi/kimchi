@@ -98,7 +98,7 @@ export function formatScopingContext(f: Ferment): string {
 
 	// Boundary map summary for multi-phase ferments — makes interface
 	// contracts between phases visible in the planner context.
-	if (f.phases.length > 1) {
+	if (f.phases && f.phases.length > 1) {
 		const boundaryLines: string[] = []
 		for (const p of f.phases) {
 			if (p.boundary?.produces?.length || p.boundary?.consumes?.length) {

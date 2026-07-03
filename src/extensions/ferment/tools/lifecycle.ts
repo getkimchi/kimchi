@@ -244,6 +244,13 @@ function normalizePhases(value: ProposeScopingArgs["phases"]): ScopePhaseInput[]
 		if (phase.parallel_group !== undefined && typeof phase.parallel_group !== "number") {
 			return `phases.${phaseIndex}.parallel_group must be a number.`
 		}
+		if (phase.demo !== undefined && typeof phase.demo !== "string") {
+			return `phases.${phaseIndex}.demo must be a string.`
+		}
+		const produces = normalizeStringArray(phase.produces, `phases.${phaseIndex}.produces`)
+		if (typeof produces === "string") return produces
+		const consumes = normalizeStringArray(phase.consumes, `phases.${phaseIndex}.consumes`)
+		if (typeof consumes === "string") return consumes
 		if (phase.steps !== undefined) {
 			if (!Array.isArray(phase.steps)) return `phases.${phaseIndex}.steps must be an array.`
 			for (const [stepIndex, rawStep] of phase.steps.entries()) {
@@ -258,12 +265,30 @@ function normalizePhases(value: ProposeScopingArgs["phases"]): ScopePhaseInput[]
 				if (step.parallel_group !== undefined && typeof step.parallel_group !== "number") {
 					return `phases.${phaseIndex}.steps.${stepIndex}.parallel_group must be a number.`
 				}
+				if (step.must_haves !== undefined) {
+					if (!step.must_haves || typeof step.must_haves !== "object") {
+						return `phases.${phaseIndex}.steps.${stepIndex}.must_haves must be an object.`
+					}
+					const mh = step.must_haves as Record<string, unknown>
+					if (mh.truths !== undefined && !Array.isArray(mh.truths)) {
+						return `phases.${phaseIndex}.steps.${stepIndex}.must_haves.truths must be an array.`
+					}
+					if (mh.artifacts !== undefined && !Array.isArray(mh.artifacts)) {
+						return `phases.${phaseIndex}.steps.${stepIndex}.must_haves.artifacts must be an array.`
+					}
+					if (mh.key_links !== undefined && !Array.isArray(mh.key_links)) {
+						return `phases.${phaseIndex}.steps.${stepIndex}.must_haves.key_links must be an array.`
+					}
+				}
 			}
 		}
 		phases.push({
 			name: phase.name as string,
 			goal: phase.goal as string,
 			description: phase.description as string | undefined,
+			demo: phase.demo as string | undefined,
+			produces,
+			consumes,
 			constraints,
 			budget: phase.budget as string | undefined,
 			parallel_group: phase.parallel_group as number | undefined,

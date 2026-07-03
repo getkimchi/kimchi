@@ -45,16 +45,25 @@ export interface ScopePhaseInput {
 	name: string
 	goal: string
 	description?: string
+	demo?: string
+	produces?: string[]
+	consumes?: string[]
 	constraints?: string[]
 	budget?: string
 	parallel_group?: number
-	steps?: { description: string; verify?: string; parallel_group?: number }[]
+	steps?: {
+		description: string
+		verify?: string
+		parallel_group?: number
+		must_haves?: { truths?: string[]; artifacts?: string[]; key_links?: string[] }
+	}[]
 }
 
 export interface RefineStepInput {
 	description: string
 	verify?: string
 	parallel_group?: number
+	must_haves?: { truths?: string[]; artifacts?: string[]; key_links?: string[] }
 }
 
 export type Command =
@@ -333,6 +342,7 @@ interface StepInput {
 	description: string
 	verify?: string
 	parallel_group?: number
+	must_haves?: { truths?: string[]; artifacts?: string[]; key_links?: string[] }
 }
 
 function buildSteps(inputs: StepInput[]): Step[] {
@@ -343,6 +353,13 @@ function buildSteps(inputs: StepInput[]): Step[] {
 		description: st.description,
 		status: "pending" as const,
 		verification: st.verify ? { command: st.verify, retries: 2, retryDelayMs: 1000 } : undefined,
+		mustHaves: st.must_haves
+			? {
+					truths: st.must_haves.truths,
+					artifacts: st.must_haves.artifacts,
+					keyLinks: st.must_haves.key_links,
+				}
+			: undefined,
 		...cohorts[i],
 	}))
 }
@@ -366,6 +383,7 @@ function handleScope(
 				description: st.description,
 				verify: st.verify,
 				parallel_group: st.parallel_group,
+				must_haves: st.must_haves,
 			})),
 		)
 		return {
@@ -374,6 +392,8 @@ function handleScope(
 			name: p.name,
 			goal: p.goal,
 			description: p.description ?? "",
+			demo: p.demo,
+			boundary: p.produces || p.consumes ? { produces: p.produces, consumes: p.consumes } : undefined,
 			constraints: p.constraints,
 			budget: p.budget,
 			...phaseCohorts[i],
