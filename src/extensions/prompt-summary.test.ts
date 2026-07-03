@@ -126,4 +126,30 @@ describe("prompt summary stale-ctx crash prevention", () => {
 		expect(harness.sent).toHaveLength(0)
 		expect(isIdleCallCount).toBe(2)
 	})
+
+	it("silently bails when pi.sendMessage throws stale-ctx error (isIdle returned true)", async () => {
+		const harness = createStaleCtxHarness()
+		const staleError = new Error("This extension ctx is stale after session replacement or reload.")
+		const piWithThrowingSend = {
+			...harness.pi,
+			sendMessage() {
+				throw staleError
+			},
+		}
+		promptSummaryExtension(piWithThrowingSend as never)
+
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+
+		await harness.emit("agent_start")
+		await harness.emit("message_end", {
+			message: { role: "assistant", usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 } },
+		})
+		await harness.emit("agent_end")
+
+		await vi.advanceTimersByTimeAsync(0)
+
+		expect(harness.sent).toHaveLength(0)
+		expect(errorSpy).not.toHaveBeenCalled()
+		errorSpy.mockRestore()
+	})
 })
