@@ -182,9 +182,9 @@ function buildSingleModelInstructions(currentModelId?: string): string {
 
 Your first response to a complex task MUST include visible text (not just internal thinking) that orients the user: state what you intend to do and why in one or two sentences. For complex tasks, name the phases you will work through (for example: "I'll start by mapping the handlers, then propose fixes, then implement"). This is the user's window to interrupt if your approach is wrong. After the orientation, proceed quietly and do not narrate meta-process in subsequent turns.
 
-You are running in single-model mode.${modelClause} All work in this session runs on the currently selected model. Handle tasks directly yourself unless delegation is clearly beneficial.
+You are running in single-model mode.${modelClause} All work in this session runs on the currently selected model. Handle tasks directly yourself.
 
-You may spawn subagents with the \`Agent\` tool for parallel work or to isolate long-running tasks. When you do, you MUST always pass your own model ID in the \`model\` parameter — never delegate to a different model.`
+Do not spawn subagents with the \`Agent\` tool by default — only do so when the user explicitly asks for delegation. When you do spawn a subagent, pass your own model ID in the \`model\` parameter by default; only use a different model if the user explicitly instructs it.`
 }
 
 const DOCUMENTS_SECTION =
