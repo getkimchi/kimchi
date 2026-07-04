@@ -51,10 +51,8 @@ describe("SHARED_PLANNING_PROCESS", () => {
 		expect(SHARED_PLANNING_PROCESS).toContain("README")
 		expect(SHARED_PLANNING_PROCESS).toContain("mental model")
 		expect(SHARED_PLANNING_PROCESS).toContain("greenfield")
-		expect(SHARED_PLANNING_PROCESS).toContain("Explore subagents")
+		expect(SHARED_PLANNING_PROCESS).toContain("5-8 targeted files")
 		expect(SHARED_PLANNING_PROCESS).toContain("package.json")
-		expect(SHARED_PLANNING_PROCESS).toContain("Don't Hand-Roll")
-		expect(SHARED_PLANNING_PROCESS).toContain("Common Pitfalls")
 		expect(SHARED_PLANNING_PROCESS).toContain("This step is about YOUR understanding")
 		expect(SHARED_PLANNING_PROCESS).toContain("Do not ask questions yet")
 	})
@@ -158,22 +156,6 @@ describe("SHARED_PLANNING_PROCESS", () => {
 		expect(SCOPING_DISCOVERY_GUIDANCE).toContain(
 			"every step should fit within ~25% of the active model's context window when implemented",
 		)
-	})
-
-	it("includes must-haves and boundary map fields in the plan template", () => {
-		expect(SHARED_PLANNING_PROCESS).toContain("**Produces**")
-		expect(SHARED_PLANNING_PROCESS).toContain("**Consumes**")
-		expect(SHARED_PLANNING_PROCESS).toContain("**Demo**")
-		expect(SHARED_PLANNING_PROCESS).toContain("**Must-Haves**")
-		expect(SHARED_PLANNING_PROCESS).toContain("**Truths**")
-		expect(SHARED_PLANNING_PROCESS).toContain("**Artifacts**")
-		expect(SHARED_PLANNING_PROCESS).toContain("**Key Links**")
-	})
-
-	it("includes don't-hand-roll and common pitfalls guidance in investigation", () => {
-		expect(SHARED_PLANNING_PROCESS).toContain("Don't Hand-Roll")
-		expect(SHARED_PLANNING_PROCESS).toContain("Common Pitfalls")
-		expect(SHARED_PLANNING_PROCESS).toContain("Risks section, not as implementation chunks")
 	})
 
 	it("can be imported and used in other modules", () => {

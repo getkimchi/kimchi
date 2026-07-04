@@ -10,8 +10,7 @@ Your goal is to reach a complete, well-scoped plan, not to understand every file
 STEP 1 — INVESTIGATE (scan + explore the codebase, MAX 4 TURNS)
 Before asking the user anything, investigate the codebase to answer your own questions:
 - Do a project scan: file listing, README, package/config files, existing patterns.
-- Then go deeper: read the specific files relevant to the task — existing implementations,
-  test setup, API routes, auth config, database schema. Don't stop at the surface.
+- Then go deeper: read the specific files relevant to the task. Don't stop at the surface.
 - Form a mental model: what technology and patterns does this project use? What already
   exists that you can build on? What conventions are established?
 - Identify what you STILL don't know after exploring — these are your interview candidates.
@@ -20,21 +19,9 @@ Before asking the user anything, investigate the codebase to answer your own que
 The goal is to answer every question you possibly can yourself, so Step 2 only asks
 about things the code genuinely cannot tell you.
 
-Spend 3-5 turns and aim for 5-8 targeted files. Use Explore subagents for parallel
-discovery of independent unknowns. Prefer targeted search over reading entire files line by line — find the specific lines you need. Do NOT read every file — target
-what's relevant to the task. But DO read enough that you're not about to ask the
-user something you could have found by checking package.json or grepping for
-existing patterns.
-
-During investigation, watch for these planning traps:
-- **Don't Hand-Roll**: if you find a problem that looks simple but has an established
-  library solution (auth, validation, date parsing, state management), note it. The plan
-  should use the library, not reimplement it. Example: "JWT handling → use jsonwebtoken,
-  not hand-rolled crypto."
-- **Common Pitfalls**: if you spot a known trap in the codebase or technology (e.g., "this
-  ORM doesn't support transactions the way we need"), note it as a risk in the plan.
-
-These belong in the plan's ## Risks section, not as implementation chunks.
+Spend 3-5 turns and aim for 5-8 targeted files. Prefer targeted search over reading entire files line by line — find the specific lines you need. Do NOT read every file — target
+what's relevant to the task. But DO read enough that you're not about to ask the user
+something you could have found by checking package.json or grepping for existing patterns.
 
 This step is about YOUR understanding. Do not ask questions yet.
 
@@ -105,19 +92,7 @@ List non-negotiable requirements (e.g., "no new dependencies", "preserve existin
 Ordered, independently-verifiable units of work. Each chunk has:
 - **Scope**: what it covers (file paths, components)
 - **Files Changed**: every file created, modified, or deleted — use concrete paths, not globs
-- **Produces**: interfaces this chunk exports for downstream chunks (omit for leaf chunks)
-  Format: "file.ts → functionName, TypeName"
-- **Consumes**: what this chunk needs from upstream chunks (omit for first chunk)
-  Format: "from chunk N → functionName"
 - **Depends On**: which prior chunk(s) it requires
-- **Demo**: one sentence — what the user can see/do when this chunk is done (omit for non-user-facing)
-- **Must-Haves** (recommended for implementation chunks):
-  - **Truths**: observable behaviors that must be true when done
-    Example: "User can sign up with email and password"
-  - **Artifacts**: files that must exist with real implementation (not stubs)
-    Example: "src/lib/auth.ts — JWT helpers (min 30 lines, exports: generateToken, verifyToken)"
-  - **Key Links**: critical wiring that must connect
-    Example: "login/route.ts → auth.ts via import of generateToken"
 - **Accept When**: 2-3 concrete, verifiable criteria
 - **Test Coverage**: which test files need creation or update for this chunk
 - **Open Questions**: explicitly list any unknowns or assumptions (never leave implicit)
@@ -150,10 +125,5 @@ Common plan anti-patterns to avoid:
 - Every chunk depending on the previous one when some could be parallel
 - Exploration or discovery as an implementation chunk — that belongs in Step 1 (Investigate), not in the plan
 - Verification Strategy that is identical for every chunk instead of chunk-specific
-- Chunks with no Produces/Consumes when downstream chunks clearly depend on their interfaces
-- Must-Haves that are just "it works" without naming specific behavioral truths or artifact exports
-- Artifacts without minimum line counts or named exports — "src/auth.ts" alone doesn't tell you what's inside
-- Key Links that describe file paths but not the specific import/function that connects them
-- Demo sentences that describe implementation ("uses JWT") instead of user outcomes ("user can log in")
 - Asking the user a question you could have answered by reading the code —
   always investigate first, interview only about what the code can't tell you`

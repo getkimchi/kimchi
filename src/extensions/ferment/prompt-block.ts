@@ -107,6 +107,19 @@ overhead isn't worth it. Use them when:
 Populating must_haves does NOT replace the \`verify\` command — it complements it. The verify
 command proves the must-haves are met; the must-haves tell you what the verify should check.
 
+During investigation, watch for these planning traps:
+- **Don't Hand-Roll**: if you find a problem that looks simple but has an established
+  library solution (auth, validation, date parsing, state management), note it. The plan
+  should use the library, not reimplement it.
+- **Common Pitfalls**: if you spot a known trap in the codebase or technology, note it as a
+  risk in the plan's ## Risks section.
+
+The plan template supports these optional fields in each chunk:
+- **Produces**: interfaces this chunk exports — "file.ts → functionName, TypeName"
+- **Consumes**: what this chunk needs from upstream — "from chunk N → functionName"
+- **Demo**: one sentence — what the user can see/do when done
+- **Must-Haves**: Truths (behavioral), Artifacts (file + exports), Key Links (wiring)
+
 Every \`propose_ferment_scoping\` call must include the full \`gates\` array for plan review: exactly P1, P2, and P3. Each gate object must include \`id\`, \`verdict\`, \`rationale\`, and \`evidence\`. Never emit a partial gates array, never include only P1, and never omit \`rationale\` or \`evidence\`.
 
 ${scopeFermentDirectCallRule}
