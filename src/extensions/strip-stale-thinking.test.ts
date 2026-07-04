@@ -127,6 +127,62 @@ describe("stripStaleThinkingBeforeLatestUser", () => {
 
 		expect(stripStaleThinkingBeforeLatestUser(messages)).toBe(messages)
 	})
+
+	it("strips inline <think> tags from old assistant text, keeping the answer", () => {
+		const messages = [user("first"), assistant([text("before <think>stale reasoning</think> after")]), user("second")]
+
+		const result = stripStaleThinkingBeforeLatestUser(messages)
+
+		expect((result[1] as AssistantMessage).content).toEqual([text("before  after")])
+	})
+
+	it("strips inline <mm:think> (MiniMax) tags from old assistant text", () => {
+		const messages = [user("first"), assistant([text("<mm:think>plan</mm:think>the answer")]), user("second")]
+
+		const result = stripStaleThinkingBeforeLatestUser(messages)
+
+		expect((result[1] as AssistantMessage).content).toEqual([text("the answer")])
+	})
+
+	it("keeps inline reasoning in the current (in-progress) turn", () => {
+		const active = assistant([text("<mm:think>still thinking</mm:think>partial")])
+		const messages = [user("first"), assistant([text("<think>old</think>done")]), user("second"), active, toolResult()]
+
+		const result = stripStaleThinkingBeforeLatestUser(messages)
+
+		expect((result[1] as AssistantMessage).content).toEqual([text("done")])
+		expect(result[3]).toBe(active)
+	})
+
+	it("drops a text block that was pure inline reasoning but keeps tool calls", () => {
+		const messages = [
+			user("first"),
+			assistant([text("<mm:think>let me run pwd</mm:think>"), toolCall()]),
+			user("second"),
+		]
+
+		const result = stripStaleThinkingBeforeLatestUser(messages)
+
+		expect((result[1] as AssistantMessage).content).toEqual([toolCall()])
+	})
+
+	it("keeps a message unchanged when inline reasoning was its only content", () => {
+		const messages = [user("first"), assistant([text("<mm:think>only reasoning</mm:think>")]), user("second")]
+
+		expect(stripStaleThinkingBeforeLatestUser(messages)).toBe(messages)
+	})
+
+	it("strips both a native thinking block and inline tags in the same old message", () => {
+		const messages = [
+			user("first"),
+			assistant([thinking("native"), text("<think>inline</think>answer")]),
+			user("second"),
+		]
+
+		const result = stripStaleThinkingBeforeLatestUser(messages)
+
+		expect((result[1] as AssistantMessage).content).toEqual([text("answer")])
+	})
 })
 
 describe("stripStaleThinkingExtension", () => {
