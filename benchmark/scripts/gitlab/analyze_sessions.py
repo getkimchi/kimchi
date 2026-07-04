@@ -50,10 +50,16 @@ def _kimchi_model() -> str:
 
 
 def _load_prompt(filename: str, **substitutions: object) -> str:
-    """Load a prompt template from a sibling text file and substitute placeholders."""
+    """Load a prompt template from a sibling text file and substitute placeholders.
+
+    Uses manual replacement instead of str.format so that literal curly braces
+    in the template (e.g. JSON examples) don't need escaping.
+    """
     prompt_dir = Path(__file__).resolve().parent
     template = (prompt_dir / filename).read_text(encoding="utf-8")
-    return template.format(**substitutions)
+    for key, value in substitutions.items():
+        template = template.replace("{" + key + "}", str(value))
+    return template
 
 
 def build_analysis_prompt(
