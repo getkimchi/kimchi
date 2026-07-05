@@ -5,6 +5,15 @@
  * tags in regular text content. This extension transforms those for display
  * while preserving the original content in the LLM context via a shadow map.
  *
+ * NOTE: for live streams this is now largely a no-op. reasoning-tag-parser.ts
+ * overrides the openai-completions api and converts inline <think> text into
+ * native ThinkingContent blocks before this extension ever sees the message, so
+ * its text blocks no longer contain tags. This extension is retained as a
+ * fallback for legacy persisted sessions whose stored text still holds raw
+ * <think> tags, and its isHideThinkingEnabled() predicate still gates ACP
+ * thinking replay. Native thinking blocks are governed by pi's own
+ * hideThinkingBlock setting + toggle.
+ *
  * Native `thinking` content blocks (type: "thinking") are handled by the
  * upstream framework and are NOT touched by this extension.
  *

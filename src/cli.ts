@@ -96,6 +96,7 @@ import uiExtension from "./extensions/ui.js"
 import webFetchExtension from "./extensions/web-fetch/index.js"
 import webSearchExtension from "./extensions/web-search/index.js"
 import { normalizeAtFileArgs } from "./fs-paths.js"
+import { installReasoningTagParser } from "./integrations/provider/reasoning-tag-parser.js"
 import {
 	injectExperimentalProvider,
 	isTransientModelsError,
@@ -122,6 +123,7 @@ import { captureSessionStart } from "./utils/session-metadata-store.js"
 
 installCloudflare524RetryPatch()
 installPiNativeCompatibilityShim()
+installReasoningTagParser()
 
 function getSubcommand(args: string[]): string {
 	if (args.includes("--version") || args.includes("-v")) return "version"
