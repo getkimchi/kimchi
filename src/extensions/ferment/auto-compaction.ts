@@ -317,11 +317,6 @@ function isExpectedCompactionError(error: Error): boolean {
 	return EXPECTED_COMPACTION_ERROR_MESSAGES.some((message) => error.message.includes(message))
 }
 
-function catchReturnedCompactionError(result: unknown, onError: (error: unknown) => void): void {
-	if (!result || typeof (result as PromiseLike<unknown>).then !== "function") return
-	void Promise.resolve(result).catch(onError)
-}
-
 // ─── Main entry point ─────────────────────────────────────────────────────────
 
 /**
@@ -529,7 +524,7 @@ async function triggerCompactionForPending(
 	}
 
 	try {
-		const result = ctx.compact({
+		ctx.compact({
 			customInstructions,
 			onComplete: finishCompaction,
 			onError: (error: Error) => {
@@ -539,8 +534,7 @@ async function triggerCompactionForPending(
 					// Best-effort: never let onError propagate and crash the extension.
 				}
 			},
-		}) as unknown
-		catchReturnedCompactionError(result, handleCompactionFailure)
+		})
 	} catch (error) {
 		handleCompactionFailure(error)
 	}
@@ -616,7 +610,7 @@ export function maybeTriggerMidTurnFermentCompaction(
 	}
 
 	try {
-		const result = ctx.compact({
+		ctx.compact({
 			customInstructions,
 			onComplete: (result: CompactionResult) => {
 				runtime.clearCompactionInFlight(fermentId)
@@ -640,8 +634,7 @@ export function maybeTriggerMidTurnFermentCompaction(
 				}
 			},
 			onError: handleCompactionFailure,
-		}) as unknown
-		catchReturnedCompactionError(result, handleCompactionFailure)
+		})
 	} catch (error) {
 		// ctx.compact should never throw, but if it does before invoking callbacks
 		// the in-flight flag must be cleared so future compactions are not blocked.
