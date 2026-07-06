@@ -159,19 +159,21 @@ const acpMode = cliMode === "acp"
 
 // Monkey-patch AgentSession.prototype.exportToJsonl so ALL JSONL exports
 // (interactive, ACP, and teleport mode) get trace IDs injected inline.
+// The wrapper is async so PII redaction completes before the file path
+// is returned — upstream's handleExportCommand is patched to await this.
 // biome-ignore lint/suspicious/noExplicitAny: monkey-patching an abstract class prototype
 const _origExportToJsonl = (AgentSession as any).prototype.exportToJsonl
 // biome-ignore lint/suspicious/noExplicitAny: monkey-patching an abstract class prototype
-;(AgentSession as any).prototype.exportToJsonl = function (outputPath?: string) {
+;(AgentSession as any).prototype.exportToJsonl = async function (outputPath?: string) {
 	const filePath = _origExportToJsonl.call(this, outputPath)
 	try {
 		postProcessJsonlExport(filePath)
 	} catch (err) {
 		console.warn("[export-post-process] Failed to post-process JSONL export:", err)
 	}
-	// Fire-and-forget async PII redaction — runs after sync post-processing
-	// completes. The file is redacted by the time the user opens it.
-	redactJsonlExport(filePath).catch((err) => console.warn("[export-post-process] Failed to redact JSONL export:", err))
+	// Await redaction so the file is scrubbed before the caller sees the path.
+	// If redaction fails, throw — fail closed rather than returning an unredacted file.
+	await redactJsonlExport(filePath)
 	return filePath
 }
 
@@ -182,12 +184,15 @@ const _origExportToHtml = (AgentSession as any).prototype.exportToHtml
 // biome-ignore lint/suspicious/noExplicitAny: monkey-patching an abstract class prototype
 ;(AgentSession as any).prototype.exportToHtml = async function (outputPath?: string) {
 	const filePath = await _origExportToHtml.call(this, outputPath)
+	// Post-processing and redaction are independent — a post-processing
+	// failure must not bypass the security redaction step.
 	try {
 		postProcessHtmlExport(filePath)
-		await redactHtmlExport(filePath)
 	} catch (err) {
 		console.warn("[export-post-process] Failed to post-process HTML export:", err)
 	}
+	// Redaction is awaited and throws on failure — fail closed.
+	await redactHtmlExport(filePath)
 	return filePath
 }
 const helpOrVersion = isHelpOrVersionArgs(originalArgs)

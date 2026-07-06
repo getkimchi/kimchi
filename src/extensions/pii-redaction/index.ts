@@ -22,7 +22,7 @@
  */
 
 import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent"
-import { readRedactionConfig } from "./config.js"
+import { getRedactionConfig } from "./config.js"
 import { redactMessages } from "./redactor.js"
 
 const piiRedactionExtension: ExtensionFactory = (pi: ExtensionAPI) => {
@@ -33,9 +33,8 @@ const piiRedactionExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 		const messages = payload.messages
 		if (!Array.isArray(messages)) return
 
-		// Check if redaction is enabled — read config on each request so
-		// env/config changes are picked up without restart.
-		const config = readRedactionConfig()
+		// Redaction config is cached at startup — avoids sync disk I/O in the hot path.
+		const config = getRedactionConfig()
 		if (!config.enabled) return
 
 		// Redact PII/secrets from all text content in the messages.

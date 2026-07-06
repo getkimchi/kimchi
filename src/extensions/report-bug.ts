@@ -46,21 +46,27 @@ async function createSessionGist(ctx: ExtensionCommandContext): Promise<string |
 		const redactedFile = join(tmpDir, "session-redacted.jsonl")
 		writeFileSync(redactedFile, `${redacted.join("\n")}\n`, "utf-8")
 
-		const result = execFileSync("gh", ["gist", "create", "--public=false", redactedFile], {
-			encoding: "utf-8",
-			stdio: ["pipe", "pipe", "pipe"],
-			timeout: 30000,
-		})
-		const gistLines = result
-			.split("\n")
-			.map((l) => l.trim())
-			.filter(Boolean)
-		// gh outputs the gist URL on the last non-empty line
-		const gistUrl = gistLines.at(-1)
-		if (!gistUrl || !gistUrl.startsWith("https://")) {
-			throw new Error(`Unexpected gh output: ${result}`)
+		try {
+			const result = execFileSync("gh", ["gist", "create", "--public=false", redactedFile], {
+				encoding: "utf-8",
+				stdio: ["pipe", "pipe", "pipe"],
+				timeout: 30000,
+			})
+			const gistLines = result
+				.split("\n")
+				.map((l) => l.trim())
+				.filter(Boolean)
+			// gh outputs the gist URL on the last non-empty line
+			const gistUrl = gistLines.at(-1)
+			if (!gistUrl || !gistUrl.startsWith("https://")) {
+				throw new Error(`Unexpected gh output: ${result}`)
+			}
+			return gistUrl
+		} finally {
+			// Clean up the temp directory so the redacted transcript doesn't linger on disk.
+			const { rmSync } = await import("node:fs")
+			rmSync(tmpDir, { recursive: true, force: true })
 		}
-		return gistUrl
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err)
 		if (ctx.hasUI) {

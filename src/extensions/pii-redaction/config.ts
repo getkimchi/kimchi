@@ -3,31 +3,32 @@
  *
  * Precedence (highest to lowest):
  *   1. KIMCHI_REDACTION_ENABLED env var — "0" or "false" disables
- *   2. config.json `redaction.enabled` boolean
+ *   2. config.json `redaction.enabled` boolean (via loadConfig project/global merge)
  *   3. Default: enabled (true)
  *
- * This mirrors the pattern established by readTelemetryConfig in
- * src/config.ts for env/config precedence.
+ * The config is cached at first call to avoid synchronous disk I/O on every
+ * provider request. Env var changes require a restart (same as telemetry config).
  */
 
-import { readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { resolve } from "node:path"
-
-const KIMCHI_CONFIG_PATH = resolve(homedir(), ".config", "kimchi", "config.json")
+import { loadConfig } from "../../config.js"
 
 export interface RedactionConfig {
 	/** Whether PII/secret redaction is active. */
 	enabled: boolean
 }
 
+/** Cached redaction config — read once, not on every request. */
+let cachedConfig: RedactionConfig | undefined
+
 /**
- * Read the redaction configuration.
+ * Read the redaction configuration using the same project/global merge as loadConfig.
  *
- * @param configPath  Path to config.json (defaults to global ~/.config/kimchi/config.json)
- * @returns           { enabled: boolean } — true unless explicitly disabled
+ * The global config path is computed dynamically (not from the module-level
+ * KIMCHI_CONFIG_PATH constant) so test isolation via process.env.HOME works.
  */
-export function readRedactionConfig(configPath: string = KIMCHI_CONFIG_PATH): RedactionConfig {
+function readRedactionConfigFromDisk(): RedactionConfig {
 	// 1. Env var takes highest precedence
 	const envValue = process.env.KIMCHI_REDACTION_ENABLED
 	if (envValue !== undefined && envValue !== "") {
@@ -35,18 +36,31 @@ export function readRedactionConfig(configPath: string = KIMCHI_CONFIG_PATH): Re
 		return { enabled }
 	}
 
-	// 2. config.json redaction.enabled
-	try {
-		const raw = readFileSync(configPath, "utf-8")
-		const parsed = JSON.parse(raw)
-		const redaction = parsed.redaction
-		if (redaction && typeof redaction === "object" && typeof redaction.enabled === "boolean") {
-			return { enabled: redaction.enabled }
-		}
-	} catch {
-		// missing or invalid config — fall through to default
+	// 2. config.json redaction.enabled (merged via loadConfig — project overrides global)
+	// Compute path dynamically so tests can redirect via process.env.HOME.
+	const globalConfigPath = resolve(homedir(), ".config", "kimchi", "config.json")
+	const config = loadConfig({ configPath: globalConfigPath })
+	if (config.redaction && typeof config.redaction.enabled === "boolean") {
+		return { enabled: config.redaction.enabled }
 	}
 
 	// 3. Default: enabled
 	return { enabled: true }
+}
+
+/**
+ * Get the redaction configuration (cached after first call).
+ *
+ * The cache avoids synchronous I/O in the hot `before_provider_request` path.
+ */
+export function getRedactionConfig(): RedactionConfig {
+	if (!cachedConfig) {
+		cachedConfig = readRedactionConfigFromDisk()
+	}
+	return cachedConfig
+}
+
+/** Reset the cached config — for test isolation. */
+export function resetRedactionConfigCache(): void {
+	cachedConfig = undefined
 }

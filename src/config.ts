@@ -150,6 +150,7 @@ export interface KimchiConfig {
 	migrationState?: MigrationState
 	onboarding: OnboardingConfig
 	deviceId: string
+	redaction?: { enabled?: boolean }
 }
 
 /**
@@ -186,6 +187,7 @@ function readConfigExtras(configPath: string): {
 	onboarding?: OnboardingConfig
 	preferences?: PreferencesConfig
 	deviceId?: string
+	redaction?: { enabled?: boolean }
 } {
 	try {
 		const raw = readFileSync(configPath, "utf-8")
@@ -258,6 +260,13 @@ function readConfigExtras(configPath: string): {
 			(typeof parsed.device_id === "string" && parsed.device_id.length > 0 && parsed.device_id) ||
 			undefined
 
+		// Read redaction config
+		let redaction: { enabled?: boolean } | undefined
+		const rd = parsed.redaction
+		if (rd && typeof rd === "object" && typeof rd.enabled === "boolean") {
+			redaction = { enabled: rd.enabled }
+		}
+
 		return {
 			apiKey,
 			llmEndpoint,
@@ -270,6 +279,7 @@ function readConfigExtras(configPath: string): {
 			onboarding,
 			deviceId,
 			preferences,
+			redaction,
 		}
 	} catch {
 		return {}
@@ -444,6 +454,7 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		migrationState: projectExtras.migrationState ?? globalExtras.migrationState,
 		onboarding: globalExtras.onboarding,
 		deviceId: projectExtras.deviceId ?? globalExtras.deviceId,
+		redaction: projectExtras.redaction ?? globalExtras.redaction,
 	}
 
 	return {
@@ -459,6 +470,7 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		migrationState: extras.migrationState,
 		onboarding: extras.onboarding ?? {},
 		deviceId: extras.deviceId ?? "",
+		redaction: extras.redaction,
 	}
 }
 

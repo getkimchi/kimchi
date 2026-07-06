@@ -1,8 +1,8 @@
-import { mkdtempSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { readRedactionConfig } from "./config.js"
+import { getRedactionConfig, resetRedactionConfigCache } from "./config.js"
 import { redactMessages, redactText, resetRedactorEngine } from "./redactor.js"
 
 // ─── Test PII / secret values ────────────────────────────────────────────────
@@ -192,66 +192,81 @@ describe("redactMessages — message structure preservation", () => {
 	})
 })
 
-describe("readRedactionConfig — opt-out paths", () => {
-	let tmpDir: string
-	let configPath: string
+describe("getRedactionConfig — opt-out paths", () => {
+	let savedHome: string | undefined
 	let savedEnv: string | undefined
+	let tmpHome: string
 
 	beforeEach(() => {
-		tmpDir = mkdtempSync(join(tmpdir(), "kimchi-redact-"))
-		configPath = join(tmpDir, "config.json")
+		savedHome = process.env.HOME
 		savedEnv = process.env.KIMCHI_REDACTION_ENABLED
+		tmpHome = mkdtempSync(join(tmpdir(), "kimchi-redact-home-"))
+		process.env.HOME = tmpHome
 		process.env.KIMCHI_REDACTION_ENABLED = ""
+		resetRedactionConfigCache()
 	})
 
 	afterEach(() => {
-		if (savedEnv !== undefined) {
-			process.env.KIMCHI_REDACTION_ENABLED = savedEnv
-		} else {
-			process.env.KIMCHI_REDACTION_ENABLED = ""
-		}
+		if (savedHome !== undefined) process.env.HOME = savedHome
+		else process.env.HOME = ""
+		if (savedEnv !== undefined) process.env.KIMCHI_REDACTION_ENABLED = savedEnv
+		else process.env.KIMCHI_REDACTION_ENABLED = ""
+		resetRedactionConfigCache()
 	})
 
+	/** Write a global config.json in the temp HOME so loadConfig picks it up */
+	function writeConfig(data: Record<string, unknown>): void {
+		const configDir = join(tmpHome, ".config", "kimchi")
+		mkdirSync(configDir, { recursive: true })
+		writeFileSync(join(configDir, "config.json"), JSON.stringify(data), "utf-8")
+		resetRedactionConfigCache()
+	}
+
 	it("defaults to enabled when no config and no env", () => {
-		// configPath doesn't exist → default
-		const config = readRedactionConfig(join(tmpDir, "nonexistent.json"))
+		const config = getRedactionConfig()
 		expect(config.enabled).toBe(true)
 	})
 
 	it("disables via KIMCHI_REDACTION_ENABLED=0 env var", () => {
 		process.env.KIMCHI_REDACTION_ENABLED = "0"
-		const config = readRedactionConfig(configPath)
+		resetRedactionConfigCache()
+		const config = getRedactionConfig()
 		expect(config.enabled).toBe(false)
 	})
 
 	it("disables via KIMCHI_REDACTION_ENABLED=false env var", () => {
 		process.env.KIMCHI_REDACTION_ENABLED = "false"
-		const config = readRedactionConfig(configPath)
+		resetRedactionConfigCache()
+		const config = getRedactionConfig()
 		expect(config.enabled).toBe(false)
 	})
 
 	it("disables via config.json redaction.enabled=false", () => {
-		writeFileSync(configPath, JSON.stringify({ redaction: { enabled: false } }))
-		const config = readRedactionConfig(configPath)
+		writeConfig({ redaction: { enabled: false } })
+		const config = getRedactionConfig()
 		expect(config.enabled).toBe(false)
 	})
 
 	it("env var overrides config.json (env=0 wins over config=true)", () => {
-		writeFileSync(configPath, JSON.stringify({ redaction: { enabled: true } }))
+		writeConfig({ redaction: { enabled: true } })
 		process.env.KIMCHI_REDACTION_ENABLED = "0"
-		const config = readRedactionConfig(configPath)
+		resetRedactionConfigCache()
+		const config = getRedactionConfig()
 		expect(config.enabled).toBe(false)
 	})
 
 	it("falls back to default when config.json is malformed", () => {
-		writeFileSync(configPath, "{ not valid json")
-		const config = readRedactionConfig(configPath)
+		const configDir = join(tmpHome, ".config", "kimchi")
+		mkdirSync(configDir, { recursive: true })
+		writeFileSync(join(configDir, "config.json"), "{ not valid json", "utf-8")
+		resetRedactionConfigCache()
+		const config = getRedactionConfig()
 		expect(config.enabled).toBe(true)
 	})
 
 	it("falls back to default when redaction key is missing", () => {
-		writeFileSync(configPath, JSON.stringify({ theme: "dark" }))
-		const config = readRedactionConfig(configPath)
+		writeConfig({ theme: "dark" })
+		const config = getRedactionConfig()
 		expect(config.enabled).toBe(true)
 	})
 })
