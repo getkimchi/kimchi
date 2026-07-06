@@ -61,6 +61,7 @@ import orphanToolResultSanitizerExtension from "./extensions/orphan-tool-result-
 import permissionsExtension from "./extensions/permissions/index.js"
 import { writeKimchiKeybindingDefaults } from "./extensions/permissions/keybindings.js"
 import { installPiNativeCompatibilityShim } from "./extensions/pi-package-lookup/native-compat.js"
+import piiRedactionExtension from "./extensions/pii-redaction/index.js"
 import pluginPackageHooksAdapter from "./extensions/plugin-package-hook-adapter/index.js"
 import promptEnrichmentExtension from "./extensions/prompt-construction/prompt-enrichment.js"
 import promptSummaryExtension from "./extensions/prompt-summary.js"
@@ -117,7 +118,12 @@ import { setAvailableModels } from "./startup-context.js"
 import { probeTerminalBackground } from "./terminal-bg-probe.js"
 import { installCloudflare524RetryPatch } from "./upstream-retry-patch.js"
 import { getVersion } from "./utils.js"
-import { postProcessHtmlExport, postProcessJsonlExport } from "./utils/export-post-process.js"
+import {
+	postProcessHtmlExport,
+	postProcessJsonlExport,
+	redactHtmlExport,
+	redactJsonlExport,
+} from "./utils/export-post-process.js"
 import { captureSessionStart } from "./utils/session-metadata-store.js"
 
 installCloudflare524RetryPatch()
@@ -163,6 +169,9 @@ const _origExportToJsonl = (AgentSession as any).prototype.exportToJsonl
 	} catch (err) {
 		console.warn("[export-post-process] Failed to post-process JSONL export:", err)
 	}
+	// Fire-and-forget async PII redaction — runs after sync post-processing
+	// completes. The file is redacted by the time the user opens it.
+	redactJsonlExport(filePath).catch((err) => console.warn("[export-post-process] Failed to redact JSONL export:", err))
 	return filePath
 }
 
@@ -175,6 +184,7 @@ const _origExportToHtml = (AgentSession as any).prototype.exportToHtml
 	const filePath = await _origExportToHtml.call(this, outputPath)
 	try {
 		postProcessHtmlExport(filePath)
+		await redactHtmlExport(filePath)
 	} catch (err) {
 		console.warn("[export-post-process] Failed to post-process HTML export:", err)
 	}
@@ -554,6 +564,7 @@ try {
 			modelGuardExtension,
 			orphanToolResultRepairExtension,
 			orphanToolResultSanitizerExtension,
+			piiRedactionExtension,
 			stripImagesExtension,
 			traceIdExtension,
 			llmResponseLogExtension,

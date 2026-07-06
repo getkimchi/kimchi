@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join, relative, resolve } from "node:path"
 import { SUPERPOWERS_SKILL_PATH } from "./extensions/superpowers/config.js"
@@ -157,6 +157,8 @@ export interface KimchiConfig {
  * Returns undefined if the file doesn't exist or the field is missing.
  */
 export function readApiKeyFromConfigFile(configPath: string = KIMCHI_CONFIG_PATH): string | undefined {
+	const permWarning = checkConfigFilePermissions(configPath)
+	if (permWarning) console.warn(permWarning)
 	try {
 		const raw = readFileSync(configPath, "utf-8")
 		const parsed = JSON.parse(raw)
@@ -272,6 +274,26 @@ function readConfigExtras(configPath: string): {
 	} catch {
 		return {}
 	}
+}
+
+/**
+ * Check if the config file has group/world-readable permission bits.
+ * Returns a warning string if the file is too permissive (mode allows
+ * group or world access), or undefined if the file doesn't exist or is
+ * owner-only (0600 or stricter). Used by loadConfig and
+ * readApiKeyFromConfigFile to warn users when their API key is exposed.
+ */
+export function checkConfigFilePermissions(configPath: string): string | undefined {
+	try {
+		const stat = statSync(configPath)
+		if ((stat.mode & 0o077) !== 0) {
+			const mode = (stat.mode & 0o777).toString(8)
+			return `Warning: ${configPath} is group/world-readable (mode ${mode}). Run \`chmod 600 ${configPath}\` to restrict access to your API key.`
+		}
+	} catch {
+		// File doesn't exist or is inaccessible — not a perm warning
+	}
+	return undefined
 }
 
 function readConfigObject(configPath: string): Record<string, unknown> | undefined {
@@ -400,10 +422,14 @@ export function readTelemetryConfig(configPath?: string): TelemetryConfig {
 export function loadConfig(options?: { configPath?: string; cwd?: string }): KimchiConfig {
 	// Read global config
 	const globalConfigPath = options?.configPath ?? KIMCHI_CONFIG_PATH
+	const globalPermWarning = checkConfigFilePermissions(globalConfigPath)
+	if (globalPermWarning) console.warn(globalPermWarning)
 	const globalExtras = readConfigExtras(globalConfigPath)
 
 	// Read project-level config
 	const projectPath = resolve(options?.cwd ?? process.cwd(), ".kimchi", "config.json")
+	const projectPermWarning = checkConfigFilePermissions(projectPath)
+	if (projectPermWarning) console.warn(projectPermWarning)
 	const projectExtras = readConfigExtras(projectPath)
 
 	// Merge: project wins for scalars; shallow merge for mcpSearch and retry
@@ -445,6 +471,10 @@ function writeConfigObject(configPath: string, raw: Record<string, unknown>): vo
 	const tmp = `${configPath}.${process.pid}.tmp`
 	writeFileSync(tmp, `${JSON.stringify(raw, null, 2)}\n`, "utf-8")
 	renameSync(tmp, configPath)
+	// Restrict to owner-only (0600) — config.json holds the Cast AI API key and
+	// git tokens in plaintext. The atomic rename may inherit the tmp file's
+	// default umask perms, so chmod explicitly after the rename lands.
+	chmodSync(configPath, 0o600)
 }
 
 function updateConfigFile(
