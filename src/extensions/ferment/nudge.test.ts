@@ -135,7 +135,7 @@ describe("ferment nudges", () => {
 			getStorage: () =>
 				({
 					get: () => current,
-				}) as unknown as FermentRuntime["getStorage"] extends () => infer T ? T : never,
+				}) as unknown as ReturnType<FermentRuntime["getStorage"]>,
 			getContinuationPolicy: () => "automated",
 			isAutomatedContinuationEnabled: () => true,
 		}
@@ -169,7 +169,7 @@ describe("ferment nudges", () => {
 			getStorage: () =>
 				({
 					get: () => boundary,
-				}) as unknown as FermentRuntime["getStorage"] extends () => infer T ? T : never,
+				}) as unknown as ReturnType<FermentRuntime["getStorage"]>,
 			getContinuationPolicy: () => "automated",
 			isAutomatedContinuationEnabled: () => true,
 		}
@@ -242,7 +242,7 @@ describe("ferment nudges", () => {
 			getStorage: () =>
 				({
 					get: () => completed,
-				}) as unknown as FermentRuntime["getStorage"] extends () => infer T ? T : never,
+				}) as unknown as ReturnType<FermentRuntime["getStorage"]>,
 			setActive: setActiveSpy,
 			getContinuationPolicy: () => "automated",
 		}
@@ -266,7 +266,7 @@ describe("ferment nudges", () => {
 			getStorage: () =>
 				({
 					get: () => readyToComplete,
-				}) as unknown as FermentRuntime["getStorage"] extends () => infer T ? T : never,
+				}) as unknown as ReturnType<FermentRuntime["getStorage"]>,
 			getContinuationPolicy: () => "automated",
 			isAutomatedContinuationEnabled: () => true,
 		}
@@ -300,7 +300,7 @@ describe("ferment nudges", () => {
 							status: "planned",
 							phases: [{ id: "phase-1", index: 1, name: "Phase", goal: "Build", status: "planned", steps: [] }],
 						}),
-				}) as unknown as FermentRuntime["getStorage"] extends () => infer T ? T : never,
+				}) as unknown as ReturnType<FermentRuntime["getStorage"]>,
 			getContinuationPolicy: () => "automated",
 			isAutomatedContinuationEnabled: () => true,
 		}
@@ -335,7 +335,7 @@ describe("ferment nudges", () => {
 			getStorage: () =>
 				({
 					get: () => current,
-				}) as unknown as FermentRuntime["getStorage"] extends () => infer T ? T : never,
+				}) as unknown as ReturnType<FermentRuntime["getStorage"]>,
 			getContinuationPolicy: () => "automated",
 			isAutomatedContinuationEnabled: () => true,
 		}
@@ -366,7 +366,7 @@ describe("ferment nudges", () => {
 			getStorage: () =>
 				({
 					get: () => failed,
-				}) as unknown as FermentRuntime["getStorage"] extends () => infer T ? T : never,
+				}) as unknown as ReturnType<FermentRuntime["getStorage"]>,
 			getContinuationPolicy: () => "automated",
 			isAutomatedContinuationEnabled: () => true,
 		}
@@ -592,7 +592,7 @@ describe("maybeInjectFermentStopNudge", () => {
 			getStorage: () =>
 				({
 					get: () => ferment,
-				}) as unknown as FermentRuntime["getStorage"] extends () => infer T ? T : never,
+				}) as unknown as ReturnType<FermentRuntime["getStorage"]>,
 			getContinuationPolicy: () => "automated",
 			isAutomatedContinuationEnabled: () => automated,
 		}

@@ -1,7 +1,6 @@
 /**
  * Role-based model configuration for multi-model orchestration.
  *
- * Eight roles:
  *   - orchestrator: runs the main loop, delegates work (single model)
  *   - planner: designs the approach, writes specs
  *   - builder: code implementation
@@ -9,12 +8,7 @@
  *   - explorer: codebase exploration, reading files, tracing architecture
  *   - researcher: research beyond codebase — web search, documentation lookup
  *   - judge: ferment verification and final grading calls
- *   - compactor: summarizes ferment stage-boundary handoffs (see
- *     ferment/auto-compaction.ts). Optional, no hardcoded default — unset means
- *     "no override," and inline compaction uses the active session's model
- *     exactly as before. Compaction is pure summarization, so this is a good
- *     place to point at a fast, non-reasoning model once you know one in your
- *     catalog.
+ *   - compactor: optional context summarization model; unset uses the active session model.
  *
  * Delegable roles (planner, builder, reviewer, explorer) accept either a
  * single model string or an array of candidates. When multiple models are
@@ -38,7 +32,7 @@
  *     "reviewer": "kimchi-dev/minimax-m2.7",
  *     "explorer": "kimchi-dev/nemotron-3-ultra-fp4",
  *     "judge": "kimchi-dev/kimi-k2.6",
- *     "compactor": "kimchi-dev/some-non-reasoning-model"
+ *     "compactor": "kimchi-dev/nemotron-3-ultra-fp4"
  *   }
  * }
  * ```
@@ -79,9 +73,7 @@ export interface ModelRoles {
 	researcher: RoleModelAssignment
 	/** Ferment judge model(s): verification triage and final grading calls. */
 	judge: RoleModelAssignment
-	/** Compaction model: summarizes ferment stage-boundary handoffs. Optional and
-	 *  NOT part of DEFAULT_MODEL_ROLES — unset means "no override," inline
-	 *  compaction falls back to the active session's model. */
+	/** Optional context summarization model; unset uses the active session model. */
 	compactor?: string
 }
 
@@ -183,7 +175,7 @@ export function parseModelRoles(obj: ModelRoles | Record<string, unknown> | unde
 			warnings.push({
 				role: "compactor",
 				configuredModel: String(compactorValue),
-				message: 'modelRoles.compactor must be a non-empty string (e.g. "kimchi-dev/kimi-k2.6"). Ignoring.',
+				message: 'modelRoles.compactor must be a non-empty string (e.g. "kimchi-dev/nemotron-3-ultra-fp4"). Ignoring.',
 			})
 		} else {
 			roles.compactor = compactorValue.trim()

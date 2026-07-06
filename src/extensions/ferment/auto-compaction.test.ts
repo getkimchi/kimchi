@@ -31,6 +31,7 @@ import { clearPendingCompaction, type PendingCompaction, setPendingCompaction } 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const NOW = "2026-01-01T00:00:00.000Z"
+const STALE_CTX_MESSAGE = "This extension ctx is stale after session replacement or reload"
 
 function makeStep(overrides: Partial<Step> & { id: string; description: string }): Step {
 	return {
@@ -494,6 +495,24 @@ describe("maybeTriggerFermentCompaction", () => {
 		expect(runtime.getPendingCompaction(ferment.id)).toBeDefined()
 	})
 
+	it("leaves pending compaction untouched when the one-shot flag read hits a stale pi", async () => {
+		const ferment = makeFermentWithPhase(
+			{ id: "phase-1", name: "Phase", goal: "Goal" },
+			{ id: "step-1", description: "Do it" },
+		)
+		storageMap.set(ferment.id, ferment)
+		runtime.setActive(ferment)
+		setPendingCompaction(ferment.id, makePendingStep(ferment.id, "phase-1", "step-1"))
+		pi.getFlag = vi.fn(() => {
+			throw new Error(STALE_CTX_MESSAGE)
+		})
+
+		await maybeTriggerFermentCompaction(pi, ctx, runtime)
+
+		expect(ctx.compact).not.toHaveBeenCalled()
+		expect(runtime.getPendingCompaction(ferment.id)).toBeDefined()
+	})
+
 	it("appends the handoff before one-shot inline compaction and schedules continuation after", async () => {
 		const ferment = makeFermentWithPhase(
 			{ id: "phase-1", name: "Phase", goal: "Goal" },
@@ -531,14 +550,13 @@ describe("maybeTriggerFermentCompaction", () => {
 		// the newest valid cut point, so the cut lands on it and the next stage
 		// keeps summary + handoff.
 		expect(appendCustomMessageEntryMock(ctx)).toHaveBeenCalledTimes(1)
-		const handoffCall = appendCustomMessageEntryMock(ctx).mock.calls[0]
-		expect(handoffCall[0]).toBe("ferment_stage_handoff")
-		expect(handoffCall[1]).toEqual([{ type: "text", text: expect.stringContaining('"fermentName":"My Ferment"') }])
-		expect(handoffCall[2]).toBe(false)
-		expect(handoffCall[3]).toMatchObject({ fermentName: "My Ferment" })
-		// Pre-compaction handoffs carry no token count — success is signalled by
-		// the compaction entry itself.
-		expect((handoffCall[3] as { compactionTokensBefore?: number }).compactionTokensBefore).toBeUndefined()
+		const [customType, content, display, details] = appendCustomMessageEntryMock(ctx).mock.calls[0]
+		expect({ customType, content, display, details }).toMatchObject({
+			customType: "ferment_stage_handoff",
+			content: [{ type: "text", text: expect.stringContaining('"fermentName":"My Ferment"') }],
+			display: false,
+			details: { fermentName: "My Ferment", compactionTokensBefore: undefined },
+		})
 		expect(pi.sendMessage).not.toHaveBeenCalled()
 		expect(pi.appendEntry).not.toHaveBeenCalled()
 
@@ -611,8 +629,11 @@ describe("maybeTriggerFermentCompaction", () => {
 		await maybeTriggerFermentCompaction(pi, ctx, runtime)
 
 		expect(find).not.toHaveBeenCalled()
-		const call = (ctx.inlineCompact as ReturnType<typeof vi.fn>).mock.calls[0][0] as { model?: unknown }
-		expect(call.model).toBeUndefined()
+		expect(ctx.inlineCompact).toHaveBeenCalledWith(
+			expect.not.objectContaining({
+				model: expect.anything(),
+			}),
+		)
 	})
 
 	it("warns when the compactor ref is configured but not in the registry", async () => {
@@ -1031,6 +1052,23 @@ describe("maybeTriggerMidTurnFermentCompaction", () => {
 				text: expect.stringContaining("Mid-turn context overrun in oneshot"),
 			}),
 		)
+	})
+
+	it("no-ops when the one-shot flag read hits a stale pi", () => {
+		const ferment = makeFermentWithPhase()
+		ferment.phases[0].status = "active"
+		ferment.phases[0].steps[0].status = "running"
+		const runtime = makeMidTurnRuntime(ferment)
+		const pi = makePi()
+		pi.getFlag = vi.fn(() => {
+			throw new Error(STALE_CTX_MESSAGE)
+		})
+		const ctx = makeMidTurnCtx()
+
+		maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, CONTEXT_WINDOW - 1)
+
+		expect(ctx.compact).not.toHaveBeenCalled()
+		expect(pi.appendEntry).not.toHaveBeenCalled()
 	})
 
 	it("onError with an expected error clears in-flight without notifying", () => {

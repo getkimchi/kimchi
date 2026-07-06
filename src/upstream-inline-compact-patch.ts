@@ -1,31 +1,10 @@
 /**
- * Non-aborting inline adaptation of pi-coding-agent's AgentSession.compact().
- *
- * Instead of cloning upstream's compaction lifecycle, `inlineCompact` DELEGATES
- * to the original `compact()` with the quiesce pair suppressed: upstream's
- * `_disconnectFromAgent()` + `await this.abort()` exist to force-idle a live
- * run before rewriting `agent.state.messages`, but inline callers (Ferment's
- * stage-boundary compaction) invoke this from an AWAITED extension handler at
- * a turn boundary — the agent loop is suspended for the whole call, so the
- * rewrite is already safe and the run must NOT be aborted.
- *
- * Delegation means upstream's own code runs: `_compactionAbortController` is
- * set (so `isCompacting` and `abortCompaction()` work unpatched), events carry
- * upstream's exact shapes (reason "manual"), and upstream fixes are inherited
- * automatically.
- *
- * The suppression works through temporary per-instance property shadows that
- * intercept the prototype members `compact()` reaches via `this`. That
- * coupling is asserted fail-loud at patch-install time (i.e. process startup)
- * by checking the source text of `compact()` — a regression here must abort
- * the process, not silently turn stage compaction abortive or into a no-op.
+ * Non-aborting inline adaptation of AgentSession.compact().
  *
  * Caller contract (enforced where possible):
  * - Call from an awaited extension handler at a turn boundary (turn_end /
- *   agent_end) or while the session is idle. NOT enforceable from inside the
- *   session; violating it races the agent loop.
- * - No unpaired toolCall in the current branch. ENFORCED: throws before
- *   compacting (see isToolCallInFlight) instead of orphaning the toolResult.
+ *   agent_end) or while the session is idle.
+ * - No unpaired toolCall in the current branch.
  */
 import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai"
 import { AgentSession, type CompactionResult, ExtensionRunner } from "@earendil-works/pi-coding-agent"
@@ -34,18 +13,9 @@ import { collectMessagesAfterLastCompaction, isToolCallInFlight } from "./tool-c
 export interface InlineCompactOptions {
 	customInstructions?: string
 	force?: boolean
-	/** Override model for the summarization call. Falls back to the session's
-	 *  active model when omitted (prior behavior). Lets callers (e.g. Ferment's
-	 *  stage-boundary compaction) point summarization at a separate, cheaper or
-	 *  non-reasoning model — upstream's summarizer already gates thinkingLevel
-	 *  on `model.reasoning`, so a non-reasoning model here needs no other patch. */
+	/** Override model for the summarization call. */
 	model?: Model<Api>
-	/** Override thinking level for the summarization call. Falls back to the
-	 *  session's current thinking level when omitted. Every model in Kimchi's
-	 *  catalog today reports `reasoning: true` (some hybrid, some just not yet
-	 *  gated off at the compat layer), so picking a different `model` above does
-	 *  not by itself guarantee no reasoning tokens are spent — this is the actual
-	 *  lever for that. */
+	/** Override thinking level for the summarization call. */
 	thinkingLevel?: ModelThinkingLevel
 }
 
@@ -119,14 +89,7 @@ function shadowProperty(target: object, key: string, value: unknown): () => void
 	}
 }
 
-/**
- * Fail at patch-install time (i.e. process startup) when `compact()` no longer
- * calls the internals the inline shadows suppress. If upstream renames
- * `_disconnectFromAgent` or stops quiescing via `this.abort()`, the shadows
- * would silently go inert and inline compaction would become abortive again —
- * the same silent-regression class that once turned every stage-boundary
- * compaction in a benchmark run into a no-op.
- */
+/** Fail fast if upstream compact internals no longer match the inline patch. */
 function assertCompactInternalsCompatible(sessionProto: PatchableSessionPrototype): void {
 	const compactSource = typeof sessionProto.compact === "function" ? String(sessionProto.compact) : ""
 	if (!compactSource.includes("_disconnectFromAgent") || !compactSource.includes("abort")) {

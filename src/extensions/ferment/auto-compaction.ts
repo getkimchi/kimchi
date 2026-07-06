@@ -70,14 +70,16 @@ function compactionThreshold(contextWindow: number): number {
 	return Math.max(0, contextWindow - COMPACTION_RESERVE_TOKENS)
 }
 
+function readFermentOneshotFlag(pi: ExtensionAPI): boolean | undefined {
+	let isOneShot: boolean | undefined
+	tryPiAction(() => {
+		isOneShot = pi.getFlag?.("ferment-oneshot") === true
+	})
+	return isOneShot
+}
+
 // ─── In-flight tool-call guard ────────────────────────────────────────────────
 
-// The pure orphaned-toolResult guard lives in tool-call-in-flight.ts so the
-// inline compaction primitive (upstream-inline-compact-patch.ts) can enforce
-// the same invariant without importing from this extension. Re-exported here
-// for existing importers. Ferment uses it for DEFERRAL (leave the pending
-// entry in the map, retry next boundary); the primitive uses it as a loud
-// safety assertion.
 export { isToolCallInFlight } from "../../tool-call-in-flight.js"
 
 /**
@@ -163,41 +165,33 @@ function findActivePhaseAndStep(ferment: Ferment): { phase?: Phase; step?: Step 
 	return { phase, step }
 }
 
-/**
- * Resolve the `modelRoles.compactor` override (see model-roles.ts) into a
- * registered model, mirroring judge.ts's role-to-model resolution. Returns
- * undefined when the role is unset, unparseable, or not in the registry —
- * inlineCompact() then falls back to the session's active model, so a bad
- * or missing config never blocks compaction.
- *
- * Silent fallback is the right availability call but a diagnosability trap: a
- * typo'd compactor ref would quietly compact on the expensive session model
- * forever. `warn` fires whenever a ref is CONFIGURED but unusable, so headless
- * runs keep a session-file trace next to each affected compaction.
- */
-function resolveCompactorModel(
-	ctx: ExtensionContext,
-	warn?: (message: string) => void,
-): ReturnType<NonNullable<ExtensionContext["modelRegistry"]>["find"]> {
+type RegisteredCompactorModel = ReturnType<NonNullable<ExtensionContext["modelRegistry"]>["find"]>
+
+interface CompactorModelResolution {
+	model?: RegisteredCompactorModel
+	fallbackWarning?: string
+}
+
+/** Resolve the optional compactor override; missing model means use the session model. */
+function resolveCompactorModel(ctx: ExtensionContext): CompactorModelResolution {
 	try {
 		const ref = getModelRoles().compactor
-		if (!ref) return undefined
+		if (!ref) return {}
 		const parsed = splitModelRef(ref)
 		if (!parsed) {
-			warn?.(
-				`Compactor model role "${ref}" is not a valid provider/model reference — stage compaction falls back to the session model`,
-			)
-			return undefined
+			return {
+				fallbackWarning: `Compactor model role "${ref}" is not a valid provider/model reference — stage compaction falls back to the session model`,
+			}
 		}
 		const model = ctx.modelRegistry?.find(parsed.provider, parsed.modelId)
 		if (!model) {
-			warn?.(
-				`Compactor model role "${ref}" is not in the model registry — stage compaction falls back to the session model`,
-			)
+			return {
+				fallbackWarning: `Compactor model role "${ref}" is not in the model registry — stage compaction falls back to the session model`,
+			}
 		}
-		return model
+		return { model }
 	} catch {
-		return undefined
+		return {}
 	}
 }
 
@@ -306,9 +300,6 @@ export function buildHandoffDetails(
 		nextPhaseGoal: nextAction?.nextPhaseGoal,
 		completedStepSummary: completedStep?.summary,
 		completedPhaseSummary: completedPhase?.summary,
-		// Only set when a compaction result exists (legacy ctx.compact path). The
-		// inline path appends the handoff BEFORE compacting, so success there is
-		// signalled by the compaction entry itself, which records tokensBefore.
 		compactionTokensBefore: result?.tokensBefore,
 	}
 }
@@ -346,7 +337,9 @@ export async function maybeTriggerFermentCompaction(
 	runtime: FermentRuntime,
 ): Promise<boolean> {
 	const hasInlineCompact = typeof ctx.inlineCompact === "function"
-	if (pi.getFlag?.("ferment-oneshot") === true && !hasInlineCompact) return false
+	const isOneShot = readFermentOneshotFlag(pi)
+	if (isOneShot === undefined) return false
+	if (isOneShot && !hasInlineCompact) return false
 
 	// Root-cause guard: defer compaction while a tool call is in flight (the
 	// trailing assistant toolCall has no matching toolResult yet). Compacting
@@ -478,6 +471,12 @@ async function triggerCompactionForPending(
 		// is a valid cut point, so the cut lands here and the next stage keeps
 		// exactly what it needs: compaction summary + plan handoff.
 		appendHandoffEntry(undefined, undefined, true)
+		const compactorModel = resolveCompactorModel(ctx)
+		if (compactorModel.fallbackWarning) {
+			tryPiAction(() => {
+				pi.appendEntry("ferment_breadcrumb", { text: compactorModel.fallbackWarning })
+			})
+		}
 		try {
 			const result = await ctx.inlineCompact({
 				customInstructions,
@@ -485,11 +484,7 @@ async function triggerCompactionForPending(
 				// separate (e.g. cheaper) model instead of the session's active one.
 				// Undefined when unconfigured/unavailable — inlineCompact falls back
 				// to the session model exactly as before.
-				model: resolveCompactorModel(ctx, (warning) => {
-					tryPiAction(() => {
-						pi.appendEntry("ferment_breadcrumb", { text: warning })
-					})
-				}),
+				model: compactorModel.model,
 				// Compaction is pure summarization and never benefits from extended
 				// thinking. Every model in Kimchi's catalog currently reports
 				// `reasoning: true`, so picking a different `model` above does not by
@@ -559,7 +554,9 @@ export function maybeTriggerMidTurnFermentCompaction(
 	runtime: FermentRuntime,
 	totalTokens: number,
 ): void {
-	if (pi.getFlag?.("ferment-oneshot") === true) {
+	const isOneShot = readFermentOneshotFlag(pi)
+	if (isOneShot === undefined) return
+	if (isOneShot) {
 		const active = runtime.getActive()
 		if (active && totalTokens > compactionThreshold(ctx.model?.contextWindow ?? Number.MAX_SAFE_INTEGER)) {
 			const warnKey = active.id
