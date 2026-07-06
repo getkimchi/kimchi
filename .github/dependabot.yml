@@ -6,18 +6,12 @@ updates:
       interval: "weekly"
       day: "monday"
     allow:
-      - dependency-name: "@earendil-works/pi-coding-agent"
-        update-types: ["version-update:semver-minor", "version-update:semver-patch"]
-      - dependency-name: "@earendil-works/pi-tui"
-        update-types: ["version-update:semver-minor", "version-update:semver-patch"]
-      - dependency-name: "@earendil-works/pi-ai"
+      - dependency-name: "@earendil-works/*"
         update-types: ["version-update:semver-minor", "version-update:semver-patch"]
     groups:
       pi-mono:
         patterns:
-          - "@earendil-works/pi-coding-agent"
-          - "@earendil-works/pi-tui"
-          - "@earendil-works/pi-ai"
+          - "@earendil-works/*"
     commit-message:
       prefix: "deps"
     open-pull-requests-limit: 5

@@ -9,7 +9,7 @@
  */
 import { existsSync, readFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 
 export const PI_MONO_PREFIX = "@earendil-works/"
 
@@ -87,4 +87,4 @@ function main() {
 	console.error("✅ Patch files are in sync with @earendil-works/* dependencies.")
 }
 
-import.meta.url === `file://${process.argv[1]}` && main()
+process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href && main()
