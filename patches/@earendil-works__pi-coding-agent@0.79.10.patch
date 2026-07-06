@@ -1,64 +1,3 @@
-# Patch: kimchi-dev runtime extensions for pi-coding-agent
-#
-# NOTE for upgraders: `pnpm patch-commit` regenerates this file and STRIPS this
-# header — re-add it (and re-run `pnpm install` to refresh the lockfile hash)
-# after every regeneration. Patches port textually but can break semantically:
-# verify that every symbol referenced by added lines still exists in the new
-# upstream version (e.g. 0.79.10 removed the `setTheme` import from
-# interactive-mode.js, which previewTheme used to call).
-#
-# Changes included:
-#   1. dist/cli/args.js         — expose KIMCHI_API_KEY in --help env-var block
-#   2. dist/core/extensions/runner.js — add emitBeforeProviderHeaders(headers) method,
-#                                       mirroring emitBeforeProviderRequest pattern
-#   3. dist/core/sdk.js         — call emitBeforeProviderHeaders in streamFn after
-#                                 static header assembly, so extensions can inject
-#                                 per-request dynamic headers (X-Session-Id, X-Turn-Index)
-#   4. dist/core/agent-session.js — set agent.prepareNextTurn to refresh context.tools
-#                                   from state.tools after each tool batch, enabling
-#                                   mid-run setActiveTools() calls to take effect on
-#                                   the next model response within the same agent run.
-#   5. dist/modes/interactive/  — miscellaneous upstream UI fixes bundled in this patch
-#   6. dist/modes/interactive/interactive-mode.js — add previewTheme(name) and
-#      dist/core/extensions/types.d.ts              showError(message) to createExtensionUIContext,
-#                                                   and their type declarations to ExtensionUIContext.
-#
-#                                 previewTheme applies a theme live by delegating to
-#                                 InteractiveThemeController.preview() (the same path as
-#                                 the internal onThemePreview callback used by /settings),
-#                                 WITHOUT the settingsManager.setTheme() persistence that
-#                                 the public ui.setTheme() includes.
-#
-#                                 Why a patch is required: the public ExtensionUIContext conflates
-#                                 "change the rendered theme" and "persist to settingsManager" — the
-#                                 public ui.setTheme() always does both. Theme preview already exists
-#                                 inside InteractiveMode (used by /settings via the private
-#                                 themeController.preview()); the patch simply promotes it to the
-#                                 extension API surface. There is no public-API-only workaround: the
-#                                 only alternative is ui.setTheme() on each arrow-key press, which
-#                                 writes to disk every keystroke and leaves a dirty settings state
-#                                 if the user cancels.
-#
-#                                 showError delegates to the inherited SessionMode.showError so
-#                                 extensions can surface error overlays (not toasts).
-#
-# Tracking: open an upstream PR against pi-mono to ship before_provider_headers as
-# a first-class extension hook in ExtensionRunner and ExtensionAPI. Also track a
-# separate PR to add previewTheme + showError to ExtensionUIContext.
-# Issue: TODO — file against https://github.com/earendil-works/pi-mono once the
-# API design is confirmed stable.
-#
-# Removal criteria:
-#   - Items 1-3 (before_provider_headers): upstream pi-mono ships BeforeProviderHeadersEvent
-#     and ExtensionAPI.on("before_provider_headers", ...) as a first-class hook, and
-#     the fixed version is pinned in package.json.
-#   - Item 4 (prepareNextTurn): upstream pi-mono wires agent.prepareNextTurn in
-#     AgentSession._installAgentToolHooks() so context.tools refreshes after each tool
-#     batch without a patch.
-#   - Item 5: individual fixes land upstream and the patched version is updated.
-#   - Item 6 (previewTheme + showError): upstream pi-coding-agent ships previewTheme
-#     and showError on ExtensionUIContext and the fixed version is pinned in package.json.
-#
 diff --git a/dist/cli/args.js b/dist/cli/args.js
 index 6bd8f43b4402dbd24f9262c4c059b2c06693a79c..ad705421fb9087efd8ad2cfbfe8709d198245751 100644
 --- a/dist/cli/args.js
@@ -233,12 +172,14 @@ index 2bbfd7fa7c4234cf34afe47de4988f35566b2f4e..6ef3eb0560587cdbc8708297fd9ebcbd
      "cloudflare-ai-gateway": "workers-ai/@cf/moonshotai/kimi-k2.6",
      xiaomi: "mimo-v2.5-pro",
 diff --git a/dist/core/sdk.js b/dist/core/sdk.js
-index e386db6d62622a8c77c7d7e9844e63020d8af39a..f2f9e0161b47f7111df88f429c36feb74f9fbf76 100644
+index e386db6d62622a8c77c7d7e9844e63020d8af39a..844ddcc0c6ed7bfa3b6901b068a926843e2f9749 100644
 --- a/dist/core/sdk.js
 +++ b/dist/core/sdk.js
-@@ -186,6 +186,12 @@ export async function createAgentSession(options = {}) {
+@@ -185,16 +185,24 @@ export async function createAgentSession(options = {}) {
+             // Use max int32 to effectively disable the timeout.
              const effectiveTimeoutMs = httpIdleTimeoutMs === 0 ? 2147483647 : httpIdleTimeoutMs;
              const timeoutMs = options?.timeoutMs ?? providerRetrySettings.timeoutMs ?? effectiveTimeoutMs;
++            const totalTimeoutMs = options?.totalTimeoutMs ?? providerRetrySettings.totalTimeoutMs;
              const websocketConnectTimeoutMs = options?.websocketConnectTimeoutMs ?? settingsManager.getWebSocketConnectTimeoutMs();
 +            let headers = mergeProviderAttributionHeaders(model, settingsManager, options?.sessionId, auth.headers, options?.headers);
 +            // Let extensions inject per-request dynamic headers (e.g. X-Session-Id, X-Turn-Index)
@@ -249,7 +190,9 @@ index e386db6d62622a8c77c7d7e9844e63020d8af39a..f2f9e0161b47f7111df88f429c36feb7
              return streamSimple(model, context, {
                  ...options,
                  apiKey: auth.apiKey,
-@@ -194,7 +200,7 @@ export async function createAgentSession(options = {}) {
+                 env,
+                 timeoutMs,
++                totalTimeoutMs,
                  websocketConnectTimeoutMs,
                  maxRetries: options?.maxRetries ?? providerRetrySettings.maxRetries,
                  maxRetryDelayMs: options?.maxRetryDelayMs ?? providerRetrySettings.maxRetryDelayMs,

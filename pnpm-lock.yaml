@@ -6,10 +6,10 @@ settings:
 
 patchedDependencies:
   '@earendil-works/pi-ai@0.79.10':
-    hash: a9d385c837d7062a1b38fd9d81d5405543cf7149753ed9a67f685e520913453e
+    hash: 81c84988a44c000902fcfcbdd259edb8dd0bf5ce7bca140f332c5201ca702e32
     path: patches/@earendil-works__pi-ai@0.79.10.patch
   '@earendil-works/pi-coding-agent@0.79.10':
-    hash: 2393f13f2f793433561affe62082282a0b1daf64032dc670bc0cae58c87acd3c
+    hash: a84c8be1a276cf2ec15d02365c1b5eac0e3561927bd88bf85791cda7d509b07b
     path: patches/@earendil-works__pi-coding-agent@0.79.10.patch
   '@earendil-works/pi-tui@0.79.10':
     hash: 3651856bfe24d881276c225f7ae61b415aaea13347e8667a70d24a3e0e1b3a38
@@ -30,7 +30,7 @@ importers:
         version: 1.6.0
       '@earendil-works/pi-coding-agent':
         specifier: 0.79.10
-        version: 0.79.10(patch_hash=2393f13f2f793433561affe62082282a0b1daf64032dc670bc0cae58c87acd3c)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.21.0)(zod@4.4.3)
+        version: 0.79.10(patch_hash=a84c8be1a276cf2ec15d02365c1b5eac0e3561927bd88bf85791cda7d509b07b)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.21.0)(zod@4.4.3)
       '@earendil-works/pi-tui':
         specifier: 0.79.10
         version: 0.79.10(patch_hash=3651856bfe24d881276c225f7ae61b415aaea13347e8667a70d24a3e0e1b3a38)
@@ -103,7 +103,7 @@ importers:
         version: 1.9.4
       '@earendil-works/pi-ai':
         specifier: 0.79.10
-        version: 0.79.10(patch_hash=a9d385c837d7062a1b38fd9d81d5405543cf7149753ed9a67f685e520913453e)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.21.0)(zod@4.4.3)
+        version: 0.79.10(patch_hash=81c84988a44c000902fcfcbdd259edb8dd0bf5ce7bca140f332c5201ca702e32)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.21.0)(zod@4.4.3)
       '@microsoft/tui-test':
         specifier: 0.0.4
         version: 0.0.4
@@ -2744,7 +2744,7 @@ snapshots:
 
   '@earendil-works/pi-agent-core@0.79.10(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.21.0)(zod@4.4.3)':
     dependencies:
-      '@earendil-works/pi-ai': 0.79.10(patch_hash=a9d385c837d7062a1b38fd9d81d5405543cf7149753ed9a67f685e520913453e)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.21.0)(zod@4.4.3)
+      '@earendil-works/pi-ai': 0.79.10(patch_hash=81c84988a44c000902fcfcbdd259edb8dd0bf5ce7bca140f332c5201ca702e32)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.21.0)(zod@4.4.3)
       ignore: 7.0.5
       typebox: 1.1.38
       yaml: 2.9.0
@@ -2756,7 +2756,7 @@ snapshots:
       - ws
       - zod
 
-  '@earendil-works/pi-ai@0.79.10(patch_hash=a9d385c837d7062a1b38fd9d81d5405543cf7149753ed9a67f685e520913453e)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.21.0)(zod@4.4.3)':
+  '@earendil-works/pi-ai@0.79.10(patch_hash=81c84988a44c000902fcfcbdd259edb8dd0bf5ce7bca140f332c5201ca702e32)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.21.0)(zod@4.4.3)':
     dependencies:
       '@anthropic-ai/sdk': 0.91.1(zod@4.4.3)
       '@aws-sdk/client-bedrock-runtime': 3.1048.0
@@ -2777,10 +2777,10 @@ snapshots:
       - ws
       - zod
 
-  '@earendil-works/pi-coding-agent@0.79.10(patch_hash=2393f13f2f793433561affe62082282a0b1daf64032dc670bc0cae58c87acd3c)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.21.0)(zod@4.4.3)':
+  '@earendil-works/pi-coding-agent@0.79.10(patch_hash=a84c8be1a276cf2ec15d02365c1b5eac0e3561927bd88bf85791cda7d509b07b)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.21.0)(zod@4.4.3)':
     dependencies:
       '@earendil-works/pi-agent-core': 0.79.10(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.21.0)(zod@4.4.3)
-      '@earendil-works/pi-ai': 0.79.10(patch_hash=a9d385c837d7062a1b38fd9d81d5405543cf7149753ed9a67f685e520913453e)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.21.0)(zod@4.4.3)
+      '@earendil-works/pi-ai': 0.79.10(patch_hash=81c84988a44c000902fcfcbdd259edb8dd0bf5ce7bca140f332c5201ca702e32)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.21.0)(zod@4.4.3)
       '@earendil-works/pi-tui': 0.79.10(patch_hash=3651856bfe24d881276c225f7ae61b415aaea13347e8667a70d24a3e0e1b3a38)
       '@silvia-odwyer/photon-node': 0.3.4
       chalk: 5.6.2

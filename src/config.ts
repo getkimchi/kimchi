@@ -119,10 +119,14 @@ export interface PreferencesConfig {
 
 export interface RetryConfig {
 	maxRetries: number
+	providerTimeoutMs?: number
+	providerTotalTimeoutMs?: number
 }
 
 export const RETRY_DEFAULTS: RetryConfig = {
 	maxRetries: 10,
+	providerTimeoutMs: 60_000,
+	providerTotalTimeoutMs: 660_000,
 }
 
 export const THIRD_PARTY_MAX_RETRIES = 4
@@ -226,6 +230,12 @@ function readConfigExtras(configPath: string): {
 		if (r && typeof r === "object") {
 			retry = {
 				...(typeof r.maxRetries === "number" && r.maxRetries > 0 ? { maxRetries: r.maxRetries } : {}),
+				...(typeof r.providerTimeoutMs === "number" && r.providerTimeoutMs > 0
+					? { providerTimeoutMs: r.providerTimeoutMs }
+					: {}),
+				...(typeof r.providerTotalTimeoutMs === "number" && r.providerTotalTimeoutMs > 0
+					? { providerTotalTimeoutMs: r.providerTotalTimeoutMs }
+					: {}),
 			}
 		}
 		const skillPaths =
