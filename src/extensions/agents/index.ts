@@ -29,6 +29,7 @@ import { sessionHasImages } from "../model-guard.js"
 import { KIMCHI_DEV_PROVIDER, MODEL_CAPABILITIES } from "../orchestration/model-registry/index.js"
 import { getMultiModelEnabled } from "../prompt-construction/prompt-enrichment.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
+import { isStaleCtxError } from "../stale-ctx.js"
 import { trackSubagentSpawned } from "../telemetry/index.js"
 import { AgentManager, buildAgentOutcome } from "./manager/agent-manager.js"
 import {
@@ -50,6 +51,7 @@ import { GroupJoinManager } from "./manager/group-join.js"
 import { createOutputFilePath, streamToOutputFile, writeInitialEntry } from "./manager/output-file.js"
 import { prepareAgentSessionFile } from "./manager/session-file.js"
 import { type LifetimeUsage, addUsage, getLifetimeTotal, getSessionContextPercent } from "./manager/usage.js"
+import { NudgeScheduler } from "./nudge-scheduler.js"
 import {
 	BUILTIN_TOOL_NAMES,
 	getAgentConfig,
@@ -577,26 +579,15 @@ export default function (pi: ExtensionAPI) {
 	const agentActivity = new Map<string, AgentActivity>()
 
 	// ---- Cancellable pending notifications ----
-	const pendingNudges = new Map<string, ReturnType<typeof setTimeout>>()
 	const NUDGE_HOLD_MS = 200
+	const nudgeScheduler = new NudgeScheduler(NUDGE_HOLD_MS)
 
 	function scheduleNudge(key: string, send: () => void, delay = NUDGE_HOLD_MS) {
-		cancelNudge(key)
-		pendingNudges.set(
-			key,
-			setTimeout(() => {
-				pendingNudges.delete(key)
-				send()
-			}, delay),
-		)
+		nudgeScheduler.schedule(key, send, delay)
 	}
 
 	function cancelNudge(key: string) {
-		const timer = pendingNudges.get(key)
-		if (timer != null) {
-			clearTimeout(timer)
-			pendingNudges.delete(key)
-		}
+		nudgeScheduler.cancel(key)
 	}
 
 	function emitIndividualNudge(record: AgentRecord) {
@@ -606,15 +597,20 @@ export default function (pi: ExtensionAPI) {
 		const notification = formatTaskNotification(record, 500)
 		const footer = record.outputFile ? `\nFull transcript available at: ${record.outputFile}` : ""
 
-		pi.sendMessage<NotificationDetails>(
-			{
-				customType: "subagent-notification",
-				content: notification + footer,
-				display: true,
-				details: buildNotificationDetails(record, 500, agentActivity.get(record.id)),
-			},
-			{ deliverAs: "followUp", triggerTurn: true },
-		)
+		try {
+			pi.sendMessage<NotificationDetails>(
+				{
+					customType: "subagent-notification",
+					content: notification + footer,
+					display: true,
+					details: buildNotificationDetails(record, 500, agentActivity.get(record.id)),
+				},
+				{ deliverAs: "followUp", triggerTurn: true },
+			)
+		} catch (err) {
+			if (isStaleCtxError(err)) return
+			throw err
+		}
 	}
 
 	function sendIndividualNudge(record: AgentRecord) {
@@ -650,15 +646,20 @@ export default function (pi: ExtensionAPI) {
 				details.others = rest.map((r) => buildNotificationDetails(r, 300, agentActivity.get(r.id)))
 			}
 
-			pi.sendMessage<NotificationDetails>(
-				{
-					customType: "subagent-notification",
-					content: `Background agent group completed: ${label}\n\n${notifications}\n\nUse get_subagent_result for full output.`,
-					display: true,
-					details,
-				},
-				{ deliverAs: "followUp", triggerTurn: true },
-			)
+			try {
+				pi.sendMessage<NotificationDetails>(
+					{
+						customType: "subagent-notification",
+						content: `Background agent group completed: ${label}\n\n${notifications}\n\nUse get_subagent_result for full output.`,
+						display: true,
+						details,
+					},
+					{ deliverAs: "followUp", triggerTurn: true },
+				)
+			} catch (err) {
+				if (isStaleCtxError(err)) return
+				throw err
+			}
 		})
 		widget.update()
 	}, 30_000)
@@ -822,8 +823,11 @@ export default function (pi: ExtensionAPI) {
 		currentUi = undefined
 		manager.abortAll()
 		budgetRetryCandidates.clear()
-		for (const timer of pendingNudges.values()) clearTimeout(timer)
-		pendingNudges.clear()
+		if (batchFinalizeTimer) {
+			clearTimeout(batchFinalizeTimer)
+			batchFinalizeTimer = undefined
+		}
+		nudgeScheduler.beginShutdown()
 		await waitForSubagentShutdown(manager)
 		widget.dispose()
 		manager.dispose()
