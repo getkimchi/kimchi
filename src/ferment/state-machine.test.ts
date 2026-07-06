@@ -1092,7 +1092,7 @@ describe("applyCommand: resume", () => {
 		expect(steps[1].status).toBe("done")
 	})
 
-	it("is a no-op when pause already reset all running steps", () => {
+	it("is a true no-op on step state when pause already reset all running steps", () => {
 		const result = expectOk(
 			applyCommand(
 				makeFerment({
