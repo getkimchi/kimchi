@@ -1055,6 +1055,69 @@ describe("applyCommand: resume", () => {
 		const error = expectError(applyCommand(makeFerment({ status: "complete" }), { type: "resume" }, ctx))
 		expect(error.code).toBe("FERMENT_NOT_IN_STATUS")
 	})
+
+	it("resets orphaned running steps back to pending on resume", () => {
+		// Defensive sweep: if pause was bypassed or failed (storage write failure
+		// during shutdown, data corruption), an orphaned "running" step would
+		// cause determineNextAction to suggest complete_step for a dead subagent.
+		// handleResume must reset running → pending even if pause didn't.
+		const result = expectOk(
+			applyCommand(
+				makeFerment({
+					status: "paused",
+					activePhaseId: "phase-1",
+					phases: [
+						makePhase({
+							id: "phase-1",
+							status: "active",
+							steps: [
+								makeStep({ id: "step-1", status: "running", startedAt: "2026-05-08T14:00:00.000Z" }),
+								makeStep({ id: "step-2", index: 2, description: "done one", status: "done" }),
+							],
+						}),
+					],
+				}),
+				{ type: "resume" },
+				ctx,
+			),
+		)
+		expect(result.status).toBe("running")
+		const steps = result.phases[0].steps
+		// The orphaned running step is reset to pending. Note: like handlePause,
+		// handleResume only flips status — it does not clear startedAt. The
+		// engine's determineNextAction keys off status, not startedAt, so the
+		// step will be correctly re-started rather than completed.
+		expect(steps[0].status).toBe("pending")
+		// Already-terminal steps are untouched.
+		expect(steps[1].status).toBe("done")
+	})
+
+	it("is a no-op when pause already reset all running steps", () => {
+		const result = expectOk(
+			applyCommand(
+				makeFerment({
+					status: "paused",
+					activePhaseId: "phase-1",
+					phases: [
+						makePhase({
+							id: "phase-1",
+							status: "active",
+							steps: [
+								makeStep({ id: "step-1", status: "pending" }),
+								makeStep({ id: "step-2", index: 2, description: "also pending", status: "pending" }),
+							],
+						}),
+					],
+				}),
+				{ type: "resume" },
+				ctx,
+			),
+		)
+		expect(result.status).toBe("running")
+		const steps = result.phases[0].steps
+		expect(steps[0].status).toBe("pending")
+		expect(steps[1].status).toBe("pending")
+	})
 })
 
 // ─── abandon ──────────────────────────────────────────────────────────────────

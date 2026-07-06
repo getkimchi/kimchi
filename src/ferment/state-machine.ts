@@ -875,10 +875,23 @@ function handleResume(
 	const guard = requireFermentStatus(ferment, ["paused"])
 	if (guard) return fail(guard)
 	const activePhase = ferment.phases.find((p) => p.status === "active")
+
+	// Defensive sweep: reset any steps still marked "running" back to "pending".
+	// `handlePause` already does this, so normally it's a no-op. But if pause was
+	// bypassed or failed (storage write failure during shutdown, data corruption),
+	// an orphaned "running" step would cause `determineNextAction` to suggest
+	// `complete_step` for a step whose subagent is long dead. Idempotent with a
+	// clean pause — only touches steps that survived as "running".
+	const phases = ferment.phases.map((p) => ({
+		...p,
+		steps: p.steps.map((s) => (s.status === "running" ? { ...s, status: "pending" as const } : s)),
+	}))
+
 	return ok(
 		touch(ferment, ctx, {
 			status: activePhase ? "running" : "planned",
 			activePhaseId: activePhase?.id,
+			phases,
 		}),
 	)
 }

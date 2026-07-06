@@ -498,6 +498,138 @@ describe("registerFermentEvents", () => {
 	})
 })
 
+describe("turn_end connection error recovery", () => {
+	it('pauses a running ferment and notifies the user when stopReason is "error"', async () => {
+		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-error-turn-end-")))
+		const ferment = storage.create("Connection Error Ferment")
+		// Scope + activate so the ferment is in "running" state with an active phase.
+		storage.mutateWithEvents(ferment.id, (current) => {
+			if (!current) throw new Error("missing ferment")
+			const now = new Date().toISOString()
+			const cmd = {
+				type: "scope" as const,
+				title: "Connection Error Ferment",
+				goal: "Test goal",
+				successCriteria: ["Test criterion"],
+				constraints: [],
+				phases: [{ name: "Build", goal: "Build it", steps: [{ description: "step 1" }] }],
+			}
+			const result = applyCommand(current, cmd, { now })
+			if (!result.ok) throw new Error(`scope failed: ${result.error.message}`)
+			const events = commandToEvents(cmd, current, result.ferment, { now })
+			return { write: true, ferment: result.ferment, events, value: undefined }
+		})
+		storage.mutateWithEvents(ferment.id, (current) => {
+			if (!current) throw new Error("missing ferment")
+			const now = new Date().toISOString()
+			const cmd = { type: "activate_phase" as const, phaseId: "phase-1" }
+			const result = applyCommand(current, cmd, { now })
+			if (!result.ok) throw new Error(`activate failed: ${result.error.message}`)
+			const events = commandToEvents(cmd, current, result.ferment, { now })
+			return { write: true, ferment: result.ferment, events, value: undefined }
+		})
+
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: () => storage,
+		}
+		const active = storage.get(ferment.id)
+		if (!active) throw new Error("ferment not found after setup")
+		runtime.setActive(active)
+
+		const { handlers, pi } = createPi()
+		;(pi as ExtensionAPI & { events: ExtensionAPI["events"] }).events = {
+			emit: vi.fn(),
+			on: vi.fn(),
+		} as unknown as ExtensionAPI["events"]
+		registerFermentEvents(pi, runtime)
+		const turnEnd = handlers.get("turn_end")
+		if (!turnEnd) throw new Error("turn_end handler was not registered")
+		const notify = vi.fn()
+		const ctx = { ui: { notify } }
+
+		await turnEnd(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "error",
+					errorMessage: "Connection error: socket closed",
+					content: [],
+				},
+			},
+			ctx,
+		)
+
+		const paused = storage.get(ferment.id)
+		expect(paused?.status).toBe("paused")
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining('Interrupted: "Connection Error Ferment" was paused'))
+	})
+
+	it("distinguishes retryable network errors from non-retryable provider errors", async () => {
+		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-retryable-")))
+		const ferment = storage.create("Retryable Error Ferment")
+		storage.mutateWithEvents(ferment.id, (current) => {
+			if (!current) throw new Error("missing ferment")
+			const now = new Date().toISOString()
+			const cmd = {
+				type: "scope" as const,
+				title: "Retryable Error Ferment",
+				goal: "Test goal",
+				successCriteria: ["Test criterion"],
+				constraints: [],
+				phases: [{ name: "Build", goal: "Build it", steps: [{ description: "step 1" }] }],
+			}
+			const result = applyCommand(current, cmd, { now })
+			if (!result.ok) throw new Error(`scope failed: ${result.error.message}`)
+			const events = commandToEvents(cmd, current, result.ferment, { now })
+			return { write: true, ferment: result.ferment, events, value: undefined }
+		})
+		storage.mutateWithEvents(ferment.id, (current) => {
+			if (!current) throw new Error("missing ferment")
+			const now = new Date().toISOString()
+			const cmd = { type: "activate_phase" as const, phaseId: "phase-1" }
+			const result = applyCommand(current, cmd, { now })
+			if (!result.ok) throw new Error(`activate failed: ${result.error.message}`)
+			const events = commandToEvents(cmd, current, result.ferment, { now })
+			return { write: true, ferment: result.ferment, events, value: undefined }
+		})
+
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: () => storage,
+		}
+		const active = storage.get(ferment.id)
+		if (!active) throw new Error("ferment not found after setup")
+		runtime.setActive(active)
+
+		const { handlers, pi } = createPi()
+		;(pi as ExtensionAPI & { events: ExtensionAPI["events"] }).events = {
+			emit: vi.fn(),
+			on: vi.fn(),
+		} as unknown as ExtensionAPI["events"]
+		registerFermentEvents(pi, runtime)
+		const turnEnd = handlers.get("turn_end")
+		if (!turnEnd) throw new Error("turn_end handler was not registered")
+		const notify = vi.fn()
+		const ctx = { ui: { notify } }
+
+		// Cloudflare 524 is a retryable network error.
+		await turnEnd(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "error",
+					errorMessage: "Cloudflare 524 timeout",
+					content: [],
+				},
+			},
+			ctx,
+		)
+
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("network or gateway error (retried but not recovered)"))
+	})
+})
+
 describe("recoverStuckFerments lockfile awareness", () => {
 	let lockDir: string
 	let storageDir: string
@@ -612,5 +744,30 @@ describe("recoverStuckFerments lockfile awareness", () => {
 		await sessionStart({}, { hasUI: false })
 
 		expect(storage.get(id)?.status).toBe("paused")
+	})
+
+	it("surfaces recovered ferment names to the user via notification", async () => {
+		const { storage, id } = createStorageWithRunningFerment()
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: () => storage,
+			setActive: vi.fn(),
+		}
+		const { handlers, pi } = createPi()
+		;(pi as ExtensionAPI & { events: ExtensionAPI["events"] }).events = {
+			emit: vi.fn(),
+			on: vi.fn(),
+		} as unknown as ExtensionAPI["events"]
+		registerFermentEvents(pi, runtime)
+
+		const sessionStart = handlers.get("session_start")
+		if (!sessionStart) throw new Error("session_start handler was not registered")
+		const notify = vi.fn()
+		await sessionStart({}, { hasUI: true, ui: { notify } })
+
+		expect(storage.get(id)?.status).toBe("paused")
+		expect(notify).toHaveBeenCalledWith(
+			expect.stringContaining('Recovered 1 ferment interrupted in a previous session: "Test"'),
+		)
 	})
 })
