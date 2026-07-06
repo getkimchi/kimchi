@@ -1,0 +1,23 @@
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    allow:
+      - dependency-name: "@earendil-works/pi-coding-agent"
+        update-types: ["version-update:semver-minor", "version-update:semver-patch"]
+      - dependency-name: "@earendil-works/pi-tui"
+        update-types: ["version-update:semver-minor", "version-update:semver-patch"]
+      - dependency-name: "@earendil-works/pi-ai"
+        update-types: ["version-update:semver-minor", "version-update:semver-patch"]
+    groups:
+      pi-mono:
+        patterns:
+          - "@earendil-works/pi-coding-agent"
+          - "@earendil-works/pi-tui"
+          - "@earendil-works/pi-ai"
+    commit-message:
+      prefix: "deps"
+    open-pull-requests-limit: 5
