@@ -2,7 +2,6 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { clearFermentCache } from "../../ferment/store.js"
 import { deriveDraftFermentTitle } from "../../ferment/title.js"
 import type { Ferment } from "../../ferment/types.js"
-import { isNetworkErrorRetryable } from "../../upstream-retry-patch.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { deferExtensionAction } from "../deferred-action.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
@@ -525,18 +524,14 @@ export function registerFermentEvents(
 		// the next tick, sending the planner straight back into the broken state.
 		if (stopReason === "error") {
 			const errorMessage = (event.message as { errorMessage?: string }).errorMessage
-			const retryable = isNetworkErrorRetryable({
-				stopReason,
-				errorMessage,
-			})
 			const errorFerment = runtime.getActive()
 			if (errorFerment && (errorFerment.status === "running" || errorFerment.status === "planned")) {
 				const outcome = applyAndPersist(errorFerment.id, { type: "pause" })
 				if (outcome.ok) {
 					setActiveFermentAndApplyProfile(pi, runtime, outcome.ferment)
-					const reason = retryable ? "a network or gateway error" : "a provider error"
+					const detail = errorMessage ? `: ${errorMessage}` : ""
 					ctx.ui.notify?.(
-						`Interrupted: "${outcome.ferment.name}" was paused due to ${reason}. Run /ferment resume to continue.`,
+						`Interrupted: "${outcome.ferment.name}" was paused due to an error${detail}. Run /ferment resume to continue.`,
 					)
 				} else {
 					ctx.ui.notify?.(

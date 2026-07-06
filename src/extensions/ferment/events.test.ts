@@ -626,7 +626,7 @@ describe("turn_end connection error recovery", () => {
 			ctx,
 		)
 
-		expect(notify).toHaveBeenCalledWith(expect.stringContaining("network or gateway error"))
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("Cloudflare 524 timeout"))
 	})
 })
 
