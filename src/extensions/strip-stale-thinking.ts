@@ -1,6 +1,6 @@
 /**
- * Strips stale reasoning from assistant messages that precede the latest user
- * turn, keeping the current turn's reasoning intact.
+ * Strips stale reasoning from assistant messages older than the last two user
+ * turns, keeping the previous and current turns' reasoning intact.
  *
  * Two reasoning representations exist and both are stripped:
  * - Native `thinking` content blocks (`type: "thinking"`). Anthropic-shaped, and
@@ -15,11 +15,10 @@
  *   without this pass they would otherwise persist across turns untouched.
  *
  * Why this is safe:
- * - Reasoning only needs to be preserved *within the turn where a tool call was
- *   made* (extended thinking + tool use). Earlier turns may be dropped freely.
- *   The latest user message is exactly that boundary: everything at/after it
- *   belongs to the in-progress turn (assistant → toolResult → assistant → …) and
- *   is left untouched; everything before it is a prior turn and safe to strip.
+ * - Reasoning only needs to be preserved for the current tool-use turn and a
+ *   short recency window. The second-latest user message is that boundary:
+ *   everything at/after it belongs to the last two turns and is left untouched;
+ *   everything before it is older context and safe to strip.
  * - For open-weights models routed through the gateway there is no cryptographic
  *   thinking signature to invalidate — the `thinkingSignature` is cosmetic — so
  *   dropping prior-turn reasoning cannot produce a signature/ordering error.
@@ -44,6 +43,8 @@ type ContextMessages = ContextEvent["messages"]
 type AssistantContent = Extract<ContextMessages[number], { role: "assistant" }>["content"]
 type ContentBlock = AssistantContent[number]
 
+const RETAINED_REASONING_USER_TURNS = 2
+
 // Closed reasoning spans emitted inline in text by models whose gateway does not
 // split reasoning into a dedicated field. Kept in sync with the tag set handled
 // by hide-thinking.ts / permissions/classifier.ts. Unclosed spans are left alone
@@ -58,6 +59,21 @@ function stripInlineReasoning(text: string): string {
 export function findLatestUserMessageIndex(messages: ContextMessages): number {
 	for (let i = messages.length - 1; i >= 0; i--) {
 		if (messages[i].role === "user") return i
+	}
+	return -1
+}
+
+export function findRetainedUserTurnStartIndex(
+	messages: ContextMessages,
+	retainedUserTurns = RETAINED_REASONING_USER_TURNS,
+): number {
+	if (retainedUserTurns <= 0) return messages.length
+
+	let seenUserTurns = 0
+	for (let i = messages.length - 1; i >= 0; i--) {
+		if (messages[i].role !== "user") continue
+		seenUserTurns++
+		if (seenUserTurns === retainedUserTurns) return i
 	}
 	return -1
 }
@@ -94,16 +110,16 @@ function stripReasoningFromContent(content: AssistantContent): AssistantContent 
 	return changed ? rebuilt : content
 }
 
-export function stripStaleThinkingBeforeLatestUser(messages: ContextMessages): ContextMessages {
-	const latestUserIndex = findLatestUserMessageIndex(messages)
-	if (latestUserIndex <= 0) return messages
+export function stripStaleThinkingBeforeLastUserTurns(messages: ContextMessages): ContextMessages {
+	const retentionStartIndex = findRetainedUserTurnStartIndex(messages)
+	if (retentionStartIndex <= 0) return messages
 
 	let changed = false
 	const stripped: ContextMessages = []
 
 	for (let i = 0; i < messages.length; i++) {
 		const message = messages[i]
-		if (i >= latestUserIndex || message.role !== "assistant") {
+		if (i >= retentionStartIndex || message.role !== "assistant") {
 			stripped.push(message)
 			continue
 		}
@@ -122,9 +138,13 @@ export function stripStaleThinkingBeforeLatestUser(messages: ContextMessages): C
 	return changed ? stripped : messages
 }
 
+export function stripStaleThinkingBeforeLatestUser(messages: ContextMessages): ContextMessages {
+	return stripStaleThinkingBeforeLastUserTurns(messages)
+}
+
 export default function stripStaleThinkingExtension(pi: ExtensionAPI): void {
 	pi.on("context", async (event) => {
-		const messages = stripStaleThinkingBeforeLatestUser(event.messages)
+		const messages = stripStaleThinkingBeforeLastUserTurns(event.messages)
 		if (messages !== event.messages) return { messages }
 	})
 }
