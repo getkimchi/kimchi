@@ -131,10 +131,7 @@ describe("resolveOrchestrationInstructions", () => {
 		const result = resolveAsString({
 			currentModelId: "kimi-k2.7",
 			registry,
-			roles: {
-				...DEFAULT_MODEL_ROLES,
-				orchestrator: "kimchi-dev/kimi-k2.7",
-			},
+			roles: DEFAULT_MODEL_ROLES,
 		})
 		expect(result).not.toContain("### Planner")
 		expect(result).toContain("DO write the plan yourself")

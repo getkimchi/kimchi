@@ -61,8 +61,8 @@ Use `/multi-model` in the interactive CLI to toggle models on/off per role, or e
 ```json
 {
   "modelRoles": {
-    "orchestrator": "kimchi-dev/minimax-m3",
-    "builder": ["kimchi-dev/minimax-m3", "anthropic/claude-sonnet-4-5"],
+    "orchestrator": "kimchi-dev/kimi-k2.6",
+    "builder": ["kimchi-dev/minimax-m2.7", "anthropic/claude-sonnet-4-5"],
     "reviewer": "anthropic/claude-sonnet-4-5",
     "explorer": "kimchi-dev/nemotron-3-ultra-fp4"
   }
@@ -71,12 +71,12 @@ Use `/multi-model` in the interactive CLI to toggle models on/off per role, or e
 
 | Role | Default | Description |
 |------|---------|-------------|
-| **orchestrator** | `minimax-m3` | Runs the main loop, classifies tasks, delegates work. Single model. |
-| **planner** | `kimi-k2.7` | Designs the approach, writes specs. When same as orchestrator, planning is done in-process. |
-| **builder** | `minimax-m3` | Code implementation. |
-| **reviewer** | `kimi-k2.7` | Code review. Orchestrator picks the strongest by tier for initial review. |
+| **orchestrator** | `kimi-k2.6` | Runs the main loop, classifies tasks, delegates work. Single model. |
+| **planner** | `kimi-k2.6` | Designs the approach, writes specs. When same as orchestrator, planning is done in-process. |
+| **builder** | `kimi-k2.6`, `minimax-m2.7` | Code implementation. For complex tasks the orchestrator may pick a heavier model from the pool. |
+| **reviewer** | `kimi-k2.6`, `minimax-m2.7` | Code review. Orchestrator picks the strongest by tier for initial review. |
 | **explorer** | `nemotron-3-ultra-fp4` | Codebase exploration — navigating files, reading code, tracing architecture. |
-| **researcher** | `minimax-m3` | Research beyond the codebase — web search, documentation lookup, external sources. |
+| **researcher** | `kimi-k2.6` | Research beyond the codebase — web search, documentation lookup, external sources. |
 
 Defaults are hardcoded in `DEFAULT_MODEL_ROLES`. Roles accept any `provider/model-id` string or an array of strings. Only non-default values need to be specified; missing keys fall back to defaults.
 

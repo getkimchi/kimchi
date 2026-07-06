@@ -137,19 +137,19 @@ test("/multi-model metadata editor saves tier/vision/description", async ({ term
 			trace.step("metadata picker open")
 
 			// Pick the first model in the picker (cursor starts on it). The
-			// default orchestrator is "kimchi-dev/minimax-m3" and it has
+			// default orchestrator is "kimchi-dev/kimi-k2.7" and it has
 			// builtin metadata, so the wizard will offer "keep current (X)"
 			// options alongside the explicit choices.
-			await waitForText(terminal, "kimchi-dev/minimax-m3", { timeoutMs: INPUT_TIMEOUT_MS })
+			await waitForText(terminal, "kimchi-dev/kimi-k2.7", { timeoutMs: INPUT_TIMEOUT_MS })
 			// Explicit assertion: if the default orchestrator ref ever
 			// changes, this surfaces the failure here at the picker rather
 			// than as a confusing downstream timeout waiting for the submenu.
-			expect(viewText(terminal)).toContain("kimchi-dev/minimax-m3")
+			expect(viewText(terminal)).toContain("kimchi-dev/kimi-k2.7")
 			terminal.submit("")
 			// The submenu title is `${ref} — metadata`. Matching the full
-			// `kimchi-dev/minimax-m3 — metadata` string avoids matching the
+			// `kimchi-dev/kimi-k2.7 — metadata` string avoids matching the
 			// picker's own "Choose a model to edit metadata" header.
-			await waitForText(terminal, "kimchi-dev/minimax-m3 — metadata", { timeoutMs: INPUT_TIMEOUT_MS })
+			await waitForText(terminal, "kimchi-dev/kimi-k2.7 — metadata", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("model selected, submenu open")
 
 			// Submenu offers "Edit" (cursor starts on it) / "Cancel".
@@ -197,7 +197,7 @@ test("/multi-model metadata editor saves tier/vision/description", async ({ term
 
 			// After the last step the wizard closes and surfaces a
 			// "Metadata saved for X." notification.
-			await waitForText(terminal, /Metadata saved for kimchi-dev\/minimax-m3\./, { timeoutMs: INPUT_TIMEOUT_MS })
+			await waitForText(terminal, /Metadata saved for kimchi-dev\/kimi-k2\.7\./, { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("metadata saved notification")
 
 			// Verify on-disk state. Assert against the parsed JSON object
@@ -205,7 +205,7 @@ test("/multi-model metadata editor saves tier/vision/description", async ({ term
 			// can't silently shift the failure mode.
 			const settingsPath = `${fixture.homeDir}/.config/kimchi/harness/settings.json`
 			const settings = await readSettingsJson(settingsPath)
-			const meta = settings.modelMetadata?.["kimchi-dev/minimax-m3"]
+			const meta = settings.modelMetadata?.["kimchi-dev/kimi-k2.7"]
 			expect(meta).toBeDefined()
 			expect(meta).toMatchObject({ tier: "heavy", vision: true })
 			expect(meta?.description).toContain("heavy model for complex work")
