@@ -64,8 +64,12 @@ async function createSessionGist(ctx: ExtensionCommandContext): Promise<string |
 			return gistUrl
 		} finally {
 			// Clean up the temp directory so the redacted transcript doesn't linger on disk.
-			const { rmSync } = await import("node:fs")
-			rmSync(tmpDir, { recursive: true, force: true })
+			try {
+				const { rmSync } = await import("node:fs")
+				rmSync(tmpDir, { recursive: true, force: true })
+			} catch {
+				// Best-effort cleanup — don't mask the original error.
+			}
 		}
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err)
