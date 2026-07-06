@@ -491,6 +491,7 @@ async function triggerCompactionForPending(
 				// itself skip reasoning — force it off here regardless of which model
 				// (configured compactor or session default) ends up handling the call.
 				thinkingLevel: "off",
+				keepRecentTokens: Math.floor((ctx.model?.contextWindow ?? 0) * 0.05),
 				// Ferment compaction is stage-boundary driven, not threshold driven.
 				// Force keeps automated runs compacting proactively between stages.
 				force: true,

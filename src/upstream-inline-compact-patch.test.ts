@@ -301,6 +301,15 @@ describe("installInlineCompactPatch", () => {
 		expect(session.preparedWithSettings).toEqual([{ enabled: true, reserveTokens: 16_384, keepRecentTokens: 0 }])
 	})
 
+	it("honors explicit keepRecentTokens", async () => {
+		install()
+		const session = new FakeSession()
+
+		await inlineSession(session).inlineCompact({ force: true, keepRecentTokens: 12_000 })
+
+		expect(session.preparedWithSettings).toEqual([{ enabled: true, reserveTokens: 16_384, keepRecentTokens: 12_000 }])
+	})
+
 	it("keeps default preparation settings when force is not set", async () => {
 		install()
 		const session = new FakeSession()

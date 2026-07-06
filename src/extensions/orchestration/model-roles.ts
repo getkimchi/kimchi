@@ -8,7 +8,7 @@
  *   - explorer: codebase exploration, reading files, tracing architecture
  *   - researcher: research beyond codebase — web search, documentation lookup
  *   - judge: ferment verification and final grading calls
- *   - compactor: optional context summarization model; unset uses the active session model.
+ *   - compactor: context summarization model.
  *
  * Delegable roles (planner, builder, reviewer, explorer) accept either a
  * single model string or an array of candidates. When multiple models are
@@ -73,7 +73,7 @@ export interface ModelRoles {
 	researcher: RoleModelAssignment
 	/** Ferment judge model(s): verification triage and final grading calls. */
 	judge: RoleModelAssignment
-	/** Optional context summarization model; unset uses the active session model. */
+	/** Context summarization model. */
 	compactor?: string
 }
 
@@ -99,6 +99,7 @@ export const DEFAULT_MODEL_ROLES: Readonly<ModelRoles> = {
 	explorer: "kimchi-dev/nemotron-3-ultra-fp4",
 	researcher: "kimchi-dev/minimax-m3",
 	judge: ["kimchi-dev/kimi-k2.7"],
+	compactor: "kimchi-dev/nemotron-3-ultra-fp4",
 }
 
 export interface ModelRolesWarning {

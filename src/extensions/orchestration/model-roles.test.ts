@@ -43,7 +43,8 @@ afterEach(() => {
 	resetModelMetadataCache()
 })
 
-const COMPACTOR_MODEL = "kimchi-dev/nemotron-3-ultra-fp4"
+const DEFAULT_COMPACTOR_MODEL = "kimchi-dev/nemotron-3-ultra-fp4"
+const CUSTOM_COMPACTOR_MODEL = "kimchi-dev/minimax-m3"
 
 describe("parseModelRoles", () => {
 	it("returns defaults when raw is undefined", () => {
@@ -76,6 +77,7 @@ describe("parseModelRoles", () => {
 			explorer: "kimchi-dev/nemotron-3-ultra-fp4",
 			researcher: "kimchi-dev/nemotron-3-ultra-fp4",
 			judge: "kimchi-dev/claude-opus-4-6",
+			compactor: DEFAULT_COMPACTOR_MODEL,
 		}
 		const { roles } = parseModelRoles(custom)
 		expect(roles).toEqual(custom)
@@ -420,7 +422,7 @@ describe("validateModelRoles", () => {
 		expect(result.unavailable.length).toBeGreaterThanOrEqual(5)
 		const flaggedRoles = new Set(result.unavailable.map((u) => u.role))
 		expect(flaggedRoles).toEqual(
-			new Set(["orchestrator", "planner", "builder", "reviewer", "explorer", "researcher", "judge"]),
+			new Set(["orchestrator", "planner", "builder", "reviewer", "explorer", "researcher", "judge", "compactor"]),
 		)
 	})
 })
@@ -557,19 +559,19 @@ describe("getAllowedMultiModelRefs", () => {
 })
 
 describe("compactor role", () => {
-	it("has no hardcoded default — unset means no override", () => {
-		expect(DEFAULT_MODEL_ROLES.compactor).toBeUndefined()
+	it("defaults to nemotron", () => {
+		expect(DEFAULT_MODEL_ROLES.compactor).toBe(DEFAULT_COMPACTOR_MODEL)
 	})
 
 	it("parses a valid compactor override", () => {
-		const { roles, warnings } = parseModelRoles({ compactor: COMPACTOR_MODEL })
-		expect(roles.compactor).toBe(COMPACTOR_MODEL)
+		const { roles, warnings } = parseModelRoles({ compactor: CUSTOM_COMPACTOR_MODEL })
+		expect(roles.compactor).toBe(CUSTOM_COMPACTOR_MODEL)
 		expect(warnings).toHaveLength(0)
 	})
 
 	it("warns and ignores a non-string compactor value", () => {
 		const { roles, warnings } = parseModelRoles({ compactor: 42 })
-		expect(roles.compactor).toBeUndefined()
+		expect(roles.compactor).toBe(DEFAULT_COMPACTOR_MODEL)
 		expect(warnings).toHaveLength(1)
 		expect(warnings[0].role).toBe("compactor")
 	})
@@ -580,8 +582,8 @@ describe("compactor role", () => {
 		expect(result.unavailable).toContainEqual({ role: "compactor", configuredModel: "kimchi-dev/does-not-exist" })
 	})
 
-	it("validateModelRoles does not flag compactor when unset", () => {
-		const result = validateModelRoles(DEFAULT_MODEL_ROLES, new Set())
+	it("validateModelRoles does not flag the default compactor when available", () => {
+		const result = validateModelRoles(DEFAULT_MODEL_ROLES, new Set(["nemotron-3-ultra-fp4"]))
 		expect(result.unavailable.some((u) => u.role === "compactor")).toBe(false)
 	})
 
@@ -596,17 +598,17 @@ describe("compactor role", () => {
 		})
 
 		it("persists a configured compactor override", () => {
-			saveModelRoles({ ...DEFAULT_MODEL_ROLES, compactor: COMPACTOR_MODEL }, testPath)
+			saveModelRoles({ ...DEFAULT_MODEL_ROLES, compactor: CUSTOM_COMPACTOR_MODEL }, testPath)
 			const saved = JSON.parse(readFileSync(testPath, "utf-8"))
-			expect(saved.modelRoles.compactor).toBe(COMPACTOR_MODEL)
+			expect(saved.modelRoles.compactor).toBe(CUSTOM_COMPACTOR_MODEL)
 		})
 	})
 })
 
 describe("applyRoleAugmentation", () => {
 	it("persists a transform that only changes compactor", () => {
-		applyRoleAugmentation((roles) => ({ ...roles, compactor: COMPACTOR_MODEL }))
-		expect(getModelRoles().compactor).toBe(COMPACTOR_MODEL)
+		applyRoleAugmentation((roles) => ({ ...roles, compactor: CUSTOM_COMPACTOR_MODEL }))
+		expect(getModelRoles().compactor).toBe(CUSTOM_COMPACTOR_MODEL)
 	})
 
 	it("is a no-op when the transform returns an equal ModelRoles", () => {

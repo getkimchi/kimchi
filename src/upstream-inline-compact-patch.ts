@@ -13,6 +13,7 @@ import { collectMessagesAfterLastCompaction, isToolCallInFlight } from "./tool-c
 export interface InlineCompactOptions {
 	customInstructions?: string
 	force?: boolean
+	keepRecentTokens?: number
 	/** Override model for the summarization call. */
 	model?: Model<Api>
 	/** Override thinking level for the summarization call. */
@@ -155,12 +156,13 @@ async function runInlineCompact(
 	// returns a DEFINED preparation with zero summarizable messages, which
 	// turned every small-session forced compaction into a no-op. Shadow the
 	// settings so preparation starts from keepRecentTokens: 0 directly.
-	if (options.force) {
+	if (options.force || options.keepRecentTokens !== undefined) {
 		const settingsManager = session.settingsManager
 		const realGetCompactionSettings = settingsManager.getCompactionSettings
+		const keepRecentTokens = options.keepRecentTokens ?? 0
 		restores.push(
 			shadowProperty(settingsManager, "getCompactionSettings", function inlineShadowedSettings() {
-				return { ...realGetCompactionSettings.call(settingsManager), keepRecentTokens: 0 }
+				return { ...realGetCompactionSettings.call(settingsManager), keepRecentTokens }
 			}),
 		)
 	}

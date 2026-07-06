@@ -522,6 +522,7 @@ describe("maybeTriggerFermentCompaction", () => {
 		runtime.setActive(ferment)
 		setPendingCompaction(ferment.id, makePendingStep(ferment.id, "phase-1", "step-1"))
 		pi.getFlag = vi.fn((name) => (name === "ferment-oneshot" ? true : undefined))
+		ctx.model = { contextWindow: 100_000 } as ExtensionContext["model"]
 
 		let resolveInline!: (result: CompactionResult) => void
 		const inlineResult = new Promise<CompactionResult>((resolve) => {
@@ -536,16 +537,25 @@ describe("maybeTriggerFermentCompaction", () => {
 			)
 			return inlineResult
 		})
+		ctx.modelRegistry = {
+			find: vi.fn((provider: string, modelId: string) =>
+				provider === "kimchi-dev" && modelId === "nemotron-3-ultra-fp4" ? { provider, id: modelId } : undefined,
+			),
+		} as unknown as ExtensionContext["modelRegistry"]
 
 		const run = maybeTriggerFermentCompaction(pi, ctx, runtime)
 		await Promise.resolve()
 
 		expect(ctx.compact).not.toHaveBeenCalled()
-		expect(ctx.inlineCompact).toHaveBeenCalledWith({
-			customInstructions: expect.stringContaining("Ferment: My Ferment"),
-			force: true,
-			thinkingLevel: "off",
-		})
+		expect(ctx.inlineCompact).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customInstructions: expect.stringContaining("Ferment: My Ferment"),
+				force: true,
+				keepRecentTokens: 5_000,
+				model: { provider: "kimchi-dev", id: "nemotron-3-ultra-fp4" },
+				thinkingLevel: "off",
+			}),
+		)
 		// The handoff must already be in the session while compaction runs: it is
 		// the newest valid cut point, so the cut lands on it and the next stage
 		// keeps summary + handoff.
@@ -738,6 +748,7 @@ describe("maybeTriggerFermentCompaction", () => {
 		expect(ctx.inlineCompact).toHaveBeenCalledWith({
 			customInstructions: expect.stringContaining("Ferment: My Ferment"),
 			force: true,
+			keepRecentTokens: 0,
 			thinkingLevel: "off",
 		})
 		expect(ctx.ui.notify).not.toHaveBeenCalled()
