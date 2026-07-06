@@ -27,6 +27,65 @@ def _with_argv():
     return patch.object(sys, "argv", ["analyze_sessions.py"])
 
 
+class FakePopen:
+    """Minimal Popen mock for testing run_kimchi_attempt.
+
+    ``side_effect`` is a callable that receives the ``cmd`` list and
+    decides what to do (write files, raise, etc.).  It must return a
+    ``(stdout, stderr, returncode)`` tuple.
+    """
+
+    pid = 99999
+
+    def __init__(self, cmd: list[str], side_effect=None, **kwargs: object) -> None:
+        self._cmd = cmd
+        self._side_effect = side_effect
+        self.returncode = 0
+        self._stdout = ""
+        self._stderr = ""
+        self._timed_out = False
+
+    def communicate(self, timeout: float | None = None):
+        if self._side_effect is not None:
+            result = self._side_effect(self._cmd)
+            if isinstance(result, tuple):
+                self._stdout, self._stderr, self.returncode = result
+            else:
+                # side_effect raised an exception or returned None
+                self._stdout, self._stderr, self.returncode = "", "", 0
+        return self._stdout, self._stderr
+
+
+def _popen_factory(side_effect):
+    """Return a Popen-like callable that uses *side_effect* for each call."""
+    return lambda cmd, **kw: FakePopen(cmd, side_effect=side_effect)
+
+
+class TimeoutPopen(FakePopen):
+    """Popen mock whose communicate() always raises TimeoutExpired."""
+
+    def communicate(self, timeout: float | None = None):
+        raise subprocess.TimeoutExpired(cmd=self._cmd, timeout=timeout or 0)
+
+
+def _timeout_popen_factory():
+    return lambda cmd, **kw: TimeoutPopen(cmd)
+
+
+class FailPopen(FakePopen):
+    """Popen mock whose returncode is always 1."""
+
+    def __init__(self, cmd, **kwargs):
+        super().__init__(cmd, side_effect=None, **kwargs)
+        self.returncode = 1
+        self._stdout = VALID_HTML
+        self._stderr = ""
+
+
+def _fail_popen_factory():
+    return lambda cmd, **kw: FailPopen(cmd)
+
+
 def test_find_session_files_discovers_jsonl_under_agent_sessions(tmp_path: Path) -> None:
     results_dir = tmp_path / "jobs"
     session_path = results_dir / "run-1" / "task-a__1" / "agent" / "sessions" / "main.jsonl"
@@ -52,13 +111,11 @@ def test_build_analysis_prompt_treats_sessions_as_untrusted_and_requests_html_fi
         results_dir=Path("/results"),
         summary_path=Path("/results/summary.json"),
         draft_path=Path("/analysis/report.html"),
-        json_path=Path("/analysis/analysis.json"),
     )
     assert "/results" in prompt
     assert "/results/summary.json" in prompt
     assert "untrusted data" in prompt
     assert "/analysis/report.html" in prompt
-    assert "/analysis/analysis.json" in prompt
     assert "read the HTML report back" in prompt
     assert "results_dir/<chunk-run>/<trial_name>/agent/sessions/main.jsonl" in prompt
     assert "orchestrator session" in prompt
@@ -156,10 +213,9 @@ def test_main_runs_kimchi_and_succeeds(tmp_path: Path) -> None:
     session_path.write_text('{"type": "message"}\n')
     output_path = tmp_path / "analysis.html"
     draft_path = tmp_path / "analysis-work" / "report.html"
-    json_draft_path = tmp_path / "analysis-work" / "analysis.json"
     session_dir = tmp_path / "analysis-session"
 
-    def fake_kimchi_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+    def side_effect(cmd: list[str]):
         prompt = cmd[2]
         assert str(results_dir) in prompt
         assert str(draft_path) in prompt
@@ -172,8 +228,7 @@ def test_main_runs_kimchi_and_succeeds(tmp_path: Path) -> None:
         assert cmd[cmd.index("--model") + 1] == "kimchi-dev/glm-5.2-fp8"
         draft_path.parent.mkdir(parents=True, exist_ok=True)
         draft_path.write_text(VALID_HTML)
-        json_draft_path.write_text(json.dumps({"summary": "ok", "findings": []}))
-        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="Report written", stderr="")
+        return "Report written", "", 0
 
     with (
         patch.dict(
@@ -183,7 +238,6 @@ def test_main_runs_kimchi_and_succeeds(tmp_path: Path) -> None:
                 "BENCHMARK_SUMMARY_PATH": str(summary_path),
                 "BENCHMARK_ANALYSIS_OUTPUT": str(output_path),
                 "BENCHMARK_ANALYSIS_DRAFT": str(draft_path),
-                "BENCHMARK_ANALYSIS_JSON_DRAFT": str(json_draft_path),
                 "BENCHMARK_ANALYSIS_SESSION_DIR": str(session_dir),
                 "KIMCHI_CODE_BINARY": "kimchi",
                 "KIMCHI_ANALYSIS_MODEL": "kimchi-dev/glm-5.2-fp8",
@@ -191,7 +245,7 @@ def test_main_runs_kimchi_and_succeeds(tmp_path: Path) -> None:
             clear=False,
         ),
         _with_argv(),
-        patch("subprocess.run", side_effect=fake_kimchi_run),
+        patch("subprocess.Popen", side_effect=_popen_factory(side_effect)),
     ):
         assert main() == 0
 
@@ -208,6 +262,11 @@ def test_main_returns_error_when_kimchi_fails(tmp_path: Path) -> None:
     session_path.write_text('{"type": "message"}\n')
     output_path = tmp_path / "analysis.html"
     output_path.write_text("stale")
+    calls: list[list[str]] = []
+
+    def fail_popen(cmd, **kw):
+        calls.append(cmd)
+        return FailPopen(cmd)
 
     with (
         patch.dict(
@@ -216,18 +275,17 @@ def test_main_returns_error_when_kimchi_fails(tmp_path: Path) -> None:
                 "BENCHMARK_RESULTS_DIR": str(results_dir),
                 "BENCHMARK_SUMMARY_PATH": str(summary_path),
                 "BENCHMARK_ANALYSIS_OUTPUT": str(output_path),
+                "KIMCHI_ANALYSIS_MAX_RETRIES": "2",
             },
             clear=False,
         ),
         _with_argv(),
-        patch(
-            "subprocess.run",
-            return_value=subprocess.CompletedProcess(args=[], returncode=1, stdout=VALID_HTML, stderr=""),
-        ),
+        patch("subprocess.Popen", side_effect=fail_popen),
     ):
         assert main() == 1
 
     assert not output_path.exists()
+    assert len(calls) == 3
 
 
 def test_main_returns_error_and_removes_stale_output_when_kimchi_times_out(tmp_path: Path) -> None:
@@ -239,6 +297,11 @@ def test_main_returns_error_and_removes_stale_output_when_kimchi_times_out(tmp_p
     session_path.write_text('{"type": "message"}\n')
     output_path = tmp_path / "analysis.html"
     output_path.write_text("stale")
+    calls: list[list[str]] = []
+
+    def timeout_popen(cmd, **kw):
+        calls.append(cmd)
+        return TimeoutPopen(cmd)
 
     with (
         patch.dict(
@@ -247,18 +310,20 @@ def test_main_returns_error_and_removes_stale_output_when_kimchi_times_out(tmp_p
                 "BENCHMARK_RESULTS_DIR": str(results_dir),
                 "BENCHMARK_SUMMARY_PATH": str(summary_path),
                 "BENCHMARK_ANALYSIS_OUTPUT": str(output_path),
+                "KIMCHI_ANALYSIS_MAX_RETRIES": "2",
             },
             clear=False,
         ),
         _with_argv(),
-        patch(
-            "subprocess.run",
-            side_effect=subprocess.TimeoutExpired(cmd=["kimchi"], timeout=1, output=VALID_HTML),
-        ),
+        patch("subprocess.Popen", side_effect=timeout_popen),
+        patch("analyze_sessions._kill_process_group"),
     ):
         assert main() == 1
 
     assert not output_path.exists()
+    assert len(calls) == 3
+    assert "--continue" not in calls[0]
+    assert all("--continue" in cmd for cmd in calls[1:])
 
 
 def test_main_returns_error_for_invalid_html(tmp_path: Path) -> None:
@@ -270,16 +335,13 @@ def test_main_returns_error_for_invalid_html(tmp_path: Path) -> None:
     session_path.write_text('{"type": "message"}\n')
     output_path = tmp_path / "analysis.html"
     draft_path = tmp_path / "analysis-work" / "report.html"
-    json_draft_path = tmp_path / "analysis-work" / "analysis.json"
     calls: list[list[str]] = []
 
-    def write_invalid_draft(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+    def side_effect(cmd: list[str]):
         calls.append(cmd)
         draft_path.parent.mkdir(parents=True, exist_ok=True)
         draft_path.write_text("not html")
-        # Write valid JSON so only the HTML validation fails
-        json_draft_path.write_text(json.dumps({"summary": "ok", "findings": []}))
-        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="Report written", stderr="")
+        return "Report written", "", 0
 
     with (
         patch.dict(
@@ -289,16 +351,12 @@ def test_main_returns_error_for_invalid_html(tmp_path: Path) -> None:
                 "BENCHMARK_SUMMARY_PATH": str(summary_path),
                 "BENCHMARK_ANALYSIS_OUTPUT": str(output_path),
                 "BENCHMARK_ANALYSIS_DRAFT": str(draft_path),
-                "BENCHMARK_ANALYSIS_JSON_DRAFT": str(json_draft_path),
                 "KIMCHI_ANALYSIS_MAX_RETRIES": "2",
             },
             clear=False,
         ),
         _with_argv(),
-        patch(
-            "subprocess.run",
-            side_effect=write_invalid_draft,
-        ),
+        patch("subprocess.Popen", side_effect=_popen_factory(side_effect)),
     ):
         assert main() == 1
 
@@ -317,22 +375,19 @@ def test_main_resumes_session_and_publishes_corrected_draft(tmp_path: Path) -> N
     session_path.write_text('{"type": "message"}\n')
     output_path = tmp_path / "analysis.html"
     draft_path = tmp_path / "analysis-work" / "report.html"
-    json_draft_path = tmp_path / "analysis-work" / "analysis.json"
     calls: list[list[str]] = []
 
-    def write_then_correct_draft(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+    def side_effect(cmd: list[str]):
         calls.append(cmd)
         draft_path.parent.mkdir(parents=True, exist_ok=True)
         if len(calls) == 1:
             draft_path.write_text("not html")
-            json_draft_path.write_text(json.dumps({"summary": "ok", "findings": []}))
         else:
             assert "--continue" in cmd
             retry_prompt = cmd[cmd.index("-p") + 1]
             assert "must start with <!doctype html>" in retry_prompt
             draft_path.write_text(VALID_HTML)
-            json_draft_path.write_text(json.dumps({"summary": "ok", "findings": []}))
-        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="Report updated", stderr="")
+        return "Report updated", "", 0
 
     with (
         patch.dict(
@@ -342,14 +397,13 @@ def test_main_resumes_session_and_publishes_corrected_draft(tmp_path: Path) -> N
                 "BENCHMARK_SUMMARY_PATH": str(summary_path),
                 "BENCHMARK_ANALYSIS_OUTPUT": str(output_path),
                 "BENCHMARK_ANALYSIS_DRAFT": str(draft_path),
-                "BENCHMARK_ANALYSIS_JSON_DRAFT": str(json_draft_path),
                 "BENCHMARK_ANALYSIS_SESSION_DIR": str(tmp_path / "analysis-session"),
                 "KIMCHI_ANALYSIS_MAX_RETRIES": "2",
             },
             clear=False,
         ),
         _with_argv(),
-        patch("subprocess.run", side_effect=write_then_correct_draft),
+        patch("subprocess.Popen", side_effect=_popen_factory(side_effect)),
     ):
         assert main() == 0
 
@@ -366,18 +420,16 @@ def test_main_resumes_session_when_first_attempt_does_not_write_draft(tmp_path: 
     session_path.write_text('{"type": "message"}\n')
     output_path = tmp_path / "analysis.html"
     draft_path = tmp_path / "analysis-work" / "report.html"
-    json_draft_path = tmp_path / "analysis-work" / "analysis.json"
     calls: list[list[str]] = []
 
-    def omit_then_write_draft(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+    def side_effect(cmd: list[str]):
         calls.append(cmd)
         if len(calls) == 2:
             retry_prompt = cmd[cmd.index("-p") + 1]
             assert "draft was not written" in retry_prompt
             draft_path.parent.mkdir(parents=True, exist_ok=True)
             draft_path.write_text(VALID_HTML)
-            json_draft_path.write_text(json.dumps({"summary": "ok", "findings": []}))
-        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="Done", stderr="")
+        return "Done", "", 0
 
     with (
         patch.dict(
@@ -387,14 +439,13 @@ def test_main_resumes_session_when_first_attempt_does_not_write_draft(tmp_path: 
                 "BENCHMARK_SUMMARY_PATH": str(summary_path),
                 "BENCHMARK_ANALYSIS_OUTPUT": str(output_path),
                 "BENCHMARK_ANALYSIS_DRAFT": str(draft_path),
-                "BENCHMARK_ANALYSIS_JSON_DRAFT": str(json_draft_path),
                 "BENCHMARK_ANALYSIS_SESSION_DIR": str(tmp_path / "analysis-session"),
                 "KIMCHI_ANALYSIS_MAX_RETRIES": "2",
             },
             clear=False,
         ),
         _with_argv(),
-        patch("subprocess.run", side_effect=omit_then_write_draft),
+        patch("subprocess.Popen", side_effect=_popen_factory(side_effect)),
     ):
         assert main() == 0
 

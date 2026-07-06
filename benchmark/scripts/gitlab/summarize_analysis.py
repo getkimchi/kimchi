@@ -4,7 +4,7 @@
 This script runs as a standalone CI job. It:
 1. Lists metadata.json files from GCS for today and yesterday.
 2. Downloads and filters them by time window, target_ref, and full-run criteria.
-3. Downloads analysis.json for qualifying runs.
+3. Downloads analysis.html for qualifying runs and extracts text.
 4. Splits runs into ferment and non-ferment groups.
 5. Calls Claude Opus to summarize each group (under 2000 chars).
 6. Posts results to Discord via webhook.
@@ -24,6 +24,8 @@ from pathlib import Path
 from typing import Any
 from urllib import error, request
 
+from extract_analysis_text import extract_text
+
 
 # --- Constants ---
 
@@ -33,9 +35,12 @@ OPUS_SYSTEM_PROMPT = (
     "Analyze Terminal-Bench 2.1 benchmark results across multiple model runs "
     "on the same 89-task suite. Context: each task has a fixed wall-clock timeout "
     "invisible to the agent. Timeout retries are disabled. "
-    "Output a single list of issues, most critical first. For each issue, note "
-    "which models are affected and frequency with real numbers from the data. "
-    "Be quantitative, not hedgy. Critical: keep under 1900 characters."
+    "Report at most 5 issues that cause low pass rates, high timeout counts, "
+    "or high error rates. Include critical and high-impact findings only; "
+    "disregard low-impact ones. For each issue: state the impact with real numbers "
+    "from the data (which models, how many tasks/trials affected, tokens wasted), "
+    "name the suspected root cause layer, and give a one-line recommendation. "
+    "Keep output under 2000 characters."
 )
 DISCORD_MAX_CHARS = 2000  # Used by _post_long_message for chunking
 MAX_RETRIES = 3
@@ -333,7 +338,7 @@ def main() -> int:
 
         print("  PASS — qualifies for summarization", flush=True)
 
-        # Check if analysis.json exists for this run
+        # Check if analysis.html exists for this run
         prefix = metadata.get("gcs", {}).get("prefix", "")
         if not prefix:
             # Try to derive prefix from the metadata.json URI
@@ -342,14 +347,14 @@ def main() -> int:
                 prefix = uri[len(f"gs://{bucket}/") :].rsplit("/", 1)[0]
                 print(f"  Derived GCS prefix from URI: {prefix}", flush=True)
 
-        analysis_uri = f"gs://{bucket}/{prefix}/analysis.json"
-        analysis_local_path = work_dir / f"analysis-{idx}.json"
-        print(f"  Checking for analysis.json: {analysis_uri}", flush=True)
+        analysis_uri = f"gs://{bucket}/{prefix}/analysis.html"
+        analysis_local_path = work_dir / f"analysis-{idx}.html"
+        print(f"  Checking for analysis.html: {analysis_uri}", flush=True)
         try:
             run(["gcloud", "storage", "cp", analysis_uri, str(analysis_local_path), "--quiet"])
-            print(f"  Downloaded analysis.json ({analysis_local_path.stat().st_size} bytes)", flush=True)
+            print(f"  Downloaded analysis.html ({analysis_local_path.stat().st_size} bytes)", flush=True)
         except subprocess.CalledProcessError:
-            print("  No analysis.json found — run may still be in progress", file=sys.stderr, flush=True)
+            print("  No analysis.html found — run may still be in progress", file=sys.stderr, flush=True)
             continue
 
         metadata["_analysis_local_path"] = str(analysis_local_path)
@@ -395,14 +400,15 @@ def main() -> int:
             print(f"No runs in {group_name} group; skipping", flush=True)
             continue
 
-        # Concatenate analysis JSON content
+        # Extract text from analysis HTML and concatenate
         analyses: list[str] = []
         for run_meta in group_runs:
             analysis_path = Path(run_meta.get("_analysis_local_path", ""))
             try:
-                content = analysis_path.read_text(encoding="utf-8").strip()
-                if content:
-                    analyses.append(content)
+                html_content = analysis_path.read_text(encoding="utf-8")
+                text = extract_text(html_content)
+                if text.strip():
+                    analyses.append(text.strip())
             except OSError as exc:
                 print(f"Failed to read analysis for run: {exc}", file=sys.stderr, flush=True)
 

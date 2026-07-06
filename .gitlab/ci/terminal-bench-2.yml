@@ -243,7 +243,6 @@ terminal-bench-$[[ inputs.dataset_version ]]-analyze:
     name: "terminal-bench-$[[ inputs.dataset_version ]]-analysis-$CI_COMMIT_REF_SLUG-$CI_PIPELINE_ID"
     paths:
       - .benchmark/analysis.html
-      - .benchmark/analysis.json
 
 terminal-bench-$[[ inputs.dataset_version ]]-upload-analysis:
   stage: postprocess
