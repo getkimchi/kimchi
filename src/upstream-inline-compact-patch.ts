@@ -28,6 +28,7 @@ type CompactionSettingsLike = {
 type PatchableSession = {
 	_compactionAbortController?: AbortController
 	_autoCompactionAbortController?: AbortController
+	_kimchiInlineCompactInFlight?: boolean
 	_disconnectFromAgent: () => void
 	abort: (...args: unknown[]) => Promise<unknown>
 	sessionManager: { getBranch(): unknown[] }
@@ -106,7 +107,11 @@ async function runInlineCompact(
 	originalCompact: NonNullable<PatchableSessionPrototype["compact"]>,
 	options: InlineCompactOptions,
 ): Promise<CompactionResult> {
-	if (session._compactionAbortController || session._autoCompactionAbortController) {
+	if (
+		session._kimchiInlineCompactInFlight ||
+		session._compactionAbortController ||
+		session._autoCompactionAbortController
+	) {
 		throw new Error("Compaction already in progress")
 	}
 
@@ -121,66 +126,57 @@ async function runInlineCompact(
 		)
 	}
 
+	session._kimchiInlineCompactInFlight = true
 	const restores: Array<() => void> = []
 
-	// One-shot suppression of the quiesce pair. compact() calls each exactly
-	// once at its start, and the agent loop is suspended in the awaited
-	// handler, so no other caller can land in that window. Any LATER abort()
-	// during the summarization is a genuine cancellation request: cancel the
-	// compaction and delegate to the real abort.
-	const realDisconnect = session._disconnectFromAgent
-	const realAbort = session.abort
-	let disconnectSuppressed = false
-	let abortSuppressed = false
-	restores.push(
-		shadowProperty(session, "_disconnectFromAgent", function inlineShadowedDisconnect(this: PatchableSession) {
-			if (!disconnectSuppressed) {
-				disconnectSuppressed = true
-				return
-			}
-			return realDisconnect.call(this)
-		}),
-		shadowProperty(session, "abort", async function inlineShadowedAbort(this: PatchableSession, ...args: unknown[]) {
-			if (!abortSuppressed) {
-				abortSuppressed = true
-				return
-			}
-			this._compactionAbortController?.abort()
-			return realAbort.apply(this, args)
-		}),
-	)
-
-	// force means "compact everything before the newest valid cut point".
-	// Upstream's own force fallback (retry with keepRecentTokens: 0) only fires
-	// when preparation is undefined — a session smaller than keepRecentTokens
-	// returns a DEFINED preparation with zero summarizable messages, which
-	// turned every small-session forced compaction into a no-op. Shadow the
-	// settings so preparation starts from keepRecentTokens: 0 directly.
-	if (options.force || options.keepRecentTokens !== undefined) {
-		const settingsManager = session.settingsManager
-		const realGetCompactionSettings = settingsManager.getCompactionSettings
-		const keepRecentTokens = options.keepRecentTokens ?? 0
+	try {
+		// One-shot suppression of the quiesce pair. Any later abort() during
+		// summarization is a genuine cancellation request.
+		const realDisconnect = session._disconnectFromAgent
+		const realAbort = session.abort
+		let disconnectSuppressed = false
+		let abortSuppressed = false
 		restores.push(
-			shadowProperty(settingsManager, "getCompactionSettings", function inlineShadowedSettings() {
-				return { ...realGetCompactionSettings.call(settingsManager), keepRecentTokens }
+			shadowProperty(session, "_disconnectFromAgent", function inlineShadowedDisconnect(this: PatchableSession) {
+				if (!disconnectSuppressed) {
+					disconnectSuppressed = true
+					return
+				}
+				return realDisconnect.call(this)
+			}),
+			shadowProperty(session, "abort", async function inlineShadowedAbort(this: PatchableSession, ...args: unknown[]) {
+				if (!abortSuppressed) {
+					abortSuppressed = true
+					return
+				}
+				this._compactionAbortController?.abort()
+				return realAbort.apply(this, args)
 			}),
 		)
-	}
 
-	// compact() reads `this.model` / `this.thinkingLevel` (prototype getters
-	// over agent.state) for auth and the summarization call. Instance shadows
-	// reroute both without touching agent.state, so the suspended loop resumes
-	// with its own model untouched.
-	if (options.model !== undefined) {
-		restores.push(shadowProperty(session, "model", options.model))
-	}
-	if (options.thinkingLevel !== undefined) {
-		restores.push(shadowProperty(session, "thinkingLevel", options.thinkingLevel))
-	}
+		// force means "compact everything before the newest valid cut point".
+		if (options.force || options.keepRecentTokens !== undefined) {
+			const settingsManager = session.settingsManager
+			const realGetCompactionSettings = settingsManager.getCompactionSettings
+			const keepRecentTokens = options.keepRecentTokens ?? 0
+			restores.push(
+				shadowProperty(settingsManager, "getCompactionSettings", function inlineShadowedSettings() {
+					return { ...realGetCompactionSettings.call(settingsManager), keepRecentTokens }
+				}),
+			)
+		}
 
-	try {
+		// compact() reads these properties for auth and summarization.
+		if (options.model !== undefined) {
+			restores.push(shadowProperty(session, "model", options.model))
+		}
+		if (options.thinkingLevel !== undefined) {
+			restores.push(shadowProperty(session, "thinkingLevel", options.thinkingLevel))
+		}
+
 		return await originalCompact.call(session, options.customInstructions, options.force ?? false)
 	} finally {
+		session._kimchiInlineCompactInFlight = false
 		for (const restore of restores.reverse()) {
 			restore()
 		}

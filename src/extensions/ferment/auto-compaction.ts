@@ -317,6 +317,11 @@ function isExpectedCompactionError(error: Error): boolean {
 	return EXPECTED_COMPACTION_ERROR_MESSAGES.some((message) => error.message.includes(message))
 }
 
+function catchReturnedCompactionError(result: unknown, onError: (error: unknown) => void): void {
+	if (!result || typeof (result as PromiseLike<unknown>).then !== "function") return
+	void Promise.resolve(result).catch(onError)
+}
+
 // ─── Main entry point ─────────────────────────────────────────────────────────
 
 /**
@@ -524,7 +529,7 @@ async function triggerCompactionForPending(
 	}
 
 	try {
-		ctx.compact({
+		const result = ctx.compact({
 			customInstructions,
 			onComplete: finishCompaction,
 			onError: (error: Error) => {
@@ -534,7 +539,8 @@ async function triggerCompactionForPending(
 					// Best-effort: never let onError propagate and crash the extension.
 				}
 			},
-		})
+		}) as unknown
+		catchReturnedCompactionError(result, handleCompactionFailure)
 	} catch (error) {
 		handleCompactionFailure(error)
 	}
@@ -597,9 +603,20 @@ export function maybeTriggerMidTurnFermentCompaction(
 	runtime.markCompactionInFlight(fermentId)
 
 	const customInstructions = buildMidTurnCustomInstructions(activeFerment, activePhase, activeStep)
+	function handleCompactionFailure(error: unknown): void {
+		runtime.clearCompactionInFlight(fermentId)
+		if (error instanceof Error && !isExpectedCompactionError(error)) {
+			ctx.ui?.notify?.(`Mid-turn compaction failed: ${error.message}`, "warning")
+			// ui.notify is a no-op in headless runs — persist the failure so
+			// archives show why the context kept growing past the threshold.
+			pi.appendEntry("ferment_breadcrumb", {
+				text: `Mid-turn compaction failed: ${error.message}`,
+			})
+		}
+	}
 
 	try {
-		ctx.compact({
+		const result = ctx.compact({
 			customInstructions,
 			onComplete: (result: CompactionResult) => {
 				runtime.clearCompactionInFlight(fermentId)
@@ -622,24 +639,12 @@ export function maybeTriggerMidTurnFermentCompaction(
 					})
 				}
 			},
-			onError: (error: Error) => {
-				runtime.clearCompactionInFlight(fermentId)
-				if (!isExpectedCompactionError(error)) {
-					ctx.ui?.notify?.(`Mid-turn compaction failed: ${error.message}`, "warning")
-					// ui.notify is a no-op in headless runs — persist the failure so
-					// archives show why the context kept growing past the threshold.
-					pi.appendEntry("ferment_breadcrumb", {
-						text: `Mid-turn compaction failed: ${error.message}`,
-					})
-				}
-			},
-		})
+			onError: handleCompactionFailure,
+		}) as unknown
+		catchReturnedCompactionError(result, handleCompactionFailure)
 	} catch (error) {
 		// ctx.compact should never throw, but if it does before invoking callbacks
 		// the in-flight flag must be cleared so future compactions are not blocked.
-		runtime.clearCompactionInFlight(fermentId)
-		if (error instanceof Error && !isExpectedCompactionError(error)) {
-			ctx.ui?.notify?.(`Mid-turn compaction failed: ${error.message}`, "warning")
-		}
+		handleCompactionFailure(error)
 	}
 }
