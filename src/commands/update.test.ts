@@ -120,6 +120,115 @@ describe("runUpdate flag parsing", () => {
 			"--extension cannot be combined with --self or --extensions",
 		)
 	})
+
+	it("rejects the --version flag with a pointer to the positional form", async () => {
+		const code = await runUpdate(["--version", "v0.0.25"])
+		expect(code).toBe(2)
+		expect(errSpy.mock.calls.map((c) => String(c[0] ?? "")).join("\n")).toContain(
+			"pass the version directly: kimchi update v1.2.3",
+		)
+	})
+
+	it("rejects a version combined with --canary", async () => {
+		const code = await runUpdate(["v0.0.25", "--canary"])
+		expect(code).toBe(2)
+		expect(errSpy.mock.calls.map((c) => String(c[0] ?? "")).join("\n")).toContain(
+			"a version cannot be combined with --canary",
+		)
+	})
+
+	it("rejects a version combined with a package target", async () => {
+		const code = await runUpdate(["v0.0.25", "--extensions"])
+		expect(code).toBe(2)
+		expect(errSpy.mock.calls.map((c) => String(c[0] ?? "")).join("\n")).toContain(
+			"a version can only be used when updating Kimchi itself",
+		)
+	})
+
+	it("rejects a version alongside another positional", async () => {
+		const code = await runUpdate(["v0.0.25", "context-mode"])
+		expect(code).toBe(2)
+		expect(errSpy.mock.calls.map((c) => String(c[0] ?? "")).join("\n")).toContain("unexpected argument: context-mode")
+	})
+
+	it("rejects a version after the self target", async () => {
+		const code = await runUpdate(["self", "v0.0.25"])
+		expect(code).toBe(2)
+		expect(errSpy.mock.calls.map((c) => String(c[0] ?? "")).join("\n")).toContain("unexpected argument: v0.0.25")
+	})
+
+	it("treats a version-like positional as a Kimchi self-update target", async () => {
+		checkForUpdateMock.mockResolvedValue({
+			hasUpdate: true,
+			latestVersion: "v0.0.25",
+			tag: "v0.0.25",
+		})
+		applyUpdateMock.mockResolvedValue(undefined)
+
+		const code = await runUpdate(["v0.0.25", "--force"])
+
+		expect(code).toBe(0)
+		expect(packageUpdateMock).not.toHaveBeenCalled()
+		expect(checkForUpdateMock).toHaveBeenCalledWith(expect.objectContaining({ tag: "v0.0.25" }))
+		expect(applyUpdateMock).toHaveBeenCalledWith({ tag: "v0.0.25" })
+	})
+
+	it("normalizes a bare version to a v-prefixed tag", async () => {
+		checkForUpdateMock.mockResolvedValue({
+			hasUpdate: true,
+			latestVersion: "v0.0.25",
+			tag: "v0.0.25",
+		})
+		applyUpdateMock.mockResolvedValue(undefined)
+
+		const code = await runUpdate(["0.0.25", "--force"])
+
+		expect(code).toBe(0)
+		expect(checkForUpdateMock).toHaveBeenCalledWith(expect.objectContaining({ tag: "v0.0.25" }))
+	})
+
+	it("still treats a non-version positional as a package source", async () => {
+		listConfiguredPackagesMock.mockReturnValue([{ source: "npm:other-package", scope: "user", filtered: false }])
+		const code = await runUpdate(["context-mode"])
+		expect(code).toBe(1)
+		expect(errSpy.mock.calls.map((c) => String(c[0] ?? "")).join("\n")).toContain(
+			"no matching package found for context-mode",
+		)
+		expect(checkForUpdateMock).not.toHaveBeenCalled()
+	})
+
+	it("a version with --dry-run reports the target without installing", async () => {
+		checkForUpdateMock.mockResolvedValue({
+			hasUpdate: true,
+			latestVersion: "v0.0.20",
+			tag: "v0.0.20",
+			releaseUrl: "https://example/release",
+		})
+
+		const code = await runUpdate(["v0.0.20", "--dry-run"])
+
+		expect(code).toBe(0)
+		const out = logSpy.mock.calls.map((c) => String(c[0] ?? "")).join("\n")
+		expect(out).toContain("would install v0.0.20")
+		expect(out).toContain("https://example/release")
+		expect(applyUpdateMock).not.toHaveBeenCalled()
+	})
+
+	it("reports already on the requested version", async () => {
+		checkForUpdateMock.mockResolvedValue({
+			hasUpdate: false,
+			latestVersion: "v0.0.23",
+			tag: "v0.0.23",
+		})
+
+		const code = await runUpdate(["v0.0.23"])
+
+		expect(code).toBe(0)
+		const out = logSpy.mock.calls.map((c) => String(c[0] ?? "")).join("\n")
+		expect(out).toContain("already on v0.0.23")
+		expect(out).not.toContain("already up to date")
+		expect(applyUpdateMock).not.toHaveBeenCalled()
+	})
 })
 
 describe("runUpdate Homebrew branch", () => {
@@ -154,6 +263,20 @@ describe("runUpdate Homebrew branch", () => {
 		expect(out).toContain("brew uninstall kimchi")
 		expect(out).toContain("install.sh")
 		expect(out).toContain("kimchi update --canary")
+		expect(out).not.toContain("brew upgrade kimchi")
+		expect(checkForUpdateMock).not.toHaveBeenCalled()
+		expect(applyUpdateMock).not.toHaveBeenCalled()
+	})
+
+	it("prints version-specific message on Homebrew + version positional and skips download", async () => {
+		isHomebrewInstallMock.mockReturnValue(true)
+		const code = await runUpdate(["v0.0.25"])
+		expect(code).toBe(0)
+		const out = logSpy.mock.calls.map((c) => String(c[0] ?? "")).join("\n")
+		expect(out).toContain("Specific release versions cannot be installed through Homebrew")
+		expect(out).toContain("brew uninstall kimchi")
+		expect(out).toContain("install.sh")
+		expect(out).toContain("kimchi update v0.0.25")
 		expect(out).not.toContain("brew upgrade kimchi")
 		expect(checkForUpdateMock).not.toHaveBeenCalled()
 		expect(applyUpdateMock).not.toHaveBeenCalled()

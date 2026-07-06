@@ -33,6 +33,8 @@ export interface CheckOptions {
 	client?: GitHubClient
 	/** Resolve the floating `canary` release instead of latest stable. */
 	canary?: boolean
+	/** Resolve an exact release tag (e.g. `v0.0.23-rc.1`) instead of latest or canary. */
+	tag?: string
 }
 
 /** Strip the "Canary " title prefix to recover the embedded version string. */
@@ -81,6 +83,25 @@ export async function checkForUpdate(opts: CheckOptions): Promise<CheckResult> {
 			tag: "",
 			releaseUrl: "",
 			hasUpdate: false,
+			cached: false,
+		}
+	}
+
+	if (opts.tag) {
+		// Explicit tag requests always bypass the cache: the caller wants the
+		// resolved metadata for this specific release, not whatever happened
+		// to be checked most recently.
+		const info = await client.releaseByTag(repo, opts.tag)
+		// Release tags carry a leading "v" while getVersion() reports bare
+		// semver from package.json; normalize both sides so requesting the
+		// already-installed version is a no-op instead of a reinstall.
+		const hasUpdate = info.tagName.replace(/^v/, "") !== opts.currentVersion.replace(/^v/, "")
+		return {
+			currentVersion: opts.currentVersion,
+			latestVersion: info.tagName,
+			tag: info.tagName,
+			releaseUrl: info.htmlUrl,
+			hasUpdate,
 			cached: false,
 		}
 	}
