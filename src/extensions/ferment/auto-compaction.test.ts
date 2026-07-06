@@ -615,6 +615,90 @@ describe("maybeTriggerFermentCompaction", () => {
 		expect(call.model).toBeUndefined()
 	})
 
+	it("warns when the compactor ref is configured but not in the registry", async () => {
+		const ferment = makeFermentWithPhase(
+			{ id: "phase-1", name: "Phase", goal: "Goal" },
+			{ id: "step-1", description: "Do it" },
+		)
+		storageMap.set(ferment.id, ferment)
+		runtime.setActive(ferment)
+		setPendingCompaction(ferment.id, makePendingStep(ferment.id, "phase-1", "step-1"))
+
+		// Configured but not in the registry: silently compacting on the session
+		// model forever is the diagnosability trap the warning exists for.
+		applyRoleAugmentation((roles) => ({ ...roles, compactor: "kimchi-dev/typo-model" }))
+		ctx.modelRegistry = { find: vi.fn(() => undefined) } as unknown as ExtensionContext["modelRegistry"]
+		ctx.inlineCompact = vi.fn(async () => ({
+			summary: "compacted",
+			firstKeptEntryId: "entry-1",
+			tokensBefore: 10,
+		}))
+
+		await maybeTriggerFermentCompaction(pi, ctx, runtime)
+
+		expect(pi.appendEntry).toHaveBeenCalledWith("ferment_breadcrumb", {
+			text: expect.stringContaining('Compactor model role "kimchi-dev/typo-model" is not in the model registry'),
+		})
+		// The fallback itself must be unaffected: compaction ran on the session model.
+		const call = (ctx.inlineCompact as ReturnType<typeof vi.fn>).mock.calls[0][0] as { model?: unknown }
+		expect(call.model).toBeUndefined()
+	})
+
+	it("warns when the compactor ref is not a valid provider/model reference", async () => {
+		const ferment = makeFermentWithPhase(
+			{ id: "phase-1", name: "Phase", goal: "Goal" },
+			{ id: "step-1", description: "Do it" },
+		)
+		storageMap.set(ferment.id, ferment)
+		runtime.setActive(ferment)
+		setPendingCompaction(ferment.id, makePendingStep(ferment.id, "phase-1", "step-1"))
+
+		applyRoleAugmentation((roles) => ({ ...roles, compactor: "ref-without-provider-slash" }))
+		ctx.inlineCompact = vi.fn(async () => ({
+			summary: "compacted",
+			firstKeptEntryId: "entry-1",
+			tokensBefore: 10,
+		}))
+
+		await maybeTriggerFermentCompaction(pi, ctx, runtime)
+
+		expect(pi.appendEntry).toHaveBeenCalledWith("ferment_breadcrumb", {
+			text: expect.stringContaining("not a valid provider/model reference"),
+		})
+	})
+
+	it("emits a loud breadcrumb when the synchronous handoff direct-append is unavailable", async () => {
+		const ferment = makeFermentWithPhase(
+			{ id: "phase-1", name: "Phase", goal: "Goal" },
+			{ id: "step-1", description: "Do it" },
+		)
+		storageMap.set(ferment.id, ferment)
+		runtime.setActive(ferment)
+		setPendingCompaction(ferment.id, makePendingStep(ferment.id, "phase-1", "step-1"))
+
+		// Upstream renamed/removed appendCustomMessageEntry: the handoff degrades
+		// to the async path, is not in the branch at prepare time, and the forced
+		// compaction that expected it as a cut point can silently no-op. That
+		// degradation must be visible in the session file, not just in a UI toast.
+		ctx.sessionManager = { getEntries: vi.fn(() => []) } as unknown as ExtensionContext["sessionManager"]
+		ctx.inlineCompact = vi.fn(async () => ({
+			summary: "compacted",
+			firstKeptEntryId: "entry-1",
+			tokensBefore: 10,
+		}))
+
+		await maybeTriggerFermentCompaction(pi, ctx, runtime)
+
+		expect(pi.appendEntry).toHaveBeenCalledWith("ferment_breadcrumb", {
+			text: expect.stringContaining("direct-append unavailable"),
+		})
+		// The async fallback still delivers the handoff.
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ customType: "ferment_stage_handoff" }),
+			expect.objectContaining({ triggerTurn: false }),
+		)
+	})
+
 	it("appends a handoff without continuing when one-shot inline compaction is skipped", async () => {
 		const ferment = makeFermentWithPhase(
 			{ id: "phase-1", name: "Phase", goal: "Goal" },

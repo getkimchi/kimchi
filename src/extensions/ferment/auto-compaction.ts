@@ -24,6 +24,7 @@
 import type { CompactionResult, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { determineNextAction } from "../../ferment/engine.js"
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
+import { collectMessagesFromEntries, isToolCallInFlight } from "../../tool-call-in-flight.js"
 import { COMPACTION_RESERVE_TOKENS } from "../compaction-thresholds.js"
 import { getModelRoles, splitModelRef } from "../orchestration/model-roles.js"
 import type { FermentRuntime } from "./runtime.js"
@@ -71,51 +72,13 @@ function compactionThreshold(contextWindow: number): number {
 
 // ─── In-flight tool-call guard ────────────────────────────────────────────────
 
-/**
- * Pure helper: return true if any assistant `toolCall` block `id` in `messages`
- * has NO matching `toolResult` (by `toolCallId`) anywhere in the array.
- *
- * This is the compaction-timing root-cause signal: when the trailing session
- * entries form an incomplete assistant toolCall -> toolResult pair, compacting
- * would summarise away the assistant toolCall while its toolResult is appended
- * later — creating the exact orphaned-toolResult condition phase 1 defends
- * against. By deferring compaction until the pair completes, orphans are never
- * created at the compaction boundary in the first place.
- *
- * Pure, total, never throws: unknown shapes are skipped defensively. Mirrors
- * the structural-guard style of `findOrphanedToolResults` (phase 1) but
- * inverts the question (toolCall without toolResult, not toolResult without
- * toolCall).
- */
-export function isToolCallInFlight(messages: ReadonlyArray<unknown>): boolean {
-	const callIds = new Set<string>()
-	const resultIds = new Set<string>()
-
-	for (const raw of messages) {
-		if (!raw || typeof raw !== "object") continue
-		const msg = raw as { role?: string; content?: unknown; toolCallId?: string }
-		if (msg.role === "assistant") {
-			const content = msg.content
-			if (!Array.isArray(content)) continue
-			for (const block of content) {
-				if (!block || typeof block !== "object") continue
-				const b = block as { type?: string; id?: unknown }
-				if (b.type === "toolCall" && typeof b.id === "string") {
-					callIds.add(b.id)
-				}
-			}
-		} else if (msg.role === "toolResult") {
-			if (typeof msg.toolCallId === "string") {
-				resultIds.add(msg.toolCallId)
-			}
-		}
-	}
-
-	for (const id of callIds) {
-		if (!resultIds.has(id)) return true
-	}
-	return false
-}
+// The pure orphaned-toolResult guard lives in tool-call-in-flight.ts so the
+// inline compaction primitive (upstream-inline-compact-patch.ts) can enforce
+// the same invariant without importing from this extension. Re-exported here
+// for existing importers. Ferment uses it for DEFERRAL (leave the pending
+// entry in the map, retry next boundary); the primitive uses it as a loud
+// safety assertion.
+export { isToolCallInFlight } from "../../tool-call-in-flight.js"
 
 /**
  * Thin wrapper: read the live session entries from `ctx.sessionManager` and
@@ -126,15 +89,7 @@ export function isToolCallInFlight(messages: ReadonlyArray<unknown>): boolean {
 export function isToolCallInFlightInSession(ctx: ExtensionContext): boolean {
 	try {
 		const entries = ctx?.sessionManager?.getEntries?.() ?? []
-		const messages: unknown[] = []
-		for (const entry of entries) {
-			if (!entry || typeof entry !== "object") continue
-			const e = entry as { type?: string; message?: unknown }
-			if (e.type === "message" && e.message && typeof e.message === "object") {
-				messages.push(e.message)
-			}
-		}
-		return isToolCallInFlight(messages)
+		return isToolCallInFlight(collectMessagesFromEntries(entries))
 	} catch {
 		return false
 	}
@@ -214,16 +169,33 @@ function findActivePhaseAndStep(ferment: Ferment): { phase?: Phase; step?: Step 
  * undefined when the role is unset, unparseable, or not in the registry —
  * inlineCompact() then falls back to the session's active model, so a bad
  * or missing config never blocks compaction.
+ *
+ * Silent fallback is the right availability call but a diagnosability trap: a
+ * typo'd compactor ref would quietly compact on the expensive session model
+ * forever. `warn` fires whenever a ref is CONFIGURED but unusable, so headless
+ * runs keep a session-file trace next to each affected compaction.
  */
 function resolveCompactorModel(
 	ctx: ExtensionContext,
+	warn?: (message: string) => void,
 ): ReturnType<NonNullable<ExtensionContext["modelRegistry"]>["find"]> {
 	try {
 		const ref = getModelRoles().compactor
 		if (!ref) return undefined
 		const parsed = splitModelRef(ref)
-		if (!parsed) return undefined
-		return ctx.modelRegistry?.find(parsed.provider, parsed.modelId)
+		if (!parsed) {
+			warn?.(
+				`Compactor model role "${ref}" is not a valid provider/model reference — stage compaction falls back to the session model`,
+			)
+			return undefined
+		}
+		const model = ctx.modelRegistry?.find(parsed.provider, parsed.modelId)
+		if (!model) {
+			warn?.(
+				`Compactor model role "${ref}" is not in the model registry — stage compaction falls back to the session model`,
+			)
+		}
+		return model
 	} catch {
 		return undefined
 	}
@@ -434,6 +406,20 @@ async function triggerCompactionForPending(
 			directAppend.call(ctx.sessionManager, "ferment_stage_handoff", content, false, handoff)
 			return
 		}
+		if (synchronous) {
+			// The direct-append path depends on an undocumented upstream method
+			// (appendCustomMessageEntry is a write method on what the public types
+			// call ReadonlySessionManager). If upstream renames or removes it, the
+			// handoff degrades to the async path below, is NOT in the branch at
+			// prepare time, and the forced compaction that expected it as a cut
+			// point silently no-ops — the exact regression that once spanned whole
+			// benchmark runs. Make that degradation loud in the session file.
+			tryPiAction(() => {
+				pi.appendEntry("ferment_breadcrumb", {
+					text: "Stage handoff direct-append unavailable (sessionManager.appendCustomMessageEntry missing) — handoff will append asynchronously and the forced stage compaction may no-op",
+				})
+			})
+		}
 		safeSendMessage(
 			pi,
 			{
@@ -499,7 +485,11 @@ async function triggerCompactionForPending(
 				// separate (e.g. cheaper) model instead of the session's active one.
 				// Undefined when unconfigured/unavailable — inlineCompact falls back
 				// to the session model exactly as before.
-				model: resolveCompactorModel(ctx),
+				model: resolveCompactorModel(ctx, (warning) => {
+					tryPiAction(() => {
+						pi.appendEntry("ferment_breadcrumb", { text: warning })
+					})
+				}),
 				// Compaction is pure summarization and never benefits from extended
 				// thinking. Every model in Kimchi's catalog currently reports
 				// `reasoning: true`, so picking a different `model` above does not by

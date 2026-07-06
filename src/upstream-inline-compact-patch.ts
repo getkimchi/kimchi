@@ -1,21 +1,35 @@
 /**
- * Local non-aborting adaptation of pi-coding-agent's AgentSession.compact()
- * lifecycle. Keep this close to upstream compaction behavior: it intentionally
- * reuses PI's internal prepare/compact functions and extension events, but skips
- * the manual compact path's session disconnect + abort.
+ * Non-aborting inline adaptation of pi-coding-agent's AgentSession.compact().
+ *
+ * Instead of cloning upstream's compaction lifecycle, `inlineCompact` DELEGATES
+ * to the original `compact()` with the quiesce pair suppressed: upstream's
+ * `_disconnectFromAgent()` + `await this.abort()` exist to force-idle a live
+ * run before rewriting `agent.state.messages`, but inline callers (Ferment's
+ * stage-boundary compaction) invoke this from an AWAITED extension handler at
+ * a turn boundary — the agent loop is suspended for the whole call, so the
+ * rewrite is already safe and the run must NOT be aborted.
+ *
+ * Delegation means upstream's own code runs: `_compactionAbortController` is
+ * set (so `isCompacting` and `abortCompaction()` work unpatched), events carry
+ * upstream's exact shapes (reason "manual"), and upstream fixes are inherited
+ * automatically.
+ *
+ * The suppression works through temporary per-instance property shadows that
+ * intercept the prototype members `compact()` reaches via `this`. That
+ * coupling is asserted fail-loud at patch-install time (i.e. process startup)
+ * by checking the source text of `compact()` — a regression here must abort
+ * the process, not silently turn stage compaction abortive or into a no-op.
+ *
+ * Caller contract (enforced where possible):
+ * - Call from an awaited extension handler at a turn boundary (turn_end /
+ *   agent_end) or while the session is idle. NOT enforceable from inside the
+ *   session; violating it races the agent loop.
+ * - No unpaired toolCall in the current branch. ENFORCED: throws before
+ *   compacting (see isToolCallInFlight) instead of orphaning the toolResult.
  */
 import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai"
-import {
-	AgentSession,
-	type CompactionResult,
-	ExtensionRunner,
-	compact as piCompact,
-	// Re-exported from the package root by patches/@earendil-works__pi-coding-agent@0.78.1.patch
-	// (item 7). A static import is required: the Bun-compiled binary has no node_modules on
-	// disk, so any runtime module resolution (import.meta.resolve, dynamic deep imports,
-	// directory walks) fails there even though it works in dev under Node.
-	prepareCompaction as piPrepareCompaction,
-} from "@earendil-works/pi-coding-agent"
+import { AgentSession, type CompactionResult, ExtensionRunner } from "@earendil-works/pi-coding-agent"
+import { collectMessagesAfterLastCompaction, isToolCallInFlight } from "./tool-call-in-flight.js"
 
 export interface InlineCompactOptions {
 	customInstructions?: string
@@ -40,67 +54,21 @@ type CompactionSettingsLike = {
 	[key: string]: unknown
 }
 
-export type InlineCompactCompactionModule = {
-	prepareCompaction: (pathEntries: unknown[], settings: CompactionSettingsLike) => unknown | undefined
-	compact: (
-		preparation: unknown,
-		model: unknown,
-		apiKey: string | undefined,
-		headers: Record<string, string> | undefined,
-		customInstructions: string | undefined,
-		signal: AbortSignal,
-		thinkingLevel: unknown,
-		streamFn: unknown,
-	) => Promise<CompactionResult>
-}
-
-type ExtensionRunnerLike = {
-	hasHandlers(event: string): boolean
-	emit(event: unknown): Promise<unknown>
-}
-
-type SessionManagerLike = {
-	getBranch(): unknown[]
-	getEntries(): unknown[]
-	appendCompaction(
-		summary: string,
-		firstKeptEntryId: string,
-		tokensBefore: number,
-		details: unknown,
-		fromExtension: boolean,
-	): void
-	buildSessionContext(): { messages: unknown[] }
-}
-
 type PatchableSession = {
-	model: unknown | undefined
-	thinkingLevel: unknown
-	agent: {
-		state: { messages: unknown[] }
-		streamFn: unknown
-	}
-	sessionManager: SessionManagerLike
-	settingsManager: {
-		getCompactionSettings(): CompactionSettingsLike
-	}
-	_getCompactionRequestAuth(model: unknown): Promise<{
-		apiKey?: string
-		headers?: Record<string, string>
-	}>
-	_extensionRunner: ExtensionRunnerLike
-	_emit(event: unknown): void
 	_compactionAbortController?: AbortController
 	_autoCompactionAbortController?: AbortController
-	_inlineCompactionAbortController?: AbortController
+	_disconnectFromAgent: () => void
+	abort: (...args: unknown[]) => Promise<unknown>
+	sessionManager: { getBranch(): unknown[] }
+	settingsManager: { getCompactionSettings(): CompactionSettingsLike }
 	inlineCompact?(options?: InlineCompactOptions): Promise<CompactionResult>
 }
 
 type PatchableSessionPrototype = {
 	_kimchiInlineCompactPatch?: boolean
 	inlineCompact?: (this: PatchableSession, options?: InlineCompactOptions) => Promise<CompactionResult>
+	compact?: (this: PatchableSession, customInstructions?: string, force?: boolean) => Promise<CompactionResult>
 	_bindExtensionCore?: (this: PatchableSession, runner: PatchableRunnerInstance) => unknown
-	abortCompaction?: (this: PatchableSession, ...args: unknown[]) => unknown
-	abort?: (this: PatchableSession, ...args: unknown[]) => unknown
 }
 
 type PatchableSessionClass = {
@@ -121,239 +89,155 @@ type PatchableRunnerClass = {
 	prototype: PatchableRunnerPrototype
 }
 
-interface SessionBeforeCompactResultLike {
-	cancel?: boolean
-	compaction?: CompactionResult
-}
-
 export interface InlineCompactPatchOptions {
 	sessionClass?: PatchableSessionClass
 	runnerClass?: PatchableRunnerClass
-	loadCompactionModule?: () => Promise<InlineCompactCompactionModule>
 }
 
-/** Throw at patch-install time (i.e. process startup) when the statically imported
- *  compaction internals are missing — a regression here must abort the process, not
- *  silently skip every compaction at stage boundaries. */
-function assertCompactionInternalsAvailable(): void {
-	if (typeof piPrepareCompaction !== "function" || typeof piCompact !== "function") {
+/**
+ * Temporarily replace `target[key]` with `value`, returning a restore
+ * function. Handles both own properties (fakes, per-instance state) and
+ * prototype members (real AgentSession methods and accessors): a prototype
+ * member is shadowed by defining an own property and restored by deleting it,
+ * which re-exposes the prototype lookup.
+ */
+function shadowProperty(target: object, key: string, value: unknown): () => void {
+	const record = target as Record<string, unknown>
+	const ownDescriptor = Object.getOwnPropertyDescriptor(target, key)
+	Object.defineProperty(target, key, {
+		configurable: true,
+		enumerable: ownDescriptor?.enumerable ?? false,
+		writable: true,
+		value,
+	})
+	return () => {
+		if (ownDescriptor) {
+			Object.defineProperty(target, key, ownDescriptor)
+		} else {
+			delete record[key]
+		}
+	}
+}
+
+/**
+ * Fail at patch-install time (i.e. process startup) when `compact()` no longer
+ * calls the internals the inline shadows suppress. If upstream renames
+ * `_disconnectFromAgent` or stops quiescing via `this.abort()`, the shadows
+ * would silently go inert and inline compaction would become abortive again —
+ * the same silent-regression class that once turned every stage-boundary
+ * compaction in a benchmark run into a no-op.
+ */
+function assertCompactInternalsCompatible(sessionProto: PatchableSessionPrototype): void {
+	const compactSource = typeof sessionProto.compact === "function" ? String(sessionProto.compact) : ""
+	if (!compactSource.includes("_disconnectFromAgent") || !compactSource.includes("abort")) {
 		throw new Error(
-			"pi-coding-agent compaction internals are incompatible with Kimchi inline compaction " +
-				"(prepareCompaction is not exported from the package root — check that " +
-				"patches/@earendil-works__pi-coding-agent applied)",
+			"pi-coding-agent AgentSession.compact() is incompatible with Kimchi inline compaction " +
+				"(expected it to quiesce via _disconnectFromAgent/abort — upstream internals changed)",
 		)
 	}
-}
-
-export async function loadDefaultCompactionModule(): Promise<InlineCompactCompactionModule> {
-	assertCompactionInternalsAvailable()
-	return {
-		prepareCompaction: piPrepareCompaction as unknown as InlineCompactCompactionModule["prepareCompaction"],
-		compact: piCompact as InlineCompactCompactionModule["compact"],
-	}
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return !!value && typeof value === "object"
-}
-
-function isCompactionResult(value: unknown): value is CompactionResult {
-	return (
-		isRecord(value) &&
-		typeof value.summary === "string" &&
-		typeof value.firstKeptEntryId === "string" &&
-		typeof value.tokensBefore === "number"
-	)
-}
-
-function isEmptyCompactionPreparation(value: unknown): boolean {
-	return isRecord(value) && Array.isArray(value.messagesToSummarize) && value.messagesToSummarize.length === 0
-}
-
-function asBeforeCompactResult(value: unknown): SessionBeforeCompactResultLike | undefined {
-	if (!isRecord(value)) return undefined
-	return {
-		cancel: value.cancel === true,
-		compaction: isCompactionResult(value.compaction) ? value.compaction : undefined,
-	}
-}
-
-function getResultFromExtension(compaction: CompactionResult): CompactionResult {
-	return {
-		summary: compaction.summary,
-		firstKeptEntryId: compaction.firstKeptEntryId,
-		tokensBefore: compaction.tokensBefore,
-		details: compaction.details,
-	}
-}
-
-function findSavedCompactionEntry(entries: unknown[], summary: string): unknown | undefined {
-	return entries.find((entry) => isRecord(entry) && entry.type === "compaction" && entry.summary === summary)
 }
 
 async function runInlineCompact(
 	session: PatchableSession,
+	originalCompact: NonNullable<PatchableSessionPrototype["compact"]>,
 	options: InlineCompactOptions,
-	loadCompactionModule: () => Promise<InlineCompactCompactionModule>,
 ): Promise<CompactionResult> {
-	if (
-		session._inlineCompactionAbortController ||
-		session._compactionAbortController ||
-		session._autoCompactionAbortController
-	) {
+	if (session._compactionAbortController || session._autoCompactionAbortController) {
 		throw new Error("Compaction already in progress")
 	}
-	// PI only exposes manual/threshold/overflow compaction event reasons.
-	// Inline compaction is automatic extension-driven work, so use threshold
-	// rather than manual even when Ferment triggers it proactively.
-	const reason = "threshold"
-	const customInstructions = options.customInstructions
-	session._inlineCompactionAbortController = new AbortController()
-	session._emit({ type: "compaction_start", reason })
+
+	// Safety assertion (not deferral — callers wanting deferral must check
+	// before calling): compacting across an unpaired toolCall summarises away
+	// the assistant toolCall and orphans the toolResult appended later. Scoped
+	// past the newest compaction entry so a historical, already-neutralised
+	// orphan cannot permanently veto compaction.
+	if (isToolCallInFlight(collectMessagesAfterLastCompaction(session.sessionManager.getBranch()))) {
+		throw new Error(
+			"inlineCompact called while a tool call is in flight — callers must defer to a turn boundary with no unpaired toolCall",
+		)
+	}
+
+	const restores: Array<() => void> = []
+
+	// One-shot suppression of the quiesce pair. compact() calls each exactly
+	// once at its start, and the agent loop is suspended in the awaited
+	// handler, so no other caller can land in that window. Any LATER abort()
+	// during the summarization is a genuine cancellation request: cancel the
+	// compaction and delegate to the real abort.
+	const realDisconnect = session._disconnectFromAgent
+	const realAbort = session.abort
+	let disconnectSuppressed = false
+	let abortSuppressed = false
+	restores.push(
+		shadowProperty(session, "_disconnectFromAgent", function inlineShadowedDisconnect(this: PatchableSession) {
+			if (!disconnectSuppressed) {
+				disconnectSuppressed = true
+				return
+			}
+			return realDisconnect.call(this)
+		}),
+		shadowProperty(session, "abort", async function inlineShadowedAbort(this: PatchableSession, ...args: unknown[]) {
+			if (!abortSuppressed) {
+				abortSuppressed = true
+				return
+			}
+			this._compactionAbortController?.abort()
+			return realAbort.apply(this, args)
+		}),
+	)
+
+	// force means "compact everything before the newest valid cut point".
+	// Upstream's own force fallback (retry with keepRecentTokens: 0) only fires
+	// when preparation is undefined — a session smaller than keepRecentTokens
+	// returns a DEFINED preparation with zero summarizable messages, which
+	// turned every small-session forced compaction into a no-op. Shadow the
+	// settings so preparation starts from keepRecentTokens: 0 directly.
+	if (options.force) {
+		const settingsManager = session.settingsManager
+		const realGetCompactionSettings = settingsManager.getCompactionSettings
+		restores.push(
+			shadowProperty(settingsManager, "getCompactionSettings", function inlineShadowedSettings() {
+				return { ...realGetCompactionSettings.call(settingsManager), keepRecentTokens: 0 }
+			}),
+		)
+	}
+
+	// compact() reads `this.model` / `this.thinkingLevel` (prototype getters
+	// over agent.state) for auth and the summarization call. Instance shadows
+	// reroute both without touching agent.state, so the suspended loop resumes
+	// with its own model untouched.
+	if (options.model !== undefined) {
+		restores.push(shadowProperty(session, "model", options.model))
+	}
+	if (options.thinkingLevel !== undefined) {
+		restores.push(shadowProperty(session, "thinkingLevel", options.thinkingLevel))
+	}
 
 	try {
-		const signal = session._inlineCompactionAbortController.signal
-		const { prepareCompaction, compact } = await loadCompactionModule()
-		if (signal.aborted) {
-			throw new Error("Compaction cancelled")
-		}
-		const compactionModel = options.model ?? session.model
-		if (!compactionModel) {
-			throw new Error("No model selected")
-		}
-
-		const { apiKey, headers } = await session._getCompactionRequestAuth(compactionModel)
-		const pathEntries = session.sessionManager.getBranch()
-		const settings = session.settingsManager.getCompactionSettings()
-		// force means "compact everything before the newest valid cut point", so
-		// prepare with keepRecentTokens: 0 directly. Falling back to 0 only when
-		// preparation is undefined is not enough: a session smaller than
-		// keepRecentTokens returns a *defined* preparation with zero summarizable
-		// messages, which turned every small-session forced compaction into a no-op.
-		const preparation = prepareCompaction(pathEntries, options.force ? { ...settings, keepRecentTokens: 0 } : settings)
-
-		if (!preparation) {
-			const lastEntry = pathEntries[pathEntries.length - 1]
-			if (isRecord(lastEntry) && lastEntry.type === "compaction") {
-				throw new Error("Already compacted")
-			}
-			throw new Error(
-				options.force ? "Nothing to compact (no valid cut point)" : "Nothing to compact (session too small)",
-			)
-		}
-		if (isEmptyCompactionPreparation(preparation)) {
-			throw new Error("Nothing to compact (no summarizable messages)")
-		}
-
-		let compactionResult: CompactionResult | undefined
-		let fromExtension = false
-		if (session._extensionRunner.hasHandlers("session_before_compact")) {
-			const extensionResult = asBeforeCompactResult(
-				await session._extensionRunner.emit({
-					type: "session_before_compact",
-					preparation,
-					branchEntries: pathEntries,
-					customInstructions,
-					signal,
-				}),
-			)
-			if (extensionResult?.cancel) {
-				throw new Error("Compaction cancelled")
-			}
-			if (extensionResult?.compaction) {
-				compactionResult = getResultFromExtension(extensionResult.compaction)
-				fromExtension = true
-			}
-		}
-
-		if (!compactionResult) {
-			compactionResult = await compact(
-				preparation,
-				compactionModel,
-				apiKey,
-				headers,
-				customInstructions,
-				signal,
-				options.thinkingLevel ?? session.thinkingLevel,
-				session.agent.streamFn,
-			)
-		}
-
-		if (signal.aborted) {
-			throw new Error("Compaction cancelled")
-		}
-
-		session.sessionManager.appendCompaction(
-			compactionResult.summary,
-			compactionResult.firstKeptEntryId,
-			compactionResult.tokensBefore,
-			compactionResult.details,
-			fromExtension,
-		)
-		const newEntries = session.sessionManager.getEntries()
-		const sessionContext = session.sessionManager.buildSessionContext()
-		session.agent.state.messages = sessionContext.messages
-
-		const savedCompactionEntry = findSavedCompactionEntry(newEntries, compactionResult.summary)
-		if (savedCompactionEntry) {
-			await session._extensionRunner.emit({
-				type: "session_compact",
-				compactionEntry: savedCompactionEntry,
-				fromExtension,
-			})
-		}
-
-		session._emit({ type: "compaction_end", reason, result: compactionResult, aborted: false, willRetry: false })
-		return compactionResult
-	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error)
-		const aborted = message === "Compaction cancelled" || (error instanceof Error && error.name === "AbortError")
-		session._emit({
-			type: "compaction_end",
-			reason,
-			result: undefined,
-			aborted,
-			willRetry: false,
-			errorMessage: aborted ? undefined : `Inline compaction failed: ${message}`,
-		})
-		throw error
+		return await originalCompact.call(session, options.customInstructions, options.force ?? false)
 	} finally {
-		session._inlineCompactionAbortController = undefined
+		for (const restore of restores.reverse()) {
+			restore()
+		}
 	}
 }
 
 export function installInlineCompactPatch(options: InlineCompactPatchOptions = {}): void {
 	const sessionClass = options.sessionClass ?? (AgentSession as unknown as PatchableSessionClass)
 	const runnerClass = options.runnerClass ?? (ExtensionRunner as unknown as PatchableRunnerClass)
-	const loadCompactionModule = options.loadCompactionModule ?? loadDefaultCompactionModule
-	// Fail at startup, not at first compaction: a missing prepareCompaction export
-	// once turned every stage-boundary compaction in a benchmark run into a silent no-op.
-	if (!options.loadCompactionModule) {
-		assertCompactionInternalsAvailable()
-	}
 
 	const sessionProto = sessionClass.prototype
-	if (!sessionProto._bindExtensionCore || !sessionProto.abortCompaction || !sessionProto.abort) {
+	if (!sessionProto.compact || !sessionProto._bindExtensionCore) {
 		throw new Error("pi-coding-agent AgentSession internals are incompatible with Kimchi inline compaction")
 	}
+	assertCompactInternalsCompatible(sessionProto)
 
 	if (!sessionProto._kimchiInlineCompactPatch) {
+		const originalCompact = sessionProto.compact
 		const originalBindExtensionCore = sessionProto._bindExtensionCore
-		const originalAbortCompaction = sessionProto.abortCompaction
-		const originalAbort = sessionProto.abort
 
 		sessionProto.inlineCompact = function inlineCompact(options: InlineCompactOptions = {}) {
-			return runInlineCompact(this, options, loadCompactionModule)
-		}
-
-		sessionProto.abortCompaction = function patchedAbortCompaction(...args: unknown[]) {
-			this._inlineCompactionAbortController?.abort()
-			return originalAbortCompaction.apply(this, args)
-		}
-
-		sessionProto.abort = function patchedAbort(...args: unknown[]) {
-			this._inlineCompactionAbortController?.abort()
-			return originalAbort.apply(this, args)
+			return runInlineCompact(this, originalCompact, options)
 		}
 
 		sessionProto._bindExtensionCore = function patchedBindExtensionCore(runner: PatchableRunnerInstance) {

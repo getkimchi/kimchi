@@ -1,12 +1,10 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
-import type { CompactionResult } from "@earendil-works/pi-coding-agent"
+import { AgentSession, type CompactionResult, ExtensionRunner } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import {
-	type InlineCompactCompactionModule,
 	type InlineCompactOptions,
 	type InlineCompactPatchOptions,
 	installInlineCompactPatch,
-	loadDefaultCompactionModule,
 } from "./upstream-inline-compact-patch.js"
 
 type EventRecord = Record<string, unknown>
@@ -20,6 +18,15 @@ class FakeRunner {
 	}
 }
 
+/**
+ * Emulates the parts of upstream AgentSession.compact() the delegation wrapper
+ * interacts with, in upstream's call order: _disconnectFromAgent → await
+ * this.abort() → set _compactionAbortController → auth via this.model →
+ * prepare via settingsManager.getCompactionSettings() → summarize with
+ * this.model/this.thinkingLevel → append + rebuild messages → finally clear
+ * controller + _reconnectToAgent(). The install-time source assertion requires
+ * the same `_disconnectFromAgent` / `this.abort` markers as the real method.
+ */
 class FakeSession {
 	model: unknown = { provider: "test", id: "model" }
 	thinkingLevel: unknown = "low"
@@ -29,39 +36,37 @@ class FakeSession {
 	}
 	_compactionAbortController?: AbortController
 	_autoCompactionAbortController?: AbortController
-	_inlineCompactionAbortController?: AbortController
 	events: EventRecord[] = []
 	disconnect = vi.fn()
+	reconnect = vi.fn()
 	originalAbortCalls = 0
-	originalAbortCompactionCalls = 0
 	boundRunner?: FakeRunner
-	branch: unknown[] = [{ type: "message", id: "m1" }]
+	branch: unknown[] = [{ type: "message", id: "m1", message: { role: "user", content: "hi" } }]
 	entries: unknown[] = [...this.branch]
+	/** Settings snapshots taken inside compact(), one per invocation. */
+	preparedWithSettings: Array<Record<string, unknown>> = []
+	/** (model, thinkingLevel, customInstructions) triples seen by the summarizer. */
+	summarizeCalls: Array<{ model: unknown; thinkingLevel: unknown; customInstructions?: string }> = []
+	summarize: (signal: AbortSignal) => Promise<CompactionResult> = async () => ({
+		summary: "summary",
+		firstKeptEntryId: "m1",
+		tokensBefore: 42,
+		details: { source: "llm" },
+	})
 	sessionManager = {
 		getBranch: vi.fn(() => this.branch),
 		getEntries: vi.fn(() => this.entries),
 		appendCompaction: vi.fn(
 			(summary: string, firstKeptEntryId: string, tokensBefore: number, details: unknown, fromExtension: boolean) => {
-				this.entries.push({
-					type: "compaction",
-					summary,
-					firstKeptEntryId,
-					tokensBefore,
-					details,
-					fromExtension,
-				})
+				this.entries.push({ type: "compaction", summary, firstKeptEntryId, tokensBefore, details, fromExtension })
 			},
 		),
 		buildSessionContext: vi.fn(() => ({ messages: ["compacted-message"] as unknown[] })),
 	}
 	settingsManager = {
-		getCompactionSettings: vi.fn(() => ({ enabled: true, reserveTokens: 16_384, keepRecentTokens: 20_000 })),
+		getCompactionSettings: () => ({ enabled: true, reserveTokens: 16_384, keepRecentTokens: 20_000 }),
 	}
-	_getCompactionRequestAuth = vi.fn(async () => ({ apiKey: "key", headers: { "x-test": "1" } }))
-	_extensionRunner = {
-		hasHandlers: vi.fn((_event: string): boolean => false),
-		emit: vi.fn(async (_event?: unknown) => undefined as unknown),
-	}
+	_getCompactionRequestAuth = vi.fn(async (_model: unknown) => ({ apiKey: "key", headers: { "x-test": "1" } }))
 	_emit = vi.fn((event: EventRecord) => {
 		this.events.push(event)
 	})
@@ -70,16 +75,51 @@ class FakeSession {
 		this.disconnect()
 	}
 
+	_reconnectToAgent(): void {
+		this.reconnect()
+	}
+
 	async abort(): Promise<void> {
 		this.originalAbortCalls += 1
 	}
 
 	abortCompaction(): void {
-		this.originalAbortCompactionCalls += 1
+		this._compactionAbortController?.abort()
 	}
 
 	_bindExtensionCore(runner: FakeRunner): void {
 		this.boundRunner = runner
+	}
+
+	async compact(customInstructions?: string, _force = false): Promise<CompactionResult> {
+		this._disconnectFromAgent()
+		await this.abort()
+		this._compactionAbortController = new AbortController()
+		this._emit({ type: "compaction_start", reason: "manual" })
+		try {
+			if (!this.model) throw new Error("No model selected")
+			await this._getCompactionRequestAuth(this.model)
+			this.preparedWithSettings.push(this.settingsManager.getCompactionSettings())
+			this.summarizeCalls.push({ model: this.model, thinkingLevel: this.thinkingLevel, customInstructions })
+			const result = await this.summarize(this._compactionAbortController.signal)
+			if (this._compactionAbortController.signal.aborted) throw new Error("Compaction cancelled")
+			this.sessionManager.appendCompaction(
+				result.summary,
+				result.firstKeptEntryId,
+				result.tokensBefore,
+				result.details,
+				false,
+			)
+			this.agent.state.messages = this.sessionManager.buildSessionContext().messages
+			this._emit({ type: "compaction_end", reason: "manual", result, aborted: false, willRetry: false })
+			return result
+		} catch (error) {
+			this._emit({ type: "compaction_end", reason: "manual", result: undefined, aborted: true, willRetry: false })
+			throw error
+		} finally {
+			this._compactionAbortController = undefined
+			this._reconnectToAgent()
+		}
 	}
 }
 
@@ -93,8 +133,6 @@ type MutableRunnerPrototype = typeof FakeRunner.prototype & {
 }
 
 const originalSessionBindExtensionCore = FakeSession.prototype._bindExtensionCore
-const originalSessionAbort = FakeSession.prototype.abort
-const originalSessionAbortCompaction = FakeSession.prototype.abortCompaction
 const originalRunnerCreateContext = FakeRunner.prototype.createContext
 
 function inlineSession(session: FakeSession): FakeSession & {
@@ -105,36 +143,29 @@ function inlineSession(session: FakeSession): FakeSession & {
 	}
 }
 
-function makeCompactionModule(overrides: Partial<InlineCompactCompactionModule> = {}): InlineCompactCompactionModule {
-	return {
-		prepareCompaction: vi.fn(() => ({
-			firstKeptEntryId: "m1",
-			tokensBefore: 42,
-		})),
-		compact: vi.fn(async () => ({
-			summary: "summary",
-			firstKeptEntryId: "m1",
-			tokensBefore: 42,
-			details: { source: "llm" },
-		})),
-		...overrides,
-	}
-}
-
-function installWith(module: InlineCompactCompactionModule) {
+function install() {
 	installInlineCompactPatch({
 		sessionClass: FakeSession as unknown as NonNullable<InlineCompactPatchOptions["sessionClass"]>,
 		runnerClass: FakeRunner as unknown as NonNullable<InlineCompactPatchOptions["runnerClass"]>,
-		loadCompactionModule: async () => module,
 	})
+}
+
+/** A summarizer that stays pending until its signal aborts (or is aborted already). */
+function hangingSummarize(): (signal: AbortSignal) => Promise<CompactionResult> {
+	return (signal) =>
+		new Promise<CompactionResult>((_resolve, reject) => {
+			if (signal.aborted) {
+				reject(new Error("Compaction cancelled"))
+				return
+			}
+			signal.addEventListener("abort", () => reject(new Error("Compaction cancelled")), { once: true })
+		})
 }
 
 describe("installInlineCompactPatch", () => {
 	beforeEach(() => {
 		const sessionProto = FakeSession.prototype as MutableSessionPrototype
 		sessionProto._bindExtensionCore = originalSessionBindExtensionCore
-		sessionProto.abort = originalSessionAbort
-		sessionProto.abortCompaction = originalSessionAbortCompaction
 		sessionProto._kimchiInlineCompactPatch = undefined
 		sessionProto.inlineCompact = undefined
 
@@ -145,22 +176,43 @@ describe("installInlineCompactPatch", () => {
 	})
 
 	it("installs idempotently", () => {
-		const module = makeCompactionModule()
 		const sessionProto = FakeSession.prototype as MutableSessionPrototype
 		const runnerProto = FakeRunner.prototype as MutableRunnerPrototype
-		installWith(module)
+		install()
 		const inlineCompact = sessionProto.inlineCompact
 		const createContext = runnerProto.createContext
 
-		installWith(module)
+		install()
 
 		expect(sessionProto.inlineCompact).toBe(inlineCompact)
 		expect(runnerProto.createContext).toBe(createContext)
 	})
 
+	it("installs against the real AgentSession/ExtensionRunner internals", () => {
+		// The drift canary: fails when upstream renames compact()'s quiesce
+		// internals (_disconnectFromAgent / this.abort) or the patched members.
+		expect(() => installInlineCompactPatch()).not.toThrow()
+		expect(typeof (AgentSession.prototype as { inlineCompact?: unknown }).inlineCompact).toBe("function")
+		expect(
+			(ExtensionRunner.prototype as { _kimchiInlineCompactContextPatch?: boolean })._kimchiInlineCompactContextPatch,
+		).toBe(true)
+	})
+
+	it("rejects a session class whose compact() lacks the quiesce internals", () => {
+		class DriftedSession {
+			async compact(): Promise<void> {}
+			_bindExtensionCore(): void {}
+		}
+		expect(() =>
+			installInlineCompactPatch({
+				sessionClass: DriftedSession as unknown as NonNullable<InlineCompactPatchOptions["sessionClass"]>,
+				runnerClass: FakeRunner as unknown as NonNullable<InlineCompactPatchOptions["runnerClass"]>,
+			}),
+		).toThrow("incompatible with Kimchi inline compaction")
+	})
+
 	it("exposes ctx.inlineCompact from ExtensionRunner contexts", async () => {
-		const module = makeCompactionModule()
-		installWith(module)
+		install()
 		const session = new FakeSession()
 		const runner = new FakeRunner()
 
@@ -175,15 +227,8 @@ describe("installInlineCompactPatch", () => {
 		expect(session.sessionManager.appendCompaction).toHaveBeenCalledOnce()
 	})
 
-	it("runs compaction without aborting or disconnecting the session", async () => {
-		const compact = vi.fn(async () => ({
-			summary: "summary",
-			firstKeptEntryId: "m1",
-			tokensBefore: 42,
-			details: { source: "llm" },
-		}))
-		const module = makeCompactionModule({ compact })
-		installWith(module)
+	it("delegates to compact() without aborting or disconnecting the session", async () => {
+		install()
 		const session = new FakeSession()
 
 		const result = await inlineSession(session).inlineCompact({ customInstructions: "keep ferment", force: true })
@@ -191,41 +236,82 @@ describe("installInlineCompactPatch", () => {
 		expect(result?.summary).toBe("summary")
 		expect(session.disconnect).not.toHaveBeenCalled()
 		expect(session.originalAbortCalls).toBe(0)
-		expect(compact).toHaveBeenCalledWith(
-			expect.anything(),
-			session.model,
-			"key",
-			{ "x-test": "1" },
-			"keep ferment",
-			expect.any(AbortSignal),
-			"low",
-			session.agent.streamFn,
-		)
+		// Upstream's finally still runs (idempotent reconnect + controller clear).
+		expect(session.reconnect).toHaveBeenCalledOnce()
+		expect(session._compactionAbortController).toBeUndefined()
+		expect(session.summarizeCalls).toEqual([
+			{ model: session.model, thinkingLevel: "low", customInstructions: "keep ferment" },
+		])
 		expect(session.sessionManager.appendCompaction).toHaveBeenCalledWith("summary", "m1", 42, { source: "llm" }, false)
 		expect(session.agent.state.messages).toEqual(["compacted-message"])
-		expect(session._extensionRunner.emit).toHaveBeenCalledWith(
-			expect.objectContaining({
-				type: "session_compact",
-				fromExtension: false,
-			}),
-		)
-		expect(session.events).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({ type: "compaction_start", reason: "threshold" }),
-				expect.objectContaining({ type: "compaction_end", reason: "threshold", aborted: false }),
-			]),
-		)
+		// Delegation inherits upstream's event shapes verbatim.
+		expect(session.events).toEqual([
+			expect.objectContaining({ type: "compaction_start", reason: "manual" }),
+			expect.objectContaining({ type: "compaction_end", reason: "manual", aborted: false }),
+		])
 	})
 
-	it("uses options.model for auth and compaction instead of the session model when provided", async () => {
-		const compact = vi.fn(async () => ({
-			summary: "summary",
-			firstKeptEntryId: "m1",
-			tokensBefore: 42,
-			details: { source: "llm" },
-		}))
-		const module = makeCompactionModule({ compact })
-		installWith(module)
+	it("restores the quiesce members after completion so later manual compactions abort again", async () => {
+		install()
+		const session = new FakeSession()
+
+		await inlineSession(session).inlineCompact()
+		// Shadows must be gone: a subsequent DIRECT compact() call is the manual
+		// path and must quiesce normally.
+		await session.compact()
+
+		expect(session.disconnect).toHaveBeenCalledOnce()
+		expect(session.originalAbortCalls).toBe(1)
+		expect(Object.getOwnPropertyDescriptor(session, "_disconnectFromAgent")).toBeUndefined()
+		expect(Object.getOwnPropertyDescriptor(session, "abort")).toBeUndefined()
+	})
+
+	it("restores all shadows when compaction fails", async () => {
+		install()
+		const session = new FakeSession()
+		session.summarize = async () => {
+			throw new Error("summarizer exploded")
+		}
+		const originalGetSettings = session.settingsManager.getCompactionSettings
+
+		await expect(
+			inlineSession(session).inlineCompact({
+				force: true,
+				model: { id: "other" } as unknown as Model<Api>,
+				thinkingLevel: "off",
+			}),
+		).rejects.toThrow("summarizer exploded")
+
+		expect(Object.getOwnPropertyDescriptor(session, "_disconnectFromAgent")).toBeUndefined()
+		expect(Object.getOwnPropertyDescriptor(session, "abort")).toBeUndefined()
+		expect(session.settingsManager.getCompactionSettings).toBe(originalGetSettings)
+		expect(session.model).toEqual({ provider: "test", id: "model" })
+		expect(session.thinkingLevel).toBe("low")
+	})
+
+	it("honors force by shadowing settings to keepRecentTokens: 0", async () => {
+		// force must not rely on upstream's undefined-preparation retry: a session
+		// smaller than keepRecentTokens returns a DEFINED preparation with zero
+		// summarizable messages, so preparation must start from keepRecentTokens: 0.
+		install()
+		const session = new FakeSession()
+
+		await inlineSession(session).inlineCompact({ force: true })
+
+		expect(session.preparedWithSettings).toEqual([{ enabled: true, reserveTokens: 16_384, keepRecentTokens: 0 }])
+	})
+
+	it("keeps default preparation settings when force is not set", async () => {
+		install()
+		const session = new FakeSession()
+
+		await inlineSession(session).inlineCompact()
+
+		expect(session.preparedWithSettings).toEqual([{ enabled: true, reserveTokens: 16_384, keepRecentTokens: 20_000 }])
+	})
+
+	it("routes options.model to auth and summarization, then restores the session model", async () => {
+		install()
 		const session = new FakeSession()
 		const overrideModel: Model<Api> = {
 			id: "non-reasoning-model",
@@ -243,245 +329,106 @@ describe("installInlineCompactPatch", () => {
 		await inlineSession(session).inlineCompact({ customInstructions: "keep ferment", model: overrideModel })
 
 		expect(session._getCompactionRequestAuth).toHaveBeenCalledWith(overrideModel)
-		expect(compact).toHaveBeenCalledWith(
-			expect.anything(),
-			overrideModel,
-			"key",
-			{ "x-test": "1" },
-			"keep ferment",
-			expect.any(AbortSignal),
-			"low",
-			session.agent.streamFn,
-		)
+		expect(session.summarizeCalls).toEqual([
+			{ model: overrideModel, thinkingLevel: "low", customInstructions: "keep ferment" },
+		])
+		expect(session.model).toEqual({ provider: "test", id: "model" })
 	})
 
-	it("falls back to the session model when options.model is omitted", async () => {
-		const compact = vi.fn(async () => ({
-			summary: "summary",
-			firstKeptEntryId: "m1",
-			tokensBefore: 42,
-			details: { source: "llm" },
-		}))
-		const module = makeCompactionModule({ compact })
-		installWith(module)
+	it("routes options.thinkingLevel to summarization, then restores the session level", async () => {
+		install()
+		const session = new FakeSession()
+
+		await inlineSession(session).inlineCompact({ thinkingLevel: "off" })
+
+		expect(session.summarizeCalls).toEqual([
+			{ model: session.model, thinkingLevel: "off", customInstructions: undefined },
+		])
+		expect(session.thinkingLevel).toBe("low")
+	})
+
+	it("falls back to the session model and thinking level when overrides are omitted", async () => {
+		install()
 		const session = new FakeSession()
 
 		await inlineSession(session).inlineCompact({ customInstructions: "keep ferment" })
 
 		expect(session._getCompactionRequestAuth).toHaveBeenCalledWith(session.model)
-		expect(compact).toHaveBeenCalledWith(
-			expect.anything(),
-			session.model,
-			"key",
-			{ "x-test": "1" },
-			"keep ferment",
-			expect.any(AbortSignal),
-			"low",
-			session.agent.streamFn,
-		)
+		expect(session.summarizeCalls).toEqual([
+			{ model: session.model, thinkingLevel: "low", customInstructions: "keep ferment" },
+		])
 	})
 
-	it("uses options.thinkingLevel for the compaction call instead of the session thinking level when provided", async () => {
-		const compact = vi.fn(async () => ({
-			summary: "summary",
-			firstKeptEntryId: "m1",
-			tokensBefore: 42,
-			details: { source: "llm" },
-		}))
-		const module = makeCompactionModule({ compact })
-		installWith(module)
+	it("cancels the compaction when abort() is called during summarization", async () => {
+		install()
 		const session = new FakeSession()
-
-		await inlineSession(session).inlineCompact({ customInstructions: "keep ferment", thinkingLevel: "off" })
-
-		expect(compact).toHaveBeenCalledWith(
-			expect.anything(),
-			session.model,
-			"key",
-			{ "x-test": "1" },
-			"keep ferment",
-			expect.any(AbortSignal),
-			"off",
-			session.agent.streamFn,
-		)
-	})
-
-	it("falls back to the session thinking level when options.thinkingLevel is omitted", async () => {
-		const compact = vi.fn(async () => ({
-			summary: "summary",
-			firstKeptEntryId: "m1",
-			tokensBefore: 42,
-			details: { source: "llm" },
-		}))
-		const module = makeCompactionModule({ compact })
-		installWith(module)
-		const session = new FakeSession()
-
-		await inlineSession(session).inlineCompact({ customInstructions: "keep ferment" })
-
-		expect(compact).toHaveBeenCalledWith(
-			expect.anything(),
-			session.model,
-			"key",
-			{ "x-test": "1" },
-			"keep ferment",
-			expect.any(AbortSignal),
-			session.thinkingLevel,
-			session.agent.streamFn,
-		)
-	})
-
-	it("uses extension-provided compaction results from session_before_compact", async () => {
-		const compact = vi.fn()
-		const module = makeCompactionModule({ compact })
-		installWith(module)
-		const session = new FakeSession()
-		session._extensionRunner.hasHandlers = vi.fn((event: string): boolean => event === "session_before_compact")
-		session._extensionRunner.emit = vi.fn(async (event: unknown) => {
-			if ((event as { type?: string }).type !== "session_before_compact") return undefined
-			return {
-				compaction: {
-					summary: "extension summary",
-					firstKeptEntryId: "m2",
-					tokensBefore: 100,
-					details: { source: "extension" },
-				},
-			}
-		})
-
-		const result = await inlineSession(session).inlineCompact()
-
-		expect(result).toMatchObject({ summary: "extension summary" })
-		expect(compact).not.toHaveBeenCalled()
-		expect(session.sessionManager.appendCompaction).toHaveBeenCalledWith(
-			"extension summary",
-			"m2",
-			100,
-			{ source: "extension" },
-			true,
-		)
-	})
-
-	it("honors force by preparing with keepRecentTokens set to zero", async () => {
-		// force must not rely on an undefined-preparation retry: a session smaller
-		// than keepRecentTokens returns a DEFINED preparation with zero
-		// summarizable messages, so force prepares with keepRecentTokens: 0
-		// directly to compact everything before the newest valid cut point.
-		const prepareCompaction = vi.fn(() => ({ firstKeptEntryId: "m1", tokensBefore: 42 }))
-		const module = makeCompactionModule({ prepareCompaction })
-		installWith(module)
-		const session = new FakeSession()
-
-		await inlineSession(session).inlineCompact({ force: true })
-
-		expect(prepareCompaction).toHaveBeenCalledTimes(1)
-		expect(prepareCompaction).toHaveBeenCalledWith(session.branch, {
-			enabled: true,
-			reserveTokens: 16_384,
-			keepRecentTokens: 0,
-		})
-	})
-
-	it("keeps default preparation settings when force is not set", async () => {
-		const prepareCompaction = vi.fn(() => ({ firstKeptEntryId: "m1", tokensBefore: 42 }))
-		const module = makeCompactionModule({ prepareCompaction })
-		installWith(module)
-		const session = new FakeSession()
-
-		await inlineSession(session).inlineCompact()
-
-		expect(prepareCompaction).toHaveBeenCalledTimes(1)
-		expect(prepareCompaction).toHaveBeenCalledWith(session.branch, {
-			enabled: true,
-			reserveTokens: 16_384,
-			keepRecentTokens: 20_000,
-		})
-	})
-
-	it("rejects an empty compaction preparation without saving a compaction", async () => {
-		const prepareCompaction = vi.fn(() => ({
-			firstKeptEntryId: "m1",
-			messagesToSummarize: [],
-			tokensBefore: 42,
-			turnPrefixMessages: [],
-		}))
-		const compact = vi.fn()
-		const module = makeCompactionModule({ prepareCompaction, compact })
-		installWith(module)
-		const session = new FakeSession()
-
-		await expect(inlineSession(session).inlineCompact({ force: true })).rejects.toThrow(
-			"Nothing to compact (no summarizable messages)",
-		)
-
-		expect(prepareCompaction).toHaveBeenCalledOnce()
-		expect(compact).not.toHaveBeenCalled()
-		expect(session.sessionManager.appendCompaction).not.toHaveBeenCalled()
-		expect(session.events).toContainEqual(
-			expect.objectContaining({
-				type: "compaction_end",
-				aborted: false,
-				errorMessage: expect.stringContaining("no summarizable messages"),
-			}),
-		)
-	})
-
-	it("rejects cancellation from session_before_compact", async () => {
-		const module = makeCompactionModule()
-		installWith(module)
-		const session = new FakeSession()
-		session._extensionRunner.hasHandlers = vi.fn((event: string): boolean => event === "session_before_compact")
-		session._extensionRunner.emit = vi.fn(async () => ({ cancel: true }))
-
-		await expect(inlineSession(session).inlineCompact()).rejects.toThrow("Compaction cancelled")
-		expect(session.sessionManager.appendCompaction).not.toHaveBeenCalled()
-		expect(session.events).toContainEqual(expect.objectContaining({ type: "compaction_end", aborted: true }))
-	})
-
-	it("preserves the original abort path while also aborting inline compaction", async () => {
-		const module = makeCompactionModule({
-			compact: vi.fn(
-				(_preparation, _model, _apiKey, _headers, _customInstructions, signal: AbortSignal) =>
-					new Promise<CompactionResult>((_resolve, reject) => {
-						signal.addEventListener("abort", () => reject(new Error("Compaction cancelled")), { once: true })
-					}),
-			),
-		})
-		installWith(module)
-		const session = new FakeSession()
+		session.summarize = hangingSummarize()
 		const promise = inlineSession(session).inlineCompact()
+		// Let the wrapper consume the one-shot suppression of compact()'s
+		// internal quiesce abort before the external abort arrives.
+		await Promise.resolve()
 
 		await session.abort()
 
-		expect(session.originalAbortCalls).toBe(1)
 		await expect(promise).rejects.toThrow("Compaction cancelled")
+		// The external abort was a real one: it reached the original abort path.
+		expect(session.originalAbortCalls).toBe(1)
 	})
 
-	it("abortCompaction cancels inline compaction and delegates to the original method", async () => {
-		const module = makeCompactionModule({
-			compact: vi.fn(
-				(_preparation, _model, _apiKey, _headers, _customInstructions, signal: AbortSignal) =>
-					new Promise<CompactionResult>((_resolve, reject) => {
-						signal.addEventListener("abort", () => reject(new Error("Compaction cancelled")), { once: true })
-					}),
-			),
-		})
-		installWith(module)
+	it("abortCompaction cancels inline compaction through upstream's own controller", async () => {
+		install()
 		const session = new FakeSession()
+		session.summarize = hangingSummarize()
 		const promise = inlineSession(session).inlineCompact()
+		await Promise.resolve()
 
 		session.abortCompaction()
 
-		expect(session.originalAbortCompactionCalls).toBe(1)
 		await expect(promise).rejects.toThrow("Compaction cancelled")
 	})
-})
 
-describe("loadDefaultCompactionModule", () => {
-	it("loads real PI compaction functions", async () => {
-		const module = await loadDefaultCompactionModule()
+	it("rejects when a compaction is already in progress", async () => {
+		install()
+		const session = new FakeSession()
+		session._compactionAbortController = new AbortController()
 
-		expect(module.prepareCompaction).toEqual(expect.any(Function))
-		expect(module.compact).toEqual(expect.any(Function))
+		await expect(inlineSession(session).inlineCompact()).rejects.toThrow("Compaction already in progress")
+
+		session._compactionAbortController = undefined
+		session._autoCompactionAbortController = new AbortController()
+
+		await expect(inlineSession(session).inlineCompact()).rejects.toThrow("Compaction already in progress")
+	})
+
+	it("rejects when the branch has an unpaired toolCall", async () => {
+		install()
+		const session = new FakeSession()
+		session.branch = [
+			{
+				type: "message",
+				message: { role: "assistant", content: [{ type: "toolCall", id: "t1" }] },
+			},
+		]
+
+		await expect(inlineSession(session).inlineCompact({ force: true })).rejects.toThrow("tool call is in flight")
+		expect(session.sessionManager.appendCompaction).not.toHaveBeenCalled()
+		expect(session.summarizeCalls).toEqual([])
+	})
+
+	it("ignores unpaired toolCalls that predate the newest compaction entry", async () => {
+		install()
+		const session = new FakeSession()
+		session.branch = [
+			{
+				type: "message",
+				message: { role: "assistant", content: [{ type: "toolCall", id: "stale-orphan" }] },
+			},
+			{ type: "compaction", summary: "earlier summary" },
+			{ type: "message", message: { role: "user", content: "hi" } },
+		]
+
+		await expect(inlineSession(session).inlineCompact({ force: true })).resolves.toMatchObject({
+			summary: "summary",
+		})
 	})
 })
