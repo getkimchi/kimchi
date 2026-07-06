@@ -549,12 +549,10 @@ index 85c551f8630bc7d021825359095a8b552cbfb518..3b97e69d382bb0315b4907568fddb446
          if (model) {
              try {
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index e35532a3cf83023e5a2cdb12df8142013fbba326..b4692c1a8f3d7e9b3c1a2d4e5f6a7b8c9d0e1f2a3 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
-@@ -4191,7 +4191,7 @@
+@@ -4291,3 +4292,3 @@
              if (outputPath?.endsWith(".jsonl")) {
 -                const filePath = this.session.exportToJsonl(outputPath);
 +                const filePath = await this.session.exportToJsonl(outputPath);
                  this.showStatus(`Session exported to: ${filePath}`);
-             }
