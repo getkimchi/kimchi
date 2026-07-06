@@ -534,7 +534,7 @@ export function registerFermentEvents(
 				const outcome = applyAndPersist(errorFerment.id, { type: "pause" })
 				if (outcome.ok) {
 					setActiveFermentAndApplyProfile(pi, runtime, outcome.ferment)
-					const reason = retryable ? "a network or gateway error (retried but not recovered)" : "a provider error"
+					const reason = retryable ? "a network or gateway error" : "a provider error"
 					ctx.ui.notify?.(
 						`Interrupted: "${outcome.ferment.name}" was paused due to ${reason}. Run /ferment resume to continue.`,
 					)
