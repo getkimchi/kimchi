@@ -69,6 +69,16 @@ function getToolCallNames(content: AssistantContentPart[]): string[] {
 	return content.filter((c) => c.type === "toolCall" && c.name).map((c) => c.name as string)
 }
 
+/** Safely extract a string field from an assistant message of unknown shape.
+ *  The turn_end event's `message` is typed loosely upstream, so casting
+ *  `{ errorMessage?: string }` directly would bypass compile-time safety if
+ *  the upstream shape changes. This narrows at runtime instead. */
+function getMessageStringField(message: unknown, field: string): string | undefined {
+	if (typeof message !== "object" || message === null) return undefined
+	const value = (message as Record<string, unknown>)[field]
+	return typeof value === "string" ? value : undefined
+}
+
 function extractPromptTextAfterLastToolCall(content: AssistantContentPart[]): string {
 	const lastToolCall = content.findLastIndex((c) => c.type === "toolCall")
 	return content
@@ -523,7 +533,7 @@ export function registerFermentEvents(
 		// the ferment stays "running" and the continuation-nudge logic fires on
 		// the next tick, sending the planner straight back into the broken state.
 		if (stopReason === "error") {
-			const errorMessage = (event.message as { errorMessage?: string }).errorMessage
+			const errorMessage = getMessageStringField(event.message, "errorMessage")
 			const errorFerment = runtime.getActive()
 			if (errorFerment && (errorFerment.status === "running" || errorFerment.status === "planned")) {
 				const outcome = applyAndPersist(errorFerment.id, { type: "pause" })
