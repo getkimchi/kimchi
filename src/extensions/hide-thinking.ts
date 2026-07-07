@@ -80,10 +80,14 @@ function readHideThinkingSetting(): boolean {
 		const raw = readFileSync(settingsPath, "utf-8")
 		const parsed = JSON.parse(raw)
 		if (parsed && typeof parsed === "object" && "hideThinkingBlock" in parsed) {
-			return Boolean((parsed as { hideThinkingBlock: unknown }).hideThinkingBlock)
+			return (parsed as { hideThinkingBlock?: unknown }).hideThinkingBlock === true
 		}
 		return true
-	} catch {
+	} catch (error) {
+		if (error instanceof Error && (error as NodeJS.ErrnoException).code === "ENOENT") {
+			return true
+		}
+		console.warn(`[hide-thinking] could not read ${settingsPath}:`, error)
 		return true
 	}
 }

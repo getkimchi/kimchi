@@ -4378,6 +4378,17 @@ describe("KimchiAcpAgent session event handlers", () => {
 })
 
 describe("shouldEmitThinking", () => {
+	it("returns false by default when hideThinkingBlock is not configured", () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "kimchi-acp-hide-thinking-"))
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", tempDir)
+		try {
+			_resetHideThinking()
+			expect(shouldEmitThinking("anything")).toBe(false)
+		} finally {
+			vi.unstubAllEnvs()
+			rmSync(tempDir, { recursive: true, force: true })
+		}
+	})
 	it("returns true when hideThinkingBlock is disabled", () => {
 		_setHideThinking(false)
 		try {

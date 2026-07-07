@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { beforeEach, describe, expect, it, vi } from "vitest"
@@ -77,18 +77,13 @@ describe("hideThinkingExtension", () => {
 	})
 
 	it("hides thinking by default when settings.json is missing", () => {
-		const originalDir = process.env.KIMCHI_CODING_AGENT_DIR
 		const tempDir = mkdtempSync(join(tmpdir(), "kimchi-hide-thinking-"))
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", tempDir)
 		try {
-			process.env.KIMCHI_CODING_AGENT_DIR = tempDir
 			_resetState()
 			expect(isHideThinkingEnabled()).toBe(true)
 		} finally {
-			if (originalDir === undefined) {
-				process.env.KIMCHI_CODING_AGENT_DIR = undefined
-			} else {
-				process.env.KIMCHI_CODING_AGENT_DIR = originalDir
-			}
+			vi.unstubAllEnvs()
 			rmSync(tempDir, { recursive: true, force: true })
 		}
 	})
