@@ -75,6 +75,8 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		cwd = ctx.cwd
 		ui = ctx.hasUI ? ctx.ui : undefined
+		warned = false
+		degradedServers = []
 		activeServers = detectServers(cwd)
 		if (activeServers.length === 0) {
 			// No server binary on PATH. If this project *would* use LSP (its
@@ -118,16 +120,11 @@ export default function (pi: ExtensionAPI) {
 
 	// ── Degraded-state warning: notify once on the first agent turn ─────────────
 
-	const INSTALL_HINTS: Record<string, string> = {
-		gopls: "go install golang.org/x/tools/gopls@latest",
-		"typescript-language-server": "npm i -g typescript-language-server typescript",
-	}
-
 	pi.on("before_agent_start", async () => {
 		// One-time warning when in a project that would use LSP but has no
 		// server binary on PATH. No-op on subsequent turns and when not degraded.
-		if (warned || degradedServers.length === 0 || !ui) return
-		const lines = degradedServers.map((s) => `${s.name} — install with: ${INSTALL_HINTS[s.name] ?? s.command}`)
+		if (warned || degradedServers.length === 0 || !ui?.notify) return
+		const lines = degradedServers.map((s) => `${s.name} — install with: ${s.installHint ?? s.command}`)
 		ui.notify(`LSP unavailable: language server(s) not installed for this project.\n${lines.join("\n")}`, "warning")
 		warned = true
 	})

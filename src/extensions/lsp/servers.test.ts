@@ -114,4 +114,17 @@ describe("detectMissingCandidates", () => {
 		expect(result.find((s) => s.name === "gopls")).toBeUndefined()
 		expect(result.find((s) => s.name === "typescript-language-server")).toBeDefined()
 	})
+
+	it("detects marker in a parent directory (monorepo subdirectory)", () => {
+		// go.mod is in /project, but cwd is /project/services/autoscaler
+		setFiles(["go.mod"])
+		setBinaries([])
+		mockExistsSync.mockImplementation(((p: unknown) => {
+			// Only /project/go.mod exists, not /project/services/autoscaler/go.mod
+			return String(p) === "/project/go.mod"
+		}) as never)
+		const result = detectMissingCandidates("/project/services/autoscaler")
+		expect(result).toHaveLength(1)
+		expect(result[0].name).toBe("gopls")
+	})
 })

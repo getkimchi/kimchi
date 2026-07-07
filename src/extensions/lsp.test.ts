@@ -167,6 +167,7 @@ const FAKE_SERVER = {
 	command: "typescript-language-server",
 	args: ["--stdio"],
 	extensions: ["ts", "tsx"],
+	installHint: "npm i -g typescript-language-server typescript",
 }
 
 const FAKE_GO_SERVER = {
@@ -174,6 +175,7 @@ const FAKE_GO_SERVER = {
 	command: "gopls",
 	args: [],
 	extensions: ["go"],
+	installHint: "go install golang.org/x/tools/gopls@latest",
 }
 
 async function callTool(
@@ -481,7 +483,42 @@ describe("no regression when a server is present", () => {
 })
 
 // =============================================================================
-// 5. tool_result handler
+// 4c. Edge cases from PR review
+// =============================================================================
+
+describe("warned flag reset on session_start", () => {
+	it("allows a one-time warning in a new session after session_shutdown", async () => {
+		vi.mocked(serversMod.detectServers).mockReturnValue([])
+		vi.mocked(serversMod.detectMissingCandidates).mockReturnValue([FAKE_GO_SERVER])
+		const notify = vi.fn()
+		const pi = makePi()
+		lspExtension(pi)
+		// First session: warning fires
+		await pi.fireSessionStart({ hasUI: true, ui: { setStatus: vi.fn(), notify } })
+		await pi.fireBeforeAgentStart()
+		expect(notify).toHaveBeenCalledTimes(1)
+		// Shutdown resets warned
+		await pi.fireShutdown()
+		// Second session: warning should fire again
+		const notify2 = vi.fn()
+		await pi.fireSessionStart({ hasUI: true, ui: { setStatus: vi.fn(), notify: notify2 } })
+		await pi.fireBeforeAgentStart()
+		expect(notify2).toHaveBeenCalledTimes(1)
+	})
+})
+
+describe("ui.notify absent", () => {
+	it("does not throw when ui lacks notify method", async () => {
+		vi.mocked(serversMod.detectServers).mockReturnValue([])
+		vi.mocked(serversMod.detectMissingCandidates).mockReturnValue([FAKE_GO_SERVER])
+		const setStatus = vi.fn()
+		const pi = makePi()
+		lspExtension(pi)
+		await pi.fireSessionStart({ hasUI: true, ui: { setStatus } })
+		// Should not throw — notify is absent so the handler should no-op
+		await expect(pi.fireBeforeAgentStart()).resolves.toBeUndefined()
+	})
+})
 // =============================================================================
 
 describe("tool_result handler", () => {
