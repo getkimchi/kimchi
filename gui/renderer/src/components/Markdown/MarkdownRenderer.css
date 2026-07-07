@@ -1,0 +1,51 @@
+.markdown{
+
+    width:100%;
+
+}
+
+.markdown p{
+
+    margin:10px 0;
+
+    line-height:1.7;
+
+}
+
+.markdown pre{
+
+    border-radius:16px;
+
+    overflow:hidden;
+
+    margin:18px 0;
+
+    box-shadow:var(--shadow-sm);
+
+}
+
+.markdown code{
+
+    font-family:
+
+        Consolas,
+
+        monospace;
+
+}
+
+.markdown table{
+
+    border-collapse:collapse;
+
+}
+
+.markdown td,
+
+.markdown th{
+
+    border:1px solid var(--border);
+
+    padding:8px;
+
+}

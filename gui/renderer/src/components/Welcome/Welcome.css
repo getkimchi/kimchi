@@ -1,0 +1,71 @@
+.welcome{
+
+    flex:1;
+
+    display:flex;
+
+    flex-direction:column;
+
+    align-items:center;
+
+    justify-content:center;
+
+}
+
+.welcome-logo{
+
+    font-size:60px;
+
+}
+
+.welcome h1{
+
+    margin:20px 0 8px;
+
+    font-size:36px;
+
+}
+
+.welcome p{
+
+    color:var(--text-secondary);
+
+    margin-bottom:40px;
+
+}
+
+.welcome-grid{
+
+    display:grid;
+
+    grid-template-columns:repeat(2,220px);
+
+    gap:18px;
+
+}
+
+    background:var(--surface);
+
+    border-radius:18px;
+
+    padding:24px;
+
+    box-shadow:var(--shadow-sm);
+
+    display:flex;
+
+    align-items:center;
+
+    gap:14px;
+
+    transition:.2s;
+
+}
+
+.welcome-card:hover{
+
+    transform:translateY(-2px);
+
+    box-shadow:var(--shadow);
+
+}

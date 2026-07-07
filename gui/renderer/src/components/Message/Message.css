@@ -1,0 +1,243 @@
+.message {
+
+    display: flex;
+
+    margin: 22px;
+
+    animation: messageAppear .18s ease;
+
+}
+
+/* ---------- User ---------- */
+
+.message.user {
+
+    justify-content: flex-end;
+
+}
+
+/* ---------- Assistant ---------- */
+
+.message.assistant {
+
+    display: flex;
+
+    flex-direction: column;
+
+    align-items: flex-start;
+
+    width: 100%;
+
+}
+
+.message-content {
+
+    width: 100%;
+
+}
+
+/* ---------- Bubble ---------- */
+
+.bubble {
+
+    padding: 18px 22px;
+
+    border-radius: 18px;
+
+    line-height: 1.7;
+
+    white-space: pre-wrap;
+
+    word-break: break-word;
+
+    box-shadow: var(--shadow-sm);
+
+}
+
+/* User bubble stays compact */
+
+.user .bubble {
+
+    max-width: 70%;
+
+}
+
+/* Assistant bubble can use most of the width */
+
+.assistant .bubble {
+
+    max-width: min(100%, 900px);
+
+}
+
+/* ---------- Legacy thought (remove after ThoughtPanel is complete) ---------- */
+
+.thought {
+
+    margin-bottom: 12px;
+
+    font-size: 13px;
+
+    color: var(--text-secondary);
+
+}
+
+/* ---------- Typing Indicator ---------- */
+
+.typing {
+
+    display: flex;
+
+    gap: 6px;
+
+    padding: 10px 0;
+
+}
+
+.typing span {
+
+    width: 8px;
+
+    height: 8px;
+
+    border-radius: 50%;
+
+    background: var(--text-secondary);
+
+    animation: bounce 1.2s infinite;
+
+}
+
+.typing span:nth-child(2) {
+
+    animation-delay: .2s;
+
+}
+
+.typing span:nth-child(3) {
+
+    animation-delay: .4s;
+
+}
+
+@keyframes bounce {
+
+    0%, 80%, 100% {
+
+        transform: scale(.7);
+
+        opacity: .4;
+
+    }
+
+    40% {
+
+        transform: scale(1);
+
+        opacity: 1;
+
+    }
+
+}
+
+/* ---------- Message Animation ---------- */
+
+@keyframes messageAppear {
+
+    from {
+
+        opacity: 0;
+
+        transform: translateY(10px);
+
+    }
+
+    to {
+
+        opacity: 1;
+
+        transform: translateY(0);
+
+    }
+
+}
+
+/* ---------- Message Actions ---------- */
+
+.message-actions {
+
+    display: flex;
+
+    gap: 6px;
+
+    margin-top: 10px;
+
+    opacity: 0;
+
+    transition: opacity .2s ease;
+
+}
+
+.message.assistant:hover .message-actions {
+
+    opacity: 1;
+
+}
+
+.message-actions button {
+
+    display: flex;
+
+    align-items: center;
+
+    justify-content: center;
+
+    width: 30px;
+
+    height: 30px;
+
+    border: none;
+
+    border-radius: 8px;
+
+    background: transparent;
+
+    color: var(--text-secondary);
+
+    cursor: pointer;
+
+    transition: background .2s, color .2s;
+
+}
+
+.message-actions button:hover {
+
+    background: var(--surface-hover);
+
+    color: var(--text);
+
+}
+
+/* ---------- Streaming Cursor ---------- */
+
+.streaming-cursor {
+
+    display: inline-block;
+
+    margin-left: 2px;
+
+    color: var(--primary);
+
+    animation: cursorBlink 1s steps(1) infinite;
+
+}
+
+@keyframes cursorBlink {
+
+    50% {
+
+        opacity: 0;
+
+    }
+
+}

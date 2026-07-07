@@ -1,0 +1,237 @@
+.settings-overlay {
+
+    position: fixed;
+    inset: 0;
+
+    background: rgba(0, 0, 0, 0.4);
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    z-index: 1000;
+
+}
+
+.settings-modal {
+
+    width: 100%;
+    max-width: 420px;
+
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-lg);
+
+    padding: 28px;
+
+}
+
+.settings-header {
+
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+
+    margin-bottom: 20px;
+
+}
+
+.settings-header h2 {
+
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--text);
+    margin: 0;
+
+}
+
+.settings-close {
+
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    width: 30px;
+    height: 30px;
+
+    border-radius: var(--radius-sm);
+
+}
+
+.settings-close:hover {
+
+    background: var(--surface-hover);
+
+}
+
+.settings-section {
+
+    padding: 18px 0;
+    border-top: 1px solid var(--border);
+
+}
+
+.settings-section:first-of-type {
+
+    border-top: none;
+    padding-top: 0;
+
+}
+
+.settings-section h3 {
+
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text);
+    margin: 0 0 12px;
+
+}
+
+.settings-hint {
+
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin: 0 0 12px;
+    line-height: 1.5;
+
+}
+
+.theme-options {
+
+    display: flex;
+    gap: 10px;
+
+}
+
+.theme-option {
+
+    flex: 1;
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+
+    padding: 10px 0;
+
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--background);
+    color: var(--text-secondary);
+
+    font-size: 13px;
+    font-weight: 600;
+
+    transition: var(--transition);
+
+}
+
+.theme-option:hover {
+
+    background: var(--surface-hover);
+
+}
+
+.theme-option.active {
+
+    border-color: var(--primary);
+    color: var(--primary);
+    background: rgba(109, 74, 255, 0.08);
+
+}
+
+.api-key-row {
+
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+
+}
+
+.settings-input {
+
+    flex: 1;
+
+    padding: 11px 12px;
+
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+
+    font-size: 13px;
+    color: var(--text);
+    background: var(--background);
+
+}
+
+.settings-input:focus {
+
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(109, 74, 255, 0.15);
+
+}
+
+.api-key-row .btn-primary {
+
+    padding: 11px 18px;
+    font-size: 13px;
+
+}
+
+.delete-key-button {
+
+    display: flex;
+    align-items: center;
+    gap: 8px;
+
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--danger);
+
+    padding: 10px 14px;
+
+    border-radius: var(--radius-sm);
+
+    font-size: 13px;
+    font-weight: 600;
+
+    width: 100%;
+    justify-content: center;
+
+}
+
+.delete-key-button:hover {
+
+    background: var(--surface-hover);
+
+}
+
+.delete-key-button:disabled {
+
+    opacity: 0.55;
+    cursor: not-allowed;
+
+}
+
+.settings-message {
+
+    font-size: 13px;
+    color: var(--success);
+    margin: 12px 0 0;
+
+}
+
+.settings-error {
+
+    font-size: 13px;
+    color: var(--danger);
+    margin: 12px 0 0;
+    line-height: 1.5;
+    white-space: pre-line;
+
+}

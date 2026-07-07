@@ -1,0 +1,47 @@
+.chat-window{
+
+    display:flex;
+
+    flex-direction:column;
+
+    height:100%;
+
+}
+
+.chat-body{
+
+    flex:1;
+
+    overflow:auto;
+
+    padding:20px;
+
+    background:var(--background);
+
+}
+
+.chat-input{
+
+    background:var(--background);
+
+}
+
+.connection-error-banner{
+
+    margin:16px 20px 0;
+
+    padding:14px 16px;
+
+    background:rgba(220,38,38,.08);
+
+    border:1px solid rgba(220,38,38,.25);
+    border-radius:var(--radius-sm);
+
+    color:var(--danger);
+
+    font-size:13px;
+    line-height:1.6;
+
+    white-space:pre-line;
+
+}
