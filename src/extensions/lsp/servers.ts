@@ -39,9 +39,18 @@ function exists(cmd: string): boolean {
 	}
 }
 
-/** Returns all LSP servers whose binary is available on PATH. */
-export function detectServers(_cwd: string): ServerConfig[] {
-	return SERVERS.filter((s) => exists(s.command))
+/**
+ * Returns LSP servers whose binary is available on PATH AND whose project
+ * marker (go.mod, tsconfig.json, package.json) exists in cwd. This ensures
+ * only servers relevant to the current project are activated — e.g. a Go
+ * project won't activate typescript-language-server even if it's on PATH.
+ */
+export function detectServers(cwd: string): ServerConfig[] {
+	return SERVERS.filter((s) => {
+		const markers = ROOT_MARKERS[s.name] ?? []
+		const hasMarker = markers.some((m) => fs.existsSync(path.join(cwd, m)))
+		return hasMarker && exists(s.command)
+	})
 }
 
 /**
