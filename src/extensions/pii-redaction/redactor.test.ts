@@ -153,7 +153,7 @@ describe("redactMessages — message structure preservation", () => {
 	})
 
 	it("handles string content (not just content blocks)", async () => {
-		const messages = [{ role: "system", content: "SSN: 489-36-2157 is on file" }]
+		const messages = [{ role: "user", content: "SSN: 489-36-2157 is on file" }]
 		const result = (await redactMessages(messages)) as Array<{ content: string }>
 		expect(result[0].content).toContain("[REDACTED-US_SSN]")
 		expect(result[0].content).not.toContain("489-36-2157")
@@ -166,6 +166,20 @@ describe("redactMessages — message structure preservation", () => {
 		expect(result[1]).toBeUndefined()
 		expect(result[2]).toBe("string")
 		expect(result[3]).toBe(42)
+	})
+
+	it("skips system messages to preserve structural identifiers", async () => {
+		const messages = [
+			{ role: "system", content: "ferment_id: 019f36c2-1b53-71ed-afc8-faded478f42a" },
+			{ role: "user", content: "My email is john.doe@example.com" },
+		]
+		const result = (await redactMessages(messages)) as Array<{ role: string; content: string }>
+		// System message untouched — UUID preserved
+		expect(result[0].content).toContain("019f36c2-1b53-71ed-afc8-faded478f42a")
+		expect(result[0].content).not.toContain("[REDACTED")
+		// User message redacted
+		expect(result[1].content).toContain("[REDACTED-EMAIL_ADDRESS]")
+		expect(result[1].content).not.toContain("john.doe@example.com")
 	})
 
 	it("redacts multiple PII types in a single message", async () => {

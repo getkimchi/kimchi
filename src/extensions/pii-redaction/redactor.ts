@@ -38,6 +38,10 @@ function getEngine(): GuardrailsEngine {
 		},
 	}
 	engine = createEngine(config)
+	// Exclude GUIDs from redaction — they are structural identifiers
+	// (ferment IDs, session IDs), not sensitive PII. Redacting them breaks
+	// internal flows that depend on UUIDs being present in context.
+	engine.setExcludeEntities(["GUID"])
 	return engine
 }
 
@@ -121,6 +125,11 @@ interface AnyMessage {
  * spans with `[REDACTED-TYPE]` markers. Returns a **new** array; the
  * input is never mutated.
  *
+ * System messages (role: "system") are skipped — the system prompt
+ * contains structural identifiers (ferment IDs, session IDs, paths) that
+ * must not be redacted, and its content is harness-generated, not
+ * user-provided PII.
+ *
  * Structural strings (role, type, toolCallId, toolName) pass through
  * unchanged because they don't match PII/secret patterns.
  *
@@ -128,5 +137,14 @@ interface AnyMessage {
  * @returns          New array with all string values redacted; input untouched
  */
 export async function redactMessages(messages: unknown[]): Promise<unknown[]> {
-	return redactObjectStrings(messages)
+	return Promise.all(
+		messages.map(async (msg) => {
+			if (msg === null || typeof msg !== "object") return msg
+			const message = msg as AnyMessage
+			// Skip system messages — they contain structural identifiers
+			// (ferment IDs, session IDs) that must not be redacted.
+			if (message.role === "system") return msg
+			return redactObjectStrings(msg)
+		}),
+	)
 }

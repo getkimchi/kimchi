@@ -28,7 +28,7 @@
 
 import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent"
 import { getRedactionConfig } from "./config.js"
-import { redactObjectStrings } from "./redactor.js"
+import { redactMessages } from "./redactor.js"
 
 const piiRedactionExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 	pi.on("before_provider_request", async (event: unknown) => {
@@ -42,12 +42,13 @@ const piiRedactionExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 		const config = getRedactionConfig()
 		if (!config.enabled) return
 
-		// Redact PII/secrets from ALL string values in the messages array.
+		// Redact PII/secrets from all non-system messages.
 		// This catches secrets in user prompts, assistant text, tool-call
-		// arguments, and tool-result content. Structural strings (role, type,
-		// toolCallId) pass through unchanged — they don't match PII patterns.
-		// redactObjectStrings returns a new structure; input is never mutated.
-		const redacted = await redactObjectStrings(messages)
+		// arguments, and tool-result content. System messages are skipped —
+		// they contain structural identifiers (ferment IDs, session IDs, paths)
+		// that must not be redacted.
+		// redactMessages returns a new array; input is never mutated.
+		const redacted = await redactMessages(messages)
 		payload.messages = redacted
 		return payload
 	})
