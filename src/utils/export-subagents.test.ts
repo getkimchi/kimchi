@@ -2,7 +2,6 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { redactDeep } from "./export-redact.js"
 import { enrichSubAgentEntries, readTranscript } from "./export-subagents.js"
 
 let tempDir: string
@@ -195,7 +194,7 @@ describe("enrichSubAgentEntries", () => {
 		expect(entries).toEqual(original)
 	})
 
-	it("sub-agent transcript is redacted when redactDeep is applied after enrichment", () => {
+	it("preserves secret values verbatim in enriched transcript (redaction owned by PR #800)", () => {
 		const outputFile = join(tempDir, "agent-004.output")
 		const transcriptEntries = [
 			{
@@ -223,17 +222,16 @@ describe("enrichSubAgentEntries", () => {
 			},
 		]
 
-		// First enrich, then redact (same order as the export pipeline)
+		// Enrichment only — secret redaction is now owned by PR #800's
+		// redactJsonlExport / redactHtmlExport, which run after this step.
 		enrichSubAgentEntries(entries)
-		redactDeep(entries[0])
 
 		const data = entries[0].data as unknown as {
 			result: string
 			transcript: Array<{ message: { content: string } }>
 		}
-		expect(data.result).toContain("REDACTED")
-		expect(data.result).not.toContain("castai_v1_in_result")
-		expect(data.transcript[0].message.content).toContain("REDACTED")
-		expect(data.transcript[0].message.content).not.toContain("castai_v1_leaked_secret")
+		// Values pass through unchanged; PR #800 is responsible for scrubbing.
+		expect(data.result).toBe("Found key castai_v1_in_result")
+		expect(data.transcript[0].message.content).toBe("Use API key castai_v1_leaked_secret")
 	})
 })

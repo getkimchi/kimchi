@@ -1,7 +1,6 @@
 import { readFileSync, writeFileSync } from "node:fs"
 import { redactObjectStrings } from "../extensions/pii-redaction/redactor.js"
 import { getVersion } from "../utils.js"
-import { redactDeep, redactEntries, redactSessionData } from "./export-redact.js"
 import { enrichSubAgentEntries } from "./export-subagents.js"
 import { getConfigChanges, getSessionStartMetadata } from "./session-metadata-store.js"
 import { injectTraceIdsIntoEntries, injectTraceIdsIntoExport } from "./trace-id-export.js"
@@ -19,19 +18,12 @@ export function postProcessJsonlExport(filePath: string): void {
 	const lines = raw.split(/\r?\n/).filter((l) => l.trim().length > 0)
 	const traceInjected = injectTraceIdsIntoExport(lines)
 
-	// Parse entries for enrichment and redaction
+	// Parse entries for enrichment. Secret redaction is handled separately by
+	// PR #800's redactJsonlExport, which runs after this post-processing step.
 	const parsedEntries = traceInjected.map((l) => JSON.parse(l) as Record<string, unknown>)
 
 	// Enrich sub-agent records with full transcripts from .output files
 	enrichSubAgentEntries(parsedEntries)
-
-	// Redact secrets across all entries (messages, tool calls, results, transcripts)
-	redactEntries(parsedEntries)
-
-	// Redact the session header too (may contain cwd with credential paths)
-	if (parsedEntries.length > 0) {
-		redactDeep(parsedEntries[0])
-	}
 
 	const processed = parsedEntries.map((e) => JSON.stringify(e))
 
@@ -129,12 +121,10 @@ export function postProcessHtmlExport(filePath: string): void {
 		if (Array.isArray(data.entries)) {
 			injectTraceIdsIntoEntries(data.entries as import("./trace-id-export.js").ExportEntry[])
 
-			// Enrich sub-agent records with full transcripts from .output files
+			// Enrich sub-agent records with full transcripts from .output files.
+			// Secret redaction is handled separately by PR #800's redactHtmlExport,
+			// which runs after this post-processing step.
 			enrichSubAgentEntries(data.entries as Record<string, unknown>[])
-
-			// Redact secrets across the entire session data
-			// (messages, tool calls, results, transcripts, systemPrompt, tools)
-			redactSessionData(data)
 
 			// Inject host/config launch metadata as a top-level `hostMetadata`
 			// key. Naturally idempotent: reassigning the same primitives.
