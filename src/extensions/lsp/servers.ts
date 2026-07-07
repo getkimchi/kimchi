@@ -44,6 +44,20 @@ export function detectServers(_cwd: string): ServerConfig[] {
 	return SERVERS.filter((s) => exists(s.command))
 }
 
+/**
+ * Returns LSP servers whose project marker (go.mod, tsconfig.json, package.json)
+ * is present in cwd but whose binary is NOT on PATH — i.e. servers this project
+ * would use if installed. Used to surface a degraded LSP state to the user
+ * instead of silently no-op'ing.
+ */
+export function detectMissingCandidates(cwd: string): ServerConfig[] {
+	return SERVERS.filter((s) => {
+		const markers = ROOT_MARKERS[s.name] ?? []
+		const hasMarker = markers.some((m) => fs.existsSync(path.join(cwd, m)))
+		return hasMarker && !exists(s.command)
+	})
+}
+
 /** Get the server config for a specific file path, or null if no server applies. */
 export function serverForFile(filePath: string, servers: ServerConfig[]): ServerConfig | null {
 	const ext = path.extname(filePath).slice(1).toLowerCase()

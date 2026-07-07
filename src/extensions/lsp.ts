@@ -22,7 +22,7 @@ import {
 	waitForDiagnostics,
 } from "./lsp/client.js"
 import { applyWorkspaceEdit } from "./lsp/edits.js"
-import { detectServers, findRoot, serverForFile } from "./lsp/servers.js"
+import { detectMissingCandidates, detectServers, findRoot, serverForFile } from "./lsp/servers.js"
 import type { Hover, Location, LocationLink, TextDocumentEdit, WorkspaceEdit } from "./lsp/types.js"
 import { fileToUri, formatDiagnostic, uriToFile } from "./lsp/utils.js"
 import { createSystemPromptBlocks } from "./prompt-construction/index.js"
@@ -49,6 +49,8 @@ LSP tools are available when language servers are detected on PATH (currently Ty
 export default function (pi: ExtensionAPI) {
 	let cwd = ""
 	let activeServers: ReturnType<typeof detectServers> = []
+	let degradedServers: ReturnType<typeof detectMissingCandidates> = []
+	let warned = false
 	let ui: ExtensionUIContext | undefined
 	// Tracks the pending diagnostic wait so a newer edit can cancel the previous
 	// one (avoiding stale status-bar updates) and so session_shutdown can
@@ -65,7 +67,7 @@ export default function (pi: ExtensionAPI) {
 
 	createSystemPromptBlocks(pi, "lsp").register({
 		id: "lsp-tools",
-		render: () => LSP_SYSTEM_PROMPT,
+		render: () => (activeServers.length > 0 ? LSP_SYSTEM_PROMPT : undefined),
 	})
 
 	// ── Session start: detect servers, hook file sync, shutdown on exit ─────────
@@ -74,7 +76,18 @@ export default function (pi: ExtensionAPI) {
 		cwd = ctx.cwd
 		ui = ctx.hasUI ? ctx.ui : undefined
 		activeServers = detectServers(cwd)
-		if (activeServers.length === 0) return
+		if (activeServers.length === 0) {
+			// No server binary on PATH. If this project *would* use LSP (its
+			// marker file is present), surface a degraded status-bar segment
+			// so the user can see LSP is unavailable instead of it silently
+			// no-op'ing. Stored for the one-time warning in before_agent_start.
+			degradedServers = detectMissingCandidates(cwd)
+			if (degradedServers.length > 0 && ui) {
+				const names = degradedServers.map((s) => s.name).join(", ")
+				ui.setStatus("lsp", `LSP: ${names} not installed`)
+			}
+			return
+		}
 
 		// Update status bar with detected server names
 		if (ui) {
@@ -98,7 +111,25 @@ export default function (pi: ExtensionAPI) {
 			ui.setStatus("lsp", undefined)
 			ui = undefined
 		}
+		warned = false
+		degradedServers = []
 		shutdownAll()
+	})
+
+	// ── Degraded-state warning: notify once on the first agent turn ─────────────
+
+	const INSTALL_HINTS: Record<string, string> = {
+		gopls: "go install golang.org/x/tools/gopls@latest",
+		"typescript-language-server": "npm i -g typescript-language-server typescript",
+	}
+
+	pi.on("before_agent_start", async () => {
+		// One-time warning when in a project that would use LSP but has no
+		// server binary on PATH. No-op on subsequent turns and when not degraded.
+		if (warned || degradedServers.length === 0 || !ui) return
+		const lines = degradedServers.map((s) => `${s.name} — install with: ${INSTALL_HINTS[s.name] ?? s.command}`)
+		ui.notify(`LSP unavailable: language server(s) not installed for this project.\n${lines.join("\n")}`, "warning")
+		warned = true
 	})
 
 	// ── File sync: refresh LSP after agent edits files ───────────────────────────

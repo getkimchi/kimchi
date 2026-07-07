@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("./lsp/servers.js", () => ({
 	detectServers: vi.fn(),
+	detectMissingCandidates: vi.fn(),
 	serverForFile: vi.fn(),
 	findRoot: vi.fn(),
 }))
@@ -49,13 +50,14 @@ interface PiStub extends ExtensionAPI {
 	fireShutdown: () => Promise<void>
 	fireToolResult: (event: unknown) => Promise<void>
 	fireSessionStart: (ctx?: Partial<SessionStartCtx>) => Promise<void>
+	fireBeforeAgentStart: () => Promise<void>
 	capturedBlocks: SystemPromptBlockStub[]
 }
 
 interface SessionStartCtx {
 	cwd: string
 	hasUI: boolean
-	ui: { setStatus: ReturnType<typeof vi.fn> }
+	ui: { setStatus: ReturnType<typeof vi.fn>; notify?: ReturnType<typeof vi.fn> }
 }
 
 interface SystemPromptBlockStub {
@@ -116,7 +118,7 @@ function makePi(): PiStub {
 			}
 		},
 		fireSessionStart: async (ctx: Partial<SessionStartCtx> = {}) => {
-			const defaultUi = { setStatus: vi.fn(), theme: { fg: (_c: string, s: string) => s } }
+			const defaultUi = { setStatus: vi.fn(), notify: vi.fn(), theme: { fg: (_c: string, s: string) => s } }
 			const full: SessionStartCtx = {
 				cwd: ctx.cwd ?? DEFAULT_CWD,
 				hasUI: ctx.hasUI ?? false,
@@ -124,6 +126,11 @@ function makePi(): PiStub {
 			}
 			for (const h of handlers.get("session_start") ?? []) {
 				await h({}, full)
+			}
+		},
+		fireBeforeAgentStart: async () => {
+			for (const h of handlers.get("before_agent_start") ?? []) {
+				await h({}, {})
 			}
 		},
 	} as unknown as PiStub
@@ -186,6 +193,7 @@ async function callTool(
 
 beforeEach(() => {
 	vi.mocked(serversMod.detectServers).mockReturnValue([])
+	vi.mocked(serversMod.detectMissingCandidates).mockReturnValue([])
 	vi.mocked(serversMod.serverForFile).mockReturnValue(null)
 	vi.mocked(serversMod.findRoot).mockImplementation((_fp: string, _sn: string, sessionCwd: string) => sessionCwd)
 	vi.mocked(clientMod.getOrCreateClient).mockResolvedValue(
@@ -309,9 +317,11 @@ describe("system prompt block", () => {
 		expect(block).toBeDefined()
 	})
 
-	it("lsp-tools block renders LSP guidance text", () => {
+	it("lsp-tools block renders LSP guidance text", async () => {
+		vi.mocked(serversMod.detectServers).mockReturnValue([FAKE_SERVER])
 		const pi = makePi()
 		lspExtension(pi)
+		await pi.fireSessionStart({ hasUI: false })
 		const block = pi.capturedBlocks.find((b) => b.id === "lsp-tools")
 		expect(block).toBeDefined()
 		const rendered = block?.render()
@@ -363,6 +373,110 @@ describe("status bar", () => {
 		lspExtension(pi)
 		await pi.fireSessionStart({ hasUI: true, ui: { setStatus } })
 		expect(setStatus).toHaveBeenCalledWith("lsp", `LSP: ${FAKE_SERVER.name}, ${FAKE_GO_SERVER.name}`)
+	})
+})
+
+// =============================================================================
+// 4b. Degraded LSP state (marker present, binary missing)
+// =============================================================================
+
+describe("degraded status (marker present, binary missing)", () => {
+	it("sets a degraded status-bar segment when a candidate server is missing", async () => {
+		vi.mocked(serversMod.detectServers).mockReturnValue([])
+		vi.mocked(serversMod.detectMissingCandidates).mockReturnValue([FAKE_GO_SERVER])
+		const setStatus = vi.fn()
+		const pi = makePi()
+		lspExtension(pi)
+		await pi.fireSessionStart({ hasUI: true, ui: { setStatus, notify: vi.fn() } })
+		expect(setStatus).toHaveBeenCalledWith("lsp", `LSP: ${FAKE_GO_SERVER.name} not installed`)
+	})
+
+	it("does not set a degraded status when no marker is present (not an LSP project)", async () => {
+		vi.mocked(serversMod.detectServers).mockReturnValue([])
+		vi.mocked(serversMod.detectMissingCandidates).mockReturnValue([])
+		const setStatus = vi.fn()
+		const pi = makePi()
+		lspExtension(pi)
+		await pi.fireSessionStart({ hasUI: true, ui: { setStatus, notify: vi.fn() } })
+		expect(setStatus).not.toHaveBeenCalled()
+	})
+})
+
+describe("one-time warning on before_agent_start", () => {
+	it("notifies once on the first before_agent_start in a degraded project", async () => {
+		vi.mocked(serversMod.detectServers).mockReturnValue([])
+		vi.mocked(serversMod.detectMissingCandidates).mockReturnValue([FAKE_GO_SERVER])
+		const notify = vi.fn()
+		const pi = makePi()
+		lspExtension(pi)
+		await pi.fireSessionStart({ hasUI: true, ui: { setStatus: vi.fn(), notify } })
+		await pi.fireBeforeAgentStart()
+		expect(notify).toHaveBeenCalledTimes(1)
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining(FAKE_GO_SERVER.name), "warning")
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("go install"), "warning")
+	})
+
+	it("does NOT re-notify on a second before_agent_start", async () => {
+		vi.mocked(serversMod.detectServers).mockReturnValue([])
+		vi.mocked(serversMod.detectMissingCandidates).mockReturnValue([FAKE_GO_SERVER])
+		const notify = vi.fn()
+		const pi = makePi()
+		lspExtension(pi)
+		await pi.fireSessionStart({ hasUI: true, ui: { setStatus: vi.fn(), notify } })
+		await pi.fireBeforeAgentStart()
+		await pi.fireBeforeAgentStart()
+		expect(notify).toHaveBeenCalledTimes(1)
+	})
+
+	it("does not notify when not degraded (server present)", async () => {
+		vi.mocked(serversMod.detectServers).mockReturnValue([FAKE_SERVER])
+		vi.mocked(serversMod.detectMissingCandidates).mockReturnValue([])
+		const notify = vi.fn()
+		const pi = makePi()
+		lspExtension(pi)
+		await pi.fireSessionStart({ hasUI: true, ui: { setStatus: vi.fn(), notify } })
+		await pi.fireBeforeAgentStart()
+		expect(notify).not.toHaveBeenCalled()
+	})
+})
+
+describe("prompt block gating on active servers", () => {
+	it("render returns undefined when activeServers is empty", async () => {
+		vi.mocked(serversMod.detectServers).mockReturnValue([])
+		const pi = makePi()
+		lspExtension(pi)
+		await pi.fireSessionStart({ hasUI: false })
+		const block = pi.capturedBlocks.find((b) => b.id === "lsp-tools")
+		expect(block).toBeDefined()
+		expect(block?.render()).toBeUndefined()
+	})
+
+	it("render returns LSP_SYSTEM_PROMPT when a server is active", async () => {
+		vi.mocked(serversMod.detectServers).mockReturnValue([FAKE_SERVER])
+		const pi = makePi()
+		lspExtension(pi)
+		await pi.fireSessionStart({ hasUI: false })
+		const block = pi.capturedBlocks.find((b) => b.id === "lsp-tools")
+		expect(block).toBeDefined()
+		const rendered = block?.render()
+		expect(rendered).toContain("Language Server Protocol")
+	})
+})
+
+describe("no regression when a server is present", () => {
+	it("sets normal status, renders prompt block, and does not warn", async () => {
+		vi.mocked(serversMod.detectServers).mockReturnValue([FAKE_SERVER])
+		vi.mocked(serversMod.detectMissingCandidates).mockReturnValue([])
+		const setStatus = vi.fn()
+		const notify = vi.fn()
+		const pi = makePi()
+		lspExtension(pi)
+		await pi.fireSessionStart({ hasUI: true, ui: { setStatus, notify } })
+		expect(setStatus).toHaveBeenCalledWith("lsp", `LSP: ${FAKE_SERVER.name}`)
+		const block = pi.capturedBlocks.find((b) => b.id === "lsp-tools")
+		expect(block?.render()).toContain("Language Server Protocol")
+		await pi.fireBeforeAgentStart()
+		expect(notify).not.toHaveBeenCalled()
 	})
 })
 
