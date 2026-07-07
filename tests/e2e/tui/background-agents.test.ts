@@ -38,20 +38,6 @@ function backgroundAgentCall(id: string, description: string, prompt: string, in
 
 const SLOW_STREAM = { stream: ["working", " working", " working", " working"], textDelayMs: 5_000 }
 
-function isWorkingSubagentRequest(request: { body: unknown }): boolean {
-	const body = asRecord(request.body)
-	return !hasTool(body, "Agent") && JSON.stringify(body.messages ?? "").includes("Reply with: working")
-}
-
-function hasTool(body: Record<string, unknown>, name: string): boolean {
-	const tools = body.tools
-	return Array.isArray(tools) && tools.some((tool) => asRecord(asRecord(tool).function).name === name)
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-	return value && typeof value === "object" ? (value as Record<string, unknown>) : {}
-}
-
 async function waitForCurrentView(
 	terminal: Parameters<typeof viewText>[0],
 	predicate: (text: string) => boolean,
@@ -163,9 +149,11 @@ test("Ctrl+X kills background agents one by one", async ({ terminal }) => {
 					],
 				},
 				// Inner agent "first bg" — slow stream so it's still running when we kill
-				{ ...SLOW_STREAM, match: isWorkingSubagentRequest },
+				{ ...SLOW_STREAM, forSubagent: true },
+				// Orchestrator turn 2: spawn second bg
+				{ toolCalls: [backgroundAgentCall("call_kill_2", "second bg", "Reply with: working")] },
 				// Inner agent "second bg" — slow stream
-				{ ...SLOW_STREAM, match: isWorkingSubagentRequest },
+				{ ...SLOW_STREAM, forSubagent: true },
 				// Orchestrator follow-up
 				{ stream: ["acknowledged"] },
 			],
