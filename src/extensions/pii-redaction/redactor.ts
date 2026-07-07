@@ -116,45 +116,17 @@ interface AnyMessage {
 /**
  * Redact PII and secrets from a pi-ai message array.
  *
- * Walks each message's content — whether a plain string or an array of
- * content blocks — and replaces matched PII/secret spans with
- * `[REDACTED-TYPE]` markers. Returns a **new** array; the input is never
- * mutated (per the immutability contract).
+ * Deep-walks every message — including tool-call arguments, tool-result
+ * content, and any other string fields — replacing matched PII/secret
+ * spans with `[REDACTED-TYPE]` markers. Returns a **new** array; the
+ * input is never mutated.
  *
- * Only `type: "text"` content blocks are scanned. Tool-call JSON, image
- * blocks, and other structured content are passed through unchanged —
- * redacting inside tool-call arguments would corrupt JSON and break the
- * message structure (success criterion: "tool-call JSON intact").
+ * Structural strings (role, type, toolCallId, toolName) pass through
+ * unchanged because they don't match PII/secret patterns.
  *
  * @param messages  pi-ai `Message[]` (the output of `convertToLlm`)
- * @returns          New array with redacted text; input untouched
+ * @returns          New array with all string values redacted; input untouched
  */
 export async function redactMessages(messages: unknown[]): Promise<unknown[]> {
-	return Promise.all(
-		messages.map(async (msg) => {
-			if (msg === null || typeof msg !== "object") return msg
-			const message = msg as AnyMessage
-			const content = message.content
-
-			// String content — scan directly
-			if (typeof content === "string") {
-				return { ...message, content: await redactText(content) }
-			}
-
-			// Array content — walk each block, redact text blocks only
-			if (Array.isArray(content)) {
-				const newContent = await Promise.all(
-					content.map(async (block) => {
-						if (isTextBlock(block)) {
-							return { ...block, text: await redactText(block.text) }
-						}
-						return block
-					}),
-				)
-				return { ...message, content: newContent }
-			}
-
-			return msg
-		}),
-	)
+	return redactObjectStrings(messages)
 }

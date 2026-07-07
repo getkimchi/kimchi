@@ -117,7 +117,7 @@ describe("redactMessages — message structure preservation", () => {
 		expect(result[0].content[0].type).toBe("text")
 	})
 
-	it("preserves tool-call JSON blocks (does not redact inside tool arguments)", async () => {
+	it("redacts PII inside tool-call arguments", async () => {
 		const messages = [
 			{
 				role: "assistant",
@@ -136,15 +136,16 @@ describe("redactMessages — message structure preservation", () => {
 			content: Array<Record<string, unknown>>
 		}>
 
-		// toolCall block untouched — JSON structure intact
+		// toolCall block structure preserved, but string values redacted
 		const toolCall = result[0].content[0]
 		expect(toolCall.type).toBe("toolCall")
-		expect(toolCall.input).toEqual({
-			to: "john.doe@example.com",
-			body: "Bearer sk-deadbeefdeadbeefdeadbeefdeadbeef",
-		})
+		expect(toolCall.id).toBe("call_001")
+		expect(toolCall.toolName).toBe("send_email")
+		// PII in input arguments is redacted
+		expect(toolCall.input).not.toMatchObject({ to: "john.doe@example.com" })
+		expect(JSON.stringify(toolCall.input)).toContain("[REDACTED-EMAIL_ADDRESS]")
 
-		// Text block redacted
+		// Text block also redacted
 		const textBlock = result[0].content[1]
 		expect(textBlock.type).toBe("text")
 		expect(textBlock.text).toContain("[REDACTED-EMAIL_ADDRESS]")
