@@ -194,6 +194,74 @@ describe("enrichSubAgentEntries", () => {
 		expect(entries).toEqual(original)
 	})
 
+	it("rejects outputFile paths containing ..", () => {
+		const entries = [
+			{
+				type: "custom" as const,
+				customType: "subagents:record",
+				data: {
+					id: "agent-005",
+					type: "Explore",
+					status: "completed",
+					outputFile: "/safe/dir/../../../etc/passwd",
+				},
+			},
+		]
+
+		enrichSubAgentEntries(entries)
+
+		const record = entries[0] as { data: { transcript?: unknown[]; outputFile?: string } }
+		expect(record.data.transcript).toBeUndefined()
+		expect(record.data.outputFile).toBeUndefined()
+	})
+
+	it("rejects outputFile outside the provided baseDir", () => {
+		const outputFile = join(tempDir, "agent-006.output")
+		writeFileSync(outputFile, `{"isSidechain":true,"agentId":"a","type":"user","message":{},"timestamp":"","cwd":""}\n`)
+
+		const entries = [
+			{
+				type: "custom" as const,
+				customType: "subagents:record",
+				data: {
+					id: "agent-006",
+					type: "Explore",
+					status: "completed",
+					outputFile,
+				},
+			},
+		]
+
+		// Pass a different directory as baseDir — the absolute outputFile is outside it.
+		enrichSubAgentEntries(entries, "/some/other/dir")
+
+		const record = entries[0] as { data: { transcript?: unknown[] } }
+		expect(record.data.transcript).toBeUndefined()
+	})
+
+	it("accepts outputFile inside the provided baseDir", () => {
+		const outputFile = join(tempDir, "agent-007.output")
+		writeFileSync(outputFile, `{"isSidechain":true,"agentId":"a","type":"user","message":{},"timestamp":"","cwd":""}\n`)
+
+		const entries = [
+			{
+				type: "custom" as const,
+				customType: "subagents:record",
+				data: {
+					id: "agent-007",
+					type: "Explore",
+					status: "completed",
+					outputFile,
+				},
+			},
+		]
+
+		enrichSubAgentEntries(entries, tempDir)
+
+		const record = entries[0] as { data: { transcript?: unknown[] } }
+		expect(record.data.transcript).toHaveLength(1)
+	})
+
 	it("preserves secret values verbatim in enriched transcript (redaction owned by PR #800)", () => {
 		const outputFile = join(tempDir, "agent-004.output")
 		const transcriptEntries = [

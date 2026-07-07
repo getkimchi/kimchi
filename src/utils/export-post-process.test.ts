@@ -129,10 +129,25 @@ describe("postProcessJsonlExport", () => {
 		expect(entry.appVersion).toBeUndefined()
 	})
 
-	it("throws on malformed JSONL", () => {
+	it("skips malformed JSONL lines instead of crashing", () => {
 		const filePath = join(tmpDir, "export-bad.jsonl")
-		writeFileSync(filePath, "not-json\n", "utf-8")
-		expect(() => postProcessJsonlExport(filePath)).toThrow()
+		writeFileSync(
+			filePath,
+			`${JSON.stringify({ type: "session", version: 3, id: "s1" })}
+not-json
+${JSON.stringify({ type: "message", id: "e1", parentId: null, message: { role: "user", content: "hello" } })}
+`,
+			"utf-8",
+		)
+
+		postProcessJsonlExport(filePath)
+
+		const result = readFileSync(filePath, "utf-8")
+			.split("\n")
+			.filter((l) => l.trim().length > 0)
+		expect(result).toHaveLength(2)
+		expect(JSON.parse(result[0]).type).toBe("session")
+		expect(JSON.parse(result[1]).type).toBe("message")
 	})
 
 	it("injects OS metadata into the session header line", () => {

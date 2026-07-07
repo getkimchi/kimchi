@@ -29,21 +29,53 @@ export interface RequestDiagnosticsData {
 	isRetry?: boolean
 }
 
+function getTraceId(headers: unknown): string | undefined {
+	if (!headers || typeof headers !== "object") return undefined
+
+	// Native fetch Headers objects expose .get() and .entries()
+	const h = headers as {
+		get?: (key: string) => string | null
+		entries?: () => IterableIterator<[string, string]>
+	}
+
+	if (typeof h.get === "function") {
+		const value = h.get("x-trace-id")
+		if (typeof value === "string") return value
+	}
+
+	if (typeof h.entries === "function") {
+		for (const [key, value] of h.entries()) {
+			if (key.toLowerCase() === "x-trace-id" && typeof value === "string") {
+				return value
+			}
+		}
+		return undefined
+	}
+
+	// Fall back to plain object iteration
+	for (const [key, value] of Object.entries(headers as Record<string, unknown>)) {
+		if (key.toLowerCase() === "x-trace-id" && typeof value === "string") {
+			return value
+		}
+	}
+
+	return undefined
+}
+
 export default function requestTimingExtension(pi: ExtensionAPI): void {
 	// Track timing per turn — a turn may have multiple provider calls (retries)
-	let turnStartTime: number | undefined
 	let lastRequestTime: number | undefined
 	let retryCount = 0
 	let lastError: string | undefined
 
 	pi.on("turn_start", async () => {
-		turnStartTime = Date.now()
 		retryCount = 0
 		lastError = undefined
 	})
 
 	pi.on("before_provider_request", async () => {
 		lastRequestTime = Date.now()
+		lastError = undefined
 	})
 
 	pi.on("after_provider_response", async (event) => {
@@ -53,17 +85,7 @@ export default function requestTimingExtension(pi: ExtensionAPI): void {
 		const durationMs = completedAt - lastRequestTime
 
 		// Extract trace ID from headers if available
-		let traceId: string | undefined
-		const headers = event.headers
-		if (headers && typeof headers === "object") {
-			const h = headers as Record<string, string>
-			for (const [key, value] of Object.entries(h)) {
-				if (key.toLowerCase() === "x-trace-id" && typeof value === "string") {
-					traceId = value
-					break
-				}
-			}
-		}
+		const traceId = getTraceId(event.headers)
 
 		// Detect retries: if status >= 500 or status === 429, the SDK may retry
 		const isRetry = retryCount > 0

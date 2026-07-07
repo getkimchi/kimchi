@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync } from "node:fs"
+import { dirname } from "node:path"
 import { redactObjectStrings } from "../extensions/pii-redaction/redactor.js"
 import { getVersion } from "../utils.js"
 import { enrichSubAgentEntries } from "./export-subagents.js"
@@ -18,9 +19,17 @@ export function postProcessJsonlExport(filePath: string): void {
 	const lines = raw.split(/\r?\n/).filter((l) => l.trim().length > 0)
 	const traceInjected = injectTraceIdsIntoExport(lines)
 
-	// Parse entries for enrichment. Secret redaction is handled separately by
-	// PR #800's redactJsonlExport, which runs after this post-processing step.
-	const parsedEntries = traceInjected.map((l) => JSON.parse(l) as Record<string, unknown>)
+	// Parse entries for enrichment. Skip malformed lines so one bad line does
+	// not crash the entire export pipeline. Secret redaction is handled
+	// separately by PR #800's redactJsonlExport, which runs after this step.
+	const parsedEntries: Record<string, unknown>[] = []
+	for (const line of traceInjected) {
+		try {
+			parsedEntries.push(JSON.parse(line) as Record<string, unknown>)
+		} catch (err) {
+			console.warn("[export] skipping malformed JSONL line:", line.slice(0, 200), err)
+		}
+	}
 
 	// Enrich sub-agent records with full transcripts from .output files
 	enrichSubAgentEntries(parsedEntries)
@@ -124,7 +133,7 @@ export function postProcessHtmlExport(filePath: string): void {
 			// Enrich sub-agent records with full transcripts from .output files.
 			// Secret redaction is handled separately by PR #800's redactHtmlExport,
 			// which runs after this post-processing step.
-			enrichSubAgentEntries(data.entries as Record<string, unknown>[])
+			enrichSubAgentEntries(data.entries as Record<string, unknown>[], dirname(filePath))
 
 			// Inject host/config launch metadata as a top-level `hostMetadata`
 			// key. Naturally idempotent: reassigning the same primitives.

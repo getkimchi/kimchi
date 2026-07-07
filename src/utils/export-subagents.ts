@@ -17,6 +17,24 @@
  */
 
 import { existsSync, readFileSync } from "node:fs"
+import { resolve } from "node:path"
+
+/**
+ * Validate that a transcript file path is safe to read.
+ *
+ * Rejects paths containing `..` or, when a base directory is supplied,
+ * paths that resolve outside that directory. This prevents a tampered
+ * session entry from reading arbitrary files during export.
+ */
+function isSafeOutputFile(outputFile: string, baseDir?: string): boolean {
+	if (outputFile.includes("..")) return false
+	if (typeof baseDir !== "string" || baseDir.length === 0) return true
+
+	const resolvedFile = resolve(outputFile)
+	const resolvedBase = resolve(baseDir)
+	const separator = resolvedBase.endsWith("/") || resolvedBase.endsWith("\\") ? "" : "/"
+	return resolvedFile === resolvedBase || resolvedFile.startsWith(`${resolvedBase}${separator}`)
+}
 
 /** A single line from a sub-agent `.output` transcript file. */
 export interface TranscriptEntry {
@@ -62,7 +80,8 @@ export interface SubAgentRecordEntry {
  * The file is JSONL with `{ isSidechain: true, agentId, type, message, timestamp, cwd }` entries.
  * Returns an empty array if the file doesn't exist or is unreadable.
  */
-export function readTranscript(filePath: string): TranscriptEntry[] {
+export function readTranscript(filePath: string, baseDir?: string): TranscriptEntry[] {
+	if (!isSafeOutputFile(filePath, baseDir)) return []
 	if (!existsSync(filePath)) return []
 
 	try {
@@ -100,7 +119,7 @@ export function readTranscript(filePath: string): TranscriptEntry[] {
  *
  * This function mutates entries in-place.
  */
-export function enrichSubAgentEntries<T extends Record<string, unknown>>(entries: T[]): T[] {
+export function enrichSubAgentEntries<T extends Record<string, unknown>>(entries: T[], baseDir?: string): T[] {
 	for (const entry of entries) {
 		if (entry.type !== "custom" || entry.customType !== "subagents:record") {
 			continue
@@ -109,9 +128,9 @@ export function enrichSubAgentEntries<T extends Record<string, unknown>>(entries
 		const data = entry.data as SubAgentRecordData | undefined
 		if (!data) continue
 
-		// Read and attach transcript if outputFile exists
-		if (data.outputFile) {
-			const transcript = readTranscript(data.outputFile)
+		// Read and attach transcript if outputFile exists and is a safe path.
+		if (data.outputFile && isSafeOutputFile(data.outputFile, baseDir)) {
+			const transcript = readTranscript(data.outputFile, baseDir)
 			if (transcript.length > 0) {
 				data.transcript = transcript
 			}
