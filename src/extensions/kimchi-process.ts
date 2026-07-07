@@ -6,44 +6,56 @@
  * code in this repo should go through the functions below — never cast and
  * write to `process` directly — so the contract stays in one place.
  *
- * __kimchiMultiModelEnabled — true while the virtual "multi-model" entry is
- *   the active selection.  Written by setMultiModelEnabled(); read by the
+ * __kimchiMultiModelEnabled.get(sessionId) — true while the virtual "multi-model"
+ *   entry is the active selection.  Written by setMultiModelEnabled(); read by the
  *   model-selector patch to highlight the virtual entry.
  *
- * __kimchiOrchestratorRef  — "provider/model-id" string of the current
- *   orchestrator role.  Written whenever roles change (or at module init).
- *   The patch uses this to inject the correct virtual entry and to resolve
- *   which real model backs "multi-model".  It must NOT change when only the
- *   enabled flag changes — that was the staleness bug this module fixes.
+ * __kimchiOrchestratorRef.get(sessionId)  — "provider/model-id" string of the
+ *   current orchestrator role.  Written whenever roles change (or at module init).
+ *   The patch uses this to inject the correct virtual entry and to resolve which
+ *   real model backs "multi-model".
  */
 
 type KimchiProcess = NodeJS.Process & {
-	__kimchiMultiModelEnabled?: boolean
-	__kimchiOrchestratorRef?: string
+	__kimchiMultiModelEnabled?: Map<string, boolean>
+	__kimchiOrchestratorRef?: Map<string, string>
 }
 
 const proc = process as KimchiProcess
 
 // ---------------------------------------------------------------------------
-// __kimchiMultiModelEnabled
+// __kimchiMultiModelEnabled.get(sessionId)
 // ---------------------------------------------------------------------------
 
-export function getProcessMultiModelEnabled(): boolean | undefined {
-	return proc.__kimchiMultiModelEnabled
+export function getProcessMultiModelEnabled(sessionId: string): boolean {
+	return proc.__kimchiMultiModelEnabled?.get(sessionId) ?? false
 }
 
-export function setProcessMultiModelEnabled(enabled: boolean): void {
-	proc.__kimchiMultiModelEnabled = enabled
+export function setProcessMultiModelEnabled(sessionId: string, enabled: boolean): void {
+	if (!proc.__kimchiMultiModelEnabled) {
+		proc.__kimchiMultiModelEnabled = new Map()
+	}
+	proc.__kimchiMultiModelEnabled.set(sessionId, enabled)
 }
 
 // ---------------------------------------------------------------------------
-// __kimchiOrchestratorRef
+// __kimchiOrchestratorRef.get(sessionId)
 // ---------------------------------------------------------------------------
 
-export function getProcessOrchestratorRef(): string | undefined {
-	return proc.__kimchiOrchestratorRef
+/**
+ * Read the per-session orchestrator ref from the process side-channel.
+ * Returns the stored value if found, or falls back to the global default.
+ */
+export function getProcessOrchestratorRef(sessionId: string): string | undefined {
+	return proc.__kimchiOrchestratorRef?.get(sessionId)
 }
 
-export function setProcessOrchestratorRef(ref: string): void {
-	proc.__kimchiOrchestratorRef = ref
+/**
+ * Store multi-model orchestrator ref to be read by Pi.
+ */
+export function setProcessOrchestratorRef(sessionId: string, ref: string): void {
+	if (!proc.__kimchiOrchestratorRef) {
+		proc.__kimchiOrchestratorRef = new Map()
+	}
+	proc.__kimchiOrchestratorRef.set(sessionId, ref)
 }

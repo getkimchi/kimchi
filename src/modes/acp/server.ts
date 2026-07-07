@@ -57,7 +57,11 @@ import {
 import type { AgentSessionEvent, ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 import { isHideThinkingEnabled } from "../../extensions/hide-thinking.js"
 import { loadConfig } from "../../extensions/permissions/config.js"
-import { PERMISSIONS_ENV_KEY } from "../../extensions/permissions/constants.js"
+import {
+	PERMISSIONS_ENV_KEY,
+	PERMISSION_MODES,
+	PERMISSION_MODES_WITH_META,
+} from "../../extensions/permissions/constants.js"
 import {
 	registerSessionPermissionFlagController,
 	unregisterSessionPermissionFlagController,
@@ -69,11 +73,7 @@ import {
 	setPermissionMode,
 } from "../../extensions/permissions/mode-controller.js"
 import { resolveMode } from "../../extensions/permissions/mode.js"
-import {
-	ALL_PERMISSION_MODES,
-	type PermissionMode,
-	type SessionPermissionFlagController,
-} from "../../extensions/permissions/types.js"
+import type { PermissionMode, SessionPermissionFlagController } from "../../extensions/permissions/types.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { createAcpUIContext } from "./acp-ui-context.js"
 import { ADVERTISED_CAPABILITIES, CAPABILITIES_KEY } from "./capabilities.js"
@@ -203,7 +203,11 @@ export class KimchiAcpAgent implements Agent {
 				// "supported"). loadSession remains the top-level flag because
 				// the spec hasn't unified it under sessionCapabilities yet.
 				sessionCapabilities: { list: {}, close: {} },
-				promptCapabilities: { image: supportsImages, audio: false, embeddedContext: false },
+				promptCapabilities: {
+					image: supportsImages,
+					audio: false,
+					embeddedContext: false,
+				},
 				// Extended capabilities
 				_meta: { [CAPABILITIES_KEY]: ADVERTISED_CAPABILITIES },
 			},
@@ -352,7 +356,7 @@ export class KimchiAcpAgent implements Agent {
 		switch (params.configId) {
 			case "permissions-mode": {
 				const value = params.value as PermissionMode
-				if (!ALL_PERMISSION_MODES.includes(value)) {
+				if (!PERMISSION_MODES.includes(value)) {
 					throw RequestError.invalidParams(undefined, `invalid mode ${value}`)
 				}
 				setPermissionMode(params.sessionId, value, "user")
@@ -629,7 +633,10 @@ export class KimchiAcpAgent implements Agent {
 		// calling dispose(). dispose() is synchronous and returns void, so async
 		// extension handlers (e.g. telemetry drain, shutdown marker) would be
 		// fire-and-forgotten if we relied on dispose() alone.
-		await entry.session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" })
+		await entry.session.extensionRunner?.emit({
+			type: "session_shutdown",
+			reason: "quit",
+		})
 		entry.session.dispose()
 	}
 
@@ -1008,22 +1015,6 @@ export class KimchiAcpAgent implements Agent {
  * Exposes the four permission modes (default, plan, auto, yolo) as a select
  * option that ACP clients can read and modify.
  */
-const PERMISSION_MODE_META: Record<PermissionMode, { name: string; description: string }> = {
-	default: {
-		name: "Ask before edits",
-		description: "Approves every file change before it's made",
-	},
-	plan: { name: "Plan", description: "Thinks and plans, no edits" },
-	auto: {
-		name: "Auto",
-		description: "Runs freely, asks only for high-risk actions",
-	},
-	yolo: {
-		name: "YOLO",
-		description: "No permissions asked (use in sandboxed environments)",
-	},
-}
-
 export function buildPermissionsConfigOption(currentMode: PermissionMode): SessionConfigOption {
 	return {
 		id: "permissions-mode",
@@ -1033,10 +1024,10 @@ export function buildPermissionsConfigOption(currentMode: PermissionMode): Sessi
 		description:
 			"Control tool execution permissions: default (prompt for writes), plan (read-only), auto (classifier-gated), yolo (no restrictions)",
 		currentValue: currentMode,
-		options: ALL_PERMISSION_MODES.map((mode) => ({
-			name: PERMISSION_MODE_META[mode].name,
+		options: PERMISSION_MODES_WITH_META.map(({ mode, label, description }) => ({
+			name: label,
 			value: mode,
-			description: PERMISSION_MODE_META[mode].description,
+			description,
 		})),
 	}
 }
@@ -1175,7 +1166,10 @@ function parseSessionHeader(raw: string): Pick<SessionHeader, "id" | "cwd"> | nu
 	return null
 }
 
-function readSessionHeaderPeek(sessionPath: string): { raw: string; complete: boolean } {
+function readSessionHeaderPeek(sessionPath: string): {
+	raw: string
+	complete: boolean
+} {
 	const fd = openSync(sessionPath, "r")
 	try {
 		const buffer = Buffer.allocUnsafe(SESSION_HEADER_PEEK_BYTES)
@@ -1536,11 +1530,19 @@ function toolResultContent(result: unknown): ToolCallContent[] {
 	const out: ToolCallContent[] = []
 	for (const block of content) {
 		if (!block || typeof block !== "object") continue
-		const b = block as { type?: string; text?: string; data?: string; mimeType?: string }
+		const b = block as {
+			type?: string
+			text?: string
+			data?: string
+			mimeType?: string
+		}
 		if (b.type === "text" && typeof b.text === "string") {
 			out.push({ type: "content", content: { type: "text", text: b.text } })
 		} else if (b.type === "image" && typeof b.data === "string" && typeof b.mimeType === "string") {
-			out.push({ type: "content", content: { type: "image", data: b.data, mimeType: b.mimeType } })
+			out.push({
+				type: "content",
+				content: { type: "image", data: b.data, mimeType: b.mimeType },
+			})
 		}
 	}
 	return out

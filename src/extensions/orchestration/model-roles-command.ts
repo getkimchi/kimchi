@@ -12,7 +12,7 @@ import type { Component } from "@earendil-works/pi-tui"
 import { getAvailableModels } from "../../startup-context.js"
 import { setProcessOrchestratorRef } from "../kimchi-process.js"
 import { withSuppressedModelSelectGuard } from "../model-switch.js"
-import { getMultiModelEnabled } from "../prompt-construction/prompt-enrichment.js"
+import { getMultiModelEnabled } from "../multi-model.js"
 import { type Question, type QuestionFormResult, YES_NO_OPTIONS, createQuestionForm } from "../questionnaire/index.js"
 import {
 	type ModelCustomMetadata,
@@ -26,14 +26,13 @@ import {
 	type ModelRoles,
 	type RoleModelAssignment,
 	getModelRoles,
-	modelIdFromRef,
 	normalizeRoleModels,
 	saveModelRoles,
 	splitModelRef,
 } from "./model-roles.js"
 
-function syncOrchestratorRef(roles: ModelRoles): void {
-	setProcessOrchestratorRef(roles.orchestrator)
+function syncOrchestratorRef(sessionId: string, roles: ModelRoles): void {
+	setProcessOrchestratorRef(sessionId, roles.orchestrator)
 }
 
 const ROLE_LABELS: Record<keyof ModelRoles, { label: string; description: string }> = {
@@ -302,11 +301,12 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 	pi.registerCommand("multi-model", {
 		description: "Configure model roles (orchestrator, planner, builder, reviewer, explorer, researcher, judge)",
 		async handler(_args, ctx) {
-			if (!ctx.hasUI) {
-				ctx.ui.notify("Model roles configuration requires an interactive session.", "warning")
+			if (ctx.mode !== "tui") {
+				ctx.ui.notify("Model roles configuration requires a TUI session.", "warning")
 				return
 			}
 
+			const sessionId = ctx.sessionManager.getSessionId()
 			const roles = { ...getModelRoles() }
 
 			const apiModels = getAvailableModels()
@@ -334,14 +334,14 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 					Object.assign(roles, DEFAULT_MODEL_ROLES)
 					try {
 						saveModelRoles(roles)
-						syncOrchestratorRef(roles)
+						syncOrchestratorRef(sessionId, roles)
 					} catch (err) {
 						ctx.ui.notify(`Failed to save model roles: ${err instanceof Error ? err.message : err}`, "error")
 						return
 					}
 					ctx.ui.notify("Model roles reset to defaults.", "info")
 
-					if (getMultiModelEnabled()) {
+					if (getMultiModelEnabled(sessionId)) {
 						const parsed = splitModelRef(DEFAULT_MODEL_ROLES.orchestrator)
 						if (parsed) {
 							const target = ctx.modelRegistry?.find(parsed.provider, parsed.modelId)
@@ -402,14 +402,14 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 				roles[roleKey] = newRef
 				try {
 					saveModelRoles(roles)
-					syncOrchestratorRef(roles)
+					syncOrchestratorRef(sessionId, roles)
 				} catch (err) {
 					ctx.ui.notify(`Failed to save model roles: ${err instanceof Error ? err.message : err}`, "error")
 					return
 				}
 				ctx.ui.notify(`${info.label} set to ${newRef}`, "info")
 
-				if (roleKey === "orchestrator" && getMultiModelEnabled()) {
+				if (roleKey === "orchestrator" && getMultiModelEnabled(sessionId)) {
 					const parsed = splitModelRef(newRef)
 					if (parsed) {
 						const target = ctx.modelRegistry?.find(parsed.provider, parsed.modelId)

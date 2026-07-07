@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { type MockedFunction, beforeEach, describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import createModelGuardExtension from "./model-guard.js"
 import { __resetImagesDetectedForTest, __setLatestMessagesForTest, sessionHasImages } from "./model-guard.js"
 import modelSwitchExtension, {
@@ -7,7 +7,7 @@ import modelSwitchExtension, {
 	getModelTier,
 	withSuppressedModelSelectGuard,
 } from "./model-switch.js"
-import { getMultiModelEnabled, setMultiModelEnabled } from "./prompt-construction/prompt-enrichment.js"
+import { getMultiModelEnabled, setMultiModelEnabled } from "./multi-model.js"
 
 type RegisteredTool = {
 	name: string
@@ -76,10 +76,11 @@ function createHarness(options: { setModelResult?: boolean } = {}): Harness {
 
 	const exec: Harness["exec"] = (model, opts = {}) => {
 		const ctx = opts.omitRegistry
-			? { getContextUsage: () => undefined, model: undefined }
+			? { getContextUsage: () => undefined, model: undefined, sessionManager: { getSessionId: () => "test-session" } }
 			: {
 					modelRegistry: { find, getAvailable },
 					getContextUsage: () => undefined,
+					sessionManager: { getSessionId: () => "test-session" },
 					model: opts.currentModel
 						? {
 								id: opts.currentModel.id,
@@ -121,6 +122,7 @@ function makeMockCtx() {
 		model: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
 		modelRegistry: { getAvailable: () => MODELS },
 		getContextUsage: () => ({ tokens: 10_000 }),
+		sessionManager: { getSessionId: () => "test-session" },
 	}
 }
 
@@ -438,6 +440,7 @@ describe("modelSwitchExtension", () => {
 					getAvailable: () => MODELS,
 				},
 				getContextUsage: () => undefined,
+				sessionManager: { getSessionId: () => "test-session" },
 				model: { id: MODELS[0].id, provider: MODELS[0].provider, input: ["text", "image"] },
 				hasUI: true,
 				ui: { select, input, notify },
@@ -478,6 +481,7 @@ describe("modelSwitchExtension", () => {
 					getAvailable: () => [unknownModel],
 				},
 				getContextUsage: () => undefined,
+				sessionManager: { getSessionId: () => "test-session" },
 				model: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
 				hasUI: true,
 				ui: { select, input, notify },
@@ -504,6 +508,7 @@ describe("modelSwitchExtension", () => {
 					getAvailable: () => MODELS,
 				},
 				getContextUsage: () => undefined,
+				sessionManager: { getSessionId: () => "test-session" },
 				model: { id: MODELS[0].id, provider: MODELS[0].provider, input: ["text", "image"] },
 				hasUI: false,
 				ui: { select, input, notify: vi.fn() },
@@ -556,6 +561,7 @@ describe("modelSwitchExtension", () => {
 					model: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
 					modelRegistry: { getAvailable: () => MODELS },
 					getContextUsage: () => ({ tokens: 150_000 }),
+					sessionManager: { getSessionId: () => "test-session" },
 					ui: { notify },
 				} as never,
 			)
@@ -592,6 +598,7 @@ describe("modelSwitchExtension", () => {
 						model: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
 						modelRegistry: { getAvailable: () => MODELS },
 						getContextUsage: () => ({ tokens: 150_000 }),
+						sessionManager: { getSessionId: () => "test-session" },
 						ui: { notify },
 					} as never,
 				)
@@ -623,6 +630,7 @@ describe("modelSwitchExtension", () => {
 					model: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
 					modelRegistry: { getAvailable: () => MODELS },
 					getContextUsage: () => ({ tokens: 150_000 }),
+					sessionManager: { getSessionId: () => "test-session" },
 					ui: { notify },
 				} as never,
 			)
@@ -647,6 +655,7 @@ describe("modelSwitchExtension", () => {
 					model: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
 					modelRegistry: { getAvailable: () => MODELS },
 					getContextUsage: () => ({ tokens: 150_000 }),
+					sessionManager: { getSessionId: () => "test-session" },
 					ui: { notify },
 				} as never,
 			)
@@ -676,6 +685,7 @@ describe("modelSwitchExtension", () => {
 					model: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
 					modelRegistry: { getAvailable: () => MODELS },
 					getContextUsage: () => ({ tokens: 150_000 }),
+					sessionManager: { getSessionId: () => "test-session" },
 					ui: { notify: notify1 },
 				} as never,
 			)
@@ -700,6 +710,7 @@ describe("modelSwitchExtension", () => {
 					model: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
 					modelRegistry: { getAvailable: () => MODELS },
 					getContextUsage: () => ({ tokens: 150_000 }),
+					sessionManager: { getSessionId: () => "test-session" },
 					ui: { notify: notify2 },
 				} as never,
 			)
@@ -786,6 +797,7 @@ describe("modelSwitchExtension", () => {
 				model: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
 				modelRegistry: { getAvailable: () => MODELS },
 				getContextUsage: () => ({ tokens }),
+				sessionManager: { getSessionId: () => "test-session" },
 				hasUI,
 				ui: { notify: vi.fn(), select: vi.fn(), input: vi.fn(), ...overrides.ui },
 				...overrides,
@@ -1037,8 +1049,8 @@ describe("modelSwitchExtension", () => {
 			const { pi, trigger } = createHarnessWithTrigger()
 			modelSwitchExtension(pi)
 
-			setMultiModelEnabled(true)
-			;(process as NodeJS.Process & { __kimchiMultiModelEnabled?: boolean }).__kimchiMultiModelEnabled = false
+			await setMultiModelEnabled("session-1", true)
+			expect(getMultiModelEnabled("session-1")).toBe(true)
 
 			await trigger(
 				"model_select",
@@ -1048,10 +1060,10 @@ describe("modelSwitchExtension", () => {
 					previousModel: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
 					source: "set",
 				},
-				mockCtx({ tokens: 10_000 }),
+				mockCtx({ tokens: 10_000, sessionManager: { getSessionId: () => "session-1" } } as never),
 			)
 
-			expect(getMultiModelEnabled()).toBe(false)
+			expect(getMultiModelEnabled("session-1")).toBe(false)
 		})
 
 		it("reverts when getContextUsage returns null but local estimate exceeds target context window", async () => {

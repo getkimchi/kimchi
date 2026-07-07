@@ -212,6 +212,7 @@ describe("prompt enrichment tool visibility", () => {
 					cwd: "/tmp",
 					model: undefined,
 					hasUI: false,
+					sessionManager: { getSessionId: () => "test-session" },
 				},
 			)) as { systemPrompt: string }
 
@@ -250,6 +251,7 @@ describe("prompt enrichment tool visibility", () => {
 				cwd: "/tmp",
 				model: undefined,
 				hasUI: false,
+				sessionManager: { getSessionId: () => "test-session" },
 			},
 		)) as { systemPrompt: string }
 

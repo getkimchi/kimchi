@@ -9,15 +9,11 @@ import {
 	resolveContextTokens,
 	sessionHasImages,
 } from "./model-guard.js"
+import { getMultiModelEnabled, setMultiModelEnabled, writeMultiModelSettingAsync } from "./multi-model.js"
 import { MODEL_CAPABILITIES } from "./orchestration/model-registry/builtin-models.js"
 import type { ModelTier } from "./orchestration/model-registry/types.js"
 import { splitModelRef } from "./orchestration/model-roles.js"
-import {
-	getMultiModelEnabled,
-	getOrchestratorModelId,
-	getOrchestratorModelRef,
-	setMultiModelEnabled,
-} from "./prompt-construction/prompt-enrichment.js"
+import { getOrchestratorModelId, getOrchestratorModelRef } from "./prompt-construction/prompt-enrichment.js"
 
 /** Prevents model_select handler from re-checking what set_model tool already validated. */
 let suppressModelSelectGuard = false
@@ -66,11 +62,12 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 			}),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const sessionId = ctx.sessionManager.getSessionId()
 			const { model } = params
 
 			if (model === "multi-model") {
-				const orchRef = getOrchestratorModelRef()
-				const orchId = getOrchestratorModelId()
+				const orchRef = getOrchestratorModelRef(sessionId)
+				const orchId = getOrchestratorModelId(sessionId)
 				const parsed = splitModelRef(orchRef)
 				const orchestrator = parsed ? ctx.modelRegistry?.find(parsed.provider, parsed.modelId) : undefined
 				if (!orchestrator) {
@@ -79,7 +76,7 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 						details: null,
 					}
 				}
-				setMultiModelEnabled(true)
+				void setMultiModelEnabled(sessionId, true)
 				suppressModelSelectGuard = true
 				try {
 					await pi.setModel(orchestrator)
@@ -171,7 +168,7 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 				}
 			}
 
-			setMultiModelEnabled(false)
+			void setMultiModelEnabled(sessionId, false)
 			let ok: boolean
 			suppressModelSelectGuard = true
 			try {
@@ -212,11 +209,10 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 		if (event.source === "cycle" || event.source === "restore") return
 
 		// Flush the multi-model flag that the harness /models UI sets via
-		// process.__kimchiMultiModelEnabled.  getMultiModelEnabled() detects a
-		// mismatch between the process flag and the extension variable and
-		// persists it to disk.  Without this, the disk value can go stale if the
-		// session ends before the footer polls the flag.
-		getMultiModelEnabled()
+		// process.__kimchiMultiModelSettings. Without this, the disk value
+		// can go stale if the session ends before the footer polls the flag.
+		const sessionId = ctx.sessionManager.getSessionId()
+		await writeMultiModelSettingAsync(sessionId, getMultiModelEnabled(sessionId))
 
 		// Nothing to revert to
 		if (!event.previousModel) return
@@ -251,10 +247,10 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 		}
 
 		if (event.source === "set") {
-			const orchRef = getOrchestratorModelRef()
+			const orchRef = getOrchestratorModelRef(sessionId)
 			const selectedRef = `${event.model.provider}/${event.model.id}`
 			if (selectedRef !== orchRef) {
-				setMultiModelEnabled(false)
+				void setMultiModelEnabled(sessionId, false)
 			}
 		}
 	})

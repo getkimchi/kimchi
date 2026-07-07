@@ -1,7 +1,8 @@
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import promptSummaryExtension from "./prompt-summary.js"
 
-type Handler = (event?: unknown) => void | Promise<void>
+type Handler = (event: unknown, ctx: unknown) => void | Promise<void>
 
 function createPiHarness() {
 	const handlers = new Map<string, Handler[]>()
@@ -17,10 +18,14 @@ function createPiHarness() {
 			sendMessage(message: unknown) {
 				sent.push(message)
 			},
-		},
-		async emit(event: string, payload?: unknown) {
+		} as unknown as ExtensionAPI,
+		async emit(event: string, payload: unknown) {
+			const ctx = {
+				isIdle: vi.fn(),
+				sessionManager: { getSessionId: () => "test-session" },
+			}
 			for (const handler of handlers.get(event) ?? []) {
-				await handler(payload)
+				await handler(payload, ctx)
 			}
 		},
 		sent,
@@ -48,10 +53,11 @@ function createStaleCtxHarness() {
 			sendMessage(message: unknown) {
 				sent.push(message)
 			},
-		},
+		} as unknown as ExtensionAPI,
 		async emit(event: string, payload?: unknown, ctxOverride?: Record<string, unknown>) {
 			const ctx = {
 				isIdle: () => false,
+				sessionManager: { getSessionId: () => "test-session" },
 				...ctxOverrides,
 				...ctxOverride,
 			}
@@ -71,9 +77,9 @@ describe("prompt summary Agent token accounting", () => {
 
 	it("adds deltas for repeated results from the same running Agent", async () => {
 		const harness = createPiHarness()
-		promptSummaryExtension(harness.pi as never)
+		promptSummaryExtension(harness.pi)
 
-		await harness.emit("agent_start")
+		await harness.emit("agent_start", {})
 		await harness.emit("tool_result", {
 			toolName: "get_subagent_result",
 			details: { agentId: "agent-1", tokenUsage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 1 } },
@@ -82,12 +88,10 @@ describe("prompt summary Agent token accounting", () => {
 			toolName: "get_subagent_result",
 			details: { agentId: "agent-1", tokenUsage: { input: 18, output: 9, cacheRead: 0, cacheWrite: 3 } },
 		})
-		await harness.emit("agent_end")
+		await harness.emit("agent_end", {})
 		await new Promise((resolve) => setTimeout(resolve, 0))
 
-		const message = harness.sent[0] as {
-			details: { subagents: { input: number; output: number; cacheRead: number; cacheWrite: number } }
-		}
+		const message = harness.sent[0] as { details: Record<string, unknown> }
 		expect(message.details.subagents).toEqual({ input: 18, output: 9, cacheRead: 0, cacheWrite: 3 })
 	})
 })

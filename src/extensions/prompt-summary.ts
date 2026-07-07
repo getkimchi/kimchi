@@ -2,7 +2,8 @@ import type { AssistantMessage } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, MessageRenderer, Theme } from "@earendil-works/pi-coding-agent"
 import { Container, Text } from "@earendil-works/pi-tui"
 import { formatCount } from "./format.js"
-import { getMultiModelEnabled, getOrchestratorModelId, isSubagent } from "./prompt-construction/prompt-enrichment.js"
+import { getMultiModelEnabled } from "./multi-model.js"
+import { getOrchestratorModelId, isSubagent } from "./prompt-construction/prompt-enrichment.js"
 import { isStaleCtxError } from "./stale-ctx.js"
 
 interface UsageTotals {
@@ -218,10 +219,11 @@ export default function promptSummaryExtension(pi: ExtensionAPI) {
 				? [...subagentModelTotals.entries()].map(([model, totals]) => ({ model, totals }))
 				: undefined
 
+		const sessionId = ctx.sessionManager.getSessionId()
 		const data: PromptSummaryData = {
 			elapsed: formatDuration(Date.now() - startedAt),
 			orchestrator: orchestrator.input + orchestrator.output > 0 ? { ...orchestrator } : null,
-			orchestratorModel: getMultiModelEnabled() ? getOrchestratorModelId() : undefined,
+			orchestratorModel: getMultiModelEnabled(sessionId) ? getOrchestratorModelId(sessionId) : undefined,
 			subagents: subagents.input + subagents.output > 0 ? { ...subagents } : null,
 			subagentsByModel,
 			total: grandTotal,

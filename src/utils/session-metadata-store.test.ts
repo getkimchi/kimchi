@@ -2,8 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import * as agentDiscovery from "../agent-discovery/index.js"
 import type { AgentDiscovery } from "../agent-discovery/index.js"
 import type { KimchiConfig, SearchStrategyConfig } from "../config.js"
-import * as permissions from "../extensions/permissions/index.js"
-import * as promptEnrichment from "../extensions/prompt-construction/prompt-enrichment.js"
+import * as multiModel from "../extensions/multi-model.js"
 import {
 	type ConfigChangeRecord,
 	type SessionStartMetadata,
@@ -68,8 +67,7 @@ describe("session-metadata-store", () => {
 		// Mock buildConfigSnapshot's dependencies for deterministic config
 		// values (mirrors config-snapshot.test.ts). getOsMetadata is left real
 		// so the OS integration is exercised against process.platform.
-		vi.spyOn(permissions, "getDisplayPermissionMode").mockReturnValue("plan")
-		vi.spyOn(promptEnrichment, "getMultiModelEnabled").mockReturnValue(true)
+		vi.spyOn(multiModel, "getMultiModelEnabled").mockReturnValue(true)
 		const fakeDiscovery: AgentDiscovery = {
 			id: "test",
 			displayName: "test",

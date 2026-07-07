@@ -39,6 +39,17 @@ export function readJson(path: string): Record<string, unknown> {
 	return parsed as Record<string, unknown>
 }
 
+export async function readJsonAsync(path: string): Promise<Record<string, unknown>> {
+	return new Promise((resolve, reject) => {
+		try {
+			const data = readJson(path)
+			resolve(data)
+		} catch (err) {
+			reject(err)
+		}
+	})
+}
+
 /**
  * Atomically write a JSON file with 2-space indentation. Creates parent
  * directories.
@@ -49,6 +60,17 @@ export function writeJson(path: string, data: unknown): void {
 	const tmp = `${path}.${process.pid}.tmp`
 	writeFileSync(tmp, content, { mode: 0o600 })
 	renameSync(tmp, path)
+}
+
+export async function writeJsonAsync(path: string, data: unknown): Promise<void> {
+	return new Promise((resolve, reject) => {
+		try {
+			writeJson(path, data)
+			resolve()
+		} catch (err) {
+			reject(err)
+		}
+	})
 }
 
 /** Atomic raw write, used by the OpenClaw .env writer. */

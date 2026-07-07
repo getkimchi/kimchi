@@ -35,7 +35,7 @@ import { TODO_TOOL_NAMES } from "../todos/tool.js"
 import { classifyToolCall } from "./classifier.js"
 import { registerCommands } from "./commands.js"
 import { type LoadedConfig, loadConfig } from "./config.js"
-import { PERMISSIONS_ENV_KEY } from "./constants.js"
+import { BUILTIN_DENY, DEFAULT_CONFIG, PERMISSION_MODES_WITH_META as MODES, PERMISSIONS_ENV_KEY } from "./constants.js"
 import { getSessionPermissionFlagController } from "./mode-controller-registry.js"
 import { getPermissionMode, getSessionPermissionsEnvKey, setPermissionMode } from "./mode-controller.js"
 import { resolveMode } from "./mode.js"
@@ -58,13 +58,7 @@ import {
 	isReadOnlyTool,
 	splitCompoundCommand,
 } from "./taxonomy.js"
-import {
-	BUILTIN_DENY,
-	DEFAULT_CONFIG,
-	type PermissionMode,
-	type PermissionModeRuntimeSource,
-	type Rule,
-} from "./types.js"
+import type { PermissionMode, PermissionModeRuntimeSource, Rule } from "./types.js"
 
 /**
  * Check whether a file path is within .kimchi/plans/ relative to cwd.
@@ -87,8 +81,6 @@ export function isWithinKimchiPlans(filePath: string, cwd: string): boolean {
  * For throwaway/sandboxed environments ONLY.
  */
 const DANGEROUS_BYPASS_FLAG = "dangerously-skip-permissions"
-
-type RuntimeModeSource = "user" | "ferment"
 
 // Safe default so any event that fires before session_start (and therefore
 // before doLoadConfig) doesn't crash reading `loaded.config.*`.
@@ -123,28 +115,10 @@ const PLAN_MODE_TOOL_SET = new Set<string>(PLAN_MODE_TOOLS)
 // before comparing (see `const toolName = event.toolName.toLowerCase()` below).
 const BUILTIN_ALLOW_TOOL_NAMES = ["set_phase", "agent", "get_subagent_result", "steer_subagent", ...TODO_TOOL_NAMES]
 
-const MODES: Array<{
-	mode: PermissionMode
-	label: string
-	color: "success" | "warning" | "error"
-}> = [
-	{ mode: "default", label: "default", color: "success" },
-	{ mode: "plan", label: "plan", color: "warning" },
-	{ mode: "auto", label: "auto", color: "warning" },
-	{ mode: "yolo", label: "yolo", color: "error" },
-]
-
 let _isLaunchedWithYolo: () => boolean = () => process.env[PERMISSIONS_ENV_KEY] === "yolo"
 
 export function isLaunchedWithYolo(): boolean {
 	return _isLaunchedWithYolo()
-}
-
-let _displayPermissionMode: PermissionMode
-
-/** Returns current permission mode to be displayed in the TUI. */
-export function getDisplayPermissionMode(): string {
-	return _displayPermissionMode
 }
 
 export { notifyFermentActive }
@@ -282,7 +256,6 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		source: PermissionModeRuntimeSource,
 		skipNotify?: boolean,
 	): void {
-		_displayPermissionMode = mode
 		setPermissionMode(ctx.sessionManager.getSessionId(), mode, source, skipNotify)
 	}
 
