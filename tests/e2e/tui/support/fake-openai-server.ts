@@ -28,8 +28,8 @@ export interface FakeResponseScript {
 	/**
 	 * Reasoning chunks emitted as `delta.reasoning_content` BEFORE `stream`.
 	 * The upstream `openai-completions` provider maps these to `thinking_start`
-	 * / `thinking_delta` / `thinking_end` events, which the UI surfaces as
-	 * the cooking-animation "thinking…" suffix.
+	 * / `thinking_delta` / `thinking_end` events, which trigger the cooking
+	 * animation's re-arm during reasoning.
 	 */
 	thinking?: string[]
 	/** Per-chunk delay for `stream` chunks. Defaults to `delayMs`. */

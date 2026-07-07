@@ -1,17 +1,11 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { withWorkingHidden } from "../ui.js"
 import type { PermissionChoice, ToolPermissionPrompter } from "./prompter.js"
 import { numberedChoices, stripChoiceNumber } from "./select-utils.js"
 import { suggestScope } from "./session-memory.js"
 import type { Rule } from "./types.js"
 
-export async function withWorkingHidden<T>(ctx: ExtensionContext, fn: () => Promise<T>): Promise<T> {
-	ctx.ui.setWorkingVisible?.(false)
-	try {
-		return await fn()
-	} finally {
-		ctx.ui.setWorkingVisible?.(true)
-	}
-}
+export { withWorkingHidden }
 
 export type ApprovalOutcome =
 	| { kind: "allow-once" }
