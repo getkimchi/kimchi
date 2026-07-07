@@ -323,11 +323,29 @@ export function shutdownIdleClientsIn(
 		clientMap.delete(key)
 		lockMap.delete(key)
 
-		// Best-effort graceful LSP shutdown, then kill. The shutdown request
-		// adds a pending entry; the proc.exited handler (fired by proc.kill())
-		// rejects it during process teardown.
-		sendRequest(client, "shutdown", null).catch(() => {})
-		client.proc.kill()
+		// Fire-and-forget LSP shutdown request, then immediately kill.
+		// We intentionally do NOT await the shutdown response or send the
+		// LSP "exit" notification before killing. This mirrors the existing
+		// shutdownAll() pattern and keeps shutdownIdleClientsIn synchronous,
+		// which is what allows the no-lock concurrency argument to hold (no
+		// event-loop turn between the idle check and kill). The client has
+		// been idle for 15+ minutes with no pending work, so there is nothing
+		// to lose. gopls and typescript-language-server both handle SIGKILL
+		// cleanly.
+		//
+		// Each step is wrapped individually so a failure in one client
+		// cannot abort the sweep for remaining clients (this runs inside a
+		// setInterval callback).
+		try {
+			sendRequest(client, "shutdown", null).catch(() => {})
+		} catch {
+			// sendRequest threw synchronously (e.g. stdin already closed)
+		}
+		try {
+			client.proc.kill()
+		} catch {
+			// Process may already be dead.
+		}
 	}
 }
 

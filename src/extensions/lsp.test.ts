@@ -1044,6 +1044,22 @@ describe("idle sweep timer", () => {
 		vi.advanceTimersByTime(60_000)
 		expect(clientMod.shutdownIdleClients).toHaveBeenCalledTimes(1)
 	})
+
+	it("clears a prior sweep when a later session_start detects no servers", async () => {
+		// First session: servers detected → sweep started
+		vi.mocked(serversMod.detectServers).mockReturnValue([FAKE_SERVER])
+		const pi = makePi()
+		lspExtension(pi)
+		await pi.fireSessionStart()
+
+		// Second session: no servers → sweep must be cleared
+		vi.mocked(serversMod.detectServers).mockReturnValue([])
+		vi.mocked(clientMod.shutdownIdleClients).mockClear()
+		await pi.fireSessionStart()
+
+		vi.advanceTimersByTime(120_000)
+		expect(clientMod.shutdownIdleClients).not.toHaveBeenCalled()
+	})
 })
 
 // =============================================================================

@@ -77,15 +77,27 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		cwd = ctx.cwd
 		ui = ctx.hasUI ? ctx.ui : undefined
+
+		// Clear any previous sweep timer first. This must happen before the
+		// no-servers early return, otherwise a prior session's interval leaks
+		// and keeps sweeping the module-level clients map.
+		if (idleSweepTimer) {
+			clearInterval(idleSweepTimer)
+			idleSweepTimer = null
+		}
+
 		activeServers = detectServers(cwd)
 		if (activeServers.length === 0) return
 
 		// Start idle sweep — shut down LSP servers after 15 min of inactivity.
-		// Clear any previous timer first to prevent duplicates on session restart.
-		if (idleSweepTimer) clearInterval(idleSweepTimer)
+		// unref() so the timer doesn't keep the process alive if session_shutdown
+		// is never fired (e.g. unexpected exit).
 		idleSweepTimer = setInterval(() => {
 			shutdownIdleClients(IDLE_THRESHOLD_MS)
 		}, IDLE_SWEEP_INTERVAL_MS)
+		if (typeof idleSweepTimer === "object" && "unref" in idleSweepTimer) {
+			idleSweepTimer.unref()
+		}
 
 		// Update status bar with detected server names
 		if (ui) {
