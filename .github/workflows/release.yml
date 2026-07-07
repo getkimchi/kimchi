@@ -99,6 +99,36 @@ jobs:
       - name: Build binary
         run: node scripts/build-binary.js --target ${{ matrix.target }}
 
+      - name: Build Windows GUI
+        if: ${{ matrix.os == 'windows' }}
+        env:
+          GUI_ARTIFACT_NAME: kimchi_windows_${{ matrix.arch }}
+        run: |
+          node node_modules/electron/install.js
+          pnpm run gui:build
+          bunx electron-builder --win portable --publish never
+          node scripts/clean-gui-dist.js
+
+      - name: Build Linux GUI
+        if: ${{ matrix.os == 'linux' }}
+        env:
+          GUI_ARTIFACT_NAME: kimchi_linux_${{ matrix.arch }}
+        run: |
+          node node_modules/electron/install.js
+          pnpm run gui:build
+          bunx electron-builder --linux AppImage --publish never
+          node scripts/clean-gui-dist.js
+
+      - name: Build macOS GUI
+        if: ${{ matrix.os == 'darwin' }}
+        env:
+          GUI_ARTIFACT_NAME: kimchi_darwin_${{ matrix.arch }}
+        run: |
+          node node_modules/electron/install.js
+          pnpm run gui:build
+          bunx electron-builder --mac dmg --publish never
+          node scripts/clean-gui-dist.js
+
       - name: Verify binary architecture
         if: ${{ matrix.os != 'windows' }}
         run: |
@@ -149,8 +179,42 @@ jobs:
             throw "Windows kimchi.exe could not locate the bundled proxy-helper.exe"
           }
 
-      - name: Package release asset
-        run: node scripts/package-release-asset.js --os ${{ matrix.os }} --arch ${{ matrix.arch }}
+      - name: Verify Windows GUI
+        if: ${{ matrix.os == 'windows' }}
+        shell: pwsh
+        run: Get-Item dist/kimchi_windows_${{ matrix.arch }}.exe
+
+      - name: Verify Linux GUI
+        if: ${{ matrix.os == 'linux' }}
+        run: ls -l dist/kimchi_linux_${{ matrix.arch }}.AppImage
+
+      - name: Verify macOS GUI
+        if: ${{ matrix.os == 'darwin' }}
+        run: ls -l dist/kimchi_darwin_${{ matrix.arch }}.dmg
+
+      - name: Package Windows release
+        if: ${{ matrix.os == 'windows' }}
+        run: >
+          node scripts/package-release-asset.js
+          --os windows
+          --arch ${{ matrix.arch }}
+          --gui dist/kimchi_windows_${{ matrix.arch }}.exe
+
+      - name: Package Linux release
+        if: ${{ matrix.os == 'linux' }}
+        run: >
+          node scripts/package-release-asset.js
+          --os linux
+          --arch ${{ matrix.arch }}
+          --gui dist/kimchi_linux_${{ matrix.arch }}.AppImage
+
+      - name: Package macOS release
+        if: ${{ matrix.os == 'darwin' }}
+        run: >
+          node scripts/package-release-asset.js
+          --os darwin
+          --arch ${{ matrix.arch }}
+          --gui dist/kimchi_darwin_${{ matrix.arch }}.dmg
 
       - name: Verify Windows installer
         if: ${{ matrix.os == 'windows' }}
