@@ -303,7 +303,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		if (!ctx.hasUI) return
 		const { mode } = getRuntimePermissionMode()
 		const active = MODES.find((m) => m.mode === mode) ?? MODES[0]
-		const name = `${resolvedSemanticFg(ctx.ui.theme, active.color)}${active.label}${RST_FG}`
+		const name = `${resolvedSemanticFg(ctx.ui.theme, active.color)}${active.tuiLabel}${RST_FG}`
 		const hint = ctx.ui.theme.fg("dim", "→ shift+tab")
 		ctx.ui.setStatus("permissions-mode", `${name} ${hint}`)
 	}
