@@ -88,9 +88,11 @@ export async function redactObjectStrings<T>(obj: T): Promise<T> {
 		return Promise.all(obj.map((item) => redactObjectStrings(item))) as Promise<T>
 	}
 	if (obj !== null && typeof obj === "object") {
+		const entries = Object.entries(obj as Record<string, unknown>)
+		const values = await Promise.all(entries.map(([, value]) => redactObjectStrings(value)))
 		const result: Record<string, unknown> = {}
-		for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
-			result[key] = await redactObjectStrings(value)
+		for (let i = 0; i < entries.length; i++) {
+			result[entries[i][0]] = values[i]
 		}
 		return result as T
 	}
