@@ -185,3 +185,120 @@ test("disables redaction when KIMCHI_REDACTION_ENABLED=0", async ({ terminal }) 
 		},
 	)
 })
+
+test("redacts PII in tool-call arguments before LLM sees them in context", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "pii-redaction-tool-call-args",
+			responses: [
+				// First response: fake model calls bash with a command containing PII
+				{
+					stream: ["Running check..."],
+					toolCalls: [
+						{
+							id: "call_bash_1",
+							function: {
+								name: "bash",
+								arguments: JSON.stringify({
+									command: "echo Authorization: Bearer abc123def456ghi789jkl012mno345pqr678stu901",
+								}),
+							},
+						},
+					],
+				},
+				// Second response: final text after tool result
+				{ stream: ["Done"] },
+			],
+		},
+		async (fixture) => {
+			terminal.submit("Check the auth token")
+
+			await expect(terminal.getByText("Done", { full: true })).toBeVisible()
+
+			// The second request contains the tool-call and tool-result in context.
+			// The tool-call arguments (which contain the Bearer token) must be redacted.
+			// Match both /openai/v1/chat/completions and /chat/completions (continuation requests may use a different path)
+			const chatRequests = fixture.fake.requests.filter(
+				(r) => r.url.includes("/chat/completions"),
+			)
+			expect(chatRequests.length).toBeGreaterThanOrEqual(2)
+
+			// Find the request that contains tool-call messages (the continuation after tool execution).
+			// Session-name title generation requests also hit /chat/completions but don't have tool messages.
+			const toolRequest = chatRequests.find((r) => {
+				const body = r.body as Record<string, unknown> | null
+				const msgs = body?.messages
+				return Array.isArray(msgs) && JSON.stringify(msgs).includes("bash")
+			})
+			expect(toolRequest).toBeTruthy()
+
+			const requestBody = toolRequest?.body as Record<string, unknown> | null
+			const messages = requestBody?.messages
+			expect(Array.isArray(messages)).toBe(true)
+
+			// Serialize the full messages array — the Bearer token must not appear anywhere.
+			const serialized = JSON.stringify(messages)
+			expect(serialized).not.toContain("abc123def456ghi789jkl012mno345pqr678stu901")
+			expect(serialized).toContain("[REDACTED")
+		},
+	)
+})
+
+test("redacts PII in tool results before LLM sees them in context", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "pii-redaction-tool-result",
+			responses: [
+				// First response: fake model calls bash, which will echo PII
+				{
+					stream: ["Checking config..."],
+					toolCalls: [
+						{
+							id: "call_bash_2",
+							function: {
+								name: "bash",
+								arguments: JSON.stringify({
+									command: "echo john.doe@example.com AKIAIOSFODNN7EXAMPLE",
+								}),
+							},
+						},
+					],
+				},
+				// Second response: final text after tool result
+				{ stream: ["Reviewed."] },
+			],
+		},
+		async (fixture) => {
+			terminal.submit("Check what's in the config")
+
+			await expect(terminal.getByText("Reviewed.", { full: true })).toBeVisible()
+
+			// The second request contains the tool result in context.
+			// The tool result text (bash output with email + AWS key) must be redacted.
+			const chatRequests = fixture.fake.requests.filter(
+				(r) => r.url.includes("/chat/completions"),
+			)
+			expect(chatRequests.length).toBeGreaterThanOrEqual(2)
+
+			// Find the request that contains tool-call messages (the continuation after tool execution).
+			const toolRequest = chatRequests.find((r) => {
+				const body = r.body as Record<string, unknown> | null
+				const msgs = body?.messages
+				return Array.isArray(msgs) && JSON.stringify(msgs).includes("bash")
+			})
+			expect(toolRequest).toBeTruthy()
+
+			const requestBody = toolRequest?.body as Record<string, unknown> | null
+			const messages = requestBody?.messages
+			expect(Array.isArray(messages)).toBe(true)
+
+			// The email and AWS key from the bash output must be redacted.
+			const serialized = JSON.stringify(messages)
+			expect(serialized).not.toContain("john.doe@example.com")
+			expect(serialized).not.toContain("AKIAIOSFODNN7EXAMPLE")
+			expect(serialized).toContain("[REDACTED")
+		},
+	)
+})
