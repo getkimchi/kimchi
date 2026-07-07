@@ -203,11 +203,7 @@ export class KimchiAcpAgent implements Agent {
 				// "supported"). loadSession remains the top-level flag because
 				// the spec hasn't unified it under sessionCapabilities yet.
 				sessionCapabilities: { list: {}, close: {} },
-				promptCapabilities: {
-					image: supportsImages,
-					audio: false,
-					embeddedContext: false,
-				},
+				promptCapabilities: { image: supportsImages, audio: false, embeddedContext: false },
 				// Extended capabilities
 				_meta: { [CAPABILITIES_KEY]: ADVERTISED_CAPABILITIES },
 			},
@@ -633,10 +629,7 @@ export class KimchiAcpAgent implements Agent {
 		// calling dispose(). dispose() is synchronous and returns void, so async
 		// extension handlers (e.g. telemetry drain, shutdown marker) would be
 		// fire-and-forgotten if we relied on dispose() alone.
-		await entry.session.extensionRunner?.emit({
-			type: "session_shutdown",
-			reason: "quit",
-		})
+		await entry.session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" })
 		entry.session.dispose()
 	}
 
@@ -1166,10 +1159,7 @@ function parseSessionHeader(raw: string): Pick<SessionHeader, "id" | "cwd"> | nu
 	return null
 }
 
-function readSessionHeaderPeek(sessionPath: string): {
-	raw: string
-	complete: boolean
-} {
+function readSessionHeaderPeek(sessionPath: string): { raw: string; complete: boolean } {
 	const fd = openSync(sessionPath, "r")
 	try {
 		const buffer = Buffer.allocUnsafe(SESSION_HEADER_PEEK_BYTES)
@@ -1530,19 +1520,11 @@ function toolResultContent(result: unknown): ToolCallContent[] {
 	const out: ToolCallContent[] = []
 	for (const block of content) {
 		if (!block || typeof block !== "object") continue
-		const b = block as {
-			type?: string
-			text?: string
-			data?: string
-			mimeType?: string
-		}
+		const b = block as { type?: string; text?: string; data?: string; mimeType?: string }
 		if (b.type === "text" && typeof b.text === "string") {
 			out.push({ type: "content", content: { type: "text", text: b.text } })
 		} else if (b.type === "image" && typeof b.data === "string" && typeof b.mimeType === "string") {
-			out.push({
-				type: "content",
-				content: { type: "image", data: b.data, mimeType: b.mimeType },
-			})
+			out.push({ type: "content", content: { type: "image", data: b.data, mimeType: b.mimeType } })
 		}
 	}
 	return out
