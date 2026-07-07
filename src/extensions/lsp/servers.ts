@@ -19,7 +19,19 @@ const SERVERS: ServerConfig[] = [
 	},
 ]
 
+/**
+ * Test-only override: when KIMCHI_LSP_BINARIES is set, `exists()` ignores the
+ * real PATH and returns true only for commands listed in the comma-separated
+ * value. This lets E2E TUI tests control which LSP servers appear "installed"
+ * regardless of the host machine's setup. When unset, normal `which` behavior.
+ */
+const LSP_BINARIES_OVERRIDE = process.env.KIMCHI_LSP_BINARIES
+
 function exists(cmd: string): boolean {
+	if (LSP_BINARIES_OVERRIDE !== undefined) {
+		const available = LSP_BINARIES_OVERRIDE.split(",").map((s) => s.trim())
+		return available.includes(cmd)
+	}
 	// Try Bun first (dev mode), fall back to Node child_process (production build)
 	try {
 		// biome-ignore lint/suspicious/noExplicitAny: Bun not typed without @types/bun
