@@ -537,3 +537,364 @@ describe("appendBeforeBody", () => {
 		expect(result).toBe("<html><body>hi\n<footer></footer>\n")
 	})
 })
+
+describe("postProcessJsonlExport — redaction", () => {
+	let tmpDir: string
+
+	beforeEach(() => {
+		tmpDir = join(tmpdir(), `kimchi-redact-jsonl-test-${Date.now()}`)
+		mkdirSync(tmpDir, { recursive: true })
+		_resetSessionMetadataStore()
+	})
+
+	afterEach(() => {
+		try {
+			rmSync(tmpDir, { recursive: true, force: true })
+		} catch {
+			// ignore cleanup errors
+		}
+		vi.restoreAllMocks()
+	})
+
+	it("redacts CastAI API keys in JSONL message text", () => {
+		vi.spyOn(sessionMetadataStore, "getSessionStartMetadata").mockReturnValue(undefined)
+		vi.spyOn(sessionMetadataStore, "getConfigChanges").mockReturnValue([])
+		const lines = [
+			JSON.stringify({ type: "session", version: 3, id: "s1" }),
+			JSON.stringify({
+				type: "message",
+				id: "e1",
+				parentId: null,
+				message: { role: "user", content: [{ type: "text", text: "Use key castai_v1_leaked_token" }] },
+			}),
+		]
+		const filePath = join(tmpDir, "export.jsonl")
+		writeFileSync(filePath, `${lines.join("\n")}\n`, "utf-8")
+
+		postProcessJsonlExport(filePath)
+
+		const result = readFileSync(filePath, "utf-8")
+			.split("\n")
+			.filter((l) => l.trim().length > 0)
+		const msg = JSON.parse(result[1])
+		const text = msg.message.content[0].text
+		expect(text).toContain("REDACTED")
+		expect(text).not.toContain("castai_v1_leaked_token")
+	})
+
+	it("redacts Bearer tokens in tool call arguments in JSONL", () => {
+		vi.spyOn(sessionMetadataStore, "getSessionStartMetadata").mockReturnValue(undefined)
+		vi.spyOn(sessionMetadataStore, "getConfigChanges").mockReturnValue([])
+		const lines = [
+			JSON.stringify({ type: "session", version: 3, id: "s1" }),
+			JSON.stringify({
+				type: "message",
+				id: "e1",
+				parentId: null,
+				message: {
+					role: "assistant",
+					content: [
+						{
+							type: "toolCall",
+							id: "call-1",
+							name: "bash",
+							arguments: {
+								command:
+									'curl -H "Authorization: Bearer ghp_1234567890abcdef1234567890abcdef12345678" https://api.example.com',
+							},
+						},
+					],
+				},
+			}),
+		]
+		const filePath = join(tmpDir, "export-bearer.jsonl")
+		writeFileSync(filePath, `${lines.join("\n")}\n`, "utf-8")
+
+		postProcessJsonlExport(filePath)
+
+		const result = readFileSync(filePath, "utf-8")
+			.split("\n")
+			.filter((l) => l.trim().length > 0)
+		const msg = JSON.parse(result[1])
+		const cmd = msg.message.content[0].arguments.command
+		expect(cmd).toContain("REDACTED")
+		expect(cmd).not.toContain("ghp_1234567890abcdef")
+	})
+
+	it("redacts auth JSON fields while preserving structure in JSONL", () => {
+		vi.spyOn(sessionMetadataStore, "getSessionStartMetadata").mockReturnValue(undefined)
+		vi.spyOn(sessionMetadataStore, "getConfigChanges").mockReturnValue([])
+		const lines = [
+			JSON.stringify({ type: "session", version: 3, id: "s1" }),
+			JSON.stringify({
+				type: "message",
+				id: "e1",
+				parentId: null,
+				message: {
+					role: "toolResult",
+					toolName: "write",
+					content: [{ type: "text", text: "wrote config" }],
+					details: { auth: { token: "castai_v1_secret" }, password: "mypass" },
+				},
+			}),
+		]
+		const filePath = join(tmpDir, "export-auth.jsonl")
+		writeFileSync(filePath, `${lines.join("\n")}\n`, "utf-8")
+
+		postProcessJsonlExport(filePath)
+
+		const result = readFileSync(filePath, "utf-8")
+			.split("\n")
+			.filter((l) => l.trim().length > 0)
+		const msg = JSON.parse(result[1])
+		// auth object should be replaced entirely
+		expect(msg.message.details.auth).toContain("REDACTED")
+		expect(msg.message.details.password).toContain("REDACTED")
+	})
+
+	it("includes sub-agent transcript in JSONL export", () => {
+		vi.spyOn(sessionMetadataStore, "getSessionStartMetadata").mockReturnValue(undefined)
+		vi.spyOn(sessionMetadataStore, "getConfigChanges").mockReturnValue([])
+		const outputFile = join(tmpDir, "agent-001.output")
+		const transcriptEntries = [
+			{
+				isSidechain: true,
+				agentId: "agent-001",
+				type: "user",
+				message: { role: "user", content: "Explore the codebase" },
+				timestamp: "2026-01-01T00:00:00.000Z",
+				cwd: "/project",
+			},
+			{
+				isSidechain: true,
+				agentId: "agent-001",
+				type: "assistant",
+				message: { role: "assistant", content: [{ type: "text", text: "Found files" }] },
+				timestamp: "2026-01-01T00:00:01.000Z",
+				cwd: "/project",
+			},
+		]
+		writeFileSync(outputFile, `${transcriptEntries.map((e) => JSON.stringify(e)).join("\n")}\n`)
+		const lines = [
+			JSON.stringify({ type: "session", version: 3, id: "s1" }),
+			JSON.stringify({
+				type: "custom",
+				id: "sub-1",
+				parentId: null,
+				customType: "subagents:record",
+				data: {
+					id: "agent-001",
+					type: "Explore",
+					status: "completed",
+					result: "Found files",
+					startedAt: 1700000000000,
+					completedAt: 1700000001000,
+					outputFile,
+					sessionFile: "/tmp/session.jsonl",
+				},
+			}),
+		]
+		const filePath = join(tmpDir, "export-subagent.jsonl")
+		writeFileSync(filePath, `${lines.join("\n")}\n`, "utf-8")
+
+		postProcessJsonlExport(filePath)
+
+		const result = readFileSync(filePath, "utf-8")
+			.split("\n")
+			.filter((l) => l.trim().length > 0)
+		const subEntry = JSON.parse(result[1])
+		expect(subEntry.data.transcript).toHaveLength(2)
+		expect(subEntry.data.transcript[0].type).toBe("user")
+		expect(subEntry.data.transcript[1].type).toBe("assistant")
+		// Local file paths stripped
+		expect(subEntry.data.outputFile).toBeUndefined()
+		expect(subEntry.data.sessionFile).toBeUndefined()
+	})
+
+	it("preserves trace IDs alongside redaction in JSONL", () => {
+		vi.spyOn(sessionMetadataStore, "getSessionStartMetadata").mockReturnValue(undefined)
+		vi.spyOn(sessionMetadataStore, "getConfigChanges").mockReturnValue([])
+		const lines = [
+			JSON.stringify({ type: "session", version: 3, id: "s1" }),
+			JSON.stringify({
+				type: "message",
+				id: "e1",
+				parentId: null,
+				message: { role: "user", content: [{ type: "text", text: "hello castai_v1_leaked" }] },
+			}),
+			JSON.stringify({ type: "message", id: "e2", parentId: "e1", message: { role: "assistant", content: "hi" } }),
+			JSON.stringify({
+				type: "custom",
+				id: "t1",
+				parentId: "e2",
+				customType: "trace_ids",
+				data: { traceIds: ["trace-abc"] },
+			}),
+		]
+		const filePath = join(tmpDir, "export-trace-redact.jsonl")
+		writeFileSync(filePath, `${lines.join("\n")}\n`, "utf-8")
+
+		postProcessJsonlExport(filePath)
+
+		const result = readFileSync(filePath, "utf-8")
+			.split("\n")
+			.filter((l) => l.trim().length > 0)
+		const userMsg = JSON.parse(result[1])
+		expect(userMsg.message.content[0].text).toContain("REDACTED")
+		const assistant = JSON.parse(result[2])
+		expect(assistant.traceIds).toEqual(["trace-abc"])
+	})
+})
+
+describe("postProcessHtmlExport — redaction", () => {
+	let tmpDir: string
+
+	beforeEach(() => {
+		tmpDir = join(tmpdir(), `kimchi-redact-html-test-${Date.now()}`)
+		mkdirSync(tmpDir, { recursive: true })
+		_resetSessionMetadataStore()
+	})
+
+	afterEach(() => {
+		try {
+			rmSync(tmpDir, { recursive: true, force: true })
+		} catch {
+			// ignore cleanup errors
+		}
+		vi.restoreAllMocks()
+	})
+
+	it("redacts CastAI API keys in HTML export", () => {
+		vi.spyOn(sessionMetadataStore, "getSessionStartMetadata").mockReturnValue(undefined)
+		vi.spyOn(sessionMetadataStore, "getConfigChanges").mockReturnValue([])
+		const sessionData = {
+			version: 3,
+			id: "s1",
+			entries: [
+				{
+					id: "m1",
+					parentId: null,
+					type: "message",
+					message: { role: "user", content: [{ type: "text", text: "Use key castai_v1_leaked" }] },
+				},
+			],
+			systemPrompt: "You are an agent with key sk-abc123def456",
+		}
+		const encoded = Buffer.from(JSON.stringify(sessionData)).toString("base64")
+		const mockHtml = `<script id="session-data" type="application/json">${encoded}</script>`
+		const outputPath = join(tmpDir, "export.html")
+		writeFileSync(outputPath, mockHtml, "utf-8")
+
+		postProcessHtmlExport(outputPath)
+
+		const result = readFileSync(outputPath, "utf-8")
+		const match = result.match(/<script id="session-data" type="application\/json">([\s\S]*?)<\/script>/)
+		expect(match).not.toBeNull()
+		if (!match) throw new Error("session-data script not found")
+		const data = JSON.parse(Buffer.from(match[1], "base64").toString("utf-8"))
+		const text = data.entries[0].message.content[0].text
+		expect(text).toContain("REDACTED")
+		expect(text).not.toContain("castai_v1_leaked")
+		expect(data.systemPrompt).toContain("REDACTED")
+		expect(data.systemPrompt).not.toContain("sk-abc123def456")
+	})
+
+	it("injects sub-agent transcript renderer script", () => {
+		vi.spyOn(sessionMetadataStore, "getSessionStartMetadata").mockReturnValue(undefined)
+		vi.spyOn(sessionMetadataStore, "getConfigChanges").mockReturnValue([])
+		const sessionData = {
+			version: 3,
+			id: "s1",
+			entries: [
+				{
+					type: "custom",
+					id: "sub-1",
+					parentId: null,
+					customType: "subagents:record",
+					data: { id: "agent-001", type: "Explore", status: "completed", transcript: [] },
+				},
+			],
+		}
+		const encoded = Buffer.from(JSON.stringify(sessionData)).toString("base64")
+		const mockHtml = `<script id="session-data" type="application/json">${encoded}</script>`
+		const outputPath = join(tmpDir, "subagent.html")
+		writeFileSync(outputPath, mockHtml, "utf-8")
+
+		postProcessHtmlExport(outputPath)
+
+		const result = readFileSync(outputPath, "utf-8")
+		expect(result).toContain('id="subagent-renderer"')
+	})
+
+	it("injects request diagnostics renderer script", () => {
+		vi.spyOn(sessionMetadataStore, "getSessionStartMetadata").mockReturnValue(undefined)
+		vi.spyOn(sessionMetadataStore, "getConfigChanges").mockReturnValue([])
+		const sessionData = {
+			version: 3,
+			id: "s1",
+			entries: [
+				{
+					type: "custom",
+					id: "diag-1",
+					parentId: null,
+					customType: "request_diagnostics",
+					data: { status: 200, durationMs: 350, isRetry: false },
+				},
+			],
+		}
+		const encoded = Buffer.from(JSON.stringify(sessionData)).toString("base64")
+		const mockHtml = `<script id="session-data" type="application/json">${encoded}</script>`
+		const outputPath = join(tmpDir, "diagnostics.html")
+		writeFileSync(outputPath, mockHtml, "utf-8")
+
+		postProcessHtmlExport(outputPath)
+
+		const result = readFileSync(outputPath, "utf-8")
+		expect(result).toContain('id="diagnostics-renderer"')
+	})
+
+	it("redacts Bearer tokens in tool call arguments in HTML", () => {
+		vi.spyOn(sessionMetadataStore, "getSessionStartMetadata").mockReturnValue(undefined)
+		vi.spyOn(sessionMetadataStore, "getConfigChanges").mockReturnValue([])
+		const sessionData = {
+			version: 3,
+			id: "s1",
+			entries: [
+				{
+					id: "m1",
+					parentId: null,
+					type: "message",
+					message: {
+						role: "assistant",
+						content: [
+							{
+								type: "toolCall",
+								id: "call-1",
+								name: "bash",
+								arguments: {
+									command:
+										'curl -H "Authorization: Bearer ghp_1234567890abcdef1234567890abcdef12345678" https://api.example.com',
+								},
+							},
+						],
+					},
+				},
+			],
+		}
+		const encoded = Buffer.from(JSON.stringify(sessionData)).toString("base64")
+		const mockHtml = `<script id="session-data" type="application/json">${encoded}</script>`
+		const outputPath = join(tmpDir, "export-bearer.html")
+		writeFileSync(outputPath, mockHtml, "utf-8")
+
+		postProcessHtmlExport(outputPath)
+
+		const result = readFileSync(outputPath, "utf-8")
+		const match = result.match(/<script id="session-data" type="application\/json">([\s\S]*?)<\/script>/)
+		expect(match).not.toBeNull()
+		if (!match) throw new Error("session-data script not found")
+		const data = JSON.parse(Buffer.from(match[1], "base64").toString("utf-8"))
+		const cmd = data.entries[0].message.content[0].arguments.command
+		expect(cmd).toContain("REDACTED")
+		expect(cmd).not.toContain("ghp_1234567890abcdef")
+	})
+})

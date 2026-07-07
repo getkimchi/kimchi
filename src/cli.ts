@@ -72,6 +72,7 @@ import promptEnrichmentExtension from "./extensions/prompt-construction/prompt-e
 import promptSummaryExtension from "./extensions/prompt-summary.js"
 import questionnaireExtension from "./extensions/questionnaire/index.js"
 import reportBugExtension from "./extensions/report-bug.js"
+import requestTimingExtension from "./extensions/request-timing.js"
 import reviewWriteGuardExtension from "./extensions/review-write-guard.js"
 import rtkRewriteExtension from "./extensions/rtk-rewrite.js"
 import sessionMetadataExtension from "./extensions/session-metadata/index.js"
@@ -593,6 +594,7 @@ try {
 			piiRedactionExtension,
 			stripImagesExtension,
 			traceIdExtension,
+			requestTimingExtension,
 			llmResponseLogExtension,
 			activityExtension,
 			infrastructureErrorTracker.extension,

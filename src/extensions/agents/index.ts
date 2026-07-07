@@ -741,6 +741,11 @@ export default function (pi: ExtensionAPI) {
 				error: record.error,
 				startedAt: record.startedAt,
 				completedAt: record.completedAt,
+				// Persist file paths so export post-processing can read the
+				// full transcript and attach it to the export. Stripped from
+				// the export output after reading.
+				outputFile: record.outputFile,
+				sessionFile: record.sessionFile,
 			})
 
 			if (record.resultConsumed) {
