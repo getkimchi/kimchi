@@ -75,16 +75,16 @@ export function isHideThinkingEnabled(): boolean {
 function readHideThinkingSetting(): boolean {
 	if (hideThinkingOverride !== undefined) return hideThinkingOverride
 	const settingsPath = getSettingsPath()
-	if (!settingsPath) return false
+	if (!settingsPath) return true
 	try {
 		const raw = readFileSync(settingsPath, "utf-8")
 		const parsed = JSON.parse(raw)
 		if (parsed && typeof parsed === "object" && "hideThinkingBlock" in parsed) {
 			return Boolean((parsed as { hideThinkingBlock: unknown }).hideThinkingBlock)
 		}
-		return false
+		return true
 	} catch {
-		return false
+		return true
 	}
 }
 

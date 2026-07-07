@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { ANSI, fg } from "../ansi.js"
 import hideThinkingExtension, {
@@ -5,6 +8,7 @@ import hideThinkingExtension, {
 	_resetState,
 	_setHideThinking,
 	filterThinkingForDisplay,
+	isHideThinkingEnabled,
 } from "./hide-thinking.js"
 
 type Handler = (event: unknown) => unknown
@@ -72,9 +76,26 @@ describe("hideThinkingExtension", () => {
 		}
 	})
 
-	// --- Default behaviour (hideThinking = false → dim) ---
+	it("hides thinking by default when settings.json is missing", () => {
+		const originalDir = process.env.KIMCHI_CODING_AGENT_DIR
+		const tempDir = mkdtempSync(join(tmpdir(), "kimchi-hide-thinking-"))
+		try {
+			process.env.KIMCHI_CODING_AGENT_DIR = tempDir
+			_resetState()
+			expect(isHideThinkingEnabled()).toBe(true)
+		} finally {
+			if (originalDir === undefined) {
+				process.env.KIMCHI_CODING_AGENT_DIR = undefined
+			} else {
+				process.env.KIMCHI_CODING_AGENT_DIR = originalDir
+			}
+			rmSync(tempDir, { recursive: true, force: true })
+		}
+	})
 
-	it("dims thinking content by default (hideThinking not set)", async () => {
+	// --- Explicit hideThinking = false (dim) ---
+
+	it("dims thinking content when hideThinking is false", async () => {
 		_setHideThinking(false)
 		const { endResult } = await simulateStreaming(h, ["Before ", "<think>", "reason", "</think>", " After"])
 		expect(endResult).toBeDefined()
@@ -271,7 +292,7 @@ describe("hideThinkingExtension", () => {
 
 	// --- mm:think tags ---
 
-	it("dims <mm:think> content by default", async () => {
+	it("dims <mm:think> content when hideThinking is false", async () => {
 		_setHideThinking(false)
 		const { endResult } = await simulateStreaming(h, ["Before ", "<mm:think>", "mm reason", "</mm:think>", " After"])
 		expect(endResult).toBeDefined()

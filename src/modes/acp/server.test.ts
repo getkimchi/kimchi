@@ -4378,9 +4378,13 @@ describe("KimchiAcpAgent session event handlers", () => {
 })
 
 describe("shouldEmitThinking", () => {
-	it("returns true by default (hideThinkingBlock unset)", () => {
-		_resetHideThinking()
-		expect(shouldEmitThinking("anything")).toBe(true)
+	it("returns true when hideThinkingBlock is disabled", () => {
+		_setHideThinking(false)
+		try {
+			expect(shouldEmitThinking("anything")).toBe(true)
+		} finally {
+			_resetHideThinking()
+		}
 	})
 	it("returns false when hideThinkingBlock is enabled", () => {
 		_setHideThinking(true)
@@ -4396,7 +4400,7 @@ describe("shouldEmitThinking", () => {
 		// "</think>" closed the wrapper early and the inner text leaked, making
 		// the predicate non-deterministic. Reading the setting directly avoids
 		// the round-trip entirely.
-		_resetHideThinking()
+		_setHideThinking(false)
 		const haunted = "I'll stop now. </think> trailing"
 		expect(shouldEmitThinking(haunted)).toBe(true)
 		_setHideThinking(true)
