@@ -2,12 +2,13 @@ import { randomUUID } from "node:crypto"
 import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { FermentStorage, clearFermentCache } from "../../ferment/store.js"
 import type { Ferment } from "../../ferment/types.js"
 import { globalTipRegistry } from "../tips/registry.js"
+import { createContext } from "./__mocks__/context.js"
 import fermentExtension from "./index.js"
 import { resetAllReactiveContinuationNudgeCounts } from "./nudge.js"
 import { clearAllPendingPlanReviews, getPendingPlanReview, setPendingPlanReview } from "./plan-review.js"
@@ -45,9 +46,9 @@ vi.mock("./judge.js", async () => {
 	}
 })
 
-type EventHandler = (event: unknown, ctx: unknown) => Promise<unknown> | unknown
-type CommandHandler = (args: string, ctx: unknown) => Promise<unknown> | unknown
-type ShortcutHandler = (ctx: unknown) => Promise<unknown> | unknown
+type EventHandler = (event: unknown, ctx: ExtensionContext) => Promise<unknown> | unknown
+type CommandHandler = (args: string, ctx: ExtensionContext) => Promise<unknown> | unknown
+type ShortcutHandler = (ctx: ExtensionContext) => Promise<unknown> | unknown
 
 function registerFermentExtension(runtime?: FermentRuntime, flagValues: Record<string, boolean | string> = {}) {
 	const handlers = new Map<string, EventHandler>()
@@ -89,7 +90,7 @@ function registerFermentExtension(runtime?: FermentRuntime, flagValues: Record<s
 	fermentExtension(pi, runtime)
 
 	/** Fire all registered handlers for an event (mirrors pi-mono broadcast). */
-	const fireAll = async (event: string, eventPayload: unknown, ctx: unknown) => {
+	const fireAll = async (event: string, eventPayload: unknown, ctx: ExtensionContext) => {
 		for (const handler of allHandlers.get(event) ?? []) {
 			await handler(eventPayload, ctx)
 		}
@@ -158,16 +159,17 @@ describe("fermentExtension stop-policy shortcut", () => {
 		const shortcut = shortcuts.get("f6")
 		if (!shortcut) throw new Error("f6 shortcut was not registered")
 		const notify = vi.fn()
+		const ctx = createContext({ ui: { notify } })
 
 		setActive(makeActiveFerment("running"))
 		setContinuationPolicy("manual")
 
-		await shortcut.handler({ hasUI: true, ui: { notify } })
+		await shortcut.handler(ctx)
 		expect(isAutomatedContinuationEnabled()).toBe(true)
 		expect(notify).not.toHaveBeenCalled()
 		expect(requestSharedFooterRenderMock).toHaveBeenCalledTimes(1)
 
-		await shortcut.handler({ hasUI: true, ui: { notify } })
+		await shortcut.handler(ctx)
 		expect(isAutomatedContinuationEnabled()).toBe(false)
 		expect(notify).not.toHaveBeenCalled()
 		expect(requestSharedFooterRenderMock).toHaveBeenCalledTimes(2)
@@ -181,7 +183,8 @@ describe("fermentExtension stop-policy shortcut", () => {
 		setActive(makeActiveFerment("paused"))
 		setContinuationPolicy("manual")
 
-		await shortcut.handler({ hasUI: true, ui: { notify: vi.fn() } })
+		const ctx = createContext()
+		await shortcut.handler(ctx)
 
 		expect(isAutomatedContinuationEnabled()).toBe(true)
 		expect(requestSharedFooterRenderMock).toHaveBeenCalledTimes(1)
@@ -192,9 +195,10 @@ describe("fermentExtension stop-policy shortcut", () => {
 		const shortcut = shortcuts.get("f6")
 		if (!shortcut) throw new Error("f6 shortcut was not registered")
 
-		await shortcut.handler({ hasUI: true, ui: { notify: vi.fn() } })
+		const ctx = createContext()
+		await shortcut.handler(ctx)
 		setActive(makeActiveFerment("draft"))
-		await shortcut.handler({ hasUI: true, ui: { notify: vi.fn() } })
+		await shortcut.handler(ctx)
 
 		expect(isAutomatedContinuationEnabled()).toBe(false)
 		expect(requestSharedFooterRenderMock).not.toHaveBeenCalled()
@@ -206,7 +210,8 @@ describe("fermentExtension session resume", () => {
 		vi.stubEnv("KIMCHI_ACTIVE_FERMENT", "missing-ferment-id")
 		const { fireAll } = registerFermentExtension()
 
-		await fireAll("session_start", {}, { hasUI: false })
+		const ctx = createContext({ hasUI: false })
+		await fireAll("session_start", {}, ctx)
 
 		expect(getActive()).toBeUndefined()
 		expect(getActiveFermentId()).toBeUndefined()
@@ -236,21 +241,26 @@ describe("fermentExtension session resume", () => {
 			summary: "done",
 		})
 		if (!completedPhase.ok) throw new Error(completedPhase.error.message)
-		const completed = await completeFerment(runtime, {
-			ferment_id: draft.id,
-			final_summary: "done",
-			gates: [
-				{ id: "C1", verdict: "pass", rationale: "ok", evidence: "n/a" },
-				{ id: "C2", verdict: "pass", rationale: "ok", evidence: "n/a" },
-				{ id: "C3", verdict: "pass", rationale: "ok", evidence: "n/a" },
-			],
-		})
+		const ctx = createContext({ hasUI: false })
+		const completed = await completeFerment(
+			runtime,
+			{
+				ferment_id: draft.id,
+				final_summary: "done",
+				gates: [
+					{ id: "C1", verdict: "pass", rationale: "ok", evidence: "n/a" },
+					{ id: "C2", verdict: "pass", rationale: "ok", evidence: "n/a" },
+					{ id: "C3", verdict: "pass", rationale: "ok", evidence: "n/a" },
+				],
+			},
+			{ ctx },
+		)
 		if ("isError" in completed && completed.isError) throw new Error(completed.content[0].text)
 
 		vi.stubEnv("KIMCHI_ACTIVE_FERMENT", draft.id)
 		const { fireAll, pi } = registerFermentExtension(runtime)
 
-		await fireAll("session_start", {}, { hasUI: false })
+		await fireAll("session_start", {}, ctx)
 
 		expect(storage.get(draft.id)?.status).toBe("complete")
 		expect(getActiveFermentId()).toBeUndefined()
@@ -268,14 +278,15 @@ describe("fermentExtension one-shot bootstrap", () => {
 		const input = handlers.get("input")
 		if (!input) throw new Error("input handler was not registered")
 
-		await fireAll("session_start", {}, { hasUI: false })
+		const ctx = createContext({ hasUI: false })
+		await fireAll("session_start", {}, ctx)
 
 		expect(pi.registerFlag).toHaveBeenCalledWith("ferment-oneshot", expect.objectContaining({ type: "boolean" }))
 		expect(getActive()).toBeUndefined()
 		expect(isAutomatedContinuationEnabled()).toBe(true)
 
 		const intent = "Add a CSV export endpoint that streams the orders table"
-		const result = (await input({ type: "input", text: intent, source: "interactive" }, {})) as
+		const result = (await input({ type: "input", text: intent, source: "interactive" }, ctx)) as
 			| { action: "transform"; text: string }
 			| undefined
 
@@ -290,7 +301,7 @@ describe("fermentExtension one-shot bootstrap", () => {
 		expect(result?.text).toContain("complete_ferment")
 
 		// Bootstrap is a one-shot — a second input must pass through untouched.
-		const next = await input({ type: "input", text: "follow-up", source: "interactive" }, {})
+		const next = await input({ type: "input", text: "follow-up", source: "interactive" }, ctx)
 		expect(next).toBeUndefined()
 
 		// Side-effects: ack message sent + ferment_reference entry recorded.
@@ -311,8 +322,9 @@ describe("fermentExtension one-shot bootstrap", () => {
 		const input = handlers.get("input")
 		if (!input) throw new Error("input handler was not registered")
 
-		await fireAll("session_start", {}, { hasUI: false })
-		const result = await input({ type: "input", text: "Fix the task", source: "interactive" }, {})
+		const ctx = createContext({ hasUI: false })
+		await fireAll("session_start", {}, ctx)
+		const result = await input({ type: "input", text: "Fix the task", source: "interactive" }, ctx)
 
 		expect(result).toBeUndefined()
 		expect(pi.sendMessage).toHaveBeenCalledWith(
@@ -330,12 +342,13 @@ describe("fermentExtension one-shot bootstrap", () => {
 		const input = handlers.get("input")
 		if (!input) throw new Error("input handler was not registered")
 
-		await fireAll("session_start", {}, { hasUI: false })
+		const ctx = createContext({ hasUI: false })
+		await fireAll("session_start", {}, ctx)
 
 		expect(getActiveFermentId()).toBeUndefined()
 
 		// And the input handler does NOT bootstrap a ferment for the next message.
-		const result = await input({ type: "input", text: "first message", source: "interactive" }, {})
+		const result = await input({ type: "input", text: "first message", source: "interactive" }, ctx)
 		expect(result).toBeUndefined()
 		expect(getActive()).toBeUndefined()
 	})
@@ -346,11 +359,12 @@ describe("fermentExtension one-shot bootstrap", () => {
 		const input = handlers.get("input")
 		if (!input) throw new Error("input handler was not registered")
 
-		await fireAll("session_start", {}, { hasUI: false })
+		const ctx = createContext({ hasUI: false })
+		await fireAll("session_start", {}, ctx)
 
 		// Subagent short-circuits session_start, so the input handler will not
 		// perform a bootstrap (pendingOneshot stays false).
-		const result = await input({ type: "input", text: "anything", source: "interactive" }, {})
+		const result = await input({ type: "input", text: "anything", source: "interactive" }, ctx)
 		expect(result).toBeUndefined()
 		expect(getActive()).toBeUndefined()
 	})
@@ -363,7 +377,8 @@ describe("/ferment command", () => {
 		if (!fermentCommand) throw new Error("ferment command was not registered")
 		const title = `Rewrite login ${randomUUID()}`
 
-		await fermentCommand(`new "${title}"`, { hasUI: false, ui: { notify: vi.fn() } })
+		const ctx = createContext({ hasUI: false })
+		await fermentCommand(`new "${title}"`, ctx)
 
 		const created = getActive()
 		expect(created?.name).toBe(title)
@@ -382,7 +397,8 @@ describe("/ferment command", () => {
 		if (!fermentCommand) throw new Error("ferment command was not registered")
 		const title = `Injected runtime ${randomUUID()}`
 
-		await fermentCommand(`new "${title}"`, { hasUI: false, ui: { notify: vi.fn() } })
+		const ctx = createContext({ hasUI: false })
+		await fermentCommand(`new "${title}"`, ctx)
 
 		const created = storage.list().find((f) => f.name === title)
 		expect(created).toBeDefined()
@@ -437,6 +453,7 @@ describe("fermentExtension question dropdown", () => {
 		const turnEnd = handlers.get("turn_end")
 		if (!turnEnd) throw new Error("turn_end handler was not registered")
 
+		const ctx = createContext()
 		await turnEnd(
 			{
 				message: {
@@ -444,7 +461,7 @@ describe("fermentExtension question dropdown", () => {
 					content: [{ type: "text", text: "I am waiting." }],
 				},
 			},
-			{},
+			ctx,
 		)
 
 		expect(pi.sendMessage).toHaveBeenCalledWith(
@@ -489,6 +506,7 @@ describe("fermentExtension question dropdown", () => {
 		const turnEnd = handlers.get("turn_end")
 		if (!turnEnd) throw new Error("turn_end handler was not registered")
 
+		const ctx = createContext()
 		await turnEnd(
 			{
 				message: {
@@ -496,7 +514,7 @@ describe("fermentExtension question dropdown", () => {
 					content: [{ type: "text", text: "Phase 1 is done." }],
 				},
 			},
-			{},
+			ctx,
 		)
 
 		expect(pi.sendMessage).toHaveBeenCalledWith(
@@ -540,6 +558,7 @@ describe("fermentExtension question dropdown", () => {
 		const agentEnd = handlers.get("agent_end")
 		if (!turnEnd || !agentEnd) throw new Error("ferment lifecycle handlers were not registered")
 
+		const ctx = createContext()
 		await turnEnd(
 			{
 				message: {
@@ -547,9 +566,9 @@ describe("fermentExtension question dropdown", () => {
 					content: [{ type: "text", text: "Now complete the ferment." }],
 				},
 			},
-			{},
+			ctx,
 		)
-		await agentEnd({ type: "agent_end" }, {})
+		await agentEnd({ type: "agent_end" }, ctx)
 
 		expect(storage.get(draft.id)?.status).not.toBe("complete")
 		expect(pi.sendMessage).toHaveBeenCalledWith(
@@ -573,9 +592,9 @@ describe("fermentExtension question dropdown", () => {
 					],
 				},
 			},
-			{},
+			ctx,
 		)
-		await agentEnd({ type: "agent_end" }, {})
+		await agentEnd({ type: "agent_end" }, ctx)
 
 		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
 		expect(pi.sendMessage).toHaveBeenCalledWith(
@@ -609,6 +628,7 @@ describe("fermentExtension question dropdown", () => {
 		const turnEnd = handlers.get("turn_end")
 		if (!turnEnd) throw new Error("turn_end handler was not registered")
 
+		const ctx = createContext()
 		await turnEnd(
 			{
 				message: {
@@ -616,7 +636,7 @@ describe("fermentExtension question dropdown", () => {
 					content: [{ type: "text", text: "I am waiting." }],
 				},
 			},
-			{},
+			ctx,
 		)
 
 		expect(pi.sendMessage).not.toHaveBeenCalled()
@@ -651,15 +671,21 @@ describe("fermentExtension question dropdown", () => {
 		const { handlers, pi } = registerFermentExtension(runtime)
 		const turnEnd = handlers.get("turn_end")
 		if (!turnEnd) throw new Error("turn_end handler was not registered")
-		await completeFerment(runtime, {
-			ferment_id: draft.id,
-			final_summary: "done",
-			gates: [
-				{ id: "C1", verdict: "pass", rationale: "ok", evidence: "n/a" },
-				{ id: "C2", verdict: "pass", rationale: "ok", evidence: "n/a" },
-				{ id: "C3", verdict: "pass", rationale: "ok", evidence: "n/a" },
-			],
-		})
+
+		const ctx = createContext()
+		await completeFerment(
+			runtime,
+			{
+				ferment_id: draft.id,
+				final_summary: "done",
+				gates: [
+					{ id: "C1", verdict: "pass", rationale: "ok", evidence: "n/a" },
+					{ id: "C2", verdict: "pass", rationale: "ok", evidence: "n/a" },
+					{ id: "C3", verdict: "pass", rationale: "ok", evidence: "n/a" },
+				],
+			},
+			{ ctx },
+		)
 
 		await turnEnd(
 			{
@@ -668,7 +694,7 @@ describe("fermentExtension question dropdown", () => {
 					content: [{ type: "text", text: "Done." }],
 				},
 			},
-			{},
+			ctx,
 		)
 
 		expect(pi.sendMessage).not.toHaveBeenCalledWith(
@@ -683,13 +709,7 @@ describe("fermentExtension question dropdown", () => {
 		const turnEnd = handlers.get("turn_end")
 		if (!turnEnd) throw new Error("turn_end handler was not registered")
 
-		const ctx = {
-			ui: {
-				select: vi.fn().mockResolvedValue("Skip"),
-				input: vi.fn(),
-			},
-		}
-
+		const ctx = createContext({ ui: { select: vi.fn().mockResolvedValue("Skip") } })
 		await turnEnd(
 			{
 				message: {
@@ -717,13 +737,7 @@ describe("fermentExtension question dropdown", () => {
 		const turnEnd = handlers.get("turn_end")
 		if (!turnEnd) throw new Error("turn_end handler was not registered")
 
-		const ctx = {
-			ui: {
-				select: vi.fn().mockResolvedValue("Yes, proceed"),
-				input: vi.fn(),
-			},
-		}
-
+		const ctx = createContext({ ui: { select: vi.fn().mockResolvedValue("Yes, proceed") } })
 		await turnEnd(
 			{
 				message: {
@@ -778,14 +792,8 @@ describe("fermentExtension question dropdown", () => {
 		const { handlers, pi } = registerFermentExtension(runtime)
 		const turnEnd = handlers.get("turn_end")
 		if (!turnEnd) throw new Error("turn_end handler was not registered")
-		const ctx = {
-			ui: {
-				select: vi.fn().mockResolvedValue("Pause here"),
-				input: vi.fn(),
-				notify: vi.fn(),
-			},
-		}
 
+		const ctx = createContext({ ui: { select: vi.fn().mockResolvedValue("Pause here") } })
 		await turnEnd(
 			{
 				message: {
@@ -813,13 +821,7 @@ describe("fermentExtension question dropdown", () => {
 		const turnEnd = handlers.get("turn_end")
 		if (!turnEnd) throw new Error("turn_end handler was not registered")
 
-		const ctx = {
-			ui: {
-				select: vi.fn().mockResolvedValue("Pause"),
-				input: vi.fn(),
-			},
-		}
-
+		const ctx = createContext({ ui: { select: vi.fn().mockResolvedValue("Pause") } })
 		await turnEnd(
 			{
 				message: {
@@ -857,6 +859,7 @@ describe("fermentExtension question dropdown", () => {
 		setActive(draft)
 		const { pi } = registerFermentExtension(runtime)
 
+		const ctx = createContext()
 		// Drive scopeFerment directly; scoping must not enqueue a hidden continuation nudge.
 		await scopeFerment(
 			runtime,
@@ -873,7 +876,7 @@ describe("fermentExtension question dropdown", () => {
 					{ id: "P3", verdict: "pass", rationale: "ok", evidence: "n/a" },
 				],
 			},
-			{ pi },
+			{ ctx },
 		)
 
 		expect(pi.sendMessage).not.toHaveBeenCalledWith(
@@ -903,8 +906,8 @@ describe("fermentExtension question dropdown", () => {
 		const { handlers, pi } = registerFermentExtension(runtime)
 		const turnEnd = handlers.get("turn_end")
 		if (!turnEnd) throw new Error("turn_end handler was not registered")
-		const ctx = { ui: { select: vi.fn(), input: vi.fn(), notify: vi.fn() } }
 
+		const ctx = createContext()
 		// Fire a text-only turn — in the old code this triggered the nudge loop.
 		await turnEnd(
 			{
@@ -948,13 +951,7 @@ describe("fermentExtension question dropdown", () => {
 			const { handlers, pi } = registerFermentExtension(runtime)
 			const agentEnd = handlers.get("agent_end")
 			if (!agentEnd) throw new Error("agent_end handler was not registered")
-			const ctx = {
-				ui: {
-					custom: vi.fn().mockResolvedValue({ kind: "start" }),
-					notify: vi.fn(),
-					setWorkingVisible: vi.fn(),
-				},
-			}
+			const ctx = createContext({ ui: { custom: vi.fn().mockResolvedValue({ kind: "start" }) } })
 
 			await agentEnd({ type: "agent_end" }, ctx)
 			expect(ctx.ui.custom).not.toHaveBeenCalled()
@@ -1008,13 +1005,7 @@ describe("fermentExtension question dropdown", () => {
 			const { handlers, pi } = registerFermentExtension(runtime)
 			const agentEnd = handlers.get("agent_end")
 			if (!agentEnd) throw new Error("agent_end handler was not registered")
-			const ctx = {
-				ui: {
-					custom: vi.fn().mockResolvedValue({ kind: "start_auto" }),
-					notify: vi.fn(),
-					setWorkingVisible: vi.fn(),
-				},
-			}
+			const ctx = createContext({ ui: { custom: vi.fn().mockResolvedValue({ kind: "start_auto" }) } })
 
 			await agentEnd({ type: "agent_end" }, ctx)
 			await vi.runOnlyPendingTimersAsync()
@@ -1072,13 +1063,7 @@ describe("fermentExtension question dropdown", () => {
 			const { handlers } = registerFermentExtension(runtime)
 			const agentEnd = handlers.get("agent_end")
 			if (!agentEnd) throw new Error("agent_end handler was not registered")
-			const ctx = {
-				ui: {
-					custom: vi.fn().mockResolvedValue({ kind: "start" }),
-					notify: vi.fn(),
-					setWorkingVisible: vi.fn(),
-				},
-			}
+			const ctx = createContext({ ui: { custom: vi.fn().mockResolvedValue({ kind: "start" }) } })
 
 			await agentEnd({ type: "agent_end" }, ctx)
 			runtime.setActive(secondDraft)
@@ -1117,12 +1102,9 @@ describe("fermentExtension question dropdown", () => {
 			const { handlers, pi } = registerFermentExtension(runtime)
 			const agentEnd = handlers.get("agent_end")
 			if (!agentEnd) throw new Error("agent_end handler was not registered")
-			const ctx = {
-				ui: {
-					custom: vi.fn().mockResolvedValue({ kind: "feedback", text: "drop phase 2" }),
-					setWorkingVisible: vi.fn(),
-				},
-			}
+			const ctx = createContext({
+				ui: { custom: vi.fn().mockResolvedValue({ kind: "feedback", text: "drop phase 2" }) },
+			})
 
 			await agentEnd({ type: "agent_end" }, ctx)
 			await vi.runOnlyPendingTimersAsync()
@@ -1180,12 +1162,11 @@ describe("fermentExtension question dropdown", () => {
 			const { handlers, pi } = registerFermentExtension(runtime)
 			const agentEnd = handlers.get("agent_end")
 			if (!agentEnd) throw new Error("agent_end handler was not registered")
-			const ctx = {
+			const ctx = createContext({
 				ui: {
 					custom: vi.fn().mockResolvedValue({ kind: "cancelled", reason: "decision_cancelled" }),
-					setWorkingVisible: vi.fn(),
 				},
-			}
+			})
 
 			await agentEnd({ type: "agent_end" }, ctx)
 			await vi.runOnlyPendingTimersAsync()
@@ -1224,13 +1205,7 @@ describe("fermentExtension question dropdown", () => {
 			const { handlers, pi } = registerFermentExtension(runtime)
 			const agentEnd = handlers.get("agent_end")
 			if (!agentEnd) throw new Error("agent_end handler was not registered")
-			const ctx = {
-				ui: {
-					custom: vi.fn().mockResolvedValue({ kind: "start" }),
-					notify: vi.fn(),
-					setWorkingVisible: vi.fn(),
-				},
-			}
+			const ctx = createContext({ ui: { custom: vi.fn().mockResolvedValue({ kind: "start" }) } })
 
 			await agentEnd({ type: "agent_end" }, ctx)
 			await vi.runOnlyPendingTimersAsync()
@@ -1253,12 +1228,7 @@ describe("fermentExtension question dropdown", () => {
 		const turnEnd = handlers.get("turn_end")
 		if (!turnEnd) throw new Error("turn_end handler was not registered")
 
-		const ctx = {
-			ui: {
-				select: vi.fn().mockResolvedValue("No, revise"),
-				input: vi.fn(),
-			},
-		}
+		const ctx = createContext({ ui: { select: vi.fn().mockResolvedValue("No, revise") } })
 
 		await turnEnd(
 			{
@@ -1294,13 +1264,7 @@ Does this plan look right?`,
 		const turnEnd = handlers.get("turn_end")
 		if (!turnEnd) throw new Error("turn_end handler was not registered")
 
-		const ctx = {
-			ui: {
-				select: vi.fn(),
-				input: vi.fn(),
-			},
-		}
-
+		const ctx = createContext()
 		await turnEnd(
 			{
 				message: {
@@ -1348,10 +1312,10 @@ Does this plan look right?`,
 
 			const compact = vi.fn()
 			const notify = vi.fn()
-			const ctx = {
+			const ctx = createContext({
 				compact,
 				ui: { notify },
-			}
+			})
 
 			await agentEnd({ type: "agent_end" }, ctx)
 
@@ -1381,10 +1345,10 @@ Does this plan look right?`,
 
 			const compact = vi.fn()
 			const notify = vi.fn()
-			const ctx = {
+			const ctx = createContext({
 				compact,
 				ui: { notify },
-			}
+			})
 
 			await agentEnd({ type: "agent_end" }, ctx)
 
@@ -1411,7 +1375,7 @@ describe("fermentExtension abort handling", () => {
 		if (!turnEnd) throw new Error("turn_end handler was not registered")
 		const notify = vi.fn()
 		const select = vi.fn()
-		const ctx = { ui: { notify, select, input: vi.fn() } }
+		const ctx = createContext({ ui: { notify, select } })
 		const applyAndPersist = createApplyAndPersist(runtime)
 
 		const scopeAndPlan = (label: string): Ferment => {
@@ -1537,7 +1501,7 @@ describe("fermentExtension abort handling", () => {
 		const turnEnd = handlers.get("turn_end")
 		if (!turnEnd) throw new Error("turn_end handler was not registered")
 		const notify = vi.fn()
-		const ctx = { ui: { notify, select: vi.fn(), input: vi.fn() } }
+		const ctx = createContext({ ui: { notify } })
 
 		await turnEnd({ message: abortedMessage([{ type: "text", text: "x" }]) }, ctx)
 
@@ -1577,9 +1541,10 @@ describe("agent-spawn-guard integration", () => {
 		// last — we just assert that SOMEONE in the chain blocks with a reason
 		// that points at start_ferment_step.
 		const toolCall = { toolName: "Agent", input: { subagent_type: "Builder", prompt: "implement it" } }
+		const ctx = createContext()
 		let redirect: { block: boolean; reason?: string } | undefined
 		for (const handler of allHandlers.get("tool_call") ?? []) {
-			const r = (await handler(toolCall, {})) as { block: boolean; reason?: string } | undefined
+			const r = (await handler(toolCall, ctx)) as { block: boolean; reason?: string } | undefined
 			if (r?.block) {
 				redirect = r
 				break

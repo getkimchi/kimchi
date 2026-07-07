@@ -21,7 +21,8 @@ export function registerKnowledgeTools(pi: ExtensionAPI, runtime: FermentRuntime
 		label: "Add Decision",
 		description: "Record a decision.",
 		parameters: DecisionParams,
-		async execute(_, params) {
+		async execute(_, params, _signal, _onUpdate, ctx) {
+			const sessionId = ctx.sessionManager.getSessionId()
 			const outcome = applyAndPersist(params.ferment_id, {
 				type: "add_decision",
 				title: params.title,
@@ -29,7 +30,7 @@ export function registerKnowledgeTools(pi: ExtensionAPI, runtime: FermentRuntime
 				phaseId: params.phase_id,
 				stepId: params.step_id,
 			})
-			if (!outcome.ok) return failedToolResult(outcome.error)
+			if (!outcome.ok) return failedToolResult(outcome.error, undefined, sessionId)
 			const last = outcome.ferment.decisions[outcome.ferment.decisions.length - 1]
 			return toolOk(`Decision: ${last.id} — ${params.title}`)
 		},
@@ -40,11 +41,12 @@ export function registerKnowledgeTools(pi: ExtensionAPI, runtime: FermentRuntime
 		label: "Add Memory",
 		description: "Record a memory.",
 		parameters: MemoryParams,
-		async execute(_, params) {
+		async execute(_, params, _signal, _onUpdate, ctx) {
 			// Pre-validate to keep the existing user-friendly error wording.
 			if (!VALID_MEMORY_CATEGORIES.includes(params.category as MemoryCategory)) {
 				return toolErr(`Invalid category "${params.category}". Use one of: ${VALID_MEMORY_CATEGORIES.join(", ")}.`)
 			}
+			const sessionId = ctx.sessionManager.getSessionId()
 			const outcome = applyAndPersist(params.ferment_id, {
 				type: "add_memory",
 				category: params.category as MemoryCategory,
@@ -52,7 +54,7 @@ export function registerKnowledgeTools(pi: ExtensionAPI, runtime: FermentRuntime
 				phaseId: params.phase_id,
 				stepId: params.step_id,
 			})
-			if (!outcome.ok) return failedToolResult(outcome.error)
+			if (!outcome.ok) return failedToolResult(outcome.error, undefined, sessionId)
 			const last = outcome.ferment.memories[outcome.ferment.memories.length - 1]
 			return toolOk(`Memory: ${last.id} [${params.category}]: ${params.content}`)
 		},

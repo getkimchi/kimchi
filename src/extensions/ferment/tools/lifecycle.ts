@@ -8,9 +8,9 @@
  *   4. Format result text — host concern
  */
 
-import { type ExtensionAPI, getMarkdownTheme } from "@earendil-works/pi-coding-agent"
+import { type ExtensionAPI, type ExtensionContext, getMarkdownTheme } from "@earendil-works/pi-coding-agent"
 import { Markdown } from "@earendil-works/pi-tui"
-import { type Static, Type } from "typebox"
+import type { Static } from "typebox"
 import type { Command, ScopePhaseInput } from "../../../ferment/state-machine.js"
 import {
 	type SuccessCriteria,
@@ -27,7 +27,7 @@ import {
 } from "../../../ferment/types.js"
 import { createToolVisibility } from "../../prompt-construction/tool-visibility.js"
 import { YES_NO_OPTIONS } from "../../questionnaire/index.js"
-import { type AskUserQuestion, askUserForm, normalizeAskUserQuestions, toScopingQuestionType } from "../ask-user.js"
+import { askUserForm, normalizeAskUserQuestions, toScopingQuestionType } from "../ask-user.js"
 import { pr_bold, pr_dim } from "../colors.js"
 import { emitFermentCreated } from "../domain-events-emitter.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
@@ -38,7 +38,7 @@ import { judgeJourneyGrade } from "../judge.js"
 import { appendRefEntry, resetReactiveContinuationNudgeCount } from "../nudge.js"
 import { PENDING_PROPOSAL_SCHEMA_VERSION, savePendingProposal } from "../pending-proposal-store.js"
 import { gatherPhaseEvidence } from "../phase-evidence.js"
-import { getPromptUi, promptEditor, promptForm, promptSelect } from "../prompt-ui.js"
+import { promptEditor, promptForm, promptSelect } from "../prompt-ui.js"
 import { readLatestPhaseReviews } from "../review-evidence.js"
 import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
 import { safeSendMessage } from "../safe-send.js"
@@ -63,7 +63,6 @@ import {
 	UpdateScopeFieldParams,
 } from "../tool-schemas.js"
 import { setActiveFermentAndApplyProfile } from "../tool-scope.js"
-import type { FermentUi } from "../ui.js"
 
 type ScopeArgs = Static<typeof ScopeParams>
 type ProposeScopingArgs = Static<typeof ProposeScopingParams>
@@ -95,7 +94,7 @@ const TITLE_REQUIRED_ERROR =
 	'Field "title" must be a non-empty concise 3-5 word title. Retry with the full payload including title.'
 
 export interface LifecycleExecutionContext {
-	pi: ExtensionAPI
+	ctx: ExtensionContext
 }
 
 function clearScopingStatus(ctx: unknown): void {
@@ -478,7 +477,7 @@ type ResolveProposeTargetResult =
 async function resolveProposeFermentTarget(
 	runtime: FermentRuntime,
 	pi: ExtensionAPI,
-	ctx: unknown,
+	ctx: ExtensionContext,
 	rawId: string | undefined,
 	title: string,
 	goal: string,
@@ -497,8 +496,7 @@ async function resolveProposeFermentTarget(
 	if (active) return { ok: true, fermentId: active.id, created: false }
 
 	// Bootstrap a new draft ferment from the proposal, mirroring /ferment new.
-	const ui = (ctx as { ui?: FermentUi } | undefined)?.ui
-	await ensureGitRepo({ ui })
+	await ensureGitRepo({ ui: ctx.ui })
 	const shortName = deriveDraftFermentTitle(title)
 	const f = storage.create(shortName, goal)
 	setActiveFermentAndApplyProfile(pi, runtime, f)
@@ -521,7 +519,7 @@ async function confirmCompletionCriteria(
 	runtime: FermentRuntime,
 	pi: ExtensionAPI,
 	params: ConfirmCompletionCriteriaArgs,
-	ctx: unknown,
+	ctx: ExtensionContext,
 ): Promise<ToolResult> {
 	const ferment = runtime.getStorage().get(params.ferment_id)
 	if (!ferment) return toolErr("Ferment not found.")
@@ -532,7 +530,7 @@ async function confirmCompletionCriteria(
 	const askContext = {
 		ferment,
 		pi,
-		ctx: ctx as { ui?: Partial<import("../ui.js").FermentUi> } | undefined,
+		ctx,
 		runtime,
 	}
 
@@ -597,7 +595,7 @@ async function confirmCompletionCriteria(
 export async function scopeFerment(
 	runtime: FermentRuntime,
 	params: ScopeArgs,
-	{ pi }: LifecycleExecutionContext,
+	{ ctx }: LifecycleExecutionContext,
 ): Promise<ToolResult> {
 	const applyAndPersist = createApplyAndPersist(runtime)
 	const title = normalizeFermentTitle(params.title)
@@ -638,9 +636,11 @@ export async function scopeFerment(
 	}
 	runtime.consumeScopingGate(params.ferment_id)
 
+	const sessionId = ctx.sessionManager.getSessionId()
+
 	// FSM validation: ensure the scope transition is allowed before applying it.
 	const fsmError = validateFsmTransition(fGate, "SCOPE_FERMENT")
-	if (fsmError) return toolErrWithNextAction(fsmError, fGate)
+	if (fsmError) return toolErrWithNextAction(fsmError, fGate, sessionId)
 
 	const cmd: Command = {
 		type: "scope",
@@ -660,10 +660,11 @@ export async function scopeFerment(
 				withNextActionHint(
 					`Ferment is already ${outcome.error.actual}. Use update_ferment_scope_field to revise individual fields.`,
 					fGate,
+					sessionId,
 				),
 			)
 		}
-		return failedToolResult(outcome.error, fGate)
+		return failedToolResult(outcome.error, fGate, sessionId)
 	}
 	// Discard any stale pending-scope buffer — its phases were either applied
 	// here or are no longer relevant (the ferment is now planned).
@@ -678,11 +679,16 @@ export async function scopeFerment(
 		withNextActionHint(
 			`**Ferment "${fresh.name}"** scoped and ready.\n\n- **ferment_id:** ${fresh.id}\n- **Goal:** ${params.goal}\n\n**Phases:**\n${phaseList}`,
 			fresh,
+			sessionId,
 		),
 	)
 }
 
-export async function completeFerment(runtime: FermentRuntime, params: CompleteFermentArgs): Promise<ToolResult> {
+export async function completeFerment(
+	runtime: FermentRuntime,
+	params: CompleteFermentArgs,
+	{ ctx }: LifecycleExecutionContext,
+): Promise<ToolResult> {
 	const applyAndPersist = createApplyAndPersist(runtime)
 
 	const fSnapshot = runtime.getStorage().get(params.ferment_id)
@@ -760,6 +766,8 @@ export async function completeFerment(runtime: FermentRuntime, params: CompleteF
 		gradeRationale = `Judge unreachable (${failureDetail}); completion proceeded without a graded review.`
 	}
 
+	const sessionId = ctx.sessionManager.getSessionId()
+
 	// Persist completion and grade together when the advisory judge returns one.
 	const completeOutcome = applyAndPersist(params.ferment_id, {
 		type: "complete_ferment",
@@ -772,7 +780,7 @@ export async function completeFerment(runtime: FermentRuntime, params: CompleteF
 				}
 			: undefined,
 	})
-	if (!completeOutcome.ok) return failedToolResult(completeOutcome.error, ferment)
+	if (!completeOutcome.ok) return failedToolResult(completeOutcome.error, ferment, sessionId)
 
 	// Cleanup in-memory state.
 	runtime.clearFermentState(params.ferment_id)
@@ -807,6 +815,8 @@ ${renderGateGuidance("scope_ferment")}`,
 			return new Markdown(text, 1, 0, getMarkdownTheme())
 		},
 		async execute(_, rawParams, _signal, _onUpdate, ctx) {
+			const sessionId = ctx.sessionManager.getSessionId()
+
 			clearScopingStatus(ctx)
 			const normalized = normalizeProposeScopingParams(rawParams)
 			if (!normalized.ok) return normalized.error
@@ -849,6 +859,7 @@ ${renderGateGuidance("scope_ferment")}`,
 					withNextActionHint(
 						`Ferment "${ferment.name}" is already ${ferment.status}; ignore this duplicate propose_ferment_scoping call and ${nextAction}.`,
 						ferment,
+						sessionId,
 					),
 				)
 			}
@@ -888,14 +899,15 @@ ${renderGateGuidance("scope_ferment")}`,
 			const formatPlanEntry = (suffix?: string): string => (suffix ? `${planEntry}\n\n${suffix}` : planEntry)
 			const planToolOk = (message: string, options: { includePlan?: boolean; suffix?: string } = {}) =>
 				toolOk(options.includePlan ? `${formatPlanEntry(options.suffix)}\n\n${message}` : message)
-			const promptUi = getPromptUi(ctx)
 
 			// 5. Headless path.
-			if (!promptUi?.select && !promptUi?.custom) {
+			if (!ctx.hasUI) {
 				if (questions.length === 0) {
 					const scopeOutcome = confirmPendingScope(runtime, fermentId, params.phases, "propose_ferment_scoping", pi)
-					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error, ferment)
-					return planToolOk(withNextActionHint("Plan saved.", scopeOutcome.outcome.ferment), { includePlan: true })
+					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error, ferment, sessionId)
+					return planToolOk(withNextActionHint("Plan saved.", scopeOutcome.outcome.ferment, sessionId), {
+						includePlan: true,
+					})
 				}
 				const recSummary = questions
 					.map((q) => {
@@ -913,14 +925,15 @@ ${renderGateGuidance("scope_ferment")}`,
 			// agent turn ends, so terminal scrollback is not fighting active-turn
 			// progress writes.
 			if (questions.length === 0) {
-				if (!promptUi?.custom) {
+				if (ctx.mode !== "tui") {
 					// Some hosts expose select/input without custom components; keep them on the pre-review confirmation path.
 					const scopeOutcome = confirmPendingScope(runtime, fermentId, params.phases, "propose_ferment_scoping", pi)
-					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error, ferment)
+					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error, ferment, sessionId)
 					return planToolOk(
 						withNextActionHint(
 							`Plan saved. Ferment "${scopeOutcome.outcome.ferment.name}" is planned with ${scopeOutcome.outcome.ferment.phases.length} phase(s). Starting execution.`,
 							scopeOutcome.outcome.ferment,
+							sessionId,
 						),
 						{ includePlan: true },
 					)
@@ -951,7 +964,7 @@ ${renderGateGuidance("scope_ferment")}`,
 			// 7. Tabbed question form + review loop.
 			const runQuestions = async (): Promise<ScopingAnswer[] | "cancelled" | { kind: "dismiss"; qn: number }> => {
 				if (
-					!getPromptUi(ctx)?.custom &&
+					ctx.mode !== "tui" &&
 					questions.every((q) => {
 						const type = getScopingQuestionType(q)
 						return type === "single" || type === "confirm"
@@ -1059,7 +1072,7 @@ ${renderGateGuidance("scope_ferment")}`,
 				const answers = answersResult
 
 				const answersEntry = buildAnswersEntry(questions, answers)
-				if (getPromptUi(ctx)?.custom) {
+				if (ctx.mode === "tui") {
 					const content = buildScopingIterationMessage(questions, answers)
 					safeSendMessage(
 						pi,
@@ -1143,8 +1156,8 @@ ${renderGateGuidance("scope_ferment")}`,
 			const text = result.content[0]?.type === "text" ? result.content[0].text : ""
 			return new Markdown(text, 1, 0, getMarkdownTheme())
 		},
-		async execute(_, params) {
-			return scopeFerment(runtime, params, { pi })
+		async execute(_, params, _signal, _onUpdate, ctx) {
+			return scopeFerment(runtime, params, { ctx })
 		},
 	})
 
@@ -1154,7 +1167,7 @@ ${renderGateGuidance("scope_ferment")}`,
 		description:
 			"Revise a single scoping field (goal, criteria, constraints, assumptions) on an already-planned ferment.",
 		parameters: UpdateScopeFieldParams,
-		async execute(_, params) {
+		async execute(_, params, _signal, _onUpdate, ctx) {
 			if (
 				params.field !== "goal" &&
 				params.field !== "criteria" &&
@@ -1163,14 +1176,19 @@ ${renderGateGuidance("scope_ferment")}`,
 			) {
 				return toolErr(`Unknown field: ${params.field}. Use goal, criteria, constraints, or assumptions.`)
 			}
+			const sessionId = ctx.sessionManager.getSessionId()
 			const outcome = applyAndPersist(params.ferment_id, {
 				type: "update_scope_field",
 				field: params.field,
 				value: params.value,
 			})
-			if (!outcome.ok) return failedToolResult(outcome.error)
+			if (!outcome.ok) return failedToolResult(outcome.error, undefined, sessionId)
 			return toolOk(
-				withNextActionHint(`Field "${params.field}" updated for "${outcome.ferment.name}".`, outcome.ferment),
+				withNextActionHint(
+					`Field "${params.field}" updated for "${outcome.ferment.name}".`,
+					outcome.ferment,
+					sessionId,
+				),
 			)
 		},
 	})
@@ -1187,8 +1205,8 @@ ${renderGateGuidance("complete_ferment")}`,
 			const text = result.content[0]?.type === "text" ? result.content[0].text : ""
 			return new Markdown(text, 1, 0, getMarkdownTheme())
 		},
-		async execute(_, params) {
-			return completeFerment(runtime, params)
+		async execute(_, params, _signal, _onUpdate, ctx) {
+			return completeFerment(runtime, params, { ctx })
 		},
 	})
 
@@ -1266,7 +1284,7 @@ Returns structured answer fields on success, or a tool error if no audience can 
 			const askContext = {
 				ferment,
 				pi,
-				ctx: ctx as { ui?: Partial<import("../ui.js").FermentUi> } | undefined,
+				ctx,
 				runtime,
 			}
 			const normalizeResult = normalizeAskUserQuestions(params.questions)

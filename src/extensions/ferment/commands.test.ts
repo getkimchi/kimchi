@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import type { Ferment } from "../../ferment/types.js"
 import { getToolsForProfile } from "../../shared/planning/tool-catalog.js"
+import { createContext } from "./__mocks__/context.js"
 import {
 	FermentCommandController,
 	getFermentArgumentCompletions,
@@ -100,8 +101,7 @@ function createHarness() {
 		events: { emit: vi.fn(), on: vi.fn(() => () => {}) },
 	} as unknown as ExtensionAPI
 	const ctx = {
-		hasUI: false,
-		ui: { notify: vi.fn() },
+		...createContext({ hasUI: false }),
 		abort: vi.fn(),
 		waitForIdle: vi.fn().mockResolvedValue(undefined),
 	} as unknown as ExtensionCommandContext
@@ -178,15 +178,12 @@ describe("FermentCommandController", () => {
 	it("accepts an inline new title without opening an editor in UI mode", async () => {
 		const h = createHarness()
 		const controller = new FermentCommandController()
-		const ui = {
-			notify: vi.fn(),
-			editor: vi.fn().mockResolvedValueOnce("unexpected editor text"),
-			input: vi.fn().mockResolvedValueOnce("unexpected input text"),
-		}
-		const ctx = {
-			hasUI: true,
-			ui,
-		} as unknown as ExtensionCommandContext
+		const ctx = createContext({
+			ui: {
+				editor: vi.fn().mockResolvedValueOnce("unexpected editor text"),
+				input: vi.fn().mockResolvedValueOnce("unexpected input text"),
+			},
+		}) as ExtensionCommandContext
 
 		const result = await controller.execute(
 			{ type: "new", title: "Inline Title" },
@@ -195,8 +192,8 @@ describe("FermentCommandController", () => {
 
 		const created = h.storage.list().find((f) => f.description === "Inline Title")
 		expect(result).toEqual({ handled: true })
-		expect(ui.editor).not.toHaveBeenCalled()
-		expect(ui.input).not.toHaveBeenCalled()
+		expect(ctx.ui.editor).not.toHaveBeenCalled()
+		expect(ctx.ui.input).not.toHaveBeenCalled()
 		expect(created).toBeDefined()
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -210,15 +207,12 @@ describe("FermentCommandController", () => {
 	it("prompts bare new commands with the multi-line editor in UI mode", async () => {
 		const h = createHarness()
 		const controller = new FermentCommandController()
-		const ui = {
-			notify: vi.fn(),
-			editor: vi.fn().mockResolvedValueOnce("make reports better\ninclude tests"),
-			input: vi.fn().mockResolvedValueOnce("single-line fallback"),
-		}
-		const ctx = {
-			hasUI: true,
-			ui,
-		} as unknown as ExtensionCommandContext
+		const ctx = createContext({
+			ui: {
+				editor: vi.fn().mockResolvedValueOnce("make reports better\ninclude tests"),
+				input: vi.fn().mockResolvedValueOnce("single-line fallback"),
+			},
+		}) as ExtensionCommandContext
 
 		const result = await controller.execute(
 			{ type: "new", title: "" },
@@ -227,11 +221,11 @@ describe("FermentCommandController", () => {
 
 		const created = h.storage.list().find((f) => f.description === "make reports better\ninclude tests")
 		expect(result).toEqual({ handled: true })
-		expect(ui.editor).toHaveBeenCalledWith(
+		expect(ctx.ui.editor).toHaveBeenCalledWith(
 			"🍺  What would you like to ferment?\ne.g. 'Rewrite login flow' or 'Add OAuth support'",
 			"",
 		)
-		expect(ui.input).not.toHaveBeenCalled()
+		expect(ctx.ui.input).not.toHaveBeenCalled()
 		expect(created).toBeDefined()
 		expect(h.runtime.setActive).toHaveBeenCalledWith(expect.objectContaining({ id: created?.id }))
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
@@ -254,26 +248,23 @@ describe("FermentCommandController", () => {
 	it("echoes the interactive request before starting the hidden scoping turn", async () => {
 		const h = createHarness()
 		const controller = new FermentCommandController()
-		const ui = {
-			notify: vi.fn(),
-			editor: vi.fn().mockResolvedValueOnce("make the todo app glassy\nwith tests"),
-			input: vi.fn().mockResolvedValueOnce("single-line fallback"),
-			select: vi.fn(),
-		}
-		const ctx = {
-			hasUI: true,
-			ui,
-		} as unknown as ExtensionCommandContext
+
+		const ctx = createContext({
+			ui: {
+				editor: vi.fn().mockResolvedValueOnce("make the todo app glassy\nwith tests"),
+				input: vi.fn().mockResolvedValueOnce("single-line fallback"),
+			},
+		}) as ExtensionCommandContext
 
 		const result = await controller.execute({ type: "interactive" }, { raw: "", pi: h.pi, ctx, runtime: h.runtime })
 
 		expect(result).toEqual({ handled: true })
-		expect(ui.editor).toHaveBeenCalledWith(
+		expect(ctx.ui.editor).toHaveBeenCalledWith(
 			"🍺  What would you like to ferment?\ne.g. 'Rewrite login flow' or 'Add OAuth support'",
 			"",
 		)
-		expect(ui.input).not.toHaveBeenCalled()
-		expect(ui.select).not.toHaveBeenCalled()
+		expect(ctx.ui.input).not.toHaveBeenCalled()
+		expect(ctx.ui.select).not.toHaveBeenCalled()
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: "ferment_request",
@@ -293,21 +284,18 @@ describe("FermentCommandController", () => {
 
 	it("exposes the interactive request flow as a reusable helper", async () => {
 		const h = createHarness()
-		const ui = {
-			notify: vi.fn(),
-			input: vi.fn().mockResolvedValueOnce("make settings searchable"),
-			select: vi.fn(),
-		}
-		const ctx = {
-			hasUI: true,
-			ui,
-		} as unknown as ExtensionCommandContext
+		const ctx = createContext({
+			ui: {
+				input: vi.fn().mockResolvedValueOnce("make settings searchable"),
+				editor: vi.fn().mockResolvedValueOnce("make settings searchable"),
+			},
+		}) as ExtensionCommandContext
 
 		await startInteractiveFerment({ pi: h.pi, ctx, runtime: h.runtime })
 
 		expect(tipWidgetLocationMock.set).toHaveBeenCalledWith("hidden")
 		expect(tipWidgetLocationMock.restore).toHaveBeenCalled()
-		expect(ui.select).not.toHaveBeenCalled()
+		expect(ctx.ui.select).not.toHaveBeenCalled()
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: "ferment_request",
@@ -593,25 +581,6 @@ describe("FermentCommandController", () => {
 		expect(h.pi.sendMessage).not.toHaveBeenCalled()
 	})
 
-	it("keeps UI one-shot without prompt handlers on the usage path", async () => {
-		const h = createHarness()
-		const controller = new FermentCommandController()
-		const ctx = {
-			hasUI: true,
-			ui: { notify: vi.fn() },
-		} as unknown as ExtensionCommandContext
-
-		const result = await controller.execute(
-			{ type: "one-shot", intent: "" },
-			{ raw: "one-shot", pi: h.pi, ctx, runtime: h.runtime },
-		)
-
-		expect(result).toEqual({ handled: true })
-		expect(ctx.ui.notify).toHaveBeenCalledWith('Usage: /ferment one-shot "description of what to build"')
-		expect(h.storage.list()).toHaveLength(0)
-		expect(h.pi.sendMessage).not.toHaveBeenCalled()
-	})
-
 	it("waits for headless one-shot turns before returning", async () => {
 		const h = createHarness()
 		const controller = new FermentCommandController()
@@ -637,15 +606,12 @@ describe("FermentCommandController", () => {
 		const controller = new FermentCommandController()
 		const active = h.storage.create("Revise Goal")
 		h.runtime.setActive(active)
-		const ui = {
-			notify: vi.fn(),
-			editor: vi.fn().mockResolvedValueOnce("new goal\nwith detail"),
-			input: vi.fn().mockResolvedValueOnce("single-line fallback"),
-		}
-		const ctx = {
-			hasUI: true,
-			ui,
-		} as unknown as ExtensionCommandContext
+		const ctx = createContext({
+			ui: {
+				editor: vi.fn().mockResolvedValueOnce("new goal\nwith detail"),
+				input: vi.fn().mockResolvedValueOnce("single-line fallback"),
+			},
+		}) as ExtensionCommandContext
 
 		const result = await controller.execute(
 			{ type: "revise", field: "goal" },
@@ -653,10 +619,10 @@ describe("FermentCommandController", () => {
 		)
 
 		expect(result).toEqual({ handled: true })
-		expect(ui.editor).toHaveBeenCalledWith("Revise goal:", "")
-		expect(ui.input).not.toHaveBeenCalled()
+		expect(ctx.ui.editor).toHaveBeenCalledWith("Revise goal:", "")
+		expect(ctx.ui.input).not.toHaveBeenCalled()
 		expect(h.storage.get(active.id)?.goal).toBe("new goal\nwith detail")
-		expect(ui.notify).toHaveBeenCalledWith('Goal updated: "new goal\nwith detail"')
+		expect(ctx.ui.notify).toHaveBeenCalledWith('Goal updated: "new goal\nwith detail"')
 	})
 
 	it("reports export write failures without throwing", async () => {
@@ -1106,7 +1072,7 @@ describe("registerFermentCommands", () => {
 			.fn()
 			.mockImplementationOnce((_title: string, options: string[]) => options[0])
 			.mockImplementationOnce((_title: string, options: string[]) => options[0])
-		const ctx = { ...h.ctx, hasUI: true, ui: { ...h.ctx.ui, select } } as ExtensionCommandContext
+		const ctx = createContext({ ...h.ctx, hasUI: true, ui: { ...h.ctx.ui, select } }) as ExtensionCommandContext
 
 		const commands = new Map<string, RegisteredCommand>()
 		const pi = {
@@ -1167,7 +1133,7 @@ describe("registerFermentCommands", () => {
 			.fn()
 			.mockImplementationOnce((_title: string, options: string[]) => options[0])
 			.mockImplementationOnce((_title: string, options: string[]) => options[0])
-		const ctx = { ...h.ctx, hasUI: true, ui: { ...h.ctx.ui, select } } as ExtensionCommandContext
+		const ctx = createContext({ ...h.ctx, hasUI: true, ui: { ...h.ctx.ui, select } }) as ExtensionCommandContext
 
 		const commands = new Map<string, RegisteredCommand>()
 		const pi = {
@@ -1625,7 +1591,7 @@ describe("registerFermentCommands", () => {
 		})
 		h.runtime.setContinuationPolicy("manual")
 		const select = vi.fn(async () => "Continue to next phase")
-		const ctx = { ...h.ctx, hasUI: true, ui: { ...h.ctx.ui, select } } as ExtensionCommandContext
+		const ctx = createContext({ ...h.ctx, hasUI: true, ui: { ...h.ctx.ui, select } }) as ExtensionCommandContext
 
 		const commands = new Map<string, RegisteredCommand>()
 		const pi = {

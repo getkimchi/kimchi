@@ -2,8 +2,8 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { Ferment } from "../../ferment/types.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { getAgentConfig, getDefaultAgentNames } from "../agents/personas/agent-types.js"
+import { getMultiModelEnabled } from "../multi-model.js"
 import { getPermissionMode } from "../permissions/mode-controller.js"
-import { getMultiModelEnabled } from "../prompt-construction/prompt-enrichment.js"
 import { SCOPING_DISCOVERY_GUIDANCE, SCOPING_EXPLORE_TOKEN_BUDGET } from "./constants.js"
 import { formatDecisionsAndMemories, formatScopingContext } from "./format.js"
 import type { FermentRuntime } from "./runtime.js"
@@ -200,7 +200,7 @@ export function buildFermentPromptBlock(
 	if (!f) return undefined
 
 	const oneshot = pi.getFlag("ferment-oneshot") === true
-	const delegationMode: "strict" | "relaxed" = getMultiModelEnabled() ? "strict" : "relaxed"
+	const delegationMode: "strict" | "relaxed" = getMultiModelEnabled(sessionId) ? "strict" : "relaxed"
 
 	switch (f.status) {
 		case "draft":

@@ -4,6 +4,7 @@ import { join } from "node:path"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../../ferment/event-store.js"
+import { createContext } from "../__mocks__/context.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "../runtime.js"
 import { setActive } from "../state.js"
 import { createApplyAndPersist } from "../tool-helpers.js"
@@ -90,7 +91,7 @@ describe("completePhase", () => {
 		const result = await completePhase(
 			h.runtime,
 			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: passingPhaseGates() },
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 
@@ -121,7 +122,7 @@ describe("completePhase", () => {
 		const result = await completePhase(
 			h.runtime,
 			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: flaggedGates },
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 
@@ -147,7 +148,7 @@ describe("completePhase", () => {
 		const result = await completePhase(
 			h.runtime,
 			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: incomplete },
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 
@@ -173,7 +174,7 @@ describe("completePhase", () => {
 		const result = await completePhase(
 			h.runtime,
 			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: malformed },
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 		const errResult = result as { content: { text: string }[]; isError?: boolean }
@@ -192,7 +193,7 @@ describe("completePhase", () => {
 			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: passingPhaseGates() },
 			{
 				pi: h.pi,
-				ctx: { ui: { select: selectSpy } },
+				ctx: createContext({ ui: { select: selectSpy } }),
 			},
 			services,
 		)
@@ -224,7 +225,7 @@ describe("completePhase", () => {
 			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: passingPhaseGates() },
 			{
 				pi: h.pi,
-				ctx: { ui: { select: selectSpy } },
+				ctx: createContext({ ui: { select: selectSpy } }),
 			},
 			services,
 		)
@@ -250,7 +251,7 @@ describe("completePhase", () => {
 		const result = await completePhase(
 			h.runtime,
 			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: passingPhaseGates() },
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 
@@ -274,7 +275,7 @@ describe("completePhase", () => {
 		const result = await completePhase(
 			h.runtime,
 			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: passingPhaseGates() },
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 
@@ -291,7 +292,7 @@ describe("completePhase", () => {
 		const result = await completePhase(
 			h.runtime,
 			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: passingPhaseGates() },
-			{ pi: h.pi },
+			{ pi: h.pi, ctx: createContext() },
 			services,
 		)
 
@@ -342,7 +343,7 @@ describe("registerPhaseTools", () => {
 			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: passingPhaseGates() },
 			undefined,
 			undefined,
-			{ ui: { select: selectSpy } },
+			createContext({ ui: { select: selectSpy } }),
 		)) as { content: { text: string }[]; isError?: boolean }
 
 		// Silent path: no dropdown, phase completed normally using the injected runtime.

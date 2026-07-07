@@ -26,8 +26,8 @@ import { Type } from "typebox"
 import { isToolExpanded, registerToolCall } from "../../expand-state.js"
 import { filterThinkingForDisplay } from "../hide-thinking.js"
 import { sessionHasImages } from "../model-guard.js"
+import { getMultiModelEnabled } from "../multi-model.js"
 import { KIMCHI_DEV_PROVIDER, MODEL_CAPABILITIES } from "../orchestration/model-registry/index.js"
-import { getMultiModelEnabled } from "../prompt-construction/prompt-enrichment.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { isStaleCtxError } from "../stale-ctx.js"
 import { trackSubagentSpawned } from "../telemetry/index.js"
@@ -345,7 +345,7 @@ function getStatusNote(status: string, abortReason?: AgentAbortReason): string {
 	return ""
 }
 
-function getStatusInstruction(status: string, abortReason?: AgentAbortReason): string {
+function getStatusInstruction(status: string, sessionId: string, abortReason?: AgentAbortReason): string {
 	if (status === "aborted" && abortReason === "token_budget") {
 		return "\nThe agent ran out of its token budget. Inspect the worker report before acting. Use resume_subagent with a bounded steering prompt when remaining_steps are a direct continuation; spawn a narrower replacement Agent when remaining_steps have a clean task boundary; use resume_subagent with purpose finalize_report if the report is missing; or stop/report if blocked. Do not blindly retry the same prompt."
 	}
@@ -353,13 +353,13 @@ function getStatusInstruction(status: string, abortReason?: AgentAbortReason): s
 		return "\nThe agent stopped producing output and was terminated. Inspect the worker report before acting; this may indicate a stall. Resume only with a steering prompt that continues the same thread while avoiding the stalled operation, or spawn a narrower replacement Agent if remaining_steps have a clean task boundary."
 	}
 	if (status === "aborted" && abortReason === "max_duration") {
-		const relaxed = !getMultiModelEnabled()
+		const relaxed = !getMultiModelEnabled(sessionId)
 		return relaxed
 			? "\nThe agent exceeded its maximum allowed wall-clock duration and was terminated. Inspect the worker report before acting; this may indicate a hang or blocked command. Resume only with a bounded steering prompt that avoids the stalled operation and directly continues the same thread, or spawn a follow-up Agent scoped to a narrower task boundary."
 			: "\nThe agent exceeded its maximum allowed wall-clock duration and was terminated. Inspect the worker report before acting; this may indicate a hang or blocked command. Resume only with a bounded steering prompt that avoids the stalled operation and directly continues the same thread, or spawn a follow-up Agent scoped to a narrower task boundary. Do NOT implement the remaining work yourself — the orchestrator must delegate, not build."
 	}
 	if (status === "aborted" && abortReason === "max_turns") {
-		const relaxed = !getMultiModelEnabled()
+		const relaxed = !getMultiModelEnabled(sessionId)
 		return relaxed
 			? "\nThe agent exhausted its turn budget. Do not mark delegated work complete from an aborted result. Inspect the worker report first: use resume_subagent with a bounded steering prompt when remaining_steps are a direct continuation; spawn a narrower linked replacement Agent when remaining_steps have a clean task boundary; use resume_subagent with purpose finalize_report if the report is missing; or stop/report if blocked."
 			: "\nThe agent exhausted its turn budget. Do not mark delegated work complete from an aborted result. Inspect the worker report first: use resume_subagent with a bounded steering prompt when remaining_steps are a direct continuation; spawn a narrower linked replacement Agent when remaining_steps have a clean task boundary; use resume_subagent with purpose finalize_report if the report is missing; or stop/report if blocked. Do NOT implement the remaining work yourself — the orchestrator must delegate, not build."
@@ -1513,7 +1513,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 				const outcome = record.status === "aborted" ? "aborted" : record.status === "stopped" ? "stopped" : "completed"
 				record.latestOutcome ??= buildAgentOutcome(record)
 				return textResult(
-					`${fallbackNote}Agent ${outcome} in ${formatMs(durationMs)} (${statsParts.join(", ")})${getStatusNote(record.status, record.abortReason)}.${getStatusInstruction(record.status, record.abortReason)}\n\n${record.result?.trim() || "No output."}${formatAgentOutcomeBlock(record.latestOutcome)}`,
+					`${fallbackNote}Agent ${outcome} in ${formatMs(durationMs)} (${statsParts.join(", ")})${getStatusNote(record.status, record.abortReason)}.${getStatusInstruction(record.status, ctx.sessionManager.getSessionId(), record.abortReason)}\n\n${record.result?.trim() || "No output."}${formatAgentOutcomeBlock(record.latestOutcome)}`,
 					details,
 				)
 			},
