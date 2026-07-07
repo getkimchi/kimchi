@@ -285,6 +285,60 @@ export function shutdownAll(): void {
 	}
 }
 
+/**
+ * Shut down LSP clients that have been idle for longer than `thresholdMs`.
+ *
+ * A client is considered idle when:
+ *   - No pending requests are in flight
+ *   - No active progress tokens (project loading / indexing)
+ *   - `lastActivity` is older than `thresholdMs`
+ *
+ * Fully synchronous — no awaits between the idle check and map deletion +
+ * process kill. JS single-threading guarantees getOrCreateClient's synchronous
+ * cache-hit path cannot interleave: either the sweep runs first (client evicted,
+ * next call spawns fresh) or getOrCreateClient runs first (updates lastActivity,
+ * sweep skips). No locking required.
+ *
+ * @param clientMap   The clients map to sweep
+ * @param lockMap     The client locks map
+ * @param thresholdMs Idle duration before shutdown
+ * @param now         Current timestamp (injectable for testing)
+ */
+export function shutdownIdleClientsIn(
+	clientMap: Map<string, LspClient>,
+	lockMap: Map<string, Promise<LspClient>>,
+	thresholdMs: number,
+	now: number = Date.now(),
+): void {
+	for (const [key, client] of clientMap) {
+		if (client.pendingRequests.size > 0) continue
+		if (client.activeProgressTokens.size > 0) continue
+
+		const idleMs = now - client.lastActivity
+		if (idleMs < thresholdMs) continue
+
+		// Remove from maps BEFORE killing so getOrCreateClient can't return
+		// a dying client. Both operations are synchronous — no event-loop turn
+		// between them.
+		clientMap.delete(key)
+		lockMap.delete(key)
+
+		// Best-effort graceful LSP shutdown, then kill. The shutdown request
+		// adds a pending entry; the proc.exited handler (fired by proc.kill())
+		// rejects it during process teardown.
+		sendRequest(client, "shutdown", null).catch(() => {})
+		client.proc.kill()
+	}
+}
+
+/**
+ * Sweep the module-level `clients` map and shut down idle LSP servers.
+ * Thin wrapper around `shutdownIdleClientsIn` for production use.
+ */
+export function shutdownIdleClients(thresholdMs: number): void {
+	shutdownIdleClientsIn(clients, clientLocks, thresholdMs)
+}
+
 // =============================================================================
 // Protocol
 // =============================================================================

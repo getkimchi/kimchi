@@ -19,6 +19,7 @@ import {
 	refreshFile,
 	sendRequest,
 	shutdownAll,
+	shutdownIdleClients,
 	waitForDiagnostics,
 } from "./lsp/client.js"
 import { applyWorkspaceEdit } from "./lsp/edits.js"
@@ -34,6 +35,8 @@ export function clientCwd(filePath: string, sessionCwd: string): string {
 
 const LSP_DIAGNOSTICS_CUSTOM_TYPE = "lsp_diagnostics"
 const DIAG_WAIT_TIMEOUT_MS = 2000
+const IDLE_THRESHOLD_MS = 15 * 60 * 1000 // 15 minutes
+const IDLE_SWEEP_INTERVAL_MS = 60 * 1000 // check every 60s
 
 const LSP_SYSTEM_PROMPT = `## Language Server Protocol (LSP)
 
@@ -56,6 +59,7 @@ export default function (pi: ExtensionAPI) {
 	// controller is combined with ctx.signal so user/session aborts also unwind
 	// the wait, but we never abort ctx.signal ourselves.
 	let pendingRefresh: { abort: AbortController } | undefined
+	let idleSweepTimer: ReturnType<typeof setInterval> | null = null
 
 	function cancelPendingRefresh(): void {
 		if (!pendingRefresh) return
@@ -76,6 +80,13 @@ export default function (pi: ExtensionAPI) {
 		activeServers = detectServers(cwd)
 		if (activeServers.length === 0) return
 
+		// Start idle sweep — shut down LSP servers after 15 min of inactivity.
+		// Clear any previous timer first to prevent duplicates on session restart.
+		if (idleSweepTimer) clearInterval(idleSweepTimer)
+		idleSweepTimer = setInterval(() => {
+			shutdownIdleClients(IDLE_THRESHOLD_MS)
+		}, IDLE_SWEEP_INTERVAL_MS)
+
 		// Update status bar with detected server names
 		if (ui) {
 			const names = activeServers.map((s) => s.name).join(", ")
@@ -93,6 +104,10 @@ export default function (pi: ExtensionAPI) {
 	})
 
 	pi.on("session_shutdown", async () => {
+		if (idleSweepTimer) {
+			clearInterval(idleSweepTimer)
+			idleSweepTimer = null
+		}
 		cancelPendingRefresh()
 		if (ui) {
 			ui.setStatus("lsp", undefined)

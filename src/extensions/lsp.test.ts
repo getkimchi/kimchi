@@ -17,6 +17,7 @@ vi.mock("./lsp/client.js", () => ({
 	refreshFile: vi.fn(),
 	sendRequest: vi.fn(),
 	shutdownAll: vi.fn(),
+	shutdownIdleClients: vi.fn(),
 	waitForDiagnostics: vi.fn(),
 }))
 
@@ -974,6 +975,74 @@ describe("lsp_rename", () => {
 		})
 		expect(result.content[0].text).toContain("src/a.ts: 1 edit(s)")
 		expect(editsMod.applyWorkspaceEdit).toHaveBeenCalledTimes(1)
+	})
+})
+
+// =============================================================================
+// 12. Idle sweep timer
+// =============================================================================
+
+describe("idle sweep timer", () => {
+	beforeEach(() => {
+		vi.useFakeTimers()
+	})
+
+	afterEach(() => {
+		vi.useRealTimers()
+	})
+
+	it("starts an idle sweep interval on session_start when servers are detected", async () => {
+		vi.mocked(serversMod.detectServers).mockReturnValue([FAKE_SERVER])
+		const pi = makePi()
+		lspExtension(pi)
+		await pi.fireSessionStart()
+
+		vi.advanceTimersByTime(60_000)
+		expect(clientMod.shutdownIdleClients).toHaveBeenCalled()
+	})
+
+	it("passes the 15-minute threshold to shutdownIdleClients", async () => {
+		vi.mocked(serversMod.detectServers).mockReturnValue([FAKE_SERVER])
+		const pi = makePi()
+		lspExtension(pi)
+		await pi.fireSessionStart()
+
+		vi.advanceTimersByTime(60_000)
+		expect(clientMod.shutdownIdleClients).toHaveBeenCalledWith(15 * 60 * 1000)
+	})
+
+	it("does not start the sweep when no servers are detected", async () => {
+		vi.mocked(serversMod.detectServers).mockReturnValue([])
+		const pi = makePi()
+		lspExtension(pi)
+		await pi.fireSessionStart()
+
+		vi.advanceTimersByTime(60_000)
+		expect(clientMod.shutdownIdleClients).not.toHaveBeenCalled()
+	})
+
+	it("clears the sweep interval on session_shutdown", async () => {
+		vi.mocked(serversMod.detectServers).mockReturnValue([FAKE_SERVER])
+		const pi = makePi()
+		lspExtension(pi)
+		await pi.fireSessionStart()
+
+		await pi.fireShutdown()
+
+		vi.mocked(clientMod.shutdownIdleClients).mockClear()
+		vi.advanceTimersByTime(120_000)
+		expect(clientMod.shutdownIdleClients).not.toHaveBeenCalled()
+	})
+
+	it("does not start a duplicate sweep if session_start fires twice", async () => {
+		vi.mocked(serversMod.detectServers).mockReturnValue([FAKE_SERVER])
+		const pi = makePi()
+		lspExtension(pi)
+		await pi.fireSessionStart()
+		await pi.fireSessionStart()
+
+		vi.advanceTimersByTime(60_000)
+		expect(clientMod.shutdownIdleClients).toHaveBeenCalledTimes(1)
 	})
 })
 
