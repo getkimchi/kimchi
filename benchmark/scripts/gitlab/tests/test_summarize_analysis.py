@@ -4,24 +4,26 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 from urllib import error, request
 
-import pytest
-
 from summarize_analysis import (
+    build_runs_table,
     call_opus,
     compute_lookback_dates,
+    extract_run_metrics,
     filter_metadata,
     is_full_run,
     is_in_time_window,
+    metadata_dict,
+    metadata_string,
     post_to_discord,
+    run_configuration,
+    run_label,
     split_by_ferment,
-    truncate_to_2000,
 )
-
 
 # --- compute_lookback_dates ---
 
@@ -157,31 +159,135 @@ def test_split_by_ferment_defaults_to_non_ferment() -> None:
     assert len(non_ferment) == 1
 
 
-# --- truncate_to_2000 ---
+# --- metadata helpers ---
 
-def test_truncate_to_2000_short_text() -> None:
-    text = "Short summary."
-    assert truncate_to_2000(text) == text
-
-
-def test_truncate_to_2000_exact_boundary() -> None:
-    text = "x" * 2000
-    assert truncate_to_2000(text) == text
+def test_metadata_string_returns_value() -> None:
+    assert metadata_string({"key": "value"}, "key") == "value"
 
 
-def test_truncate_to_2000_long_text() -> None:
-    text = ("A. " * 600) + "x" * 2100  # Many sentence boundaries, last one near 2000
-    result = truncate_to_2000(text)
-    assert len(result) <= 2000
-    # Should truncate at a sentence boundary after position 1000
-    assert result.rstrip().endswith(".")
+def test_metadata_string_returns_default_for_missing() -> None:
+    assert metadata_string({}, "key", "default") == "default"
 
 
-def test_truncate_to_2000_no_sentence_boundary() -> None:
-    """When there's no sentence boundary, hard truncate at 2000."""
-    text = "x" * 3000
-    result = truncate_to_2000(text)
-    assert len(result) == 2000
+def test_metadata_string_returns_default_for_empty() -> None:
+    assert metadata_string({"key": ""}, "key", "default") == "default"
+
+
+def test_metadata_dict_returns_nested_dict() -> None:
+    assert metadata_dict({"outer": {"inner": 1}}, "outer") == {"inner": 1}
+
+
+def test_metadata_dict_returns_empty_for_invalid() -> None:
+    assert metadata_dict({"outer": "not-a-dict"}, "outer") == {}
+
+
+# --- run metrics and table ---
+
+def test_extract_run_metrics_from_summary(tmp_path: Path) -> None:
+    summary = {
+        "totals": {
+            "tasks": {
+                "expected": 89,
+                "scored_pass": 42,
+                "scored_fail": 30,
+                "agent_timeout": 10,
+                "error": 7,
+                "no_verdict": 0,
+            }
+        }
+    }
+    summary_path = tmp_path / "summary.json"
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+    metadata = {"_summary_local_path": str(summary_path)}
+    metrics = extract_run_metrics(metadata)
+    assert metrics == {
+        "available": True,
+        "tasks_expected": 89,
+        "scored_pass": 42,
+        "scored_fail": 30,
+        "agent_timeout": 10,
+        "error": 7,
+        "no_verdict": 0,
+    }
+
+
+def test_extract_run_metrics_missing_summary() -> None:
+    assert extract_run_metrics({"_summary_local_path": None}) == {"available": False}
+
+
+def test_extract_run_metrics_bad_summary_file(tmp_path: Path) -> None:
+    summary_path = tmp_path / "summary.json"
+    summary_path.write_text("not json", encoding="utf-8")
+    assert extract_run_metrics({"_summary_local_path": str(summary_path)}) == {"available": False}
+
+
+def test_run_label_includes_provider() -> None:
+    assert run_label({"model_provider": "kimchi-dev", "model": "kimi-k2.7"}) == "kimchi-dev/kimi-k2.7"
+
+
+def test_run_label_falls_back_to_model() -> None:
+    assert run_label({"model": "kimi-k2.7"}) == "kimi-k2.7"
+
+
+def test_run_configuration_returns_value() -> None:
+    assert run_configuration({"configuration": "multi-model"}) == "multi-model"
+
+
+def test_run_configuration_defaults_to_na() -> None:
+    assert run_configuration({}) == "na"
+
+
+def test_build_runs_table_includes_metrics_and_pipeline_link() -> None:
+    runs = [
+        {
+            "model_provider": "kimchi-dev",
+            "model": "kimi-k2.7",
+            "configuration": "single-model",
+            "_summary_local_path": None,
+            "gitlab": {"pipeline_url": "https://gitlab.com/castai/kimchi/kimchi/-/pipelines/1"},
+        }
+    ]
+    table = build_runs_table(runs)
+    assert "Runs in scope (1)" in table
+    assert "kimchi-dev/kimi-k2.7" in table
+    assert "single-model" in table
+    assert "metrics unavailable" in table
+    assert "[pipeline](https://gitlab.com/castai/kimchi/kimchi/-/pipelines/1)" in table
+
+
+def test_build_runs_table_with_available_summary(tmp_path: Path) -> None:
+    summary = {
+        "totals": {
+            "tasks": {
+                "expected": 89,
+                "scored_pass": 55,
+                "scored_fail": 20,
+                "agent_timeout": 8,
+                "error": 6,
+                "no_verdict": 0,
+            }
+        }
+    }
+    summary_path = tmp_path / "summary.json"
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+    runs = [
+        {
+            "model_provider": "anthropic",
+            "model": "claude-sonnet-4-6",
+            "configuration": "multi-model",
+            "_summary_local_path": str(summary_path),
+            "gitlab": {"pipeline_url": "https://gitlab.com/castai/kimchi/kimchi/-/pipelines/2"},
+        }
+    ]
+    table = build_runs_table(runs)
+    assert "Runs in scope (1)" in table
+    assert "anthropic/claude-sonnet-4-6" in table
+    assert "89 tasks · 55 pass / 20 fail / 8 timeout / 6 error" in table
+    assert "[pipeline](https://gitlab.com/castai/kimchi/kimchi/-/pipelines/2)" in table
+
+
+def test_build_runs_table_empty() -> None:
+    assert build_runs_table([]) == "No qualifying runs."
 
 
 # --- call_opus ---
@@ -194,7 +300,7 @@ class _FakeResponse:
     def read(self) -> bytes:
         return json.dumps(self._data).encode()
 
-    def __enter__(self) -> "_FakeResponse":
+    def __enter__(self) -> _FakeResponse:
         return self
 
     def __exit__(self, *args: object) -> None:
@@ -260,8 +366,8 @@ def test_call_opus_returns_none_after_max_retries() -> None:
 
 # --- post_to_discord ---
 
-def test_post_to_discord_headline_thread_and_summary() -> None:
-    """post_to_discord posts headline, creates thread, then posts summary in thread."""
+def test_post_to_discord_creates_thread_and_posts_blocks() -> None:
+    """post_to_discord creates a thread and posts each content block in order."""
     captured: list[dict] = []
     call_count = 0
 
@@ -274,44 +380,42 @@ def test_post_to_discord_headline_thread_and_summary() -> None:
             "headers": dict(req.headers),
             "body": body,
         })
-        # Call 1: post headline message -> returns message id
+        # Call 1: create thread -> returns thread channel id
         if call_count == 1:
-            return _FakeResponse({"id": "msg-123", "channel_id": "chan-456"})
-        # Call 2: create thread from message -> returns thread channel id
-        if call_count == 2:
             assert "threads" in req.full_url
             return _FakeResponse({"id": "thread-789"})
-        # Call 3: post summary in thread
-        if call_count == 3:
+        # Calls 2-4: post blocks in thread
+        if call_count in (2, 3, 4):
             assert "/channels/thread-789/messages" in req.full_url
-            return _FakeResponse({"id": "reply-000"})
+            return _FakeResponse({"id": f"reply-{call_count:03d}"})
         return _FakeResponse({})
 
     with patch("summarize_analysis.request.urlopen", side_effect=fake_urlopen):
         result = post_to_discord(
             bot_token="test-bot-token",
             channel_id="chan-456",
-            headline="🔬 Non-ferment benchmark summary — 2026-07-01",
             thread_name="Non-ferment runs — 2026-07-01",
-            summary="Critical: task X failed due to agent loop.",
+            content_blocks=[
+                "🔬 Non-ferment benchmark summary — 2026-07-01",
+                "**Runs in scope (1)**\n\n- run-1",
+                "Critical: task X failed due to agent loop.",
+            ],
         )
 
     assert result is True
-    assert call_count == 3
-    # Headline posted to channel
-    assert captured[0]["url"] == "https://discord.com/api/v10/channels/chan-456/messages"
+    assert call_count == 4
+    # Thread created in channel
+    assert captured[0]["url"] == "https://discord.com/api/v10/channels/chan-456/threads"
     assert captured[0]["headers"]["Authorization"] == "Bot test-bot-token"
-    assert captured[0]["body"]["content"] == "🔬 Non-ferment benchmark summary — 2026-07-01"
-    # Thread created from headline message
-    assert captured[1]["url"] == "https://discord.com/api/v10/channels/chan-456/messages/msg-123/threads"
-    assert captured[1]["body"]["name"] == "Non-ferment runs — 2026-07-01"
-    # Summary posted in thread
-    assert captured[2]["url"] == "https://discord.com/api/v10/channels/thread-789/messages"
-    assert captured[2]["body"]["content"] == "Critical: task X failed due to agent loop."
+    assert captured[0]["body"]["name"] == "Non-ferment runs — 2026-07-01"
+    # Blocks posted in thread in order
+    assert captured[1]["body"]["content"] == "🔬 Non-ferment benchmark summary — 2026-07-01"
+    assert captured[2]["body"]["content"] == "**Runs in scope (1)**\n\n- run-1"
+    assert captured[3]["body"]["content"] == "Critical: task X failed due to agent loop."
 
 
-def test_post_to_discord_returns_false_on_headline_failure() -> None:
-    """If the headline post fails, post_to_discord returns False without creating a thread."""
+def test_post_to_discord_returns_false_on_thread_creation_failure() -> None:
+    """If thread creation fails, post_to_discord returns False."""
 
     def fake_urlopen(req: request.Request, timeout: float = 0) -> None:
         raise error.URLError("connection refused")
@@ -320,9 +424,34 @@ def test_post_to_discord_returns_false_on_headline_failure() -> None:
         result = post_to_discord(
             bot_token="test-bot-token",
             channel_id="chan-456",
-            headline="headline",
             thread_name="thread",
-            summary="summary",
+            content_blocks=["headline", "summary"],
         )
 
     assert result is False
+
+
+def test_post_to_discord_returns_false_on_block_post_failure() -> None:
+    """If any block post fails, post_to_discord returns False without posting remaining blocks."""
+    call_count = 0
+
+    def fake_urlopen(req: request.Request, timeout: float = 0) -> _FakeResponse | None:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _FakeResponse({"id": "thread-789"})
+        # Second block post fails
+        if call_count == 3:
+            raise error.URLError("connection refused")
+        return _FakeResponse({"id": "reply"})
+
+    with patch("summarize_analysis.request.urlopen", side_effect=fake_urlopen):
+        result = post_to_discord(
+            bot_token="test-bot-token",
+            channel_id="chan-456",
+            thread_name="thread",
+            content_blocks=["block-1", "block-2", "block-3"],
+        )
+
+    assert result is False
+    assert call_count == 3  # thread + block 1 + failed block 2

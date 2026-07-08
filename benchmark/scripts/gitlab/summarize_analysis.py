@@ -26,7 +26,6 @@ from urllib import error, request
 
 from extract_analysis_text import extract_text
 
-
 # --- Constants ---
 
 OPUS_MODEL = "claude-opus-4-6"
@@ -118,10 +117,7 @@ def filter_metadata(metadata: dict[str, Any], now: datetime) -> bool:
         return False
 
     # Full runs only
-    if not is_full_run(metadata):
-        return False
-
-    return True
+    return is_full_run(metadata)
 
 
 def split_by_ferment(runs: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -134,6 +130,96 @@ def split_by_ferment(runs: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], 
         else:
             non_ferment.append(run_meta)
     return ferment, non_ferment
+
+
+def metadata_string(metadata: dict[str, Any], key: str, default: str = "unknown") -> str:
+    """Return a string value from a metadata dict, falling back to default."""
+    value = metadata.get(key)
+    if value is None:
+        return default
+    text = str(value)
+    return text if text else default
+
+
+def metadata_dict(metadata: dict[str, Any], key: str) -> dict[str, Any]:
+    """Return a nested dict from a metadata dict, or an empty dict if missing/invalid."""
+    value = metadata.get(key)
+    return value if isinstance(value, dict) else {}
+
+
+# --- Run metrics and table ---
+
+def load_summary(path: Path) -> dict[str, Any] | None:
+    """Load a summary.json file, returning None on error."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"  Failed to load summary.json: {exc}", file=sys.stderr, flush=True)
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def extract_run_metrics(metadata: dict[str, Any]) -> dict[str, Any]:
+    """Extract high-level task metrics from the downloaded summary.json."""
+    summary_path = metadata.get("_summary_local_path")
+    summary = load_summary(Path(summary_path)) if summary_path else None
+    if summary is None:
+        return {"available": False}
+    totals = summary.get("totals", {}) if isinstance(summary, dict) else {}
+    tasks = totals.get("tasks", {}) if isinstance(totals, dict) else {}
+    return {
+        "available": True,
+        "tasks_expected": tasks.get("expected", 0),
+        "scored_pass": tasks.get("scored_pass", 0),
+        "scored_fail": tasks.get("scored_fail", 0),
+        "agent_timeout": tasks.get("agent_timeout", 0),
+        "error": tasks.get("error", 0),
+        "no_verdict": tasks.get("no_verdict", 0),
+    }
+
+
+def run_label(metadata: dict[str, Any]) -> str:
+    """Return a readable model label for a run."""
+    model = metadata_string(metadata, "model", "unknown")
+    provider = metadata_string(metadata, "model_provider", "unknown")
+    if provider and provider != "unknown":
+        return f"{provider}/{model}"
+    return model
+
+
+def run_configuration(metadata: dict[str, Any]) -> str:
+    """Return the configuration label for a run."""
+    return metadata_string(metadata, "configuration", "na")
+
+
+def build_runs_table(runs: list[dict[str, Any]]) -> str:
+    """Build a Markdown list of runs with high-level metrics and pipeline links."""
+    if not runs:
+        return "No qualifying runs."
+
+    lines = [f"**Runs in scope ({len(runs)})**", ""]
+    for run_meta in runs:
+        metrics = extract_run_metrics(run_meta)
+        gitlab = metadata_dict(run_meta, "gitlab")
+        pipeline_url = str(gitlab.get("pipeline_url") or "")
+
+        label = run_label(run_meta)
+        config = run_configuration(run_meta)
+
+        if metrics["available"]:
+            metrics_text = (
+                f"{metrics['tasks_expected']} tasks · "
+                f"{metrics['scored_pass']} pass / {metrics['scored_fail']} fail / "
+                f"{metrics['agent_timeout']} timeout / {metrics['error']} error"
+            )
+        else:
+            metrics_text = "metrics unavailable"
+
+        link = f"[pipeline]({pipeline_url})" if pipeline_url else "no pipeline link"
+
+        lines.append(f"- **{label}** · {config} · {metrics_text} · {link}")
+
+    return "\n".join(lines)
 
 
 # --- Opus summarization ---
@@ -233,8 +319,8 @@ def _post_long_message(url: str, bot_token: str, content: str) -> bool:
     return True
 
 
-def post_to_discord(bot_token: str, channel_id: str, headline: str, thread_name: str, summary: str) -> bool:
-    """Create a thread in the channel, then post the headline and summary inside it.
+def post_to_discord(bot_token: str, channel_id: str, thread_name: str, content_blocks: list[str]) -> bool:
+    """Create a thread in the channel and post each content block in order.
 
     Uses the Discord Bot API (v10). Creates a standalone thread (not attached to a message)
     to avoid requiring READ_MESSAGE_HISTORY permission.
@@ -245,10 +331,10 @@ def post_to_discord(bot_token: str, channel_id: str, headline: str, thread_name:
     print(f"Discord: creating thread '{thread_name}' in channel {channel_id}", flush=True)
     thread_resp = _discord_post(thread_url, bot_token, {"name": thread_name, "type": 11})
     if thread_resp is None:
-        print("Discord thread creation failed; posting summary as channel messages", file=sys.stderr, flush=True)
-        # Fall back: post summary as regular messages in the channel (split if needed)
+        print("Discord thread creation failed; posting content as channel messages", file=sys.stderr, flush=True)
+        # Fall back: post all blocks as regular messages in the channel (split if needed)
         messages_url = f"{DISCORD_API_BASE}/channels/{channel_id}/messages"
-        return _post_long_message(messages_url, bot_token, summary)
+        return _post_long_message(messages_url, bot_token, "\n\n".join(content_blocks))
 
     thread_channel_id = str(thread_resp.get("id", ""))
     if not thread_channel_id:
@@ -256,14 +342,14 @@ def post_to_discord(bot_token: str, channel_id: str, headline: str, thread_name:
         return False
     print(f"Discord: thread created, thread_channel_id={thread_channel_id}", flush=True)
 
-    # Step 2: Post the headline and full summary in the thread (split if > 2000 chars)
+    # Step 2: Post each content block in the thread (split if > 2000 chars)
     thread_messages_url = f"{DISCORD_API_BASE}/channels/{thread_channel_id}/messages"
-    full_content = f"{headline}\n\n{summary}"
-    print(f"Discord: posting summary ({len(full_content)} chars) to thread {thread_channel_id}", flush=True)
-    success = _post_long_message(thread_messages_url, bot_token, full_content)
-    if success:
-        print("Discord: summary posted successfully", flush=True)
-    return success
+    for block in content_blocks:
+        print(f"Discord: posting block ({len(block)} chars) to thread {thread_channel_id}", flush=True)
+        if not _post_long_message(thread_messages_url, bot_token, block):
+            return False
+    print("Discord: all blocks posted successfully", flush=True)
+    return True
 
 
 # --- Main ---
@@ -275,7 +361,9 @@ def main() -> int:
     window_end = now.replace(hour=6, minute=0, second=0, microsecond=0)
 
     print(f"Summarize analysis started at {now.strftime('%Y-%m-%d %H:%M:%S')} UTC", flush=True)
-    print(f"Lookback window: {window_start.strftime('%Y-%m-%d %H:%M')} to {window_end.strftime('%Y-%m-%d %H:%M')} UTC", flush=True)
+    window_start_str = window_start.strftime('%Y-%m-%d %H:%M')
+    window_end_str = window_end.strftime('%Y-%m-%d %H:%M')
+    print(f"Lookback window: {window_start_str} to {window_end_str} UTC", flush=True)
     print(f"GCS date prefixes: {yesterday_str}, {today_str}", flush=True)
 
     bucket = require_env("BENCHMARK_GCS_BUCKET")
@@ -330,7 +418,11 @@ def main() -> int:
         run_meta = metadata.get("run_metadata", {})
         tasks_all = run_meta.get("tasks_all") if isinstance(run_meta, dict) else None
         n_tasks = len(run_meta.get("selected_tasks", [])) if isinstance(run_meta, dict) else 0
-        print(f"  created_at={created_at}, ferment={ferment}, target_ref={target_ref}, tasks_all={tasks_all}, n_tasks={n_tasks}", flush=True)
+        print(
+            f"  created_at={created_at}, ferment={ferment}, target_ref={target_ref}, "
+            f"tasks_all={tasks_all}, n_tasks={n_tasks}",
+            flush=True,
+        )
 
         if not filter_metadata(metadata, now):
             print("  SKIP — does not match filter criteria", flush=True)
@@ -340,12 +432,11 @@ def main() -> int:
 
         # Check if analysis.html exists for this run
         prefix = metadata.get("gcs", {}).get("prefix", "")
-        if not prefix:
-            # Try to derive prefix from the metadata.json URI
-            # URI format: gs://{bucket}/{prefix}/metadata.json
-            if uri.startswith(f"gs://{bucket}/"):
-                prefix = uri[len(f"gs://{bucket}/") :].rsplit("/", 1)[0]
-                print(f"  Derived GCS prefix from URI: {prefix}", flush=True)
+        # Try to derive prefix from the metadata.json URI if not present.
+        # URI format: gs://{bucket}/{prefix}/metadata.json
+        if not prefix and uri.startswith(f"gs://{bucket}/"):
+            prefix = uri[len(f"gs://{bucket}/") :].rsplit("/", 1)[0]
+            print(f"  Derived GCS prefix from URI: {prefix}", flush=True)
 
         analysis_uri = f"gs://{bucket}/{prefix}/analysis.html"
         analysis_local_path = work_dir / f"analysis-{idx}.html"
@@ -356,6 +447,18 @@ def main() -> int:
         except subprocess.CalledProcessError:
             print("  No analysis.html found — run may still be in progress", file=sys.stderr, flush=True)
             continue
+
+        # Also fetch the generated summary.json for high-level metrics.
+        summary_uri = f"gs://{bucket}/{prefix}/summary.json"
+        summary_local_path = work_dir / f"summary-{idx}.json"
+        print(f"  Checking for summary.json: {summary_uri}", flush=True)
+        try:
+            run(["gcloud", "storage", "cp", summary_uri, str(summary_local_path), "--quiet"])
+            print(f"  Downloaded summary.json ({summary_local_path.stat().st_size} bytes)", flush=True)
+            metadata["_summary_local_path"] = str(summary_local_path)
+        except subprocess.CalledProcessError:
+            print("  No summary.json found for run", file=sys.stderr, flush=True)
+            metadata["_summary_local_path"] = None
 
         metadata["_analysis_local_path"] = str(analysis_local_path)
         metadata["_gcs_prefix"] = prefix
@@ -389,7 +492,8 @@ def main() -> int:
             missing.append("DISCORD_BOT_TOKEN")
         if not channel_id:
             missing.append("DISCORD_CHANNEL_ID")
-        print(f"{' and '.join(missing)} not set; summaries will be printed but not posted to Discord", file=sys.stderr, flush=True)
+        message = f"{' and '.join(missing)} not set; summaries will be printed but not posted to Discord"
+        print(message, file=sys.stderr, flush=True)
     else:
         print(f"Discord configured: channel_id={channel_id}", flush=True)
 
@@ -420,19 +524,30 @@ def main() -> int:
         print(f"Calling Opus for {group_name} group ({len(group_runs)} runs, {len(combined)} chars total)", flush=True)
         summary = call_opus(combined, api_key)
         if summary is None:
-            print(f"Opus summarization failed for {group_name} group after {MAX_RETRIES} retries", file=sys.stderr, flush=True)
+            message = f"Opus summarization failed for {group_name} group after {MAX_RETRIES} retries"
+            print(message, file=sys.stderr, flush=True)
             # Post error notification if Discord is configured
             if discord_configured:
                 error_headline = f"⚠️ Opus summarization failed for {group_name} group — {date_str}"
-                post_to_discord(bot_token, channel_id, error_headline, f"{group_name} runs — {date_str}", "Summarization failed after 3 retries.")
+                post_to_discord(
+                    bot_token,
+                    channel_id,
+                    f"{group_name} runs — {date_str}",
+                    [error_headline, "Summarization failed after 3 retries."],
+                )
             return 1
 
         print(f"Opus returned summary ({len(summary)} chars)", flush=True)
 
-        # Always print the summary to stdout
+        # Build the runs-in-scope table for this group.
+        runs_table = build_runs_table(group_runs)
+
+        # Always print the summary to stdout, with the runs table before the Opus report.
         print(f"\n{'=' * 80}", flush=True)
         print(f"{group_name.upper()} BENCHMARK SUMMARY — {date_str}", flush=True)
         print(f"{'=' * 80}", flush=True)
+        print(runs_table, flush=True)
+        print(f"{'-' * 80}", flush=True)
         print(summary, flush=True)
         print(f"{'=' * 80}\n", flush=True)
 
@@ -443,7 +558,8 @@ def main() -> int:
             thread_name = f"{group_name.capitalize()} runs — {date_str}"
 
             print(f"Posting {group_name} summary to Discord ({len(summary)} chars)", flush=True)
-            if not post_to_discord(bot_token, channel_id, headline, thread_name, summary):
+            content_blocks = [headline, runs_table, summary]
+            if not post_to_discord(bot_token, channel_id, thread_name, content_blocks):
                 print(f"Failed to post {group_name} summary to Discord", file=sys.stderr, flush=True)
         else:
             print(f"Discord not configured; skipping Discord post for {group_name} group", flush=True)
