@@ -630,40 +630,40 @@ describe("turn_end connection error recovery", () => {
 	})
 })
 
-describe("turn_end error recovery in one-shot mode", () => {
-	function setupRunningFerment() {
-		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-oneshot-error-")))
-		const ferment = storage.create("One-shot Error Ferment")
-		storage.mutateWithEvents(ferment.id, (current) => {
-			if (!current) throw new Error("missing ferment")
-			const now = new Date().toISOString()
-			const cmd = {
-				type: "scope" as const,
-				title: "One-shot Error Ferment",
-				goal: "Test goal",
-				successCriteria: ["Test criterion"],
-				constraints: [],
-				phases: [{ name: "Build", goal: "Build it", steps: [{ description: "step 1" }] }],
-			}
-			const result = applyCommand(current, cmd, { now })
-			if (!result.ok) throw new Error(`scope failed: ${result.error.message}`)
-			const events = commandToEvents(cmd, current, result.ferment, { now })
-			return { write: true, ferment: result.ferment, events, value: undefined }
-		})
-		storage.mutateWithEvents(ferment.id, (current) => {
-			if (!current) throw new Error("missing ferment")
-			const now = new Date().toISOString()
-			const cmd = { type: "activate_phase" as const, phaseId: "phase-1" }
-			const result = applyCommand(current, cmd, { now })
-			if (!result.ok) throw new Error(`activate failed: ${result.error.message}`)
-			const events = commandToEvents(cmd, current, result.ferment, { now })
-			return { write: true, ferment: result.ferment, events, value: undefined }
-		})
-		return { storage, ferment }
-	}
+function setupScopedRunningFerment(prefix: string, name: string) {
+	const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), prefix)))
+	const ferment = storage.create(name)
+	storage.mutateWithEvents(ferment.id, (current) => {
+		if (!current) throw new Error("missing ferment")
+		const now = new Date().toISOString()
+		const cmd = {
+			type: "scope" as const,
+			title: name,
+			goal: "Test goal",
+			successCriteria: ["Test criterion"],
+			constraints: [],
+			phases: [{ name: "Build", goal: "Build it", steps: [{ description: "step 1" }] }],
+		}
+		const result = applyCommand(current, cmd, { now })
+		if (!result.ok) throw new Error(`scope failed: ${result.error.message}`)
+		const events = commandToEvents(cmd, current, result.ferment, { now })
+		return { write: true, ferment: result.ferment, events, value: undefined }
+	})
+	storage.mutateWithEvents(ferment.id, (current) => {
+		if (!current) throw new Error("missing ferment")
+		const now = new Date().toISOString()
+		const cmd = { type: "activate_phase" as const, phaseId: "phase-1" }
+		const result = applyCommand(current, cmd, { now })
+		if (!result.ok) throw new Error(`activate failed: ${result.error.message}`)
+		const events = commandToEvents(cmd, current, result.ferment, { now })
+		return { write: true, ferment: result.ferment, events, value: undefined }
+	})
+	return { storage, ferment }
+}
 
+describe("turn_end error recovery in one-shot mode", () => {
 	it('does not pause the ferment when stopReason is "error" in one-shot mode', async () => {
-		const { storage, ferment } = setupRunningFerment()
+		const { storage, ferment } = setupScopedRunningFerment("ferment-oneshot-error-", "One-shot Error Ferment")
 		const runtime: FermentRuntime = {
 			...createDefaultFermentRuntime(),
 			getStorage: () => storage,
@@ -707,7 +707,7 @@ describe("turn_end error recovery in one-shot mode", () => {
 	})
 
 	it('still pauses the ferment when stopReason is "error" in interactive mode', async () => {
-		const { storage, ferment } = setupRunningFerment()
+		const { storage, ferment } = setupScopedRunningFerment("ferment-oneshot-error-", "One-shot Error Ferment")
 		const runtime: FermentRuntime = {
 			...createDefaultFermentRuntime(),
 			getStorage: () => storage,
@@ -746,39 +746,8 @@ describe("turn_end error recovery in one-shot mode", () => {
 })
 
 describe("session_shutdown one-shot recovery", () => {
-	function setupRunningFerment() {
-		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-oneshot-shutdown-")))
-		const ferment = storage.create("Shutdown Ferment")
-		storage.mutateWithEvents(ferment.id, (current) => {
-			if (!current) throw new Error("missing ferment")
-			const now = new Date().toISOString()
-			const cmd = {
-				type: "scope" as const,
-				title: "Shutdown Ferment",
-				goal: "Test goal",
-				successCriteria: ["Test criterion"],
-				constraints: [],
-				phases: [{ name: "Build", goal: "Build it", steps: [{ description: "step 1" }] }],
-			}
-			const result = applyCommand(current, cmd, { now })
-			if (!result.ok) throw new Error(`scope failed: ${result.error.message}`)
-			const events = commandToEvents(cmd, current, result.ferment, { now })
-			return { write: true, ferment: result.ferment, events, value: undefined }
-		})
-		storage.mutateWithEvents(ferment.id, (current) => {
-			if (!current) throw new Error("missing ferment")
-			const now = new Date().toISOString()
-			const cmd = { type: "activate_phase" as const, phaseId: "phase-1" }
-			const result = applyCommand(current, cmd, { now })
-			if (!result.ok) throw new Error(`activate failed: ${result.error.message}`)
-			const events = commandToEvents(cmd, current, result.ferment, { now })
-			return { write: true, ferment: result.ferment, events, value: undefined }
-		})
-		return { storage, ferment }
-	}
-
 	it("abandons the ferment in one-shot mode", async () => {
-		const { storage, ferment } = setupRunningFerment()
+		const { storage, ferment } = setupScopedRunningFerment("ferment-oneshot-shutdown-", "Shutdown Ferment")
 		const runtime: FermentRuntime = {
 			...createDefaultFermentRuntime(),
 			getStorage: () => storage,
@@ -802,7 +771,7 @@ describe("session_shutdown one-shot recovery", () => {
 	})
 
 	it("pauses the ferment in interactive mode", async () => {
-		const { storage, ferment } = setupRunningFerment()
+		const { storage, ferment } = setupScopedRunningFerment("ferment-oneshot-shutdown-", "Shutdown Ferment")
 		const runtime: FermentRuntime = {
 			...createDefaultFermentRuntime(),
 			getStorage: () => storage,

@@ -563,7 +563,10 @@ export function registerFermentEvents(
 			}
 
 			if (isOneShot) {
-				maybeInjectReactiveContinuationNudge(pi, runtime)
+				const errorFerment = runtime.getActive()
+				if (errorFerment && (errorFerment.status === "running" || errorFerment.status === "planned")) {
+					maybeInjectReactiveContinuationNudge(pi, runtime)
+				}
 			}
 
 			return
