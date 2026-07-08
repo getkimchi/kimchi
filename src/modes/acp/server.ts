@@ -2,7 +2,7 @@
 // @agentclientprotocol/sdk. Lets IDE extensions, Zed, openclaw drive kimchi in-process.
 
 import { closeSync, openSync, readFileSync, readSync, readdirSync } from "node:fs"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 import { Readable, Writable } from "node:stream"
 import {
 	type SessionInfo as AcpSessionInfo,
@@ -55,7 +55,7 @@ import {
 	initTheme,
 } from "@earendil-works/pi-coding-agent"
 import type { AgentSessionEvent, ExtensionUIContext } from "@earendil-works/pi-coding-agent"
-import { isHideThinkingEnabled } from "../../extensions/hide-thinking.js"
+
 import { loadConfig } from "../../extensions/permissions/config.js"
 import { PERMISSIONS_ENV_KEY } from "../../extensions/permissions/constants.js"
 import {
@@ -1507,16 +1507,48 @@ function collectToolResults(entries: unknown[]): Map<string, ReplayToolResult> {
 	return out
 }
 
-// Native ThinkingContent blocks aren't routed through hideThinkingExtension
-// (which only mutates <think> tags inside text blocks), but the replay UX
-// should still honor the user's hideThinkingBlock setting — otherwise a user
-// who hides thinking sees a quiet live UI but a noisy replayed transcript.
-// Read the setting directly: a previous version probed filterThinkingForDisplay
-// with a synthetic <think>...</think> wrapper, which broke when the persisted
-// thinking text itself contained `</think>` (the inner regex terminated early
-// and the predicate falsely returned true).
+// ACP replay surfaces native thinking blocks via agent_thought_chunk. This
+// is controlled by the ACP-specific `acpShowThinking` setting, independent of
+// the live TUI's `hideThinkingBlock`. Default is true so ACP clients see the
+// full transcript unless the user explicitly opts out.
+let acpShowThinkingOverride: boolean | undefined
+
+export function _setAcpShowThinking(value: boolean | undefined): void {
+	acpShowThinkingOverride = value
+}
+
+export function _resetAcpShowThinking(): void {
+	acpShowThinkingOverride = undefined
+}
+
+function getSettingsPath(): string | undefined {
+	const agentDir = process.env.KIMCHI_CODING_AGENT_DIR
+	if (!agentDir) return undefined
+	return resolve(agentDir, "settings.json")
+}
+
+function readAcpShowThinking(): boolean {
+	if (acpShowThinkingOverride !== undefined) return acpShowThinkingOverride
+	const settingsPath = getSettingsPath()
+	if (!settingsPath) return true
+	try {
+		const raw = readFileSync(settingsPath, "utf-8")
+		const parsed = JSON.parse(raw)
+		if (parsed && typeof parsed === "object" && "acpShowThinking" in parsed) {
+			return (parsed as { acpShowThinking?: unknown }).acpShowThinking === true
+		}
+		return true
+	} catch (error) {
+		if (error instanceof Error && (error as NodeJS.ErrnoException).code === "ENOENT") {
+			return true
+		}
+		console.warn(`[acp] could not read ${settingsPath}:`, error)
+		return true
+	}
+}
+
 export function shouldEmitThinking(_thinking: string): boolean {
-	return !isHideThinkingEnabled()
+	return readAcpShowThinking()
 }
 
 function toolResultContent(result: unknown): ToolCallContent[] {

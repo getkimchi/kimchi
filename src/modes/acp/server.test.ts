@@ -26,11 +26,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 const THEME_KEY = Symbol.for("@earendil-works/pi-coding-agent:theme")
 const THEME_KEY_OLD = Symbol.for("@mariozechner/pi-coding-agent:theme")
 
-import { _resetState as _resetHideThinking, _setHideThinking } from "../../extensions/hide-thinking.js"
 import { PERMISSIONS_ENV_KEY } from "../../extensions/permissions/constants.js"
 import { getSessionPermissionFlagController } from "../../extensions/permissions/mode-controller-registry.js"
 import { ALL_PERMISSION_MODES } from "../../extensions/permissions/types.js"
 import { getAcpPrompter } from "./permission-prompter-registry.js"
+import { _resetAcpShowThinking, _setAcpShowThinking } from "./server.js"
 import {
 	type AcpSessionFactory,
 	type AcpSessionLister,
@@ -3503,75 +3503,85 @@ describe("KimchiAcpAgent loadSession", () => {
 		// text blocks (rare but legal) must merge into one agent_message_chunk;
 		// structural blocks (thinking / toolCall) flush the buffer so ordering
 		// stays faithful.
-		const fake = new FakeAgentSession("loaded-coalesce")
-		fake.branch = [
-			userTextEntry("go", "u1", null),
-			assistantBlocksEntry(
-				[
-					{ type: "text", text: "first " },
-					{ type: "text", text: "second" },
-					{ type: "thinking", thinking: "pondering" },
-					{ type: "text", text: "third" },
-				],
-				"a1",
-				"u1",
-			),
-		]
-		const { conn, updates } = makeRecordingConn()
-		const agent = makeAgent(async () => asSession(fake), { conn })
-		await agent.loadSession({
-			sessionId: "loaded-coalesce",
-			cwd: "/tmp",
-			mcpServers: [],
-		})
-		const replay = replayOnly(updates)
-		expect(replay.map((u) => u.update.sessionUpdate)).toEqual([
-			"user_message_chunk",
-			"agent_message_chunk",
-			"agent_thought_chunk",
-			"agent_message_chunk",
-		])
-		expect((replay[1].update as { content: { text: string } }).content.text).toBe("first second")
-		expect((replay[3].update as { content: { text: string } }).content.text).toBe("third")
+		_setAcpShowThinking(true)
+		try {
+			const fake = new FakeAgentSession("loaded-coalesce")
+			fake.branch = [
+				userTextEntry("go", "u1", null),
+				assistantBlocksEntry(
+					[
+						{ type: "text", text: "first " },
+						{ type: "text", text: "second" },
+						{ type: "thinking", thinking: "pondering" },
+						{ type: "text", text: "third" },
+					],
+					"a1",
+					"u1",
+				),
+			]
+			const { conn, updates } = makeRecordingConn()
+			const agent = makeAgent(async () => asSession(fake), { conn })
+			await agent.loadSession({
+				sessionId: "loaded-coalesce",
+				cwd: "/tmp",
+				mcpServers: [],
+			})
+			const replay = replayOnly(updates)
+			expect(replay.map((u) => u.update.sessionUpdate)).toEqual([
+				"user_message_chunk",
+				"agent_message_chunk",
+				"agent_thought_chunk",
+				"agent_message_chunk",
+			])
+			expect((replay[1].update as { content: { text: string } }).content.text).toBe("first second")
+			expect((replay[3].update as { content: { text: string } }).content.text).toBe("third")
+		} finally {
+			_resetAcpShowThinking()
+		}
 	})
 
 	it("routes ANSI-dimmed replay text to thought chunks and strips remaining ANSI", async () => {
-		// hide-thinking-aware models (DeepSeek, QwQ) plus hideThinkingBlock=false
+		// hide-thinking-aware models (DeepSeek, QwQ) plus acpShowThinking=true
 		// persist text with ANSI dim escapes around inner <think> content. The
 		// live TUI renders them as reasoning; ACP's text content type is
 		// plaintext, so replay must preserve that semantic split explicitly.
-		const dimmed = "before \x1b[2minner\x1b[22m after"
-		const fake = new FakeAgentSession("loaded-ansi")
-		fake.branch = [
-			userTextEntry("go", "u1", null),
-			assistantBlocksEntry(
-				[
-					{ type: "text", text: dimmed },
-					{ type: "thinking", thinking: "raw \x1b[2mthought\x1b[22m" },
-				],
-				"a1",
-				"u1",
-			),
-		]
-		const { conn, updates } = makeRecordingConn()
-		const agent = makeAgent(async () => asSession(fake), { conn })
-		await agent.loadSession({
-			sessionId: "loaded-ansi",
-			cwd: "/tmp",
-			mcpServers: [],
-		})
-		const messageTexts = updates
-			.filter((u) => u.update.sessionUpdate === "agent_message_chunk")
-			.map((u) => (u.update as { content: { text: string } }).content.text)
-		const thoughtTexts = updates
-			.filter((u) => u.update.sessionUpdate === "agent_thought_chunk")
-			.map((u) => (u.update as { content: { text: string } }).content.text)
-		expect(messageTexts).toEqual(["before ", " after"])
-		expect(thoughtTexts).toEqual(["inner", "raw thought"])
+		_setAcpShowThinking(true)
+		try {
+			const dimmed = "before \x1b[2minner\x1b[22m after"
+			const fake = new FakeAgentSession("loaded-ansi")
+			fake.branch = [
+				userTextEntry("go", "u1", null),
+				assistantBlocksEntry(
+					[
+						{ type: "text", text: dimmed },
+						{ type: "thinking", thinking: "raw \x1b[2mthought\x1b[22m" },
+					],
+					"a1",
+					"u1",
+				),
+			]
+			const { conn, updates } = makeRecordingConn()
+			const agent = makeAgent(async () => asSession(fake), { conn })
+			await agent.loadSession({
+				sessionId: "loaded-ansi",
+				cwd: "/tmp",
+				mcpServers: [],
+			})
+			const messageTexts = updates
+				.filter((u) => u.update.sessionUpdate === "agent_message_chunk")
+				.map((u) => (u.update as { content: { text: string } }).content.text)
+			const thoughtTexts = updates
+				.filter((u) => u.update.sessionUpdate === "agent_thought_chunk")
+				.map((u) => (u.update as { content: { text: string } }).content.text)
+			expect(messageTexts).toEqual(["before ", " after"])
+			expect(thoughtTexts).toEqual(["inner", "raw thought"])
+		} finally {
+			_resetAcpShowThinking()
+		}
 	})
 
-	it("drops ANSI-dimmed replay thinking when hideThinkingBlock is enabled", async () => {
-		_setHideThinking(true)
+	it("drops ANSI-dimmed replay thinking when acpShowThinking is disabled", async () => {
+		_setAcpShowThinking(false)
 		try {
 			const fake = new FakeAgentSession("loaded-ansi-hidden")
 			fake.branch = [
@@ -3591,7 +3601,7 @@ describe("KimchiAcpAgent loadSession", () => {
 			expect(updates.find((u) => u.update.sessionUpdate === "agent_thought_chunk")).toBeUndefined()
 			expect(messageTexts).toEqual(["before  after"])
 		} finally {
-			_resetHideThinking()
+			_resetAcpShowThinking()
 		}
 	})
 
@@ -3898,33 +3908,37 @@ describe("KimchiAcpAgent loadSession", () => {
 	})
 
 	it("replays thinking blocks as agent_thought_chunk with raw text (no ANSI)", async () => {
-		const fake = new FakeAgentSession("loaded-thinking")
-		fake.branch = [
-			userTextEntry("go", "u1", null),
-			assistantBlocksEntry([{ type: "thinking", thinking: "considering options" }], "a1", "u1"),
-		]
-		const { conn, updates } = makeRecordingConn()
-		const agent = makeAgent(async () => asSession(fake), { conn })
-		await agent.loadSession({
-			sessionId: "loaded-thinking",
-			cwd: "/tmp",
-			mcpServers: [],
-		})
-		const thought = updates.find((u) => u.update.sessionUpdate === "agent_thought_chunk")
-		expect(thought).toBeDefined()
-		const content = (thought?.update as { content: { type: string; text: string } }).content
-		expect(content.text).toBe("considering options")
-		// No ANSI escape codes — filterThinkingForDisplay returns dimmed text
-		// for live TUI rendering, but ACP clients can't render escapes. Replay
-		// uses the helper as a yes/no predicate and emits the raw thinking.
-		expect(content.text.includes("\x1b[")).toBe(false)
+		_setAcpShowThinking(true)
+		try {
+			const fake = new FakeAgentSession("loaded-thinking")
+			fake.branch = [
+				userTextEntry("go", "u1", null),
+				assistantBlocksEntry([{ type: "thinking", thinking: "considering options" }], "a1", "u1"),
+			]
+			const { conn, updates } = makeRecordingConn()
+			const agent = makeAgent(async () => asSession(fake), { conn })
+			await agent.loadSession({
+				sessionId: "loaded-thinking",
+				cwd: "/tmp",
+				mcpServers: [],
+			})
+			const thought = updates.find((u) => u.update.sessionUpdate === "agent_thought_chunk")
+			expect(thought).toBeDefined()
+			const content = (thought?.update as { content: { type: string; text: string } }).content
+			expect(content.text).toBe("considering options")
+			// No ANSI escape codes — filterThinkingForDisplay returns dimmed text
+			// for live TUI rendering, but ACP clients can't render escapes. Replay
+			// uses the helper as a yes/no predicate and emits the raw thinking.
+			expect(content.text.includes("\x1b[")).toBe(false)
+		} finally {
+			_resetAcpShowThinking()
+		}
 	})
 
-	it("skips thinking blocks when hideThinkingBlock is enabled (shared with hide-thinking extension)", async () => {
-		// Same redaction rule the live TUI uses — verified by sharing
-		// filterThinkingForDisplay across both code paths so a setting flip
-		// doesn't drift between live and replay.
-		_setHideThinking(true)
+	it("skips thinking blocks when acpShowThinking is disabled", async () => {
+		// ACP replay consults its own acpShowThinking setting, independent of
+		// the live TUI's hideThinkingBlock.
+		_setAcpShowThinking(false)
 		try {
 			const fake = new FakeAgentSession("loaded-thinking-hidden")
 			fake.branch = [
@@ -3940,11 +3954,11 @@ describe("KimchiAcpAgent loadSession", () => {
 			})
 			expect(updates.find((u) => u.update.sessionUpdate === "agent_thought_chunk")).toBeUndefined()
 		} finally {
-			_resetHideThinking()
+			_resetAcpShowThinking()
 		}
 	})
 
-	it("skips redacted thinking blocks even when hideThinkingBlock is off", async () => {
+	it("skips redacted thinking blocks", async () => {
 		// Redacted thinking has only an opaque encrypted payload (in
 		// thinkingSignature) for multi-turn provider continuity — no plaintext
 		// to surface to the user.
@@ -4027,62 +4041,67 @@ describe("KimchiAcpAgent loadSession", () => {
 	})
 
 	it("replays a mixed transcript end-to-end (text, thinking, tool, skipped entries, follow-up text)", async () => {
-		const fake = new FakeAgentSession("loaded-mixed")
-		fake.branch = [
-			userTextEntry("question", "u1", null),
-			assistantBlocksEntry(
-				[
-					{ type: "text", text: "let me check" },
-					{ type: "thinking", thinking: "weighing options" },
-					{
-						type: "toolCall",
-						id: "tc-1",
-						name: "bash",
-						arguments: { command: "ls" },
-					},
-				],
-				"a1",
-				"u1",
-			),
-			toolResultEntry("tc-1", "bash", "file1\nfile2", false, "tr1", "a1"),
-			// Skipped entries scattered through the branch must not break the walker.
-			{
-				type: "model_change",
-				id: "mc1",
-				parentId: "tr1",
-				timestamp: "x",
-				provider: "p",
-				modelId: "m",
-			},
-			{
-				type: "compaction",
-				id: "c1",
-				parentId: "mc1",
-				timestamp: "x",
-				summary: "snip",
-				firstKeptEntryId: "u1",
-				tokensBefore: 0,
-			},
-			assistantTextEntry("here is what I found", "a2", "c1"),
-		]
-		const { conn, updates } = makeRecordingConn()
-		const agent = makeAgent(async () => asSession(fake), { conn })
-		await agent.loadSession({
-			sessionId: "loaded-mixed",
-			cwd: "/tmp",
-			mcpServers: [],
-		})
-		// Order is significant: tool_call must precede tool_call_update, and
-		// the post-skipped-entries assistant text must land last.
-		expect(updates.map((u) => u.update.sessionUpdate)).toEqual([
-			"user_message_chunk",
-			"agent_message_chunk",
-			"agent_thought_chunk",
-			"tool_call",
-			"tool_call_update",
-			"agent_message_chunk",
-			"available_commands_update",
-		])
+		_setAcpShowThinking(true)
+		try {
+			const fake = new FakeAgentSession("loaded-mixed")
+			fake.branch = [
+				userTextEntry("question", "u1", null),
+				assistantBlocksEntry(
+					[
+						{ type: "text", text: "let me check" },
+						{ type: "thinking", thinking: "weighing options" },
+						{
+							type: "toolCall",
+							id: "tc-1",
+							name: "bash",
+							arguments: { command: "ls" },
+						},
+					],
+					"a1",
+					"u1",
+				),
+				toolResultEntry("tc-1", "bash", "file1\nfile2", false, "tr1", "a1"),
+				// Skipped entries scattered through the branch must not break the walker.
+				{
+					type: "model_change",
+					id: "mc1",
+					parentId: "tr1",
+					timestamp: "x",
+					provider: "p",
+					modelId: "m",
+				},
+				{
+					type: "compaction",
+					id: "c1",
+					parentId: "mc1",
+					timestamp: "x",
+					summary: "snip",
+					firstKeptEntryId: "u1",
+					tokensBefore: 0,
+				},
+				assistantTextEntry("here is what I found", "a2", "c1"),
+			]
+			const { conn, updates } = makeRecordingConn()
+			const agent = makeAgent(async () => asSession(fake), { conn })
+			await agent.loadSession({
+				sessionId: "loaded-mixed",
+				cwd: "/tmp",
+				mcpServers: [],
+			})
+			// Order is significant: tool_call must precede tool_call_update, and
+			// the post-skipped-entries assistant text must land last.
+			expect(updates.map((u) => u.update.sessionUpdate)).toEqual([
+				"user_message_chunk",
+				"agent_message_chunk",
+				"agent_thought_chunk",
+				"tool_call",
+				"tool_call_update",
+				"agent_message_chunk",
+				"available_commands_update",
+			])
+		} finally {
+			_resetAcpShowThinking()
+		}
 	})
 
 	it("does not deliver synthetic agent_* events to session subscribers during replay", async () => {
@@ -4378,31 +4397,31 @@ describe("KimchiAcpAgent session event handlers", () => {
 })
 
 describe("shouldEmitThinking", () => {
-	it("returns false by default when hideThinkingBlock is not configured", () => {
+	it("returns true by default when acpShowThinking is not configured", () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "kimchi-acp-hide-thinking-"))
 		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", tempDir)
 		try {
-			_resetHideThinking()
-			expect(shouldEmitThinking("anything")).toBe(false)
+			_resetAcpShowThinking()
+			expect(shouldEmitThinking("anything")).toBe(true)
 		} finally {
 			vi.unstubAllEnvs()
 			rmSync(tempDir, { recursive: true, force: true })
 		}
 	})
-	it("returns true when hideThinkingBlock is disabled", () => {
-		_setHideThinking(false)
+	it("returns true when acpShowThinking is enabled", () => {
+		_setAcpShowThinking(true)
 		try {
 			expect(shouldEmitThinking("anything")).toBe(true)
 		} finally {
-			_resetHideThinking()
+			_resetAcpShowThinking()
 		}
 	})
-	it("returns false when hideThinkingBlock is enabled", () => {
-		_setHideThinking(true)
+	it("returns false when acpShowThinking is disabled", () => {
+		_setAcpShowThinking(false)
 		try {
 			expect(shouldEmitThinking("anything")).toBe(false)
 		} finally {
-			_resetHideThinking()
+			_resetAcpShowThinking()
 		}
 	})
 	it("does not break when the persisted thinking text contains a literal </think>", () => {
@@ -4411,14 +4430,14 @@ describe("shouldEmitThinking", () => {
 		// "</think>" closed the wrapper early and the inner text leaked, making
 		// the predicate non-deterministic. Reading the setting directly avoids
 		// the round-trip entirely.
-		_setHideThinking(false)
+		_setAcpShowThinking(true)
 		const haunted = "I'll stop now. </think> trailing"
 		expect(shouldEmitThinking(haunted)).toBe(true)
-		_setHideThinking(true)
+		_setAcpShowThinking(false)
 		try {
 			expect(shouldEmitThinking(haunted)).toBe(false)
 		} finally {
-			_resetHideThinking()
+			_resetAcpShowThinking()
 		}
 	})
 })
