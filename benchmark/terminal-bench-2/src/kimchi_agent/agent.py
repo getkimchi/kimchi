@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, ClassVar
 from harbor.agents.installed.base import (
     BaseInstalledAgent,
     CliFlag,
+    NonZeroAgentExitCodeError,
     with_prompt_template,
 )
 from harbor.models.trial.result import AgentInfo, ModelInfo
@@ -211,11 +212,12 @@ class Kimchi(BaseInstalledAgent):
         if cli_flags:
             cli_flags += " "
 
-        # Harbor's _exec merges _extra_env *over* env=, so the merged value must live
-        # in _extra_env to win. Idempotent: a second run() sees the merged string as
-        # "user tags", finds all auto keys collide, and produces the same output.
-        user_tags = self._extra_env.get("KIMCHI_TAGS", "")
-        self._extra_env["KIMCHI_TAGS"] = self._merge_kimchi_tags(user_tags)
+        # Harbor 0.18 no longer merges _extra_env into each exec call, so pass
+        # merged tags explicitly. Cache the value so a second run on the same
+        # instance keeps the generated local run id stable.
+        user_tags = self._get_env("KIMCHI_TAGS") or ""
+        kimchi_tags = self._merge_kimchi_tags(user_tags)
+        self._extra_env["KIMCHI_TAGS"] = kimchi_tags
 
         # When the bench opts into a one-shot ferment per trial, pin the ferments
         # directory under /logs/agent — which is bind-mounted to
@@ -228,6 +230,7 @@ class Kimchi(BaseInstalledAgent):
 
         env = {
             "KIMCHI_API_KEY": self._config.api_key,
+            "KIMCHI_TAGS": kimchi_tags,
             "PI_PACKAGE_DIR": PI_PACKAGE_DIR,
             **ferment_env,
         }
