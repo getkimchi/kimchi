@@ -7,14 +7,18 @@ const FETCH_TIMEOUT_MS = 20000
 
 function normalizeKimchiEndpoint(endpoint?: string): string {
 	const trimmed = endpoint?.trim()
-	return (trimmed && trimmed.length > 0 ? trimmed : KIMCHI_API).replace(/\/+$/, "")
+	if (!trimmed) return KIMCHI_API
+	// A scheme-less value like "example.com" produces an invalid request URL that the HTTP
+	// layer silently drops (falling back to the gateway), so default it to https://.
+	const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`
+	return withScheme.replace(/\/+$/, "")
 }
 
 function modelsMetadataApi(endpoint?: string): string {
 	return `${normalizeKimchiEndpoint(endpoint)}/v1/models/metadata?include_in_cli=true`
 }
 
-function chatCompletionsApi(endpoint?: string): string {
+export function chatCompletionsApi(endpoint?: string): string {
 	return `${normalizeKimchiEndpoint(endpoint)}/openai/v1`
 }
 
