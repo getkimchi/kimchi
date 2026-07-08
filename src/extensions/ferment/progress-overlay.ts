@@ -11,7 +11,6 @@
  * blocked even after manual intervention.
  */
 
-import { getScopingProgress } from "../../ferment/engine.js"
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
 import {
 	DIM,
@@ -46,7 +45,9 @@ function parallelMarkerVerbose(s: Step): string {
 }
 
 export function buildPhaseListTitle(f: Ferment, runtime: FermentRuntime = defaultFermentRuntime): string {
-	// Count terminal steps across all phases. If no steps exist, fall back to phase-level counting.
+	// Count terminal and running steps across all phases.
+	// The progress bar fills completed steps with █ and running steps with ▌
+	// so the user can see both what's done and what's in-flight at a glance.
 	const totalSteps = f.phases.reduce((sum, p) => sum + p.steps.length, 0)
 	const terminalSteps = f.phases.reduce(
 		(sum, p) =>
@@ -56,6 +57,7 @@ export function buildPhaseListTitle(f: Ferment, runtime: FermentRuntime = defaul
 			).length,
 		0,
 	)
+	const runningSteps = f.phases.reduce((sum, p) => sum + p.steps.filter((s) => s.status === "running").length, 0)
 
 	// Fallback to phase-level counting if there are no steps yet
 	const terminalPhases = f.phases.filter(
@@ -65,28 +67,54 @@ export function buildPhaseListTitle(f: Ferment, runtime: FermentRuntime = defaul
 
 	const progress =
 		totalSteps > 0
-			? { total: totalSteps, terminal: terminalSteps, unit: "steps" as const }
-			: { total: totalPhases, terminal: terminalPhases, unit: "phases" as const }
+			? { total: totalSteps, terminal: terminalSteps, running: runningSteps, unit: "steps" as const }
+			: { total: totalPhases, terminal: terminalPhases, running: 0, unit: "phases" as const }
 
 	const progressTotal = progress.total
 	const progressTerminal = progress.terminal
+	const progressRunning = progress.running
 	const progressUnit = progress.unit
 
 	const barLen = 28
-	const filled = progressTotal > 0 ? Math.round((progressTerminal / progressTotal) * barLen) : 0
-	const bar = `${SUCCESS_FG}${"█".repeat(filled)}${RST_FG}${DIM}${"░".repeat(barLen - filled)}${RST_ALL}`
+	const filledWhole = progressTotal > 0 ? Math.floor((progressTerminal / progressTotal) * barLen) : 0
+	const hasPartial = progressTotal > 0 && progressRunning > 0
+	const filledTotal = Math.min(filledWhole + (hasPartial ? 1 : 0), barLen)
+	const bar = [
+		`${SUCCESS_FG}${"█".repeat(filledWhole)}`,
+		hasPartial ? `${pr_orange("▌")}${RST_FG}` : "",
+		`${DIM}${"░".repeat(barLen - filledTotal)}${RST_ALL}`,
+	].join("")
 	const pct = progressTotal > 0 ? Math.round((progressTerminal / progressTotal) * 100) : 0
-	const scopeProgress = getScopingProgress(f)
-	const scopeTag = f.status === "draft" ? pr_dim(`  scoping ${scopeProgress.answered}/4`) : ""
+	const runningTag = progressRunning > 0 ? pr_orange(` +${progressRunning} running`) : ""
+	const scopeTag = ""
 	const fermentGrade = f.grade ? `  ${gradeColor(f.grade.grade)}` : ""
 	const lastHumanInputAt = runtime.getLastHumanInputAt()
 	const sinceHuman = lastHumanInputAt
 		? formatDuration(runtime.now().getTime() - lastHumanInputAt.getTime())
 		: pr_dim("n/a")
 
+	// "Now" line: show the active phase and any running steps so the user
+	// can immediately see what the agent is working on without drilling in.
+	const activePhase = f.phases.find((p) => p.id === f.activePhaseId)
+	const nowParts: string[] = []
+	if (activePhase) {
+		const runningInPhase = activePhase.steps.filter((s) => s.status === "running")
+		if (runningInPhase.length > 0) {
+			const stepDescs = runningInPhase.map((s) => truncateLabel(s.description, 40)).join(", ")
+			nowParts.push(`${pr_dim("now:")} ${pr_teal(`P${activePhase.index}`)} ${pr_dim("·")} ${stepDescs}`)
+		} else {
+			nowParts.push(`${pr_dim("now:")} ${pr_teal(`P${activePhase.index} ${activePhase.name}`)}`)
+		}
+	} else if (f.status === "planned") {
+		nowParts.push(`${pr_dim("now:")} ${pr_dim("waiting for phase activation")}`)
+	} else if (f.status === "draft") {
+		nowParts.push(`${pr_dim("now:")} ${pr_dim("scoping")}`)
+	}
+
 	return [
 		`${pr_teal("🍺")} ${pr_bold(f.name)}${fermentGrade}${scopeTag}`,
-		`${bar}  ${pr_teal(`${pct}%`)}  ${pr_dim(`${progressTerminal}/${progressTotal} ${progressUnit}`)}`,
+		`${bar}  ${pr_teal(`${pct}%`)}  ${pr_dim(`${progressTerminal}/${progressTotal} ${progressUnit}`)}${runningTag}`,
+		...nowParts,
 		`${pr_dim("human:")} ${sinceHuman}  ${pr_dim("branch:")} ${f.worktree.branch ? pr_teal(f.worktree.branch) : pr_dim("—")}`,
 		f.goal ? `${pr_dim("goal:")} ${truncateLabel(f.goal, 70)}` : "",
 	]
