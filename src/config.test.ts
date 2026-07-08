@@ -3,6 +3,7 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
+	RETRY_DEFAULTS,
 	VENDOR_SKILL_PATHS,
 	buildSkillPathOptions,
 	checkConfigFilePermissions,
@@ -13,6 +14,7 @@ import {
 	readGitToken,
 	readHideTips,
 	readTelemetryConfig,
+	upgradeLegacyRetrySettings,
 	writeApiKey,
 	writeDeviceId,
 	writeGitToken,
@@ -83,6 +85,11 @@ describe("loadConfig", () => {
 	it("returns empty apiKey when no key is found", () => {
 		const config = loadConfig({ configPath })
 		expect(config.apiKey).toBe("")
+	})
+
+	it("does not expose Pi retry settings as Kimchi config", () => {
+		const config = loadConfig({ configPath, cwd: tempDir })
+		expect(config).not.toHaveProperty("retry")
 	})
 
 	it("reads project config from .kimchi/config.json overriding global", () => {
@@ -811,5 +818,35 @@ describe("permissions", () => {
 		const warning = warnSpy.mock.calls.find((c) => typeof c[0] === "string" && c[0].includes("group/world-readable"))
 		expect(warning).toBeDefined()
 		warnSpy.mockRestore()
+	})
+})
+
+describe("upgradeLegacyRetrySettings", () => {
+	it("seeds the defaults when no retry block exists", () => {
+		expect(upgradeLegacyRetrySettings(undefined)).toEqual(RETRY_DEFAULTS)
+	})
+
+	it("upgrades the legacy kimchi-written block to the current defaults", () => {
+		expect(upgradeLegacyRetrySettings({ maxRetries: 10 })).toEqual(RETRY_DEFAULTS)
+	})
+
+	it("keeps a user-tuned maxRetries while adding the provider block", () => {
+		expect(upgradeLegacyRetrySettings({ maxRetries: 5 })).toEqual({ ...RETRY_DEFAULTS, maxRetries: 5 })
+	})
+
+	it("keeps other user-tuned keys from the legacy block", () => {
+		expect(upgradeLegacyRetrySettings({ enabled: false, maxRetries: 10 })).toEqual({
+			...RETRY_DEFAULTS,
+			enabled: false,
+		})
+	})
+
+	it("leaves a block with a provider section alone", () => {
+		expect(upgradeLegacyRetrySettings({ maxRetries: 10, provider: { maxRetries: 1 } })).toBeUndefined()
+	})
+
+	it("leaves a non-object retry value alone", () => {
+		expect(upgradeLegacyRetrySettings(false)).toBeUndefined()
+		expect(upgradeLegacyRetrySettings(null)).toBeUndefined()
 	})
 })

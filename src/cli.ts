@@ -21,9 +21,11 @@ import "./login-command-patch.js"
 import "./paste-to-editor-patch.js"
 import {
 	DEFAULT_SKILL_PATHS,
+	RETRY_DEFAULTS,
 	getActiveVendorSkillPaths,
 	loadConfig,
 	readTelemetryConfig,
+	upgradeLegacyRetrySettings,
 	writeApiKey,
 	writeMigrationState,
 	writeSkillPaths,
@@ -73,6 +75,7 @@ import sessionMetadataExtension from "./extensions/session-metadata/index.js"
 import sessionNameExtension from "./extensions/session-name.js"
 import orphanToolResultRepairExtension from "./extensions/session-repair/orphan-tool-result-repair.js"
 import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
+import socketBreakerExtension from "./extensions/socket-breaker.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
 import stripImagesExtension from "./extensions/strip-images.js"
@@ -98,6 +101,11 @@ import webFetchExtension from "./extensions/web-fetch/index.js"
 import webSearchExtension from "./extensions/web-search/index.js"
 import { normalizeAtFileArgs } from "./fs-paths.js"
 import {
+	KIMCHI_INFRA_ERROR_EXIT_CODE,
+	applyInfrastructureExitPolicy,
+	createInfrastructureErrorTracker,
+} from "./infrastructure-error.js"
+import {
 	injectExperimentalProvider,
 	isTransientModelsError,
 	readExperimentalModels,
@@ -116,7 +124,7 @@ import resourceToolBlockerExtension from "./resources/tool-blocker.js"
 import { runSetupWizard } from "./setup-wizard.js"
 import { setAvailableModels } from "./startup-context.js"
 import { probeTerminalBackground } from "./terminal-bg-probe.js"
-import { installCloudflare524RetryPatch } from "./upstream-retry-patch.js"
+import { installCloudflare524RetryPatch, isSocketBreakerTripped } from "./upstream-retry-patch.js"
 import { getVersion } from "./utils.js"
 import {
 	postProcessHtmlExport,
@@ -139,6 +147,10 @@ function getSubcommand(args: string[]): string {
 }
 
 const originalArgs = process.argv.slice(2)
+
+// Observes provider transport failures in-process (via message_end) so the
+// exit path can reclassify a failed run as infrastructure (exit 74).
+const infrastructureErrorTracker = createInfrastructureErrorTracker()
 
 // --- Telemetry ---
 const telemetryConfig = readTelemetryConfig()
@@ -348,18 +360,21 @@ try {
 			readFileSync(settingsPath, "utf-8")
 		} catch (err) {
 			if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-				writeFileSync(settingsPath, `${JSON.stringify({ quietStartup: true, theme: "kimchi-minimal" }, null, 2)}\n`)
+				writeFileSync(
+					settingsPath,
+					`${JSON.stringify({ quietStartup: true, theme: "kimchi-minimal", retry: RETRY_DEFAULTS }, null, 2)}\n`,
+				)
 			} else {
 				console.error(`Warning: could not read ${settingsPath}: ${(err as Error).message}`)
 			}
 		}
 
-		// Sync retry config to SDK settings so both systems use the same value
+		// Seed Kimchi retry defaults for Pi; Pi handles global/project settings merging.
 		try {
 			const existing = JSON.parse(readFileSync(settingsPath, "utf-8"))
-			const sdkRetry = existing.retry
-			if (!sdkRetry || sdkRetry.maxRetries !== config.retry.maxRetries) {
-				existing.retry = { ...sdkRetry, maxRetries: config.retry.maxRetries }
+			const upgraded = upgradeLegacyRetrySettings(existing.retry)
+			if (upgraded) {
+				existing.retry = upgraded
 				writeFileSync(settingsPath, `${JSON.stringify(existing, null, 2)}\n`)
 			}
 		} catch {
@@ -574,6 +589,8 @@ try {
 			traceIdExtension,
 			llmResponseLogExtension,
 			activityExtension,
+			infrastructureErrorTracker.extension,
+			socketBreakerExtension,
 		]
 
 		if (acpMode) {
@@ -584,6 +601,15 @@ try {
 			const { main } = await import("@earendil-works/pi-coding-agent")
 			await main(rawArgs, { extensionFactories })
 		}
+		// Only reclassify runs that already failed (print mode sets exitCode 1);
+		// a clean interactive quit after a transient error stays a success.
+		if (process.exitCode) {
+			applyInfrastructureExitPolicy(infrastructureErrorTracker.getFailure())
+			// A tripped breaker means the run was cut off mid-storm, and handles
+			// leaked by the failed stream can keep the event loop alive for minutes
+			// after main() returns — don't wait for it to drain.
+			if (isSocketBreakerTripped()) process.exit(process.exitCode)
+		}
 	}
 } catch (err) {
 	await drainPreSessionTelemetry()
@@ -591,6 +617,7 @@ try {
 		process.exitCode = 130
 	} else {
 		console.error(err instanceof Error ? err.message : String(err))
-		process.exit(1)
+		const isInfraFailure = applyInfrastructureExitPolicy(infrastructureErrorTracker.getFailure())
+		process.exit(isInfraFailure ? KIMCHI_INFRA_ERROR_EXIT_CODE : 1)
 	}
 }

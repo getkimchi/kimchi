@@ -1,6 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join, relative, resolve } from "node:path"
+import type { RetrySettings } from "@earendil-works/pi-coding-agent"
 import { SUPERPOWERS_SKILL_PATH } from "./extensions/superpowers/config.js"
 import { getVersion } from "./utils.js"
 
@@ -117,12 +118,38 @@ export interface PreferencesConfig {
 	hideTips?: boolean
 }
 
-export interface RetryConfig {
-	maxRetries: number
-}
+export const RETRY_DEFAULTS = {
+	enabled: true,
+	maxRetries: 3,
+	baseDelayMs: 2000,
+	provider: {
+		timeoutMs: 600_000,
+		maxRetries: 0,
+		maxRetryDelayMs: 60_000,
+	},
+} satisfies RetrySettings
 
-export const RETRY_DEFAULTS: RetryConfig = {
-	maxRetries: 10,
+/** What older kimchi versions wrote into pi's settings.json on every startup. */
+const LEGACY_KIMCHI_MAX_RETRIES = 10
+
+/**
+ * Returns the `retry` block to write into pi's settings.json, or undefined if
+ * the existing block should be left alone. A missing block gets the defaults.
+ * Older kimchi versions synced `retry: { maxRetries }` (never a `provider`
+ * block) into settings.json on every startup, so a provider-less block is
+ * kimchi-owned legacy state: upgrade it to the current defaults, but keep any
+ * user-tuned values — only `maxRetries: 10` is known to be kimchi-written
+ * rather than user intent.
+ */
+export function upgradeLegacyRetrySettings(retry: unknown): RetrySettings | undefined {
+	if (retry === undefined) return RETRY_DEFAULTS
+	if (!retry || typeof retry !== "object" || "provider" in retry) return undefined
+	const { maxRetries, ...userTuned } = retry as { maxRetries?: number }
+	const upgraded = { ...RETRY_DEFAULTS, ...userTuned } as RetrySettings
+	if (maxRetries !== undefined && maxRetries !== LEGACY_KIMCHI_MAX_RETRIES) {
+		upgraded.maxRetries = maxRetries
+	}
+	return upgraded
 }
 
 export const THIRD_PARTY_MAX_RETRIES = 4
@@ -145,7 +172,6 @@ export interface KimchiConfig {
 	maxToolResultChars: number
 	mcpSearchLimit: number
 	mcpSearch: SearchStrategyConfig
-	retry: RetryConfig
 	skillPaths?: string[]
 	migrationState?: MigrationState
 	onboarding: OnboardingConfig
@@ -181,7 +207,6 @@ function readConfigExtras(configPath: string): {
 	maxToolResultChars?: number
 	mcpSearchLimit?: number
 	mcpSearch?: Partial<SearchStrategyConfig>
-	retry?: Partial<RetryConfig>
 	skillPaths?: string[]
 	migrationState?: MigrationState
 	onboarding?: OnboardingConfig
@@ -225,13 +250,6 @@ function readConfigExtras(configPath: string): {
 					: {}),
 			}
 		}
-		let retry: Partial<RetryConfig> | undefined
-		const r = parsed.retry
-		if (r && typeof r === "object") {
-			retry = {
-				...(typeof r.maxRetries === "number" && r.maxRetries > 0 ? { maxRetries: r.maxRetries } : {}),
-			}
-		}
 		const skillPaths =
 			Array.isArray(parsed.skillPaths) && parsed.skillPaths.every((p: unknown) => typeof p === "string")
 				? (parsed.skillPaths as string[])
@@ -273,7 +291,6 @@ function readConfigExtras(configPath: string): {
 			maxToolResultChars,
 			mcpSearchLimit,
 			mcpSearch,
-			retry,
 			skillPaths,
 			migrationState,
 			onboarding,
@@ -442,14 +459,13 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 	if (projectPermWarning) console.warn(projectPermWarning)
 	const projectExtras = readConfigExtras(projectPath)
 
-	// Merge: project wins for scalars; shallow merge for mcpSearch and retry
+	// Merge: project wins for scalars; shallow merge for mcpSearch.
 	const extras = {
 		apiKey: projectExtras.apiKey ?? globalExtras.apiKey,
 		llmEndpoint: projectExtras.llmEndpoint ?? globalExtras.llmEndpoint,
 		maxToolResultChars: projectExtras.maxToolResultChars ?? globalExtras.maxToolResultChars,
 		mcpSearchLimit: projectExtras.mcpSearchLimit ?? globalExtras.mcpSearchLimit,
 		mcpSearch: { ...globalExtras.mcpSearch, ...projectExtras.mcpSearch },
-		retry: { ...globalExtras.retry, ...projectExtras.retry },
 		skillPaths: projectExtras.skillPaths ?? globalExtras.skillPaths,
 		migrationState: projectExtras.migrationState ?? globalExtras.migrationState,
 		onboarding: globalExtras.onboarding,
@@ -465,7 +481,6 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		maxToolResultChars: extras.maxToolResultChars ?? 10_000,
 		mcpSearchLimit: extras.mcpSearchLimit ?? 5,
 		mcpSearch: { ...SEARCH_STRATEGY_DEFAULTS, ...extras.mcpSearch },
-		retry: { ...RETRY_DEFAULTS, ...extras.retry },
 		skillPaths: extras.skillPaths,
 		migrationState: extras.migrationState,
 		onboarding: extras.onboarding ?? {},

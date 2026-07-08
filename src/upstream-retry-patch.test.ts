@@ -1,5 +1,13 @@
-import { describe, expect, it, vi } from "vitest"
-import { installCloudflare524RetryPatch, isNetworkErrorRetryable } from "./upstream-retry-patch.js"
+import { afterEach, describe, expect, it, vi } from "vitest"
+import {
+	SOCKET_BREAKER_THRESHOLD_ENV,
+	configureSocketBreaker,
+	installCloudflare524RetryPatch,
+	isNetworkErrorRetryable,
+	isSocketBreakerTripped,
+	resetSocketBreaker,
+	resolveSocketBreakerThreshold,
+} from "./upstream-retry-patch.js"
 
 describe("upstream retry patch", () => {
 	it("classifies Cloudflare 524 provider errors as retryable", () => {
@@ -42,36 +50,92 @@ describe("isNetworkErrorRetryable", () => {
 		expect(isNetworkErrorRetryable({ stopReason: "error", errorMessage: "rate limit exceeded" })).toBe(false)
 	})
 
-	it("matches 'socket connection was closed'", () => {
-		expect(isNetworkErrorRetryable({ stopReason: "error", errorMessage: "socket connection was closed" })).toBe(true)
+	// Token-level classifier coverage lives in infrastructure-error.test.ts;
+	// this pins the incident that motivated the patch (upstream misses Bun's wording).
+	it("matches Bun's mid-stream socket close verbatim", () => {
+		expect(
+			isNetworkErrorRetryable({
+				stopReason: "error",
+				errorMessage:
+					"The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()",
+			}),
+		).toBe(true)
+	})
+})
+
+describe("socket breaker", () => {
+	const networkError = { stopReason: "error", errorMessage: "The socket connection was closed unexpectedly" }
+	const success = { stopReason: "stop" }
+
+	function installPatchedClassifier(threshold: number) {
+		const sessionClass = {
+			prototype: { _isRetryableError: (_message: { stopReason?: string; errorMessage?: string }) => false },
+		}
+		installCloudflare524RetryPatch(sessionClass, threshold)
+		// biome-ignore lint/style/noNonNullAssertion: installCloudflare524RetryPatch always wraps the classifier above
+		return sessionClass.prototype._isRetryableError!
+	}
+
+	afterEach(() => {
+		configureSocketBreaker(0)
+		vi.restoreAllMocks()
 	})
 
-	it("matches 'unexpectedly'", () => {
-		expect(isNetworkErrorRetryable({ stopReason: "error", errorMessage: "connection closed unexpectedly" })).toBe(true)
+	it("parses the threshold env var, treating unset/invalid/non-positive as disabled", () => {
+		expect(resolveSocketBreakerThreshold({})).toBe(0)
+		expect(resolveSocketBreakerThreshold({ [SOCKET_BREAKER_THRESHOLD_ENV]: "3" })).toBe(3)
+		expect(resolveSocketBreakerThreshold({ [SOCKET_BREAKER_THRESHOLD_ENV]: "0" })).toBe(0)
+		expect(resolveSocketBreakerThreshold({ [SOCKET_BREAKER_THRESHOLD_ENV]: "-1" })).toBe(0)
+		expect(resolveSocketBreakerThreshold({ [SOCKET_BREAKER_THRESHOLD_ENV]: "banana" })).toBe(0)
 	})
 
-	it("matches EPIPE", () => {
-		expect(isNetworkErrorRetryable({ stopReason: "error", errorMessage: "write EPIPE" })).toBe(true)
+	it("trips after the threshold of consecutive transport errors and stops retries", () => {
+		vi.spyOn(console, "error").mockImplementation(() => {})
+		const isRetryable = installPatchedClassifier(3)
+
+		expect(isRetryable(networkError)).toBe(true)
+		expect(isRetryable(networkError)).toBe(true)
+		expect(isRetryable(networkError)).toBe(false)
+		expect(isSocketBreakerTripped()).toBe(true)
 	})
 
-	it("matches ERR_SOCKET_CLOSED", () => {
-		expect(isNetworkErrorRetryable({ stopReason: "error", errorMessage: "ERR_SOCKET_CLOSED" })).toBe(true)
+	it("closes again on reset, so a recovered run gets a fresh budget", () => {
+		vi.spyOn(console, "error").mockImplementation(() => {})
+		const isRetryable = installPatchedClassifier(2)
+
+		expect(isRetryable(networkError)).toBe(true)
+		resetSocketBreaker()
+		expect(isRetryable(networkError)).toBe(true)
+		expect(isRetryable(networkError)).toBe(false)
+		expect(isSocketBreakerTripped()).toBe(true)
 	})
 
-	it("matches ERR_STREAM_PREMATURE_CLOSE", () => {
-		expect(isNetworkErrorRetryable({ stopReason: "error", errorMessage: "ERR_STREAM_PREMATURE_CLOSE" })).toBe(true)
+	it("does not count non-transport errors that upstream retries (e.g. rate limits)", () => {
+		const sessionClass = {
+			prototype: {
+				_isRetryableError: (message: { stopReason?: string; errorMessage?: string }) =>
+					message.errorMessage === "429 rate limit",
+			},
+		}
+		installCloudflare524RetryPatch(sessionClass, 1)
+		const isRetryable = sessionClass.prototype._isRetryableError
+
+		expect(isRetryable({ stopReason: "error", errorMessage: "429 rate limit" })).toBe(true)
+		expect(isRetryable({ stopReason: "error", errorMessage: "429 rate limit" })).toBe(true)
+		expect(isSocketBreakerTripped()).toBe(false)
 	})
 
-	it("matches ECONNRESET", () => {
-		expect(isNetworkErrorRetryable({ stopReason: "error", errorMessage: "read ECONNRESET" })).toBe(true)
+	it("never trips when disabled", () => {
+		const isRetryable = installPatchedClassifier(0)
+
+		for (let i = 0; i < 10; i++) expect(isRetryable(networkError)).toBe(true)
+		expect(isSocketBreakerTripped()).toBe(false)
 	})
 
-	it("matches 'connection reset'", () => {
-		expect(isNetworkErrorRetryable({ stopReason: "error", errorMessage: "connection reset by peer" })).toBe(true)
-	})
+	it("stays irrelevant for successful messages", () => {
+		const isRetryable = installPatchedClassifier(1)
 
-	it("is case-insensitive for mixed-case variants", () => {
-		expect(isNetworkErrorRetryable({ stopReason: "error", errorMessage: "Socket Connection Was Closed" })).toBe(true)
-		expect(isNetworkErrorRetryable({ stopReason: "error", errorMessage: "Connection Reset" })).toBe(true)
+		expect(isRetryable(success)).toBe(false)
+		expect(isSocketBreakerTripped()).toBe(false)
 	})
 })
