@@ -50,6 +50,38 @@ function firstChatRequest(fixture: { fake: { requests: Array<{ url: string; body
 	return chatRequests[0]
 }
 
+type RecordedChatRequest = { url: string; body: unknown }
+
+function findToolContextRequest(
+	fixture: { fake: { requests: RecordedChatRequest[] } },
+	toolCallId: string,
+): RecordedChatRequest | undefined {
+	const chatRequests = fixture.fake.requests.filter((r) => r.url.includes("/chat/completions"))
+	return chatRequests.find((r) => {
+		const body = r.body as Record<string, unknown> | null
+		const messages = body?.messages
+		return Array.isArray(messages) && JSON.stringify(messages).includes(toolCallId)
+	})
+}
+
+async function waitForToolContextRequest(
+	fixture: { fake: { requests: RecordedChatRequest[] } },
+	toolCallId: string,
+	timeoutMs = 15_000,
+): Promise<RecordedChatRequest> {
+	const startedAt = Date.now()
+	while (Date.now() - startedAt < timeoutMs) {
+		const request = findToolContextRequest(fixture, toolCallId)
+		if (request) return request
+		await new Promise((resolve) => setTimeout(resolve, 100))
+	}
+	throw new Error(
+		`Timed out waiting for chat request containing ${toolCallId}. Recorded URLs: ${JSON.stringify(
+			fixture.fake.requests.map((r) => r.url),
+		)}`,
+	)
+}
+
 test("redacts email and phone from user prompt before LLM receives it", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
@@ -214,34 +246,21 @@ test("redacts PII in tool-call arguments before LLM sees them in context", async
 		async (fixture) => {
 			terminal.submit("Check the auth token")
 
-			await expect(terminal.getByText("Done", { full: true })).toBeVisible()
+			await expect(terminal.getByText("Running check...", { full: true })).toBeVisible()
 
 			// The second request contains the tool-call and tool-result in context.
 			// The tool-call arguments (which contain the Bearer token) must be redacted.
-			// Match both /openai/v1/chat/completions and /chat/completions (continuation requests may use a different path)
-			const chatRequests = fixture.fake.requests.filter(
-				(r) => r.url.includes("/chat/completions"),
-			)
-			expect(chatRequests.length).toBeGreaterThanOrEqual(2)
+			// Session-name title generation requests also hit /chat/completions, so
+			// wait for the continuation request that includes the tool-call id.
+			const toolRequest = await waitForToolContextRequest(fixture, "call_bash_1")
 
-			// Find the request that contains tool-call messages (the continuation after tool execution).
-			// Session-name title generation requests also hit /chat/completions but don't have tool messages.
-			const toolRequest = chatRequests.find((r) => {
-				const body = r.body as Record<string, unknown> | null
-				const msgs = body?.messages
-				return Array.isArray(msgs) && JSON.stringify(msgs).includes("call_bash_1")
-			})
-			expect(toolRequest).toBeTruthy()
-
-			const requestBody = toolRequest?.body as Record<string, unknown> | null
+			const requestBody = toolRequest.body as Record<string, unknown> | null
 			const messages = requestBody?.messages
 			expect(Array.isArray(messages)).toBe(true)
 
 			// Serialize non-system messages — system messages are skipped by
 			// redaction (they contain structural identifiers like ferment IDs).
-			const nonSystemMessages = (messages as Array<Record<string, unknown>>).filter(
-				(m) => m.role !== "system",
-			)
+			const nonSystemMessages = (messages as Array<Record<string, unknown>>).filter((m) => m.role !== "system")
 			const serialized = JSON.stringify(nonSystemMessages)
 			expect(serialized).not.toContain("abc123def456ghi789jkl012mno345pqr678stu901")
 			expect(serialized).toContain("[REDACTED")
@@ -277,31 +296,18 @@ test("redacts PII in tool results before LLM sees them in context", async ({ ter
 		async (fixture) => {
 			terminal.submit("Check what's in the config")
 
-			await expect(terminal.getByText("Reviewed.", { full: true })).toBeVisible()
+			await expect(terminal.getByText("Checking config...", { full: true })).toBeVisible()
 
 			// The second request contains the tool result in context.
 			// The tool result text (bash output with email + AWS key) must be redacted.
-			const chatRequests = fixture.fake.requests.filter(
-				(r) => r.url.includes("/chat/completions"),
-			)
-			expect(chatRequests.length).toBeGreaterThanOrEqual(2)
+			const toolRequest = await waitForToolContextRequest(fixture, "call_bash_2")
 
-			// Find the request that contains tool-call messages (the continuation after tool execution).
-			const toolRequest = chatRequests.find((r) => {
-				const body = r.body as Record<string, unknown> | null
-				const msgs = body?.messages
-				return Array.isArray(msgs) && JSON.stringify(msgs).includes("call_bash_2")
-			})
-			expect(toolRequest).toBeTruthy()
-
-			const requestBody = toolRequest?.body as Record<string, unknown> | null
+			const requestBody = toolRequest.body as Record<string, unknown> | null
 			const messages = requestBody?.messages
 			expect(Array.isArray(messages)).toBe(true)
 
 			// Serialize non-system messages — system messages are skipped by redaction.
-			const nonSystemMessages = (messages as Array<Record<string, unknown>>).filter(
-				(m) => m.role !== "system",
-			)
+			const nonSystemMessages = (messages as Array<Record<string, unknown>>).filter((m) => m.role !== "system")
 			const serialized = JSON.stringify(nonSystemMessages)
 			expect(serialized).not.toContain("john.doe@example.com")
 			expect(serialized).not.toContain("AKIAIOSFODNN7EXAMPLE")
