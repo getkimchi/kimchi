@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync } from "node:fs"
+import { redactObjectStrings } from "../extensions/pii-redaction/redactor.js"
 import { getVersion } from "../utils.js"
 import { getConfigChanges, getSessionStartMetadata } from "./session-metadata-store.js"
 import { injectTraceIdsIntoEntries, injectTraceIdsIntoExport } from "./trace-id-export.js"
@@ -65,6 +66,38 @@ export function postProcessJsonlExport(filePath: string): void {
 	}
 
 	writeFileSync(filePath, `${processed.join("\n")}\n`, "utf-8")
+}
+
+/**
+ * Redact PII and secrets from a JSONL export file.
+ *
+ * Reads the file, parses each line as JSON, deep-walks all string values
+ * redacting PII/secrets, and writes back. Lines that are not valid JSON
+ * are passed through unchanged. This runs AFTER `postProcessJsonlExport`
+ * so the file already has trace IDs and metadata injected.
+ *
+ * API keys/secrets in session transcripts are scrubbed before the
+ * transcript leaves the harness.
+ */
+export async function redactJsonlExport(filePath: string): Promise<void> {
+	const raw = readFileSync(filePath, "utf-8")
+	const lines = raw.split(/\r?\n/)
+	const redacted: string[] = []
+	for (const line of lines) {
+		if (!line.trim()) {
+			redacted.push(line)
+			continue
+		}
+		try {
+			const parsed = JSON.parse(line)
+			const cleaned = await redactObjectStrings(parsed)
+			redacted.push(JSON.stringify(cleaned))
+		} catch {
+			// Not valid JSON — pass through unchanged
+			redacted.push(line)
+		}
+	}
+	writeFileSync(filePath, `${redacted.join("\n")}\n`, "utf-8")
 }
 
 export function postProcessHtmlExport(filePath: string): void {
@@ -209,5 +242,32 @@ export function postProcessHtmlExport(filePath: string): void {
 		html = appendBeforeBody(html, metadataScript)
 	}
 
+	writeFileSync(filePath, html, "utf-8")
+}
+
+/**
+ * Redact PII and secrets from an HTML export file.
+ *
+ * Finds the base64-encoded session-data script tag, decodes it, deep-walks
+ * all string values redacting PII/secrets, re-encodes, and writes back.
+ * If the session-data tag is not found, the file is left unchanged.
+ *
+ * API keys/secrets in session transcripts are scrubbed before the
+ * transcript leaves the harness.
+ */
+export async function redactHtmlExport(filePath: string): Promise<void> {
+	let html = readFileSync(filePath, "utf-8")
+	const match = html.match(/<script id="session-data" type="application\/json">([\s\S]*?)<\/script>/)
+	if (!match) return
+	const base64 = match[1]
+	const json = Buffer.from(base64, "base64").toString("utf-8")
+	const data = JSON.parse(json)
+	const cleaned = await redactObjectStrings(data)
+	const modified = JSON.stringify(cleaned)
+	const modifiedBase64 = Buffer.from(modified).toString("base64")
+	html = html.replace(
+		/<script id="session-data" type="application\/json">[\s\S]*?<\/script>/,
+		`<script id="session-data" type="application/json">${modifiedBase64}</script>`,
+	)
 	writeFileSync(filePath, html, "utf-8")
 }

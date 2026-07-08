@@ -630,6 +630,169 @@ describe("turn_end connection error recovery", () => {
 	})
 })
 
+function setupScopedRunningFerment(prefix: string, name: string) {
+	const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), prefix)))
+	const ferment = storage.create(name)
+	storage.mutateWithEvents(ferment.id, (current) => {
+		if (!current) throw new Error("missing ferment")
+		const now = new Date().toISOString()
+		const cmd = {
+			type: "scope" as const,
+			title: name,
+			goal: "Test goal",
+			successCriteria: ["Test criterion"],
+			constraints: [],
+			phases: [{ name: "Build", goal: "Build it", steps: [{ description: "step 1" }] }],
+		}
+		const result = applyCommand(current, cmd, { now })
+		if (!result.ok) throw new Error(`scope failed: ${result.error.message}`)
+		const events = commandToEvents(cmd, current, result.ferment, { now })
+		return { write: true, ferment: result.ferment, events, value: undefined }
+	})
+	storage.mutateWithEvents(ferment.id, (current) => {
+		if (!current) throw new Error("missing ferment")
+		const now = new Date().toISOString()
+		const cmd = { type: "activate_phase" as const, phaseId: "phase-1" }
+		const result = applyCommand(current, cmd, { now })
+		if (!result.ok) throw new Error(`activate failed: ${result.error.message}`)
+		const events = commandToEvents(cmd, current, result.ferment, { now })
+		return { write: true, ferment: result.ferment, events, value: undefined }
+	})
+	return { storage, ferment }
+}
+
+describe("turn_end error recovery in one-shot mode", () => {
+	it('does not pause the ferment when stopReason is "error" in one-shot mode', async () => {
+		const { storage, ferment } = setupScopedRunningFerment("ferment-oneshot-error-", "One-shot Error Ferment")
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: () => storage,
+			isAutomatedContinuationEnabled: () => true,
+		}
+		const active = storage.get(ferment.id)
+		if (!active) throw new Error("ferment not found after setup")
+		runtime.setActive(active)
+
+		const { handlers, pi } = createPi()
+		;(pi.getFlag as ReturnType<typeof vi.fn>).mockImplementation((name: string) =>
+			name === "ferment-oneshot" ? true : undefined,
+		)
+		;(pi as ExtensionAPI & { events: ExtensionAPI["events"] }).events = {
+			emit: vi.fn(),
+			on: vi.fn(),
+		} as unknown as ExtensionAPI["events"]
+		registerFermentEvents(pi, runtime)
+		const turnEnd = handlers.get("turn_end")
+		if (!turnEnd) throw new Error("turn_end handler was not registered")
+		const notify = vi.fn()
+		const ctx = { ui: { notify } }
+
+		await turnEnd(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "error",
+					errorMessage: "Connection error: socket closed",
+					content: [],
+				},
+			},
+			ctx,
+		)
+
+		const stored = storage.get(ferment.id)
+		expect(stored?.status).toBe("running")
+		expect(notify).not.toHaveBeenCalledWith(expect.stringContaining("was paused"))
+		// The continuation nudge should have been injected via sendMessage.
+		expect(pi.sendMessage).toHaveBeenCalled()
+	})
+
+	it('still pauses the ferment when stopReason is "error" in interactive mode', async () => {
+		const { storage, ferment } = setupScopedRunningFerment("ferment-oneshot-error-", "One-shot Error Ferment")
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: () => storage,
+		}
+		const active = storage.get(ferment.id)
+		if (!active) throw new Error("ferment not found after setup")
+		runtime.setActive(active)
+
+		const { handlers, pi } = createPi()
+		;(pi.getFlag as ReturnType<typeof vi.fn>).mockReturnValue(undefined)
+		;(pi as ExtensionAPI & { events: ExtensionAPI["events"] }).events = {
+			emit: vi.fn(),
+			on: vi.fn(),
+		} as unknown as ExtensionAPI["events"]
+		registerFermentEvents(pi, runtime)
+		const turnEnd = handlers.get("turn_end")
+		if (!turnEnd) throw new Error("turn_end handler was not registered")
+		const notify = vi.fn()
+		const ctx = { ui: { notify } }
+
+		await turnEnd(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "error",
+					errorMessage: "Connection error: socket closed",
+					content: [],
+				},
+			},
+			ctx,
+		)
+
+		const stored = storage.get(ferment.id)
+		expect(stored?.status).toBe("paused")
+	})
+})
+
+describe("session_shutdown one-shot recovery", () => {
+	it("abandons the ferment in one-shot mode", async () => {
+		const { storage, ferment } = setupScopedRunningFerment("ferment-oneshot-shutdown-", "Shutdown Ferment")
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: () => storage,
+		}
+		const active = storage.get(ferment.id)
+		if (!active) throw new Error("ferment not found after setup")
+		runtime.setActive(active)
+
+		const { handlers, pi } = createPi()
+		;(pi.getFlag as ReturnType<typeof vi.fn>).mockImplementation((name: string) =>
+			name === "ferment-oneshot" ? true : undefined,
+		)
+		registerFermentEvents(pi, runtime)
+		const shutdown = handlers.get("session_shutdown")
+		if (!shutdown) throw new Error("session_shutdown handler was not registered")
+
+		await shutdown({}, {})
+
+		const stored = storage.get(ferment.id)
+		expect(stored?.status).toBe("abandoned")
+	})
+
+	it("pauses the ferment in interactive mode", async () => {
+		const { storage, ferment } = setupScopedRunningFerment("ferment-oneshot-shutdown-", "Shutdown Ferment")
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: () => storage,
+		}
+		const active = storage.get(ferment.id)
+		if (!active) throw new Error("ferment not found after setup")
+		runtime.setActive(active)
+
+		const { handlers, pi } = createPi()
+		;(pi.getFlag as ReturnType<typeof vi.fn>).mockReturnValue(undefined)
+		registerFermentEvents(pi, runtime)
+		const shutdown = handlers.get("session_shutdown")
+		if (!shutdown) throw new Error("session_shutdown handler was not registered")
+
+		await shutdown({}, {})
+
+		const stored = storage.get(ferment.id)
+		expect(stored?.status).toBe("paused")
+	})
+})
+
 describe("recoverStuckFerments lockfile awareness", () => {
 	let lockDir: string
 	let storageDir: string

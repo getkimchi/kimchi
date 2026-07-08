@@ -22,7 +22,16 @@ export interface FakeToolCall {
 	}
 }
 
+export interface FakeResponseRequest {
+	method: string
+	url: string
+	headers: Record<string, string | string[] | undefined>
+	body: unknown
+}
+
 export interface FakeResponseScript {
+	/** Optional predicate that reserves this script for matching chat requests. */
+	match?: (request: FakeResponseRequest) => boolean
 	/** Text chunks emitted as `delta.content` (the visible assistant response). */
 	stream?: string[]
 	/**
@@ -44,11 +53,7 @@ export interface FakeResponseScript {
 	body?: unknown
 }
 
-export interface RecordedRequest {
-	method: string
-	url: string
-	headers: Record<string, string | string[] | undefined>
-	body: unknown
+export interface RecordedRequest extends FakeResponseRequest {
 	aborted: boolean
 }
 
@@ -99,11 +104,14 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 
 	const server = createServer(async (req, res) => {
 		const body = await readJsonBody(req)
-		const recorded: RecordedRequest = {
+		const request: FakeResponseRequest = {
 			method: req.method ?? "GET",
 			url: req.url ?? "/",
 			headers: req.headers,
 			body,
+		}
+		const recorded: RecordedRequest = {
+			...request,
 			aborted: false,
 		}
 		req.on("aborted", () => {
@@ -132,7 +140,7 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 			}
 
 			if (req.method === "POST" && req.url?.startsWith("/openai/v1/chat/completions")) {
-				const script = responseQueue.shift() ?? { stream: ["fake response"] }
+				const script = takeNextResponse(responseQueue, request) ?? { stream: ["fake response"] }
 				await writeChatCompletion(res, script, body)
 				return
 			}
@@ -170,6 +178,15 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 		requests,
 		stop: () => closeServer(server, sockets),
 	}
+}
+
+function takeNextResponse(
+	responseQueue: FakeResponseScript[],
+	request: FakeResponseRequest,
+): FakeResponseScript | undefined {
+	const index = responseQueue.findIndex((script) => !script.match || script.match(request))
+	if (index === -1) return undefined
+	return responseQueue.splice(index, 1)[0]
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {

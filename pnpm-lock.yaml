@@ -9,7 +9,7 @@ patchedDependencies:
     hash: a9d385c837d7062a1b38fd9d81d5405543cf7149753ed9a67f685e520913453e
     path: patches/@earendil-works__pi-ai@0.79.10.patch
   '@earendil-works/pi-coding-agent@0.79.10':
-    hash: 2393f13f2f793433561affe62082282a0b1daf64032dc670bc0cae58c87acd3c
+    hash: d29884b7582397ece2c07d71c40d73cc0ff38a582a117391c1fe8147be52d0bb
     path: patches/@earendil-works__pi-coding-agent@0.79.10.patch
   '@earendil-works/pi-tui@0.79.10':
     hash: 3651856bfe24d881276c225f7ae61b415aaea13347e8667a70d24a3e0e1b3a38
@@ -25,6 +25,9 @@ importers:
       '@agentclientprotocol/sdk':
         specifier: 0.19.2
         version: 0.19.2(zod@4.4.3)
+      '@bulkhead-ai/core':
+        specifier: ^0.7.0
+        version: 0.7.0
       '@clack/prompts':
         specifier: ^1.3.0
         version: 1.3.0
@@ -3698,6 +3701,10 @@ packages:
   std-env@3.10.0:
     resolution: {integrity: sha512-5GS12FdOZNliM5mAOxFRg7Ir0pWz8MdpYm6AY6VPkGpbA7ZzmbzNcBJQ0GPvvyWgcY7QAhCgf9Uy89I03faLkg==}
 
+  string-similarity@4.0.4:
+    resolution: {integrity: sha512-/q/8Q4Bl4ZKAPjj8WerIBJWALKkaPRfrvhfF8k/B23i4nzrlRj2/go1m90In7nG/3XDSbOo0+pu6RvCTM9RGMQ==}
+    deprecated: Package no longer supported. Contact Support at https://www.npmjs.com/support for more info.
+
   string-width@4.2.3:
     resolution: {integrity: sha512-wKyQRQpjJ0sIp62ErSZdGsjMJWsap5oRNihHhu6G7JVO/9jIB6UyevL+tXuOqrng8j/cxKTWyWUwvSTriiZz/g==}
     engines: {node: '>=8'}
@@ -6570,7 +6577,7 @@ snapshots:
       get-proto: 1.0.1
       gopd: 1.2.0
       has-symbols: 1.1.0
-      hasown: 2.0.4
+      hasown: 2.0.3
       math-intrinsics: 1.1.0
 
   get-proto@1.0.1:
@@ -8081,6 +8088,8 @@ snapshots:
   statuses@2.0.2: {}
 
   std-env@3.10.0: {}
+
+  string-similarity@4.0.4: {}
 
   string-width@4.2.3:
     dependencies:
