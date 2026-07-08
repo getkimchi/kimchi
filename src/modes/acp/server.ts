@@ -263,9 +263,7 @@ export class KimchiAcpAgent implements Agent {
 
 			const sessionId = session.sessionId
 			const uiContext = this.createUiContext(session)
-			const permissionFlagController = registerPermissionFlagController(sessionId, initialMode, (params) =>
-				this.send(params),
-			)
+			registerPermissionFlagController(session, initialMode, (params) => this.send(params))
 			registerAcpPrompter(sessionId, createAcpPermissionPrompter(this.conn, sessionId, uiContext, buildToolCallUpdate))
 			await this.bindAcpExtensions(session, uiContext)
 
@@ -282,7 +280,7 @@ export class KimchiAcpAgent implements Agent {
 			return {
 				sessionId,
 				models: buildSessionModelState(session),
-				configOptions: [buildPermissionsConfigOption(permissionFlagController.getMode()?.mode)],
+				configOptions: buildConfigOptions(session, () => this.resolveInitialMode(params.cwd)),
 			}
 		} catch (err) {
 			unregisterAcpPrompter(session.sessionId)
@@ -316,18 +314,57 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	async unstable_setSessionModel(params: SetSessionModelRequest): Promise<SetSessionModelResponse> {
-		const entry = this.sessions.get(params.sessionId)
-		if (!entry) {
+		await this.setModel(params.sessionId, params.modelId)
+		return {}
+	}
+
+	async setSessionConfigOption(params: SetSessionConfigOptionRequest): Promise<SetSessionConfigOptionResponse> {
+		const session = this.sessions.get(params.sessionId)?.session
+		if (!session) {
 			throw RequestError.invalidParams(undefined, `unknown sessionId ${params.sessionId}`)
+		}
+		switch (params.configId) {
+			case "permissions-mode": {
+				this.setPermissionMode(params.sessionId, params.value ? `${params.value}` : "")
+				break
+			}
+			case "model": {
+				await this.setModel(params.sessionId, params.value ? `${params.value}` : "")
+				break
+			}
+			default:
+				throw RequestError.invalidParams(undefined, `unknown config option ${params.configId}`)
+		}
+		return {
+			configOptions: buildConfigOptions(session, () => this.resolveInitialMode(session.sessionManager.getSessionDir())),
+		}
+	}
+
+	private setPermissionMode(sessionId: string, mode: string): PermissionMode {
+		const permissionMode = mode as PermissionMode
+		if (!PERMISSION_MODES.includes(permissionMode)) {
+			throw RequestError.invalidParams(undefined, `invalid mode ${permissionMode}`)
+		}
+		setPermissionMode(sessionId, permissionMode, "user")
+		return permissionMode
+	}
+
+	private async setModel(sessionId: string, modelId: string): Promise<string> {
+		const entry = this.sessions.get(sessionId)
+		if (!entry) {
+			throw RequestError.invalidParams(undefined, `unknown sessionId ${sessionId}`)
 		}
 		if (entry.turn) {
 			throw RequestError.invalidRequest(undefined, "a prompt is already in progress for this session")
 		}
+		if (!modelId) {
+			throw RequestError.invalidParams(undefined, "modelId is required")
+		}
 		const { session } = entry
 		const availableModels = session.modelRegistry.getAvailable()
-		const selectedModel = availableModels.find((m) => getAcpModelId(m) === params.modelId)
+		const selectedModel = availableModels.find((m) => getAcpModelId(m) === modelId)
 		if (!selectedModel) {
-			throw RequestError.invalidParams(undefined, `Unknown or unavailable model: ${params.modelId}`)
+			throw RequestError.invalidParams(undefined, `unknown or unavailable model: ${modelId}`)
 		}
 		try {
 			await session.setModel(selectedModel)
@@ -340,29 +377,7 @@ export class KimchiAcpAgent implements Agent {
 				`Failed to switch model: ${err instanceof Error ? err.message : String(err)}`,
 			)
 		}
-		return {}
-	}
-
-	async setSessionConfigOption(params: SetSessionConfigOptionRequest): Promise<SetSessionConfigOptionResponse> {
-		const entry = this.sessions.get(params.sessionId)
-		if (!entry) {
-			throw RequestError.invalidParams(undefined, `unknown sessionId ${params.sessionId}`)
-		}
-
-		switch (params.configId) {
-			case "permissions-mode": {
-				const value = params.value as PermissionMode
-				if (!PERMISSION_MODES.includes(value)) {
-					throw RequestError.invalidParams(undefined, `invalid mode ${value}`)
-				}
-				setPermissionMode(params.sessionId, value, "user")
-				return {
-					configOptions: [buildPermissionsConfigOption(value)],
-				}
-			}
-			default:
-				throw RequestError.invalidParams(undefined, `unknown config option ${params.configId}`)
-		}
+		return modelId
 	}
 
 	async loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse> {
@@ -384,10 +399,8 @@ export class KimchiAcpAgent implements Agent {
 			this.sendAvailableCommandsUpdate(sessionId)
 
 			return {
-				models: this.modelStateForSession(existing.session),
-				configOptions: [
-					buildPermissionsConfigOption(getPermissionMode(sessionId)?.mode ?? this.resolveInitialMode(params.cwd)),
-				],
+				models: buildSessionModelState(existing.session),
+				configOptions: buildConfigOptions(existing.session, () => this.resolveInitialMode(params.cwd)),
 			}
 		}
 		const loading = this.loadingSessions.get(sessionId)
@@ -432,7 +445,7 @@ export class KimchiAcpAgent implements Agent {
 			assertSessionHasModel(session)
 
 			const uiContext = this.createUiContext(session)
-			const permissionFlagController = registerPermissionFlagController(sid, initialMode, (params) => this.send(params))
+			registerPermissionFlagController(session, initialMode, (params) => this.send(params))
 			registerAcpPrompter(sid, createAcpPermissionPrompter(this.conn, sid, uiContext, buildToolCallUpdate))
 			await this.bindAcpExtensions(session, uiContext)
 
@@ -458,8 +471,8 @@ export class KimchiAcpAgent implements Agent {
 			this.sendAvailableCommandsUpdate(sid)
 
 			return {
-				models: this.modelStateForSession(session),
-				configOptions: [buildPermissionsConfigOption(permissionFlagController.getMode()?.mode)],
+				models: buildSessionModelState(session),
+				configOptions: buildConfigOptions(session, () => this.resolveInitialMode(params.cwd)),
 			}
 		} catch (err) {
 			unregisterAcpPrompter(sid)
@@ -948,10 +961,6 @@ export class KimchiAcpAgent implements Agent {
 		flushText()
 	}
 
-	private modelStateForSession(session: AgentSession): SessionModelState | null {
-		return buildSessionModelState(session)
-	}
-
 	private send(params: SessionNotification): void {
 		// Fire-and-forget is safe here because the ACP SDK chains every outbound
 		// message onto a shared writeQueue Promise (see @agentclientprotocol/sdk
@@ -996,6 +1005,7 @@ export class KimchiAcpAgent implements Agent {
  * Builds a SessionConfigOption for the permissions mode setting.
  * Exposes the four permission modes (default, plan, auto, yolo) as a select
  * option that ACP clients can read and modify.
+ * Exported for testing.
  */
 export function buildPermissionsConfigOption(currentMode: PermissionMode): SessionConfigOption {
 	return {
@@ -1012,6 +1022,37 @@ export function buildPermissionsConfigOption(currentMode: PermissionMode): Sessi
 			description,
 		})),
 	}
+}
+
+/**
+ * Builds a SessionConfigOption for the model setting.
+ * ???
+ * Exported for testing.
+ */
+export function buildModelConfigOption(session: Pick<AgentSession, "model" | "modelRegistry">): SessionConfigOption {
+	const availableModels = session.modelRegistry.getAvailable().map((m) => ({
+		value: getAcpModelId(m),
+		name: m.name,
+	}))
+	const currentValue = session.model ? getAcpModelId(session.model) : availableModels[0].value
+	return {
+		id: "model",
+		name: "Model",
+		type: "select",
+		category: "model",
+		description: "",
+		currentValue,
+		options: availableModels,
+	}
+}
+
+function buildConfigOptions(
+	session: AgentSession,
+	defaultMode: PermissionMode | (() => PermissionMode),
+): SessionConfigOption[] {
+	const mode =
+		getPermissionMode(session.sessionId)?.mode ?? (typeof defaultMode === "function" ? defaultMode() : defaultMode)
+	return [buildPermissionsConfigOption(mode), buildModelConfigOption(session)]
 }
 
 // Exported for testing. In practice the only way model is missing here is a
@@ -1054,26 +1095,25 @@ export function initializeHeadlessTheme(settingsManager: Pick<SettingsManager, "
 }
 
 function registerPermissionFlagController(
-	sessionId: string,
+	session: AgentSession,
 	initialMode: PermissionMode,
 	send: (params: SessionNotification) => void,
-): SessionPermissionFlagController {
+): void {
 	const permissionFlagController = createSessionPermissionFlagController({
 		mode: { mode: initialMode, source: "user" },
 	})
 	// Register with permissions extension so tool gating uses session-scoped mode
-	registerSessionPermissionFlagController(sessionId, permissionFlagController)
+	registerSessionPermissionFlagController(session.sessionId, permissionFlagController)
 	permissionFlagController.subscribe(({ mode }) => {
 		if (mode === undefined) return
 		send({
-			sessionId,
+			sessionId: session.sessionId,
 			update: {
 				sessionUpdate: "config_option_update",
-				configOptions: [buildPermissionsConfigOption(mode.mode)],
+				configOptions: buildConfigOptions(session, initialMode),
 			},
 		})
 	})
-	return permissionFlagController
 }
 
 // Title falls back to the truncated first user message when the session has no
