@@ -237,9 +237,9 @@ describe("getRedactionConfig — opt-out paths", () => {
 		resetRedactionConfigCache()
 	}
 
-	it("defaults to enabled when no config and no env", () => {
+	it("defaults to disabled when no config and no env", () => {
 		const config = getRedactionConfig()
-		expect(config.enabled).toBe(true)
+		expect(config.enabled).toBe(false)
 	})
 
 	it("disables via KIMCHI_REDACTION_ENABLED=0 env var", () => {
@@ -270,18 +270,38 @@ describe("getRedactionConfig — opt-out paths", () => {
 		expect(config.enabled).toBe(false)
 	})
 
+	it("enables via KIMCHI_REDACTION_ENABLED=1 env var", () => {
+		process.env.KIMCHI_REDACTION_ENABLED = "1"
+		resetRedactionConfigCache()
+		const config = getRedactionConfig()
+		expect(config.enabled).toBe(true)
+	})
+
+	it("enables via KIMCHI_REDACTION_ENABLED=true env var", () => {
+		process.env.KIMCHI_REDACTION_ENABLED = "true"
+		resetRedactionConfigCache()
+		const config = getRedactionConfig()
+		expect(config.enabled).toBe(true)
+	})
+
+	it("enables via config.json redaction.enabled=true", () => {
+		writeConfig({ redaction: { enabled: true } })
+		const config = getRedactionConfig()
+		expect(config.enabled).toBe(true)
+	})
+
 	it("falls back to default when config.json is malformed", () => {
 		const configDir = join(tmpHome, ".config", "kimchi")
 		mkdirSync(configDir, { recursive: true })
 		writeFileSync(join(configDir, "config.json"), "{ not valid json", "utf-8")
 		resetRedactionConfigCache()
 		const config = getRedactionConfig()
-		expect(config.enabled).toBe(true)
+		expect(config.enabled).toBe(false)
 	})
 
 	it("falls back to default when redaction key is missing", () => {
 		writeConfig({ theme: "dark" })
 		const config = getRedactionConfig()
-		expect(config.enabled).toBe(true)
+		expect(config.enabled).toBe(false)
 	})
 })
