@@ -15,6 +15,7 @@ without touching Python string syntax.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import re
 import shlex
@@ -138,10 +139,8 @@ def run_kimchi_attempt(
         if proc is not None:
             _kill_process_group(proc.pid)
             # Reap the zombie after killing.
-            try:
+            with contextlib.suppress(subprocess.TimeoutExpired):
                 proc.communicate(timeout=10)
-            except subprocess.TimeoutExpired:
-                pass
         return False
 
     if stdout:
@@ -173,10 +172,8 @@ def _kill_process_group(pid: int) -> None:
         time.sleep(2)
     except ProcessLookupError:
         return
-    try:
+    with contextlib.suppress(ProcessLookupError):
         os.killpg(pgid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
 
 
 def read_analysis_draft(draft_path: Path) -> tuple[str | None, str | None]:
@@ -256,6 +253,23 @@ def run_kimchi_analysis(
     return None
 
 
+def _line_number_and_snippet(content: str, position: int, max_snippet_length: int = 120) -> tuple[int, str]:
+    """Return the 1-based line number and a trimmed snippet around *position*."""
+    line_number = content.count("\n", 0, position) + 1
+    lines = content.splitlines()
+    line_text = lines[line_number - 1] if line_number <= len(lines) else ""
+    snippet = line_text.strip()
+    if len(snippet) > max_snippet_length:
+        snippet = f"{snippet[:max_snippet_length]}..."
+    return line_number, snippet
+
+
+def _format_validation_error(content: str, position: int, message: str) -> str:
+    """Format a validation error with the line number and offending snippet."""
+    line_number, snippet = _line_number_and_snippet(content, position)
+    return f"{message} (line {line_number}: `{snippet}`)"
+
+
 def validate_analysis_html(content: str) -> str | None:
     """Return a validation error, or None when content is a safe complete HTML document."""
     if not content:
@@ -268,14 +282,24 @@ def validate_analysis_html(content: str) -> str | None:
         return "analysis output is missing a complete <html> document"
     if "<body" not in lowered or "</body>" not in lowered:
         return "analysis output is missing a complete <body> element"
-    if "<script" in lowered:
-        return "analysis output must not contain scripts"
-    if re.search(r"<(?:iframe|object|embed|link)\b", lowered):
-        return "analysis output must not contain externally loaded or embedded resources"
-    if re.search(r"\s(?:src|srcset)\s*=", lowered) or re.search(r"(?:@import|url\s*\()", lowered):
-        return "analysis output must not reference external resources"
-    if re.search(r"\son[a-z]+\s*=", lowered):
-        return "analysis output must not contain inline event handlers"
+
+    checks: list[tuple[str, str]] = [
+        (r"<script\b", "analysis output must not contain scripts"),
+        (
+            r"<(?:iframe|object|embed|link)\b",
+            "analysis output must not contain externally loaded or embedded resources",
+        ),
+        (r"\s(?:src|srcset)\s*=", "analysis output must not reference external resources"),
+        (r"(?:@import|url\s*\()", "analysis output must not reference external resources"),
+        (r"\s(?:on[a-z]+)\s*=", "analysis output must not contain inline event handlers"),
+    ]
+    first_match: tuple[int, str] | None = None
+    for pattern, message in checks:
+        match = re.search(pattern, lowered)
+        if match is not None and (first_match is None or match.start() < first_match[0]):
+            first_match = (match.start(), message)
+    if first_match is not None:
+        return _format_validation_error(content, first_match[0], first_match[1])
     return None
 
 

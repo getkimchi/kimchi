@@ -155,6 +155,35 @@ def test_validate_analysis_html_accepts_complete_script_free_document() -> None:
     assert validate_analysis_html(VALID_HTML) is None
 
 
+def test_validate_analysis_html_includes_line_number_and_snippet() -> None:
+    content = "<!doctype html><html><body>\n<p>Some text</p>\n<script>alert(1)</script>\n</body></html>"
+    error = validate_analysis_html(content)
+    assert error is not None
+    assert "line 3" in error
+    assert "<script>alert(1)</script>" in error
+
+
+def test_validate_analysis_html_reports_first_violation() -> None:
+    content = (
+        "<!doctype html><html><body>\n"
+        "<img src='x.png'>\n"
+        "<script>alert(1)</script>\n"
+        "</body></html>"
+    )
+    error = validate_analysis_html(content)
+    assert error is not None
+    assert "line 2" in error
+    assert "src='x.png'" in error
+
+
+def test_validate_analysis_html_is_case_insensitive() -> None:
+    content = "<!doctype html><html><body>\n<SCRIPT>alert(1)</SCRIPT>\n</body></html>"
+    error = validate_analysis_html(content)
+    assert error is not None
+    assert "scripts" in error
+    assert "line 2" in error
+
+
 def test_main_returns_error_when_summary_missing(tmp_path: Path) -> None:
     results_dir = tmp_path / "jobs"
     results_dir.mkdir()

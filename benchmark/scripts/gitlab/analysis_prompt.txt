@@ -54,5 +54,12 @@ The HTML report must be a complete, valid HTML document using this report struct
 
 The report must be self-contained and must not contain scripts, inline event handlers, or externally loaded resources.
 
+Specifically, the automated validator will reject the draft if it contains any of the following patterns (case-insensitive):
+- `<script` tags
+- `<iframe>`, `<object>`, `<embed>`, or `<link>` tags
+- `src=` or `srcset=` attributes on any element
+- CSS `@import` statements or `url(...)` references
+- Inline event handlers such as `onload=`, `onclick=`, `onerror=`, etc.
+
 Write the HTML report to: {draft_path}
 Use the write and edit tools to refine it. Before finishing, read the HTML report back and verify that it starts with <!doctype html>, is complete, and satisfies every requirement above. Do not write or modify any other files. Your final response should only confirm that the report has been written and verified; do not include its contents.
