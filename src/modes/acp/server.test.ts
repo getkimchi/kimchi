@@ -3534,8 +3534,7 @@ describe("KimchiAcpAgent loadSession", () => {
 	})
 
 	it("routes ANSI-dimmed replay text to thought chunks and strips remaining ANSI", async () => {
-		// hide-thinking-aware models (DeepSeek, QwQ) plus acpShowThinking=true
-		// persist text with ANSI dim escapes around inner <think> content. The
+		// hide-thinking-aware models (DeepSeek, QwQ) persist text with ANSI dim escapes around inner <think> content. The
 		// live TUI renders them as reasoning; ACP's text content type is
 		// plaintext, so replay must preserve that semantic split explicitly.
 		const dimmed = "before \x1b[2minner\x1b[22m after"
