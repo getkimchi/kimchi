@@ -17,11 +17,11 @@ import { getAvailableModels } from "../../../startup-context.js"
 import { runAsAgentWorker } from "../../agent-worker-context.js"
 import bashDefaultTimeoutExtension, { createSubagentBashClampExtension } from "../../bash-default-timeout.js"
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
+import infrastructureBreakerExtension from "../../infrastructure-breaker.js"
 import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
 import type { Phase } from "../../orchestration/model-registry/types.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
-import socketBreakerExtension from "../../socket-breaker.js"
 import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import telemetryExtension from "../../telemetry/index.js"
 import { detectEnv } from "../env.js"
@@ -439,8 +439,8 @@ async function runAgentInner(
 			? createSubagentBashClampExtension(effectiveMaxDuration, Date.now())
 			: bashDefaultTimeoutExtension
 	// Subagents share this process and its patched retry classifier, so their
-	// successes must close the shared socket breaker just like the parent's.
-	const extensionFactories = [telemetryExtension(readTelemetryConfig()), bashExtension, socketBreakerExtension]
+	// successes must close the shared infrastructure breaker just like the parent's.
+	const extensionFactories = [telemetryExtension(readTelemetryConfig()), bashExtension, infrastructureBreakerExtension]
 	if (options.workerReport) {
 		extensionFactories.push(createWorkerReportExtension(options.workerReport))
 	}

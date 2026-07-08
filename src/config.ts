@@ -138,15 +138,22 @@ const LEGACY_KIMCHI_MAX_RETRIES = 10
  * Older kimchi versions synced `retry: { maxRetries }` (never a `provider`
  * block) into settings.json on every startup, so a provider-less block is
  * kimchi-owned legacy state: upgrade it to the current defaults, but keep any
- * user-tuned values — only `maxRetries: 10` is known to be kimchi-written
- * rather than user intent.
+ * valid user-tuned values. Only an exact `retry: { maxRetries: 10 }` block is
+ * known to be kimchi-written rather than user intent.
  */
 export function upgradeLegacyRetrySettings(retry: unknown): RetrySettings | undefined {
 	if (retry === undefined) return RETRY_DEFAULTS
-	if (!retry || typeof retry !== "object" || "provider" in retry) return undefined
-	const { maxRetries, ...userTuned } = retry as { maxRetries?: number }
-	const upgraded = { ...RETRY_DEFAULTS, ...userTuned } as RetrySettings
-	if (maxRetries !== undefined && maxRetries !== LEGACY_KIMCHI_MAX_RETRIES) {
+	if (!retry || typeof retry !== "object" || Array.isArray(retry) || "provider" in retry) return undefined
+	const legacy = retry as Record<string, unknown>
+	const upgraded: RetrySettings = { ...RETRY_DEFAULTS }
+	if (typeof legacy.enabled === "boolean") upgraded.enabled = legacy.enabled
+	if (typeof legacy.baseDelayMs === "number" && Number.isFinite(legacy.baseDelayMs)) {
+		upgraded.baseDelayMs = legacy.baseDelayMs
+	}
+	const maxRetries = legacy.maxRetries
+	const isExactKimchiLegacyBlock =
+		Object.keys(legacy).length === 1 && typeof maxRetries === "number" && maxRetries === LEGACY_KIMCHI_MAX_RETRIES
+	if (typeof maxRetries === "number" && Number.isFinite(maxRetries) && !isExactKimchiLegacyBlock) {
 		upgraded.maxRetries = maxRetries
 	}
 	return upgraded

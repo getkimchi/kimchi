@@ -9,9 +9,9 @@ const KIMCHI_INFRA_ERROR_PREFIX = "KIMCHI_INFRA_ERROR"
 const NON_INFRA_PROVIDER_ERROR_RE =
 	/unauthorized|authentication[_\s]?(?:error|failed)|invalid api key|\b401\b|\b403\b|permission denied|account.{0,40}\b(?:terminated|suspended|deactivated|disabled)\b|context window|context overflow|maximum context|prompt too long|quota|billing|insufficient_quota|out of budget|usage limit|rate.?limit|too many requests|\b429\b/i
 
-// Transport and gateway failures: nothing (or garbage) came back from the
-// provider, so the run can be retried by a supervisor. Shared with
-// upstream-retry-patch.ts so retry and exit classification cannot drift.
+// Provider infrastructure failures: nothing usable came back from the provider,
+// so the run can be retried by a supervisor. Shared by the retry patch,
+// process-wide breaker, and final exit classification so they stay aligned.
 const INFRA_PROVIDER_ERROR_RE =
 	/\b5(?:00|02|03|04|24|29)\b|bad gateway|service unavailable|gateway timeout|internal server error|overloaded|cloudflare.*timeout|timeout.*cloudflare|socket(?: connection was)? closed|socket hang up|other side closed|connection closed|broken pipe|fetch failed|network.?error|connection.?error|connection.?refused|connection.?lost|upstream.?connect|reset before headers|ended without|stream ended before message_stop|http2 request did not get a response|timed? out|\btimeout\b|\bterminated\b|unexpectedly|EPIPE|ERR_SOCKET_CLOSED|ERR_STREAM_PREMATURE_CLOSE|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|connection reset/i
 
@@ -53,10 +53,11 @@ export function createInfrastructureErrorTracker(): InfrastructureErrorTracker {
 					typeof message.errorMessage === "string" &&
 					isInfrastructureProviderError(message.errorMessage)
 				) {
+					const sessionPath = ctx.sessionManager?.getSessionFile?.()
 					failure = {
 						errorMessage: message.errorMessage,
 						consecutiveInfraErrors: (failure?.consecutiveInfraErrors ?? 0) + 1,
-						sessionPath: ctx.sessionManager.getSessionFile(),
+						...(sessionPath ? { sessionPath } : {}),
 					}
 				} else {
 					failure = undefined

@@ -65,7 +65,8 @@ describe("infrastructure error tracker", () => {
 		} as unknown as ExtensionAPI
 		tracker.extension(pi)
 		const ctx = { sessionManager: { getSessionFile: () => sessionFile } }
-		const emit = (message: Record<string, unknown>) => handler?.({ type: "message_end", message }, ctx)
+		const emit = (message: Record<string, unknown>, overrideCtx: unknown = ctx) =>
+			handler?.({ type: "message_end", message }, overrideCtx)
 		return { tracker, emit }
 	}
 
@@ -86,6 +87,16 @@ describe("infrastructure error tracker", () => {
 			errorMessage: "ECONNRESET: connection reset by peer",
 			consecutiveInfraErrors: 2,
 			sessionPath: sessionFile,
+		})
+	})
+
+	it("records a trailing infra error without a session manager", () => {
+		const { tracker, emit } = createTrackerHarness()
+		emit(assistantError("socket connection was closed unexpectedly"), {})
+
+		expect(tracker.getFailure()).toEqual({
+			errorMessage: "socket connection was closed unexpectedly",
+			consecutiveInfraErrors: 1,
 		})
 	})
 

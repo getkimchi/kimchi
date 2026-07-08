@@ -14,6 +14,7 @@ import {
 	normalizeResumeIdArgs,
 	stripExperimentalFeaturesArg,
 } from "./cli-args.js"
+import { applyPostMainInfrastructureExitPolicy } from "./cli-infrastructure-exit.js"
 import { dispatchSubcommand } from "./commands/dispatch.js"
 // IMPORTANT: must be first local import — patches InteractiveMode.prototype
 // before any module can construct an InteractiveMode instance.
@@ -47,6 +48,7 @@ import fermentExtension from "./extensions/ferment/index.js"
 import helpExtension from "./extensions/help.js"
 import hideThinkingExtension from "./extensions/hide-thinking.js"
 import ideAdapterExtension from "./extensions/ide-adapter/index.js"
+import infrastructureBreakerExtension from "./extensions/infrastructure-breaker.js"
 import inputHistoryExtension from "./extensions/input-history.js"
 import kimchiMinimalTintsExtension from "./extensions/kimchi-minimal-tints.js"
 import llmResponseLogExtension from "./extensions/llm-response-log.js"
@@ -75,7 +77,6 @@ import sessionMetadataExtension from "./extensions/session-metadata/index.js"
 import sessionNameExtension from "./extensions/session-name.js"
 import orphanToolResultRepairExtension from "./extensions/session-repair/orphan-tool-result-repair.js"
 import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
-import socketBreakerExtension from "./extensions/socket-breaker.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
 import stripImagesExtension from "./extensions/strip-images.js"
@@ -124,7 +125,7 @@ import resourceToolBlockerExtension from "./resources/tool-blocker.js"
 import { runSetupWizard } from "./setup-wizard.js"
 import { setAvailableModels } from "./startup-context.js"
 import { probeTerminalBackground } from "./terminal-bg-probe.js"
-import { installCloudflare524RetryPatch, isSocketBreakerTripped } from "./upstream-retry-patch.js"
+import { installInfrastructureRetryPatch } from "./upstream-retry-patch.js"
 import { getVersion } from "./utils.js"
 import {
 	postProcessHtmlExport,
@@ -134,7 +135,7 @@ import {
 } from "./utils/export-post-process.js"
 import { captureSessionStart } from "./utils/session-metadata-store.js"
 
-installCloudflare524RetryPatch()
+installInfrastructureRetryPatch()
 installPiNativeCompatibilityShim()
 
 function getSubcommand(args: string[]): string {
@@ -590,7 +591,7 @@ try {
 			llmResponseLogExtension,
 			activityExtension,
 			infrastructureErrorTracker.extension,
-			socketBreakerExtension,
+			infrastructureBreakerExtension,
 		]
 
 		if (acpMode) {
@@ -604,11 +605,7 @@ try {
 		// Only reclassify runs that already failed (print mode sets exitCode 1);
 		// a clean interactive quit after a transient error stays a success.
 		if (process.exitCode) {
-			applyInfrastructureExitPolicy(infrastructureErrorTracker.getFailure())
-			// A tripped breaker means the run was cut off mid-storm, and handles
-			// leaked by the failed stream can keep the event loop alive for minutes
-			// after main() returns — don't wait for it to drain.
-			if (isSocketBreakerTripped()) process.exit(process.exitCode)
+			applyPostMainInfrastructureExitPolicy(infrastructureErrorTracker.getFailure())
 		}
 	}
 } catch (err) {

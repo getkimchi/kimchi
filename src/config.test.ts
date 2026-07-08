@@ -834,10 +834,25 @@ describe("upgradeLegacyRetrySettings", () => {
 		expect(upgradeLegacyRetrySettings({ maxRetries: 5 })).toEqual({ ...RETRY_DEFAULTS, maxRetries: 5 })
 	})
 
-	it("keeps other user-tuned keys from the legacy block", () => {
+	it("keeps other user-tuned keys and maxRetries when the block is not exactly legacy", () => {
 		expect(upgradeLegacyRetrySettings({ enabled: false, maxRetries: 10 })).toEqual({
 			...RETRY_DEFAULTS,
 			enabled: false,
+			maxRetries: 10,
+		})
+	})
+
+	it("drops invalid legacy retry keys instead of writing them to pi settings", () => {
+		expect(
+			upgradeLegacyRetrySettings({
+				enabled: "false",
+				baseDelayMs: "1000",
+				maxRetries: 10,
+				extra: "ignored",
+			}),
+		).toEqual({
+			...RETRY_DEFAULTS,
+			maxRetries: 10,
 		})
 	})
 

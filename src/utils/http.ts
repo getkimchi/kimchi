@@ -9,6 +9,7 @@ const BACKOFF_FACTOR = 2
 
 export interface FetchWithRetryOptions {
 	timeoutMs?: number
+	/** Retries after the initial attempt. */
 	retry?: { maxRetries?: number }
 	signal?: AbortSignal
 	fetchImpl?: typeof globalThis.fetch
@@ -63,8 +64,6 @@ export async function fetchWithRetry(
 ): Promise<Response> {
 	const fetchFn = options?.fetchImpl ?? globalThis.fetch
 	const timeoutMs = options?.timeoutMs ?? 30_000
-	// maxRetries is the number of retries after the initial attempt, so the
-	// total attempt budget is maxRetries + 1. Negative values are treated as 0.
 	const maxRetries = Math.max(options?.retry?.maxRetries ?? DEFAULT_MAX_RETRIES, 0)
 	const maxAttempts = maxRetries + 1
 
