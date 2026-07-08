@@ -4,7 +4,7 @@
  * Precedence (highest to lowest):
  *   1. KIMCHI_REDACTION_ENABLED env var — "0" or "false" disables
  *   2. config.json `redaction.enabled` boolean (via loadConfig project/global merge)
- *   3. Default: enabled (true)
+ *   3. Default: disabled (false)
  *
  * The config is cached at first call to avoid synchronous disk I/O on every
  * provider request. Env var changes require a restart (same as telemetry config).
@@ -44,8 +44,8 @@ function readRedactionConfigFromDisk(): RedactionConfig {
 		return { enabled: config.redaction.enabled }
 	}
 
-	// 3. Default: enabled
-	return { enabled: true }
+	// 3. Default: disabled
+	return { enabled: false }
 }
 
 /**
