@@ -1,7 +1,7 @@
 import asyncio
 import shlex
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from harbor.agents.installed.base import (
     BaseInstalledAgent,
@@ -39,6 +39,9 @@ CONTAINER_HARNESS_SETTINGS_DIR = "~/.config/kimchi/harness"
 CONTAINER_HARNESS_SETTINGS = f"{CONTAINER_HARNESS_SETTINGS_DIR}/settings.json"
 CONTAINER_HARNESS_SKILLS_DIR = f"{CONTAINER_HARNESS_SETTINGS_DIR}/skills"
 KIMCHI_API_KEY_ENV = "KIMCHI_API_KEY"
+KIMCHI_INFRA_BREAKER_THRESHOLD_ENV = "KIMCHI_INFRA_BREAKER_THRESHOLD"
+KIMCHI_BENCHMARK_INFRA_BREAKER_DEFAULT_ATTEMPTS = "3"
+KIMCHI_EXIT_OUTPUT_TAIL_LINES = 20
 
 
 def _coerce_bool_kwarg(value: object, name: str) -> bool:
@@ -67,6 +70,47 @@ def _validate_model_name(model_name: str | None) -> None:
     if not provider or not model_id:
         raise ValueError(
             f"--model must be qualified as <provider>/<id> (got {model_name!r}); use e.g. kimchi-dev/kimi-k2.5"
+        )
+
+
+def _resolve_infra_breaker_threshold(value: str | None) -> str:
+    if value is None or not value.strip():
+        return KIMCHI_BENCHMARK_INFRA_BREAKER_DEFAULT_ATTEMPTS
+    threshold = value.strip()
+    try:
+        parsed = int(threshold)
+    except ValueError as exc:
+        raise ValueError(
+            f"{KIMCHI_INFRA_BREAKER_THRESHOLD_ENV} must be a positive integer for benchmark runs, got {value!r}"
+        ) from exc
+    if parsed <= 0:
+        raise ValueError(
+            f"{KIMCHI_INFRA_BREAKER_THRESHOLD_ENV} must be a positive integer for benchmark runs, got {value!r}"
+        )
+    return str(parsed)
+
+
+def _tail_output(text: str | None, max_lines: int = KIMCHI_EXIT_OUTPUT_TAIL_LINES) -> str:
+    if not text:
+        return "None"
+    lines = text.splitlines()
+    if len(lines) <= max_lines:
+        return text
+    return "\n".join([f"... [showing last {max_lines} lines]", *lines[-max_lines:]])
+
+
+class KimchiExitError(NonZeroAgentExitCodeError):
+    """Raised when the kimchi process exits non-zero."""
+
+    def __init__(self, *, command: str, exit_code: int, stdout: str | None, stderr: str | None) -> None:
+        self.command = command
+        self.exit_code = exit_code
+        self.stdout = _tail_output(stdout)
+        self.stderr = _tail_output(stderr)
+        super().__init__(
+            f"Kimchi exited with code {self.exit_code}: {self.command}\n"
+            f"stdout:\n{self.stdout}\n"
+            f"stderr:\n{self.stderr}"
         )
 
 
@@ -138,6 +182,15 @@ class Kimchi(BaseInstalledAgent):
 
     def parse_version(self, stdout: str) -> str:
         return stdout.strip().splitlines()[-1].strip()
+
+    def _classify_exec_error(self, command: str, result: Any) -> NonZeroAgentExitCodeError:
+        return_code = getattr(result, "return_code", 1)
+        return KimchiExitError(
+            command=command,
+            exit_code=int(return_code if return_code is not None else 1),
+            stdout=getattr(result, "stdout", None),
+            stderr=getattr(result, "stderr", None),
+        )
 
     async def install(self, environment: BaseEnvironment) -> None:
         host_stage_dir = await self._resolve_host_stage_dir(environment)
@@ -230,6 +283,11 @@ class Kimchi(BaseInstalledAgent):
 
         env = {
             "KIMCHI_API_KEY": self._config.api_key,
+            # Configure Kimchi's own harness-level breaker for benchmark runs.
+            # Harbor trial retries and non-Kimchi agents use separate policies.
+            KIMCHI_INFRA_BREAKER_THRESHOLD_ENV: _resolve_infra_breaker_threshold(
+                self._get_env(KIMCHI_INFRA_BREAKER_THRESHOLD_ENV)
+            ),
             "KIMCHI_TAGS": kimchi_tags,
             "PI_PACKAGE_DIR": PI_PACKAGE_DIR,
             **ferment_env,
