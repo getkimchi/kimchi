@@ -50,6 +50,10 @@ function firstChatRequest(fixture: { fake: { requests: Array<{ url: string; body
 	return chatRequests[0]
 }
 
+function withRedactionEnabled<T extends { env?: Record<string, string> }>(options: T): T & { env: Record<string, string> } {
+	return { ...options, env: { ...options.env, KIMCHI_REDACTION_ENABLED: "1" } }
+}
+
 type RecordedChatRequest = { url: string; body: unknown }
 
 function findToolContextRequest(
@@ -85,10 +89,10 @@ async function waitForToolContextRequest(
 test("redacts email and phone from user prompt before LLM receives it", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
-		{
+		withRedactionEnabled({
 			artifactName: "pii-redaction-email-phone",
 			responses: [{ stream: ["OK"] }],
-		},
+		}),
 		async (fixture) => {
 			terminal.submit("Contact me at alice@example.com or call 555-867-5309")
 
@@ -107,10 +111,10 @@ test("redacts email and phone from user prompt before LLM receives it", async ({
 test("redacts Bearer tokens and AWS access keys from user prompt", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
-		{
+		withRedactionEnabled({
 			artifactName: "pii-redaction-secrets",
 			responses: [{ stream: ["Done"] }],
-		},
+		}),
 		async (fixture) => {
 			terminal.submit("Use Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9 and AWS key AKIAIOSFODNN7EXAMPLE")
 
@@ -129,10 +133,10 @@ test("redacts Bearer tokens and AWS access keys from user prompt", async ({ term
 test("redacts credit card and IBAN from user prompt", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
-		{
+		withRedactionEnabled({
 			artifactName: "pii-redaction-financial",
 			responses: [{ stream: ["Noted"] }],
-		},
+		}),
 		async (fixture) => {
 			terminal.submit("Pay with card 4111111111111111 or IBAN GB29NWBK60161331926819")
 
@@ -151,10 +155,10 @@ test("redacts credit card and IBAN from user prompt", async ({ terminal }) => {
 test("preserves surrounding text when redacting PII", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
-		{
+		withRedactionEnabled({
 			artifactName: "pii-redaction-preservation",
 			responses: [{ stream: ["OK"] }],
-		},
+		}),
 		async (fixture) => {
 			terminal.submit("Please review the file at /home/user/project and email bob@corp.org")
 
@@ -174,10 +178,10 @@ test("preserves surrounding text when redacting PII", async ({ terminal }) => {
 test("redacts kimchi API key from Bearer authorization header in prompt", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
-		{
+		withRedactionEnabled({
 			artifactName: "pii-redaction-api-key",
 			responses: [{ stream: ["OK"] }],
-		},
+		}),
 		async (fixture) => {
 			terminal.submit("Debug this: Authorization: Bearer abc123def456ghi789jkl012mno345pqr678stu901")
 
@@ -221,7 +225,7 @@ test("disables redaction when KIMCHI_REDACTION_ENABLED=0", async ({ terminal }) 
 test("redacts PII in tool-call arguments before LLM sees them in context", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
-		{
+		withRedactionEnabled({
 			artifactName: "pii-redaction-tool-call-args",
 			responses: [
 				// First response: fake model calls bash with a command containing PII
@@ -242,7 +246,7 @@ test("redacts PII in tool-call arguments before LLM sees them in context", async
 				// Second response: final text after tool result
 				{ stream: ["Done"] },
 			],
-		},
+		}),
 		async (fixture) => {
 			terminal.submit("Check the auth token")
 
@@ -271,7 +275,7 @@ test("redacts PII in tool-call arguments before LLM sees them in context", async
 test("redacts PII in tool results before LLM sees them in context", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
-		{
+		withRedactionEnabled({
 			artifactName: "pii-redaction-tool-result",
 			responses: [
 				// First response: fake model calls bash, which will echo PII
@@ -292,7 +296,7 @@ test("redacts PII in tool results before LLM sees them in context", async ({ ter
 				// Second response: final text after tool result
 				{ stream: ["Reviewed."] },
 			],
-		},
+		}),
 		async (fixture) => {
 			terminal.submit("Check what's in the config")
 
