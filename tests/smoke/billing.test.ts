@@ -1,0 +1,52 @@
+import { writeFileSync } from "node:fs"
+import { join } from "node:path"
+import { expect, it } from "vitest"
+import { startFakeOpenAiServer } from "../e2e/tui/support/fake-openai-server.js"
+import { getAgentDir, spawnInteractive } from "./harness.js"
+
+it("renders pinned Billing footer status from the credits API", { timeout: 30_000 }, async () => {
+	const fake = await startFakeOpenAiServer({
+		responses: [],
+		creditsResponses: [
+			{
+				serverless: true,
+				tier: "coder",
+				is_paid_tier: true,
+				billing_status: "low_balance",
+				has_credits: true,
+				remaining: "5",
+			},
+		],
+	})
+	const agentDir = getAgentDir()
+	writeFileSync(
+		join(agentDir, "..", "config.json"),
+		JSON.stringify(
+			{
+				apiKey: "fake",
+				llmEndpoint: fake.baseUrl,
+				skillPaths: [],
+				migrationState: "done",
+				onboarding: { hideSessionModeDialog: true },
+			},
+			null,
+			"\t",
+		),
+		"utf-8",
+	)
+	writeFileSync(
+		join(agentDir, "settings.json"),
+		JSON.stringify({ footer: { pinned: ["billing"] } }, null, "\t"),
+		"utf-8",
+	)
+
+	const session = spawnInteractive()
+	try {
+		await session.waitFor((out) => out.includes("Coder: €5"), 15_000)
+		const creditsRequest = fake.requests.find((req) => req.method === "GET" && req.url.startsWith("/v1/credits"))
+		expect(creditsRequest?.headers.authorization).toBe("Bearer fake")
+	} finally {
+		await session.kill()
+		await fake.stop()
+	}
+})
