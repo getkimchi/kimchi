@@ -478,6 +478,48 @@ describe("updateModelsConfig", () => {
 		expect(readFileSync(modelsJsonPath, "utf-8")).toBe(original)
 	})
 
+	it("does not persist an endpoint override into models.json when the refresh fails (no global pollution)", async () => {
+		// Seed the cache via a successful gateway fetch → baseUrl = gateway on disk.
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [KIMI] }),
+		} as Response)
+		await updateModelsConfig(modelsJsonPath, "test-key")
+		const original = readFileSync(modelsJsonPath, "utf-8")
+
+		// A project-local override whose metadata endpoint is unreachable → fall back to cache.
+		vi.mocked(fetch).mockRejectedValue(new Error("network down"))
+		await updateModelsConfig(modelsJsonPath, "test-key", {
+			endpoint: "https://project-override.example",
+			sleep: async () => {},
+		})
+
+		// models.json is a GLOBAL file; a project-local llmEndpoint must never be written into it.
+		// The override is applied in-memory by the login extension, so the file stays byte-for-byte
+		// and keeps pointing at the gateway. Guards the disk-write regression from #814.
+		const after = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		expect(after.providers["kimchi-dev"].baseUrl).toBe("https://llm.kimchi.dev/openai/v1")
+		expect(readFileSync(modelsJsonPath, "utf-8")).toBe(original)
+	})
+
+	it("prefixes a scheme-less endpoint with https:// for the metadata URL and kimchi-dev baseUrl", async () => {
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [KIMI] }),
+		} as Response)
+
+		await updateModelsConfig(modelsJsonPath, "test-key", { endpoint: "example.com" })
+
+		// A bare "example.com" would otherwise be an invalid request URL that the HTTP layer
+		// silently drops, falling back to the gateway (the original #814 bug).
+		expect(fetch).toHaveBeenCalledWith(
+			"https://example.com/v1/models/metadata?include_in_cli=true",
+			expect.objectContaining({ headers: { Authorization: "Bearer test-key" } }),
+		)
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		expect(config.providers["kimchi-dev"].baseUrl).toBe("https://example.com/openai/v1")
+	})
+
 	it("creates nested directories if they do not exist", async () => {
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
