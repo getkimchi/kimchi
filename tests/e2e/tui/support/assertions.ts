@@ -39,3 +39,26 @@ export async function waitForText(
 	}
 	throw new Error(`Timed out waiting for ${String(pattern)}.\n\nTerminal:\n${text}`)
 }
+
+/**
+ * Waits for the harness to finish processing the main agent turn AND any
+ * follow-up completions. Polls request count until stable for settleForMs.
+ * Shared across TUI E2E tests that need to wait for the agent to fully settle.
+ */
+export async function waitForTurnToSettle(requests: { length: number }): Promise<void> {
+	const settleForMs = 1_200
+	const timeoutMs = 30_000
+	const startedAt = Date.now()
+	let lastCount = requests.length
+	let stableSince = Date.now()
+	while (Date.now() - startedAt < timeoutMs) {
+		await new Promise((resolve) => setTimeout(resolve, 100))
+		const currentCount = requests.length
+		if (currentCount !== lastCount) {
+			lastCount = currentCount
+			stableSince = Date.now()
+		} else if (Date.now() - stableSince >= settleForMs) {
+			return
+		}
+	}
+}

@@ -1,6 +1,7 @@
 import { expect, test } from "@microsoft/tui-test"
 import type { KimchiFixture } from "./support/kimchi-fixture.js"
 import { TUI_TEST_CONFIG, runKimchiSession } from "./support/kimchi-fixture.js"
+import { waitForTurnToSettle } from "./support/assertions.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -55,34 +56,6 @@ function anyRequestContainsAnyNudge(fixture: KimchiFixture): boolean {
 	)
 }
 
-/**
- * Waits for the harness to finish processing the orchestrator's main turn
- * AND any nudge-driven followUp turn.
- *
- * Polls `fixture.fake.requests.length` until no new completion requests
- * have arrived for `settleForMs`. This is the authoritative "all nudges
- * have either fired or been suppressed" signal — stable for the full
- * window means the harness is idle and ready to assert.
- */
-async function waitForTurnToSettle(fixture: KimchiFixture) {
-	const settleForMs = 1_200
-	const timeoutMs = 30_000
-	const startedAt = Date.now()
-	let lastCount = fixture.fake.requests.length
-	let stableSince = Date.now()
-	while (Date.now() - startedAt < timeoutMs) {
-		await new Promise((resolve) => setTimeout(resolve, 100))
-		const currentCount = fixture.fake.requests.length
-		if (currentCount !== lastCount) {
-			lastCount = currentCount
-			stableSince = Date.now()
-		} else if (Date.now() - stableSince >= settleForMs) {
-			return
-		}
-	}
-	throw new Error("Request count did not settle")
-}
-
 test("nudge wiring stays silent on a text-only response in a fresh session", async ({ terminal }) => {
 	// Wiring smoke: when none of the nudge conditions are met, no
 	// component of the harness should inject a nudge phrase into any
@@ -97,7 +70,7 @@ test("nudge wiring stays silent on a text-only response in a fresh session", asy
 		async (fixture, trace) => {
 			terminal.submit("hello")
 			trace.step("submitted prompt")
-			await waitForTurnToSettle(fixture)
+			await waitForTurnToSettle(fixture.fake.requests)
 			trace.step("settled")
 			expect(anyRequestContainsAnyNudge(fixture)).toBe(false)
 		},
@@ -121,7 +94,7 @@ test("nudge wiring fires the empty-turn nudge when the orchestrator returns empt
 		async (fixture, trace) => {
 			terminal.submit("go")
 			trace.step("submitted prompt")
-			await waitForTurnToSettle(fixture)
+			await waitForTurnToSettle(fixture.fake.requests)
 			trace.step("settled")
 			expect(anyRequestContainsNudgePhrase(fixture, EMPTY_TURN_NUDGE_PHRASE)).toBe(true)
 		},
