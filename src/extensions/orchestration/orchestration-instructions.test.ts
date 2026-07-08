@@ -85,13 +85,11 @@ describe("resolveOrchestrationInstructions", () => {
 		})
 
 		expect(result).toContain("Explore findings are not durable artifacts")
-		expect(result).toContain("Explore agents return decision-ready findings directly in the Agent result")
+		expect(result).toContain("Explore agents are the exception: they return decision-ready findings directly")
 		expect(result).toContain(
 			"Do NOT ask Explore agents to write Markdown files, reports, docs, notes, or scratch files",
 		)
-		expect(result).toContain(
-			"For artifact-producing agents (Plan, Reviewer, Fixer, and Researcher when the research is non-trivial)",
-		)
+		expect(result).toContain("For artifact-producing agents (Plan, Reviewer, Fixer, non-trivial Researcher)")
 		expect(result).not.toContain("Pass plans and structured findings as Markdown files")
 	})
 
@@ -198,7 +196,7 @@ describe("resolveOrchestrationInstructions", () => {
 		expect(result).toContain("complexity")
 		expect(result).toContain("`simple`")
 		expect(result).toContain("`complex`")
-		expect(result).toContain("Complex chunks get the multi-file-package token budget")
+		expect(result).toContain("Complex chunks get the multi-file-package budget")
 	})
 
 	it("includes complex chunk spec detail requirements", () => {
