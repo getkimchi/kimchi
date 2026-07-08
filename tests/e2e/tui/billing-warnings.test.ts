@@ -1,6 +1,6 @@
 import { expect, test } from "@microsoft/tui-test"
-import { TUI_TEST_CONFIG, runKimchiSession } from "./support/kimchi-fixture.js"
 import { waitForText } from "./support/assertions.js"
+import { TUI_TEST_CONFIG, runKimchiSession } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -71,11 +71,7 @@ test("shows exhausted-credit warning from credits API after a model response", a
 			terminal.submit("Use remaining credits")
 
 			await expect(terminal.getByText("Done.", { full: true })).toBeVisible()
-			await waitForText(
-				terminal,
-				"You ran out of credits. Keep using Kimchi in restricted mode or top up at app.kimchi.dev/billing",
-				{ full: true },
-			)
+			await waitForText(terminal, "You ran out of credits. Top up at app.kimchi.dev/billing", { full: true })
 		},
 	)
 })

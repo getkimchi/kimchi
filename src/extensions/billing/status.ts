@@ -20,7 +20,7 @@ export interface BillingWarning {
 
 export interface BillingStatusLine {
 	text: string
-	tone: "dim" | "accent" | "warning" | "error"
+	tone: "dim" | "accent"
 }
 
 interface BillingCreditsApiConfig {
@@ -38,8 +38,7 @@ interface RefreshBillingStatusOptions {
 export const LOW_CREDITS_THRESHOLD_EUR = 5
 export const COMMUNITY_TIER_HEADER_NOTICE =
 	"You are using Community tier. For faster performance, upgrade to Coder at app.kimchi.dev/pricing"
-export const BILLING_EXHAUSTED_MESSAGE =
-	"You ran out of credits. Keep using Kimchi in restricted mode or top up at app.kimchi.dev/billing"
+export const BILLING_EXHAUSTED_MESSAGE = "You ran out of credits. Top up at app.kimchi.dev/billing"
 const BILLING_REFRESH_TIMEOUT_MS = 5000
 
 const TIER_FIELDS = ["tier", "tier_name", "tierName"] as const
@@ -47,6 +46,7 @@ const IS_PAID_TIER_FIELDS = ["is_paid_tier", "isPaidTier"] as const
 const BILLING_STATUS_FIELDS = ["billing_status", "billingStatus"] as const
 const HAS_CREDITS_FIELDS = ["has_credits", "hasCredits"] as const
 const PLAN_DISPLAY_NAMES: Partial<Record<BillingPlan, string>> = {
+	community: "Community",
 	coder: "Coder",
 	teams: "Teams",
 	enterprise: "Enterprise",
@@ -180,7 +180,7 @@ export function getBillingWarning(
 		(status.creditStatus === undefined &&
 			typeof status.remainingCredits === "number" &&
 			status.remainingCredits > 0 &&
-			status.remainingCredits <= LOW_CREDITS_THRESHOLD_EUR)
+			status.remainingCredits < LOW_CREDITS_THRESHOLD_EUR)
 	if (isLow) {
 		const balance =
 			typeof status.remainingCredits === "number" ? ` (${formatCreditsAmount(status.remainingCredits)} remaining)` : ""
@@ -197,12 +197,10 @@ export function getBillingStatusLine(
 	status: BillingStatus | undefined = currentBillingStatus,
 ): BillingStatusLine | undefined {
 	if (!status || status.serverless === false) return undefined
-	if (status.plan === "community") return { text: "Community", tone: "dim" }
 
 	const label = planDisplayName(status.plan) ?? "Credits"
 	const suffix = typeof status.remainingCredits === "number" ? `: ${formatCreditsAmount(status.remainingCredits)}` : ""
-	const warning = getBillingWarning(status)
-	const tone = warning?.kind === "exhausted" ? "error" : warning?.kind === "low" ? "warning" : "accent"
+	const tone = status.plan === "community" ? "dim" : "accent"
 	return { text: `${label}${suffix}`, tone }
 }
 
