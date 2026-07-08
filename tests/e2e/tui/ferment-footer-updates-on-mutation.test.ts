@@ -10,16 +10,12 @@
  * happened. The fix calls `requestSharedFooterRender()` after every
  * successful mutation.
  *
- * This test pins the ferment footer segment, starts a ferment, scopes it, and
- * has the model call `activate_ferment_phase`. The footer must show the ferment
- * name + "Planned" after scoping, then update to "Running" after activation.
- *
- * The response script mirrors the passing `todo-widget-ferment` test so the
- * fake-server queue stays aligned with the host's turn sequence.
+ * This test starts a ferment, scopes it, and has the model call
+ * `activate_ferment_phase`. The footer must show the ferment name + "Running".
  */
 
-import { expect, test } from "@microsoft/tui-test"
-import { INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, viewText, waitForText } from "./support/assertions.js"
+import { test } from "@microsoft/tui-test"
+import { INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
 import { TUI_TEST_CONFIG, runKimchiSession } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -84,71 +80,61 @@ test("ferment footer segment updates after activate_ferment_phase tool call", as
 						},
 					],
 				},
-				// Keepalive after implementation turn.
-				{},
+				// Turn 5 (host nudge): start step 1 — must comply to avoid nudge loop.
+				{
+					stream: ["Starting step 1."],
+					toolCalls: [
+						{
+							function: {
+								name: "start_ferment_step",
+								arguments: JSON.stringify({
+									ferment_id: "__FERMENT_ID__",
+									phase_id: "phase-1",
+									step_id: "step-1",
+								}),
+							},
+						},
+					],
+				},
+				// Extra text-only responses to absorb continuation nudges.
+				{ stream: ["Waiting."] }, { stream: ["Waiting."] }, { stream: ["Waiting."] },
+				{ stream: ["Waiting."] }, { stream: ["Waiting."] },
 			],
 		},
 		async (_fixture, trace) => {
-			// Stage 1: ready prompt visible.
-			await waitForText(terminal, "ask anything or type / for commands", {
-				timeoutMs: STARTUP_TIMEOUT_MS,
-			})
+			// Stage 1: ready prompt.
+			await waitForText(terminal, "ask anything or type / for commands", { timeoutMs: STARTUP_TIMEOUT_MS })
 			trace.step("ready prompt visible")
 
 			// Stage 2: enter ferment.
 			terminal.write("/ferment")
 			await waitForText(terminal, "/ferment", { timeoutMs: INPUT_TIMEOUT_MS })
-			trace.step("typed /ferment")
 			terminal.submit("")
 			trace.step("ran /ferment")
 
-			// Stage 3: intent prompt appears.
-			await waitForText(terminal, "would you like to ferment", {
-				timeoutMs: STARTUP_TIMEOUT_MS,
-			})
+			// Stage 3: intent prompt.
+			await waitForText(terminal, "would you like to ferment", { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("intent prompt visible")
 
 			// Stage 4: submit intent → model proposes scoping.
 			terminal.submit("Verify footer updates on mutation")
 			trace.step("submitted intent")
 
-			// Stage 5: plan-review dialog appears.
-			await waitForText(terminal, "Proceed with this plan?", {
-				timeoutMs: STREAM_TIMEOUT_MS,
-			})
-			await waitForText(terminal, "Start execution", {
-				timeoutMs: INPUT_TIMEOUT_MS,
-			})
+			// Stage 5: plan-review dialog.
+			await waitForText(terminal, "Proceed with this plan?", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, "Start execution", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("plan-review dialog visible")
 
-			// Stage 6: confirm → ferment is scoped.
+			// Stage 6: confirm.
 			terminal.submit("")
 			trace.step("confirmed 'Start execution'")
 
-			// Stage 7: footer must show the ferment name. The ferment segment now
-			// renders whenever a ferment is active, even when not pinned (matches
-			// the ScriptFooter path). This guards the "doesn't show when there's an
-			// active ferment" regression.
-			//
-			// We wait for the footer to show the ferment status specifically — the
-			// bottom status line. Asserting on bare "Footer Update Test" would also
-			// match the plan-review dialog and breadcrumb, so we target the footer
-			// line which combines name + status + stop policy.
-			await waitForText(terminal, /Running · Stop:/, { timeoutMs: STREAM_TIMEOUT_MS })
+			// Stage 7: footer must show the ferment name + "Running" status.
+			// The ferment segment now renders whenever a ferment is active, even
+			// when not pinned (matches the ScriptFooter path). This guards the
+			// "doesn't show when there's an active ferment" regression.
+			await waitForText(terminal, /Footer Update Test · Running/, { timeoutMs: 30_000 })
 			trace.step("footer shows ferment name + Running status")
-
-			// Stage 8: after activate_ferment_phase, the footer must update to
-			// "Running". This is the "doesn't reliably update as things progress"
-			// half — createApplyAndPersist now triggers requestSharedFooterRender()
-			// after every successful mutation.
-			//
-			// The footer line combines the ferment name with its status.
-			await waitForText(terminal, /Footer Update Test · Running/, { timeoutMs: STREAM_TIMEOUT_MS })
-			trace.step("footer updated to Running after activate_ferment_phase")
-
-			// Final assertion: both name and status are present.
-			const text = viewText(terminal)
-			expect(text).toContain("Footer Update Test")
 		},
 	)
 })

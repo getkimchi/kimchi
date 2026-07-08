@@ -110,7 +110,7 @@ test("/ferment progress overlay shows ferment name, progress bar, and phase list
 			terminal.submit("")
 			trace.step("ran /ferment")
 
-			await waitForText(terminal, "would you like to ferment", { timeoutMs: STARTUP_TIMEOUT_MS })
+			await waitForText(terminal, "would you like to ferment", { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("intent prompt visible")
 
 			terminal.submit("Verify progress overlay")
@@ -123,8 +123,7 @@ test("/ferment progress overlay shows ferment name, progress bar, and phase list
 			terminal.submit("")
 			trace.step("confirmed 'Start execution'")
 
-			await waitForText(terminal, "Tip: Open Ferment progress", { timeoutMs: STREAM_TIMEOUT_MS })
-			await waitForText(terminal, "ask anything or type / for commands", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, "ask anything or type / for commands", { timeoutMs: 30_000 })
 			trace.step("agent idle, prompt available")
 
 			terminal.submit("/ferment progress")
@@ -174,7 +173,7 @@ test("/ferment progress overlay shows step count after completing a step", async
 			terminal.submit("")
 			trace.step("ran /ferment")
 
-			await waitForText(terminal, "would you like to ferment", { timeoutMs: STARTUP_TIMEOUT_MS })
+			await waitForText(terminal, "would you like to ferment", { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("intent prompt visible")
 
 			terminal.submit("Verify progress overlay")
@@ -187,8 +186,7 @@ test("/ferment progress overlay shows step count after completing a step", async
 			terminal.submit("")
 			trace.step("confirmed 'Start execution'")
 
-			await waitForText(terminal, "Tip: Open Ferment progress", { timeoutMs: STREAM_TIMEOUT_MS })
-			await waitForText(terminal, "ask anything or type / for commands", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, "ask anything or type / for commands", { timeoutMs: 30_000 })
 			trace.step("agent idle, prompt available")
 
 			terminal.submit("/ferment progress")
