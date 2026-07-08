@@ -8,11 +8,13 @@ import { buildInfoLines, buildLogoLines } from "./logo-art.js"
 export class LogoHeader implements Component {
 	private readonly theme: Theme
 	private readonly getBranch?: () => string | undefined
+	private readonly getRightColumnNotice?: () => string | undefined
 	private logoLines: string[]
 
-	constructor(theme: Theme, opts?: { getBranch?(): string | undefined }) {
+	constructor(theme: Theme, opts?: { getBranch?(): string | undefined; getRightColumnNotice?(): string | undefined }) {
 		this.theme = theme
 		this.getBranch = opts?.getBranch
+		this.getRightColumnNotice = opts?.getRightColumnNotice
 		this.logoLines = buildLogoLines(theme)
 	}
 
@@ -73,7 +75,9 @@ export class LogoHeader implements Component {
 		const accentText = (text: string) => theme.fg("accent", text)
 		const labelLine = "Kimchi's special:"
 		const tip1Text = `Use ${accentText("/ferment")} to hand off a large task with minimal interruption.`
-		const tip2Text = `To leave the Ferment mode and return to a regular coding session, use ${accentText("/ferment exit")}.`
+		const tip2Text =
+			this.getRightColumnNotice?.() ??
+			`To leave the Ferment mode and return to a regular coding session, use ${accentText("/ferment exit")}.`
 
 		const labelWrap = wrapTextWithAnsi(labelLine, rightColWidth)
 		const wrap1 = wrapTextWithAnsi(tip1Text, rightColWidth)

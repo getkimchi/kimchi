@@ -12,6 +12,7 @@ export type FooterElementId =
 	| "phase"
 	| "tags"
 	| "team"
+	| "billing"
 
 export type FooterConfig = { pinned: FooterElementId[] }
 
@@ -73,6 +74,11 @@ export const FOOTER_ELEMENTS: Array<{
 		id: "team",
 		label: "Team",
 		description: "Team tag value",
+	},
+	{
+		id: "billing",
+		label: "Billing",
+		description: "Plan and credit balance",
 	},
 ]
 

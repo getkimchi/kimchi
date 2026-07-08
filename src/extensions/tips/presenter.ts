@@ -1,9 +1,10 @@
 import type { TipRegistry } from "./registry.js"
-import type { Tip, TipCandidate, TipProvider, TipScope } from "./types.js"
+import { type Tip, type TipCandidate, type TipProvider, type TipScope, tipPriority } from "./types.js"
 
 interface ProviderTips {
 	source: string
 	tips: TipCandidate[]
+	priority: number
 }
 
 interface ActiveTipGroup {
@@ -129,21 +130,20 @@ export class TipPresenter {
 		const providers: ProviderTips[] = []
 
 		for (const provider of this.registry.getProviders()) {
-			const tips = getProviderTips(provider).filter((tip) => tip.scope === scope)
+			const tips = getProviderTips(provider)
+				.filter((tip) => tip.scope === scope)
+				.map((tip) => toCandidate(provider.source, tip))
+				.sort(compareTips)
 			if (tips.length === 0) continue
 
 			providers.push({
 				source: provider.source,
-				tips: tips.map((tip) => ({
-					source: provider.source,
-					id: tip.id,
-					scope: tip.scope,
-					message: tip.message,
-				})),
+				tips,
+				priority: Math.max(...tips.map(tipPriority)),
 			})
 		}
 
-		return providers
+		return providers.sort((a, b) => b.priority - a.priority)
 	}
 }
 
@@ -155,6 +155,22 @@ function getProviderTips(provider: TipProvider): readonly Tip[] {
 	}
 }
 
+function toCandidate(source: string, tip: Tip): TipCandidate {
+	return {
+		source,
+		id: tip.id,
+		scope: tip.scope,
+		message: tip.message,
+		priority: tip.priority,
+		tone: tip.tone,
+		showPrefix: tip.showPrefix,
+	}
+}
+
+function compareTips(a: Tip, b: Tip): number {
+	return tipPriority(b) - tipPriority(a)
+}
+
 function findTip(group: ActiveTipGroup, tip: TipCandidate): TipCandidate | undefined {
 	if (tip.scope !== group.scope) return undefined
 
@@ -164,7 +180,7 @@ function findTip(group: ActiveTipGroup, tip: TipCandidate): TipCandidate | undef
 
 function getGroupKey(group: ActiveTipGroup): string {
 	const providers = group.providers
-		.map((provider) => `${provider.source}[${provider.tips.map((tip) => tip.id).join(",")}]`)
+		.map((provider) => `${provider.source}[${provider.tips.map((tip) => `${tip.id}:${tipPriority(tip)}`).join(",")}]`)
 		.join("|")
 	return `${group.scope}:${providers}`
 }

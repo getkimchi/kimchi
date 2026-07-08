@@ -46,8 +46,8 @@ afterEach(() => {
 // ── FOOTER_ELEMENTS metadata ──────────────────────────────────────────────────
 
 describe("FOOTER_ELEMENTS", () => {
-	it("has 9 entries", () => {
-		expect(FOOTER_ELEMENTS).toHaveLength(9)
+	it("has 10 entries", () => {
+		expect(FOOTER_ELEMENTS).toHaveLength(10)
 	})
 
 	it("every entry has id, label, description", () => {
@@ -59,8 +59,19 @@ describe("FOOTER_ELEMENTS", () => {
 	})
 
 	it("covers all FooterElementId values", () => {
-		const ids = FOOTER_ELEMENTS.map((e) => e.id).sort()
-		const expected = ["permissions", "model", "ferment", "agents", "context", "usage", "phase", "tags", "team"].sort()
+		const ids = FOOTER_ELEMENTS.map((e) => e.id).sort((a, b) => a.localeCompare(b))
+		const expected = [
+			"permissions",
+			"model",
+			"ferment",
+			"agents",
+			"context",
+			"usage",
+			"phase",
+			"tags",
+			"team",
+			"billing",
+		].sort((a, b) => a.localeCompare(b))
 		expect(ids).toEqual(expected)
 	})
 })
@@ -99,6 +110,11 @@ describe("readFooterConfig", () => {
 	it("returns { pinned: ['context'] } when config exists", () => {
 		memfs.set(SETTINGS_PATH, JSON.stringify({ footer: { pinned: ["context"] } }, null, 2))
 		expect(readFooterConfig().pinned).toEqual(["context"])
+	})
+
+	it("keeps billing when pinned in config", () => {
+		memfs.set(SETTINGS_PATH, JSON.stringify({ footer: { pinned: ["billing"] } }, null, 2))
+		expect(readFooterConfig().pinned).toEqual(["billing"])
 	})
 
 	it("ignores non-string items in the pinned array", () => {

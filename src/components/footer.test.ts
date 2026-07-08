@@ -3,6 +3,7 @@ import { visibleWidth } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { FooterElementId } from "../config/footer-config.js"
 import * as AGENTS from "../extensions/agents/index.js"
+import { setBillingStatusForTest } from "../extensions/billing/status.js"
 import * as FERMENT from "../extensions/ferment/index.js"
 import * as ORCHESTRATION from "../extensions/prompt-construction/prompt-enrichment.js"
 import * as TAGS from "../extensions/tags.js"
@@ -265,6 +266,7 @@ describe("StatsFooter behavioural acceptance at representative widths", () => {
 
 	afterEach(() => {
 		vi.restoreAllMocks()
+		setBillingStatusForTest(undefined)
 		restorePlatform()
 	})
 
@@ -386,6 +388,7 @@ describe("StatsFooter segment coverage", () => {
 
 	afterEach(() => {
 		vi.restoreAllMocks()
+		setBillingStatusForTest(undefined)
 		restorePlatform()
 	})
 
@@ -484,6 +487,38 @@ describe("StatsFooter segment coverage", () => {
 		const footer = new StatsFooter(createMockContext(), theme, createMockFooterData())
 		const visible = renderVisible(footer, 200)
 		expect(visible).not.toContain("team:")
+	})
+
+	it("billing segment shows compact credit status", () => {
+		withPinned(["billing"], () => {
+			setBillingStatusForTest({
+				serverless: true,
+				plan: "coder",
+				isPaidTier: true,
+				remainingCredits: 5,
+				creditStatus: "low",
+				updatedAt: "2026-07-07T00:00:00.000Z",
+			})
+			const footer = new StatsFooter(createMockContext(), theme, createMockFooterData())
+			const visible = renderVisible(footer, 200)
+
+			expect(visible).toContain("Coder: €5")
+		})
+	})
+
+	it("billing segment is hidden when unpinned", () => {
+		setBillingStatusForTest({
+			serverless: true,
+			plan: "coder",
+			isPaidTier: true,
+			remainingCredits: 5,
+			creditStatus: "low",
+			updatedAt: "2026-07-07T00:00:00.000Z",
+		})
+		const footer = new StatsFooter(createMockContext(), theme, createMockFooterData())
+		const visible = renderVisible(footer, 200)
+
+		expect(visible).not.toContain("Coder: €5")
 	})
 })
 

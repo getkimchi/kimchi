@@ -12,7 +12,9 @@ import { PromptEditor } from "../components/editor.js"
 import { ScriptFooter, StatsFooter, buildScriptPayload, readStatusLineCommand } from "../components/footer.js"
 import { LogoHeader } from "../components/logo.js"
 import { collapseAll, expandNext, resetState } from "../expand-state.js"
-import { getGitBranch, refreshGitBranch } from "../utils.js"
+import { refreshGitBranch } from "../utils.js"
+import { formatBillingStatusLine } from "./billing/status-line-format.js"
+import { getBillingStatusLine, getCommunityTierHeaderNotice, subscribeBillingStatus } from "./billing/status.js"
 import { isBareExitAlias } from "./exit-utils.js"
 import { formatFermentFooterDisplay } from "./ferment/footer-status.js"
 import { getActiveFerment, getFermentContinuationPolicy } from "./ferment/index.js"
@@ -218,6 +220,8 @@ export default function uiExtension(pi: ExtensionAPI) {
 	let scriptFooter: ScriptFooter | null = null
 	let scriptTui: TUI | null = null
 	let uiTui: TUI | null = null
+	let headerTui: TUI | null = null
+	let unregisterBillingStatus: (() => void) | undefined
 	let scriptCmd: string | null = null
 	let scriptPending = false
 	let scriptGeneration = 0
@@ -245,7 +249,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 		)
 	}
 
-	pi.on("session_start", (event, ctx) => {
+	pi.on("session_start", (_event, ctx) => {
 		setSessionModeOnboardingFooterSuppressed(false)
 		stopWorkingAnimation?.()
 		stopWorkingAnimation = undefined
@@ -258,14 +262,26 @@ export default function uiExtension(pi: ExtensionAPI) {
 		linesRemoved = 0
 		scriptGeneration++
 		scriptPending = false
+		unregisterBillingStatus?.()
+		unregisterBillingStatus = subscribeBillingStatus(() => {
+			headerTui?.requestRender()
+			uiTui?.requestRender()
+		})
 
 		ctx.ui.setHeader((tui, theme) => {
+			headerTui = tui
 			branchPoller.start(() => tui.requestRender())
-			const logo = new LogoHeader(theme, { getBranch: () => branchPoller.getBranch() })
+			const logo = new LogoHeader(theme, {
+				getBranch: () => branchPoller.getBranch(),
+				getRightColumnNotice: getCommunityTierHeaderNotice,
+			})
 			const header: DisposableComponent = {
 				render: (w) => logo.render(w),
 				invalidate: () => logo.invalidate(),
-				dispose: () => branchPoller.stop(),
+				dispose: () => {
+					if (headerTui === tui) headerTui = null
+					branchPoller.stop()
+				},
 			}
 			return header
 		})
@@ -286,6 +302,8 @@ export default function uiExtension(pi: ExtensionAPI) {
 				if (ferment) parts.push(ferment.text)
 				const perm = footerData.getExtensionStatuses().get("permissions-mode")
 				if (perm) parts.push(perm)
+				const billing = getBillingStatusLine()
+				if (billing) parts.push(formatBillingStatusLine(billing, theme))
 				const modelId = getMultiModelEnabled() ? `multi-model (${getOrchestratorModelId()})` : (ctx.model?.id ?? "n/a")
 				parts.push(`${resolvedAccentFg(theme)}${modelId}${RST_FG} ${theme.fg("dim", "→ ctrl+p")}`)
 				return parts.join(` ${theme.fg("dim", "·")} `)
@@ -619,6 +637,9 @@ export default function uiExtension(pi: ExtensionAPI) {
 	})
 	pi.on("session_shutdown", () => {
 		setSessionModeOnboardingFooterSuppressed(false)
+		unregisterBillingStatus?.()
+		unregisterBillingStatus = undefined
+		headerTui = null
 	})
 
 	pi.on("tool_result", (event) => {
