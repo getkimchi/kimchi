@@ -28,6 +28,7 @@ import {
 	type PromptResponse,
 	RequestError,
 	type SessionConfigOption,
+	type SessionConfigSelectOption,
 	type SessionModelState,
 	type SessionNotification,
 	type SetSessionConfigOptionRequest,
@@ -55,7 +56,9 @@ import {
 	initTheme,
 } from "@earendil-works/pi-coding-agent"
 import type { AgentSessionEvent, ExtensionUIContext } from "@earendil-works/pi-coding-agent"
-
+import { refFromModel, splitModelRef } from "../../extensions/model-catalog/ref-utils.js"
+import { setMultiModelEnabled } from "../../extensions/multi-model.js"
+import { getOrchestratorModel } from "../../extensions/orchestration/model-roles.js"
 import { loadConfig } from "../../extensions/permissions/config.js"
 import {
 	PERMISSIONS_ENV_KEY,
@@ -73,7 +76,7 @@ import {
 	setPermissionMode,
 } from "../../extensions/permissions/mode-controller.js"
 import { resolveMode } from "../../extensions/permissions/mode.js"
-import type { PermissionMode, SessionPermissionFlagController } from "../../extensions/permissions/types.js"
+import type { PermissionMode } from "../../extensions/permissions/types.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { createAcpUIContext } from "./acp-ui-context.js"
 import { ADVERTISED_CAPABILITIES, CAPABILITIES_KEY } from "./capabilities.js"
@@ -277,10 +280,11 @@ export class KimchiAcpAgent implements Agent {
 
 			this.sendAvailableCommandsUpdate(sessionId)
 
+			const configOptions = buildConfigOptions(session, () => this.resolveInitialMode(params.cwd))
 			return {
 				sessionId,
-				models: buildSessionModelState(session),
-				configOptions: buildConfigOptions(session, () => this.resolveInitialMode(params.cwd)),
+				configOptions,
+				models: buildSessionModelState(configOptions),
 			}
 		} catch (err) {
 			unregisterAcpPrompter(session.sessionId)
@@ -349,7 +353,7 @@ export class KimchiAcpAgent implements Agent {
 		return permissionMode
 	}
 
-	private async setModel(sessionId: string, modelId: string): Promise<string> {
+	private async setModel(sessionId: string, value: string): Promise<string> {
 		const entry = this.sessions.get(sessionId)
 		if (!entry) {
 			throw RequestError.invalidParams(undefined, `unknown sessionId ${sessionId}`)
@@ -357,27 +361,43 @@ export class KimchiAcpAgent implements Agent {
 		if (entry.turn) {
 			throw RequestError.invalidRequest(undefined, "a prompt is already in progress for this session")
 		}
-		if (!modelId) {
+		if (!value) {
 			throw RequestError.invalidParams(undefined, "modelId is required")
 		}
+
 		const { session } = entry
-		const availableModels = session.modelRegistry.getAvailable()
-		const selectedModel = availableModels.find((m) => getAcpModelId(m) === modelId)
-		if (!selectedModel) {
-			throw RequestError.invalidParams(undefined, `unknown or unavailable model: ${modelId}`)
-		}
-		try {
-			await session.setModel(selectedModel)
-		} catch (err) {
-			if (err instanceof RequestError) {
-				throw err
+		if (value === "multi-model") {
+			const { model: orchestrator, modelRef: orchRef } = getOrchestratorModel(session.sessionId, session.modelRegistry)
+			if (!orchestrator) {
+				throw RequestError.invalidParams(undefined, `multi-model orchestrator (${orchRef}) is not available`)
 			}
+			void setMultiModelEnabled(sessionId, true)
+			await session.setModel(orchestrator)
+			return value
+		}
+
+		const { provider, modelId } = splitModelRef(value) || {}
+		if (!provider || !modelId) {
 			throw RequestError.invalidParams(
 				undefined,
-				`Failed to switch model: ${err instanceof Error ? err.message : String(err)}`,
+				`invalid model format: "${modelId}". expected "provider/modelId" or "multi-model".`,
 			)
 		}
-		return modelId
+		const target = session.modelRegistry.find(provider, modelId)
+		if (!target) {
+			const available = session.modelRegistry
+				.getAvailable()
+				.map((m) => refFromModel(m))
+				.sort()
+			throw RequestError.invalidParams(
+				undefined,
+				`model not found: "${value}". available models: multi-model, ${available.join(", ")}`,
+			)
+		}
+
+		void setMultiModelEnabled(sessionId, false)
+		await session.setModel(target)
+		return value
 	}
 
 	async loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse> {
@@ -398,9 +418,10 @@ export class KimchiAcpAgent implements Agent {
 			this.replayTranscript(existing.session)
 			this.sendAvailableCommandsUpdate(sessionId)
 
+			const configOptions = buildConfigOptions(existing.session, () => this.resolveInitialMode(params.cwd))
 			return {
-				models: buildSessionModelState(existing.session),
-				configOptions: buildConfigOptions(existing.session, () => this.resolveInitialMode(params.cwd)),
+				configOptions,
+				models: buildSessionModelState(configOptions),
 			}
 		}
 		const loading = this.loadingSessions.get(sessionId)
@@ -470,9 +491,10 @@ export class KimchiAcpAgent implements Agent {
 			this.replayTranscript(session)
 			this.sendAvailableCommandsUpdate(sid)
 
+			const configOptions = buildConfigOptions(session, () => this.resolveInitialMode(params.cwd))
 			return {
-				models: buildSessionModelState(session),
-				configOptions: buildConfigOptions(session, () => this.resolveInitialMode(params.cwd)),
+				configOptions,
+				models: buildSessionModelState(configOptions),
 			}
 		} catch (err) {
 			unregisterAcpPrompter(sid)
@@ -1029,12 +1051,25 @@ export function buildPermissionsConfigOption(currentMode: PermissionMode): Sessi
  * ???
  * Exported for testing.
  */
-export function buildModelConfigOption(session: Pick<AgentSession, "model" | "modelRegistry">): SessionConfigOption {
-	const availableModels = session.modelRegistry.getAvailable().map((m) => ({
-		value: getAcpModelId(m),
+export function buildModelConfigOption(
+	session: Pick<AgentSession, "model" | "modelRegistry" | "sessionId">,
+): SessionConfigOption {
+	const {
+		model: orchestrator,
+		modelRef: orchRef,
+		modelId: orchId,
+	} = getOrchestratorModel(session.sessionId, session.modelRegistry)
+	const orchName = orchestrator?.name ?? orchId ?? orchRef
+	const options = session.modelRegistry.getAvailable().map((m) => ({
+		value: refFromModel(m),
 		name: m.name,
 	}))
-	const currentValue = session.model ? getAcpModelId(session.model) : availableModels[0].value
+	options.push({
+		value: "multi-model",
+		name: `Multi-model (${orchName})`,
+	})
+	// biome-ignore lint/style/noNonNullAssertion: we assert model availability before session is created/loaded via assertSessionHasModel.
+	const currentValue = refFromModel(session.model!)
 	return {
 		id: "model",
 		name: "Model",
@@ -1042,7 +1077,7 @@ export function buildModelConfigOption(session: Pick<AgentSession, "model" | "mo
 		category: "model",
 		description: "",
 		currentValue,
-		options: availableModels,
+		options,
 	}
 }
 
@@ -1055,30 +1090,17 @@ function buildConfigOptions(
 	return [buildPermissionsConfigOption(mode), buildModelConfigOption(session)]
 }
 
-// Exported for testing. In practice the only way model is missing here is a
-// missing / unusable credential: loadConfig() already threw on an absent
-// KIMCHI_API_KEY before we ever spawned the ACP loop, and updateModelsConfig
-// falls back to defaults rather than failing. authRequired (-32000) nudges
-// Zed toward an auth prompt instead of showing a generic "internal error".
-export function buildSessionModelState(
-	session: Pick<AgentSession, "model" | "modelRegistry">,
-): SessionModelState | null {
-	const currentModel = session.model
-	if (!currentModel) {
-		return null
-	}
-	const availableModels = session.modelRegistry.getAvailable()
+export function buildSessionModelState(configOptions: SessionConfigOption[]): SessionModelState | null {
+	// biome-ignore lint/style/noNonNullAssertion: model config option is static, it is always available
+	const configOption = configOptions.find((opt) => opt.id === "model")!
+	const options = (configOption as SessionConfigOption & { type: "select" }).options as SessionConfigSelectOption[]
 	return {
-		currentModelId: getAcpModelId(currentModel),
-		availableModels: availableModels.map((m) => ({
-			modelId: getAcpModelId(m),
+		currentModelId: configOption.currentValue as string,
+		availableModels: options.map((m) => ({
+			modelId: m.value,
 			name: m.name,
 		})),
 	}
-}
-
-function getAcpModelId(model: Pick<NonNullable<AgentSession["model"]>, "provider" | "id">): string {
-	return `${model.provider}/${model.id}`
 }
 
 export function assertSessionHasModel(session: Pick<AgentSession, "model">): void {
