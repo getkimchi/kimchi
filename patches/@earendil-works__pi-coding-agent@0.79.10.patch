@@ -509,7 +509,7 @@ index 0e85e9006835b754e38a7af725b4f1ca18eb3a61..94ea3d983a2abe039a7729d452f60c32
              color: (content) => theme.fg("userMessageText", content),
          }, { preserveOrderedListMarkers: true }));
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index 85c551f8630bc7d021825359095a8b552cbfb518..4e3c10e149d4599a406e761b8ee587559db1fc37 100644
+index 85c551f8630bc7d021825359095a8b552cbfb518..a412b3131d64a985026f8487fdf9f8ce5c914869 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
 @@ -1592,6 +1592,7 @@ export class InteractiveMode {
@@ -597,8 +597,12 @@ index 85c551f8630bc7d021825359095a8b552cbfb518..4e3c10e149d4599a406e761b8ee58755
              return { component: selector, focus: selector };
          });
      }
-@@ -4291,3 +4292,3 @@
+@@ -4255,7 +4294,7 @@ export class InteractiveMode {
+         const outputPath = this.getPathCommandArgument(text, "/export");
+         try {
              if (outputPath?.endsWith(".jsonl")) {
 -                const filePath = this.session.exportToJsonl(outputPath);
 +                const filePath = await this.session.exportToJsonl(outputPath);
                  this.showStatus(`Session exported to: ${filePath}`);
+             }
+             else {
