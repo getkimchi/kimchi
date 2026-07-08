@@ -13,6 +13,9 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=1.0",
+    "pytest-mock>=3.12",
     "ruff>=0.7",
 ]
 
@@ -30,3 +33,10 @@ target-version = "py314"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.pytest.ini_options]
+testpaths = ["src", "tests"]
+python_files = ["test_*.py", "*_test.py"]
+addopts = "-ra"
+pythonpath = ["scripts"]
+asyncio_mode = "auto"
