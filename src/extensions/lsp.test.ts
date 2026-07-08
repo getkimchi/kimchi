@@ -402,6 +402,16 @@ describe("degraded status (marker present, binary missing)", () => {
 		await pi.fireSessionStart({ hasUI: true, ui: { setStatus, notify: vi.fn() } })
 		expect(setStatus).not.toHaveBeenCalled()
 	})
+
+	it("shows both active and degraded servers in a mixed repo", async () => {
+		vi.mocked(serversMod.detectServers).mockReturnValue([FAKE_SERVER])
+		vi.mocked(serversMod.detectMissingCandidates).mockReturnValue([FAKE_GO_SERVER])
+		const setStatus = vi.fn()
+		const pi = makePi()
+		lspExtension(pi)
+		await pi.fireSessionStart({ hasUI: true, ui: { setStatus, notify: vi.fn() } })
+		expect(setStatus).toHaveBeenCalledWith("lsp", `LSP: ${FAKE_SERVER.name} · ${FAKE_GO_SERVER.name} not installed`)
+	})
 })
 
 describe("one-time warning on before_agent_start", () => {

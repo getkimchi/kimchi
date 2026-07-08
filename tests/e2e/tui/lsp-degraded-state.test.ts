@@ -3,6 +3,7 @@ import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
 import type { KimchiFixture } from "./support/kimchi-fixture.js"
 import { TUI_TEST_CONFIG, runKimchiSession } from "./support/kimchi-fixture.js"
+import { viewText, waitForTurnToSettle } from "./support/assertions.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -16,28 +17,6 @@ const LSP_DEGRADED_FOOTER = "gopls not installed"
 /** Footer status-bar text for active LSP: binary on PATH and marker present. */
 const LSP_ACTIVE_FOOTER = "typescript-language-server"
 
-/**
- * Waits for the harness to finish processing the main agent turn AND any
- * follow-up completions. Polls request count until stable for settleForMs.
- */
-async function waitForTurnToSettle(fixture: KimchiFixture) {
-	const settleForMs = 1_200
-	const timeoutMs = 30_000
-	const startedAt = Date.now()
-	let lastCount = fixture.fake.requests.length
-	let stableSince = Date.now()
-	while (Date.now() - startedAt < timeoutMs) {
-		await new Promise((resolve) => setTimeout(resolve, 100))
-		const currentCount = fixture.fake.requests.length
-		if (currentCount !== lastCount) {
-			lastCount = currentCount
-			stableSince = Date.now()
-		} else if (Date.now() - stableSince >= settleForMs) {
-			return
-		}
-	}
-}
-
 /** Returns true if any recorded provider request body contains the phrase. */
 function anyRequestContains(fixture: KimchiFixture, phrase: string): boolean {
 	for (const request of fixture.fake.requests) {
@@ -45,15 +24,6 @@ function anyRequestContains(fixture: KimchiFixture, phrase: string): boolean {
 		if (bodyText.includes(phrase)) return true
 	}
 	return false
-}
-
-/** Checks the viewable terminal text for a substring. */
-function viewTextContains(terminal: { getViewableBuffer: () => string[][] }, phrase: string): boolean {
-	const text = terminal
-		.getViewableBuffer()
-		.map((row) => row.join(""))
-		.join("\n")
-	return text.includes(phrase)
 }
 
 // =============================================================================
@@ -76,13 +46,13 @@ test("LSP degraded state shows status-bar segment and omits prompt in a Go proje
 		async (fixture, trace) => {
 			// Wait for the footer to render the degraded LSP segment.
 			trace.step("checking footer for degraded LSP status")
-			expect(viewTextContains(terminal, LSP_DEGRADED_FOOTER)).toBe(true)
+			expect(viewText(terminal)).toContain(LSP_DEGRADED_FOOTER)
 
 			// Submit a prompt to trigger before_agent_start (which fires the
 			// one-time warning) and settle the turn.
 			terminal.submit("hello")
 			trace.step("submitted prompt")
-			await waitForTurnToSettle(fixture)
+			await waitForTurnToSettle(fixture.fake.requests)
 			trace.step("settled")
 
 			// The LSP system prompt block must NOT appear in any request —
@@ -106,11 +76,11 @@ test("LSP segment absent when no project markers are present", async ({ terminal
 		},
 		async (fixture, trace) => {
 			trace.step("checking footer for absence of LSP segment")
-			expect(viewTextContains(terminal, "LSP:")).toBe(false)
+			expect(viewText(terminal)).not.toContain("LSP:")
 
 			terminal.submit("hello")
 			trace.step("submitted prompt")
-			await waitForTurnToSettle(fixture)
+			await waitForTurnToSettle(fixture.fake.requests)
 			trace.step("settled")
 
 			// No markers → no server active → prompt block omitted.
@@ -139,11 +109,11 @@ test("LSP active state shows status-bar segment and includes prompt in a TS proj
 		},
 		async (fixture, trace) => {
 			trace.step("checking footer for active LSP status")
-			expect(viewTextContains(terminal, LSP_ACTIVE_FOOTER)).toBe(true)
+			expect(viewText(terminal)).toContain(LSP_ACTIVE_FOOTER)
 
 			terminal.submit("hello")
 			trace.step("submitted prompt")
-			await waitForTurnToSettle(fixture)
+			await waitForTurnToSettle(fixture.fake.requests)
 			trace.step("settled")
 
 			// LSP system prompt MUST appear in requests — server is active.

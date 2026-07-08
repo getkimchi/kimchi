@@ -78,24 +78,26 @@ export default function (pi: ExtensionAPI) {
 		warned = false
 		degradedServers = []
 		activeServers = detectServers(cwd)
-		if (activeServers.length === 0) {
-			// No server binary on PATH. If this project *would* use LSP (its
-			// marker file is present), surface a degraded status-bar segment
-			// so the user can see LSP is unavailable instead of it silently
-			// no-op'ing. Stored for the one-time warning in before_agent_start.
-			degradedServers = detectMissingCandidates(cwd)
-			if (degradedServers.length > 0 && ui) {
-				const names = degradedServers.map((s) => s.name).join(", ")
+
+		// Compute missing candidates independently of active servers. In a mixed
+		// repo (e.g. both go.mod and package.json present but only one server
+		// binary installed), this catches the missing server and surfaces it.
+		degradedServers = detectMissingCandidates(cwd)
+		if (degradedServers.length > 0 && ui) {
+			const names = degradedServers.map((s) => s.name).join(", ")
+			if (activeServers.length > 0) {
+				// Partial degradation: some servers active, some missing
+				const activeNames = activeServers.map((s) => s.name).join(", ")
+				ui.setStatus("lsp", `LSP: ${activeNames} · ${names} not installed`)
+			} else {
 				ui.setStatus("lsp", `LSP: ${names} not installed`)
 			}
-			return
-		}
-
-		// Update status bar with detected server names
-		if (ui) {
+		} else if (activeServers.length > 0 && ui) {
 			const names = activeServers.map((s) => s.name).join(", ")
 			ui.setStatus("lsp", `LSP: ${names}`)
 		}
+
+		if (activeServers.length === 0) return
 
 		// Eagerly start servers that have a project marker directly in sessionCwd
 		const goMarkers = ["go.mod"]
