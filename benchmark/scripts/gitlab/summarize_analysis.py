@@ -171,12 +171,12 @@ def extract_run_metrics(metadata: dict[str, Any]) -> dict[str, Any]:
 
 
 def run_label(metadata: dict[str, Any]) -> str:
-    """Return a readable model label for a run."""
-    model = metadata_string(metadata, "model", "unknown")
-    provider = metadata_string(metadata, "model_provider", "unknown")
-    if provider and provider != "unknown":
-        return f"{provider}/{model}"
-    return model
+    """Return a readable model label for a run.
+
+    The 'model' field already contains the provider prefix (e.g.
+    'kimchi-dev/glm-5.2-fp8'), so return it directly.
+    """
+    return metadata_string(metadata, "model", "unknown")
 
 
 def run_configuration(metadata: dict[str, Any]) -> str:

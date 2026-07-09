@@ -207,8 +207,9 @@ def test_extract_run_metrics_bad_summary_file(tmp_path: Path) -> None:
     assert extract_run_metrics({"_summary_local_path": str(summary_path)}) == {"available": False}
 
 
-def test_run_label_includes_provider() -> None:
-    assert run_label({"model_provider": "kimchi-dev", "model": "kimi-k2.7"}) == "kimchi-dev/kimi-k2.7"
+def test_run_label_returns_model_with_provider() -> None:
+    # The 'model' field already contains the provider prefix.
+    assert run_label({"model": "kimchi-dev/kimi-k2.7"}) == "kimchi-dev/kimi-k2.7"
 
 
 def test_run_label_falls_back_to_model() -> None:
@@ -226,8 +227,7 @@ def test_run_configuration_defaults_to_na() -> None:
 def test_build_runs_table_includes_metrics_and_pipeline_link() -> None:
     runs = [
         {
-            "model_provider": "kimchi-dev",
-            "model": "kimi-k2.7",
+            "model": "kimchi-dev/kimi-k2.7",
             "configuration": "single-model",
             "_summary_local_path": None,
             "gitlab": {"pipeline_url": "https://gitlab.com/castai/kimchi/kimchi/-/pipelines/1"},
@@ -258,8 +258,7 @@ def test_build_runs_table_with_available_summary(tmp_path: Path) -> None:
     summary_path.write_text(json.dumps(summary), encoding="utf-8")
     runs = [
         {
-            "model_provider": "anthropic",
-            "model": "claude-sonnet-4-6",
+            "model": "anthropic/claude-sonnet-4-6",
             "configuration": "multi-model",
             "_summary_local_path": str(summary_path),
             "gitlab": {"pipeline_url": "https://gitlab.com/castai/kimchi/kimchi/-/pipelines/2"},
