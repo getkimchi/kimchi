@@ -2547,7 +2547,24 @@ function getMode<T extends string>(value: unknown, allowed: readonly T[], fallba
 	return typeof value === "string" && (allowed as readonly string[]).includes(value) ? (value as T) : fallback
 }
 
-const CORE_TOOL_OVERRIDES = new Set(["read", "bash", "grep", "find", "ls", "write", "edit", "set_phase"])
+// Tools that have their own renderCall/renderResult and must NOT be routed
+// through the generic OpenAI-style renderer (patchToolExecutionRenderers uses
+// this set via shouldUseGenericToolRenderer; registerOpenAiToolOverrides uses
+// OPENAI_STYLE_TOOL_NAMES). Agent, get_subagent_result, and steer_subagent
+// all register custom renderers in extensions/agents/index.ts.
+const CORE_TOOL_OVERRIDES = new Set([
+	"read",
+	"bash",
+	"grep",
+	"find",
+	"ls",
+	"write",
+	"edit",
+	"set_phase",
+	"Agent",
+	"get_subagent_result",
+	"steer_subagent",
+])
 
 const OPENAI_STYLE_TOOL_NAMES = new Set([
 	"apply_patch",

@@ -408,10 +408,12 @@ describe("set_phase tool summary", () => {
 
 describe("Agent tool rendering", () => {
 	beforeAll(() => {
+		initTheme("default")
 		toolRenderingExtension({
 			registerCommand: () => {},
 			registerTool: () => {},
 			on: () => {},
+			getAllTools: () => [],
 		} as never)
 	})
 
@@ -437,10 +439,16 @@ describe("Agent tool rendering", () => {
 		component.markExecutionStarted()
 		component.updateResult({ content: [{ type: "text", text: "Agent completed" }], isError: false }, false)
 
-		const rendered = component.render(80).join("\n")
+		// Strip ANSI escape codes so we can assert on visible text content.
+		const ansi = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g")
+		const rendered = component.render(80).join("\n").replace(ansi, "")
 		const description = "Add multi-mode agent tool tests"
 
+		// The custom renderCall produces a line starting with ▸ (arrow), while the
+		// generic renderer would produce a plain "Agent" header without the arrow.
+		expect(rendered).toContain("▸ Agent")
 		expect(rendered).toContain(description)
+		// Description must appear exactly once — no duplicate header rendering.
 		expect(rendered.split(description).length - 1).toBe(1)
 	})
 })
