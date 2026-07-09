@@ -4,7 +4,10 @@ import { LOOP_GUARD_EVENTS } from "./loop-guard-events.js"
 
 type Handler = (...args: unknown[]) => Promise<unknown> | unknown
 
-function createMockApi(events?: { emit: (ch: string, data: unknown) => void; on: (ch: string, fn: (d: unknown) => void) => () => void }) {
+function createMockApi(events?: {
+	emit: (ch: string, data: unknown) => void
+	on: (ch: string, fn: (d: unknown) => void) => () => void
+}) {
 	const handlers = new Map<string, Handler[]>()
 	const on = vi.fn((event: string, handler: Handler) => {
 		if (!handlers.has(event)) handlers.set(event, [])

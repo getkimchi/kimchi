@@ -289,7 +289,9 @@ export class LoopGuard {
 		return this.detectConsecutiveIdenticalCalls() ?? this.detectExactNgram() ?? this.detectFuzzyNgram()
 	}
 
-	private detectConsecutiveIdenticalCalls(): { reason: string; firedKeys: string[]; detector: LoopGuardDetector } | undefined {
+	private detectConsecutiveIdenticalCalls():
+		| { reason: string; firedKeys: string[]; detector: LoopGuardDetector }
+		| undefined {
 		const last = this.history[this.history.length - 1]
 		if (!last) return undefined
 		const targetKey = exactKey(last)
@@ -312,11 +314,19 @@ export class LoopGuard {
 	private detectExactNgram(): { reason: string; firedKeys: string[]; detector: LoopGuardDetector } | undefined {
 		const r2 = countContiguousNgramReps(this.history, 2, exactKey)
 		if (r2 > EXACT_2GRAM_THRESHOLD) {
-			return { reason: formatLoopReason(this.history, 2, r2, "identical results"), firedKeys: [], detector: "exact_ngram" }
+			return {
+				reason: formatLoopReason(this.history, 2, r2, "identical results"),
+				firedKeys: [],
+				detector: "exact_ngram",
+			}
 		}
 		const r3 = countContiguousNgramReps(this.history, 3, exactKey)
 		if (r3 > EXACT_3GRAM_THRESHOLD) {
-			return { reason: formatLoopReason(this.history, 3, r3, "identical results"), firedKeys: [], detector: "exact_ngram" }
+			return {
+				reason: formatLoopReason(this.history, 3, r3, "identical results"),
+				firedKeys: [],
+				detector: "exact_ngram",
+			}
 		}
 		return undefined
 	}

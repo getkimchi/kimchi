@@ -8,11 +8,6 @@ import {
 	type BashToolGuardWarnPayload,
 } from "../bash-tool-guard-events.js"
 import {
-	LOOP_GUARD_EVENTS,
-	type LoopGuardSubagentAbortPayload,
-	type LoopGuardWarnPayload,
-} from "../loop-guard-events.js"
-import {
 	FERMENT_EVENTS,
 	type FermentAbandonedPayload,
 	type FermentCompletedPayload,
@@ -25,6 +20,11 @@ import {
 	type FermentStepFailedPayload,
 	type FermentStepStartedPayload,
 } from "../ferment/domain-events.js"
+import {
+	LOOP_GUARD_EVENTS,
+	type LoopGuardSubagentAbortPayload,
+	type LoopGuardWarnPayload,
+} from "../loop-guard-events.js"
 
 import { handleAgentEnd, handleBeforeAgentStart, handleMessageEnd, handleMessageStart } from "./handlers/messages.js"
 import { emitSessionStartEvent, handleSessionInitialized, handleSessionShutdown } from "./handlers/session.js"
