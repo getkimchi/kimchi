@@ -230,10 +230,19 @@ export async function stopKimchi(terminal: Terminal): Promise<void> {
 /** Create fixture, launch kimchi, wait for ready, run `body`, always tear down (artifact on throw). */
 export async function runKimchiSession(
 	terminal: Terminal,
-	options: CreateKimchiFixtureOptions & { artifactName: string },
+	options: CreateKimchiFixtureOptions & {
+		artifactName: string
+		/**
+		 * Optional hook that runs AFTER launch but BEFORE the PROMPT_READY wait.
+		 * Use to dismiss startup dialogs (e.g. a ferment resume dialog triggered
+		 * by KIMCHI_ACTIVE_FERMENT) that would otherwise block PROMPT_READY.
+		 * The hook receives the terminal so it can interact with the UI.
+		 */
+		beforeReady?: (terminal: Terminal) => Promise<void>
+	},
 	body: (fixture: KimchiFixture, trace: TuiScenarioTrace) => Promise<void>,
 ): Promise<void> {
-	const { artifactName, ...fixtureOptions } = options
+	const { artifactName, beforeReady, ...fixtureOptions } = options
 	const fixture = await createKimchiFixture(fixtureOptions)
 	let artifactWritten = false
 	const steps: TuiStepSnapshot[] = []
@@ -245,6 +254,7 @@ export async function runKimchiSession(
 
 	try {
 		launchKimchi(terminal, fixture, fixtureOptions.extraArgs ?? [], { ...fixtureOptions.env, ...fixture.seedEnv })
+		if (beforeReady) await beforeReady(terminal)
 		await waitForText(terminal, PROMPT_READY, { timeoutMs: STARTUP_TIMEOUT_MS })
 		trace.step("ready prompt visible")
 		await body(fixture, trace)
