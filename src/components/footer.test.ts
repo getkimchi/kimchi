@@ -502,7 +502,7 @@ describe("StatsFooter segment coverage", () => {
 			const footer = new StatsFooter(createMockContext(), theme, createMockFooterData())
 			const visible = renderVisible(footer, 200)
 
-			expect(visible).toContain("Coder: €5")
+			expect(visible).toContain("Credits: $5")
 		})
 	})
 
@@ -518,7 +518,7 @@ describe("StatsFooter segment coverage", () => {
 		const footer = new StatsFooter(createMockContext(), theme, createMockFooterData())
 		const visible = renderVisible(footer, 200)
 
-		expect(visible).not.toContain("Coder: €5")
+		expect(visible).not.toContain("Credits: $5")
 	})
 })
 

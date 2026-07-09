@@ -212,7 +212,7 @@ describe("tips extension", () => {
 					{
 						id: "billing-low",
 						scope: "contextual",
-						message: "Heads up: your credits are running low (€5 remaining).",
+						message: "Heads up: your credits are running low ($5 remaining).",
 						priority: 10_000,
 						tone: "warning",
 						showPrefix: false,
@@ -220,7 +220,8 @@ describe("tips extension", () => {
 					{
 						id: "billing-exhausted",
 						scope: "contextual",
-						message: "You ran out of credits. Keep using Kimchi in restricted mode or top up at app.kimchi.dev/billing",
+						message:
+							"You ran out of credits. Keep using Kimchi in restricted mode or top up at https://app.kimchi.dev/billing",
 						priority: 11_000,
 						tone: "error",
 						showPrefix: false,

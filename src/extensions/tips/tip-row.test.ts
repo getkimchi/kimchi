@@ -103,7 +103,7 @@ describe("TipRow", () => {
 				source: "kimchi.billing",
 				id: "billing-low",
 				scope: "contextual",
-				message: "Heads up: your credits are running low (€5 remaining).",
+				message: "Heads up: your credits are running low ($5 remaining).",
 				tone: "warning",
 				showPrefix: false,
 			},
@@ -112,7 +112,7 @@ describe("TipRow", () => {
 		)
 
 		expect(line).not.toContain("Tip:")
-		expect(line).toContain("\x1b[33mHeads up: your credits are running low (€5 remaining).\x1b[39m")
+		expect(line).toContain("\x1b[33mHeads up: your credits are running low ($5 remaining).\x1b[39m")
 	})
 
 	it("wraps standalone warning tips instead of truncating the billing URL", () => {
@@ -122,7 +122,7 @@ describe("TipRow", () => {
 				id: "billing-low",
 				scope: "contextual",
 				message:
-					"Heads up: your credits are running low (€5 remaining). Top up now to avoid slowdowns and rate limits: app.kimchi.dev/billing",
+					"Heads up: your credits are running low ($5 remaining). Top up now to avoid slowdowns and rate limits: https://app.kimchi.dev/billing",
 				tone: "warning",
 				showPrefix: false,
 			},
@@ -131,7 +131,7 @@ describe("TipRow", () => {
 		)
 
 		expect(lines.length).toBeGreaterThan(1)
-		expect(lines.join(" ")).toContain("app.kimchi.dev/billing")
+		expect(lines.join(" ")).toContain("https://app.kimchi.dev/billing")
 		for (const line of lines) {
 			expect(visibleWidth(line)).toBeLessThanOrEqual(80)
 		}
@@ -143,7 +143,8 @@ describe("TipRow", () => {
 				source: "kimchi.billing",
 				id: "billing-exhausted",
 				scope: "contextual",
-				message: "You ran out of credits. Keep using Kimchi in restricted mode or top up at app.kimchi.dev/billing",
+				message:
+					"You ran out of credits. Keep using Kimchi in restricted mode or top up at https://app.kimchi.dev/billing",
 				tone: "error",
 				showPrefix: false,
 			},
@@ -152,7 +153,7 @@ describe("TipRow", () => {
 		)
 
 		expect(lines.length).toBeGreaterThan(1)
-		expect(lines.join(" ")).toContain("app.kimchi.dev/billing")
+		expect(lines.join(" ")).toContain("https://app.kimchi.dev/billing")
 		for (const line of lines) {
 			expect(visibleWidth(line)).toBeLessThanOrEqual(72)
 		}

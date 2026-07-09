@@ -19,8 +19,7 @@ export interface BillingWarning {
 }
 
 export interface BillingStatusLine {
-	text: string
-	tone: "dim" | "accent"
+	amount: string
 }
 
 interface BillingCreditsApiConfig {
@@ -35,22 +34,16 @@ interface RefreshBillingStatusOptions {
 	requestTimeoutMs?: number
 }
 
-export const LOW_CREDITS_THRESHOLD_EUR = 5
+export const LOW_CREDITS_THRESHOLD_USD = 5
 export const COMMUNITY_TIER_HEADER_NOTICE =
 	"You are using Community tier. For faster performance, upgrade to Coder at app.kimchi.dev/pricing"
-export const BILLING_EXHAUSTED_MESSAGE = "You ran out of credits. Top up at app.kimchi.dev/billing"
+export const BILLING_EXHAUSTED_MESSAGE = "You ran out of credits. Top up at https://app.kimchi.dev/billing"
 const BILLING_REFRESH_TIMEOUT_MS = 5000
 
 const TIER_FIELDS = ["tier", "tier_name", "tierName"] as const
 const IS_PAID_TIER_FIELDS = ["is_paid_tier", "isPaidTier"] as const
 const BILLING_STATUS_FIELDS = ["billing_status", "billingStatus"] as const
 const HAS_CREDITS_FIELDS = ["has_credits", "hasCredits"] as const
-const PLAN_DISPLAY_NAMES: Partial<Record<BillingPlan, string>> = {
-	community: "Community",
-	coder: "Coder",
-	teams: "Teams",
-	enterprise: "Enterprise",
-}
 
 let currentBillingStatus: BillingStatus | undefined
 let creditsApiConfig: BillingCreditsApiConfig | undefined
@@ -180,13 +173,13 @@ export function getBillingWarning(
 		(status.creditStatus === undefined &&
 			typeof status.remainingCredits === "number" &&
 			status.remainingCredits > 0 &&
-			status.remainingCredits < LOW_CREDITS_THRESHOLD_EUR)
+			status.remainingCredits < LOW_CREDITS_THRESHOLD_USD)
 	if (isLow) {
 		const balance =
 			typeof status.remainingCredits === "number" ? ` (${formatCreditsAmount(status.remainingCredits)} remaining)` : ""
 		return {
 			kind: "low",
-			message: `Heads up: your credits are running low${balance}. Top up now to avoid slowdowns and rate limits: app.kimchi.dev/billing`,
+			message: `Heads up: your credits are running low${balance}. Top up now to avoid slowdowns and rate limits: https://app.kimchi.dev/billing`,
 		}
 	}
 
@@ -197,11 +190,9 @@ export function getBillingStatusLine(
 	status: BillingStatus | undefined = currentBillingStatus,
 ): BillingStatusLine | undefined {
 	if (!status || status.serverless === false) return undefined
+	if (typeof status.remainingCredits !== "number") return undefined
 
-	const label = planDisplayName(status.plan) ?? "Credits"
-	const suffix = typeof status.remainingCredits === "number" ? `: ${formatCreditsAmount(status.remainingCredits)}` : ""
-	const tone = status.plan === "community" ? "dim" : "accent"
-	return { text: `${label}${suffix}`, tone }
+	return { amount: formatCreditsAmount(status.remainingCredits) }
 }
 
 function parseCreditsPayload(payload: unknown): Partial<BillingStatus> | undefined {
@@ -323,11 +314,7 @@ function readBoolean(record: Record<string, unknown>, keys: readonly string[]): 
 function formatCreditsAmount(amount: number): string {
 	const rounded = Math.round(amount * 100) / 100
 	const value = Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(2).replace(/0$/, "")
-	return `€${value}`
-}
-
-function planDisplayName(plan: BillingPlan | undefined): string | undefined {
-	return plan ? PLAN_DISPLAY_NAMES[plan] : undefined
+	return `$${value}`
 }
 
 function hasSignificantChange(previous: BillingStatus | undefined, next: BillingStatus): boolean {

@@ -19,10 +19,9 @@ function theme(): Theme {
 }
 
 describe("formatBillingStatusLine", () => {
-	it("formats billing footer tones without alert colors", () => {
+	it("dims the fixed label and accents the dollar balance", () => {
 		const t = theme()
 
-		expect(formatBillingStatusLine({ text: "Community: €2", tone: "dim" }, t)).toBe("<dim>Community: €2</dim>")
-		expect(formatBillingStatusLine({ text: "Coder: €10", tone: "accent" }, t)).toBe(`<accent>Coder: €10${RST_FG}`)
+		expect(formatBillingStatusLine({ amount: "$10" }, t)).toBe(`<dim>Credits:</dim> <accent>$10${RST_FG}`)
 	})
 })

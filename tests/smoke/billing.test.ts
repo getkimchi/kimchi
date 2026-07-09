@@ -4,6 +4,11 @@ import { expect, it } from "vitest"
 import { startFakeOpenAiServer } from "../e2e/tui/support/fake-openai-server.js"
 import { getAgentDir, spawnInteractive } from "./harness.js"
 
+// biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI/OSC escape stripping in PTY output assertions.
+const TERMINAL_ESCAPE = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))/g
+const visibleText = (out: string): string => out.replace(TERMINAL_ESCAPE, "")
+const hasCreditsFooter = (out: string): boolean => visibleText(out).includes("Credits: $5")
+
 it("renders pinned Billing footer status from the credits API", { timeout: 30_000 }, async () => {
 	const fake = await startFakeOpenAiServer({
 		responses: [],
@@ -42,7 +47,11 @@ it("renders pinned Billing footer status from the credits API", { timeout: 30_00
 
 	const session = spawnInteractive()
 	try {
-		await session.waitFor((out) => out.includes("Coder: €5"), 15_000)
+		await session.waitFor((out) => out.includes("Trust project folder?") || hasCreditsFooter(out), 15_000)
+		if (session.output().includes("Trust project folder?")) {
+			session.write("\n")
+		}
+		await session.waitFor(hasCreditsFooter, 15_000)
 		const creditsRequest = fake.requests.find((req) => req.method === "GET" && req.url.startsWith("/v1/credits"))
 		expect(creditsRequest?.headers.authorization).toBe("Bearer fake")
 	} finally {
