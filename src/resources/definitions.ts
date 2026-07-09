@@ -77,6 +77,14 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		defaultEnabled: true,
 	},
 	{
+		id: "extensions.cursor-rules",
+		kind: "extensions",
+		label: "Cursor rules",
+		description:
+			"Load Cursor-style project rules from .cursor/rules and .agents/rules and inject matching rules into the system prompt.",
+		defaultEnabled: true,
+	},
+	{
 		id: "extensions.claude-code-hook-adapter",
 		kind: "extensions",
 		label: "Claude Code hook adapter",
