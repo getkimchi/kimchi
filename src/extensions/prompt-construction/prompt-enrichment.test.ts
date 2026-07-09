@@ -962,7 +962,6 @@ describe("continuation nudge turn_end handler", () => {
 				bm25B: 0.75,
 				fieldWeights: { name: 6, description: 2, schemaKey: 1 },
 			},
-			retry: { maxRetries: 10 },
 			onboarding: {},
 			deviceId: "test",
 		})

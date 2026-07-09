@@ -26,7 +26,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 const THEME_KEY = Symbol.for("@earendil-works/pi-coding-agent:theme")
 const THEME_KEY_OLD = Symbol.for("@mariozechner/pi-coding-agent:theme")
 
-import { _resetState as _resetHideThinking, _setHideThinking } from "../../extensions/hide-thinking.js"
 import { PERMISSIONS_ENV_KEY } from "../../extensions/permissions/constants.js"
 import { PERMISSION_MODES } from "../../extensions/permissions/constants.js"
 import { getSessionPermissionFlagController } from "../../extensions/permissions/mode-controller-registry.js"
@@ -41,7 +40,6 @@ import {
 	describeToolCall,
 	initializeHeadlessTheme,
 	isHiddenToolCall,
-	shouldEmitThinking,
 	stripAnsi,
 	toAcpSessionInfo,
 	userMessageText,
@@ -3536,8 +3534,7 @@ describe("KimchiAcpAgent loadSession", () => {
 	})
 
 	it("routes ANSI-dimmed replay text to thought chunks and strips remaining ANSI", async () => {
-		// hide-thinking-aware models (DeepSeek, QwQ) plus hideThinkingBlock=false
-		// persist text with ANSI dim escapes around inner <think> content. The
+		// hide-thinking-aware models (DeepSeek, QwQ) persist text with ANSI dim escapes around inner <think> content. The
 		// live TUI renders them as reasoning; ACP's text content type is
 		// plaintext, so replay must preserve that semantic split explicitly.
 		const dimmed = "before \x1b[2minner\x1b[22m after"
@@ -3568,31 +3565,6 @@ describe("KimchiAcpAgent loadSession", () => {
 			.map((u) => (u.update as { content: { text: string } }).content.text)
 		expect(messageTexts).toEqual(["before ", " after"])
 		expect(thoughtTexts).toEqual(["inner", "raw thought"])
-	})
-
-	it("drops ANSI-dimmed replay thinking when hideThinkingBlock is enabled", async () => {
-		_setHideThinking(true)
-		try {
-			const fake = new FakeAgentSession("loaded-ansi-hidden")
-			fake.branch = [
-				userTextEntry("go", "u1", null),
-				assistantBlocksEntry([{ type: "text", text: "before \x1b[2minner\x1b[22m after" }], "a1", "u1"),
-			]
-			const { conn, updates } = makeRecordingConn()
-			const agent = makeAgent(async () => asSession(fake), { conn })
-			await agent.loadSession({
-				sessionId: "loaded-ansi-hidden",
-				cwd: "/tmp",
-				mcpServers: [],
-			})
-			const messageTexts = updates
-				.filter((u) => u.update.sessionUpdate === "agent_message_chunk")
-				.map((u) => (u.update as { content: { text: string } }).content.text)
-			expect(updates.find((u) => u.update.sessionUpdate === "agent_thought_chunk")).toBeUndefined()
-			expect(messageTexts).toEqual(["before  after"])
-		} finally {
-			_resetHideThinking()
-		}
 	})
 
 	it("treats a concurrent session/cancel during replay as a no-op (no turn active)", async () => {
@@ -3920,31 +3892,7 @@ describe("KimchiAcpAgent loadSession", () => {
 		expect(content.text.includes("\x1b[")).toBe(false)
 	})
 
-	it("skips thinking blocks when hideThinkingBlock is enabled (shared with hide-thinking extension)", async () => {
-		// Same redaction rule the live TUI uses — verified by sharing
-		// filterThinkingForDisplay across both code paths so a setting flip
-		// doesn't drift between live and replay.
-		_setHideThinking(true)
-		try {
-			const fake = new FakeAgentSession("loaded-thinking-hidden")
-			fake.branch = [
-				userTextEntry("go", "u1", null),
-				assistantBlocksEntry([{ type: "thinking", thinking: "considering options" }], "a1", "u1"),
-			]
-			const { conn, updates } = makeRecordingConn()
-			const agent = makeAgent(async () => asSession(fake), { conn })
-			await agent.loadSession({
-				sessionId: "loaded-thinking-hidden",
-				cwd: "/tmp",
-				mcpServers: [],
-			})
-			expect(updates.find((u) => u.update.sessionUpdate === "agent_thought_chunk")).toBeUndefined()
-		} finally {
-			_resetHideThinking()
-		}
-	})
-
-	it("skips redacted thinking blocks even when hideThinkingBlock is off", async () => {
+	it("skips redacted thinking blocks", async () => {
 		// Redacted thinking has only an opaque encrypted payload (in
 		// thinkingSignature) for multi-turn provider continuity — no plaintext
 		// to surface to the user.
@@ -4374,37 +4322,6 @@ describe("KimchiAcpAgent session event handlers", () => {
 			expect((titleUpdates[0].update as { title?: string }).title).toBe("Draft title")
 			expect((titleUpdates[1].update as { title?: string }).title).toBe("Final title")
 		})
-	})
-})
-
-describe("shouldEmitThinking", () => {
-	it("returns true by default (hideThinkingBlock unset)", () => {
-		_resetHideThinking()
-		expect(shouldEmitThinking("anything")).toBe(true)
-	})
-	it("returns false when hideThinkingBlock is enabled", () => {
-		_setHideThinking(true)
-		try {
-			expect(shouldEmitThinking("anything")).toBe(false)
-		} finally {
-			_resetHideThinking()
-		}
-	})
-	it("does not break when the persisted thinking text contains a literal </think>", () => {
-		// Regression: a previous version probed filterThinkingForDisplay with a
-		// synthetic <think>${thinking}</think> wrapper. Models self-quoting
-		// "</think>" closed the wrapper early and the inner text leaked, making
-		// the predicate non-deterministic. Reading the setting directly avoids
-		// the round-trip entirely.
-		_resetHideThinking()
-		const haunted = "I'll stop now. </think> trailing"
-		expect(shouldEmitThinking(haunted)).toBe(true)
-		_setHideThinking(true)
-		try {
-			expect(shouldEmitThinking(haunted)).toBe(false)
-		} finally {
-			_resetHideThinking()
-		}
 	})
 })
 

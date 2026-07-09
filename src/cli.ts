@@ -14,6 +14,7 @@ import {
 	normalizeResumeIdArgs,
 	stripExperimentalFeaturesArg,
 } from "./cli-args.js"
+import { applyPostMainInfrastructureExitPolicy } from "./cli-infrastructure-exit.js"
 import { dispatchSubcommand } from "./commands/dispatch.js"
 // IMPORTANT: must be first local import — patches InteractiveMode.prototype
 // before any module can construct an InteractiveMode instance.
@@ -21,9 +22,12 @@ import "./login-command-patch.js"
 import "./paste-to-editor-patch.js"
 import {
 	DEFAULT_SKILL_PATHS,
+	RETRY_DEFAULTS,
+	ensureHideThinkingBlockDefault,
 	getActiveVendorSkillPaths,
 	loadConfig,
 	readTelemetryConfig,
+	upgradeLegacyRetrySettings,
 	writeApiKey,
 	writeMigrationState,
 	writeSkillPaths,
@@ -45,6 +49,7 @@ import fermentExtension from "./extensions/ferment/index.js"
 import helpExtension from "./extensions/help.js"
 import hideThinkingExtension from "./extensions/hide-thinking.js"
 import ideAdapterExtension from "./extensions/ide-adapter/index.js"
+import infrastructureBreakerExtension from "./extensions/infrastructure-breaker.js"
 import inputHistoryExtension from "./extensions/input-history.js"
 import kimchiMinimalTintsExtension from "./extensions/kimchi-minimal-tints.js"
 import llmResponseLogExtension from "./extensions/llm-response-log.js"
@@ -98,6 +103,11 @@ import webFetchExtension from "./extensions/web-fetch/index.js"
 import webSearchExtension from "./extensions/web-search/index.js"
 import { normalizeAtFileArgs } from "./fs-paths.js"
 import {
+	KIMCHI_INFRA_ERROR_EXIT_CODE,
+	applyInfrastructureExitPolicy,
+	createInfrastructureErrorTracker,
+} from "./infrastructure-error.js"
+import {
 	injectExperimentalProvider,
 	isTransientModelsError,
 	readExperimentalModels,
@@ -116,7 +126,7 @@ import resourceToolBlockerExtension from "./resources/tool-blocker.js"
 import { runSetupWizard } from "./setup-wizard.js"
 import { setAvailableModels } from "./startup-context.js"
 import { probeTerminalBackground } from "./terminal-bg-probe.js"
-import { installCloudflare524RetryPatch } from "./upstream-retry-patch.js"
+import { installInfrastructureRetryPatch } from "./upstream-retry-patch.js"
 import { getVersion } from "./utils.js"
 import {
 	postProcessHtmlExport,
@@ -126,7 +136,7 @@ import {
 } from "./utils/export-post-process.js"
 import { captureSessionStart } from "./utils/session-metadata-store.js"
 
-installCloudflare524RetryPatch()
+installInfrastructureRetryPatch()
 installPiNativeCompatibilityShim()
 
 function getSubcommand(args: string[]): string {
@@ -139,6 +149,10 @@ function getSubcommand(args: string[]): string {
 }
 
 const originalArgs = process.argv.slice(2)
+
+// Observes provider transport failures in-process (via message_end) so the
+// exit path can reclassify a failed run as infrastructure (exit 74).
+const infrastructureErrorTracker = createInfrastructureErrorTracker()
 
 // --- Telemetry ---
 const telemetryConfig = readTelemetryConfig()
@@ -348,22 +362,29 @@ try {
 			readFileSync(settingsPath, "utf-8")
 		} catch (err) {
 			if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-				writeFileSync(settingsPath, `${JSON.stringify({ quietStartup: true, theme: "kimchi-minimal" }, null, 2)}\n`)
+				writeFileSync(
+					settingsPath,
+					`${JSON.stringify({ quietStartup: true, theme: "kimchi-minimal", retry: RETRY_DEFAULTS, hideThinkingBlock: true }, null, 2)}\n`,
+				)
 			} else {
 				console.error(`Warning: could not read ${settingsPath}: ${(err as Error).message}`)
 			}
 		}
 
-		// Sync retry config to SDK settings so both systems use the same value
+		// Seed Kimchi harness defaults for Pi; Pi handles global/project settings merging.
 		try {
-			const existing = JSON.parse(readFileSync(settingsPath, "utf-8"))
-			const sdkRetry = existing.retry
-			if (!sdkRetry || sdkRetry.maxRetries !== config.retry.maxRetries) {
-				existing.retry = { ...sdkRetry, maxRetries: config.retry.maxRetries }
+			const existing = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>
+			let changed = ensureHideThinkingBlockDefault(existing)
+			const upgraded = upgradeLegacyRetrySettings(existing.retry)
+			if (upgraded) {
+				existing.retry = upgraded
+				changed = true
+			}
+			if (changed) {
 				writeFileSync(settingsPath, `${JSON.stringify(existing, null, 2)}\n`)
 			}
 		} catch {
-			/* retry sync is best-effort */
+			/* settings sync is best-effort */
 		}
 
 		// Bundled themes are write-through cache — owned by the package, not the user.
@@ -574,6 +595,8 @@ try {
 			traceIdExtension,
 			llmResponseLogExtension,
 			activityExtension,
+			infrastructureErrorTracker.extension,
+			infrastructureBreakerExtension,
 		]
 
 		if (acpMode) {
@@ -584,6 +607,11 @@ try {
 			const { main } = await import("@earendil-works/pi-coding-agent")
 			await main(rawArgs, { extensionFactories })
 		}
+		// Only reclassify runs that already failed (print mode sets exitCode 1);
+		// a clean interactive quit after a transient error stays a success.
+		if (process.exitCode) {
+			applyPostMainInfrastructureExitPolicy(infrastructureErrorTracker.getFailure())
+		}
 	}
 } catch (err) {
 	await drainPreSessionTelemetry()
@@ -591,6 +619,7 @@ try {
 		process.exitCode = 130
 	} else {
 		console.error(err instanceof Error ? err.message : String(err))
-		process.exit(1)
+		const isInfraFailure = applyInfrastructureExitPolicy(infrastructureErrorTracker.getFailure())
+		process.exit(isInfraFailure ? KIMCHI_INFRA_ERROR_EXIT_CODE : 1)
 	}
 }

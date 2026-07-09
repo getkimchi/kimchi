@@ -391,7 +391,7 @@ describe("FermentCommandController", () => {
 			}),
 			{ triggerTurn: false },
 		)
-		expect(requestSharedFooterRenderMock).toHaveBeenCalledTimes(1)
+		expect(requestSharedFooterRenderMock).toHaveBeenCalledTimes(2)
 		expect(h.ctx.abort).toHaveBeenCalledTimes(1)
 	})
 

@@ -507,16 +507,24 @@ export class StatsFooter implements Component {
 	}
 
 	private fermentSegment(pinned = false): Segment | null {
-		if (!pinned) return null
 		const display = formatFermentFooterDisplay(getActiveFerment(), getFermentContinuationPolicy(), {
 			dim: (s) => this.dim(s),
 			accent: (s) => this.accent(s),
 		})
+		// No active ferment: only show the placeholder when the user has
+		// explicitly pinned the segment (so they can see it's wired up but
+		// idle). Unpinned, hide it entirely — "Ferment: —" is noise when no
+		// ferment is running.
 		if (!display) {
+			if (!pinned) return null
 			const text = `${this.dim("Ferment:")} ${this.dim("—")}`
 			return { id: "ferment", text, width: visibleWidth(text) }
 		}
 
+		// Active ferment: always render, even when unpinned. The status line is
+		// the primary surface for ferment progress and must not be hidden by
+		// default. This matches the ScriptFooter path (ui.ts) which shows the
+		// ferment segment unconditionally when there is one.
 		return {
 			id: "ferment",
 			text: display.text,

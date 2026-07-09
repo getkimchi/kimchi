@@ -25,9 +25,10 @@ function foregroundAgentCall(id: string, description: string, prompt: string) {
 	}
 }
 
-function backgroundAgentCall(id: string, description: string, prompt: string) {
+function backgroundAgentCall(id: string, description: string, prompt: string, index = 0) {
 	return {
 		id,
+		index,
 		function: {
 			name: "Agent",
 			arguments: JSON.stringify({ prompt, description, subagent_type: "General-Purpose", run_in_background: true }),
@@ -36,6 +37,36 @@ function backgroundAgentCall(id: string, description: string, prompt: string) {
 }
 
 const SLOW_STREAM = { stream: ["working", " working", " working", " working"], textDelayMs: 5_000 }
+
+function isWorkingSubagentRequest(request: { body: unknown }): boolean {
+	const body = asRecord(request.body)
+	return !hasTool(body, "Agent") && JSON.stringify(body.messages ?? "").includes("Reply with: working")
+}
+
+function hasTool(body: Record<string, unknown>, name: string): boolean {
+	const tools = body.tools
+	return Array.isArray(tools) && tools.some((tool) => asRecord(asRecord(tool).function).name === name)
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+	return value && typeof value === "object" ? (value as Record<string, unknown>) : {}
+}
+
+async function waitForCurrentView(
+	terminal: Parameters<typeof viewText>[0],
+	predicate: (text: string) => boolean,
+	description: string,
+	timeoutMs = 5_000,
+): Promise<string> {
+	const startedAt = Date.now()
+	let text = viewText(terminal)
+	while (Date.now() - startedAt < timeoutMs) {
+		if (predicate(text)) return text
+		await new Promise((resolve) => setTimeout(resolve, 100))
+		text = viewText(terminal)
+	}
+	throw new Error(`Timed out waiting for ${description}.\n\nTerminal:\n${text}`)
+}
 
 test("Ctrl+B detaches a running foreground agent to background", async ({ terminal }) => {
 	await runKimchiSession(
@@ -123,14 +154,18 @@ test("Ctrl+X kills background agents one by one", async ({ terminal }) => {
 			artifactName: "agent-kill-ctrl-x-two",
 			models: [{ slug: "basic", displayName: "Fake Basic", input: ["text"] }],
 			responses: [
-				// Orchestrator turn 1: spawn first bg
-				{ toolCalls: [backgroundAgentCall("call_kill_1", "first bg", "Reply with: working")] },
+				// Orchestrator turn 1: spawn both background agents before
+				// their subagent turns start consuming the shared fake response queue.
+				{
+					toolCalls: [
+						backgroundAgentCall("call_kill_1", "first bg", "Reply with: working", 0),
+						backgroundAgentCall("call_kill_2", "second bg", "Reply with: working", 1),
+					],
+				},
 				// Inner agent "first bg" — slow stream so it's still running when we kill
-				SLOW_STREAM,
-				// Orchestrator turn 2: spawn second bg
-				{ toolCalls: [backgroundAgentCall("call_kill_2", "second bg", "Reply with: working")] },
+				{ ...SLOW_STREAM, match: isWorkingSubagentRequest },
 				// Inner agent "second bg" — slow stream
-				SLOW_STREAM,
+				{ ...SLOW_STREAM, match: isWorkingSubagentRequest },
 				// Orchestrator follow-up
 				{ stream: ["acknowledged"] },
 			],
@@ -139,26 +174,30 @@ test("Ctrl+X kills background agents one by one", async ({ terminal }) => {
 			terminal.submit("spawn two background agents")
 			await waitForText(terminal, "first bg", { timeoutMs: STREAM_TIMEOUT_MS })
 			await waitForText(terminal, "second bg", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, "ctrl+x to kill", { timeoutMs: 5_000, full: false })
 			trace.step("two background agents running")
 
 			// Kill the most recent one (second bg — listAgents sorts by startedAt desc)
 			terminal.keyPress("x", { ctrl: true })
-			await waitForText(terminal, "Stopped", { timeoutMs: 5_000 })
+			await waitForText(terminal, "Stopped", { timeoutMs: 5_000, full: false })
 			trace.step("killed second bg")
 
 			// Wait for the widget to re-render — the kill hint should still be
 			// present on the remaining background agent
-			await waitForText(terminal, "ctrl+x to kill", { timeoutMs: 5_000 })
+			await waitForText(terminal, "ctrl+x to kill", { timeoutMs: 5_000, full: false })
 			trace.step("kill hint still visible on remaining agent")
 
 			// Kill the remaining one
 			terminal.keyPress("x", { ctrl: true })
-			await waitForText(terminal, "Stopped", { timeoutMs: 5_000 })
+			await waitForText(terminal, "Stopped", { timeoutMs: 5_000, full: false })
 			trace.step("killed first bg")
 
 			// No more background agents — kill hint should be gone
-			await new Promise((resolve) => setTimeout(resolve, 500))
-			const view = viewText(terminal)
+			const view = await waitForCurrentView(
+				terminal,
+				(text) => !text.includes("ctrl+x to kill"),
+				"ctrl+x kill hint to disappear",
+			)
 			expect(view).not.toContain("ctrl+x to kill")
 			trace.step("no kill hint remaining — all background agents killed")
 		},

@@ -102,7 +102,7 @@ vi.mock("../ui/progress.js", () => ({
 
 import type { TeleportContext } from "../types.js"
 import { TeleportRefusal } from "./errors.js"
-import { runTeleport } from "./teleport.js"
+import { SESSION_CREATE_TIMEOUT_MS, runTeleport } from "./teleport.js"
 
 const CREDS = {
 	connectToken: "tok-1",
@@ -261,6 +261,12 @@ describe("runTeleport", () => {
 		expect(createSessionMock).toHaveBeenCalledOnce()
 		expect(createSessionMock.mock.calls[0][1]).toBe("mysession")
 		expect(createSessionMock.mock.calls[0][2]).toEqual({ agentMode: "PTY" })
+		// Large repos take longer than the 30s WorkerClient default;
+		// teleport must pass a per-call timeout that outlasts them.
+		expect(createSessionMock.mock.calls[0][3]).toMatchObject({ timeoutMs: SESSION_CREATE_TIMEOUT_MS })
+		// Must outlast the 30s WorkerClient default — large repos
+		// exceed it and the session would otherwise abort mid-flight.
+		expect(SESSION_CREATE_TIMEOUT_MS).toBeGreaterThan(30_000)
 		expect(ui.custom).toHaveBeenCalledOnce()
 	})
 

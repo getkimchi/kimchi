@@ -50,13 +50,49 @@ function firstChatRequest(fixture: { fake: { requests: Array<{ url: string; body
 	return chatRequests[0]
 }
 
+function withRedactionEnabled<T extends { env?: Record<string, string> }>(options: T): T & { env: Record<string, string> } {
+	return { ...options, env: { ...options.env, KIMCHI_REDACTION_ENABLED: "1" } }
+}
+
+type RecordedChatRequest = { url: string; body: unknown }
+
+function findToolContextRequest(
+	fixture: { fake: { requests: RecordedChatRequest[] } },
+	toolCallId: string,
+): RecordedChatRequest | undefined {
+	const chatRequests = fixture.fake.requests.filter((r) => r.url.includes("/chat/completions"))
+	return chatRequests.find((r) => {
+		const body = r.body as Record<string, unknown> | null
+		const messages = body?.messages
+		return Array.isArray(messages) && JSON.stringify(messages).includes(toolCallId)
+	})
+}
+
+async function waitForToolContextRequest(
+	fixture: { fake: { requests: RecordedChatRequest[] } },
+	toolCallId: string,
+	timeoutMs = 15_000,
+): Promise<RecordedChatRequest> {
+	const startedAt = Date.now()
+	while (Date.now() - startedAt < timeoutMs) {
+		const request = findToolContextRequest(fixture, toolCallId)
+		if (request) return request
+		await new Promise((resolve) => setTimeout(resolve, 100))
+	}
+	throw new Error(
+		`Timed out waiting for chat request containing ${toolCallId}. Recorded URLs: ${JSON.stringify(
+			fixture.fake.requests.map((r) => r.url),
+		)}`,
+	)
+}
+
 test("redacts email and phone from user prompt before LLM receives it", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
-		{
+		withRedactionEnabled({
 			artifactName: "pii-redaction-email-phone",
 			responses: [{ stream: ["OK"] }],
-		},
+		}),
 		async (fixture) => {
 			terminal.submit("Contact me at alice@example.com or call 555-867-5309")
 
@@ -75,10 +111,10 @@ test("redacts email and phone from user prompt before LLM receives it", async ({
 test("redacts Bearer tokens and AWS access keys from user prompt", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
-		{
+		withRedactionEnabled({
 			artifactName: "pii-redaction-secrets",
 			responses: [{ stream: ["Done"] }],
-		},
+		}),
 		async (fixture) => {
 			terminal.submit("Use Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9 and AWS key AKIAIOSFODNN7EXAMPLE")
 
@@ -97,10 +133,10 @@ test("redacts Bearer tokens and AWS access keys from user prompt", async ({ term
 test("redacts credit card and IBAN from user prompt", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
-		{
+		withRedactionEnabled({
 			artifactName: "pii-redaction-financial",
 			responses: [{ stream: ["Noted"] }],
-		},
+		}),
 		async (fixture) => {
 			terminal.submit("Pay with card 4111111111111111 or IBAN GB29NWBK60161331926819")
 
@@ -119,10 +155,10 @@ test("redacts credit card and IBAN from user prompt", async ({ terminal }) => {
 test("preserves surrounding text when redacting PII", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
-		{
+		withRedactionEnabled({
 			artifactName: "pii-redaction-preservation",
 			responses: [{ stream: ["OK"] }],
-		},
+		}),
 		async (fixture) => {
 			terminal.submit("Please review the file at /home/user/project and email bob@corp.org")
 
@@ -142,10 +178,10 @@ test("preserves surrounding text when redacting PII", async ({ terminal }) => {
 test("redacts kimchi API key from Bearer authorization header in prompt", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
-		{
+		withRedactionEnabled({
 			artifactName: "pii-redaction-api-key",
 			responses: [{ stream: ["OK"] }],
-		},
+		}),
 		async (fixture) => {
 			terminal.submit("Debug this: Authorization: Bearer abc123def456ghi789jkl012mno345pqr678stu901")
 
@@ -189,7 +225,7 @@ test("disables redaction when KIMCHI_REDACTION_ENABLED=0", async ({ terminal }) 
 test("redacts PII in tool-call arguments before LLM sees them in context", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
-		{
+		withRedactionEnabled({
 			artifactName: "pii-redaction-tool-call-args",
 			responses: [
 				// First response: fake model calls bash with a command containing PII
@@ -210,38 +246,25 @@ test("redacts PII in tool-call arguments before LLM sees them in context", async
 				// Second response: final text after tool result
 				{ stream: ["Done"] },
 			],
-		},
+		}),
 		async (fixture) => {
 			terminal.submit("Check the auth token")
 
-			await expect(terminal.getByText("Done", { full: true })).toBeVisible()
+			await expect(terminal.getByText("Running check...", { full: true })).toBeVisible()
 
 			// The second request contains the tool-call and tool-result in context.
 			// The tool-call arguments (which contain the Bearer token) must be redacted.
-			// Match both /openai/v1/chat/completions and /chat/completions (continuation requests may use a different path)
-			const chatRequests = fixture.fake.requests.filter(
-				(r) => r.url.includes("/chat/completions"),
-			)
-			expect(chatRequests.length).toBeGreaterThanOrEqual(2)
+			// Session-name title generation requests also hit /chat/completions, so
+			// wait for the continuation request that includes the tool-call id.
+			const toolRequest = await waitForToolContextRequest(fixture, "call_bash_1")
 
-			// Find the request that contains tool-call messages (the continuation after tool execution).
-			// Session-name title generation requests also hit /chat/completions but don't have tool messages.
-			const toolRequest = chatRequests.find((r) => {
-				const body = r.body as Record<string, unknown> | null
-				const msgs = body?.messages
-				return Array.isArray(msgs) && JSON.stringify(msgs).includes("call_bash_1")
-			})
-			expect(toolRequest).toBeTruthy()
-
-			const requestBody = toolRequest?.body as Record<string, unknown> | null
+			const requestBody = toolRequest.body as Record<string, unknown> | null
 			const messages = requestBody?.messages
 			expect(Array.isArray(messages)).toBe(true)
 
 			// Serialize non-system messages — system messages are skipped by
 			// redaction (they contain structural identifiers like ferment IDs).
-			const nonSystemMessages = (messages as Array<Record<string, unknown>>).filter(
-				(m) => m.role !== "system",
-			)
+			const nonSystemMessages = (messages as Array<Record<string, unknown>>).filter((m) => m.role !== "system")
 			const serialized = JSON.stringify(nonSystemMessages)
 			expect(serialized).not.toContain("abc123def456ghi789jkl012mno345pqr678stu901")
 			expect(serialized).toContain("[REDACTED")
@@ -252,7 +275,7 @@ test("redacts PII in tool-call arguments before LLM sees them in context", async
 test("redacts PII in tool results before LLM sees them in context", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
-		{
+		withRedactionEnabled({
 			artifactName: "pii-redaction-tool-result",
 			responses: [
 				// First response: fake model calls bash, which will echo PII
@@ -273,35 +296,22 @@ test("redacts PII in tool results before LLM sees them in context", async ({ ter
 				// Second response: final text after tool result
 				{ stream: ["Reviewed."] },
 			],
-		},
+		}),
 		async (fixture) => {
 			terminal.submit("Check what's in the config")
 
-			await expect(terminal.getByText("Reviewed.", { full: true })).toBeVisible()
+			await expect(terminal.getByText("Checking config...", { full: true })).toBeVisible()
 
 			// The second request contains the tool result in context.
 			// The tool result text (bash output with email + AWS key) must be redacted.
-			const chatRequests = fixture.fake.requests.filter(
-				(r) => r.url.includes("/chat/completions"),
-			)
-			expect(chatRequests.length).toBeGreaterThanOrEqual(2)
+			const toolRequest = await waitForToolContextRequest(fixture, "call_bash_2")
 
-			// Find the request that contains tool-call messages (the continuation after tool execution).
-			const toolRequest = chatRequests.find((r) => {
-				const body = r.body as Record<string, unknown> | null
-				const msgs = body?.messages
-				return Array.isArray(msgs) && JSON.stringify(msgs).includes("call_bash_2")
-			})
-			expect(toolRequest).toBeTruthy()
-
-			const requestBody = toolRequest?.body as Record<string, unknown> | null
+			const requestBody = toolRequest.body as Record<string, unknown> | null
 			const messages = requestBody?.messages
 			expect(Array.isArray(messages)).toBe(true)
 
 			// Serialize non-system messages — system messages are skipped by redaction.
-			const nonSystemMessages = (messages as Array<Record<string, unknown>>).filter(
-				(m) => m.role !== "system",
-			)
+			const nonSystemMessages = (messages as Array<Record<string, unknown>>).filter((m) => m.role !== "system")
 			const serialized = JSON.stringify(nonSystemMessages)
 			expect(serialized).not.toContain("john.doe@example.com")
 			expect(serialized).not.toContain("AKIAIOSFODNN7EXAMPLE")

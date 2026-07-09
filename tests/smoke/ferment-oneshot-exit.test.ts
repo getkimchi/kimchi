@@ -363,9 +363,9 @@ async function runOneshot(options: {
 				KIMCHI_API_KEY: "fake",
 				KIMCHI_FERMENTS_DIR: options.fermentsDir,
 				KIMCHI_TELEMETRY_ENABLED: "0",
-				// Redaction is enabled by default, but it strips ferment UUIDs from
-				// the system prompt, which the fake server needs for __FERMENT_ID__
-				// substitution. Disable it in this lifecycle smoke test.
+				// Explicitly disable redaction in this lifecycle smoke test — it
+				// strips ferment UUIDs from the system prompt, which the fake
+				// server needs for __FERMENT_ID__ substitution.
 				KIMCHI_REDACTION_ENABLED: "0",
 			},
 			stdio: ["pipe", "pipe", "pipe"],

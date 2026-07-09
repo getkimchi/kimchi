@@ -13,6 +13,7 @@ import type { Command, TransitionError } from "../../ferment/state-machine.js"
 import { applyCommand } from "../../ferment/state-machine.js"
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
 import { getMultiModelEnabled } from "../multi-model.js"
+import { requestSharedFooterRender } from "../shared-footer.js"
 import { publicToolNameForActionKind } from "./action-tool-names.js"
 import { emitFermentDomainEvent } from "./domain-events-emitter.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
@@ -200,6 +201,12 @@ export function createApplyAndPersist(runtime: FermentRuntime) {
 		)
 		if (outcome.ok) {
 			runtime.setActive(outcome.ferment)
+			// The footer's ferment segment reads getActive() at render time, but
+			// tool-call mutations happen mid-agent-run with no natural render
+			// trigger. Request a footer re-render so the status line reflects the
+			// new phase/step/state immediately instead of going stale until the
+			// next user keypress or message render.
+			requestSharedFooterRender()
 			if (runtime.events) {
 				try {
 					emitFermentDomainEvent(runtime.events, cmd, outcome.ferment)

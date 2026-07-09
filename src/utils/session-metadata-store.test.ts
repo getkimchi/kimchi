@@ -29,7 +29,6 @@ function makeConfig(overrides: Partial<KimchiConfig> = {}): KimchiConfig {
 		maxToolResultChars: 12000,
 		mcpSearchLimit: 10,
 		mcpSearch: SEARCH_STRATEGY,
-		retry: { maxRetries: 10 },
 		onboarding: {},
 		deviceId: "test-device-id",
 		...overrides,
