@@ -150,8 +150,6 @@ test("Ctrl+X kills background agents one by one", async ({ terminal }) => {
 				},
 				// Inner agent "first bg" — slow stream so it's still running when we kill
 				{ ...SLOW_STREAM, forSubagent: true },
-				// Orchestrator turn 2: spawn second bg
-				{ toolCalls: [backgroundAgentCall("call_kill_2", "second bg", "Reply with: working")] },
 				// Inner agent "second bg" — slow stream
 				{ ...SLOW_STREAM, forSubagent: true },
 				// Orchestrator follow-up
