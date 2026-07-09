@@ -1211,6 +1211,11 @@ describe("loop-guard telemetry via pi.events", () => {
 		return Object.fromEntries(rec.attributes.map((a) => [a.key, a.value.stringValue]))
 	}
 
+	/** Flush buffered OTLP log records by triggering session_shutdown. */
+	async function flushTelemetry(handlers: Map<string, Handler[]>) {
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+	}
+
 	it("loop_guard:warn → loop_guard.warn OTLP record with detector, count, is_subagent", async () => {
 		const { handlers, events } = await setup()
 		const { LOOP_GUARD_EVENTS } = await import("../loop-guard-events.js")
@@ -1220,7 +1225,7 @@ describe("loop-guard telemetry via pi.events", () => {
 			count: 3,
 			is_subagent: true,
 		})
-		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+		await flushTelemetry(handlers)
 
 		const rec = extractRecords().find((r) => r.eventName === "loop_guard.warn")
 		expect(rec).toBeDefined()
@@ -1243,7 +1248,7 @@ describe("loop-guard telemetry via pi.events", () => {
 			count: 1,
 			is_subagent: true,
 		})
-		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+		await flushTelemetry(handlers)
 
 		const rec = extractRecords().find((r) => r.eventName === "loop_guard.subagent_abort")
 		expect(rec).toBeDefined()

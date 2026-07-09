@@ -2,7 +2,12 @@ import { createHash } from "node:crypto"
 import type { ExtensionAPI, ExtensionContext, ToolResultEvent } from "@earendil-works/pi-coding-agent"
 import { isAgentWorker } from "./agent-worker-context.js"
 import { LOOP_GUARD_EVENTS } from "./loop-guard-events.js"
-import type { LoopGuardDetector } from "./loop-guard-events.js"
+import type {
+	LoopGuardDetector,
+	LoopGuardEventChannel,
+	LoopGuardSubagentAbortPayload,
+	LoopGuardWarnPayload,
+} from "./loop-guard-events.js"
 
 export interface ToolHistoryRecord {
 	toolName: string
@@ -679,7 +684,14 @@ export default function loopGuardExtension(pi: ExtensionAPI) {
 
 	// Domain event helper: emit a loop-guard event via pi.events. No-ops
 	// silently when `pi.events` is unavailable on the host.
-	function emitGuardEvent(channel: string, payload: unknown): void {
+	// Typed overloads ensure the payload matches the channel, catching
+	// drift between the emit site and the telemetry subscription.
+	function emitGuardEvent(channel: typeof LOOP_GUARD_EVENTS.WARN, payload: LoopGuardWarnPayload): void
+	function emitGuardEvent(
+		channel: typeof LOOP_GUARD_EVENTS.SUBAGENT_ABORT,
+		payload: LoopGuardSubagentAbortPayload,
+	): void
+	function emitGuardEvent(channel: LoopGuardEventChannel, payload: unknown): void {
 		try {
 			pi.events.emit(channel, payload)
 		} catch {
@@ -745,7 +757,7 @@ export default function loopGuardExtension(pi: ExtensionAPI) {
 			lastWarnDetector = result.detector
 			lastWarnCount = warnCount
 			emitGuardEvent(LOOP_GUARD_EVENTS.WARN, {
-				detector: result.detector,
+				detector: result.detector ?? "consecutive_identical",
 				count: warnCount,
 				is_subagent: isAgentWorker(),
 			})

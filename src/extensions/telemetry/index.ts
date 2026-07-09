@@ -533,7 +533,7 @@ function onLoopGuardSubagentAbort(raw: unknown): void {
 	const payload = raw as LoopGuardSubagentAbortPayload
 	ctx.emit("loop_guard.subagent_abort", {
 		model: ctx.currentModel,
-		detector: payload.detector,
+		detector: payload.detector ?? "unknown",
 		count: payload.count,
 		is_subagent: payload.is_subagent,
 	})

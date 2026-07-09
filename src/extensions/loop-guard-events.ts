@@ -39,8 +39,10 @@ export interface LoopGuardWarnPayload {
 }
 
 export interface LoopGuardSubagentAbortPayload {
-	/** The detector that triggered the warn preceding this abort. */
-	detector: LoopGuardDetector
+	/** The detector that triggered the warn preceding this abort. May be
+	 *  undefined if the warn happened before detector tracking was added
+	 *  or in edge cases where no detector was stashed. */
+	detector?: LoopGuardDetector
 	/** The session warn count at the time of the triggering warn. */
 	count: number
 	/** Always true — aborts only fire for subagents. */
