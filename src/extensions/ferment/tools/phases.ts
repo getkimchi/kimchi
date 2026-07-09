@@ -13,6 +13,7 @@ import { findFirstPlannedPhase } from "../../../ferment/engine.js"
 import type { Ferment, Phase } from "../../../ferment/types.js"
 import { getMultiModelEnabled } from "../../multi-model.js"
 import type { Grade } from "../../../ferment/types.js"
+import { runWithOverlay } from "../../agents/index.js"
 import { withWorkingHidden } from "../../ui.js"
 import { askUserForm } from "../ask-user.js"
 import { gradeColor, pr_bold } from "../colors.js"
@@ -454,7 +455,9 @@ export async function completePhase(
 			? { available: evidence.available, filesChanged: evidence.filesChanged, diffSnippet: evidence.diffSnippet }
 			: { available: false },
 	}
-	const phaseJudgeResult = await services.judgePhaseGrade(judgeInput)
+	const phaseJudgeResult = await runWithOverlay(`Grading phase "${phase.name}"…`, () =>
+		services.judgePhaseGrade(judgeInput),
+	)
 
 	// Resolve the final grade + recommendations.
 	let finalGrade: Grade = derivedGrade as Grade

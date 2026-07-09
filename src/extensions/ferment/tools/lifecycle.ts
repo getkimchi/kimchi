@@ -26,6 +26,7 @@ import {
 	type ScopingQuestionType,
 } from "../../../ferment/types.js"
 import { getMultiModelEnabled } from "../../multi-model.js"
+import { runWithOverlay } from "../../agents/index.js"
 import { createToolVisibility } from "../../prompt-construction/tool-visibility.js"
 import { YES_NO_OPTIONS } from "../../questionnaire/index.js"
 import { askUserForm, normalizeAskUserQuestions, toScopingQuestionType } from "../ask-user.js"
@@ -731,29 +732,31 @@ export async function completeFerment(
 	const ferment = fSnapshot
 	const phaseReviews = readLatestPhaseReviews(ferment.id)
 	const totalDiff = ferment.worktree.commit ? gatherPhaseEvidence(ferment.worktree.commit) : undefined
-	const journeyResult = await judgeJourneyGrade({
-		fermentName: ferment.name,
-		goal: ferment.goal ?? "",
-		successCriteria: renderSuccessCriteria(ferment.successCriteria, ""),
-		finalSummary: params.final_summary ?? "",
-		phases: ferment.phases.map((p) => {
-			const review = phaseReviews.get(p.id)
-			return {
-				name: p.name,
-				goal: p.goal,
-				status: p.status,
-				gateVerdicts: review?.gateVerdicts?.map((v) => ({
-					id: v.id,
-					verdict: v.verdict,
-					rationale: v.rationale,
-				})),
-			}
+	const journeyResult = await runWithOverlay(`Grading ferment "${ferment.name}"…`, () =>
+		judgeJourneyGrade({
+			fermentName: ferment.name,
+			goal: ferment.goal ?? "",
+			successCriteria: renderSuccessCriteria(ferment.successCriteria, ""),
+			finalSummary: params.final_summary ?? "",
+			phases: ferment.phases.map((p) => {
+				const review = phaseReviews.get(p.id)
+				return {
+					name: p.name,
+					goal: p.goal,
+					status: p.status,
+					gateVerdicts: review?.gateVerdicts?.map((v) => ({
+						id: v.id,
+						verdict: v.verdict,
+						rationale: v.rationale,
+					})),
+				}
+			}),
+			fermentGates: gates.map((g) => ({ id: g.id, verdict: g.verdict, rationale: g.rationale })),
+			totalDiff: totalDiff
+				? { available: totalDiff.available, filesChanged: totalDiff.filesChanged, diffSnippet: totalDiff.diffSnippet }
+				: { available: false },
 		}),
-		fermentGates: gates.map((g) => ({ id: g.id, verdict: g.verdict, rationale: g.rationale })),
-		totalDiff: totalDiff
-			? { available: totalDiff.available, filesChanged: totalDiff.filesChanged, diffSnippet: totalDiff.diffSnippet }
-			: { available: false },
-	})
+	)
 
 	// Resolve the grade. C-gates already decided ship/refuse. The judge now
 	// ENFORCES quality: a C/D/F grade refuses ship and routes through the same

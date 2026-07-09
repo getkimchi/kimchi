@@ -464,6 +464,7 @@ function buildNotificationDetails(
 }
 
 let activeManager: AgentManager | undefined
+let activeWidget: { ensureTimer: () => void; update: () => void; markFinished: (id: string) => void } | undefined
 let budgetRetryBlock: BudgetRetryBlock | undefined
 const budgetRetryCandidates = new Map<string, BudgetRetryCandidate>()
 
@@ -495,6 +496,33 @@ export function getAgentRecordForTaskValidation(id: string): Readonly<AgentRecor
 	const record = activeManager?.getRecord(id)
 	if (!record || record.visibility === "system") return undefined
 	return { ...record, latestOutcome: record.latestOutcome ?? buildAgentOutcome(record) }
+}
+
+/**
+ * Run an async function while showing a transient entry in the agent overlay.
+ * The description appears in the agents widget ("N running" footer + overlay)
+ * for the duration of the call — the same visual feedback as a real subagent.
+ *
+ * Falls back to calling fn() directly when no agent system is active
+ * (e.g. unit tests, non-TUI contexts).
+ */
+export async function runWithOverlay<T>(description: string, fn: () => Promise<T>): Promise<T> {
+	if (!activeManager) return fn()
+	const id = activeManager.registerTransient(description)
+	activeWidget?.ensureTimer()
+	activeWidget?.update()
+	try {
+		const result = await fn()
+		activeManager.completeTransient(id)
+		activeWidget?.markFinished(id)
+		activeWidget?.update()
+		return result
+	} catch (err) {
+		activeManager.completeTransient(id)
+		activeWidget?.markFinished(id)
+		activeWidget?.update()
+		throw err
+	}
 }
 
 function readAgentTaskRef(params: Record<string, unknown>): AgentTaskRef | undefined {
@@ -824,6 +852,7 @@ export default function (pi: ExtensionAPI) {
 	let currentUi: ExtensionUIContext | undefined
 
 	const widget = new AgentWidget(manager, agentActivity)
+	activeWidget = widget
 	const listUserVisibleAgents = () => manager.listAgents().filter((a) => a.visibility !== "system")
 
 	pi.on("session_shutdown", async () => {
