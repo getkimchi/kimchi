@@ -13,7 +13,12 @@ export function appendBeforeBody(html: string, snippet: string): string {
 	return `${html}\n${snippet}\n`
 }
 
-export function postProcessJsonlExport(filePath: string): void {
+export interface PostProcessJsonlExportOptions {
+	/** Effective system prompt at export time (from live AgentSession). */
+	systemPrompt?: string
+}
+
+export function postProcessJsonlExport(filePath: string, options?: PostProcessJsonlExportOptions): void {
 	const raw = readFileSync(filePath, "utf-8")
 	const lines = raw.split(/\r?\n/).filter((l) => l.trim().length > 0)
 	const traceInjected = injectTraceIdsIntoExport(lines)
@@ -41,6 +46,10 @@ export function postProcessJsonlExport(filePath: string): void {
 		const first = JSON.parse(processed[0]) as Record<string, unknown>
 		if (first.type === "session") {
 			first.appVersion = getVersion()
+			const systemPrompt = options?.systemPrompt?.trim()
+			if (systemPrompt) {
+				first.systemPrompt = systemPrompt
+			}
 			// Spread the flat telemetry.* / config.* key-value pairs onto the
 			// header. Naturally idempotent: reassigning the same primitives.
 			if (metadata) {

@@ -182,7 +182,8 @@ const _origExportToJsonl = (AgentSession as any).prototype.exportToJsonl
 ;(AgentSession as any).prototype.exportToJsonl = async function (outputPath?: string) {
 	const filePath = _origExportToJsonl.call(this, outputPath)
 	try {
-		postProcessJsonlExport(filePath)
+		const systemPrompt = typeof this.systemPrompt === "string" ? this.systemPrompt : undefined
+		postProcessJsonlExport(filePath, { systemPrompt })
 	} catch (err) {
 		console.warn("[export-post-process] Failed to post-process JSONL export:", err)
 	}

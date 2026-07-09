@@ -72,6 +72,34 @@ describe("postProcessJsonlExport", () => {
 		expect(header.appVersion).toBeDefined()
 	})
 
+	it("injects systemPrompt into the session header when provided", () => {
+		const lines = [JSON.stringify({ type: "session", version: 3, id: "s1" })]
+		const filePath = join(tmpDir, "export-system-prompt.jsonl")
+		writeFileSync(filePath, `${lines.join("\n")}\n`, "utf-8")
+
+		postProcessJsonlExport(filePath, { systemPrompt: "You are a helpful assistant." })
+
+		const result = readFileSync(filePath, "utf-8")
+			.split("\n")
+			.filter((l) => l.trim().length > 0)
+		const header = JSON.parse(result[0])
+		expect(header.systemPrompt).toBe("You are a helpful assistant.")
+	})
+
+	it("does not inject systemPrompt when it is empty or whitespace", () => {
+		const lines = [JSON.stringify({ type: "session", version: 3, id: "s1" })]
+		const filePath = join(tmpDir, "export-no-system-prompt.jsonl")
+		writeFileSync(filePath, `${lines.join("\n")}\n`, "utf-8")
+
+		postProcessJsonlExport(filePath, { systemPrompt: "   \n  " })
+
+		const result = readFileSync(filePath, "utf-8")
+			.split("\n")
+			.filter((l) => l.trim().length > 0)
+		const header = JSON.parse(result[0])
+		expect(header.systemPrompt).toBeUndefined()
+	})
+
 	it("preserves trace ID injection", () => {
 		const lines = [
 			JSON.stringify({ type: "session", version: 3, id: "s1" }),
