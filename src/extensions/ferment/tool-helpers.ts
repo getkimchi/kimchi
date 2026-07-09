@@ -13,7 +13,7 @@ import type { Command, TransitionError } from "../../ferment/state-machine.js"
 import { applyCommand } from "../../ferment/state-machine.js"
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
 import { getMultiModelEnabled } from "../multi-model.js"
-import { requestSharedFooterRender } from "../shared-footer.js"
+import { requestSharedStatusLineRender } from "../shared-status-line.js"
 import { publicToolNameForActionKind } from "./action-tool-names.js"
 import { emitFermentDomainEvent } from "./domain-events-emitter.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
@@ -206,7 +206,7 @@ export function createApplyAndPersist(runtime: FermentRuntime) {
 			// trigger. Request a footer re-render so the status line reflects the
 			// new phase/step/state immediately instead of going stale until the
 			// next user keypress or message render.
-			requestSharedFooterRender()
+			requestSharedStatusLineRender()
 			if (runtime.events) {
 				try {
 					emitFermentDomainEvent(runtime.events, cmd, outcome.ferment)

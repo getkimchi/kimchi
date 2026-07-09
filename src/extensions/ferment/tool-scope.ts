@@ -2,7 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Ferment } from "../../ferment/types.js"
 import * as ToolProfileManager from "../../shared/planning/tool-profile-manager.js"
 import { isAgentWorker } from "../agent-worker-context.js"
-import { requestSharedFooterRender } from "../shared-footer.js"
+import { requestSharedStatusLineRender } from "../shared-status-line.js"
 import type { FermentRuntime } from "./runtime.js"
 import { FERMENT_TOOLS } from "./tool-names.js"
 
@@ -178,5 +178,5 @@ export function setActiveFermentAndApplyProfile(
 	// loadFermentSilently) which run as deferred actions outside any natural
 	// render cycle. Request a footer render so the status line picks up the
 	// newly-active (or newly-cleared) ferment immediately.
-	requestSharedFooterRender()
+	requestSharedStatusLineRender()
 }

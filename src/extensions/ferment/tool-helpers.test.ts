@@ -4,7 +4,7 @@ import { join } from "node:path"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import type { Ferment } from "../../ferment/types.js"
-import * as sharedFooter from "../shared-footer.js"
+import * as sharedStatusLine from "../shared-status-line.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
 
@@ -125,8 +125,8 @@ describe("createApplyAndPersist", () => {
 		// activate_ferment_phase, ...) flow through createApplyAndPersist. The footer's
 		// ferment segment reads getActive() at render time, so without an explicit
 		// render request the status line goes stale until a keypress or message
-		// render happens. Each successful mutation must trigger requestSharedFooterRender.
-		const renderSpy = vi.spyOn(sharedFooter, "requestSharedFooterRender").mockImplementation(() => {})
+		// render happens. Each successful mutation must trigger requestSharedStatusLineRender.
+		const renderSpy = vi.spyOn(sharedStatusLine, "requestSharedStatusLineRender").mockImplementation(() => {})
 		const { runtime, storage } = createRuntime()
 		const applyAndPersist = createApplyAndPersist(runtime)
 		const ferment = scopeDraft(applyAndPersist, storage.create("Render On Mutate"))
