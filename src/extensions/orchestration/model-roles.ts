@@ -250,6 +250,27 @@ export function getModelRolesWarnings(): readonly ModelRolesWarning[] {
 	return _resolved.warnings
 }
 
+/**
+ * Collect every model ref referenced by any role (orchestrator, planner,
+ * builder, reviewer, explorer, researcher, judge) into a de-duplicated,
+ * deterministically sorted array. Normalization is limited to exact string
+ * de-duplication; the configured case is preserved and ordering is fixed via
+ * `.sort()` so the result is stable across calls.
+ */
+export function getAllowedMultiModelRefs(): string[] {
+	const roles = getModelRoles()
+	const refs = new Set<string>()
+	for (const key of ROLE_KEYS) {
+		const value = roles[key]
+		if (Array.isArray(value)) {
+			for (const ref of value) refs.add(ref)
+		} else if (typeof value === "string" && value.length > 0) {
+			refs.add(value)
+		}
+	}
+	return Array.from(refs).sort()
+}
+
 export function resetModelRolesCache(): void {
 	_resolved = undefined
 }

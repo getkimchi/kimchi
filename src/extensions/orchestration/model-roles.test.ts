@@ -25,7 +25,9 @@ import { type ModelCustomMetadata, resetModelMetadataCache, saveModelMetadata } 
 import {
 	DEFAULT_MODEL_ROLES,
 	type ModelRoles,
+	applyRoleAugmentation,
 	extractCustomConfigs,
+	getAllowedMultiModelRefs,
 	modelIdFromRef,
 	normalizeRoleModels,
 	parseModelRoles,
@@ -441,5 +443,122 @@ describe("extractCustomConfigs", () => {
 			tier: "heavy",
 			description: "From global store",
 		})
+	})
+})
+
+describe("saveModelRoles", () => {
+	const testDir = join(tmpdir(), `kimchi-model-roles-test-${process.pid}`)
+	const testPath = join(testDir, "settings.json")
+
+	afterEach(() => {
+		try {
+			rmSync(testDir, { recursive: true, force: true })
+		} catch {}
+	})
+
+	it("saves string roles to modelRoles key", () => {
+		const roles: ModelRoles = {
+			...DEFAULT_MODEL_ROLES,
+			builder: "anthropic/claude-sonnet-4-5",
+		}
+		saveModelRoles(roles)
+		const saved = JSON.parse(readFileSync(testPath, "utf-8"))
+		expect(saved.modelRoles.builder).toBe("anthropic/claude-sonnet-4-5")
+	})
+
+	it("does not write modelMetadata", () => {
+		const roles: ModelRoles = {
+			...DEFAULT_MODEL_ROLES,
+			builder: "anthropic/claude-sonnet-4-5",
+		}
+		saveModelRoles(roles)
+		const saved = JSON.parse(readFileSync(testPath, "utf-8"))
+		expect(saved.modelMetadata).toBeUndefined()
+	})
+
+	it("preserves existing modelMetadata when saving roles", () => {
+		mkdirSync(testDir, { recursive: true })
+		const metadata = new Map<string, ModelCustomMetadata>([["anthropic/claude-opus-4-6", { tier: "heavy" }]])
+		saveModelMetadata(metadata, testPath)
+
+		const roles: ModelRoles = {
+			...DEFAULT_MODEL_ROLES,
+			builder: "openai/gpt-4o",
+		}
+		saveModelRoles(roles)
+
+		const saved = JSON.parse(readFileSync(testPath, "utf-8"))
+		expect(saved.modelMetadata["anthropic/claude-opus-4-6"]).toEqual({ tier: "heavy" })
+		expect(saved.modelRoles.builder).toBe("openai/gpt-4o")
+	})
+})
+
+describe("getAllowedMultiModelRefs", () => {
+	it("returns sorted unique refs for default roles", () => {
+		applyRoleAugmentation(() => ({ ...DEFAULT_MODEL_ROLES }))
+		expect(getAllowedMultiModelRefs()).toEqual([
+			"kimchi-dev/kimi-k2.7",
+			"kimchi-dev/minimax-m3",
+			"kimchi-dev/nemotron-3-ultra-fp4",
+		])
+	})
+
+	it("de-duplicates refs shared across multiple roles", () => {
+		const roles: ModelRoles = {
+			orchestrator: "kimchi-dev/kimi-k2.7",
+			planner: "kimchi-dev/kimi-k2.7",
+			builder: ["kimchi-dev/minimax-m3", "kimchi-dev/kimi-k2.7"],
+			reviewer: ["kimchi-dev/kimi-k2.7"],
+			explorer: "kimchi-dev/nemotron-3-ultra-fp4",
+			researcher: "kimchi-dev/minimax-m3",
+			judge: ["kimchi-dev/kimi-k2.7"],
+		}
+		applyRoleAugmentation(() => roles)
+		// kimi-k2.7 appears in 5 roles but should be listed once
+		expect(getAllowedMultiModelRefs()).toEqual([
+			"kimchi-dev/kimi-k2.7",
+			"kimchi-dev/minimax-m3",
+			"kimchi-dev/nemotron-3-ultra-fp4",
+		])
+	})
+
+	it("returns refs in sorted order regardless of configuration order", () => {
+		const roles: ModelRoles = {
+			orchestrator: "openai/gpt-4o",
+			planner: "anthropic/claude-sonnet-4-5",
+			builder: ["google/gemini-pro"],
+			reviewer: "anthropic/claude-opus-4-7",
+			explorer: "openai/gpt-4o",
+			researcher: "anthropic/claude-sonnet-4-5",
+			judge: ["google/gemini-pro"],
+		}
+		applyRoleAugmentation(() => roles)
+		expect(getAllowedMultiModelRefs()).toEqual([
+			"anthropic/claude-opus-4-7",
+			"anthropic/claude-sonnet-4-5",
+			"google/gemini-pro",
+			"openai/gpt-4o",
+		])
+	})
+
+	it("handles mixed single-string and array roles", () => {
+		const roles: ModelRoles = {
+			orchestrator: "provider-a/model-1",
+			planner: "provider-b/model-2",
+			builder: "provider-c/model-3",
+			reviewer: ["provider-d/model-4"],
+			explorer: "provider-e/model-5",
+			researcher: ["provider-a/model-1"],
+			judge: "provider-f/model-6",
+		}
+		applyRoleAugmentation(() => roles)
+		expect(getAllowedMultiModelRefs()).toEqual([
+			"provider-a/model-1",
+			"provider-b/model-2",
+			"provider-c/model-3",
+			"provider-d/model-4",
+			"provider-e/model-5",
+			"provider-f/model-6",
+		])
 	})
 })
