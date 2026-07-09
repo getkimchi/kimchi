@@ -1,5 +1,4 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { getScopingProgress } from "../../ferment/engine.js"
 import type { DeclarativeAction } from "../../ferment/engine.js"
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
 import { formatActionNudgeLine } from "./action-tool-names.js"
@@ -194,7 +193,6 @@ export function scheduleNextFermentAction(
 	const breadcrumb = `${tag} [${action.kind}]: "${ferment.name}" [${ferment.status}]${phaseInfo}${stepInfo}`
 
 	const baseMsg = buildContextualNudge(ferment, action)
-	const scopeProgress = getScopingProgress(ferment)
 	const interruptedPrefix =
 		ferment.status === "running"
 			? `RESUMING ferment "${ferment.name}" — the previous session was interrupted. Pick up the work immediately. Do NOT explain or summarize — execute the next action below.\n\n`
@@ -203,7 +201,7 @@ export function scheduleNextFermentAction(
 
 	tryPiAction(() => {
 		pi.appendEntry("ferment_breadcrumb", {
-			text: `${breadcrumb} · policy ${runtime.getContinuationPolicy()} · scoping ${scopeProgress.answered}/${scopeProgress.total}`,
+			text: `${breadcrumb} · policy ${runtime.getContinuationPolicy()}`,
 		})
 		safeSendMessage(
 			pi,
@@ -234,11 +232,10 @@ export function scheduleFermentWakeUp(
 	if (opts.skipNudge && decision.action.kind === "scope") return
 	if (shouldSuppressHiddenNudge(decision.action, runtime.getContinuationPolicy())) return
 
-	const scopeProgress = getScopingProgress(ferment)
 	const tag = opts.tag ?? "Wake-up"
 	tryPiAction(() => {
 		pi.appendEntry("ferment_breadcrumb", {
-			text: `${tag} [${decision.action.kind}]: "${ferment.name}" [${ferment.status}] · policy ${runtime.getContinuationPolicy()} · scoping ${scopeProgress.answered}/${scopeProgress.total}`,
+			text: `${tag} [${decision.action.kind}]: "${ferment.name}" [${ferment.status}] · policy ${runtime.getContinuationPolicy()}`,
 		})
 		safeSendMessage(
 			pi,
