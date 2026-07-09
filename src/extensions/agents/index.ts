@@ -1155,11 +1155,12 @@ ${AGENT_TOOL_GUIDELINES}`,
 					}
 				}
 
+				const sessionId = ctx.sessionManager.getSessionId()
 				// Multi-model guard: when multi-model mode is active and the caller supplied
 				// an explicit model, the resolved model must belong to the configured
 				// multi-model role pool. This runs before budget-retry and task_ref checks
 				// so invalid models are rejected immediately.
-				if (getMultiModelEnabled() && resolvedConfig.modelFromParams) {
+				if (getMultiModelEnabled(sessionId) && resolvedConfig.modelFromParams) {
 					const fullRef = `${(model as { provider?: string }).provider}/${(model as { id?: string }).id}`
 					const allowed = new Set(getAllowedMultiModelRefs())
 					if (!allowed.has(fullRef)) {

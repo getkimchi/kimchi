@@ -80,7 +80,7 @@ vi.mock("./settings.js", () => ({
 	applyAndEmitLoaded: vi.fn(),
 	saveAndEmitChanged: vi.fn(),
 }))
-vi.mock("../prompt-construction/prompt-enrichment.js", () => ({ getMultiModelEnabled: vi.fn().mockReturnValue(false) }))
+vi.mock("../multi-model.js", () => ({ getMultiModelEnabled: vi.fn().mockReturnValue(false) }))
 vi.mock("../model-guard.js", () => ({ sessionHasImages: vi.fn().mockReturnValue(false) }))
 vi.mock("../shared-input.js", () => ({ isRawInputCaptureActive: vi.fn().mockReturnValue(false) }))
 vi.mock("../hide-thinking.js", () => ({ filterThinkingForDisplay: vi.fn().mockReturnValue("") }))
@@ -97,8 +97,8 @@ vi.mock("../orchestration/model-roles.js", () => ({
 }))
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { getMultiModelEnabled } from "../multi-model.js"
 import { getAllowedMultiModelRefs } from "../orchestration/model-roles.js"
-import { getMultiModelEnabled } from "../prompt-construction/prompt-enrichment.js"
 import agentsExtension from "./index.js"
 import { AgentManager as MockedAgentManager } from "./manager/agent-manager.js"
 
@@ -489,9 +489,9 @@ describe("Agent tool multi-mode model guard", () => {
 describe("mock wiring", () => {
 	it("getMultiModelEnabled reflects mock toggles", () => {
 		vi.mocked(getMultiModelEnabled).mockReturnValue(true)
-		expect(getMultiModelEnabled()).toBe(true)
+		expect(getMultiModelEnabled("session-1")).toBe(true)
 		vi.mocked(getMultiModelEnabled).mockReturnValue(false)
-		expect(getMultiModelEnabled()).toBe(false)
+		expect(getMultiModelEnabled("session-1")).toBe(false)
 	})
 
 	it("getAllowedMultiModelRefs reflects mock overrides", () => {
