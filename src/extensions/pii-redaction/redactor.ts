@@ -113,6 +113,18 @@ function isSensitiveKey(key: string): boolean {
 }
 
 /**
+ * Keys whose values are diagnostic identifiers (not secrets) and must
+ * survive redaction unchanged. Trace IDs are captured from LLM provider
+ * response headers and stored as `traceId` (string) or `traceIds` (string[]);
+ * the bulkhead secret engine can false-positive on them.
+ */
+const PRESERVED_KEYS = new Set(["traceid", "traceids"])
+
+function isPreservedKey(key: string): boolean {
+	return PRESERVED_KEYS.has(key.toLowerCase())
+}
+
+/**
  * Apply custom regex patterns that the bulkhead engine does not cover.
  * This runs as a second pass after `engine.scan()`.
  */
@@ -183,6 +195,11 @@ export async function redactObjectStrings<T>(obj: T): Promise<T> {
 		const entries = Object.entries(obj as Record<string, unknown>)
 		const values = await Promise.all(
 			entries.map(([key, value]) => {
+				// Trace IDs are diagnostic identifiers, not secrets — pass through
+				// unchanged (handles both `traceId: string` and `traceIds: string[]`).
+				if (isPreservedKey(key)) {
+					return Promise.resolve(value)
+				}
 				// Redact any string value stored under a sensitive key name.
 				if (typeof value === "string" && isSensitiveKey(key)) {
 					return Promise.resolve("[REDACTED-SECRET_FIELD]")

@@ -282,6 +282,49 @@ describe("redactObjectStrings — sensitive JSON fields", () => {
 	})
 })
 
+describe("redactObjectStrings — trace ID preservation", () => {
+	beforeEach(() => resetRedactorEngine())
+	afterEach(() => resetRedactorEngine())
+
+	it("preserves traceId and traceIds while redacting sibling secrets", async () => {
+		const input = {
+			traceId: "9f4e8d2c1b0a5f6e",
+			traceIds: ["9f4e8d2c1b0a5f6e", "diag-trace-123"],
+			apiKey: "AKIAIOSFODNN7EXAMPLE",
+			message: "Key: AKIAIOSFODNN7EXAMPLE",
+		}
+		const result = await redactObjectStrings(input)
+		// Trace IDs unchanged
+		expect(result.traceId).toBe("9f4e8d2c1b0a5f6e")
+		expect(result.traceIds).toEqual(["9f4e8d2c1b0a5f6e", "diag-trace-123"])
+		// Sibling secret field still redacted
+		expect(result.apiKey).toBe("[REDACTED-SECRET_FIELD]")
+		expect(result.message).toContain("[REDACTED-AWS_ACCESS_KEY]")
+		expect(result.message).not.toContain("AKIAIOSFODNN7EXAMPLE")
+	})
+
+	it("preserves traceId when undefined", async () => {
+		const result = await redactObjectStrings({ traceId: undefined, name: "x" })
+		expect(result).toEqual({ traceId: undefined, name: "x" })
+	})
+
+	it("preserves nested traceIds inside request_diagnostics entries", async () => {
+		const input = {
+			type: "custom",
+			customType: "request_diagnostics",
+			data: {
+				status: 200,
+				traceId: "diag-trace-123",
+				apiKey: "AKIAIOSFODNN7EXAMPLE",
+			},
+		}
+		const result = await redactObjectStrings(input)
+		expect(result.data.traceId).toBe("diag-trace-123")
+		expect(result.data.apiKey).toBe("[REDACTED-SECRET_FIELD]")
+		expect(result.data.status).toBe(200)
+	})
+})
+
 describe("getRedactionConfig — opt-out paths", () => {
 	let savedHome: string | undefined
 	let savedEnv: string | undefined
