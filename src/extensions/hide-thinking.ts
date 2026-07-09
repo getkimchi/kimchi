@@ -9,8 +9,8 @@
  * upstream framework and are NOT touched by this extension.
  *
  * Behaviour controlled by `hideThinkingBlock` in settings.json:
- * - true: hides thinking content entirely from display
- * - false (default): strips tags, dims content (last 5 lines shown)
+ * - true (default): hides thinking content entirely from display
+ * - false: strips tags, dims content (last 5 lines shown)
  *
  * Architecture:
  * - message_start: initialises per-message streaming state

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { beforeEach, describe, expect, it, vi } from "vitest"
@@ -82,6 +82,32 @@ describe("hideThinkingExtension", () => {
 		try {
 			_resetState()
 			expect(isHideThinkingEnabled()).toBe(true)
+		} finally {
+			vi.unstubAllEnvs()
+			rmSync(tempDir, { recursive: true, force: true })
+		}
+	})
+
+	it("hides thinking when settings.json exists without hideThinkingBlock key", () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "kimchi-hide-thinking-"))
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", tempDir)
+		writeFileSync(join(tempDir, "settings.json"), JSON.stringify({ footer: { pinned: [] } }))
+		try {
+			_resetState()
+			expect(isHideThinkingEnabled()).toBe(true)
+		} finally {
+			vi.unstubAllEnvs()
+			rmSync(tempDir, { recursive: true, force: true })
+		}
+	})
+
+	it("dims thinking when hideThinkingBlock is false in settings.json", () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "kimchi-hide-thinking-"))
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", tempDir)
+		writeFileSync(join(tempDir, "settings.json"), JSON.stringify({ hideThinkingBlock: false }))
+		try {
+			_resetState()
+			expect(isHideThinkingEnabled()).toBe(false)
 		} finally {
 			vi.unstubAllEnvs()
 			rmSync(tempDir, { recursive: true, force: true })

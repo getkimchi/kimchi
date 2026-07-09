@@ -159,6 +159,13 @@ export function upgradeLegacyRetrySettings(retry: unknown): RetrySettings | unde
 	return upgraded
 }
 
+/** Seed hideThinkingBlock when absent so Kimchi and upstream pi agree on the default. */
+export function ensureHideThinkingBlockDefault(settings: Record<string, unknown>): boolean {
+	if ("hideThinkingBlock" in settings) return false
+	settings.hideThinkingBlock = true
+	return true
+}
+
 export const THIRD_PARTY_MAX_RETRIES = 4
 
 export const SEARCH_STRATEGY_DEFAULTS: SearchStrategyConfig = {
