@@ -51,6 +51,8 @@ export interface FakeResponseScript {
 	closeSocketAfterChunks?: number
 	status?: number
 	body?: unknown
+	/** Route this script to the subagent queue (consumed by subagent requests). */
+	forSubagent?: boolean
 }
 
 export interface RecordedRequest extends FakeResponseRequest {
@@ -100,7 +102,15 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 	const requests: RecordedRequest[] = []
 	const sockets = new Set<Socket>()
 	const models = resolveModels(options.models)
-	const responseQueue = [...options.responses]
+	const mainQueue: FakeResponseScript[] = []
+	const subagentQueue: FakeResponseScript[] = []
+	for (const script of options.responses) {
+		if (script.forSubagent === true) {
+			subagentQueue.push(script)
+		} else {
+			mainQueue.push(script)
+		}
+	}
 
 	const server = createServer(async (req, res) => {
 		const body = await readJsonBody(req)
@@ -140,7 +150,7 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 			}
 
 			if (req.method === "POST" && req.url?.startsWith("/openai/v1/chat/completions")) {
-				const script = takeNextResponse(responseQueue, request) ?? { stream: ["fake response"] }
+				const script = pickResponseScript(body, mainQueue, subagentQueue)
 				await writeChatCompletion(res, script, body)
 				return
 			}
@@ -178,15 +188,6 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 		requests,
 		stop: () => closeServer(server, sockets),
 	}
-}
-
-function takeNextResponse(
-	responseQueue: FakeResponseScript[],
-	request: FakeResponseRequest,
-): FakeResponseScript | undefined {
-	const index = responseQueue.findIndex((script) => !script.match || script.match(request))
-	if (index === -1) return undefined
-	return responseQueue.splice(index, 1)[0]
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
@@ -352,6 +353,43 @@ function parseAgentId(value: unknown): string | undefined {
 
 function asRecord(value: unknown): Record<string, unknown> {
 	return value && typeof value === "object" ? (value as Record<string, unknown>) : {}
+}
+
+/**
+ * A chat-completion request is treated as a subagent turn when any system
+ * message carries the inherited-prompt marker the host injects for spawned
+ * subagents. This lets the fake server route scripted responses to the
+ * correct queue even when subagent and orchestrator turns interleave.
+ */
+function isSubagentRequest(body: unknown): boolean {
+	const messages = asRecord(body).messages
+	if (!Array.isArray(messages)) return false
+	return messages.some((message) => {
+		const record = asRecord(message)
+		if (record.role !== "system") return false
+		return readMessageContent(record.content).includes("<inherited_system_prompt>")
+	})
+}
+
+/**
+ * Select the next scripted response, preferring the subagent queue for
+ * subagent requests and the main queue otherwise. Falls back to the other
+ * queue when the chosen one is empty to avoid hangs if scripted counts are
+ * slightly off. When `subagentQueue` is empty this reduces to the legacy
+ * single-queue behaviour.
+ */
+function pickResponseScript(
+	body: unknown,
+	mainQueue: FakeResponseScript[],
+	subagentQueue: FakeResponseScript[],
+): FakeResponseScript {
+	const useSubagent = subagentQueue.length > 0 && isSubagentRequest(body)
+	const primary = useSubagent ? subagentQueue : mainQueue
+	if (primary.length > 0) {
+		return primary.shift() ?? { stream: ["fake response"] }
+	}
+	const fallback = useSubagent ? mainQueue : subagentQueue
+	return fallback.shift() ?? { stream: ["fake response"] }
 }
 
 function unixNow(): number {

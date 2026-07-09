@@ -190,6 +190,8 @@ export interface AgentRecord {
 	toolCallId?: string
 	/** Path to the streaming output transcript file. */
 	outputFile?: string
+	/** The system prompt used for this agent run. */
+	systemPrompt?: string
 	/** Persisted session file for this agent run, when the parent session is persisted. */
 	sessionFile?: string
 	/** Cleanup function for the output file stream subscription. */

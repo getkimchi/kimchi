@@ -684,6 +684,27 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
+	function appendSubagentRecord(record: AgentRecord): void {
+		pi.appendEntry("subagents:record", {
+			id: record.id,
+			type: record.type,
+			description: record.description,
+			visibility: record.visibility,
+			status: record.status,
+			abortReason: record.abortReason,
+			result: record.result,
+			error: record.error,
+			startedAt: record.startedAt,
+			completedAt: record.completedAt,
+			// Persist file paths so export post-processing can read the
+			// full transcript and attach it to the export. Stripped from
+			// the export output after reading.
+			outputFile: record.outputFile,
+			sessionFile: record.sessionFile,
+			systemPrompt: record.systemPrompt,
+		})
+	}
+
 	let currentBatchAgents: { id: string; joinMode: JoinMode }[] = []
 	let batchFinalizeTimer: ReturnType<typeof setTimeout> | undefined
 	let batchCounter = 0
@@ -730,18 +751,7 @@ export default function (pi: ExtensionAPI) {
 				pi.events.emit("subagents:completed", eventData)
 			}
 
-			pi.appendEntry("subagents:record", {
-				id: record.id,
-				type: record.type,
-				description: record.description,
-				visibility: record.visibility,
-				status: record.status,
-				abortReason: record.abortReason,
-				result: record.result,
-				error: record.error,
-				startedAt: record.startedAt,
-				completedAt: record.completedAt,
-			})
+			appendSubagentRecord(record)
 
 			if (record.resultConsumed) {
 				agentActivity.delete(record.id)
@@ -1349,6 +1359,15 @@ ${AGENT_TOOL_GUIDELINES}`,
 							fgId = a.id
 							agentActivity.set(a.id, fgState)
 							widget.ensureTimer()
+							const rec = manager.getRecord(a.id)
+							if (rec?.outputFile) {
+								rec.outputCleanup = streamToOutputFile(
+									session as Parameters<typeof streamToOutputFile>[0],
+									rec.outputFile,
+									a.id,
+									ctx.cwd,
+								)
+							}
 							break
 						}
 					}
@@ -1362,6 +1381,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 				streamUpdate()
 
 				let childSessionFile: string | undefined
+				let fgOutputFile: string | undefined
 				const parentSessionDir = ctx.sessionManager.getSessionDir()
 				try {
 					childSessionFile = prepareAgentSessionFile(
@@ -1369,6 +1389,12 @@ ${AGENT_TOOL_GUIDELINES}`,
 						ctx.sessionManager.getSessionFile(),
 						ctx.cwd,
 					)?.sessionFile
+					fgOutputFile = createOutputFilePath(
+						ctx.cwd,
+						"placeholder",
+						ctx.sessionManager.getSessionId(),
+						parentSessionDir,
+					)
 				} catch (err) {
 					clearInterval(spinnerInterval)
 					const detail = err instanceof Error ? err.message : String(err)
@@ -1408,6 +1434,11 @@ ${AGENT_TOOL_GUIDELINES}`,
 				const record = manager.getRecord(spawnedId)!
 				fgId = spawnedId
 				record.detachResolver = detachResolve
+				if (fgOutputFile) {
+					record.outputFile = fgOutputFile.replace("placeholder", spawnedId)
+					record.toolCallId = toolCallId
+					writeInitialEntry(record.outputFile, spawnedId, params.prompt as string, ctx.cwd)
+				}
 
 				// biome-ignore lint/style/noNonNullAssertion: promise is always set after spawn() calls startAgent()
 				const raceResult = await Promise.race([record.promise!.then(() => "completed" as const), detachPromise])
@@ -1423,9 +1454,11 @@ ${AGENT_TOOL_GUIDELINES}`,
 						parentSessionDir,
 					)
 					record.outputFile = outputFile
-					record.toolCallId = toolCallId
 					writeInitialEntry(outputFile, spawnedId, params.prompt as string, ctx.cwd)
 					if (record.session) {
+						// Tear down the foreground streaming subscription before
+						// re-subscribing against the same session for background output.
+						record.outputCleanup?.()
 						record.outputCleanup = streamToOutputFile(
 							record.session as Parameters<typeof streamToOutputFile>[0],
 							outputFile,
@@ -1512,6 +1545,10 @@ ${AGENT_TOOL_GUIDELINES}`,
 				if (tokenText) statsParts.push(tokenText)
 				const outcome = record.status === "aborted" ? "aborted" : record.status === "stopped" ? "stopped" : "completed"
 				record.latestOutcome ??= buildAgentOutcome(record)
+				// Persist a subagents:record entry for foreground agents so exports
+				// can enrich them with full transcripts the same way background
+				// agents are handled.
+				appendSubagentRecord(record)
 				return textResult(
 					`${fallbackNote}Agent ${outcome} in ${formatMs(durationMs)} (${statsParts.join(", ")})${getStatusNote(record.status, record.abortReason)}.${getStatusInstruction(record.status, record.abortReason)}\n\n${record.result?.trim() || "No output."}${formatAgentOutcomeBlock(record.latestOutcome)}`,
 					details,

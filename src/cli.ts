@@ -72,6 +72,7 @@ import promptEnrichmentExtension from "./extensions/prompt-construction/prompt-e
 import promptSummaryExtension from "./extensions/prompt-summary.js"
 import questionnaireExtension from "./extensions/questionnaire/index.js"
 import reportBugExtension from "./extensions/report-bug.js"
+import requestTimingExtension from "./extensions/request-timing.js"
 import reviewWriteGuardExtension from "./extensions/review-write-guard.js"
 import rtkRewriteExtension from "./extensions/rtk-rewrite.js"
 import sessionMetadataExtension from "./extensions/session-metadata/index.js"
@@ -181,7 +182,8 @@ const _origExportToJsonl = (AgentSession as any).prototype.exportToJsonl
 ;(AgentSession as any).prototype.exportToJsonl = async function (outputPath?: string) {
 	const filePath = _origExportToJsonl.call(this, outputPath)
 	try {
-		postProcessJsonlExport(filePath)
+		const systemPrompt = typeof this.systemPrompt === "string" ? this.systemPrompt : undefined
+		postProcessJsonlExport(filePath, { systemPrompt })
 	} catch (err) {
 		console.warn("[export-post-process] Failed to post-process JSONL export:", err)
 	}
@@ -593,6 +595,7 @@ try {
 			piiRedactionExtension,
 			stripImagesExtension,
 			traceIdExtension,
+			requestTimingExtension,
 			llmResponseLogExtension,
 			activityExtension,
 			infrastructureErrorTracker.extension,
