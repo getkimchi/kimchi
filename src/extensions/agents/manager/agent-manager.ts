@@ -587,7 +587,9 @@ export class AgentManager {
 		if (!record) return
 		record.status = "completed"
 		record.completedAt = Date.now()
-		this.onStart?.(record)
+		// Schedule removal after a short delay — long enough for the widget to
+		// render one final "✓ done" frame, but not so long it lingers in listAgents().
+		setTimeout(() => this.agents.delete(id), 2000)
 	}
 
 	abort(id: string): boolean {
