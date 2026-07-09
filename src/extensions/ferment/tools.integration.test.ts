@@ -52,6 +52,7 @@ vi.mock("./judge.js", async () => {
 const mockAgentRecords = vi.hoisted(() => new Map<string, unknown>())
 vi.mock("../agents/index.js", () => ({
 	getAgentRecordForTaskValidation: vi.fn((id: string) => mockAgentRecords.get(id)),
+	runWithOverlay: vi.fn((_description: string, fn: () => Promise<unknown>) => fn()),
 }))
 import { createContext } from "../__mocks__/context.js"
 import { pr_dim } from "./colors.js"

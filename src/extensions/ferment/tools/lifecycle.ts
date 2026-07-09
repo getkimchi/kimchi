@@ -764,6 +764,10 @@ export async function completeFerment(
 	// recommendations persisted. Judge-unavailable outcomes remain advisory
 	// (do NOT refuse ship) — judge outages must not block the user.
 	const FERMENT_GRADE_KEY = "__ferment__"
+	// First attempt requires A; after rework B is also acceptable.
+	const priorFermentRetries = runtime.getBlockRetry(params.ferment_id, FERMENT_GRADE_KEY)
+	const minimumAcceptableFermentGrade = priorFermentRetries === 0 ? "A" : "B"
+	const fermentGradeOrder: Record<Grade, number> = { A: 5, B: 4, C: 3, D: 2, F: 1 }
 	let resolvedGrade: { grade: Grade; rationale: string; recommendations?: string[] } | undefined
 	let gradeRationale: string
 	if (journeyResult.ok) {
@@ -774,9 +778,9 @@ export async function completeFerment(
 		}
 		gradeRationale = journeyResult.rationale
 
-		// C/D/F from the final grader — give the agent a bounded number of retries
-		// to fix the recommendations, then accept the grade and ship.
-		if (journeyResult.grade === "C" || journeyResult.grade === "D" || journeyResult.grade === "F") {
+		// Below minimum grade — give the agent a bounded number of retries to fix
+		// the recommendations, then accept the grade and ship.
+		if (fermentGradeOrder[journeyResult.grade] < fermentGradeOrder[minimumAcceptableFermentGrade]) {
 			const recsText = journeyResult.recommendations.map((rec, i) => `  ${i + 1}. ${rec}`).join("\n")
 			const retry = runtime.bumpBlockRetry(params.ferment_id, FERMENT_GRADE_KEY)
 
@@ -787,7 +791,7 @@ export async function completeFerment(
 				// Fall through to the ship path below with the judge's grade + recs.
 			} else {
 				return toolErr(
-					`**Ferment "${ferment.name}"** cannot complete — final LLM grader assigned grade ${journeyResult.grade} (retry ${retry}/${MAX_BLOCK_RETRIES}).\n\nRecommendations:\n${recsText}\n\nAddress the recommendations above and call complete_ferment again with an updated summary.`,
+					`**Ferment "${ferment.name}"** cannot complete — final LLM grader assigned grade ${journeyResult.grade}, minimum required is ${minimumAcceptableFermentGrade} (retry ${retry}/${MAX_BLOCK_RETRIES}).\n\nRecommendations:\n${recsText}\n\nAddress the recommendations above and call complete_ferment again with an updated summary.`,
 				)
 			}
 		}

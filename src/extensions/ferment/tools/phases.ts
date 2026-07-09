@@ -460,6 +460,9 @@ export async function completePhase(
 	)
 
 	// Resolve the final grade + recommendations.
+	// First attempt requires A; after rework B is also acceptable.
+	const priorRetries = runtime.getBlockRetry(params.ferment_id, phase.id)
+	const minimumAcceptableGrade = priorRetries === 0 ? "A" : "B"
 	let finalGrade: Grade = derivedGrade as Grade
 	let finalRationale = rationale
 	let finalRecommendations: string[] = []
@@ -469,7 +472,8 @@ export async function completePhase(
 		finalGrade = phaseJudgeResult.grade
 		finalRationale = phaseJudgeResult.rationale
 		finalRecommendations = phaseJudgeResult.recommendations
-		if (phaseJudgeResult.grade === "C" || phaseJudgeResult.grade === "D" || phaseJudgeResult.grade === "F") {
+		const gradeOrder: Record<Grade, number> = { A: 5, B: 4, C: 3, D: 2, F: 1 }
+		if (gradeOrder[phaseJudgeResult.grade] < gradeOrder[minimumAcceptableGrade]) {
 			judgeRefused = true
 			judgeRecsText = phaseJudgeResult.recommendations.map((rec, i) => `  ${i + 1}. ${rec}`).join("\n")
 		}
@@ -495,7 +499,7 @@ export async function completePhase(
 			// Fall through to the advance path below with the judge's grade + recs.
 		} else {
 			return toolErr(
-				`**Phase "${phase.name}"** cannot complete — LLM grader assigned grade ${phaseJudgeResult.ok ? phaseJudgeResult.grade : "?"} (retry ${retry}/${MAX_BLOCK_RETRIES}).${projectChecksNote}\n\nRecommendations:\n${judgeRecsText}${warnLines}\n\nAddress the recommendations above and call complete_ferment_phase again with an updated summary.`,
+				`**Phase "${phase.name}"** cannot complete — LLM grader assigned grade ${phaseJudgeResult.ok ? phaseJudgeResult.grade : "?"}, minimum required is ${minimumAcceptableGrade} (retry ${retry}/${MAX_BLOCK_RETRIES}).${projectChecksNote}\n\nRecommendations:\n${judgeRecsText}${warnLines}\n\nAddress the recommendations above and call complete_ferment_phase again with an updated summary.`,
 			)
 		}
 	}

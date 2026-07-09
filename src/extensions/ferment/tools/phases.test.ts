@@ -412,7 +412,7 @@ describe("registerPhaseTools", () => {
 		expect(stored?.phases[0].grade?.recommendations).toEqual(recs)
 	})
 
-	it("B-grade advances and persists recommendations", async () => {
+	it("B-grade refuses on first attempt, accepts on rework", async () => {
 		const h = createHarness()
 		const recs = ["Add edge-case test for empty input.", "Wire retry into production call site."]
 		const services = createServices({
@@ -424,14 +424,25 @@ describe("registerPhaseTools", () => {
 			})),
 		})
 
-		const result = await completePhase(
+		// First attempt: B refused (minimum is A on first try).
+		const result1 = await completePhase(
 			h.runtime,
-			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: passingPhaseGates() },
+			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "attempt 1", gates: passingPhaseGates() },
 			{ pi: h.pi },
 			services,
 		)
+		const err1 = result1 as { content: { text: string }[]; isError?: boolean }
+		expect(err1.isError).toBe(true)
+		expect(err1.content.map((c) => c.text).join("\n")).toContain("minimum required is A")
 
-		expect(okText(result)).toContain('**Phase "Phase 1"** done')
+		// Second attempt: B accepted (minimum relaxes to B after rework).
+		const result2 = await completePhase(
+			h.runtime,
+			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "attempt 2", gates: passingPhaseGates() },
+			{ pi: h.pi },
+			services,
+		)
+		expect(okText(result2)).toContain('**Phase "Phase 1"** done')
 		const stored = h.storage.get(h.fermentId)
 		expect(stored?.phases[0].status).toBe("completed")
 		expect(stored?.phases[0].grade?.grade).toBe("B")
