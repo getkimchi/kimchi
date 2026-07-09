@@ -23,6 +23,7 @@ import "./paste-to-editor-patch.js"
 import {
 	DEFAULT_SKILL_PATHS,
 	RETRY_DEFAULTS,
+	ensureHideThinkingBlockDefault,
 	getActiveVendorSkillPaths,
 	loadConfig,
 	readTelemetryConfig,
@@ -363,23 +364,27 @@ try {
 			if ((err as NodeJS.ErrnoException).code === "ENOENT") {
 				writeFileSync(
 					settingsPath,
-					`${JSON.stringify({ quietStartup: true, theme: "kimchi-minimal", retry: RETRY_DEFAULTS }, null, 2)}\n`,
+					`${JSON.stringify({ quietStartup: true, theme: "kimchi-minimal", retry: RETRY_DEFAULTS, hideThinkingBlock: true }, null, 2)}\n`,
 				)
 			} else {
 				console.error(`Warning: could not read ${settingsPath}: ${(err as Error).message}`)
 			}
 		}
 
-		// Seed Kimchi retry defaults for Pi; Pi handles global/project settings merging.
+		// Seed Kimchi harness defaults for Pi; Pi handles global/project settings merging.
 		try {
-			const existing = JSON.parse(readFileSync(settingsPath, "utf-8"))
+			const existing = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>
+			let changed = ensureHideThinkingBlockDefault(existing)
 			const upgraded = upgradeLegacyRetrySettings(existing.retry)
 			if (upgraded) {
 				existing.retry = upgraded
+				changed = true
+			}
+			if (changed) {
 				writeFileSync(settingsPath, `${JSON.stringify(existing, null, 2)}\n`)
 			}
 		} catch {
-			/* retry sync is best-effort */
+			/* settings sync is best-effort */
 		}
 
 		// Bundled themes are write-through cache — owned by the package, not the user.
