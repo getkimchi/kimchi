@@ -41,6 +41,21 @@ describe("classifyLLMGatewayError", () => {
 			reason: "transport_failure",
 		},
 		{
+			name: "connection terminated unexpectedly",
+			message: "connection terminated unexpectedly",
+			reason: "transport_failure",
+		},
+		{
+			name: "request unexpectedly ended",
+			message: "request unexpectedly ended while reading upstream response",
+			reason: "transport_failure",
+		},
+		{
+			name: "stream terminated unexpectedly",
+			message: "provider stream terminated unexpectedly",
+			reason: "transport_failure",
+		},
+		{
 			name: "connection reset by peer",
 			message: 'proxying request: Post "<url>": read tcp 127.0.0.1:1->127.0.0.1:2: read: connection reset by peer',
 			reason: "transport_failure",
@@ -172,6 +187,24 @@ describe("classifyLLMGatewayError", () => {
 		{
 			name: "generic HTTP bad request",
 			message: "400 Bad Request",
+			reason: "bad_request",
+			httpStatusCode: 400,
+		},
+		{
+			name: "bad request with hosted vLLM transport wording",
+			message: "BadRequestError: Hosted_vllmException - error sending request, code 400",
+			reason: "bad_request",
+			httpStatusCode: 400,
+		},
+		{
+			name: "HTTP 400 with transport wording",
+			message: "HTTP 400 error sending request",
+			reason: "bad_request",
+			httpStatusCode: 400,
+		},
+		{
+			name: "status 400 with upstream connect wording",
+			message: "upstream connect error: status code 400",
 			reason: "bad_request",
 			httpStatusCode: 400,
 		},

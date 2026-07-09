@@ -1,12 +1,11 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { isInfrastructureProviderError } from "../infrastructure-error.js"
-import { resetInfrastructureBreaker } from "../upstream-retry-patch.js"
+import { recordInfrastructureBreakerFailure, resetInfrastructureBreaker } from "../upstream-retry-patch.js"
 
 /**
- * Reset half of the infrastructure-error circuit breaker. Errored attempts are counted
- * where they are classified, in the patched retry classifier
- * (upstream-retry-patch.ts); this extension closes the breaker again on any
- * successful assistant message or non-infra provider verdict.
+ * Counts infrastructure-classified assistant errors once per message_end and
+ * closes the breaker again on any successful assistant message or non-infra
+ * provider verdict.
  */
 export default function infrastructureBreakerExtension(pi: ExtensionAPI): void {
 	pi.on("message_end", (event) => {
@@ -16,7 +15,9 @@ export default function infrastructureBreakerExtension(pi: ExtensionAPI): void {
 			resetInfrastructureBreaker()
 			return
 		}
-		if (typeof message.errorMessage !== "string" || !isInfrastructureProviderError(message.errorMessage)) {
+		if (typeof message.errorMessage === "string" && isInfrastructureProviderError(message.errorMessage)) {
+			recordInfrastructureBreakerFailure()
+		} else {
 			resetInfrastructureBreaker()
 		}
 	})

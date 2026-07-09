@@ -83,6 +83,8 @@ const PROVIDER_5XX_TEXT_RE =
 // Named-phrase forms only; numeric statuses are matched via parseHttpStatusCode.
 const TRANSPORT_FAILURE_RE =
 	/\bEOF\b|socket(?: connection was)? closed|socket hang up|other side closed|connection closed|connection reset|connection refused|connection lost|broken pipe|fetch failed|network.?error|connection.?error|upstream.?connect|reset before headers|http2 request did not get a response|i\/o timeout|(?:request|connection|socket|network|fetch|read|write|proxy|http2|tls).{0,30}(?:timeout|timed out)|timed out|EPIPE|ERR_SOCKET_CLOSED|ERR_STREAM_PREMATURE_CLOSE|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN/i
+const TRANSPORT_TERMINATION_RE =
+	/\b(?:connection|request|stream|response|socket|http2 request)\b.{0,40}\b(?:terminated unexpectedly|unexpectedly (?:ended|closed|terminated)|ended unexpectedly|closed unexpectedly)\b/i
 const BAD_REQUEST_TEXT_RE = /bad request|BadRequest/i
 
 function parseHttpStatusCode(rawMessage: string): number | undefined {
@@ -113,14 +115,15 @@ export function classifyLLMGatewayError(rawMessage: string): LLMGatewayError | u
 	if (INVALID_REQUEST_PAYLOAD_RE.test(rawMessage)) return createError("invalid_request_payload", rawMessage, status)
 	if (CONTEXT_WINDOW_RE.test(rawMessage)) return createError("context_window_exceeded", rawMessage, status)
 	if (NON_GATEWAY_PROVIDER_VERDICT_RE.test(rawMessage)) return undefined
+	if (BAD_REQUEST_TEXT_RE.test(rawMessage) || status === 400) return createError("bad_request", rawMessage, status)
 
 	if (RATE_LIMIT_TEXT_RE.test(rawMessage) || status === 429) return createError("rate_limit", rawMessage, status)
 	if (STREAM_INTERRUPTED_RE.test(rawMessage)) return createError("stream_interrupted", rawMessage, status)
 	if (HOSTED_VLLM_PROVIDER_ERROR_RE.test(rawMessage)) return createError("provider_error", rawMessage, status)
 	if (PROVIDER_5XX_TEXT_RE.test(rawMessage) || (status !== undefined && FIVE_XX_STATUS_CODES.has(status)))
 		return createError("provider_5xx", rawMessage, status)
-	if (TRANSPORT_FAILURE_RE.test(rawMessage)) return createError("transport_failure", rawMessage, status)
-	if (BAD_REQUEST_TEXT_RE.test(rawMessage) || status === 400) return createError("bad_request", rawMessage, status)
+	if (TRANSPORT_FAILURE_RE.test(rawMessage) || TRANSPORT_TERMINATION_RE.test(rawMessage))
+		return createError("transport_failure", rawMessage, status)
 
 	return undefined
 }

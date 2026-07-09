@@ -5,6 +5,8 @@ import {
 	installInfrastructureRetryPatch,
 	isInfrastructureBreakerTripped,
 	isInfrastructureErrorRetryable,
+	recordInfrastructureBreakerFailure,
+	resetInfrastructureBreaker,
 	resolveInfrastructureBreakerThreshold,
 } from "./upstream-retry-patch.js"
 
@@ -50,7 +52,7 @@ describe("upstream retry patch", () => {
 
 describe("isInfrastructureErrorRetryable", () => {
 	it("returns false when stopReason is not error", () => {
-		expect(isInfrastructureErrorRetryable({ stopReason: "end_turn", errorMessage: "524" })).toBe(false)
+		expect(isInfrastructureErrorRetryable({ stopReason: "stop", errorMessage: "524" })).toBe(false)
 	})
 
 	it("returns false when errorMessage is absent", () => {
@@ -101,13 +103,24 @@ describe("infrastructure breaker", () => {
 		expect(resolveInfrastructureBreakerThreshold({ [INFRA_BREAKER_THRESHOLD_ENV]: "banana" })).toBe(0)
 	})
 
+	it("does not mutate breaker state while classifying retryability", () => {
+		const isRetryable = installPatchedClassifier(1)
+
+		expect(isRetryable(networkError)).toBe(true)
+		expect(isRetryable(networkError)).toBe(true)
+		expect(isInfrastructureBreakerTripped()).toBe(false)
+	})
+
 	it("trips after the threshold of consecutive infrastructure errors and stops retries", () => {
 		vi.spyOn(console, "error").mockImplementation(() => {})
 		const isRetryable = installPatchedClassifier(2)
 
 		expect(isRetryable(networkError)).toBe(true)
-		expect(isRetryable(networkError)).toBe(false)
+		recordInfrastructureBreakerFailure()
+		expect(isRetryable(networkError)).toBe(true)
+		recordInfrastructureBreakerFailure()
 		expect(isInfrastructureBreakerTripped()).toBe(true)
+		expect(isRetryable(networkError)).toBe(false)
 	})
 
 	it("does not count upstream-only retryable errors", () => {
@@ -123,8 +136,11 @@ describe("infrastructure breaker", () => {
 		const isRetryable = installPatchedClassifier(2)
 
 		expect(isRetryable({ stopReason: "error", errorMessage: "429 rate limit exceeded" })).toBe(true)
-		expect(isRetryable({ stopReason: "error", errorMessage: "429 rate limit exceeded" })).toBe(false)
+		recordInfrastructureBreakerFailure()
+		expect(isRetryable({ stopReason: "error", errorMessage: "429 rate limit exceeded" })).toBe(true)
+		recordInfrastructureBreakerFailure()
 		expect(isInfrastructureBreakerTripped()).toBe(true)
+		expect(isRetryable({ stopReason: "error", errorMessage: "429 rate limit exceeded" })).toBe(false)
 	})
 
 	it("counts provider 5xx errors even when upstream retries them", () => {
@@ -132,15 +148,34 @@ describe("infrastructure breaker", () => {
 		const isRetryable = installPatchedClassifier(2, (message) => message.errorMessage === "500 internal server error")
 
 		expect(isRetryable({ stopReason: "error", errorMessage: "500 internal server error" })).toBe(true)
-		expect(isRetryable({ stopReason: "error", errorMessage: "500 internal server error" })).toBe(false)
+		recordInfrastructureBreakerFailure()
+		expect(isRetryable({ stopReason: "error", errorMessage: "500 internal server error" })).toBe(true)
+		recordInfrastructureBreakerFailure()
 		expect(isInfrastructureBreakerTripped()).toBe(true)
+		expect(isRetryable({ stopReason: "error", errorMessage: "500 internal server error" })).toBe(false)
 	})
 
 	it("never trips when disabled", () => {
 		const isRetryable = installPatchedClassifier(0)
 
-		for (let i = 0; i < 10; i++) expect(isRetryable(networkError)).toBe(true)
+		for (let i = 0; i < 10; i++) {
+			recordInfrastructureBreakerFailure()
+			expect(isRetryable(networkError)).toBe(true)
+		}
 		expect(isInfrastructureBreakerTripped()).toBe(false)
+	})
+
+	it("resetInfrastructureBreaker clears a tripped breaker", () => {
+		vi.spyOn(console, "error").mockImplementation(() => {})
+		const isRetryable = installPatchedClassifier(1)
+
+		recordInfrastructureBreakerFailure()
+		expect(isInfrastructureBreakerTripped()).toBe(true)
+		expect(isRetryable(networkError)).toBe(false)
+
+		resetInfrastructureBreaker()
+		expect(isInfrastructureBreakerTripped()).toBe(false)
+		expect(isRetryable(networkError)).toBe(true)
 	})
 
 	it("stays irrelevant for successful messages", () => {
