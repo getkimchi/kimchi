@@ -1,5 +1,11 @@
-import { type Theme, ToolExecutionComponent, UserMessageComponent, initTheme } from "@earendil-works/pi-coding-agent"
-import { visibleWidth } from "@earendil-works/pi-tui"
+import {
+	type Theme,
+	type ToolDefinition,
+	ToolExecutionComponent,
+	UserMessageComponent,
+	initTheme,
+} from "@earendil-works/pi-coding-agent"
+import { Text, visibleWidth } from "@earendil-works/pi-tui"
 import { beforeAll, describe, expect, it } from "vitest"
 import toolRenderingExtension, {
 	formatToolTimer,
@@ -397,5 +403,44 @@ describe("set_phase tool summary", () => {
 	it("summarizes set_phase calls with unknown phase fallback", () => {
 		const summary = summarizeOpenAiToolCall("set_phase", {}, plainTheme, (path) => path)
 		expect(summary).toBe("set phase")
+	})
+})
+
+describe("Agent tool rendering", () => {
+	beforeAll(() => {
+		toolRenderingExtension({
+			registerCommand: () => {},
+			registerTool: () => {},
+			on: () => {},
+		} as never)
+	})
+
+	function createAgentComponent() {
+		return new ToolExecutionComponent(
+			"Agent",
+			"tc-agent-1",
+			{ description: "Add multi-mode agent tool tests", subagent_type: "Builder" },
+			{},
+			{
+				renderCall: (args: { description?: string }, theme: Theme) =>
+					new Text(`▸ ${theme.fg("toolTitle", theme.bold("Agent"))} ${args.description ?? ""}`, 0, 0),
+				renderResult: () => new Text("  ⎿ Done", 0, 0),
+			} as unknown as ToolDefinition,
+			// biome-ignore lint/suspicious/noExplicitAny: minimal UI test double
+			{ requestRender: () => {} } as any,
+			"/tmp",
+		)
+	}
+
+	it("uses the registered tool definition renderers instead of the generic renderer", () => {
+		const component = createAgentComponent()
+		component.markExecutionStarted()
+		component.updateResult({ content: [{ type: "text", text: "Agent completed" }], isError: false }, false)
+
+		const rendered = component.render(80).join("\n")
+		const description = "Add multi-mode agent tool tests"
+
+		expect(rendered).toContain(description)
+		expect(rendered.split(description).length - 1).toBe(1)
 	})
 })

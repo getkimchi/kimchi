@@ -2571,7 +2571,11 @@ const OPENAI_STYLE_TOOL_NAMES = new Set([
 	"Skill",
 	"EnterPlanMode",
 	"ExitPlanMode",
-	"Agent",
+	// Agent is deliberately excluded: it has its own renderCall/renderResult in
+	// extensions/agents/index.ts. Routing it through the generic renderer causes
+	// the call header and the result header to be rendered as two duplicate
+	// "Agent <description>" lines because ToolExecutionComponent keeps them as
+	// separate components.
 	"get_subagent_result",
 	"steer_subagent",
 	"TaskCreate",
