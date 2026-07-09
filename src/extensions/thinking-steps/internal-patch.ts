@@ -3,7 +3,7 @@ import { AssistantMessageComponent as _AssistantMessageComponent } from "@earend
 import { Markdown, Spacer, Text } from "@earendil-works/pi-tui"
 import type { Component, MarkdownTheme } from "@earendil-works/pi-tui"
 import { truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
-import { ThinkingStepsComponent } from "./render.js"
+import { ThinkingStepsComponent, tailRawLines } from "./render.js"
 import {
 	decrementPatchRefCount,
 	getActiveThinkingState,
@@ -90,6 +90,14 @@ function hasPatchableContentContainer(value: AssistantMessageComponentPrototype)
 const LIVE_PREVIEW_LINES = 5
 
 class LiveThinkingPreview implements Component {
+	// The spinner drives renders at 30-60fps while a request is in flight, so
+	// the preview body must never process the full accumulated thinking text
+	// per frame — that freezes the terminal on large messages. The body only
+	// depends on (blocks, width); blocks are an immutable snapshot per
+	// component instance, so cache the body and recompute the pulse header only.
+	private cachedBodyWidth?: number
+	private cachedBody?: string[]
+
 	constructor(
 		private readonly theme: ThinkingThemeLike,
 		private readonly blocks: ThinkingSourceBlock[],
@@ -111,6 +119,14 @@ class LiveThinkingPreview implements Component {
 			"",
 		)}`
 
+		if (this.cachedBodyWidth !== width || !this.cachedBody) {
+			this.cachedBody = this.renderBody(innerWidth)
+			this.cachedBodyWidth = width
+		}
+		return [header, ...this.cachedBody]
+	}
+
+	private renderBody(innerWidth: number): string[] {
 		const prefix = `${this.theme.fg("muted", "▍")} `
 		const bodyInnerWidth = Math.max(1, innerWidth - 2)
 		const fullText = this.blocks
@@ -118,9 +134,9 @@ class LiveThinkingPreview implements Component {
 			.join("\n")
 			.trim()
 		const separator = ` ${truncateToWidth(prefix, innerWidth, "")}`
-		if (!fullText) return [header, separator]
+		if (!fullText) return [separator]
 		const allLines: string[] = []
-		for (const rawLine of fullText.replace(/\t/g, "    ").split("\n")) {
+		for (const rawLine of tailRawLines(fullText, LIVE_PREVIEW_LINES).replace(/\t/g, "    ").split("\n")) {
 			if (rawLine.trim().length === 0) {
 				allLines.push(` ${truncateToWidth(prefix, innerWidth, "")}`)
 				continue
@@ -129,10 +145,13 @@ class LiveThinkingPreview implements Component {
 				allLines.push(` ${truncateToWidth(`${prefix}${wrapped}`, innerWidth, "")}`)
 			}
 		}
-		return [header, separator, ...allLines.slice(-LIVE_PREVIEW_LINES)]
+		return [separator, ...allLines.slice(-LIVE_PREVIEW_LINES)]
 	}
 
-	invalidate(): void {}
+	invalidate(): void {
+		this.cachedBodyWidth = undefined
+		this.cachedBody = undefined
+	}
 }
 
 function hasVisibleThinking(content: ThinkingContent): boolean {

@@ -1317,6 +1317,42 @@ export function iconForThinkingRole(role: ThinkingSemanticRole): string {
 	}
 }
 
+type StepDerivation = {
+	summaryDetails: ReturnType<typeof summarizeThinkingTextDetailed>
+	role: ThinkingSemanticRole
+}
+
+// Summaries and roles are pure functions of the step text. During streaming,
+// deriveThinkingSteps runs on every message_update delta over the full
+// accumulated thinking text; without this cache each delta re-summarizes every
+// step (hundreds of ms on large messages), which starves the render loop and
+// freezes the terminal. Only the growing last step misses the cache.
+const stepDerivationCache = new Map<string, StepDerivation>()
+const STEP_DERIVATION_CACHE_MAX = 8192
+
+// Summarization cost scales with step size, and a step with few paragraph
+// breaks can grow unbounded while streaming. Summaries describe the step's
+// latest activity, so deriving them from the tail keeps each delta bounded.
+const STEP_SUMMARY_MAX_CHARS = 16384
+
+function deriveStep(stepText: string): StepDerivation {
+	const summarySource = stepText.length > STEP_SUMMARY_MAX_CHARS ? stepText.slice(-STEP_SUMMARY_MAX_CHARS) : stepText
+	const cached = stepDerivationCache.get(summarySource)
+	if (cached) return cached
+	const summaryDetails = summarizeThinkingTextDetailed(summarySource)
+	const role = inferThinkingRole(`${summaryDetails.summary}\n${summarySource}`)
+	const derivation: StepDerivation = { summaryDetails, role }
+	if (stepDerivationCache.size >= STEP_DERIVATION_CACHE_MAX) {
+		stepDerivationCache.clear()
+	}
+	stepDerivationCache.set(summarySource, derivation)
+	return derivation
+}
+
+export function clearStepDerivationCacheForTesting(): void {
+	stepDerivationCache.clear()
+}
+
 export function deriveThinkingSteps(blocks: ThinkingSourceBlock[]): DerivedThinkingStep[] {
 	const steps: DerivedThinkingStep[] = []
 	blocks.forEach((block, blockIndex) => {
@@ -1343,8 +1379,7 @@ export function deriveThinkingSteps(blocks: ThinkingSourceBlock[]): DerivedThink
 
 		const stepTexts = splitThinkingIntoStepTexts(block.text)
 		stepTexts.forEach((stepText, stepIndex) => {
-			const summaryDetails = summarizeThinkingTextDetailed(stepText)
-			const role = inferThinkingRole(`${summaryDetails.summary}\n${stepText}`)
+			const { summaryDetails, role } = deriveStep(stepText)
 			steps.push({
 				id: `${block.contentIndex}-${stepIndex}`,
 				contentIndex: block.contentIndex,

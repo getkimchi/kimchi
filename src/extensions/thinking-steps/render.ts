@@ -215,6 +215,38 @@ function stripInlineFormattingMarkers(text: string): string {
 
 const COLLAPSED_LIVE_LINES = 5
 
+// Live previews only show the last few lines, so never sanitize/wrap the full
+// accumulated thinking text — on large messages that costs hundreds of ms per
+// frame and freezes the terminal while the render loop is starved. A raw line
+// yields at least one rendered line, so the last N raw lines are sufficient.
+// The character bound guards against a single enormous line.
+export const LIVE_PREVIEW_TAIL_CHARS = 8192
+
+export function tailRawLines(text: string, maxLines: number): string {
+	const tail = text.length > LIVE_PREVIEW_TAIL_CHARS ? text.slice(-LIVE_PREVIEW_TAIL_CHARS) : text
+	const lines = tail.split("\n")
+	if (lines.length <= maxLines) return tail
+	return lines.slice(-maxLines).join("\n")
+}
+
+// The active collapsed view bypasses the component cache every frame so the
+// pulse glyph can animate, but only the header changes between frames. Cache
+// the wrapped body across frames (and across the component instances that
+// updateContent recreates per delta) so idle frames cost nothing.
+let collapsedLiveBodyCache: { width: number; textLength: number; textTail: string; lines: string[] } | undefined
+
+function collapsedLiveBodyLines(theme: ThinkingThemeLike, width: number, fullText: string): string[] {
+	const textTail = tailRawLines(fullText, COLLAPSED_LIVE_LINES)
+	const cache = collapsedLiveBodyCache
+	if (cache && cache.width === width && cache.textLength === fullText.length && cache.textTail === textTail) {
+		return cache.lines
+	}
+	const bodyPrefix = `${theme.fg("muted", "▍")} `
+	const lines = renderWrappedRawText(theme, textTail, width, bodyPrefix).slice(-COLLAPSED_LIVE_LINES)
+	collapsedLiveBodyCache = { width, textLength: fullText.length, textTail, lines }
+	return lines
+}
+
 function renderCollapsed(
 	theme: ThinkingThemeLike,
 	width: number,
@@ -239,10 +271,7 @@ function renderCollapsed(
 		if (fullText) {
 			const headerPrefix = `${theme.fg("muted", "▍")} `
 			const header = truncateToWidth(`${headerPrefix}${theme.fg("dim", label)} ${icon} ${activity}`, width, "")
-			const bodyPrefix = `${theme.fg("muted", "▍")} `
-			const allBodyLines = renderWrappedRawText(theme, fullText, width, bodyPrefix)
-			const bodyLines = allBodyLines.slice(-COLLAPSED_LIVE_LINES)
-			return [header, ...bodyLines]
+			return [header, ...collapsedLiveBodyLines(theme, width, fullText)]
 		}
 	}
 
