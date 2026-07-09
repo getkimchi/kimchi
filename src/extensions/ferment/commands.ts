@@ -411,6 +411,7 @@ async function openFermentProgress(pi: ExtensionAPI, ctx: FermentUiContext, runt
 		FERMENT_EVENTS.PHASE_COMPLETED,
 		FERMENT_EVENTS.SUSPENDED,
 		FERMENT_EVENTS.RESUMED,
+		FERMENT_EVENTS.STALLED,
 	] as const
 
 	let currentController: AbortController | undefined

@@ -86,7 +86,6 @@ export function buildPhaseListTitle(f: Ferment, runtime: FermentRuntime = defaul
 	].join("")
 	const pct = progressTotal > 0 ? Math.round((progressTerminal / progressTotal) * 100) : 0
 	const runningTag = progressRunning > 0 ? pr_orange(` +${progressRunning} running`) : ""
-	const scopeTag = ""
 	const fermentGrade = f.grade ? `  ${gradeColor(f.grade.grade)}` : ""
 	const lastHumanInputAt = runtime.getLastHumanInputAt()
 	const sinceHuman = lastHumanInputAt
@@ -112,7 +111,7 @@ export function buildPhaseListTitle(f: Ferment, runtime: FermentRuntime = defaul
 	}
 
 	return [
-		`${pr_teal("🍺")} ${pr_bold(f.name)}${fermentGrade}${scopeTag}`,
+		`${pr_teal("🍺")} ${pr_bold(f.name)}${fermentGrade}`,
 		`${bar}  ${pr_teal(`${pct}%`)}  ${pr_dim(`${progressTerminal}/${progressTotal} ${progressUnit}`)}${runningTag}`,
 		...nowParts,
 		`${pr_dim("human:")} ${sinceHuman}  ${pr_dim("branch:")} ${f.worktree.branch ? pr_teal(f.worktree.branch) : pr_dim("—")}`,

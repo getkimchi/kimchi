@@ -139,15 +139,11 @@ describe("createApplyAndPersist", () => {
 		expect(renderSpy).toHaveBeenCalledTimes(1)
 
 		// Failed mutation does NOT trigger a render request (no state change).
+		// complete_ferment fails because the phase is still active (non-terminal).
 		renderSpy.mockClear()
-		const reject = applyAndPersist(ferment.id, { type: "pause" })
-		// pause is not legal mid-phase in this minimal harness; outcome is still ok here
-		// so assert the invariant: a render happens iff the mutation succeeded.
-		if (reject.ok) {
-			expect(renderSpy).toHaveBeenCalledTimes(1)
-		} else {
-			expect(renderSpy).not.toHaveBeenCalled()
-		}
+		const reject = applyAndPersist(ferment.id, { type: "complete_ferment" })
+		expect(reject.ok).toBe(false)
+		expect(renderSpy).not.toHaveBeenCalled()
 		renderSpy.mockRestore()
 	})
 })
