@@ -284,6 +284,9 @@ export class AgentManager {
 				}
 				options.onSessionCreated?.(session)
 			},
+			onSystemPrompt: (prompt) => {
+				record.systemPrompt = prompt
+			},
 		})
 			.then(({ responseText, session, aborted, abortReason, steered, turnsUsed, maxTurns }) => {
 				if (record.status !== "stopped") {

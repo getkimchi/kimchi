@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { getRedactionConfig, resetRedactionConfigCache } from "./config.js"
-import { redactMessages, redactText, resetRedactorEngine } from "./redactor.js"
+import { redactMessages, redactObjectStrings, redactText, resetRedactorEngine } from "./redactor.js"
 
 // ─── Test PII / secret values ────────────────────────────────────────────────
 // SSNs use non-obvious numbers (not 000/666/9xx area, valid group & serial)
@@ -204,6 +204,81 @@ describe("redactMessages — message structure preservation", () => {
 		expect(text).not.toContain("john.doe@example.com")
 		expect(text).not.toContain("489-36-2157")
 		expect(text).not.toContain("4532015112830366")
+	})
+})
+
+describe("redactText — custom secret patterns", () => {
+	beforeEach(() => resetRedactorEngine())
+	afterEach(() => resetRedactorEngine())
+
+	it("redacts CastAI API keys (castai_v1_)", async () => {
+		const result = await redactText("API key: castai_v1_abc123def456ghi789")
+		expect(result).not.toContain("castai_v1_abc123def456ghi789")
+		expect(result).toContain("[REDACTED-CASTAI_API_KEY]")
+	})
+
+	it("redacts Bearer tokens", async () => {
+		const result = await redactText("Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.test123")
+		expect(result).not.toContain("eyJhbGciOiJIUzI1NiJ9.test123")
+		expect(result).toContain("[REDACTED")
+	})
+
+	it("redacts OAuth tokens (ya29.*)", async () => {
+		const result = await redactText("token: ya29.a0ARrdaM-abc123def456ghi789")
+		expect(result).not.toContain("ya29.a0ARrdaM-abc123def456ghi789")
+		expect(result).toContain("[REDACTED-OAUTH_TOKEN]")
+	})
+
+	it("redacts local auth/config paths", async () => {
+		const result = await redactText("Config at /Users/krzysztofreczek/.config/kimchi/config.json")
+		expect(result).not.toContain("/Users/krzysztofreczek/.config/kimchi/config.json")
+		expect(result).toContain("[REDACTED-LOCAL_PATH]")
+	})
+
+	it("redacts SSH credential file paths", async () => {
+		const result = await redactText("Key at ~/.ssh/id_rsa")
+		expect(result).not.toContain("~/.ssh/id_rsa")
+		expect(result).toContain("[REDACTED-CREDENTIAL_FILE]")
+	})
+})
+
+describe("redactObjectStrings — sensitive JSON fields", () => {
+	beforeEach(() => resetRedactorEngine())
+	afterEach(() => resetRedactorEngine())
+
+	it("redacts password field", async () => {
+		const result = await redactObjectStrings({ password: "mySecretPassword123" })
+		expect(result).toEqual({ password: "[REDACTED-SECRET_FIELD]" })
+	})
+
+	it("redacts token field", async () => {
+		const result = await redactObjectStrings({ token: "bearer_xyz" })
+		expect(result).toEqual({ token: "[REDACTED-SECRET_FIELD]" })
+	})
+
+	it("redacts secret field", async () => {
+		const result = await redactObjectStrings({ secret: "my_secret_value" })
+		expect(result).toEqual({ secret: "[REDACTED-SECRET_FIELD]" })
+	})
+
+	it("redacts auth field", async () => {
+		const result = await redactObjectStrings({ auth: { token: "secret123" } })
+		expect(result).toEqual({ auth: { token: "[REDACTED-SECRET_FIELD]" } })
+	})
+
+	it("redacts apiKey field (camelCase)", async () => {
+		const result = await redactObjectStrings({ apiKey: "key_abc123" })
+		expect(result).toEqual({ apiKey: "[REDACTED-SECRET_FIELD]" })
+	})
+
+	it("redacts nested sensitive fields", async () => {
+		const result = await redactObjectStrings({ config: { credentials: { clientSecret: "sec_789" } } })
+		expect(result).toEqual({ config: { credentials: { clientSecret: "[REDACTED-SECRET_FIELD]" } } })
+	})
+
+	it("preserves non-sensitive fields", async () => {
+		const result = await redactObjectStrings({ name: "test", count: 42, items: ["a", "b"] })
+		expect(result).toEqual({ name: "test", count: 42, items: ["a", "b"] })
 	})
 })
 

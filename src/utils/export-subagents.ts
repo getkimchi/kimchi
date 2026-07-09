@@ -18,6 +18,8 @@
 
 import { existsSync, readFileSync } from "node:fs"
 import { resolve } from "node:path"
+import { getAgentConfig } from "../extensions/agents/personas/agent-types.js"
+import { DEFAULT_AGENTS } from "../extensions/agents/personas/default-agents.js"
 
 /**
  * Validate that a transcript file path is safe to read.
@@ -62,6 +64,8 @@ export interface SubAgentRecordData {
 	outputFile?: string
 	/** Persisted session file for this agent run. Added by export enrichment. */
 	sessionFile?: string
+	/** The system prompt used for this agent run. */
+	systemPrompt?: string
 	/** Full transcript — attached during export enrichment. */
 	transcript?: TranscriptEntry[]
 }
@@ -72,6 +76,18 @@ export interface SubAgentRecordEntry {
 	customType: "subagents:record"
 	data: SubAgentRecordData
 	[key: string]: unknown
+}
+
+/** A sub-agent summary suitable for tab display. */
+export interface SubAgentTab {
+	/** Unique tab id (the sub-agent record id). */
+	id: string
+	/** Display label, e.g. "Reviewer". */
+	label: string
+	/** Tab subtitle, e.g. "completed (109s)". */
+	subtitle: string
+	/** Base64-encoded session-data JSON for the iframe. */
+	sessionDataB64: string
 }
 
 /**
@@ -104,6 +120,107 @@ export function readTranscript(filePath: string, baseDir?: string): TranscriptEn
 	} catch {
 		return []
 	}
+}
+
+/**
+ * Build a session-data object from a sub-agent transcript.
+ *
+ * Converts the flat transcript lines into proper `{ type: "message", id, parentId, timestamp, message }`
+ * entries that the upstream HTML export template renders natively. The
+ * transcript messages already contain `role`, `content`, `toolCallId`, etc.
+ * in the correct format — we just wrap them as session entries.
+ *
+ * The resulting object has the same `{ header, entries }` shape as the main
+ * session-data, so it can be rendered by the exact same template in an iframe.
+ */
+export function buildSubAgentSessionData(data: SubAgentRecordData): {
+	header: Record<string, unknown>
+	entries: Record<string, unknown>[]
+} {
+	const entries: Record<string, unknown>[] = []
+	const agentId = data.id || "unknown"
+	let prevId: string | null = null
+
+	// Include the system prompt as the first entry so it renders in the
+	// upstream template's message list (as a user-message header).
+	// Fall back to the persona config's systemPrompt for sessions recorded
+	// before systemPrompt was persisted on the record.
+	const systemPrompt =
+		data.systemPrompt ?? getAgentConfig(data.type)?.systemPrompt ?? DEFAULT_AGENTS.get(data.type)?.systemPrompt
+	if (systemPrompt) {
+		const spId = `sa:${agentId}:system`
+		entries.push({
+			type: "message",
+			id: spId,
+			parentId: null,
+			timestamp: data.startedAt ? new Date(data.startedAt).toISOString() : new Date().toISOString(),
+			message: {
+				role: "user",
+				content: `**System Prompt**\n\n${systemPrompt}`,
+			},
+		})
+		prevId = spId
+	}
+
+	for (let i = 0; i < (data.transcript ?? []).length; i++) {
+		const t = data.transcript?.[i]
+		if (!t) continue
+		const entryId = `sa:${agentId}:${i}`
+		const ts = t.timestamp || new Date(data.startedAt || Date.now()).toISOString()
+
+		entries.push({
+			type: "message",
+			id: entryId,
+			parentId: prevId,
+			timestamp: ts,
+			message: t.message,
+		})
+		prevId = entryId
+	}
+
+	return {
+		header: {
+			type: "session",
+			version: 3,
+			id: agentId,
+			timestamp: data.startedAt ? new Date(data.startedAt).toISOString() : new Date().toISOString(),
+			cwd: data.transcript?.[0]?.cwd ?? "",
+		},
+		entries,
+	}
+}
+
+/**
+ * Collect sub-agent tabs from enriched entries.
+ *
+ * Returns one `SubAgentTab` per `subagents:record` entry that has a
+ * non-empty transcript. The `sessionDataB64` field contains the
+ * base64-encoded session-data JSON ready for iframe embedding.
+ */
+export function collectSubAgentTabs(entries: Record<string, unknown>[]): SubAgentTab[] {
+	const tabs: SubAgentTab[] = []
+
+	for (const entry of entries) {
+		if (entry.type !== "custom" || entry.customType !== "subagents:record") continue
+
+		const data = entry.data as SubAgentRecordData | undefined
+		if (!data?.transcript || data.transcript.length === 0) continue
+
+		const duration =
+			data.startedAt && data.completedAt ? `${Math.round((data.completedAt - data.startedAt) / 1000)}s` : ""
+
+		const sessionData = buildSubAgentSessionData(data)
+		const sessionDataB64 = Buffer.from(JSON.stringify(sessionData), "utf-8").toString("base64")
+
+		tabs.push({
+			id: data.id || "unknown",
+			label: data.type || "Agent",
+			subtitle: `${data.status || "unknown"}${duration ? ` · ${duration}` : ""}`,
+			sessionDataB64,
+		})
+	}
+
+	return tabs
 }
 
 /**

@@ -236,6 +236,8 @@ export interface RunOptions {
 	hardTurnLimit?: boolean
 	/** Registers a hard-fallback cleanup for runner-owned resources. */
 	onRuntimeCleanupRegistered?: (cleanup: () => void) => void
+	/** Called with the built system prompt before the session starts. */
+	onSystemPrompt?: (prompt: string) => void
 }
 
 export interface RunResult {
@@ -407,6 +409,7 @@ async function runAgentInner(
 	}
 
 	let systemPrompt = buildSystemPrompt(getPromptToolNames(toolNames, disallowedSet))
+	options.onSystemPrompt?.(systemPrompt)
 
 	const debugSession = process.env.KIMCHI_DEBUG_SESSION
 	if (debugSession) {

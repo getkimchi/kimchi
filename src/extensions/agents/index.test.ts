@@ -196,4 +196,45 @@ describe("session_shutdown nudge race (integration)", () => {
 		// No sendMessage should have been called — the batch timer was cleared
 		expect(pi.sendMessage).not.toHaveBeenCalled()
 	})
+
+	it("onComplete appends a subagents:record entry with file paths for export enrichment", async () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+
+		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		expect(managerInstance).toBeDefined()
+
+		const fakeRecord = {
+			id: "record-agent",
+			type: "Reviewer",
+			description: "Review branch changes",
+			visibility: "user",
+			status: "completed",
+			result: "Looks good",
+			error: undefined,
+			abortReason: undefined,
+			startedAt: 1_000,
+			completedAt: 2_000,
+			outputFile: "/tmp/agent-outputs/session/tasks/record-agent.output",
+			sessionFile: "/tmp/agent-outputs/session/record-agent.jsonl",
+			toolUses: 3,
+			lifetimeUsage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 },
+		}
+		managerInstance.onComplete(fakeRecord)
+
+		expect(pi.appendEntry).toHaveBeenCalledWith("subagents:record", {
+			id: "record-agent",
+			type: "Reviewer",
+			description: "Review branch changes",
+			visibility: "user",
+			status: "completed",
+			abortReason: undefined,
+			result: "Looks good",
+			error: undefined,
+			startedAt: 1_000,
+			completedAt: 2_000,
+			outputFile: "/tmp/agent-outputs/session/tasks/record-agent.output",
+			sessionFile: "/tmp/agent-outputs/session/record-agent.jsonl",
+		})
+	})
 })

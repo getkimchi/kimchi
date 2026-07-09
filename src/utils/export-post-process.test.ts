@@ -594,7 +594,7 @@ describe("postProcessHtmlExport", () => {
 		expect(data.hostMetadata).toBeDefined()
 	})
 
-	it("injects sub-agent transcript renderer script", () => {
+	it("injects sub-agent tab bar and iframe data", () => {
 		vi.spyOn(sessionMetadataStore, "getSessionStartMetadata").mockReturnValue(undefined)
 		vi.spyOn(sessionMetadataStore, "getConfigChanges").mockReturnValue([])
 		const sessionData = {
@@ -606,19 +606,134 @@ describe("postProcessHtmlExport", () => {
 					id: "sub-1",
 					parentId: null,
 					customType: "subagents:record",
-					data: { id: "agent-001", type: "Explore", status: "completed", transcript: [] },
+					data: {
+						id: "agent-001",
+						type: "Explore",
+						status: "completed",
+						startedAt: 1700000000000,
+						completedAt: 1700000010000,
+						transcript: [
+							{
+								isSidechain: true,
+								agentId: "agent-001",
+								type: "user",
+								message: { role: "user", content: "Explore the codebase" },
+								timestamp: "2026-01-01T00:00:00.000Z",
+								cwd: "/project",
+							},
+							{
+								isSidechain: true,
+								agentId: "agent-001",
+								type: "assistant",
+								message: { role: "assistant", content: [{ type: "text", text: "Found files" }] },
+								timestamp: "2026-01-01T00:00:01.000Z",
+								cwd: "/project",
+							},
+						],
+					},
 				},
 			],
 		}
 		const encoded = Buffer.from(JSON.stringify(sessionData)).toString("base64")
-		const mockHtml = `<script id="session-data" type="application/json">${encoded}</script>`
+		const mockHtml = `<html><body><script id="session-data" type="application/json">${encoded}</script></body></html>`
 		const outputPath = join(tmpDir, "subagent.html")
 		writeFileSync(outputPath, mockHtml, "utf-8")
 
 		postProcessHtmlExport(outputPath)
 
 		const result = readFileSync(outputPath, "utf-8")
-		expect(result).toContain('id="subagent-renderer"')
+		// Tab bar should be injected with a button for the sub-agent.
+		expect(result).toContain('id="subagent-tabs"')
+		expect(result).toContain("switchToSubAgent")
+		expect(result).toContain("Main Session")
+		// Hidden data script for the iframe.
+		expect(result).toContain('id="subagent-data-agent-001"')
+		// The original subagents:record should NOT be expanded into the main entries.
+		const match = result.match(/<script id="session-data" type="application\/json">([\s\S]*?)<\/script>/)
+		const base64Data = match?.[1] ?? ""
+		const data = JSON.parse(Buffer.from(base64Data, "base64").toString("utf-8")) as {
+			entries: Array<Record<string, unknown>>
+		}
+		expect(data.entries).toHaveLength(1)
+		expect(data.entries[0].type).toBe("custom")
+		expect(data.entries[0].customType).toBe("subagents:record")
+	})
+
+	it("enriches sub-agent transcript from .output file outside the export directory", () => {
+		// Regression: .output files live under the session directory
+		// (~/.config/kimchi/harness/sessions/...), which is unrelated to
+		// the export file's location. Passing dirname(exportPath) as
+		// baseDir incorrectly rejected these legitimate paths, leaving the
+		// exported subagent record without a transcript.
+		vi.spyOn(sessionMetadataStore, "getSessionStartMetadata").mockReturnValue(undefined)
+		vi.spyOn(sessionMetadataStore, "getConfigChanges").mockReturnValue([])
+
+		// Create the .output file in a directory completely separate from
+		// the export output directory.
+		const transcriptDir = join(tmpDir, "session-store", "agent-outputs", "sess-1", "tasks")
+		mkdirSync(transcriptDir, { recursive: true })
+		const outputFile = join(transcriptDir, "agent-999.output")
+		const transcriptEntries = [
+			{
+				isSidechain: true,
+				agentId: "agent-999",
+				type: "user",
+				message: { role: "user", content: "Review the code" },
+				timestamp: "2026-07-08T08:00:00.000Z",
+				cwd: "/project",
+			},
+			{
+				isSidechain: true,
+				agentId: "agent-999",
+				type: "assistant",
+				message: { role: "assistant", content: [{ type: "text", text: "Looks good" }] },
+				timestamp: "2026-07-08T08:00:01.000Z",
+				cwd: "/project",
+			},
+		]
+		writeFileSync(outputFile, `${transcriptEntries.map((e) => JSON.stringify(e)).join("\n")}\n`)
+
+		const sessionData = {
+			version: 3,
+			id: "sess-1",
+			entries: [
+				{
+					type: "custom",
+					id: "sub-2",
+					parentId: null,
+					customType: "subagents:record",
+					data: {
+						id: "agent-999",
+						type: "Reviewer",
+						status: "completed",
+						outputFile,
+						sessionFile: "/tmp/sess-1.jsonl",
+					},
+				},
+			],
+		}
+		const encoded = Buffer.from(JSON.stringify(sessionData)).toString("base64")
+		const mockHtml = `<html><body><script id="session-data" type="application/json">${encoded}</script></body></html>`
+		const outputPath = join(tmpDir, "export.html")
+		writeFileSync(outputPath, mockHtml, "utf-8")
+
+		postProcessHtmlExport(outputPath)
+
+		const result = readFileSync(outputPath, "utf-8")
+		const match = result.match(/<script id="session-data" type="application\/json">([\s\S]*?)<\/script>/)
+		expect(match).not.toBeNull()
+		const base64Data = match?.[1] ?? ""
+		const data = JSON.parse(Buffer.from(base64Data, "base64").toString("utf-8")) as {
+			entries: Array<Record<string, unknown>>
+		}
+		// The original subagents:record should remain unexpanded.
+		expect(data.entries[0].type).toBe("custom")
+		expect(data.entries[0].customType).toBe("subagents:record")
+		// Tab bar should be present.
+		expect(result).toContain('id="subagent-tabs"')
+		expect(result).toContain('id="subagent-data-agent-999"')
+		// No old renderer script.
+		expect(result).not.toContain('id="subagent-renderer"')
 	})
 
 	it("injects request diagnostics renderer script", () => {
