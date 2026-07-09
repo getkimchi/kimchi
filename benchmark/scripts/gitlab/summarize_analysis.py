@@ -78,7 +78,8 @@ def compute_lookback_dates(now: datetime) -> tuple[str, str]:
 def is_in_time_window(created_at: datetime, now: datetime) -> bool:
     """Check if created_at is between yesterday 17:00 and today 06:00 UTC."""
     window_start = (now - timedelta(days=1)).replace(hour=17, minute=0, second=0, microsecond=0)
-    window_end = now.replace(hour=6, minute=0, second=0, microsecond=0)
+    # TEMP: widen window end to 12:00 UTC to capture same-day runs
+    window_end = now.replace(hour=12, minute=0, second=0, microsecond=0)
     return window_start <= created_at <= window_end
 
 
