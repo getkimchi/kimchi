@@ -1,5 +1,5 @@
 import { AgentSession } from "@earendil-works/pi-coding-agent"
-import { isInfrastructureProviderError } from "./infrastructure-error.js"
+import { classifyLLMGatewayError } from "./llm-gateway-error.js"
 
 type RetryableMessage = { stopReason?: string; errorMessage?: string }
 type RetryableClassifier = (message: RetryableMessage) => boolean
@@ -11,7 +11,8 @@ type PatchableAgentSession = {
 }
 
 export function isInfrastructureErrorRetryable(message: RetryableMessage): boolean {
-	return message.stopReason === "error" && !!message.errorMessage && isInfrastructureProviderError(message.errorMessage)
+	if (message.stopReason !== "error" || !message.errorMessage) return false
+	return classifyLLMGatewayError(message.errorMessage)?.retryable ?? false
 }
 
 // --- Infrastructure-error circuit breaker ---
@@ -56,8 +57,14 @@ export function isInfrastructureBreakerTripped(): boolean {
 	return infrastructureBreaker.tripped
 }
 
-function infrastructureBreakerAllowsRetry(message: RetryableMessage): boolean {
-	if (infrastructureBreaker.threshold <= 0 || !isInfrastructureErrorRetryable(message)) return true
+/**
+ * Record one infrastructure-classified retryable error and report whether a
+ * retry is still allowed. Only call this for errors already classified as
+ * infrastructure errors; ordinary upstream-retryable verdicts must not draw
+ * down the budget. When disabled (threshold <= 0) nothing is counted.
+ */
+function infrastructureBreakerAllowsRetry(): boolean {
+	if (infrastructureBreaker.threshold <= 0) return true
 	infrastructureBreaker.consecutive++
 	if (infrastructureBreaker.consecutive < infrastructureBreaker.threshold) return true
 	if (!infrastructureBreaker.tripped) {
@@ -86,8 +93,12 @@ export function installInfrastructureRetryPatch(
 	if (!original) return
 
 	proto._isRetryableError = function patchedIsRetryableError(message: RetryableMessage): boolean {
-		if (!(original.call(this, message) || isInfrastructureErrorRetryable(message))) return false
-		return infrastructureBreakerAllowsRetry(message)
+		const infrastructure = isInfrastructureErrorRetryable(message)
+		if (!(original.call(this, message) || infrastructure)) return false
+		// Only infrastructure-classified errors draw down the breaker budget;
+		// ordinary upstream-retryable verdicts pass through uncounted.
+		if (!infrastructure) return true
+		return infrastructureBreakerAllowsRetry()
 	}
 	proto._kimchiInfrastructureRetryPatch = true
 }

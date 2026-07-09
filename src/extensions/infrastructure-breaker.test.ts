@@ -61,8 +61,18 @@ describe("infrastructure breaker extension", () => {
 		const { isRetryable, emit } = createHarness(2)
 
 		expect(isRetryable(networkError)).toBe(true)
-		emit({ role: "assistant", content: [], stopReason: "error", errorMessage: "429 rate limit exceeded" })
+		emit({ role: "assistant", content: [], stopReason: "error", errorMessage: "insufficient_quota" })
 		expect(isRetryable(networkError)).toBe(true)
+		expect(isRetryable(networkError)).toBe(false)
+		expect(isInfrastructureBreakerTripped()).toBe(true)
+	})
+
+	it("does not reset on rate limits", () => {
+		vi.spyOn(console, "error").mockImplementation(() => {})
+		const { isRetryable, emit } = createHarness(2)
+
+		expect(isRetryable(networkError)).toBe(true)
+		emit({ role: "assistant", content: [], stopReason: "error", errorMessage: "429 rate limit exceeded" })
 		expect(isRetryable(networkError)).toBe(false)
 		expect(isInfrastructureBreakerTripped()).toBe(true)
 	})
