@@ -199,21 +199,7 @@ export async function redactObjectStrings<T>(obj: T): Promise<T> {
 	return obj
 }
 
-/** A pi-ai text content block — the only block type we redact. */
-interface TextBlock {
-	type: "text"
-	text: string
-}
-
-function isTextBlock(block: unknown): block is TextBlock {
-	return (
-		block !== null &&
-		typeof block === "object" &&
-		(block as Record<string, unknown>).type === "text" &&
-		typeof (block as Record<string, unknown>).text === "string"
-	)
-}
-
+/** A pi-ai message with optional role/content fields. */
 interface AnyMessage {
 	role?: string
 	content?: unknown
@@ -222,18 +208,10 @@ interface AnyMessage {
 /**
  * Redact PII and secrets from a pi-ai message array.
  *
- * Deep-walks every message — including tool-call arguments, tool-result
- * content, and any other string fields — replacing matched PII/secret
- * spans with `[REDACTED-TYPE]` markers. Returns a **new** array; the
- * input is never mutated.
- *
- * System messages (role: "system") are skipped — the system prompt
- * contains structural identifiers (ferment IDs, session IDs, paths) that
- * must not be redacted, and its content is harness-generated, not
- * user-provided PII.
- *
- * Structural strings (role, type, toolCallId, toolName) pass through
- * unchanged because they don't match PII/secret patterns.
+ * Deep-walks every non-system message — including tool-call arguments,
+ * tool-result content, and any other string fields — replacing matched
+ * PII/secret spans with `[REDACTED-TYPE]` markers. Returns a **new**
+ * array; the input is never mutated.
  *
  * @param messages  pi-ai `Message[]` (the output of `convertToLlm`)
  * @returns          New array with all string values redacted; input untouched

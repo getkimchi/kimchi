@@ -146,4 +146,50 @@ describe("redactHtmlExport", () => {
 		const result = readFileSync(filePath, "utf-8")
 		expect(result).toBe(original)
 	})
+
+	it("redacts secrets from subagent-data iframe payloads", async () => {
+		const sessionData = {
+			entries: [
+				{
+					type: "user",
+					id: "msg-1",
+					content: "Main session is clean",
+				},
+			],
+		}
+		const subAgentData = {
+			header: { type: "session", id: "agent-1" },
+			entries: [
+				{
+					type: "message",
+					id: "sa:agent-1:0",
+					message: { role: "user", content: "Key: AKIAIOSFODNN7EXAMPLE" },
+				},
+			],
+		}
+		const sessionB64 = Buffer.from(JSON.stringify(sessionData)).toString("base64")
+		const subAgentB64 = Buffer.from(JSON.stringify(subAgentData)).toString("base64")
+		const dir = mkdtempSync(join(tmpdir(), "kimchi-html-test-"))
+		const filePath = join(dir, "export.html")
+		writeFileSync(
+			filePath,
+			`<html><body><script id="session-data" type="application/json">${sessionB64}</script><script type="application/json" id="subagent-data-agent-1">${subAgentB64}</script></body></html>`,
+			"utf-8",
+		)
+
+		await redactHtmlExport(filePath)
+
+		const result = readFileSync(filePath, "utf-8")
+		expect(result).not.toContain("AKIAIOSFODNN7EXAMPLE")
+
+		const subMatch = result.match(
+			/<script type="application\/json" id="subagent-data-agent-1">([A-Za-z0-9+/=]+)<\/script>/,
+		)
+		expect(subMatch).not.toBeNull()
+		if (!subMatch?.[1]) throw new Error("subagent-data not found")
+		const decoded = JSON.parse(Buffer.from(subMatch[1], "base64").toString("utf-8")) as {
+			entries: Array<{ message: { content: string } }>
+		}
+		expect(decoded.entries[0].message.content).toContain("[REDACTED-AWS_ACCESS_KEY]")
+	})
 })

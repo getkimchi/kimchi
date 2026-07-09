@@ -243,7 +243,7 @@ ${JSON.stringify({ type: "message", id: "e1", parentId: null, message: { role: "
 		// header + 3 change entries
 		expect(result.length).toBe(4)
 		const values = result.slice(1).map((l) => JSON.parse(l).data.value)
-		// PR #800 owns redaction; post-processing passes values through verbatim.
+		// Redaction runs in a separate pass (redactJsonlExport); post-processing passes values through verbatim.
 		expect(values).toEqual(["https://secret.example.com", "sk-leaked-secret", "user@example.com"])
 	})
 
@@ -560,6 +560,79 @@ describe("postProcessHtmlExport", () => {
 		const rendererIdx = result.indexOf('id="session-metadata-renderer"')
 		const bodyIdx = result.indexOf("</body>")
 		expect(bodyIdx).toBeGreaterThan(rendererIdx)
+		expect(
+			result.includes(
+				"if (os['telemetry.os']) parts.push('OS: ' + os['telemetry.os'] + '/' + (os['telemetry.arch'] || ''))",
+			),
+		).toBe(true)
+		expect(result.includes("parts.push(models.length > 0 ? 'Models: ' + models.join(', ') : 'Models: —')")).toBe(true)
+		expect(result.includes("if (e.type === 'model_change' && e.provider && e.modelId)")).toBe(true)
+		expect(result.includes("e.type === 'message' && e.message && e.message.role === 'assistant'")).toBe(true)
+		expect(result.includes("Multimodel:")).toBe(false)
+		expect(result.includes("Orchestrator:")).toBe(false)
+	})
+
+	it("renders Models: — when no models are resolved from session entries", () => {
+		vi.spyOn(sessionMetadataStore, "getSessionStartMetadata").mockReturnValue(mockMetadata())
+		const sessionData = {
+			version: 3,
+			id: "s1",
+			entries: [{ id: "m1", parentId: null, type: "message", message: { role: "user", content: "hello" } }],
+		}
+		const encoded = Buffer.from(JSON.stringify(sessionData)).toString("base64")
+		const mockHtml = `<!DOCTYPE html>
+<html>
+<head><title>Export</title></head>
+<body>
+<script id="session-data" type="application/json">${encoded}</script>
+</body>
+</html>`
+		const outputPath = join(tmpDir, "metadata-renderer-no-models.html")
+		writeFileSync(outputPath, mockHtml, "utf-8")
+
+		postProcessHtmlExport(outputPath)
+
+		const result = readFileSync(outputPath, "utf-8")
+		expect(result.includes("'Models: —'")).toBe(true)
+	})
+
+	it("renders unique models resolved from session entries", () => {
+		vi.spyOn(sessionMetadataStore, "getSessionStartMetadata").mockReturnValue(mockMetadata())
+		const sessionData = {
+			version: 3,
+			id: "s1",
+			entries: [
+				{ id: "m1", parentId: null, type: "model_change", provider: "p1", modelId: "m1" },
+				{ id: "m2", parentId: "m1", type: "message", message: { role: "assistant", provider: "p1", model: "m1" } },
+				{ id: "m3", parentId: "m2", type: "model_change", provider: "p2", modelId: "m2" },
+				{ id: "m4", parentId: "m3", type: "message", message: { role: "assistant", provider: "p2", model: "m2" } },
+			],
+		}
+		const encoded = Buffer.from(JSON.stringify(sessionData)).toString("base64")
+		const mockHtml = `<!DOCTYPE html>
+<html>
+<head><title>Export</title></head>
+<body>
+<script id="session-data" type="application/json">${encoded}</script>
+</body>
+</html>`
+		const outputPath = join(tmpDir, "metadata-renderer-models.html")
+		writeFileSync(outputPath, mockHtml, "utf-8")
+
+		postProcessHtmlExport(outputPath)
+
+		const result = readFileSync(outputPath, "utf-8")
+		expect(result.includes("'Models: ' + models.join(', ')")).toBe(true)
+		const match = result.match(/<script id="session-data" type="application\/json">([\s\S]*?)<\/script>/)
+		expect(match).not.toBeNull()
+		if (!match) throw new Error("session-data script not found")
+		const data = JSON.parse(Buffer.from(match[1], "base64").toString("utf-8")) as {
+			entries: Array<Record<string, unknown>>
+		}
+		const modelChanges = data.entries.filter((e) => e.type === "model_change")
+		expect(modelChanges.length).toBe(2)
+		expect(modelChanges[0]).toMatchObject({ provider: "p1", modelId: "m1" })
+		expect(modelChanges[1]).toMatchObject({ provider: "p2", modelId: "m2" })
 	})
 
 	it("is idempotent when run twice (metadata + changes)", () => {
@@ -657,6 +730,62 @@ describe("postProcessHtmlExport", () => {
 		expect(data.entries).toHaveLength(1)
 		expect(data.entries[0].type).toBe("custom")
 		expect(data.entries[0].customType).toBe("subagents:record")
+	})
+
+	it("sub-agent iframe CSS preserves system prompt while hiding header chrome", () => {
+		vi.spyOn(sessionMetadataStore, "getSessionStartMetadata").mockReturnValue(undefined)
+		vi.spyOn(sessionMetadataStore, "getConfigChanges").mockReturnValue([])
+		const sessionData = {
+			version: 3,
+			id: "s1",
+			entries: [
+				{
+					type: "custom",
+					id: "sub-1",
+					parentId: null,
+					customType: "subagents:record",
+					data: {
+						id: "agent-001",
+						type: "Explore",
+						status: "completed",
+						startedAt: 1700000000000,
+						completedAt: 1700000010000,
+						systemPrompt: "You are an explorer.",
+						transcript: [
+							{
+								isSidechain: true,
+								agentId: "agent-001",
+								type: "user",
+								message: { role: "user", content: "Explore" },
+								timestamp: "2026-01-01T00:00:00.000Z",
+								cwd: "/project",
+							},
+						],
+					},
+				},
+			],
+		}
+		const encoded = Buffer.from(JSON.stringify(sessionData)).toString("base64")
+		const mockHtml = `<html><body><script id="session-data" type="application/json">${encoded}</script></body></html>`
+		const outputPath = join(tmpDir, "subagent-system-prompt.html")
+		writeFileSync(outputPath, mockHtml, "utf-8")
+
+		postProcessHtmlExport(outputPath)
+
+		const result = readFileSync(outputPath, "utf-8")
+		const dataMatch = result.match(/id="subagent-data-agent-001">([\s\S]*?)<\/script>/)
+		expect(dataMatch).not.toBeNull()
+		if (!dataMatch) throw new Error("subagent data not found")
+		const subData = JSON.parse(Buffer.from(dataMatch[1], "base64").toString("utf-8")) as {
+			systemPrompt?: string
+		}
+		expect(subData.systemPrompt).toBe("You are an explorer.")
+
+		// The iframe CSS should hide header chrome but leave room for the system prompt.
+		expect(result).toContain("#header-container .header h1")
+		expect(result).toContain("#header-container .header .help-bar")
+		expect(result).toContain("#header-container .header .header-info")
+		expect(result).not.toContain("#header-container{display:none")
 	})
 
 	it("enriches sub-agent transcript from .output file outside the export directory", () => {

@@ -235,6 +235,7 @@ describe("session_shutdown nudge race (integration)", () => {
 			completedAt: 2_000,
 			outputFile: "/tmp/agent-outputs/session/tasks/record-agent.output",
 			sessionFile: "/tmp/agent-outputs/session/record-agent.jsonl",
+			systemPrompt: undefined,
 		})
 	})
 })

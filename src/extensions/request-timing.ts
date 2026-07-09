@@ -2,8 +2,12 @@
  * Request timing extension — captures per-LLM-call diagnostics.
  *
  * Hooks into `before_provider_request` / `after_provider_response` to
- * measure duration, and `turn_end` to persist timing + diagnostics
- * as a custom entry alongside the assistant message.
+ * measure duration, and `message_end` to attach provider errors before
+ * persisting a `request_diagnostics` custom entry.
+ *
+ * Diagnostics are flushed on assistant `message_end` (production event
+ * order: HTTP response arrives before the assistant message is finalized).
+ * Orphaned pending entries are flushed on `turn_start` / the next request.
  *
  * This data is surfaced in `/export` output so that per-call
  * diagnostics (status, duration, retries, errors) are visible.
@@ -66,16 +70,26 @@ export default function requestTimingExtension(pi: ExtensionAPI): void {
 	// Track timing per turn — a turn may have multiple provider calls (retries)
 	let lastRequestTime: number | undefined
 	let retryCount = 0
-	let lastError: string | undefined
+	let pendingDiagnostics: RequestDiagnosticsData | undefined
+
+	const flushPendingDiagnostics = (error?: string) => {
+		if (!pendingDiagnostics) return
+		const data = { ...pendingDiagnostics }
+		if (error) {
+			data.error = error
+		}
+		pi.appendEntry("request_diagnostics", data)
+		pendingDiagnostics = undefined
+	}
 
 	pi.on("turn_start", async () => {
+		flushPendingDiagnostics()
 		retryCount = 0
-		lastError = undefined
 	})
 
 	pi.on("before_provider_request", async () => {
+		flushPendingDiagnostics()
 		lastRequestTime = Date.now()
-		lastError = undefined
 	})
 
 	pi.on("after_provider_response", async (event) => {
@@ -93,27 +107,25 @@ export default function requestTimingExtension(pi: ExtensionAPI): void {
 			retryCount++
 		}
 
-		const data: RequestDiagnosticsData = {
+		pendingDiagnostics = {
 			requestStartedAt: new Date(lastRequestTime).toISOString(),
 			requestCompletedAt: new Date(completedAt).toISOString(),
 			durationMs,
 			status: event.status,
 			traceId,
 			isRetry,
-			error: lastError,
 		}
 
-		pi.appendEntry("request_diagnostics", data)
-
-		// Reset for next call in the same turn
 		lastRequestTime = undefined
 	})
 
-	// Track errors via message_end for failed responses
+	// Flush pending diagnostics once the assistant message is finalized so
+	// provider errors are available (message_end fires after the HTTP response).
 	pi.on("message_end", async (event) => {
-		const msg = event.message as { stopReason?: string; errorMessage?: string }
-		if (msg?.stopReason === "error" && msg.errorMessage) {
-			lastError = msg.errorMessage
-		}
+		const msg = event.message as { role?: string; stopReason?: string; errorMessage?: string }
+		if (msg?.role !== "assistant" || !pendingDiagnostics) return
+
+		const error = msg.stopReason === "error" && msg.errorMessage ? msg.errorMessage : undefined
+		flushPendingDiagnostics(error)
 	})
 }

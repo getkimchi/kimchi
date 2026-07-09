@@ -10,10 +10,10 @@
  * `data.transcript`. Local file paths (`outputFile`, `sessionFile`) are
  * stripped from the export for safety.
  *
- * Transcripts are redacted by the caller (via `redactDeep`) — this module
- * only handles reading and attaching. The transcript is left unredacted
- * here so that the caller can run a single redaction pass over the entire
- * enriched entries array.
+ * Transcripts are redacted by the caller (`redactJsonlExport` /
+ * `redactHtmlExport`) — this module only handles reading and attaching.
+ * The transcript is left unredacted here so the caller can run a single
+ * redaction pass over the enriched export payload.
  */
 
 import { existsSync, readFileSync } from "node:fs"
@@ -136,31 +136,17 @@ export function readTranscript(filePath: string, baseDir?: string): TranscriptEn
 export function buildSubAgentSessionData(data: SubAgentRecordData): {
 	header: Record<string, unknown>
 	entries: Record<string, unknown>[]
+	systemPrompt?: string
 } {
 	const entries: Record<string, unknown>[] = []
 	const agentId = data.id || "unknown"
 	let prevId: string | null = null
 
-	// Include the system prompt as the first entry so it renders in the
-	// upstream template's message list (as a user-message header).
-	// Fall back to the persona config's systemPrompt for sessions recorded
-	// before systemPrompt was persisted on the record.
+	// Resolve the system prompt from the persisted record or the persona config.
+	// Pass it as a top-level field so the upstream HTML export template renders
+	// it in the same violet "System Prompt" box used for the main session.
 	const systemPrompt =
 		data.systemPrompt ?? getAgentConfig(data.type)?.systemPrompt ?? DEFAULT_AGENTS.get(data.type)?.systemPrompt
-	if (systemPrompt) {
-		const spId = `sa:${agentId}:system`
-		entries.push({
-			type: "message",
-			id: spId,
-			parentId: null,
-			timestamp: data.startedAt ? new Date(data.startedAt).toISOString() : new Date().toISOString(),
-			message: {
-				role: "user",
-				content: `**System Prompt**\n\n${systemPrompt}`,
-			},
-		})
-		prevId = spId
-	}
 
 	for (let i = 0; i < (data.transcript ?? []).length; i++) {
 		const t = data.transcript?.[i]
@@ -178,7 +164,11 @@ export function buildSubAgentSessionData(data: SubAgentRecordData): {
 		prevId = entryId
 	}
 
-	return {
+	const result: {
+		header: Record<string, unknown>
+		entries: Record<string, unknown>[]
+		systemPrompt?: string
+	} = {
 		header: {
 			type: "session",
 			version: 3,
@@ -188,6 +178,10 @@ export function buildSubAgentSessionData(data: SubAgentRecordData): {
 		},
 		entries,
 	}
+	if (systemPrompt) {
+		result.systemPrompt = systemPrompt
+	}
+	return result
 }
 
 /**

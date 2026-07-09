@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { enrichSubAgentEntries, readTranscript } from "./export-subagents.js"
+import { buildSubAgentSessionData, enrichSubAgentEntries, readTranscript } from "./export-subagents.js"
 
 let tempDir: string
 
@@ -262,14 +262,14 @@ describe("enrichSubAgentEntries", () => {
 		expect(record.data.transcript).toHaveLength(1)
 	})
 
-	it("preserves secret values verbatim in enriched transcript (redaction owned by PR #800)", () => {
+	it("preserves secret values verbatim in enriched transcript (redaction runs in a separate pass)", () => {
 		const outputFile = join(tempDir, "agent-004.output")
 		const transcriptEntries = [
 			{
 				isSidechain: true,
 				agentId: "agent-004",
 				type: "user",
-				message: { role: "user", content: "Use API key castai_v1_leaked_secret" },
+				message: { role: "user", content: "Use API key [REDACTED-CASTAI_API_KEY]" },
 				timestamp: "2026-01-01T00:00:00.000Z",
 				cwd: "/project",
 			},
@@ -284,22 +284,73 @@ describe("enrichSubAgentEntries", () => {
 					id: "agent-004",
 					type: "Explore",
 					status: "completed",
-					result: "Found key castai_v1_in_result",
+					result: "Found key [REDACTED-CASTAI_API_KEY]",
 					outputFile,
 				},
 			},
 		]
 
-		// Enrichment only — secret redaction is now owned by PR #800's
-		// redactJsonlExport / redactHtmlExport, which run after this step.
+		// Enrichment only — redactJsonlExport / redactHtmlExport run after this step.
 		enrichSubAgentEntries(entries)
 
 		const data = entries[0].data as unknown as {
 			result: string
 			transcript: Array<{ message: { content: string } }>
 		}
-		// Values pass through unchanged; PR #800 is responsible for scrubbing.
-		expect(data.result).toBe("Found key castai_v1_in_result")
-		expect(data.transcript[0].message.content).toBe("Use API key castai_v1_leaked_secret")
+		// Values pass through unchanged; the redaction pass is responsible for scrubbing.
+		expect(data.result).toBe("Found key [REDACTED-CASTAI_API_KEY]")
+		expect(data.transcript[0].message.content).toBe("Use API key [REDACTED-CASTAI_API_KEY]")
+	})
+})
+
+describe("buildSubAgentSessionData", () => {
+	it("returns systemPrompt as a top-level field for the upstream template", () => {
+		const result = buildSubAgentSessionData({
+			id: "agent-008",
+			type: "Explore",
+			status: "completed",
+			systemPrompt: "You are an explorer. Be thorough.",
+			transcript: [
+				{
+					isSidechain: true,
+					agentId: "agent-008",
+					type: "user",
+					message: { role: "user", content: "Explore" },
+					timestamp: "2026-01-01T00:00:00.000Z",
+					cwd: "/project",
+				},
+			],
+		})
+
+		expect(result.systemPrompt).toBe("You are an explorer. Be thorough.")
+		expect(result.entries).toHaveLength(1)
+		expect(result.entries[0]).toHaveProperty("type", "message")
+	})
+
+	it("does not inject a system prompt user message", () => {
+		const result = buildSubAgentSessionData({
+			id: "agent-009",
+			type: "Explore",
+			status: "completed",
+			systemPrompt: "You are an explorer.",
+			transcript: [],
+		})
+
+		const userMessages = result.entries.filter(
+			(e) => e.type === "message" && (e.message as { role?: string }).role === "user",
+		)
+		expect(userMessages).toHaveLength(0)
+	})
+
+	it("falls back to persona config systemPrompt when record systemPrompt is missing", () => {
+		const result = buildSubAgentSessionData({
+			id: "agent-010",
+			type: "Explore",
+			status: "completed",
+			transcript: [],
+		})
+
+		expect(result.systemPrompt).toBeTruthy()
+		expect(typeof result.systemPrompt).toBe("string")
 	})
 })

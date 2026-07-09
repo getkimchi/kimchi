@@ -23,6 +23,30 @@ function getHandler(handlers: Map<string, Handler[]>, event: string): Handler {
 	return list[0]
 }
 
+/** Simulate production event order: HTTP response, then assistant message_end. */
+async function completeProviderCall(
+	handlers: Map<string, Handler[]>,
+	options: {
+		status: number
+		headers?: unknown
+		errorMessage?: string
+	},
+) {
+	const beforeProviderRequest = getHandler(handlers, "before_provider_request")
+	const afterProviderResponse = getHandler(handlers, "after_provider_response")
+	const messageEnd = getHandler(handlers, "message_end")
+
+	await beforeProviderRequest({})
+	await afterProviderResponse({ status: options.status, headers: options.headers ?? {} })
+	await messageEnd({
+		message: {
+			role: "assistant",
+			stopReason: options.errorMessage ? "error" : "stop",
+			errorMessage: options.errorMessage,
+		},
+	})
+}
+
 describe("requestTimingExtension", () => {
 	it("registers expected handlers", () => {
 		const { handlers, api } = createMockApi()
@@ -34,15 +58,14 @@ describe("requestTimingExtension", () => {
 		expect(handlers.has("message_end")).toBe(true)
 	})
 
-	it("emits a request_diagnostics entry after a provider response", async () => {
+	it("emits a request_diagnostics entry after the assistant message is finalized", async () => {
 		const { handlers, api, appendEntry } = createMockApi()
 		requestTimingExtension(api)
 
-		const beforeProviderRequest = getHandler(handlers, "before_provider_request")
-		const afterProviderResponse = getHandler(handlers, "after_provider_response")
-
-		await beforeProviderRequest({})
-		await afterProviderResponse({ status: 200, headers: { "x-trace-id": "trace-abc" } })
+		await completeProviderCall(handlers, {
+			status: 200,
+			headers: { "x-trace-id": "trace-abc" },
+		})
 
 		expect(appendEntry).toHaveBeenCalledTimes(1)
 		const call = appendEntry.mock.calls[0] as [string, Record<string, unknown>]
@@ -58,11 +81,7 @@ describe("requestTimingExtension", () => {
 		const { handlers, api, appendEntry } = createMockApi()
 		requestTimingExtension(api)
 
-		const beforeProviderRequest = getHandler(handlers, "before_provider_request")
-		const afterProviderResponse = getHandler(handlers, "after_provider_response")
-
-		await beforeProviderRequest({})
-		await afterProviderResponse({
+		await completeProviderCall(handlers, {
 			status: 200,
 			headers: new Headers({ "x-trace-id": "headers-object-trace" }),
 		})
@@ -75,35 +94,38 @@ describe("requestTimingExtension", () => {
 		const { handlers, api, appendEntry } = createMockApi()
 		requestTimingExtension(api)
 
-		const beforeProviderRequest = getHandler(handlers, "before_provider_request")
-		const afterProviderResponse = getHandler(handlers, "after_provider_response")
-
 		const headers = new Headers()
 		headers.append("X-Trace-Id", "entries-trace")
 
-		await beforeProviderRequest({})
-		await afterProviderResponse({ status: 200, headers })
+		await completeProviderCall(handlers, { status: 200, headers })
 
 		const call = appendEntry.mock.calls[0] as [string, Record<string, unknown>]
 		expect(call[1].traceId).toBe("entries-trace")
 	})
 
-	it("clears lastError on before_provider_request so a successful retry does not carry the earlier error", async () => {
+	it("attaches provider errors from message_end after the HTTP response", async () => {
 		const { handlers, api, appendEntry } = createMockApi()
 		requestTimingExtension(api)
 
-		const beforeProviderRequest = getHandler(handlers, "before_provider_request")
-		const afterProviderResponse = getHandler(handlers, "after_provider_response")
-		const messageEnd = getHandler(handlers, "message_end")
+		await completeProviderCall(handlers, {
+			status: 500,
+			errorMessage: "first failure",
+		})
 
-		// First request fails
-		await beforeProviderRequest({})
-		await messageEnd({ message: { stopReason: "error", errorMessage: "first failure" } })
-		await afterProviderResponse({ status: 500, headers: {} })
+		expect(appendEntry).toHaveBeenCalledTimes(1)
+		const call = appendEntry.mock.calls[0] as [string, Record<string, unknown>]
+		expect(call[1].error).toBe("first failure")
+	})
 
-		// Retry succeeds — lastError should have been cleared at the start of this request
-		await beforeProviderRequest({})
-		await afterProviderResponse({ status: 200, headers: {} })
+	it("does not carry an earlier error into a successful retry", async () => {
+		const { handlers, api, appendEntry } = createMockApi()
+		requestTimingExtension(api)
+
+		await completeProviderCall(handlers, {
+			status: 500,
+			errorMessage: "first failure",
+		})
+		await completeProviderCall(handlers, { status: 200 })
 
 		expect(appendEntry).toHaveBeenCalledTimes(2)
 		const firstCall = appendEntry.mock.calls[0] as [string, Record<string, unknown>]
@@ -117,14 +139,8 @@ describe("requestTimingExtension", () => {
 		const { handlers, api, appendEntry } = createMockApi()
 		requestTimingExtension(api)
 
-		const beforeProviderRequest = getHandler(handlers, "before_provider_request")
-		const afterProviderResponse = getHandler(handlers, "after_provider_response")
-
-		await beforeProviderRequest({})
-		await afterProviderResponse({ status: 200, headers: {} })
-
-		await beforeProviderRequest({})
-		await afterProviderResponse({ status: 200, headers: {} })
+		await completeProviderCall(handlers, { status: 200 })
+		await completeProviderCall(handlers, { status: 200 })
 
 		expect(appendEntry).toHaveBeenCalledTimes(2)
 		const firstCall = appendEntry.mock.calls[0] as [string, Record<string, unknown>]

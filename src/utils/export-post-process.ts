@@ -20,7 +20,7 @@ export function postProcessJsonlExport(filePath: string): void {
 
 	// Parse entries for enrichment. Skip malformed lines so one bad line does
 	// not crash the entire export pipeline. Secret redaction is handled
-	// separately by PR #800's redactJsonlExport, which runs after this step.
+	// separately by redactJsonlExport, which runs after this step.
 	const parsedEntries: Record<string, unknown>[] = []
 	for (const line of traceInjected) {
 		try {
@@ -135,7 +135,7 @@ export function postProcessHtmlExport(filePath: string): void {
 			// which is unrelated to the export file's location. The `..`
 			// traversal check inside enrichSubAgentEntries still guards against
 			// directory-escape attacks.
-			// Secret redaction is handled separately by PR #800's redactHtmlExport,
+			// Secret redaction is handled separately by redactHtmlExport,
 			// which runs after this post-processing step.
 			enrichSubAgentEntries(data.entries as Record<string, unknown>[])
 
@@ -262,7 +262,7 @@ export function postProcessHtmlExport(filePath: string): void {
 					'    var head = clone.querySelector("head");',
 					"    if (head) {",
 					'      var css = document.createElement("style");',
-					'      css.textContent = "html,body{margin:0;padding:0;height:100%;overflow:hidden}#app{display:flex !important;height:100vh !important}#content{height:100vh !important}#header-container{display:none !important}";',
+					'      css.textContent = "html,body{margin:0;padding:0;height:100%;overflow:hidden}#app{display:flex !important;height:100vh !important}#content{height:100vh !important}#header-container .header h1,#header-container .header .help-bar,#header-container .header .header-info{display:none}#header-container .header{padding:0;margin:0;background:transparent}"',
 					"      head.appendChild(css);",
 					"    }",
 					'    var iframe = document.createElement("iframe");',
@@ -383,10 +383,24 @@ export function postProcessHtmlExport(filePath: string): void {
     var os = data.hostMetadata.os || {};
     if (os['telemetry.os']) parts.push('OS: ' + os['telemetry.os'] + '/' + (os['telemetry.arch'] || ''));
     if (os['telemetry.is_wsl']) parts.push('WSL');
-    var cfg = data.hostMetadata.config || {};
-    if (cfg['config.multi_model_enabled']) parts.push('Multimodel: on');
-    var orch = cfg['config.model_roles.orchestrator'];
-    if (orch) parts.push('Orchestrator: ' + orch);
+    var models = [];
+    var seen = {};
+    if (data.entries) {
+        for (var i = 0; i < data.entries.length; i++) {
+            var e = data.entries[i];
+            var ref = null;
+            if (e.type === 'model_change' && e.provider && e.modelId) {
+                ref = e.provider + '/' + e.modelId;
+            } else if (e.type === 'message' && e.message && e.message.role === 'assistant' && e.message.provider && e.message.model) {
+                ref = e.message.provider + '/' + e.message.model;
+            }
+            if (ref && !seen[ref]) {
+                seen[ref] = true;
+                models.push(ref);
+            }
+        }
+    }
+    parts.push(models.length > 0 ? 'Models: ' + models.join(', ') : 'Models: —');
     container.textContent = parts.join(' · ');
     var saHeader = document.getElementById('sa-header');
     if (saHeader) {
@@ -485,28 +499,53 @@ export function postProcessHtmlExport(filePath: string): void {
 }
 
 /**
+ * Decode, redact, and re-encode every base64 JSON payload embedded in
+ * matching `<script>` tags. Malformed tags are left unchanged.
+ */
+async function redactBase64JsonScripts(html: string, pattern: RegExp): Promise<string> {
+	const globalPattern = new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`)
+	let result = html
+
+	for (const match of result.matchAll(globalPattern)) {
+		const fullTag = match[0]
+		const base64 = match[1]
+		if (!base64?.trim()) continue
+
+		try {
+			const json = Buffer.from(base64, "base64").toString("utf-8")
+			const data = JSON.parse(json)
+			const cleaned = await redactObjectStrings(data)
+			const modifiedBase64 = Buffer.from(JSON.stringify(cleaned)).toString("base64")
+			result = result.replace(fullTag, fullTag.replace(base64, modifiedBase64))
+		} catch {
+			// Not valid base64/JSON — pass through unchanged.
+		}
+	}
+
+	return result
+}
+
+/**
  * Redact PII and secrets from an HTML export file.
  *
- * Finds the base64-encoded session-data script tag, decodes it, deep-walks
- * all string values redacting PII/secrets, re-encodes, and writes back.
- * If the session-data tag is not found, the file is left unchanged.
+ * Deep-walks all string values in the base64-encoded `session-data` script
+ * and any `subagent-data-*` iframe payloads, then re-encodes them.
+ * If no matching script tags are found, the file is left unchanged.
  *
  * API keys/secrets in session transcripts are scrubbed before the
  * transcript leaves the harness.
  */
 export async function redactHtmlExport(filePath: string): Promise<void> {
-	let html = readFileSync(filePath, "utf-8")
-	const match = html.match(/<script id="session-data" type="application\/json">([\s\S]*?)<\/script>/)
-	if (!match) return
-	const base64 = match[1]
-	const json = Buffer.from(base64, "base64").toString("utf-8")
-	const data = JSON.parse(json)
-	const cleaned = await redactObjectStrings(data)
-	const modified = JSON.stringify(cleaned)
-	const modifiedBase64 = Buffer.from(modified).toString("base64")
-	html = html.replace(
-		/<script id="session-data" type="application\/json">[\s\S]*?<\/script>/,
-		`<script id="session-data" type="application/json">${modifiedBase64}</script>`,
+	const html = readFileSync(filePath, "utf-8")
+	let redacted = await redactBase64JsonScripts(
+		html,
+		/<script id="session-data" type="application\/json">([\s\S]*?)<\/script>/,
 	)
-	writeFileSync(filePath, html, "utf-8")
+	redacted = await redactBase64JsonScripts(
+		redacted,
+		/<script type="application\/json" id="subagent-data-[^"]+">([\s\S]*?)<\/script>/,
+	)
+	if (redacted !== html) {
+		writeFileSync(filePath, redacted, "utf-8")
+	}
 }
