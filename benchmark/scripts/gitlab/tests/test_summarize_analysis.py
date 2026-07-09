@@ -12,72 +12,30 @@ from urllib import error, request
 from summarize_analysis import (
     build_runs_table,
     call_opus,
-    compute_lookback_dates,
     extract_run_metrics,
     filter_metadata,
     is_full_run,
-    is_in_time_window,
     metadata_dict,
     metadata_string,
     post_to_discord,
     run_configuration,
     run_label,
     split_by_ferment,
+    yesterday_date_str,
 )
 
-# --- compute_lookback_dates ---
+# --- yesterday_date_str ---
 
-def test_compute_lookback_dates_returns_yesterday_and_today() -> None:
-    """At 06:30 UTC on July 2, lookback is July 1 (yesterday) and July 2 (today)."""
+def test_yesterday_date_str_returns_yesterday() -> None:
+    """At 06:30 UTC on July 2, yesterday is July 1."""
     now = datetime(2026, 7, 2, 6, 30, 0, tzinfo=UTC)
-    yesterday, today = compute_lookback_dates(now)
-    assert yesterday == "2026-07-01"
-    assert today == "2026-07-02"
+    assert yesterday_date_str(now) == "2026-07-01"
 
 
-def test_compute_lookback_dates_across_month_boundary() -> None:
-    """At 06:30 UTC on August 1, lookback is July 31 and August 1."""
+def test_yesterday_date_str_across_month_boundary() -> None:
+    """At 06:30 UTC on August 1, yesterday is July 31."""
     now = datetime(2026, 8, 1, 6, 30, 0, tzinfo=UTC)
-    yesterday, today = compute_lookback_dates(now)
-    assert yesterday == "2026-07-31"
-    assert today == "2026-08-01"
-
-
-# --- is_in_time_window ---
-
-def test_is_in_time_window_includes_run_at_18_00() -> None:
-    """A run created at 18:00 UTC yesterday is within the window."""
-    now = datetime(2026, 7, 2, 6, 30, 0, tzinfo=UTC)
-    created = datetime(2026, 7, 1, 18, 0, 0, tzinfo=UTC)
-    assert is_in_time_window(created, now) is True
-
-
-def test_is_in_time_window_includes_run_at_03_00() -> None:
-    """A run created at 03:00 UTC today is within the window."""
-    now = datetime(2026, 7, 2, 6, 30, 0, tzinfo=UTC)
-    created = datetime(2026, 7, 2, 3, 0, 0, tzinfo=UTC)
-    assert is_in_time_window(created, now) is True
-
-
-def test_is_in_time_window_boundary_at_06_00() -> None:
-    """A run created exactly at 06:00 UTC today is within the window (inclusive)."""
-    now = datetime(2026, 7, 2, 6, 30, 0, tzinfo=UTC)
-    created = datetime(2026, 7, 2, 6, 0, 0, tzinfo=UTC)
-    assert is_in_time_window(created, now) is True
-
-
-def test_is_in_time_window_excludes_run_at_16_00() -> None:
-    """A run created at 16:00 UTC yesterday is before the window."""
-    now = datetime(2026, 7, 2, 6, 30, 0, tzinfo=UTC)
-    created = datetime(2026, 7, 1, 16, 0, 0, tzinfo=UTC)
-    assert is_in_time_window(created, now) is False
-
-
-def test_is_in_time_window_excludes_run_at_07_00() -> None:
-    """A run created at 07:00 UTC today is after the window."""
-    now = datetime(2026, 7, 2, 6, 30, 0, tzinfo=UTC)
-    created = datetime(2026, 7, 2, 7, 0, 0, tzinfo=UTC)
-    assert is_in_time_window(created, now) is False
+    assert yesterday_date_str(now) == "2026-07-31"
 
 
 # --- is_full_run ---
@@ -106,36 +64,64 @@ def test_is_full_run_with_fewer_tasks() -> None:
 # --- filter_metadata ---
 
 def test_filter_metadata_includes_valid_run() -> None:
-    now = datetime(2026, 7, 2, 6, 30, 0, tzinfo=UTC)
     metadata = {
-        "created_at": "2026-07-01T20:00:00Z",
         "ferment": True,
         "gitlab": {"target_ref": "master"},
-        "run_metadata": {"tasks_all": True, "selected_tasks": ["a"] * 89},
+        "run_metadata": {
+            "benchmark_tag": "daily-tb2",
+            "tasks_all": True,
+            "selected_tasks": ["a"] * 89,
+        },
     }
-    assert filter_metadata(metadata, now) is True
+    assert filter_metadata(metadata) is True
 
 
 def test_filter_metadata_excludes_non_master() -> None:
-    now = datetime(2026, 7, 2, 6, 30, 0, tzinfo=UTC)
     metadata = {
-        "created_at": "2026-07-01T20:00:00Z",
         "ferment": False,
         "gitlab": {"target_ref": "master-test"},
-        "run_metadata": {"tasks_all": True, "selected_tasks": ["a"] * 89},
+        "run_metadata": {
+            "benchmark_tag": "daily-tb2",
+            "tasks_all": True,
+            "selected_tasks": ["a"] * 89,
+        },
     }
-    assert filter_metadata(metadata, now) is False
+    assert filter_metadata(metadata) is False
 
 
 def test_filter_metadata_excludes_partial_run() -> None:
-    now = datetime(2026, 7, 2, 6, 30, 0, tzinfo=UTC)
     metadata = {
-        "created_at": "2026-07-01T20:00:00Z",
         "ferment": False,
         "gitlab": {"target_ref": "master"},
-        "run_metadata": {"tasks_all": False, "selected_tasks": ["a"] * 10},
+        "run_metadata": {
+            "benchmark_tag": "daily-tb2",
+            "tasks_all": False,
+            "selected_tasks": ["a"] * 10,
+        },
     }
-    assert filter_metadata(metadata, now) is False
+    assert filter_metadata(metadata) is False
+
+
+def test_filter_metadata_excludes_missing_tag() -> None:
+    metadata = {
+        "ferment": False,
+        "gitlab": {"target_ref": "master"},
+        "run_metadata": {"tasks_all": True, "selected_tasks": ["a"] * 89},
+    }
+    assert filter_metadata(metadata) is False
+
+
+def test_filter_metadata_excludes_wrong_tag() -> None:
+    metadata = {
+        "ferment": False,
+        "gitlab": {"target_ref": "master"},
+        "run_metadata": {
+            "benchmark_tag": "adhoc",
+            "tasks_all": True,
+            "selected_tasks": ["a"] * 89,
+        },
+    }
+    assert filter_metadata(metadata) is False
 
 
 # --- split_by_ferment ---

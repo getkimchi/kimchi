@@ -354,6 +354,7 @@ def _write_run_metadata(
 
     metadata = {
         "schema_version": 1,
+        "benchmark_tag": os.environ.get("BENCHMARK_TAG", ""),
         "benchmark": os.environ.get(ENV_BENCHMARK_NAME, DEFAULT_BENCHMARK_NAME),
         "coding_agent": os.environ.get(ENV_CODING_AGENT, DEFAULT_CODING_AGENT),
         "model": model,

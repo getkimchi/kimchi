@@ -18,6 +18,10 @@ inputs:
     description: "Git ref to fetch from origin and benchmark. Defaults to master."
     type: string
     default: "master"
+  benchmark_tag:
+    description: "Optional tag identifying the schedule/source of this run (e.g. 'daily-tb2')."
+    type: string
+    default: ""
   tasks_all:
     description: "Run every task in the dataset, ignoring the `tasks` selection. Use for full benchmark runs."
     type: boolean

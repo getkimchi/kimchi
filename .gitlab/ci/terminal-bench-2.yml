@@ -27,6 +27,18 @@ stages:
   - notify
   - summarize
 
+default:
+  tags:
+    - runner::experimental
+  id_tokens: !reference [.auth-gcp-id-tokens, id_tokens]
+  interruptible: false
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - api_failure
+      - stuck_or_timeout_failure
+
 .gcloud-setup:
   script:
     - benchmark/scripts/gitlab/install_gcloud.sh
@@ -39,14 +51,10 @@ stages:
 setup-image:
   stage: prepare
   image: mirror.gcr.io/library/node:22-bookworm
-  id_tokens: !reference [.auth-gcp-id-tokens, id_tokens]
   services:
     - name: mirror.gcr.io/library/docker:27.5.1-dind
       alias: docker
-  tags:
-    - runner::experimental
   timeout: 30 min
-  interruptible: false
   resource_group: "$TERMINAL_BENCH_RESOURCE_GROUP"
   rules:
     - if: '$SUMMARY_ONLY == "true"'
@@ -75,17 +83,13 @@ setup-image:
   needs:
     - job: setup-image
       artifacts: true
-  id_tokens: !reference [.auth-gcp-id-tokens, id_tokens]
   services:
     - name: mirror.gcr.io/library/docker:27.5.1-dind
       alias: docker
       command: ["--registry-mirror", "https://mirror.gcr.io"]
-  tags:
-    - runner::experimental
   timeout: 12 hours
   retry: 2
   allow_failure: true
-  interruptible: false
   rules:
     - if: '$SUMMARY_ONLY == "true"'
       when: never
@@ -99,6 +103,7 @@ setup-image:
     BENCHMARK_RESULTS_DIR: benchmark/terminal-bench-$[[ inputs.dataset_version ]]/jobs
     DATASET: terminal-bench/terminal-bench-$[[ inputs.dataset_version ]]
     BENCHMARK_TARGET_REF: "$[[ inputs.target_ref ]]"
+    BENCHMARK_TAG: "$[[ inputs.benchmark_tag ]]"
     CODING_AGENT: "$[[ inputs.agent ]]"
     MODEL: "$[[ inputs.model ]]"
     GCS_UPLOAD_REQUIRED: "true"
@@ -180,12 +185,9 @@ terminal-bench-$[[ inputs.dataset_version ]]-summary:
       when: never
     - when: always
   image: mirror.gcr.io/library/node:22-bookworm
-  id_tokens: !reference [.auth-gcp-id-tokens, id_tokens]
   needs:
     - job: terminal-bench-$[[ inputs.dataset_version ]]-chunks
       artifacts: true
-  tags:
-    - runner::experimental
   variables:
     <<: *gcp-auth-vars
     BENCHMARK_RESULTS_DIR: benchmark/terminal-bench-$[[ inputs.dataset_version ]]/jobs
@@ -218,6 +220,7 @@ terminal-bench-$[[ inputs.dataset_version ]]-analyze:
       when: always
     - when: never
   image: "$BENCH_IMAGE"
+  id_tokens: {}
   needs:
     - job: setup-image
       artifacts: true
@@ -225,8 +228,6 @@ terminal-bench-$[[ inputs.dataset_version ]]-analyze:
       artifacts: true
     - job: terminal-bench-$[[ inputs.dataset_version ]]-summary
       artifacts: true
-  tags:
-    - runner::experimental
   timeout: 70 min
   variables:
     BENCHMARK_RESULTS_DIR: benchmark/terminal-bench-$[[ inputs.dataset_version ]]/jobs
@@ -253,14 +254,11 @@ terminal-bench-$[[ inputs.dataset_version ]]-upload-analysis:
       when: on_success
     - when: never
   image: mirror.gcr.io/library/node:22-bookworm
-  id_tokens: !reference [.auth-gcp-id-tokens, id_tokens]
   needs:
     - job: terminal-bench-$[[ inputs.dataset_version ]]-summary
       artifacts: true
     - job: terminal-bench-$[[ inputs.dataset_version ]]-analyze
       artifacts: true
-  tags:
-    - runner::experimental
   variables:
     <<: *gcp-auth-vars
     DEBIAN_FRONTEND: noninteractive
@@ -275,9 +273,6 @@ terminal-bench-$[[ inputs.dataset_version ]]-upload-analysis:
 summarize-benchmark-analysis:
   stage: summarize
   image: mirror.gcr.io/library/node:22-bookworm
-  id_tokens: !reference [.auth-gcp-id-tokens, id_tokens]
-  tags:
-    - runner::dind
   variables:
     <<: *gcp-auth-vars
     DEBIAN_FRONTEND: noninteractive

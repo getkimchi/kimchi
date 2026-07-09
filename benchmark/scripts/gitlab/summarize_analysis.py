@@ -2,8 +2,8 @@
 """Summarize benchmark analysis files from GCS using Claude Opus and post to Discord.
 
 This script runs as a standalone CI job. It:
-1. Lists metadata.json files from GCS for today and yesterday.
-2. Downloads and filters them by time window, target_ref, and full-run criteria.
+1. Lists metadata.json files from GCS for yesterday.
+2. Downloads and filters them by benchmark_tag, target_ref, and full-run criteria.
 3. Downloads analysis.html for qualifying runs and extracts text.
 4. Splits runs into ferment and non-ferment groups.
 5. Calls Claude Opus to summarize each group (under 2000 chars).
@@ -69,18 +69,9 @@ def run(cmd: list[str]) -> str:
     return stdout
 
 
-def compute_lookback_dates(now: datetime) -> tuple[str, str]:
-    """Return (yesterday_str, today_str) as YYYY-MM-DD."""
-    yesterday = now - timedelta(days=1)
-    return yesterday.strftime("%Y-%m-%d"), now.strftime("%Y-%m-%d")
-
-
-def is_in_time_window(created_at: datetime, now: datetime) -> bool:
-    """Check if created_at is between yesterday 17:00 and today 06:00 UTC."""
-    window_start = (now - timedelta(days=1)).replace(hour=17, minute=0, second=0, microsecond=0)
-    # TEMP: widen window end to 12:00 UTC to capture same-day runs
-    window_end = now.replace(hour=12, minute=0, second=0, microsecond=0)
-    return window_start <= created_at <= window_end
+def yesterday_date_str(now: datetime) -> str:
+    """Return yesterday's date as YYYY-MM-DD."""
+    return (now - timedelta(days=1)).strftime("%Y-%m-%d")
 
 
 def is_full_run(metadata: dict[str, Any]) -> bool:
@@ -94,20 +85,20 @@ def is_full_run(metadata: dict[str, Any]) -> bool:
     return len(selected) >= 89
 
 
-def filter_metadata(metadata: dict[str, Any], now: datetime) -> bool:
+DAILY_TB2_TAG = "daily-tb2"
+
+
+def filter_metadata(metadata: dict[str, Any]) -> bool:
     """Apply all filter criteria to a metadata dict.
 
     Returns True if the run qualifies for summarization.
     """
-    # Time window
-    created_at_str = metadata.get("created_at", "")
-    if not created_at_str:
+    run_meta = metadata.get("run_metadata", {})
+    if not isinstance(run_meta, dict):
         return False
-    try:
-        created_at = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
-    except (ValueError, TypeError):
-        return False
-    if not is_in_time_window(created_at, now):
+
+    # Select only daily scheduled TB2 runs
+    if run_meta.get("benchmark_tag") != DAILY_TB2_TAG:
         return False
 
     # Target ref
@@ -357,35 +348,29 @@ def post_to_discord(bot_token: str, channel_id: str, thread_name: str, content_b
 
 def main() -> int:
     now = datetime.now(UTC)
-    yesterday_str, today_str = compute_lookback_dates(now)
-    window_start = (now - timedelta(days=1)).replace(hour=17, minute=0, second=0, microsecond=0)
-    window_end = now.replace(hour=6, minute=0, second=0, microsecond=0)
+    yesterday_str = yesterday_date_str(now)
 
     print(f"Summarize analysis started at {now.strftime('%Y-%m-%d %H:%M:%S')} UTC", flush=True)
-    window_start_str = window_start.strftime('%Y-%m-%d %H:%M')
-    window_end_str = window_end.strftime('%Y-%m-%d %H:%M')
-    print(f"Lookback window: {window_start_str} to {window_end_str} UTC", flush=True)
-    print(f"GCS date prefixes: {yesterday_str}, {today_str}", flush=True)
+    print(f"GCS date prefix: {yesterday_str}", flush=True)
 
     bucket = require_env("BENCHMARK_GCS_BUCKET")
     print(f"GCS bucket: {bucket}", flush=True)
 
-    # Step 1: List metadata.json from GCS across both dates
+    # Step 1: List metadata.json from GCS for yesterday
     all_metadata_uris: list[str] = []
-    for date_str in (yesterday_str, today_str):
-        pattern = f"gs://{bucket}/runs/benchmark=*/coding_agent=*/model_provider=*/model=*/configuration=*/date={date_str}/run=*/metadata.json"
-        print(f"Listing GCS for date={date_str}", flush=True)
-        try:
-            output = run(["gcloud", "storage", "ls", pattern])
-        except subprocess.CalledProcessError as exc:
-            print(f"GCS listing failed for date={date_str}: {exc.stderr}", file=sys.stderr, flush=True)
-            continue
-        uris = output.splitlines() if output else []
-        print(f"  Found {len(uris)} metadata.json files for date={date_str}", flush=True)
-        all_metadata_uris.extend(uris)
+    pattern = f"gs://{bucket}/runs/benchmark=*/coding_agent=*/model_provider=*/model=*/configuration=*/date={yesterday_str}/run=*/metadata.json"
+    print(f"Listing GCS for date={yesterday_str}", flush=True)
+    try:
+        output = run(["gcloud", "storage", "ls", pattern])
+    except subprocess.CalledProcessError as exc:
+        print(f"GCS listing failed for date={yesterday_str}: {exc.stderr}", file=sys.stderr, flush=True)
+        return 1
+    uris = output.splitlines() if output else []
+    print(f"  Found {len(uris)} metadata.json files for date={yesterday_str}", flush=True)
+    all_metadata_uris.extend(uris)
 
     if not all_metadata_uris:
-        print("No metadata.json files found in GCS for the lookback window.", file=sys.stderr, flush=True)
+        print("No metadata.json files found in GCS for yesterday.", file=sys.stderr, flush=True)
         return 1
 
     print(f"Total metadata.json files found: {len(all_metadata_uris)}", flush=True)
@@ -412,20 +397,20 @@ def main() -> int:
             continue
 
         # Log what we found
-        created_at = metadata.get("created_at", "unknown")
         ferment = metadata.get("ferment", False)
         gitlab = metadata.get("gitlab", {})
         target_ref = gitlab.get("target_ref", "unknown") if isinstance(gitlab, dict) else "unknown"
         run_meta = metadata.get("run_metadata", {})
+        benchmark_tag = run_meta.get("benchmark_tag", "unknown") if isinstance(run_meta, dict) else "unknown"
         tasks_all = run_meta.get("tasks_all") if isinstance(run_meta, dict) else None
         n_tasks = len(run_meta.get("selected_tasks", [])) if isinstance(run_meta, dict) else 0
         print(
-            f"  created_at={created_at}, ferment={ferment}, target_ref={target_ref}, "
+            f"  benchmark_tag={benchmark_tag}, ferment={ferment}, target_ref={target_ref}, "
             f"tasks_all={tasks_all}, n_tasks={n_tasks}",
             flush=True,
         )
 
-        if not filter_metadata(metadata, now):
+        if not filter_metadata(metadata):
             print("  SKIP — does not match filter criteria", flush=True)
             continue
 

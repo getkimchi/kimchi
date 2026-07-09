@@ -9,6 +9,7 @@ include:
       dataset_version: $[[ inputs.dataset_version ]]
       agent: $[[ inputs.agent ]]
       target_ref: $[[ inputs.target_ref ]]
+      benchmark_tag: $[[ inputs.benchmark_tag ]]
       tasks: $[[ inputs.tasks ]]
       model: $[[ inputs.model ]]
       kimchi_multi_model: $[[ inputs.kimchi_multi_model ]]
