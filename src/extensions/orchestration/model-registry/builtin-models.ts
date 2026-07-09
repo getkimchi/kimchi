@@ -65,11 +65,10 @@ Best for: orchestration, architectural planning, plan verification involving con
 algorithmic design, multi-step coding tasks, and any work requiring image understanding.`
 
 const MINIMAX_M3_DESCRIPTION = `\
-Primary MiniMax model with vision support — the default for orchestration, deep research, \
-complex planning, and correctness-critical tasks. Handles images, screenshots, and visual input. \
-Best for: orchestration, architectural planning, plan verification involving concurrency or \
-algorithmic design, multi-step coding tasks, and any work requiring image understanding. \
-Replaces kimi-k2.6 (orchestrator) and minimax-m2.7 (builder/reviewer subagent).`
+Primary MiniMax model with vision support — heavy-tier builder and researcher. \
+Handles images, screenshots, and visual input. \
+Best for: multi-file implementation, concurrency-heavy code, deep research with citations, \
+and plan verification involving complex logic.`
 
 const MINIMAX_M27_DESCRIPTION = `\
 The strongest coding model in the pool. \
