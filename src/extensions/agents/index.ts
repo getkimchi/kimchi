@@ -27,6 +27,7 @@ import { isToolExpanded, registerToolCall } from "../../expand-state.js"
 import { filterThinkingForDisplay } from "../hide-thinking.js"
 import { sessionHasImages } from "../model-guard.js"
 import { KIMCHI_DEV_PROVIDER, MODEL_CAPABILITIES } from "../orchestration/model-registry/index.js"
+import { getAllowedMultiModelRefs } from "../orchestration/model-roles.js"
 import { getMultiModelEnabled } from "../prompt-construction/prompt-enrichment.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { isStaleCtxError } from "../stale-ctx.js"
@@ -125,7 +126,7 @@ export const AGENT_TOOL_GUIDELINES = `Guidelines:
 - Use inherit_context if the agent needs the parent conversation history.`
 
 export const AGENT_MODEL_PARAMETER_DESCRIPTION =
-	'Model identifier for the spawned agent. If omitted, the agent uses the current session model. Follow your system prompt\'s delegation rules when deciding whether to provide this. Format "provider/modelId" (e.g. "kimchi-dev/minimax-m2.7"). Partial model IDs such as "kimi" or "nemotron" are accepted when unambiguous; specify the full versioned model ID when the exact version matters.'
+	'Model identifier for the spawned agent. If omitted, the agent uses the current session model. Follow your system prompt\'s delegation rules when deciding whether to provide this. Format "provider/modelId" (e.g. "kimchi-dev/minimax-m2.7"). Partial model IDs such as "kimi" or "nemotron" are accepted when unambiguous; specify the full versioned model ID when the exact version matters. In multi-model mode, only the models configured in the multi-model roles may be used.'
 
 function textResult<T = AgentDetails>(msg: string, details?: T) {
 	return { content: [{ type: "text" as const, text: msg }], details: details as unknown }
@@ -1141,6 +1142,23 @@ ${AGENT_TOOL_GUIDELINES}`,
 						if (resolvedConfig.modelFromParams) return textResult(resolvedModel)
 					} else {
 						model = resolvedModel as typeof ctx.model
+					}
+				}
+
+				// Multi-model guard: when multi-model mode is active and the caller supplied
+				// an explicit model, the resolved model must belong to the configured
+				// multi-model role pool. This runs before budget-retry and task_ref checks
+				// so invalid models are rejected immediately.
+				if (getMultiModelEnabled() && resolvedConfig.modelFromParams) {
+					const fullRef = `${(model as { provider?: string }).provider}/${(model as { id?: string }).id}`
+					const allowed = new Set(getAllowedMultiModelRefs())
+					if (!allowed.has(fullRef)) {
+						const allowedList = Array.from(allowed)
+							.map((ref) => `  - ${ref}`)
+							.join("\n")
+						return textResult(
+							`Model "${fullRef}" is not allowed in multi-model mode.\n\nAllowed models:\n${allowedList}\n\nOmit the model parameter to use the current session model, or specify one of the allowed models.`,
+						)
 					}
 				}
 
