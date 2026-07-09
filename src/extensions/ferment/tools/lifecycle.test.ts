@@ -1114,6 +1114,7 @@ describe("completeFerment", () => {
 			ok: true,
 			grade: "B",
 			rationale: "Phase 1 verified via proxy; goal met but coverage is thin.",
+			recommendations: [],
 		})
 		const result = await completeFerment(
 			h.runtime,
@@ -1176,6 +1177,140 @@ describe("completeFerment", () => {
 
 		expect(okText(result)).toContain("**Final grade:** unavailable")
 		expect(okText(result)).toContain("Judge unreachable (no_registry)")
+		expect(h.storage.get(h.fermentId)?.status).toBe("complete")
+		expect(h.storage.get(h.fermentId)?.grade).toBeUndefined()
+	})
+
+	// ── Final grader enforcement ──────────────────────────────────────────────────
+
+	it("A-grade ships with recommendations persisted", async () => {
+		const h = createHarness()
+		createTerminalFerment(h)
+		const recs = ["Add integration test for the retry path."]
+		vi.mocked(mockJudgeJourneyGrade).mockResolvedValueOnce({
+			ok: true,
+			grade: "A",
+			rationale: "Excellent. Production-ready.",
+			recommendations: recs,
+		})
+		const result = await completeFerment(h.runtime, {
+			ferment_id: h.fermentId,
+			final_summary: "done",
+			gates: passingFermentGates(),
+		})
+		expect(okText(result)).toContain("**Final grade:** A")
+		expect(h.storage.get(h.fermentId)?.status).toBe("complete")
+		expect(h.storage.get(h.fermentId)?.grade?.grade).toBe("A")
+		expect(h.storage.get(h.fermentId)?.grade?.recommendations).toEqual(recs)
+	})
+
+	it("B-grade ships with recommendations persisted", async () => {
+		const h = createHarness()
+		createTerminalFerment(h)
+		const recs = ["Add edge-case test for empty input.", "Wire retry into production call site."]
+		vi.mocked(mockJudgeJourneyGrade).mockResolvedValueOnce({
+			ok: true,
+			grade: "B",
+			rationale: "Goal met but coverage is thin.",
+			recommendations: recs,
+		})
+		const result = await completeFerment(h.runtime, {
+			ferment_id: h.fermentId,
+			final_summary: "done",
+			gates: passingFermentGates(),
+		})
+		expect(okText(result)).toContain("**Final grade:** B")
+		expect(h.storage.get(h.fermentId)?.status).toBe("complete")
+		expect(h.storage.get(h.fermentId)?.grade?.grade).toBe("B")
+		expect(h.storage.get(h.fermentId)?.grade?.recommendations).toEqual(recs)
+	})
+
+	it("C-grade refuses ship within budget and surfaces recommendations", async () => {
+		const h = createHarness()
+		createTerminalFerment(h)
+		const recs = ["Fix the N+1 query in listUsers.", "Add cancellation to the fetch loop."]
+		vi.mocked(mockJudgeJourneyGrade).mockResolvedValueOnce({
+			ok: true,
+			grade: "C",
+			rationale: "Operational gaps.",
+			recommendations: recs,
+		})
+		const result = await completeFerment(h.runtime, {
+			ferment_id: h.fermentId,
+			final_summary: "done",
+			gates: passingFermentGates(),
+		})
+		expect(errText(result)).toContain("final LLM grader assigned grade C")
+		expect(errText(result)).toContain("retry 1/3")
+		expect(errText(result)).toContain("Fix the N+1 query in listUsers.")
+		expect(errText(result)).toContain("Add cancellation to the fetch loop.")
+		// Ferment must NOT be completed.
+		expect(h.storage.get(h.fermentId)?.status).not.toBe("complete")
+		// Retry counter must have been bumped.
+		expect(h.runtime.getBlockRetry(h.fermentId, "__ferment__")).toBe(1)
+	})
+
+	it("C-grade repeated exhausts budget and ships with the grade", async () => {
+		const h = createHarness()
+		createTerminalFerment(h)
+		const recs = ["Fix the N+1 query in listUsers."]
+		vi.mocked(mockJudgeJourneyGrade).mockResolvedValue({
+			ok: true,
+			grade: "C",
+			rationale: "Operational gaps.",
+			recommendations: recs,
+		})
+
+		// First refusal: within budget.
+		const result1 = await completeFerment(h.runtime, {
+			ferment_id: h.fermentId,
+			final_summary: "attempt 1",
+			gates: passingFermentGates(),
+		})
+		expect(errText(result1)).toContain("retry 1/3")
+
+		// Second refusal: within budget.
+		const result2 = await completeFerment(h.runtime, {
+			ferment_id: h.fermentId,
+			final_summary: "attempt 2",
+			gates: passingFermentGates(),
+		})
+		expect(errText(result2)).toContain("retry 2/3")
+
+		// Third refusal: within budget.
+		const result3 = await completeFerment(h.runtime, {
+			ferment_id: h.fermentId,
+			final_summary: "attempt 3",
+			gates: passingFermentGates(),
+		})
+		expect(errText(result3)).toContain("retry 3/3")
+
+		// Fourth attempt: budget exhausted — accepts the grade and ships.
+		const result4 = await completeFerment(h.runtime, {
+			ferment_id: h.fermentId,
+			final_summary: "attempt 4",
+			gates: passingFermentGates(),
+		})
+		expect(okText(result4)).toContain("**Final grade:** C")
+		expect(h.storage.get(h.fermentId)?.status).toBe("complete")
+		expect(h.storage.get(h.fermentId)?.grade?.grade).toBe("C")
+		expect(h.storage.get(h.fermentId)?.grade?.recommendations).toEqual(recs)
+	})
+
+	it("judge-unavailable ships without refusal", async () => {
+		const h = createHarness()
+		createTerminalFerment(h)
+		vi.mocked(mockJudgeJourneyGrade).mockResolvedValueOnce({
+			ok: false,
+			reason: "no_auth",
+			detail: "missing api key",
+		})
+		const result = await completeFerment(h.runtime, {
+			ferment_id: h.fermentId,
+			final_summary: "done",
+			gates: passingFermentGates(),
+		})
+		expect(okText(result)).toContain("**Final grade:** unavailable")
 		expect(h.storage.get(h.fermentId)?.status).toBe("complete")
 		expect(h.storage.get(h.fermentId)?.grade).toBeUndefined()
 	})

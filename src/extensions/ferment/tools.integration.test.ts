@@ -44,6 +44,7 @@ vi.mock("./judge.js", async () => {
 			ok: true as const,
 			grade: "A" as const,
 			rationale: "Clean delivery; gates substantiated.",
+			recommendations: [],
 		})),
 	}
 })

@@ -200,6 +200,49 @@ describe("FermentStorage v4", () => {
 		})
 	})
 
+	describe("setPhaseGrade", () => {
+		it("persists recommendations and survives a reload", () => {
+			const f = storage.create("Graded")
+			storage.setPhases(f.id, [{ id: "p1", index: 1, name: "Phase 1", goal: "G1", status: "completed", steps: [] }])
+			const recs = ["Add edge-case test for empty input.", "Wire retry into production call site."]
+			const grade = {
+				grade: "B" as const,
+				rationale: "Thin coverage.",
+				gradedAt: new Date().toISOString(),
+				recommendations: recs,
+			}
+			const updated = storage.setPhaseGrade(f.id, "p1", grade)
+			expect(updated?.phases[0]?.grade?.recommendations).toEqual(recs)
+
+			// Reload from disk — recommendations must survive serialization.
+			clearFermentCache()
+			const reloaded = storage.get(f.id)
+			expect(reloaded?.phases[0]?.grade?.recommendations).toEqual(recs)
+			expect(reloaded?.phases[0]?.grade?.grade).toBe("B")
+		})
+	})
+
+	describe("setFermentGrade", () => {
+		it("persists recommendations and survives a reload", () => {
+			const f = storage.create("Graded Ferment")
+			const recs = ["Fix the N+1 query in listUsers.", "Add cancellation to the fetch loop."]
+			const grade = {
+				grade: "C" as const,
+				rationale: "Operational gaps.",
+				gradedAt: new Date().toISOString(),
+				recommendations: recs,
+			}
+			const updated = storage.setFermentGrade(f.id, grade)
+			expect(updated?.grade?.recommendations).toEqual(recs)
+
+			// Reload from disk — recommendations must survive serialization.
+			clearFermentCache()
+			const reloaded = storage.get(f.id)
+			expect(reloaded?.grade?.recommendations).toEqual(recs)
+			expect(reloaded?.grade?.grade).toBe("C")
+		})
+	})
+
 	describe("skipPhase", () => {
 		it("marks a phase skipped", () => {
 			const f = storage.create("X")

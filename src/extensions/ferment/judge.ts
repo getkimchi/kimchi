@@ -137,6 +137,23 @@ type JudgeCallResult<T> =
 	| { ok: true; value: T }
 	| { ok: false; reason: JudgeUnavailableReason | "unparseable"; detail?: string }
 
+/** Coerce the model's `recommendations` field into a clean string[]. Accepts
+ *  string[], a single string, or missing/garbage — always returns string[].
+ *  Truncates to 20 entries and 600 chars each to bound persisted payload. */
+function normalizeRecommendations(raw: unknown): string[] {
+	if (Array.isArray(raw)) {
+		return raw
+			.map((item) => (typeof item === "string" ? item : ""))
+			.filter((s) => s.trim().length > 0)
+			.map((s) => s.slice(0, 600))
+			.slice(0, 20)
+	}
+	if (typeof raw === "string" && raw.trim().length > 0) {
+		return [raw.slice(0, 600)]
+	}
+	return []
+}
+
 async function judgeCall<T>(systemPrompt: string, userMsg: string, maxTokens: number): Promise<JudgeCallResult<T>> {
 	const api = await judgeApiCall(systemPrompt, userMsg, maxTokens)
 	if (!api.ok) return { ok: false, reason: api.reason, detail: api.detail }
@@ -237,6 +254,8 @@ export interface JudgeJourneyGradeOk {
 	ok: true
 	grade: Grade
 	rationale: string
+	/** Concrete fix bullets the grader recommends to reach A. Empty for A grades. */
+	recommendations: string[]
 }
 
 export interface JudgeJourneyGradeFailure {
@@ -256,26 +275,68 @@ function withJourneyGradeAttemptDetail(failure: JudgeJourneyGradeFailure, attemp
 	}
 }
 
-const JOURNEY_GRADE_SYSTEM = `You are the final reviewer for an autonomous coding ferment. The agent has completed all phases and the ferment-scope gates (C1/C2/C3) all passed — so shipping is allowed. Your job is NOT to decide whether to ship. Your job is to assign a letter grade A–F that describes HOW WELL the work was done.
+const JOURNEY_GRADE_SYSTEM = `You are a strict production-readiness review council compressed into one reviewer, acting as the final reviewer for an autonomous coding ferment. The agent has completed all phases and the ferment-scope gates (C1/C2/C3) all passed — so shipping is allowed. Your job is NOT to decide whether to ship. Your job is to evaluate the completed result against the stated goal, implementation, tests, and evidence, and assign a letter grade A–F that describes HOW WELL the work was done.
 
 Your bias is PESSIMISTIC. Most work is B or C, not A. A is reserved for ferments that delivered cleanly without retries, with concrete real-execution verification at every phase, and where every gate verdict was substantiated with specific evidence.
 
-Letter rubric (be strict):
-- A: every phase delivered, real verification of artifact ran, diff cleanly implements goal end-to-end, no warns, no block-retries needed, gate rationales cite specific files/commands not vague claims.
-- B: goal met with minor unresolved warns OR weak verification (mostly proxy/sentinel) OR thin gate rationales.
-- C: partial goal achievement, suspect coverage, summaries that hallucinate work not in the diff, OR phases needed retries to converge.
-- D: substantial gaps — phases that failed, summaries that don't match the diff, gate rationales that don't ground in evidence.
-- F: goal not achieved, evidence shows clearly broken work, or the agent never actually exercised the artifact.
+## Hard constraints
 
-You will be given:
+- Do not treat claims as proof. Missing proof lowers the grade.
+- Passing compile/build alone is not proof of runtime behavior.
+- Skipped required tests are not pass evidence.
+- Documentation of a problem is not remediation.
+- Prefer concrete findings over vague concerns.
+- Grade harshly when correctness, security, evidence, or production wiring is unclear.
+
+## Internal review council
+
+Run these reviews silently before assigning the grade.
+
+### 1. Security attacker
+Authentication/authorization, tenant isolation, privilege escalation, input validation, injection, XSS, SSRF, path traversal, command execution, secrets exposure, unsafe logging, weak crypto, unsafe config, unsafe external API/webhook/MCP/CI behavior, data leakage, privacy violations, audit gaps, missing abuse-case tests for security-sensitive code. Any critical/high security issue → F. Any medium security issue caps the grade at D.
+
+### 2. Architecture / principal review
+Correct boundary placement and abstraction level, simpler viable alternative ignored, excessive coupling or hidden dependency, production code not wired into a production path, domain invariant violations, backward-compat scaffolding added without explicit approval, durability/replay/audit/privacy/consistency assumptions violated, SQL/index/partition changes without query or write-path justification. Unwired production code, invalid boundaries, domain invariant violations, or unjustified durability weakening cap the grade at D or F depending on severity.
+
+### 3. Operational pragmatist review
+Missing observability for unattended paths, poor error handling, swallowed errors, vague diagnostics, missing cancellation/timeout/retry/lifecycle handling, unbounded goroutines/loops/memory growth/queues, deployment/runtime behavior not proven, config/env failure modes not clear, recovery/debuggability gaps. Operational gaps that would block diagnosis or safe runtime use cap the grade at D.
+
+### 4. Code quality review
+Dead code, unused exports, unreachable branches, abandoned files, TODO/FIXME stubs, placeholder behavior, debug artifacts, test-only artifacts imported by production code, hand-written mocks where generated mocks are required, unsafe casts, broad any, nil guards hiding required dependencies, speculative abstractions, performance footguns (N+1 queries, per-row durable commits, speculative indexes, unbounded work). Production/test leakage, placeholder implementation, hand-written mocks where forbidden, or dead code affecting production readiness cap the grade at D.
+
+### 5. Test and verification review
+Classify evidence for each requirement: proven / missing / stale / ambiguous / compile-only / skipped-expected / skipped-unexpected / failed. Check required behavior has current tests, error paths and edge cases are covered, integration/runtime evidence exists when required, UI/auth/live flows verified in a real runtime, test output is parseable and not hiding skips, performance claims have runtime/trace evidence, verification commands match the changed surface. Failed required verification → F. Missing required runtime evidence caps at D. Compile-only evidence for runtime behavior caps at D. Unexpected skipped required tests cap at D or F.
+
+### 6. UX / UI review (if applicable)
+For UI or user-facing behavior: design-system consistency, accessibility, navigation and information hierarchy, empty/loading/error states, mobile/responsive behavior, clear copy and obvious next actions, browser/runtime evidence for the actual rendered flow. Missing UI runtime validation for UI work caps at D.
+
+## Moderator rules
+
+After internal specialist review: cluster duplicate issues, separate proven findings from hypotheses, classify evidence strength, identify blockers, assign one final grade. If the grade is not A, recommend the concrete fixes needed to reach A.
+
+## Grade rubric
+
+- A: Excellent, production-ready. All required behavior is implemented, wired, tested, and verified with appropriate evidence. Architecture simple and aligned. Security, operations, UX, and maintainability have no meaningful concerns. Only trivial nits, if any.
+- B: Good and shippable. Core behavior correct and verified. Minor low-risk issues exist, but no blocker, no missing critical evidence, no security concern, no production-wiring gap, and no maintainability risk likely to hurt near-term work.
+- C: Acceptable but concerning. Probably works, but has moderate issues: incomplete edge coverage, some weak evidence, mild maintainability concerns, minor UX gaps, or non-blocking operational weaknesses. Should be improved, but not clearly unsafe or broken.
+- D: Not production-ready. At least one must-fix issue: missing required verification, compile-only proof for runtime behavior, unexpected skipped required tests, unwired production code, significant architecture/quality/operational gap, medium security issue, missing UI runtime evidence, or maintainability risk that will likely cause defects.
+- F: Fail. Core requirement not met, implementation broken, required tests fail, evidence absent or fabricated, critical/high security issue, data loss/privacy/audit risk, build/runtime broken, or change unsafe to ship.
+
+## You will be given
+
 - The ferment goal and success criteria.
 - A per-phase trail: name, goal, status, and the F-gate verdicts the agent provided at complete_ferment_phase.
 - The final C-gate verdicts the agent provided at complete_ferment.
 - The total diff (files changed + snippet) from ferment start to now.
 - The agent's final summary.
 
+## Final output
+
 Respond with EXACTLY one JSON object, no markdown:
-{"grade":"A"|"B"|"C"|"D"|"F","rationale":"<2-3 sentences citing specific phases, gates, or diff regions>"}`
+{"grade":"A"|"B"|"C"|"D"|"F","rationale":"<2-3 sentences citing specific phases, gates, or diff regions>","recommendations":["<bullet>",...]}
+
+If grade is A, recommendations MUST be an empty array [].
+If grade is B–F, each recommendation must include: what is wrong, why it matters, what must change, and what evidence would prove the fix. Do not include vague advice or "nice to have" items.`
 
 function buildJourneyGradeUserMsg(input: JudgeJourneyGradeInput): string {
 	const parts: string[] = []
@@ -327,7 +388,7 @@ export async function judgeJourneyGrade(
 			return withJourneyGradeAttemptDetail(failure, attempt)
 		}
 
-		const parsed = tryParseJson<{ grade?: string; rationale?: string }>(api.text)
+		const parsed = tryParseJson<{ grade?: string; rationale?: string; recommendations?: unknown }>(api.text)
 		if (parsed === undefined) {
 			return { ok: false, reason: "unparseable", detail: api.text.slice(0, 200) }
 		}
@@ -335,8 +396,176 @@ export async function judgeJourneyGrade(
 			return { ok: false, reason: "invalid_grade", detail: `Judge returned: ${parsed.grade}` }
 		}
 		const rationale = typeof parsed.rationale === "string" ? parsed.rationale.slice(0, 800) : "(no rationale provided)"
-		return { ok: true, grade: parsed.grade, rationale }
+		const recommendations = normalizeRecommendations(parsed.recommendations)
+		return { ok: true, grade: parsed.grade, rationale, recommendations }
 	}
 
 	throw new Error("unreachable: journey grade retry loop exited without a result")
+}
+
+// ─── Public API: phase grade (per-phase LLM review) ───────────────────────────
+//
+// At complete_ferment_phase, after the F-gates and project checks pass, this
+// judge assigns a per-phase letter grade A–F. It reads the phase goal, the
+// F-gate verdicts the agent provided, the project-check summary, the phase
+// diff, and the phase summary, and produces a pessimistic grade with a
+// rationale and concrete recommendations when the grade is not A.
+//
+// Unlike the journey grade, this is a SIMPLIFIED council: it drops the
+// UX/UI review and the full-project architecture review (a single phase
+// rarely warrants them) and keeps the security, code-quality, test/
+// verification, and operational-pragmatist reviews plus the moderator and
+// rubric. The grade drives advancement: A/B advance, C/D/F refuse and route
+// through the existing MAX_BLOCK_RETRIES / escalation loop.
+
+export interface JudgePhaseInput {
+	fermentName: string
+	phaseName: string
+	phaseGoal: string
+	/** The agent's complete_ferment_phase summary. */
+	phaseSummary: string
+	/** Step summaries rendered as a single text block (one bullet per step). */
+	stepSummaries?: string
+	/** F-gate verdicts the agent provided at complete_ferment_phase. */
+	gateVerdicts: ReadonlyArray<{ id: string; verdict: string; rationale: string }>
+	/** Project-check summary text, if project checks ran. */
+	projectChecksSummary?: string
+	/** Phase diff (files changed + snippet) from the phase's evidence. */
+	phaseDiff?: JourneyDiff
+}
+
+export interface JudgePhaseGradeOk {
+	ok: true
+	grade: Grade
+	rationale: string
+	/** Concrete fix bullets the grader recommends to reach A. Empty for A grades. */
+	recommendations: string[]
+}
+
+export interface JudgePhaseGradeFailure {
+	ok: false
+	reason: JudgeUnavailableReason | "unparseable" | "invalid_grade"
+	detail?: string
+}
+
+export type JudgePhaseGradeResult = JudgePhaseGradeOk | JudgePhaseGradeFailure
+
+const PHASE_GRADE_SYSTEM = `You are a strict production-readiness review council compressed into one reviewer, acting as the per-phase reviewer for an autonomous coding ferment. The agent has completed a single phase and the phase-scope gates (F1/F2/F3) all passed — so phase advancement is allowed by the gates. Your job is NOT to decide whether the phase advances. Your job is to evaluate the phase result against its stated goal, implementation, tests, and evidence, and assign a letter grade A–F that describes HOW WELL the phase was done.
+
+Your bias is PESSIMISTIC. Most phase work is B or C, not A. A is reserved for phases that delivered cleanly without retries, with concrete real-execution verification, and where every gate verdict was substantiated with specific evidence.
+
+## Hard constraints
+
+- Do not treat claims as proof. Missing proof lowers the grade.
+- Passing compile/build alone is not proof of runtime behavior.
+- Skipped required tests are not pass evidence.
+- Documentation of a problem is not remediation.
+- Prefer concrete findings over vague concerns.
+- Grade harshly when correctness, security, evidence, or production wiring is unclear.
+
+## Internal review council
+
+Run these reviews silently before assigning the grade.
+
+### 1. Security attacker
+Authentication/authorization, tenant isolation, privilege escalation, input validation, injection, XSS, SSRF, path traversal, command execution, secrets exposure, unsafe logging, weak crypto, unsafe config, unsafe external API/webhook/MCP/CI behavior, data leakage, privacy violations, audit gaps, missing abuse-case tests for security-sensitive code. Any critical/high security issue → F. Any medium security issue caps the grade at D.
+
+### 2. Operational pragmatist review
+Missing observability for unattended paths, poor error handling, swallowed errors, vague diagnostics, missing cancellation/timeout/retry/lifecycle handling, unbounded goroutines/loops/memory growth/queues, deployment/runtime behavior not proven, config/env failure modes not clear, recovery/debuggability gaps. Operational gaps that would block diagnosis or safe runtime use cap the grade at D.
+
+### 3. Code quality review
+Dead code, unused exports, unreachable branches, abandoned files, TODO/FIXME stubs, placeholder behavior, debug artifacts, test-only artifacts imported by production code, hand-written mocks where generated mocks are required, unsafe casts, broad any, nil guards hiding required dependencies, speculative abstractions, performance footguns (N+1 queries, per-row durable commits, speculative indexes, unbounded work). Production/test leakage, placeholder implementation, hand-written mocks where forbidden, or dead code affecting production readiness cap the grade at D.
+
+### 4. Test and verification review
+Classify evidence for each requirement: proven / missing / stale / ambiguous / compile-only / skipped-expected / skipped-unexpected / failed. Check required behavior has current tests, error paths and edge cases are covered, integration/runtime evidence exists when required, test output is parseable and not hiding skips, performance claims have runtime/trace evidence, verification commands match the changed surface. Failed required verification → F. Missing required runtime evidence caps at D. Compile-only evidence for runtime behavior caps at D. Unexpected skipped required tests cap at D or F.
+
+## Moderator rules
+
+After internal specialist review: cluster duplicate issues, separate proven findings from hypotheses, classify evidence strength, identify blockers, assign one final grade. If the grade is not A, recommend the concrete fixes needed to reach A.
+
+## Grade rubric
+
+- A: Excellent, production-ready phase. All required behavior is implemented, wired, tested, and verified with appropriate evidence. No meaningful concerns. Only trivial nits, if any.
+- B: Good and shippable phase. Core behavior correct and verified. Minor low-risk issues exist, but no blocker, no missing critical evidence, no security concern, and no maintainability risk likely to hurt near-term work.
+- C: Acceptable but concerning. Probably works, but has moderate issues: incomplete edge coverage, some weak evidence, mild maintainability concerns, or non-blocking operational weaknesses. Should be improved, but not clearly unsafe or broken.
+- D: Not production-ready. At least one must-fix issue: missing required verification, compile-only proof for runtime behavior, unexpected skipped required tests, significant quality/operational gap, medium security issue, or maintainability risk that will likely cause defects.
+- F: Fail. Core phase requirement not met, implementation broken, required tests fail, evidence absent or fabricated, critical/high security issue, or the change is unsafe to ship.
+
+## You will be given
+
+- The ferment name and the phase name + goal.
+- The agent's phase summary and per-step summaries.
+- The F-gate verdicts the agent provided at complete_ferment_phase.
+- The project-check summary (if any).
+- The phase diff (files changed + snippet) when available.
+
+## Final output
+
+Respond with EXACTLY one JSON object, no markdown:
+{"grade":"A"|"B"|"C"|"D"|"F","rationale":"<2-3 sentences citing specific gates, steps, or diff regions>","recommendations":["<bullet>",...]}
+
+If grade is A, recommendations MUST be an empty array [].
+If grade is B–F, each recommendation must include: what is wrong, why it matters, what must change, and what evidence would prove the fix. Do not include vague advice or "nice to have" items.`
+
+function buildPhaseGradeUserMsg(input: JudgePhaseInput): string {
+	const parts: string[] = []
+	parts.push(`Ferment: "${input.fermentName}"`)
+	parts.push(`Phase: "${input.phaseName}"`)
+	parts.push(`Phase goal: ${input.phaseGoal || "(none specified)"}`)
+	parts.push(`Phase summary: ${input.phaseSummary || "(none)"}`)
+	if (input.stepSummaries && input.stepSummaries.trim().length > 0) {
+		parts.push("")
+		parts.push("Step summaries:")
+		parts.push(input.stepSummaries)
+	}
+	parts.push("")
+	parts.push("Phase-scope gate verdicts:")
+	for (const v of input.gateVerdicts) {
+		parts.push(`  ${v.id} (${v.verdict}): ${v.rationale}`)
+	}
+	if (input.projectChecksSummary && input.projectChecksSummary.trim().length > 0) {
+		parts.push("")
+		parts.push("Project checks:")
+		parts.push(input.projectChecksSummary)
+	}
+	if (input.phaseDiff?.available) {
+		parts.push("")
+		parts.push("--- PHASE DIFF ---")
+		parts.push(`Files changed:\n${input.phaseDiff.filesChanged ?? "(none recorded)"}`)
+		if (input.phaseDiff.diffSnippet) {
+			parts.push(`\nDiff snippet:\n\`\`\`diff\n${input.phaseDiff.diffSnippet}\n\`\`\``)
+		}
+	} else {
+		parts.push("")
+		parts.push("(No diff available — judge on verdicts + summary only.)")
+	}
+	return parts.join("\n")
+}
+
+export async function judgePhaseGrade(
+	input: JudgePhaseInput,
+	apiCall: (sys: string, msg: string, maxTokens?: number) => Promise<JudgeApiResult> = judgeApiCall,
+): Promise<JudgePhaseGradeResult> {
+	const userMsg = buildPhaseGradeUserMsg(input)
+	for (let attempt = 1; attempt <= JOURNEY_GRADE_MAX_ATTEMPTS; attempt++) {
+		const api = await apiCall(PHASE_GRADE_SYSTEM, userMsg)
+		if (!api.ok) {
+			const failure: JudgePhaseGradeFailure = { ok: false, reason: api.reason, detail: api.detail }
+			if (api.reason === "empty_response" && attempt < JOURNEY_GRADE_MAX_ATTEMPTS) continue
+			return withJourneyGradeAttemptDetail(failure, attempt)
+		}
+
+		const parsed = tryParseJson<{ grade?: string; rationale?: string; recommendations?: unknown }>(api.text)
+		if (parsed === undefined) {
+			return { ok: false, reason: "unparseable", detail: api.text.slice(0, 200) }
+		}
+		if (!isGrade(parsed.grade)) {
+			return { ok: false, reason: "invalid_grade", detail: `Judge returned: ${parsed.grade}` }
+		}
+		const rationale = typeof parsed.rationale === "string" ? parsed.rationale.slice(0, 800) : "(no rationale provided)"
+		const recommendations = normalizeRecommendations(parsed.recommendations)
+		return { ok: true, grade: parsed.grade, rationale, recommendations }
+	}
+
+	throw new Error("unreachable: phase grade retry loop exited without a result")
 }

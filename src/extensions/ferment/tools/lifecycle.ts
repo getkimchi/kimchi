@@ -45,6 +45,7 @@ import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
 import { safeSendMessage } from "../safe-send.js"
 import { confirmPendingScope } from "../scoping-confirmation.js"
 import type { PendingScope } from "../scoping.js"
+import { MAX_BLOCK_RETRIES } from "../state.js"
 import {
 	createApplyAndPersist,
 	failedToolResult,
@@ -754,14 +755,39 @@ export async function completeFerment(
 			: { available: false },
 	})
 
-	// Resolve the grade. The final judge is advisory; completion gates have
-	// already decided whether shipping is allowed, so judge outages must not
-	// block the user.
-	let resolvedGrade: { grade: Grade; rationale: string } | undefined
+	// Resolve the grade. C-gates already decided ship/refuse. The judge now
+	// ENFORCES quality: a C/D/F grade refuses ship and routes through the same
+	// block-retry / escalation loop used at the phase level. A/B ships with
+	// recommendations persisted. Judge-unavailable outcomes remain advisory
+	// (do NOT refuse ship) — judge outages must not block the user.
+	const FERMENT_GRADE_KEY = "__ferment__"
+	let resolvedGrade: { grade: Grade; rationale: string; recommendations?: string[] } | undefined
 	let gradeRationale: string
 	if (journeyResult.ok) {
-		resolvedGrade = { grade: journeyResult.grade, rationale: journeyResult.rationale }
+		resolvedGrade = {
+			grade: journeyResult.grade,
+			rationale: journeyResult.rationale,
+			recommendations: journeyResult.recommendations,
+		}
 		gradeRationale = journeyResult.rationale
+
+		// C/D/F from the final grader — give the agent a bounded number of retries
+		// to fix the recommendations, then accept the grade and ship.
+		if (journeyResult.grade === "C" || journeyResult.grade === "D" || journeyResult.grade === "F") {
+			const recsText = journeyResult.recommendations.map((rec, i) => `  ${i + 1}. ${rec}`).join("\n")
+			const retry = runtime.bumpBlockRetry(params.ferment_id, FERMENT_GRADE_KEY)
+
+			if (retry > MAX_BLOCK_RETRIES) {
+				// Budget exhausted — accept the grade and ship with recommendations persisted.
+				// The agent had its retries; we don't block continuation indefinitely.
+				runtime.clearBlockRetry(params.ferment_id, FERMENT_GRADE_KEY)
+				// Fall through to the ship path below with the judge's grade + recs.
+			} else {
+				return toolErr(
+					`**Ferment "${ferment.name}"** cannot complete — final LLM grader assigned grade ${journeyResult.grade} (retry ${retry}/${MAX_BLOCK_RETRIES}).\n\nRecommendations:\n${recsText}\n\nAddress the recommendations above and call complete_ferment again with an updated summary.`,
+				)
+			}
+		}
 	} else {
 		const failureDetail = `${journeyResult.reason}${journeyResult.detail ? `: ${journeyResult.detail}` : ""}`
 		gradeRationale = `Judge unreachable (${failureDetail}); completion proceeded without a graded review.`
@@ -769,7 +795,7 @@ export async function completeFerment(
 
 	const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
 
-	// Persist completion and grade together when the advisory judge returns one.
+	// Persist completion and grade together.
 	const completeOutcome = applyAndPersist(params.ferment_id, {
 		type: "complete_ferment",
 		finalSummary: params.final_summary,
@@ -778,10 +804,16 @@ export async function completeFerment(
 					grade: resolvedGrade.grade,
 					rationale: resolvedGrade.rationale,
 					gradedAt: runtime.nowIso(),
+					...(resolvedGrade.recommendations && resolvedGrade.recommendations.length > 0
+						? { recommendations: resolvedGrade.recommendations }
+						: {}),
 				}
 			: undefined,
 	})
 	if (!completeOutcome.ok) return failedToolResult(completeOutcome.error, ferment, multiModelEnabled)
+
+	// Clear the ferment-level block-retry counter — ship succeeded.
+	runtime.clearBlockRetry(params.ferment_id, FERMENT_GRADE_KEY)
 
 	// Cleanup in-memory state.
 	runtime.clearFermentState(params.ferment_id)
