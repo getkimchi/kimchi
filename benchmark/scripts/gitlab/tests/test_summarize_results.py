@@ -14,6 +14,8 @@ from jsonschema import ValidationError, validate
 
 import summarize_results
 
+API_KEY_BUDGET_EXCEEDED = "api_key_budget_exceeded"
+
 BASE_RESULT = {
     "trial_name": "sample-task__abc123",
     "task_name": "terminal-bench/sample-task",
@@ -107,6 +109,20 @@ class SummarizeResultsClassificationTest(unittest.TestCase):
 
         self.assert_error(result, "agent_request_aborted", "Request was aborted")
 
+    def test_classifies_api_key_budget_with_specific_subcategory(self) -> None:
+        result = self.result_with_exception(
+            "NonZeroAgentExitCodeError",
+            "API error: insufficient credits to complete request",
+        )
+
+        summary = self.summarize(result)
+        data = summary.to_summary_json()
+
+        self.assertEqual(data["error"]["type"], API_KEY_BUDGET_EXCEEDED)
+        self.assertEqual(data["error_category"], "infra")
+        self.assertEqual(data["error_subcategory"], API_KEY_BUDGET_EXCEEDED)
+        self.assertIn("insufficient credits", data["error"]["message"])
+
     def test_prefers_session_evidence_when_session_artifact_exists(self) -> None:
         result = self.result_with_exception("NonZeroAgentExitCodeError", "stdout: Request was aborted.")
 
@@ -193,19 +209,43 @@ class SummarizeResultsClassificationTest(unittest.TestCase):
 
         self.assert_error(result, "agent_environment_error", "cannot find -llapack")
 
-    def test_classifies_agent_exit_after_success(self) -> None:
+    def test_scored_pass_remains_terminal_with_infra_exception(self) -> None:
         result = self.result_with_exception(
             "NonZeroAgentExitCodeError",
-            "stdout: The socket connection was closed unexpectedly.",
+            "KIMCHI_INFRA_ERROR: provider transport failure; exiting with code 74",
         )
         result["verifier_result"]["rewards"]["reward"] = 1
 
         summary = self.summarize(result)
         data = summary.to_summary_json()
 
-        # reward==1.0 → scored_pass regardless of the exception
         self.assertEqual(data["status"], "passed")
         self.assertEqual(data["verdict"], "scored_pass")
+        self.assertIsNone(data["error"])
+        self.assertIsNone(data["error_category"])
+        self.assertIsNone(data["error_subcategory"])
+
+    def test_generic_exit_74_without_marker_is_not_infra_error(self) -> None:
+        result = self.result_with_exception(
+            "NonZeroAgentExitCodeError",
+            "Command failed (exit 74): /installed-agent/bin/kimchi --print",
+        )
+
+        summary = self.summarize(result)
+        data = summary.to_summary_json()
+
+        self.assertEqual(data["error"]["type"], "agent_execution_failed")
+        self.assertEqual(data["error_category"], "agent")
+        self.assertEqual(data["error_subcategory"], "agent_execution_failed")
+        self.assertIn("Command failed (exit 74)", data["error"]["message"])
+
+    def test_classifies_kimchi_exit_error_exception(self) -> None:
+        result = self.result_with_exception(
+            "KimchiExitError",
+            "Kimchi exited with code 74: /installed-agent/bin/kimchi --print",
+        )
+
+        self.assert_error(result, "kimchi_infra_exit", "Kimchi exited with code")
 
     def test_classifies_verifier_timeout_and_marks_verifier_timeout(self) -> None:
         result = self.result_with_exception("VerifierTimeoutError", "Verifier execution timed out after 900.0 seconds")
@@ -673,7 +713,12 @@ class BuildRunLLMParametersTest(unittest.TestCase):
             },
             "gitlab": {"ref": "benchmarks", "commit_sha": "abc123"},
         }
-        run = summarize_results.build_run(metadata, "2026-06-26T00:00:00Z", "2026-06-26T01:00:00Z", "2026-06-26T01:00:00Z")
+        run = summarize_results.build_run(
+            metadata,
+            "2026-06-26T00:00:00Z",
+            "2026-06-26T01:00:00Z",
+            "2026-06-26T01:00:00Z",
+        )
         self.assertEqual(run["parameters"]["llm_params"], {"temperature": 0.7})
         self.assertEqual(run["parameters"]["llm_per_model_params"], {"kimchi-dev/kimi-k2.6": {"max_tokens": 8192}})
 
@@ -723,7 +768,10 @@ class BuildRunLLMParametersTest(unittest.TestCase):
         deserialized = json.loads(serialized)
         self.assertEqual(deserialized["parameters"]["llm_params"]["temperature"], 0.7)
         self.assertEqual(deserialized["parameters"]["llm_params"]["top_p"], 0.95)
-        self.assertEqual(deserialized["parameters"]["llm_per_model_params"]["kimchi-dev/glm-5.2-fp8"]["temperature"], 0.8)
+        self.assertEqual(
+            deserialized["parameters"]["llm_per_model_params"]["kimchi-dev/glm-5.2-fp8"]["temperature"],
+            0.8,
+        )
 
 
 if __name__ == "__main__":

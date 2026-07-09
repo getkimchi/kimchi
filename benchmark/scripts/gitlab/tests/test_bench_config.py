@@ -9,29 +9,32 @@ from outcome import Outcome
 
 
 @pytest.mark.parametrize(
-    ("outcome", "error_category", "env_value", "expected"),
+    ("outcome", "error_category", "error_subcategory", "env_value", "expected"),
     [
         # Agent timeouts: follow the env flag (default is false)
-        (Outcome.AGENT_TIMEOUT, None,    None,    False),
-        (Outcome.AGENT_TIMEOUT, None,    "true",  True),
-        (Outcome.AGENT_TIMEOUT, None,    "false", False),
-        (Outcome.AGENT_TIMEOUT, None,    "1",     True),
-        (Outcome.AGENT_TIMEOUT, None,    "yes",   True),
-        (Outcome.AGENT_TIMEOUT, None,    "0",     False),
-        # Infra errors: always retryable regardless of the flag
-        (Outcome.ERROR,         "infra", "false", True),
-        (Outcome.ERROR,         "infra", "true",  True),
+        (Outcome.AGENT_TIMEOUT, None,    None,                       None,    False),
+        (Outcome.AGENT_TIMEOUT, None,    None,                       "true",  True),
+        (Outcome.AGENT_TIMEOUT, None,    None,                       "false", False),
+        (Outcome.AGENT_TIMEOUT, None,    None,                       "1",     True),
+        (Outcome.AGENT_TIMEOUT, None,    None,                       "yes",   True),
+        (Outcome.AGENT_TIMEOUT, None,    None,                       "0",     False),
+        # Infra errors: retryable regardless of the flag, except terminal infra causes.
+        (Outcome.ERROR,         "infra", None,                       "false", True),
+        (Outcome.ERROR,         "infra", "kimchi_infra_exit",        "true",  True),
+        (Outcome.ERROR,         "infra", "api_key_budget_exceeded",  "true",  False),
+        (Outcome.ERROR,         "infra", "api_key_budget_exceeded",  "false", False),
         # Quality / other errors: never retryable
-        (Outcome.ERROR,         "quality", "true", False),
-        (Outcome.ERROR,         None,      "true", False),
+        (Outcome.ERROR,         "quality", None,                     "true",  False),
+        (Outcome.ERROR,         None,      None,                     "true",  False),
         # Pass / scored-fail: never retryable
-        (Outcome.SCORED_PASS,   None,    "true",  False),
-        (Outcome.SCORED_FAIL,   None,    "true",  False),
+        (Outcome.SCORED_PASS,   None,    None,                       "true",  False),
+        (Outcome.SCORED_FAIL,   None,    None,                       "true",  False),
     ],
 )
 def test_is_retryable(
     outcome: Outcome,
     error_category: str | None,
+    error_subcategory: str | None,
     env_value: str,
     expected: bool,
     monkeypatch: pytest.MonkeyPatch,
@@ -40,7 +43,7 @@ def test_is_retryable(
         monkeypatch.delenv("BENCH_RETRY_AGENT_TIMEOUT", raising=False)
     else:
         monkeypatch.setenv("BENCH_RETRY_AGENT_TIMEOUT", env_value)
-    assert is_retryable(outcome, error_category) is expected
+    assert is_retryable(outcome, error_category, error_subcategory) is expected
 
 
 # ---------------------------------------------------------------------------

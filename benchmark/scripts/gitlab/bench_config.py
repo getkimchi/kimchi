@@ -105,6 +105,7 @@ DEFAULT_BENCH_TASKS_ALL = "false"
 # --- Retry behavior ---
 ENV_BENCH_RETRY_AGENT_TIMEOUT = "BENCH_RETRY_AGENT_TIMEOUT"
 DEFAULT_BENCH_RETRY_AGENT_TIMEOUT = False
+NON_RETRYABLE_INFRA_SUBCATEGORIES = frozenset({"api_key_budget_exceeded"})
 
 
 def should_retry_agent_timeout() -> bool:
@@ -116,15 +117,24 @@ def should_retry_agent_timeout() -> bool:
     return raw in ("true", "1", "yes")
 
 
-def is_retryable(outcome: Outcome, error_category: str | None) -> bool:
+def is_retryable(
+    outcome: Outcome,
+    error_category: str | None,
+    error_subcategory: str | None = None,
+) -> bool:
     """Single source of truth: should this verdict outcome trigger a retry?
 
-    Infra errors (outcome=ERROR, error_category='infra') are always retried.
+    Infra errors (outcome=ERROR, error_category='infra') are retried unless
+    their subcategory is a known terminal infra condition.
     AgentTimeoutError retries are controlled by $BENCH_RETRY_AGENT_TIMEOUT (default false).
     """
     if outcome == Outcome.AGENT_TIMEOUT:
         return should_retry_agent_timeout()
-    return outcome == Outcome.ERROR and error_category == "infra"
+    return (
+        outcome == Outcome.ERROR
+        and error_category == "infra"
+        and error_subcategory not in NON_RETRYABLE_INFRA_SUBCATEGORIES
+    )
 
 
 # --- LLM sampling parameters ---

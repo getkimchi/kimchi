@@ -5,17 +5,17 @@ the trial directory. Conservative: unknown exception types default to
 error/quality (not retried), so we never silently retry what may be a real regression.
 
 `ErrorRule` and `ERROR_RULES` are defined here and serve dual purposes:
-  1. classify() uses them to assign (outcome, error_category, error_subcategory).
+  1. classify() uses them to assign outcome/category/subcategory.
   2. summarize_results.py imports them for evidence extraction (evidence_markers).
 
-Intentional split: this module uses fine-grained rules to drive both retry and
-display, replacing the previously separate coarse retry allowlists and the
-summarize_results.py TrialErrorClassifier.
+Intentional split: retry decisions use coarse error_category values, while
+error_subcategory preserves the rule-level cause for analysis.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -24,7 +24,6 @@ from pathlib import Path
 from typing import Literal
 
 from outcome import Outcome
-
 
 # Gap threshold used when inspecting the agent session JSONL for an
 # AgentTimeoutError. Matches the default in scripts/analyze_timeouts.py.
@@ -43,6 +42,9 @@ _TIMEOUT_STATUS_TOOL_RETURNED = "tool_returned"
 _TIMEOUT_STATUS_TOOL_IN_FLIGHT = "tool_in_flight"
 _TIMEOUT_STATUS_FEW_TURNS = "few_turns"
 _TIMEOUT_STATUS_UNKNOWN = "unknown"
+API_KEY_BUDGET_EXCEEDED_SUBCATEGORY = "api_key_budget_exceeded"
+
+_KIMCHI_EXIT_CODE_PATTERN = re.compile(r"\bkimchi exited with code\s+(\d+)\b")
 
 
 @dataclass(frozen=True)
@@ -62,6 +64,7 @@ class TrialErrorContext:
 
     exception_type: str | None
     exception_text: str  # casefold of type + message + traceback
+    exit_code: int | None
 
     def contains_all(self, *needles: str) -> bool:
         return all(needle in self.exception_text for needle in needles)
@@ -72,11 +75,13 @@ class ErrorRule:
     """A single classification rule used for both retry decisions and display.
 
     Fields:
-      kind            — wire value for error_subcategory
+      kind            — stable internal rule id used for evidence/debugging
       outcome         — Outcome assigned when this rule matches
       error_category  — "infra" | "agent" | null; only populated for ERROR outcome
       evidence_markers — text hints used by summarize_results.extract_error_evidence()
       exception_types — if non-empty, matches when exception_type is in this set
+      exit_codes      — if non-empty, matches when the extracted process exit code
+                        is in this set
       marker_groups   — text-based match: at least one group must have ALL its strings
                         present in the casefold exception text
     """
@@ -86,10 +91,14 @@ class ErrorRule:
     error_category: str | None
     evidence_markers: tuple[str, ...]
     exception_types: tuple[str, ...] = field(default_factory=tuple)
+    exit_codes: tuple[int, ...] = field(default_factory=tuple)
     marker_groups: tuple[tuple[str, ...], ...] = field(default_factory=tuple)
 
     def matches(self, context: TrialErrorContext) -> bool:
-        if self.exception_types and context.exception_type in self.exception_types:
+        has_structured_matchers = bool(self.exception_types or self.exit_codes)
+        type_matches = not self.exception_types or context.exception_type in self.exception_types
+        exit_code_matches = not self.exit_codes or context.exit_code in self.exit_codes
+        if has_structured_matchers and type_matches and exit_code_matches:
             return True
         return any(context.contains_all(*group) for group in self.marker_groups)
 
@@ -180,6 +189,18 @@ ERROR_RULES: tuple[ErrorRule, ...] = (
         exception_types=("GCSUploadError", "HarborInternalError"),
         evidence_markers=("gcs", "harbor", "upload"),
     ),
+    # ── Kimchi process failures ───────────────────────────────────────────────────
+    # KimchiExitError is infra only when Kimchi used the reserved infra exit code.
+    # Other Kimchi non-zero exits remain agent failures.
+    ErrorRule(
+        kind="kimchi_infra_exit",
+        outcome=Outcome.ERROR,
+        error_category="infra",
+        exception_types=("KimchiExitError",),
+        exit_codes=(os.EX_IOERR,),
+        marker_groups=(("kimchi_infra_error",),),
+        evidence_markers=(),
+    ),
     # ── Text-pattern rules (all fire on NonZeroAgentExitCodeError or any type) ────
     ErrorRule(
         kind="agent_command_timeout",
@@ -230,7 +251,7 @@ ERROR_RULES: tuple[ErrorRule, ...] = (
     ),
     # ── Provider budget / quota errors (direct exception type or in captured stdout) ──
     ErrorRule(
-        kind="api_key_budget_exceeded",
+        kind=API_KEY_BUDGET_EXCEEDED_SUBCATEGORY,
         outcome=Outcome.ERROR,
         error_category="infra",
         marker_groups=(
@@ -357,7 +378,13 @@ def _build_error_context(result: dict) -> TrialErrorContext:
     return TrialErrorContext(
         exception_type=str(exception_type) if isinstance(exception_type, str) else None,
         exception_text=exception_text,
+        exit_code=_extract_exit_code(exception_text),
     )
+
+
+def _extract_exit_code(exception_text: str) -> int | None:
+    match = _KIMCHI_EXIT_CODE_PATTERN.search(exception_text)
+    return int(match.group(1)) if match is not None else None
 
 
 def _parse_iso(value: object) -> datetime | None:
@@ -422,7 +449,7 @@ def _empty_timeout_analysis(timeout_duration_sec: float | None) -> dict:
 def _analyze_agent_timeout(trial_dir: Path, result: dict) -> dict:
     """Build an agent_timeout_analysis dict from agent/sessions/main.jsonl.
 
-    Mirrors the state machine in scripts/analyze_timeouts.py (last-role × gap).
+    Mirrors the state machine in scripts/analyze_timeouts.py (last-role x gap).
     Always returns a dict; when the session file is missing or unreadable,
     timeout_status is "unknown" and timing fields are null/0.
     """
@@ -555,54 +582,18 @@ def _session_marks_budget_error(trial_dir: Path) -> bool:
     return False
 
 
-def classify(trial_dir: Path) -> Verdict:
-    """Classify a trial into one of four outcomes.
-
-    Returns a Verdict with outcome, error_category, error_subcategory, reward, and the raw result.
-    Defaults to error/quality when classification is ambiguous (conservative: don't retry unknowns).
-
-    The discriminator between "verifier ran and reported no score" (scored_fail) and
-    "verifier never ran" (error/infra missing_verdict) is the presence of the
-    `verifier_result` top-level key and the absence of `exception_info`.
-    """
-    status, result = _read_result(trial_dir)
-
-    if status == "missing":
-        return Verdict(outcome=Outcome.ERROR, error_category="infra", error_subcategory="missing_result", reward=None, raw={})
-
-    if status == "corrupt":
-        return Verdict(outcome=Outcome.ERROR, error_category="infra", error_subcategory="corrupt_json", reward=None, raw={})
-
-    # status == "ok"; result is a dict
-    assert result is not None  # narrowing for type checkers
-    verifier_result = result.get("verifier_result")
-    exception_info = result.get("exception_info")
-    reward = _reward(result)
-
-    if verifier_result is None and exception_info is None:
-        # No verifier result and no exception — something silently failed.
-        return Verdict(outcome=Outcome.ERROR, error_category="infra", error_subcategory="missing_verdict", reward=reward, raw=result)
-
-    # A passed trial is never an error even if the agent process crashed afterward.
-    if reward == 1.0:
-        return Verdict(outcome=Outcome.SCORED_PASS, error_category=None, error_subcategory=None, reward=reward, raw=result)
-
-    # Verifier ran to completion and produced a non-pass score with no exception.
-    if verifier_result is not None and exception_info is None:
-        return Verdict(outcome=Outcome.SCORED_FAIL, error_category=None, error_subcategory=None, reward=reward, raw=result)
-
-    # Exception present — run ERROR_RULES to classify.
+def _classify_exception(trial_dir: Path, result: dict, reward: float | None) -> Verdict:
     context = _build_error_context(result)
     for rule in ERROR_RULES:
         if rule.matches(context):
             # A generic agent_timeout that was actually caused by a budget error is re-classified
-            # before the Verdict is constructed — no Verdict-then-replace. Same wire values as the
-            # direct 429 case, so dashboards can filter on error_subcategory alone.
+            # before the Verdict is constructed. Keep the budget-specific subcategory visible while
+            # retaining error_category="infra" for retry behavior.
             if rule.outcome == Outcome.AGENT_TIMEOUT and _session_marks_budget_error(trial_dir):
                 return Verdict(
                     outcome=Outcome.ERROR,
                     error_category="infra",
-                    error_subcategory="api_key_budget_exceeded",
+                    error_subcategory=API_KEY_BUDGET_EXCEEDED_SUBCATEGORY,
                     reward=reward,
                     raw=result,
                 )
@@ -632,6 +623,87 @@ def classify(trial_dir: Path) -> Verdict:
         outcome=Outcome.ERROR,
         error_category="agent",
         error_subcategory=f"{phase}_failed",
+        reward=reward,
+        raw=result,
+    )
+
+
+def classify(trial_dir: Path) -> Verdict:
+    """Classify a trial into one of four outcomes.
+
+    Returns a Verdict with outcome, error_category, error_subcategory, reward, and the raw result.
+    Defaults to error/quality when classification is ambiguous (conservative: don't retry unknowns).
+
+    The discriminator between "verifier ran and reported no score" (scored_fail) and
+    "verifier never ran" (error/infra missing_verdict) is the presence of the
+    `verifier_result` top-level key and the absence of `exception_info`.
+    """
+    status, result = _read_result(trial_dir)
+
+    if status == "missing":
+        return Verdict(
+            outcome=Outcome.ERROR,
+            error_category="infra",
+            error_subcategory="missing_result",
+            reward=None,
+            raw={},
+        )
+
+    if status == "corrupt":
+        return Verdict(
+            outcome=Outcome.ERROR,
+            error_category="infra",
+            error_subcategory="corrupt_json",
+            reward=None,
+            raw={},
+        )
+
+    # status == "ok"; result is a dict
+    assert result is not None  # narrowing for type checkers
+    verifier_result = result.get("verifier_result")
+    exception_info = result.get("exception_info")
+    reward = _reward(result)
+
+    if verifier_result is None and exception_info is None:
+        # No verifier result and no exception — something silently failed.
+        return Verdict(
+            outcome=Outcome.ERROR,
+            error_category="infra",
+            error_subcategory="missing_verdict",
+            reward=reward,
+            raw=result,
+        )
+
+    if reward == 1.0:
+        # A verifier pass is terminal. Do not retry a passed task because the
+        # agent wrapper also reported an infra or cleanup failure afterward.
+        return Verdict(
+            outcome=Outcome.SCORED_PASS,
+            error_category=None,
+            error_subcategory=None,
+            reward=reward,
+            raw=result,
+        )
+
+    if exception_info is not None:
+        return _classify_exception(trial_dir, result, reward)
+
+    # Verifier ran to completion and produced a non-pass score with no exception.
+    if verifier_result is not None:
+        return Verdict(
+            outcome=Outcome.SCORED_FAIL,
+            error_category=None,
+            error_subcategory=None,
+            reward=reward,
+            raw=result,
+        )
+
+    # Defensive fallback for future refactors: the equivalent state is handled
+    # above, but classify() should never fall through and return None.
+    return Verdict(
+        outcome=Outcome.ERROR,
+        error_category="infra",
+        error_subcategory="missing_verdict",
         reward=reward,
         raw=result,
     )

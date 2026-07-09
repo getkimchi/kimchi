@@ -238,7 +238,7 @@ def process_trial_results(
         }
         (trial_dir / "result.json").write_text(json.dumps(enriched, indent=2) + "\n")
 
-        if is_retryable(verdict.outcome, verdict.error_category):
+        if is_retryable(verdict.outcome, verdict.error_category, verdict.error_subcategory):
             needs_retry.append(task_name)
 
     return needs_retry
@@ -452,7 +452,11 @@ def _print_heartbeat(
                 print(f"[chunk-{chunk_index}] trial={trial_dir.name} reward={reward_text} passed", flush=True)
             else:
                 verdict = classify(trial_dir)
-                needs_retry_trial = is_retryable(verdict.outcome, verdict.error_category)
+                needs_retry_trial = is_retryable(
+                    verdict.outcome,
+                    verdict.error_category,
+                    verdict.error_subcategory,
+                )
                 retry_label = f"will-retry({verdict.outcome})" if needs_retry_trial else "final"
                 cause = verdict.error_subcategory or _get_exception_type(result_path) or verdict.outcome
                 print(

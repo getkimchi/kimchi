@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -10,62 +11,203 @@ import pytest
 from classify import ERROR_RULES, classify
 from outcome import Outcome
 
+API_KEY_BUDGET_EXCEEDED = "api_key_budget_exceeded"
+_BUDGET_ERROR_EXACT_MESSAGE = (
+    '429 "API key has reached its spend limit.\\n'
+    "Increase the budget in the console or contact your "
+    'organization admin to continue."'
+)
+_NO_SESSION = object()
+
 
 def _write_result(trial_dir: Path, payload: dict) -> None:
     trial_dir.mkdir(parents=True, exist_ok=True)
     (trial_dir / "result.json").write_text(json.dumps(payload))
 
 
-# ── scored_pass ───────────────────────────────────────────────────────────────
+def _reward_payload(reward: float | None) -> dict:
+    return {"verifier_result": {"rewards": {"reward": reward}}}
 
-def test_pass_when_reward_one_and_no_exception(tmp_results_dir: Path) -> None:
-    trial = tmp_results_dir / "run-1" / "task-a__1"
-    _write_result(trial, {"verifier_result": {"rewards": {"reward": 1.0}}})
+
+def _exception_payload(
+    exception_type: str,
+    exception_message: str | None = None,
+    *,
+    reward: float | None | object = _NO_SESSION,
+) -> dict:
+    payload = {"exception_info": {"exception_type": exception_type}}
+    if exception_message is not None:
+        payload["exception_info"]["exception_message"] = exception_message
+    if reward is not _NO_SESSION:
+        payload["verifier_result"] = {"rewards": {"reward": reward}}
+    return payload
+
+
+def _assert_verdict(verdict, expected: dict) -> None:
+    assert verdict.outcome == expected["outcome"]
+    if "error_category" in expected:
+        assert verdict.error_category == expected["error_category"]
+    if "error_subcategory" in expected:
+        assert verdict.error_subcategory == expected["error_subcategory"]
+    if "reward" in expected:
+        assert verdict.reward == expected["reward"]
+    if "timeout_status" in expected:
+        assert verdict.raw["agent_timeout_analysis"]["timeout_status"] == expected["timeout_status"]
+
+
+RESULT_JSON_CASES = [
+    pytest.param(
+        _reward_payload(1.0),
+        {"outcome": "scored_pass", "error_category": None, "error_subcategory": None, "reward": 1.0},
+        id="scored-pass",
+    ),
+    pytest.param(
+        _reward_payload(0.0),
+        {"outcome": "scored_fail", "error_category": None, "error_subcategory": None, "reward": 0.0},
+        id="scored-fail",
+    ),
+    pytest.param(
+        _reward_payload(None),
+        {"outcome": "scored_fail", "error_category": None},
+        id="none-reward-scored-fail",
+    ),
+    pytest.param(
+        _exception_payload("AgentTimeoutError"),
+        {
+            "outcome": "agent_timeout",
+            "error_category": None,
+            "error_subcategory": None,
+            "timeout_status": "unknown",
+        },
+        id="agent-timeout",
+    ),
+    pytest.param(
+        {},
+        {"outcome": "error", "error_category": "infra", "error_subcategory": "missing_verdict"},
+        id="empty-result",
+    ),
+    pytest.param(
+        _exception_payload("VerifierTimeoutError"),
+        {"outcome": "error", "error_category": "infra", "error_subcategory": "verifier_timeout"},
+        id="verifier-timeout",
+    ),
+    pytest.param(
+        _exception_payload("AgentSetupTimeoutError"),
+        {"outcome": "error", "error_category": "infra", "error_subcategory": "agent_setup_timeout"},
+        id="agent-setup-timeout",
+    ),
+    pytest.param(
+        _exception_payload("EnvironmentStartTimeoutError"),
+        {"outcome": "error", "error_category": "infra", "error_subcategory": "environment_setup_timeout"},
+        id="environment-start-timeout",
+    ),
+    pytest.param(
+        _exception_payload("NonZeroAgentExitCodeError", "command timed out after 300 seconds"),
+        {"outcome": "error", "error_category": "infra", "error_subcategory": "agent_command_timeout"},
+        id="command-timeout",
+    ),
+    pytest.param(
+        _exception_payload(
+            "KimchiExitError",
+            f"Kimchi exited with code {os.EX_IOERR}: /installed-agent/bin/kimchi",
+        ),
+        {"outcome": "error", "error_category": "infra", "error_subcategory": "kimchi_infra_exit"},
+        id="kimchi-exit-ioerr",
+    ),
+    pytest.param(
+        _exception_payload("KimchiExitError", f"Kimchi exit {os.EX_IOERR}: /installed-agent/bin/kimchi"),
+        {"outcome": "error", "error_category": "agent", "error_subcategory": "unknown_failed"},
+        id="bare-exit-code-is-not-structured",
+    ),
+    pytest.param(
+        _exception_payload("KimchiExitError", "Kimchi exited with code 1: /installed-agent/bin/kimchi"),
+        {"outcome": "error", "error_category": "agent", "error_subcategory": "unknown_failed"},
+        id="kimchi-exit-non-ioerr",
+    ),
+    pytest.param(
+        _exception_payload("ConnectionError"),
+        {"outcome": "error", "error_category": "infra", "error_subcategory": "infra_network_error"},
+        id="connection-error",
+    ),
+    pytest.param(
+        _exception_payload("OOMKilled"),
+        {"outcome": "error", "error_category": "infra", "error_subcategory": "infra_container_error"},
+        id="oom-killed",
+    ),
+    pytest.param(
+        _exception_payload("SSLError", reward=0.0),
+        {"outcome": "error", "error_category": "infra", "error_subcategory": "infra_network_error"},
+        id="infra-exception-allowlist",
+    ),
+    pytest.param(
+        _exception_payload("NonZeroAgentExitCodeError", "request was aborted by the server"),
+        {"outcome": "error", "error_category": "infra", "error_subcategory": "agent_request_aborted"},
+        id="request-aborted",
+    ),
+    pytest.param(
+        _exception_payload(
+            "NonZeroAgentExitCodeError",
+            f"Command failed (exit {os.EX_IOERR}): /installed-agent/bin/kimchi --print",
+        ),
+        {"outcome": "error", "error_category": "agent", "error_subcategory": "unknown_failed"},
+        id="generic-wrapper-exit-74-without-marker",
+    ),
+    pytest.param(
+        _exception_payload(
+            "NonZeroAgentExitCodeError",
+            "KIMCHI_INFRA_ERROR: provider transport failure; exiting with code 74",
+            reward=1.0,
+        ),
+        {"outcome": "scored_pass", "error_category": None, "error_subcategory": None, "reward": 1.0},
+        id="infra-marker-after-success-is-terminal-pass",
+    ),
+    pytest.param(
+        _exception_payload("NonZeroAgentExitCodeError", "Command failed (exit 137): /installed-agent/bin/kimchi"),
+        {"outcome": "error", "error_category": "infra", "error_subcategory": "agent_process_killed"},
+        id="agent-process-killed",
+    ),
+    pytest.param(
+        _exception_payload("AssertionError", reward=0.0),
+        {"outcome": "error", "error_category": "agent"},
+        id="quality-exception",
+    ),
+    pytest.param(
+        _exception_payload(
+            "NonZeroAgentExitCodeError",
+            "error: This extension ctx is stale after session replacement",
+        ),
+        {"outcome": "error", "error_category": "agent", "error_subcategory": "agent_stale_extension_context"},
+        id="stale-extension-context",
+    ),
+    pytest.param(
+        _exception_payload(
+            "NonZeroAgentExitCodeError",
+            (
+                "Command failed (exit 1): /installed-agent/bin/kimchi "
+                "--print --session /logs/agent/sessions/main.jsonl "
+                "--dangerously-skip-permissions\n"
+                f"stdout: {_BUDGET_ERROR_EXACT_MESSAGE}\\n"
+            ),
+        ),
+        {"outcome": "error", "error_category": "infra", "error_subcategory": API_KEY_BUDGET_EXCEEDED},
+        id="anthropic-spend-limit",
+    ),
+    pytest.param(
+        _exception_payload("NonZeroAgentExitCodeError", "API error: insufficient credits to complete request"),
+        {"outcome": "error", "error_category": "infra", "error_subcategory": API_KEY_BUDGET_EXCEEDED},
+        id="insufficient-credits",
+    ),
+]
+
+
+@pytest.mark.parametrize(("payload", "expected"), RESULT_JSON_CASES)
+def test_classify_result_json_cases(tmp_results_dir: Path, payload: dict, expected: dict) -> None:
+    trial = tmp_results_dir / "run-1" / "case__1"
+    _write_result(trial, payload)
 
     verdict = classify(trial)
 
-    assert verdict.outcome == "scored_pass"
-    assert verdict.error_category is None
-    assert verdict.error_subcategory is None
-    assert verdict.reward == 1.0
-
-
-# ── scored_fail ───────────────────────────────────────────────────────────────
-
-def test_scored_fail_when_reward_zero_and_no_exception(tmp_results_dir: Path) -> None:
-    trial = tmp_results_dir / "run-1" / "task-b__1"
-    _write_result(trial, {"verifier_result": {"rewards": {"reward": 0.0}}})
-
-    verdict = classify(trial)
-
-    assert verdict.outcome == "scored_fail"
-    assert verdict.error_category is None
-    assert verdict.error_subcategory is None
-    assert verdict.reward == 0.0
-
-
-def test_none_reward_no_exception_is_scored_fail(tmp_results_dir: Path) -> None:
-    trial = tmp_results_dir / "run-1" / "task-c__1"
-    _write_result(trial, {"verifier_result": {"rewards": {"reward": None}}})
-
-    verdict = classify(trial)
-
-    assert verdict.outcome == "scored_fail"
-    assert verdict.error_category is None
-
-
-# ── agent_timeout ─────────────────────────────────────────────────────────────
-
-def test_agent_timeout_error_is_agent_timeout(tmp_results_dir: Path) -> None:
-    trial = tmp_results_dir / "run-1" / "task-timeout__1"
-    _write_result(trial, {"exception_info": {"exception_type": "AgentTimeoutError"}})
-
-    verdict = classify(trial)
-
-    assert verdict.outcome == "agent_timeout"
-    assert verdict.error_category is None
-    assert verdict.error_subcategory is None
-    assert verdict.raw["agent_timeout_analysis"]["timeout_status"] == "unknown"
+    _assert_verdict(verdict, expected)
 
 
 def _write_session(trial_dir: Path, entries: list[dict]) -> None:
@@ -196,218 +338,35 @@ def test_agent_timeout_analysis_few_turns(tmp_results_dir: Path) -> None:
     assert analysis["timeout_status"] == "few_turns"
 
 
-# ── error/infra — read failures ───────────────────────────────────────────────
+READ_FAILURE_CASES = [
+    pytest.param(
+        None,
+        {"outcome": "error", "error_category": "infra", "error_subcategory": "missing_result"},
+        id="missing-result-json",
+    ),
+    pytest.param(
+        "{ not valid json",
+        {"outcome": "error", "error_category": "infra", "error_subcategory": "corrupt_json"},
+        id="corrupt-json",
+    ),
+    pytest.param(
+        "[]",
+        {"outcome": "error", "error_category": "infra", "error_subcategory": "corrupt_json"},
+        id="non-dict-json",
+    ),
+]
 
-def test_missing_result_json_is_infra(tmp_results_dir: Path) -> None:
-    trial = tmp_results_dir / "run-1" / "task-missing__1"
+
+@pytest.mark.parametrize(("result_json", "expected"), READ_FAILURE_CASES)
+def test_classify_read_failure_cases(tmp_results_dir: Path, result_json: str | None, expected: dict) -> None:
+    trial = tmp_results_dir / "run-1" / "case__1"
     trial.mkdir(parents=True)
-    v = classify(trial)
-    assert v.outcome == "error"
-    assert v.error_category == "infra"
-    assert v.error_subcategory == "missing_result"
-
-
-def test_corrupt_result_json_is_infra(tmp_results_dir: Path) -> None:
-    trial = tmp_results_dir / "run-1" / "task-corrupt__1"
-    trial.mkdir(parents=True)
-    (trial / "result.json").write_text("{ not valid json")
-    v = classify(trial)
-    assert v.outcome == "error"
-    assert v.error_category == "infra"
-    assert v.error_subcategory == "corrupt_json"
-
-
-def test_non_dict_result_is_infra(tmp_results_dir: Path) -> None:
-    trial = tmp_results_dir / "run-1" / "task-nondict__1"
-    trial.mkdir(parents=True)
-    (trial / "result.json").write_text("[]")
-    v = classify(trial)
-    assert v.outcome == "error"
-    assert v.error_category == "infra"
-    assert v.error_subcategory == "corrupt_json"
-
-
-def test_empty_result_is_missing_verdict(tmp_results_dir: Path) -> None:
-    """{} has no verifier_result and no exception_info → missing_verdict (infra)."""
-    trial = tmp_results_dir / "run-1" / "task-empty__1"
-    _write_result(trial, {})
-    v = classify(trial)
-    assert v.outcome == "error"
-    assert v.error_category == "infra"
-    assert v.error_subcategory == "missing_verdict"
-
-
-# ── error/infra — internal timeouts ──────────────────────────────────────────
-
-def test_verifier_timeout_error_is_error_infra(tmp_results_dir: Path) -> None:
-    trial = tmp_results_dir / "run-1" / "task-vtimeout__1"
-    _write_result(trial, {"exception_info": {"exception_type": "VerifierTimeoutError"}})
+    if result_json is not None:
+        (trial / "result.json").write_text(result_json)
 
     verdict = classify(trial)
 
-    assert verdict.outcome == "error"
-    assert verdict.error_category == "infra"
-    assert verdict.error_subcategory == "verifier_timeout"
-
-
-def test_agent_setup_timeout_is_error_infra(tmp_results_dir: Path) -> None:
-    trial = tmp_results_dir / "run-1" / "task-setuptimeout__1"
-    _write_result(trial, {"exception_info": {"exception_type": "AgentSetupTimeoutError"}})
-
-    verdict = classify(trial)
-
-    assert verdict.outcome == "error"
-    assert verdict.error_category == "infra"
-    assert verdict.error_subcategory == "agent_setup_timeout"
-
-
-def test_environment_start_timeout_is_error_infra(tmp_results_dir: Path) -> None:
-    trial = tmp_results_dir / "run-1" / "task-envtimeout__1"
-    _write_result(trial, {"exception_info": {"exception_type": "EnvironmentStartTimeoutError"}})
-
-    verdict = classify(trial)
-
-    assert verdict.outcome == "error"
-    assert verdict.error_category == "infra"
-    assert verdict.error_subcategory == "environment_setup_timeout"
-
-
-def test_command_timeout_is_error_infra(tmp_results_dir: Path) -> None:
-    trial = tmp_results_dir / "run-1" / "task-cmdtimeout__1"
-    _write_result(
-        trial,
-        {
-            "exception_info": {
-                "exception_type": "NonZeroAgentExitCodeError",
-                "exception_message": "command timed out after 300 seconds",
-            }
-        },
-    )
-
-    verdict = classify(trial)
-
-    assert verdict.outcome == "error"
-    assert verdict.error_category == "infra"
-    assert verdict.error_subcategory == "agent_command_timeout"
-
-
-# ── error/infra — exception type allowlist ────────────────────────────────────
-
-def test_connection_error_is_infra_network(tmp_results_dir: Path) -> None:
-    trial = tmp_results_dir / "run-1" / "task-conn__1"
-    _write_result(trial, {"exception_info": {"exception_type": "ConnectionError"}})
-
-    verdict = classify(trial)
-
-    assert verdict.outcome == "error"
-    assert verdict.error_category == "infra"
-    assert verdict.error_subcategory == "infra_network_error"
-
-
-def test_oomkilled_is_infra_container(tmp_results_dir: Path) -> None:
-    trial = tmp_results_dir / "run-1" / "task-oom__1"
-    _write_result(trial, {"exception_info": {"exception_type": "OOMKilled"}})
-
-    verdict = classify(trial)
-
-    assert verdict.outcome == "error"
-    assert verdict.error_category == "infra"
-    assert verdict.error_subcategory == "infra_container_error"
-
-
-def test_infra_exception_in_allowlist(tmp_results_dir: Path) -> None:
-    """Any INFRA_EXCEPTION_TYPES exception maps to error/infra."""
-    trial = tmp_results_dir / "run-1" / "task-d__1"
-    _write_result(
-        trial,
-        {
-            "verifier_result": {"rewards": {"reward": 0.0}},
-            "exception_info": {"exception_type": "SSLError"},
-        },
-    )
-
-    verdict = classify(trial)
-
-    assert verdict.outcome == "error"
-    assert verdict.error_category == "infra"
-    assert verdict.error_subcategory == "infra_network_error"
-
-
-# ── error/infra — text-pattern rules ─────────────────────────────────────────
-
-def test_non_zero_exit_infra_marker_is_error_infra(tmp_results_dir: Path) -> None:
-    trial = tmp_results_dir / "run-1" / "task-nzeinfra__1"
-    _write_result(
-        trial,
-        {
-            "exception_info": {
-                "exception_type": "NonZeroAgentExitCodeError",
-                "exception_message": "request was aborted by the server",
-            }
-        },
-    )
-
-    verdict = classify(trial)
-
-    assert verdict.outcome == "error"
-    assert verdict.error_category == "infra"
-    assert verdict.error_subcategory == "agent_request_aborted"
-
-
-def test_agent_process_killed_exit_137_is_error_infra(tmp_results_dir: Path) -> None:
-    trial = tmp_results_dir / "run-1" / "task-exit137__1"
-    _write_result(
-        trial,
-        {
-            "exception_info": {
-                "exception_type": "NonZeroAgentExitCodeError",
-                "exception_message": "Command failed (exit 137): /installed-agent/bin/kimchi",
-            }
-        },
-    )
-
-    verdict = classify(trial)
-
-    assert verdict.outcome == "error"
-    assert verdict.error_category == "infra"
-    assert verdict.error_subcategory == "agent_process_killed"
-
-
-# ── error/quality ─────────────────────────────────────────────────────────────
-
-def test_quality_exception_not_in_allowlist_is_error_quality(tmp_results_dir: Path) -> None:
-    trial = tmp_results_dir / "run-1" / "task-e__1"
-    _write_result(
-        trial,
-        {
-            "verifier_result": {"rewards": {"reward": 0.0}},
-            "exception_info": {"exception_type": "AssertionError"},
-        },
-    )
-
-    verdict = classify(trial)
-
-    assert verdict.outcome == "error"
-    assert verdict.error_category == "agent"
-
-
-def test_stale_extension_context_is_error_quality(tmp_results_dir: Path) -> None:
-    trial = tmp_results_dir / "run-1" / "task-stale__1"
-    _write_result(
-        trial,
-        {
-            "exception_info": {
-                "exception_type": "NonZeroAgentExitCodeError",
-                "exception_message": "error: This extension ctx is stale after session replacement",
-            }
-        },
-    )
-
-    verdict = classify(trial)
-
-    assert verdict.outcome == "error"
-    assert verdict.error_category == "agent"
-    assert verdict.error_subcategory == "agent_stale_extension_context"
+    _assert_verdict(verdict, expected)
 
 
 # ── structural invariants ─────────────────────────────────────────────────────
@@ -428,62 +387,7 @@ def test_error_rules_outcomes_are_consistent() -> None:
             )
 
 
-# ── error/infra — API key budget (direct, agent exits non-zero) ──────────────────
-
-def test_anthropic_spend_limit_in_captured_stdout_is_api_key_budget(tmp_results_dir: Path) -> None:
-    """Anthropic 429 'spend limit' captured in agent stdout → api_key_budget_exceeded."""
-    trial = tmp_results_dir / "run-1" / "task-budget__1"
-    _write_result(
-        trial,
-        {
-            "exception_info": {
-                "exception_type": "NonZeroAgentExitCodeError",
-                "exception_message": (
-                    "Command failed (exit 1): /installed-agent/bin/kimchi "
-                    "--print --session /logs/agent/sessions/main.jsonl "
-                    "--dangerously-skip-permissions\n"
-                    'stdout: 429 "API key has reached its spend limit.\\n'
-                    "Increase the budget in the console or contact your "
-                    'organization admin to continue."\\n'
-                ),
-            }
-        },
-    )
-
-    verdict = classify(trial)
-
-    assert verdict.outcome == "error"
-    assert verdict.error_category == "infra"
-    assert verdict.error_subcategory == "api_key_budget_exceeded"
-
-
-def test_insufficient_credits_is_api_key_budget(tmp_results_dir: Path) -> None:
-    """Variant wording used by some providers → same subcategory."""
-    trial = tmp_results_dir / "run-1" / "task-credits__1"
-    _write_result(
-        trial,
-        {
-            "exception_info": {
-                "exception_type": "NonZeroAgentExitCodeError",
-                "exception_message": "API error: insufficient credits to complete request",
-            }
-        },
-    )
-
-    verdict = classify(trial)
-
-    assert verdict.outcome == "error"
-    assert verdict.error_category == "infra"
-    assert verdict.error_subcategory == "api_key_budget_exceeded"
-
-
 # ── error/infra — API key budget (agent timed out because of budget) ─────────────
-
-_BUDGET_ERROR_EXACT_MESSAGE = (
-    '429 "API key has reached its spend limit.\\n'
-    'Increase the budget in the console or contact your '
-    'organization admin to continue."'
-)
 
 
 def _write_session_message_errorMessage(trial: Path, error_message: object) -> None:
@@ -505,14 +409,43 @@ def _write_session_message_errorMessage(trial: Path, error_message: object) -> N
     )
 
 
-def test_agent_timeout_with_exact_budget_error_message_is_api_key_budget(tmp_results_dir: Path) -> None:
-    """AgentTimeoutError + exact anthropic 429 errorMessage → ERROR/infra/api_key_budget_exceeded.
+AGENT_TIMEOUT_BUDGET_CASES = [
+    pytest.param(
+        _BUDGET_ERROR_EXACT_MESSAGE,
+        {"outcome": "error", "error_category": "infra", "error_subcategory": API_KEY_BUDGET_EXCEEDED},
+        id="exact-budget-error-message",
+    ),
+    pytest.param(
+        "api key has reached its spend limit",
+        {"outcome": "agent_timeout", "error_category": None, "error_subcategory": None},
+        id="near-miss-budget-message",
+    ),
+    pytest.param(
+        None,
+        {"outcome": "agent_timeout", "error_category": None, "error_subcategory": None},
+        id="non-string-error-message",
+    ),
+    pytest.param(
+        "I am working on the task but it is taking a long time...",
+        {"outcome": "agent_timeout", "error_category": None, "error_subcategory": None},
+        id="unrelated-error-message",
+    ),
+    pytest.param(
+        _NO_SESSION,
+        {"outcome": "agent_timeout", "error_category": None, "error_subcategory": None},
+        id="no-sessions-dir",
+    ),
+]
 
-    Matches the actual production shape: a `type: message` entry with the verbatim provider
-    errorMessage. Any deviation (substring, variant wording, extra whitespace) keeps the trial
-    as agent_timeout.
-    """
-    trial = tmp_results_dir / "run-1" / "task-budget-timeout__1"
+
+@pytest.mark.parametrize(("session_error_message", "expected"), AGENT_TIMEOUT_BUDGET_CASES)
+def test_agent_timeout_budget_session_refinement_cases(
+    tmp_results_dir: Path,
+    session_error_message: object,
+    expected: dict,
+) -> None:
+    """Only the verbatim provider budget body refines AgentTimeoutError into api_key_budget_exceeded."""
+    trial = tmp_results_dir / "run-1" / "case__1"
     _write_result(
         trial,
         {
@@ -522,103 +455,40 @@ def test_agent_timeout_with_exact_budget_error_message_is_api_key_budget(tmp_res
             }
         },
     )
+    if session_error_message is not _NO_SESSION:
+        _write_session_message_errorMessage(trial, session_error_message)
+
+    verdict = classify(trial)
+
+    _assert_verdict(verdict, expected)
+
+
+def test_scored_pass_is_not_refined_by_non_exception_session_scan(tmp_results_dir: Path) -> None:
+    """Sanity: session refinement only runs when result.json contains an exception."""
+    trial = tmp_results_dir / "run-1" / "task-pass__1"
+    _write_result(trial, {"verifier_result": {"rewards": {"reward": 1.0}}})
+    # Even with the exact budget errorMessage in sessions, a passing trial stays scored_pass.
     _write_session_message_errorMessage(trial, _BUDGET_ERROR_EXACT_MESSAGE)
 
     verdict = classify(trial)
 
-    assert verdict.outcome == "error"
-    assert verdict.error_category == "infra"
-    assert verdict.error_subcategory == "api_key_budget_exceeded"
-
-
-def test_agent_timeout_with_similar_budget_message_stays_agent_timeout(tmp_results_dir: Path) -> None:
-    """A near-miss errorMessage (extra whitespace, lower-case, substring only) must not match.
-
-    Validates the exact-match contract: only the verbatim provider body triggers the
-    classification.
-    """
-    trial = tmp_results_dir / "run-1" / "task-budget-near-miss__1"
-    _write_result(
-        trial,
-        {
-            "exception_info": {
-                "exception_type": "AgentTimeoutError",
-                "exception_message": "Agent execution timed out after 3600 seconds",
-            }
-        },
-    )
-    # Substring only (no 429 prefix, no closing quote) — must not match.
-    _write_session_message_errorMessage(
-        trial,
-        "api key has reached its spend limit",
-    )
-
-    verdict = classify(trial)
-
-    assert verdict.outcome == "agent_timeout"
+    assert verdict.outcome == "scored_pass"
     assert verdict.error_category is None
     assert verdict.error_subcategory is None
 
 
-def test_agent_timeout_with_non_string_error_message_stays_agent_timeout(tmp_results_dir: Path) -> None:
-    """errorMessage that is not a string (e.g. null) must not match the exact string."""
-    trial = tmp_results_dir / "run-1" / "task-budget-null__1"
+def test_scored_pass_is_not_refined_by_budget_timeout_session(tmp_results_dir: Path) -> None:
+    trial = tmp_results_dir / "run-1" / "task-pass-budget-timeout__1"
     _write_result(
         trial,
         {
+            "verifier_result": {"rewards": {"reward": 1.0}},
             "exception_info": {
                 "exception_type": "AgentTimeoutError",
                 "exception_message": "Agent execution timed out after 3600 seconds",
-            }
+            },
         },
     )
-    _write_session_message_errorMessage(trial, None)
-
-    verdict = classify(trial)
-
-    assert verdict.outcome == "agent_timeout"
-
-
-def test_agent_timeout_without_budget_error_message_stays_agent_timeout(tmp_results_dir: Path) -> None:
-    """An AgentTimeoutError with an unrelated assistant message stays AGENT_TIMEOUT."""
-    trial = tmp_results_dir / "run-1" / "task-pure-timeout__1"
-    _write_result(
-        trial,
-        {
-            "exception_info": {
-                "exception_type": "AgentTimeoutError",
-                "exception_message": "Agent execution timed out after 3600 seconds",
-            }
-        },
-    )
-    _write_session_message_errorMessage(trial, "I am working on the task but it is taking a long time...")
-
-    verdict = classify(trial)
-
-    assert verdict.outcome == "agent_timeout"
-    assert verdict.error_category is None
-    assert verdict.error_subcategory is None
-
-
-def test_agent_timeout_with_no_sessions_dir_stays_agent_timeout(tmp_results_dir: Path) -> None:
-    """An AgentTimeoutError with no agent/sessions/ directory stays AGENT_TIMEOUT."""
-    trial = tmp_results_dir / "run-1" / "task-no-sessions__1"
-    _write_result(
-        trial,
-        {"exception_info": {"exception_type": "AgentTimeoutError"}},
-    )
-    # no sessions dir
-
-    verdict = classify(trial)
-
-    assert verdict.outcome == "agent_timeout"
-
-
-def test_scored_pass_is_not_refined_by_session_scan(tmp_results_dir: Path) -> None:
-    """Sanity: the refinement only runs on AGENT_TIMEOUT — other outcomes are untouched."""
-    trial = tmp_results_dir / "run-1" / "task-pass__1"
-    _write_result(trial, {"verifier_result": {"rewards": {"reward": 1.0}}})
-    # Even with the exact budget errorMessage in sessions, a passing trial stays scored_pass.
     _write_session_message_errorMessage(trial, _BUDGET_ERROR_EXACT_MESSAGE)
 
     verdict = classify(trial)

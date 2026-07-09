@@ -836,7 +836,9 @@ def build_run(
         ),
         "parameters": {
             "llm_params": _convert_decimals(metadata_dict(metadata, "parameters").get("llm_params", {})),
-            "llm_per_model_params": _convert_decimals(metadata_dict(metadata, "parameters").get("llm_per_model_params", {})),
+            "llm_per_model_params": _convert_decimals(
+                metadata_dict(metadata, "parameters").get("llm_per_model_params", {})
+            ),
         },
     }
 
@@ -925,7 +927,7 @@ def build_summary(
 
     # Tasks that hit a retryable outcome at least once.
     tasks_with_retryable_outcome = len(
-        {t.task for t in trials if is_retryable(t.outcome, t.error_category)}
+        {t.task for t in trials if is_retryable(t.outcome, t.error_category, t.error_subcategory)}
     )
 
     return {

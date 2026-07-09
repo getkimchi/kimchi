@@ -70,6 +70,34 @@ def test_process_classifies_infra_and_marks_needs_retry(
     assert enriched["error_category"] == "infra"
 
 
+def test_process_classifies_budget_infra_without_retry(tmp_results_dir: Path) -> None:
+    """Budget exhaustion is infra for reporting, but terminal for retry policy."""
+    trial = tmp_results_dir / "run-1" / "task-budget__1"
+    _write_result(
+        trial,
+        {
+            "verifier_result": {"rewards": {"reward": 0.0}},
+            "exception_info": {
+                "exception_type": "NonZeroAgentExitCodeError",
+                "exception_message": "API error: insufficient credits to complete request",
+            },
+        },
+    )
+
+    needs_retry = process_trial_results(
+        results_dir=tmp_results_dir,
+        expected_tasks=["task-budget"],
+        chunk_attempt=1,
+        run_id="chunk-0-attempt-1",
+    )
+
+    assert needs_retry == []
+    enriched = json.loads((trial / "result.json").read_text())
+    assert enriched["outcome"] == "error"
+    assert enriched["error_category"] == "infra"
+    assert enriched["error_subcategory"] == "api_key_budget_exceeded"
+
+
 def test_process_marks_missing_as_needs_retry(tmp_results_dir: Path) -> None:
     """A task with no local result.json is added to needs_retry."""
     needs_retry = process_trial_results(
