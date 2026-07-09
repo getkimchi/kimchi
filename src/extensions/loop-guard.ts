@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto"
 import type { ExtensionAPI, ExtensionContext, ToolResultEvent } from "@earendil-works/pi-coding-agent"
 import { isAgentWorker } from "./agent-worker-context.js"
+import { LOOP_GUARD_EVENTS } from "./loop-guard-events.js"
+import type { LoopGuardDetector } from "./loop-guard-events.js"
 
 export interface ToolHistoryRecord {
 	toolName: string
@@ -14,6 +16,8 @@ export type LoopGuardState = "ok" | "warn" | "terminate"
 export interface LoopGuardResult {
 	state: LoopGuardState
 	reason?: string
+	/** Which detector fired. Set on the 'warn' path; undefined otherwise. */
+	detector?: LoopGuardDetector
 }
 
 // Detection thresholds. Exact detectors (which require matching output) can
@@ -170,7 +174,7 @@ export class LoopGuard {
 			this.bashCountsNormTotal.delete(key)
 		}
 
-		return { state: "warn", reason: `${STEERING_MESSAGE} (${detected.reason})` }
+		return { state: "warn", reason: `${STEERING_MESSAGE} (${detected.reason})`, detector: detected.detector }
 	}
 
 	/**
@@ -270,7 +274,7 @@ export class LoopGuard {
 	 *  state. Task-total keys are included so the caller can decrement
 	 *  them after a warn — otherwise the same task-total threshold would
 	 *  fire on every subsequent record for the rest of the session. */
-	private detect(): { reason: string; firedKeys: string[] } | undefined {
+	private detect(): { reason: string; firedKeys: string[]; detector: LoopGuardDetector } | undefined {
 		return (
 			this.detectConsecutiveIdenticalCalls() ??
 			this.detectExactNgram() ??
@@ -281,11 +285,11 @@ export class LoopGuard {
 		)
 	}
 
-	private detectNgramOnly(): { reason: string; firedKeys: string[] } | undefined {
+	private detectNgramOnly(): { reason: string; firedKeys: string[]; detector: LoopGuardDetector } | undefined {
 		return this.detectConsecutiveIdenticalCalls() ?? this.detectExactNgram() ?? this.detectFuzzyNgram()
 	}
 
-	private detectConsecutiveIdenticalCalls(): { reason: string; firedKeys: string[] } | undefined {
+	private detectConsecutiveIdenticalCalls(): { reason: string; firedKeys: string[]; detector: LoopGuardDetector } | undefined {
 		const last = this.history[this.history.length - 1]
 		if (!last) return undefined
 		const targetKey = exactKey(last)
@@ -301,34 +305,35 @@ export class LoopGuard {
 		return {
 			reason: `${count} consecutive identical calls of ${formatCall(last)} producing identical output`,
 			firedKeys: [],
+			detector: "consecutive_identical",
 		}
 	}
 
-	private detectExactNgram(): { reason: string; firedKeys: string[] } | undefined {
+	private detectExactNgram(): { reason: string; firedKeys: string[]; detector: LoopGuardDetector } | undefined {
 		const r2 = countContiguousNgramReps(this.history, 2, exactKey)
 		if (r2 > EXACT_2GRAM_THRESHOLD) {
-			return { reason: formatLoopReason(this.history, 2, r2, "identical results"), firedKeys: [] }
+			return { reason: formatLoopReason(this.history, 2, r2, "identical results"), firedKeys: [], detector: "exact_ngram" }
 		}
 		const r3 = countContiguousNgramReps(this.history, 3, exactKey)
 		if (r3 > EXACT_3GRAM_THRESHOLD) {
-			return { reason: formatLoopReason(this.history, 3, r3, "identical results"), firedKeys: [] }
+			return { reason: formatLoopReason(this.history, 3, r3, "identical results"), firedKeys: [], detector: "exact_ngram" }
 		}
 		return undefined
 	}
 
-	private detectFuzzyNgram(): { reason: string; firedKeys: string[] } | undefined {
+	private detectFuzzyNgram(): { reason: string; firedKeys: string[]; detector: LoopGuardDetector } | undefined {
 		const r2 = countContiguousNgramReps(this.history, 2, fuzzyKey)
 		if (r2 > FUZZY_2GRAM_THRESHOLD) {
-			return { reason: formatLoopReason(this.history, 2, r2, "same arguments"), firedKeys: [] }
+			return { reason: formatLoopReason(this.history, 2, r2, "same arguments"), firedKeys: [], detector: "fuzzy_ngram" }
 		}
 		const r3 = countContiguousNgramReps(this.history, 3, fuzzyKey)
 		if (r3 > FUZZY_3GRAM_THRESHOLD) {
-			return { reason: formatLoopReason(this.history, 3, r3, "same arguments"), firedKeys: [] }
+			return { reason: formatLoopReason(this.history, 3, r3, "same arguments"), firedKeys: [], detector: "fuzzy_ngram" }
 		}
 		return undefined
 	}
 
-	private detectEditRunCycle(): { reason: string; firedKeys: string[] } | undefined {
+	private detectEditRunCycle(): { reason: string; firedKeys: string[]; detector: LoopGuardDetector } | undefined {
 		const topEdit = mapMax(this.editCounts)
 		const topBashRaw = mapMax(this.bashCounts)
 		const topBashNorm = mapMax(this.bashCountsNorm)
@@ -345,10 +350,11 @@ export class LoopGuard {
 		return {
 			reason: `edit-run cycle: ${editPreview} edited ${topEdit[1]}× and bash "${bashPreview}" ran ${topBash[1]}× in last ${this.history.length} calls`,
 			firedKeys: [],
+			detector: "edit_run",
 		}
 	}
 
-	private detectEditRunCycleTotal(): { reason: string; firedKeys: string[] } | undefined {
+	private detectEditRunCycleTotal(): { reason: string; firedKeys: string[]; detector: LoopGuardDetector } | undefined {
 		// Task-total counts catch interleaved loops that the 30-record
 		// window misses. Window-based detection is still preferred because
 		// it's sensitive to recent behaviour; this is a backstop for the
@@ -372,6 +378,7 @@ export class LoopGuard {
 		return {
 			reason: `edit-run cycle (task-total): ${editPreview} edited ${topEdit[1]}× and bash "${bashPreview}" ran ${topBash[1]}× across the task`,
 			firedKeys: [topEdit[0], topBash[0]],
+			detector: "edit_run_total",
 		}
 	}
 
@@ -381,7 +388,7 @@ export class LoopGuard {
 	 * like repeated yt-dlp downloads, repeated curl calls, repeated make on
 	 * a project that always fails.
 	 */
-	private detectBashRepetition(): { reason: string; firedKeys: string[] } | undefined {
+	private detectBashRepetition(): { reason: string; firedKeys: string[]; detector: LoopGuardDetector } | undefined {
 		// Bash-only thresholds are higher than edit-run because the signal
 		// is weaker (no paired file edit to confirm it's a loop).
 		// Window check (raw)
@@ -390,6 +397,7 @@ export class LoopGuard {
 			return {
 				reason: `bash repetition: "${truncPreview(topBashWin[0])}" ran ${topBashWin[1]}× in last ${this.history.length} calls`,
 				firedKeys: [],
+				detector: "bash_repetition",
 			}
 		}
 		// Window check (normalized)
@@ -398,6 +406,7 @@ export class LoopGuard {
 			return {
 				reason: `bash repetition (normalized): "${truncPreview(topBashNormWin[0])}" ran ${topBashNormWin[1]}× in last ${this.history.length} calls`,
 				firedKeys: [],
+				detector: "bash_repetition",
 			}
 		}
 		// Task-total check (raw)
@@ -406,6 +415,7 @@ export class LoopGuard {
 			return {
 				reason: `bash repetition (task-total): "${truncPreview(topBashTotal[0])}" ran ${topBashTotal[1]}× across the task`,
 				firedKeys: [topBashTotal[0]],
+				detector: "bash_repetition",
 			}
 		}
 		// Task-total check (normalized)
@@ -414,6 +424,7 @@ export class LoopGuard {
 			return {
 				reason: `bash repetition (normalized task-total): "${truncPreview(topBashNormTotal[0])}" ran ${topBashNormTotal[1]}× across the task`,
 				firedKeys: [topBashNormTotal[0]],
+				detector: "bash_repetition",
 			}
 		}
 		return undefined
@@ -648,15 +659,39 @@ export default function loopGuardExtension(pi: ExtensionAPI) {
 	/** True when a subagent loop-guard steer has fired and the subagent
 	 *  gets one more turn to produce a summary before abort. */
 	let subagentAbortPending = false
+	/** Per-session count of loop-guard warns. Reset alongside guard.reset().
+	 *  Carried into telemetry payloads so the backend can track frequency. */
+	let warnCount = 0
+	/** Stash the detector + count from the last warn so the subagent_abort
+	 *  event can reference them when the abort fires in turn_end. */
+	let lastWarnDetector: LoopGuardDetector | undefined
+	let lastWarnCount = 0
+
+	// Domain event helper: emit a loop-guard event via pi.events. No-ops
+	// silently when `pi.events` is unavailable on the host.
+	function emitGuardEvent(channel: string, payload: unknown): void {
+		try {
+			pi.events.emit(channel, payload)
+		} catch {
+			// Older pi-coding-agent versions may not expose `events`. The
+			// guard still functions correctly without telemetry.
+		}
+	}
 
 	pi.on("session_start", (_event, _ctx) => {
 		ctx = _ctx
+		warnCount = 0
+		lastWarnDetector = undefined
+		lastWarnCount = 0
 	})
 
 	pi.on("input", (event) => {
 		if (event.source === "extension") return
 		guard.reset()
 		subagentAbortPending = false
+		warnCount = 0
+		lastWarnDetector = undefined
+		lastWarnCount = 0
 	})
 
 	pi.on("tool_call", (event) => {
@@ -676,6 +711,11 @@ export default function loopGuardExtension(pi: ExtensionAPI) {
 		// one turn to produce output, then we abort. Whatever it produced
 		// becomes the responseText the orchestrator receives.
 		if (subagentAbortPending) {
+			emitGuardEvent(LOOP_GUARD_EVENTS.SUBAGENT_ABORT, {
+				detector: lastWarnDetector,
+				count: lastWarnCount,
+				is_subagent: true,
+			})
 			ctx?.abort()
 			subagentAbortPending = false
 			return
@@ -691,6 +731,14 @@ export default function loopGuardExtension(pi: ExtensionAPI) {
 		}
 		const result = guard.record(record)
 		if (result.state === "warn" && result.reason) {
+			warnCount++
+			lastWarnDetector = result.detector
+			lastWarnCount = warnCount
+			emitGuardEvent(LOOP_GUARD_EVENTS.WARN, {
+				detector: result.detector,
+				count: warnCount,
+				is_subagent: isAgentWorker(),
+			})
 			pi.sendMessage(
 				{
 					customType: "loop-guard-steer",
