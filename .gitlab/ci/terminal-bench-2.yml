@@ -6,27 +6,6 @@ spec:
 include:
   - component: $CI_SERVER_FQDN/castai/tooling/gitlab-ci-components/auth@v0.0.29
 
-workflow:
-  name: 'Terminal Bench $[[ inputs.dataset_version ]] — $[[ inputs.agent ]] · $[[ inputs.model ]] · $[[ inputs.target_ref ]] · multi-model=$[[ inputs.kimchi_multi_model ]] · ferment=$[[ inputs.kimchi_ferment_oneshot ]] · tasks_all=$[[ inputs.tasks_all ]]'
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      variables:
-        TERMINAL_BENCH_RESOURCE_GROUP: terminal-bench-$[[ inputs.dataset_version ]]-$[[ inputs.agent ]]-scheduled
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      variables:
-        TERMINAL_BENCH_RESOURCE_GROUP: 'terminal-bench-$[[ inputs.dataset_version ]]-$[[ inputs.agent ]]-$[[ inputs.target_ref ]]'
-    - if: '$CI_PIPELINE_SOURCE == "api"'
-      variables:
-        TERMINAL_BENCH_RESOURCE_GROUP: 'terminal-bench-$[[ inputs.dataset_version ]]-$[[ inputs.agent ]]-$[[ inputs.target_ref ]]'
-    - when: never
-
-stages:
-  - prepare
-  - benchmark
-  - postprocess
-  - notify
-  - summarize
-
 default:
   tags:
     - runner::experimental

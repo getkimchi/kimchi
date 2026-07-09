@@ -4,14 +4,20 @@ from __future__ import annotations
 
 import itertools
 import json
-import os
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from chunk_runner import _build_gcs_key_prefix, _derive_configuration, _write_run_metadata, main, process_trial_results, run_id_from_chunk_attempt
+from chunk_runner import (
+    _build_gcs_key_prefix,
+    _derive_configuration,
+    _write_run_metadata,
+    main,
+    process_trial_results,
+    run_id_from_chunk_attempt,
+)
 
 
 def _write_result(trial_dir: Path, payload: dict) -> None:
@@ -775,7 +781,6 @@ def test_build_gcs_key_prefix_is_pipeline_level(monkeypatch: pytest.MonkeyPatch)
         "CI_PIPELINE_ID": "1001",
         "CI_JOB_ID": "9001",
     }
-    pipeline_b = {**pipeline_a, "CI_PIPELINE_ID": "1002"}
 
     # Wipe vars the function consults so the dict above is the full env.
     for key in (

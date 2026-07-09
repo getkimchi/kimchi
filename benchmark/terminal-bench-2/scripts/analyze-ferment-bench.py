@@ -15,7 +15,6 @@ from pathlib import Path
 from statistics import mean
 from typing import Any
 
-
 SCRIPT_DIR = Path(__file__).resolve().parent
 BENCH_DIR = SCRIPT_DIR.parent
 JOBS_DIR = BENCH_DIR / "jobs"
@@ -37,9 +36,22 @@ SIGNAL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("missing-dependency", re.compile(r"ModuleNotFoundError|No module named|ImportError", re.IGNORECASE)),
     ("missing-file", re.compile(r"No such file|does not exist|FileNotFoundError|not found at", re.IGNORECASE)),
     ("image-unavailable", re.compile(r"Image omitted|does not support images|could not be resized", re.IGNORECASE)),
-    ("exact-output-mismatch", re.compile(r"does not start with|is not correct|OUTPUT MISMATCH|Expected .* got|expected .* actual", re.IGNORECASE)),
-    ("protocol-mismatch", re.compile(r"not a real gRPC|Protocol message|RpcError|connection refused|handshake", re.IGNORECASE)),
-    ("side-effect-structure", re.compile(r"protected files|Expected only|extra file|file hash|checksum|not in the correct state", re.IGNORECASE)),
+    (
+        "exact-output-mismatch",
+        re.compile(
+            r"does not start with|is not correct|OUTPUT MISMATCH|Expected .* got|expected .* actual", re.IGNORECASE
+        ),
+    ),
+    (
+        "protocol-mismatch",
+        re.compile(r"not a real gRPC|Protocol message|RpcError|connection refused|handshake", re.IGNORECASE),
+    ),
+    (
+        "side-effect-structure",
+        re.compile(
+            r"protected files|Expected only|extra file|file hash|checksum|not in the correct state", re.IGNORECASE
+        ),
+    ),
     ("response-length", re.compile(r'"stopReason":"length"|stopReason.*length', re.IGNORECASE)),
 )
 
@@ -263,7 +275,8 @@ def text_from_content(content: Any, include_thinking: bool = False) -> str:
         elif include_thinking and item_type == "thinking":
             parts.append(display(item.get("thinking"), ""))
         elif item_type == "toolCall":
-            parts.append(f"[toolCall {display(item.get('name'))}] {json.dumps(item.get('arguments', {}), ensure_ascii=False)[:500]}")
+            arguments = json.dumps(item.get("arguments", {}), ensure_ascii=False)[:500]
+            parts.append(f"[toolCall {display(item.get('name'))}] {arguments}")
     return "\n".join(part for part in parts if part)
 
 
@@ -392,7 +405,9 @@ def summarize_events(events: list[dict[str, Any]]) -> tuple[int, str, int | None
     )
 
 
-def phase_step_maps(ferment: dict[str, Any]) -> tuple[dict[str, str], dict[tuple[str, str], str], dict[str, str], dict[tuple[str, str], str]]:
+def phase_step_maps(
+    ferment: dict[str, Any],
+) -> tuple[dict[str, str], dict[tuple[str, str], str], dict[str, str], dict[tuple[str, str], str]]:
     phase_names: dict[str, str] = {}
     phase_statuses: dict[str, str] = {}
     step_names: dict[tuple[str, str], str] = {}
@@ -452,7 +467,9 @@ def timing_rows(ferment: dict[str, Any], events: list[dict[str, Any]]) -> list[T
         if start and not end and final_ts:
             end = final_ts
             note = "open at final event"
-        rows.append(TimingRow("phase", name, phase_statuses.get(phase_id, ""), start, end, seconds_between(start, end), note))
+        rows.append(
+            TimingRow("phase", name, phase_statuses.get(phase_id, ""), start, end, seconds_between(start, end), note)
+        )
     for key, name in step_names.items():
         start = step_start.get(key)
         end = step_end.get(key)
@@ -502,7 +519,9 @@ def summarize_session_file(path: Path, max_notables: int) -> SessionSummary:
             if isinstance(parent, str):
                 summary.parent_session = parent
         elif entry_type == "model_change":
-            summary.current_model = f"{display(entry.get('provider'), 'unknown')}/{display(entry.get('modelId'), 'unknown')}"
+            summary.current_model = (
+                f"{display(entry.get('provider'), 'unknown')}/{display(entry.get('modelId'), 'unknown')}"
+            )
         elif entry_type in {"custom", "custom_message"}:
             summary.custom_types[display(entry.get("customType"), "unknown")] += 1
             record_signal_text(summary, json.dumps(entry, ensure_ascii=False), max_notables)
@@ -566,7 +585,9 @@ def load_trial_evidence(trial_dir: Path, max_notables: int = 5, include_workers:
         events=load_jsonl(event_path),
         failures=failed_tests(trial_dir / "verifier" / "ctrf.json"),
         sessions=[summarize_session_file(path, max_notables) for path in session_files(trial_dir)],
-        workers=[summarize_session_file(path, max_notables) for path in worker_output_files(trial_dir)] if include_workers else [],
+        workers=[summarize_session_file(path, max_notables) for path in worker_output_files(trial_dir)]
+        if include_workers
+        else [],
     )
 
 
@@ -597,8 +618,12 @@ def summarize_trial(evidence: TrialEvidence) -> TrialSummary:
     result = evidence.result
     reward = display(get_path(result, "verifier_result", "rewards", "reward"), "missing")
     exception = display(get_path(result, "exception_info", "exception_type"), "none")
-    agent_seconds = seconds_between(get_path(result, "agent_execution", "started_at"), get_path(result, "agent_execution", "finished_at"))
-    verifier_seconds = seconds_between(get_path(result, "verifier", "started_at"), get_path(result, "verifier", "finished_at"))
+    agent_seconds = seconds_between(
+        get_path(result, "agent_execution", "started_at"), get_path(result, "agent_execution", "finished_at")
+    )
+    verifier_seconds = seconds_between(
+        get_path(result, "verifier", "started_at"), get_path(result, "verifier", "finished_at")
+    )
     ferment = evidence.ferment
     events = evidence.events
     event_count, last_event, planning_seconds, activation_seconds, execution_seconds = summarize_events(events)
@@ -739,9 +764,17 @@ def print_timing_averages(trials: list[TrialSummary]) -> None:
     print_kv("planned to first phase", seconds_mean([t.activation_seconds for t in trials]))
     print_kv("first phase to complete", seconds_mean([t.execution_seconds for t in trials]))
     print_kv("session wall span", seconds_mean([t.session_span_seconds for t in trials]))
-    print_kv("llm rounds avg", f"{mean([t.llm_rounds for t in trials]):.1f} across {len(trials)} trials" if trials else "n/a")
-    print_kv("input tokens avg", f"{mean([t.input_tokens for t in trials]):.1f} across {len(trials)} trials" if trials else "n/a")
-    print_kv("output tokens avg", f"{mean([t.output_tokens for t in trials]):.1f} across {len(trials)} trials" if trials else "n/a")
+    print_kv(
+        "llm rounds avg", f"{mean([t.llm_rounds for t in trials]):.1f} across {len(trials)} trials" if trials else "n/a"
+    )
+    print_kv(
+        "input tokens avg",
+        f"{mean([t.input_tokens for t in trials]):.1f} across {len(trials)} trials" if trials else "n/a",
+    )
+    print_kv(
+        "output tokens avg",
+        f"{mean([t.output_tokens for t in trials]):.1f} across {len(trials)} trials" if trials else "n/a",
+    )
 
 
 def print_task_consistency(trials: list[TrialSummary]) -> None:
@@ -749,19 +782,26 @@ def print_task_consistency(trials: list[TrialSummary]) -> None:
     for trial in trials:
         by_task[trial.task].append(trial)
     distribution = Counter(sum(1 for trial in rows if is_pass(trial)) for rows in by_task.values())
-    print_counter("Task Pass Count Distribution", Counter({f"{passes} pass attempts": count for passes, count in distribution.items()}))
+    print_counter(
+        "Task Pass Count Distribution",
+        Counter({f"{passes} pass attempts": count for passes, count in distribution.items()}),
+    )
     all_failed = sorted(task for task, rows in by_task.items() if rows and not any(is_pass(t) for t in rows))
     print_attention_list("Tasks With All Attempts Failed", all_failed, DEFAULT_MAX_LIST)
 
 
 def print_run_summary(run_dir: Path, max_list: int) -> None:
-    trials = [summarize_trial(load_trial_evidence(p)) for p in sorted(run_dir.iterdir()) if "__" in p.name and is_trial_dir(p)]
+    trials = [
+        summarize_trial(load_trial_evidence(p)) for p in sorted(run_dir.iterdir()) if "__" in p.name and is_trial_dir(p)
+    ]
     print_run_section(run_dir, trials)
     print_artifact_counts(run_dir)
     print_counter("Reward / Exception Breakdown", Counter(f"{t.reward}\t{t.exception}" for t in trials))
     print_counter("Ferment Status Counts", Counter(t.ferment_status for t in trials))
     print_counter("Ferment Grade Counts", Counter(t.grade for t in trials))
-    print_counter("Ferment Status / Reward / Exception", Counter(f"{t.ferment_status}\t{t.reward}\t{t.exception}" for t in trials))
+    print_counter(
+        "Ferment Status / Reward / Exception", Counter(f"{t.ferment_status}\t{t.reward}\t{t.exception}" for t in trials)
+    )
     print_counter("Final Ferment Event Counts", Counter(t.last_event for t in trials))
     print_counter("Failure Signal Counts", Counter(signal for t in trials if not is_pass(t) for signal in t.signals))
     model_counts: Counter[str] = Counter()
@@ -772,27 +812,47 @@ def print_run_summary(run_dir: Path, max_list: int) -> None:
     print_task_consistency(trials)
     print_attention_list(
         "Complete Ferment But Reward 0",
-        [f"{t.trial}\tgrade={t.grade}\texception={t.exception}\trounds={t.llm_rounds}\ttokens={tokens_text(t)}" for t in trials if t.ferment_status == "complete" and is_zero_reward(t)],
+        [
+            f"{t.trial}\tgrade={t.grade}\texception={t.exception}\trounds={t.llm_rounds}\ttokens={tokens_text(t)}"
+            for t in trials
+            if t.ferment_status == "complete" and is_zero_reward(t)
+        ],
         max_list,
     )
     print_attention_list(
         "Non-Complete Ferment But Reward 1",
-        [f"{t.trial}\tstatus={t.ferment_status}\texception={t.exception}\tlast_event={t.last_event}" for t in trials if t.ferment_status != "complete" and is_pass(t)],
+        [
+            f"{t.trial}\tstatus={t.ferment_status}\texception={t.exception}\tlast_event={t.last_event}"
+            for t in trials
+            if t.ferment_status != "complete" and is_pass(t)
+        ],
         max_list,
     )
     print_attention_list(
         "Missing Verifier Reward",
-        [f"{t.trial}\tstatus={t.ferment_status}\texception={t.exception}\tlast_event={t.last_event}" for t in trials if t.reward == "missing"],
+        [
+            f"{t.trial}\tstatus={t.ferment_status}\texception={t.exception}\tlast_event={t.last_event}"
+            for t in trials
+            if t.reward == "missing"
+        ],
         max_list,
     )
     print_attention_list(
         "Draft / Planned / Paused Ferments",
-        [f"{t.trial}\tstatus={t.ferment_status}\treward={t.reward}\texception={t.exception}\tlast_event={t.last_event}" for t in trials if t.ferment_status in EARLY_STOP_STATUSES],
+        [
+            f"{t.trial}\tstatus={t.ferment_status}\treward={t.reward}\texception={t.exception}\tlast_event={t.last_event}"
+            for t in trials
+            if t.ferment_status in EARLY_STOP_STATUSES
+        ],
         max_list,
     )
     print_attention_list(
         "Running Ferments With Exceptions",
-        [f"{t.trial}\treward={t.reward}\texception={t.exception}\tlast_event={t.last_event}" for t in trials if t.ferment_status == "running" and t.exception != "none"],
+        [
+            f"{t.trial}\treward={t.reward}\texception={t.exception}\tlast_event={t.last_event}"
+            for t in trials
+            if t.ferment_status == "running" and t.exception != "none"
+        ],
         max_list,
     )
 
@@ -895,7 +955,9 @@ def render_ferment_scope_section(evidence: TrialEvidence) -> list[str]:
         lines += ["### Success Criteria", "", display(criteria), ""]
     if constraints:
         lines += ["### Constraints", ""]
-        lines += [f"- {display(item)}" for item in constraints] if isinstance(constraints, list) else [display(constraints)]
+        lines += (
+            [f"- {display(item)}" for item in constraints] if isinstance(constraints, list) else [display(constraints)]
+        )
         lines.append("")
     if get_path(ferment, "grade", "rationale"):
         lines += ["### Grade Rationale", "", display(get_path(ferment, "grade", "rationale")), ""]
@@ -910,7 +972,19 @@ def render_timing_section(evidence: TrialEvidence) -> list[str]:
         "| --- | --- | --- | ---: | --- | --- | --- |",
     ]
     for row in timing_rows(evidence.ferment, evidence.events):
-        lines.append(md_row([row.kind, truncate(row.name, 120), row.status, seconds_display(row.seconds), row.start, row.end, row.note]))
+        lines.append(
+            md_row(
+                [
+                    row.kind,
+                    truncate(row.name, 120),
+                    row.status,
+                    seconds_display(row.seconds),
+                    row.start,
+                    row.end,
+                    row.note,
+                ]
+            )
+        )
     lines.append("")
     return lines
 
@@ -940,7 +1014,8 @@ def render_trial_report(trial_dir: Path, max_trace_lines: int, max_notables: int
     lines: list[str] = [
         f"# Terminal-Bench Trial Analysis: {trial_dir.name}",
         "",
-        "This report is generated from local artifacts so repeated investigation can start from a stable evidence summary instead of rereading raw JSONL/session files.",
+        "This report is generated from local artifacts so repeated investigation can start from a stable evidence "
+        "summary instead of rereading raw JSONL/session files.",
         "",
     ]
     lines += render_top_level_section(evidence, summary)
@@ -958,7 +1033,11 @@ def render_verifier_section(evidence: TrialEvidence, max_trace_lines: int) -> li
     trial_dir = evidence.trial_dir
     lines = ["## Verifier", ""]
     reward_path = trial_dir / "verifier" / "reward.txt"
-    lines.append(f"- reward.txt: `{reward_path.read_text(encoding='utf-8', errors='replace').strip()}`" if reward_path.is_file() else "- reward.txt: missing")
+    lines.append(
+        f"- reward.txt: `{reward_path.read_text(encoding='utf-8', errors='replace').strip()}`"
+        if reward_path.is_file()
+        else "- reward.txt: missing"
+    )
     lines.append(f"- ctrf.json: {'present' if (trial_dir / 'verifier' / 'ctrf.json').is_file() else 'missing'}")
     lines.append(f"- failed tests: {len(evidence.failures)}")
     lines.append("")
@@ -979,11 +1058,18 @@ def render_sessions_section(evidence: TrialEvidence, max_notables: int, max_sess
         "",
         f"- session jsonl files: {len(sessions)}",
         f"- worker output files: {len(workers)}",
-        "- execution totals use session JSONL files; worker output files are listed as cross-check evidence and are not added again.",
+        "- execution totals use session JSONL files; worker output files are listed as cross-check evidence and are "
+        "not added again.",
         "",
     ]
     if sessions:
-        lines += ["### Session Files", "", "| File | Entries | Seconds | LLM Rounds | Tokens In/Out | Models | Tool Calls | Stop Reasons | Last Assistant |", "| --- | ---: | ---: | ---: | --- | --- | --- | --- | --- |"]
+        lines += [
+            "### Session Files",
+            "",
+            "| File | Entries | Seconds | LLM Rounds | Tokens In/Out | Models | Tool Calls | Stop Reasons | "
+            "Last Assistant |",
+            "| --- | ---: | ---: | ---: | --- | --- | --- | --- | --- |",
+        ]
         for summary in sessions[:max_sessions]:
             duration = seconds_between(summary.start, summary.end)
             last = summary.last_assistant_stop or ""
@@ -1007,7 +1093,9 @@ def render_sessions_section(evidence: TrialEvidence, max_notables: int, max_sess
                 )
             )
         if len(sessions) > max_sessions:
-            lines.append(f"| ... | {len(sessions) - max_sessions} more omitted; raise `--max-sessions` |  |  |  |  |  |  |  |")
+            lines.append(
+                f"| ... | {len(sessions) - max_sessions} more omitted; raise `--max-sessions` |  |  |  |  |  |  |  |"
+            )
         lines.append("")
         lines += ["### Notable Session Signals", ""]
         any_notables = False
@@ -1021,7 +1109,12 @@ def render_sessions_section(evidence: TrialEvidence, max_notables: int, max_sess
         if not any_notables:
             lines += ["No notable session signals matched the built-in patterns.", ""]
     if workers:
-        lines += ["### Worker Outputs", "", "| File | Entries | Seconds | LLM Rounds | Tokens In/Out | Models | Tool Calls | Stop Reasons | Signals |", "| --- | ---: | ---: | ---: | --- | --- | --- | --- | --- |"]
+        lines += [
+            "### Worker Outputs",
+            "",
+            "| File | Entries | Seconds | LLM Rounds | Tokens In/Out | Models | Tool Calls | Stop Reasons | Signals |",
+            "| --- | ---: | ---: | ---: | --- | --- | --- | --- | --- |",
+        ]
         for summary in workers[:max_sessions]:
             duration = seconds_between(summary.start, summary.end)
             signal_text = "; ".join(f"{label}: {text}" for label, text in summary.notables[:3])
@@ -1041,7 +1134,9 @@ def render_sessions_section(evidence: TrialEvidence, max_notables: int, max_sess
                 )
             )
         if len(workers) > max_sessions:
-            lines.append(f"| ... | {len(workers) - max_sessions} more omitted; raise `--max-sessions` |  |  |  |  |  |  |  |")
+            lines.append(
+                f"| ... | {len(workers) - max_sessions} more omitted; raise `--max-sessions` |  |  |  |  |  |  |  |"
+            )
         lines.append("")
     return lines
 
@@ -1049,15 +1144,32 @@ def render_sessions_section(evidence: TrialEvidence, max_notables: int, max_sess
 def render_investigation_hints(summary: TrialSummary) -> list[str]:
     hints: list[str] = []
     if summary.exception != "none":
-        hints.append(f"Exception path is active: `{summary.exception}`. Start from `exception.txt`, then inspect final ferment event `{summary.last_event}` and the last assistant/tool call in `agent/sessions/main.jsonl`.")
+        hints.append(
+            f"Exception path is active: `{summary.exception}`. Start from `exception.txt`, then inspect final "
+            f"ferment event `{summary.last_event}` and the last assistant/tool call in `agent/sessions/main.jsonl`."
+        )
     if summary.ferment_status == "complete" and is_zero_reward(summary):
-        hints.append("Ferment completed but verifier rejected the result. Compare failed CTRF tests against lifecycle verification commands; this usually indicates weak gates, exact-output mismatch, side effects, protocol mismatch, or dependency leakage.")
+        hints.append(
+            "Ferment completed but verifier rejected the result. Compare failed CTRF tests against lifecycle "
+            "verification commands; this usually indicates weak gates, exact-output mismatch, side effects, "
+            "protocol mismatch, or dependency leakage."
+        )
     if summary.ferment_status in INCOMPLETE_STATUSES and not is_pass(summary):
-        hints.append(f"Ferment did not reach completion (`{summary.ferment_status}` with final event `{summary.last_event}`). Inspect phase/step timing and session stop reasons for timeout, response-length, or worker-stall evidence.")
+        hints.append(
+            f"Ferment did not reach completion (`{summary.ferment_status}` with final event "
+            f"`{summary.last_event}`). Inspect phase/step timing and session stop reasons for timeout, "
+            "response-length, or worker-stall evidence."
+        )
     for signal in summary.signals:
-        hints.append(f"Detected `{signal}` signal. Use the verifier/session excerpt for that signal as primary evidence before opening long raw logs.")
+        hints.append(
+            f"Detected `{signal}` signal. Use the verifier/session excerpt for that signal as primary evidence "
+            "before opening long raw logs."
+        )
     if not hints:
-        hints.append("No automated hint matched; inspect verifier failures first, then compare against ferment gates and the final main-session assistant message.")
+        hints.append(
+            "No automated hint matched; inspect verifier failures first, then compare against ferment gates and the "
+            "final main-session assistant message."
+        )
     return ["## Investigation Hints", "", *[f"- {hint}" for hint in dict.fromkeys(hints)], ""]
 
 
@@ -1068,13 +1180,16 @@ def cache_path_for_trial(trial_dir: Path, cache_dir: Path) -> Path:
 def phase_summary_cell(summary: TrialSummary) -> str:
     if not summary.phase_seconds:
         return ""
-    return "; ".join(f"{truncate(name, 32)}={seconds_display(seconds)}" for name, seconds in summary.phase_seconds.items())
+    return "; ".join(
+        f"{truncate(name, 32)}={seconds_display(seconds)}" for name, seconds in summary.phase_seconds.items()
+    )
 
 
 def compare_trials(trials: list[Path]) -> str:
     summaries = [summarize_trial(load_trial_evidence(trial)) for trial in sorted(trials)]
     lines = [
-        "| Run | Trial | Reward | Exception | Status | Grade | Agent | Verifier | Span | Rounds | Tokens In/Out | Models | Final Event | Failed Tests | Signals | Phase Seconds |",
+        "| Run | Trial | Reward | Exception | Status | Grade | Agent | Verifier | Span | Rounds | Tokens In/Out | "
+        "Models | Final Event | Failed Tests | Signals | Phase Seconds |",
         "| --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- | --- | --- | --- | --- |",
     ]
     for summary in summaries:
@@ -1112,12 +1227,17 @@ def command_trial(args: argparse.Namespace) -> int:
     trials = resolve_trials(args.targets, args.run, args.runs)
     if not trials:
         raise SystemExit("error: no trial directories matched")
-    reports = [(trial, render_trial_report(trial, args.max_trace_lines, args.max_notables, args.max_sessions)) for trial in trials]
+    reports = [
+        (trial, render_trial_report(trial, args.max_trace_lines, args.max_notables, args.max_sessions))
+        for trial in trials
+    ]
     output_paths: list[Path] = []
     if args.cache or args.output_dir:
         base = args.output_dir.resolve() if args.output_dir else DEFAULT_CACHE_DIR
         for trial, report in reports:
-            path = cache_path_for_trial(trial, base) if args.cache and not args.output_dir else base / f"{trial.name}.md"
+            path = (
+                cache_path_for_trial(trial, base) if args.cache and not args.output_dir else base / f"{trial.name}.md"
+            )
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(report, encoding="utf-8")
             output_paths.append(path)
@@ -1147,18 +1267,29 @@ def command_compare(args: argparse.Namespace) -> int:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Analyze terminal-bench ferment runs, trials, sessions, subagents, verifier failures, timings, and tokens.")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Analyze terminal-bench ferment runs, trials, sessions, subagents, verifier failures, timings, and "
+            "tokens."
+        )
+    )
     subparsers = parser.add_subparsers(dest="command")
 
     run_parser = subparsers.add_parser("run", help="Summarize one full run.")
-    run_parser.add_argument("run", nargs="?", help="Run directory or run name under jobs/. Defaults to latest jobs/ run.")
+    run_parser.add_argument(
+        "run", nargs="?", help="Run directory or run name under jobs/. Defaults to latest jobs/ run."
+    )
     run_parser.add_argument("--max-list", type=int, default=int(os.environ.get("MAX_LIST", str(DEFAULT_MAX_LIST))))
     run_parser.set_defaults(func=command_run)
 
     trial_parser = subparsers.add_parser("trial", help="Write or print detailed per-trial evidence reports.")
-    trial_parser.add_argument("targets", nargs="*", help="Trial path/name, task name under --run/--runs, or glob under --run/--runs.")
+    trial_parser.add_argument(
+        "targets", nargs="*", help="Trial path/name, task name under --run/--runs, or glob under --run/--runs."
+    )
     trial_parser.add_argument("--run", help="Single run directory or run name.")
-    trial_parser.add_argument("--runs", nargs="+", help="Multiple run directories or run names. Targets are matched in each run.")
+    trial_parser.add_argument(
+        "--runs", nargs="+", help="Multiple run directories or run names. Targets are matched in each run."
+    )
     trial_parser.add_argument("--cache", action="store_true", help=f"Write reports under {DEFAULT_CACHE_DIR}.")
     trial_parser.add_argument("--output-dir", type=Path, help="Write one Markdown report per trial to this directory.")
     trial_parser.add_argument("--max-trace-lines", type=int, default=80)
@@ -1167,9 +1298,13 @@ def parse_args() -> argparse.Namespace:
     trial_parser.set_defaults(func=command_trial)
 
     compare_parser = subparsers.add_parser("compare", help="Compare trials or task attempts within or across runs.")
-    compare_parser.add_argument("targets", nargs="*", help="Trial path/name, task name under --run/--runs, or glob under --run/--runs.")
+    compare_parser.add_argument(
+        "targets", nargs="*", help="Trial path/name, task name under --run/--runs, or glob under --run/--runs."
+    )
     compare_parser.add_argument("--run", help="Single run directory or run name.")
-    compare_parser.add_argument("--runs", nargs="+", help="Multiple run directories or run names. Targets are matched in each run.")
+    compare_parser.add_argument(
+        "--runs", nargs="+", help="Multiple run directories or run names. Targets are matched in each run."
+    )
     compare_parser.add_argument("--output", type=Path, help="Write comparison Markdown table to this file.")
     compare_parser.set_defaults(func=command_compare)
 

@@ -21,7 +21,6 @@ This module exposes two kinds of values:
 from __future__ import annotations
 
 import os
-from typing import Any
 
 from outcome import Outcome
 

@@ -26,13 +26,11 @@ import json
 import os
 import re
 import signal
-import subprocess
 import sys
 import time
 import urllib.request
 import zipfile
 from pathlib import Path
-from typing import Protocol
 
 from bench_config import (
     DEFAULT_BENCHMARK_NAME,
@@ -45,10 +43,10 @@ from bench_config import (
     ENV_BENCHMARK_NAME,
     ENV_BENCHMARK_RESULTS_DIR,
     ENV_BENCHMARK_RUN_METADATA,
+    ENV_BENCHMARK_TARGET_REF,
     ENV_CODING_AGENT,
     ENV_KIMCHI_FERMENT_ONESHOT,
     ENV_KIMCHI_MULTI_MODEL,
-    ENV_BENCHMARK_TARGET_REF,
     ENV_MODEL,
     is_retryable,
     load_llm_params,
@@ -58,9 +56,9 @@ from bench_config import (
 from chunk_slicing import slice_tasks
 from classify import classify
 from harbor_runner import build_harbor_command, format_command_for_log, run_harbor
-from outcome import Outcome
 
-def _fetch_all_tasks(dataset: str, bench_dir: Path) -> list[str]:  # noqa: ARG001
+
+def _fetch_all_tasks(dataset: str, bench_dir: Path) -> list[str]:
     # Hardcoded instead of queried from Harbor at runtime: the Harbor registry
     # backend (Supabase/PostgREST) occasionally fails with PGRST002 on cold
     # start, which would abort the entire benchmark job.
@@ -714,8 +712,6 @@ def main() -> int:
     """Entry point for the chunk runner. Returns exit code for GitLab retry."""
     chunk_index = _env_int("BENCH_CHUNK_INDEX", 0)
     chunk_count = _env_int("BENCH_CHUNK_COUNT", 8)
-    job_retry_count = _env_int("CI_JOB_RETRY_COUNT", 0)
-    job_max_retries = _env_int("BENCH_JOB_MAX_RETRIES", 2)
     parallelism = _env_int("BENCH_PARALLELISM", 1)
     attempts = _env_int("BENCH_ATTEMPTS", 1)
     timeout_multiplier = _env_float("BENCH_TIMEOUT_MULTIPLIER", 1.0)
@@ -895,4 +891,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from summarize_analysis import _post_long_message, DISCORD_MAX_CHARS
+from summarize_analysis import DISCORD_MAX_CHARS, _post_long_message
 
 
 def _extract_content(call) -> str:

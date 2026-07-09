@@ -3,8 +3,29 @@ spec:
     - local: /.gitlab/ci/terminal-bench-2.inputs.yml
 ---
 
+stages:
+  - prepare
+  - benchmark
+  - postprocess
+  - notify
+  - summarize
+
+workflow:
+  name: 'Terminal Bench $[[ inputs.dataset_version ]] — $[[ inputs.agent ]] · $[[ inputs.model ]] · $[[ inputs.target_ref ]] · multi-model=$[[ inputs.kimchi_multi_model ]] · ferment=$[[ inputs.kimchi_ferment_oneshot ]] · tasks_all=$[[ inputs.tasks_all ]]'
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      variables:
+        TERMINAL_BENCH_RESOURCE_GROUP: terminal-bench-$[[ inputs.dataset_version ]]-$[[ inputs.agent ]]-scheduled
+    - if: '$CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"'
+      variables:
+        TERMINAL_BENCH_RESOURCE_GROUP: 'terminal-bench-$[[ inputs.dataset_version ]]-$[[ inputs.agent ]]-$[[ inputs.target_ref ]]'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - when: never
+
 include:
   - local: /.gitlab/ci/terminal-bench-2.yml
+    rules:
+      - if: '$CI_PIPELINE_SOURCE == "schedule" || $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"'
     inputs:
       dataset_version: $[[ inputs.dataset_version ]]
       agent: $[[ inputs.agent ]]
@@ -24,3 +45,19 @@ include:
       top_p: $[[ inputs.top_p ]]
       top_k: $[[ inputs.top_k ]]
       max_tokens: $[[ inputs.max_tokens ]]
+
+benchmarks-tests:
+  stage: prepare
+  image: ghcr.io/astral-sh/uv:python3.14-bookworm
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "benchmarks"'
+  variables:
+    BENCHMARK_TARGET_REF: "$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME"
+    BENCHMARK_TARGET_SHA: "$CI_COMMIT_SHA"
+  script:
+    - cd benchmark/scripts/gitlab
+    - uv run ruff check .
+    - uv run pytest
+    - cd ../../terminal-bench-2
+    - uv run ruff check .
+    - uv run pytest

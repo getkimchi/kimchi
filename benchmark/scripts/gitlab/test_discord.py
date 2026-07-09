@@ -8,8 +8,8 @@ Usage:
 import json
 import os
 import sys
-import urllib.request
 import urllib.error
+import urllib.request
 
 API_BASE = "https://discord.com/api/v10"
 MAX_CHARS = 2000
@@ -140,7 +140,7 @@ def main():
     print("2. Posting message in thread...")
     thread_messages_url = f"{API_BASE}/channels/{thread_id}/messages"
     api_request("POST", thread_messages_url, token, {"content": "Message inside the thread ✅"})
-    print(f"   ✓ Message posted in thread")
+    print("   ✓ Message posted in thread")
 
     print("\nAll tests passed!")
 

@@ -143,10 +143,15 @@ def main() -> int:
     chunk_gitlab = metadata_dict(run_metadata, "gitlab")
     target_ref = getenv("BENCHMARK_TARGET_REF") or optional_metadata_string(chunk_gitlab, "target_ref")
     if not target_ref:
-        return skip_upload("No target_ref found in BENCHMARK_TARGET_REF or run_metadata.gitlab.target_ref; skipping GCS upload.")
+        return skip_upload(
+            "No target_ref found in BENCHMARK_TARGET_REF or run_metadata.gitlab.target_ref; skipping GCS upload."
+        )
     target_commit_sha = getenv("BENCHMARK_TARGET_SHA") or optional_metadata_string(chunk_gitlab, "target_commit_sha")
     if not target_commit_sha:
-        return skip_upload("No target_commit_sha found in BENCHMARK_TARGET_SHA or run_metadata.gitlab.target_commit_sha; skipping GCS upload.")
+        return skip_upload(
+            "No target_commit_sha found in BENCHMARK_TARGET_SHA or run_metadata.gitlab.target_commit_sha; "
+            "skipping GCS upload."
+        )
 
     metadata = {
         "schema_version": 1,
