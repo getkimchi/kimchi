@@ -11,6 +11,7 @@ import { Markdown } from "@earendil-works/pi-tui"
 import type { Static } from "typebox"
 import { findFirstPlannedPhase } from "../../../ferment/engine.js"
 import type { Ferment, Phase } from "../../../ferment/types.js"
+import { getMultiModelEnabled } from "../../multi-model.js"
 import { withWorkingHidden } from "../../ui.js"
 import { askUserForm } from "../ask-user.js"
 import { gradeColor, pr_bold } from "../colors.js"
@@ -189,7 +190,7 @@ function pauseForManualPhaseBoundary(
 
 function formatManualPhaseBoundaryContinue(
 	ferment: Ferment,
-	sessionId: string,
+	multiModelEnabled: boolean,
 	completedPhase: Phase,
 	nextPhase: Phase,
 	projectChecksLine: string,
@@ -203,7 +204,7 @@ function formatManualPhaseBoundaryContinue(
 			"User chose to continue to the next phase.",
 		].join("\n"),
 		ferment,
-		sessionId,
+		multiModelEnabled,
 	)
 }
 
@@ -231,11 +232,10 @@ async function maybeCompleteManualPhaseBoundary(
 				]) ?? Promise.resolve(undefined),
 		)
 		if (choice === "Continue to next phase") {
-			const sessionId = ctx.sessionManager.getSessionId()
 			return toolOk(
 				formatManualPhaseBoundaryContinue(
 					ferment,
-					sessionId,
+					getMultiModelEnabled(ctx.sessionManager),
 					completedPhase,
 					nextPhase,
 					projectChecksLine,
@@ -262,11 +262,11 @@ export async function completePhase(
 	const phase = resolvePhase(f, params.phase_id)
 	if (!phase) return toolErr("Phase not found.")
 
-	const sessionId = ctx.sessionManager.getSessionId()
+	const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
 
 	// FSM validation: complete_ferment_phase requires all phases to be terminal
 	const fsmError = validateFsmTransition(f, "COMPLETE_PHASE", { phaseId: phase.id })
-	if (fsmError) return toolErrWithNextAction(fsmError, f, sessionId)
+	if (fsmError) return toolErrWithNextAction(fsmError, f, multiModelEnabled)
 
 	// Step 2a: validate gate coverage + per-verdict shape. Phase-scope is the
 	// one tool that does NOT short-circuit on a flag — flags feed the
@@ -443,7 +443,7 @@ export async function completePhase(
 		},
 		blockRetries: blockRetriesForTelemetry,
 	})
-	if (!completeOutcome.ok) return failedToolResult(completeOutcome.error, f, sessionId)
+	if (!completeOutcome.ok) return failedToolResult(completeOutcome.error, f, multiModelEnabled)
 
 	// Step 3a: clear the block-retry counter — phase advanced cleanly.
 	runtime.clearBlockRetry(params.ferment_id, phase.id)
@@ -503,7 +503,7 @@ export async function completePhase(
 						: ""
 				}`,
 				fresh,
-				sessionId,
+				multiModelEnabled,
 			),
 		)
 	}
@@ -512,7 +512,7 @@ export async function completePhase(
 		withNextActionHint(
 			`**Phase "${phase.name}"** done.${projectChecksLine}${warnSection}\n**Next:** "${nextPhase.name}".`,
 			fresh,
-			sessionId,
+			multiModelEnabled,
 		),
 	)
 }
@@ -534,7 +534,7 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 			const f = runtime.getStorage().get(params.ferment_id)
 			if (!f) return toolErr("Ferment not found.")
 
-			const sessionId = ctx.sessionManager.getSessionId()
+			const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
 
 			let target = params.phase_id ? f.phases.find((p) => p.id === params.phase_id) : undefined
 			if (!target && params.phase_id) {
@@ -542,11 +542,11 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 				target = f.phases.find((p) => p.name.toLowerCase().includes(name))
 			}
 			if (!target) target = f.phases.find((p) => p.status === "failed") ?? findFirstPlannedPhase(f)
-			if (!target) return toolErrWithNextAction("No planned or failed phases to activate.", f, sessionId)
+			if (!target) return toolErrWithNextAction("No planned or failed phases to activate.", f, multiModelEnabled)
 
 			// FSM validation: ensure phase activation is allowed
 			const fsmError = validateFsmTransition(f, "ACTIVATE_PHASE", { phaseId: target.id })
-			if (fsmError) return toolErrWithNextAction(fsmError, f, sessionId)
+			if (fsmError) return toolErrWithNextAction(fsmError, f, multiModelEnabled)
 
 			// Detect parallel group — activate all siblings at once
 			if (target.groupIndex !== undefined) {
@@ -554,7 +554,7 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 					type: "activate_phase_group",
 					groupIndex: target.groupIndex,
 				})
-				if (!outcome.ok) return failedToolResult(outcome.error, f, sessionId)
+				if (!outcome.ok) return failedToolResult(outcome.error, f, multiModelEnabled)
 
 				// Hook: re-apply the profile based on the updated lifecycle state.
 				// pi-mono snapshots the active tool list at the start of each agent run,
@@ -594,13 +594,13 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 					withNextActionHint(
 						`Parallel group ${target.groupIndex} activated (${groupPhases.length} phases running concurrently).\nferment_id: ${fresh.id}\nparallel_group: ${target.groupIndex}\nphase_ids: ${groupPhases.map((p) => p.id).join(", ")}\n\n${phaseLines}\n\nRun all parallel phases concurrently: call refine_ferment_phase + start_ferment_step for each phase simultaneously.${dmSection}`,
 						fresh,
-						sessionId,
+						multiModelEnabled,
 					),
 				)
 			}
 
 			const outcome = applyAndPersist(params.ferment_id, { type: "activate_phase", phaseId: target.id })
-			if (!outcome.ok) return failedToolResult(outcome.error, f, sessionId)
+			if (!outcome.ok) return failedToolResult(outcome.error, f, multiModelEnabled)
 
 			// Hook: re-apply the profile based on the updated lifecycle state.
 			// pi-mono snapshots the active tool list at the start of each agent run,
@@ -629,7 +629,7 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 				withNextActionHint(
 					`Phase "${target.name}" activated.\nferment_id: ${fresh.id}\nphase_id: ${target.id}${stepList}${dmSection}`,
 					fresh,
-					sessionId,
+					multiModelEnabled,
 				),
 			)
 		},
@@ -662,11 +662,11 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 				)
 			}
 
-			const sessionId = ctx.sessionManager.getSessionId()
+			const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
 
 			// FSM validation: refine_ferment_phase is only valid in PHASE_ACTIVE state
 			const fsmError = validateFsmTransition(f, "REFINE_PHASE", { phaseId: phase.id })
-			if (fsmError) return toolErrWithNextAction(fsmError, f, sessionId)
+			if (fsmError) return toolErrWithNextAction(fsmError, f, multiModelEnabled)
 
 			const outcome = applyAndPersist(params.ferment_id, {
 				type: "refine_phase",
@@ -676,9 +676,9 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 			if (!outcome.ok) {
 				// Rewrite phase-not-active for the LLM-friendly form expected today.
 				if (outcome.error.code === "PHASE_NOT_IN_STATUS") {
-					return toolErrWithNextAction(`Phase must be active. Current: ${outcome.error.actual}`, f, sessionId)
+					return toolErrWithNextAction(`Phase must be active. Current: ${outcome.error.actual}`, f, multiModelEnabled)
 				}
-				return failedToolResult(outcome.error, f, sessionId)
+				return failedToolResult(outcome.error, f, multiModelEnabled)
 			}
 
 			const refined = outcome.ferment.phases.find((p) => p.id === phase.id)
@@ -687,7 +687,7 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 				withNextActionHint(
 					`"${phase.name}" refined with ${refined?.steps.length ?? 0} step(s).\nferment_id: ${outcome.ferment.id}\nphase_id: ${phase.id}\n${stepList}`,
 					outcome.ferment,
-					sessionId,
+					multiModelEnabled,
 				),
 			)
 		},
@@ -722,25 +722,25 @@ ${renderGateGuidance("complete_ferment_phase")}`,
 			const phase = resolvePhase(f, params.phase_id)
 			if (!phase) return toolErr("Phase not found.")
 
-			const sessionId = ctx.sessionManager.getSessionId()
+			const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
 
 			// FSM validation: phase must be active to skip
 			const fsmError = validateFsmTransition(f, "SKIP_PHASE", { phaseId: phase.id })
-			if (fsmError) return toolErrWithNextAction(fsmError, f, sessionId)
+			if (fsmError) return toolErrWithNextAction(fsmError, f, multiModelEnabled)
 
 			const outcome = applyAndPersist(params.ferment_id, {
 				type: "skip_phase",
 				phaseId: phase.id,
 				reason: params.reason,
 			})
-			if (!outcome.ok) return failedToolResult(outcome.error, f, sessionId)
+			if (!outcome.ok) return failedToolResult(outcome.error, f, multiModelEnabled)
 
 			const manualBoundary = await maybeCompleteManualPhaseBoundary(runtime, outcome.ferment, phase, "", "", ctx, {
 				summaryLine: `Phase "${phase.name}" skipped.`,
 			})
 			if (manualBoundary) return manualBoundary
 
-			return toolOk(withNextActionHint("Phase skipped.", outcome.ferment, sessionId))
+			return toolOk(withNextActionHint("Phase skipped.", outcome.ferment, multiModelEnabled))
 		},
 	})
 
@@ -755,23 +755,23 @@ ${renderGateGuidance("complete_ferment_phase")}`,
 			const phase = resolvePhase(f, params.phase_id)
 			if (!phase) return toolErr("Phase not found.")
 
-			const sessionId = ctx.sessionManager.getSessionId()
+			const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
 
 			// FSM validation: phase must be active to fail
 			const fsmError = validateFsmTransition(f, "FAIL_PHASE", { phaseId: phase.id })
-			if (fsmError) return toolErrWithNextAction(fsmError, f, sessionId)
+			if (fsmError) return toolErrWithNextAction(fsmError, f, multiModelEnabled)
 
 			const outcome = applyAndPersist(params.ferment_id, {
 				type: "fail_phase",
 				phaseId: phase.id,
 				reason: params.reason,
 			})
-			if (!outcome.ok) return failedToolResult(outcome.error, f, sessionId)
+			if (!outcome.ok) return failedToolResult(outcome.error, f, multiModelEnabled)
 			return toolOk(
 				withNextActionHint(
 					`Phase marked as failed: ${params.reason}. Use activate_ferment_phase to retry, skip_ferment_phase to bypass, or ask the user to run /ferment abandon if the ferment should stop.`,
 					outcome.ferment,
-					sessionId,
+					multiModelEnabled,
 				),
 			)
 		},

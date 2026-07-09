@@ -4,6 +4,7 @@ import { deriveDraftFermentTitle } from "../../ferment/title.js"
 import type { Ferment } from "../../ferment/types.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { deferExtensionAction } from "../deferred-action.js"
+import { getMultiModelEnabled } from "../multi-model.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { maybeTriggerFermentCompaction, maybeTriggerMidTurnFermentCompaction } from "./auto-compaction.js"
 import { formatDuration } from "./colors.js"
@@ -449,7 +450,7 @@ export function registerFermentEvents(
 			)
 			return {
 				action: "transform" as const,
-				text: buildOneshotNudge(updated, intent, handler.sessionManager.getSessionId()),
+				text: buildOneshotNudge(updated, intent, getMultiModelEnabled(handler.sessionManager)),
 				images: event.images,
 			}
 		} catch (err) {

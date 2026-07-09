@@ -13,7 +13,7 @@ vi.mock("../../agents/index.js", () => ({
 	getAgentRecordForTaskValidation: vi.fn((id: string) => mockAgentRecords.get(id)),
 }))
 
-import { createContext } from "../__mocks__/context.js"
+import { createContext } from "../../__mocks__/context.js"
 import {
 	type StepHandlerServices,
 	type VerificationResult,

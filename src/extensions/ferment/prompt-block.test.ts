@@ -17,7 +17,7 @@ vi.mock("../multi-model.js", (importOriginal) => {
 	}))
 })
 
-import { createContext } from "./__mocks__/context.js"
+import { createContext } from "../__mocks__/context.js"
 import { buildFermentPromptBlock } from "./prompt-block.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
 import type { ContinuationPolicy } from "./state.js"

@@ -27,12 +27,12 @@ const proc = process as KimchiProcess
 // __kimchiMultiModelEnabled.get(sessionId)
 // ---------------------------------------------------------------------------
 
-export function getProcessMultiModelEnabled(sessionId: string): boolean {
-	return proc.__kimchiMultiModelEnabled?.get(sessionId) ?? false
+export function getProcessMultiModelEnabled(sessionId: string): boolean | undefined {
+	return proc.__kimchiMultiModelEnabled?.get(sessionId)
 }
 
 export function setProcessMultiModelEnabled(sessionId: string, enabled: boolean): void {
-	if (!proc.__kimchiMultiModelEnabled) {
+	if (!(proc.__kimchiMultiModelEnabled instanceof Map)) {
 		proc.__kimchiMultiModelEnabled = new Map()
 	}
 	proc.__kimchiMultiModelEnabled.set(sessionId, enabled)
@@ -54,7 +54,7 @@ export function getProcessOrchestratorRef(sessionId: string): string | undefined
  * Store multi-model orchestrator ref to be read by Pi.
  */
 export function setProcessOrchestratorRef(sessionId: string, ref: string): void {
-	if (!proc.__kimchiOrchestratorRef) {
+	if (!(proc.__kimchiOrchestratorRef instanceof Map)) {
 		proc.__kimchiOrchestratorRef = new Map()
 	}
 	proc.__kimchiOrchestratorRef.set(sessionId, ref)

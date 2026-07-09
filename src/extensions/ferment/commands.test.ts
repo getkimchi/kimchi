@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import type { Ferment } from "../../ferment/types.js"
 import { getToolsForProfile } from "../../shared/planning/tool-catalog.js"
-import { createContext } from "./__mocks__/context.js"
+import { createContext } from "../__mocks__/context.js"
 import {
 	FermentCommandController,
 	getFermentArgumentCompletions,

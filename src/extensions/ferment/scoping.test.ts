@@ -4,7 +4,7 @@ import { join } from "node:path"
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
-import { createContext } from "./__mocks__/context.js"
+import { createContext } from "../__mocks__/context.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
 import { runScopingFlow } from "./scoping.js"
 

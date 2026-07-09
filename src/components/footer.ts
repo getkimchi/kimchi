@@ -150,7 +150,7 @@ export function buildScriptPayload(
 			mode: getPermissionMode(sessionId),
 		},
 		multi_model: {
-			enabled: getMultiModelEnabled(sessionId),
+			enabled: getMultiModelEnabled(ctx.sessionManager),
 		},
 		phase: getCurrentPhase(),
 	}
@@ -377,8 +377,7 @@ export class StatsFooter implements Component {
 	}
 
 	private modelSegment(): Segment {
-		const sessionId = this.ctx.sessionManager.getSessionId()
-		const multiModel = getMultiModelEnabled(sessionId)
+		const multiModel = getMultiModelEnabled(this.ctx.sessionManager)
 		const rawModelId = this.ctx.model?.id ?? "n/a"
 		const label = multiModel ? `multi-model (${rawModelId})` : rawModelId
 		const text = `${this.accent(label)} ${this.dim("→ ctrl+p")}`

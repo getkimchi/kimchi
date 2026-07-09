@@ -341,7 +341,7 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 					}
 					ctx.ui.notify("Model roles reset to defaults.", "info")
 
-					if (getMultiModelEnabled(sessionId)) {
+					if (getMultiModelEnabled(ctx.sessionManager)) {
 						const parsed = splitModelRef(DEFAULT_MODEL_ROLES.orchestrator)
 						if (parsed) {
 							const target = ctx.modelRegistry?.find(parsed.provider, parsed.modelId)
@@ -409,7 +409,7 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 				}
 				ctx.ui.notify(`${info.label} set to ${newRef}`, "info")
 
-				if (roleKey === "orchestrator" && getMultiModelEnabled(sessionId)) {
+				if (roleKey === "orchestrator" && getMultiModelEnabled(ctx.sessionManager)) {
 					const parsed = splitModelRef(newRef)
 					if (parsed) {
 						const target = ctx.modelRegistry?.find(parsed.provider, parsed.modelId)

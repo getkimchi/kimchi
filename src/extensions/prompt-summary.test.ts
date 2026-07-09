@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { createContext } from "./__mocks__/context.js"
 import promptSummaryExtension from "./prompt-summary.js"
 
 type Handler = (event: unknown, ctx: unknown) => void | Promise<void>
@@ -20,10 +21,7 @@ function createPiHarness() {
 			},
 		} as unknown as ExtensionAPI,
 		async emit(event: string, payload: unknown) {
-			const ctx = {
-				isIdle: vi.fn(),
-				sessionManager: { getSessionId: () => "test-session" },
-			}
+			const ctx = createContext()
 			for (const handler of handlers.get(event) ?? []) {
 				await handler(payload, ctx)
 			}
@@ -55,12 +53,11 @@ function createStaleCtxHarness() {
 			},
 		} as unknown as ExtensionAPI,
 		async emit(event: string, payload?: unknown, ctxOverride?: Record<string, unknown>) {
-			const ctx = {
-				isIdle: () => false,
-				sessionManager: { getSessionId: () => "test-session" },
+			const ctx = createContext({
+				isIdle: vi.fn().mockReturnValue(false),
 				...ctxOverrides,
 				...ctxOverride,
-			}
+			})
 			for (const handler of handlers.get(event) ?? []) {
 				await handler(payload, ctx)
 			}
@@ -107,7 +104,7 @@ describe("prompt summary stale-ctx crash prevention", () => {
 
 	it("does not crash when ctx.isIdle() throws stale-ctx error from setTimeout callback", async () => {
 		const harness = createStaleCtxHarness()
-		promptSummaryExtension(harness.pi as never)
+		promptSummaryExtension(harness.pi)
 
 		let isIdleCallCount = 0
 		const staleError = new Error(
@@ -140,7 +137,7 @@ describe("prompt summary stale-ctx crash prevention", () => {
 				throw staleError
 			},
 		}
-		promptSummaryExtension(piWithThrowingSend as never)
+		promptSummaryExtension(piWithThrowingSend)
 
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
 
@@ -166,7 +163,7 @@ describe("prompt summary stale-ctx crash prevention", () => {
 				throw nonStaleError
 			},
 		}
-		promptSummaryExtension(piWithThrowingSend as never)
+		promptSummaryExtension(piWithThrowingSend)
 
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
 
@@ -185,7 +182,7 @@ describe("prompt summary stale-ctx crash prevention", () => {
 	it("polls until isIdle returns true, then sends the summary", async () => {
 		vi.useRealTimers()
 		const harness = createStaleCtxHarness()
-		promptSummaryExtension(harness.pi as never)
+		promptSummaryExtension(harness.pi)
 
 		let idleCalls = 0
 		await harness.emit("agent_start")

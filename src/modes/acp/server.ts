@@ -407,8 +407,7 @@ export class KimchiAcpAgent implements Agent {
 	private async loadSessionFresh(params: LoadSessionRequest): Promise<LoadSessionResponse> {
 		const cwd = params.cwd
 		const initialMode = this.resolveInitialMode(cwd)
-		let session: AgentSession
-		session = await this.sessionLoader(params)
+		const session: AgentSession = await this.sessionLoader(params)
 		// Atomic ownership transfer mirrors newSession but covers the full
 		// register → replay → respond path: a throw at any point after the
 		// loader hands back a live session must unwind registration AND dispose,

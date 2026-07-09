@@ -19,8 +19,7 @@ import { getActiveFerment, getFermentContinuationPolicy } from "./ferment/index.
 import { formatDuration } from "./format.js"
 import { sessionHasImages } from "./model-guard.js"
 import { getMultiModelEnabled, setMultiModelEnabled } from "./multi-model.js"
-import { splitModelRef } from "./orchestration/model-roles.js"
-import { getOrchestratorModelId, getOrchestratorModelRef } from "./prompt-construction/prompt-enrichment.js"
+import { getOrchestratorModelId, getOrchestratorModelRef, splitModelRef } from "./orchestration/model-roles.js"
 import {
 	isSessionModeOnboardingFooterSuppressed,
 	registerSharedFooterRenderer,
@@ -305,7 +304,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 				if (ferment) parts.push(ferment.text)
 				const perm = footerData.getExtensionStatuses().get("permissions-mode")
 				if (perm) parts.push(perm)
-				const modelId = getMultiModelEnabled(sessionId)
+				const modelId = getMultiModelEnabled(ctx.sessionManager)
 					? `multi-model (${getOrchestratorModelId(sessionId)})`
 					: (ctx.model?.id ?? "n/a")
 				parts.push(`${resolvedAccentFg(theme)}${modelId}${RST_FG} ${theme.fg("dim", "→ ctrl+p")}`)
@@ -385,7 +384,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 						// Cycle order: model[0] → ... → model[last] → multi-model → model[0]
 						// kimi-k2.6 appears as a regular model AND multi-model appears
 						// as a separate virtual entry right after the last real model.
-						if (getMultiModelEnabled(sessionId)) {
+						if (getMultiModelEnabled(ctx.sessionManager)) {
 							// Currently on the virtual multi-model entry — wrap to first real model.
 							// Check ALL models (including the orchestrator itself) because we are
 							// leaving the virtual entry, not a real model — the orchestrator in
@@ -403,7 +402,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 									break
 								}
 								if (firstReal) {
-									void setMultiModelEnabled(sessionId, false)
+									setMultiModelEnabled(sessionId, false)
 									if (current && modelsAreEqual(firstReal, current)) {
 										// Model object is the same (orchestrator → orchestrator) so setModel
 										// won't emit model_select and the footer won't re-render.
@@ -437,7 +436,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 
 							if (wouldWrap && orchestratorModel) {
 								// Reached end of real models — enter multi-model.
-								void setMultiModelEnabled(sessionId, true)
+								setMultiModelEnabled(sessionId, true)
 								if (modelsAreEqual(orchestratorModel, current)) {
 									// Already on the orchestrator — setModel won't emit model_select
 									// so the footer won't re-render.  Force it.

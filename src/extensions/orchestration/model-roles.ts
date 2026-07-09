@@ -44,6 +44,7 @@ import {
 } from "./model-metadata.js"
 export { modelIdFromRef, splitModelRef } from "./model-ref-utils.js"
 import { readConfigSetting, writeConfigSetting } from "../../config/settings.js"
+import { getProcessOrchestratorRef } from "../kimchi-process.js"
 import { modelIdFromRef } from "./model-ref-utils.js"
 
 /** Task-type affinity tag used to match an agent persona to a model role. */
@@ -164,11 +165,7 @@ export function parseModelRoles(obj: ModelRoles | Record<string, unknown> | unde
  * Missing or invalid entries fall back to DEFAULT_MODEL_ROLES.
  */
 export function resolveModelRoles(): { roles: ModelRoles; warnings: ModelRolesWarning[] } {
-	const value = readConfigSetting(
-		null,
-		"modelRoles",
-		(value): value is Record<string, unknown> => typeof value === "object",
-	)
+	const value = readConfigSetting("modelRoles", (value): value is Record<string, unknown> => typeof value === "object")
 	return parseModelRoles(value)
 }
 
@@ -193,7 +190,7 @@ export function saveModelRoles(roles: ModelRoles): void {
 		rolesObj = undefined
 	}
 
-	writeConfigSetting(null, "modelRoles", rolesObj)
+	writeConfigSetting("modelRoles", rolesObj)
 	resetModelRolesCache()
 	resetMetadataCache()
 }
@@ -297,4 +294,30 @@ function isEqualModelRoles(a: ModelRoles, b: ModelRoles): boolean {
 		if (!isEqualRoleValue(a[key], b[key])) return false
 	}
 	return true
+}
+
+/**
+ * Orchestrator model ID (without provider prefix).
+ * When sessionId is provided, reads from the per-session side-channel first,
+ * falling back to the global model-roles config.
+ */
+export function getOrchestratorModelId(sessionId: string | null): string {
+	if (sessionId !== null) {
+		const ref = getProcessOrchestratorRef(sessionId)
+		if (ref) return modelIdFromRef(ref)
+	}
+	return modelIdFromRef(getModelRoles().orchestrator)
+}
+
+/**
+ * Orchestrator model reference (provider/model-id).
+ * When sessionId is provided, reads from the per-session side-channel first,
+ * falling back to the global model-roles config.
+ */
+export function getOrchestratorModelRef(sessionId: string | null): string {
+	if (sessionId !== null) {
+		const ref = getProcessOrchestratorRef(sessionId)
+		if (ref) return ref
+	}
+	return getModelRoles().orchestrator
 }

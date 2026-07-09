@@ -1,7 +1,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { createContext } from "./__mocks__/context.js"
+import { createContext } from "../__mocks__/context.js"
 import { createPromptFormComponent, promptEditor, promptForm, promptInput, promptSelect } from "./prompt-ui.js"
 
 const tipWidgetLocationMock = vi.hoisted(() => ({

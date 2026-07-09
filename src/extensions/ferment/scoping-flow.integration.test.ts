@@ -15,7 +15,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { clearFermentCache } from "../../ferment/store.js"
-import { createContext } from "./__mocks__/context.js"
+import { createContext } from "../__mocks__/context.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
 import { clearAllPendingScopes, getPendingScope, runScopingFlow } from "./scoping.js"
 import { clearAllScopingGates, clearAllStepStarts, setActive } from "./state.js"

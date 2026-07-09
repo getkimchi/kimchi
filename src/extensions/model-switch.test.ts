@@ -1,5 +1,6 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext, ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { createContext } from "./__mocks__/context.js"
 import createModelGuardExtension from "./model-guard.js"
 import { __resetImagesDetectedForTest, __setLatestMessagesForTest, sessionHasImages } from "./model-guard.js"
 import modelSwitchExtension, {
@@ -23,7 +24,7 @@ type RegisteredTool = {
 	) => Promise<{ content: Array<{ type: string; text: string }>; details: unknown }>
 }
 
-type ModelEntry = { id: string; provider: string; name: string; input?: string[]; contextWindow?: number }
+type ModelEntry = { id: string; provider: string; name: string; input?: ("text" | "image")[]; contextWindow?: number }
 
 interface Harness {
 	tool: RegisteredTool
@@ -62,6 +63,7 @@ function createHarness(options: { setModelResult?: boolean } = {}): Harness {
 	const find = vi.fn((provider: string, id: string) => MODELS.find((m) => m.provider === provider && m.id === id))
 	const getAvailable = vi.fn(() => MODELS)
 	const pi = {
+		on: vi.fn(),
 		registerTool: (tool: RegisteredTool) => {
 			registered = tool
 		},
@@ -76,11 +78,10 @@ function createHarness(options: { setModelResult?: boolean } = {}): Harness {
 
 	const exec: Harness["exec"] = (model, opts = {}) => {
 		const ctx = opts.omitRegistry
-			? { getContextUsage: () => undefined, model: undefined, sessionManager: { getSessionId: () => "test-session" } }
-			: {
+			? createContext({ getContextUsage: () => undefined, model: undefined })
+			: createContext({
 					modelRegistry: { find, getAvailable },
 					getContextUsage: () => undefined,
-					sessionManager: { getSessionId: () => "test-session" },
 					model: opts.currentModel
 						? {
 								id: opts.currentModel.id,
@@ -88,7 +89,7 @@ function createHarness(options: { setModelResult?: boolean } = {}): Harness {
 								input: opts.currentModel.input ?? ["text", "image"],
 							}
 						: { id: MODELS[0].id, provider: MODELS[0].provider, input: ["text", "image"] },
-				}
+				})
 		return tool.execute("test-call-id", { model }, undefined, undefined, ctx)
 	}
 
@@ -112,18 +113,33 @@ function createHarnessWithTrigger(options: { setModelResult?: boolean } = {}) {
 		const set = handlers.get(event)
 		if (set) for (const h of set) await h(data, ctx)
 	}
-	const pi = { on, setModel, registerTool: vi.fn(), registerCommand: vi.fn() } as unknown as ExtensionAPI
+	const pi = {
+		on,
+		setModel,
+		registerTool: vi.fn(),
+		registerCommand: vi.fn(),
+		appendEntry: vi.fn(),
+	} as unknown as ExtensionAPI
 	return { pi, trigger, setModel }
 }
 
-/** Returns a minimal mock ExtensionContext for triggering context events. */
+/** Returns a mock ExtensionContext for triggering context events. */
 function makeMockCtx() {
-	return {
-		model: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
-		modelRegistry: { getAvailable: () => MODELS },
-		getContextUsage: () => ({ tokens: 10_000 }),
-		sessionManager: { getSessionId: () => "test-session" },
-	}
+	return createContext({
+		model: {
+			id: "kimi-k2.6",
+			provider: "kimchi-dev",
+			input: ["text", "image"],
+		},
+		modelRegistry: {
+			getAvailable: vi.fn().mockReturnValue(MODELS),
+		},
+		getContextUsage: vi.fn().mockReturnValue({
+			contextWindow: 256_000,
+			tokens: 10_000,
+			percent: 5,
+		}),
+	})
 }
 
 function textOf(result: { content: Array<{ type: string; text: string }> }): string {
@@ -434,17 +450,16 @@ describe("modelSwitchExtension", () => {
 			const input = vi.fn()
 			const notify = vi.fn()
 			const { tool } = createHarness()
-			const ctx = {
+			const ctx = createContext({
 				modelRegistry: {
 					find: (_p: string, id: string) => MODELS.find((m) => m.id === id),
 					getAvailable: () => MODELS,
-				},
+				} as ModelRegistry,
 				getContextUsage: () => undefined,
-				sessionManager: { getSessionId: () => "test-session" },
 				model: { id: MODELS[0].id, provider: MODELS[0].provider, input: ["text", "image"] },
 				hasUI: true,
 				ui: { select, input, notify },
-			}
+			})
 			await tool.execute("id", { model: "kimchi-dev/kimi-k2.6" }, undefined, undefined, ctx)
 			expect(select).not.toHaveBeenCalled()
 			expect(input).not.toHaveBeenCalled()
@@ -466,6 +481,7 @@ describe("modelSwitchExtension", () => {
 			const setModel = vi.fn(async () => true)
 			let registeredTool: RegisteredTool | undefined
 			const pi = {
+				on: vi.fn(),
 				registerTool: (t: RegisteredTool) => {
 					registeredTool = t
 				},
@@ -474,18 +490,17 @@ describe("modelSwitchExtension", () => {
 			} as unknown as ExtensionAPI
 			modelSwitchExtension(pi)
 			if (!registeredTool) throw new Error("set_model not registered")
-			const ctx = {
+			const ctx = createContext({
 				modelRegistry: {
 					find: (p: string, id: string) =>
 						p === unknownModel.provider && id === unknownModel.id ? unknownModel : undefined,
 					getAvailable: () => [unknownModel],
-				},
+				} as ModelRegistry,
 				getContextUsage: () => undefined,
-				sessionManager: { getSessionId: () => "test-session" },
 				model: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
 				hasUI: true,
 				ui: { select, input, notify },
-			}
+			})
 			const result = await registeredTool.execute(
 				"id",
 				{ model: "some-provider/unknown-model-xyz" },
@@ -502,17 +517,16 @@ describe("modelSwitchExtension", () => {
 			const select = vi.fn()
 			const input = vi.fn()
 			const { tool } = createHarness()
-			const ctx = {
+			const ctx = createContext({
 				modelRegistry: {
 					find: (_p: string, id: string) => MODELS.find((m) => m.id === id),
 					getAvailable: () => MODELS,
-				},
+				} as ModelRegistry,
 				getContextUsage: () => undefined,
-				sessionManager: { getSessionId: () => "test-session" },
 				model: { id: MODELS[0].id, provider: MODELS[0].provider, input: ["text", "image"] },
 				hasUI: false,
 				ui: { select, input, notify: vi.fn() },
-			}
+			})
 			await tool.execute("id", { model: "kimchi-dev/kimi-k2.6" }, undefined, undefined, ctx)
 			expect(select).not.toHaveBeenCalled()
 			expect(input).not.toHaveBeenCalled()
@@ -557,13 +571,12 @@ describe("modelSwitchExtension", () => {
 					previousModel: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
 					source: "set",
 				},
-				{
+				createContext({
 					model: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
 					modelRegistry: { getAvailable: () => MODELS },
 					getContextUsage: () => ({ tokens: 150_000 }),
-					sessionManager: { getSessionId: () => "test-session" },
 					ui: { notify },
-				} as never,
+				}),
 			)
 			// Guard is active → revert was called
 			expect(setModel).toHaveBeenCalledWith(expect.objectContaining({ id: "kimi-k2.6" }))
@@ -777,7 +790,7 @@ describe("modelSwitchExtension", () => {
 	})
 
 	describe("model_select handler", () => {
-		const mockCtx = (
+		const createContext = (
 			overrides: Partial<{
 				tokens: number
 				getContextUsage: () => { tokens: number }
@@ -801,7 +814,7 @@ describe("modelSwitchExtension", () => {
 				hasUI,
 				ui: { notify: vi.fn(), select: vi.fn(), input: vi.fn(), ...overrides.ui },
 				...overrides,
-			} as unknown as never
+			} as ExtensionContext
 		}
 
 		beforeEach(() => {
@@ -829,7 +842,7 @@ describe("modelSwitchExtension", () => {
 					previousModel: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
 					source: "set",
 				},
-				mockCtx({ tokens: 10_000 }),
+				createContext({ tokens: 10_000 }),
 			)
 			// No guard triggered (tokens fit), no revert needed — setModel already called by /model path
 			expect(setModel).not.toHaveBeenCalled()
@@ -847,7 +860,7 @@ describe("modelSwitchExtension", () => {
 					previousModel: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
 					source: "cycle",
 				},
-				mockCtx({ tokens: 10_000 }),
+				createContext({ tokens: 10_000 }),
 			)
 			expect(setModel).not.toHaveBeenCalled()
 		})
@@ -864,7 +877,7 @@ describe("modelSwitchExtension", () => {
 					previousModel: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
 					source: "restore",
 				},
-				mockCtx({ tokens: 10_000 }),
+				createContext({ tokens: 10_000 }),
 			)
 			expect(setModel).not.toHaveBeenCalled()
 		})
@@ -881,7 +894,7 @@ describe("modelSwitchExtension", () => {
 					previousModel: undefined,
 					source: "set",
 				},
-				mockCtx({ tokens: 10_000 }),
+				createContext({ tokens: 10_000 }),
 			)
 			expect(setModel).not.toHaveBeenCalled()
 		})
@@ -899,7 +912,7 @@ describe("modelSwitchExtension", () => {
 					previousModel: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
 					source: "set",
 				},
-				mockCtx({ tokens: 150_000, ui: { notify } }),
+				createContext({ tokens: 150_000, ui: { notify } }),
 			)
 			// Reverted back to previousModel
 			expect(setModel).toHaveBeenCalledWith(expect.objectContaining({ id: "kimi-k2.6" }))
@@ -918,7 +931,7 @@ describe("modelSwitchExtension", () => {
 					previousModel: { id: "minimax-m2.7", provider: "kimchi-dev", input: ["text"] },
 					source: "set",
 				},
-				mockCtx({ tokens: 10_000 }),
+				createContext({ tokens: 10_000 }),
 			)
 			expect(setModel).not.toHaveBeenCalled()
 		})
@@ -959,7 +972,7 @@ describe("modelSwitchExtension", () => {
 					previousModel: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
 					source: "set",
 				},
-				mockCtx({ tokens: 10_000, ui: { notify } }),
+				createContext({ tokens: 10_000, ui: { notify } }),
 			)
 			expect(setModel).toHaveBeenCalledWith(expect.objectContaining({ id: "kimi-k2.6" }))
 			expect(notify).toHaveBeenCalledWith(expect.stringContaining("vision"), "error")
@@ -999,7 +1012,7 @@ describe("modelSwitchExtension", () => {
 					previousModel: { id: "minimax-m2.7", provider: "kimchi-dev", input: ["text"] },
 					source: "set",
 				},
-				mockCtx({ tokens: 10_000 }),
+				createContext({ tokens: 10_000 }),
 			)
 			expect(setModel).not.toHaveBeenCalled()
 		})
@@ -1039,7 +1052,7 @@ describe("modelSwitchExtension", () => {
 					previousModel: { id: "minimax-m2.7", provider: "kimchi-dev", input: ["text"] },
 					source: "set",
 				},
-				mockCtx({ tokens: 10_000, ui: { notify } }),
+				createContext({ tokens: 10_000, ui: { notify } }),
 			)
 			expect(setModel).not.toHaveBeenCalled()
 			expect(notify).not.toHaveBeenCalledWith(expect.stringContaining("vision"), "error")
@@ -1047,10 +1060,11 @@ describe("modelSwitchExtension", () => {
 
 		it("syncs multi-model process flag to extension state on model_select from /models UI", async () => {
 			const { pi, trigger } = createHarnessWithTrigger()
+			const ctx = createContext({ tokens: 10_000 })
 			modelSwitchExtension(pi)
 
-			await setMultiModelEnabled("session-1", true)
-			expect(getMultiModelEnabled("session-1")).toBe(true)
+			setMultiModelEnabled("test-session", true)
+			expect(getMultiModelEnabled(ctx.sessionManager)).toBe(true)
 
 			await trigger(
 				"model_select",
@@ -1060,10 +1074,10 @@ describe("modelSwitchExtension", () => {
 					previousModel: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
 					source: "set",
 				},
-				mockCtx({ tokens: 10_000, sessionManager: { getSessionId: () => "session-1" } } as never),
+				ctx,
 			)
 
-			expect(getMultiModelEnabled("session-1")).toBe(false)
+			expect(getMultiModelEnabled(ctx.sessionManager)).toBe(false)
 		})
 
 		it("reverts when getContextUsage returns null but local estimate exceeds target context window", async () => {
@@ -1087,7 +1101,7 @@ describe("modelSwitchExtension", () => {
 					previousModel: { id: "claude-opus-4.6", provider: "kimchi-dev", input: ["text", "image"] },
 					source: "set",
 				},
-				mockCtx({ getContextUsage: () => ({ tokens: null as unknown as number }) }),
+				createContext({ getContextUsage: () => ({ tokens: null as unknown as number }) }),
 			)
 
 			expect(h.setModel).toHaveBeenCalledWith({
@@ -1111,7 +1125,7 @@ describe("modelSwitchExtension", () => {
 					previousModel: { id: "claude-opus-4.6", provider: "kimchi-dev", input: ["text", "image"] },
 					source: "set",
 				},
-				mockCtx({ getContextUsage: () => ({ tokens: null as unknown as number }) }),
+				createContext({ getContextUsage: () => ({ tokens: null as unknown as number }) }),
 			)
 
 			expect(h.setModel).not.toHaveBeenCalled()

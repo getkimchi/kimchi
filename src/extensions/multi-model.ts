@@ -1,4 +1,5 @@
-import { readConfigSetting, writeConfigSetting, writeConfigSettingAsync } from "../config/settings.js"
+import type { CustomEntry, ExtensionAPI, SessionManager } from "@earendil-works/pi-coding-agent"
+import { readConfigSetting } from "../config/settings.js"
 import { getProcessMultiModelEnabled, setProcessMultiModelEnabled } from "./kimchi-process.js"
 
 function hasExplicitModelFlag(): boolean {
@@ -9,24 +10,40 @@ function hasExplicitModelFlag(): boolean {
 	return false
 }
 
-export function readMultiModelSetting(sessionId: string | null): boolean {
-	return readConfigSetting(sessionId, "multiModel", (value) => typeof value === "boolean") ?? true
-}
+const _defaultMultiModelEnabled = hasExplicitModelFlag()
+	? false
+	: (readConfigSetting("multiModel", (value) => typeof value === "boolean") ?? true)
+const _multiModelEntryType = "multi_model_enabled" as const
 
-const _defaultMultiModelEnabled = hasExplicitModelFlag() ? false : readMultiModelSetting(null)
+export function getMultiModelEnabled(
+	sessionManager: Pick<SessionManager, "getEntries" | "getSessionId"> | null,
+): boolean {
+	if (sessionManager) {
+		const enabled = getProcessMultiModelEnabled(sessionManager.getSessionId())
+		if (enabled !== undefined) {
+			return enabled
+		}
+		const lastEntry = sessionManager
+			.getEntries()
+			.findLast(
+				(item): item is CustomEntry<boolean> => item.type === "custom" && item.customType === _multiModelEntryType,
+			)
 
-export function getMultiModelEnabled(sessionId: string | null): boolean {
-	if (sessionId !== null) {
-		return getProcessMultiModelEnabled(sessionId)
+		return lastEntry?.data ?? _defaultMultiModelEnabled
 	}
 	return _defaultMultiModelEnabled
 }
 
-export async function writeMultiModelSettingAsync(sessionId: string, enabled: boolean): Promise<void> {
-	await writeConfigSettingAsync(sessionId, "multiModel", enabled)
+/** Writes the multi-model flag to the current process, keyed by session ID. */
+export function setMultiModelEnabled(sessionId: string, enabled: boolean): void {
+	setProcessMultiModelEnabled(sessionId, enabled)
 }
 
-export async function setMultiModelEnabled(sessionId: string, enabled: boolean): Promise<void> {
-	setProcessMultiModelEnabled(sessionId, enabled)
-	await writeMultiModelSettingAsync(sessionId, enabled)
+/** Persists the multi-model flag to session log. Should be called once per started session, if changed. */
+export function persistMultiModelEnabled(
+	context: Pick<SessionManager, "appendCustomEntry"> | Pick<ExtensionAPI, "appendEntry">,
+	enabled: boolean,
+): void {
+	const append = "appendCustomEntry" in context ? context.appendCustomEntry : context.appendEntry
+	append(_multiModelEntryType, enabled)
 }

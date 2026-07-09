@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
 import type { Ferment } from "../../ferment/types.js"
-import { createContext } from "./__mocks__/context.js"
+import { createContext } from "../__mocks__/context.js"
 import { askJudgeForm, askUserForm, normalizeAskUserQuestions, toScopingQuestionType } from "./ask-user.js"
 
 function makeFerment(overrides: Partial<Ferment> = {}): Ferment {

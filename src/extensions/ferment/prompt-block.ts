@@ -200,7 +200,7 @@ export function buildFermentPromptBlock(
 	if (!f) return undefined
 
 	const oneshot = pi.getFlag("ferment-oneshot") === true
-	const delegationMode: "strict" | "relaxed" = getMultiModelEnabled(sessionId) ? "strict" : "relaxed"
+	const delegationMode: "strict" | "relaxed" = getMultiModelEnabled(ctx.sessionManager) ? "strict" : "relaxed"
 
 	switch (f.status) {
 		case "draft":

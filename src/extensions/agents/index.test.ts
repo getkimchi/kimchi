@@ -483,19 +483,3 @@ describe("Agent tool multi-mode model guard", () => {
 		expect(text).not.toContain("not allowed in multi-model mode")
 	})
 })
-
-// Sanity check: the imported mocks are wired through the module system so
-// the guard reads the toggled values rather than a frozen snapshot.
-describe("mock wiring", () => {
-	it("getMultiModelEnabled reflects mock toggles", () => {
-		vi.mocked(getMultiModelEnabled).mockReturnValue(true)
-		expect(getMultiModelEnabled("session-1")).toBe(true)
-		vi.mocked(getMultiModelEnabled).mockReturnValue(false)
-		expect(getMultiModelEnabled("session-1")).toBe(false)
-	})
-
-	it("getAllowedMultiModelRefs reflects mock overrides", () => {
-		vi.mocked(getAllowedMultiModelRefs).mockReturnValue(["openai/gpt-4o"])
-		expect(getAllowedMultiModelRefs()).toEqual(["openai/gpt-4o"])
-	})
-})

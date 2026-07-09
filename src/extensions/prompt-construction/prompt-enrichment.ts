@@ -28,7 +28,13 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs"
 import { arch, homedir, version as osVersion, platform, release, userInfo } from "node:os"
 import { join } from "node:path"
 import type { AssistantMessage } from "@earendil-works/pi-ai"
-import { type ExtensionAPI, type Skill, getAgentDir, loadSkills } from "@earendil-works/pi-coding-agent"
+import {
+	type ExtensionAPI,
+	type ExtensionContext,
+	type Skill,
+	getAgentDir,
+	loadSkills,
+} from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
 import { isResourceEnabled } from "../../resources/store.js"
 import { getKimchiProjectSkillPaths } from "../../skill-paths.js"
@@ -43,8 +49,13 @@ import {
 	getConfiguredSkillResourcePaths,
 } from "../claude-code-skills/definition.js"
 import { bumpStallCounter } from "../ferment/todo-sync.js"
-import { getProcessOrchestratorRef, setProcessOrchestratorRef } from "../kimchi-process.js"
-import { getMultiModelEnabled, readMultiModelSetting, setMultiModelEnabled } from "../multi-model.js"
+import {
+	getProcessMultiModelEnabled,
+	getProcessOrchestratorRef,
+	setProcessMultiModelEnabled,
+	setProcessOrchestratorRef,
+} from "../kimchi-process.js"
+import { getMultiModelEnabled, persistMultiModelEnabled } from "../multi-model.js"
 import {
 	ContinuationNudge,
 	EMPTY_TURN_NUDGE_TEXT,
@@ -59,6 +70,8 @@ import { registerModelRolesCommand } from "../orchestration/model-roles-command.
 import {
 	extractCustomConfigs,
 	getModelRoles,
+	getOrchestratorModelId,
+	getOrchestratorModelRef,
 	modelIdFromRef,
 	splitModelRef,
 	validateModelRoles,
@@ -92,37 +105,39 @@ function readGitRemote(cwd: string): string | undefined {
 	}
 }
 
-/**
- * Orchestrator model ID (without provider prefix).
- * When sessionId is provided, reads from the per-session side-channel first,
- * falling back to the global model-roles config.
- */
-export function getOrchestratorModelId(sessionId: string | null): string {
-	if (sessionId !== null) {
-		const ref = getProcessOrchestratorRef(sessionId)
-		if (ref) return modelIdFromRef(ref)
-	}
-	return modelIdFromRef(getModelRoles().orchestrator)
-}
-
-/**
- * Orchestrator model reference (provider/model-id).
- * When sessionId is provided, reads from the per-session side-channel first,
- * falling back to the global model-roles config.
- */
-export function getOrchestratorModelRef(sessionId: string | null): string {
-	if (sessionId !== null) {
-		const ref = getProcessOrchestratorRef(sessionId)
-		if (ref) return ref
-	}
-	return getModelRoles().orchestrator
-}
-
 // Tracks sessions that have already received a deprecation notification to avoid duplicate alerts.
 const deprecatedNotificationFired = new Set<string>()
 
 export function _resetDeprecatedNotificationTracking(): void {
 	deprecatedNotificationFired.clear()
+}
+
+/**
+ * Fetches and persists multi-model and orchestrator settings
+ * before the next agent turn.
+ */
+function persistMultiModelSettings(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+): {
+	multiModelEnabled: boolean
+	orchestratorModelRef: string
+} {
+	const sessionId = ctx.sessionManager.getSessionId()
+
+	const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
+	if (getProcessMultiModelEnabled(sessionId) !== multiModelEnabled) {
+		setProcessMultiModelEnabled(sessionId, multiModelEnabled)
+		// Persist to session log once per session_start if changed
+		persistMultiModelEnabled(pi, multiModelEnabled)
+	}
+
+	const orchestratorModelRef = getOrchestratorModelRef(sessionId)
+	if (getProcessOrchestratorRef(sessionId) !== orchestratorModelRef) {
+		setProcessOrchestratorRef(sessionId, orchestratorModelRef)
+	}
+
+	return { multiModelEnabled, orchestratorModelRef }
 }
 
 function isDelegationToolCallName(name: string | undefined): boolean {
@@ -275,16 +290,9 @@ export default function (skillPaths: string[]) {
 			pi.on("session_start", async (_event, ctx) => {
 				notifyIfDeprecated(ctx)
 
-				const sessionId = ctx.sessionManager.getSessionId()
-
-				const multiModelEnabled = readMultiModelSetting(sessionId)
-				const orchestratorModelRef = getOrchestratorModelRef(sessionId)
+				const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
+				const orchestratorModelRef = getOrchestratorModelRef(ctx.sessionManager.getSessionId())
 				const orchestratorModelId = modelIdFromRef(orchestratorModelRef)
-
-				// Multi model setting is persisted in local map keyed by session ID and to file;
-				// we don't need to wait here for the write Promise to resolve.
-				void setMultiModelEnabled(sessionId, multiModelEnabled)
-				setProcessOrchestratorRef(sessionId, orchestratorModelRef)
 
 				// In multi-model mode the orchestrator must always be the configured
 				// orchestrator model. Force-switch if the user has a different model
@@ -447,6 +455,8 @@ export default function (skillPaths: string[]) {
 		})
 
 		pi.on("before_agent_start", async (event, ctx) => {
+			persistMultiModelSettings(pi, ctx)
+
 			const sessionId = ctx.sessionManager.getSessionId()
 
 			const activeToolNames = new Set(pi.getActiveTools())
@@ -494,7 +504,11 @@ export default function (skillPaths: string[]) {
 				gitRemote: isGitRepo ? (cachedGitRemote ?? undefined) : undefined,
 			}
 
-			const mode: PromptMode = subagentMode ? "subagent" : getMultiModelEnabled(sessionId) ? "orchestrator" : "single"
+			const mode: PromptMode = subagentMode
+				? "subagent"
+				: getMultiModelEnabled(ctx.sessionManager)
+					? "orchestrator"
+					: "single"
 			const roles = mode === "orchestrator" ? getModelRoles() : undefined
 			const customConfigs = mode === "orchestrator" && roles ? extractCustomConfigs(roles) : undefined
 
