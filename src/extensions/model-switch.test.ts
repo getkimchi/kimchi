@@ -8,7 +8,7 @@ import modelSwitchExtension, {
 	getModelTier,
 	withSuppressedModelSelectGuard,
 } from "./model-switch.js"
-import { getMultiModelEnabled, setMultiModelEnabled } from "./multi-model.js"
+import { getMultiModelEnabled, resolveMultiModelEnabled, setMultiModelEnabled } from "./multi-model.js"
 
 type RegisteredTool = {
 	name: string
@@ -817,10 +817,31 @@ describe("modelSwitchExtension", () => {
 			} as ExtensionContext
 		}
 
+		let argvSpy: ReturnType<typeof vi.spyOn> | null = null
+
+		function setArgv(args: string[]): void {
+			argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue(args)
+		}
+
+		function clearArgv(): void {
+			if (argvSpy) {
+				argvSpy.mockRestore()
+				argvSpy = null
+			}
+		}
+
+		/** Reset the process side-channel map for our test session id. */
+		function resetProcessMap(): void {
+			const proc = process as NodeJS.Process & { __kimchiMultiModelEnabled?: Map<string, boolean> }
+			proc.__kimchiMultiModelEnabled?.delete("test-session")
+		}
+
 		beforeEach(() => {
 			__resetModelSwitchStateForTest()
 			__resetImagesDetectedForTest()
 			vi.clearAllMocks()
+			clearArgv()
+			resetProcessMap()
 		})
 
 		it("skips when isRevertingModel guard is set", async () => {
@@ -1078,6 +1099,23 @@ describe("modelSwitchExtension", () => {
 			)
 
 			expect(getMultiModelEnabled(ctx.sessionManager)).toBe(false)
+		})
+
+		it("--model flag sets startup default to false but does not override runtime selection", async () => {
+			setArgv(["node", "script", "--model"])
+			const ctx = createContext({ tokens: 10_000 })
+
+			// Runtime selection (user entered multi-session multi-model mode) outranks CLI
+			setMultiModelEnabled("test-session", true)
+			expect(getMultiModelEnabled(ctx.sessionManager)).toBe(true)
+			expect(resolveMultiModelEnabled(ctx.sessionManager)).toEqual({ value: true, source: "runtime" })
+
+			// Clear the process map so only CLI flag applies
+			resetProcessMap()
+
+			// Now CLI flag takes effect (no runtime override)
+			expect(getMultiModelEnabled(ctx.sessionManager)).toBe(false)
+			expect(resolveMultiModelEnabled(ctx.sessionManager)).toEqual({ value: false, source: "cli" })
 		})
 
 		it("reverts when getContextUsage returns null but local estimate exceeds target context window", async () => {

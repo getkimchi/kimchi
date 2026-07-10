@@ -224,6 +224,7 @@ describe("prompt enrichment tool visibility", () => {
 			{ name: "bash", description: "Execute shell commands" },
 		] as ToolInfo[]
 		const pi = {
+			appendEntry: vi.fn(),
 			registerFlag: () => {},
 			registerCommand: () => {},
 			on: (event: string, handler: (event: unknown, ctx: unknown) => Promise<unknown> | unknown) => {

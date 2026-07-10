@@ -49,13 +49,8 @@ import {
 	getConfiguredSkillResourcePaths,
 } from "../claude-code-skills/definition.js"
 import { bumpStallCounter } from "../ferment/todo-sync.js"
-import {
-	getProcessMultiModelEnabled,
-	getProcessOrchestratorRef,
-	setProcessMultiModelEnabled,
-	setProcessOrchestratorRef,
-} from "../kimchi-process.js"
-import { getMultiModelEnabled, persistMultiModelEnabled } from "../multi-model.js"
+import { getProcessOrchestratorRef, setProcessOrchestratorRef } from "../kimchi-process.js"
+import { getMultiModelEnabled, setAndPersistMultiModelEnabled } from "../multi-model.js"
 import {
 	ContinuationNudge,
 	EMPTY_TURN_NUDGE_TEXT,
@@ -113,31 +108,29 @@ export function _resetDeprecatedNotificationTracking(): void {
 }
 
 /**
- * Fetches and persists multi-model and orchestrator settings
- * before the next agent turn.
+ * Sync multi-model and orchestrator state to the process side-channel
+ * and reconcile persistence. Called from both session_start and
+ * before_agent_start for consistency.
+ *
+ * Returns the effective boolean and orchestrator ref. The boolean
+ * comes from resolution.value — setAndPersistMultiModelEnabled returns
+ * a MultiModelResolution internally, but callers of this helper
+ * only need the boolean.
  */
-function persistMultiModelSettings(
+function syncSessionModelState(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
-): {
-	multiModelEnabled: boolean
-	orchestratorModelRef: string
-} {
+): { multiModelEnabled: boolean; orchestratorModelRef: string } {
 	const sessionId = ctx.sessionManager.getSessionId()
 
-	const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
-	if (getProcessMultiModelEnabled(sessionId) !== multiModelEnabled) {
-		setProcessMultiModelEnabled(sessionId, multiModelEnabled)
-		// Persist to session log once per session_start if changed
-		persistMultiModelEnabled(pi, multiModelEnabled)
-	}
+	const resolution = setAndPersistMultiModelEnabled(sessionId, ctx.sessionManager, pi)
 
 	const orchestratorModelRef = getOrchestratorModelRef(sessionId)
 	if (getProcessOrchestratorRef(sessionId) !== orchestratorModelRef) {
 		setProcessOrchestratorRef(sessionId, orchestratorModelRef)
 	}
 
-	return { multiModelEnabled, orchestratorModelRef }
+	return { multiModelEnabled: resolution.value, orchestratorModelRef }
 }
 
 function isDelegationToolCallName(name: string | undefined): boolean {
@@ -288,11 +281,10 @@ export default function (skillPaths: string[]) {
 			})
 
 			pi.on("session_start", async (_event, ctx) => {
-				notifyIfDeprecated(ctx)
-
-				const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
-				const orchestratorModelRef = getOrchestratorModelRef(ctx.sessionManager.getSessionId())
+				const { multiModelEnabled, orchestratorModelRef } = syncSessionModelState(pi, ctx)
 				const orchestratorModelId = modelIdFromRef(orchestratorModelRef)
+
+				notifyIfDeprecated(ctx)
 
 				// In multi-model mode the orchestrator must always be the configured
 				// orchestrator model. Force-switch if the user has a different model
@@ -455,7 +447,7 @@ export default function (skillPaths: string[]) {
 		})
 
 		pi.on("before_agent_start", async (event, ctx) => {
-			persistMultiModelSettings(pi, ctx)
+			syncSessionModelState(pi, ctx)
 
 			const sessionId = ctx.sessionManager.getSessionId()
 

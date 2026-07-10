@@ -15,6 +15,9 @@ const testPath = join(testDir, "settings.json")
 /** Set to a non-null Error to make the next readJson call throw. */
 let readJsonError: Error | null = null
 
+/** Set to a non-null Error to make the next writeJson call throw. */
+let writeJsonError: Error | null = null
+
 vi.mock("./json.js", async (importOriginal) => {
 	const original = await importOriginal<typeof import("./json.js")>()
 	return {
@@ -23,7 +26,10 @@ vi.mock("./json.js", async (importOriginal) => {
 			if (readJsonError) throw readJsonError
 			return original.readJson(testPath)
 		},
-		writeJson: (_path: string, data: unknown) => original.writeJson(testPath, data),
+		writeJson: (_path: string, data: unknown) => {
+			if (writeJsonError) throw writeJsonError
+			return original.writeJson(testPath, data)
+		},
 	}
 })
 
@@ -61,6 +67,7 @@ function readBack(): Record<string, unknown> {
 
 beforeEach(() => {
 	readJsonError = null
+	writeJsonError = null
 	// Start each test with a clean (empty) settings file
 	try {
 		rmSync(testDir, { recursive: true, force: true })
@@ -168,9 +175,9 @@ describe("writeConfigSetting", () => {
 		expect(after).toEqual(before)
 	})
 
-	it("silently returns when readJson throws (malformed file)", () => {
+	it("throws when readJson throws (malformed file)", () => {
 		readJsonError = new SyntaxError("Unexpected token")
-		expect(() => writeConfigSetting("key", "val")).not.toThrow()
+		expect(() => writeConfigSetting("key", "val")).toThrow(SyntaxError)
 	})
 
 	it("handles undefined value", () => {
@@ -190,6 +197,13 @@ describe("writeConfigSetting", () => {
 		writeConfigSetting("modelRoles", { orchestrator: "c/d" })
 		expect(readBack().modelRoles).toEqual({ orchestrator: "c/d" })
 	})
+
+	it("throws when writeJson throws (filesystem error)", () => {
+		seed({ theme: "light" })
+		writeJsonError = new Error("ENOSPC")
+		expect(() => writeConfigSetting("theme", "dark")).toThrow(Error)
+		expect(() => writeConfigSetting("theme", "dark")).toThrow("ENOSPC")
+	})
 })
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -201,5 +215,16 @@ describe("writeConfigSettingAsync", () => {
 		seed({})
 		await writeConfigSettingAsync("theme", "dark")
 		expect(readBack().theme).toBe("dark")
+	})
+
+	it("rejects when writeConfigSetting throws (readJson error)", async () => {
+		readJsonError = new SyntaxError("Unexpected token")
+		await expect(writeConfigSettingAsync("key", "val")).rejects.toThrow(SyntaxError)
+	})
+
+	it("rejects when writeConfigSetting throws (writeJson error)", async () => {
+		seed({ theme: "light" })
+		writeJsonError = new Error("ENOSPC")
+		await expect(writeConfigSettingAsync("theme", "dark")).rejects.toThrow("ENOSPC")
 	})
 })

@@ -31,36 +31,20 @@ export function readConfigSetting<T>(key: string, satisfies: Satisfies<T>): T | 
 }
 
 export async function readConfigSettingAsync<T>(key: string, satisfies: Satisfies<T>): Promise<T | undefined> {
-	return new Promise((resolve) => {
-		const setting = readConfigSetting(key, satisfies)
-		resolve(setting)
-	})
+	return readConfigSetting(key, satisfies)
 }
 
 export function writeConfigSetting<T>(key: string, value: T): void {
-	let config: Record<string, unknown>
-	try {
-		config = readJson(HARNESS_SETTINGS_PATH)
-	} catch {
-		// thrown if the file is malformed: don't override
-		return
-	}
+	const config = readJson(HARNESS_SETTINGS_PATH)
 	if (config[key] !== value) {
 		config[key] = value
 	} else {
 		// avoid modifying settings file if it's up to date
 		return
 	}
-	try {
-		writeJson(HARNESS_SETTINGS_PATH, config)
-	} catch {
-		// best-effort
-	}
+	writeJson(HARNESS_SETTINGS_PATH, config)
 }
 
 export async function writeConfigSettingAsync<T>(key: string, value: T): Promise<void> {
-	return new Promise((resolve) => {
-		writeConfigSetting(key, value)
-		resolve()
-	})
+	writeConfigSetting(key, value)
 }
