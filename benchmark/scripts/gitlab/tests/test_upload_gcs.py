@@ -80,6 +80,8 @@ def test_main_uploads_consolidated_archive(
     monkeypatch.setenv("BENCHMARK_GCS_BUCKET", "test-bucket")
     monkeypatch.setenv("BENCHMARK_RUN_METADATA", str(fake_run_metadata))
     monkeypatch.setenv("GCS_UPLOAD_REQUIRED", "true")
+    monkeypatch.setenv("BENCHMARK_TARGET_REF", "master")
+    monkeypatch.setenv("BENCHMARK_TARGET_SHA", "abc123")
     # Keep work_dir inside tmp_path so the test doesn't leave a real
     # .benchmark-upload/ behind in the caller's working directory.
     monkeypatch.setenv("CI_PROJECT_DIR", str(tmp_path))
@@ -171,6 +173,8 @@ def test_main_uploads_to_2_1_prefix(
     monkeypatch.setenv("BENCHMARK_GCS_BUCKET", "test-bucket")
     monkeypatch.setenv("BENCHMARK_RUN_METADATA", str(metadata_path))
     monkeypatch.setenv("GCS_UPLOAD_REQUIRED", "true")
+    monkeypatch.setenv("BENCHMARK_TARGET_REF", "master")
+    monkeypatch.setenv("BENCHMARK_TARGET_SHA", "abc123")
     # Keep work_dir inside tmp_path so the test doesn't leave a real
     # .benchmark-upload/ behind in the caller's working directory.
     monkeypatch.setenv("CI_PROJECT_DIR", str(tmp_path))

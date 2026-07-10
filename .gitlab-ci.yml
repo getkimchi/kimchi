@@ -54,9 +54,6 @@ benchmarks-tests:
   image: ghcr.io/astral-sh/uv:python3.14-bookworm
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "benchmarks"'
-  variables:
-    BENCHMARK_TARGET_REF: "$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME"
-    BENCHMARK_TARGET_SHA: "$CI_COMMIT_SHA"
   script:
     - cd benchmark/scripts/gitlab
     - uv run ruff check .
