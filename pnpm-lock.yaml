@@ -9,7 +9,7 @@ patchedDependencies:
     hash: a9d385c837d7062a1b38fd9d81d5405543cf7149753ed9a67f685e520913453e
     path: patches/@earendil-works__pi-ai@0.79.10.patch
   '@earendil-works/pi-coding-agent@0.79.10':
-    hash: 8ffc18078fa9cf3b0aac8804e626830d09b2c509c1674d9c0b554028f919a663
+    hash: e932ee4224492c7fab0450757ab60961b91c992679462f8744e33092c95585be
     path: patches/@earendil-works__pi-coding-agent@0.79.10.patch
   '@earendil-works/pi-tui@0.79.10':
     hash: 3651856bfe24d881276c225f7ae61b415aaea13347e8667a70d24a3e0e1b3a38
@@ -33,7 +33,7 @@ importers:
         version: 1.3.0
       '@earendil-works/pi-coding-agent':
         specifier: 0.79.10
-        version: 0.79.10(patch_hash=8ffc18078fa9cf3b0aac8804e626830d09b2c509c1674d9c0b554028f919a663)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)
+        version: 0.79.10(patch_hash=e932ee4224492c7fab0450757ab60961b91c992679462f8744e33092c95585be)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)
       '@earendil-works/pi-tui':
         specifier: 0.79.10
         version: 0.79.10(patch_hash=3651856bfe24d881276c225f7ae61b415aaea13347e8667a70d24a3e0e1b3a38)
@@ -2827,7 +2827,7 @@ snapshots:
       - ws
       - zod
 
-  '@earendil-works/pi-coding-agent@0.79.10(patch_hash=8ffc18078fa9cf3b0aac8804e626830d09b2c509c1674d9c0b554028f919a663)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)':
+  '@earendil-works/pi-coding-agent@0.79.10(patch_hash=e932ee4224492c7fab0450757ab60961b91c992679462f8744e33092c95585be)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)':
     dependencies:
       '@earendil-works/pi-agent-core': 0.79.10(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)
       '@earendil-works/pi-ai': 0.79.10(patch_hash=a9d385c837d7062a1b38fd9d81d5405543cf7149753ed9a67f685e520913453e)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)
