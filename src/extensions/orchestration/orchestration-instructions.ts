@@ -150,6 +150,7 @@ const AGENT_DELEGATION = `### Agent delegation
 - If an Agent call returns an error of any kind (including protocol violation, timeout, or exit error): do NOT attempt to implement or debug the work yourself. First assess whether the failure is retryable (e.g. transient timeouts or protocol violations) or not (e.g. missing files, permission errors, or invalid inputs). For retryable failures, call a replacement Agent with a corrected or simplified prompt — allow at most one retry per delegated step. For non-retryable failures, report the failure clearly and stop immediately without retrying.
 - **When a subagent returns agent_outcome.outcome other than "completed"**: the work is likely partial or invalid. Do NOT pick up the remaining work yourself — that defeats the purpose of delegation and wastes orchestrator tokens. Inspect agent_outcome.report before acting. Resume the same Agent only when remaining_steps are a direct continuation and preserving session context is valuable; use a changed-approach resume when the same thread still matters but the prior approach stalled; spawn a NEW follow-up Agent when remaining_steps have a clean narrower task boundary; run a short finalizer resume when the report is missing or the work appears finished but did not return completed; or stop/skip and report when blocked or unclear. Do not blindly retry the same prompt. **Include dependency context** in any replacement prompt: paste the public type signatures and function signatures of packages the follow-up agent will import (e.g. structs, interfaces, exported functions from earlier chunks) directly in the prompt so it does not waste turns re-reading files.
 - Do NOT call Agent for work you can do in a single tool call.
+- Do NOT use General-Purpose agents for implementation, review, exploration, research, or planning. Route work to the specialized agent for the corresponding phase. Use General-Purpose only for tasks that genuinely do not match any specialized persona.
 - Use \`inherit_context: true\` only when the Agent needs the parent conversation history. Otherwise keep the default fresh context.
 - Inline images in your conversation are forwarded automatically to vision-capable Agents when needed. If no vision-capable model is available, the harness will automatically switch to one.
 - Scope every Explore prompt with exact starting files and/or directories, prioritized symbols/search terms, one decision-relevant question to answer, allowed expansion rules for when it may follow imports/callers/related tests, and a qualitative stop condition tied to that question. Before delegating Explore, do cheap parent-side discovery/existence checks so the prompt starts from real anchors. Good Explore prompt: "Inspect /app/src/program.cbl. Answer only: what are the SELECT/FD entries and PIC-derived record widths? Follow no procedure logic. Stop once record layouts are known. Return decision-ready findings to the parent; do not write files." Bad Explore prompt: "Analyze the COBOL program and write a complete implementation spec."
@@ -223,40 +224,29 @@ function modelListForRole(assignment: RoleModelAssignment): string {
 }
 
 function buildPlanPhaseDirectives(ctx: PhaseDirectiveContext): string {
-	const owns = ctx.ownRoles.includes("planner")
+	const models = ctx.roles ? modelListForRole(ctx.roles.planner) : "a Planner model"
 	const lines: string[] = []
 
 	lines.push("#### Plan phase")
 	lines.push("")
-
-	if (owns) {
-		lines.push("- DO write the plan yourself. Produce a Markdown spec file in the Documents directory.")
-		lines.push("- DO self-validate: re-read the spec and cross-check every requirement from the original task.")
-	} else {
-		const models = ctx.roles ? modelListForRole(ctx.roles.planner) : "a Planner model"
-		lines.push("- DO NOT write the plan yourself. You do not have the planner role.")
-		lines.push(`- DO delegate planning to Agent(type: "Plan", model: ${models}).`)
-		lines.push(
-			"- DO self-validate after the Plan agent returns: re-read the spec and cross-check every requirement from the original task.",
-		)
-	}
+	lines.push(
+		"- Decide whether to write the plan yourself or delegate to a Plan agent. Base the choice on cost, your current planning capacity, and whether a fresh architectural perspective would improve the spec.",
+	)
+	lines.push(
+		"- If writing yourself: produce a Markdown spec file in the Documents directory and self-validate by re-reading the spec against every requirement from the original task.",
+	)
+	lines.push(
+		`- If delegating: use Agent(type: "Plan", model: ${models}). Have the Plan agent write the Markdown spec (full method signatures, file paths, interfaces) to the Documents directory. Self-validate the returned spec before proceeding.`,
+	)
 
 	lines.push("")
 	lines.push(PLAN_SPEC_REQUIREMENTS)
 	lines.push("")
 	lines.push(PLAN_VERIFICATION)
 	lines.push("")
-
-	if (owns) {
-		lines.push(
-			"**Handling the verdict:** If APPROVED: proceed to build phase. If NEEDS_REVISION: fix the gaps yourself. After revision, send ONLY the changed sections back to the verifier — not the full plan. Maximum one re-verification round; if still not approved, proceed with documented reservations.",
-		)
-	} else {
-		const models = ctx.roles ? modelListForRole(ctx.roles.planner) : "a Planner model"
-		lines.push(
-			`**Handling the verdict:** If APPROVED: proceed to build phase. If NEEDS_REVISION: delegate revisions to Agent(type: "Plan", model: ${models}). After revision, send ONLY the changed sections back to the verifier — not the full plan. Maximum one re-verification round; if still not approved, proceed with documented reservations.`,
-		)
-	}
+	lines.push(
+		"**Handling the verdict:** If APPROVED: proceed to build phase. If NEEDS_REVISION: fix or delegate the gaps. After revision, send ONLY the changed sections back to the verifier — not the full plan. Maximum one re-verification round; if still not approved, proceed with documented reservations.",
+	)
 
 	return lines.join("\n")
 }
@@ -292,10 +282,13 @@ function buildReviewPhaseDirectives(ctx: PhaseDirectiveContext): string {
 	lines.push("#### Review phase")
 	lines.push("")
 	lines.push(
-		"- DO NOT review code yourself. Always delegate to a Reviewer agent in a fresh context — even when reviewer is in your roles. The fresh context provides independence from planning and building.",
+		"- Prefer delegating review to a Reviewer agent in a fresh context. Independent review provides unbiased judgment and catches issues the orchestrator may have accepted.",
 	)
 	lines.push(
-		`- DO delegate to Agent(type: "Reviewer", model: ${models}). Use the Reviewer model(s) configured in **Your team**. If both standard and heavy-tier Reviewers are configured, prefer the standard-tier for simple changes and reserve the heavy-tier for complex concurrency, security-critical logic, or novel architectural patterns.`,
+		`- Delegate to Agent(type: "Reviewer", model: ${models}) by default. Use the Reviewer model(s) configured in **Your team**. If both standard and heavy-tier Reviewers are configured, prefer the standard-tier for simple changes and reserve the heavy-tier for complex concurrency, security-critical logic, or novel architectural patterns.`,
+	)
+	lines.push(
+		"- You may review yourself only when the Reviewer role is unavailable or the change is trivial and low-risk. If you self-review, explicitly state that you are doing so and why.",
 	)
 	lines.push("- DO pass the spec file path and the full list of created files.")
 	lines.push("")

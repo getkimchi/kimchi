@@ -129,18 +129,20 @@ describe("resolveOrchestrationInstructions", () => {
 		expect(result).toContain("kimchi-dev/nemotron-3-ultra-fp4")
 	})
 
-	it("generates DO directive for plan when orchestrator is planner", () => {
+	it("describes flexible planning ownership when orchestrator is planner", () => {
 		const result = resolveAsString({
 			currentModelId: "kimi-k2.7",
 			registry,
 			roles: DEFAULT_MODEL_ROLES,
 		})
 		expect(result).not.toContain("### Planner")
-		expect(result).toContain("DO write the plan yourself")
-		expect(result).not.toContain("DO NOT write the plan yourself")
+		expect(result).toContain("Decide whether to write the plan yourself or delegate to a Plan agent")
+		expect(result).toContain("If writing yourself")
+		expect(result).toContain("If delegating")
+		expect(result).toContain('Agent(type: "Plan"')
 	})
 
-	it("generates DO NOT directive for plan when orchestrator is not planner", () => {
+	it("describes flexible planning ownership when orchestrator is not planner", () => {
 		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
@@ -151,9 +153,8 @@ describe("resolveOrchestrationInstructions", () => {
 		})
 		expect(result).toContain("### Planner")
 		expect(result).toContain("anthropic/claude-opus-4-7")
-		expect(result).toContain("DO NOT write the plan yourself")
-		expect(result).toContain('delegate planning to Agent(type: "Plan"')
-		expect(result).not.toContain("DO write the plan yourself")
+		expect(result).toContain("Decide whether to write the plan yourself or delegate to a Plan agent")
+		expect(result).toContain('Agent(type: "Plan"')
 	})
 
 	it("renders tier and description for models in Your Team", () => {
@@ -236,6 +237,29 @@ describe("resolveOrchestrationInstructions", () => {
 		})
 		expect(result).toContain("Review (read code + write findings report)")
 		expect(result).toContain("Heavy-tier model duration scaling")
+	})
+
+	it("advises but does not mandate delegating review to a Reviewer agent", () => {
+		const result = resolveAsString({
+			currentModelId: "kimi-k2.6",
+			registry,
+			roles: DEFAULT_MODEL_ROLES,
+		})
+		expect(result).toContain("Prefer delegating review to a Reviewer agent")
+		expect(result).toContain("You may review yourself only when")
+		expect(result).not.toContain("DO NOT review code yourself")
+		expect(result).not.toContain("Always delegate to a Reviewer")
+	})
+
+	it("discourages General-Purpose agents for specialized phases", () => {
+		const result = resolveAsString({
+			currentModelId: "kimi-k2.6",
+			registry,
+			roles: DEFAULT_MODEL_ROLES,
+		})
+		expect(result).toContain(
+			"Do NOT use General-Purpose agents for implementation, review, exploration, research, or planning",
+		)
 	})
 
 	it("does not include lightweight re-verification guidance", () => {
