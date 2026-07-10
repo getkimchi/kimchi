@@ -16,7 +16,7 @@ function makeBlocks(text: string): ThinkingSourceBlock[] {
 	return [{ contentIndex: 0, text, redacted: false }]
 }
 
-function renderCollapsedActive(text: string, nowMs = 1000, width = 80): string[] {
+function renderCollapsedActive(text: string, nowMs = 1000, width = 80, cacheOwner?: object): string[] {
 	const blocks = makeBlocks(text)
 	return renderThinkingStepsLines(theme, width, {
 		mode: "collapsed",
@@ -24,6 +24,7 @@ function renderCollapsedActive(text: string, nowMs = 1000, width = 80): string[]
 		steps: deriveThinkingSteps(blocks),
 		isActive: true,
 		nowMs,
+		cacheOwner,
 	})
 }
 
@@ -42,6 +43,23 @@ describe("tailRawLines", () => {
 		expect(tailRawLines(text, 5)).toHaveLength(LIVE_PREVIEW_TAIL_CHARS)
 	})
 
+	it("starts at a grapheme boundary when the character cap splits an emoji", () => {
+		const suffix = "x".repeat(LIVE_PREVIEW_TAIL_CHARS - 1)
+		expect(tailRawLines(`prefix😀${suffix}`, 5)).toBe(suffix)
+	})
+
+	it("sanitizes an ANSI sequence that crosses the character boundary", () => {
+		const suffix = "y".repeat(LIVE_PREVIEW_TAIL_CHARS - 2)
+		const tail = tailRawLines(`${"x".repeat(100)}\u001b[31m${suffix}`, 5)
+		expect(tail).toBe(`xx${suffix}`)
+	})
+
+	it("stays well formed when ANSI stripping shrinks a surrogate-split window", () => {
+		const ansi = "\u001b[31m".repeat(20)
+		const suffix = "x".repeat(LIVE_PREVIEW_TAIL_CHARS - 37)
+		expect(tailRawLines(`prefix😀${ansi}${suffix}`, 5)).toBe(suffix)
+	})
+
 	it("builds the visible tail without joining whole thinking blocks", () => {
 		const blocks = [
 			{ contentIndex: 0, text: "old ".repeat(LIVE_PREVIEW_TAIL_CHARS), redacted: false },
@@ -49,6 +67,16 @@ describe("tailRawLines", () => {
 		]
 		expect(tailRawLinesFromBlocks(blocks, 5)).toContain("latest visible line")
 		expect(tailRawLinesFromBlocks(makeBlocks("  visible tail  \n"), 5)).toBe("visible tail")
+	})
+
+	it("ignores empty redacted blocks when building the visible tail", () => {
+		const emptyBlocks: ThinkingSourceBlock[] = Array.from(
+			{ length: LIVE_PREVIEW_TAIL_CHARS + 1 },
+			(_, contentIndex) => ({ contentIndex: contentIndex + 1, text: " ", redacted: true }),
+		)
+		expect(
+			tailRawLinesFromBlocks([{ contentIndex: 0, text: "visible reasoning", redacted: false }, ...emptyBlocks], 5),
+		).toBe("visible reasoning")
 	})
 })
 
@@ -71,8 +99,9 @@ describe("collapsed live preview", () => {
 
 	it("returns identical body lines across pulse frames while the text is unchanged", () => {
 		const text = Array.from({ length: 100 }, (_, i) => `Step ${i} of the analysis.`).join("\n")
-		const [headerA, ...bodyA] = renderCollapsedActive(text, 1000)
-		const [headerB, ...bodyB] = renderCollapsedActive(text, 1180)
+		const cacheOwner = {}
+		const [headerA, ...bodyA] = renderCollapsedActive(text, 1000, 80, cacheOwner)
+		const [headerB, ...bodyB] = renderCollapsedActive(text, 1180, 80, cacheOwner)
 		expect(bodyA).toEqual(bodyB)
 		expect(headerA).toBeTruthy()
 		expect(headerB).toBeTruthy()
@@ -85,8 +114,16 @@ describe("collapsed live preview", () => {
 		while (text.length < 500 * 1024) text += para
 		const blocks = makeBlocks(text)
 		const steps = deriveThinkingSteps(blocks)
+		const cacheOwner = {}
 		// warm caches, then measure steady-state frames like the spinner produces
-		renderThinkingStepsLines(theme, 120, { mode: "collapsed", blocks, steps, isActive: true, nowMs: 1 })
+		renderThinkingStepsLines(theme, 120, {
+			mode: "collapsed",
+			blocks,
+			steps,
+			isActive: true,
+			nowMs: 1,
+			cacheOwner,
+		})
 		const start = performance.now()
 		for (let frame = 0; frame < 30; frame++) {
 			renderThinkingStepsLines(theme, 120, {
@@ -95,6 +132,7 @@ describe("collapsed live preview", () => {
 				steps,
 				isActive: true,
 				nowMs: 1 + frame * 180,
+				cacheOwner,
 			})
 		}
 		const perFrameMs = (performance.now() - start) / 30
@@ -103,22 +141,8 @@ describe("collapsed live preview", () => {
 	})
 })
 
-describe("expanded view", () => {
-	it("renders identical lines whether the step-line cache is warm or cold", () => {
-		const text = Array.from(
-			{ length: 40 },
-			(_, i) => `First I will inspect module ${i}.\n\nThen I verify the results of ${i}.`,
-		).join("\n\n")
-		const blocks = makeBlocks(text)
-		const steps = deriveThinkingSteps(blocks)
-		const render = () => renderThinkingStepsLines(theme, 80, { mode: "expanded", blocks, steps, isActive: false })
-		const cold = render()
-		const warm = render()
-		expect(warm).toEqual(cold)
-		expect(cold.length).toBeGreaterThan(0)
-	})
-
-	it("reuses wrapped lines within one message but not across messages", () => {
+describe("body render caching", () => {
+	it.each(["collapsed", "expanded"] as const)("reuses %s lines within one message but not across messages", (mode) => {
 		let bodyRenders = 0
 		const countingTheme: ThinkingThemeLike = {
 			fg: (color, text) => {
@@ -130,7 +154,7 @@ describe("expanded view", () => {
 		const render = (cacheOwner: object) => {
 			const blocks = makeBlocks("cached body")
 			renderThinkingStepsLines(countingTheme, 80, {
-				mode: "expanded",
+				mode,
 				blocks,
 				steps: deriveThinkingSteps(blocks),
 				isActive: true,
@@ -143,6 +167,24 @@ describe("expanded view", () => {
 		expect(bodyRenders).toBe(1)
 		render({})
 		expect(bodyRenders).toBe(2)
+	})
+})
+
+describe("expanded view", () => {
+	it("renders identical lines whether the step-line cache is warm or cold", () => {
+		const text = Array.from(
+			{ length: 40 },
+			(_, i) => `First I will inspect module ${i}.\n\nThen I verify the results of ${i}.`,
+		).join("\n\n")
+		const blocks = makeBlocks(text)
+		const steps = deriveThinkingSteps(blocks)
+		const cacheOwner = {}
+		const render = () =>
+			renderThinkingStepsLines(theme, 80, { mode: "expanded", blocks, steps, isActive: false, cacheOwner })
+		const cold = render()
+		const warm = render()
+		expect(warm).toEqual(cold)
+		expect(cold.length).toBeGreaterThan(0)
 	})
 
 	it("replaces the cached body when the growing step changes", () => {
@@ -175,13 +217,21 @@ describe("expanded view", () => {
 		}
 		const blocks = makeBlocks("cached body")
 		const steps = deriveThinkingSteps(blocks)
-		renderThinkingStepsLines(mutableTheme, 80, { mode: "expanded", blocks, steps, isActive: false })
+		const cacheOwner = {}
+		renderThinkingStepsLines(mutableTheme, 80, {
+			mode: "expanded",
+			blocks,
+			steps,
+			isActive: false,
+			cacheOwner,
+		})
 		marker = "B"
 		const rerendered = renderThinkingStepsLines(mutableTheme, 80, {
 			mode: "expanded",
 			blocks,
 			steps,
 			isActive: false,
+			cacheOwner,
 		})
 		expect(rerendered.join("\n")).toContain("<B:")
 		expect(rerendered.join("\n")).not.toContain("<A:")
@@ -207,6 +257,23 @@ describe("expanded view", () => {
 })
 
 describe("deriveThinkingSteps caching", () => {
+	it("keeps an early failure cue when a long step is summarized", () => {
+		const text = `The build failed because the compiler returned an error. ${"Reviewing verification details. ".repeat(
+			1000,
+		)}Now checking the latest output.`
+		const [step] = deriveThinkingSteps(makeBlocks(text))
+		expect(step?.hasExplicitFailure).toBe(true)
+		expect(step?.summaryEvents?.some((event) => event.type === "failure")).toBe(true)
+	})
+
+	it("does not split a surrogate pair at the long-step summary boundary", () => {
+		const failure = "The build failed because boom. "
+		const afterBoundary = failure + "z".repeat(8190 - failure.length)
+		const text = `${"x".repeat(8200)}😀${afterBoundary}`
+		const [step] = deriveThinkingSteps(makeBlocks(text))
+		expect(step?.summary).toBe("The build failed because boom.")
+	})
+
 	it("returns the same steps with a warm and a cold cache", () => {
 		const text = Array.from(
 			{ length: 50 },
@@ -252,6 +319,37 @@ describe("deriveThinkingSteps caching", () => {
 			deriveThinkingSteps(makeBlocks("growing ".repeat(index)))
 		}
 		expect(getStepDerivationCacheSizeForTesting()).toBe(0)
+	})
+
+	it("evicts oldest derivations once the cache character budget is exhausted", () => {
+		clearStepDerivationCacheForTesting()
+		// Each step's summary source is 16KB (the per-step cap), so a 4MB budget
+		// holds 256 of them; deriving 300 must evict rather than grow unbounded.
+		const stepChars = 16 * 1024
+		const blocks = Array.from({ length: 300 }, (_, contentIndex) => ({
+			contentIndex,
+			text: `unique module ${contentIndex} `.padEnd(stepChars, "x"),
+			redacted: false,
+		}))
+		deriveThinkingSteps(blocks)
+		expect(getStepDerivationCacheSizeForTesting()).toBeLessThanOrEqual(256)
+		expect(getStepDerivationCacheSizeForTesting()).toBeGreaterThan(200)
+	})
+
+	it("keeps every step of a large message cached across streaming rescans", () => {
+		clearStepDerivationCacheForTesting()
+		// Rescan pattern of streaming: all completed steps re-derived per chunk.
+		// With an entry-count bound this thrashed (0% hit rate); the char budget
+		// must hold all 1000 unique steps so rescans stay cheap.
+		const paras = Array.from({ length: 1000 }, (_, i) => `Considering unique hypothesis ${i} about module ${i}.`)
+		const blocks = [{ contentIndex: 0, text: paras.join("\n\n"), redacted: false }]
+		deriveThinkingSteps(blocks)
+		const start = performance.now()
+		for (let rescan = 0; rescan < 5; rescan++) deriveThinkingSteps(blocks)
+		const perRescanMs = (performance.now() - start) / 5
+		expect(getStepDerivationCacheSizeForTesting()).toBeGreaterThanOrEqual(999)
+		// Thrashing regressed this to ~25ms; warm rescans are ~1ms. Loose CI bound.
+		expect(perRescanMs).toBeLessThan(15)
 	})
 
 	it("treats the last text step as growing even when a redacted placeholder follows", () => {

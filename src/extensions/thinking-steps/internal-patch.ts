@@ -70,7 +70,8 @@ function hasPatchableContentContainer(value: AssistantMessageComponentPrototype)
 const LIVE_PREVIEW_LINES = 5
 
 class LiveThinkingPreview implements Component {
-	// The spinner drives renders at 30-60fps while a request is in flight, so
+	// The working animation requests a render every 40-200ms while a request is
+	// in flight, so
 	// the preview body must never process the full accumulated thinking text
 	// per frame — that freezes the terminal on large messages. The body only
 	// depends on (blocks, width, theme styling); blocks are an immutable

@@ -1323,27 +1323,52 @@ type StepDerivation = {
 }
 
 // Completed steps repeat across stream updates. Cache them, but not the growing
-// final step, whose changing snapshots would accumulate.
+// final step, whose changing snapshots would accumulate. The bound is on total
+// key characters, not entry count: deriveThinkingSteps rescans every step of a
+// message per stream chunk, so the cache must hold a whole long message's steps
+// (1000+ on large messages) or the sequential rescan evicts each entry right
+// before its next use and hit rate collapses to zero.
 const stepDerivationCache = new Map<string, StepDerivation>()
-const STEP_DERIVATION_CACHE_MAX = 8192
+const STEP_DERIVATION_CACHE_MAX_CHARS = 4 * 1024 * 1024
+let stepDerivationCacheChars = 0
 
-// Summaries describe the latest activity, so bound work to the step's tail.
+// Bound candidate extraction while retaining both early outcome cues and the
+// latest activity from long steps.
 const STEP_SUMMARY_MAX_CHARS = 16384
+const STEP_SUMMARY_SEPARATOR = "\n\n"
+const STEP_SUMMARY_HEAD_CHARS = Math.floor((STEP_SUMMARY_MAX_CHARS - STEP_SUMMARY_SEPARATOR.length) / 2)
+
+function boundedStepSummarySource(stepText: string): string {
+	if (stepText.length <= STEP_SUMMARY_MAX_CHARS) return stepText
+	const tailChars = STEP_SUMMARY_MAX_CHARS - STEP_SUMMARY_HEAD_CHARS - STEP_SUMMARY_SEPARATOR.length
+	const head = stepText.slice(0, STEP_SUMMARY_HEAD_CHARS).replace(/[\uD800-\uDBFF]$/, "")
+	const tail = stepText.slice(-tailChars).replace(/^[\uDC00-\uDFFF]/, "")
+	return `${head}${STEP_SUMMARY_SEPARATOR}${tail}`
+}
 
 function deriveStep(stepText: string, isFinalStep: boolean): StepDerivation {
-	const summarySource = stepText.slice(-STEP_SUMMARY_MAX_CHARS)
+	const summarySource = boundedStepSummarySource(stepText)
 	const cached = !isFinalStep && stepDerivationCache.get(summarySource)
 	if (cached) return cached
 	const summaryDetails = summarizeThinkingTextDetailed(summarySource)
 	const role = inferThinkingRole(`${summaryDetails.summary}\n${summarySource}`)
 	const derivation: StepDerivation = { summaryDetails, role }
 	if (isFinalStep) return derivation
-	if (stepDerivationCache.size >= STEP_DERIVATION_CACHE_MAX) stepDerivationCache.clear()
+	while (stepDerivationCacheChars + summarySource.length > STEP_DERIVATION_CACHE_MAX_CHARS) {
+		const oldest = stepDerivationCache.keys().next().value
+		if (oldest === undefined) break
+		stepDerivationCache.delete(oldest)
+		stepDerivationCacheChars -= oldest.length
+	}
 	stepDerivationCache.set(summarySource, derivation)
+	stepDerivationCacheChars += summarySource.length
 	return derivation
 }
 
-export const clearStepDerivationCacheForTesting = () => stepDerivationCache.clear()
+export const clearStepDerivationCacheForTesting = () => {
+	stepDerivationCache.clear()
+	stepDerivationCacheChars = 0
+}
 
 export const getStepDerivationCacheSizeForTesting = () => stepDerivationCache.size
 

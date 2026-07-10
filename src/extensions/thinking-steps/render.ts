@@ -206,31 +206,40 @@ function wrapCollapsedSummaryText(
 	return lines
 }
 
-function stripInlineFormattingMarkers(text: string): string {
-	return text
-		.replace(/(\*\*|__)(?=\S)([\s\S]*?\S)\1/g, "$2")
-		.replace(/`([^`]+)`/g, "$1")
-		.replace(/(?<![\w/.-])\*(?!\*)(?=\S)([\s\S]*?\S)(?<!\*)\*(?![\w/.-])/g, "$1")
-		.replace(/(?<![\w/.-])_(?!_)(?=\S)([\s\S]*?\S)(?<!_)_(?![\w/.-])/g, "$1")
-}
-
 const COLLAPSED_LIVE_LINES = 5
 
 // Processing the full accumulated reasoning on every preview frame stalls the
 // terminal, so keep only the small tail that can be visible.
 export const LIVE_PREVIEW_TAIL_CHARS = 8192
+const TAIL_BOUNDARY_CONTEXT_CHARS = 64
+const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" })
+
+function boundedThinkingTail(text: string, maxChars: number): string {
+	// Sanitize a small overlap at the cut, then advance to a complete grapheme.
+	const candidate = sanitizeThinkingText(text.slice(-(maxChars + TAIL_BOUNDARY_CONTEXT_CHARS)))
+	const wasClipped = text.length > maxChars + TAIL_BOUNDARY_CONTEXT_CHARS
+	const sliceStart = Math.max(candidate.length - maxChars, wasClipped ? 1 : 0)
+	if (sliceStart === 0) return candidate
+	for (const { index } of graphemeSegmenter.segment(candidate)) {
+		if (index >= sliceStart) return candidate.slice(index)
+	}
+	return ""
+}
 
 export function tailRawLines(text: string, maxLines: number): string {
-	return text.slice(-LIVE_PREVIEW_TAIL_CHARS).split("\n").slice(-maxLines).join("\n")
+	return boundedThinkingTail(text, LIVE_PREVIEW_TAIL_CHARS).split("\n").slice(-maxLines).join("\n")
 }
 
 export function tailRawLinesFromBlocks(blocks: ThinkingSourceBlock[], maxLines: number): string {
 	let tail = ""
 	for (let index = blocks.length - 1; index >= 0; index -= 1) {
-		const separator = index < blocks.length - 1 ? "\n" : ""
+		const block = blocks[index]!
+		const text = block.text
+		if (!text || (block.redacted && !text.trim())) continue
+		const separator = tail ? "\n" : ""
 		const remaining = LIVE_PREVIEW_TAIL_CHARS - tail.length - separator.length
 		if (remaining <= 0) break
-		tail = `${blocks[index]!.text.slice(-remaining)}${separator}${tail}`
+		tail = `${boundedThinkingTail(text, remaining)}${separator}${tail}`
 	}
 	return tailRawLines(tail.trim(), maxLines)
 }
@@ -238,21 +247,25 @@ export function tailRawLinesFromBlocks(blocks: ThinkingSourceBlock[], maxLines: 
 const renderedBodyStyleKey = (theme: ThinkingThemeLike): string =>
 	[theme.fg("thinkingText", "x"), theme.fg("accent", "x"), theme.fg("muted", "x"), theme.bold("x")].join("\u0000")
 
-// The active collapsed view bypasses the component cache every frame so the
-// pulse glyph can animate, but only the header changes between frames. Cache
-// the wrapped body across frames (and across the component instances that
-// updateContent recreates per delta) so idle frames cost nothing.
-let collapsedLiveBodyCache: { width: number; textTail: string; styleKey: string; lines: string[] } | undefined
+type CollapsedLiveBodyCacheEntry = { width: number; textTail: string; styleKey: string; lines: string[] }
+// The assistant-message component owns this entry; weak ownership releases it
+// when the message/session is collected.
+const collapsedLiveBodyCaches = new WeakMap<object, CollapsedLiveBodyCacheEntry>()
 
-function collapsedLiveBodyLines(theme: ThinkingThemeLike, width: number, textTail: string): string[] {
+function collapsedLiveBodyLines(
+	theme: ThinkingThemeLike,
+	width: number,
+	textTail: string,
+	cacheOwner?: object,
+): string[] {
 	const styleKey = renderedBodyStyleKey(theme)
-	const cache = collapsedLiveBodyCache
+	const cache = cacheOwner ? collapsedLiveBodyCaches.get(cacheOwner) : undefined
 	if (cache && cache.width === width && cache.textTail === textTail && cache.styleKey === styleKey) {
 		return cache.lines
 	}
 	const bodyPrefix = `${theme.fg("muted", "▍")} `
 	const lines = renderWrappedRawText(theme, textTail, width, bodyPrefix).slice(-COLLAPSED_LIVE_LINES)
-	collapsedLiveBodyCache = { width, textTail, styleKey, lines }
+	if (cacheOwner) collapsedLiveBodyCaches.set(cacheOwner, { width, textTail, styleKey, lines })
 	return lines
 }
 
@@ -264,6 +277,7 @@ function renderCollapsed(
 	activeStepId?: string,
 	isActive = false,
 	nowMs = Date.now(),
+	cacheOwner?: object,
 ): string[] {
 	const step = pickCollapsedStep(steps, activeStepId)
 	if (!step) return []
@@ -277,7 +291,7 @@ function renderCollapsed(
 		if (textTail) {
 			const headerPrefix = `${theme.fg("muted", "▍")} `
 			const header = truncateToWidth(`${headerPrefix}${theme.fg("dim", label)} ${icon} ${activity}`, width, "")
-			return [header, ...collapsedLiveBodyLines(theme, width, textTail)]
+			return [header, ...collapsedLiveBodyLines(theme, width, textTail, cacheOwner)]
 		}
 	}
 
@@ -459,12 +473,12 @@ function renderExpanded(
 	theme: ThinkingThemeLike,
 	width: number,
 	steps: DerivedThinkingStep[],
-	cacheOwner: object,
+	cacheOwner?: object,
 ): string[] {
-	let cache = expandedStepLineCaches.get(cacheOwner)
+	let cache = cacheOwner ? expandedStepLineCaches.get(cacheOwner) : undefined
 	if (!cache) {
 		cache = new Map()
-		expandedStepLineCaches.set(cacheOwner, cache)
+		if (cacheOwner) expandedStepLineCaches.set(cacheOwner, cache)
 	}
 	const prefix = `${theme.fg("muted", "▍")} `
 	const styleKey = renderedBodyStyleKey(theme)
@@ -493,10 +507,11 @@ export function renderThinkingStepsLines(theme: ThinkingThemeLike, width: number
 			options.activeStepId,
 			options.isActive,
 			options.nowMs,
+			options.cacheOwner,
 		)
 	}
 	if (options.mode === "expanded") {
-		return renderExpanded(theme, width, options.steps, options.cacheOwner ?? options.steps)
+		return renderExpanded(theme, width, options.steps, options.cacheOwner)
 	}
 	return renderSummary(theme, width, options.steps, options.activeStepId)
 }
