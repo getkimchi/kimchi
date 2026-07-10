@@ -201,9 +201,9 @@ export function createApplyAndPersist(runtime: FermentRuntime) {
 		)
 		if (outcome.ok) {
 			runtime.setActive(outcome.ferment)
-			// The footer's ferment segment reads getActive() at render time, but
-			// tool-call mutations happen mid-agent-run with no natural render
-			// trigger. Request a footer re-render so the status line reflects the
+			// The status line's ferment segment reads getActive() at render time,
+			// but tool-call mutations happen mid-agent-run with no natural render
+			// trigger. Request a re-render so the status line reflects the
 			// new phase/step/state immediately instead of going stale until the
 			// next user keypress or message render.
 			requestSharedStatusLineRender()

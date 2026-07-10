@@ -322,7 +322,7 @@ test("/multi-model toggle-select has no Done/Add custom rows and uses new bottom
 			expect(view).not.toContain("Add custom")
 			trace.step("no Done or Add custom rows visible")
 
-			// Footer uses the new key set with (N selected) count and
+			// Bottom row uses the new key set with (N selected) count and
 			// does NOT mention the removed "c custom" keybinding.
 			expect(view).not.toContain("c custom")
 			expect(view).toMatch(/\(\d+ selected\)/)

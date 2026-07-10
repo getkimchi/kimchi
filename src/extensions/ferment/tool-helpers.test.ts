@@ -120,10 +120,10 @@ describe("createApplyAndPersist", () => {
 		if (outcome.ok) expect(outcome.ferment.status).toBe("planned")
 	})
 
-	it("requests a footer re-render after every successful mutation", () => {
+	it("requests a status-line re-render after every successful mutation", () => {
 		// Regression: tool-call mutations (start_ferment_step, complete_ferment_step,
-		// activate_ferment_phase, ...) flow through createApplyAndPersist. The footer's
-		// ferment segment reads getActive() at render time, so without an explicit
+		// activate_ferment_phase, ...) flow through createApplyAndPersist. The status
+		// line's ferment segment reads getActive() at render time, so without an explicit
 		// render request the status line goes stale until a keypress or message
 		// render happens. Each successful mutation must trigger requestSharedStatusLineRender.
 		const renderSpy = vi.spyOn(sharedStatusLine, "requestSharedStatusLineRender").mockImplementation(() => {})

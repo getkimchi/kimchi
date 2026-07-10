@@ -87,7 +87,7 @@ async function findScopedFermentArtifact(
  *
  * Waiting for the startup prompt copy ("ask anything or type / for commands")
  * is unreliable — after a completed turn the idle prompt can render as a
- * bare ❯ with footer text. Instead, poll for the absence of the dialog's
+ * bare ❯ with status-line text. Instead, poll for the absence of the dialog's
  * signature strings.
  */
 async function waitForPlanReviewClosed(terminal: Terminal, timeoutMs = INPUT_TIMEOUT_MS): Promise<void> {
@@ -171,7 +171,7 @@ test("plan review dialog does not re-appear after Esc dismissal", async ({ termi
 
 			// Stage 7: wait for the plan-review dialog to close. Waiting for
 			// the startup prompt copy is unreliable — the idle prompt can
-			// render as a bare ❯ with footer text. Instead, poll until the
+			// render as a bare ❯ with status-line text. Instead, poll until the
 			// dialog's signature strings are gone from the viewable buffer.
 			await waitForPlanReviewClosed(terminal)
 			trace.step("plan-review dialog closed")

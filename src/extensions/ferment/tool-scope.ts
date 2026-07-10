@@ -176,7 +176,7 @@ export function setActiveFermentAndApplyProfile(
 	applyFermentToolProfile(pi, profileForFerment(ferment))
 	// setActive is called from session_start resume paths (resumeFerment /
 	// loadFermentSilently) which run as deferred actions outside any natural
-	// render cycle. Request a footer render so the status line picks up the
+	// render cycle. Request a status-line render so it picks up the
 	// newly-active (or newly-cleared) ferment immediately.
 	requestSharedStatusLineRender()
 }

@@ -91,7 +91,7 @@ describe("hideThinkingExtension", () => {
 	it("hides thinking when settings.json exists without hideThinkingBlock key", () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "kimchi-hide-thinking-"))
 		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", tempDir)
-		writeFileSync(join(tempDir, "settings.json"), JSON.stringify({ footer: { pinned: [] } }))
+		writeFileSync(join(tempDir, "settings.json"), JSON.stringify({ statusLine: { pinned: [] } }))
 		try {
 			_resetState()
 			expect(isHideThinkingEnabled()).toBe(true)

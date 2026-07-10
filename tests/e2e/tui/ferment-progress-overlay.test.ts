@@ -139,7 +139,7 @@ test("/ferment progress overlay shows ferment name, progress bar, phase list, an
 			trace.step("submitted /ferment progress")
 
 			// "human:" always appears in the overlay header and is absent from
-			// the footer and all scrollback. Once visible, the full overlay is
+			// the status line and all scrollback. Once visible, the full overlay is
 			// rendered and all field assertions are reliable.
 			await waitForText(terminal, "human:", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
 			trace.step("overlay open")
