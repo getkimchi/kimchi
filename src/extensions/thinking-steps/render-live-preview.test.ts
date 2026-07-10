@@ -90,6 +90,39 @@ describe("collapsed live preview", () => {
 	})
 })
 
+describe("expanded view", () => {
+	it("renders identical lines whether the step-line cache is warm or cold", () => {
+		const text = Array.from(
+			{ length: 40 },
+			(_, i) => `First I will inspect module ${i}.\n\nThen I verify the results of ${i}.`,
+		).join("\n\n")
+		const blocks = makeBlocks(text)
+		const steps = deriveThinkingSteps(blocks)
+		const render = () => renderThinkingStepsLines(theme, 80, { mode: "expanded", blocks, steps, isActive: false })
+		const cold = render()
+		const warm = render()
+		expect(warm).toEqual(cold)
+		expect(cold.length).toBeGreaterThan(0)
+	})
+
+	it("stays fast across streaming deltas of a large thinking text", () => {
+		const para =
+			"Let me check the `render` function in **tui.js** to see how the diff works.\n\nNow I will verify the fix by running the tests again.\n\n"
+		let full = ""
+		while (full.length < 300 * 1024) full += para
+		const deltas = 20
+		const start = performance.now()
+		for (let i = 1; i <= deltas; i++) {
+			const blocks = makeBlocks(full.slice(0, Math.floor((full.length * i) / deltas)))
+			const steps = deriveThinkingSteps(blocks)
+			renderThinkingStepsLines(theme, 120, { mode: "expanded", blocks, steps, isActive: true })
+		}
+		const perDeltaMs = (performance.now() - start) / deltas
+		// Pre-memo the full text was re-wrapped per delta (~150ms+); loose bound for CI.
+		expect(perDeltaMs).toBeLessThan(100)
+	})
+})
+
 describe("deriveThinkingSteps caching", () => {
 	it("returns the same steps with a warm and a cold cache", () => {
 		const text = Array.from(

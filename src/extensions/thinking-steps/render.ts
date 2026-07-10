@@ -427,6 +427,26 @@ function renderWrappedRawText(theme: ThinkingThemeLike, text: string, width: num
 	return rendered
 }
 
+// The expanded view is rebuilt from scratch on every stream chunk (the
+// component is recreated per message_update), but step bodies are immutable
+// once written — only the last step grows. Memoize wrapped lines per
+// (width, body) so each chunk re-wraps only the growing step instead of the
+// whole accumulated text.
+const expandedStepLineCache = new Map<string, string[]>()
+const EXPANDED_STEP_CACHE_MAX = 8192
+
+function wrappedStepBodyLines(theme: ThinkingThemeLike, body: string, width: number, prefix: string): string[] {
+	const key = `${width}:${body}`
+	const cached = expandedStepLineCache.get(key)
+	if (cached) return cached
+	const lines = renderWrappedRawText(theme, body, width, prefix)
+	if (expandedStepLineCache.size >= EXPANDED_STEP_CACHE_MAX) {
+		expandedStepLineCache.clear()
+	}
+	expandedStepLineCache.set(key, lines)
+	return lines
+}
+
 function renderExpanded(
 	theme: ThinkingThemeLike,
 	width: number,
@@ -442,7 +462,7 @@ function renderExpanded(
 		if (!normalizedBody) continue
 
 		if (index > 0) lines.push(theme.fg("muted", "▍"))
-		lines.push(...renderWrappedRawText(theme, normalizedBody, width, prefix))
+		lines.push(...wrappedStepBodyLines(theme, normalizedBody, width, prefix))
 	}
 
 	return lines
