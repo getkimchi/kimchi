@@ -1,3 +1,13 @@
+# Patch: kimchi-dev left-edge stroke rendering for framed TUI content
+#
+# NOTE for upgraders: regenerate functional changes with `pnpm patch` and
+# `pnpm patch-commit`; do not edit hunks in this file by hand.
+#
+# Tracking: inherited from the pre-0.80.5 Kimchi patch; no upstream issue is
+# currently recorded in this repository.
+# Removal criteria: upstream pi-tui exposes equivalent left-edge stroke
+# rendering, or Kimchi removes its stroke-based message and tool presentation.
+#
 diff --git a/dist/components/box.js b/dist/components/box.js
 index 5de0f24bfe4e9ccb7b9476dae9ea55f882acce75..e8bf2e8986ec53c8189a58764e47e16d50d8793a 100644
 --- a/dist/components/box.js
@@ -34,7 +44,7 @@ index 5de0f24bfe4e9ccb7b9476dae9ea55f882acce75..e8bf2e8986ec53c8189a58764e47e16d
          return padded;
      }
 diff --git a/dist/components/markdown.js b/dist/components/markdown.js
-index 64766013e0705ff953cbdcfd3b8ac94913c3b623..ccef50d93ac2ae2987db927f9b67d22817b4b987 100644
+index 0524308e12e2752578abad231f684ffa22136119..23e877d83588360e079d08a9096e26390b742fb1 100644
 --- a/dist/components/markdown.js
 +++ b/dist/components/markdown.js
 @@ -1,6 +1,6 @@

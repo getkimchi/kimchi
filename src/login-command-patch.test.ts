@@ -1,4 +1,4 @@
-import { getModels } from "@earendil-works/pi-ai"
+import { getModels } from "@earendil-works/pi-ai/compat"
 import { InteractiveMode, initTheme } from "@earendil-works/pi-coding-agent"
 import { Text } from "@earendil-works/pi-tui"
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest"
@@ -8,8 +8,8 @@ import * as modelsModule from "./models.js"
 
 const { applyLoginCommandPatch, oauthDelegate, warningDelegate } = loginPatch
 
-vi.mock("@earendil-works/pi-ai", async () => {
-	const actual = await vi.importActual("@earendil-works/pi-ai")
+vi.mock("@earendil-works/pi-ai/compat", async () => {
+	const actual = await vi.importActual("@earendil-works/pi-ai/compat")
 	return {
 		...(actual as object),
 		getModels: vi.fn().mockReturnValue([]),
@@ -453,7 +453,7 @@ it("routes the subscription option to upstream OAuth providers without showing K
 })
 
 it("pre-populates subscription provider models in models.json before upstream login", async () => {
-	const piAi = await import("@earendil-works/pi-ai")
+	const piAi = await import("@earendil-works/pi-ai/compat")
 	const getModelsMock = vi.mocked(piAi.getModels)
 	getModelsMock.mockReturnValue([
 		{

@@ -1,82 +1,40 @@
 # Patch: kimchi-dev runtime extensions for pi-coding-agent
 #
-# NOTE for upgraders: `pnpm patch-commit` regenerates this file and STRIPS this
-# header — re-add it (and re-run `pnpm install` to refresh the lockfile hash)
-# after every regeneration. Patches port textually but can break semantically:
-# verify that every symbol referenced by added lines still exists in the new
-# upstream version (e.g. 0.79.10 removed the `setTheme` import from
-# interactive-mode.js, which previewTheme used to call).
+# NOTE for upgraders: `pnpm patch-commit` regenerates this file and strips this
+# header. Re-add metadata only, then run `pnpm install` to refresh the lockfile
+# hash. Functional changes must be made through the pnpm patch workspace.
 #
 # Changes included:
-#   1. dist/cli/args.js         — expose KIMCHI_API_KEY in --help env-var block
-#   2. dist/core/extensions/runner.js — add emitBeforeProviderHeaders(headers) method,
-#                                       mirroring emitBeforeProviderRequest pattern
-#   3. dist/core/sdk.js         — call emitBeforeProviderHeaders in streamFn after
-#                                 static header assembly, so extensions can inject
-#                                 per-request dynamic headers (X-Session-Id, X-Turn-Index)
-#   4. dist/core/agent-session.js — set agent.prepareNextTurn to refresh context.tools
-#                                   from state.tools after each tool batch, enabling
-#                                   mid-run setActiveTools() calls to take effect on
-#                                   the next model response within the same agent run.
-#   5. dist/modes/interactive/  — miscellaneous upstream UI fixes bundled in this patch
-#   6. dist/modes/interactive/interactive-mode.js — add previewTheme(name) and
-#      dist/core/extensions/types.d.ts              showError(message) to createExtensionUIContext,
-#                                                   and their type declarations to ExtensionUIContext.
+#   1. Expose KIMCHI_API_KEY in --help.
+#   2. Preserve return-value chaining for before_provider_headers handlers.
+#   3. Support forced compaction for small sessions.
+#   4. Add previewTheme and showError to ExtensionUIContext.
+#   5. Preserve Kimchi-specific provider/model selection and TUI presentation,
+#      with multi-model state keyed per session: ModelSelectorComponent takes a
+#      sessionId constructor parameter, and all reads/writes of
+#      process.__kimchiMultiModelEnabled and process.__kimchiOrchestratorRef go
+#      through Map<sessionId, value> instead of plain globals (see
+#      src/extensions/kimchi-process.ts for the owning declarations).
+#   6. Preserve the UserMessageComponent.contentBox compatibility field.
+#   7. Await asynchronous JSONL export.
+#   8. Destroy child stdio streams after a timeout kill so escaped grandchildren
+#      cannot keep the bash tool call open indefinitely.
 #
-#                                 previewTheme applies a theme live by delegating to
-#                                 InteractiveThemeController.preview() (the same path as
-#                                 the internal onThemePreview callback used by /settings),
-#                                 WITHOUT the settingsManager.setTheme() persistence that
-#                                 the public ui.setTheme() includes.
+# Removed during the 0.80.5 rebase because upstream now provides them:
+#   - before_provider_headers hook registration and SDK wiring.
+#   - next-turn refresh of active tools/model/thinking state.
 #
-#                                 Why a patch is required: the public ExtensionUIContext conflates
-#                                 "change the rendered theme" and "persist to settingsManager" — the
-#                                 public ui.setTheme() always does both. Theme preview already exists
-#                                 inside InteractiveMode (used by /settings via the private
-#                                 themeController.preview()); the patch simply promotes it to the
-#                                 extension API surface. There is no public-API-only workaround: the
-#                                 only alternative is ui.setTheme() on each arrow-key press, which
-#                                 writes to disk every keystroke and leaves a dirty settings state
-#                                 if the user cancels.
+# Tracking: inherited from the pre-0.80.5 patch. The repository records an
+# upstream PR plan but no filed issue/PR URL yet. The bash timeout fix is tracked
+# by the local change originally merged as #833.
+# Removal criteria: upstream exposes forced compaction, previewTheme/showError,
+# and the remaining UI fixes; header handlers no longer return replacements;
+# Kimchi-specific provider/model behavior moves to public extension APIs; and
+# upstream's bash runner destroys child stdio after timeout termination or
+# otherwise guarantees waitForChildProcess cannot hang on escaped descendants.
 #
-#                                 showError delegates to the inherited SessionMode.showError so
-#                                 extensions can surface error overlays (not toasts).
-#   7. dist/modes/interactive/components/model-selector.js — accept sessionId constructor
-#      dist/modes/interactive/interactive-mode.js            parameter and key all reads/writes
-#                                                            to process.__kimchiMultiModelEnabled
-#                                                            and process.__kimchiOrchestratorRef
-#                                                            through Map<sessionId, value> instead
-#                                                            of plain globals, so multi-model state
-#                                                            is per-session.
-#   8. dist/core/tools/bash.js — destroy child stdio streams 500ms after a timeout kill
-#      so the tool call returns even when setsid'd grandchildren (e.g. bubblewrap used
-#      by opam install on Linux) escape the process group SIGKILL and keep the stdout
-#      pipe open, which would otherwise cause waitForChildProcess to hang indefinitely.
-#
-# Tracking: open an upstream PR against pi-mono to ship before_provider_headers as
-# a first-class extension hook in ExtensionRunner and ExtensionAPI. Also track a
-# separate PR to add previewTheme + showError to ExtensionUIContext.
-# Issue: TODO — file against https://github.com/earendil-works/pi-mono once the
-# API design is confirmed stable.
-#
-# Removal criteria:
-#   - Items 1-3 (before_provider_headers): upstream pi-mono ships BeforeProviderHeadersEvent
-#     and ExtensionAPI.on("before_provider_headers", ...) as a first-class hook, and
-#     the fixed version is pinned in package.json.
-#   - Item 4 (prepareNextTurn): upstream pi-mono wires agent.prepareNextTurn in
-#     AgentSession._installAgentToolHooks() so context.tools refreshes after each tool
-#     batch without a patch.
-#   - Item 5: individual fixes land upstream and the patched version is updated.
-#   - Item 6 (previewTheme + showError): upstream pi-coding-agent ships previewTheme
-#     and showError on ExtensionUIContext and the fixed version is pinned in package.json.
-#   - Item 7: Kimchi-specific multi-model settings.
-#   - Item 8 (bash timeout stream destroy): upstream pi-coding-agent's
-#     createLocalBashOperations destroys child stdio after a timeout kill (or
-#     waitForChildProcess gains a max-wait that forces resolution), and the
-#     fixed version is pinned in package.json.
-
 diff --git a/dist/cli/args.js b/dist/cli/args.js
-index 6bd8f43b4402dbd24f9262c4c059b2c06693a79c..ad705421fb9087efd8ad2cfbfe8709d198245751 100644
+index 3054834336336416eb9edc67f79bd90fb93ce909..f56ea400be298392b801fb3eb519c4ae082a3901 100644
 --- a/dist/cli/args.js
 +++ b/dist/cli/args.js
 @@ -321,6 +321,7 @@ ${chalk.bold("Examples:")}
@@ -88,31 +46,10 @@ index 6bd8f43b4402dbd24f9262c4c059b2c06693a79c..ad705421fb9087efd8ad2cfbfe8709d1
    ANTHROPIC_OAUTH_TOKEN            - Anthropic OAuth token (alternative to API key)
    ANT_LING_API_KEY                 - Ant Ling API key
 diff --git a/dist/core/agent-session.js b/dist/core/agent-session.js
-index 3b2c24d1b52869e351ea488f0c535c34eaedf127..7302cc4df1e25be2e38489afb7c8ea8364695542 100644
+index a208774c956e3039c47ca54ce1f2f362ce3e4db3..72fcc9510db6ba46a7f1add0f71d33631a967343 100644
 --- a/dist/core/agent-session.js
 +++ b/dist/core/agent-session.js
-@@ -203,6 +203,20 @@ export class AgentSession {
-                 throw new Error(`Extension failed, blocking execution: ${String(err)}`);
-             }
-         };
-+        // Refresh context.tools from state.tools after every tool batch so that
-+        // mid-run setActiveTools() calls (e.g. the planning→implementation profile
-+        // transition fired by activate_ferment_phase) are visible to the next model
-+        // response within the same agent run. Without this, createContextSnapshot()
-+        // snaps tools once at prompt/continue time and the loop never updates them.
-+        this.agent.prepareNextTurn = async (_signal) => {
-+            return {
-+                context: {
-+                    systemPrompt: this.agent.state.systemPrompt,
-+                    messages: this.agent.state.messages.slice(),
-+                    tools: this.agent.state.tools.slice(),
-+                },
-+            };
-+        };
-         this.agent.afterToolCall = async ({ toolCall, args, result, isError }) => {
-             const runner = this._extensionRunner;
-             if (!runner.hasHandlers("tool_result")) {
-@@ -1270,8 +1284,9 @@ export class AgentSession {
+@@ -1341,8 +1341,9 @@ export class AgentSession {
       * Manually compact the session context.
       * Aborts current agent operation first.
       * @param customInstructions Optional instructions for the compaction summary
@@ -123,7 +60,7 @@ index 3b2c24d1b52869e351ea488f0c535c34eaedf127..7302cc4df1e25be2e38489afb7c8ea83
          this._disconnectFromAgent();
          await this.abort();
          this._compactionAbortController = new AbortController();
-@@ -1283,14 +1298,21 @@ export class AgentSession {
+@@ -1354,14 +1355,21 @@ export class AgentSession {
              const { apiKey, headers, env } = await this._getCompactionRequestAuth(this.model);
              const pathEntries = this.sessionManager.getBranch();
              const settings = this.settingsManager.getCompactionSettings();
@@ -147,7 +84,7 @@ index 3b2c24d1b52869e351ea488f0c535c34eaedf127..7302cc4df1e25be2e38489afb7c8ea83
              }
              let extensionCompaction;
              let fromExtension = false;
-@@ -1809,7 +1831,7 @@ export class AgentSession {
+@@ -1886,7 +1894,7 @@ export class AgentSession {
              compact: (options) => {
                  void (async () => {
                      try {
@@ -157,42 +94,45 @@ index 3b2c24d1b52869e351ea488f0c535c34eaedf127..7302cc4df1e25be2e38489afb7c8ea83
                      }
                      catch (error) {
 diff --git a/dist/core/extensions/runner.js b/dist/core/extensions/runner.js
-index 45d68a44d4fb1738509aae509ad7314150d87d74..305c751da224e124de5ddd6ada06deb70a9365d4 100644
+index a8923cf91df514396bb7f66d9b36579a02088113..42970927d3db6031fd3d9913106523357edcd369 100644
 --- a/dist/core/extensions/runner.js
 +++ b/dist/core/extensions/runner.js
-@@ -743,6 +743,30 @@ export class ExtensionRunner {
-         }
-         return currentPayload;
+@@ -754,18 +754,21 @@ export class ExtensionRunner {
      }
-+    async emitBeforeProviderHeaders(headers) {
-+        const ctx = this.createContext();
-+        let current = headers;
-+        for (const ext of this.extensions) {
-+            const handlers = ext.handlers.get("before_provider_headers");
-+            if (!handlers || handlers.length === 0)
-+                continue;
-+            for (const handler of handlers) {
-+                try {
-+                    const result = await handler({ type: "before_provider_headers", headers: current }, ctx);
-+                    if (result !== undefined)
-+                        current = result;
-+                } catch (err) {
-+                    this.emitError({
-+                        extensionPath: ext.path,
-+                        event: "before_provider_headers",
-+                        error: err instanceof Error ? err.message : String(err),
-+                        stack: err instanceof Error ? err.stack : undefined,
-+                    });
-+                }
-+            }
-+        }
-+        return current;
-+    }
+     async emitBeforeProviderHeaders(headers) {
+         const ctx = this.createContext();
++        let currentHeaders = headers;
+         for (const ext of this.extensions) {
+             const handlers = ext.handlers.get("before_provider_headers");
+             if (!handlers || handlers.length === 0)
+                 continue;
+             for (const handler of handlers) {
+                 try {
+-                    // Handlers mutate `headers` in place; the return value is ignored.
+                     const event = {
+                         type: "before_provider_headers",
+-                        headers,
++                        headers: currentHeaders,
+                     };
+-                    await handler(event, ctx);
++                    const handlerResult = await handler(event, ctx);
++                    if (handlerResult !== undefined) {
++                        currentHeaders = handlerResult;
++                    }
+                 }
+                 catch (err) {
+                     const message = err instanceof Error ? err.message : String(err);
+@@ -779,7 +782,7 @@ export class ExtensionRunner {
+                 }
+             }
+         }
+-        return headers;
++        return currentHeaders;
+     }
      async emitBeforeAgentStart(prompt, images, systemPrompt, systemPromptOptions) {
          let currentSystemPrompt = systemPrompt;
-         const ctx = Object.defineProperties({}, Object.getOwnPropertyDescriptors(this.createContext()));
 diff --git a/dist/core/extensions/types.d.ts b/dist/core/extensions/types.d.ts
-index 32c62bef1e9797d2512557e3504d1aa52112ab7f..94cd217e715f5a471dba51717a9287c0b79514b2 100644
+index 581fb2a64d697eeb274d3b180feb0f0e9c5dbe67..0b78b84f92620b163a157f5baf92bc4cfa0e202a 100644
 --- a/dist/core/extensions/types.d.ts
 +++ b/dist/core/extensions/types.d.ts
 @@ -188,6 +188,16 @@ export interface ExtensionUIContext {
@@ -223,10 +163,10 @@ index 32c62bef1e9797d2512557e3504d1aa52112ab7f..94cd217e715f5a471dba51717a9287c0
      onError?: (error: Error) => void;
  }
 diff --git a/dist/core/model-registry.js b/dist/core/model-registry.js
-index dff21eeeacc779bd1ee0ac30966384679967c30f..3925f317922d6cfaae208fe9491f7dec91c77a44 100644
+index 137b1c773ac3640b1fdfea05a1b71d9bcdbe594d..5b29b7efc495b79dd883c8b3b5f660f4dd2ef726 100644
 --- a/dist/core/model-registry.js
 +++ b/dist/core/model-registry.js
-@@ -308,7 +308,8 @@ export class ModelRegistry {
+@@ -310,7 +310,8 @@ export class ModelRegistry {
      }
      /** Load built-in models and apply provider/model overrides */
      loadBuiltInModels(overrides, modelOverrides) {
@@ -237,7 +177,7 @@ index dff21eeeacc779bd1ee0ac30966384679967c30f..3925f317922d6cfaae208fe9491f7dec
              const providerOverride = overrides.get(provider);
              const perModelOverrides = modelOverrides.get(provider);
 diff --git a/dist/core/model-resolver.js b/dist/core/model-resolver.js
-index 2bbfd7fa7c4234cf34afe47de4988f35566b2f4e..6ef3eb0560587cdbc8708297fd9ebcbdaf1124e7 100644
+index a2b74cc81d8347974674b4c7241fed3c413001e1..13fc39f47a9dd76771ea3f743e1b1bb2258bcb1c 100644
 --- a/dist/core/model-resolver.js
 +++ b/dist/core/model-resolver.js
 @@ -37,6 +37,7 @@ export const defaultModelPerProvider = {
@@ -248,37 +188,11 @@ index 2bbfd7fa7c4234cf34afe47de4988f35566b2f4e..6ef3eb0560587cdbc8708297fd9ebcbd
      "cloudflare-workers-ai": "@cf/moonshotai/kimi-k2.6",
      "cloudflare-ai-gateway": "workers-ai/@cf/moonshotai/kimi-k2.6",
      xiaomi: "mimo-v2.5-pro",
-diff --git a/dist/core/sdk.js b/dist/core/sdk.js
-index e386db6d62622a8c77c7d7e9844e63020d8af39a..f2f9e0161b47f7111df88f429c36feb74f9fbf76 100644
---- a/dist/core/sdk.js
-+++ b/dist/core/sdk.js
-@@ -186,6 +186,12 @@ export async function createAgentSession(options = {}) {
-             const effectiveTimeoutMs = httpIdleTimeoutMs === 0 ? 2147483647 : httpIdleTimeoutMs;
-             const timeoutMs = options?.timeoutMs ?? providerRetrySettings.timeoutMs ?? effectiveTimeoutMs;
-             const websocketConnectTimeoutMs = options?.websocketConnectTimeoutMs ?? settingsManager.getWebSocketConnectTimeoutMs();
-+            let headers = mergeProviderAttributionHeaders(model, settingsManager, options?.sessionId, auth.headers, options?.headers);
-+            // Let extensions inject per-request dynamic headers (e.g. X-Session-Id, X-Turn-Index)
-+            const runner = extensionRunnerRef.current;
-+            if (runner?.hasHandlers("before_provider_headers")) {
-+                headers = await runner.emitBeforeProviderHeaders(headers ?? {});
-+            }
-             return streamSimple(model, context, {
-                 ...options,
-                 apiKey: auth.apiKey,
-@@ -194,7 +200,7 @@ export async function createAgentSession(options = {}) {
-                 websocketConnectTimeoutMs,
-                 maxRetries: options?.maxRetries ?? providerRetrySettings.maxRetries,
-                 maxRetryDelayMs: options?.maxRetryDelayMs ?? providerRetrySettings.maxRetryDelayMs,
--                headers: mergeProviderAttributionHeaders(model, settingsManager, options?.sessionId, auth.headers, options?.headers),
-+                headers,
-             });
-         },
-         onPayload: async (payload, _model) => {
 diff --git a/dist/core/tools/bash.js b/dist/core/tools/bash.js
-index 98b69bb9ccf6464dfaec7b2271cf78677cb73ce9..659fe9c52d0acac4080abfc6d3b92d865d141a4c 100644
+index 36de477de588526591153f69560ccc645dd7281d..a068891ffb3bb61ab3c93e32f59279f6ce3b278c 100644
 --- a/dist/core/tools/bash.js
 +++ b/dist/core/tools/bash.js
-@@ -62,6 +62,16 @@ export function createLocalBashOperations(options) {
+@@ -77,6 +77,16 @@ export function createLocalBashOperations(options) {
                          timedOut = true;
                          if (child.pid)
                              killProcessTree(child.pid);
@@ -292,11 +206,11 @@ index 98b69bb9ccf6464dfaec7b2271cf78677cb73ce9..659fe9c52d0acac4080abfc6d3b92d86
 +                            child.stdout?.destroy();
 +                            child.stderr?.destroy();
 +                        }, 500);
-                     }, timeout * 1000);
+                     }, timeoutMs);
                  }
                  // Stream stdout and stderr.
 diff --git a/dist/core/tools/edit.js b/dist/core/tools/edit.js
-index bf8a79ebfdbe23415cd1effdd3db0b9ebfd804bc..f69116ceafe8ee7f1e2dbfeaa37f60c5d97aa84c 100644
+index 1940549fec4126ce088f91f9ef4852b9c3c578f2..44ae297368d251dc4682f136d273787d6ae340fe 100644
 --- a/dist/core/tools/edit.js
 +++ b/dist/core/tools/edit.js
 @@ -55,7 +55,7 @@ function validateEditInput(input) {
@@ -526,23 +440,37 @@ index 3f93cc6c5665f603d29b3d6ac3dabfa560d6bb32..a0b9d9a89b5f2e6384d4b909a949794e
          this.hideComponent = false;
          if (this.hasRendererDefinition()) {
 diff --git a/dist/modes/interactive/components/user-message.js b/dist/modes/interactive/components/user-message.js
-index 0e85e9006835b754e38a7af725b4f1ca18eb3a61..94ea3d983a2abe039a7729d452f60c32457a6638 100644
+index 7ad309f6661b7ce8fb1b28e94988faf0ca1caab1..a141a0295b360a8db08f70be36a814b8aedf1731 100644
 --- a/dist/modes/interactive/components/user-message.js
 +++ b/dist/modes/interactive/components/user-message.js
-@@ -10,7 +10,7 @@ export class UserMessageComponent extends Container {
-     contentBox;
-     constructor(text, markdownTheme = getMarkdownTheme()) {
+@@ -10,6 +10,7 @@ export class UserMessageComponent extends Container {
+     text;
+     markdownTheme;
+     outputPad;
++    contentBox;
+     constructor(text, markdownTheme = getMarkdownTheme(), outputPad = 1) {
          super();
--        this.contentBox = new Box(1, 1, (content) => theme.bg("userMessageBg", content));
-+        this.contentBox = new Box(1, 1, (content) => theme.fg("accent", content));
-         this.contentBox.addChild(new Markdown(text, 0, 0, markdownTheme, {
+         this.text = text;
+@@ -23,11 +24,11 @@ export class UserMessageComponent extends Container {
+     }
+     rebuild() {
+         this.clear();
+-        const contentBox = new Box(this.outputPad, 1, (content) => theme.bg("userMessageBg", content));
+-        contentBox.addChild(new Markdown(this.text, 0, 0, this.markdownTheme, {
++        this.contentBox = new Box(this.outputPad, 1, (content) => theme.fg("accent", content));
++        this.contentBox.addChild(new Markdown(this.text, 0, 0, this.markdownTheme, {
              color: (content) => theme.fg("userMessageText", content),
-         }, { preserveOrderedListMarkers: true }));
+         }, { preserveOrderedListMarkers: true, preserveBackslashEscapes: true }));
+-        this.addChild(contentBox);
++        this.addChild(this.contentBox);
+     }
+     render(width) {
+         const lines = super.render(width);
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index 85c551f8630bc7d021825359095a8b552cbfb518..a412b3131d64a985026f8487fdf9f8ce5c914869 100644
+index 02455d69435ab71a2b321a887abf077f5efe79b1..3631efb449f1175ed06fc63cfc3b94ca5de2262f 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
-@@ -1592,6 +1592,7 @@ export class InteractiveMode {
+@@ -1654,6 +1654,7 @@ export class InteractiveMode {
              confirm: (title, message, opts) => this.showExtensionConfirm(title, message, opts),
              input: (title, placeholder, opts) => this.showExtensionInput(title, placeholder, opts),
              notify: (message, type) => this.showExtensionNotify(message, type),
@@ -550,7 +478,7 @@ index 85c551f8630bc7d021825359095a8b552cbfb518..a412b3131d64a985026f8487fdf9f8ce
              onTerminalInput: (handler) => this.addExtensionTerminalInputListener(handler),
              setStatus: (key, text) => this.setExtensionStatus(key, text),
              setWorkingMessage: (message) => {
-@@ -1608,7 +1609,7 @@ export class InteractiveMode {
+@@ -1670,7 +1671,7 @@ export class InteractiveMode {
              setHeader: (factory) => this.setExtensionHeader(factory),
              setTitle: (title) => this.ui.terminal.setTitle(title),
              custom: (factory, options) => this.showExtensionCustom(factory, options),
@@ -559,7 +487,7 @@ index 85c551f8630bc7d021825359095a8b552cbfb518..a412b3131d64a985026f8487fdf9f8ce
              setEditorText: (text) => this.editor.setText(text),
              getEditorText: () => this.editor.getExpandedText?.() ?? this.editor.getText(),
              editor: (title, prefill) => this.showExtensionEditor(title, prefill),
-@@ -1637,6 +1638,16 @@ export class InteractiveMode {
+@@ -1699,6 +1700,16 @@ export class InteractiveMode {
              },
              getToolsExpanded: () => this.toolOutputExpanded,
              setToolsExpanded: (expanded) => this.setToolsExpanded(expanded),
@@ -576,7 +504,7 @@ index 85c551f8630bc7d021825359095a8b552cbfb518..a412b3131d64a985026f8487fdf9f8ce
          };
      }
      /**
-@@ -3425,6 +3436,33 @@ export class InteractiveMode {
+@@ -3554,6 +3565,33 @@ export class InteractiveMode {
              this.showModelSelector();
              return;
          }
@@ -610,7 +538,7 @@ index 85c551f8630bc7d021825359095a8b552cbfb518..a412b3131d64a985026f8487fdf9f8ce
          const model = await this.findExactModelMatch(searchTerm);
          if (model) {
              try {
-@@ -3539,6 +3577,7 @@ export class InteractiveMode {
+@@ -3668,6 +3706,7 @@ export class InteractiveMode {
      }
      showModelSelector(initialSearchInput) {
          this.showSelector((done) => {
@@ -618,7 +546,7 @@ index 85c551f8630bc7d021825359095a8b552cbfb518..a412b3131d64a985026f8487fdf9f8ce
              const selector = new ModelSelectorComponent(this.ui, this.session.model, this.settingsManager, this.session.modelRegistry, this.session.scopedModels, async (model) => {
                  try {
                      await this.session.setModel(model);
-@@ -3556,7 +3595,7 @@ export class InteractiveMode {
+@@ -3685,7 +3724,7 @@ export class InteractiveMode {
              }, () => {
                  done();
                  this.ui.requestRender();
@@ -627,7 +555,7 @@ index 85c551f8630bc7d021825359095a8b552cbfb518..a412b3131d64a985026f8487fdf9f8ce
              return { component: selector, focus: selector };
          });
      }
-@@ -4255,7 +4294,7 @@ export class InteractiveMode {
+@@ -4453,7 +4492,7 @@ export class InteractiveMode {
          const outputPath = this.getPathCommandArgument(text, "/export");
          try {
              if (outputPath?.endsWith(".jsonl")) {
