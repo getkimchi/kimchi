@@ -341,6 +341,17 @@ describe("buildSystemPrompt", () => {
 			])
 		})
 
+		it("includes thinking levels in orchestrator mode", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				registry,
+				mode: "orchestrator",
+			})
+			expect(result).toContain("### Thinking levels")
+			expect(result).toContain("| Build chunk | Builder |")
+		})
+
 		it("includes model-specific orchestration notes when model is provided", () => {
 			const result = buildSystemPrompt({
 				tools,

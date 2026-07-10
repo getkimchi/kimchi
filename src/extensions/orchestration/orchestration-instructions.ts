@@ -6,6 +6,7 @@
  * Subagent and single-model instructions live in `prompt-construction/system-prompt.ts`.
  */
 
+import { renderDelegationThinkingLevelTable, renderOrchestratorThinkingTable } from "../agents/thinking-level-policy.js"
 import { renderAgentWorkerBudgetTable } from "../agents/worker-budget-policy.js"
 import type { PromptMode } from "../prompt-construction/system-prompt.js"
 import type { ModelCustomMetadata } from "./model-metadata.js"
@@ -164,7 +165,25 @@ Always pass a \`model\` parameter on every Agent call — never omit it. Match t
 - Use a heavy-tier model for concurrency, architectural reasoning, security-critical logic, novel patterns, or as a retry after a lighter-tier model failed on the same chunk.
 If the role is configured with only one model, use that model. Read the model's **description** in **Your team** before selecting — it may reveal limitations. If the subtask involves images or visual content, select a model with Vision: yes.
 
+Always pass a \`thinking\` parameter on every Agent call — never omit it. Use the **Thinking levels** table below. Match each build chunk's \`complexity\` from the plan spec (\`simple\` or \`complex\`). On retry after \`budget_exhausted\` or a stalled approach, bump \`thinking\` one tier (respect per-scope ceilings in the table).
+
 **Tool descriptions vs. Orchestration:** Tool descriptions summarize capabilities. Detailed policy for delegation, budgets, model selection, and artifact handoff lives in this Orchestration section. If a tool description appears to set policy differently, follow Orchestration.`
+
+const THINKING_LEVELS = `### Thinking levels
+
+\`thinking\` controls extended reasoning for the orchestrator and each delegated worker. Levels (lowest to highest): off, minimal, low, medium, high, xhigh. Use the lowest level that fits the task — higher thinking costs more tokens and time.
+
+**Orchestrator (main thread):** keep thinking low while coordinating (spawning agents, reading artifact paths). Raise only when classifying the pipeline, self-validating a plan, or interpreting ambiguous subagent reports.
+
+${renderOrchestratorThinkingTable()}
+
+**Delegated workers:** pass \`thinking\` on every \`Agent\` call. Orchestrator-provided \`thinking\` overrides agent profile defaults. Map chunk \`complexity\` from the plan spec to the simple/complex column.
+
+${renderDelegationThinkingLevelTable()}
+
+**Retry escalation:** when spawning a replacement or \`resume_subagent\` after \`budget_exhausted\` or a stalled approach, bump \`thinking\` one tier from the prior call (see retry column). Do not exceed the per-scope ceiling (explore max medium, research max high, build max xhigh). Combine with model-tier escalation when appropriate.
+
+**Non-reasoning models:** if the target model does not support extended thinking, use \`off\` or the highest level the model supports — never request levels the model cannot run.`
 
 const TOKEN_BUDGETS = `### Token budgets and turn caps
 
@@ -265,7 +284,7 @@ function buildBuildPhaseDirectives(ctx: PhaseDirectiveContext): string {
 	lines.push(
 		`- DO delegate each chunk to Agent(type: "Builder", model: ${models}). Simple chunks use a standard-tier Builder; complex chunks (concurrency, state machines, algorithms) require a heavy-tier Builder. Retries may escalate to a heavier tier when the first choice fails.`,
 	)
-	lines.push("- DO pass the spec file path and tell each agent which chunk to implement.")
+	lines.push("- DO pass the spec file path, the chunk's `complexity`, and set `thinking` per **Thinking levels**.")
 	lines.push(
 		"- DO instruct every build agent to: (1) write the implementation, (2) write tests, (3) verify compilation and lint, (4) run tests exactly once. If compilation or tests fail, the agent reports failures and stops — no fix-retry cycles.",
 	)
@@ -393,6 +412,7 @@ Pass durable artifacts as Markdown files in the Documents directory: plans/specs
 
 	parts.push(STEP_4_EXECUTE)
 	parts.push(AGENT_DELEGATION)
+	parts.push(THINKING_LEVELS)
 	parts.push(TOKEN_BUDGETS)
 	parts.push(PLAN_QUALITY_CHECKLIST)
 

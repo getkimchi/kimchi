@@ -229,6 +229,18 @@ describe("resolveOrchestrationInstructions", () => {
 		expect(result).toContain("error propagation path")
 	})
 
+	it("includes thinking levels guidance and delegation table", () => {
+		const result = resolveAsString({
+			currentModelId: "kimi-k2.6",
+			registry,
+			roles: DEFAULT_MODEL_ROLES,
+		})
+		expect(result).toContain("### Thinking levels")
+		expect(result).toContain("Always pass a `thinking` parameter on every Agent call")
+		expect(result).toContain("| Build chunk | Builder |")
+		expect(result).toContain("Orchestrator-provided `thinking` overrides agent profile defaults")
+	})
+
 	it("includes review row in budget table", () => {
 		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
