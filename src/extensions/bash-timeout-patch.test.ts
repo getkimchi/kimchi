@@ -29,19 +29,14 @@ const TIMEOUT_SECONDS = 2
 const MAX_RETURN_SECONDS = 5
 
 describe.skipIf(process.platform !== "linux")("bash timeout: setsid'd grandchild escaping process group", () => {
-	// Track any orphaned processes so we can clean them up after the test.
-	const orphanPatterns: string[] = []
-
 	afterEach(() => {
 		// Kill any surviving orphaned processes from the test.
-		for (const pattern of orphanPatterns) {
-			try {
-				execSync(`pkill -f "${pattern}"`, { stdio: "ignore" })
-			} catch {
-				// Already dead or pkill not available
-			}
+		// The marker string in the command makes this reliable.
+		try {
+			execSync("pkill -f 'bash-timeout-regression-marker' 2>/dev/null || true", { stdio: "ignore" })
+		} catch {
+			// No survivors
 		}
-		orphanPatterns.length = 0
 	})
 
 	it("returns after timeout when setsid'd child keeps the stdout pipe open", async () => {
@@ -51,8 +46,9 @@ describe.skipIf(process.platform !== "linux")("bash timeout: setsid'd grandchild
 		// setsid creates a new process group/session. The child writes to
 		// stdout continuously, which would re-arm waitForChildProcess's
 		// grace timer indefinitely without the stdio-destroy fix.
-		const command = `setsid bash -c 'for i in $(seq 1 100000); do echo "compile output $i"; sleep 0.01; done' & wait`
-		orphanPatterns.push("compile output")
+		// The loop self-terminates after 10s (200 × 0.05s) so even if
+		// cleanup fails, no orphan survives past the test run.
+		const command = `setsid bash -c 'for i in $(seq 1 200); do echo "bash-timeout-regression-marker $i"; sleep 0.05; done' & wait`
 
 		let error: Error | undefined
 		try {
@@ -82,11 +78,11 @@ describe.skipIf(process.platform !== "linux")("bash timeout: setsid'd grandchild
 
 		// Multiple parallel setsid children, simulating `make -j4` style
 		// parallel compilation where each worker escapes the process group.
+		// Each child self-terminates after 10s (200 × 0.05s).
 		const command = `for i in $(seq 1 4); do
-  setsid bash -c 'for j in $(seq 1 100000); do echo "worker $i: $j"; sleep 0.01; done' &
+  setsid bash -c 'for j in $(seq 1 200); do echo "bash-timeout-regression-marker $i $j"; sleep 0.05; done' &
 done
 wait`
-		orphanPatterns.push("worker")
 
 		let error: Error | undefined
 		try {
