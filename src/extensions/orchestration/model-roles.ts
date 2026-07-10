@@ -171,7 +171,7 @@ export function parseModelRoles(obj: ModelRoles | Record<string, unknown> | unde
 	// compactor is optional and single-model-only (like orchestrator), so it is
 	// handled outside ROLE_KEYS rather than widening the generic loop's types.
 	const compactorValue = obj.compactor
-	if (compactorValue !== undefined && compactorValue !== null) {
+	if (compactorValue != null) {
 		if (typeof compactorValue !== "string" || compactorValue.trim().length === 0) {
 			warnings.push({
 				role: "compactor",

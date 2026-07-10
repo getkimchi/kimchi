@@ -7,8 +7,13 @@
  * - No unpaired toolCall in the current branch.
  */
 import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai"
-import { AgentSession, type CompactionResult, ExtensionRunner } from "@earendil-works/pi-coding-agent"
-import { collectMessagesAfterLastCompaction, isToolCallInFlight } from "./tool-call-in-flight.js"
+import {
+	AgentSession,
+	type CompactionResult,
+	ExtensionRunner,
+	buildSessionContext,
+} from "@earendil-works/pi-coding-agent"
+import { isToolCallInFlight } from "./tool-call-in-flight.js"
 
 export interface InlineCompactOptions {
 	customInstructions?: string
@@ -20,26 +25,24 @@ export interface InlineCompactOptions {
 	thinkingLevel?: ModelThinkingLevel
 }
 
-type CompactionSettingsLike = {
-	keepRecentTokens: number
-	[key: string]: unknown
-}
-
-type PatchableSession = {
+type PatchableSession = Pick<AgentSession, "abort" | "sessionManager" | "settingsManager"> & {
 	_compactionAbortController?: AbortController
 	_autoCompactionAbortController?: AbortController
 	_kimchiInlineCompactInFlight?: boolean
 	_disconnectFromAgent: () => void
-	abort: (...args: unknown[]) => Promise<unknown>
-	sessionManager: { getBranch(): unknown[] }
-	settingsManager: { getCompactionSettings(): CompactionSettingsLike }
 	inlineCompact?(options?: InlineCompactOptions): Promise<CompactionResult>
 }
+
+type UpstreamCompact = AgentSession["compact"]
 
 type PatchableSessionPrototype = {
 	_kimchiInlineCompactPatch?: boolean
 	inlineCompact?: (this: PatchableSession, options?: InlineCompactOptions) => Promise<CompactionResult>
-	compact?: (this: PatchableSession, customInstructions?: string, force?: boolean) => Promise<CompactionResult>
+	compact?: (
+		this: PatchableSession,
+		customInstructions?: Parameters<UpstreamCompact>[0],
+		force?: boolean,
+	) => ReturnType<UpstreamCompact>
 	_bindExtensionCore?: (this: PatchableSession, runner: PatchableRunnerInstance) => unknown
 }
 
@@ -117,10 +120,10 @@ async function runInlineCompact(
 
 	// Safety assertion (not deferral — callers wanting deferral must check
 	// before calling): compacting across an unpaired toolCall summarises away
-	// the assistant toolCall and orphans the toolResult appended later. Scoped
-	// past the newest compaction entry so a historical, already-neutralised
-	// orphan cannot permanently veto compaction.
-	if (isToolCallInFlight(collectMessagesAfterLastCompaction(session.sessionManager.getBranch()))) {
+	// the assistant toolCall and orphans the toolResult appended later. Pi's
+	// context builder applies the active branch and latest compaction boundary.
+	const activeMessages = buildSessionContext(session.sessionManager.getBranch()).messages
+	if (isToolCallInFlight(activeMessages)) {
 		throw new Error(
 			"inlineCompact called while a tool call is in flight — callers must defer to a turn boundary with no unpaired toolCall",
 		)
@@ -144,13 +147,13 @@ async function runInlineCompact(
 				}
 				return realDisconnect.call(this)
 			}),
-			shadowProperty(session, "abort", async function inlineShadowedAbort(this: PatchableSession, ...args: unknown[]) {
+			shadowProperty(session, "abort", async function inlineShadowedAbort(this: PatchableSession) {
 				if (!abortSuppressed) {
 					abortSuppressed = true
 					return
 				}
 				this._compactionAbortController?.abort()
-				return realAbort.apply(this, args)
+				return realAbort.call(this)
 			}),
 		)
 
@@ -189,7 +192,13 @@ export function installInlineCompactPatch(options: InlineCompactPatchOptions = {
 
 	const sessionProto = sessionClass.prototype
 	if (!sessionProto.compact || !sessionProto._bindExtensionCore) {
-		throw new Error("pi-coding-agent AgentSession internals are incompatible with Kimchi inline compaction")
+		const missing = [
+			!sessionProto.compact && "AgentSession.compact()",
+			!sessionProto._bindExtensionCore && "AgentSession._bindExtensionCore()",
+		].filter(Boolean)
+		throw new Error(
+			`pi-coding-agent AgentSession internals are incompatible with Kimchi inline compaction (missing ${missing.join(" and ")} — upstream internals changed)`,
+		)
 	}
 	assertCompactInternalsCompatible(sessionProto)
 
@@ -212,7 +221,10 @@ export function installInlineCompactPatch(options: InlineCompactPatchOptions = {
 
 	const runnerProto = runnerClass.prototype
 	if (!runnerProto.createContext) {
-		throw new Error("pi-coding-agent ExtensionRunner internals are incompatible with Kimchi inline compaction")
+		throw new Error(
+			"pi-coding-agent ExtensionRunner internals are incompatible with Kimchi inline compaction " +
+				"(missing ExtensionRunner.createContext() — upstream internals changed)",
+		)
 	}
 
 	if (!runnerProto._kimchiInlineCompactContextPatch) {

@@ -21,10 +21,15 @@
  * Failures warn via `ctx.ui.notify` and never block the pipeline.
  */
 
-import type { CompactionResult, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import {
+	type CompactionResult,
+	type ExtensionAPI,
+	type ExtensionContext,
+	buildSessionContext,
+} from "@earendil-works/pi-coding-agent"
 import { determineNextAction } from "../../ferment/engine.js"
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
-import { collectMessagesFromEntries, isToolCallInFlight } from "../../tool-call-in-flight.js"
+import { isToolCallInFlight } from "../../tool-call-in-flight.js"
 import { COMPACTION_RESERVE_TOKENS } from "../compaction-thresholds.js"
 import { getModelRoles, splitModelRef } from "../orchestration/model-roles.js"
 import type { FermentRuntime } from "./runtime.js"
@@ -91,7 +96,8 @@ export { isToolCallInFlight } from "../../tool-call-in-flight.js"
 export function isToolCallInFlightInSession(ctx: ExtensionContext): boolean {
 	try {
 		const entries = ctx?.sessionManager?.getEntries?.() ?? []
-		return isToolCallInFlight(collectMessagesFromEntries(entries))
+		const leafId = ctx.sessionManager.getLeafId()
+		return isToolCallInFlight(buildSessionContext(entries, leafId).messages)
 	} catch {
 		return false
 	}

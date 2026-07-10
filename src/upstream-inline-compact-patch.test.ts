@@ -208,7 +208,29 @@ describe("installInlineCompactPatch", () => {
 				sessionClass: DriftedSession as unknown as NonNullable<InlineCompactPatchOptions["sessionClass"]>,
 				runnerClass: FakeRunner as unknown as NonNullable<InlineCompactPatchOptions["runnerClass"]>,
 			}),
-		).toThrow("incompatible with Kimchi inline compaction")
+		).toThrow("expected it to quiesce via _disconnectFromAgent/abort")
+	})
+
+	it("identifies missing AgentSession prototype methods", () => {
+		class MissingCompactSession {
+			_bindExtensionCore(): void {}
+		}
+		expect(() =>
+			installInlineCompactPatch({
+				sessionClass: MissingCompactSession as unknown as NonNullable<InlineCompactPatchOptions["sessionClass"]>,
+				runnerClass: FakeRunner as unknown as NonNullable<InlineCompactPatchOptions["runnerClass"]>,
+			}),
+		).toThrow("missing AgentSession.compact() — upstream internals changed")
+	})
+
+	it("identifies a missing ExtensionRunner.createContext method", () => {
+		class MissingContextRunner {}
+		expect(() =>
+			installInlineCompactPatch({
+				sessionClass: FakeSession as unknown as NonNullable<InlineCompactPatchOptions["sessionClass"]>,
+				runnerClass: MissingContextRunner as unknown as NonNullable<InlineCompactPatchOptions["runnerClass"]>,
+			}),
+		).toThrow("missing ExtensionRunner.createContext() — upstream internals changed")
 	})
 
 	it("exposes ctx.inlineCompact from ExtensionRunner contexts", async () => {

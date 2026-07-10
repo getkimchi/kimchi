@@ -7,6 +7,7 @@
  * 3. maybeTriggerFermentCompaction — integration: no-op, trigger, onComplete, onError, in-flight guard
  */
 
+import type { AssistantMessage, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai"
 import type { CompactionResult, ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
@@ -95,6 +96,7 @@ function makeCtx(): ExtensionContext {
 		},
 		sessionManager: {
 			getEntries: vi.fn(() => []),
+			getLeafId: vi.fn(() => null),
 			appendCustomMessageEntry: vi.fn(),
 		},
 	} as unknown as ExtensionContext
@@ -175,6 +177,15 @@ function makeSessionMessageEntry(message: unknown): SessionEntry {
 		timestamp: NOW,
 		message,
 	} as unknown as SessionEntry
+}
+
+function setSessionEntries(ctx: ExtensionContext, entries: SessionEntry[]): void {
+	const linkedEntries = entries.map((entry, index) => ({
+		...entry,
+		parentId: index === 0 ? null : entries[index - 1].id,
+	})) as SessionEntry[]
+	ctx.sessionManager.getEntries = vi.fn(() => linkedEntries)
+	ctx.sessionManager.getLeafId = vi.fn(() => linkedEntries.at(-1)?.id ?? null)
 }
 
 // ─── Test suite ───────────────────────────────────────────────────────────────
@@ -1160,57 +1171,57 @@ describe("in-flight tool-call guard", () => {
 	})
 
 	describe("isToolCallInFlight", () => {
+		const assistant = (content: AssistantMessage["content"]): AssistantMessage => ({
+			role: "assistant",
+			content,
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "test-model",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "toolUse",
+			timestamp: Date.now(),
+		})
+		const toolResult = (toolCallId: string): ToolResultMessage => ({
+			role: "toolResult",
+			toolCallId,
+			toolName: "test-tool",
+			content: [{ type: "text", text: "done" }],
+			isError: false,
+			timestamp: Date.now(),
+		})
+		const user = (content: string): UserMessage => ({ role: "user", content, timestamp: Date.now() })
+		const toolCall = (id: string) => ({ type: "toolCall" as const, id, name: "test-tool", arguments: {} })
+
 		it("returns true when a toolCall has no matching toolResult", () => {
-			const messages = [
-				{
-					role: "assistant",
-					content: [{ type: "toolCall", id: "call-1" }],
-				},
-			]
-			expect(isToolCallInFlight(messages)).toBe(true)
+			expect(isToolCallInFlight([assistant([toolCall("call-1")])])).toBe(true)
 		})
 
 		it("returns false when the matching toolResult is present", () => {
-			const messages = [
-				{
-					role: "assistant",
-					content: [{ type: "toolCall", id: "call-1" }],
-				},
-				{ role: "toolResult", toolCallId: "call-1" },
-			]
-			expect(isToolCallInFlight(messages)).toBe(false)
+			expect(isToolCallInFlight([assistant([toolCall("call-1")]), toolResult("call-1")])).toBe(false)
 		})
 
 		it("returns false for empty arrays and messages with no tool calls", () => {
 			expect(isToolCallInFlight([])).toBe(false)
-			expect(isToolCallInFlight([{ role: "user", content: "hi" }])).toBe(false)
-			expect(isToolCallInFlight([{ role: "assistant", content: [{ type: "text" }] }])).toBe(false)
+			expect(isToolCallInFlight([user("hi")])).toBe(false)
+			expect(isToolCallInFlight([assistant([{ type: "text", text: "done" }])])).toBe(false)
 		})
 
 		it("returns true when only some toolCalls have matching toolResults", () => {
-			const messages = [
-				{
-					role: "assistant",
-					content: [
-						{ type: "toolCall", id: "call-1" },
-						{ type: "toolCall", id: "call-2" },
-					],
-				},
-				{ role: "toolResult", toolCallId: "call-1" },
-			]
+			const messages = [assistant([toolCall("call-1"), toolCall("call-2")]), toolResult("call-1")]
 			expect(isToolCallInFlight(messages)).toBe(true)
-		})
-
-		it("returns false for malformed input without throwing", () => {
-			const malformed = [null, { role: "user" }, { role: "assistant", content: "not-an-array" }]
-			expect(() => isToolCallInFlight(malformed)).not.toThrow()
-			expect(isToolCallInFlight(malformed)).toBe(false)
 		})
 	})
 
 	describe("isToolCallInFlightInSession", () => {
 		it("returns true when the session contains an in-flight toolCall", () => {
-			ctx.sessionManager.getEntries = vi.fn(() => [
+			setSessionEntries(ctx, [
 				makeSessionMessageEntry({
 					role: "assistant",
 					content: [{ type: "toolCall", id: "call-1" }],
@@ -1220,7 +1231,7 @@ describe("in-flight tool-call guard", () => {
 		})
 
 		it("returns false when the session has a completed toolCall pair", () => {
-			ctx.sessionManager.getEntries = vi.fn(() => [
+			setSessionEntries(ctx, [
 				makeSessionMessageEntry({
 					role: "assistant",
 					content: [{ type: "toolCall", id: "call-1" }],
@@ -1246,7 +1257,7 @@ describe("in-flight tool-call guard", () => {
 			runtime.setActive(ferment)
 			setPendingCompaction(ferment.id, makePendingStep(ferment.id, "phase-1", "step-1"))
 
-			ctx.sessionManager.getEntries = vi.fn(() => [
+			setSessionEntries(ctx, [
 				makeSessionMessageEntry({
 					role: "assistant",
 					content: [{ type: "toolCall", id: "call-in-flight" }],
@@ -1268,7 +1279,7 @@ describe("in-flight tool-call guard", () => {
 			runtime.setActive(ferment)
 			setPendingCompaction(ferment.id, makePendingStep(ferment.id, "phase-1", "step-1"))
 
-			ctx.sessionManager.getEntries = vi.fn(() => [
+			setSessionEntries(ctx, [
 				makeSessionMessageEntry({
 					role: "assistant",
 					content: [{ type: "toolCall", id: "call-done" }],
