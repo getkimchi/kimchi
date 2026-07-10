@@ -138,11 +138,29 @@ test("/ferment progress overlay shows ferment name, progress bar, phase list, an
 			terminal.submit("/ferment progress")
 			trace.step("submitted /ferment progress")
 
+			// The overlay usually opens on L1, but a buffered Enter from the
+			// submit can race the phase-list select and auto-drill into L2.
+			// Detect which layer opened and recover back to L1 when needed.
+			const overlayLayer = await Promise.race([
+				waitForText(terminal, "human:", { timeoutMs: STREAM_TIMEOUT_MS, full: false }).then(
+					() => "l1" as const,
+				),
+				waitForText(terminal, "Phase 1/1", { timeoutMs: STREAM_TIMEOUT_MS, full: false }).then(
+					() => "l2" as const,
+				),
+			])
+			trace.step(`overlay opened at ${overlayLayer}`)
+
+			if (overlayLayer === "l2") {
+				// Escape cancels L2 and returns to the L1 phase list.
+				terminal.keyEscape()
+				await waitForText(terminal, "human:", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
+				trace.step("navigated back to L1 phase list")
+			}
+
 			// "human:" always appears in the overlay header and is absent from
 			// the footer and all scrollback. Once visible, the full overlay is
 			// rendered and all field assertions are reliable.
-			await waitForText(terminal, "human:", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
-			trace.step("overlay open")
 
 			await waitForText(terminal, "Progress Overlay Test", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			trace.step("overlay shows ferment name")
