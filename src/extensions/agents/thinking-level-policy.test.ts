@@ -34,6 +34,14 @@ describe("bumpThinkingLevel", () => {
 	it("respects ceiling", () => {
 		expect(bumpThinkingLevel("high", 2, "high")).toBe("high")
 	})
+
+	it("does not decrease the level when steps is zero", () => {
+		expect(bumpThinkingLevel("high", 0, "low")).toBe("high")
+	})
+
+	it("does not decrease the level when the ceiling is below the current level", () => {
+		expect(bumpThinkingLevel("high", 1, "low")).toBe("high")
+	})
 })
 
 describe("thinkingScopeForSubagentType", () => {

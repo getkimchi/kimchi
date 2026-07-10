@@ -59,7 +59,9 @@ export function thinkingScopeForSubagentType(subagentType: string): ThinkingTask
 export function bumpThinkingLevel(level: ThinkingLevel, steps = 1, ceiling: ThinkingLevel = "xhigh"): ThinkingLevel {
 	const idx = THINKING_LEVEL_ORDER.indexOf(level)
 	const ceilIdx = THINKING_LEVEL_ORDER.indexOf(ceiling)
-	if (idx < 0) return level
+	if (idx < 0 || steps <= 0) return level
+	// A ceiling only caps increases; it must never force the level down.
+	if (ceilIdx >= 0 && ceilIdx < idx) return level
 	const target = Math.min(ceilIdx >= 0 ? ceilIdx : THINKING_LEVEL_ORDER.length - 1, idx + steps)
 	return THINKING_LEVEL_ORDER[target] ?? level
 }
