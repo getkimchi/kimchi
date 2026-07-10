@@ -59,26 +59,6 @@ export function assertPatchableAssistantMessageComponent(value: unknown): {
 	return value as { prototype: AssistantMessageComponentPrototype }
 }
 
-export function assertThinkingStepsTheme(value: unknown): ThinkingThemeLike {
-	if (!value || typeof value !== "object") {
-		throw new Error("Thinking Steps patch failed: interactive theme export is missing or invalid.")
-	}
-
-	try {
-		const candidate = value as Record<string, unknown>
-		if (typeof candidate.fg !== "function" || typeof candidate.bold !== "function") {
-			throw new Error("Thinking Steps patch failed: interactive theme export is incompatible.")
-		}
-	} catch (error) {
-		if (error instanceof Error && /Theme not initialized/.test(error.message)) {
-			return value as ThinkingThemeLike
-		}
-		throw error
-	}
-
-	return value as ThinkingThemeLike
-}
-
 function hasPatchableContentContainer(value: AssistantMessageComponentPrototype): boolean {
 	return Boolean(
 		value.contentContainer &&
