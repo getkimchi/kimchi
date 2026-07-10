@@ -182,13 +182,13 @@ Do not use `--agent-kwarg disable-multi-model=true`; the adapter accepts that le
 
 ### Multi-model run (orchestrator)
 
-To run kimchi's multi-model orchestrator, opt into the adapter-level kwarg. In this mode the adapter intentionally does not pass `--model` to kimchi, because an explicit model flag is what disables orchestration in the kimchi CLI.
+To run kimchi's default multi-model role configuration, select the adapter's virtual `multi-model` model. In this mode the adapter intentionally does not pass `--model` to kimchi, because an explicit model flag is what disables orchestration in the kimchi CLI.
 
 ```bash
-./scripts/run-local.sh -n 8 -k 3 --agent-kwarg multi-model=true
+MODEL=multi-model ./scripts/run-local.sh -n 8 -k 3
 ```
 
-With no custom role config in the task container, the orchestrator model defaults to `kimchi-dev/kimi-k2.6`. The adapter writes `{"multiModel":true}` to the in-container harness settings before launching kimchi so orchestration is enabled even in a fresh benchmark image.
+With no custom role config in the task container, the tested Kimchi revision supplies its default role configuration. The adapter writes `{"multiModel":true}` to the in-container harness settings before launching kimchi so orchestration is enabled even in a fresh benchmark image.
 
 ### One-shot ferment per task
 

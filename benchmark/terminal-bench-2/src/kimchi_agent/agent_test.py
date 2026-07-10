@@ -89,8 +89,7 @@ async def test_single_model_run_passes_model_without_multi_model_cli_flag(tmp_pa
 async def test_multi_model_run_omits_model_and_enables_harness_setting(tmp_path: Path) -> None:
     agent = RecordingKimchi(
         logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
-        model_name="kimchi-dev/kimi-k2.6",
-        **{"multi-model": True},
+        model_name="multi-model",
     )
 
     with pytest.raises(asyncio.CancelledError):
@@ -107,16 +106,22 @@ async def test_multi_model_run_omits_model_and_enables_harness_setting(tmp_path:
     assert agent.to_agent_info().model_info.name == "multi-model"
 
 
-async def test_multi_model_run_does_not_require_model_name(tmp_path: Path) -> None:
-    agent = RecordingKimchi(
-        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
-        **{"multi-model": "true"},
-    )
+def test_legacy_multi_model_kwarg_cannot_enable_mode(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="must match model_name='multi-model'"):
+        RecordingKimchi(
+            logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+            model_name="kimchi-dev/kimi-k2.6",
+            **{"multi-model": "true"},
+        )
 
-    with pytest.raises(asyncio.CancelledError):
-        await agent.run("hello", object(), AgentContext())
 
-    assert "--model" not in agent.agent_commands[0]
+def test_multi_model_virtual_selection_rejects_explicit_false_kwarg(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="must match model_name='multi-model'"):
+        RecordingKimchi(
+            logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+            model_name="multi-model",
+            **{"multi-model": False},
+        )
 
 
 async def test_run_copies_harbor_skills_dir_into_kimchi_harness_skills_dir(tmp_path: Path) -> None:
@@ -237,8 +242,8 @@ def test_multi_model_and_legacy_disable_multi_model_conflict(tmp_path: Path) -> 
     with pytest.raises(ValueError):
         RecordingKimchi(
             logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
-            model_name="kimchi-dev/kimi-k2.6",
-            **{"multi-model": True, "disable-multi-model": True},
+            model_name="multi-model",
+            **{"disable-multi-model": True},
         )
 
 
