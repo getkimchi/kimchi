@@ -181,7 +181,9 @@ ${renderOrchestratorThinkingTable()}
 
 ${renderDelegationThinkingLevelTable()}
 
-**Retry escalation:** when spawning a replacement or \`resume_subagent\` after \`budget_exhausted\` or a stalled approach, bump \`thinking\` one tier from the prior call (see retry column). Do not exceed the per-scope ceiling (explore max medium, research max high, build max xhigh). Combine with model-tier escalation when appropriate.
+**Self-performed work:** when you decide to do a phase yourself instead of delegating, call \`set_phase\` with the same phase-scoped \`thinking\` level you would have passed to an Agent. Use the \`simple\` column for quick/small work and the \`complex\` column for multi-step or subtle work. This updates your own reasoning level for the phase; reset to a lower coordination level when you go back to delegating.
+
+**Retry escalation:** when spawning a replacement or \`resume_subagent\` after \`budget_exhausted\` or a stalled approach, bump \`thinking\` one tier from the prior call (see retry column). If you are redoing self-performed work, bump the \`set_phase\` \`thinking\` value the same way. Do not exceed the per-scope ceiling (explore max medium, research max high, build max xhigh). Combine with model-tier escalation when appropriate.
 
 **Non-reasoning models:** if the target model does not support extended thinking, use \`off\` or the highest level the model supports — never request levels the model cannot run.`
 
