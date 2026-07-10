@@ -207,7 +207,7 @@ terminal-bench-$[[ inputs.dataset_version ]]-analyze:
       artifacts: true
     - job: terminal-bench-$[[ inputs.dataset_version ]]-summary
       artifacts: true
-  timeout: 70 min
+  timeout: 3h 30min
   variables:
     BENCHMARK_RESULTS_DIR: benchmark/terminal-bench-$[[ inputs.dataset_version ]]/jobs
     DEBIAN_FRONTEND: noninteractive
