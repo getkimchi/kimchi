@@ -93,9 +93,12 @@ class LiveThinkingPreview implements Component {
 	// The spinner drives renders at 30-60fps while a request is in flight, so
 	// the preview body must never process the full accumulated thinking text
 	// per frame — that freezes the terminal on large messages. The body only
-	// depends on (blocks, width); blocks are an immutable snapshot per
-	// component instance, so cache the body and recompute the pulse header only.
+	// depends on (blocks, width, theme styling); blocks are an immutable
+	// snapshot per component instance, so cache the body and recompute the
+	// pulse header only. The style key catches a theme switch mid-stall, when
+	// no new chunk arrives to replace this instance.
 	private cachedBodyWidth?: number
+	private cachedBodyStyleKey?: string
 	private cachedBody?: string[]
 
 	constructor(
@@ -119,9 +122,11 @@ class LiveThinkingPreview implements Component {
 			"",
 		)}`
 
-		if (this.cachedBodyWidth !== width || !this.cachedBody) {
+		const styleKey = `${this.theme.fg("dim", "x")}\u0000${this.theme.fg("muted", "x")}`
+		if (this.cachedBodyWidth !== width || this.cachedBodyStyleKey !== styleKey || !this.cachedBody) {
 			this.cachedBody = this.renderBody(innerWidth)
 			this.cachedBodyWidth = width
+			this.cachedBodyStyleKey = styleKey
 		}
 		return [header, ...this.cachedBody]
 	}
@@ -147,6 +152,7 @@ class LiveThinkingPreview implements Component {
 
 	invalidate(): void {
 		this.cachedBodyWidth = undefined
+		this.cachedBodyStyleKey = undefined
 		this.cachedBody = undefined
 	}
 }

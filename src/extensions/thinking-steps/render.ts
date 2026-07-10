@@ -230,6 +230,8 @@ export function tailRawLines(text: string, maxLines: number): string {
 }
 
 export function tailRawLinesFromBlocks(blocks: ThinkingSourceBlock[], maxLines: number): string {
+	// tailRawLines re-applies the character cap; the budget here only bounds
+	// how much text is assembled from the blocks. Both are intentional.
 	let tail = ""
 	for (let index = blocks.length - 1; index >= 0 && tail.length < LIVE_PREVIEW_TAIL_CHARS; index -= 1) {
 		const suffix = `${index < blocks.length - 1 ? "\n" : ""}${tail}`
@@ -446,7 +448,9 @@ function renderWrappedRawText(theme: ThinkingThemeLike, text: string, width: num
 
 // The expanded view is rebuilt on every stream chunk. Cache one body per
 // (width, step id), replacing the growing step instead of retaining every
-// intermediate snapshot.
+// intermediate snapshot. Step ids restart per message, so entries can collide
+// across messages during a full chat rebuild — safe only because the body is
+// compared before reuse (do not remove that check).
 type ExpandedStepLineCacheEntry = { body: string; styleKey: string; lines: string[] }
 const expandedStepLineCache = new Map<string, ExpandedStepLineCacheEntry>()
 const EXPANDED_STEP_CACHE_MAX = 8192

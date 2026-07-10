@@ -1360,10 +1360,23 @@ export function getStepDerivationCacheSizeForTesting(): number {
 	return stepDerivationCache.size
 }
 
+function isRedactedPlaceholderBlock(block: ThinkingSourceBlock): boolean {
+	return block.redacted === true && !block.text.trim()
+}
+
 export function deriveThinkingSteps(blocks: ThinkingSourceBlock[]): DerivedThinkingStep[] {
 	const steps: DerivedThinkingStep[] = []
+	// The still-growing step is the last one derived from text, which is not
+	// necessarily in the last block: trailing redacted placeholders don't count.
+	let lastTextBlockIndex = -1
+	for (let index = blocks.length - 1; index >= 0; index -= 1) {
+		if (!isRedactedPlaceholderBlock(blocks[index]!)) {
+			lastTextBlockIndex = index
+			break
+		}
+	}
 	blocks.forEach((block, blockIndex) => {
-		if (block.redacted && !block.text.trim()) {
+		if (isRedactedPlaceholderBlock(block)) {
 			const summary = "Reasoning is hidden by the provider."
 			steps.push({
 				id: `${block.contentIndex}-0`,
@@ -1386,7 +1399,7 @@ export function deriveThinkingSteps(blocks: ThinkingSourceBlock[]): DerivedThink
 
 		const stepTexts = splitThinkingIntoStepTexts(block.text)
 		stepTexts.forEach((stepText, stepIndex) => {
-			const isFinalStep = blockIndex === blocks.length - 1 && stepIndex === stepTexts.length - 1
+			const isFinalStep = blockIndex === lastTextBlockIndex && stepIndex === stepTexts.length - 1
 			const { summaryDetails, role } = deriveStep(stepText, !isFinalStep)
 			steps.push({
 				id: `${block.contentIndex}-${stepIndex}`,

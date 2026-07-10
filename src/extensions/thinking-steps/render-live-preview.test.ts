@@ -230,4 +230,15 @@ describe("deriveThinkingSteps caching", () => {
 		}
 		expect(getStepDerivationCacheSizeForTesting()).toBe(0)
 	})
+
+	it("treats the last text step as growing even when a redacted placeholder follows", () => {
+		clearStepDerivationCacheForTesting()
+		for (let index = 1; index <= 20; index += 1) {
+			deriveThinkingSteps([
+				{ contentIndex: 0, text: "growing ".repeat(index), redacted: false },
+				{ contentIndex: 1, text: "", redacted: true },
+			])
+		}
+		expect(getStepDerivationCacheSizeForTesting()).toBe(0)
+	})
 })
