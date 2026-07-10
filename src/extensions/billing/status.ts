@@ -276,11 +276,14 @@ function parseCreditsAmount(value: unknown): number | undefined {
 	if (value === undefined || value === null || value === "") return undefined
 	if (typeof value === "number") return Number.isFinite(value) && value >= 0 ? value : undefined
 	if (typeof value !== "string") return undefined
-	const normalized = value.replace(/[€$]/g, "").replace(/eur/gi, "").replace(/\s+/g, "").replace(",", ".")
-	const match = normalized.match(/^-?\d+(?:\.\d+)?/)
-	if (!match) return undefined
-	const parsed = Number(match[0])
-	return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined
+	const normalized = [...value.toLowerCase()]
+		.filter((character) => character.trim() !== "")
+		.join("")
+		.replaceAll("$", "")
+		.replaceAll("usd", "")
+		.replace(",", ".")
+	const parsed = Number(normalized)
+	return normalized !== "" && Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined
 }
 
 function isPaidPlan(status: BillingStatus): boolean {

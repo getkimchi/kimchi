@@ -174,6 +174,27 @@ describe("billing status", () => {
 		expect(getBillingStatusLine()).toEqual({ amount: "$0.1" })
 	})
 
+	it("accepts USD-labelled credits and rejects Euro-labelled credits", () => {
+		observeCreditsPayload({
+			serverless: true,
+			tier: "coder",
+			is_paid_tier: true,
+			billing_status: "ok",
+			remaining: "USD 4.5",
+		})
+		expect(getBillingStatusLine()).toEqual({ amount: "$4.5" })
+
+		observeCreditsPayload({
+			serverless: true,
+			tier: "coder",
+			is_paid_tier: true,
+			billing_status: "ok",
+			remaining: "4.5 EUR",
+		})
+		expect(getBillingStatus()?.remainingCredits).toBeUndefined()
+		expect(getBillingStatusLine()).toBeUndefined()
+	})
+
 	it("shows exhausted warning for paid credits API depletion", () => {
 		observeCreditsPayload({
 			serverless: true,
