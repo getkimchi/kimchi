@@ -28,6 +28,8 @@ const thinkingChunks = Array.from({ length: THINKING_CHUNK_COUNT }, (_, index) =
 	const line = `Considering hypothesis ${index} about \`renderCollapsed\` and comparing **line diff** output against \`previousLines\`.\n`
 	return `${line.repeat(9)}\nNow verifying case ${index} before moving on.\n\n`
 })
+const STALL_READY_MARKER = "STALL_READY_3071"
+thinkingChunks[thinkingChunks.length - 1] += `${STALL_READY_MARKER}\n`
 
 const TYPED_TEXT = "zqxwvu42abcdef"
 // Post-fix a char echoes within one 100ms poll (~1.5s for all round-trips);
@@ -68,9 +70,9 @@ test("typed input echoes promptly while a large thinking stream is stalled", asy
 			await waitForText(terminal, "Thinking", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
 			trace.step("thinking preview visible")
 
-			// Give the client time to consume the full stalled stream so the
-			// latency measurement below isn't dominated by ingest work.
-			await new Promise((resolve) => setTimeout(resolve, 3_000))
+			// The server stalls immediately after writing this final marker, so
+			// seeing it proves the client consumed the complete stalled stream.
+			await waitForText(terminal, STALL_READY_MARKER, { timeoutMs: STREAM_TIMEOUT_MS, full: false })
 			trace.step("stream consumed, provider stalled")
 
 			const startedAt = Date.now()

@@ -3,7 +3,7 @@ import { AssistantMessageComponent as _AssistantMessageComponent } from "@earend
 import { Markdown, Spacer, Text } from "@earendil-works/pi-tui"
 import type { Component, MarkdownTheme } from "@earendil-works/pi-tui"
 import { truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
-import { ThinkingStepsComponent, tailRawLines } from "./render.js"
+import { ThinkingStepsComponent, tailRawLinesFromBlocks } from "./render.js"
 import {
 	decrementPatchRefCount,
 	getActiveThinkingState,
@@ -129,14 +129,11 @@ class LiveThinkingPreview implements Component {
 	private renderBody(innerWidth: number): string[] {
 		const prefix = `${this.theme.fg("muted", "▍")} `
 		const bodyInnerWidth = Math.max(1, innerWidth - 2)
-		const fullText = this.blocks
-			.map((b) => b.text)
-			.join("\n")
-			.trim()
 		const separator = ` ${truncateToWidth(prefix, innerWidth, "")}`
-		if (!fullText) return [separator]
+		const textTail = tailRawLinesFromBlocks(this.blocks, LIVE_PREVIEW_LINES)
+		if (!textTail) return [separator]
 		const allLines: string[] = []
-		for (const rawLine of tailRawLines(fullText, LIVE_PREVIEW_LINES).replace(/\t/g, "    ").split("\n")) {
+		for (const rawLine of textTail.replace(/\t/g, "    ").split("\n")) {
 			if (rawLine.trim().length === 0) {
 				allLines.push(` ${truncateToWidth(prefix, innerWidth, "")}`)
 				continue

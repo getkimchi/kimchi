@@ -1,6 +1,16 @@
 import { describe, expect, it } from "vitest"
-import { clearStepDerivationCacheForTesting, deriveThinkingSteps } from "./parse.js"
-import { LIVE_PREVIEW_TAIL_CHARS, renderThinkingStepsLines, tailRawLines } from "./render.js"
+import {
+	clearStepDerivationCacheForTesting,
+	deriveThinkingSteps,
+	getStepDerivationCacheSizeForTesting,
+} from "./parse.js"
+import {
+	LIVE_PREVIEW_TAIL_CHARS,
+	getExpandedStepLineCacheSizeForTesting,
+	renderThinkingStepsLines,
+	tailRawLines,
+	tailRawLinesFromBlocks,
+} from "./render.js"
 import type { ThinkingSourceBlock, ThinkingThemeLike } from "./types.js"
 
 const theme: ThinkingThemeLike = {
@@ -36,6 +46,15 @@ describe("tailRawLines", () => {
 	it("bounds a single enormous line by the character cap", () => {
 		const text = "x".repeat(LIVE_PREVIEW_TAIL_CHARS * 4)
 		expect(tailRawLines(text, 5)).toHaveLength(LIVE_PREVIEW_TAIL_CHARS)
+	})
+
+	it("builds the visible tail without joining whole thinking blocks", () => {
+		const blocks = [
+			{ contentIndex: 0, text: "old ".repeat(LIVE_PREVIEW_TAIL_CHARS), redacted: false },
+			{ contentIndex: 1, text: "latest visible line", redacted: false },
+		]
+		expect(tailRawLinesFromBlocks(blocks, 5)).toContain("latest visible line")
+		expect(tailRawLinesFromBlocks(makeBlocks("  visible tail  \n"), 5)).toBe("visible tail")
 	})
 })
 
@@ -105,6 +124,47 @@ describe("expanded view", () => {
 		expect(cold.length).toBeGreaterThan(0)
 	})
 
+	it("replaces the cached body when the growing step changes", () => {
+		const firstBlocks = makeBlocks("first body")
+		const secondBlocks = makeBlocks("second body")
+		renderThinkingStepsLines(theme, 80, {
+			mode: "expanded",
+			blocks: firstBlocks,
+			steps: deriveThinkingSteps(firstBlocks),
+			isActive: true,
+		})
+		const cacheSize = getExpandedStepLineCacheSizeForTesting()
+		const second = renderThinkingStepsLines(theme, 80, {
+			mode: "expanded",
+			blocks: secondBlocks,
+			steps: deriveThinkingSteps(secondBlocks),
+			isActive: true,
+		})
+		expect(second.join("\n")).toContain("second body")
+		expect(second.join("\n")).not.toContain("first body")
+		expect(getExpandedStepLineCacheSizeForTesting()).toBe(cacheSize)
+	})
+
+	it("restyles a cached body after the theme changes", () => {
+		let marker = "A"
+		const mutableTheme: ThinkingThemeLike = {
+			fg: (color, text) => `<${marker}:${color}>${text}`,
+			bold: (text) => `<${marker}:bold>${text}`,
+		}
+		const blocks = makeBlocks("cached body")
+		const steps = deriveThinkingSteps(blocks)
+		renderThinkingStepsLines(mutableTheme, 80, { mode: "expanded", blocks, steps, isActive: false })
+		marker = "B"
+		const rerendered = renderThinkingStepsLines(mutableTheme, 80, {
+			mode: "expanded",
+			blocks,
+			steps,
+			isActive: false,
+		})
+		expect(rerendered.join("\n")).toContain("<B:")
+		expect(rerendered.join("\n")).not.toContain("<A:")
+	})
+
 	it("stays fast across streaming deltas of a large thinking text", () => {
 		const para =
 			"Let me check the `render` function in **tui.js** to see how the diff works.\n\nNow I will verify the fix by running the tests again.\n\n"
@@ -161,5 +221,13 @@ describe("deriveThinkingSteps caching", () => {
 		expect(steps.length).toBeGreaterThan(0)
 		expect(steps[0]?.summary).toBeTruthy()
 		expect(elapsedMs).toBeLessThan(250)
+	})
+
+	it("does not retain snapshots of the growing final step", () => {
+		clearStepDerivationCacheForTesting()
+		for (let index = 1; index <= 20; index += 1) {
+			deriveThinkingSteps(makeBlocks("growing ".repeat(index)))
+		}
+		expect(getStepDerivationCacheSizeForTesting()).toBe(0)
 	})
 })

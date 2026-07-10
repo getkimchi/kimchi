@@ -229,21 +229,41 @@ export function tailRawLines(text: string, maxLines: number): string {
 	return lines.slice(-maxLines).join("\n")
 }
 
+export function tailRawLinesFromBlocks(blocks: ThinkingSourceBlock[], maxLines: number): string {
+	let tail = ""
+	for (let index = blocks.length - 1; index >= 0 && tail.length < LIVE_PREVIEW_TAIL_CHARS; index -= 1) {
+		const suffix = `${index < blocks.length - 1 ? "\n" : ""}${tail}`
+		const remaining = LIVE_PREVIEW_TAIL_CHARS - suffix.length
+		if (remaining <= 0) {
+			tail = suffix.slice(-LIVE_PREVIEW_TAIL_CHARS)
+			break
+		}
+		tail = `${blocks[index]!.text.slice(-remaining)}${suffix}`
+	}
+	return tailRawLines(tail.trim(), maxLines)
+}
+
+function renderedBodyStyleKey(theme: ThinkingThemeLike): string {
+	return [theme.fg("thinkingText", "x"), theme.fg("accent", "x"), theme.fg("muted", "x"), theme.bold("x")].join(
+		"\u0000",
+	)
+}
+
 // The active collapsed view bypasses the component cache every frame so the
 // pulse glyph can animate, but only the header changes between frames. Cache
 // the wrapped body across frames (and across the component instances that
 // updateContent recreates per delta) so idle frames cost nothing.
-let collapsedLiveBodyCache: { width: number; textLength: number; textTail: string; lines: string[] } | undefined
+let collapsedLiveBodyCache: { width: number; textTail: string; styleKey: string; lines: string[] } | undefined
 
-function collapsedLiveBodyLines(theme: ThinkingThemeLike, width: number, fullText: string): string[] {
-	const textTail = tailRawLines(fullText, COLLAPSED_LIVE_LINES)
+function collapsedLiveBodyLines(theme: ThinkingThemeLike, width: number, textTail: string): string[] {
+	const styleKey = renderedBodyStyleKey(theme)
 	const cache = collapsedLiveBodyCache
-	if (cache && cache.width === width && cache.textLength === fullText.length && cache.textTail === textTail) {
+	if (cache && cache.width === width && cache.textTail === textTail && cache.styleKey === styleKey) {
 		return cache.lines
 	}
 	const bodyPrefix = `${theme.fg("muted", "▍")} `
 	const lines = renderWrappedRawText(theme, textTail, width, bodyPrefix).slice(-COLLAPSED_LIVE_LINES)
-	collapsedLiveBodyCache = { width, textLength: fullText.length, textTail, lines }
+	collapsedLiveBodyCache = { width, textTail, styleKey, lines }
 	return lines
 }
 
@@ -264,14 +284,11 @@ function renderCollapsed(
 	const activity = isActive ? pulseGlyph(theme, nowMs) : theme.fg("dim", "·")
 
 	if (isActive) {
-		const fullText = blocks
-			.map((b) => b.text)
-			.join("\n")
-			.trim()
-		if (fullText) {
+		const textTail = tailRawLinesFromBlocks(blocks, COLLAPSED_LIVE_LINES)
+		if (textTail) {
 			const headerPrefix = `${theme.fg("muted", "▍")} `
 			const header = truncateToWidth(`${headerPrefix}${theme.fg("dim", label)} ${icon} ${activity}`, width, "")
-			return [header, ...collapsedLiveBodyLines(theme, width, fullText)]
+			return [header, ...collapsedLiveBodyLines(theme, width, textTail)]
 		}
 	}
 
@@ -427,23 +444,33 @@ function renderWrappedRawText(theme: ThinkingThemeLike, text: string, width: num
 	return rendered
 }
 
-// The expanded view is rebuilt from scratch on every stream chunk (the
-// component is recreated per message_update), but step bodies are immutable
-// once written — only the last step grows. Memoize wrapped lines per
-// (width, body) so each chunk re-wraps only the growing step instead of the
-// whole accumulated text.
-const expandedStepLineCache = new Map<string, string[]>()
+// The expanded view is rebuilt on every stream chunk. Cache one body per
+// (width, step id), replacing the growing step instead of retaining every
+// intermediate snapshot.
+type ExpandedStepLineCacheEntry = { body: string; styleKey: string; lines: string[] }
+const expandedStepLineCache = new Map<string, ExpandedStepLineCacheEntry>()
 const EXPANDED_STEP_CACHE_MAX = 8192
 
-function wrappedStepBodyLines(theme: ThinkingThemeLike, body: string, width: number, prefix: string): string[] {
-	const key = `${width}:${body}`
+export function getExpandedStepLineCacheSizeForTesting(): number {
+	return expandedStepLineCache.size
+}
+
+function wrappedStepBodyLines(
+	theme: ThinkingThemeLike,
+	step: DerivedThinkingStep,
+	body: string,
+	width: number,
+	prefix: string,
+	styleKey: string,
+): string[] {
+	const key = `${width}:${step.id}`
 	const cached = expandedStepLineCache.get(key)
-	if (cached) return cached
+	if (cached && cached.body === body && cached.styleKey === styleKey) return cached.lines
 	const lines = renderWrappedRawText(theme, body, width, prefix)
-	if (expandedStepLineCache.size >= EXPANDED_STEP_CACHE_MAX) {
+	if (!cached && expandedStepLineCache.size >= EXPANDED_STEP_CACHE_MAX) {
 		expandedStepLineCache.clear()
 	}
-	expandedStepLineCache.set(key, lines)
+	expandedStepLineCache.set(key, { body, styleKey, lines })
 	return lines
 }
 
@@ -454,6 +481,7 @@ function renderExpanded(
 	_activeStepId?: string,
 ): string[] {
 	const prefix = `${theme.fg("muted", "▍")} `
+	const styleKey = renderedBodyStyleKey(theme)
 	const lines: string[] = []
 
 	for (let index = 0; index < steps.length; index++) {
@@ -462,7 +490,7 @@ function renderExpanded(
 		if (!normalizedBody) continue
 
 		if (index > 0) lines.push(theme.fg("muted", "▍"))
-		lines.push(...wrappedStepBodyLines(theme, normalizedBody, width, prefix))
+		lines.push(...wrappedStepBodyLines(theme, step, normalizedBody, width, prefix, styleKey))
 	}
 
 	return lines
@@ -501,8 +529,8 @@ export class ThinkingStepsComponent implements Component {
 		scopeKey?: string,
 	) {
 		this.blocks = blocks
-		this.steps = deriveThinkingSteps(blocks)
 		this.scopeKey = scopeKey ?? getCurrentThinkingScopeKey()
+		this.steps = deriveThinkingSteps(blocks)
 	}
 
 	render(width: number): string[] {

@@ -1326,7 +1326,8 @@ type StepDerivation = {
 // deriveThinkingSteps runs on every message_update delta over the full
 // accumulated thinking text; without this cache each delta re-summarizes every
 // step (hundreds of ms on large messages), which starves the render loop and
-// freezes the terminal. Only the growing last step misses the cache.
+// freezes the terminal. The final step may still be growing, so do not cache
+// it; caching each moving tail would retain every streaming snapshot.
 const stepDerivationCache = new Map<string, StepDerivation>()
 const STEP_DERIVATION_CACHE_MAX = 8192
 
@@ -1335,22 +1336,28 @@ const STEP_DERIVATION_CACHE_MAX = 8192
 // latest activity, so deriving them from the tail keeps each delta bounded.
 const STEP_SUMMARY_MAX_CHARS = 16384
 
-function deriveStep(stepText: string): StepDerivation {
+function deriveStep(stepText: string, cacheable: boolean): StepDerivation {
 	const summarySource = stepText.length > STEP_SUMMARY_MAX_CHARS ? stepText.slice(-STEP_SUMMARY_MAX_CHARS) : stepText
-	const cached = stepDerivationCache.get(summarySource)
+	const cached = cacheable ? stepDerivationCache.get(summarySource) : undefined
 	if (cached) return cached
 	const summaryDetails = summarizeThinkingTextDetailed(summarySource)
 	const role = inferThinkingRole(`${summaryDetails.summary}\n${summarySource}`)
 	const derivation: StepDerivation = { summaryDetails, role }
-	if (stepDerivationCache.size >= STEP_DERIVATION_CACHE_MAX) {
-		stepDerivationCache.clear()
+	if (cacheable) {
+		if (stepDerivationCache.size >= STEP_DERIVATION_CACHE_MAX) {
+			stepDerivationCache.clear()
+		}
+		stepDerivationCache.set(summarySource, derivation)
 	}
-	stepDerivationCache.set(summarySource, derivation)
 	return derivation
 }
 
 export function clearStepDerivationCacheForTesting(): void {
 	stepDerivationCache.clear()
+}
+
+export function getStepDerivationCacheSizeForTesting(): number {
+	return stepDerivationCache.size
 }
 
 export function deriveThinkingSteps(blocks: ThinkingSourceBlock[]): DerivedThinkingStep[] {
@@ -1379,7 +1386,8 @@ export function deriveThinkingSteps(blocks: ThinkingSourceBlock[]): DerivedThink
 
 		const stepTexts = splitThinkingIntoStepTexts(block.text)
 		stepTexts.forEach((stepText, stepIndex) => {
-			const { summaryDetails, role } = deriveStep(stepText)
+			const isFinalStep = blockIndex === blocks.length - 1 && stepIndex === stepTexts.length - 1
+			const { summaryDetails, role } = deriveStep(stepText, !isFinalStep)
 			steps.push({
 				id: `${block.contentIndex}-${stepIndex}`,
 				contentIndex: block.contentIndex,
