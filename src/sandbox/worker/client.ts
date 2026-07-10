@@ -107,6 +107,7 @@ export class WorkerClient {
 		path: string,
 		parts: { request: unknown; sessionFile?: string },
 		signal?: AbortSignal,
+		timeoutMs?: number,
 	): Promise<T> {
 		const url = this.#url(path)
 		const form = new FormData()
@@ -126,7 +127,7 @@ export class WorkerClient {
 				body: form,
 			},
 			this.#fetch,
-			this.#timeoutMs,
+			timeoutMs ?? this.#timeoutMs,
 			signal,
 		)
 		await checkResponse(resp, url)

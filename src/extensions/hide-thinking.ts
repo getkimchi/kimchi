@@ -9,8 +9,8 @@
  * upstream framework and are NOT touched by this extension.
  *
  * Behaviour controlled by `hideThinkingBlock` in settings.json:
- * - true: hides thinking content entirely from display
- * - false (default): strips tags, dims content (last 5 lines shown)
+ * - true (default): hides thinking content entirely from display
+ * - false: strips tags, dims content (last 5 lines shown)
  *
  * Architecture:
  * - message_start: initialises per-message streaming state
@@ -75,16 +75,20 @@ export function isHideThinkingEnabled(): boolean {
 function readHideThinkingSetting(): boolean {
 	if (hideThinkingOverride !== undefined) return hideThinkingOverride
 	const settingsPath = getSettingsPath()
-	if (!settingsPath) return false
+	if (!settingsPath) return true
 	try {
 		const raw = readFileSync(settingsPath, "utf-8")
 		const parsed = JSON.parse(raw)
 		if (parsed && typeof parsed === "object" && "hideThinkingBlock" in parsed) {
-			return Boolean((parsed as { hideThinkingBlock: unknown }).hideThinkingBlock)
+			return (parsed as { hideThinkingBlock?: unknown }).hideThinkingBlock === true
 		}
-		return false
-	} catch {
-		return false
+		return true
+	} catch (error) {
+		if (error instanceof Error && (error as NodeJS.ErrnoException).code === "ENOENT") {
+			return true
+		}
+		console.warn(`[hide-thinking] could not read ${settingsPath}:`, error)
+		return true
 	}
 }
 

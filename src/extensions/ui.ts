@@ -215,6 +215,29 @@ function runScript(scriptPath: string, payload: object, tui: TUI, footer: Script
 	})
 }
 
+/**
+ * Hide the cooking animation while an interactive prompt (ui.custom,
+ * ui.select, ui.input, ui.confirm) has keyboard focus, then restore it.
+ *
+ * Only needed for prompts shown *during a turn* (tool execute(),
+ * permission prompts, ferment step recovery). Command handlers run when the
+ * agent is idle and don't need this.
+ *
+ * Uses try/finally so the indicator is restored even if the prompt throws
+ * or the user cancels.
+ */
+export async function withWorkingHidden<T>(
+	ctx: Pick<ExtensionContext, "ui"> | { ui?: { setWorkingVisible?: (visible: boolean) => void } },
+	fn: () => Promise<T>,
+): Promise<T> {
+	ctx.ui?.setWorkingVisible?.(false)
+	try {
+		return await fn()
+	} finally {
+		ctx.ui?.setWorkingVisible?.(true)
+	}
+}
+
 export default function uiExtension(pi: ExtensionAPI) {
 	let unsubModelCycleInput: (() => void) | null = null
 	let scriptFooter: ScriptFooter | null = null
@@ -253,8 +276,6 @@ export default function uiExtension(pi: ExtensionAPI) {
 		setSessionModeOnboardingFooterSuppressed(false)
 		stopWorkingAnimation?.()
 		stopWorkingAnimation = undefined
-		toolsInFlight = 0
-		userInputPending = 0
 		resetState()
 		currentCtx = ctx
 		sessionStartMs = Date.now()
@@ -479,25 +500,30 @@ export default function uiExtension(pi: ExtensionAPI) {
 		if (isBareExitAlias(event.text)) {
 			ctx.shutdown()
 		}
-
-		// User typed something — clear any pending-user-input state so the spinner
-		// does not stay suppressed on the next assistant message that follows.
-		userInputPending = Math.max(0, userInputPending - 1)
 	})
 
 	let stopWorkingAnimation: (() => void) | undefined
-	let toolsInFlight = 0
-	/** Tracks whether a tool-executed block is awaiting user input at the TUI.
-	 *  Incremented when toolsInFlight hits 0 and the UI may be blocking (e.g. questionnaire).
-	 *  Decremented when the user actually types a response (input event).
-	 *  message_start checks this to avoid restarting the spinner while the user is being prompted.
-	 */
-	let userInputPending = 0
-	/** Used by the cooking-animator callback to render the "(thinking…)" /
-	 *  "(thought for Ns)" suffix. Updated on `message_update(thinking_start/_end)`.
-	 */
-	let thinkingStatus: "thinking" | number | null = null
-	let thinkingStartMs = 0
+
+	// ── Indicator lifecycle ──────────────────────────────────────────────────
+	//
+	// The cooking animation is ON whenever the assistant is mid-turn. It starts
+	// at turn_start and stops at message_end / turn_end / agent_end.
+	// tool_execution_end is a no-op — the indicator keeps running through the
+	// tool-result gap because the turn is still active.
+	//
+	// Interactive prompts (ui.custom, ui.select, ui.input, ui.confirm) are the
+	// one exception: while they have keyboard focus the spinner must be hidden
+	// so it doesn't show behind the form. Each tool that shows an interactive
+	// prompt during a turn wraps the call in `withWorkingHidden(ctx, fn)`
+	// (exported below) — it calls setWorkingVisible(false), runs the prompt, then
+	// restores setWorkingVisible(true) in a finally block. Currently:
+	//   - questionnaire       (questionnaire.ts)
+	//   - ask_user / confirm  (ferment/prompt-ui.ts)
+	//   - permission prompts   (permissions/prompts.ts)
+	//   - step recovery        (ferment/tools/steps.ts)
+	//   - phase boundary       (ferment/tools/phases.ts)
+	// Command handlers (/agents, /theme, /mcp, etc.) do NOT need this — they run
+	// when the agent is idle, so the indicator is already off.
 
 	const startIndicator = (ctx: ExtensionContext) => {
 		ctx.ui.setWorkingVisible(true)
@@ -505,14 +531,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 		stopWorkingAnimation = createWorkingAnimator((char, message) => {
 			const accent = resolvedAccentFg(ctx.ui.theme)
 			ctx.ui.setWorkingIndicator({ frames: [`${accent}${char}${RST_FG}`] })
-			let suffix = ""
-			if (thinkingStatus === "thinking") {
-				suffix = ` ${ctx.ui.theme.fg("dim", "(thinking…)")}`
-			} else if (typeof thinkingStatus === "number") {
-				const secs = Math.max(1, Math.round(thinkingStatus / 1000))
-				suffix = ` ${ctx.ui.theme.fg("dim", `(thought for ${secs}s)`)}`
-			}
-			ctx.ui.setWorkingMessage(`${accent}${message}${RST_FG}${suffix}`)
+			ctx.ui.setWorkingMessage(`${accent}${message}${RST_FG}`)
 		})
 	}
 
@@ -526,66 +545,27 @@ export default function uiExtension(pi: ExtensionAPI) {
 		clearTimeout(workedForTimer)
 		workedForTimer = undefined
 		currentCtx = ctx
-		toolsInFlight = 0
-		userInputPending = 0
 		turnStartMs = Date.now()
-		thinkingStatus = null
-		thinkingStartMs = 0
 		refresh("generating")
 		startIndicator(ctx)
 	})
 	pi.on("message_update", (event, ctx) => {
 		const evt = event.assistantMessageEvent as { type: string }
-		if (evt.type === "thinking_start") {
-			thinkingStartMs = Date.now()
-			thinkingStatus = "thinking"
-			// Reasoning is in flight. If the spinner isn't running (e.g. because the
-			// TUI was blocking on a permission prompt) and no suppression is active,
-			// start it so the cooking animation covers the reasoning window.
-			if (ctx && userInputPending === 0) {
-				startIndicator(ctx)
-			}
-		} else if (evt.type === "thinking_end") {
-			if (thinkingStatus === "thinking") {
-				const duration = Date.now() - thinkingStartMs
-				thinkingStatus = duration > 100 ? duration : null
-			}
-		} else if (evt.type === "text_start" && ctx) {
-			// Text content is about to stream. Stop the cooking animation so the
-			// status bar doesn't show a stale message while the response renders.
-			// (The spinner lives in statusContainer and text in chatContainer, so
-			// they don't visually overlap — but the spinner message would be
-			// misleading once visible text starts flowing.)
-			stopIndicator(ctx)
+		if (evt.type === "thinking_start" && ctx) {
+			// Re-arm: a permission prompt or tool result may have stopped the
+			// spinner. Reasoning is in flight — keep the cooking animation visible.
+			startIndicator(ctx)
 		}
 	})
 	pi.on("message_start", (event, ctx) => {
 		if (event.message.role !== "assistant") return
-		// The spinner is intentionally kept alive through message_start so the
-		// cooking animation is visible during the gap before the first content
-		// event arrives — text_start for non-thinking models, thinking_start for
-		// thinking models. For models with significant prefill/reasoning-setup
-		// time, this gap can be tens of seconds; killing the spinner here would
-		// leave the user staring at a blank TUI with no feedback.
-		//
-		// We also re-arm the spinner here: the upstream TUI only creates the
-		// loader when session.isStreaming is true (which becomes true around
-		// message_start). The setWorkingVisible(true) call at turn_start was a
-		// no-op for rendering; this one triggers loader creation so the cooking
-		// animation is visible during the message_start → first_content_event
-		// gap, not just once thinking_start fires.
-		//
-		// text_start and message_end are responsible for stopping the spinner
-		// once content is visible or the assistant finishes.
-		//
-		// We still decrement userInputPending here — it was incremented by
-		// tool_execution_end when the TUI may be blocking on a prompt — so the
-		// suppression is lifted for the next thinking_start or text_start.
-		if (userInputPending > 0) {
-			userInputPending--
-		} else {
-			ctx.ui.setWorkingVisible(true)
-		}
+		// Re-arm the spinner. The upstream TUI only creates its loader once
+		// session.isStreaming is true (which becomes true around message_start),
+		// so the setWorkingVisible(true) call at turn_start was a rendering
+		// no-op. This call triggers loader creation, making the cooking animation
+		// visible during the message_start → first-content-event gap.
+		// message_end stops it again once the assistant finishes.
+		startIndicator(ctx)
 	})
 	pi.on("message_end", (event, ctx) => {
 		if (event.message.role !== "assistant") return
@@ -594,18 +574,13 @@ export default function uiExtension(pi: ExtensionAPI) {
 		stopIndicator(ctx)
 	})
 	pi.on("tool_execution_start", (_, ctx) => {
-		toolsInFlight++
+		// Re-arm: a permission prompt may have stopped the spinner during the
+		// tool's argument-collection phase. The turn is still in flight.
 		startIndicator(ctx)
 	})
-	pi.on("tool_execution_end", (_, ctx) => {
-		toolsInFlight = Math.max(0, toolsInFlight - 1)
-		if (toolsInFlight === 0) {
-			// Last tool finished — the UI may now be blocking waiting for user input
-			// (e.g. a questionnaire prompt). Mark it so message_start does not restart
-			// the spinner on the assistant text that follows before the user responds.
-			userInputPending++
-			stopIndicator(ctx)
-		}
+	pi.on("tool_execution_end", () => {
+		// The turn is still active — keep the indicator running. It stops at the
+		// next message_end (assistant text follows) or turn_end (model stops).
 	})
 	pi.on("turn_end", (_, ctx) => {
 		currentCtx = ctx
@@ -624,10 +599,6 @@ export default function uiExtension(pi: ExtensionAPI) {
 	pi.on("agent_end", (_, ctx) => {
 		clearTimeout(workedForTimer)
 		workedForTimer = undefined
-		toolsInFlight = 0
-		userInputPending = 0
-		thinkingStatus = null
-		thinkingStartMs = 0
 		stopIndicator(ctx)
 	})
 	pi.on("model_select", (_, ctx) => {

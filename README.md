@@ -295,25 +295,41 @@ The agent is prompted to prefer LSP tools over text-based alternatives (e.g., `l
 
 When LSP servers are active, the status bar shows the server name(s) and current diagnostic error count (e.g., `LSP: typescript-language-server (3 diags)`).
 
-## Remote teleport (preview)
+## Remote Sessions
 
-Launch with `kimchi --teleport` to enable session-multiplex commands. The local TUI stays the home base; remote workers are spawned, detached, and re-attached without restarting kimchi.
+Hand off an in-progress session to a cloud sandbox with `/teleport` — the agent keeps running when you close your laptop, switch machines, or hand off to a teammate. Resume from the CLI, the Kimchi console, or VS Code.
+
+> **Requires Kimchi CLI v0.1.52+.** Check with `kimchi --version`, update with `kimchi update`. Not available on Windows.
 
 ```bash
-kimchi --teleport
+/teleport
 ```
-
-Slash commands available inside the TUI:
+### Commands
 
 | Command | Description |
 |---------|-------------|
-| `/teleport [name] [flags]` | Rsync the working tree to a fresh remote sandbox and foreground it. Flags: `--allow-dirty`, `--exclude <glob>`, `--include-ignored`, `--abandon-pending`, `--force` |
-| `/detach [--abandon-pending]` | Drop the WebSocket to the foreground remote and return to the local home base. The server keeps the session running. |
-| `/attach <name-or-id>` | Re-attach to a previously detached remote |
-| `/sessions` | List everything: foreground remote, detached remotes, server-side sessions |
-| `/connect [name-or-id]` | Open an interactive SSH shell on the sandbox via the teleport proxy |
+| `/teleport [name] [flags]` | Rsync working tree to a cloud sandbox and foreground it |
+| `/remote-sessions` | Browse all workspaces and sessions; reattach with Enter |
+| `/sync up\|down --workspace <name> --source <path> --target <path>` | Push or pull files without restarting the session |
+| `/terminal [name-or-id]` | Open a raw SSH shell on the sandbox |
 
-`--teleport` and `--remote` are mutually exclusive. Use `--remote --session <id>` to attach to a single remote at startup; use `--teleport` to multiplex from a local home base.
+
+### `/teleport` flags
+
+| Flag | Description |
+|------|-------------|
+| `--workspace <id\|name>` | Reuse an existing workspace instead of creating a new one |
+| `--git-repo <url>` | Clone from a git URL instead of rsyncing local files |
+| `--branch <branch>` | Branch to check out after cloning (requires `--git-repo`) |
+| `--allow-dirty` | Proceed with uncommitted changes |
+| `--force` | Override the 5 GB workspace size limit |
+| `--no-git-token` | Skip git credentials prompt |
+| `--skip-session` | Start remote agent fresh (don't upload current session history) |
+
+
+Once teleported, you're in the **PTY overlay** — a fullscreen tabbed terminal. Use `Ctrl+B c` / `n` / `p` to open and switch tabs. Press `Ctrl+D` to drop back to local kimchi; the sandbox and agent keep running.
+
+For full documentation see [docs.kimchi.dev/docs/coding-remote-sessions](https://docs.kimchi.dev/docs/coding-remote-sessions).
 
 ## Configuration
 

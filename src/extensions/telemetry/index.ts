@@ -20,6 +20,11 @@ import {
 	type FermentStepFailedPayload,
 	type FermentStepStartedPayload,
 } from "../ferment/domain-events.js"
+import {
+	LOOP_GUARD_EVENTS,
+	type LoopGuardSubagentAbortPayload,
+	type LoopGuardWarnPayload,
+} from "../loop-guard-events.js"
 
 import { handleAgentEnd, handleBeforeAgentStart, handleMessageEnd, handleMessageStart } from "./handlers/messages.js"
 import { emitSessionStartEvent, handleSessionInitialized, handleSessionShutdown } from "./handlers/session.js"
@@ -505,6 +510,35 @@ function onBashGuardAllowedByUserRequest(raw: unknown): void {
 	})
 }
 
+function onLoopGuardWarn(raw: unknown): void {
+	if (!isEnabled()) return
+	const ctx = _ctx
+	if (!ctx) return
+	const payload = raw as LoopGuardWarnPayload
+	// Only structured fields land in OTLP. Raw tool args, command text, and
+	// the human-readable reason string are intentionally NOT emitted to
+	// avoid leaking user data. Mirrors the bash-tool-guard stance.
+	ctx.emit("loop_guard.warn", {
+		model: ctx.currentModel,
+		detector: payload.detector,
+		count: payload.count,
+		is_subagent: payload.is_subagent,
+	})
+}
+
+function onLoopGuardSubagentAbort(raw: unknown): void {
+	if (!isEnabled()) return
+	const ctx = _ctx
+	if (!ctx) return
+	const payload = raw as LoopGuardSubagentAbortPayload
+	ctx.emit("loop_guard.subagent_abort", {
+		model: ctx.currentModel,
+		detector: payload.detector ?? "unknown",
+		count: payload.count,
+		is_subagent: payload.is_subagent,
+	})
+}
+
 // ---------------------------------------------------------------------------
 // Extension factory
 // ---------------------------------------------------------------------------
@@ -542,6 +576,11 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		pi.events.on(BASH_TOOL_GUARD_EVENTS.WARN, onBashGuardWarn)
 		pi.events.on(BASH_TOOL_GUARD_EVENTS.BLOCK, onBashGuardBlock)
 		pi.events.on(BASH_TOOL_GUARD_EVENTS.ALLOWED_BY_USER_REQUEST, onBashGuardAllowedByUserRequest)
+
+		// Subscribe to loop-guard domain events. The guard publishes facts;
+		// telemetry translates them into OTLP records for analytics.
+		pi.events.on(LOOP_GUARD_EVENTS.WARN, onLoopGuardWarn)
+		pi.events.on(LOOP_GUARD_EVENTS.SUBAGENT_ABORT, onLoopGuardSubagentAbort)
 
 		pi.on("session_start", async (_event, extCtx) => {
 			resetBashGuardCounts()

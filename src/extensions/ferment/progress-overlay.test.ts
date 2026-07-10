@@ -83,6 +83,44 @@ describe("progress overlay action handlers", () => {
 		expect(title).toContain("2m ago")
 	})
 
+	it("shows running step count and active step in the title", () => {
+		const { runtime, ferment, step } = createHarness()
+		// The harness has one phase with one step in "running" status.
+		const title = buildPhaseListTitle(ferment, runtime)
+
+		// Progress bar includes a partial-fill glyph (▌) for the running step.
+		expect(title).toContain("▌")
+		// Running step count is shown.
+		expect(title).toContain("+1 running")
+		// "now:" line shows the active phase and the running step description.
+		expect(title).toContain("now:")
+		expect(title).toContain("P1")
+		expect(title).toContain(step.description)
+	})
+
+	it("shows 0% and no running tag when all steps are pending", () => {
+		const { runtime, storage, ferment } = createHarness()
+		// Reset the step back to pending by reading from storage and creating
+		// a fresh ferment with all-pending steps.
+		const fresh = storage.get(ferment.id)
+		if (!fresh) throw new Error("ferment not found in storage")
+		const pendingFerment: Ferment = {
+			...fresh,
+			phases: fresh.phases.map((p) => ({
+				...p,
+				steps: p.steps.map((s) => ({ ...s, status: "pending" as const })),
+			})),
+		}
+		const title = buildPhaseListTitle(pendingFerment, runtime)
+
+		// No partial fill, no running tag.
+		expect(title).not.toContain("▌")
+		expect(title).not.toContain("running")
+		// 0% progress, 0/1 steps.
+		expect(title).toContain("0%")
+		expect(title).toContain("0/1")
+	})
+
 	it("uses injected runtime state for step actions", async () => {
 		const { runtime, storage, ferment, phase, step, ctx, setActiveSpy, clearStepStartSpy } = createHarness()
 
