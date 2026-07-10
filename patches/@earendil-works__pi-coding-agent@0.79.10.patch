@@ -22,25 +22,10 @@
 #   6. dist/modes/interactive/interactive-mode.js — add previewTheme(name) and
 #      dist/core/extensions/types.d.ts              showError(message) to createExtensionUIContext,
 #                                                   and their type declarations to ExtensionUIContext.
-#
-#                                 previewTheme applies a theme live by delegating to
-#                                 InteractiveThemeController.preview() (the same path as
-#                                 the internal onThemePreview callback used by /settings),
-#                                 WITHOUT the settingsManager.setTheme() persistence that
-#                                 the public ui.setTheme() includes.
-#
-#                                 Why a patch is required: the public ExtensionUIContext conflates
-#                                 "change the rendered theme" and "persist to settingsManager" — the
-#                                 public ui.setTheme() always does both. Theme preview already exists
-#                                 inside InteractiveMode (used by /settings via the private
-#                                 themeController.preview()); the patch simply promotes it to the
-#                                 extension API surface. There is no public-API-only workaround: the
-#                                 only alternative is ui.setTheme() on each arrow-key press, which
-#                                 writes to disk every keystroke and leaves a dirty settings state
-#                                 if the user cancels.
-#
-#                                 showError delegates to the inherited SessionMode.showError so
-#                                 extensions can surface error overlays (not toasts).
+#   7. dist/core/tools/bash.js — destroy child stdio streams 500ms after a timeout kill
+#      so the tool call returns even when setsid'd grandchildren (e.g. bubblewrap used
+#      by opam install on Linux) escape the process group SIGKILL and keep the stdout
+#      pipe open, which would otherwise cause waitForChildProcess to hang indefinitely.
 #
 # Tracking: open an upstream PR against pi-mono to ship before_provider_headers as
 # a first-class extension hook in ExtensionRunner and ExtensionAPI. Also track a
@@ -58,7 +43,11 @@
 #   - Item 5: individual fixes land upstream and the patched version is updated.
 #   - Item 6 (previewTheme + showError): upstream pi-coding-agent ships previewTheme
 #     and showError on ExtensionUIContext and the fixed version is pinned in package.json.
-#
+#   - Item 7 (bash timeout stream destroy): upstream pi-coding-agent's
+#     createLocalBashOperations destroys child stdio after a timeout kill (or
+#     waitForChildProcess gains a max-wait that forces resolution), and the
+#     fixed version is pinned in package.json.
+
 diff --git a/dist/cli/args.js b/dist/cli/args.js
 index 6bd8f43b4402dbd24f9262c4c059b2c06693a79c..ad705421fb9087efd8ad2cfbfe8709d198245751 100644
 --- a/dist/cli/args.js
@@ -258,6 +247,27 @@ index e386db6d62622a8c77c7d7e9844e63020d8af39a..f2f9e0161b47f7111df88f429c36feb7
              });
          },
          onPayload: async (payload, _model) => {
+diff --git a/dist/core/tools/bash.js b/dist/core/tools/bash.js
+index 98b69bb9ccf6464dfaec7b2271cf78677cb73ce9..659fe9c52d0acac4080abfc6d3b92d865d141a4c 100644
+--- a/dist/core/tools/bash.js
++++ b/dist/core/tools/bash.js
+@@ -62,6 +62,16 @@ export function createLocalBashOperations(options) {
+                         timedOut = true;
+                         if (child.pid)
+                             killProcessTree(child.pid);
++                        // Destroy stdio streams after a short grace so the tool
++                        // call returns even when setsid'd grandchildren (e.g.
++                        // bubblewrap used by opam install on Linux) escape the
++                        // process-group SIGKILL, inherit the pipe, and keep
++                        // writing — which would re-arm waitForChildProcess's
++                        // grace timer indefinitely.
++                        setTimeout(() => {
++                            child.stdout?.destroy();
++                            child.stderr?.destroy();
++                        }, 500);
+                     }, timeout * 1000);
+                 }
+                 // Stream stdout and stderr.
 diff --git a/dist/core/tools/edit.js b/dist/core/tools/edit.js
 index bf8a79ebfdbe23415cd1effdd3db0b9ebfd804bc..f69116ceafe8ee7f1e2dbfeaa37f60c5d97aa84c 100644
 --- a/dist/core/tools/edit.js
@@ -481,7 +491,7 @@ index 0e85e9006835b754e38a7af725b4f1ca18eb3a61..94ea3d983a2abe039a7729d452f60c32
              color: (content) => theme.fg("userMessageText", content),
          }, { preserveOrderedListMarkers: true }));
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index 85c551f8630bc7d021825359095a8b552cbfb518..3b97e69d382bb0315b4907568fddb446e6cefe56 100644
+index 85c551f8630bc7d021825359095a8b552cbfb518..30f3116df69289dbac01ebbc2439e821e07c86af 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
 @@ -1592,6 +1592,7 @@ export class InteractiveMode {
@@ -548,11 +558,12 @@ index 85c551f8630bc7d021825359095a8b552cbfb518..3b97e69d382bb0315b4907568fddb446
          const model = await this.findExactModelMatch(searchTerm);
          if (model) {
              try {
-diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
---- a/dist/modes/interactive/interactive-mode.js
-+++ b/dist/modes/interactive/interactive-mode.js
-@@ -4291,3 +4292,3 @@
+@@ -4255,7 +4289,7 @@ export class InteractiveMode {
+         const outputPath = this.getPathCommandArgument(text, "/export");
+         try {
              if (outputPath?.endsWith(".jsonl")) {
 -                const filePath = this.session.exportToJsonl(outputPath);
 +                const filePath = await this.session.exportToJsonl(outputPath);
                  this.showStatus(`Session exported to: ${filePath}`);
+             }
+             else {
