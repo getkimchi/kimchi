@@ -9,7 +9,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Static } from "typebox"
 import { determineNextAction } from "../../../ferment/engine.js"
-import type { Ferment, Phase, Step, StepResult } from "../../../ferment/types.js"
+import type { Ferment, Phase, Step, StepResult, StepRoutingDecision } from "../../../ferment/types.js"
 import { getAgentRecordForTaskValidation } from "../../agents/index.js"
 import { FERMENT_WORKER_BUDGETS, type FermentWorkerBudgetTier } from "../../agents/worker-budget-policy.js"
 import { getMultiModelEnabled } from "../../prompt-construction/prompt-enrichment.js"
@@ -177,6 +177,16 @@ function validateLinkedWorker(params: CompleteStepArgs): string | null {
 		return `Worker Agent "${params.worker_agent_id}" exhausted its budget (${latest.reason ?? "budget"}). Do not complete this step from an aborted result. Inspect agent_outcome.report first: call resume_subagent with a bounded steering prompt when remaining_steps are a direct continuation; use a changed-approach continuation when the same thread still matters but the prior approach stalled; spawn a new linked Agent when remaining_steps have a clean narrower task boundary; use purpose "finalize_report" if the report is missing; or stop/report if blocked. Complete only from a linked worker whose latest outcome and report.status are completed.`
 	}
 	return `Worker Agent "${params.worker_agent_id}" outcome is ${latest.outcome}${latest.reason ? ` (${latest.reason})` : ""}. Complete requires a linked worker whose latest outcome is completed. Spawn a corrected linked replacement Agent or stop and report the failure.`
+}
+
+function extractRoutingDecision(workerAgentId: string | undefined): StepRoutingDecision | undefined {
+	if (!workerAgentId) return undefined
+	const record = getAgentRecordForTaskValidation(workerAgentId)
+	if (!record) return undefined
+	return {
+		subagentType: record.type,
+		...(record.modelId ? { modelId: record.modelId } : {}),
+	}
 }
 
 async function runVerificationCommand({
@@ -411,6 +421,8 @@ export async function completeStep(
 	const workerError = validateLinkedWorker(params)
 	if (workerError) return toolErrWithNextAction(workerError, f)
 
+	const routingDecision = extractRoutingDecision(params.worker_agent_id)
+
 	// Gate validation runs BEFORE any state mutation. Step-level flags don't
 	// feed the phase retry/escalation pipeline - they just refuse this single
 	// call, and the agent has to fix the underlying issue and re-call.
@@ -431,6 +443,7 @@ export async function completeStep(
 			phaseId: phase.id,
 			stepId: step.id,
 			summary: params.summary,
+			routingDecision,
 		})
 		if (!completeOutcome.ok) return failedToolResult(completeOutcome.error, f)
 		runtime.clearStepStart(f.id, phase.id, step.id)
@@ -466,6 +479,7 @@ export async function completeStep(
 		stepId: step.id,
 		result: verifyResult,
 		summary: params.summary,
+		routingDecision,
 	})
 	if (!verifyOutcome.ok) return failedToolResult(verifyOutcome.error, f)
 	runtime.clearStepStart(f.id, phase.id, step.id)

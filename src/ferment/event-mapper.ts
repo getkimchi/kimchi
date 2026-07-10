@@ -219,7 +219,12 @@ export function commandToEvents(cmd: Command, pre: Ferment, post: Ferment, ctx: 
 			// records as "verified", causing a hash chain mismatch on every
 			// successful verified completion. Folding through applyFermentEvent
 			// keeps the chain truthful.
-			b.push("step_completed", { phaseId: cmd.phaseId, stepId: cmd.stepId, completedAt: ctx.now })
+			b.push("step_completed", {
+				phaseId: cmd.phaseId,
+				stepId: cmd.stepId,
+				completedAt: ctx.now,
+				...(cmd.routingDecision ? { routingDecision: cmd.routingDecision } : {}),
+			})
 			if (cmd.grade) {
 				b.push("step_graded", {
 					phaseId: cmd.phaseId,
@@ -238,6 +243,7 @@ export function commandToEvents(cmd: Command, pre: Ferment, post: Ferment, ctx: 
 				result: cmd.result,
 				verifiedAt: ctx.now,
 				exitCode: cmd.result.exitCode,
+				...(cmd.routingDecision ? { routingDecision: cmd.routingDecision } : {}),
 			})
 			return b.events
 

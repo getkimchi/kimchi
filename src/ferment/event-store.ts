@@ -245,6 +245,8 @@ export interface StepCompletedPayload {
 	phaseId: string
 	stepId: string
 	completedAt: string
+	/** Routing decision recorded at completion time for audit purposes. */
+	routingDecision?: import("./types.js").StepRoutingDecision
 }
 
 export interface StepSkippedPayload {
@@ -266,6 +268,8 @@ export interface StepVerifiedPayload {
 	result: StepResult
 	verifiedAt: string
 	exitCode?: number
+	/** Routing decision recorded at verification time for audit purposes. */
+	routingDecision?: import("./types.js").StepRoutingDecision
 }
 
 export interface StepGradedPayload {

@@ -88,8 +88,17 @@ export type Command =
 			/** Short worker-written summary of what was accomplished. Persisted on
 			 *  the Step so subsequent steps in the same phase can reference it. */
 			summary?: string
+			/** Routing decision recorded from the linked worker agent, if one was spawned. */
+			routingDecision?: import("./types.js").StepRoutingDecision
 	  }
-	| { type: "verify_step"; phaseId: string; stepId: string; result: StepResult; summary?: string }
+	| {
+			type: "verify_step"
+			phaseId: string
+			stepId: string
+			result: StepResult
+			summary?: string
+			routingDecision?: import("./types.js").StepRoutingDecision
+	  }
 	| { type: "skip_step"; phaseId: string; stepId: string }
 	| { type: "fail_step"; phaseId: string; stepId: string; error?: string }
 	| { type: "update_step_description"; phaseId: string; stepId: string; description: string }
@@ -618,6 +627,7 @@ function handleCompleteStep(
 				result: cmd.result,
 				grade: cmd.grade,
 				summary: cmd.summary,
+				routingDecision: cmd.routingDecision,
 			}),
 		}),
 	)
@@ -649,6 +659,7 @@ function handleVerifyStep(
 				completedAt: ctx.now,
 				result: { ...cmd.result, completedAt: ctx.now },
 				summary: cmd.summary,
+				routingDecision: cmd.routingDecision,
 			}),
 		}),
 	)

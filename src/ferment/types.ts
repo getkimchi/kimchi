@@ -183,6 +183,17 @@ export interface Step {
 	 *  Surfaced in worker context for subsequent steps in the same phase
 	 *  so they don't redo work or miss prior decisions. */
 	summary?: string
+
+	/** Model routing decision recorded when a linked worker was spawned for this step. */
+	routingDecision?: StepRoutingDecision
+}
+
+/** Records which subagent type and model were assigned to execute a step. */
+export interface StepRoutingDecision {
+	/** The subagent_type passed to the Agent tool (e.g. "builder", "explorer"). */
+	subagentType: string
+	/** The resolved model ID of the worker agent, if available. */
+	modelId?: string
 }
 
 export interface Verification {
