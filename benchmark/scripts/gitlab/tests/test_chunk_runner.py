@@ -147,7 +147,6 @@ def test_main_exits_zero_when_no_tasks_need_retry(
     monkeypatch.setenv("MODEL", "kimchi-dev/kimi-k2.6")
     monkeypatch.setenv("KIMCHI_API_KEY", "test-key")
     monkeypatch.setenv("DATASET", "terminal-bench/terminal-bench-2")
-    monkeypatch.setenv("KIMCHI_MULTI_MODEL", "false")
     monkeypatch.setenv("KIMCHI_FERMENT_ONESHOT", "false")
 
     # Pre-populate the workspace with both tasks done as passes
@@ -183,7 +182,6 @@ def test_main_invokes_harbor_for_missing_tasks(
     monkeypatch.setenv("MODEL", "kimchi-dev/kimi-k2.6")
     monkeypatch.setenv("KIMCHI_API_KEY", "test-key")
     monkeypatch.setenv("DATASET", "terminal-bench/terminal-bench-2")
-    monkeypatch.setenv("KIMCHI_MULTI_MODEL", "false")
     monkeypatch.setenv("KIMCHI_FERMENT_ONESHOT", "false")
 
     # Pre-populate: only task-a is done. task-b is missing.
@@ -236,7 +234,6 @@ def test_main_writes_chunk_meta_on_success(
     monkeypatch.setenv("MODEL", "kimchi-dev/kimi-k2.6")
     monkeypatch.setenv("KIMCHI_API_KEY", "test-key")
     monkeypatch.setenv("DATASET", "terminal-bench/terminal-bench-2")
-    monkeypatch.setenv("KIMCHI_MULTI_MODEL", "false")
     monkeypatch.setenv("KIMCHI_FERMENT_ONESHOT", "false")
 
     def fake_harbor(*, cmd, cwd, env):
@@ -283,7 +280,6 @@ def test_main_passes_unique_job_name_per_chunk(
     monkeypatch.setenv("MODEL", "kimchi-dev/kimi-k2.6")
     monkeypatch.setenv("KIMCHI_API_KEY", "test-key")
     monkeypatch.setenv("DATASET", "terminal-bench/terminal-bench-2")
-    monkeypatch.setenv("KIMCHI_MULTI_MODEL", "false")
     monkeypatch.setenv("KIMCHI_FERMENT_ONESHOT", "false")
     monkeypatch.setenv("CI_JOB_ID", "12345")
 
@@ -332,7 +328,6 @@ def test_main_detects_retry_via_chunk_meta(
     monkeypatch.setenv("MODEL", "kimchi-dev/kimi-k2.6")
     monkeypatch.setenv("KIMCHI_API_KEY", "test-key")
     monkeypatch.setenv("DATASET", "terminal-bench/terminal-bench-2")
-    monkeypatch.setenv("KIMCHI_MULTI_MODEL", "false")
     monkeypatch.setenv("KIMCHI_FERMENT_ONESHOT", "false")
 
     def fake_harbor(*, cmd, cwd, env):
@@ -668,19 +663,22 @@ def test_restore_prior_artifact_uses_include_retried(
     "env,expected",
     [
         # non-kimchi agents always get "default"
-        ({"CODING_AGENT": "claude-code", "KIMCHI_MULTI_MODEL": "true", "KIMCHI_FERMENT_ONESHOT": "false"}, "default"),
+        (
+            {"CODING_AGENT": "claude-code", "MODEL": "kimchi-dev/kimi-k2.7", "KIMCHI_FERMENT_ONESHOT": "false"},
+            "default",
+        ),
         ({"CODING_AGENT": "opencode"}, "default"),
-        # kimchi + multi-model combinations
-        ({"CODING_AGENT": "kimchi", "KIMCHI_MULTI_MODEL": "true", "KIMCHI_FERMENT_ONESHOT": "false"}, "multi-mode"),
-        ({"CODING_AGENT": "kimchi", "KIMCHI_MULTI_MODEL": "true", "KIMCHI_FERMENT_ONESHOT": "true"}, "multi-mode-ferment"),  # noqa: E501
-        ({"CODING_AGENT": "kimchi", "KIMCHI_MULTI_MODEL": "false", "KIMCHI_FERMENT_ONESHOT": "false"}, "single-model"),
-        ({"CODING_AGENT": "kimchi", "KIMCHI_MULTI_MODEL": "false", "KIMCHI_FERMENT_ONESHOT": "true"}, "single-model-ferment"),  # noqa: E501
-        # defaults: CODING_AGENT=kimchi, KIMCHI_MULTI_MODEL=true → multi-mode
-        ({}, "multi-mode"),
+        # kimchi mode is selected through MODEL
+        ({"CODING_AGENT": "kimchi", "MODEL": "multi-model", "KIMCHI_FERMENT_ONESHOT": "false"}, "multi-mode"),
+        ({"CODING_AGENT": "kimchi", "MODEL": "multi-model", "KIMCHI_FERMENT_ONESHOT": "true"}, "multi-mode-ferment"),
+        ({"CODING_AGENT": "kimchi", "MODEL": "kimchi-dev/kimi-k2.7", "KIMCHI_FERMENT_ONESHOT": "false"}, "single-model"),  # noqa: E501
+        ({"CODING_AGENT": "kimchi", "MODEL": "kimchi-dev/kimi-k2.7", "KIMCHI_FERMENT_ONESHOT": "true"}, "single-model-ferment"),  # noqa: E501
+        # defaults: CODING_AGENT=kimchi with a concrete model
+        ({}, "single-model"),
     ],
 )
 def test_derive_configuration(env: dict, expected: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    for key in ("CODING_AGENT", "KIMCHI_MULTI_MODEL", "KIMCHI_FERMENT_ONESHOT"):
+    for key in ("CODING_AGENT", "MODEL", "KIMCHI_FERMENT_ONESHOT"):
         monkeypatch.delenv(key, raising=False)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
@@ -706,7 +704,6 @@ def _main_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **overrides: str)
         "MODEL": "kimchi-dev/kimi-k2.6",
         "KIMCHI_API_KEY": "test-key",
         "DATASET": "terminal-bench/terminal-bench-2",
-        "KIMCHI_MULTI_MODEL": "false",
         "KIMCHI_FERMENT_ONESHOT": "false",
     }
     for key, val in {**defaults, **overrides}.items():
@@ -733,6 +730,15 @@ def test_tasks_all_fetches_all_tasks(
         main()
 
     mock_fetch.assert_called_once()
+
+
+def test_multi_model_is_rejected_for_non_kimchi_agent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _main_env(tmp_path, monkeypatch, CODING_AGENT="opencode", MODEL="multi-model")
+
+    assert main() == 1
+    assert "MODEL=multi-model is only supported when CODING_AGENT=kimchi" in capsys.readouterr().err
 
 
 def test_tasks_all_false_uses_selected_tasks_json(
@@ -773,8 +779,7 @@ def test_build_gcs_key_prefix_is_pipeline_level(monkeypatch: pytest.MonkeyPatch)
     pipeline_a = {
         "BENCHMARK_NAME": "terminal-bench-2",
         "CODING_AGENT": "kimchi",
-        "MODEL": "anthropic/claude-sonnet-4-20250514",
-        "KIMCHI_MULTI_MODEL": "true",
+        "MODEL": "multi-model",
         "KIMCHI_FERMENT_ONESHOT": "false",
         "CI_COMMIT_REF_NAME": "benchmarks",
         "CI_COMMIT_SHA": "abc1234567890abcdef1234567890abcdef12345",
@@ -787,7 +792,6 @@ def test_build_gcs_key_prefix_is_pipeline_level(monkeypatch: pytest.MonkeyPatch)
         "BENCHMARK_NAME",
         "CODING_AGENT",
         "MODEL",
-        "KIMCHI_MULTI_MODEL",
         "KIMCHI_FERMENT_ONESHOT",
         "CI_COMMIT_REF_NAME",
         "CI_COMMIT_SHA",
@@ -839,8 +843,7 @@ def test_write_run_metadata_is_pipeline_level(
     monkeypatch.setenv("BENCHMARK_RUN_METADATA", str(metadata_path))
     monkeypatch.setenv("BENCHMARK_NAME", "terminal-bench-2")
     monkeypatch.setenv("CODING_AGENT", "kimchi")
-    monkeypatch.setenv("MODEL", "anthropic/claude-sonnet-4-20250514")
-    monkeypatch.setenv("KIMCHI_MULTI_MODEL", "true")
+    monkeypatch.setenv("MODEL", "multi-model")
     monkeypatch.setenv("KIMCHI_FERMENT_ONESHOT", "false")
     monkeypatch.setenv("CI_COMMIT_REF_NAME", "benchmarks")
     monkeypatch.setenv("CI_COMMIT_SHA", "abc1234567890abcdef1234567890abcdef12345")
@@ -860,6 +863,12 @@ def test_write_run_metadata_is_pipeline_level(
     # traceability, not for the GCS prefix.
     assert metadata["gitlab"]["job_id"] == "9002"
     assert metadata["gitlab"]["pipeline_id"] == "1001"
+    assert metadata["model"] == "multi-model"
+    assert metadata["model_provider"] == "kimchi"
+    assert metadata["model_name"] == "multi-model"
+    assert metadata["configuration"] == "multi-mode"
+    assert metadata["multi_mode"] is True
+    assert "/model_provider=kimchi/model=multi-model/configuration=multi-mode/" in metadata["gcs"]["prefix"]
 
 
 def test_write_run_metadata_includes_tasks_all(
@@ -870,8 +879,7 @@ def test_write_run_metadata_includes_tasks_all(
     monkeypatch.setenv("BENCHMARK_RUN_METADATA", str(metadata_path))
     monkeypatch.setenv("BENCHMARK_NAME", "terminal-bench-2")
     monkeypatch.setenv("CODING_AGENT", "kimchi")
-    monkeypatch.setenv("MODEL", "anthropic/claude-sonnet-4-20250514")
-    monkeypatch.setenv("KIMCHI_MULTI_MODEL", "true")
+    monkeypatch.setenv("MODEL", "multi-model")
     monkeypatch.setenv("KIMCHI_FERMENT_ONESHOT", "false")
     monkeypatch.setenv("BENCH_TASKS_ALL", "true")
     monkeypatch.setenv("CI_COMMIT_REF_NAME", "benchmarks")
@@ -899,7 +907,6 @@ def test_build_gcs_key_prefix_uses_benchmark_name_env(
     minimal_env = {
         "CODING_AGENT": "kimchi",
         "MODEL": "kimchi-dev/kimi-k2.6",
-        "KIMCHI_MULTI_MODEL": "false",
         "KIMCHI_FERMENT_ONESHOT": "false",
         "CI_COMMIT_REF_NAME": "benchmarks",
         "CI_COMMIT_SHA": "abc1234567890abcdef1234567890abcdef12345",
@@ -911,7 +918,6 @@ def test_build_gcs_key_prefix_uses_benchmark_name_env(
         "BENCHMARK_NAME",
         "CODING_AGENT",
         "MODEL",
-        "KIMCHI_MULTI_MODEL",
         "KIMCHI_FERMENT_ONESHOT",
         "CI_COMMIT_REF_NAME",
         "CI_COMMIT_SHA",

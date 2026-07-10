@@ -26,7 +26,6 @@ def test_empty_slice_exits_zero(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("MODEL", "kimchi-dev/kimi-k2.6")
     monkeypatch.setenv("KIMCHI_API_KEY", "test-key")
     monkeypatch.setenv("DATASET", "terminal-bench/terminal-bench-2")
-    monkeypatch.setenv("KIMCHI_MULTI_MODEL", "false")
     monkeypatch.setenv("KIMCHI_FERMENT_ONESHOT", "false")
     monkeypatch.setenv("BENCHMARK_GCS_BUCKET", "test-bucket")
 

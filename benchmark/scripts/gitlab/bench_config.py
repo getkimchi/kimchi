@@ -26,7 +26,14 @@ from outcome import Outcome
 
 # --- Model ---
 ENV_MODEL = "MODEL"
+MULTI_MODEL = "multi-model"
 DEFAULT_MODEL = "kimchi-dev/minimax-m3"
+
+
+def is_multi_model(model: str | None = None) -> bool:
+    """Return whether the selected benchmark model is Kimchi's virtual multi-model mode."""
+    selected = model if model is not None else os.environ.get(ENV_MODEL, DEFAULT_MODEL)
+    return selected == MULTI_MODEL
 
 
 def parse_model() -> tuple[str, str]:
@@ -36,6 +43,8 @@ def parse_model() -> tuple[str, str]:
     can override MODEL before the function is called.
     """
     model = os.environ.get(ENV_MODEL, DEFAULT_MODEL)
+    if is_multi_model(model):
+        return ("kimchi", MULTI_MODEL)
     provider, _, name = model.partition("/")
     return (provider, name) if name else ("unknown", model)
 
@@ -43,9 +52,6 @@ def parse_model() -> tuple[str, str]:
 # --- Agent / mode flags ---
 ENV_CODING_AGENT = "CODING_AGENT"
 DEFAULT_CODING_AGENT = "kimchi"
-
-ENV_KIMCHI_MULTI_MODEL = "KIMCHI_MULTI_MODEL"
-DEFAULT_KIMCHI_MULTI_MODEL = "true"
 
 ENV_KIMCHI_FERMENT_ONESHOT = "KIMCHI_FERMENT_ONESHOT"
 DEFAULT_KIMCHI_FERMENT_ONESHOT = "false"

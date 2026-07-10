@@ -69,21 +69,20 @@ def test_command_does_not_include_retry_flags_for_non_claude_code() -> None:
     assert "--max-retries" not in cmd
 
 
-def test_command_includes_agent_kwargs_for_kimchi_multi_model() -> None:
+def test_command_passes_multi_model_as_virtual_model_without_agent_kwarg() -> None:
     cmd = build_harbor_command(
         tasks=["task-a"],
         agent_import_path="kimchi_agent:Kimchi",
-        model="kimchi-dev/kimi-k2.6",
+        model="multi-model",
         dataset="terminal-bench/terminal-bench-2",
         parallelism=1,
         attempts=1,
         timeout_multiplier=1.0,
-        kimchi_multi_model=True,
     )
 
-    # Find the multi-model kwarg
     pairs = list(itertools.pairwise(cmd))
-    assert ("--agent-kwarg", "multi-model=true") in pairs
+    assert ("--model", "multi-model") in pairs
+    assert ("--agent-kwarg", "multi-model=true") not in pairs
 
 
 def test_command_includes_kimchi_ferment_oneshot_kwarg() -> None:

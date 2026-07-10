@@ -88,7 +88,6 @@ setup-image:
     GCS_UPLOAD_REQUIRED: "true"
     BENCH_TASKS_ALL: "$[[ inputs.tasks_all ]]"
     KIMCHI_FERMENT_ONESHOT: "$[[ inputs.kimchi_ferment_oneshot ]]"
-    KIMCHI_MULTI_MODEL: "$[[ inputs.kimchi_multi_model ]]"
     RUN_ID: "gitlab-p$CI_PIPELINE_ID"
     BENCH_CHUNK_INDEX: "$CHUNK"
     BENCH_CHUNK_COUNT: 3
@@ -118,7 +117,6 @@ setup-image:
         echo "tasks:                    ${SELECTED_TASKS_JSON:-}"
       fi
       echo "model:                    ${MODEL}"
-      echo "kimchi_multi_model:       ${KIMCHI_MULTI_MODEL}"
       echo "kimchi_ferment_oneshot:   ${KIMCHI_FERMENT_ONESHOT}"
       echo "parallelism:              ${BENCH_PARALLELISM}"
       echo "attempts:                 ${BENCH_ATTEMPTS}"
@@ -133,7 +131,7 @@ setup-image:
       echo "------------------------------------------"
       if [ "${CODING_AGENT}" = "kimchi" ]; then
         model_label="single-model"
-        [ "${KIMCHI_MULTI_MODEL}" = "true" ] && model_label="multi-model"
+        [ "${MODEL}" = "multi-model" ] && model_label="multi-model"
         extras=""
         [ "${KIMCHI_FERMENT_ONESHOT}" = "true" ] && extras=" · ferment"
         echo "Configuration: ${model_label}${extras}"

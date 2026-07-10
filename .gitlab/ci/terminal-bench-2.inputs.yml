@@ -121,19 +121,16 @@ inputs:
       - winning-avg-corewars
       - write-compressor
   model:
-    description: "Kimchi model used for the benchmark run."
+    description: "Kimchi model or execution mode. Select multi-model to use the target ref's default role configuration."
     type: string
     default: "kimchi-dev/minimax-m3"
     options:
+      - multi-model
       - kimchi-dev/kimi-k2.7
       - kimchi-dev/claude-sonnet-4-6
       - kimchi-dev/claude-opus-4-6
       - kimchi-dev/minimax-m3
       - kimchi-dev/glm-5.2-fp8
-  kimchi_multi_model:
-    description: "Enable Kimchi multi-model routing. Ignored unless agent is kimchi."
-    type: boolean
-    default: true
   kimchi_ferment_oneshot:
     description: "Run each task through Kimchi ferment one-shot workflow. Ignored unless agent is kimchi."
     type: boolean

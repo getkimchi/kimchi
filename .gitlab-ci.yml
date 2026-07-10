@@ -11,7 +11,7 @@ stages:
   - summarize
 
 workflow:
-  name: 'Terminal Bench $[[ inputs.dataset_version ]] — $[[ inputs.agent ]] · $[[ inputs.model ]] · $[[ inputs.target_ref ]] · multi-model=$[[ inputs.kimchi_multi_model ]] · ferment=$[[ inputs.kimchi_ferment_oneshot ]] · tasks_all=$[[ inputs.tasks_all ]]'
+  name: 'Terminal Bench $[[ inputs.dataset_version ]] — $[[ inputs.agent ]] · $[[ inputs.model ]] · $[[ inputs.target_ref ]] · ferment=$[[ inputs.kimchi_ferment_oneshot ]] · tasks_all=$[[ inputs.tasks_all ]]'
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       variables:
@@ -33,7 +33,6 @@ include:
       benchmark_tag: $[[ inputs.benchmark_tag ]]
       tasks: $[[ inputs.tasks ]]
       model: $[[ inputs.model ]]
-      kimchi_multi_model: $[[ inputs.kimchi_multi_model ]]
       kimchi_ferment_oneshot: $[[ inputs.kimchi_ferment_oneshot ]]
       analyze_results: $[[ inputs.analyze_results ]]
       tasks_all: $[[ inputs.tasks_all ]]

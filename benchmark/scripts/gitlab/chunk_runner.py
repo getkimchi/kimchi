@@ -37,7 +37,6 @@ from bench_config import (
     DEFAULT_BENCHMARK_RESULTS_DIR,
     DEFAULT_BENCHMARK_RUN_METADATA,
     DEFAULT_CODING_AGENT,
-    DEFAULT_KIMCHI_MULTI_MODEL,
     DEFAULT_MODEL,
     ENV_BENCH_TASKS_ALL,
     ENV_BENCHMARK_NAME,
@@ -46,8 +45,9 @@ from bench_config import (
     ENV_BENCHMARK_TARGET_REF,
     ENV_CODING_AGENT,
     ENV_KIMCHI_FERMENT_ONESHOT,
-    ENV_KIMCHI_MULTI_MODEL,
     ENV_MODEL,
+    MULTI_MODEL,
+    is_multi_model,
     is_retryable,
     load_llm_params,
     parse_model,
@@ -280,9 +280,8 @@ def _derive_configuration() -> str:
 
 
 def _configuration_segment() -> str:
-    """Return 'multi-mode' or 'single-model' based on KIMCHI_MULTI_MODEL."""
-    raw = os.environ.get(ENV_KIMCHI_MULTI_MODEL, DEFAULT_KIMCHI_MULTI_MODEL).strip().lower()
-    return "single-model" if raw in ("0", "false", "no") else "multi-mode"
+    """Return the Kimchi mode selected through MODEL."""
+    return "multi-mode" if is_multi_model() else "single-model"
 
 
 def _build_gcs_key_prefix() -> str:
@@ -350,16 +349,17 @@ def _write_run_metadata(
     job_id = os.environ.get("CI_JOB_ID", "unknown")
     run_id = f"gitlab-p{pipeline_id}"
 
+    coding_agent = os.environ.get(ENV_CODING_AGENT, DEFAULT_CODING_AGENT)
     metadata = {
         "schema_version": 1,
         "benchmark_tag": os.environ.get("BENCHMARK_TAG", ""),
         "benchmark": os.environ.get(ENV_BENCHMARK_NAME, DEFAULT_BENCHMARK_NAME),
-        "coding_agent": os.environ.get(ENV_CODING_AGENT, DEFAULT_CODING_AGENT),
+        "coding_agent": coding_agent,
         "model": model,
         "model_provider": model_provider,
         "model_name": model_name,
         "configuration": _derive_configuration(),
-        "multi_mode": _env_bool("KIMCHI_MULTI_MODEL", True),
+        "multi_mode": coding_agent == "kimchi" and is_multi_model(model),
         "ferment": _env_bool("KIMCHI_FERMENT_ONESHOT", False),
         "tasks_all": _env_bool(ENV_BENCH_TASKS_ALL, False),
         "selected_tasks": selected_tasks,
@@ -717,10 +717,12 @@ def main() -> int:
     timeout_multiplier = _env_float("BENCH_TIMEOUT_MULTIPLIER", 1.0)
     coding_agent = os.environ.get(ENV_CODING_AGENT, DEFAULT_CODING_AGENT)
     model = os.environ.get(ENV_MODEL, DEFAULT_MODEL)
-    kimchi_multi_model = _env_bool(ENV_KIMCHI_MULTI_MODEL, True)
     kimchi_ferment_oneshot = _env_bool(ENV_KIMCHI_FERMENT_ONESHOT, False)
     dataset = os.environ.get("DATASET", "terminal-bench/terminal-bench-2")
     api_key = os.environ.get("KIMCHI_API_KEY")
+    if model == MULTI_MODEL and coding_agent != "kimchi":
+        print("MODEL=multi-model is only supported when CODING_AGENT=kimchi", file=sys.stderr)
+        return 1
     if not api_key:
         print("KIMCHI_API_KEY is required", file=sys.stderr)
         return 1
@@ -813,7 +815,6 @@ def main() -> int:
         timeout_multiplier=timeout_multiplier,
         jobs_dir=results_dir,
         job_name=job_name,
-        kimchi_multi_model=kimchi_multi_model,
         kimchi_ferment_oneshot=kimchi_ferment_oneshot,
         coding_agent=coding_agent,
         llm_params=llm_params,

@@ -25,7 +25,6 @@ def build_harbor_command(
     timeout_multiplier: float,
     jobs_dir: str | Path | None = None,
     job_name: str | None = None,
-    kimchi_multi_model: bool = False,
     kimchi_ferment_oneshot: bool = False,
     claude_code_api_max_retries: int = 0,
     coding_agent: str = "kimchi",
@@ -57,8 +56,6 @@ def build_harbor_command(
             "--retry-include", "RetryableApiError",
         ])
 
-    if coding_agent == "kimchi" and kimchi_multi_model:
-        cmd.extend(["--agent-kwarg", "multi-model=true"])
     if coding_agent == "kimchi" and kimchi_ferment_oneshot:
         cmd.extend(["--agent-kwarg", "ferment-oneshot=true"])
 

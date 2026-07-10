@@ -4,8 +4,22 @@ from __future__ import annotations
 
 import pytest
 
-from bench_config import is_retryable, load_llm_params
+from bench_config import is_multi_model, is_retryable, load_llm_params, parse_model
 from outcome import Outcome
+
+
+def test_concrete_model_is_the_default_selection(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("MODEL", raising=False)
+
+    assert is_multi_model() is False
+    assert parse_model() == ("kimchi-dev", "minimax-m3")
+
+
+def test_explicit_multi_model_selection(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MODEL", "multi-model")
+
+    assert is_multi_model() is True
+    assert parse_model() == ("kimchi", "multi-model")
 
 
 @pytest.mark.parametrize(

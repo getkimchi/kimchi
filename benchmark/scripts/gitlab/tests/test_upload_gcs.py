@@ -26,9 +26,9 @@ def fake_run_metadata(tmp_path: Path) -> Path:
     metadata = {
         "benchmark": "terminal-bench-2",
         "coding_agent": "kimchi",
-        "model": "anthropic/claude-sonnet-4-20250514",
-        "model_provider": "anthropic",
-        "model_name": "claude-sonnet-4-20250514",
+        "model": "multi-model",
+        "model_provider": "kimchi",
+        "model_name": "multi-model",
         "configuration": "multi-mode",
         "multi_mode": True,
         "ferment": False,
