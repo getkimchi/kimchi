@@ -330,8 +330,14 @@ describe("buildSystemPrompt", () => {
 			expect([...ORCHESTRATOR_SUPPRESSED_SKILL_NAMES].sort()).toEqual([
 				"dispatching-parallel-agents",
 				"executing-plans",
+				"finishing-a-development-branch",
+				"receiving-code-review",
+				"requesting-code-review",
 				"subagent-driven-development",
+				"systematic-debugging",
+				"test-driven-development",
 				"verification-before-completion",
+				"writing-plans",
 			])
 		})
 

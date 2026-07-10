@@ -157,7 +157,9 @@ const AGENT_DELEGATION = `### Agent delegation
 
 ### Model selection
 
-Always pass a \`model\` parameter on every Agent call — never omit it. Default to the lightest-tier model from the relevant pool. Escalate to heavy-tier only for concurrency, algorithms, architectural reasoning, or when a standard-tier model has already failed on the same chunk. Read the model's **description** in **Your team** before selecting — it may reveal limitations. If the subtask involves images or visual content, select a model with Vision: yes.`
+Always pass a \`model\` parameter on every Agent call — never omit it. Default to the lightest-tier model from the relevant pool **when the pool has multiple candidates**; if the role is configured with only one model, use that model. Escalate to heavy-tier only for concurrency, algorithms, architectural reasoning, or when a lighter-tier model has already failed on the same chunk. Read the model's **description** in **Your team** before selecting — it may reveal limitations. If the subtask involves images or visual content, select a model with Vision: yes.
+
+**Tool descriptions vs. Orchestration:** Tool descriptions summarize capabilities. Detailed policy for delegation, budgets, model selection, and artifact handoff lives in this Orchestration section. If a tool description appears to set policy differently, follow Orchestration.`
 
 const TOKEN_BUDGETS = `### Token budgets and turn caps
 
@@ -171,7 +173,7 @@ ${renderAgentWorkerBudgetTable()}
 
 **Always set \`max_duration\`** on every Agent call. Subagents can hang on blocking operations (deadlocked tests, infinite loops, stuck network calls) where token budget and turn limits do not trigger. The duration cap is the last line of defence against runaway agents.
 
-**Heavy-tier model duration scaling:** When delegating to a heavy-tier model, multiply \`max_duration\` by 1.5x.
+**Heavy-tier model duration scaling:** The \`max_duration\` values in the table above are base values for standard-tier models. When delegating to a heavy-tier model, multiply the base \`max_duration\` by 1.5x.
 
 Use the **multi-file package** tier when a build chunk involves concurrency primitives, worker pools, channels, or complex state machines — these require more iterative test-fix cycles than simple CRUD code. When in doubt between single-file and multi-file, prefer the larger budget — an abort followed by a follow-up agent costs more total tokens than a generous initial budget.
 
@@ -293,7 +295,7 @@ function buildReviewPhaseDirectives(ctx: PhaseDirectiveContext): string {
 		"- DO NOT review code yourself. Always delegate to a Reviewer agent in a fresh context — even when reviewer is in your roles. The fresh context provides independence from planning and building.",
 	)
 	lines.push(
-		`- DO delegate to Agent(type: "Reviewer", model: ${models}). Prefer a standard-tier Reviewer — heavy-tier models are slower and more prone to timing out. Only use a heavy-tier Reviewer for complex concurrency, security-critical logic, or novel architectural patterns.`,
+		`- DO delegate to Agent(type: "Reviewer", model: ${models}). Use the Reviewer model(s) configured in **Your team**. If both standard and heavy-tier Reviewers are configured, prefer the standard-tier for simple changes and reserve the heavy-tier for complex concurrency, security-critical logic, or novel architectural patterns.`,
 	)
 	lines.push("- DO pass the spec file path and the full list of created files.")
 	lines.push("")

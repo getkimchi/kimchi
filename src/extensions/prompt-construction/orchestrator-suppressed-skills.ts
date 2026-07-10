@@ -10,4 +10,10 @@ export const ORCHESTRATOR_SUPPRESSED_SKILL_NAMES = new Set([
 	"dispatching-parallel-agents",
 	"executing-plans",
 	"verification-before-completion",
+	"writing-plans",
+	"requesting-code-review",
+	"receiving-code-review",
+	"test-driven-development",
+	"systematic-debugging",
+	"finishing-a-development-branch",
 ])
