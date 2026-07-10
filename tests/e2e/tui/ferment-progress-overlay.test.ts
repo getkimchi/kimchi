@@ -23,8 +23,7 @@
  */
 
 import { randomUUID } from "node:crypto"
-import { mkdirSync, writeFileSync } from "node:fs"
-import { realpathSync } from "node:fs"
+import { mkdirSync, realpathSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { test } from "@microsoft/tui-test"
 import {
