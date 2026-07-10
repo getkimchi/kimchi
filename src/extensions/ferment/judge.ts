@@ -248,6 +248,9 @@ export interface JudgeJourneyGradeInput {
 	phases: ReadonlyArray<JourneyPhaseInput>
 	fermentGates: ReadonlyArray<JourneyGateVerdict>
 	totalDiff?: JourneyDiff
+	/** Agent-pasted execution evidence (command outputs, verification results,
+	 *  file contents). Primary proof source when no git diff is available. */
+	evidence?: string
 }
 
 export interface JudgeJourneyGradeOk {
@@ -327,7 +330,8 @@ After internal specialist review: cluster duplicate issues, separate proven find
 - The ferment goal and success criteria.
 - A per-phase trail: name, goal, status, and the F-gate verdicts the agent provided at complete_ferment_phase.
 - The final C-gate verdicts the agent provided at complete_ferment.
-- The total diff (files changed + snippet) from ferment start to now.
+- The total diff (files changed + snippet) from ferment start to now, when available.
+- Execution evidence (agent-provided): real command outputs, verification results, or file contents that prove the work was done. This is the primary proof source when no diff is available.
 - The agent's final summary.
 
 ## Final output
@@ -371,6 +375,11 @@ function buildJourneyGradeUserMsg(input: JudgeJourneyGradeInput): string {
 	} else {
 		parts.push("")
 		parts.push("(No diff available — judge on verdicts + summary only.)")
+	}
+	if (input.evidence && input.evidence.trim().length > 0) {
+		parts.push("")
+		parts.push("--- EXECUTION EVIDENCE (agent-provided) ---")
+		parts.push(input.evidence.slice(0, 4000))
 	}
 	return parts.join("\n")
 }
@@ -432,6 +441,9 @@ export interface JudgePhaseInput {
 	projectChecksSummary?: string
 	/** Phase diff (files changed + snippet) from the phase's evidence. */
 	phaseDiff?: JourneyDiff
+	/** Agent-pasted execution evidence (command outputs, verification results,
+	 *  file contents). Primary proof source when no git diff is available. */
+	evidence?: string
 }
 
 export interface JudgePhaseGradeOk {
@@ -498,6 +510,7 @@ After internal specialist review: cluster duplicate issues, separate proven find
 - The F-gate verdicts the agent provided at complete_ferment_phase.
 - The project-check summary (if any).
 - The phase diff (files changed + snippet) when available.
+- Execution evidence (agent-provided): real command outputs, verification results, or file contents that prove the work was done. This is the primary proof source when no diff is available.
 
 ## Final output
 
@@ -538,6 +551,11 @@ function buildPhaseGradeUserMsg(input: JudgePhaseInput): string {
 	} else {
 		parts.push("")
 		parts.push("(No diff available — judge on verdicts + summary only.)")
+	}
+	if (input.evidence && input.evidence.trim().length > 0) {
+		parts.push("")
+		parts.push("--- EXECUTION EVIDENCE (agent-provided) ---")
+		parts.push(input.evidence.slice(0, 4000))
 	}
 	return parts.join("\n")
 }

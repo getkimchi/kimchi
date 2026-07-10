@@ -332,6 +332,7 @@ export async function completePhase(
 		outcome: { flags: mergedFlags, grade: derivedGrade, rationale },
 		diffAvailable: evidence?.available ?? false,
 		diffFilesChanged: evidence?.filesChanged,
+		evidence: params.evidence,
 		projectChecks,
 		gateVerdicts: params.gates,
 	})
@@ -454,6 +455,7 @@ export async function completePhase(
 		phaseDiff: evidence
 			? { available: evidence.available, filesChanged: evidence.filesChanged, diffSnippet: evidence.diffSnippet }
 			: { available: false },
+		evidence: params.evidence,
 	}
 	const phaseJudgeResult = await runWithOverlay(`Grading phase "${phase.name}"…`, () =>
 		services.judgePhaseGrade(judgeInput),

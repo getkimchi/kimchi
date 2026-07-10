@@ -755,6 +755,7 @@ export async function completeFerment(
 			totalDiff: totalDiff
 				? { available: totalDiff.available, filesChanged: totalDiff.filesChanged, diffSnippet: totalDiff.diffSnippet }
 				: { available: false },
+			evidence: params.evidence,
 		}),
 	)
 

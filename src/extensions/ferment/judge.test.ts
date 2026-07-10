@@ -177,6 +177,50 @@ describe("judgeJourneyGrade", () => {
 		expect(captured).toContain("No diff available")
 	})
 
+	it("includes agent-provided execution evidence in the prompt", async () => {
+		let captured = ""
+		const apiCall = vi.fn(async (_sys: string, msg: string) => {
+			captured = msg
+			return ok('{"grade":"A","rationale":"x"}')
+		})
+		await judgeJourneyGrade(
+			makeInput({
+				evidence: "$ pytest -q\n5 passed\n$ cat output.txt\nresult=ok",
+			}),
+			apiCall,
+		)
+		expect(captured).toContain("EXECUTION EVIDENCE")
+		expect(captured).toContain("5 passed")
+	})
+
+	it("includes execution evidence even when no diff is available", async () => {
+		let captured = ""
+		const apiCall = vi.fn(async (_sys: string, msg: string) => {
+			captured = msg
+			return ok('{"grade":"B","rationale":"x"}')
+		})
+		await judgeJourneyGrade(
+			makeInput({
+				totalDiff: { available: false },
+				evidence: "$ stockfish analysis\nbest move: g2g4 (#+1)",
+			}),
+			apiCall,
+		)
+		expect(captured).toContain("No diff available")
+		expect(captured).toContain("EXECUTION EVIDENCE")
+		expect(captured).toContain("g2g4")
+	})
+
+	it("omits the evidence section when evidence is empty", async () => {
+		let captured = ""
+		const apiCall = vi.fn(async (_sys: string, msg: string) => {
+			captured = msg
+			return ok('{"grade":"A","rationale":"x"}')
+		})
+		await judgeJourneyGrade(makeInput({ evidence: "" }), apiCall)
+		expect(captured).not.toContain("EXECUTION EVIDENCE")
+	})
+
 	// ── recommendations parsing ──────────────────────────────────────────────
 
 	it("returns parsed recommendations on a clean B-grade response", async () => {
@@ -385,5 +429,63 @@ describe("judgePhaseGrade", () => {
 		})
 		await judgePhaseGrade(makePhaseInput({ phaseDiff: { available: false } }), apiCall)
 		expect(captured).toContain("No diff available")
+	})
+
+	it("includes agent-provided execution evidence in the prompt", async () => {
+		let captured = ""
+		const apiCall = vi.fn(async (_sys: string, msg: string) => {
+			captured = msg
+			return ok('{"grade":"A","rationale":"x","recommendations":[]}')
+		})
+		await judgePhaseGrade(
+			makePhaseInput({
+				evidence: "$ python3 verify.py\nAll 5 tests passed\n$ cat /app/result.txt\n42",
+			}),
+			apiCall,
+		)
+		expect(captured).toContain("EXECUTION EVIDENCE")
+		expect(captured).toContain("All 5 tests passed")
+		expect(captured).toContain("cat /app/result.txt")
+	})
+
+	it("includes execution evidence even when no diff is available", async () => {
+		let captured = ""
+		const apiCall = vi.fn(async (_sys: string, msg: string) => {
+			captured = msg
+			return ok('{"grade":"B","rationale":"x","recommendations":[]}')
+		})
+		await judgePhaseGrade(
+			makePhaseInput({
+				phaseDiff: { available: false },
+				evidence: "$ stockfish analysis\nbest move: g2g4 (#+1)",
+			}),
+			apiCall,
+		)
+		expect(captured).toContain("No diff available")
+		expect(captured).toContain("EXECUTION EVIDENCE")
+		expect(captured).toContain("g2g4")
+	})
+
+	it("truncates evidence to 4 KB", async () => {
+		let captured = ""
+		const apiCall = vi.fn(async (_sys: string, msg: string) => {
+			captured = msg
+			return ok('{"grade":"A","rationale":"x","recommendations":[]}')
+		})
+		const longEvidence = "x".repeat(6000)
+		await judgePhaseGrade(makePhaseInput({ evidence: longEvidence }), apiCall)
+		expect(captured).toContain("EXECUTION EVIDENCE")
+		const evidenceSection = captured.split("EXECUTION EVIDENCE")[1]
+		expect(evidenceSection.length).toBeLessThan(5000)
+	})
+
+	it("omits the evidence section when evidence is empty", async () => {
+		let captured = ""
+		const apiCall = vi.fn(async (_sys: string, msg: string) => {
+			captured = msg
+			return ok('{"grade":"A","rationale":"x","recommendations":[]}')
+		})
+		await judgePhaseGrade(makePhaseInput({ evidence: "   " }), apiCall)
+		expect(captured).not.toContain("EXECUTION EVIDENCE")
 	})
 })
