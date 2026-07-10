@@ -9,8 +9,8 @@ import {
 } from "./orchestration-instructions.js"
 
 function resolveAsString(ctx: OrchestrationInstructionsContext): string {
-	const { teamSection, instructionsSection } = resolveOrchestrationInstructions(ctx)
-	return [teamSection, instructionsSection].filter(Boolean).join("\n\n")
+	const { instructionsSection } = resolveOrchestrationInstructions(ctx)
+	return instructionsSection
 }
 
 const ALL_KNOWN_IDS = [...MODEL_CAPABILITIES.keys()]
@@ -180,6 +180,18 @@ describe("resolveOrchestrationInstructions", () => {
 		expect(result).toContain("Require verification when")
 		expect(result).not.toContain("## Your Team")
 		expect(result).not.toContain("## Your Capabilities")
+	})
+
+	it("renders team roster with roles even when registry is absent", () => {
+		const result = resolveAsString({
+			currentModelId: "kimi-k2.6",
+			roles: DEFAULT_MODEL_ROLES,
+		})
+		expect(result).toContain("### Your team")
+		expect(result).toContain("### Builder")
+		expect(result).toContain("### Reviewer")
+		expect(result).toContain("### Explorer")
+		expect(result).toContain("Tier: standard")
 	})
 
 	it("includes concurrency test mandate in plan checklist", () => {

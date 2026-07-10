@@ -14,8 +14,8 @@ import type { ModelRegistry } from "../orchestration/model-registry/index.js"
 import type { Phase } from "../orchestration/model-registry/types.js"
 import type { ModelRoles } from "../orchestration/model-roles.js"
 import { resolveOrchestrationInstructions } from "../orchestration/orchestration-instructions.js"
-import type { OrchestrationInstructionsResult } from "../orchestration/orchestration-instructions.js"
 import type { ContextFile } from "./context-files.js"
+import { ORCHESTRATOR_SUPPRESSED_SKILL_NAMES } from "./orchestrator-suppressed-skills.js"
 import { type SuppressibleSection, renderSystemPromptBlocks } from "./system-prompt-blocks.js"
 
 export interface EnvironmentInfo {
@@ -73,7 +73,7 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 	const projectContext = formatProjectContext(contextFiles)
 	const filteredSkills = filterSkillsForMode(skills, mode)
 
-	const { teamSection, instructionsSection: orchestrationSection } = resolveModeInstructions({
+	const orchestrationSection = resolveModeInstructions({
 		mode,
 		currentModelId,
 		registry,
@@ -93,7 +93,6 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 
 	return buildPrompt({
 		mode,
-		teamSection,
 		toolsSection,
 		environmentSection,
 		projectContext,
@@ -111,7 +110,6 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 
 interface PromptParts {
 	mode: PromptMode
-	teamSection: string
 	toolsSection: string
 	environmentSection: string
 	projectContext: string
@@ -143,19 +141,19 @@ function resolveModeInstructions(args: {
 	registry?: ModelRegistry
 	roles?: ModelRoles
 	customConfigs?: ReadonlyMap<string, ModelCustomMetadata>
-}): OrchestrationInstructionsResult {
+}): string {
 	if (args.mode === "orchestrator") {
 		return resolveOrchestrationInstructions({
 			currentModelId: args.currentModelId,
 			registry: args.registry,
 			roles: args.roles,
 			customConfigs: args.customConfigs,
-		})
+		}).instructionsSection
 	}
 	if (args.mode === "subagent") {
-		return { teamSection: "", instructionsSection: SUBAGENT_INSTRUCTIONS }
+		return SUBAGENT_INSTRUCTIONS
 	}
-	return { teamSection: "", instructionsSection: buildSingleModelInstructions(args.currentModelId) }
+	return buildSingleModelInstructions(args.currentModelId)
 }
 
 // ---------------------------------------------------------------------------
@@ -212,14 +210,6 @@ const ORCHESTRATOR_GUIDELINES = `- Be concise in your responses. Do not repeat w
 - After every tool result, ALWAYS produce text — either the next tool call with explicit reasoning, or a final summary. Never re-issue the same tool call after a successful result.
 - Never emit tool calls with empty names, blank IDs, or malformed arguments. If a tool call fails to advance the task after 3 attempts, stop calling tools, summarize what is not working, and reassess in plain text before continuing.
 - At the end of a task, summarize from delegated artifacts (spec, review, verification files). Do not re-verify implementation yourself unless Orchestration assigns that step to you.`
-
-/** Skills whose workflows conflict with multi-model Orchestration. */
-const ORCHESTRATOR_SUPPRESSED_SKILL_NAMES = new Set([
-	"subagent-driven-development",
-	"dispatching-parallel-agents",
-	"executing-plans",
-	"verification-before-completion",
-])
 
 function filterSkillsForMode(skills: readonly Skill[] | undefined, mode: PromptMode): readonly Skill[] | undefined {
 	if (!skills || mode !== "orchestrator") return skills

@@ -26,7 +26,6 @@ export interface OrchestrationInstructionsContext {
 }
 
 export interface OrchestrationInstructionsResult {
-	teamSection: string
 	instructionsSection: string
 }
 
@@ -34,7 +33,6 @@ export function resolveOrchestrationInstructions(
 	ctx: OrchestrationInstructionsContext,
 ): OrchestrationInstructionsResult {
 	return {
-		teamSection: "",
 		instructionsSection: buildOrchestrationChapter(ctx.roles, ctx.currentModelId, ctx.registry, ctx.customConfigs),
 	}
 }
@@ -206,7 +204,7 @@ A plan is "good" when an independent model can build from it without asking ques
 10. **Feasibility** — The plan fits within the token budgets allocated for each chunk. No chunk requires >150k tokens to build.`
 
 // ---------------------------------------------------------------------------
-// Orchestrator instruction builder (generates role-specific DOs/DONTs)
+// Phase responsibilities — per-phase DOs/DONTs (generated from roles)
 // ---------------------------------------------------------------------------
 
 interface PhaseDirectiveContext {
@@ -369,7 +367,7 @@ As the orchestrator, you reason through the work, plan the approach, and coordin
 
 ${ORCHESTRATION_ORIENTATION}`)
 
-	if (roles && registry) {
+	if (roles) {
 		parts.push(buildTeamSubsection(roles, registry, customConfigs))
 		parts.push(buildRolesSubsection(currentModelId, roles, registry, customConfigs))
 	}

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 import type { ModelMetadata } from "../../models.js"
 import { MODEL_CAPABILITIES, ModelRegistry } from "../orchestration/model-registry/index.js"
 import { DEFAULT_MODEL_ROLES } from "../orchestration/model-roles.js"
+import { ORCHESTRATOR_SUPPRESSED_SKILL_NAMES } from "./orchestrator-suppressed-skills.js"
 import { type EnvironmentInfo, buildSystemPrompt, formatEnvironmentSection } from "./system-prompt.js"
 
 const testEnv: EnvironmentInfo = {
@@ -323,6 +324,15 @@ describe("buildSystemPrompt", () => {
 			})
 			expect(result).toContain("brainstorming")
 			expect(result).not.toContain("subagent-driven-development")
+		})
+
+		it("documents the canonical names of suppressed orchestrator-conflicting skills", () => {
+			expect([...ORCHESTRATOR_SUPPRESSED_SKILL_NAMES].sort()).toEqual([
+				"dispatching-parallel-agents",
+				"executing-plans",
+				"subagent-driven-development",
+				"verification-before-completion",
+			])
 		})
 
 		it("includes model-specific orchestration notes when model is provided", () => {
