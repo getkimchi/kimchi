@@ -47,6 +47,13 @@ export interface FakeResponseScript {
 	thinkingDelayMs?: number
 	/** Fallback delay applied to both `thinking` and `stream` chunks. */
 	delayMs?: number
+	/**
+	 * Per-chunk delays for `stream` entries, indexed by chunk position.
+	 * `streamChunkDelays[i]` is the delay BEFORE emitting `stream[i]`.
+	 * Falls back to `textDelayMs` / `delayMs` for entries beyond the array length.
+	 * Use to simulate a stalled LLM: emit chunk 0 immediately, then delay chunk 1.
+	 */
+	streamChunkDelays?: number[]
 	toolCalls?: FakeToolCall[]
 	closeSocketAfterChunks?: number
 	status?: number
@@ -253,8 +260,9 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 		}
 	}
 
-	for (const text of script.stream ?? []) {
-		const delay = script.textDelayMs ?? script.delayMs
+	for (let i = 0; i < (script.stream ?? []).length; i++) {
+		const text = script.stream![i]
+		const delay = script.streamChunkDelays?.[i] ?? script.textDelayMs ?? script.delayMs
 		if (delay) await sleep(delay)
 		chunk([{ index: 0, delta: { content: text }, finish_reason: null }])
 		emitted += 1
