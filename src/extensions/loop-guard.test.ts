@@ -680,6 +680,48 @@ describe("Edit-run cycle detector", () => {
 	})
 })
 
+describe("LoopGuardResult.detector", () => {
+	it("populates detector='consecutive_identical' for a consecutive-identical loop", () => {
+		const guard = new LoopGuard()
+		const r = rec({ isError: true, outputFingerprint: FP_A })
+		guard.record(r)
+		guard.record(r)
+		const result = guard.record(r)
+		expect(result.state).toBe("warn")
+		expect(result.detector).toBe("consecutive_identical")
+	})
+
+	it("populates detector='edit_run' for an edit-run cycle", () => {
+		const guard = new LoopGuard()
+		const file = "/app/vm.js"
+		const bashPrefix = '{"command":"node vm.js 2>&1 | head -20"}'
+		let detector: string | undefined
+		for (let i = 0; i < 8; i++) {
+			guard.record({
+				toolName: "read",
+				toolArgs: `{"path":"/tmp/probe-${i}.txt"}`,
+				isError: false,
+				outputFingerprint: `probe-${i}`,
+			})
+			guard.record({
+				toolName: "edit",
+				toolArgs: `{"path":"${file}","edits":[{"oldText":"x","newText":"v${i}"}]}`,
+				isError: false,
+				outputFingerprint: `edit-${i}`,
+			})
+			const result = guard.record({
+				toolName: "bash",
+				toolArgs: bashPrefix,
+				isError: true,
+				outputFingerprint: `bash-${i}`,
+			})
+			detector = result.detector
+		}
+		expect(guard.isWarned()).toBe(true)
+		expect(detector).toBe("edit_run")
+	})
+})
+
 describe("Edit-run cycle detector — task-total backstop", () => {
 	// The task-total detector catches interleaved loops where the same
 	// edit/bash pattern is spread across many rounds with OTHER tool

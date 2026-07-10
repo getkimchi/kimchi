@@ -1168,3 +1168,107 @@ describe("bash-tool-guard telemetry via pi.events", () => {
 		expect(fetchMock).not.toHaveBeenCalled()
 	})
 })
+
+describe("loop-guard telemetry via pi.events", () => {
+	let fetchMock: ReturnType<typeof vi.fn>
+	let originalFetch: typeof globalThis.fetch
+
+	beforeEach(() => {
+		fetchMock = vi.fn().mockResolvedValue({ ok: true, text: async () => "" })
+		originalFetch = globalThis.fetch
+		// biome-ignore lint/suspicious/noExplicitAny: test mock
+		globalThis.fetch = fetchMock as any
+	})
+
+	afterEach(async () => {
+		globalThis.fetch = originalFetch
+		_resetSharedAccumulators()
+		const { _resetFermentTrackingState } = await import("./index.js")
+		_resetFermentTrackingState()
+		vi.restoreAllMocks()
+	})
+
+	async function setup() {
+		const { handlers, events, api } = createMockApi()
+		const { default: ext } = await import("./index.js")
+		ext(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, { model: { id: "claude-sonnet-4-6" } })
+		return { handlers, events }
+	}
+
+	function extractRecords() {
+		const logCalls = fetchMock.mock.calls.filter(([url]: unknown[]) => String(url).includes("/logs"))
+		return logCalls.flatMap(([, opts]: unknown[]) => {
+			const body = JSON.parse((opts as { body: string }).body)
+			return body.resourceLogs[0].scopeLogs[0].logRecords as Array<{
+				eventName: string
+				attributes: Array<{ key: string; value: { stringValue: string } }>
+			}>
+		})
+	}
+
+	function attrsOf(rec: { attributes: Array<{ key: string; value: { stringValue: string } }> }) {
+		return Object.fromEntries(rec.attributes.map((a) => [a.key, a.value.stringValue]))
+	}
+
+	/** Flush buffered OTLP log records by triggering session_shutdown. */
+	async function flushTelemetry(handlers: Map<string, Handler[]>) {
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+	}
+
+	it("loop_guard:warn → loop_guard.warn OTLP record with detector, count, is_subagent", async () => {
+		const { handlers, events } = await setup()
+		const { LOOP_GUARD_EVENTS } = await import("../loop-guard-events.js")
+
+		events.emit(LOOP_GUARD_EVENTS.WARN, {
+			detector: "edit_run",
+			count: 3,
+			is_subagent: true,
+		})
+		await flushTelemetry(handlers)
+
+		const rec = extractRecords().find((r) => r.eventName === "loop_guard.warn")
+		expect(rec).toBeDefined()
+		const attrs = attrsOf(rec as NonNullable<typeof rec>)
+		expect(attrs.detector).toBe("edit_run")
+		expect(attrs.count).toBe("3")
+		expect(attrs.is_subagent).toBe("true")
+		expect(attrs.model).toBe("claude-sonnet-4-6")
+		// No raw args/command text must leak into OTLP.
+		expect(attrs.reason).toBeUndefined()
+		expect(attrs.toolArgs).toBeUndefined()
+	})
+
+	it("loop_guard:subagent_abort → loop_guard.subagent_abort OTLP record", async () => {
+		const { handlers, events } = await setup()
+		const { LOOP_GUARD_EVENTS } = await import("../loop-guard-events.js")
+
+		events.emit(LOOP_GUARD_EVENTS.SUBAGENT_ABORT, {
+			detector: "consecutive_identical",
+			count: 1,
+			is_subagent: true,
+		})
+		await flushTelemetry(handlers)
+
+		const rec = extractRecords().find((r) => r.eventName === "loop_guard.subagent_abort")
+		expect(rec).toBeDefined()
+		const attrs = attrsOf(rec as NonNullable<typeof rec>)
+		expect(attrs.detector).toBe("consecutive_identical")
+		expect(attrs.count).toBe("1")
+		expect(attrs.is_subagent).toBe("true")
+		expect(attrs.model).toBe("claude-sonnet-4-6")
+	})
+
+	it("does NOT emit OTLP records when telemetry is disabled", async () => {
+		const { events } = createMockApi()
+		const { default: ext } = await import("./index.js")
+		ext(makeConfig({ enabled: false }))({ on: vi.fn(), events } as unknown as ExtensionAPI)
+		const { LOOP_GUARD_EVENTS } = await import("../loop-guard-events.js")
+		events.emit(LOOP_GUARD_EVENTS.WARN, {
+			detector: "edit_run",
+			count: 1,
+			is_subagent: false,
+		})
+		expect(fetchMock).not.toHaveBeenCalled()
+	})
+})

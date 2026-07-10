@@ -39,6 +39,7 @@ CONTAINER_HARNESS_SETTINGS_DIR = "~/.config/kimchi/harness"
 CONTAINER_HARNESS_SETTINGS = f"{CONTAINER_HARNESS_SETTINGS_DIR}/settings.json"
 CONTAINER_HARNESS_SKILLS_DIR = f"{CONTAINER_HARNESS_SETTINGS_DIR}/skills"
 KIMCHI_API_KEY_ENV = "KIMCHI_API_KEY"
+MULTI_MODEL = "multi-model"
 KIMCHI_INFRA_BREAKER_THRESHOLD_ENV = "KIMCHI_INFRA_BREAKER_THRESHOLD"
 KIMCHI_BENCHMARK_INFRA_BREAKER_DEFAULT_ATTEMPTS = "3"
 KIMCHI_EXIT_OUTPUT_TAIL_LINES = 20
@@ -145,17 +146,25 @@ class Kimchi(BaseInstalledAgent):
     ]
 
     def __init__(self, *args, **kwargs):
-        multi_model = _coerce_bool_kwarg(kwargs.pop("multi-model", False), "multi-model")
+        multi_model_kwarg = kwargs.pop("multi-model", None)
         disable_multi_model = _coerce_bool_kwarg(
             kwargs.pop("disable-multi-model", False), "disable-multi-model"
         )
-        if multi_model and disable_multi_model:
-            raise ValueError(
-                "'multi-model=true' conflicts with legacy 'disable-multi-model=true'"
-            )
 
         super().__init__(*args, **kwargs)
-        self._multi_model_enabled = multi_model
+        selected_multi_model = self.model_name == MULTI_MODEL
+        legacy_multi_model = (
+            _coerce_bool_kwarg(multi_model_kwarg, "multi-model")
+            if multi_model_kwarg is not None
+            else False
+        )
+        if multi_model_kwarg is not None and legacy_multi_model != selected_multi_model:
+            raise ValueError("the 'multi-model' agent kwarg must match model_name='multi-model'")
+        if selected_multi_model and disable_multi_model:
+            raise ValueError(
+                "multi-model selection conflicts with legacy 'disable-multi-model=true'"
+            )
+        self._multi_model_enabled = selected_multi_model
         config_kwargs = {}
         api_key = self._get_env(KIMCHI_API_KEY_ENV)
         if api_key is not None:
