@@ -19,15 +19,26 @@ const lowerCaseIndex = new Map<string, string>()
 
 /**
  * Register agents into the unified registry.
- * Starts with DEFAULT_AGENTS, then overlays user agents (overrides defaults with same name).
+ * Starts with DEFAULT_AGENTS (optionally transformed), then overlays user agents.
+ *
+ * @param userAgents - Custom agents loaded from project/.kimchi/agents or global config.
+ * @param transformDefaults - Optional transform applied only to built-in default agents
+ *   before registration. User/project custom agents are never passed through it. When
+ *   undefined the default path is byte-identical (no allocation, no mutation).
  */
-export function registerAgents(userAgents: Map<string, AgentConfig>): void {
+export function registerAgents(
+	userAgents: Map<string, AgentConfig>,
+	transformDefaults?: (agents: readonly AgentConfig[]) => readonly AgentConfig[],
+): void {
 	agents.clear()
 	lowerCaseIndex.clear()
 
-	for (const [name, config] of DEFAULT_AGENTS) {
-		agents.set(name, config)
-		lowerCaseIndex.set(name.toLowerCase(), name)
+	const defaultEntries = [...DEFAULT_AGENTS.values()]
+	const resolvedDefaults = transformDefaults ? transformDefaults(defaultEntries) : defaultEntries
+
+	for (const config of resolvedDefaults) {
+		agents.set(config.name, config)
+		lowerCaseIndex.set(config.name.toLowerCase(), config.name)
 	}
 
 	for (const [name, config] of userAgents) {

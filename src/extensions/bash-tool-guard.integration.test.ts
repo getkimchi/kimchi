@@ -7,9 +7,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import bashToolGuardExtension, { bashToolDescription, STEER_MESSAGE_TYPE } from "./bash-tool-guard.js"
 import { BASH_TOOL_GUARD_EVENTS } from "./bash-tool-guard-events.js"
 import { setExperimentalFeaturesEnabled } from "./experimental.js"
+import type { PromptVariant } from "./prompt-construction/variants/index.js"
 
 let mockMode: string | undefined = "default"
 let mockResourceEnabled = true
+
+const mockResolvePromptVariant = vi.fn((): PromptVariant => ({ name: "default" }))
+
+vi.mock("./prompt-construction/variants/index.js", () => ({
+	resolvePromptVariant: () => mockResolvePromptVariant(),
+}))
 
 vi.mock("./permissions/mode-controller.js", () => ({
 	getPermissionMode: () => (mockMode ? { mode: mockMode, source: "user" } : undefined),
@@ -28,6 +35,7 @@ beforeEach(() => {
 afterEach(() => {
 	mockMode = "default"
 	mockResourceEnabled = true
+	mockResolvePromptVariant.mockReturnValue({ name: "default" })
 	setExperimentalFeaturesEnabled(false)
 })
 
@@ -866,5 +874,41 @@ describe("bashToolGuardExtension - description override", () => {
 		const second = pi.registeredTools.get("bash")
 		expect(second).not.toBe(first)
 		expect(second?.description).toBe(bashToolDescription())
+	})
+})
+
+describe("bashToolGuardExtension - variant suppression", () => {
+	it("registers no handlers when suppressBashToolGuard is true", () => {
+		mockResolvePromptVariant.mockReturnValue({ name: "spicy", suppressBashToolGuard: true })
+		const pi = createMockPI()
+		bashToolGuardExtension(pi as unknown as PI)
+		expect(pi.handlers.session_start).toBeUndefined()
+		expect(pi.handlers.input).toBeUndefined()
+		expect(pi.handlers.tool_call).toBeUndefined()
+	})
+
+	it("does not register the bash tool description override when suppressBashToolGuard is true", () => {
+		mockResolvePromptVariant.mockReturnValue({ name: "spicy", suppressBashToolGuard: true })
+		const pi = createMockPI()
+		bashToolGuardExtension(pi as unknown as PI)
+		fireSessionStart(pi)
+		expect(pi.registeredTools.size).toBe(0)
+	})
+
+	it("does not steer on a bash tool_call when suppressBashToolGuard is true", () => {
+		mockResolvePromptVariant.mockReturnValue({ name: "spicy", suppressBashToolGuard: true })
+		const pi = createMockPI()
+		bashToolGuardExtension(pi as unknown as PI)
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "cat foo.ts" } })
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("registers handlers with the default variant", () => {
+		mockResolvePromptVariant.mockReturnValue({ name: "default" })
+		const pi = createMockPI()
+		bashToolGuardExtension(pi as unknown as PI)
+		expect(pi.handlers.session_start?.length).toBeGreaterThan(0)
+		expect(pi.handlers.input?.length).toBeGreaterThan(0)
+		expect(pi.handlers.tool_call?.length).toBeGreaterThan(0)
 	})
 })

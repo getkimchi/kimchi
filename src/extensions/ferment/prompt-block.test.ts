@@ -4,6 +4,7 @@ import type { Ferment, FermentStatus } from "../../ferment/types.js"
 import { runAsAgentWorker } from "../agent-worker-context.js"
 import { registerAgents } from "../agents/personas/agent-types.js"
 import { setPermissionMode } from "../permissions/mode-controller.js"
+import { PROMPT_VARIANT_ENV } from "../prompt-construction/variants/index.js"
 
 // Mock getMultiModelEnabled so tests can control delegationMode (strict vs relaxed)
 // without depending on real config state. Default to true (multi-model / strict)
@@ -620,5 +621,52 @@ describe("buildFermentPromptBlock", () => {
 			expect(out).toContain("may take a brief thinking or assessment turn")
 			expect(out).not.toContain("Every turn MUST end with a ferment lifecycle tool call or an Agent spawn")
 		})
+	})
+})
+
+// ---------------------------------------------------------------------------
+// Spicy ferment steer tests
+// ---------------------------------------------------------------------------
+
+describe("buildFermentPromptBlock: spicy ferment steer", () => {
+	let savedEnv: string | undefined
+
+	afterEach(() => {
+		if (savedEnv === undefined) {
+			delete process.env[PROMPT_VARIANT_ENV]
+		} else {
+			process.env[PROMPT_VARIANT_ENV] = savedEnv
+		}
+		registerAgents(new Map())
+	})
+
+	it("with spicy active the planner supplement leads with '## Ferment Discipline'", () => {
+		savedEnv = process.env[PROMPT_VARIANT_ENV]
+		process.env[PROMPT_VARIANT_ENV] = "spicy"
+		const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status: "running" })) ?? ""
+		expect(out).toContain("## Ferment Discipline")
+	})
+
+	it("with spicy active the supplement contains 'Call `scope_ferment` first'", () => {
+		savedEnv = process.env[PROMPT_VARIANT_ENV]
+		process.env[PROMPT_VARIANT_ENV] = "spicy"
+		const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status: "running" })) ?? ""
+		expect(out).toContain("Call `scope_ferment` first")
+	})
+
+	it("with default variant the supplement does NOT contain '## Ferment Discipline'", () => {
+		savedEnv = process.env[PROMPT_VARIANT_ENV]
+		delete process.env[PROMPT_VARIANT_ENV]
+		const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status: "running" })) ?? ""
+		expect(out).not.toContain("## Ferment Discipline")
+	})
+
+	it("spicy steer appears for planned and running status", () => {
+		savedEnv = process.env[PROMPT_VARIANT_ENV]
+		process.env[PROMPT_VARIANT_ENV] = "spicy"
+		for (const status of ["planned", "running"] as const) {
+			const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime({ status })) ?? ""
+			expect(out, `status=${status}`).toContain("## Ferment Discipline")
+		}
 	})
 })

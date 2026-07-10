@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext, InputEvent } from "@earendil-works
 import { isAgentWorker } from "./agent-worker-context.js"
 import { ASSISTANT_OUTPUT_WITHHELD } from "./orchestration/continuation-nudge.js"
 import { getPermissionMode } from "./permissions/mode-controller.js"
+import { resolvePromptVariant } from "./prompt-construction/variants/index.js"
 import { markHarnessSteer } from "./steer-marker.js"
 
 export const DEFAULT_READ_TOOLS = new Set([
@@ -225,6 +226,8 @@ export class ExplorationGuard {
 }
 
 export default function explorationGuardExtension(pi: ExtensionAPI, options?: ExplorationGuardOptions): void {
+	if (resolvePromptVariant().suppressExplorationGuard) return
+
 	// ExtensionContext is populated on session start
 	let ctx: ExtensionContext | undefined
 

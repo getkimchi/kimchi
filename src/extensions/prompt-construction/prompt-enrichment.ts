@@ -65,6 +65,7 @@ import {
 } from "../orchestration/model-roles.js"
 import { registerModelRolesCommand } from "../orchestration/model-roles-command.js"
 import { getEffectiveModel } from "../router/state.js"
+import { setSessionMode } from "../session-mode.js"
 import { type ContextFile, loadGlobalContextFiles, loadProjectContextFiles } from "./context-files.js"
 import { isKimiK2Model, normalizeKimiToolCallIds } from "./normalize-kimi-tool-call-ids.js"
 import {
@@ -550,7 +551,7 @@ export default function (skillPathsFromConfig: string[]) {
 					return
 				}
 
-				if (!continuationNudge.evaluateTurn(assistantMsg)) return
+				if (!continuationNudge.evaluateTurn(assistantMsg, ctx?.model?.id)) return
 				pi.sendMessage(
 					{
 						customType: NUDGE_CUSTOM_TYPE,
@@ -661,6 +662,7 @@ export default function (skillPathsFromConfig: string[]) {
 				: getMultiModelEnabled(ctx.sessionManager)
 					? "orchestrator"
 					: "single"
+			setSessionMode(ctx.sessionManager?.getSessionId(), mode)
 			const roles = mode === "orchestrator" ? getModelRoles() : undefined
 			const customConfigs = mode === "orchestrator" && roles ? extractCustomConfigs(roles) : undefined
 

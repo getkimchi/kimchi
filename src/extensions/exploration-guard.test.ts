@@ -1,10 +1,25 @@
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import explorationGuardExtension, {
 	ExplorationGuard,
 	type ExplorationGuardOptions,
 	STEER_MESSAGE_TYPE,
 } from "./exploration-guard.js"
 import { ASSISTANT_OUTPUT_WITHHELD } from "./orchestration/continuation-nudge.js"
+import type { PromptVariant } from "./prompt-construction/variants/index.js"
+
+const mockResolvePromptVariant = vi.fn((): PromptVariant => ({ name: "default" }))
+
+vi.mock("./permissions/mode-controller.js", () => ({
+	getPermissionMode: vi.fn(() => undefined),
+}))
+
+vi.mock("./prompt-construction/variants/index.js", () => ({
+	resolvePromptVariant: () => mockResolvePromptVariant(),
+}))
+
+afterEach(() => {
+	mockResolvePromptVariant.mockReturnValue({ name: "default" })
+})
 
 function createGuard(options?: ExplorationGuardOptions): ExplorationGuard {
 	return new ExplorationGuard(options)
@@ -606,6 +621,118 @@ describe("Provider error suppression", () => {
 		guard.turnStart()
 		guard.turnEnd(() => {})
 		expect(guard.getConsecutiveNoToolTurns()).toBe(1)
+	})
+})
+
+describe("explorationGuardExtension - warn sendMessage delivery", () => {
+	it("delivers warn message with deliverAs: steer", async () => {
+		const { default: explorationGuardExtension } = await import("./exploration-guard.js")
+
+		type Handler = (event: unknown, ctx?: unknown) => unknown
+		const handlers = new Map<string, Handler[]>()
+		const sendMessage = vi.fn()
+		const pi = {
+			on: (event: string, handler: Handler) => {
+				const list = handlers.get(event) ?? []
+				list.push(handler)
+				handlers.set(event, list)
+			},
+			sendMessage,
+		}
+
+		explorationGuardExtension(pi as never, { hypothesisThreshold: 1 })
+
+		// Provide a ctx with a sessionManager so isEnabled() returns true (non-plan session)
+		const mockCtx = { sessionManager: { getSessionId: () => "test-session" } }
+		for (const h of handlers.get("session_start") ?? []) h({}, mockCtx)
+
+		// Drive 1 read-only turn to reach the hypothesis threshold
+		for (const h of handlers.get("turn_start") ?? []) h({})
+		for (const h of handlers.get("tool_call") ?? []) h({ toolName: "read" })
+		for (const h of handlers.get("turn_end") ?? []) h({ message: { role: "assistant", stopReason: "stop" } })
+
+		expect(sendMessage).toHaveBeenCalledOnce()
+		const [, options] = sendMessage.mock.calls[0]
+		expect(options).toEqual({ deliverAs: "steer" })
+	})
+})
+
+describe("explorationGuardExtension - variant suppression", () => {
+	type Handler = (event: unknown, ctx?: unknown) => unknown
+
+	function createPi() {
+		const handlers = new Map<string, Handler[]>()
+		const sendMessage = vi.fn()
+		const pi = {
+			on: (event: string, handler: Handler) => {
+				const list = handlers.get(event) ?? []
+				list.push(handler)
+				handlers.set(event, list)
+			},
+			sendMessage,
+		}
+		return { pi, handlers, sendMessage }
+	}
+
+	const mockCtx = { sessionManager: { getSessionId: () => "test-session" } }
+
+	function driveReadTurn(handlers: Map<string, Handler[]>): void {
+		for (const h of handlers.get("session_start") ?? []) h({}, mockCtx)
+		for (const h of handlers.get("turn_start") ?? []) h({})
+		for (const h of handlers.get("tool_call") ?? []) h({ toolName: "read" })
+		for (const h of handlers.get("turn_end") ?? []) h({ message: { role: "assistant", stopReason: "stop" } })
+	}
+
+	// The factory calls resolvePromptVariant() at invocation time, so updating the
+	// mock before each call is sufficient - no vi.resetModules() needed.
+
+	it("registers no handlers when variant is v2 (suppressExplorationGuard: true)", async () => {
+		mockResolvePromptVariant.mockReturnValue({ name: "v2", suppressExplorationGuard: true })
+		const { default: explorationGuardExtension } = await import("./exploration-guard.js")
+		const { pi, handlers } = createPi()
+		explorationGuardExtension(pi as never, { hypothesisThreshold: 1 })
+		expect(handlers.get("session_start")).toBeUndefined()
+		expect(handlers.get("turn_start")).toBeUndefined()
+		expect(handlers.get("tool_call")).toBeUndefined()
+		expect(handlers.get("turn_end")).toBeUndefined()
+	})
+
+	it("does not steer on read-only turns when variant is v2", async () => {
+		mockResolvePromptVariant.mockReturnValue({ name: "v2", suppressExplorationGuard: true })
+		const { default: explorationGuardExtension } = await import("./exploration-guard.js")
+		const { pi, handlers, sendMessage } = createPi()
+		explorationGuardExtension(pi as never, { hypothesisThreshold: 1 })
+		driveReadTurn(handlers)
+		expect(sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("registers no handlers when variant is opinionated-v2 (inherits suppressExplorationGuard: true)", async () => {
+		mockResolvePromptVariant.mockReturnValue({ name: "opinionated-v2", suppressExplorationGuard: true })
+		const { default: explorationGuardExtension } = await import("./exploration-guard.js")
+		const { pi, handlers } = createPi()
+		explorationGuardExtension(pi as never, { hypothesisThreshold: 1 })
+		expect(handlers.get("session_start")).toBeUndefined()
+		expect(handlers.get("turn_start")).toBeUndefined()
+		expect(handlers.get("tool_call")).toBeUndefined()
+		expect(handlers.get("turn_end")).toBeUndefined()
+	})
+
+	it("does not steer on read-only turns when variant is opinionated-v2", async () => {
+		mockResolvePromptVariant.mockReturnValue({ name: "opinionated-v2", suppressExplorationGuard: true })
+		const { default: explorationGuardExtension } = await import("./exploration-guard.js")
+		const { pi, handlers, sendMessage } = createPi()
+		explorationGuardExtension(pi as never, { hypothesisThreshold: 1 })
+		driveReadTurn(handlers)
+		expect(sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("still steers on read-only turns with the default variant", async () => {
+		mockResolvePromptVariant.mockReturnValue({ name: "default" })
+		const { default: explorationGuardExtension } = await import("./exploration-guard.js")
+		const { pi, handlers, sendMessage } = createPi()
+		explorationGuardExtension(pi as never, { hypothesisThreshold: 1 })
+		driveReadTurn(handlers)
+		expect(sendMessage).toHaveBeenCalledOnce()
 	})
 })
 

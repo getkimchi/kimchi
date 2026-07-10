@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url"
 import { AgentSession, parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
 import piWorkflowsExtension from "@kimchi-dev/kimchi-workflows/extension"
 import {
+	applyVariantSelection,
 	getParsedCliArgs,
 	hasFermentOneshotArg,
 	hasPrintFlag,
@@ -69,6 +70,7 @@ import contextAssemblyExtension from "./extensions/context-assembly.js"
 import customizeStatusLineExtension from "./extensions/customize-status-line-command.js"
 import daemonExtension from "./extensions/daemon/index.js"
 import dapExtension from "./extensions/dap.js"
+import disciplineReminderExtension from "./extensions/discipline-reminder.js"
 import { setExperimentalFeaturesEnabled } from "./extensions/experimental.js"
 import explorationGuardExtension from "./extensions/exploration-guard.js"
 import fermentExtension from "./extensions/ferment/index.js"
@@ -109,6 +111,7 @@ import pluginPackageHooksAdapter from "./extensions/plugin-package-hook-adapter/
 import { setPrintGate } from "./extensions/print-mode.js"
 import promptEnrichmentExtension from "./extensions/prompt-construction/prompt-enrichment.js"
 import promptSummaryExtension from "./extensions/prompt-summary.js"
+import promptVariantNoticeExtension from "./extensions/prompt-variant-notice.js"
 import questionnaireExtension from "./extensions/questionnaire/index.js"
 import rateLimitNoticeExtension from "./extensions/rate-limit-notice.js"
 import remoteRunExtension from "./extensions/remote-run/index.js"
@@ -271,6 +274,11 @@ const _origExportToHtml = (AgentSession as any).prototype.exportToHtml
 }
 const helpOrVersion = isHelpOrVersionArgs(originalArgs)
 
+// Strip --spicy once, before any branch that calls main(), and apply it to
+// the environment. Every main() call below receives argsWithoutVariant so the
+// flag never reaches the pi SDK parser.
+const argsWithoutVariant = applyVariantSelection(process.argv.slice(2), process.env)
+
 // Internal control signal: setup cancellation must skip harness/extensions
 // without a hard process.exit(), so clack can restore terminal state normally.
 class SetupCancelled extends Error {}
@@ -303,7 +311,7 @@ try {
 
 	if (helpOrVersion) {
 		const { main } = await import("@earendil-works/pi-coding-agent")
-		await main(originalArgs, { extensionFactories: [] })
+		await main(argsWithoutVariant, { extensionFactories: [] })
 	} else {
 		const experimentalFeatures = isExperimentalFeaturesArg(originalArgs)
 		// Publish to the module-level flag so extensions (daemon tools,
@@ -525,8 +533,11 @@ try {
 			: resolve(dirname(fileURLToPath(import.meta.url)), "../themes")
 		mkdirSync(themesDir, { recursive: true })
 
+		// argsWithoutVariant is computed once at the top of cli.ts (before the
+		// helpOrVersion branch) so --spicy is stripped on every code path before
+		// pi-mono or the @file/resume normalization sees it.
 		const atFileArgs = normalizeAtFileArgs(
-			normalizeResumeIdArgs(stripExperimentalFeaturesArg(originalArgs)),
+			normalizeResumeIdArgs(stripExperimentalFeaturesArg(argsWithoutVariant)),
 			process.cwd(),
 			isCliAtFileArg,
 		)
@@ -628,6 +639,7 @@ try {
 			autoUpdateSettingsExtension,
 			startupUpdateExtension,
 			packageInstallGuardExtension,
+			promptVariantNoticeExtension,
 			sessionNameExtension(),
 			shutdownMarkerExtension,
 			statsExtension,
@@ -641,6 +653,7 @@ try {
 			createApiKeyWarningExtension(apiKeyWarning),
 			loopGuardExtension,
 			explorationGuardExtension,
+			disciplineReminderExtension,
 			reviewWriteGuardExtension,
 			lspExtension,
 			dapExtension,

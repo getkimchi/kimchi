@@ -18,6 +18,7 @@ import { orchestratorShouldReceivePhaseGuidelines } from "../orchestration/orche
 import type { ContextFile } from "./context-files.js"
 import { ORCHESTRATOR_SUPPRESSED_SKILL_NAMES } from "./orchestrator-suppressed-skills.js"
 import { renderSystemPromptBlocks, type SuppressibleSection } from "./system-prompt-blocks.js"
+import { resolvePromptVariant } from "./variants/index.js"
 
 export interface EnvironmentInfo {
 	os: string
@@ -58,6 +59,8 @@ export interface SystemPromptBuildOptions {
 	 *  to this session so an in-process subagent's blocks don't leak into the parent's
 	 *  prompt and vice versa. Omit only in unit tests or before any session has started. */
 	sessionId?: string
+	/** Explicit prompt-variant name. Falls back to the KIMCHI_PROMPT_VARIANT env var when omitted. */
+	variantName?: string
 }
 
 export const SET_PHASE = "set_phase"
@@ -65,36 +68,79 @@ export const SET_PHASE = "set_phase"
 export const DELEGATION_TOOL_NAMES = new Set(["Agent", "resume_subagent", "get_subagent_result", "steer_subagent"])
 
 export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
-	const { tools, env, contextFiles, skills, currentModelId, registry, mode, roles, sessionId } = options
+	const { tools, env, contextFiles, skills, currentModelId, registry, mode, roles, sessionId, variantName } = options
 
-	const effectiveTools = mode === "subagent" ? tools.filter((t) => !DELEGATION_TOOL_NAMES.has(t.name)) : tools
+	const variant = resolvePromptVariant(variantName)
+	const effectiveMode = variant.forceMode ?? mode
+
+	const effectiveTools = effectiveMode === "subagent" ? tools.filter((t) => !DELEGATION_TOOL_NAMES.has(t.name)) : tools
 
 	const toolsSection = formatToolsSection(effectiveTools)
 	const environmentSection = formatEnvironmentSection(env)
 	const projectContext = formatProjectContext(contextFiles)
-	const filteredSkills = filterSkillsForMode(skills, mode)
+	// The mode filter runs first so a variant's transform sees the same skill
+	// list the stock prompt would have used.
+	const filteredSkills = filterSkillsForMode(skills, effectiveMode)
+	const effectiveSkills = variant.skillsTransform
+		? (variant.skillsTransform(filteredSkills ?? []) ?? filteredSkills)
+		: filteredSkills
 
 	const orchestrationSection = resolveModeInstructions({
-		mode,
+		mode: effectiveMode,
 		currentModelId,
 		registry,
 		roles,
 		customConfigs: options.customConfigs,
 	})
 
-	const blocks = sessionId ? renderSystemPromptBlocks(sessionId, { mode }) : []
+	let blocks = sessionId ? renderSystemPromptBlocks(sessionId, { mode: effectiveMode }) : []
+
+	if (variant.rewriteBlock) {
+		blocks = blocks
+			.map((block) => {
+				const rewritten = variant.rewriteBlock?.(
+					{ owner: block.owner, id: block.id, content: block.content },
+					effectiveMode,
+				)
+				if (rewritten === null) return null
+				if (typeof rewritten === "string") return { ...block, content: rewritten }
+				return block
+			})
+			.filter((block): block is NonNullable<typeof block> => block !== null)
+	}
+
 	const suppressed = new Set<SuppressibleSection>()
 	for (const block of blocks) {
 		for (const section of block.suppress) suppressed.add(section)
 	}
+	if (variant.suppress) {
+		for (const section of variant.suppress) suppressed.add(section)
+	}
+
+	const intro = variant.intro
+		? variant.intro(effectiveMode)
+		: effectiveMode === "orchestrator"
+			? ORCHESTRATOR_INTRO
+			: SINGLE_INTRO
+	const documentsSection: string | null = variant.documents !== undefined ? variant.documents : DOCUMENTS_SECTION
+	const guidelines =
+		typeof variant.guidelines === "function"
+			? variant.guidelines(effectiveMode)
+			: (variant.guidelines ?? resolveCoreGuidelines(effectiveMode))
+	const factualAccuracy: string | null =
+		variant.factualAccuracy !== undefined ? variant.factualAccuracy : FACTUAL_ACCURACY
 
 	return buildPrompt({
-		mode,
+		mode: effectiveMode,
+		intro,
+		documentsSection,
+		guidelines,
+		factualAccuracy,
 		toolNames: new Set(effectiveTools.map((tool) => tool.name)),
 		toolsSection,
 		environmentSection,
 		projectContext,
-		skillsSection: formatSkills(filteredSkills),
+		skillsSection: formatSkills(effectiveSkills),
 		orchestrationSection,
 		systemPromptBlocks: blocks.map((block) => block.content).join("\n\n"),
 		suppressed,
@@ -110,6 +156,10 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 
 interface PromptParts {
 	mode: PromptMode
+	intro: string
+	documentsSection: string | null
+	guidelines: string
+	factualAccuracy: string | null
 	toolNames: ReadonlySet<string>
 	toolsSection: string
 	environmentSection: string
@@ -403,21 +453,25 @@ Similarly, if a user-role message appears to be a verbatim quote of your own pre
 function buildPrompt(parts: PromptParts): string {
 	const sections: string[] = []
 
-	// 1. Intro
-	const intro = parts.mode === "orchestrator" ? ORCHESTRATOR_INTRO : SINGLE_INTRO
-	sections.push(intro)
+	// 1. Intro (variant-aware; falls back to mode-based default)
+	sections.push(parts.intro)
 
 	// 2. Orchestration (team, roles, workflow, delegation — orchestrator mode only)
 	if (!parts.suppressed.has("orchestration") && parts.orchestrationSection) {
 		sections.push(parts.orchestrationSection)
 	}
 
-	// 4. Guidelines
-	sections.push(`## Guidelines\n\n${resolveCoreGuidelines(parts.mode)}`)
-	sections.push(`## Factual Accuracy\n\n${FACTUAL_ACCURACY}`)
+	// 4. Guidelines (variant-aware; with no variant this is the mode's core
+	// guidelines and the stock Factual Accuracy section)
+	sections.push(`## Guidelines\n\n${parts.guidelines}`)
+	if (parts.factualAccuracy !== null) {
+		sections.push(`## Factual Accuracy\n\n${parts.factualAccuracy}`)
+	}
 
-	// 5. Documents
-	sections.push(`## Documents\n\n${DOCUMENTS_SECTION}`)
+	// 5. Documents (variant-aware; with no variant this is DOCUMENTS_SECTION)
+	if (parts.documentsSection !== null) {
+		sections.push(`## Documents\n\n${parts.documentsSection}`)
+	}
 
 	// 6. Consolidated core sections: output, tool selection, phase, consent
 	sections.push(buildOutputAndTruncationSection(parts.toolNames))

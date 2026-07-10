@@ -4,12 +4,17 @@ import { isAgentWorker } from "../agent-worker-context.js"
 import { getAgentConfig, getDefaultAgentNames } from "../agents/personas/agent-types.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { getPermissionMode } from "../permissions/mode-controller.js"
+import { resolvePromptVariant } from "../prompt-construction/variants/index.js"
 import { SCOPING_DISCOVERY_GUIDANCE, SCOPING_EXPLORE_TOKEN_BUDGET } from "./constants.js"
 import { formatDecisionsAndMemories, formatScopingContext } from "./format.js"
 import type { FermentRuntime } from "./runtime.js"
 import type { ContinuationPolicy } from "./state.js"
 import { formatNoReplanningGuidance } from "./tool-helpers.js"
 import { CREATE_FERMENT_REDIRECT_MESSAGE } from "./tool-names.js"
+
+const SPICY_FERMENT_STEER = `## Ferment Discipline (priority)
+
+Call \`scope_ferment\` first. Do not narrate a plan in prose, ask for permission, or end your turn before \`scope_ferment\` has been called with the full plan-scope gate verdicts. A ferment that ends without \`scope_ferment\` produces zero files and is a failure, not a draft. After scoping, drive the lifecycle through each phase to \`complete_ferment\`.`
 
 /** Pull the first line of an agent's description (typically a one-sentence role
  *  summary) so the planner can pick the right subagent without each entry
@@ -106,6 +111,7 @@ After \`propose_ferment_scoping\` returns "Plan ready for review", the host take
 After \`propose_ferment_scoping\` returns "Plan saved", the host confirmation already happened and the implementation toolset is active. Do not call \`propose_ferment_scoping\` again, do not tell the user the draft is waiting in the TUI, and do not summarize the plan in chat. Continue with the next state-machine action (usually \`activate_ferment_phase\`).`
 
 	const agentsSection = buildAgentsSection()
+	const steer = resolvePromptVariant().name === "spicy" ? `${SPICY_FERMENT_STEER}\n\n` : ""
 
 	const delegationRules =
 		delegationMode === "strict"
@@ -117,7 +123,7 @@ After \`propose_ferment_scoping\` returns "Plan saved", the host confirmation al
 - Measured rationale: direct execution completed 28 steps in 109 min at A/B grades (run 019ff530); forced delegation was slower per step at bench scale — workers re-establish context (~14 reads each) and hit budget caps on real builds.
 - If a worker aborts mid-step, resume it with resume_subagent, or finish directly when you already hold the context — do not spawn a duplicate that re-discovers the same work.`
 
-	return `
+	return `${steer}
 
 ## Ferment Planner Role
 
