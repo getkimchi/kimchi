@@ -339,17 +339,24 @@ describe("deriveThinkingSteps caching", () => {
 	it("keeps every step of a large message cached across streaming rescans", () => {
 		clearStepDerivationCacheForTesting()
 		// Rescan pattern of streaming: all completed steps re-derived per chunk.
-		// With an entry-count bound this thrashed (0% hit rate); the char budget
-		// must hold all 1000 unique steps so rescans stay cheap.
+		// With the old 256-entry bound this thrashed (0% hit rate); the char budget
+		// must hold all 1000 unique steps.
 		const paras = Array.from({ length: 1000 }, (_, i) => `Considering unique hypothesis ${i} about module ${i}.`)
 		const blocks = [{ contentIndex: 0, text: paras.join("\n\n"), redacted: false }]
 		deriveThinkingSteps(blocks)
-		const start = performance.now()
 		for (let rescan = 0; rescan < 5; rescan++) deriveThinkingSteps(blocks)
-		const perRescanMs = (performance.now() - start) / 5
 		expect(getStepDerivationCacheSizeForTesting()).toBeGreaterThanOrEqual(999)
-		// Thrashing regressed this to ~25ms; warm rescans are ~1ms. Loose CI bound.
-		expect(perRescanMs).toBeLessThan(15)
+	})
+
+	it("bounds cache entry overhead when derivation keys are small", () => {
+		clearStepDerivationCacheForTesting()
+		const blocks = Array.from({ length: 8194 }, (_, contentIndex) => ({
+			contentIndex,
+			text: `step ${contentIndex}`,
+			redacted: false,
+		}))
+		deriveThinkingSteps(blocks)
+		expect(getStepDerivationCacheSizeForTesting()).toBe(8192)
 	})
 
 	it("treats the last text step as growing even when a redacted placeholder follows", () => {

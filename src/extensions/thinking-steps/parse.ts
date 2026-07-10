@@ -1323,13 +1323,12 @@ type StepDerivation = {
 }
 
 // Completed steps repeat across stream updates. Cache them, but not the growing
-// final step, whose changing snapshots would accumulate. The bound is on total
-// key characters, not entry count: deriveThinkingSteps rescans every step of a
-// message per stream chunk, so the cache must hold a whole long message's steps
-// (1000+ on large messages) or the sequential rescan evicts each entry right
-// before its next use and hit rate collapses to zero.
+// final step, whose changing snapshots would accumulate. The character budget
+// holds realistic 1000+ step messages; the high entry cap only bounds overhead
+// from pathological numbers of tiny steps.
 const stepDerivationCache = new Map<string, StepDerivation>()
 const STEP_DERIVATION_CACHE_MAX_CHARS = 4 * 1024 * 1024
+const STEP_DERIVATION_CACHE_MAX_ENTRIES = 8192
 let stepDerivationCacheChars = 0
 
 // Bound candidate extraction while retaining both early outcome cues and the
@@ -1354,7 +1353,10 @@ function deriveStep(stepText: string, isFinalStep: boolean): StepDerivation {
 	const role = inferThinkingRole(`${summaryDetails.summary}\n${summarySource}`)
 	const derivation: StepDerivation = { summaryDetails, role }
 	if (isFinalStep) return derivation
-	while (stepDerivationCacheChars + summarySource.length > STEP_DERIVATION_CACHE_MAX_CHARS) {
+	while (
+		stepDerivationCache.size >= STEP_DERIVATION_CACHE_MAX_ENTRIES ||
+		stepDerivationCacheChars + summarySource.length > STEP_DERIVATION_CACHE_MAX_CHARS
+	) {
 		const oldest = stepDerivationCache.keys().next().value
 		if (oldest === undefined) break
 		stepDerivationCache.delete(oldest)
