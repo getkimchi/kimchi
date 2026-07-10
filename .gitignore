@@ -34,8 +34,9 @@ tui-traces/
 *.tui-e2e.txt
 *.tui-e2e.log
 
-# Kimchi docs directory
-.kimchi/
+# Kimchi docs and superpowers
+.kimchi
+docs/superpowers
 .benchmark/
 .worktrees
 
