@@ -2,10 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import * as agentDiscovery from "../../agent-discovery/index.js"
 import type { AgentDiscovery } from "../../agent-discovery/index.js"
 import type { KimchiConfig, SearchStrategyConfig } from "../../config.js"
+import * as multiModel from "../multi-model.js"
 import * as modelRoles from "../orchestration/model-roles.js"
 import type { ModelRoles } from "../orchestration/model-roles.js"
-import * as permissions from "../permissions/index.js"
-import * as promptEnrichment from "../prompt-construction/prompt-enrichment.js"
+import * as permissions from "../permissions/mode-controller.js"
 import { buildConfigSnapshot } from "./config-snapshot.js"
 
 const SEARCH_STRATEGY: SearchStrategyConfig = {
@@ -61,18 +61,15 @@ const MOCK_MODEL_ROLES: ModelRoles = {
 describe("buildConfigSnapshot", () => {
 	let savedEnv: NodeJS.ProcessEnv
 	// biome-ignore lint/suspicious/noExplicitAny: mock spy refs typed loosely to avoid vitest MockInstance generic friction
-	let permSpy: any
-	// biome-ignore lint/suspicious/noExplicitAny: mock spy refs typed loosely to avoid vitest MockInstance generic friction
 	let multiSpy: any
 
 	beforeEach(() => {
 		savedEnv = { ...process.env }
 		// No settings.json available -> model "unknown", provider "cast-ai"
 		process.env.KIMCHI_CODING_AGENT_DIR = undefined
-		process.env.KIMCHI_PERMISSIONS = undefined
+		process.env.KIMCHI_PERMISSIONS = "plan"
 
-		permSpy = vi.spyOn(permissions, "getDisplayPermissionMode").mockReturnValue("plan")
-		multiSpy = vi.spyOn(promptEnrichment, "getMultiModelEnabled").mockReturnValue(true)
+		multiSpy = vi.spyOn(multiModel, "getMultiModelEnabled").mockReturnValue(true)
 		vi.spyOn(modelRoles, "getModelRoles").mockReturnValue(MOCK_MODEL_ROLES)
 		// Mock discoverAgent to return 1 server named "evil-corp-server" per definition.
 		const fakeDiscovery: AgentDiscovery = {
@@ -120,7 +117,7 @@ describe("buildConfigSnapshot", () => {
 		})
 
 		it("flows through alternate mocked values when telemetry disabled", () => {
-			permSpy.mockReturnValue("yolo")
+			process.env.KIMCHI_PERMISSIONS = "yolo"
 			multiSpy.mockReturnValue(false)
 			const snapshot = buildConfigSnapshot(makeConfig({ mcpSearch: { ...SEARCH_STRATEGY, strategy: "regex" } }), false)
 			expect(snapshot["config.telemetry_enabled"]).toBe(false)

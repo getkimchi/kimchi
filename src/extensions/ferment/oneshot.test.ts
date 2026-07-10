@@ -1,14 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { describe, expect, it } from "vitest"
 import type { Ferment } from "../../ferment/types.js"
-
-const getMultiModelEnabledMock = vi.fn(() => true)
-vi.mock("../prompt-construction/prompt-enrichment.js", (importOriginal) => {
-	return importOriginal<typeof import("../prompt-construction/prompt-enrichment.js")>().then((mod) => ({
-		...mod,
-		getMultiModelEnabled: () => getMultiModelEnabledMock(),
-	}))
-})
-
 import { buildOneshotNudge } from "./oneshot.js"
 
 const NOW = "2026-01-01T00:00:00.000Z"
@@ -33,12 +24,12 @@ const INTENT = "Tune /app/model_ref.xml so simulation finishes in 60% of the ori
 
 describe("buildOneshotNudge", () => {
 	it("instructs the planner to call scope_ferment", () => {
-		const out = buildOneshotNudge(makeFerment(), INTENT)
+		const out = buildOneshotNudge(makeFerment(), INTENT, true)
 		expect(out).toContain("Call scope_ferment")
 	})
 
 	it("lists the scope_ferment parameters required by ScopeParams", () => {
-		const out = buildOneshotNudge(makeFerment(), INTENT)
+		const out = buildOneshotNudge(makeFerment(), INTENT, true)
 		expect(out).toContain("ferment_id")
 		expect(out).toContain("title")
 		expect(out).toContain("goal")
@@ -48,7 +39,7 @@ describe("buildOneshotNudge", () => {
 
 	// Regression: gates was originally omitted, causing validateGatesOrErr to reject the call.
 	it("explicitly lists the gates array with P1, P2, P3 plan-scope gate ids", () => {
-		const out = buildOneshotNudge(makeFerment(), INTENT)
+		const out = buildOneshotNudge(makeFerment(), INTENT, true)
 		expect(out).toMatch(/gates\s*:/i)
 		expect(out).toContain("P1")
 		expect(out).toContain("P2")
@@ -57,7 +48,7 @@ describe("buildOneshotNudge", () => {
 	})
 
 	it("does not tell the model to skip asking questions — ask_user routes to judge automatically", () => {
-		const out = buildOneshotNudge(makeFerment(), INTENT)
+		const out = buildOneshotNudge(makeFerment(), INTENT, true)
 		// The Interview step must NOT tell the model to skip calling ask_user.
 		// Judge routing is transparent; the model calls ask_user as normal.
 		// Check the Interview bullet specifically (not the shared process which may
@@ -67,7 +58,7 @@ describe("buildOneshotNudge", () => {
 	})
 
 	it("does not instruct the model to skip confirm_ferment_completion_criteria explicitly", () => {
-		const out = buildOneshotNudge(makeFerment(), INTENT)
+		const out = buildOneshotNudge(makeFerment(), INTENT, true)
 		// confirm_ferment_completion_criteria is hidden from the toolset in one-shot mode
 		// (via the cooperative visibility layer), so the prompt doesn't need to mention it.
 		// If it does appear, it should not be telling the model NOT to call it.
@@ -77,7 +68,7 @@ describe("buildOneshotNudge", () => {
 	})
 
 	it("keeps exhausted workers incomplete and requires bounded linked recovery", () => {
-		const out = buildOneshotNudge(makeFerment(), INTENT)
+		const out = buildOneshotNudge(makeFerment(), INTENT, true)
 		expect(out).toContain("max_turns")
 		expect(out).toContain("max_duration")
 		expect(out).toContain("budget_tier")
@@ -89,12 +80,12 @@ describe("buildOneshotNudge", () => {
 	})
 
 	it("does NOT suggest propose_ferment_scoping in the user message", () => {
-		const out = buildOneshotNudge(makeFerment(), INTENT)
+		const out = buildOneshotNudge(makeFerment(), INTENT, true)
 		expect(out).not.toContain("propose_ferment_scoping")
 	})
 
 	it("includes the full shared planning process from src/shared/planning", () => {
-		const out = buildOneshotNudge(makeFerment(), INTENT)
+		const out = buildOneshotNudge(makeFerment(), INTENT, true)
 		expect(out).toContain("STEP 1 — ORIENT")
 		expect(out).toContain("STEP 2 — INTERVIEW")
 		expect(out).toContain("STEP 3 — COMPLETION CRITERIA")
@@ -109,7 +100,7 @@ describe("buildOneshotNudge", () => {
 	// implementation toolset unlocks on activate_ferment_phase) rather than
 	// the static curated allowlist from the pre-unified model.
 	it("envelope describes the lifecycle-driven toolset transition", () => {
-		const out = buildOneshotNudge(makeFerment(), INTENT)
+		const out = buildOneshotNudge(makeFerment(), INTENT, true)
 		// Must describe both phases of the toolset.
 		expect(out).toContain("planning phase")
 		expect(out).toContain("implementation toolset unlocks")
@@ -124,24 +115,20 @@ describe("buildOneshotNudge", () => {
 })
 
 describe("buildOneshotNudge — single-model (relaxed) delegation mode", () => {
-	beforeEach(() => {
-		getMultiModelEnabledMock.mockReturnValue(false)
-	})
-
 	it("allows direct execution instead of mandating delegation", () => {
-		const out = buildOneshotNudge(makeFerment(), INTENT)
+		const out = buildOneshotNudge(makeFerment(), INTENT, false)
 		expect(out).toContain("OR execute the step directly")
 		expect(out).toContain("bash/edit/write")
 	})
 
 	it("relaxes turn discipline — no MUST end with tool call", () => {
-		const out = buildOneshotNudge(makeFerment(), INTENT)
+		const out = buildOneshotNudge(makeFerment(), INTENT, false)
 		expect(out).not.toContain("Every turn MUST end with a ferment lifecycle tool call or an Agent spawn")
 		expect(out).toContain("may take a brief thinking or assessment turn")
 	})
 
 	it("mentions worker_agent_id is optional", () => {
-		const out = buildOneshotNudge(makeFerment(), INTENT)
+		const out = buildOneshotNudge(makeFerment(), INTENT, false)
 		expect(out).toContain("worker_agent_id is optional")
 	})
 })

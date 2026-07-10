@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process"
-import type { FermentUi } from "./ui.js"
+import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 
 /**
  * Check if `cwd` is inside a git repository (including subdirectories).
@@ -18,7 +18,7 @@ export type EnsureGitRepoOutcome = "already-repo" | "initialized" | "declined" |
 
 export interface EnsureGitRepoOptions {
 	cwd?: string
-	ui?: FermentUi
+	ui?: ExtensionUIContext
 	/**
 	 * When true, skip the interactive confirm and run `git init` unconditionally.
 	 * Set by callers in non-interactive flows (e.g. one-shot with --init-git flag

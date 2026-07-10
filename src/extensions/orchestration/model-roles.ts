@@ -37,16 +37,14 @@
  * ```
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
-import { homedir } from "node:os"
-import { dirname, join } from "node:path"
-
 import {
 	type ModelCustomMetadata,
 	getModelMetadata,
 	resetModelMetadataCache as resetMetadataCache,
 } from "./model-metadata.js"
 export { modelIdFromRef, splitModelRef } from "./model-ref-utils.js"
+import { readConfigSetting, writeConfigSetting } from "../../config/settings.js"
+import { getProcessOrchestratorRef } from "../kimchi-process.js"
 import { modelIdFromRef } from "./model-ref-utils.js"
 
 /** Task-type affinity tag used to match an agent persona to a model role. */
@@ -81,8 +79,6 @@ const DELEGABLE_ROLE_KEYS: readonly (keyof Omit<ModelRoles, "orchestrator">)[] =
 	"judge",
 ]
 const ROLE_KEYS: readonly (keyof ModelRoles)[] = ["orchestrator", ...DELEGABLE_ROLE_KEYS]
-
-const HARNESS_SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "settings.json")
 
 /** Hardcoded default model-to-role assignment. Users override via /multi-model. */
 export const DEFAULT_MODEL_ROLES: Readonly<ModelRoles> = {
@@ -123,15 +119,16 @@ function trimRoleValue(value: string | string[]): RoleModelAssignment {
  * Parse and validate raw modelRoles from settings.json.
  * Returns a validated ModelRoles merged with defaults, plus any warnings.
  */
-export function parseModelRoles(raw: unknown): { roles: ModelRoles; warnings: ModelRolesWarning[] } {
+export function parseModelRoles(obj: ModelRoles | Record<string, unknown> | undefined): {
+	roles: ModelRoles
+	warnings: ModelRolesWarning[]
+} {
 	const warnings: ModelRolesWarning[] = []
 	const roles: ModelRoles = { ...DEFAULT_MODEL_ROLES }
 
-	if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+	if (!obj) {
 		return { roles, warnings }
 	}
-
-	const obj = raw as Record<string, unknown>
 
 	for (const key of ROLE_KEYS) {
 		const value = obj[key]
@@ -167,18 +164,9 @@ export function parseModelRoles(raw: unknown): { roles: ModelRoles; warnings: Mo
  * Resolve model roles from settings.json, merged with defaults.
  * Missing or invalid entries fall back to DEFAULT_MODEL_ROLES.
  */
-export function resolveModelRoles(settingsPath?: string): { roles: ModelRoles; warnings: ModelRolesWarning[] } {
-	const path = settingsPath ?? HARNESS_SETTINGS_PATH
-	try {
-		const raw = readFileSync(path, "utf-8")
-		const parsed = JSON.parse(raw)
-		if (parsed && typeof parsed === "object" && "modelRoles" in parsed) {
-			return parseModelRoles(parsed.modelRoles)
-		}
-	} catch {
-		// settings.json absent or unreadable — use defaults
-	}
-	return { roles: { ...DEFAULT_MODEL_ROLES }, warnings: [] }
+export function resolveModelRoles(): { roles: ModelRoles; warnings: ModelRolesWarning[] } {
+	const value = readConfigSetting("modelRoles", (value): value is Record<string, unknown> => typeof value === "object")
+	return parseModelRoles(value)
 }
 
 function isEqualRoleValue(a: RoleModelAssignment, b: RoleModelAssignment): boolean {
@@ -190,16 +178,8 @@ function isEqualRoleValue(a: RoleModelAssignment, b: RoleModelAssignment): boole
  * Save model roles to settings.json. Merges with existing settings,
  * only writing non-default values (omits keys that match DEFAULT_MODEL_ROLES).
  */
-export function saveModelRoles(roles: ModelRoles, settingsPath?: string): void {
-	const path = settingsPath ?? HARNESS_SETTINGS_PATH
-	let existing: Record<string, unknown> = {}
-	try {
-		existing = JSON.parse(readFileSync(path, "utf-8"))
-	} catch {
-		// absent or unreadable — start fresh
-	}
-
-	const rolesObj: Record<string, RoleModelAssignment> = {}
+export function saveModelRoles(roles: ModelRoles): void {
+	let rolesObj: Record<string, RoleModelAssignment> | undefined = {}
 	for (const key of ROLE_KEYS) {
 		if (!isEqualRoleValue(roles[key], DEFAULT_MODEL_ROLES[key])) {
 			rolesObj[key] = roles[key]
@@ -207,16 +187,10 @@ export function saveModelRoles(roles: ModelRoles, settingsPath?: string): void {
 	}
 
 	if (Object.keys(rolesObj).length === 0) {
-		const { modelRoles: _, ...rest } = existing
-		existing = rest
-	} else {
-		existing.modelRoles = rolesObj
+		rolesObj = undefined
 	}
 
-	const dir = dirname(path)
-	if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-	writeFileSync(path, `${JSON.stringify(existing, null, 2)}\n`)
-
+	writeConfigSetting("modelRoles", rolesObj)
 	resetModelRolesCache()
 	resetMetadataCache()
 }
@@ -320,4 +294,30 @@ function isEqualModelRoles(a: ModelRoles, b: ModelRoles): boolean {
 		if (!isEqualRoleValue(a[key], b[key])) return false
 	}
 	return true
+}
+
+/**
+ * Orchestrator model ID (without provider prefix).
+ * When sessionId is provided, reads from the per-session side-channel first,
+ * falling back to the global model-roles config.
+ */
+export function getOrchestratorModelId(sessionId: string | null): string {
+	if (sessionId !== null) {
+		const ref = getProcessOrchestratorRef(sessionId)
+		if (ref) return modelIdFromRef(ref)
+	}
+	return modelIdFromRef(getModelRoles().orchestrator)
+}
+
+/**
+ * Orchestrator model reference (provider/model-id).
+ * When sessionId is provided, reads from the per-session side-channel first,
+ * falling back to the global model-roles config.
+ */
+export function getOrchestratorModelRef(sessionId: string | null): string {
+	if (sessionId !== null) {
+		const ref = getProcessOrchestratorRef(sessionId)
+		if (ref) return ref
+	}
+	return getModelRoles().orchestrator
 }

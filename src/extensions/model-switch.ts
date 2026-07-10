@@ -9,21 +9,16 @@ import {
 	resolveContextTokens,
 	sessionHasImages,
 } from "./model-guard.js"
+import { setMultiModelEnabled } from "./multi-model.js"
 import { MODEL_CAPABILITIES } from "./orchestration/model-registry/builtin-models.js"
 import type { ModelTier } from "./orchestration/model-registry/types.js"
-import { splitModelRef } from "./orchestration/model-roles.js"
-import {
-	getMultiModelEnabled,
-	getOrchestratorModelId,
-	getOrchestratorModelRef,
-	setMultiModelEnabled,
-} from "./prompt-construction/prompt-enrichment.js"
+import { getOrchestratorModelId, getOrchestratorModelRef, splitModelRef } from "./orchestration/model-roles.js"
 
 /** Prevents model_select handler from re-checking what set_model tool already validated. */
 let suppressModelSelectGuard = false
 
 /** Suppress the model_select guard temporarily (e.g. when /multi-model calls setModel). */
-export function withSuppressedModelSelectGuard<T>(fn: () => Promise<T>): Promise<T> {
+export async function withSuppressedModelSelectGuard<T>(fn: () => Promise<T>): Promise<T> {
 	suppressModelSelectGuard = true
 	return fn().finally(() => {
 		suppressModelSelectGuard = false
@@ -66,11 +61,12 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 			}),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const sessionId = ctx.sessionManager.getSessionId()
 			const { model } = params
 
 			if (model === "multi-model") {
-				const orchRef = getOrchestratorModelRef()
-				const orchId = getOrchestratorModelId()
+				const orchRef = getOrchestratorModelRef(sessionId)
+				const orchId = getOrchestratorModelId(sessionId)
 				const parsed = splitModelRef(orchRef)
 				const orchestrator = parsed ? ctx.modelRegistry?.find(parsed.provider, parsed.modelId) : undefined
 				if (!orchestrator) {
@@ -79,7 +75,7 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 						details: null,
 					}
 				}
-				setMultiModelEnabled(true)
+				setMultiModelEnabled(sessionId, true)
 				suppressModelSelectGuard = true
 				try {
 					await pi.setModel(orchestrator)
@@ -171,7 +167,7 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 				}
 			}
 
-			setMultiModelEnabled(false)
+			setMultiModelEnabled(sessionId, false)
 			let ok: boolean
 			suppressModelSelectGuard = true
 			try {
@@ -203,24 +199,17 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 		},
 	})
 
-	pi.on?.("model_select", async (event, ctx) => {
+	pi.on("model_select", async (event, ctx) => {
 		// Skip if a revert is already in progress
 		if (isRevertingModel) return
 		// Skip if set_model tool initiated this (already validated)
 		if (suppressModelSelectGuard) return
 		// cycle and restore are handled by ctrl+p / session recovery already
 		if (event.source === "cycle" || event.source === "restore") return
-
-		// Flush the multi-model flag that the harness /models UI sets via
-		// process.__kimchiMultiModelEnabled.  getMultiModelEnabled() detects a
-		// mismatch between the process flag and the extension variable and
-		// persists it to disk.  Without this, the disk value can go stale if the
-		// session ends before the footer polls the flag.
-		getMultiModelEnabled()
-
 		// Nothing to revert to
 		if (!event.previousModel) return
 
+		const sessionId = ctx.sessionManager.getSessionId()
 		const usage = ctx.getContextUsage?.()
 
 		// Context window guard — block if current tokens exceed target safe context window.
@@ -251,10 +240,10 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 		}
 
 		if (event.source === "set") {
-			const orchRef = getOrchestratorModelRef()
+			const orchRef = getOrchestratorModelRef(sessionId)
 			const selectedRef = `${event.model.provider}/${event.model.id}`
 			if (selectedRef !== orchRef) {
-				setMultiModelEnabled(false)
+				setMultiModelEnabled(sessionId, false)
 			}
 		}
 	})

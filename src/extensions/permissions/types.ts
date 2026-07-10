@@ -1,9 +1,14 @@
 export type PermissionMode = "default" | "plan" | "auto" | "yolo"
 
+export interface PermissionModeMeta {
+	label: string
+	tuiLabel: string
+	description: string
+	color: "success" | "warning" | "error"
+}
+
 /** Source of a runtime permission mode change. */
 export type PermissionModeRuntimeSource = "user" | "ferment"
-
-export const ALL_PERMISSION_MODES: readonly PermissionMode[] = ["default", "plan", "auto", "yolo"] as const
 
 export type RuleBehavior = "allow" | "deny"
 
@@ -50,21 +55,3 @@ export interface SessionPermissionFlagChanges {
 		source: PermissionModeRuntimeSource
 	}
 }
-
-export const DEFAULT_CONFIG: PermissionsConfig = {
-	defaultMode: "default",
-	allow: [],
-	deny: [],
-	classifierTimeoutMs: 8000,
-}
-
-// Denylist applied as the lowest-precedence rule source. Users can override by
-// adding matching allow rules at a higher-precedence source.
-export const BUILTIN_DENY: string[] = [
-	"bash(rm -rf /*)",
-	"bash(sudo *)",
-	"write(.env)",
-	"write(.env.*)",
-	"edit(.env)",
-	"edit(.env.*)",
-]

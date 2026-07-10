@@ -11,6 +11,7 @@
  * blocked even after manual intervention.
  */
 
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
 import {
 	DIM,
@@ -31,7 +32,6 @@ import {
 import { promptEditor } from "./prompt-ui.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
-import type { FermentUiContext } from "./ui.js"
 
 // Parallel-group markers — one compact form for inline list rows, one verbose
 // form for the step detail header. Centralized so the glyph and colour stay
@@ -260,7 +260,7 @@ export async function handleStepAction(
 	f: Ferment,
 	p: Phase,
 	s: Step,
-	ctx: FermentUiContext,
+	ctx: ExtensionContext,
 	runtime: FermentRuntime = defaultFermentRuntime,
 ): Promise<void> {
 	const applyAndPersist = createApplyAndPersist(runtime)
@@ -289,7 +289,7 @@ export async function handlePhaseAction(
 	choice: string,
 	f: Ferment,
 	p: Phase,
-	ctx: FermentUiContext,
+	ctx: ExtensionContext,
 	runtime: FermentRuntime = defaultFermentRuntime,
 ): Promise<void> {
 	const applyAndPersist = createApplyAndPersist(runtime)

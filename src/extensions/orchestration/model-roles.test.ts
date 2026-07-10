@@ -1,7 +1,26 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+
+// ---------------------------------------------------------------------------
+// Monkey-patch the json layer so that readJson / writeJson — called by the
+// real readConfigSetting / writeConfigSetting — redirect to the per-test temp
+// file. The settings.ts logic itself runs unmodified.
+// ---------------------------------------------------------------------------
+
+const testDir = join(tmpdir(), `kimchi-model-roles-test-${process.pid}`)
+const testPath = join(testDir, "settings.json")
+
+vi.mock("../../config/json.js", async (importOriginal) => {
+	const original = await importOriginal<typeof import("../../config/json.js")>()
+	return {
+		...original,
+		readJson: (_path: string) => original.readJson(testPath),
+		writeJson: (_path: string, data: unknown) => original.writeJson(testPath, data),
+	}
+})
+
 import { type ModelCustomMetadata, resetModelMetadataCache, saveModelMetadata } from "./model-metadata.js"
 import {
 	DEFAULT_MODEL_ROLES,
@@ -26,18 +45,6 @@ afterEach(() => {
 describe("parseModelRoles", () => {
 	it("returns defaults when raw is undefined", () => {
 		const { roles, warnings } = parseModelRoles(undefined)
-		expect(roles).toEqual(DEFAULT_MODEL_ROLES)
-		expect(warnings).toHaveLength(0)
-	})
-
-	it("returns defaults when raw is null", () => {
-		const { roles, warnings } = parseModelRoles(null)
-		expect(roles).toEqual(DEFAULT_MODEL_ROLES)
-		expect(warnings).toHaveLength(0)
-	})
-
-	it("returns defaults when raw is not an object", () => {
-		const { roles, warnings } = parseModelRoles("not-an-object")
 		expect(roles).toEqual(DEFAULT_MODEL_ROLES)
 		expect(warnings).toHaveLength(0)
 	})
@@ -115,6 +122,7 @@ describe("parseModelRoles", () => {
 	})
 
 	it("ignores array as top-level input", () => {
+		// @ts-expect-error
 		const { roles } = parseModelRoles(["not", "valid"])
 		expect(roles).toEqual(DEFAULT_MODEL_ROLES)
 	})
@@ -159,6 +167,24 @@ describe("parseModelRoles", () => {
 		// null is skipped silently, number warns
 		expect(warnings).toHaveLength(1)
 		expect(warnings[0].role).toBe("reviewer")
+	})
+
+	it("warns on object value for a delegable role", () => {
+		const { roles, warnings } = parseModelRoles({
+			builder: { model: "anthropic/claude-sonnet-4-5", tier: "heavy" },
+		})
+		expect(roles.builder).toBe(DEFAULT_MODEL_ROLES.builder)
+		expect(warnings).toHaveLength(1)
+		expect(warnings[0].role).toBe("builder")
+	})
+
+	it("warns on array containing objects", () => {
+		const { roles, warnings } = parseModelRoles({
+			planner: ["kimchi-dev/kimi-k2.6", { model: "anthropic/claude-opus-4-6" }],
+		})
+		expect(roles.planner).toBe(DEFAULT_MODEL_ROLES.planner)
+		expect(warnings).toHaveLength(1)
+		expect(warnings[0].role).toBe("planner")
 	})
 })
 
@@ -254,8 +280,9 @@ describe("DEFAULT_MODEL_ROLES", () => {
 })
 
 describe("saveModelRoles", () => {
-	const testDir = join(tmpdir(), `kimchi-model-roles-test-${process.pid}`)
-	const testPath = join(testDir, "settings.json")
+	beforeEach(() => {
+		mkdirSync(testDir, { recursive: true })
+	})
 
 	afterEach(() => {
 		try {
@@ -264,16 +291,19 @@ describe("saveModelRoles", () => {
 	})
 
 	it("creates the settings file and directory if absent", () => {
+		// Remove the dir so the mock's writeConfigSetting must create it
+		rmSync(testDir, { recursive: true, force: true })
+
 		const roles: ModelRoles = { ...DEFAULT_MODEL_ROLES, builder: "anthropic/claude-sonnet-4-5" }
-		saveModelRoles(roles, testPath)
-		expect(existsSync(testPath)).toBe(true)
+		saveModelRoles(roles)
+
 		const saved = JSON.parse(readFileSync(testPath, "utf-8"))
 		expect(saved.modelRoles.builder).toBe("anthropic/claude-sonnet-4-5")
 	})
 
 	it("only writes non-default values", () => {
 		const roles: ModelRoles = { ...DEFAULT_MODEL_ROLES, reviewer: "openai/gpt-4o" }
-		saveModelRoles(roles, testPath)
+		saveModelRoles(roles)
 		const saved = JSON.parse(readFileSync(testPath, "utf-8"))
 		expect(saved.modelRoles).toEqual({ reviewer: "openai/gpt-4o" })
 		expect(saved.modelRoles.orchestrator).toBeUndefined()
@@ -282,21 +312,55 @@ describe("saveModelRoles", () => {
 
 	it("removes modelRoles key when all values are defaults", () => {
 		// First save a non-default
-		saveModelRoles({ ...DEFAULT_MODEL_ROLES, builder: "anthropic/claude-sonnet-4-5" }, testPath)
+		saveModelRoles({ ...DEFAULT_MODEL_ROLES, builder: "anthropic/claude-sonnet-4-5" })
 		// Then save all defaults
-		saveModelRoles({ ...DEFAULT_MODEL_ROLES }, testPath)
+		saveModelRoles({ ...DEFAULT_MODEL_ROLES })
 		const saved = JSON.parse(readFileSync(testPath, "utf-8"))
 		expect(saved.modelRoles).toBeUndefined()
 	})
 
 	it("preserves other settings in the file", () => {
-		mkdirSync(testDir, { recursive: true })
 		writeFileSync(testPath, JSON.stringify({ multiModel: true, theme: "dark" }, null, 2))
-		saveModelRoles({ ...DEFAULT_MODEL_ROLES, orchestrator: "anthropic/claude-opus-4-7" }, testPath)
+		saveModelRoles({ ...DEFAULT_MODEL_ROLES, orchestrator: "anthropic/claude-opus-4-7" })
 		const saved = JSON.parse(readFileSync(testPath, "utf-8"))
 		expect(saved.multiModel).toBe(true)
 		expect(saved.theme).toBe("dark")
 		expect(saved.modelRoles.orchestrator).toBe("anthropic/claude-opus-4-7")
+	})
+
+	it("saves string roles to modelRoles key", () => {
+		const roles: ModelRoles = {
+			...DEFAULT_MODEL_ROLES,
+			builder: "anthropic/claude-sonnet-4-5",
+		}
+		saveModelRoles(roles)
+		const saved = JSON.parse(readFileSync(testPath, "utf-8"))
+		expect(saved.modelRoles.builder).toBe("anthropic/claude-sonnet-4-5")
+	})
+
+	it("does not write modelMetadata", () => {
+		const roles: ModelRoles = {
+			...DEFAULT_MODEL_ROLES,
+			builder: "anthropic/claude-sonnet-4-5",
+		}
+		saveModelRoles(roles)
+		const saved = JSON.parse(readFileSync(testPath, "utf-8"))
+		expect(saved.modelMetadata).toBeUndefined()
+	})
+
+	it("preserves existing modelMetadata when saving roles", () => {
+		const metadata = new Map<string, ModelCustomMetadata>([["anthropic/claude-opus-4-6", { tier: "heavy" }]])
+		saveModelMetadata(metadata, testPath)
+
+		const roles: ModelRoles = {
+			...DEFAULT_MODEL_ROLES,
+			builder: "openai/gpt-4o",
+		}
+		saveModelRoles(roles)
+
+		const saved = JSON.parse(readFileSync(testPath, "utf-8"))
+		expect(saved.modelMetadata["anthropic/claude-opus-4-6"]).toEqual({ tier: "heavy" })
+		expect(saved.modelRoles.builder).toBe("openai/gpt-4o")
 	})
 })
 
@@ -358,26 +422,6 @@ describe("validateModelRoles", () => {
 	})
 })
 
-describe("parseModelRoles rejects objects", () => {
-	it("warns on object value for a delegable role", () => {
-		const { roles, warnings } = parseModelRoles({
-			builder: { model: "anthropic/claude-sonnet-4-5", tier: "heavy" },
-		})
-		expect(roles.builder).toBe(DEFAULT_MODEL_ROLES.builder)
-		expect(warnings).toHaveLength(1)
-		expect(warnings[0].role).toBe("builder")
-	})
-
-	it("warns on array containing objects", () => {
-		const { roles, warnings } = parseModelRoles({
-			planner: ["kimchi-dev/kimi-k2.6", { model: "anthropic/claude-opus-4-6" }],
-		})
-		expect(roles.planner).toBe(DEFAULT_MODEL_ROLES.planner)
-		expect(warnings).toHaveLength(1)
-		expect(warnings[0].role).toBe("planner")
-	})
-})
-
 describe("extractCustomConfigs", () => {
 	it("returns empty map when no overrides provided", () => {
 		const roles: ModelRoles = {
@@ -417,7 +461,7 @@ describe("saveModelRoles", () => {
 			...DEFAULT_MODEL_ROLES,
 			builder: "anthropic/claude-sonnet-4-5",
 		}
-		saveModelRoles(roles, testPath)
+		saveModelRoles(roles)
 		const saved = JSON.parse(readFileSync(testPath, "utf-8"))
 		expect(saved.modelRoles.builder).toBe("anthropic/claude-sonnet-4-5")
 	})
@@ -427,7 +471,7 @@ describe("saveModelRoles", () => {
 			...DEFAULT_MODEL_ROLES,
 			builder: "anthropic/claude-sonnet-4-5",
 		}
-		saveModelRoles(roles, testPath)
+		saveModelRoles(roles)
 		const saved = JSON.parse(readFileSync(testPath, "utf-8"))
 		expect(saved.modelMetadata).toBeUndefined()
 	})
@@ -441,7 +485,7 @@ describe("saveModelRoles", () => {
 			...DEFAULT_MODEL_ROLES,
 			builder: "openai/gpt-4o",
 		}
-		saveModelRoles(roles, testPath)
+		saveModelRoles(roles)
 
 		const saved = JSON.parse(readFileSync(testPath, "utf-8"))
 		expect(saved.modelMetadata["anthropic/claude-opus-4-6"]).toEqual({ tier: "heavy" })

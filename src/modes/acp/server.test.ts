@@ -27,8 +27,8 @@ const THEME_KEY = Symbol.for("@earendil-works/pi-coding-agent:theme")
 const THEME_KEY_OLD = Symbol.for("@mariozechner/pi-coding-agent:theme")
 
 import { PERMISSIONS_ENV_KEY } from "../../extensions/permissions/constants.js"
+import { PERMISSION_MODES } from "../../extensions/permissions/constants.js"
 import { getSessionPermissionFlagController } from "../../extensions/permissions/mode-controller-registry.js"
-import { ALL_PERMISSION_MODES } from "../../extensions/permissions/types.js"
 import { getAcpPrompter } from "./permission-prompter-registry.js"
 import {
 	type AcpSessionFactory,
@@ -1907,7 +1907,7 @@ describe("setSessionConfigOption", () => {
 
 		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
 
-		for (const mode of ALL_PERMISSION_MODES) {
+		for (const mode of PERMISSION_MODES) {
 			const res = await agent.setSessionConfigOption({
 				sessionId: "test-session-modes",
 				configId: "permissions-mode",
@@ -2001,7 +2001,7 @@ describe("setSessionConfigOption", () => {
 		// biome-ignore lint/suspicious/noExplicitAny: union type requires assertion
 		const selectOption = res.configOptions[0] as any
 		expect(selectOption.options).toHaveLength(4)
-		expect(selectOption.options.map((o: { value: string }) => o.value)).toEqual(ALL_PERMISSION_MODES)
+		expect(selectOption.options.map((o: { value: string }) => o.value)).toEqual(PERMISSION_MODES)
 	})
 
 	it("emits config_option_update when permission mode changes", async () => {

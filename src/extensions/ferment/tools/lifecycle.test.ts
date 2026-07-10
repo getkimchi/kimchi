@@ -1,9 +1,10 @@
 import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../../ferment/event-store.js"
+import { createContext } from "../../__mocks__/context.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "../runtime.js"
 import { createApplyAndPersist } from "../tool-helpers.js"
 import { FERMENT_TOOLS } from "../tool-names.js"
@@ -37,7 +38,13 @@ const { judgeApiCall: mockJudgeApiCall, judgeJourneyGrade: mockJudgeJourneyGrade
 
 interface RegisteredTool {
 	name: string
-	execute: (toolCallId: string, params: Record<string, unknown>) => Promise<unknown>
+	execute: (
+		toolCallId: string,
+		params: Record<string, unknown>,
+		signal: unknown | undefined,
+		onUpdate: unknown | undefined,
+		ctx: ExtensionContext,
+	) => Promise<unknown>
 	renderResult?: (result: unknown) => unknown
 }
 
@@ -182,7 +189,7 @@ describe("scopeFerment", () => {
 				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
 				gates: passingPlanGates(),
 			},
-			{ pi: h.pi },
+			{ ctx: createContext() },
 		)
 
 		expect(okText(result)).toContain("scoped and ready")
@@ -206,7 +213,7 @@ describe("scopeFerment", () => {
 				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
 				gates: passingPlanGates(),
 			},
-			{ pi: h.pi },
+			{ ctx: createContext() },
 		)
 
 		expect(okText(result)).toContain("scoped and ready")
@@ -226,7 +233,7 @@ describe("scopeFerment", () => {
 				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
 				gates: passingPlanGates(),
 			},
-			{ pi: h.pi },
+			{ ctx: createContext() },
 		)
 
 		expect(errText(result)).toContain('Field "title" must be a non-empty')
@@ -256,7 +263,7 @@ describe("scopeFerment", () => {
 				phases: [{ name: "Build", goal: "Implement" }],
 				gates: flaggedGates,
 			},
-			{ pi: h.pi },
+			{ ctx: createContext() },
 		)
 
 		expect(errText(result)).toContain("Gate P1")
@@ -278,7 +285,7 @@ describe("scopeFerment", () => {
 				phases: [{ name: "Build", goal: "Implement" }],
 				gates: incomplete,
 			},
-			{ pi: h.pi },
+			{ ctx: createContext() },
 		)
 
 		expect(errText(result)).toContain("missing required gate verdicts")
@@ -301,7 +308,7 @@ describe("scopeFerment", () => {
 				phases: [{ name: "Build", goal: "Implement" }],
 				gates: passingPlanGates(),
 			},
-			{ pi: h.pi },
+			{ ctx: createContext() },
 		)
 
 		expect(errText(result)).toContain("propose_ferment_scoping")
@@ -324,7 +331,7 @@ describe("scopeFerment", () => {
 				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
 				gates: passingPlanGates(),
 			},
-			{ pi: h.pi },
+			{ ctx: createContext() },
 		)
 
 		const saved = h.storage.get(h.fermentId)
@@ -344,7 +351,7 @@ describe("scopeFerment", () => {
 				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
 				gates: passingPlanGates(),
 			},
-			{ pi: h.pi },
+			{ ctx: createContext() },
 		)
 
 		const saved = h.storage.get(h.fermentId)
@@ -399,7 +406,7 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 			},
 			undefined,
 			undefined,
-			{ ui: {} },
+			createContext({ hasUI: false }),
 		)
 
 		expect(errText(result)).toContain("Cannot ask scoping questions without an interactive UI")
@@ -421,7 +428,7 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 			},
 			undefined,
 			undefined,
-			{ ui: {} },
+			createContext(),
 		)
 
 		expect(errText(result)).toContain('Field "title" must be a non-empty')
@@ -451,7 +458,7 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 			},
 			undefined,
 			undefined,
-			{ ui: {} },
+			createContext(),
 		)
 
 		expect(errText(result)).toContain("questions.0.question must be a string")
@@ -481,7 +488,7 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 			},
 			undefined,
 			undefined,
-			{ ui: {} },
+			createContext({ hasUI: false }),
 		)
 
 		expect(errText(result)).toContain("Cannot ask scoping questions without an interactive UI")
@@ -512,7 +519,7 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 			},
 			undefined,
 			undefined,
-			{ ui: {} },
+			createContext(),
 		)
 
 		expect(errText(result)).toContain("questions.0.question must be a string")
@@ -542,7 +549,7 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 			},
 			undefined,
 			undefined,
-			{ ui: {} },
+			createContext({ hasUI: false }),
 		)
 
 		expect(okText(result)).toContain("Plan saved")
@@ -570,7 +577,7 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 			},
 			undefined,
 			undefined,
-			{ ui: {} },
+			createContext({ hasUI: false }),
 		)
 
 		expect(okText(result)).toContain("Plan saved")
@@ -599,7 +606,7 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 			},
 			undefined,
 			undefined,
-			{ ui: {} },
+			createContext({ hasUI: false }),
 		)
 
 		expect(okText(result)).toContain("Plan saved")
@@ -649,7 +656,7 @@ describe("confirm_ferment_completion_criteria via registerLifecycleTools", () =>
 			},
 			undefined,
 			undefined,
-			{ ui: { select, input } },
+			createContext({ ui: { select, input } }),
 		)
 
 		const text = okText(result)
@@ -681,7 +688,7 @@ describe("confirm_ferment_completion_criteria via registerLifecycleTools", () =>
 			},
 			undefined,
 			undefined,
-			{ ui: { select, input } },
+			createContext({ ui: { select, input } }),
 		)
 
 		const text = okText(result)
@@ -706,10 +713,16 @@ describe("confirm_ferment_completion_criteria via registerLifecycleTools", () =>
 			}
 		})
 
-		const result = await execute("tool-call-1", {
-			ferment_id: h.fermentId,
-			criteria: ["README.md exists at the project root; verify by opening README.md."],
-		})
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				criteria: ["README.md exists at the project root; verify by opening README.md."],
+			},
+			undefined,
+			undefined,
+			createContext(),
+		)
 
 		const text = okText(result)
 		expect(text).toContain("Confirmed: no")
@@ -721,10 +734,16 @@ describe("confirm_ferment_completion_criteria via registerLifecycleTools", () =>
 	it("rejects criteria that normalize to empty strings", async () => {
 		const { h, execute } = createConfirmCriteriaHarness()
 
-		const result = await execute("tool-call-1", {
-			ferment_id: h.fermentId,
-			criteria: ["  "],
-		})
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				criteria: ["  "],
+			},
+			undefined,
+			undefined,
+			createContext(),
+		)
 
 		expect(errText(result)).toContain('Field "criteria" must include at least one non-empty criterion')
 	})
@@ -762,7 +781,7 @@ describe("ask_user via registerLifecycleTools", () => {
 			},
 			undefined,
 			undefined,
-			{ ui: { select } },
+			createContext({ ui: { select } }),
 		)
 		expect(okText(result)).toContain("- confirm: yes")
 		expect(select).toHaveBeenCalledWith("Sound right?", ["Yes", "No"])
@@ -779,7 +798,7 @@ describe("ask_user via registerLifecycleTools", () => {
 			},
 			undefined,
 			undefined,
-			{ ui: { select } },
+			createContext({ ui: { select } }),
 		)
 		expect(okText(result)).toContain("- confirm: yes")
 	})
@@ -794,7 +813,7 @@ describe("ask_user via registerLifecycleTools", () => {
 			},
 			undefined,
 			undefined,
-			undefined,
+			createContext(),
 		)
 		expect(errText(result)).toContain("No active ferment. Provide ferment_id or activate a ferment first.")
 	})
@@ -809,7 +828,7 @@ describe("ask_user via registerLifecycleTools", () => {
 			},
 			undefined,
 			undefined,
-			undefined,
+			createContext(),
 		)
 		expect(errText(result)).toContain("ask_user requires a non-empty questions[] array")
 	})
@@ -824,7 +843,7 @@ describe("ask_user via registerLifecycleTools", () => {
 			},
 			undefined,
 			undefined,
-			undefined,
+			createContext(),
 		)
 		expect(errText(result)).toContain('missing required field "id"')
 	})
@@ -839,7 +858,7 @@ describe("ask_user via registerLifecycleTools", () => {
 			},
 			undefined,
 			undefined,
-			undefined,
+			createContext(),
 		)
 		expect(errText(result)).toContain('Question "q1" is missing required field "prompt"')
 	})
@@ -854,7 +873,7 @@ describe("ask_user via registerLifecycleTools", () => {
 			},
 			undefined,
 			undefined,
-			undefined,
+			createContext(),
 		)
 		expect(errText(result)).toContain('Question "bad" has unknown type "bogus"')
 		expect(errText(result)).toContain("single, multi, text, confirm")
@@ -870,7 +889,7 @@ describe("ask_user via registerLifecycleTools", () => {
 			},
 			undefined,
 			undefined,
-			undefined,
+			createContext(),
 		)
 		expect(errText(result)).toContain('Question "ok" is type "confirm" and must not have options')
 	})
@@ -885,7 +904,7 @@ describe("ask_user via registerLifecycleTools", () => {
 			},
 			undefined,
 			undefined,
-			undefined,
+			createContext(),
 		)
 		expect(errText(result)).toContain('Question "lonely" is type "single" but has no options')
 	})
@@ -900,7 +919,7 @@ describe("ask_user via registerLifecycleTools", () => {
 			},
 			undefined,
 			undefined,
-			undefined,
+			createContext(),
 		)
 		expect(errText(result)).toContain('Question "lonely" is type "multi" but has no options')
 	})
@@ -943,11 +962,17 @@ describe("update_ferment_scope_field via registerLifecycleTools", () => {
 		const tool = tools.get("update_ferment_scope_field")
 		if (!tool) throw new Error("update_ferment_scope_field was not registered")
 
-		const result = (await tool.execute("test-call-id", {
-			ferment_id: fermentId,
-			field: "assumptions",
-			value: "k8s cluster exists and is reachable",
-		})) as { content: { text: string }[]; isError?: boolean }
+		const result = (await tool.execute(
+			"test-call-id",
+			{
+				ferment_id: fermentId,
+				field: "assumptions",
+				value: "k8s cluster exists and is reachable",
+			},
+			undefined,
+			undefined,
+			createContext(),
+		)) as { content: { text: string }[]; isError?: boolean }
 
 		expect(okText(result)).toContain("assumptions")
 		expect(storage.get(fermentId)?.scoping.assumptions?.answer).toBe("k8s cluster exists and is reachable")
@@ -958,11 +983,17 @@ describe("update_ferment_scope_field via registerLifecycleTools", () => {
 		const tool = tools.get("update_ferment_scope_field")
 		if (!tool) throw new Error("update_ferment_scope_field was not registered")
 
-		const result = (await tool.execute("test-call-id", {
-			ferment_id: fermentId,
-			field: "unknown_field",
-			value: "ignored",
-		})) as { content: { text: string }[]; isError?: boolean }
+		const result = (await tool.execute(
+			"test-call-id",
+			{
+				ferment_id: fermentId,
+				field: "unknown_field",
+				value: "ignored",
+			},
+			undefined,
+			undefined,
+			createContext(),
+		)) as { content: { text: string }[]; isError?: boolean }
 
 		expect(errText(result)).toContain("assumptions")
 	})
@@ -977,11 +1008,15 @@ describe("completeFerment", () => {
 		h.runtime.clearFermentState = clearFermentState
 		h.runtime.setActive = setActive
 
-		const result = await completeFerment(h.runtime, {
-			ferment_id: h.fermentId,
-			final_summary: "all done",
-			gates: passingFermentGates(),
-		})
+		const result = await completeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				final_summary: "all done",
+				gates: passingFermentGates(),
+			},
+			{ ctx: createContext() },
+		)
 
 		expect(okText(result)).toContain("complete")
 		expect(okText(result)).toContain("C1 (pass)")
@@ -1005,7 +1040,11 @@ describe("completeFerment", () => {
 			{ id: "C3", verdict: "pass" as const, rationale: "ok", evidence: "smoke" },
 		]
 
-		const result = await completeFerment(h.runtime, { ferment_id: h.fermentId, final_summary: "", gates: flaggedGates })
+		const result = await completeFerment(
+			h.runtime,
+			{ ferment_id: h.fermentId, final_summary: "", gates: flaggedGates },
+			{ ctx: createContext() },
+		)
 
 		expect(errText(result)).toContain("complete_ferment refused")
 		expect(errText(result)).toContain("Gate C2")
@@ -1017,7 +1056,11 @@ describe("completeFerment", () => {
 		createTerminalFerment(h)
 		const incomplete = [{ id: "C1", verdict: "pass" as const, rationale: "ok", evidence: "n/a" }]
 
-		const result = await completeFerment(h.runtime, { ferment_id: h.fermentId, final_summary: "", gates: incomplete })
+		const result = await completeFerment(
+			h.runtime,
+			{ ferment_id: h.fermentId, final_summary: "", gates: incomplete },
+			{ ctx: createContext() },
+		)
 
 		expect(errText(result)).toContain("missing required gate verdicts")
 		expect(errText(result)).toContain("C2")
@@ -1028,18 +1071,22 @@ describe("completeFerment", () => {
 	it("treats complete_ferment on an already-complete ferment as an inert no-op", async () => {
 		const h = createHarness()
 		createTerminalFerment(h)
-		const first = await completeFerment(h.runtime, {
-			ferment_id: h.fermentId,
-			final_summary: "done",
-			gates: passingFermentGates(),
-		})
+		const first = await completeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				final_summary: "done",
+				gates: passingFermentGates(),
+			},
+			{ ctx: createContext() },
+		)
 		expect(okText(first)).toContain('**Ferment "Lifecycle Test"** complete')
 		expect(okText(first)).toContain("Do not call bash/read/list_ferments or any ferment tools")
 		expect(okText(first)).toContain('/ferment new "..."')
 		expect(okText(first)).toContain("do not search MCP tools or invent a tool")
 		expect(mockJudgeJourneyGrade).toHaveBeenCalledTimes(1)
 
-		const second = await completeFerment(h.runtime, { ferment_id: h.fermentId })
+		const second = await completeFerment(h.runtime, { ferment_id: h.fermentId }, { ctx: createContext() })
 
 		expect(okText(second)).toContain('Ferment "Lifecycle Test" is already complete')
 		expect(okText(second)).toContain("without clear user consent")
@@ -1053,7 +1100,7 @@ describe("completeFerment", () => {
 		const abandoned = applyAndPersist(h.fermentId, { type: "abandon", reason: "user stopped" })
 		if (!abandoned.ok) throw new Error(abandoned.error.message)
 
-		const result = await completeFerment(h.runtime, { ferment_id: h.fermentId })
+		const result = await completeFerment(h.runtime, { ferment_id: h.fermentId }, { ctx: createContext() })
 
 		expect(errText(result)).toContain('Ferment "Lifecycle Test" is abandoned and cannot be completed')
 		expect(mockJudgeJourneyGrade).not.toHaveBeenCalled()
@@ -1068,11 +1115,15 @@ describe("completeFerment", () => {
 			grade: "B",
 			rationale: "Phase 1 verified via proxy; goal met but coverage is thin.",
 		})
-		const result = await completeFerment(h.runtime, {
-			ferment_id: h.fermentId,
-			final_summary: "done",
-			gates: passingFermentGates(),
-		})
+		const result = await completeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				final_summary: "done",
+				gates: passingFermentGates(),
+			},
+			{ ctx: createContext() },
+		)
 		expect(okText(result)).toContain("**Final grade:** B")
 		expect(okText(result)).toContain("proxy")
 		expect(h.storage.get(h.fermentId)?.grade?.grade).toBe("B")
@@ -1089,11 +1140,15 @@ describe("completeFerment", () => {
 			detail: "missing api key",
 		})
 
-		const result = await completeFerment(h.runtime, {
-			ferment_id: h.fermentId,
-			final_summary: "done",
-			gates: passingFermentGates(),
-		})
+		const result = await completeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				final_summary: "done",
+				gates: passingFermentGates(),
+			},
+			{ ctx: createContext() },
+		)
 
 		expect(okText(result)).toContain("**Final grade:** unavailable")
 		expect(okText(result)).toContain("Judge unreachable (no_auth: missing api key)")
@@ -1109,11 +1164,15 @@ describe("completeFerment", () => {
 			reason: "no_registry",
 		})
 
-		const result = await completeFerment(h.runtime, {
-			ferment_id: h.fermentId,
-			final_summary: "done",
-			gates: passingFermentGates(),
-		})
+		const result = await completeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				final_summary: "done",
+				gates: passingFermentGates(),
+			},
+			{ ctx: createContext() },
+		)
 
 		expect(okText(result)).toContain("**Final grade:** unavailable")
 		expect(okText(result)).toContain("Judge unreachable (no_registry)")
