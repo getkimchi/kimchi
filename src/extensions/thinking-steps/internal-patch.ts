@@ -344,6 +344,7 @@ function installPatch(theme: ThinkingThemeLike): () => void {
 								message.timestamp,
 								thinkingBlocks,
 								resolveThinkingMessageScope(message),
+								this,
 							),
 						)
 					}

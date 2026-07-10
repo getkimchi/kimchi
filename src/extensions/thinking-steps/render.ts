@@ -11,6 +11,7 @@ interface RenderOptions {
 	activeStepId?: string
 	isActive: boolean
 	nowMs?: number
+	cacheOwner?: object
 }
 
 function roleColor(role: ThinkingSemanticRole): string {
@@ -446,18 +447,12 @@ function renderWrappedRawText(theme: ThinkingThemeLike, text: string, width: num
 	return rendered
 }
 
-// The expanded view is rebuilt on every stream chunk. Cache one body per
-// (width, step id), replacing the growing step instead of retaining every
-// intermediate snapshot. Step ids restart per message, so entries can collide
-// across messages during a full chat rebuild — safe only because the body is
-// compared before reuse (do not remove that check).
+// The assistant-message component survives stream updates while its child
+// ThinkingStepsComponent is recreated. Use that persistent component as the
+// weak owner so completed bodies stay cached across deltas, then disappear
+// with the message/session.
 type ExpandedStepLineCacheEntry = { body: string; styleKey: string; lines: string[] }
-const expandedStepLineCache = new Map<string, ExpandedStepLineCacheEntry>()
-const EXPANDED_STEP_CACHE_MAX = 8192
-
-export function getExpandedStepLineCacheSizeForTesting(): number {
-	return expandedStepLineCache.size
-}
+const expandedStepLineCaches = new WeakMap<object, Map<string, ExpandedStepLineCacheEntry>>()
 
 function wrappedStepBodyLines(
 	theme: ThinkingThemeLike,
@@ -466,15 +461,13 @@ function wrappedStepBodyLines(
 	width: number,
 	prefix: string,
 	styleKey: string,
+	cache: Map<string, ExpandedStepLineCacheEntry>,
 ): string[] {
 	const key = `${width}:${step.id}`
-	const cached = expandedStepLineCache.get(key)
+	const cached = cache.get(key)
 	if (cached && cached.body === body && cached.styleKey === styleKey) return cached.lines
 	const lines = renderWrappedRawText(theme, body, width, prefix)
-	if (!cached && expandedStepLineCache.size >= EXPANDED_STEP_CACHE_MAX) {
-		expandedStepLineCache.clear()
-	}
-	expandedStepLineCache.set(key, { body, styleKey, lines })
+	cache.set(key, { body, styleKey, lines })
 	return lines
 }
 
@@ -482,8 +475,14 @@ function renderExpanded(
 	theme: ThinkingThemeLike,
 	width: number,
 	steps: DerivedThinkingStep[],
+	cacheOwner: object,
 	_activeStepId?: string,
 ): string[] {
+	let cache = expandedStepLineCaches.get(cacheOwner)
+	if (!cache) {
+		cache = new Map()
+		expandedStepLineCaches.set(cacheOwner, cache)
+	}
 	const prefix = `${theme.fg("muted", "▍")} `
 	const styleKey = renderedBodyStyleKey(theme)
 	const lines: string[] = []
@@ -494,7 +493,7 @@ function renderExpanded(
 		if (!normalizedBody) continue
 
 		if (index > 0) lines.push(theme.fg("muted", "▍"))
-		lines.push(...wrappedStepBodyLines(theme, step, normalizedBody, width, prefix, styleKey))
+		lines.push(...wrappedStepBodyLines(theme, step, normalizedBody, width, prefix, styleKey, cache))
 	}
 
 	return lines
@@ -514,7 +513,7 @@ export function renderThinkingStepsLines(theme: ThinkingThemeLike, width: number
 		)
 	}
 	if (options.mode === "expanded") {
-		return renderExpanded(theme, width, options.steps, options.activeStepId)
+		return renderExpanded(theme, width, options.steps, options.cacheOwner ?? options.steps, options.activeStepId)
 	}
 	return renderSummary(theme, width, options.steps, options.activeStepId)
 }
@@ -525,15 +524,18 @@ export class ThinkingStepsComponent implements Component {
 	private cacheKey?: string
 	private cachedLines?: string[]
 	private readonly scopeKey: string
+	private readonly cacheOwner: object
 
 	constructor(
 		private readonly theme: ThinkingThemeLike,
 		private readonly messageTimestamp: number,
 		blocks: ThinkingSourceBlock[],
 		scopeKey?: string,
+		cacheOwner?: object,
 	) {
 		this.blocks = blocks
 		this.scopeKey = scopeKey ?? getCurrentThinkingScopeKey()
+		this.cacheOwner = cacheOwner ?? this
 		this.steps = deriveThinkingSteps(blocks)
 	}
 
@@ -558,6 +560,7 @@ export class ThinkingStepsComponent implements Component {
 			activeStepId,
 			isActive: active.active,
 			nowMs: Date.now(),
+			cacheOwner: this.cacheOwner,
 		}).map((line) => ` ${line}`)
 
 		if (!shouldBypassCache) {

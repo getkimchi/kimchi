@@ -4,13 +4,7 @@ import {
 	deriveThinkingSteps,
 	getStepDerivationCacheSizeForTesting,
 } from "./parse.js"
-import {
-	LIVE_PREVIEW_TAIL_CHARS,
-	getExpandedStepLineCacheSizeForTesting,
-	renderThinkingStepsLines,
-	tailRawLines,
-	tailRawLinesFromBlocks,
-} from "./render.js"
+import { LIVE_PREVIEW_TAIL_CHARS, renderThinkingStepsLines, tailRawLines, tailRawLinesFromBlocks } from "./render.js"
 import type { ThinkingSourceBlock, ThinkingThemeLike } from "./types.js"
 
 const theme: ThinkingThemeLike = {
@@ -124,25 +118,73 @@ describe("expanded view", () => {
 		expect(cold.length).toBeGreaterThan(0)
 	})
 
+	it("reuses wrapped lines across reconstructed steps for the same message", () => {
+		let bodyRenders = 0
+		const countingTheme: ThinkingThemeLike = {
+			fg: (color, text) => {
+				if (color === "thinkingText" && text === "cached body") bodyRenders += 1
+				return text
+			},
+			bold: (text) => text,
+		}
+		const cacheOwner = {}
+		for (let render = 0; render < 2; render += 1) {
+			const blocks = makeBlocks("cached body")
+			renderThinkingStepsLines(countingTheme, 80, {
+				mode: "expanded",
+				blocks,
+				steps: deriveThinkingSteps(blocks),
+				isActive: true,
+				cacheOwner,
+			})
+		}
+		expect(bodyRenders).toBe(1)
+	})
+
+	it("does not share wrapped lines between messages", () => {
+		let bodyRenders = 0
+		const countingTheme: ThinkingThemeLike = {
+			fg: (color, text) => {
+				if (color === "thinkingText" && text === "cached body") bodyRenders += 1
+				return text
+			},
+			bold: (text) => text,
+		}
+		for (let message = 0; message < 2; message += 1) {
+			const blocks = makeBlocks("cached body")
+			renderThinkingStepsLines(countingTheme, 80, {
+				mode: "expanded",
+				blocks,
+				steps: deriveThinkingSteps(blocks),
+				isActive: true,
+				cacheOwner: {},
+			})
+		}
+		expect(bodyRenders).toBe(2)
+	})
+
 	it("replaces the cached body when the growing step changes", () => {
 		const firstBlocks = makeBlocks("first body")
 		const secondBlocks = makeBlocks("second body")
+		const firstSteps = deriveThinkingSteps(firstBlocks)
+		const secondSteps = deriveThinkingSteps(secondBlocks)
+		const cacheOwner = {}
 		renderThinkingStepsLines(theme, 80, {
 			mode: "expanded",
 			blocks: firstBlocks,
-			steps: deriveThinkingSteps(firstBlocks),
+			steps: firstSteps,
 			isActive: true,
+			cacheOwner,
 		})
-		const cacheSize = getExpandedStepLineCacheSizeForTesting()
 		const second = renderThinkingStepsLines(theme, 80, {
 			mode: "expanded",
 			blocks: secondBlocks,
-			steps: deriveThinkingSteps(secondBlocks),
+			steps: secondSteps,
 			isActive: true,
+			cacheOwner,
 		})
 		expect(second.join("\n")).toContain("second body")
 		expect(second.join("\n")).not.toContain("first body")
-		expect(getExpandedStepLineCacheSizeForTesting()).toBe(cacheSize)
 	})
 
 	it("restyles a cached body after the theme changes", () => {
@@ -171,11 +213,12 @@ describe("expanded view", () => {
 		let full = ""
 		while (full.length < 300 * 1024) full += para
 		const deltas = 20
+		const cacheOwner = {}
 		const start = performance.now()
 		for (let i = 1; i <= deltas; i++) {
 			const blocks = makeBlocks(full.slice(0, Math.floor((full.length * i) / deltas)))
 			const steps = deriveThinkingSteps(blocks)
-			renderThinkingStepsLines(theme, 120, { mode: "expanded", blocks, steps, isActive: true })
+			renderThinkingStepsLines(theme, 120, { mode: "expanded", blocks, steps, isActive: true, cacheOwner })
 		}
 		const perDeltaMs = (performance.now() - start) / deltas
 		// Pre-memo the full text was re-wrapped per delta (~150ms+); loose bound for CI.
