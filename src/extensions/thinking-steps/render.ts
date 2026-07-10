@@ -216,41 +216,27 @@ function stripInlineFormattingMarkers(text: string): string {
 
 const COLLAPSED_LIVE_LINES = 5
 
-// Live previews only show the last few lines, so never sanitize/wrap the full
-// accumulated thinking text — on large messages that costs hundreds of ms per
-// frame and freezes the terminal while the render loop is starved. A raw line
-// yields at least one rendered line, so the last N raw lines are sufficient.
-// The character bound guards against a single enormous line.
+// Processing the full accumulated reasoning on every preview frame stalls the
+// terminal, so keep only the small tail that can be visible.
 export const LIVE_PREVIEW_TAIL_CHARS = 8192
 
 export function tailRawLines(text: string, maxLines: number): string {
-	const tail = text.length > LIVE_PREVIEW_TAIL_CHARS ? text.slice(-LIVE_PREVIEW_TAIL_CHARS) : text
-	const lines = tail.split("\n")
-	if (lines.length <= maxLines) return tail
-	return lines.slice(-maxLines).join("\n")
+	return text.slice(-LIVE_PREVIEW_TAIL_CHARS).split("\n").slice(-maxLines).join("\n")
 }
 
 export function tailRawLinesFromBlocks(blocks: ThinkingSourceBlock[], maxLines: number): string {
-	// tailRawLines re-applies the character cap; the budget here only bounds
-	// how much text is assembled from the blocks. Both are intentional.
 	let tail = ""
-	for (let index = blocks.length - 1; index >= 0 && tail.length < LIVE_PREVIEW_TAIL_CHARS; index -= 1) {
-		const suffix = `${index < blocks.length - 1 ? "\n" : ""}${tail}`
-		const remaining = LIVE_PREVIEW_TAIL_CHARS - suffix.length
-		if (remaining <= 0) {
-			tail = suffix.slice(-LIVE_PREVIEW_TAIL_CHARS)
-			break
-		}
-		tail = `${blocks[index]!.text.slice(-remaining)}${suffix}`
+	for (let index = blocks.length - 1; index >= 0; index -= 1) {
+		const separator = index < blocks.length - 1 ? "\n" : ""
+		const remaining = LIVE_PREVIEW_TAIL_CHARS - tail.length - separator.length
+		if (remaining <= 0) break
+		tail = `${blocks[index]!.text.slice(-remaining)}${separator}${tail}`
 	}
 	return tailRawLines(tail.trim(), maxLines)
 }
 
-function renderedBodyStyleKey(theme: ThinkingThemeLike): string {
-	return [theme.fg("thinkingText", "x"), theme.fg("accent", "x"), theme.fg("muted", "x"), theme.bold("x")].join(
-		"\u0000",
-	)
-}
+const renderedBodyStyleKey = (theme: ThinkingThemeLike): string =>
+	[theme.fg("thinkingText", "x"), theme.fg("accent", "x"), theme.fg("muted", "x"), theme.bold("x")].join("\u0000")
 
 // The active collapsed view bypasses the component cache every frame so the
 // pulse glyph can animate, but only the header changes between frames. Cache
@@ -447,10 +433,8 @@ function renderWrappedRawText(theme: ThinkingThemeLike, text: string, width: num
 	return rendered
 }
 
-// The assistant-message component survives stream updates while its child
-// ThinkingStepsComponent is recreated. Use that persistent component as the
-// weak owner so completed bodies stay cached across deltas, then disappear
-// with the message/session.
+// The assistant-message component survives stream deltas and is collected with
+// the message/session, so use it as the weak cache owner.
 type ExpandedStepLineCacheEntry = { body: string; styleKey: string; lines: string[] }
 const expandedStepLineCaches = new WeakMap<object, Map<string, ExpandedStepLineCacheEntry>>()
 
@@ -476,7 +460,6 @@ function renderExpanded(
 	width: number,
 	steps: DerivedThinkingStep[],
 	cacheOwner: object,
-	_activeStepId?: string,
 ): string[] {
 	let cache = expandedStepLineCaches.get(cacheOwner)
 	if (!cache) {
@@ -513,7 +496,7 @@ export function renderThinkingStepsLines(theme: ThinkingThemeLike, width: number
 		)
 	}
 	if (options.mode === "expanded") {
-		return renderExpanded(theme, width, options.steps, options.cacheOwner ?? options.steps, options.activeStepId)
+		return renderExpanded(theme, width, options.steps, options.cacheOwner ?? options.steps)
 	}
 	return renderSummary(theme, width, options.steps, options.activeStepId)
 }

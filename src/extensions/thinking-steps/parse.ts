@@ -1322,47 +1322,33 @@ type StepDerivation = {
 	role: ThinkingSemanticRole
 }
 
-// Summaries and roles are pure functions of the step text. During streaming,
-// deriveThinkingSteps runs on every message_update delta over the full
-// accumulated thinking text; without this cache each delta re-summarizes every
-// step (hundreds of ms on large messages), which starves the render loop and
-// freezes the terminal. The final step may still be growing, so do not cache
-// it; caching each moving tail would retain every streaming snapshot.
+// Completed steps repeat across stream updates. Cache them, but not the growing
+// final step, whose changing snapshots would accumulate.
 const stepDerivationCache = new Map<string, StepDerivation>()
 const STEP_DERIVATION_CACHE_MAX = 8192
 
-// Summarization cost scales with step size, and a step with few paragraph
-// breaks can grow unbounded while streaming. Summaries describe the step's
-// latest activity, so deriving them from the tail keeps each delta bounded.
+// Summaries describe the latest activity, so bound work to the step's tail.
 const STEP_SUMMARY_MAX_CHARS = 16384
 
-function deriveStep(stepText: string, cacheable: boolean): StepDerivation {
-	const summarySource = stepText.length > STEP_SUMMARY_MAX_CHARS ? stepText.slice(-STEP_SUMMARY_MAX_CHARS) : stepText
-	const cached = cacheable ? stepDerivationCache.get(summarySource) : undefined
+function deriveStep(stepText: string, isFinalStep: boolean): StepDerivation {
+	const summarySource = stepText.slice(-STEP_SUMMARY_MAX_CHARS)
+	const cached = !isFinalStep && stepDerivationCache.get(summarySource)
 	if (cached) return cached
 	const summaryDetails = summarizeThinkingTextDetailed(summarySource)
 	const role = inferThinkingRole(`${summaryDetails.summary}\n${summarySource}`)
 	const derivation: StepDerivation = { summaryDetails, role }
-	if (cacheable) {
-		if (stepDerivationCache.size >= STEP_DERIVATION_CACHE_MAX) {
-			stepDerivationCache.clear()
-		}
-		stepDerivationCache.set(summarySource, derivation)
-	}
+	if (isFinalStep) return derivation
+	if (stepDerivationCache.size >= STEP_DERIVATION_CACHE_MAX) stepDerivationCache.clear()
+	stepDerivationCache.set(summarySource, derivation)
 	return derivation
 }
 
-export function clearStepDerivationCacheForTesting(): void {
-	stepDerivationCache.clear()
-}
+export const clearStepDerivationCacheForTesting = () => stepDerivationCache.clear()
 
-export function getStepDerivationCacheSizeForTesting(): number {
-	return stepDerivationCache.size
-}
+export const getStepDerivationCacheSizeForTesting = () => stepDerivationCache.size
 
-function isRedactedPlaceholderBlock(block: ThinkingSourceBlock): boolean {
-	return block.redacted === true && !block.text.trim()
-}
+const isRedactedPlaceholderBlock = (block: ThinkingSourceBlock): boolean =>
+	block.redacted === true && !block.text.trim()
 
 export function deriveThinkingSteps(blocks: ThinkingSourceBlock[]): DerivedThinkingStep[] {
 	const steps: DerivedThinkingStep[] = []
@@ -1400,7 +1386,7 @@ export function deriveThinkingSteps(blocks: ThinkingSourceBlock[]): DerivedThink
 		const stepTexts = splitThinkingIntoStepTexts(block.text)
 		stepTexts.forEach((stepText, stepIndex) => {
 			const isFinalStep = blockIndex === lastTextBlockIndex && stepIndex === stepTexts.length - 1
-			const { summaryDetails, role } = deriveStep(stepText, !isFinalStep)
+			const { summaryDetails, role } = deriveStep(stepText, isFinalStep)
 			steps.push({
 				id: `${block.contentIndex}-${stepIndex}`,
 				contentIndex: block.contentIndex,

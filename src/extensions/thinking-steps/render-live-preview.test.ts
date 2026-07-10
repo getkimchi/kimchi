@@ -118,7 +118,7 @@ describe("expanded view", () => {
 		expect(cold.length).toBeGreaterThan(0)
 	})
 
-	it("reuses wrapped lines across reconstructed steps for the same message", () => {
+	it("reuses wrapped lines within one message but not across messages", () => {
 		let bodyRenders = 0
 		const countingTheme: ThinkingThemeLike = {
 			fg: (color, text) => {
@@ -127,8 +127,7 @@ describe("expanded view", () => {
 			},
 			bold: (text) => text,
 		}
-		const cacheOwner = {}
-		for (let render = 0; render < 2; render += 1) {
+		const render = (cacheOwner: object) => {
 			const blocks = makeBlocks("cached body")
 			renderThinkingStepsLines(countingTheme, 80, {
 				mode: "expanded",
@@ -138,48 +137,29 @@ describe("expanded view", () => {
 				cacheOwner,
 			})
 		}
+		const cacheOwner = {}
+		render(cacheOwner)
+		render(cacheOwner)
 		expect(bodyRenders).toBe(1)
-	})
-
-	it("does not share wrapped lines between messages", () => {
-		let bodyRenders = 0
-		const countingTheme: ThinkingThemeLike = {
-			fg: (color, text) => {
-				if (color === "thinkingText" && text === "cached body") bodyRenders += 1
-				return text
-			},
-			bold: (text) => text,
-		}
-		for (let message = 0; message < 2; message += 1) {
-			const blocks = makeBlocks("cached body")
-			renderThinkingStepsLines(countingTheme, 80, {
-				mode: "expanded",
-				blocks,
-				steps: deriveThinkingSteps(blocks),
-				isActive: true,
-				cacheOwner: {},
-			})
-		}
+		render({})
 		expect(bodyRenders).toBe(2)
 	})
 
 	it("replaces the cached body when the growing step changes", () => {
 		const firstBlocks = makeBlocks("first body")
 		const secondBlocks = makeBlocks("second body")
-		const firstSteps = deriveThinkingSteps(firstBlocks)
-		const secondSteps = deriveThinkingSteps(secondBlocks)
 		const cacheOwner = {}
 		renderThinkingStepsLines(theme, 80, {
 			mode: "expanded",
 			blocks: firstBlocks,
-			steps: firstSteps,
+			steps: deriveThinkingSteps(firstBlocks),
 			isActive: true,
 			cacheOwner,
 		})
 		const second = renderThinkingStepsLines(theme, 80, {
 			mode: "expanded",
 			blocks: secondBlocks,
-			steps: secondSteps,
+			steps: deriveThinkingSteps(secondBlocks),
 			isActive: true,
 			cacheOwner,
 		})
