@@ -9,14 +9,11 @@ describe("summaryForStatus", () => {
 })
 
 describe("AGENT_TOOL_GUIDELINES", () => {
-	it("tells orchestrators to keep Explore prompts narrow and read-only", () => {
-		expect(AGENT_TOOL_GUIDELINES).toContain("one decision-relevant question")
-		expect(AGENT_TOOL_GUIDELINES).toContain("a qualitative stop condition tied to that question")
-		expect(AGENT_TOOL_GUIDELINES).toContain("Explore is read-only")
-		expect(AGENT_TOOL_GUIDELINES).toContain("Do not ask Explore agents to write reports")
-		expect(AGENT_TOOL_GUIDELINES).toContain("You should consume the returned findings directly")
-		expect(AGENT_TOOL_GUIDELINES).toContain("Return decision-ready findings to the parent; do not write files.")
-		expect(AGENT_TOOL_GUIDELINES).toContain("write a complete implementation spec")
+	it("points orchestrators to the Orchestration section instead of duplicating delegation rules", () => {
+		expect(AGENT_TOOL_GUIDELINES).toContain("Follow the **Orchestration** section")
+		expect(AGENT_TOOL_GUIDELINES).toContain("Explore prompt shaping")
+		expect(AGENT_TOOL_GUIDELINES).not.toContain("Return decision-ready findings to the parent; do not write files.")
+		expect(AGENT_TOOL_GUIDELINES).not.toContain("write a complete implementation spec")
 	})
 })
 

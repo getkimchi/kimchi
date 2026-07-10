@@ -71,7 +71,7 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 	const toolsSection = formatToolsSection(effectiveTools)
 	const environmentSection = formatEnvironmentSection(env)
 	const projectContext = formatProjectContext(contextFiles)
-	const skillsSection = formatSkills(skills)
+	const filteredSkills = filterSkillsForMode(skills, mode)
 
 	const { teamSection, instructionsSection: orchestrationSection } = resolveModeInstructions({
 		mode,
@@ -81,7 +81,10 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 		customConfigs: options.customConfigs,
 	})
 
-	const phaseSection = buildPhaseGuidelinesSection(currentModelId, currentPhase, registry)
+	const phaseSection = buildPhaseGuidelinesSection(currentModelId, currentPhase, registry, {
+		mode,
+		roles,
+	})
 	const blocks = sessionId ? renderSystemPromptBlocks(sessionId, { mode }) : []
 	const suppressed = new Set<SuppressibleSection>()
 	for (const block of blocks) {
@@ -94,7 +97,7 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 		toolsSection,
 		environmentSection,
 		projectContext,
-		skillsSection,
+		skillsSection: formatSkills(filteredSkills),
 		orchestrationSection,
 		phaseSection,
 		systemPromptBlocks: blocks.map((block) => block.content).join("\n\n"),
@@ -124,7 +127,7 @@ const BASE_INSTRUCTIONS =
 
 const SINGLE_INTRO = BASE_INSTRUCTIONS
 
-const ORCHESTRATOR_INTRO = `${BASE_INSTRUCTIONS} As an orchestrator, you reason through the work, plan the approach, and coordinate a team of specialised subagents to execute it.`
+const ORCHESTRATOR_INTRO = BASE_INSTRUCTIONS
 
 /**
  * Resolve the mode-specific instruction payload for the system prompt.
@@ -200,6 +203,33 @@ const CORE_GUIDELINES = `- Be concise in your responses. Do not repeat what you 
 - After every tool result, ALWAYS produce text — either the next tool call with explicit reasoning, or a final summary. Never re-issue the same tool call after a successful result.
 - Never emit tool calls with empty names, blank IDs, or malformed arguments. If a tool call fails to advance the task after 3 attempts, stop calling tools, summarize what is not working, and reassess in plain text before continuing.`
 
+const ORCHESTRATOR_GUIDELINES = `- Be concise in your responses. Do not repeat what you just did or summarize completed steps — act and move on.
+- Follow **Orchestration** for what to do yourself vs delegate. Do not read implementation files, write or edit source code, run tests, or review diffs unless Orchestration **Phase responsibilities** explicitly says DO for your current phase and role.
+- Before starting, orient the user per Orchestration — use the phased pipeline instead of ad-hoc exploration or inline implementation.
+- Adhere to existing code conventions and patterns. Use only libraries and frameworks confirmed to be present in the codebase. Never introduce new dependencies without explicit instruction.
+- Show file paths clearly when working with files. Always use absolute paths.
+- Do NOT introduce security vulnerabilities.
+- After every tool result, ALWAYS produce text — either the next tool call with explicit reasoning, or a final summary. Never re-issue the same tool call after a successful result.
+- Never emit tool calls with empty names, blank IDs, or malformed arguments. If a tool call fails to advance the task after 3 attempts, stop calling tools, summarize what is not working, and reassess in plain text before continuing.
+- At the end of a task, summarize from delegated artifacts (spec, review, verification files). Do not re-verify implementation yourself unless Orchestration assigns that step to you.`
+
+/** Skills whose workflows conflict with multi-model Orchestration. */
+const ORCHESTRATOR_SUPPRESSED_SKILL_NAMES = new Set([
+	"subagent-driven-development",
+	"dispatching-parallel-agents",
+	"executing-plans",
+	"verification-before-completion",
+])
+
+function filterSkillsForMode(skills: readonly Skill[] | undefined, mode: PromptMode): readonly Skill[] | undefined {
+	if (!skills || mode !== "orchestrator") return skills
+	return skills.filter((skill) => !ORCHESTRATOR_SUPPRESSED_SKILL_NAMES.has(skill.name))
+}
+
+function resolveCoreGuidelines(mode: PromptMode): string {
+	return mode === "orchestrator" ? ORCHESTRATOR_GUIDELINES : CORE_GUIDELINES
+}
+
 const FACTUAL_ACCURACY = `- Never guess, assume, or fabricate information. Every claim you make must be backed by data you concretely obtained during this session. Do not over-escalate minor issues or blame the user for poor request phrasing.
 - Never invent people's names, roles, or contact details. If human input is needed, ask the user — do not fabricate who that person should be.
 - "I don't know" is a valid answer. When requirements, specifications, or factual details are not available through your tools or the user's messages, state that clearly and ask the user to provide them. Do not fill the gap with plausible-sounding content.
@@ -212,18 +242,13 @@ function buildPrompt(parts: PromptParts): string {
 	const intro = parts.mode === "orchestrator" ? ORCHESTRATOR_INTRO : SINGLE_INTRO
 	sections.push(intro)
 
-	// 2. Your Team + Your Capabilities
-	if (parts.teamSection) {
-		sections.push(parts.teamSection)
-	}
-
-	// 3. Orchestration instructions (DOs/DONTs, budgets, agent management)
+	// 2. Orchestration (team, roles, workflow, delegation — orchestrator mode only)
 	if (!parts.suppressed.has("orchestration") && parts.orchestrationSection) {
 		sections.push(parts.orchestrationSection)
 	}
 
 	// 4. Guidelines
-	sections.push(`## Guidelines\n\n${CORE_GUIDELINES}`)
+	sections.push(`## Guidelines\n\n${resolveCoreGuidelines(parts.mode)}`)
 	sections.push(`## Factual Accuracy\n\n${FACTUAL_ACCURACY}`)
 
 	// 5. Phase guidelines
