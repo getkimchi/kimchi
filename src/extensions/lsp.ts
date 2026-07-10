@@ -59,7 +59,7 @@ export default function (pi: ExtensionAPI) {
 	// controller is combined with ctx.signal so user/session aborts also unwind
 	// the wait, but we never abort ctx.signal ourselves.
 	let pendingRefresh: { abort: AbortController } | undefined
-	let idleSweepTimer: ReturnType<typeof setInterval> | null = null
+	let idleSweepTimer: NodeJS.Timeout | null = null
 
 	function cancelPendingRefresh(): void {
 		if (!pendingRefresh) return
@@ -95,9 +95,7 @@ export default function (pi: ExtensionAPI) {
 		idleSweepTimer = setInterval(() => {
 			shutdownIdleClients(IDLE_THRESHOLD_MS)
 		}, IDLE_SWEEP_INTERVAL_MS)
-		if (typeof idleSweepTimer === "object" && "unref" in idleSweepTimer) {
-			idleSweepTimer.unref()
-		}
+		idleSweepTimer.unref()
 
 		// Update status bar with detected server names
 		if (ui) {
