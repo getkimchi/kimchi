@@ -1,6 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { applyPostMainInfrastructureExitPolicy } from "./cli-infrastructure-exit.js"
-import { KIMCHI_INFRA_ERROR_EXIT_CODE } from "./infrastructure-error.js"
+import { type InfrastructureFailure, KIMCHI_INFRA_ERROR_EXIT_CODE } from "./infrastructure-error.js"
+import { classifyLLMGatewayError } from "./llm-gateway-error.js"
+
+function createFailure(errorMessage: string, overrides: Partial<InfrastructureFailure> = {}): InfrastructureFailure {
+	const error = classifyLLMGatewayError(errorMessage)
+	if (!error) throw new Error(`Expected test message to classify: ${errorMessage}`)
+	return {
+		error,
+		consecutiveInfraErrors: 1,
+		...overrides,
+	}
+}
 
 describe("post-main CLI infrastructure exit policy", () => {
 	let previousExitCode: typeof process.exitCode
@@ -21,11 +32,10 @@ describe("post-main CLI infrastructure exit policy", () => {
 		const exitProcess = vi.fn()
 
 		const applied = applyPostMainInfrastructureExitPolicy(
-			{
-				errorMessage: "ERR_SOCKET_CLOSED",
+			createFailure("ERR_SOCKET_CLOSED", {
 				consecutiveInfraErrors: 2,
 				sessionPath: "/tmp/session.jsonl",
-			},
+			}),
 			exitProcess,
 		)
 
@@ -41,7 +51,7 @@ describe("post-main CLI infrastructure exit policy", () => {
 		process.exitCode = undefined
 		expect(
 			applyPostMainInfrastructureExitPolicy(
-				{ errorMessage: "ERR_SOCKET_CLOSED", consecutiveInfraErrors: 1 },
+				createFailure("ERR_SOCKET_CLOSED", { consecutiveInfraErrors: 1 }),
 				exitProcess,
 			),
 		).toBe(false)

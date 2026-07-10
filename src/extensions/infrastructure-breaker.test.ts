@@ -38,42 +38,58 @@ describe("infrastructure breaker extension", () => {
 		vi.spyOn(console, "error").mockImplementation(() => {})
 		const { isRetryable, emit } = createHarness(2)
 
+		emit({ role: "assistant", content: [], stopReason: "error", errorMessage: "read ECONNRESET" })
 		expect(isRetryable(networkError)).toBe(true)
 		emit({ role: "assistant", content: [], stopReason: "stop" })
+		emit({ role: "assistant", content: [], stopReason: "error", errorMessage: "read ECONNRESET" })
 		expect(isRetryable(networkError)).toBe(true)
-		expect(isRetryable(networkError)).toBe(false)
+		emit({ role: "assistant", content: [], stopReason: "error", errorMessage: "read ECONNRESET" })
 		expect(isInfrastructureBreakerTripped()).toBe(true)
+		expect(isRetryable(networkError)).toBe(false)
 	})
 
 	it("does not reset on infra errored assistant messages or non-assistant messages", () => {
 		vi.spyOn(console, "error").mockImplementation(() => {})
 		const { isRetryable, emit } = createHarness(2)
 
-		expect(isRetryable(networkError)).toBe(true)
 		emit({ role: "assistant", content: [], stopReason: "error", errorMessage: "read ECONNRESET" })
 		emit({ role: "user", content: "hello" })
-		expect(isRetryable(networkError)).toBe(false)
+		expect(isRetryable(networkError)).toBe(true)
+		emit({ role: "assistant", content: [], stopReason: "error", errorMessage: "read ECONNRESET" })
 		expect(isInfrastructureBreakerTripped()).toBe(true)
+		expect(isRetryable(networkError)).toBe(false)
 	})
 
 	it("resets on non-infra provider verdicts", () => {
 		vi.spyOn(console, "error").mockImplementation(() => {})
 		const { isRetryable, emit } = createHarness(2)
 
+		emit({ role: "assistant", content: [], stopReason: "error", errorMessage: "read ECONNRESET" })
+		emit({ role: "assistant", content: [], stopReason: "error", errorMessage: "insufficient_quota" })
+		emit({ role: "assistant", content: [], stopReason: "error", errorMessage: "read ECONNRESET" })
 		expect(isRetryable(networkError)).toBe(true)
-		emit({ role: "assistant", content: [], stopReason: "error", errorMessage: "429 rate limit exceeded" })
-		expect(isRetryable(networkError)).toBe(true)
-		expect(isRetryable(networkError)).toBe(false)
+		emit({ role: "assistant", content: [], stopReason: "error", errorMessage: "read ECONNRESET" })
 		expect(isInfrastructureBreakerTripped()).toBe(true)
+		expect(isRetryable(networkError)).toBe(false)
+	})
+
+	it("does not reset on rate limits", () => {
+		vi.spyOn(console, "error").mockImplementation(() => {})
+		const { isRetryable, emit } = createHarness(2)
+
+		emit({ role: "assistant", content: [], stopReason: "error", errorMessage: "read ECONNRESET" })
+		emit({ role: "assistant", content: [], stopReason: "error", errorMessage: "429 rate limit exceeded" })
+		expect(isInfrastructureBreakerTripped()).toBe(true)
+		expect(isRetryable(networkError)).toBe(false)
 	})
 
 	it("does not reset on provider 5xx errors", () => {
 		vi.spyOn(console, "error").mockImplementation(() => {})
 		const { isRetryable, emit } = createHarness(2)
 
-		expect(isRetryable(networkError)).toBe(true)
+		emit({ role: "assistant", content: [], stopReason: "error", errorMessage: "read ECONNRESET" })
 		emit({ role: "assistant", content: [], stopReason: "error", errorMessage: "500 internal server error" })
-		expect(isRetryable(networkError)).toBe(false)
 		expect(isInfrastructureBreakerTripped()).toBe(true)
+		expect(isRetryable(networkError)).toBe(false)
 	})
 })

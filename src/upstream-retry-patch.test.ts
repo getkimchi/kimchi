@@ -5,6 +5,7 @@ import {
 	installInfrastructureRetryPatch,
 	isInfrastructureBreakerTripped,
 	isInfrastructureErrorRetryable,
+	recordInfrastructureBreakerFailure,
 	resetInfrastructureBreaker,
 	resolveInfrastructureBreakerThreshold,
 } from "./upstream-retry-patch.js"
@@ -19,15 +20,17 @@ describe("upstream retry patch", () => {
 		)
 		expect(isInfrastructureErrorRetryable({ stopReason: "error", errorMessage: "503 Service Unavailable" })).toBe(true)
 		expect(isInfrastructureErrorRetryable({ stopReason: "error", errorMessage: "overloaded_error" })).toBe(true)
+		expect(isInfrastructureErrorRetryable({ stopReason: "error", errorMessage: "429 rate limit exceeded" })).toBe(true)
 		expect(isInfrastructureErrorRetryable({ stopReason: "stop", errorMessage: "524 status code (no body)" })).toBe(
 			false,
 		)
 		expect(isInfrastructureErrorRetryable({ stopReason: "error", errorMessage: "bad request" })).toBe(false)
+		expect(isInfrastructureErrorRetryable({ stopReason: "error", errorMessage: "context window exceeded" })).toBe(false)
 	})
 
 	it("wraps the upstream retry classifier once and preserves original retryable errors", () => {
 		const original = vi.fn(
-			(message: { stopReason?: string; errorMessage?: string }) => message.errorMessage === "429 rate limit",
+			(message: { stopReason?: string; errorMessage?: string }) => message.errorMessage === "upstream-only retryable",
 		)
 		const sessionClass = {
 			prototype: {
@@ -41,7 +44,7 @@ describe("upstream retry patch", () => {
 
 		expect(sessionClass.prototype._isRetryableError).toBe(wrapped)
 		expect(wrapped?.({ stopReason: "error", errorMessage: "524 status code (no body)" })).toBe(true)
-		expect(wrapped?.({ stopReason: "error", errorMessage: "429 rate limit" })).toBe(true)
+		expect(wrapped?.({ stopReason: "error", errorMessage: "upstream-only retryable" })).toBe(true)
 		expect(wrapped?.({ stopReason: "error", errorMessage: "500 internal server error" })).toBe(true)
 		expect(wrapped?.({ stopReason: "error", errorMessage: "invalid request" })).toBe(false)
 	})
@@ -49,7 +52,7 @@ describe("upstream retry patch", () => {
 
 describe("isInfrastructureErrorRetryable", () => {
 	it("returns false when stopReason is not error", () => {
-		expect(isInfrastructureErrorRetryable({ stopReason: "end_turn", errorMessage: "524" })).toBe(false)
+		expect(isInfrastructureErrorRetryable({ stopReason: "stop", errorMessage: "524" })).toBe(false)
 	})
 
 	it("returns false when errorMessage is absent", () => {
@@ -57,10 +60,10 @@ describe("isInfrastructureErrorRetryable", () => {
 	})
 
 	it("returns false for unrelated error messages", () => {
-		expect(isInfrastructureErrorRetryable({ stopReason: "error", errorMessage: "rate limit exceeded" })).toBe(false)
+		expect(isInfrastructureErrorRetryable({ stopReason: "error", errorMessage: "insufficient_quota" })).toBe(false)
 	})
 
-	// Token-level classifier coverage lives in infrastructure-error.test.ts;
+	// Token-level classifier coverage lives in llm-gateway-error.test.ts;
 	// this pins the incident that motivated the patch (upstream misses Bun's wording).
 	it("matches Bun's mid-stream socket close verbatim", () => {
 		expect(
@@ -77,10 +80,11 @@ describe("infrastructure breaker", () => {
 	const networkError = { stopReason: "error", errorMessage: "The socket connection was closed unexpectedly" }
 	const success = { stopReason: "stop" }
 
-	function installPatchedClassifier(threshold: number) {
-		const sessionClass = {
-			prototype: { _isRetryableError: (_message: { stopReason?: string; errorMessage?: string }) => false },
-		}
+	function installPatchedClassifier(
+		threshold: number,
+		upstream: (message: { stopReason?: string; errorMessage?: string }) => boolean = () => false,
+	) {
+		const sessionClass = { prototype: { _isRetryableError: upstream } }
 		installInfrastructureRetryPatch(sessionClass, threshold)
 		// biome-ignore lint/style/noNonNullAssertion: installInfrastructureRetryPatch always wraps the classifier above
 		return sessionClass.prototype._isRetryableError!
@@ -99,63 +103,79 @@ describe("infrastructure breaker", () => {
 		expect(resolveInfrastructureBreakerThreshold({ [INFRA_BREAKER_THRESHOLD_ENV]: "banana" })).toBe(0)
 	})
 
-	it("trips after the threshold of consecutive infrastructure errors and stops retries", () => {
-		vi.spyOn(console, "error").mockImplementation(() => {})
-		const isRetryable = installPatchedClassifier(3)
+	it("does not mutate breaker state while classifying retryability", () => {
+		const isRetryable = installPatchedClassifier(1)
 
 		expect(isRetryable(networkError)).toBe(true)
 		expect(isRetryable(networkError)).toBe(true)
-		expect(isRetryable(networkError)).toBe(false)
-		expect(isInfrastructureBreakerTripped()).toBe(true)
+		expect(isInfrastructureBreakerTripped()).toBe(false)
 	})
 
-	it("closes again on reset, so a recovered run gets a fresh budget", () => {
+	it("trips after the threshold of consecutive infrastructure errors and stops retries", () => {
 		vi.spyOn(console, "error").mockImplementation(() => {})
 		const isRetryable = installPatchedClassifier(2)
 
 		expect(isRetryable(networkError)).toBe(true)
-		resetInfrastructureBreaker()
+		recordInfrastructureBreakerFailure()
 		expect(isRetryable(networkError)).toBe(true)
-		expect(isRetryable(networkError)).toBe(false)
+		recordInfrastructureBreakerFailure()
 		expect(isInfrastructureBreakerTripped()).toBe(true)
+		expect(isRetryable(networkError)).toBe(false)
 	})
 
-	it("does not count non-infrastructure errors that upstream retries (e.g. rate limits)", () => {
-		const sessionClass = {
-			prototype: {
-				_isRetryableError: (message: { stopReason?: string; errorMessage?: string }) =>
-					message.errorMessage === "429 rate limit",
-			},
-		}
-		installInfrastructureRetryPatch(sessionClass, 1)
-		const isRetryable = sessionClass.prototype._isRetryableError
+	it("does not count upstream-only retryable errors", () => {
+		const isRetryable = installPatchedClassifier(1, (message) => message.errorMessage === "upstream-only retryable")
 
-		expect(isRetryable({ stopReason: "error", errorMessage: "429 rate limit" })).toBe(true)
-		expect(isRetryable({ stopReason: "error", errorMessage: "429 rate limit" })).toBe(true)
+		expect(isRetryable({ stopReason: "error", errorMessage: "upstream-only retryable" })).toBe(true)
+		expect(isRetryable({ stopReason: "error", errorMessage: "upstream-only retryable" })).toBe(true)
 		expect(isInfrastructureBreakerTripped()).toBe(false)
+	})
+
+	it("counts rate limits as retryable gateway errors", () => {
+		vi.spyOn(console, "error").mockImplementation(() => {})
+		const isRetryable = installPatchedClassifier(2)
+
+		expect(isRetryable({ stopReason: "error", errorMessage: "429 rate limit exceeded" })).toBe(true)
+		recordInfrastructureBreakerFailure()
+		expect(isRetryable({ stopReason: "error", errorMessage: "429 rate limit exceeded" })).toBe(true)
+		recordInfrastructureBreakerFailure()
+		expect(isInfrastructureBreakerTripped()).toBe(true)
+		expect(isRetryable({ stopReason: "error", errorMessage: "429 rate limit exceeded" })).toBe(false)
 	})
 
 	it("counts provider 5xx errors even when upstream retries them", () => {
 		vi.spyOn(console, "error").mockImplementation(() => {})
-		const sessionClass = {
-			prototype: {
-				_isRetryableError: (message: { stopReason?: string; errorMessage?: string }) =>
-					message.errorMessage === "500 internal server error",
-			},
-		}
-		installInfrastructureRetryPatch(sessionClass, 2)
-		const isRetryable = sessionClass.prototype._isRetryableError
+		const isRetryable = installPatchedClassifier(2, (message) => message.errorMessage === "500 internal server error")
 
 		expect(isRetryable({ stopReason: "error", errorMessage: "500 internal server error" })).toBe(true)
-		expect(isRetryable({ stopReason: "error", errorMessage: "500 internal server error" })).toBe(false)
+		recordInfrastructureBreakerFailure()
+		expect(isRetryable({ stopReason: "error", errorMessage: "500 internal server error" })).toBe(true)
+		recordInfrastructureBreakerFailure()
 		expect(isInfrastructureBreakerTripped()).toBe(true)
+		expect(isRetryable({ stopReason: "error", errorMessage: "500 internal server error" })).toBe(false)
 	})
 
 	it("never trips when disabled", () => {
 		const isRetryable = installPatchedClassifier(0)
 
-		for (let i = 0; i < 10; i++) expect(isRetryable(networkError)).toBe(true)
+		for (let i = 0; i < 10; i++) {
+			recordInfrastructureBreakerFailure()
+			expect(isRetryable(networkError)).toBe(true)
+		}
 		expect(isInfrastructureBreakerTripped()).toBe(false)
+	})
+
+	it("resetInfrastructureBreaker clears a tripped breaker", () => {
+		vi.spyOn(console, "error").mockImplementation(() => {})
+		const isRetryable = installPatchedClassifier(1)
+
+		recordInfrastructureBreakerFailure()
+		expect(isInfrastructureBreakerTripped()).toBe(true)
+		expect(isRetryable(networkError)).toBe(false)
+
+		resetInfrastructureBreaker()
+		expect(isInfrastructureBreakerTripped()).toBe(false)
+		expect(isRetryable(networkError)).toBe(true)
 	})
 
 	it("stays irrelevant for successful messages", () => {
