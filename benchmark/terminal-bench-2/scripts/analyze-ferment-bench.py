@@ -71,6 +71,8 @@ class TrialSummary:
     failed_tests: list[str]
     signals: Counter[str]
     phase_seconds: dict[str, int | None]
+    routing_subagent_types: Counter[str]
+    routing_models: Counter[str]
 
 
 def is_pass(summary: TrialSummary) -> bool:
@@ -127,6 +129,8 @@ class TimingRow:
     end: str | None
     seconds: int | None
     note: str = ""
+    subagent_type: str | None = None
+    model_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -392,14 +396,15 @@ def summarize_events(events: list[dict[str, Any]]) -> tuple[int, str, int | None
     )
 
 
-def phase_step_maps(ferment: dict[str, Any]) -> tuple[dict[str, str], dict[tuple[str, str], str], dict[str, str], dict[tuple[str, str], str]]:
+def phase_step_maps(ferment: dict[str, Any]) -> tuple[dict[str, str], dict[tuple[str, str], str], dict[str, str], dict[tuple[str, str], str], dict[tuple[str, str], dict[str, str]]]:
     phase_names: dict[str, str] = {}
     phase_statuses: dict[str, str] = {}
     step_names: dict[tuple[str, str], str] = {}
     step_statuses: dict[tuple[str, str], str] = {}
+    step_routing: dict[tuple[str, str], dict[str, str]] = {}
     phases = ferment.get("phases")
     if not isinstance(phases, list):
-        return phase_names, step_names, phase_statuses, step_statuses
+        return phase_names, step_names, phase_statuses, step_statuses, step_routing
     for phase in phases:
         if not isinstance(phase, dict):
             continue
@@ -413,16 +418,20 @@ def phase_step_maps(ferment: dict[str, Any]) -> tuple[dict[str, str], dict[tuple
             key = (phase_id, step_id)
             step_names[key] = display(step.get("description"), step_id)
             step_statuses[key] = display(step.get("status"), "")
-    return phase_names, step_names, phase_statuses, step_statuses
+            routing = step.get("routingDecision")
+            if isinstance(routing, dict):
+                step_routing[key] = routing
+    return phase_names, step_names, phase_statuses, step_statuses, step_routing
 
 
 def timing_rows(ferment: dict[str, Any], events: list[dict[str, Any]]) -> list[TimingRow]:
-    phase_names, step_names, phase_statuses, step_statuses = phase_step_maps(ferment)
+    phase_names, step_names, phase_statuses, step_statuses, step_routing = phase_step_maps(ferment)
     final_ts = events[-1].get("timestamp") if events and isinstance(events[-1].get("timestamp"), str) else None
     phase_start: dict[str, str] = {}
     phase_end: dict[str, str] = {}
     step_start: dict[tuple[str, str], str] = {}
     step_end: dict[tuple[str, str], str] = {}
+    event_routing: dict[tuple[str, str], dict[str, str]] = {}
     phase_terminal = {"phase_completed", "phase_failed", "phase_skipped"}
     step_terminal = {"step_verified", "step_completed", "step_failed", "step_skipped"}
     for event in events:
@@ -443,6 +452,9 @@ def timing_rows(ferment: dict[str, Any], events: list[dict[str, Any]]) -> list[T
             step_start.setdefault((phase_id, step_id), timestamp)
         elif event_type in step_terminal and isinstance(phase_id, str) and isinstance(step_id, str):
             step_end[(phase_id, step_id)] = timestamp
+            routing = payload.get("routingDecision")
+            if isinstance(routing, dict) and isinstance(step_id, str):
+                event_routing.setdefault((phase_id, step_id), routing)
 
     rows: list[TimingRow] = []
     for phase_id, name in phase_names.items():
@@ -460,7 +472,10 @@ def timing_rows(ferment: dict[str, Any], events: list[dict[str, Any]]) -> list[T
         if start and not end and final_ts:
             end = final_ts
             note = "open at final event"
-        rows.append(TimingRow("step", name, step_statuses.get(key, ""), start, end, seconds_between(start, end), note))
+        routing = step_routing.get(key) or event_routing.get(key)
+        subagent_type = routing.get("subagentType") if routing else None
+        model_id = routing.get("modelId") if routing else None
+        rows.append(TimingRow("step", name, step_statuses.get(key, ""), start, end, seconds_between(start, end), note, subagent_type, model_id))
     return rows
 
 
@@ -608,6 +623,9 @@ def summarize_trial(evidence: TrialEvidence) -> TrialSummary:
         signals[exception] += 1
     for failure in evidence.failures:
         add_signals(signals, f"{failure['name']}\n{failure['message']}\n{failure['trace']}")
+    step_rows = [r for r in timing_rows(ferment, events) if r.kind == "step"]
+    routing_subagent_types: Counter[str] = Counter(r.subagent_type for r in step_rows if r.subagent_type)
+    routing_models: Counter[str] = Counter(r.model_id for r in step_rows if r.model_id)
     return TrialSummary(
         trial_dir=trial_dir,
         run=trial_dir.parent.name,
@@ -634,6 +652,8 @@ def summarize_trial(evidence: TrialEvidence) -> TrialSummary:
         failed_tests=[failure["name"] for failure in evidence.failures],
         signals=signals,
         phase_seconds=phase_seconds_map(ferment, events),
+        routing_subagent_types=routing_subagent_types,
+        routing_models=routing_models,
     )
 
 
@@ -768,6 +788,13 @@ def print_run_summary(run_dir: Path, max_list: int) -> None:
     for trial in trials:
         model_counts.update(trial.models)
     print_counter("Model Counts From Sessions", model_counts)
+    routing_subagent_counts: Counter[str] = Counter()
+    routing_model_counts: Counter[str] = Counter()
+    for trial in trials:
+        routing_subagent_counts.update(trial.routing_subagent_types)
+        routing_model_counts.update(trial.routing_models)
+    print_counter("Routing Subagent Type Counts", routing_subagent_counts)
+    print_counter("Routing Model Counts", routing_model_counts)
     print_timing_averages(trials)
     print_task_consistency(trials)
     print_attention_list(
@@ -825,6 +852,15 @@ def event_payload_summary(event: dict[str, Any]) -> str:
     result = payload.get("result")
     if isinstance(result, dict):
         pieces.append(f"verify success={display(result.get('success'))}, exit={display(result.get('exitCode'))}")
+    routing = payload.get("routingDecision")
+    if isinstance(routing, dict):
+        subagent_type = routing.get("subagentType")
+        model_id = routing.get("modelId")
+        routing_str = display(subagent_type, "")
+        if model_id:
+            routing_str = f"{routing_str}/{display(model_id)}"
+        if routing_str:
+            pieces.append(f"routing={routing_str}")
     return "; ".join(pieces)
 
 
@@ -906,11 +942,11 @@ def render_timing_section(evidence: TrialEvidence) -> list[str]:
     lines = [
         "## Phase And Step Timing",
         "",
-        "| Kind | Name | Status | Seconds | Start | End | Note |",
-        "| --- | --- | --- | ---: | --- | --- | --- |",
+        "| Kind | Name | Status | Seconds | Subagent Type | Model | Start | End | Note |",
+        "| --- | --- | --- | ---: | --- | --- | --- | --- | --- |",
     ]
     for row in timing_rows(evidence.ferment, evidence.events):
-        lines.append(md_row([row.kind, truncate(row.name, 120), row.status, seconds_display(row.seconds), row.start, row.end, row.note]))
+        lines.append(md_row([row.kind, truncate(row.name, 120), row.status, seconds_display(row.seconds), row.subagent_type or "", row.model_id or "", row.start, row.end, row.note]))
     lines.append("")
     return lines
 
@@ -947,11 +983,34 @@ def render_trial_report(trial_dir: Path, max_trace_lines: int, max_notables: int
     lines += render_execution_section(summary)
     lines += render_ferment_scope_section(evidence)
     lines += render_timing_section(evidence)
+    lines += render_routing_section(evidence)
     lines += render_event_timeline_section(evidence)
     lines += render_verifier_section(evidence, max_trace_lines)
     lines += render_sessions_section(evidence, max_notables, max_sessions)
     lines += render_investigation_hints(summary)
     return "\n".join(lines).rstrip() + "\n"
+
+
+def render_routing_section(evidence: TrialEvidence) -> list[str]:
+    rows = [r for r in timing_rows(evidence.ferment, evidence.events) if r.kind == "step" and (r.subagent_type or r.model_id)]
+    lines = ["## Model Routing Decisions", ""]
+    if not rows:
+        return [*lines, "No routing decisions recorded (steps may have run directly without a linked worker agent).", ""]
+    lines += [
+        "| Phase Step | Status | Subagent Type | Model | Seconds |",
+        "| --- | --- | --- | --- | ---: |",
+    ]
+    for row in rows:
+        lines.append(md_row([truncate(row.name, 120), row.status, row.subagent_type or "", row.model_id or "", seconds_display(row.seconds)]))
+    lines.append("")
+    subagent_counts: Counter[str] = Counter(r.subagent_type for r in rows if r.subagent_type)
+    model_counts: Counter[str] = Counter(r.model_id for r in rows if r.model_id)
+    if subagent_counts:
+        lines.append(f"Subagent types: {counter_text(subagent_counts)}")
+    if model_counts:
+        lines.append(f"Models used: {counter_text(model_counts)}")
+    lines.append("")
+    return lines
 
 
 def render_verifier_section(evidence: TrialEvidence, max_trace_lines: int) -> list[str]:
