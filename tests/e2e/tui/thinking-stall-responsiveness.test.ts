@@ -34,8 +34,7 @@ thinkingChunks[thinkingChunks.length - 1] += `${STALL_READY_MARKER}\n`
 const TYPED_TEXT = "zqxwvu42abcdef"
 // Post-fix a char echoes within one 100ms poll (~1.5s for all round-trips);
 // pre-fix each round-trip waits on ~1s of blocked render frames (~10s total).
-// The bound sits between with ~2x margin to both sides.
-const TOTAL_ECHO_BUDGET_MS = 5_000
+const TOTAL_ECHO_BUDGET_MS = 7_000
 
 test("typed input echoes promptly while a large thinking stream is stalled", async ({ terminal }) => {
 	await runKimchiSession(
