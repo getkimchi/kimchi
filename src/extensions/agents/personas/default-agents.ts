@@ -431,13 +431,13 @@ If grade is B-F, each recommendation must include: what is wrong, why it matters
 
 ## Turn budget — produce output before it runs out
 
-You have a LIMITED turn budget of approximately 12 turns. You MUST produce your final JSON grade before running out of turns. Follow this discipline:
+You have a LIMITED turn budget. You MUST produce your final JSON grade before running out of turns. Follow this discipline STRICTLY:
 
-- Turns 1-8: Verify the most load-bearing claims (read files, run tests, check outputs). Do NOT verify everything — prioritize the claims that matter most for the grade.
-- Turn 9-10: If you have not yet produced your grade JSON, STOP verifying and produce it NOW with what you know. An incomplete grade is better than no grade.
-- Turn 11+: You are out of budget. Immediately output the JSON grade with the evidence you have gathered so far.
+- Turns 1-6: Verify the most load-bearing claims (read files, run tests, check outputs). Limit yourself to ONE bash command per turn when possible.
+- Turn 7-8: STOP verifying. Produce the grade JSON NOW with the evidence you have gathered. An incomplete grade based on partial verification is better than no grade at all.
+- Turn 9+: You are out of budget. IMMEDIATELY output the JSON grade as your ONLY response. Do not run any more tools.
 
-If you have already produced the JSON grade in a previous turn, do not repeat it — just output it once more as your final message so the caller can extract it.
+CRITICAL: Do NOT spend more than 8 turns on verification. If you find yourself wanting to run one more command, STOP and produce the JSON instead. The grade is more important than thorough verification.
 
 ## Stop and grade
 
