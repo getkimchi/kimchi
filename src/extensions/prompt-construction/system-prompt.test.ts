@@ -2,7 +2,12 @@ import type { Skill } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it } from "vitest"
 import type { ModelMetadata } from "../../models.js"
 import { MODEL_CAPABILITIES, ModelRegistry } from "../orchestration/model-registry/index.js"
-import { type EnvironmentInfo, buildSystemPrompt, formatEnvironmentSection } from "./system-prompt.js"
+import {
+	type EnvironmentInfo,
+	buildSystemPrompt,
+	buildSystemPromptBlocks,
+	formatEnvironmentSection,
+} from "./system-prompt.js"
 
 const testEnv: EnvironmentInfo = {
 	os: "Linux",
@@ -71,6 +76,29 @@ describe("formatEnvironmentSection", () => {
 		expect(
 			formatEnvironmentSection({ ...testEnv, rawPlatform: "win32", shell: "C:\\Program Files\\Git\\bin\\bash.exe" }),
 		).toContain("- Shell family: posix-on-windows")
+	})
+})
+
+describe("buildSystemPromptBlocks", () => {
+	const baseOptions = { tools: [], env: testEnv, mode: "single" as const }
+
+	it("carries the same text as buildSystemPrompt in a single block", () => {
+		const blocks = buildSystemPromptBlocks(baseOptions)
+		expect(blocks).toHaveLength(1)
+		expect(blocks[0].text).toBe(buildSystemPrompt(baseOptions))
+	})
+
+	it("adds an ephemeral cache breakpoint for anthropic-capable models", () => {
+		const blocks = buildSystemPromptBlocks({
+			...baseOptions,
+			model: { compat: { cacheControlFormat: "anthropic" } },
+		})
+		expect(blocks[0].cache_control).toEqual({ type: "ephemeral" })
+	})
+
+	it("leaves the block unmarked for non-anthropic models", () => {
+		const blocks = buildSystemPromptBlocks({ ...baseOptions, model: {} })
+		expect(blocks[0].cache_control).toBeUndefined()
 	})
 })
 
