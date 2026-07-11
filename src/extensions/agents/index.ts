@@ -538,9 +538,29 @@ export async function spawnGraderAgent(
 ): Promise<{ text: string; status: string } | undefined> {
 	if (!activeManager) return undefined
 	const AGENT_GRADER_TYPE = "Grader"
+
+	// Prepare a persisted session file so the grader's transcript is saved
+	// alongside the parent session for post-mortem analysis.
+	let sessionFile: string | undefined
+	let sessionDir: string | undefined
+	try {
+		const parentSessionDir = ctx.sessionManager.getSessionDir()
+		const parentSessionFile = ctx.sessionManager.getSessionFile()
+		if (parentSessionDir && parentSessionFile) {
+			const prepared = prepareAgentSessionFile(parentSessionDir, parentSessionFile, ctx.cwd)
+			sessionFile = prepared?.sessionFile
+			sessionDir = parentSessionDir
+		}
+	} catch {
+		// Session file creation is best-effort — the grader can still run
+		// without a persisted session, it just won't have a transcript file.
+	}
+
 	const record = await activeManager.spawnAndWait(pi, ctx, AGENT_GRADER_TYPE, prompt, {
 		description: "Ferment grader",
 		visibility: "system",
+		sessionFile,
+		sessionDir,
 	})
 	return { text: record.result ?? "", status: record.status }
 }
