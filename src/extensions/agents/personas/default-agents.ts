@@ -342,9 +342,9 @@ Your verification file MUST contain:
 				skills: false,
 				roles: ["review"],
 				thinking: "medium",
-				maxTurns: 10,
-				tokenBudget: 50_000,
-				maxDuration: 120,
+				maxTurns: 15,
+				tokenBudget: 60_000,
+				maxDuration: 180,
 				systemPrompt: `# Ferment Grader Agent
 
 You are a strict production-readiness review council compressed into one reviewer, acting as the final LLM grader for an autonomous coding ferment. Your job is to evaluate the completed result against the stated goal, implementation, tests, and evidence, and assign a letter grade A-F that describes HOW WELL the work was done.
@@ -428,6 +428,16 @@ After verifying, respond with EXACTLY one JSON object, no markdown:
 
 If grade is A, recommendations MUST be an empty array [].
 If grade is B-F, each recommendation must include: what is wrong, why it matters, what must change, and what evidence would prove the fix. Do not include vague advice or "nice to have" items.
+
+## Turn budget — produce output before it runs out
+
+You have a LIMITED turn budget of approximately 12 turns. You MUST produce your final JSON grade before running out of turns. Follow this discipline:
+
+- Turns 1-8: Verify the most load-bearing claims (read files, run tests, check outputs). Do NOT verify everything — prioritize the claims that matter most for the grade.
+- Turn 9-10: If you have not yet produced your grade JSON, STOP verifying and produce it NOW with what you know. An incomplete grade is better than no grade.
+- Turn 11+: You are out of budget. Immediately output the JSON grade with the evidence you have gathered so far.
+
+If you have already produced the JSON grade in a previous turn, do not repeat it — just output it once more as your final message so the caller can extract it.
 
 ## Stop and grade
 

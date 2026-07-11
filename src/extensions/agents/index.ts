@@ -562,7 +562,26 @@ export async function spawnGraderAgent(
 		sessionFile,
 		sessionDir,
 	})
-	return { text: record.result ?? "", status: record.status }
+	// Collect all assistant text from the session — the grade JSON may appear
+	// in an earlier turn, not just the final response.
+	let fullText = record.result ?? ""
+	if (record.session) {
+		const messages = record.session.messages ?? []
+		const assistantTexts: string[] = []
+		for (const msg of messages) {
+			if (msg.role !== "assistant") continue
+			const content = msg.content
+			if (!Array.isArray(content)) continue
+			for (const c of content) {
+				if (typeof c === "object" && c !== null && "type" in c && c.type === "text" && "text" in c) {
+					const t = c.text
+					if (typeof t === "string" && t.trim()) assistantTexts.push(t)
+				}
+			}
+		}
+		fullText = assistantTexts.join("\n\n")
+	}
+	return { text: fullText, status: record.status }
 }
 
 function readAgentTaskRef(params: Record<string, unknown>): AgentTaskRef | undefined {

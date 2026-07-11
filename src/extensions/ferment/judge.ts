@@ -597,7 +597,7 @@ export async function judgePhaseGrade(
 
 /** Result from a grader subagent invocation. */
 export interface GraderSubagentResult {
-	/** The final text response from the subagent (should be JSON). */
+	/** The full text output from the subagent (may contain multiple assistant turns). */
 	text: string
 	/** "completed" = finished normally; anything else = aborted/errored. */
 	status: string
@@ -607,15 +607,38 @@ export interface GraderSubagentResult {
  *  lifecycle.ts) which has access to ExtensionAPI + AgentManager. */
 export type GraderSpawner = (prompt: string) => Promise<GraderSubagentResult>
 
-/** Parse the subagent's final response into a grade result. Returns undefined
- *  if the response is not parseable JSON with a valid grade. */
+/** Parse the subagent's response into a grade result. Scans for a JSON object
+ *  with a valid grade field anywhere in the text — the subagent may produce
+ *  the grade JSON in an earlier turn and then continue with follow-up text.
+ *  Returns undefined if no parseable grade JSON is found. */
 function parseGraderResponse(text: string): JudgePhaseGradeOk | undefined {
-	const parsed = tryParseJson<{ grade?: string; rationale?: string; recommendations?: unknown }>(text)
-	if (parsed === undefined) return undefined
-	if (!isGrade(parsed.grade)) return undefined
-	const rationale = typeof parsed.rationale === "string" ? parsed.rationale.slice(0, 800) : "(no rationale provided)"
-	const recommendations = normalizeRecommendations(parsed.recommendations)
-	return { ok: true, grade: parsed.grade, rationale, recommendations }
+	// Try parsing the full text as JSON first (common case: final message IS the JSON)
+	const direct = tryParseJson<{ grade?: string; rationale?: string; recommendations?: unknown }>(text)
+	if (direct !== undefined && isGrade(direct.grade)) {
+		const rationale = typeof direct.rationale === "string" ? direct.rationale.slice(0, 800) : "(no rationale provided)"
+		const recommendations = normalizeRecommendations(direct.recommendations)
+		return { ok: true, grade: direct.grade, rationale, recommendations }
+	}
+
+	// Scan for a JSON object containing a grade field anywhere in the text.
+	// This handles the case where the subagent produced the grade JSON mid-session
+	// and then continued with follow-up text (e.g. "Already completed the grade...").
+	const gradeJsonPattern = /\{[^{}]*"grade"\s*:\s*"[A-F]"[^{}]*\}/g
+	const matches = text.match(gradeJsonPattern)
+	if (matches) {
+		// Try from the last match (most recent grade)
+		for (let i = matches.length - 1; i >= 0; i--) {
+			const parsed = tryParseJson<{ grade?: string; rationale?: string; recommendations?: unknown }>(matches[i])
+			if (parsed !== undefined && isGrade(parsed.grade)) {
+				const rationale =
+					typeof parsed.rationale === "string" ? parsed.rationale.slice(0, 800) : "(no rationale provided)"
+				const recommendations = normalizeRecommendations(parsed.recommendations)
+				return { ok: true, grade: parsed.grade, rationale, recommendations }
+			}
+		}
+	}
+
+	return undefined
 }
 
 /** Grade a phase using a subagent with tool access. Falls back to the

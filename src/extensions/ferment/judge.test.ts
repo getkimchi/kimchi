@@ -643,4 +643,29 @@ describe("judgeJourneyGradeViaSubagent", () => {
 		if (!result.ok) return
 		expect(result.grade).toBe("A")
 	})
+
+	it("extracts grade JSON from multi-turn text where JSON appears before the final message", async () => {
+		// Simulates the case where the subagent produces the grade JSON at turn 8
+		// but then continues with follow-up text on turns 9-11.
+		const multiTurnText = [
+			"Verifying phase...",
+			"Ran tests: all passed.",
+			'{"grade":"B","rationale":"Tests pass but coverage thin.","recommendations":["Add edge-case test"]}',
+			"Already completed the grade for this phase. Final JSON was produced above.",
+			"Already completed the grade for this phase. Final JSON was produced above.",
+		].join("\n\n")
+		const spawn = vi.fn(
+			async (): Promise<GraderSubagentResult> => ({
+				text: multiTurnText,
+				status: "completed",
+			}),
+		)
+		const apiCall = vi.fn(async () => ok('{"grade":"A","rationale":"x"}'))
+		const result = await judgeJourneyGradeViaSubagent(makeInput(), spawn, apiCall)
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.grade).toBe("B")
+		expect(result.rationale).toContain("coverage thin")
+		expect(apiCall).not.toHaveBeenCalled()
+	})
 })

@@ -24,9 +24,9 @@ describe("Grader agent registration", () => {
 		expect(cfg.disallowedTools).toContain("Agent")
 
 		// Must be bounded
-		expect(cfg.maxTurns).toBe(10)
-		expect(cfg.tokenBudget).toBe(50_000)
-		expect(cfg.maxDuration).toBe(120)
+		expect(cfg.maxTurns).toBe(15)
+		expect(cfg.tokenBudget).toBe(60_000)
+		expect(cfg.maxDuration).toBe(180)
 
 		// No extensions or skills — purely built-in tools
 		expect(cfg.extensions).toBe(false)
