@@ -1,11 +1,14 @@
 import { describe, expect, it, vi } from "vitest"
 import {
+	type GraderSubagentResult,
 	type JudgeApiResult,
 	type JudgeJourneyGradeInput,
 	type JudgePhaseInput,
 	isGrade,
 	judgeJourneyGrade,
+	judgeJourneyGradeViaSubagent,
 	judgePhaseGrade,
+	judgePhaseGradeViaSubagent,
 } from "./judge.js"
 
 describe("isGrade", () => {
@@ -487,5 +490,157 @@ describe("judgePhaseGrade", () => {
 		})
 		await judgePhaseGrade(makePhaseInput({ evidence: "   " }), apiCall)
 		expect(captured).not.toContain("EXECUTION EVIDENCE")
+	})
+})
+
+describe("judgePhaseGradeViaSubagent", () => {
+	function ok(text: string): JudgeApiResult {
+		return { ok: true, text }
+	}
+
+	function makePhaseInput(overrides: Partial<JudgePhaseInput> = {}): JudgePhaseInput {
+		return {
+			fermentName: "Test Ferment",
+			phaseName: "Phase 1",
+			phaseGoal: "Build retry plumbing.",
+			phaseSummary: "Implemented retry logic with tests.",
+			stepSummaries: "  - step-1: added retry.ts",
+			gateVerdicts: [
+				{ id: "F1", verdict: "pass", rationale: "step-1 used smoke" },
+				{ id: "F2", verdict: "pass", rationale: "feature.ts delivers retry" },
+				{ id: "F3", verdict: "pass", rationale: "Nothing deferred" },
+			],
+			phaseDiff: { available: true, filesChanged: "feature.ts", diffSnippet: "+retry logic" },
+			...overrides,
+		}
+	}
+
+	it("returns the subagent's parsed grade when it completes with valid JSON", async () => {
+		const spawn = vi.fn(
+			async (): Promise<GraderSubagentResult> => ({
+				text: '{"grade":"B","rationale":"Tests pass but coverage thin.","recommendations":["Add edge-case test"]}',
+				status: "completed",
+			}),
+		)
+		const apiCall = vi.fn(async () => ok('{"grade":"A","rationale":"x"}'))
+		const result = await judgePhaseGradeViaSubagent(makePhaseInput(), spawn, apiCall)
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.grade).toBe("B")
+		expect(result.rationale).toContain("coverage thin")
+		expect(result.recommendations).toHaveLength(1)
+		expect(apiCall).not.toHaveBeenCalled()
+	})
+
+	it("falls back to single-shot when subagent returns unparseable text", async () => {
+		const spawn = vi.fn(
+			async (): Promise<GraderSubagentResult> => ({
+				text: "I think this work is pretty good",
+				status: "completed",
+			}),
+		)
+		const apiCall = vi.fn(async () => ok('{"grade":"C","rationale":"weak evidence"}'))
+		const result = await judgePhaseGradeViaSubagent(makePhaseInput(), spawn, apiCall)
+		expect(spawn).toHaveBeenCalledTimes(1)
+		expect(apiCall).toHaveBeenCalledTimes(1)
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.grade).toBe("C")
+	})
+
+	it("falls back to single-shot when subagent aborts", async () => {
+		const spawn = vi.fn(
+			async (): Promise<GraderSubagentResult> => ({
+				text: "",
+				status: "aborted",
+			}),
+		)
+		const apiCall = vi.fn(async () => ok('{"grade":"D","rationale":"gaps"}'))
+		const result = await judgePhaseGradeViaSubagent(makePhaseInput(), spawn, apiCall)
+		expect(apiCall).toHaveBeenCalledTimes(1)
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.grade).toBe("D")
+	})
+
+	it("falls back to single-shot when subagent throws", async () => {
+		const spawn = vi.fn(async (): Promise<GraderSubagentResult> => {
+			throw new Error("agent system not available")
+		})
+		const apiCall = vi.fn(async () => ok('{"grade":"B","rationale":"ok"}'))
+		const result = await judgePhaseGradeViaSubagent(makePhaseInput(), spawn, apiCall)
+		expect(apiCall).toHaveBeenCalledTimes(1)
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.grade).toBe("B")
+	})
+
+	it("falls back to single-shot when no spawner is provided", async () => {
+		const apiCall = vi.fn(async () => ok('{"grade":"A","rationale":"clean"}'))
+		const result = await judgePhaseGradeViaSubagent(makePhaseInput(), undefined, apiCall)
+		expect(apiCall).toHaveBeenCalledTimes(1)
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.grade).toBe("A")
+	})
+})
+
+describe("judgeJourneyGradeViaSubagent", () => {
+	function ok(text: string): JudgeApiResult {
+		return { ok: true, text }
+	}
+
+	it("returns the subagent's parsed grade when it completes with valid JSON", async () => {
+		const spawn = vi.fn(
+			async (): Promise<GraderSubagentResult> => ({
+				text: '{"grade":"A","rationale":"Excellent work.","recommendations":[]}',
+				status: "completed",
+			}),
+		)
+		const apiCall = vi.fn(async () => ok('{"grade":"C","rationale":"x"}'))
+		const result = await judgeJourneyGradeViaSubagent(makeInput(), spawn, apiCall)
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.grade).toBe("A")
+		expect(apiCall).not.toHaveBeenCalled()
+	})
+
+	it("falls back to single-shot when subagent returns unparseable text", async () => {
+		const spawn = vi.fn(
+			async (): Promise<GraderSubagentResult> => ({
+				text: "Not JSON at all",
+				status: "completed",
+			}),
+		)
+		const apiCall = vi.fn(async () => ok('{"grade":"B","rationale":"ok"}'))
+		const result = await judgeJourneyGradeViaSubagent(makeInput(), spawn, apiCall)
+		expect(apiCall).toHaveBeenCalledTimes(1)
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.grade).toBe("B")
+	})
+
+	it("falls back to single-shot when subagent aborts", async () => {
+		const spawn = vi.fn(
+			async (): Promise<GraderSubagentResult> => ({
+				text: "",
+				status: "aborted",
+			}),
+		)
+		const apiCall = vi.fn(async () => ok('{"grade":"C","rationale":"x"}'))
+		const result = await judgeJourneyGradeViaSubagent(makeInput(), spawn, apiCall)
+		expect(apiCall).toHaveBeenCalledTimes(1)
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.grade).toBe("C")
+	})
+
+	it("falls back to single-shot when no spawner is provided", async () => {
+		const apiCall = vi.fn(async () => ok('{"grade":"A","rationale":"clean"}'))
+		const result = await judgeJourneyGradeViaSubagent(makeInput(), undefined, apiCall)
+		expect(apiCall).toHaveBeenCalledTimes(1)
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(result.grade).toBe("A")
 	})
 })

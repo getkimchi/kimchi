@@ -26,7 +26,7 @@ import {
 	type ScopingQuestionType,
 } from "../../../ferment/types.js"
 import { getMultiModelEnabled } from "../../multi-model.js"
-import { runWithOverlay } from "../../agents/index.js"
+import { runWithOverlay, spawnGraderAgent } from "../../agents/index.js"
 import { createToolVisibility } from "../../prompt-construction/tool-visibility.js"
 import { YES_NO_OPTIONS } from "../../questionnaire/index.js"
 import { askUserForm, normalizeAskUserQuestions, toScopingQuestionType } from "../ask-user.js"
@@ -36,7 +36,7 @@ import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { renderGateGuidance } from "../gate-registry.js"
 import { assertGateFieldsPresent, validateGatesOrErr } from "../gate-validation.js"
 import { ensureGitRepo } from "../git-init.js"
-import { judgeJourneyGrade } from "../judge.js"
+import { type GraderSpawner, judgeJourneyGradeViaSubagent } from "../judge.js"
 import { appendRefEntry, resetReactiveContinuationNudgeCount } from "../nudge.js"
 import { PENDING_PROPOSAL_SCHEMA_VERSION, savePendingProposal } from "../pending-proposal-store.js"
 import { gatherPhaseEvidence } from "../phase-evidence.js"
@@ -690,7 +690,7 @@ export async function scopeFerment(
 export async function completeFerment(
 	runtime: FermentRuntime,
 	params: CompleteFermentArgs,
-	{ ctx }: LifecycleExecutionContext,
+	{ ctx, spawner }: LifecycleExecutionContext & { spawner?: GraderSpawner },
 ): Promise<ToolResult> {
 	const applyAndPersist = createApplyAndPersist(runtime)
 
@@ -733,30 +733,33 @@ export async function completeFerment(
 	const phaseReviews = readLatestPhaseReviews(ferment.id)
 	const totalDiff = ferment.worktree.commit ? gatherPhaseEvidence(ferment.worktree.commit) : undefined
 	const journeyResult = await runWithOverlay(`Grading ferment "${ferment.name}"…`, () =>
-		judgeJourneyGrade({
-			fermentName: ferment.name,
-			goal: ferment.goal ?? "",
-			successCriteria: renderSuccessCriteria(ferment.successCriteria, ""),
-			finalSummary: params.final_summary ?? "",
-			phases: ferment.phases.map((p) => {
-				const review = phaseReviews.get(p.id)
-				return {
-					name: p.name,
-					goal: p.goal,
-					status: p.status,
-					gateVerdicts: review?.gateVerdicts?.map((v) => ({
-						id: v.id,
-						verdict: v.verdict,
-						rationale: v.rationale,
-					})),
-				}
-			}),
-			fermentGates: gates.map((g) => ({ id: g.id, verdict: g.verdict, rationale: g.rationale })),
-			totalDiff: totalDiff
-				? { available: totalDiff.available, filesChanged: totalDiff.filesChanged, diffSnippet: totalDiff.diffSnippet }
-				: { available: false },
-			evidence: params.evidence,
-		}),
+		judgeJourneyGradeViaSubagent(
+			{
+				fermentName: ferment.name,
+				goal: ferment.goal ?? "",
+				successCriteria: renderSuccessCriteria(ferment.successCriteria, ""),
+				finalSummary: params.final_summary ?? "",
+				phases: ferment.phases.map((p) => {
+					const review = phaseReviews.get(p.id)
+					return {
+						name: p.name,
+						goal: p.goal,
+						status: p.status,
+						gateVerdicts: review?.gateVerdicts?.map((v) => ({
+							id: v.id,
+							verdict: v.verdict,
+							rationale: v.rationale,
+						})),
+					}
+				}),
+				fermentGates: gates.map((g) => ({ id: g.id, verdict: g.verdict, rationale: g.rationale })),
+				totalDiff: totalDiff
+					? { available: totalDiff.available, filesChanged: totalDiff.filesChanged, diffSnippet: totalDiff.diffSnippet }
+					: { available: false },
+				evidence: params.evidence,
+			},
+			spawner,
+		),
 	)
 
 	// Resolve the grade. C-gates already decided ship/refuse. The judge now
@@ -1247,7 +1250,12 @@ ${renderGateGuidance("complete_ferment")}`,
 			return new Markdown(text, 1, 0, getMarkdownTheme())
 		},
 		async execute(_, params, _signal, _onUpdate, ctx) {
-			return completeFerment(runtime, params, { ctx })
+			const spawner = async (prompt: string) => {
+				const result = await spawnGraderAgent(pi, ctx, prompt)
+				if (!result) return { text: "", status: "unavailable" }
+				return result
+			}
+			return completeFerment(runtime, params, { ctx, spawner })
 		},
 	})
 

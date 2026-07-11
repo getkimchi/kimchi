@@ -13,7 +13,7 @@ import { findFirstPlannedPhase } from "../../../ferment/engine.js"
 import type { Ferment, Phase } from "../../../ferment/types.js"
 import { getMultiModelEnabled } from "../../multi-model.js"
 import type { Grade } from "../../../ferment/types.js"
-import { runWithOverlay } from "../../agents/index.js"
+import { runWithOverlay, spawnGraderAgent } from "../../agents/index.js"
 import { withWorkingHidden } from "../../ui.js"
 import { askUserForm } from "../ask-user.js"
 import { gradeColor, pr_bold } from "../colors.js"
@@ -22,7 +22,13 @@ import { formatDecisionsAndMemories } from "../format.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { flaggedVerdicts, renderGateGuidance } from "../gate-registry.js"
 import { assertGateFieldsPresent, validateGatesOrErr } from "../gate-validation.js"
-import { type JudgeFlag, type JudgePhaseGradeResult, type JudgePhaseInput, judgePhaseGrade } from "../judge.js"
+import {
+	type GraderSpawner,
+	type JudgeFlag,
+	type JudgePhaseGradeResult,
+	type JudgePhaseInput,
+	judgePhaseGradeViaSubagent,
+} from "../judge.js"
 import { onPhaseCompleted } from "../nudge.js"
 import { type PhaseEvidence, captureGitHead, gatherPhaseEvidence } from "../phase-evidence.js"
 import { type ProjectCheckResult, runProjectChecks, summarizeProjectChecks } from "../project-tests.js"
@@ -79,7 +85,12 @@ export interface PhaseHandlerServices {
 	 *  and route through the existing block-retry / escalation loop.
 	 *  Judge-unavailable outcomes (no_registry/no_model/no_auth/api_error/
 	 *  unparseable/invalid_grade) are advisory and do NOT refuse advancement. */
-	judgePhaseGrade(input: JudgePhaseInput): Promise<JudgePhaseGradeResult>
+	judgePhaseGrade(input: JudgePhaseInput, spawner?: GraderSpawner): Promise<JudgePhaseGradeResult>
+	/** Optional spawner for the grader subagent. When provided, the grader
+	 *  runs as a bounded subagent with read-only + bash tools so it can
+	 *  independently verify the agent's claims. When undefined, the grader
+	 *  falls back to a single-shot LLM call. */
+	graderSpawner?: GraderSpawner
 	onPhaseCompleted(runtime: FermentRuntime): void
 }
 
@@ -92,7 +103,7 @@ export const defaultPhaseHandlerServices: PhaseHandlerServices = {
 	captureGitHead,
 	gatherEvidence: gatherPhaseEvidence,
 	runProjectChecks: (cwd) => runProjectChecks(cwd),
-	judgePhaseGrade,
+	judgePhaseGrade: (input, spawner) => judgePhaseGradeViaSubagent(input, spawner),
 	onPhaseCompleted,
 }
 
@@ -458,7 +469,7 @@ export async function completePhase(
 		evidence: params.evidence,
 	}
 	const phaseJudgeResult = await runWithOverlay(`Grading phase "${phase.name}"…`, () =>
-		services.judgePhaseGrade(judgeInput),
+		services.judgePhaseGrade(judgeInput, services.graderSpawner),
 	)
 
 	// Resolve the final grade + recommendations.
@@ -781,7 +792,15 @@ ${renderGateGuidance("complete_ferment_phase")}`,
 			return new Markdown(text, 1, 0, getMarkdownTheme())
 		},
 		async execute(_, params, _signal, _onUpdate, ctx) {
-			return completePhase(runtime, params, { pi, ctx }, phaseServices)
+			const services = {
+				...phaseServices,
+				graderSpawner: async (prompt: string) => {
+					const result = await spawnGraderAgent(pi, ctx, prompt)
+					if (!result) return { text: "", status: "unavailable" }
+					return result
+				},
+			}
+			return completePhase(runtime, params, { pi, ctx }, services)
 		},
 	})
 

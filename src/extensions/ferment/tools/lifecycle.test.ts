@@ -30,11 +30,20 @@ vi.mock("../judge.js", async () => {
 			ok: true as const,
 			grade: "A" as const,
 			rationale: "Clean delivery; gates substantiated.",
+			recommendations: [] as string[],
+		})),
+		judgeJourneyGradeViaSubagent: vi.fn(async (_input: unknown, _spawner: unknown) => ({
+			ok: true as const,
+			grade: "A" as const,
+			rationale: "Clean delivery; gates substantiated.",
+			recommendations: [] as string[],
 		})),
 	}
 })
 
-const { judgeApiCall: mockJudgeApiCall, judgeJourneyGrade: mockJudgeJourneyGrade } = await import("../judge.js")
+const { judgeApiCall: mockJudgeApiCall, judgeJourneyGradeViaSubagent: mockJudgeJourneyGrade } = await import(
+	"../judge.js"
+)
 
 interface RegisteredTool {
 	name: string

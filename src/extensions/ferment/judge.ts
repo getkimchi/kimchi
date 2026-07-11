@@ -587,3 +587,193 @@ export async function judgePhaseGrade(
 
 	throw new Error("unreachable: phase grade retry loop exited without a result")
 }
+
+// ─── Subagent-based grading ───────────────────────────────────────────────────
+//
+// The subagent grader spawns a bounded agent with read-only + bash tools so it
+// can independently verify the agent's claims (run tests, read source files,
+// check output files). Falls back to the single-shot judgeApiCall() when the
+// subagent is unavailable, crashes, or produces unparseable output.
+
+/** Result from a grader subagent invocation. */
+export interface GraderSubagentResult {
+	/** The final text response from the subagent (should be JSON). */
+	text: string
+	/** "completed" = finished normally; anything else = aborted/errored. */
+	status: string
+}
+
+/** Spawner function for the grader subagent. Injected by the caller (phases.ts /
+ *  lifecycle.ts) which has access to ExtensionAPI + AgentManager. */
+export type GraderSpawner = (prompt: string) => Promise<GraderSubagentResult>
+
+/** Parse the subagent's final response into a grade result. Returns undefined
+ *  if the response is not parseable JSON with a valid grade. */
+function parseGraderResponse(text: string): JudgePhaseGradeOk | undefined {
+	const parsed = tryParseJson<{ grade?: string; rationale?: string; recommendations?: unknown }>(text)
+	if (parsed === undefined) return undefined
+	if (!isGrade(parsed.grade)) return undefined
+	const rationale = typeof parsed.rationale === "string" ? parsed.rationale.slice(0, 800) : "(no rationale provided)"
+	const recommendations = normalizeRecommendations(parsed.recommendations)
+	return { ok: true, grade: parsed.grade, rationale, recommendations }
+}
+
+/** Grade a phase using a subagent with tool access. Falls back to the
+ *  single-shot judgeApiCall() when the subagent is unavailable or fails. */
+export async function judgePhaseGradeViaSubagent(
+	input: JudgePhaseInput,
+	spawn: GraderSpawner | undefined,
+	apiCall: (sys: string, msg: string, maxTokens?: number) => Promise<JudgeApiResult> = judgeApiCall,
+): Promise<JudgePhaseGradeResult> {
+	// Try the subagent first if a spawner was provided.
+	if (spawn) {
+		try {
+			const prompt = buildPhaseGraderPrompt(input)
+			const result = await spawn(prompt)
+			if (result.status === "completed") {
+				const parsed = parseGraderResponse(result.text)
+				if (parsed) return parsed
+				// Subagent completed but output wasn't parseable — fall through to single-shot.
+			}
+			// Subagent aborted/errored — fall through to single-shot.
+		} catch {
+			// Subagent threw — fall through to single-shot.
+		}
+	}
+
+	// Fallback: single-shot LLM call.
+	return judgePhaseGrade(input, apiCall)
+}
+
+/** Grade a ferment (journey) using a subagent with tool access. Falls back to
+ *  the single-shot judgeApiCall() when the subagent is unavailable or fails. */
+export async function judgeJourneyGradeViaSubagent(
+	input: JudgeJourneyGradeInput,
+	spawn: GraderSpawner | undefined,
+	apiCall: (sys: string, msg: string, maxTokens?: number) => Promise<JudgeApiResult> = judgeApiCall,
+): Promise<JudgeJourneyGradeResult> {
+	// Try the subagent first if a spawner was provided.
+	if (spawn) {
+		try {
+			const prompt = buildJourneyGraderPrompt(input)
+			const result = await spawn(prompt)
+			if (result.status === "completed") {
+				const parsed = parseGraderResponse(result.text)
+				if (parsed) return parsed
+				// Subagent completed but output wasn't parseable — fall through to single-shot.
+			}
+			// Subagent aborted/errored — fall through to single-shot.
+		} catch {
+			// Subagent threw — fall through to single-shot.
+		}
+	}
+
+	// Fallback: single-shot LLM call.
+	return judgeJourneyGrade(input, apiCall)
+}
+
+/** Build the user-message prompt for the phase grader subagent. This is the
+ *  same content as buildPhaseGradeUserMsg but framed as a task instruction for
+ *  a multi-turn agent rather than a single-shot completion. */
+function buildPhaseGraderPrompt(input: JudgePhaseInput): string {
+	const parts: string[] = []
+	parts.push("You are grading a completed phase of an autonomous coding ferment.")
+	parts.push("Verify the agent's claims independently using your tools, then produce a grade as JSON.")
+	parts.push("")
+	parts.push(`Ferment: "${input.fermentName}"`)
+	parts.push(`Phase: "${input.phaseName}"`)
+	parts.push(`Phase goal: ${input.phaseGoal || "(none specified)"}`)
+	parts.push(`Phase summary: ${input.phaseSummary || "(none)"}`)
+	if (input.stepSummaries && input.stepSummaries.trim().length > 0) {
+		parts.push("")
+		parts.push("Step summaries:")
+		parts.push(input.stepSummaries)
+	}
+	parts.push("")
+	parts.push("Phase-scope gate verdicts (agent self-reported — verify independently):")
+	for (const v of input.gateVerdicts) {
+		parts.push(`  ${v.id} (${v.verdict}): ${v.rationale}`)
+	}
+	if (input.projectChecksSummary && input.projectChecksSummary.trim().length > 0) {
+		parts.push("")
+		parts.push("Project checks:")
+		parts.push(input.projectChecksSummary)
+	}
+	if (input.phaseDiff?.available) {
+		parts.push("")
+		parts.push("--- PHASE DIFF ---")
+		parts.push(`Files changed:\n${input.phaseDiff.filesChanged ?? "(none recorded)"}`)
+		if (input.phaseDiff.diffSnippet) {
+			parts.push(`\nDiff snippet:\n\`\`\`diff\n${input.phaseDiff.diffSnippet}\n\`\`\``)
+		}
+	} else {
+		parts.push("")
+		parts.push("(No diff available — use your tools to inspect files directly.)")
+	}
+	if (input.evidence && input.evidence.trim().length > 0) {
+		parts.push("")
+		parts.push("--- EXECUTION EVIDENCE (agent-provided) ---")
+		parts.push(input.evidence.slice(0, 4000))
+	}
+	parts.push("")
+	parts.push(`Working directory: ${process.cwd()}`)
+	parts.push("")
+	parts.push(
+		"Verify the agent's claims by reading files and running commands. Then respond with EXACTLY one JSON object:",
+	)
+	parts.push('{"grade":"A"|"B"|"C"|"D"|"F","rationale":"...","recommendations":[...]}')
+	return parts.join("\n")
+}
+
+/** Build the user-message prompt for the journey grader subagent. */
+function buildJourneyGraderPrompt(input: JudgeJourneyGradeInput): string {
+	const parts: string[] = []
+	parts.push(
+		"You are grading a completed ferment (all phases done). Verify the agent's claims independently using your tools, then produce a grade as JSON.",
+	)
+	parts.push("")
+	parts.push(`Ferment: "${input.fermentName}"`)
+	parts.push(`Goal: ${input.goal || "(none specified)"}`)
+	parts.push(`Success criteria: ${input.successCriteria || "(none specified)"}`)
+	parts.push(`Final summary: ${input.finalSummary || "(none)"}`)
+	parts.push("")
+	parts.push("Per-phase trail:")
+	for (const p of input.phases) {
+		parts.push(`  - Phase "${p.name}" [${p.status}] — ${p.goal}`)
+		if (!p.gateVerdicts || p.gateVerdicts.length === 0) {
+			parts.push("    (no verdicts on file)")
+		} else {
+			for (const v of p.gateVerdicts) {
+				parts.push(`    ${v.id} (${v.verdict}): ${v.rationale}`)
+			}
+		}
+	}
+	parts.push("")
+	parts.push("Ferment-scope gate verdicts (agent self-reported — verify independently):")
+	for (const v of input.fermentGates) {
+		parts.push(`  ${v.id} (${v.verdict}): ${v.rationale}`)
+	}
+	if (input.totalDiff?.available) {
+		parts.push("")
+		parts.push("--- TOTAL DIFF ---")
+		parts.push(`Files changed:\n${input.totalDiff.filesChanged ?? "(none recorded)"}`)
+		if (input.totalDiff.diffSnippet) {
+			parts.push(`\nDiff snippet:\n\`\`\`diff\n${input.totalDiff.diffSnippet}\n\`\`\``)
+		}
+	} else {
+		parts.push("(No diff available — use your tools to inspect files directly.)")
+	}
+	if (input.evidence && input.evidence.trim().length > 0) {
+		parts.push("")
+		parts.push("--- EXECUTION EVIDENCE (agent-provided) ---")
+		parts.push(input.evidence.slice(0, 4000))
+	}
+	parts.push("")
+	parts.push(`Working directory: ${process.cwd()}`)
+	parts.push("")
+	parts.push(
+		"Verify the agent's claims by reading files and running commands. Then respond with EXACTLY one JSON object:",
+	)
+	parts.push('{"grade":"A"|"B"|"C"|"D"|"F","rationale":"...","recommendations":[...]}')
+	return parts.join("\n")
+}

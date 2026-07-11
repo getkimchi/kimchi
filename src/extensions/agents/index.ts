@@ -525,6 +525,26 @@ export async function runWithOverlay<T>(description: string, fn: () => Promise<T
 	}
 }
 
+/** Spawn a Grader subagent (read-only + bash, bounded turns) and wait for its
+ *  result. Returns the agent's final text response and status. Used by the
+ *  ferment grader to independently verify agent claims with tool access.
+ *
+ *  Returns undefined when the agent system is not active (e.g. unit tests,
+ *  non-TUI contexts) so callers can fall back to a single-shot LLM call. */
+export async function spawnGraderAgent(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	prompt: string,
+): Promise<{ text: string; status: string } | undefined> {
+	if (!activeManager) return undefined
+	const AGENT_GRADER_TYPE = "Grader"
+	const record = await activeManager.spawnAndWait(pi, ctx, AGENT_GRADER_TYPE, prompt, {
+		description: "Ferment grader",
+		visibility: "system",
+	})
+	return { text: record.result ?? "", status: record.status }
+}
+
 function readAgentTaskRef(params: Record<string, unknown>): AgentTaskRef | undefined {
 	const ref = params.task_ref as Partial<AgentTaskRef> | undefined
 	if (
