@@ -75,6 +75,11 @@ DEFAULT_BENCHMARK_SUMMARY_PATH = ".benchmark/summary.json"
 ENV_BENCHMARK_GCS_BUCKET = "BENCHMARK_GCS_BUCKET"
 DEFAULT_BENCHMARK_GCS_BUCKET = ""
 
+# Stable run date — set once by setup-image and passed downstream via
+# bench.env so that retried chunk jobs (possibly days later) use the same
+# date in the GCS prefix as the original run.
+ENV_BENCH_RUN_DATE = "BENCH_RUN_DATE"
+
 ENV_BENCHMARK_TARGET_REF = "BENCHMARK_TARGET_REF"
 ENV_BENCHMARK_TARGET_SHA = "BENCHMARK_TARGET_SHA"
 

@@ -38,6 +38,7 @@ from bench_config import (
     DEFAULT_BENCHMARK_RUN_METADATA,
     DEFAULT_CODING_AGENT,
     DEFAULT_MODEL,
+    ENV_BENCH_RUN_DATE,
     ENV_BENCH_TASKS_ALL,
     ENV_BENCHMARK_NAME,
     ENV_BENCHMARK_RESULTS_DIR,
@@ -298,7 +299,13 @@ def _build_gcs_key_prefix() -> str:
     model_provider, model_name = parse_model()
 
     configuration = _derive_configuration()
-    date = time.strftime("%Y-%m-%d", time.gmtime())
+    date = os.environ.get(ENV_BENCH_RUN_DATE, "")
+    if not date:
+        raise SystemExit(
+            f"{ENV_BENCH_RUN_DATE} is required — it should be set by setup-image and "
+            "passed downstream via bench.env. Without it, retried chunks would "
+            "produce inconsistent GCS prefixes."
+        )
     pipeline_id = os.environ.get("CI_PIPELINE_ID", "unknown")
     # Pipeline-level identifier: identical for all chunks in the same pipeline.
     # Job ID intentionally excluded — see docstring.
@@ -376,7 +383,7 @@ def _write_run_metadata(
             "dataset": os.environ.get("DATASET", "terminal-bench/terminal-bench-2"),
         },
         "gcs": {
-            "date": time.strftime("%Y-%m-%d", time.gmtime()),
+            "date": os.environ.get(ENV_BENCH_RUN_DATE, ""),
             "run_id": run_id,
             "prefix": _build_gcs_key_prefix(),
         },

@@ -97,4 +97,5 @@ fi
 {
   echo "BENCH_IMAGE=${BENCH_IMAGE}"
   echo "BENCHMARK_TARGET_SHA=${BENCHMARK_TARGET_SHA}"
+  echo "BENCH_RUN_DATE=$(date -u +%Y-%m-%d)"
 } > bench.env

@@ -500,6 +500,86 @@ class FormatTaskTableTest(unittest.TestCase):
         self.assertEqual(summarize_results.format_task_table([]), "No task results to display.")
 
 
+class WriteSummaryMissingTasksTest(unittest.TestCase):
+    def test_write_summary_fails_when_expected_task_has_no_trial(self) -> None:
+        """write_summary returns 1 when an expected task never produced a result.json.
+
+        Simulates a chunk that exhausted all retries due to infra errors — the
+        task never ran, so no trial directory exists for it.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            results_dir = tmp_path / "jobs" / "run-1"
+            results_dir.mkdir(parents=True)
+
+            # Only one trial exists, but two tasks are expected.
+            trial_dir = results_dir / "ran-task__abc123"
+            trial_dir.mkdir()
+            write_json(trial_dir / "result.json", {
+                **BASE_RESULT,
+                "trial_name": "ran-task__abc123",
+                "outcome": "scored_pass",
+                "error_category": None,
+                "error_subcategory": None,
+            })
+            sessions_dir = trial_dir / "agent" / "sessions"
+            sessions_dir.mkdir(parents=True)
+            (sessions_dir / "main.jsonl").write_text("\n", encoding="utf-8")
+
+            metadata_path = tmp_path / "run-metadata.json"
+            write_json(metadata_path, {
+                "benchmark": "terminal-bench-2",
+                "coding_agent": "kimchi",
+                "model": "kimchi-dev/kimi-k2.6",
+                "results_dir": str(results_dir),
+                "parameters": {"selected_tasks": ["ran-task", "missing-task"]},
+            })
+
+            output_path = tmp_path / "summary.json"
+            with contextlib.redirect_stdout(io.StringIO()), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                rc = summarize_results.write_summary(metadata_path, output_path, results_dir_override=results_dir)
+            self.assertEqual(rc, 1)
+
+    def test_write_summary_succeeds_when_all_expected_tasks_ran(self) -> None:
+        """write_summary returns 0 when every expected task has at least one trial,
+        even if the trial failed.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            results_dir = tmp_path / "jobs" / "run-1"
+            results_dir.mkdir(parents=True)
+
+            for task in ("task-a", "task-b"):
+                trial_dir = results_dir / f"{task}__abc123"
+                trial_dir.mkdir()
+                write_json(trial_dir / "result.json", {
+                    **BASE_RESULT,
+                    "trial_name": f"{task}__abc123",
+                    "outcome": "scored_fail",
+                    "error_category": None,
+                    "error_subcategory": None,
+                })
+                sessions_dir = trial_dir / "agent" / "sessions"
+                sessions_dir.mkdir(parents=True)
+                (sessions_dir / "main.jsonl").write_text("\n", encoding="utf-8")
+
+            metadata_path = tmp_path / "run-metadata.json"
+            write_json(metadata_path, {
+                "benchmark": "terminal-bench-2",
+                "coding_agent": "kimchi",
+                "model": "kimchi-dev/kimi-k2.6",
+                "results_dir": str(results_dir),
+                "parameters": {"selected_tasks": ["task-a", "task-b"]},
+            })
+
+            output_path = tmp_path / "summary.json"
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc = summarize_results.write_summary(metadata_path, output_path, results_dir_override=results_dir)
+            self.assertEqual(rc, 0)
+
+
+
 class WriteSummaryPrintsTableTest(unittest.TestCase):
     def test_write_summary_prints_task_table(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

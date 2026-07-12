@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import itertools
 import json
-import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -135,19 +134,7 @@ def test_main_exits_zero_when_no_tasks_need_retry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """If all tasks classified as final, main exits 0 without invoking Harbor."""
-    monkeypatch.setenv("BENCH_CHUNK_INDEX", "0")
-    monkeypatch.setenv("BENCH_CHUNK_COUNT", "1")
-    monkeypatch.setenv("SELECTED_TASKS_JSON", '["task-a","task-b"]')
-    monkeypatch.setenv("BENCHMARK_RESULTS_DIR", str(tmp_path / "jobs"))
-    monkeypatch.setenv("BENCHMARK_GCS_BUCKET", "test-bucket")
-    monkeypatch.setenv("BENCH_PARALLELISM", "1")
-    monkeypatch.setenv("BENCH_ATTEMPTS", "1")
-    monkeypatch.setenv("BENCH_TIMEOUT_MULTIPLIER", "1")
-    monkeypatch.setenv("CODING_AGENT", "kimchi")
-    monkeypatch.setenv("MODEL", "kimchi-dev/kimi-k2.6")
-    monkeypatch.setenv("KIMCHI_API_KEY", "test-key")
-    monkeypatch.setenv("DATASET", "terminal-bench/terminal-bench-2")
-    monkeypatch.setenv("KIMCHI_FERMENT_ONESHOT", "false")
+    _main_env(tmp_path, monkeypatch, SELECTED_TASKS_JSON='["task-a","task-b"]')
 
     # Pre-populate the workspace with both tasks done as passes
     results_dir = tmp_path / "jobs"
@@ -170,19 +157,7 @@ def test_main_invokes_harbor_for_missing_tasks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """When tasks are missing locally, main invokes Harbor on them."""
-    monkeypatch.setenv("BENCH_CHUNK_INDEX", "0")
-    monkeypatch.setenv("BENCH_CHUNK_COUNT", "1")
-    monkeypatch.setenv("SELECTED_TASKS_JSON", '["task-a","task-b"]')
-    monkeypatch.setenv("BENCHMARK_RESULTS_DIR", str(tmp_path / "jobs"))
-    monkeypatch.setenv("BENCHMARK_GCS_BUCKET", "test-bucket")
-    monkeypatch.setenv("BENCH_PARALLELISM", "1")
-    monkeypatch.setenv("BENCH_ATTEMPTS", "1")
-    monkeypatch.setenv("BENCH_TIMEOUT_MULTIPLIER", "1")
-    monkeypatch.setenv("CODING_AGENT", "kimchi")
-    monkeypatch.setenv("MODEL", "kimchi-dev/kimi-k2.6")
-    monkeypatch.setenv("KIMCHI_API_KEY", "test-key")
-    monkeypatch.setenv("DATASET", "terminal-bench/terminal-bench-2")
-    monkeypatch.setenv("KIMCHI_FERMENT_ONESHOT", "false")
+    _main_env(tmp_path, monkeypatch, SELECTED_TASKS_JSON='["task-a","task-b"]')
 
     # Pre-populate: only task-a is done. task-b is missing.
     (tmp_path / "jobs" / "run-1" / "task-a__1").mkdir(parents=True)
@@ -222,19 +197,7 @@ def test_main_writes_chunk_meta_on_success(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """After successful chunk run, chunk-meta.json is written with attempt=1 and exit_code=0."""
-    monkeypatch.setenv("BENCH_CHUNK_INDEX", "0")
-    monkeypatch.setenv("BENCH_CHUNK_COUNT", "1")
-    monkeypatch.setenv("SELECTED_TASKS_JSON", '["task-a"]')
-    monkeypatch.setenv("BENCHMARK_RESULTS_DIR", str(tmp_path / "jobs"))
-    monkeypatch.setenv("BENCHMARK_GCS_BUCKET", "test-bucket")
-    monkeypatch.setenv("BENCH_PARALLELISM", "1")
-    monkeypatch.setenv("BENCH_ATTEMPTS", "1")
-    monkeypatch.setenv("BENCH_TIMEOUT_MULTIPLIER", "1")
-    monkeypatch.setenv("CODING_AGENT", "kimchi")
-    monkeypatch.setenv("MODEL", "kimchi-dev/kimi-k2.6")
-    monkeypatch.setenv("KIMCHI_API_KEY", "test-key")
-    monkeypatch.setenv("DATASET", "terminal-bench/terminal-bench-2")
-    monkeypatch.setenv("KIMCHI_FERMENT_ONESHOT", "false")
+    _main_env(tmp_path, monkeypatch)
 
     def fake_harbor(*, cmd, cwd, env):
         run_dir = Path(env["BENCHMARK_RESULTS_DIR"]) / "run-1"
@@ -268,20 +231,12 @@ def test_main_passes_unique_job_name_per_chunk(
     identical Harbor job directory names (default YYYY-MM-DD__HH-MM-SS) and
     clobber each other's config.json, result.json, job.log, and lock.json.
     """
-    monkeypatch.setenv("BENCH_CHUNK_INDEX", "0")
-    monkeypatch.setenv("BENCH_CHUNK_COUNT", "3")
-    monkeypatch.setenv("SELECTED_TASKS_JSON", '["task-a","task-b","task-c"]')
-    monkeypatch.setenv("BENCHMARK_RESULTS_DIR", str(tmp_path / "jobs"))
-    monkeypatch.setenv("BENCHMARK_GCS_BUCKET", "test-bucket")
-    monkeypatch.setenv("BENCH_PARALLELISM", "1")
-    monkeypatch.setenv("BENCH_ATTEMPTS", "1")
-    monkeypatch.setenv("BENCH_TIMEOUT_MULTIPLIER", "1")
-    monkeypatch.setenv("CODING_AGENT", "kimchi")
-    monkeypatch.setenv("MODEL", "kimchi-dev/kimi-k2.6")
-    monkeypatch.setenv("KIMCHI_API_KEY", "test-key")
-    monkeypatch.setenv("DATASET", "terminal-bench/terminal-bench-2")
-    monkeypatch.setenv("KIMCHI_FERMENT_ONESHOT", "false")
-    monkeypatch.setenv("CI_JOB_ID", "12345")
+    _main_env(
+        tmp_path, monkeypatch,
+        BENCH_CHUNK_COUNT="3",
+        SELECTED_TASKS_JSON='["task-a","task-b","task-c"]',
+        CI_JOB_ID="12345",
+    )
 
     def fake_harbor(*, cmd, cwd, env):
         run_dir = Path(env["BENCHMARK_RESULTS_DIR"]) / "run-1"
@@ -316,19 +271,7 @@ def test_main_detects_retry_via_chunk_meta(
         "needs_retry": ["task-a"],
     }))
 
-    monkeypatch.setenv("BENCH_CHUNK_INDEX", "0")
-    monkeypatch.setenv("BENCH_CHUNK_COUNT", "1")
-    monkeypatch.setenv("SELECTED_TASKS_JSON", '["task-a"]')
-    monkeypatch.setenv("BENCHMARK_RESULTS_DIR", str(tmp_path / "jobs"))
-    monkeypatch.setenv("BENCHMARK_GCS_BUCKET", "test-bucket")
-    monkeypatch.setenv("BENCH_PARALLELISM", "1")
-    monkeypatch.setenv("BENCH_ATTEMPTS", "1")
-    monkeypatch.setenv("BENCH_TIMEOUT_MULTIPLIER", "1")
-    monkeypatch.setenv("CODING_AGENT", "kimchi")
-    monkeypatch.setenv("MODEL", "kimchi-dev/kimi-k2.6")
-    monkeypatch.setenv("KIMCHI_API_KEY", "test-key")
-    monkeypatch.setenv("DATASET", "terminal-bench/terminal-bench-2")
-    monkeypatch.setenv("KIMCHI_FERMENT_ONESHOT", "false")
+    _main_env(tmp_path, monkeypatch)
 
     def fake_harbor(*, cmd, cwd, env):
         # Existing infra result still on disk from attempt 1; Harbor runs task-a again
@@ -373,12 +316,7 @@ def test_restore_prior_artifact_matches_only_same_chunk(
     """
     from chunk_runner import _restore_prior_artifact
 
-    monkeypatch.setenv("CI_JOB_TOKEN", "tok")
-    monkeypatch.setenv("CI_PROJECT_ID", "1")
-    monkeypatch.setenv("CI_PIPELINE_ID", "100")
-    monkeypatch.setenv("CI_JOB_ID", "200")
-    monkeypatch.setenv("CI_JOB_NAME", "terminal-bench-2-chunks: [2]")
-    monkeypatch.setenv("BENCH_CHUNK_INDEX", "2")  # we're chunk 2
+    _ci_env(monkeypatch, CI_JOB_NAME="terminal-bench-2-chunks: [2]", BENCH_CHUNK_INDEX="2")
 
     class FakeResp:
         def __init__(self, data: bytes) -> None:
@@ -417,12 +355,7 @@ def test_restore_prior_artifact_skips_when_chunk_meta_present(
     """If chunk-meta is already in the workspace, skip the API call (already restored)."""
     from chunk_runner import _restore_prior_artifact
 
-    monkeypatch.setenv("CI_JOB_TOKEN", "tok")
-    monkeypatch.setenv("CI_PROJECT_ID", "1")
-    monkeypatch.setenv("CI_PIPELINE_ID", "100")
-    monkeypatch.setenv("CI_JOB_ID", "200")
-    monkeypatch.setenv("CI_JOB_NAME", "terminal-bench-2-chunks: [0]")
-    monkeypatch.setenv("BENCH_CHUNK_INDEX", "0")
+    _ci_env(monkeypatch)
     (tmp_path / "chunk-meta").mkdir()
     (tmp_path / "chunk-meta" / "chunk-0.json").write_text("{}")
 
@@ -441,12 +374,7 @@ def test_restore_prior_artifact_downloads_and_extracts(
 
     from chunk_runner import _restore_prior_artifact
 
-    monkeypatch.setenv("CI_JOB_TOKEN", "tok")
-    monkeypatch.setenv("CI_PROJECT_ID", "1")
-    monkeypatch.setenv("CI_PIPELINE_ID", "100")
-    monkeypatch.setenv("CI_JOB_ID", "200")
-    monkeypatch.setenv("CI_JOB_NAME", "terminal-bench-2-chunks: [0]")
-    monkeypatch.setenv("BENCH_CHUNK_INDEX", "0")
+    _ci_env(monkeypatch)
 
     # Build a fake archive that mirrors the chunk artifact layout.
     archive_buf = io.BytesIO()
@@ -504,12 +432,7 @@ def test_restore_prior_artifact_returns_false_when_api_fails(
 
     from chunk_runner import _restore_prior_artifact
 
-    monkeypatch.setenv("CI_JOB_TOKEN", "tok")
-    monkeypatch.setenv("CI_PROJECT_ID", "1")
-    monkeypatch.setenv("CI_PIPELINE_ID", "100")
-    monkeypatch.setenv("CI_JOB_ID", "200")
-    monkeypatch.setenv("CI_JOB_NAME", "terminal-bench-2-chunks: [0]")
-    monkeypatch.setenv("BENCH_CHUNK_INDEX", "0")
+    _ci_env(monkeypatch)
 
     def fake_urlopen(req, timeout=None):
         raise urllib.error.URLError("simulated network error")
@@ -526,12 +449,7 @@ def test_restore_prior_artifact_returns_false_when_no_prior_attempts(
     """If the pipeline has no prior attempts of this job, return False (first attempt)."""
     from chunk_runner import _restore_prior_artifact
 
-    monkeypatch.setenv("CI_JOB_TOKEN", "tok")
-    monkeypatch.setenv("CI_PROJECT_ID", "1")
-    monkeypatch.setenv("CI_PIPELINE_ID", "100")
-    monkeypatch.setenv("CI_JOB_ID", "200")
-    monkeypatch.setenv("CI_JOB_NAME", "terminal-bench-2-chunks: [0]")
-    monkeypatch.setenv("BENCH_CHUNK_INDEX", "0")
+    _ci_env(monkeypatch)
 
     class FakeResp:
         def __init__(self, data: bytes) -> None:
@@ -563,12 +481,7 @@ def test_restore_prior_artifact_blocks_zip_slip(
 
     from chunk_runner import _restore_prior_artifact
 
-    monkeypatch.setenv("CI_JOB_TOKEN", "tok")
-    monkeypatch.setenv("CI_PROJECT_ID", "1")
-    monkeypatch.setenv("CI_PIPELINE_ID", "100")
-    monkeypatch.setenv("CI_JOB_ID", "200")
-    monkeypatch.setenv("CI_JOB_NAME", "terminal-bench-2-chunks: [0]")
-    monkeypatch.setenv("BENCH_CHUNK_INDEX", "0")
+    _ci_env(monkeypatch)
 
     archive_buf = io.BytesIO()
     with zf.ZipFile(archive_buf, "w") as z:
@@ -620,12 +533,7 @@ def test_restore_prior_artifact_uses_include_retried(
     """
     from chunk_runner import _restore_prior_artifact
 
-    monkeypatch.setenv("CI_JOB_TOKEN", "tok")
-    monkeypatch.setenv("CI_PROJECT_ID", "1")
-    monkeypatch.setenv("CI_PIPELINE_ID", "100")
-    monkeypatch.setenv("CI_JOB_ID", "200")
-    monkeypatch.setenv("CI_JOB_NAME", "terminal-bench-2-chunks: [0]")
-    monkeypatch.setenv("BENCH_CHUNK_INDEX", "0")
+    _ci_env(monkeypatch)
 
     seen_urls: list[str] = []
 
@@ -705,6 +613,21 @@ def _main_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **overrides: str)
         "KIMCHI_API_KEY": "test-key",
         "DATASET": "terminal-bench/terminal-bench-2",
         "KIMCHI_FERMENT_ONESHOT": "false",
+        "BENCH_RUN_DATE": "2026-06-22",
+    }
+    for key, val in {**defaults, **overrides}.items():
+        monkeypatch.setenv(key, val)
+
+
+def _ci_env(monkeypatch: pytest.MonkeyPatch, **overrides: str) -> None:
+    """Set CI env vars needed by _restore_prior_artifact, with optional overrides."""
+    defaults = {
+        "CI_JOB_TOKEN": "tok",
+        "CI_PROJECT_ID": "1",
+        "CI_PIPELINE_ID": "100",
+        "CI_JOB_ID": "200",
+        "CI_JOB_NAME": "terminal-bench-2-chunks: [0]",
+        "BENCH_CHUNK_INDEX": "0",
     }
     for key, val in {**defaults, **overrides}.items():
         monkeypatch.setenv(key, val)
@@ -766,7 +689,7 @@ def test_tasks_all_false_uses_selected_tasks_json(
 
 
 # Pinned UTC date so the test is stable across midnight boundaries.
-_FROZEN_GMTIME = time.struct_time((2026, 6, 22, 12, 0, 0, 0, 173, 0))
+_FROZEN_DATE = "2026-06-22"
 
 
 def test_build_gcs_key_prefix_is_pipeline_level(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -797,9 +720,10 @@ def test_build_gcs_key_prefix_is_pipeline_level(monkeypatch: pytest.MonkeyPatch)
         "CI_COMMIT_SHA",
         "CI_PIPELINE_ID",
         "CI_JOB_ID",
+        "BENCH_RUN_DATE",
     ):
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setattr("chunk_runner.time.gmtime", lambda: _FROZEN_GMTIME)
+    monkeypatch.setenv("BENCH_RUN_DATE", _FROZEN_DATE)
 
     for key, value in pipeline_a.items():
         monkeypatch.setenv(key, value)
@@ -849,7 +773,7 @@ def test_write_run_metadata_is_pipeline_level(
     monkeypatch.setenv("CI_COMMIT_SHA", "abc1234567890abcdef1234567890abcdef12345")
     monkeypatch.setenv("CI_PIPELINE_ID", "1001")
     monkeypatch.setenv("CI_JOB_ID", "9002")
-    monkeypatch.setattr("chunk_runner.time.gmtime", lambda: _FROZEN_GMTIME)
+    monkeypatch.setenv("BENCH_RUN_DATE", _FROZEN_DATE)
 
     _write_run_metadata(tmp_path, ["task-a", "task-b"])
 
@@ -886,7 +810,7 @@ def test_write_run_metadata_includes_tasks_all(
     monkeypatch.setenv("CI_COMMIT_SHA", "abc1234567890abcdef1234567890abcdef12345")
     monkeypatch.setenv("CI_PIPELINE_ID", "1001")
     monkeypatch.setenv("CI_JOB_ID", "9002")
-    monkeypatch.setattr("chunk_runner.time.gmtime", lambda: _FROZEN_GMTIME)
+    monkeypatch.setenv("BENCH_RUN_DATE", _FROZEN_DATE)
 
     _write_run_metadata(tmp_path, [f"task-{i}" for i in range(89)])
 
@@ -913,7 +837,7 @@ def test_build_gcs_key_prefix_uses_benchmark_name_env(
         "CI_PIPELINE_ID": "1001",
     }
     # Mirror test_build_gcs_key_prefix_is_pipeline_level: wipe the vars the
-    # function consults so `minimal_env` is the full env, then freeze time.
+    # function consults so `minimal_env` is the full env.
     for key in (
         "BENCHMARK_NAME",
         "CODING_AGENT",
@@ -923,9 +847,10 @@ def test_build_gcs_key_prefix_uses_benchmark_name_env(
         "CI_COMMIT_SHA",
         "CI_PIPELINE_ID",
         "CI_JOB_ID",
+        "BENCH_RUN_DATE",
     ):
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setattr("chunk_runner.time.gmtime", lambda: _FROZEN_GMTIME)
+    monkeypatch.setenv("BENCH_RUN_DATE", _FROZEN_DATE)
     for key, value in minimal_env.items():
         monkeypatch.setenv(key, value)
     # CI_JOB_ID intentionally absent: the prefix is pipeline-level, not job-level.
@@ -940,6 +865,70 @@ def test_build_gcs_key_prefix_uses_benchmark_name_env(
     monkeypatch.delenv("BENCHMARK_NAME")
     prefix_default = _build_gcs_key_prefix()
     assert prefix_default.startswith("runs/benchmark=terminal-bench-2-1/"), prefix_default
+
+
+def test_build_gcs_key_prefix_uses_bench_run_date_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """BENCH_RUN_DATE is the sole source of the date= segment.
+
+    setup-image computes BENCH_RUN_DATE once and passes it downstream via
+    bench.env. If a chunk is retried on a different UTC day, the GCS prefix
+    must still contain the original date, not the retry date.
+    """
+    pinned_date = "2026-06-20"
+
+    for key in (
+        "BENCHMARK_NAME",
+        "CODING_AGENT",
+        "MODEL",
+        "KIMCHI_FERMENT_ONESHOT",
+        "CI_COMMIT_REF_NAME",
+        "CI_COMMIT_SHA",
+        "CI_PIPELINE_ID",
+        "CI_JOB_ID",
+        "BENCH_RUN_DATE",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    monkeypatch.setenv("CODING_AGENT", "kimchi")
+    monkeypatch.setenv("MODEL", "kimchi-dev/kimi-k2.6")
+    monkeypatch.setenv("CI_PIPELINE_ID", "1001")
+    monkeypatch.setenv("BENCH_RUN_DATE", pinned_date)
+
+    prefix = _build_gcs_key_prefix()
+    assert f"date={pinned_date}" in prefix, (
+        f"BENCH_RUN_DATE must appear in prefix; expected date={pinned_date} in {prefix!r}"
+    )
+
+
+def test_build_gcs_key_prefix_fails_without_bench_run_date(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Missing BENCH_RUN_DATE must raise SystemExit, not silently fall back to wall-clock.
+
+    If setup-image didn't run or bench.env wasn't propagated, the job should
+    fail loudly rather than embed a different date that breaks retry stability.
+    """
+    for key in (
+        "BENCHMARK_NAME",
+        "CODING_AGENT",
+        "MODEL",
+        "KIMCHI_FERMENT_ONESHOT",
+        "CI_COMMIT_REF_NAME",
+        "CI_COMMIT_SHA",
+        "CI_PIPELINE_ID",
+        "CI_JOB_ID",
+        "BENCH_RUN_DATE",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    monkeypatch.setenv("CODING_AGENT", "kimchi")
+    monkeypatch.setenv("MODEL", "kimchi-dev/kimi-k2.6")
+    monkeypatch.setenv("CI_PIPELINE_ID", "1001")
+
+    with pytest.raises(SystemExit, match="BENCH_RUN_DATE is required"):
+        _build_gcs_key_prefix()
 
 
 @pytest.mark.parametrize(

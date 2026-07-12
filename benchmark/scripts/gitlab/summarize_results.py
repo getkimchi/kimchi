@@ -1014,6 +1014,22 @@ def write_summary(metadata_path: Path, output_path: Path, results_dir_override: 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     print(f"Wrote benchmark summary to {output_path}")
+
+    # Fail if any expected task never produced a result.json (e.g. a chunk
+    # exhausted all retries due to infra errors). Tasks that ran but failed
+    # are valid benchmark results — only tasks with zero trials are missing.
+    selected_tasks = metadata_dict(metadata, "parameters").get("selected_tasks") or metadata.get("selected_tasks")
+    if isinstance(selected_tasks, list) and selected_tasks:
+        trial_tasks = {t.task for t in trials}
+        missing_tasks = sorted(set(selected_tasks) - trial_tasks)
+        if missing_tasks:
+            print(
+                f"ERROR: {len(missing_tasks)} expected task(s) never produced a trial: "
+                f"{missing_tasks}",
+                file=sys.stderr,
+            )
+            return 1
+
     return 0
 
 
