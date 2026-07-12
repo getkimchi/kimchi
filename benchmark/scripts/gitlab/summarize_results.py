@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import os
 import sys
@@ -1021,7 +1022,14 @@ def write_summary(metadata_path: Path, output_path: Path, results_dir_override: 
     selected_tasks = metadata_dict(metadata, "parameters").get("selected_tasks") or metadata.get("selected_tasks")
     if isinstance(selected_tasks, list) and selected_tasks:
         trial_tasks = {t.task for t in trials}
-        missing_tasks = sorted(set(selected_tasks) - trial_tasks)
+        # selected_tasks may contain glob wildcards (e.g. 'install-windows-3?11'
+        # to match both 'install-windows-3.11' and 'install-windows-3-11' across
+        # benchmark dataset versions). Use fnmatch so these patterns resolve
+        # against actual trial task names instead of being treated as literals.
+        missing_tasks = sorted(
+            task for task in set(selected_tasks)
+            if not any(fnmatch.fnmatch(t, task) for t in trial_tasks)
+        )
         if missing_tasks:
             print(
                 f"ERROR: {len(missing_tasks)} expected task(s) never produced a trial: "
