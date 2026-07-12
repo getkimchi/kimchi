@@ -17,6 +17,7 @@ default:
       - runner_system_failure
       - api_failure
       - stuck_or_timeout_failure
+      - no_updates_running
 
 .gcloud-setup:
   script:
@@ -52,7 +53,7 @@ setup-image:
   script:
     - benchmark/scripts/gitlab/setup_image.sh
   artifacts:
-    expire_in: 1 day
+    expire_in: 30 days
     reports:
       dotenv: bench.env
 
