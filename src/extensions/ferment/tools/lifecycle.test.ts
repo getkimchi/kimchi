@@ -1133,7 +1133,7 @@ describe("completeFerment", () => {
 				ferment_id: h.fermentId,
 				final_summary: "done",
 				gates: passingFermentGates(),
-		},
+			},
 			{ ctx: createContext() },
 		)
 		expect(errText(result1)).toContain("minimum required is A")
@@ -1144,7 +1144,7 @@ describe("completeFerment", () => {
 				ferment_id: h.fermentId,
 				final_summary: "done",
 				gates: passingFermentGates(),
-		},
+			},
 			{ ctx: createContext() },
 		)
 		expect(okText(result)).toContain("**Final grade:** B")
@@ -1221,7 +1221,7 @@ describe("completeFerment", () => {
 				ferment_id: h.fermentId,
 				final_summary: "done",
 				gates: passingFermentGates(),
-		},
+			},
 			{ ctx: createContext() },
 		)
 		expect(okText(result)).toContain("**Final grade:** A")
@@ -1247,7 +1247,7 @@ describe("completeFerment", () => {
 				ferment_id: h.fermentId,
 				final_summary: "done",
 				gates: passingFermentGates(),
-		},
+			},
 			{ ctx: createContext() },
 		)
 		expect(errText(result1)).toContain("minimum required is A")
@@ -1259,7 +1259,7 @@ describe("completeFerment", () => {
 				ferment_id: h.fermentId,
 				final_summary: "done",
 				gates: passingFermentGates(),
-		},
+			},
 			{ ctx: createContext() },
 		)
 		expect(okText(result2)).toContain("**Final grade:** B")
@@ -1284,7 +1284,7 @@ describe("completeFerment", () => {
 				ferment_id: h.fermentId,
 				final_summary: "done",
 				gates: passingFermentGates(),
-		},
+			},
 			{ ctx: createContext() },
 		)
 		expect(errText(result)).toContain("final LLM grader assigned grade C")
@@ -1315,7 +1315,7 @@ describe("completeFerment", () => {
 				ferment_id: h.fermentId,
 				final_summary: "attempt 1",
 				gates: passingFermentGates(),
-		},
+			},
 			{ ctx: createContext() },
 		)
 		expect(errText(result1)).toContain("retry 1/3")
@@ -1327,7 +1327,7 @@ describe("completeFerment", () => {
 				ferment_id: h.fermentId,
 				final_summary: "attempt 2",
 				gates: passingFermentGates(),
-		},
+			},
 			{ ctx: createContext() },
 		)
 		expect(errText(result2)).toContain("retry 2/3")
@@ -1339,7 +1339,7 @@ describe("completeFerment", () => {
 				ferment_id: h.fermentId,
 				final_summary: "attempt 3",
 				gates: passingFermentGates(),
-		},
+			},
 			{ ctx: createContext() },
 		)
 		expect(errText(result3)).toContain("retry 3/3")
@@ -1351,7 +1351,7 @@ describe("completeFerment", () => {
 				ferment_id: h.fermentId,
 				final_summary: "attempt 4",
 				gates: passingFermentGates(),
-		},
+			},
 			{ ctx: createContext() },
 		)
 		expect(okText(result4)).toContain("**Final grade:** C")
@@ -1374,7 +1374,7 @@ describe("completeFerment", () => {
 				ferment_id: h.fermentId,
 				final_summary: "done",
 				gates: passingFermentGates(),
-		},
+			},
 			{ ctx: createContext() },
 		)
 		expect(okText(result)).toContain("**Final grade:** unavailable")
