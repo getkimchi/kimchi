@@ -197,7 +197,7 @@ describe("scopeFerment", () => {
 				constraints: ["Keep it small"],
 				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
 				gates: passingPlanGates(),
-			},
+				},
 			{ ctx: createContext() },
 		)
 
@@ -221,7 +221,7 @@ describe("scopeFerment", () => {
 				success_criteria: ["Tests pass"],
 				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
 				gates: passingPlanGates(),
-			},
+				},
 			{ ctx: createContext() },
 		)
 
@@ -241,7 +241,7 @@ describe("scopeFerment", () => {
 				success_criteria: ["Tests pass"],
 				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
 				gates: passingPlanGates(),
-			},
+				},
 			{ ctx: createContext() },
 		)
 
@@ -257,7 +257,7 @@ describe("scopeFerment", () => {
 				verdict: "flag" as const,
 				rationale: "phase-1 has no concrete verifier.",
 				evidence: "no verify command set",
-			},
+				},
 			{ id: "P2", verdict: "pass" as const, rationale: "ok", evidence: "n/a" },
 			{ id: "P3", verdict: "pass" as const, rationale: "ok", evidence: "n/a" },
 		]
@@ -271,7 +271,7 @@ describe("scopeFerment", () => {
 				success_criteria: ["Tests pass"],
 				phases: [{ name: "Build", goal: "Implement" }],
 				gates: flaggedGates,
-			},
+				},
 			{ ctx: createContext() },
 		)
 
@@ -293,7 +293,7 @@ describe("scopeFerment", () => {
 				success_criteria: ["Tests pass"],
 				phases: [{ name: "Build", goal: "Implement" }],
 				gates: incomplete,
-			},
+				},
 			{ ctx: createContext() },
 		)
 
@@ -316,7 +316,7 @@ describe("scopeFerment", () => {
 				success_criteria: ["Tests pass"],
 				phases: [{ name: "Build", goal: "Implement" }],
 				gates: passingPlanGates(),
-			},
+				},
 			{ ctx: createContext() },
 		)
 
@@ -339,7 +339,7 @@ describe("scopeFerment", () => {
 				assumptions: "k8s cluster exists and is reachable",
 				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
 				gates: passingPlanGates(),
-			},
+				},
 			{ ctx: createContext() },
 		)
 
@@ -359,7 +359,7 @@ describe("scopeFerment", () => {
 				success_criteria: ["Tests pass"],
 				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
 				gates: passingPlanGates(),
-			},
+				},
 			{ ctx: createContext() },
 		)
 
@@ -376,7 +376,7 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 			...h.pi,
 			registerTool: (tool: RegisteredTool) => {
 				tools.set(tool.name, tool)
-			},
+				},
 			getActiveTools: vi.fn(() => ["read", "bash"]),
 			getAllTools: vi.fn(() => [{ name: "read" }, { name: "bash" }]),
 			setActiveTools: vi.fn(),
@@ -412,7 +412,7 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 					},
 				],
 				gates: passingPlanGates(),
-			},
+				},
 			undefined,
 			undefined,
 			createContext({ hasUI: false }),
@@ -434,7 +434,7 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
 				questions: [],
 				gates: passingPlanGates(),
-			},
+				},
 			undefined,
 			undefined,
 			createContext(),
@@ -464,7 +464,7 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 					},
 				],
 				gates: passingPlanGates(),
-			},
+				},
 			undefined,
 			undefined,
 			createContext(),
@@ -494,7 +494,7 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 					},
 				],
 				gates: passingPlanGates(),
-			},
+				},
 			undefined,
 			undefined,
 			createContext({ hasUI: false }),
@@ -525,7 +525,7 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 					},
 				],
 				gates: passingPlanGates(),
-			},
+				},
 			undefined,
 			undefined,
 			createContext(),
@@ -555,7 +555,7 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 				phases: [{ name: "P1", goal: "Build it", steps: [{ description: "Code it" }] }],
 				questions: [],
 				gates: passingPlanGates(),
-			},
+				},
 			undefined,
 			undefined,
 			createContext({ hasUI: false }),
@@ -583,7 +583,7 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 				phases: [{ name: "P1", goal: "Build it", steps: [{ description: "Code it" }] }],
 				questions: [],
 				gates: passingPlanGates(),
-			},
+				},
 			undefined,
 			undefined,
 			createContext({ hasUI: false }),
@@ -612,7 +612,7 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 				phases: [{ name: "P1", goal: "Build it", steps: [{ description: "Code it" }] }],
 				questions: [],
 				gates: passingPlanGates(),
-			},
+				},
 			undefined,
 			undefined,
 			createContext({ hasUI: false }),
@@ -634,7 +634,7 @@ describe("confirm_ferment_completion_criteria via registerLifecycleTools", () =>
 			...h.pi,
 			registerTool: (tool: RegisteredTool) => {
 				tools.set(tool.name, tool)
-			},
+				},
 			getFlag: vi.fn((flag: string) => flag === "ferment-oneshot" && options?.oneShot === true),
 		} as unknown as ExtensionAPI
 		registerLifecycleTools(pi, h.runtime)
@@ -662,7 +662,7 @@ describe("confirm_ferment_completion_criteria via registerLifecycleTools", () =>
 					"README.md exists at the project root; verify by opening README.md.",
 					"README.md documents all CLI commands; verify by reading the command list.",
 				],
-			},
+				},
 			undefined,
 			undefined,
 			createContext({ ui: { select, input } }),
@@ -694,7 +694,7 @@ describe("confirm_ferment_completion_criteria via registerLifecycleTools", () =>
 			{
 				ferment_id: h.fermentId,
 				criteria: ["README.md exists at the project root; verify by opening README.md."],
-			},
+				},
 			undefined,
 			undefined,
 			createContext({ ui: { select, input } }),
@@ -727,7 +727,7 @@ describe("confirm_ferment_completion_criteria via registerLifecycleTools", () =>
 			{
 				ferment_id: h.fermentId,
 				criteria: ["README.md exists at the project root; verify by opening README.md."],
-			},
+				},
 			undefined,
 			undefined,
 			createContext(),
@@ -748,7 +748,7 @@ describe("confirm_ferment_completion_criteria via registerLifecycleTools", () =>
 			{
 				ferment_id: h.fermentId,
 				criteria: ["  "],
-			},
+				},
 			undefined,
 			undefined,
 			createContext(),
@@ -766,7 +766,7 @@ describe("ask_user via registerLifecycleTools", () => {
 			...h.pi,
 			registerTool: (tool: RegisteredTool) => {
 				tools.set(tool.name, tool)
-			},
+				},
 			getFlag: vi.fn(() => false),
 		} as unknown as ExtensionAPI
 		registerLifecycleTools(pi, h.runtime)
@@ -787,7 +787,7 @@ describe("ask_user via registerLifecycleTools", () => {
 			{
 				ferment_id: h.fermentId,
 				questions: [{ id: "confirm", type: "confirm", prompt: "Sound right?" }],
-			},
+				},
 			undefined,
 			undefined,
 			createContext({ ui: { select } }),
@@ -804,7 +804,7 @@ describe("ask_user via registerLifecycleTools", () => {
 			"tool-call-1",
 			{
 				questions: [{ id: "confirm", type: "confirm", prompt: "Sound right?" }],
-			},
+				},
 			undefined,
 			undefined,
 			createContext({ ui: { select } }),
@@ -819,7 +819,7 @@ describe("ask_user via registerLifecycleTools", () => {
 			"tool-call-1",
 			{
 				questions: [{ id: "confirm", type: "confirm", prompt: "Sound right?" }],
-			},
+				},
 			undefined,
 			undefined,
 			createContext(),
@@ -834,7 +834,7 @@ describe("ask_user via registerLifecycleTools", () => {
 			{
 				ferment_id: h.fermentId,
 				questions: [],
-			},
+				},
 			undefined,
 			undefined,
 			createContext(),
@@ -849,7 +849,7 @@ describe("ask_user via registerLifecycleTools", () => {
 			{
 				ferment_id: h.fermentId,
 				questions: [{ id: "", type: "single", prompt: "Which?", options: [{ id: "a", label: "A" }] }],
-			},
+				},
 			undefined,
 			undefined,
 			createContext(),
@@ -864,7 +864,7 @@ describe("ask_user via registerLifecycleTools", () => {
 			{
 				ferment_id: h.fermentId,
 				questions: [{ id: "q1", type: "single", prompt: "", options: [{ id: "a", label: "A" }] }],
-			},
+				},
 			undefined,
 			undefined,
 			createContext(),
@@ -879,7 +879,7 @@ describe("ask_user via registerLifecycleTools", () => {
 			{
 				ferment_id: h.fermentId,
 				questions: [{ id: "bad", type: "bogus", prompt: "Which?", options: [{ id: "a", label: "A" }] }],
-			},
+				},
 			undefined,
 			undefined,
 			createContext(),
@@ -895,7 +895,7 @@ describe("ask_user via registerLifecycleTools", () => {
 			{
 				ferment_id: h.fermentId,
 				questions: [{ id: "ok", type: "confirm", prompt: "Proceed?", options: [{ id: "ship", label: "Ship" }] }],
-			},
+				},
 			undefined,
 			undefined,
 			createContext(),
@@ -910,7 +910,7 @@ describe("ask_user via registerLifecycleTools", () => {
 			{
 				ferment_id: h.fermentId,
 				questions: [{ id: "lonely", type: "single", prompt: "Pick one?" }],
-			},
+				},
 			undefined,
 			undefined,
 			createContext(),
@@ -925,7 +925,7 @@ describe("ask_user via registerLifecycleTools", () => {
 			{
 				ferment_id: h.fermentId,
 				questions: [{ id: "lonely", type: "multi", prompt: "Pick many?" }],
-			},
+				},
 			undefined,
 			undefined,
 			createContext(),
@@ -942,7 +942,7 @@ describe("update_ferment_scope_field via registerLifecycleTools", () => {
 		const pi = {
 			registerTool: (tool: RegisteredTool) => {
 				tools.set(tool.name, tool)
-			},
+				},
 			sendMessage: vi.fn(),
 			appendEntry: vi.fn(),
 			on: vi.fn(),
@@ -977,7 +977,7 @@ describe("update_ferment_scope_field via registerLifecycleTools", () => {
 				ferment_id: fermentId,
 				field: "assumptions",
 				value: "k8s cluster exists and is reachable",
-			},
+				},
 			undefined,
 			undefined,
 			createContext(),
@@ -998,7 +998,7 @@ describe("update_ferment_scope_field via registerLifecycleTools", () => {
 				ferment_id: fermentId,
 				field: "unknown_field",
 				value: "ignored",
-			},
+				},
 			undefined,
 			undefined,
 			createContext(),
@@ -1023,7 +1023,7 @@ describe("completeFerment", () => {
 				ferment_id: h.fermentId,
 				final_summary: "all done",
 				gates: passingFermentGates(),
-			},
+				},
 			{ ctx: createContext() },
 		)
 
@@ -1045,7 +1045,7 @@ describe("completeFerment", () => {
 				verdict: "flag" as const,
 				rationale: "phase-1 deferred error handling but no later phase resolves it.",
 				evidence: "F3 of phase-1 deferred 'edge cases'",
-			},
+				},
 			{ id: "C3", verdict: "pass" as const, rationale: "ok", evidence: "smoke" },
 		]
 
@@ -1086,7 +1086,7 @@ describe("completeFerment", () => {
 				ferment_id: h.fermentId,
 				final_summary: "done",
 				gates: passingFermentGates(),
-			},
+				},
 			{ ctx: createContext() },
 		)
 		expect(okText(first)).toContain('**Ferment "Lifecycle Test"** complete')
@@ -1095,11 +1095,7 @@ describe("completeFerment", () => {
 		expect(okText(first)).toContain("do not search MCP tools or invent a tool")
 		expect(mockJudgeJourneyGrade).toHaveBeenCalledTimes(1)
 
-		const second = await completeFerment(
-			h.runtime,
-			{ ferment_id: h.fermentId },
-			{ ctx: createContext() },
-		)
+		const second = await completeFerment(h.runtime, { ferment_id: h.fermentId }, { ctx: createContext() })
 
 		expect(okText(second)).toContain('Ferment "Lifecycle Test" is already complete')
 		expect(okText(second)).toContain("without clear user consent")
@@ -1113,11 +1109,7 @@ describe("completeFerment", () => {
 		const abandoned = applyAndPersist(h.fermentId, { type: "abandon", reason: "user stopped" })
 		if (!abandoned.ok) throw new Error(abandoned.error.message)
 
-		const result = await completeFerment(
-			h.runtime,
-			{ ferment_id: h.fermentId },
-			{ ctx: createContext() },
-		)
+		const result = await completeFerment(h.runtime, { ferment_id: h.fermentId }, { ctx: createContext() })
 
 		expect(errText(result)).toContain('Ferment "Lifecycle Test" is abandoned and cannot be completed')
 		expect(mockJudgeJourneyGrade).not.toHaveBeenCalled()
@@ -1138,9 +1130,9 @@ describe("completeFerment", () => {
 		const result1 = await completeFerment(
 			h.runtime,
 			{
-			ferment_id: h.fermentId,
-			final_summary: "done",
-			gates: passingFermentGates(),
+				ferment_id: h.fermentId,
+				final_summary: "done",
+				gates: passingFermentGates(),
 		},
 			{ ctx: createContext() },
 		)
@@ -1149,9 +1141,9 @@ describe("completeFerment", () => {
 		const result = await completeFerment(
 			h.runtime,
 			{
-			ferment_id: h.fermentId,
-			final_summary: "done",
-			gates: passingFermentGates(),
+				ferment_id: h.fermentId,
+				final_summary: "done",
+				gates: passingFermentGates(),
 		},
 			{ ctx: createContext() },
 		)
@@ -1177,7 +1169,7 @@ describe("completeFerment", () => {
 				ferment_id: h.fermentId,
 				final_summary: "done",
 				gates: passingFermentGates(),
-			},
+				},
 			{ ctx: createContext() },
 		)
 
@@ -1201,7 +1193,7 @@ describe("completeFerment", () => {
 				ferment_id: h.fermentId,
 				final_summary: "done",
 				gates: passingFermentGates(),
-			},
+				},
 			{ ctx: createContext() },
 		)
 
@@ -1226,9 +1218,9 @@ describe("completeFerment", () => {
 		const result = await completeFerment(
 			h.runtime,
 			{
-			ferment_id: h.fermentId,
-			final_summary: "done",
-			gates: passingFermentGates(),
+				ferment_id: h.fermentId,
+				final_summary: "done",
+				gates: passingFermentGates(),
 		},
 			{ ctx: createContext() },
 		)
@@ -1252,9 +1244,9 @@ describe("completeFerment", () => {
 		const result1 = await completeFerment(
 			h.runtime,
 			{
-			ferment_id: h.fermentId,
-			final_summary: "done",
-			gates: passingFermentGates(),
+				ferment_id: h.fermentId,
+				final_summary: "done",
+				gates: passingFermentGates(),
 		},
 			{ ctx: createContext() },
 		)
@@ -1264,9 +1256,9 @@ describe("completeFerment", () => {
 		const result2 = await completeFerment(
 			h.runtime,
 			{
-			ferment_id: h.fermentId,
-			final_summary: "done",
-			gates: passingFermentGates(),
+				ferment_id: h.fermentId,
+				final_summary: "done",
+				gates: passingFermentGates(),
 		},
 			{ ctx: createContext() },
 		)
@@ -1289,9 +1281,9 @@ describe("completeFerment", () => {
 		const result = await completeFerment(
 			h.runtime,
 			{
-			ferment_id: h.fermentId,
-			final_summary: "done",
-			gates: passingFermentGates(),
+				ferment_id: h.fermentId,
+				final_summary: "done",
+				gates: passingFermentGates(),
 		},
 			{ ctx: createContext() },
 		)
@@ -1320,9 +1312,9 @@ describe("completeFerment", () => {
 		const result1 = await completeFerment(
 			h.runtime,
 			{
-			ferment_id: h.fermentId,
-			final_summary: "attempt 1",
-			gates: passingFermentGates(),
+				ferment_id: h.fermentId,
+				final_summary: "attempt 1",
+				gates: passingFermentGates(),
 		},
 			{ ctx: createContext() },
 		)
@@ -1332,9 +1324,9 @@ describe("completeFerment", () => {
 		const result2 = await completeFerment(
 			h.runtime,
 			{
-			ferment_id: h.fermentId,
-			final_summary: "attempt 2",
-			gates: passingFermentGates(),
+				ferment_id: h.fermentId,
+				final_summary: "attempt 2",
+				gates: passingFermentGates(),
 		},
 			{ ctx: createContext() },
 		)
@@ -1344,9 +1336,9 @@ describe("completeFerment", () => {
 		const result3 = await completeFerment(
 			h.runtime,
 			{
-			ferment_id: h.fermentId,
-			final_summary: "attempt 3",
-			gates: passingFermentGates(),
+				ferment_id: h.fermentId,
+				final_summary: "attempt 3",
+				gates: passingFermentGates(),
 		},
 			{ ctx: createContext() },
 		)
@@ -1356,9 +1348,9 @@ describe("completeFerment", () => {
 		const result4 = await completeFerment(
 			h.runtime,
 			{
-			ferment_id: h.fermentId,
-			final_summary: "attempt 4",
-			gates: passingFermentGates(),
+				ferment_id: h.fermentId,
+				final_summary: "attempt 4",
+				gates: passingFermentGates(),
 		},
 			{ ctx: createContext() },
 		)
@@ -1379,9 +1371,9 @@ describe("completeFerment", () => {
 		const result = await completeFerment(
 			h.runtime,
 			{
-			ferment_id: h.fermentId,
-			final_summary: "done",
-			gates: passingFermentGates(),
+				ferment_id: h.fermentId,
+				final_summary: "done",
+				gates: passingFermentGates(),
 		},
 			{ ctx: createContext() },
 		)
@@ -1409,11 +1401,11 @@ describe("interactive ferment tool visibility (registerLifecycleTools)", () => {
 			registerTool: () => {},
 			on: (_event, handler) => {
 				pi._sessionStart = handler
-			},
+				},
 			getActiveTools: () => options.activeTools,
 			setActiveTools: (names: string[]) => {
 				pi.setActiveCalls.push(names)
-			},
+				},
 			getFlag: (name: string) => (name === "ferment-oneshot" ? options.oneShot === true : undefined),
 			_sessionStart: null,
 			setActiveCalls: [],

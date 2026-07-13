@@ -656,15 +656,15 @@ function extractJsonObjects(text: string): string[] {
 		if (open === -1) break
 		let depth = 0
 		let inString = false
-		let escape = false
+		let escaped = false
 		let end = -1
 		for (let j = open; j < text.length; j++) {
 			const ch = text[j]
 			if (inString) {
-				if (escape) {
-					escape = false
+				if (escaped) {
+					escaped = false
 				} else if (ch === "\\") {
-					escape = true
+					escaped = true
 				} else if (ch === '"') {
 					inString = false
 				}
