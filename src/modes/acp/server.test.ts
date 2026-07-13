@@ -26,6 +26,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 const THEME_KEY = Symbol.for("@earendil-works/pi-coding-agent:theme")
 const THEME_KEY_OLD = Symbol.for("@mariozechner/pi-coding-agent:theme")
 
+import { setMultiModelEnabled } from "../../extensions/multi-model.js"
 import { PERMISSIONS_ENV_KEY } from "../../extensions/permissions/constants.js"
 import { PERMISSION_MODES } from "../../extensions/permissions/constants.js"
 import { getSessionPermissionFlagController } from "../../extensions/permissions/mode-controller-registry.js"
@@ -105,6 +106,9 @@ class FakeAgentSession {
 
 	constructor(sessionId: string) {
 		this.sessionId = sessionId
+		// Tests assume deterministic single-model state by default. The global
+		// multi-model default may differ between local and CI, so pin it here.
+		setMultiModelEnabled(sessionId, false)
 	}
 
 	subscribe(listener: AgentSessionEventListener): () => void {
