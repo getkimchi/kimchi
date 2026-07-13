@@ -77,7 +77,6 @@ import {
 } from "../../extensions/permissions/mode-controller.js"
 import { resolveMode } from "../../extensions/permissions/mode.js"
 import type { PermissionMode } from "../../extensions/permissions/types.js"
-import { SLASH_COMMANDS } from "../../extensions/slash-commands.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { createAcpUIContext } from "./acp-ui-context.js"
 import { ADVERTISED_CAPABILITIES, CAPABILITIES_KEY } from "./capabilities.js"
@@ -378,6 +377,7 @@ export class KimchiAcpAgent implements Agent {
 				await session.setModel(orchestrator)
 			} catch {
 				setMultiModelEnabled(sessionId, previousMultiModelEnabled)
+				// Pi's setModel only throws "if no auth is configured for the model"
 				throw RequestError.authRequired(undefined, `orchestrator model ${orchRef} is not available: auth required`)
 			}
 			return value
@@ -402,10 +402,13 @@ export class KimchiAcpAgent implements Agent {
 			)
 		}
 
+		const previousMultiModelEnabled = getMultiModelEnabled(session.sessionManager)
 		setMultiModelEnabled(sessionId, false)
 		try {
 			await session.setModel(target)
 		} catch (err) {
+			setMultiModelEnabled(sessionId, previousMultiModelEnabled)
+			// Pi's setModel only throws "if no auth is configured for the model"
 			throw RequestError.authRequired(undefined, `model ${refFromModel(target)} is not available: auth required`)
 		}
 		return value

@@ -26,7 +26,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 const THEME_KEY = Symbol.for("@earendil-works/pi-coding-agent:theme")
 const THEME_KEY_OLD = Symbol.for("@mariozechner/pi-coding-agent:theme")
 
-import { setMultiModelEnabled } from "../../extensions/multi-model.js"
+import { setProcessOrchestratorRef } from "../../extensions/kimchi-process.js"
+import { getMultiModelEnabled, setMultiModelEnabled } from "../../extensions/multi-model.js"
 import { PERMISSIONS_ENV_KEY } from "../../extensions/permissions/constants.js"
 import { PERMISSION_MODES } from "../../extensions/permissions/constants.js"
 import { getSessionPermissionFlagController } from "../../extensions/permissions/mode-controller-registry.js"
@@ -2065,16 +2066,55 @@ describe("setSessionConfigOption", () => {
 			expect(modelOption?.currentValue).toBe("provider-b/model-b")
 		})
 
-		it("switches to multi-model when orchestrator is available", async () => {
-			const fake = new FakeAgentSession("test-session-model-multi")
-			fake.model = { provider: "kimchi-dev", id: "kimi-k2.7", name: "Kimi K2.7" }
+		it("restores previous multi-model state when switching to a single model fails", async () => {
+			const sessionId = "test-session-model-restore"
+			const fake = new FakeAgentSession(sessionId)
+			fake.model = { provider: "provider-a", id: "model-a", name: "Model A" }
 			fake.modelRegistry = {
 				...fake.modelRegistry,
 				getAvailable: () => [
-					{ provider: "kimchi-dev", id: "kimi-k2.7", name: "Kimi K2.7" },
 					{ provider: "provider-a", id: "model-a", name: "Model A" },
+					{ provider: "provider-b", id: "model-b", name: "Model B" },
 				],
 			}
+			fake.setModel = async () => {
+				throw new Error("auth failed")
+			}
+			// Start in multi-model mode so we can verify the flag is restored on failure.
+			setMultiModelEnabled(sessionId, true)
+			const agent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: "/tmp/fake-agent-dir",
+				sessionFactory: async () => asSession(fake),
+			})
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			await expect(
+				agent.setSessionConfigOption({
+					sessionId,
+					configId: "model",
+					value: "provider-b/model-b",
+				}),
+			).rejects.toThrow(/model provider-b\/model-b is not available: auth required/)
+
+			expect(getMultiModelEnabled(fake.sessionManager as Pick<SessionManager, "getEntries" | "getSessionId">)).toBe(
+				true,
+			)
+		})
+
+		it("switches to multi-model when orchestrator is available", async () => {
+			const sessionId = "test-session-model-multi"
+			const fake = new FakeAgentSession(sessionId)
+			fake.model = { provider: "provider-a", id: "model-a", name: "Model A" }
+			fake.modelRegistry = {
+				...fake.modelRegistry,
+				getAvailable: () => [
+					{ provider: "provider-a", id: "model-a", name: "Model A" },
+					{ provider: "orchestrator-provider", id: "orchestrator-model", name: "Orchestrator Model" },
+				],
+			}
+			// Wire the orchestrator model explicitly instead of relying on the global default role.
+			setProcessOrchestratorRef(sessionId, "orchestrator-provider/orchestrator-model")
 			const agent = new KimchiAcpAgent(makeConn(), {
 				extensionFactories: [],
 				agentDir: "/tmp/fake-agent-dir",
@@ -2083,14 +2123,50 @@ describe("setSessionConfigOption", () => {
 			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
 
 			const res = await agent.setSessionConfigOption({
-				sessionId: "test-session-model-multi",
+				sessionId,
 				configId: "model",
 				value: "multi-model",
 			})
 
-			expect(fake.model).toMatchObject({ provider: "kimchi-dev", id: "kimi-k2.7" })
+			expect(fake.model).toMatchObject({ provider: "orchestrator-provider", id: "orchestrator-model" })
 			const modelOption = res.configOptions?.find((o) => o.id === "model")
 			expect(modelOption?.currentValue).toBe("multi-model")
+		})
+
+		it("restores previous multi-model state when switching to multi-model fails", async () => {
+			const sessionId = "test-session-model-multi-restore"
+			const fake = new FakeAgentSession(sessionId)
+			fake.model = { provider: "provider-a", id: "model-a", name: "Model A" }
+			fake.modelRegistry = {
+				...fake.modelRegistry,
+				getAvailable: () => [
+					{ provider: "provider-a", id: "model-a", name: "Model A" },
+					{ provider: "orchestrator-provider", id: "orchestrator-model", name: "Orchestrator Model" },
+				],
+			}
+			fake.setModel = async () => {
+				throw new Error("auth failed")
+			}
+			// Wire the orchestrator model explicitly instead of relying on the global default role.
+			setProcessOrchestratorRef(sessionId, "orchestrator-provider/orchestrator-model")
+			const agent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: "/tmp/fake-agent-dir",
+				sessionFactory: async () => asSession(fake),
+			})
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			await expect(
+				agent.setSessionConfigOption({
+					sessionId,
+					configId: "model",
+					value: "multi-model",
+				}),
+			).rejects.toThrow(/orchestrator model orchestrator-provider\/orchestrator-model is not available: auth required/)
+
+			expect(getMultiModelEnabled(fake.sessionManager as Pick<SessionManager, "getEntries" | "getSessionId">)).toBe(
+				false,
+			)
 		})
 
 		it("rejects multi-model when orchestrator is not available", async () => {
