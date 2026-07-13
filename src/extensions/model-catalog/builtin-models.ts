@@ -46,36 +46,20 @@ import type { ModelCapabilities, Phase } from "./types.js"
  */
 
 const KIMI_K26_DESCRIPTION = `\
-Flagship Kimi model with vision support — the key model for complex planning decisions, \
-deep research, and correctness-critical tasks. Handles images, screenshots, and visual input. \
-Best for: orchestration, architectural planning, plan verification involving concurrency \
-or algorithmic design. \
-WARNING — subagent reliability: This model is 2-3x slower than standard-tier models. \
-As a build subagent it frequently times out before completing, even with 1.5x duration \
-scaling. Prefer minimax-m2.7 for build subagents — it is faster and completes reliably \
-within standard budgets. Use kimi-k2.6 as a build subagent ONLY as a retry after \
-minimax has already failed on the same chunk.`
+Flagship Kimi model with vision support — best for complex planning, deep research, \
+and correctness-critical orchestration.`
 
 const MINIMAX_M27_DESCRIPTION = `\
-The strongest coding model in the pool. \
-Best accuracy on multi-file bugs, complex refactors, and extended tool call chains. \
-Best for: well-scoped coding tasks (CRUD, parsers, handlers, CLI wiring, straightforward tests), \
-and mechanical code review of straightforward code. \
-Not reliable for algorithm-correctness tasks (graph algorithms, topological sort, complex data \
-structure invariants) — use a heavy-tier model for those.`
+Strongest coding model in the pool — best for multi-file bugs, complex refactors, \
+and extended tool-call chains.`
 
 const NEMOTRON_3_ULTRA_DESCRIPTION = `\
-Cheapest and fastest. 1M token context window with near-perfect retrieval — \
-can ingest entire large codebases in a single pass. \
-Best for: codebase exploration, research, and trivial re-verification (confirming tests pass \
-after a fix). \
-Not suitable for: code review, building code, or any task requiring correctness judgment.`
+Cheapest and fastest model with a 1M-token context window — best for codebase \
+exploration and large-scale retrieval.`
 
 const CLAUDE_OPUS_46_DESCRIPTION = `\
-Anthropic's flagship Claude model. Dominates at architectural planning and complex task \
-decomposition — when a hard problem needs a superior plan, this is the model to delegate to. \
-Also excels at deep reasoning, research, and exploration across large codebases. Best for \
-complex multi-step tasks requiring careful analysis and methodical planning.`
+Anthropic's flagship Claude model — best for architectural planning, deep reasoning, \
+and complex multi-step analysis.`
 
 /** Filter out empty layers and join with double newlines. */
 function concatGuidelines(...layers: string[]): string {

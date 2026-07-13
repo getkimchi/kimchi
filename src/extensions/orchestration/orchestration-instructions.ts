@@ -65,23 +65,23 @@ Decide whether the task is **simple** or **complex**:
 
 const STEP_2_PIPELINE = `### Step 2 — Identify required pipeline steps
 
-From the following steps, select only the ones the task actually needs:
+Select only the steps the task needs:
 
-- explore — reading files, tracing code, understanding the existing codebase before acting.
-- research — consulting external sources: documentation, internet resources, library APIs, versioning, guidelines, or anything not contained in this codebase.
-- plan — designing the approach, writing specs, deciding on interfaces before implementing.
+- explore — reading files and tracing code to understand the codebase.
+- research — consulting documentation, APIs, or external sources.
+- plan — designing the approach, writing specs, deciding interfaces.
 - build — writing, modifying, or refactoring code.
-- review — verifying correctness, checking for bugs, confirming the implementation matches intent.
+- review — verifying correctness and checking for bugs.
 
-Omit steps that add no value. A simple fix may need only build. A complex feature may need all phases. **Match the pipeline to the request**: if the user asks to review code, run explore + review — not plan + build + review. If the user asks to plan an approach, run explore + plan — not the full pipeline. If the user asks to explore or research, do only that. The mandatory plan->build->review pipeline applies only when the task involves writing or modifying code. **Greenfield projects** (empty directory, no existing code to read): skip explore entirely — there is nothing to explore. Merge any discovery work into the plan phase instead.
+**Match the pipeline to the request**: review code → explore + review; plan an approach → explore + plan; explore/research only → produce a summary. The full plan→build→review pipeline applies only to writing or modifying code. **Greenfield projects** (empty directory): skip explore.
 
-**Intent boundary — never exceed what was asked.** The selected pipeline is the scope ceiling. No agent — orchestrator or subagent — may perform actions that belong to a pipeline step not selected above. Concrete rules:
-- If the pipeline does not include **build**, no source files may be created, modified, or deleted. No commits may be made. Findings and suggestions are reported, never applied.
-- If the pipeline does not include **plan**, no spec or design document is produced — the task is executed or evaluated directly.
-- If the pipeline is **review-only** (explore + review), the output is a findings report. Do not fix, refactor, or apply any of the reported issues. Do not offer to apply fixes inline. Report what you found and stop.
+**Intent boundary — never exceed what was asked.** Concrete rules:
+- If the pipeline does not include **build**, do not create, modify, or delete source files. Report findings only.
+- If the pipeline does not include **plan**, do not produce a spec or design document.
+- If the pipeline is **review-only** (explore + review), output a findings report. Do not fix or apply issues.
 - If the pipeline is **explore-only** or **research-only**, produce a summary. Do not plan, build, or review.
 
-When delegating to subagents, include the intent boundary explicitly in the agent prompt so the subagent knows what it must not do.`
+Include the intent boundary in every subagent prompt.`
 
 const STEP_4_EXECUTE = `### Step 4 — Execute
 
@@ -95,116 +95,115 @@ const PLAN_SPEC_REQUIREMENTS = `The spec MUST break the work into **small, indep
 
 Chunks must be ordered so each one can build on the previous.`
 
-const PLAN_VERIFICATION = `**Plan verification (required for complex tasks, optional for simple):** After self-validation (see Phase Guidelines), decide whether the plan needs external verification.
+const PLAN_VERIFICATION = `**Plan verification (required for complex tasks, optional for simple):** After self-validation, decide whether the plan needs external verification.
 
 **Skip verification when ALL of these apply:**
 - Single-file change or 2 files maximum
-- Well-understood pattern (e.g. adding a field, fixing a nil check, updating a constant)
+- Well-understood pattern (e.g. adding a field, fixing a nil check)
 - No new architecture, interfaces, or data flow
-- No ambiguous requirements or multiple valid approaches
+- No ambiguous requirements
 
 **Require verification when ANY of these apply:**
-- 3+ files or 2+ chunks in the plan
+- 3+ files or 2+ chunks
 - New architecture, abstraction layer, or unfamiliar pattern
-- Requirements are unclear, incomplete, or have multiple interpretations
-- The task involves concurrency, state machines, or distributed logic
+- Unclear or incomplete requirements
+- Concurrency, state machines, or distributed logic
 
-**Verification prompt:** The verifier receives: (1) the original task description, (2) the plan spec file path. Verifier reads both, then outputs a brief markdown verdict:
-- APPROVED — the plan is complete, buildable, and aligned with requirements.
+**Verification prompt:** The verifier reads the task description and spec, then outputs:
+- APPROVED — the plan is complete, buildable, and aligned.
 - NEEDS_REVISION — list specific gaps with file/chunk references.
 
-The verifier MUST check **build feasibility** and **complexity classification** for each chunk:
-- **Build feasibility**: is the spec detailed enough that a standard-tier Builder model can implement it without inventing design decisions? Are concurrency primitives named (e.g. "use sync.WaitGroup + channels", not just "use concurrency")? Are state transitions explicit? Are synchronization points specified?
-- **Complexity accuracy**: is the chunk classified correctly? A chunk using concurrency primitives, worker pools, channels, mutexes, signal handling, graph algorithms (topological sort, cycle detection, BFS/DFS), or any logic where correctness depends on subtle ordering MUST be marked \`complex\`. A chunk marked \`simple\` that contains any of these is a classification error.
-- **Chunk scope**: does any single chunk combine multiple independent concurrency concerns (e.g. worker pool scheduling AND signal handling AND fail-fast cancellation)? A chunk that stacks 3+ concurrency mechanisms must be split — models spend excessive generation time reasoning about all interactions at once, frequently hitting duration limits. Split along natural seams: e.g. one chunk for the core execution loop with worker pool, a separate chunk for signal handling and graceful shutdown wired on top.
-If any chunk fails either check, the verdict MUST be NEEDS_REVISION with the specific gaps listed.`
+The verifier checks **build feasibility** and **complexity classification** for each chunk:
+- **Build feasibility**: is the spec detailed enough that a standard-tier Builder can implement it without inventing design? Are concurrency primitives, state transitions, and synchronization points explicit?
+- **Complexity accuracy**: a chunk using concurrency, worker pools, mutexes, signal handling, or graph algorithms MUST be \`complex\`. A \`simple\` chunk containing any of these is misclassified.
+- **Chunk scope**: split chunks that stack 3+ independent concurrency mechanisms (e.g. worker pool + signal handling + fail-fast cancellation).
 
-const REVIEW_PHASE = `**Review output contract:** Instruct the review agent to write its findings to a Markdown file in the Documents directory (e.g. \`.kimchi/docs/review.md\`). The file MUST contain:
+If any check fails, the verdict MUST be NEEDS_REVISION with the specific gaps.`
+
+const REVIEW_PHASE = `**Review output contract:** The review agent writes findings to a Markdown file in the Documents directory (e.g. \`.kimchi/docs/review.md\`) containing:
 - **Verdict**: APPROVED or NEEDS_FIXES
-- **Issues** (if NEEDS_FIXES): numbered list, each with the file path, line reference, description of the problem, and suggested fix
+- **Issues** (if NEEDS_FIXES): numbered list with file path, line reference, problem description, and suggested fix
 
-The review agent runs tests, checks lint, and verifies the implementation matches the spec, then writes all findings to the review file.
+The review agent runs tests, checks lint, and verifies the implementation matches the spec.
 
-**If the review agent times out or produces no output:** Retry ONCE with the same or a different standard-tier Reviewer. If the retry also fails, skip review and report to the user that review could not be completed. Do NOT attempt a third reviewer.
+**If the review agent times out or produces no output:** Retry ONCE with a standard-tier Reviewer. If the retry also fails, skip review and report the failure. Do NOT attempt a third reviewer.
 
-**Handling review results:** After the review agent completes, read ONLY the review file — do NOT re-read source files yourself. If the verdict is APPROVED, the review phase is done — produce the final summary and stop. If the verdict is NEEDS_FIXES, delegate a fix agent: pass it the review file path and the spec file path.
+**Handling review results:** Read ONLY the review file. If APPROVED, produce the final summary and stop. If NEEDS_FIXES, delegate a fix agent with the review file and spec file paths.
 
-**Fix agent contract:** Instruct the fix agent to: (1) read the review findings file, (2) apply all fixes, (3) run the full test suite (with race/thread-safety detection if applicable) and lint, (4) write a verification report to the Documents directory (e.g. \`.kimchi/docs/verification.md\`) containing:
-- **Test output**: pass/fail count, any failures
-- **Lint output**: any warnings or errors
+**Fix agent contract:** The fix agent must: (1) read the review findings, (2) apply all fixes, (3) run the full test suite (with race/thread-safety detection if applicable) and lint, (4) write a verification report to the Documents directory (e.g. \`.kimchi/docs/verification.md\`) with:
+- **Test output**: pass/fail count and failures
+- **Lint output**: warnings or errors
 - **Verdict**: ALL_PASS or HAS_FAILURES
 
-**After the fix agent completes:** Read ONLY the verification file — this is the ONLY action you take. Do NOT re-read source files, do NOT run tests yourself, do NOT grep, do NOT smoke-test, do NOT write any file, do NOT build the binary, do NOT create test scripts. Then:
-- If the verdict is ALL_PASS -> review phase is complete. Produce ONE final summary message and stop. Do not repeat the summary.
-- If the verdict is HAS_FAILURES -> this is fix round 1. Spawn ONE more fix agent with the remaining failures. When it returns its verification file, read it. That is fix round 2.
-- After round 2, STOP regardless of outcome. If failures remain, report them to the user as unresolved. Do NOT attempt a third round. Do NOT debug manually. Do NOT write smoke tests. Do NOT run the binary.
-- If remaining failures are tests that assert specific ordering of concurrently-executed operations (e.g. checking which goroutine/thread finishes first), these are non-deterministic test design flaws, not implementation bugs. Report them as known flaky tests and stop — do not attempt to fix non-deterministic ordering assertions.
+**After the fix agent completes:** Read ONLY the verification file. Take no other action.
+- If ALL_PASS → review phase is complete. Produce one final summary and stop.
+- If HAS_FAILURES → spawn one more fix agent with the remaining failures (round 2).
+- After round 2, stop regardless of outcome. Report unresolved failures to the user.
+- If remaining failures assert specific ordering of concurrent operations, report them as known flaky tests and stop.
 
-**Review phase turn budget:** The entire review phase (from \`set_phase(review)\` to final summary) should complete in at most 10 orchestrator turns. If you are approaching 10 turns in the review phase, stop immediately and produce the summary with whatever state you have.
+**Review phase turn budget:** Complete the review phase in at most 10 orchestrator turns. If approaching 10 turns, produce the summary with whatever state you have.
 
-**Review verdicts are final**: Never edit a review report to change its verdict. If a flag is genuinely wrong, add a separate rationale note alongside the original review — do not alter the reviewer's output.`
+**Review verdicts are final**: Do not edit a review report. If a flag is genuinely wrong, add a separate rationale note alongside it.`
 
 const ORCHESTRATOR_DISCIPLINE = `**Orchestrator discipline**: Between delegation calls, you may do at most 5 tool calls (e.g. reading the spec file, setting the phase, checking a subagent result). If you find yourself doing reads, edits, bash calls, or writes on implementation files, STOP — you are doing a subagent's job. Delegate it instead. **Post-abort anti-pattern**: When a subagent aborts (budget or turns), do NOT manually complete its remaining work — this is the most common violation. Spawn a follow-up Agent scoped to the unfinished portion. List what the aborted agent completed and what remains.`
 
 const AGENT_MANAGEMENT = `### Agent management
 
-- Write Agent prompts that are fully self-contained. Agents start with fresh context by default — include necessary instructions directly, or point them to a Markdown file containing larger context.
-- When delegating \`plan\` before \`build\`, have the Plan agent write a Markdown spec file (full method signatures, file paths, interfaces) to the Documents directory. Pass that file path to the build Agent — it must not rediscover what was already decided.
-- Spawn independent subtasks in parallel with \`run_in_background: true\`: do NOT run more than 3 concurrent Agents.
-- After an Agent returns, TRUST its output unless the subagent itself reported errors or produced obviously incomplete work. Do NOT re-read source files just to verify a successful subagent's findings — this is the most common source of wasted orchestrator turns. For artifact-producing agents (Plan, Reviewer, Fixer, and Researcher when the research is non-trivial), have the subagent write its substantive output to a Markdown file in the Documents directory and return the file path. Read ONLY that file (or pass it to the next subagent). Explore is the exception: Explore agents return decision-ready findings directly in the Agent result and must not be asked to write Markdown files, reports, docs, notes, or scratch files. For build agents specifically: if the agent reports tests pass and compilation succeeds, move on to the next chunk or to review. Do NOT re-read the code it wrote. For correction tasks, call Agent again with the correction task rather than fixing inline.
-- If an Agent call returns an error of any kind (including protocol violation, timeout, or exit error): do NOT attempt to implement or debug the work yourself. First assess whether the failure is retryable (e.g. transient timeouts or protocol violations) or not (e.g. missing files, permission errors, or invalid inputs). For retryable failures, call a replacement Agent with a corrected or simplified prompt — allow at most one retry per delegated step. For non-retryable failures, report the failure clearly and stop immediately without retrying.
-- **When a subagent returns agent_outcome.outcome other than "completed"**: the work is likely partial or invalid. Do NOT pick up the remaining work yourself — that defeats the purpose of delegation and wastes orchestrator tokens. Inspect agent_outcome.report before acting. Resume the same Agent only when remaining_steps are a direct continuation and preserving session context is valuable; use a changed-approach resume when the same thread still matters but the prior approach stalled; spawn a NEW follow-up Agent when remaining_steps have a clean narrower task boundary; run a short finalizer resume when the report is missing or the work appears finished but did not return completed; or stop/skip and report when blocked or unclear. Do not blindly retry the same prompt. **Include dependency context** in any replacement prompt: paste the public type signatures and function signatures of packages the follow-up agent will import (e.g. structs, interfaces, exported functions from earlier chunks) directly in the prompt so it does not waste turns re-reading files.
+- Write Agent prompts that are fully self-contained. Include instructions directly or point to a Markdown file with larger context.
+- When delegating \`plan\` before \`build\`, have the Plan agent write a Markdown spec to the Documents directory. Pass that path to the Builder; it must not rediscover the plan.
+- Spawn independent subtasks in parallel with \`run_in_background: true\`; do NOT run more than 3 concurrent Agents.
+- After an Agent returns, TRUST its output unless it reported errors or produced obviously incomplete work. Do NOT re-read source files to verify successful work. For artifact-producing agents (Plan, Reviewer, Fixer, non-trivial Researcher), have the agent write its output to a Markdown file in the Documents directory and read only that file. Explore agents are the exception: they return decision-ready findings directly and must not write Markdown files. For build agents, if tests pass and compilation succeeds, move to the next chunk or to review.
+- If an Agent call errors (protocol violation, timeout, exit error, etc.), do NOT debug it yourself. Assess whether the failure is retryable. Retryable failures get one replacement Agent with a corrected or simplified prompt. Non-retryable failures are reported and stop the step.
+- **When a subagent outcome is not "completed":** inspect \`agent_outcome.report\` before acting. Resume the same Agent only for direct continuations; use a changed-approach resume for stalled threads; spawn a new follow-up Agent for clean narrower boundaries; run a short finalizer when the report is missing; stop/skip when blocked or unclear. Include dependency context (public types, function signatures) in replacement prompts so the agent does not re-read files.
 - Do NOT call Agent for work you can do in a single tool call.
-- Use \`inherit_context: true\` only when the Agent needs the parent conversation history. Otherwise keep the default fresh context.
-- Inline images in your conversation are forwarded automatically to vision-capable Agents when needed. If no vision-capable model is available, the harness will automatically switch to one.
+- Use \`inherit_context: true\` only when the Agent needs the parent conversation history.
+- Inline images are forwarded automatically to vision-capable Agents; the harness falls back to a vision model if needed.
 
 ### Model selection
 
-Always pass a \`model\` parameter on every Agent call — never omit it. Default to the lightest-tier model from the relevant pool. Escalate to heavy-tier only for concurrency, algorithms, architectural reasoning, or when a standard-tier model has already failed on the same chunk. Read the model's **description** before selecting — it may reveal limitations. If the subtask involves images or visual content, select a model with Vision: yes.`
+Always pass a \`model\` parameter on every Agent call. Default to the lightest-tier model in the relevant pool. Escalate to heavy-tier only for concurrency, algorithms, architectural reasoning, or when a standard-tier model already failed on the same chunk. Check the model's description for limitations. Use a vision-capable model for image or visual content.`
 
 const TOKEN_BUDGETS = `### Token budgets and turn caps
 
-Include a \`max_turns\` for every Agent call. Use \`token_budget\` when the caller or task scope needs an output-token cap; it caps **cumulative output tokens** (tokens generated by the agent across all turns). It does not count input tokens, which grow as a side-effect of conversation length and are not controllable by the agent.
+Include \`max_turns\` on every Agent call. Use \`token_budget\` to cap cumulative output tokens generated by the agent; it does not count input tokens.
 
-Match the budget to the **delegated task scope**, not the overall project complexity.
-
-If the user explicitly asks for the Agent tool with a specific \`token_budget\`, make that Agent call once with the requested value. Do not ask to increase the budget or substitute a larger budget before the tool runs.
+Match the budget to the **delegated task scope**, not the overall project. If the user explicitly requests a \`token_budget\`, honor it once; do not ask for a larger budget first.
 
 ${renderAgentWorkerBudgetTable()}
 
-**Always set \`max_duration\`** on every Agent call. Subagents can hang on blocking operations (deadlocked tests, infinite loops, stuck network calls) where token budget and turn limits do not trigger. The duration cap is the last line of defence against runaway agents.
+**Always set \`max_duration\`** on every Agent call; it is the last defence against runaway agents on blocking operations.
 
-**Heavy-tier model duration scaling:** When delegating to a heavy-tier model, multiply \`max_duration\` by 1.5x.
+**Heavy-tier model duration scaling:** multiply \`max_duration\` by 1.5x for heavy-tier models.
 
-Use the **multi-file package** tier when a build chunk involves concurrency primitives, worker pools, channels, or complex state machines — these require more iterative test-fix cycles than simple CRUD code. When in doubt between single-file and multi-file, prefer the larger budget — an abort followed by a follow-up agent costs more total tokens than a generous initial budget.
+Use the **multi-file package** tier for build chunks with concurrency, worker pools, channels, or complex state machines. When in doubt, prefer the larger budget — an abort plus follow-up costs more than a generous initial budget.
 
-The turn cap is the primary delegated-worker budget. If an Agent returns \`agent_outcome.outcome: "budget_exhausted"\`, do not mark the delegated work complete from that aborted result. Inspect \`agent_outcome.report\` and choose deliberately:
+If an Agent returns \`agent_outcome.outcome: "budget_exhausted"\`, do not mark the work complete. Inspect \`agent_outcome.report\` and act:
 
 | Signal | Action |
 |---|---|
 | Completed outcome + report.status completed | Use the result or complete the linked Ferment step. |
-| Missing report | Call \`resume_subagent\` with only \`agent_id\` and purpose \`finalize_report\`; the host supplies fixed report-only limits. |
-| Budget exhausted + direct continuation in remaining_steps | Call \`resume_subagent\` with a bounded fresh budget and steering prompt. |
-| Budget exhausted + same thread but stalled approach | Call \`resume_subagent\` once with a changed-approach steering prompt. |
-| Budget exhausted + separable remaining_steps | Spawn a narrower linked replacement Agent for the clean task boundary. |
-| Budget exhausted + appears finished | Run a short finalizer resume, then complete only from a completed outcome. |
-| Max duration or inactivity | Assume a possible hang or blocked operation; resume only if the steering prompt avoids the stall, otherwise spawn a narrower replacement or stop/report. |
-| Failed, stopped, blocked, or unclear report | Spawn a corrected replacement only if there is a clear task boundary; otherwise stop/skip and report the worker report. |`
+| Missing report | Call \`resume_subagent\` with only \`agent_id\` and purpose \`finalize_report\`. |
+| Budget exhausted + direct continuation | Call \`resume_subagent\` with a bounded fresh budget and steering prompt. |
+| Budget exhausted + stalled approach | Call \`resume_subagent\` once with a changed-approach steering prompt. |
+| Budget exhausted + separable remaining steps | Spawn a narrower replacement Agent. |
+| Budget exhausted + appears finished | Run a short finalizer resume; complete only from a completed outcome. |
+| Max duration or inactivity | Resume only if the steering prompt avoids the stall; otherwise spawn a narrower replacement or stop/report. |
+| Failed, stopped, blocked, or unclear report | Spawn a corrected replacement only if there is a clear task boundary; otherwise stop/skip and report. |`
 
 const PLAN_QUALITY_CHECKLIST = `### What makes a good plan
 
 A plan is "good" when an independent model can build from it without asking questions. Verify against this checklist before calling a plan complete:
 
-1. **Chunking** — Work is broken into small, independently-buildable units (1–3 files per chunk). Each chunk has a single focused goal and a **complexity** classification (\`simple\` or \`complex\`). Complex chunks get the multi-file-package token budget; simple chunks get the single-file budget. Both default to standard-tier Builders.
-2. **Ordering** — Chunks are ordered so later ones build on earlier ones. Dependencies are explicit.
+1. **Chunking** — 1–3 files per chunk; each chunk has one focused goal and a \`simple\` or \`complex\` classification. Complex chunks get the multi-file-package budget; simple chunks get the single-file budget.
+2. **Ordering** — Later chunks build on earlier ones; dependencies are explicit.
 3. **Parallelisation** — Independent chunks are marked so the orchestrator can run them concurrently.
-4. **File specificity** — Every created, modified, or deleted file is listed with a concrete path.
-5. **Interface contracts** — Method signatures, types, and data structures are defined, not described vaguely.
-6. **Acceptance criteria** — Each chunk has 2–4 concrete, verifiable criteria (e.g. "test X passes", "API returns 404 on missing item").
+4. **File specificity** — Every created, modified, or deleted file has a concrete path.
+5. **Interface contracts** — Method signatures, types, and data structures are defined, not vague.
+6. **Acceptance criteria** — 2–4 concrete, verifiable criteria per chunk.
 7. **Edge cases** — Error handling, timeouts, concurrency, empty inputs, and malformed data are addressed.
-8. **Test strategy** — Every architectural layer MUST have adequate tests. If the project has a repository/data layer, it needs tests. If it has a service/domain layer, it needs tests. If it has handlers/controllers, it needs tests. If it has a CLI, it needs at least a smoke test. No layer is exempt. Target a test-to-production LOC ratio of at least 1.0. Use the language's idiomatic test patterns (Go: map-based table-driven tests with \`map[string]struct{...}\`; TypeScript: describe/it; Python: pytest parametrize). For concurrency: include a race/thread-safety detector (\`go test -race\`, \`-fsanitize=thread\`). For Go projects: always pass \`-timeout 30s\` (or an appropriate duration) to \`go test\` — tests that deadlock or block on channels will otherwise hang for the default 10 minutes, wasting agent budget. **Anti-flaky rule**: tests must NEVER assert specific ordering of concurrently-produced results. For non-deterministic collections, assert membership or sort before comparing.
-9. **No ambiguity** — API choices, library versions, and design decisions are explicit. Alternatives rejected are noted in one line each.
-10. **Feasibility** — The plan fits within the token budgets allocated for each chunk. No chunk requires >150k tokens to build.`
+8. **Test strategy** — Every architectural layer has adequate tests (data, service, handlers, CLI smoke). Target ≥ 1.0 test-to-production LOC. Use idiomatic patterns (Go table-driven, TypeScript describe/it, Python pytest parametrize). For concurrency, use race/thread-safety detectors (\`go test -race\`, \`-fsanitize=thread\`). For Go, pass \`-timeout 30s\` to avoid deadlocks. **Anti-flaky rule**: never assert specific ordering of concurrent results; assert membership or sort first.
+9. **No ambiguity** — API choices, library versions, and design decisions are explicit; rejected alternatives noted in one line.
+10. **Feasibility** — The plan fits the token budgets; no chunk needs >150k tokens.`
 
 // ---------------------------------------------------------------------------
 // Orchestrator instruction builder (generates role-specific DOs/DONTs)
