@@ -99,7 +99,7 @@ export const DEFAULT_MODEL_ROLES: Readonly<ModelRoles> = {
 	explorer: "kimchi-dev/nemotron-3-ultra-fp4",
 	researcher: "kimchi-dev/minimax-m3",
 	judge: ["kimchi-dev/kimi-k2.7"],
-	compactor: "kimchi-dev/nemotron-3-ultra-fp4",
+	compactor: "kimchi-dev/minimax-m3",
 }
 
 export interface ModelRolesWarning {

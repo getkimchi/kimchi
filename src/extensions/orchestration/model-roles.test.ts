@@ -43,8 +43,8 @@ afterEach(() => {
 	resetModelMetadataCache()
 })
 
-const DEFAULT_COMPACTOR_MODEL = "kimchi-dev/nemotron-3-ultra-fp4"
-const CUSTOM_COMPACTOR_MODEL = "kimchi-dev/minimax-m3"
+const DEFAULT_COMPACTOR_MODEL = "kimchi-dev/minimax-m3"
+const CUSTOM_COMPACTOR_MODEL = "kimchi-dev/nemotron-3-ultra-fp4"
 
 describe("parseModelRoles", () => {
 	it("returns defaults when raw is undefined", () => {
@@ -583,7 +583,7 @@ describe("compactor role", () => {
 	})
 
 	it("validateModelRoles does not flag the default compactor when available", () => {
-		const result = validateModelRoles(DEFAULT_MODEL_ROLES, new Set(["nemotron-3-ultra-fp4"]))
+		const result = validateModelRoles(DEFAULT_MODEL_ROLES, new Set(["minimax-m3"]))
 		expect(result.unavailable.some((u) => u.role === "compactor")).toBe(false)
 	})
 

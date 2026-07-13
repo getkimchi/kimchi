@@ -8,11 +8,18 @@
  */
 
 import type { AssistantMessage, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai"
-import type { CompactionResult, ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent"
+import {
+	type CompactionResult,
+	type ExtensionAPI,
+	type ExtensionContext,
+	type SessionEntry,
+	SessionManager,
+} from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
 import { applyRoleAugmentation, resetModelRolesCache } from "../orchestration/model-roles.js"
 import {
+	DEFAULT_STAGE_COMPACTION_OPTIONS,
 	buildCustomInstructions,
 	buildHandoffDetails,
 	buildMidTurnCustomInstructions,
@@ -88,17 +95,51 @@ function makePi(): ExtensionAPI {
 	} as unknown as ExtensionAPI
 }
 
-function makeCtx(): ExtensionContext {
+/** An assistant message whose usage reports `totalTokens` — the signal the
+ *  stage-compaction minimum-size gate reads. Shaped like a kimchi-dev
+ *  open-weight model response (openai-completions API), matching how
+ *  `src/models.ts` wires the kimchi-dev provider. */
+function makeAssistantMessage(totalTokens: number): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [],
+		api: "openai-completions",
+		provider: "kimchi-dev",
+		model: "kimi-k2.7",
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "stop",
+		timestamp: Date.now(),
+	}
+}
+
+// Context sizes relative to the stage-compaction minimum-size gate, derived
+// from the real constant so a future gate change cannot silently flip tests
+// onto the skip path. makeCtx sessions default to above-gate so tests
+// exercising the compaction path are not skipped.
+const ABOVE_GATE_TOKENS = DEFAULT_STAGE_COMPACTION_OPTIONS.minContextTokens + 10_000
+const BELOW_GATE_TOKENS = DEFAULT_STAGE_COMPACTION_OPTIONS.minContextTokens - 20_000
+
+/** Build a ctx backed by a real in-memory pi SessionManager, seeded with one
+ *  assistant message reporting `contextTokens` (0 seeds nothing). */
+function makeCtx(contextTokens: number = ABOVE_GATE_TOKENS): ExtensionContext {
+	const sessionManager = SessionManager.inMemory()
+	if (contextTokens > 0) {
+		sessionManager.appendMessage(makeAssistantMessage(contextTokens))
+	}
+	vi.spyOn(sessionManager, "appendCustomMessageEntry")
 	return {
 		compact: vi.fn(),
 		ui: {
 			notify: vi.fn(),
 		},
-		sessionManager: {
-			getEntries: vi.fn(() => []),
-			getLeafId: vi.fn(() => null),
-			appendCustomMessageEntry: vi.fn(),
-		},
+		sessionManager,
 	} as unknown as ExtensionContext
 }
 
@@ -550,7 +591,7 @@ describe("maybeTriggerFermentCompaction", () => {
 		})
 		ctx.modelRegistry = {
 			find: vi.fn((provider: string, modelId: string) =>
-				provider === "kimchi-dev" && modelId === "nemotron-3-ultra-fp4" ? { provider, id: modelId } : undefined,
+				provider === "kimchi-dev" && modelId === "minimax-m3" ? { provider, id: modelId } : undefined,
 			),
 		} as unknown as ExtensionContext["modelRegistry"]
 
@@ -562,8 +603,9 @@ describe("maybeTriggerFermentCompaction", () => {
 			expect.objectContaining({
 				customInstructions: expect.stringContaining("Ferment: My Ferment"),
 				force: true,
-				keepRecentTokens: 5_000,
-				model: { provider: "kimchi-dev", id: "nemotron-3-ultra-fp4" },
+				// 5% of the 100k window is 5k — clamped up to the 20k floor.
+				keepRecentTokens: 20_000,
+				model: { provider: "kimchi-dev", id: "minimax-m3" },
 				thinkingLevel: "off",
 			}),
 		)
@@ -722,7 +764,11 @@ describe("maybeTriggerFermentCompaction", () => {
 		// to the async path, is not in the branch at prepare time, and the forced
 		// compaction that expected it as a cut point can silently no-op. That
 		// degradation must be visible in the session file, not just in a UI toast.
-		ctx.sessionManager = { getEntries: vi.fn(() => []) } as unknown as ExtensionContext["sessionManager"]
+		const bareSession = SessionManager.inMemory()
+		bareSession.appendMessage(makeAssistantMessage(ABOVE_GATE_TOKENS))
+		ctx.sessionManager = {
+			getEntries: () => bareSession.getEntries(),
+		} as unknown as ExtensionContext["sessionManager"]
 		ctx.inlineCompact = vi.fn(async () => ({
 			summary: "compacted",
 			firstKeptEntryId: "entry-1",
@@ -759,7 +805,8 @@ describe("maybeTriggerFermentCompaction", () => {
 		expect(ctx.inlineCompact).toHaveBeenCalledWith({
 			customInstructions: expect.stringContaining("Ferment: My Ferment"),
 			force: true,
-			keepRecentTokens: 0,
+			// No ctx.model → 5% of window is 0 — clamped up to the 20k floor.
+			keepRecentTokens: 20_000,
 			thinkingLevel: "off",
 		})
 		expect(ctx.ui.notify).not.toHaveBeenCalled()
@@ -776,6 +823,114 @@ describe("maybeTriggerFermentCompaction", () => {
 		expect(pi.appendEntry).toHaveBeenCalledWith("ferment_breadcrumb", {
 			text: "Stage compaction skipped: Nothing to compact (session too small)",
 		})
+	})
+
+	it("skips inline compaction below the minimum-size gate but still delivers the handoff", async () => {
+		const ferment = makeFermentWithPhase(
+			{ id: "phase-1", name: "Phase", goal: "Goal" },
+			{ id: "step-1", description: "Do it" },
+		)
+		storageMap.set(ferment.id, ferment)
+		runtime.setActive(ferment)
+		setPendingCompaction(ferment.id, makePendingStep(ferment.id, "phase-1", "step-1"))
+		pi.getFlag = vi.fn((name) => (name === "ferment-oneshot" ? true : undefined))
+		ctx = makeCtx(BELOW_GATE_TOKENS)
+		ctx.inlineCompact = vi.fn()
+
+		await maybeTriggerFermentCompaction(pi, ctx, runtime)
+
+		expect(ctx.inlineCompact).not.toHaveBeenCalled()
+		expect(ctx.compact).not.toHaveBeenCalled()
+		// The pending entry is consumed — the next stage boundary re-checks.
+		expect(runtime.getPendingCompaction(ferment.id)).toBeUndefined()
+		expect(runtime.isCompactionInFlight(ferment.id)).toBe(false)
+		// The handoff still reaches the next stage, carrying the skip reason.
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customType: "ferment_stage_handoff",
+				details: expect.objectContaining({
+					compactionError: expect.stringContaining(
+						`below the ${DEFAULT_STAGE_COMPACTION_OPTIONS.minContextTokens.toLocaleString()}-token stage-compaction minimum`,
+					),
+				}),
+			}),
+			expect.objectContaining({ triggerTurn: false }),
+		)
+		expect(pi.appendEntry).toHaveBeenCalledWith("ferment_breadcrumb", {
+			text: expect.stringContaining(`Stage compaction skipped: context ~${BELOW_GATE_TOKENS.toLocaleString()} tokens`),
+		})
+	})
+
+	it("treats a session with no assistant usage as below the minimum-size gate", async () => {
+		const ferment = makeFermentWithPhase(
+			{ id: "phase-1", name: "Phase", goal: "Goal" },
+			{ id: "step-1", description: "Do it" },
+		)
+		storageMap.set(ferment.id, ferment)
+		runtime.setActive(ferment)
+		setPendingCompaction(ferment.id, makePendingStep(ferment.id, "phase-1", "step-1"))
+		ctx = makeCtx(0)
+		ctx.inlineCompact = vi.fn()
+
+		await maybeTriggerFermentCompaction(pi, ctx, runtime)
+
+		expect(ctx.inlineCompact).not.toHaveBeenCalled()
+		expect(runtime.isCompactionInFlight(ferment.id)).toBe(false)
+	})
+
+	it("honours caller-supplied stage-compaction options", async () => {
+		const ferment = makeFermentWithPhase(
+			{ id: "phase-1", name: "Phase", goal: "Goal" },
+			{ id: "step-1", description: "Do it" },
+		)
+		storageMap.set(ferment.id, ferment)
+		runtime.setActive(ferment)
+		setPendingCompaction(ferment.id, makePendingStep(ferment.id, "phase-1", "step-1"))
+		applyRoleAugmentation((roles) => ({ ...roles, compactor: undefined }))
+		// 30k context: below the default 50k gate, above the custom 10k one.
+		ctx = makeCtx(30_000)
+		ctx.model = { contextWindow: 100_000 } as ExtensionContext["model"]
+		ctx.inlineCompact = vi.fn(async () => ({
+			summary: "compacted",
+			firstKeptEntryId: "entry-1",
+			tokensBefore: 30_000,
+		}))
+
+		await maybeTriggerFermentCompaction(pi, ctx, runtime, {
+			minContextTokens: 10_000,
+			minKeepRecentTokens: 1_000,
+			keepRecentWindowFraction: 0.5,
+			thinkingLevel: "low",
+		})
+
+		expect(ctx.inlineCompact).toHaveBeenCalledWith(
+			expect.objectContaining({
+				// max(1k floor, 50% of the 100k window)
+				keepRecentTokens: 50_000,
+				thinkingLevel: "low",
+			}),
+		)
+	})
+
+	it("keeps 5% of large context windows when that exceeds the 20k keep-recent floor", async () => {
+		const ferment = makeFermentWithPhase(
+			{ id: "phase-1", name: "Phase", goal: "Goal" },
+			{ id: "step-1", description: "Do it" },
+		)
+		storageMap.set(ferment.id, ferment)
+		runtime.setActive(ferment)
+		setPendingCompaction(ferment.id, makePendingStep(ferment.id, "phase-1", "step-1"))
+		applyRoleAugmentation((roles) => ({ ...roles, compactor: undefined }))
+		ctx.model = { contextWindow: 1_000_000 } as ExtensionContext["model"]
+		ctx.inlineCompact = vi.fn(async () => ({
+			summary: "compacted",
+			firstKeptEntryId: "entry-1",
+			tokensBefore: 100_000,
+		}))
+
+		await maybeTriggerFermentCompaction(pi, ctx, runtime)
+
+		expect(ctx.inlineCompact).toHaveBeenCalledWith(expect.objectContaining({ keepRecentTokens: 50_000 }))
 	})
 
 	it("persists unexpected inline compaction failures as a breadcrumb and warns", async () => {

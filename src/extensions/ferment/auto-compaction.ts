@@ -6,6 +6,10 @@
  * The `turn_end` and `agent_end` hooks call `maybeTriggerFermentCompaction` to:
  *   1. Drain ready (non-in-flight) pending entries from the map.
  *   2. Build custom instructions highlighting the ferment plan and stage.
+ *      On the inline path, skip compaction (but still deliver the handoff)
+ *      when the estimated context is below the minimum-size gate
+ *      (`StageCompactionOptions.minContextTokens`) — small contexts cost a
+ *      full summarization call and save nothing.
  *   3. Append a hidden `ferment_stage_handoff` session entry so the next stage
  *      has all context it needs to resume cleanly. On the inline path this
  *      happens BEFORE compaction: the handoff is the newest valid cut point,
@@ -21,11 +25,14 @@
  * Failures warn via `ctx.ui.notify` and never block the pipeline.
  */
 
+import type { ModelThinkingLevel } from "@earendil-works/pi-ai"
 import {
 	type CompactionResult,
 	type ExtensionAPI,
 	type ExtensionContext,
 	buildSessionContext,
+	calculateContextTokens,
+	getLastAssistantUsage,
 } from "@earendil-works/pi-coding-agent"
 import { determineNextAction } from "../../ferment/engine.js"
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
@@ -38,6 +45,31 @@ import { scheduleNextFermentAction } from "./scheduler.js"
 import type { PendingCompaction } from "./state.js"
 
 // ─── Public types ─────────────────────────────────────────────────────────────
+
+/** Tunables for stage-boundary compaction. Callers may override per call;
+ *  everything defaults to `DEFAULT_STAGE_COMPACTION_OPTIONS`. */
+export interface StageCompactionOptions {
+	/** Skip stage compaction when the estimated context is below this many tokens. */
+	minContextTokens: number
+	/** Never keep fewer recent tokens than this on a forced stage cut. */
+	minKeepRecentTokens: number
+	/** Fraction of the model's context window kept as recent tokens (before the floor). */
+	keepRecentWindowFraction: number
+	/** Thinking level for the summarization call. */
+	thinkingLevel: ModelThinkingLevel
+}
+
+export const DEFAULT_STAGE_COMPACTION_OPTIONS: Readonly<StageCompactionOptions> = {
+	// Below this, the multi-minute summarization call saves almost nothing.
+	// Compactions firing at a median of ~30k tokens consume 20–40% of session
+	// wall time, converting passing tasks into agent timeouts. The next stage
+	// boundary re-checks, so skipped stages compact once the context has grown.
+	minContextTokens: 50_000,
+	minKeepRecentTokens: 20_000,
+	keepRecentWindowFraction: 0.05,
+	// Compaction is pure summarization and never benefits from extended thinking.
+	thinkingLevel: "off",
+}
 
 export interface FermentHandoffDetails {
 	fermentName: string
@@ -73,6 +105,19 @@ type InlineHandoffSessionManager = {
  *  that would spuriously match any non-negative token count. */
 function compactionThreshold(contextWindow: number): number {
 	return Math.max(0, contextWindow - COMPACTION_RESERVE_TOKENS)
+}
+
+/** Best-effort estimate of the current context size: the token usage reported
+ *  by the last assistant message — the same signal upstream's `shouldCompact`
+ *  uses. Returns 0 when unknown (fresh session, no assistant turn yet), which
+ *  callers treat as "too small to compact". */
+function estimateSessionContextTokens(ctx: ExtensionContext): number {
+	try {
+		const usage = getLastAssistantUsage(ctx.sessionManager?.getEntries?.() ?? [])
+		return usage ? calculateContextTokens(usage) : 0
+	} catch {
+		return 0
+	}
 }
 
 function readFermentOneshotFlag(pi: ExtensionAPI): boolean | undefined {
@@ -341,6 +386,7 @@ export async function maybeTriggerFermentCompaction(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
 	runtime: FermentRuntime,
+	options: StageCompactionOptions = DEFAULT_STAGE_COMPACTION_OPTIONS,
 ): Promise<boolean> {
 	const hasInlineCompact = typeof ctx.inlineCompact === "function"
 	const isOneShot = readFermentOneshotFlag(pi)
@@ -361,7 +407,7 @@ export async function maybeTriggerFermentCompaction(
 
 	let didWork = false
 	for (const pending of ready) {
-		didWork = (await triggerCompactionForPending(pi, ctx, runtime, pending)) || didWork
+		didWork = (await triggerCompactionForPending(pi, ctx, runtime, pending, options)) || didWork
 	}
 	return didWork
 }
@@ -371,6 +417,7 @@ async function triggerCompactionForPending(
 	ctx: ExtensionContext,
 	runtime: FermentRuntime,
 	pending: PendingCompaction,
+	options: StageCompactionOptions,
 ): Promise<boolean> {
 	const { fermentId } = pending
 
@@ -469,6 +516,22 @@ async function triggerCompactionForPending(
 	}
 
 	if (typeof ctx.inlineCompact === "function") {
+		// Minimum-size gate: a stage-boundary compaction on a small context costs
+		// a multi-minute summarization call and saves almost nothing. Skip it —
+		// the pending entry is already drained, the handoff below still delivers
+		// plan context to the next stage, and the next stage boundary re-checks
+		// once the context has grown.
+		const contextTokens = estimateSessionContextTokens(ctx)
+		if (contextTokens < options.minContextTokens) {
+			runtime.clearCompactionInFlight(fermentId)
+			const skipReason = `context ~${contextTokens.toLocaleString()} tokens is below the ${options.minContextTokens.toLocaleString()}-token stage-compaction minimum`
+			appendHandoffEntry(undefined, skipReason)
+			tryPiAction(() => {
+				pi.appendEntry("ferment_breadcrumb", { text: `Stage compaction skipped: ${skipReason}` })
+			})
+			return true
+		}
+
 		// Append the handoff BEFORE compacting. At a stage boundary the session
 		// tail is assistant → toolResult, and upstream cannot place a compaction
 		// cut point after a toolResult — without a trailing custom_message entry,
@@ -491,13 +554,11 @@ async function triggerCompactionForPending(
 				// Undefined when unconfigured/unavailable — inlineCompact falls back
 				// to the session model exactly as before.
 				model: compactorModel.model,
-				// Compaction is pure summarization and never benefits from extended
-				// thinking. Every model in Kimchi's catalog currently reports
-				// `reasoning: true`, so picking a different `model` above does not by
-				// itself skip reasoning — force it off here regardless of which model
-				// (configured compactor or session default) ends up handling the call.
-				thinkingLevel: "off",
-				keepRecentTokens: Math.floor((ctx.model?.contextWindow ?? 0) * 0.05),
+				thinkingLevel: options.thinkingLevel,
+				keepRecentTokens: Math.max(
+					options.minKeepRecentTokens,
+					Math.floor((ctx.model?.contextWindow ?? 0) * options.keepRecentWindowFraction),
+				),
 				// Ferment compaction is stage-boundary driven, not threshold driven.
 				// Force keeps automated runs compacting proactively between stages.
 				force: true,
