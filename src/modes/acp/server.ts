@@ -57,7 +57,7 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import type { AgentSessionEvent, ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 import { refFromModel, splitModelRef } from "../../extensions/model-catalog/ref-utils.js"
-import { setMultiModelEnabled } from "../../extensions/multi-model.js"
+import { getMultiModelEnabled, setMultiModelEnabled } from "../../extensions/multi-model.js"
 import { getOrchestratorModel } from "../../extensions/orchestration/model-roles.js"
 import { loadConfig } from "../../extensions/permissions/config.js"
 import {
@@ -77,6 +77,7 @@ import {
 } from "../../extensions/permissions/mode-controller.js"
 import { resolveMode } from "../../extensions/permissions/mode.js"
 import type { PermissionMode } from "../../extensions/permissions/types.js"
+import { SLASH_COMMANDS } from "../../extensions/slash-commands.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { createAcpUIContext } from "./acp-ui-context.js"
 import { ADVERTISED_CAPABILITIES, CAPABILITIES_KEY } from "./capabilities.js"
@@ -371,8 +372,14 @@ export class KimchiAcpAgent implements Agent {
 			if (!orchestrator) {
 				throw RequestError.invalidParams(undefined, `multi-model orchestrator (${orchRef}) is not available`)
 			}
-			void setMultiModelEnabled(sessionId, true)
-			await session.setModel(orchestrator)
+			const previousMultiModelEnabled = getMultiModelEnabled(session.sessionManager)
+			setMultiModelEnabled(sessionId, true)
+			try {
+				await session.setModel(orchestrator)
+			} catch {
+				setMultiModelEnabled(sessionId, previousMultiModelEnabled)
+				throw RequestError.authRequired(undefined, `orchestrator model ${orchRef} is not available: auth required`)
+			}
 			return value
 		}
 
@@ -380,7 +387,7 @@ export class KimchiAcpAgent implements Agent {
 		if (!provider || !modelId) {
 			throw RequestError.invalidParams(
 				undefined,
-				`invalid model format: "${modelId}". expected "provider/modelId" or "multi-model".`,
+				`invalid model format: "${value}". expected "provider/modelId" or "multi-model".`,
 			)
 		}
 		const target = session.modelRegistry.find(provider, modelId)
@@ -395,8 +402,12 @@ export class KimchiAcpAgent implements Agent {
 			)
 		}
 
-		void setMultiModelEnabled(sessionId, false)
-		await session.setModel(target)
+		setMultiModelEnabled(sessionId, false)
+		try {
+			await session.setModel(target)
+		} catch (err) {
+			throw RequestError.authRequired(undefined, `model ${refFromModel(target)} is not available: auth required`)
+		}
 		return value
 	}
 
@@ -1048,12 +1059,13 @@ export function buildPermissionsConfigOption(currentMode: PermissionMode): Sessi
 
 /**
  * Builds a SessionConfigOption for the model setting.
- * ???
+ * Combines the orchestrator model with multi-model support into a single select UI.
  * Exported for testing.
  */
 export function buildModelConfigOption(
-	session: Pick<AgentSession, "model" | "modelRegistry" | "sessionId">,
+	session: Pick<AgentSession, "model" | "modelRegistry" | "sessionId" | "sessionManager">,
 ): SessionConfigOption {
+	const multiModelEnabled = getMultiModelEnabled(session.sessionManager)
 	const {
 		model: orchestrator,
 		modelRef: orchRef,
@@ -1069,13 +1081,13 @@ export function buildModelConfigOption(
 		name: `Multi-model (${orchName})`,
 	})
 	// biome-ignore lint/style/noNonNullAssertion: we assert model availability before session is created/loaded via assertSessionHasModel.
-	const currentValue = refFromModel(session.model!)
+	const currentValue = multiModelEnabled ? "multi-model" : refFromModel(session.model!)
 	return {
 		id: "model",
 		name: "Model",
 		type: "select",
 		category: "model",
-		description: "",
+		description: "Select the active AI model: single-model or multi-model (orchestrator + workers).",
 		currentValue,
 		options,
 	}
