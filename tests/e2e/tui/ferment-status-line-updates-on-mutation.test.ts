@@ -97,8 +97,11 @@ test("ferment status-line segment updates after activate_ferment_phase tool call
 					],
 				},
 				// Extra text-only responses to absorb continuation nudges.
-				{ stream: ["Waiting."] }, { stream: ["Waiting."] }, { stream: ["Waiting."] },
-				{ stream: ["Waiting."] }, { stream: ["Waiting."] },
+				{ stream: ["Waiting."] },
+				{ stream: ["Waiting."] },
+				{ stream: ["Waiting."] },
+				{ stream: ["Waiting."] },
+				{ stream: ["Waiting."] },
 			],
 		},
 		async (_fixture, trace) => {
@@ -107,9 +110,7 @@ test("ferment status-line segment updates after activate_ferment_phase tool call
 			trace.step("ready prompt visible")
 
 			// Stage 2: enter ferment.
-			terminal.write("/ferment")
-			await waitForText(terminal, "/ferment", { timeoutMs: INPUT_TIMEOUT_MS })
-			terminal.submit("")
+			terminal.submit("/ferment")
 			trace.step("ran /ferment")
 
 			// Stage 3: intent prompt.

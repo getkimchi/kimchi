@@ -141,10 +141,7 @@ test("plan review: model stops after propose, review dialog appears, user confir
 			trace.step("ready prompt visible")
 
 			// Stage 2: enter ferment.
-			terminal.write("/ferment")
-			await waitForText(terminal, "/ferment", { timeoutMs: INPUT_TIMEOUT_MS })
-			trace.step("typed /ferment")
-			terminal.submit("")
+			terminal.submit("/ferment")
 			trace.step("ran /ferment")
 
 			// Stage 3: intent prompt appears.
@@ -241,10 +238,7 @@ test("plan review: cancel restores planning tools, model can re-propose, ferment
 			trace.step("ready prompt visible")
 
 			// Stage 2: enter ferment.
-			terminal.write("/ferment")
-			await waitForText(terminal, "/ferment", { timeoutMs: INPUT_TIMEOUT_MS })
-			trace.step("typed /ferment")
-			terminal.submit("")
+			terminal.submit("/ferment")
 			trace.step("ran /ferment")
 
 			// Stage 3: intent prompt.
@@ -345,10 +339,7 @@ test("plan review: existing zero-questions scoping flow still works (no regressi
 			trace.step("ready prompt visible")
 
 			// Stage 2: enter ferment.
-			terminal.write("/ferment")
-			await waitForText(terminal, "/ferment", { timeoutMs: INPUT_TIMEOUT_MS })
-			trace.step("typed /ferment")
-			terminal.submit("")
+			terminal.submit("/ferment")
 			trace.step("ran /ferment")
 
 			// Stage 3: intent prompt.

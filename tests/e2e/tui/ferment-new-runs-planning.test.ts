@@ -105,12 +105,8 @@ test("/ferment new runs planning and produces a scoped ferment artifact", async 
 			})
 			trace.step("ready prompt visible")
 
-			// Stage 2: enter ferment. Type then Enter separately — one-shot
-			// "/ferment\r" can race startup (ferment-phase-review.test.ts:42-48).
-			terminal.write("/ferment")
-			await waitForText(terminal, "/ferment", { timeoutMs: INPUT_TIMEOUT_MS })
-			trace.step("typed /ferment")
-			terminal.submit("")
+			// Stage 2: enter ferment.
+			terminal.submit("/ferment")
 			trace.step("ran /ferment")
 
 			// Stage 3: intent prompt appears.

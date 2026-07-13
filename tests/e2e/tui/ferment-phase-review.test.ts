@@ -43,12 +43,8 @@ test.fail("ferment phase-review separator is not selectable", async ({ terminal 
 			],
 		},
 		async (_fixture, trace) => {
-			// Stage 1: enter ferment. Type then Enter separately — one-shot "/ferment\r" can
-			// race startup and skip the intent prompt.
-			terminal.write("/ferment")
-			await waitForText(terminal, "/ferment", { timeoutMs: INPUT_TIMEOUT_MS })
-			trace.step("typed /ferment")
-			terminal.submit("")
+			// Stage 1: enter ferment.
+			terminal.submit("/ferment")
 			trace.step("ran /ferment")
 			await waitForText(terminal, "would you like to ferment", { timeoutMs: STARTUP_TIMEOUT_MS })
 			trace.step("intent prompt visible")
