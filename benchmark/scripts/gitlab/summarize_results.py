@@ -1016,9 +1016,11 @@ def write_summary(metadata_path: Path, output_path: Path, results_dir_override: 
     output_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     print(f"Wrote benchmark summary to {output_path}")
 
-    # Fail if any expected task never produced a result.json (e.g. a chunk
-    # exhausted all retries due to infra errors). Tasks that ran but failed
-    # are valid benchmark results — only tasks with zero trials are missing.
+    # Distinguish between tasks that never ran (no trial dirs at all) and
+    # tasks that were attempted but only produced error/infra verdicts.
+    # - Never-ran tasks: fail (exit 1) — something went wrong with dispatch.
+    # - All-errored tasks: warn only — the chunk ran and produced evidence,
+    #   the errors are visible in the summary for analysis.
     selected_tasks = metadata_dict(metadata, "parameters").get("selected_tasks") or metadata.get("selected_tasks")
     if isinstance(selected_tasks, list) and selected_tasks:
         trial_tasks = {t.task for t in trials}
@@ -1037,6 +1039,24 @@ def write_summary(metadata_path: Path, output_path: Path, results_dir_override: 
                 file=sys.stderr,
             )
             return 1
+
+        # Warn about tasks that ran but only have error/infra verdicts
+        # (no scored_pass or scored_fail). These are attempted-but-failed
+        # tasks — the errors are real benchmark evidence, not missing data.
+        all_errored_tasks = sorted(
+            task for task in trial_tasks
+            if not any(
+                t.outcome in (Outcome.SCORED_PASS, Outcome.SCORED_FAIL)
+                for t in trials if t.task == task
+            )
+        )
+        if all_errored_tasks:
+            print(
+                f"WARNING: {len(all_errored_tasks)} task(s) were attempted but only "
+                f"produced error/infra verdicts (no scored pass/fail): "
+                f"{all_errored_tasks}",
+                file=sys.stderr,
+            )
 
     return 0
 

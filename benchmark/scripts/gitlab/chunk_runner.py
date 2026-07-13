@@ -57,6 +57,7 @@ from bench_config import (
 from chunk_slicing import slice_tasks
 from classify import classify
 from harbor_runner import build_harbor_command, format_command_for_log, run_harbor
+from outcome import Outcome
 
 
 def _fetch_all_tasks(dataset: str, bench_dir: Path) -> list[str]:
@@ -171,15 +172,15 @@ def list_trial_dirs(results_dir: Path) -> list[Path]:
     return out
 
 
-def _trial_dir_for_task(results_dir: Path, task_name: str) -> Path | None:
-    """Find the trial directory for a bare task name (e.g. 'task-a').
+def _all_trial_dirs_for_task(results_dir: Path, task_name: str) -> list[Path]:
+    """Find all trial directories for a bare task name (e.g. 'task-a').
 
-    Searches all run subdirectories under results_dir and returns the most
-    recently created trial dir whose name starts with `{task_name}__`.
-    Returns None if no trial exists for this task.
+    Searches all run subdirectories under results_dir and returns every
+    trial dir whose name matches '{task_name}__*'. Sorted by name
+    (ascending) for deterministic ordering. Returns empty list if none found.
     """
     if not results_dir.is_dir():
-        return None
+        return []
     pattern = f"{task_name}__*"
     matches: list[Path] = []
     for run_dir in results_dir.iterdir():
@@ -188,24 +189,24 @@ def _trial_dir_for_task(results_dir: Path, task_name: str) -> Path | None:
         for trial_dir in run_dir.iterdir():
             if trial_dir.is_dir() and fnmatch.fnmatch(trial_dir.name, pattern):
                 matches.append(trial_dir)
-    if not matches:
-        return None
-    # If multiple attempts, prefer the highest-numbered attempt suffix
-    return sorted(matches, key=lambda p: p.name, reverse=True)[0]
+    return sorted(matches, key=lambda p: p.name)
 
 
 def process_trial_results(
     *,
     results_dir: Path,
     expected_tasks: list[str],
-    chunk_attempt: int,
-    run_id: str,
-) -> list[str]:
+) -> tuple[list[str], dict[str, int]]:
     """Classify each trial and write enriched results to the local workspace.
 
     `expected_tasks` is a list of BARE task names (e.g. ['task-a', 'task-b']).
-    Returns the list of tasks that need retry (infra_error or missing, or
-    AgentTimeoutError when BENCH_RETRY_AGENT_TIMEOUT=true).
+
+    Returns:
+        needs_retry: bare task names that need retry (have retryable trials
+            and no passing trial).
+        retry_counts: {task_name: count} — number of retryable trials per
+            task. Only includes tasks in needs_retry. Tasks with no trials
+            at all get retry_counts[task] = 1.
 
     No GCS uploads happen here. The summary job tars the entire
     `BENCHMARK_RESULTS_DIR` (including this chunk's slice under
@@ -215,39 +216,56 @@ def process_trial_results(
     Harbor re-runs via this function's needs_retry signal.
     """
     needs_retry: list[str] = []
+    retry_counts: dict[str, int] = {}
 
     for task_name in expected_tasks:
-        trial_dir = _trial_dir_for_task(results_dir, task_name)
+        trial_dirs = _all_trial_dirs_for_task(results_dir, task_name)
 
-        if trial_dir is None:
+        if not trial_dirs:
             needs_retry.append(task_name)
+            retry_counts[task_name] = 1
             continue
 
-        verdict = classify(trial_dir)
+        retryable_count = 0
+        has_pass = False
+        for trial_dir in trial_dirs:
+            verdict = classify(trial_dir)
 
-        # Always write enriched local artifact (so resume sees it).
-        # New v2 schema: outcome + error_category + error_subcategory.
-        error_category = verdict.error_category
-        error_subcategory = verdict.error_subcategory
-        enriched = {
-            **verdict.raw,
-            "outcome": verdict.outcome,
-            "error_category": error_category,
-            "error_subcategory": error_subcategory,
-        }
-        (trial_dir / "result.json").write_text(json.dumps(enriched, indent=2) + "\n")
+            # Always write enriched local artifact (so resume sees it).
+            # New v2 schema: outcome + error_category + error_subcategory.
+            enriched = {
+                **verdict.raw,
+                "outcome": verdict.outcome,
+                "error_category": verdict.error_category,
+                "error_subcategory": verdict.error_subcategory,
+            }
+            (trial_dir / "result.json").write_text(
+                json.dumps(enriched, indent=2) + "\n"
+            )
 
-        if is_retryable(verdict.outcome, verdict.error_category, verdict.error_subcategory):
+            if verdict.outcome == Outcome.SCORED_PASS:
+                has_pass = True
+            elif is_retryable(
+                verdict.outcome,
+                verdict.error_category,
+                verdict.error_subcategory,
+            ):
+                retryable_count += 1
+
+        if has_pass:
+            continue
+        if retryable_count > 0:
             needs_retry.append(task_name)
+            retry_counts[task_name] = retryable_count
 
-    return needs_retry
+    return needs_retry, retry_counts
 
 
 __all__ = [
+    "_all_trial_dirs_for_task",
     "_build_gcs_key_prefix",
     "_detect_chunk_attempt",
     "_expected_tasks_for_chunk",
-    "_trial_dir_for_task",
     "_write_chunk_meta",
     "list_trial_dirs",
     "main",
@@ -779,14 +797,10 @@ def main() -> int:
         )
         return 0
 
-    run_id = run_id_from_chunk_attempt(chunk_index=chunk_index, chunk_attempt=chunk_attempt)
 
-    # First pass: classify what's already in the workspace
-    needs_retry = process_trial_results(
+    needs_retry, retry_counts = process_trial_results(
         results_dir=results_dir,
         expected_tasks=expected,
-        chunk_attempt=chunk_attempt,
-        run_id=run_id,
     )
 
     if not needs_retry:
@@ -812,13 +826,20 @@ def main() -> int:
     # `config.json`, `result.json`, `job.log`, `lock.json` (last writer wins).
     # Embedding the chunk index + CI_JOB_ID guarantees a unique name per chunk.
     job_name = f"chunk-{chunk_index}-{os.environ.get('CI_JOB_ID', 'local')}"
+    # On the first attempt (chunk_attempt == 1), use the full BENCH_ATTEMPTS
+    # since all tasks are running fresh. On retries, use the max retryable
+    # count across all retry tasks — Harbor's -k is global (not per-task), so
+    # tasks with fewer infra errors get extra trial dirs. This is harmless:
+    # compute_leaderboard_score.py filters infra-error trials and caps at
+    # expected_attempts.
+    harbor_attempts = attempts if chunk_attempt == 1 else (max(retry_counts.values()) if retry_counts else attempts)
     cmd = build_harbor_command(
         tasks=needs_retry,
         agent_import_path=_agent_import_path(coding_agent),
         model=model,
         dataset=dataset,
         parallelism=parallelism,
-        attempts=attempts,
+        attempts=harbor_attempts,
         timeout_multiplier=timeout_multiplier,
         jobs_dir=results_dir,
         job_name=job_name,
@@ -870,11 +891,9 @@ def main() -> int:
     print(f"[chunk-{chunk_index}] Harbor exited with status {harbor_status}", flush=True)
 
     # Second pass: classify what Harbor produced
-    final_needs_retry = process_trial_results(
+    final_needs_retry, _ = process_trial_results(
         results_dir=results_dir,
         expected_tasks=expected,
-        chunk_attempt=chunk_attempt,
-        run_id=run_id,
     )
 
     exit_code = 0 if not final_needs_retry else 1

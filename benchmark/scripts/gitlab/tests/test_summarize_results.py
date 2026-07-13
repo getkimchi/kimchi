@@ -620,6 +620,89 @@ class WriteSummaryMissingTasksTest(unittest.TestCase):
 
 
 
+class TestWriteSummaryAllErroredTasks(unittest.TestCase):
+    """Tasks that ran but only produced error/infra verdicts should warn, not fail."""
+
+    def test_write_summary_succeeds_when_task_only_has_error_trials(self) -> None:
+        """write_summary returns 0 when a task was attempted but all trials errored.
+
+        The task has trial dirs with result.json containing infra errors — there
+        is evidence it ran. A warning is printed but exit code is 0.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            results_dir = tmp_path / "jobs" / "run-1"
+            results_dir.mkdir(parents=True)
+
+            trial_dir = results_dir / "errored-task__abc123"
+            trial_dir.mkdir()
+            write_json(trial_dir / "result.json", {
+                **BASE_RESULT,
+                "trial_name": "errored-task__abc123",
+                "outcome": "error",
+                "error_category": "infra",
+                "error_subcategory": "agent_process_killed",
+            })
+            sessions_dir = trial_dir / "agent" / "sessions"
+            sessions_dir.mkdir(parents=True)
+            (sessions_dir / "main.jsonl").write_text("\n", encoding="utf-8")
+
+            metadata_path = tmp_path / "run-metadata.json"
+            write_json(metadata_path, {
+                "benchmark": "terminal-bench-2",
+                "coding_agent": "kimchi",
+                "model": "kimchi-dev/kimi-k2.6",
+                "results_dir": str(results_dir),
+                "parameters": {"selected_tasks": ["errored-task"]},
+            })
+
+            output_path = tmp_path / "summary.json"
+            err_buf = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), \
+                 contextlib.redirect_stderr(err_buf):
+                rc = summarize_results.write_summary(metadata_path, output_path, results_dir_override=results_dir)
+            self.assertEqual(rc, 0)
+            self.assertIn("WARNING", err_buf.getvalue())
+            self.assertIn("errored-task", err_buf.getvalue())
+
+    def test_write_summary_no_warning_when_task_has_scored_trials(self) -> None:
+        """No warning when a task has at least one scored_pass or scored_fail trial."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            results_dir = tmp_path / "jobs" / "run-1"
+            results_dir.mkdir(parents=True)
+
+            trial_dir = results_dir / "task-a__abc123"
+            trial_dir.mkdir()
+            write_json(trial_dir / "result.json", {
+                **BASE_RESULT,
+                "trial_name": "task-a__abc123",
+                "outcome": "scored_fail",
+                "error_category": None,
+                "error_subcategory": None,
+            })
+            sessions_dir = trial_dir / "agent" / "sessions"
+            sessions_dir.mkdir(parents=True)
+            (sessions_dir / "main.jsonl").write_text("\n", encoding="utf-8")
+
+            metadata_path = tmp_path / "run-metadata.json"
+            write_json(metadata_path, {
+                "benchmark": "terminal-bench-2",
+                "coding_agent": "kimchi",
+                "model": "kimchi-dev/kimi-k2.6",
+                "results_dir": str(results_dir),
+                "parameters": {"selected_tasks": ["task-a"]},
+            })
+
+            output_path = tmp_path / "summary.json"
+            err_buf = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), \
+                 contextlib.redirect_stderr(err_buf):
+                rc = summarize_results.write_summary(metadata_path, output_path, results_dir_override=results_dir)
+            self.assertEqual(rc, 0)
+            self.assertNotIn("WARNING", err_buf.getvalue())
+
+
 class WriteSummaryPrintsTableTest(unittest.TestCase):
     def test_write_summary_prints_task_table(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

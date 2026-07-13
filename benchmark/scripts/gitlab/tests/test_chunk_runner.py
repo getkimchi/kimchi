@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from chunk_runner import (
+    _all_trial_dirs_for_task,
     _build_gcs_key_prefix,
     _derive_configuration,
     _write_run_metadata,
@@ -17,6 +18,7 @@ from chunk_runner import (
     process_trial_results,
     run_id_from_chunk_attempt,
 )
+from outcome import Outcome
 
 
 def _write_result(trial_dir: Path, payload: dict) -> None:
@@ -36,14 +38,13 @@ def test_process_classifies_pass_and_writes_local(
     trial = tmp_results_dir / "run-1" / "task-a__1"
     _write_result(trial, {"verifier_result": {"rewards": {"reward": 1.0}}})
 
-    needs_retry = process_trial_results(
+    needs_retry, retry_counts = process_trial_results(
         results_dir=tmp_results_dir,
         expected_tasks=["task-a"],
-        chunk_attempt=1,
-        run_id="chunk-0-attempt-1",
     )
 
     assert needs_retry == []
+    assert retry_counts == {}
     # Local file overwritten with enriched version
     enriched = json.loads((trial / "result.json").read_text())
     assert enriched["outcome"] == "scored_pass"
@@ -62,14 +63,13 @@ def test_process_classifies_infra_and_marks_needs_retry(
         },
     )
 
-    needs_retry = process_trial_results(
+    needs_retry, retry_counts = process_trial_results(
         results_dir=tmp_results_dir,
         expected_tasks=["task-b"],
-        chunk_attempt=1,
-        run_id="chunk-0-attempt-1",
     )
 
     assert needs_retry == ["task-b"]
+    assert retry_counts == {"task-b": 1}
     enriched = json.loads((trial / "result.json").read_text())
     assert enriched["outcome"] == "error"
     assert enriched["error_category"] == "infra"
@@ -89,14 +89,13 @@ def test_process_classifies_budget_infra_without_retry(tmp_results_dir: Path) ->
         },
     )
 
-    needs_retry = process_trial_results(
+    needs_retry, retry_counts = process_trial_results(
         results_dir=tmp_results_dir,
         expected_tasks=["task-budget"],
-        chunk_attempt=1,
-        run_id="chunk-0-attempt-1",
     )
 
     assert needs_retry == []
+    assert retry_counts == {}
     enriched = json.loads((trial / "result.json").read_text())
     assert enriched["outcome"] == "error"
     assert enriched["error_category"] == "infra"
@@ -105,14 +104,13 @@ def test_process_classifies_budget_infra_without_retry(tmp_results_dir: Path) ->
 
 def test_process_marks_missing_as_needs_retry(tmp_results_dir: Path) -> None:
     """A task with no local result.json is added to needs_retry."""
-    needs_retry = process_trial_results(
+    needs_retry, retry_counts = process_trial_results(
         results_dir=tmp_results_dir,
         expected_tasks=["task-missing"],
-        chunk_attempt=1,
-        run_id="chunk-0-attempt-1",
     )
 
     assert needs_retry == ["task-missing"]
+    assert retry_counts == {"task-missing": 1}
 
 
 def test_process_quality_fail_no_retry(tmp_results_dir: Path) -> None:
@@ -120,14 +118,13 @@ def test_process_quality_fail_no_retry(tmp_results_dir: Path) -> None:
     trial = tmp_results_dir / "run-1" / "task-c__1"
     _write_result(trial, {"verifier_result": {"rewards": {"reward": 0.0}}})
 
-    needs_retry = process_trial_results(
+    needs_retry, retry_counts = process_trial_results(
         results_dir=tmp_results_dir,
         expected_tasks=["task-c"],
-        chunk_attempt=1,
-        run_id="chunk-0-attempt-1",
     )
 
     assert needs_retry == []
+    assert retry_counts == {}
 
 
 def test_main_exits_zero_when_no_tasks_need_retry(
@@ -994,3 +991,316 @@ def test_restore_prior_artifact_does_not_collide_across_dataset_versions(
 
     assert restored is False
     assert not any(tmp_path.iterdir())
+
+
+# ---------------------------------------------------------------------------
+# _all_trial_dirs_for_task — returns ALL trial dirs, not just one
+# ---------------------------------------------------------------------------
+
+class TestAllTrialDirsForTask:
+    def test_multiple_trial_dirs_across_run_subdirs(self, tmp_path: Path) -> None:
+        """Returns all trial dirs for a task across multiple run subdirs."""
+        (tmp_path / "run-1" / "task-a__abc1234").mkdir(parents=True)
+        (tmp_path / "run-1" / "task-a__def5678").mkdir(parents=True)
+        (tmp_path / "run-2" / "task-a__ghi9012").mkdir(parents=True)
+
+        result = _all_trial_dirs_for_task(tmp_path, "task-a")
+
+        assert len(result) == 3
+        names = [p.name for p in result]
+        assert "task-a__abc1234" in names
+        assert "task-a__def5678" in names
+        assert "task-a__ghi9012" in names
+        assert result == sorted(result, key=lambda p: p.name)
+
+    def test_zero_matches_returns_empty_list(self, tmp_path: Path) -> None:
+        """Returns empty list when no trial dirs match."""
+        (tmp_path / "run-1" / "task-b__xyz").mkdir(parents=True)
+
+        result = _all_trial_dirs_for_task(tmp_path, "task-a")
+
+        assert result == []
+
+    def test_prefix_match_does_not_match_other_tasks(self, tmp_path: Path) -> None:
+        """task-a does not match task-aa."""
+        (tmp_path / "run-1" / "task-a__abc1234").mkdir(parents=True)
+        (tmp_path / "run-1" / "task-aa__def5678").mkdir(parents=True)
+
+        result = _all_trial_dirs_for_task(tmp_path, "task-a")
+
+        assert len(result) == 1
+        assert result[0].name == "task-a__abc1234"
+
+    def test_results_dir_does_not_exist_returns_empty_list(self, tmp_path: Path) -> None:
+        """Returns empty list when results_dir doesn't exist."""
+        result = _all_trial_dirs_for_task(tmp_path / "nonexistent", "task-a")
+        assert result == []
+
+    def test_ignores_non_directory_files(self, tmp_path: Path) -> None:
+        """Only returns directories, not files."""
+        (tmp_path / "run-1").mkdir(parents=True)
+        (tmp_path / "run-1" / "task-a__abc1234").mkdir()
+        (tmp_path / "run-1" / "task-a__not_a_dir.txt").write_text("ignored")
+
+        result = _all_trial_dirs_for_task(tmp_path, "task-a")
+
+        assert len(result) == 1
+        assert result[0].name == "task-a__abc1234"
+
+
+# ---------------------------------------------------------------------------
+# process_trial_results — multi-trial inspection + retry counts
+# ---------------------------------------------------------------------------
+
+def _write_enriched_result(
+    trial_dir: Path,
+    *,
+    reward: float | None = None,
+    outcome: Outcome = Outcome.SCORED_PASS,
+    error_category: str | None = None,
+    error_subcategory: str | None = None,
+) -> None:
+    """Write a minimal enriched result.json for process_trial_results tests.
+
+    This helper writes a pre-classified result (with ``outcome`` already set),
+    bypassing the real ``classify()`` call that ``process_trial_results`` makes
+    internally.  That is intentional: ``classify()`` reads ``result.json`` and,
+    when it finds an ``outcome`` field already present, propagates it through
+    the enriched schema — so the round-trip is consistent.  Tests that need
+    real classification (e.g. ``TestMainRetryFlow``) should use the lower-level
+    ``_write_result`` helper instead, which writes raw verifier/exception payloads.
+    """
+    raw: dict = {}
+    if reward is not None:
+        raw["verifier_result"] = {"rewards": {"reward": reward}}
+    enriched = {
+        **raw,
+        "outcome": outcome,
+        "error_category": error_category,
+        "error_subcategory": error_subcategory,
+    }
+    (trial_dir / "result.json").write_text(json.dumps(enriched) + "\n")
+
+
+class TestProcessTrialResultsMultiTrial:
+    def test_task_with_pass_and_infra_not_retried(self, tmp_path: Path) -> None:
+        """Task with one SCORED_PASS and one infra error -> not retried."""
+        t1 = tmp_path / "run-1" / "task-a__abc1234"
+        t2 = tmp_path / "run-1" / "task-a__def5678"
+        t1.mkdir(parents=True)
+        t2.mkdir(parents=True)
+        _write_enriched_result(t1, reward=1.0, outcome=Outcome.SCORED_PASS)
+        _write_enriched_result(t2, outcome=Outcome.ERROR, error_category="infra",
+                              error_subcategory="agent_process_killed")
+
+        needs_retry, retry_counts = process_trial_results(
+            results_dir=tmp_path, expected_tasks=["task-a"]
+        )
+
+        assert needs_retry == []
+        assert retry_counts == {}
+
+    def test_task_with_all_infra_retried_with_count(self, tmp_path: Path) -> None:
+        """Task with all infra-error trials -> retried, count = N."""
+        for suffix in ["abc1234", "def5678", "ghi9012"]:
+            d = tmp_path / "run-1" / f"task-a__{suffix}"
+            d.mkdir(parents=True)
+            _write_enriched_result(d, outcome=Outcome.ERROR, error_category="infra",
+                                   error_subcategory="agent_process_killed")
+
+        needs_retry, retry_counts = process_trial_results(
+            results_dir=tmp_path, expected_tasks=["task-a"]
+        )
+
+        assert needs_retry == ["task-a"]
+        assert retry_counts == {"task-a": 3}
+
+    def test_task_with_no_trials_retried_with_count_1(self, tmp_path: Path) -> None:
+        """Task with zero trial dirs -> retried, count = 1."""
+        needs_retry, retry_counts = process_trial_results(
+            results_dir=tmp_path, expected_tasks=["task-a"]
+        )
+
+        assert needs_retry == ["task-a"]
+        assert retry_counts == {"task-a": 1}
+
+    def test_task_with_scored_fail_only_not_retried(self, tmp_path: Path) -> None:
+        """Task with only scored_fail trials (not retryable) -> not retried."""
+        d = tmp_path / "run-1" / "task-a__abc1234"
+        d.mkdir(parents=True)
+        _write_enriched_result(d, reward=0.0, outcome=Outcome.SCORED_FAIL)
+
+        needs_retry, retry_counts = process_trial_results(
+            results_dir=tmp_path, expected_tasks=["task-a"]
+        )
+
+        assert needs_retry == []
+        assert retry_counts == {}
+
+    def test_task_with_mix_fail_and_infra_retried_with_infra_count(self, tmp_path: Path) -> None:
+        """Task with scored_fail + infra -> retried, count = infra count only."""
+        t1 = tmp_path / "run-1" / "task-a__abc1234"
+        t2 = tmp_path / "run-1" / "task-a__def5678"
+        t1.mkdir(parents=True)
+        t2.mkdir(parents=True)
+        _write_enriched_result(t1, reward=0.0, outcome=Outcome.SCORED_FAIL)
+        _write_enriched_result(t2, outcome=Outcome.ERROR, error_category="infra",
+                               error_subcategory="agent_process_killed")
+
+        needs_retry, retry_counts = process_trial_results(
+            results_dir=tmp_path, expected_tasks=["task-a"]
+        )
+
+        assert needs_retry == ["task-a"]
+        assert retry_counts == {"task-a": 1}
+
+    def test_enriched_result_json_written_for_every_trial(self, tmp_path: Path) -> None:
+        """Every trial dir gets an enriched result.json, not just one."""
+        t1 = tmp_path / "run-1" / "task-a__abc1234"
+        t2 = tmp_path / "run-1" / "task-a__def5678"
+        t1.mkdir(parents=True)
+        t2.mkdir(parents=True)
+        _write_enriched_result(t1, reward=1.0, outcome=Outcome.SCORED_PASS)
+        _write_enriched_result(t2, outcome=Outcome.ERROR, error_category="infra",
+                               error_subcategory="agent_process_killed")
+
+        process_trial_results(
+            results_dir=tmp_path, expected_tasks=["task-a"]
+        )
+
+        for trial_dir in [t1, t2]:
+            data = json.loads((trial_dir / "result.json").read_text())
+            assert "outcome" in data
+            assert "error_category" in data
+            assert "error_subcategory" in data
+
+    def test_multiple_tasks_with_different_outcomes(self, tmp_path: Path) -> None:
+        """Two tasks: one passes, one has infra -> only infra task retried."""
+        pass_dir = tmp_path / "run-1" / "task-a__abc1234"
+        infra_dir = tmp_path / "run-1" / "task-b__def5678"
+        pass_dir.mkdir(parents=True)
+        infra_dir.mkdir(parents=True)
+        _write_enriched_result(pass_dir, reward=1.0, outcome=Outcome.SCORED_PASS)
+        _write_enriched_result(infra_dir, outcome=Outcome.ERROR, error_category="infra",
+                               error_subcategory="agent_process_killed")
+
+        needs_retry, retry_counts = process_trial_results(
+            results_dir=tmp_path, expected_tasks=["task-a", "task-b"]
+        )
+
+        assert needs_retry == ["task-b"]
+        assert retry_counts == {"task-b": 1}
+
+
+# ---------------------------------------------------------------------------
+# main() retry flow — harbor_attempts on first attempt vs retry
+# ---------------------------------------------------------------------------
+
+class TestMainRetryFlow:
+    """Verify that main() passes the correct -k to Harbor on retry."""
+
+    def test_first_attempt_uses_bench_attempts(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """On first attempt (no prior trials), harbor_attempts == BENCH_ATTEMPTS."""
+        _main_env(tmp_path, monkeypatch, BENCH_ATTEMPTS="5")
+        monkeypatch.setenv("BENCHMARK_NAME", "terminal-bench-2")
+        monkeypatch.setenv("DATASET", "terminal-bench/terminal-bench-2")
+        monkeypatch.setenv("BENCH_RETRY_AGENT_TIMEOUT", "false")
+
+        import chunk_runner
+
+        captured_attempts: list[int] = []
+
+        def mock_build(**kwargs):
+            captured_attempts.append(kwargs["attempts"])
+            return ["echo", "mocked"]
+
+        monkeypatch.setattr(chunk_runner, "build_harbor_command", mock_build)
+
+        class FakeProc:
+            def poll(self):
+                return 0
+            def wait(self):
+                return 0
+            def terminate(self):
+                pass
+
+        results_dir = Path(str(tmp_path / "jobs"))
+
+        def mock_run_harbor(**kw):
+            # Simulate Harbor creating a passing trial dir
+            trial_dir = results_dir / "run-1" / "task-a__mock1234"
+            trial_dir.mkdir(parents=True, exist_ok=True)
+            _write_result(trial_dir, {"verifier_result": {"rewards": {"reward": 1.0}}})
+            return FakeProc()
+
+        monkeypatch.setattr(chunk_runner, "run_harbor", mock_run_harbor)
+
+        exit_code = main()
+        assert exit_code == 0
+        assert len(captured_attempts) == 1
+        assert captured_attempts[0] == 5
+
+    def test_retry_uses_max_retry_count(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """On retry with 3 infra-error trials, harbor_attempts == 3."""
+        _main_env(tmp_path, monkeypatch, BENCH_ATTEMPTS="5")
+        monkeypatch.setenv("BENCHMARK_NAME", "terminal-bench-2")
+        monkeypatch.setenv("DATASET", "terminal-bench/terminal-bench-2")
+        monkeypatch.setenv("BENCH_RETRY_AGENT_TIMEOUT", "false")
+
+        results_dir = Path(str(tmp_path / "jobs"))
+
+        # Create 3 infra-error trial dirs with proper exception_info
+        # so real classify() returns ERROR/infra/agent_process_killed
+        for suffix in ["abc1234", "def5678", "ghi9012"]:
+            d = results_dir / "run-1" / f"task-a__{suffix}"
+            d.mkdir(parents=True)
+            _write_result(d, {
+                "exception_info": {
+                    "exception_type": "NonZeroAgentExitCodeError",
+                    "exception_message": "command failed (exit 137)",
+                    "exception_traceback": "Process killed\n/installed-agent/bin/kimchi",
+                },
+            })
+
+        # Write chunk-meta so _detect_chunk_attempt returns 2
+        meta_dir = results_dir / "chunk-meta"
+        meta_dir.mkdir(parents=True)
+        (meta_dir / "chunk-0.json").write_text(json.dumps({
+            "chunk_index": 0,
+            "chunk_attempt": 1,
+            "exit_code": 1,
+            "needs_retry": ["task-a"],
+            "timestamp": "2026-07-12T00:00:00Z",
+        }))
+
+        import chunk_runner
+
+        captured_attempts: list[int] = []
+
+        def mock_build(**kwargs):
+            captured_attempts.append(kwargs["attempts"])
+            return ["echo", "mocked"]
+
+        monkeypatch.setattr(chunk_runner, "build_harbor_command", mock_build)
+
+        class FakeProc:
+            def poll(self):
+                return 0
+            def wait(self):
+                return 0
+            def terminate(self):
+                pass
+
+        def mock_run_harbor(**kw):
+            # Simulate Harbor creating a passing trial dir
+            trial_dir = results_dir / "run-1" / "task-a__mock1234"
+            trial_dir.mkdir(parents=True, exist_ok=True)
+            _write_result(trial_dir, {"verifier_result": {"rewards": {"reward": 1.0}}})
+            return FakeProc()
+
+        monkeypatch.setattr(chunk_runner, "run_harbor", mock_run_harbor)
+
+        exit_code = main()
+        assert exit_code == 0
+        assert len(captured_attempts) == 1
+        assert captured_attempts[0] == 3
