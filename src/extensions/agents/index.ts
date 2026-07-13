@@ -102,11 +102,11 @@ import {
 const SUBAGENT_SHUTDOWN_WAIT_MS = 5_000
 
 export const AGENT_TOOL_GUIDELINES = `Guidelines:
-- Follow the **Orchestration** section for workflow, delegation, model selection, budgets, Explore prompt shaping, and artifact handoff.
+- Follow the **Orchestration** section for workflow, delegation, model selection, budgets, Explore-agent prompt shaping, and artifact handoff.
 - If the user explicitly asks to use the Agent tool, call Agent exactly once with the requested agent type and token_budget. Do not refuse or preflight the budget in prose; let the tool enforce it.
 - For parallel work, use run_in_background: true on each agent. Foreground calls run sequentially — only one executes at a time.
 - Keep each Agent call focused on a single outcome. Split large tasks into smaller, independent Agent calls.
-- Agent types: Explore (read-only fact-finding), Plan (spec writing), Researcher (cited web/docs research), Builder (implementation), Reviewer (findings report), Fixer (apply review fixes), General-Purpose (editing when no persona fits).
+- Agent types: Explore (read-only fact-finding), Plan (spec writing), Researcher (cited web/docs research), Builder (implementation), Reviewer (findings report), Fixer (apply review fixes), General-Purpose (fallback when none of the specialized personas fit).
 - Provide clear, detailed prompts so the agent can work autonomously.
 - Agent results are returned as text — summarize them for the user.
 - Use resume_subagent to continue a previous agent's work; get_subagent_result for background status; steer_subagent for mid-run steering.

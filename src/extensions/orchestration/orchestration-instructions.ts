@@ -158,7 +158,11 @@ const AGENT_DELEGATION = `### Agent delegation
 
 ### Model selection
 
-Always pass a \`model\` parameter on every Agent call — never omit it. Default to the lightest-tier model from the relevant pool **when the pool has multiple candidates**; if the role is configured with only one model, use that model. Escalate to heavy-tier only for concurrency, algorithms, architectural reasoning, or when a lighter-tier model has already failed on the same chunk. Read the model's **description** in **Your team** before selecting — it may reveal limitations. If the subtask involves images or visual content, select a model with Vision: yes.
+Always pass a \`model\` parameter on every Agent call — never omit it. Match the model tier to the task complexity:
+- Use the lightest-tier model from the relevant pool for straightforward, bounded work (e.g. a single file edit, a deterministic lookup, or a small refactor).
+- Use a standard-tier model for multi-file packages, state machines, or non-trivial algorithms.
+- Use a heavy-tier model for concurrency, architectural reasoning, security-critical logic, novel patterns, or as a retry after a lighter-tier model failed on the same chunk.
+If the role is configured with only one model, use that model. Read the model's **description** in **Your team** before selecting — it may reveal limitations. If the subtask involves images or visual content, select a model with Vision: yes.
 
 **Tool descriptions vs. Orchestration:** Tool descriptions summarize capabilities. Detailed policy for delegation, budgets, model selection, and artifact handoff lives in this Orchestration section. If a tool description appears to set policy differently, follow Orchestration.`
 
@@ -230,10 +234,10 @@ function buildPlanPhaseDirectives(ctx: PhaseDirectiveContext): string {
 	lines.push("#### Plan phase")
 	lines.push("")
 	lines.push(
-		"- Decide whether to write the plan yourself or delegate to a Plan agent. Base the choice on cost, your current planning capacity, and whether a fresh architectural perspective would improve the spec.",
+		"- Decide whether to write the plan yourself or delegate to a Plan agent. Base the choice on cost, how well you already understand the domain and constraints, and whether a fresh architectural perspective would improve the spec.",
 	)
 	lines.push(
-		"- If writing yourself: produce a Markdown spec file in the Documents directory and self-validate by re-reading the spec against every requirement from the original task.",
+		"- If writing yourself: produce a Markdown spec file in the Documents directory and validate it by re-reading the spec against every requirement from the original task.",
 	)
 	lines.push(
 		`- If delegating: use Agent(type: "Plan", model: ${models}). Have the Plan agent write the Markdown spec (full method signatures, file paths, interfaces) to the Documents directory. Self-validate the returned spec before proceeding.`,
@@ -245,7 +249,7 @@ function buildPlanPhaseDirectives(ctx: PhaseDirectiveContext): string {
 	lines.push(PLAN_VERIFICATION)
 	lines.push("")
 	lines.push(
-		"**Handling the verdict:** If APPROVED: proceed to build phase. If NEEDS_REVISION: fix or delegate the gaps. After revision, send ONLY the changed sections back to the verifier — not the full plan. Maximum one re-verification round; if still not approved, proceed with documented reservations.",
+		"**Handling the verdict:** If APPROVED: proceed to build phase. If NEEDS_REVISION: fix or delegate the gaps, then return the full revised plan to the verifier with the changed sections clearly marked. Maximum one re-verification round; if still not approved, proceed with documented reservations.",
 	)
 
 	return lines.join("\n")

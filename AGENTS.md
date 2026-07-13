@@ -47,13 +47,15 @@ Example: `gh pr create --label "bug" ...`
 
 ## Before Adding Features
 
-This repo extends `@earendil-works/pi-coding-agent` (pi-mono). Most
-capabilities you might be asked to add already exist upstream or in a
-sibling package. Re-implementing them locally creates maintenance debt
-and divergence. Before writing any new feature, work through the project-
-specific checklist below **within the generic Orchestration phases** (this
-is the Explore/Research/Plan content for feature work; it does not replace
-or run in parallel with Orchestration).
+Before adding a new capability, check whether it already exists upstream
+or in a sibling package. This repo extends `@earendil-works/pi-coding-agent`
+(pi-mono), so re-implementing upstream features creates maintenance debt
+and divergence.
+
+Use the checklist below **during the Explore/Research/Plan phases** of your
+orchestration workflow. It does not replace your main orchestration
+pipeline; it replaces the normal Explore/Research/Plan content for
+feature-work sessions.
 
 ### Frame the capability
 

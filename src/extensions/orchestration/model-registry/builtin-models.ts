@@ -48,7 +48,7 @@ import type { ModelCapabilities, Phase } from "./types.js"
  */
 
 const KIMI_K26_DESCRIPTION = `\
-Flagship Kimi model with vision support — the key model for complex planning decisions, \
+High-capacity Kimi model with vision support — the key model for complex planning decisions, \
 deep research, and correctness-critical tasks. Handles images, screenshots, and visual input. \
 Best for: orchestration, architectural planning, plan verification involving concurrency \
 or algorithmic design. \

@@ -11,7 +11,7 @@ describe("summaryForStatus", () => {
 describe("AGENT_TOOL_GUIDELINES", () => {
 	it("points orchestrators to the Orchestration section instead of duplicating delegation rules", () => {
 		expect(AGENT_TOOL_GUIDELINES).toContain("Follow the **Orchestration** section")
-		expect(AGENT_TOOL_GUIDELINES).toContain("Explore prompt shaping")
+		expect(AGENT_TOOL_GUIDELINES).toContain("Explore-agent prompt shaping")
 		expect(AGENT_TOOL_GUIDELINES).not.toContain("Return decision-ready findings to the parent; do not write files.")
 		expect(AGENT_TOOL_GUIDELINES).not.toContain("write a complete implementation spec")
 	})

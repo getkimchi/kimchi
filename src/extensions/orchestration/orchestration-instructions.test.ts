@@ -299,6 +299,51 @@ describe("resolveOrchestrationInstructions", () => {
 		expect(result).toContain("minimax-m2.7")
 		expect(result).toContain("### Reviewer")
 	})
+
+	it("uses complexity-based model tier examples instead of a lightest-tier default", () => {
+		const result = resolveAsString({
+			currentModelId: "kimi-k2.6",
+			registry,
+			roles: DEFAULT_MODEL_ROLES,
+		})
+		expect(result).toContain("Match the model tier to the task complexity")
+		expect(result).toContain("single file edit")
+		expect(result).toContain("multi-file packages")
+		expect(result).toContain("state machines")
+		expect(result).toContain("security-critical logic")
+		expect(result).not.toContain("Default to the lightest-tier model")
+	})
+
+	it("uses observable planning factors instead of 'planning capacity'", () => {
+		const result = resolveAsString({
+			currentModelId: "kimi-k2.6",
+			registry,
+			roles: DEFAULT_MODEL_ROLES,
+		})
+		expect(result).toContain("how well you already understand the domain and constraints")
+		expect(result).not.toContain("planning capacity")
+	})
+
+	it("replaces 'self-validate' with 'validate it by re-reading'", () => {
+		const result = resolveAsString({
+			currentModelId: "kimi-k2.6",
+			registry,
+			roles: DEFAULT_MODEL_ROLES,
+		})
+		expect(result).toContain("validate it by re-reading")
+		expect(result).not.toContain("self-validate")
+	})
+
+	it("requires the full revised plan with changed sections marked on re-verification", () => {
+		const result = resolveAsString({
+			currentModelId: "kimi-k2.6",
+			registry,
+			roles: DEFAULT_MODEL_ROLES,
+		})
+		expect(result).toContain("return the full revised plan to the verifier")
+		expect(result).toContain("changed sections clearly marked")
+		expect(result).not.toContain("send ONLY the changed sections")
+	})
 })
 
 describe("resolveOrchestrationInstructions with custom configs", () => {
