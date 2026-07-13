@@ -139,12 +139,8 @@ test("plan review dialog does not re-appear after Esc dismissal", async ({ termi
 				timeoutMs: STARTUP_TIMEOUT_MS,
 			})
 
-			// Stage 2: enter ferment. Type then Enter separately — one-shot
-			// "/ferment\r" can race startup.
-			terminal.write("/ferment")
-			await waitForText(terminal, "/ferment", { timeoutMs: INPUT_TIMEOUT_MS })
-			trace.step("typed /ferment")
-			terminal.submit("")
+			// Stage 2: enter ferment.
+			terminal.submit("/ferment")
 			trace.step("ran /ferment")
 
 			// Stage 3: intent prompt appears.
@@ -235,10 +231,7 @@ test("plan review dialog does not re-appear after feedback", async ({ terminal }
 			})
 
 			// Stage 2: enter ferment.
-			terminal.write("/ferment")
-			await waitForText(terminal, "/ferment", { timeoutMs: INPUT_TIMEOUT_MS })
-			trace.step("typed /ferment")
-			terminal.submit("")
+			terminal.submit("/ferment")
 			trace.step("ran /ferment")
 
 			// Stage 3: intent prompt appears.
