@@ -15,6 +15,12 @@ interface SkillToolDetails {
 const SkillToolSchema = Type.Object({
 	skill: Type.Optional(Type.String({ description: "Claude Code skill name to load, e.g. typescript-safety." })),
 	name: Type.Optional(Type.String({ description: "Alias for skill." })),
+	source: Type.Optional(
+		Type.Union([Type.Literal("auto"), Type.Literal("claude")], {
+			description:
+				'Skill source selector. Use "claude" to explicitly load a Claude Code skill that duplicates a native skill.',
+		}),
+	),
 })
 
 type SkillToolArgs = Static<typeof SkillToolSchema>
@@ -57,6 +63,17 @@ export default function claudeCodeSkillsExtension(pi: ExtensionAPI, configuredSk
 				return {
 					content: [{ type: "text" as const, text: message }],
 					details: { success: false, name, error: message } satisfies SkillToolDetails,
+				}
+			}
+
+			if (
+				params.source !== "claude" &&
+				getConfiguredNativeSkillNames(ctx.cwd, configuredSkillPaths).includes(skill.name)
+			) {
+				const message = `Claude Code skill "${skill.name}" duplicates a native skill. Pass source: "claude" to load the Claude Code version explicitly.`
+				return {
+					content: [{ type: "text" as const, text: message }],
+					details: { success: false, name: skill.name, error: message } satisfies SkillToolDetails,
 				}
 			}
 
