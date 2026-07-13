@@ -33,6 +33,7 @@ import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
 import { confirmPendingScope } from "./scoping-confirmation.js"
 import { clearAllPendingScopes, setPendingScope } from "./scoping.js"
 import { clearAllScopingGates, clearAllStepStarts, setActive } from "./state.js"
+import { createApplyAndPersist } from "./tool-helpers.js"
 
 // ─── Harness ─────────────────────────────────────────────────────────────────
 
@@ -229,5 +230,104 @@ describe("resumeFerment automated scope-nudge dedup", () => {
 			.filter((m) => m.customType === "ferment_resume_nudge" || m.customType === "ferment_continuation_nudge")
 			.map((m) => m.customType)
 		expect(hiddenNudges).toEqual(["ferment_resume_nudge"])
+	})
+})
+
+describe("resumeFerment paused-state nudge guard", () => {
+	it("paused ferment that resumes to running emits the resume nudge", () => {
+		const draft = h.eventStorage.create("Paused Then Running")
+		h.runtime.setActive(draft)
+
+		// Scope and activate so the ferment can be paused/resumed meaningfully.
+		const applyAndPersist = createApplyAndPersist(h.runtime)
+		const scoped = applyAndPersist(draft.id, {
+			type: "scope",
+			title: "Paused Then Running",
+			goal: "g",
+			successCriteria: ["c"],
+			constraints: [],
+			assumptions: "a",
+			phases: [{ name: "P1", goal: "g", steps: [{ description: "s1" }] }],
+		})
+		expect(scoped.ok).toBe(true)
+		if (!scoped.ok) throw new Error(scoped.error.message)
+		const activated = applyAndPersist(draft.id, {
+			type: "activate_phase",
+			phaseId: scoped.ferment.phases[0].id,
+		})
+		expect(activated.ok).toBe(true)
+		if (!activated.ok) throw new Error(activated.error.message)
+
+		// Pause the ferment.
+		const paused = applyAndPersist(draft.id, { type: "pause" })
+		expect(paused.ok).toBe(true)
+		if (!paused.ok) throw new Error(paused.error.message)
+		expect(paused.ferment.status).toBe("paused")
+
+		resumeFerment(h.pi, draft.id, hasUIContext(), h.runtime)
+
+		// After resume, status should be running and the model gets the imperative nudge.
+		const running = h.eventStorage.get(draft.id)
+		expect(running?.status).toBe("running")
+
+		const resumeNudge = h.sentMessages.find((m) => m.customType === "ferment_resume_nudge")
+		expect(resumeNudge).toBeDefined()
+		const nudgeText = resumeNudge?.content?.map((c) => c.text ?? "").join("") ?? ""
+		expect(nudgeText).toContain("RESUMING ferment")
+		expect(nudgeText).toContain("Pick up the work immediately")
+	})
+
+	it("paused ferment that remains paused does not emit the resume nudge", () => {
+		const draft = h.eventStorage.create("Stays Paused")
+		h.runtime.setActive(draft)
+
+		const applyAndPersist = createApplyAndPersist(h.runtime)
+		const scoped = applyAndPersist(draft.id, {
+			type: "scope",
+			title: "Stays Paused",
+			goal: "g",
+			successCriteria: ["c"],
+			constraints: [],
+			assumptions: "a",
+			phases: [{ name: "P1", goal: "g", steps: [{ description: "s1" }] }],
+		})
+		expect(scoped.ok).toBe(true)
+		if (!scoped.ok) throw new Error(scoped.error.message)
+		const activated = applyAndPersist(draft.id, {
+			type: "activate_phase",
+			phaseId: scoped.ferment.phases[0].id,
+		})
+		expect(activated.ok).toBe(true)
+		if (!activated.ok) throw new Error(activated.error.message)
+		const paused = applyAndPersist(draft.id, { type: "pause" })
+		expect(paused.ok).toBe(true)
+		if (!paused.ok) throw new Error(paused.error.message)
+
+		// Simulate a resume that did not take effect: intercept the next
+		// mutateWithEvents call (the resume attempt inside resumeFerment) and
+		// force it to fail with a non-ok outcome. Because resume.ts only
+		// reassigns `existing = out.ferment` when `out.ok`, leaving
+		// existing.status === "paused" exercises the ferment_paused_notice branch.
+		// We can't achieve this by mocking eventStorage.get alone: resume.ts
+		// reassigns `existing` from the applyAndPersist return value, and
+		// mutateWithEvents reads the underlying storage via this.storage.get
+		// (not this.get), so a spy on eventStorage.get would not intercept the
+		// mutate path.
+		vi.spyOn(h.eventStorage, "mutateWithEvents").mockImplementationOnce(() => {
+			return { ok: false, error: { code: "FERMENT_NOT_FOUND", message: "simulated resume failure" } }
+		})
+
+		resumeFerment(h.pi, draft.id, hasUIContext(), h.runtime)
+
+		// No resume nudge should be sent to the model.
+		const resumeNudge = h.sentMessages.find((m) => m.customType === "ferment_resume_nudge")
+		expect(resumeNudge).toBeUndefined()
+
+		// A user-facing paused notice should be sent instead.
+		const pausedNotice = h.sentMessages.find((m) => m.customType === "ferment_paused_notice")
+		expect(pausedNotice).toBeDefined()
+		const noticeText = pausedNotice?.content?.map((c) => c.text ?? "").join("") ?? ""
+		expect(noticeText).toContain("currently paused")
+		expect(noticeText).toContain("/ferment resume")
 	})
 })

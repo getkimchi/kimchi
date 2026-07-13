@@ -4,6 +4,7 @@ import { deriveDraftFermentTitle } from "../../ferment/title.js"
 import type { Ferment } from "../../ferment/types.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { deferExtensionAction } from "../deferred-action.js"
+import { getMultiModelEnabled } from "../multi-model.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { maybeTriggerFermentCompaction, maybeTriggerMidTurnFermentCompaction } from "./auto-compaction.js"
 import { formatDuration } from "./colors.js"
@@ -39,15 +40,9 @@ import {
 	resetScopingExploreTurns,
 } from "./state.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
-import {
-	applyFermentRuntimeToolProfile,
-	applyFermentToolProfile,
-	hasPendingPlanReview,
-	setActiveFermentAndApplyProfile,
-} from "./tool-scope.js"
+import { applyFermentRuntimeToolProfile, hasPendingPlanReview, setActiveFermentAndApplyProfile } from "./tool-scope.js"
 
 type AssistantContentPart = { type: string; text?: string; name?: string }
-type TurnEndContext = Partial<Pick<ExtensionContext, "ui">>
 
 function isAssistantContentPart(value: unknown): value is AssistantContentPart {
 	return typeof value === "object" && value !== null && "type" in value && typeof value.type === "string"
@@ -124,14 +119,14 @@ function findUserInputPrompt(
 
 async function maybeRunManualBoundaryDropdown(
 	pi: ExtensionAPI,
-	ctx: TurnEndContext | undefined,
+	ctx: ExtensionContext,
 	prompt: UserInputPrompt,
 	f: NonNullable<ReturnType<FermentRuntime["getActive"]>>,
 	runtime: FermentRuntime,
 ): Promise<boolean> {
 	const decision = decideContinuation(f, runtime.getContinuationPolicy())
 	if (decision.type !== "wait_manual_boundary") return false
-	if (!ctx?.ui?.select) return true
+	if (!ctx.hasUI) return true
 
 	const nextPhase = f.phases.find((phase) => phase.id === decision.action.phaseId)
 	const nextPhaseName = nextPhase?.name ?? decision.action.phaseId
@@ -188,7 +183,7 @@ function buildStalledPayload(ferment: Ferment, now: number): FermentStalledPaylo
 
 async function maybeRunUserInputDropdown(
 	pi: ExtensionAPI,
-	ctx: TurnEndContext | undefined,
+	ctx: ExtensionContext,
 	content: AssistantContentPart[],
 	f: NonNullable<ReturnType<FermentRuntime["getActive"]>>,
 	runtime: FermentRuntime,
@@ -197,7 +192,7 @@ async function maybeRunUserInputDropdown(
 	if (!prompt) return false
 	const boundaryHandled = await maybeRunManualBoundaryDropdown(pi, ctx, prompt, f, runtime)
 	if (boundaryHandled) return true
-	if (!ctx?.ui?.select || (!ctx.ui.editor && !ctx.ui.input)) return true
+	if (!ctx.hasUI) return true
 
 	const choice = await promptSelect(ctx, prompt.title, prompt.options)
 	if (!choice) return true
@@ -357,7 +352,7 @@ export function registerFermentEvents(
 				return
 			}
 
-			if (ctx?.hasUI && ctx.ui?.select) {
+			if (ctx?.hasUI) {
 				// F27: ask user before auto-resuming so the planner doesn't
 				// hijack the session before they're ready.
 				const activePhase = ferment.phases.find((p) => p.id === ferment.activePhaseId)
@@ -417,7 +412,7 @@ export function registerFermentEvents(
 		removeFermentLock(f.id)
 	})
 
-	pi.on("input", async (event) => {
+	pi.on("input", async (event, handler) => {
 		if (event.source === "interactive") {
 			runtime.markHumanInput()
 		}
@@ -453,7 +448,11 @@ export function registerFermentEvents(
 				},
 				{ triggerTurn: false },
 			)
-			return { action: "transform" as const, text: buildOneshotNudge(updated, intent), images: event.images }
+			return {
+				action: "transform" as const,
+				text: buildOneshotNudge(updated, intent, getMultiModelEnabled(handler.sessionManager)),
+				images: event.images,
+			}
 		} catch (err) {
 			const failText = `One-shot ferment bootstrap failed: ${err instanceof Error ? err.message : String(err)}`
 			safeSendMessage(

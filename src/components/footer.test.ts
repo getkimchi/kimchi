@@ -5,7 +5,7 @@ import type { FooterElementId } from "../config/footer-config.js"
 import * as AGENTS from "../extensions/agents/index.js"
 import { setBillingStatusForTest } from "../extensions/billing/status.js"
 import * as FERMENT from "../extensions/ferment/index.js"
-import * as ORCHESTRATION from "../extensions/prompt-construction/prompt-enrichment.js"
+import * as MULTI_MODEL from "../extensions/multi-model.js"
 import * as TAGS from "../extensions/tags.js"
 import { SHORTCUT_TAIL, StatsFooter, buildContextCompact, buildModelAbbrev, buildPhaseCompact } from "./footer.js"
 
@@ -254,7 +254,7 @@ describe("StatsFooter behavioural acceptance at representative widths", () => {
 		// shape so the SHORTCUT_TAIL regex can find it.
 		const permissionsMode = "\u25cf default \x1b[2m\u2192 shift+tab\x1b[0m"
 		footerData = createMockFooterData({ permissionsMode })
-		vi.spyOn(ORCHESTRATION, "getMultiModelEnabled").mockReturnValue(true)
+		vi.spyOn(MULTI_MODEL, "getMultiModelEnabled").mockReturnValue(true)
 		vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(0)
 		vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
 		vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
@@ -377,7 +377,7 @@ describe("StatsFooter segment coverage", () => {
 
 	beforeEach(() => {
 		theme = createMockTheme()
-		vi.spyOn(ORCHESTRATION, "getMultiModelEnabled").mockReturnValue(true)
+		vi.spyOn(MULTI_MODEL, "getMultiModelEnabled").mockReturnValue(true)
 		vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(0)
 		vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
 		vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
@@ -527,7 +527,7 @@ describe("StatsFooter info line", () => {
 
 	beforeEach(() => {
 		theme = createMockTheme()
-		vi.spyOn(ORCHESTRATION, "getMultiModelEnabled").mockReturnValue(true)
+		vi.spyOn(MULTI_MODEL, "getMultiModelEnabled").mockReturnValue(true)
 		vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(0)
 		vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
 		vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
@@ -601,7 +601,7 @@ describe("StatsFooter regression tests", () => {
 
 	beforeEach(() => {
 		theme = createMockTheme()
-		vi.spyOn(ORCHESTRATION, "getMultiModelEnabled").mockReturnValue(true)
+		vi.spyOn(MULTI_MODEL, "getMultiModelEnabled").mockReturnValue(true)
 		vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(0)
 		vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
 		vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
@@ -648,7 +648,7 @@ describe("footer pinning", () => {
 	beforeEach(() => {
 		theme = createMockTheme()
 		pinnedElements = []
-		vi.spyOn(ORCHESTRATION, "getMultiModelEnabled").mockReturnValue(false)
+		vi.spyOn(MULTI_MODEL, "getMultiModelEnabled").mockReturnValue(false)
 		vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(0)
 		vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
 		vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
@@ -734,7 +734,7 @@ describe("footer pinning", () => {
 	it("pinned-first ordering: permissions pinned, agents not → unpinned agents appear left of pinned permissions", () => {
 		withPinned(["permissions"], () => {
 			vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(2) // agents now visible
-			vi.spyOn(ORCHESTRATION, "getMultiModelEnabled").mockReturnValue(true)
+			vi.spyOn(MULTI_MODEL, "getMultiModelEnabled").mockReturnValue(true)
 			vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
 			const permissionsMode = "\u25cf default \x1b[2m\u2192 shift+tab\x1b[0m"
 			const footer = new StatsFooter(createMockContext(), theme, createMockFooterData({ permissionsMode }))
@@ -748,7 +748,7 @@ describe("footer pinning", () => {
 	it("pinned and unpinned segments are separated by ' · '", () => {
 		withPinned(["permissions"], () => {
 			vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(2)
-			vi.spyOn(ORCHESTRATION, "getMultiModelEnabled").mockReturnValue(false)
+			vi.spyOn(MULTI_MODEL, "getMultiModelEnabled").mockReturnValue(false)
 			vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
 			const footer = new StatsFooter(
 				createMockContext(),

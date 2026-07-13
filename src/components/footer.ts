@@ -13,8 +13,8 @@ import { getBillingStatusLine } from "../extensions/billing/status.js"
 import { formatFermentFooterDisplay } from "../extensions/ferment/footer-status.js"
 import { getActiveFerment, getFermentContinuationPolicy } from "../extensions/ferment/index.js"
 import { formatCount } from "../extensions/format.js"
-import { getDisplayPermissionMode } from "../extensions/permissions/index.js"
-import { getMultiModelEnabled } from "../extensions/prompt-construction/prompt-enrichment.js"
+import { getMultiModelEnabled } from "../extensions/multi-model.js"
+import { getPermissionMode } from "../extensions/permissions/mode-controller.js"
 import { getActiveTags, getCurrentPhase, parseTag } from "../extensions/tags.js"
 
 /** Stable identifier used by compaction steps to find segments. */
@@ -99,6 +99,7 @@ export function buildScriptPayload(
 	linesAdded: number,
 	linesRemoved: number,
 ) {
+	const sessionId = ctx.sessionManager.getSessionId()
 	const usage = ctx.getContextUsage()
 
 	let costUsd = 0
@@ -149,10 +150,10 @@ export function buildScriptPayload(
 		},
 		exceeds_200k_tokens: (usage?.tokens ?? 0) > 200_000,
 		permissions: {
-			mode: getDisplayPermissionMode(),
+			mode: getPermissionMode(sessionId),
 		},
 		multi_model: {
-			enabled: getMultiModelEnabled(),
+			enabled: getMultiModelEnabled(ctx.sessionManager),
 		},
 		phase: getCurrentPhase(),
 	}
@@ -379,7 +380,7 @@ export class StatsFooter implements Component {
 	}
 
 	private modelSegment(): Segment {
-		const multiModel = getMultiModelEnabled()
+		const multiModel = getMultiModelEnabled(this.ctx.sessionManager)
 		const rawModelId = this.ctx.model?.id ?? "n/a"
 		const label = multiModel ? `multi-model (${rawModelId})` : rawModelId
 		const text = `${this.accent(label)} ${this.dim("→ ctrl+p")}`

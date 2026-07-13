@@ -149,7 +149,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	const isCurrentPendingReview = (review: PendingPlanReview): boolean =>
 		runtime.getPendingPlanReview(review.fermentId) === review
 
-	const runPendingPlanReview = async (ctx: Pick<ExtensionContext, "ui"> | undefined, review: PendingPlanReview) => {
+	const runPendingPlanReview = async (ctx: ExtensionContext, review: PendingPlanReview) => {
 		if (planReviewRunning) return
 		if (!isCurrentPendingReview(review)) return
 

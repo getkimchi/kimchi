@@ -1,11 +1,10 @@
-import type { Theme } from "@earendil-works/pi-coding-agent"
+import type { ExtensionContext, ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent"
 import type { Component, TUI } from "@earendil-works/pi-tui"
 import type { ScopingQuestionType } from "../../ferment/types.js"
 import { type Answer, type Question, type QuestionType, createQuestionForm } from "../questionnaire/index.js"
 import { setTipWidgetLocation } from "../tips/index.js"
-import type { FermentUi } from "./ui.js"
 
-type PromptUi = Pick<FermentUi, "select" | "input" | "editor" | "custom" | "setWorkingVisible">
+type PromptUi = Pick<ExtensionUIContext, "select" | "input" | "editor" | "custom" | "setWorkingVisible">
 
 export interface PromptEditorOptions {
 	placeholder?: string
@@ -50,10 +49,6 @@ export interface PromptFormResult {
 	cancelled: boolean
 }
 
-export function getPromptUi(ctx: { ui?: PromptUi } | undefined): PromptUi | undefined {
-	return ctx?.ui
-}
-
 export async function withWorkingHidden<T>(ui: PromptUi, fn: () => Promise<T>): Promise<T> {
 	const restoreTips = setTipWidgetLocation("hidden")
 	try {
@@ -68,56 +63,42 @@ export async function withWorkingHidden<T>(ui: PromptUi, fn: () => Promise<T>): 
 	}
 }
 
-export function promptSelect(
-	ctx: { ui?: PromptUi } | undefined,
-	title: string,
-	options: string[],
-): Promise<string | undefined> {
-	const ui = getPromptUi(ctx)
-	if (!ui?.select) return Promise.resolve(undefined)
+export function promptSelect(ctx: ExtensionContext, title: string, options: string[]): Promise<string | undefined> {
+	if (!ctx.hasUI) return Promise.resolve(undefined)
+	const ui = ctx.ui
 	return withWorkingHidden(ui, () => ui.select?.(title, options) ?? Promise.resolve(undefined))
 }
 
-export function promptInput(
-	ctx: { ui?: PromptUi } | undefined,
-	title: string,
-	placeholder?: string,
-): Promise<string | undefined> {
-	const ui = getPromptUi(ctx)
-	if (!ui?.input) return Promise.resolve(undefined)
+export function promptInput(ctx: ExtensionContext, title: string, placeholder?: string): Promise<string | undefined> {
+	if (!ctx.hasUI) return Promise.resolve(undefined)
+	const ui = ctx.ui
 	return withWorkingHidden(ui, () => ui.input?.(title, placeholder) ?? Promise.resolve(undefined))
 }
 
 export function promptEditor(
-	ctx: { ui?: PromptUi } | undefined,
+	ctx: ExtensionContext,
 	title: string,
 	options: PromptEditorOptions = {},
 ): Promise<string | undefined> {
-	const ui = getPromptUi(ctx)
-	if (!ui) return Promise.resolve(undefined)
-	if (ui.editor) {
+	if (!ctx.hasUI) return Promise.resolve(undefined)
+	const ui = ctx.ui
+	if (ctx.mode === "tui") {
 		const editorTitle = options.placeholder ? `${title}\n${options.placeholder}` : title
 		return withWorkingHidden(ui, () => ui.editor?.(editorTitle, options.prefill ?? "") ?? Promise.resolve(undefined))
 	}
-	if (ui.input) {
-		return withWorkingHidden(
-			ui,
-			() => ui.input?.(title, options.prefill ?? options.placeholder) ?? Promise.resolve(undefined),
-		)
-	}
-	return Promise.resolve(undefined)
+	return withWorkingHidden(
+		ui,
+		() => ui.input?.(title, options.prefill ?? options.placeholder) ?? Promise.resolve(undefined),
+	)
 }
 
-export async function promptForm(
-	ctx: { ui?: PromptUi } | undefined,
-	spec: PromptFormSpec,
-): Promise<PromptFormResult | undefined> {
-	const ui = getPromptUi(ctx)
-	if (!ui) return undefined
+export async function promptForm(ctx: ExtensionContext, spec: PromptFormSpec): Promise<PromptFormResult | undefined> {
+	if (!ctx.hasUI) return undefined
+	const ui = ctx.ui
 	const questions = spec.questions.map(normalizePromptFormQuestion)
 	if (questions.length === 0) return undefined
 
-	if (ui.custom) {
+	if (ctx.mode === "tui") {
 		const customResult = await withWorkingHidden(
 			ui,
 			() =>

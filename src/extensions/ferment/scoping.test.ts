@@ -4,6 +4,7 @@ import { join } from "node:path"
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
+import { createContext } from "../__mocks__/context.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
 import { runScopingFlow } from "./scoping.js"
 
@@ -141,20 +142,17 @@ describe("runScopingFlow", () => {
 		const { runtime, storage } = createRuntime()
 		const ferment = storage.create("My Ferment")
 		const pi = makePi()
-		const ui = {
-			notify: vi.fn(),
-			editor: vi.fn().mockResolvedValue("I want to build reports\nwith export tests"),
-			input: vi.fn().mockResolvedValue("single-line fallback"),
-		}
-		const ctx = {
-			hasUI: true,
-			ui,
-		} as unknown as ExtensionCommandContext
+		const ctx = createContext({
+			ui: {
+				editor: vi.fn().mockResolvedValue("I want to build reports\nwith export tests"),
+				input: vi.fn().mockResolvedValue("single-line fallback"),
+			},
+		}) as ExtensionCommandContext
 
 		await runScopingFlow(ferment, pi, ctx, runtime)
 
-		expect(ui.editor).toHaveBeenCalledWith("What do you want to do?\nDescribe what you want to accomplish…", "")
-		expect(ui.input).not.toHaveBeenCalled()
+		expect(ctx.ui.editor).toHaveBeenCalledWith("What do you want to do?\nDescribe what you want to accomplish…", "")
+		expect(ctx.ui.input).not.toHaveBeenCalled()
 		expect(pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: "ferment_request",
@@ -198,10 +196,9 @@ describe("runScopingFlow", () => {
 		const ferment = storage.create("My Ferment")
 		const pi = makePi()
 		// Headless: ctx with no input function
-		const ctx = {
+		const ctx = createContext({
 			hasUI: false,
-			ui: { notify: vi.fn() },
-		} as unknown as ExtensionCommandContext
+		}) as ExtensionCommandContext
 
 		await runScopingFlow(ferment, pi, ctx, runtime)
 

@@ -20,13 +20,8 @@ import { formatFermentFooterDisplay } from "./ferment/footer-status.js"
 import { getActiveFerment, getFermentContinuationPolicy } from "./ferment/index.js"
 import { formatDuration } from "./format.js"
 import { sessionHasImages } from "./model-guard.js"
-import { splitModelRef } from "./orchestration/model-roles.js"
-import {
-	getMultiModelEnabled,
-	getOrchestratorModelId,
-	getOrchestratorModelRef,
-	setMultiModelEnabled,
-} from "./prompt-construction/prompt-enrichment.js"
+import { getMultiModelEnabled, setMultiModelEnabled } from "./multi-model.js"
+import { getOrchestratorModelId, getOrchestratorModelRef, splitModelRef } from "./orchestration/model-roles.js"
 import {
 	isSessionModeOnboardingFooterSuppressed,
 	registerSharedFooterRenderer,
@@ -273,6 +268,8 @@ export default function uiExtension(pi: ExtensionAPI) {
 	}
 
 	pi.on("session_start", (_event, ctx) => {
+		const sessionId = ctx.sessionManager.getSessionId()
+
 		setSessionModeOnboardingFooterSuppressed(false)
 		stopWorkingAnimation?.()
 		stopWorkingAnimation = undefined
@@ -325,7 +322,9 @@ export default function uiExtension(pi: ExtensionAPI) {
 				if (perm) parts.push(perm)
 				const billing = getBillingStatusLine()
 				if (billing) parts.push(formatBillingStatusLine(billing, theme))
-				const modelId = getMultiModelEnabled() ? `multi-model (${getOrchestratorModelId()})` : (ctx.model?.id ?? "n/a")
+				const modelId = getMultiModelEnabled(ctx.sessionManager)
+					? `multi-model (${getOrchestratorModelId(sessionId)})`
+					: (ctx.model?.id ?? "n/a")
 				parts.push(`${resolvedAccentFg(theme)}${modelId}${RST_FG} ${theme.fg("dim", "→ ctrl+p")}`)
 				return parts.join(` ${theme.fg("dim", "·")} `)
 			}
@@ -394,7 +393,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 							? allAvailable.filter((m) => enabledIds.has(`${m.provider}/${m.id}`))
 							: allAvailable
 						const current = ctx.model
-						const orchRef = getOrchestratorModelRef()
+						const orchRef = getOrchestratorModelRef(sessionId)
 						const orchParsed = splitModelRef(orchRef)
 						const orchestratorModel = orchParsed
 							? ctx.modelRegistry.find(orchParsed.provider, orchParsed.modelId)
@@ -403,7 +402,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 						// Cycle order: model[0] → ... → model[last] → multi-model → model[0]
 						// kimi-k2.6 appears as a regular model AND multi-model appears
 						// as a separate virtual entry right after the last real model.
-						if (getMultiModelEnabled()) {
+						if (getMultiModelEnabled(ctx.sessionManager)) {
 							// Currently on the virtual multi-model entry — wrap to first real model.
 							// Check ALL models (including the orchestrator itself) because we are
 							// leaving the virtual entry, not a real model — the orchestrator in
@@ -421,7 +420,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 									break
 								}
 								if (firstReal) {
-									setMultiModelEnabled(false)
+									setMultiModelEnabled(sessionId, false)
 									if (current && modelsAreEqual(firstReal, current)) {
 										// Model object is the same (orchestrator → orchestrator) so setModel
 										// won't emit model_select and the footer won't re-render.
@@ -455,7 +454,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 
 							if (wouldWrap && orchestratorModel) {
 								// Reached end of real models — enter multi-model.
-								setMultiModelEnabled(true)
+								setMultiModelEnabled(sessionId, true)
 								if (modelsAreEqual(orchestratorModel, current)) {
 									// Already on the orchestrator — setModel won't emit model_select
 									// so the footer won't re-render.  Force it.

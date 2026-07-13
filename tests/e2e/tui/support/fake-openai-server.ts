@@ -48,6 +48,12 @@ export interface FakeResponseScript {
 	/** Fallback delay applied to both `thinking` and `stream` chunks. */
 	delayMs?: number
 	toolCalls?: FakeToolCall[]
+	/**
+	 * After emitting all `thinking` chunks, keep the SSE response open without
+	 * writing anything further until the client disconnects. Simulates a
+	 * provider stream stalling mid-reasoning (thinking stays active client-side).
+	 */
+	stallAfterThinking?: boolean
 	closeSocketAfterChunks?: number
 	status?: number
 	body?: unknown
@@ -268,6 +274,11 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 			res.destroy()
 			return
 		}
+	}
+
+	if (script.stallAfterThinking) {
+		await new Promise<void>((resolve) => res.once("close", resolve))
+		return
 	}
 
 	for (const text of script.stream ?? []) {

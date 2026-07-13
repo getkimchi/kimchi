@@ -1317,10 +1317,79 @@ export function iconForThinkingRole(role: ThinkingSemanticRole): string {
 	}
 }
 
+type StepDerivation = {
+	summaryDetails: ReturnType<typeof summarizeThinkingTextDetailed>
+	role: ThinkingSemanticRole
+}
+
+// Completed steps repeat across stream updates. Cache them, but not the growing
+// final step, whose changing snapshots would accumulate. The character budget
+// holds realistic 1000+ step messages; the high entry cap only bounds overhead
+// from pathological numbers of tiny steps.
+const stepDerivationCache = new Map<string, StepDerivation>()
+const STEP_DERIVATION_CACHE_MAX_CHARS = 4 * 1024 * 1024
+const STEP_DERIVATION_CACHE_MAX_ENTRIES = 8192
+let stepDerivationCacheChars = 0
+
+// Bound candidate extraction while retaining both early outcome cues and the
+// latest activity from long steps.
+const STEP_SUMMARY_MAX_CHARS = 16384
+const STEP_SUMMARY_SEPARATOR = "\n\n"
+const STEP_SUMMARY_HEAD_CHARS = Math.floor((STEP_SUMMARY_MAX_CHARS - STEP_SUMMARY_SEPARATOR.length) / 2)
+
+function boundedStepSummarySource(stepText: string): string {
+	if (stepText.length <= STEP_SUMMARY_MAX_CHARS) return stepText
+	const tailChars = STEP_SUMMARY_MAX_CHARS - STEP_SUMMARY_HEAD_CHARS - STEP_SUMMARY_SEPARATOR.length
+	const head = stepText.slice(0, STEP_SUMMARY_HEAD_CHARS).replace(/[\uD800-\uDBFF]$/, "")
+	const tail = stepText.slice(-tailChars).replace(/^[\uDC00-\uDFFF]/, "")
+	return `${head}${STEP_SUMMARY_SEPARATOR}${tail}`
+}
+
+function deriveStep(stepText: string, isFinalStep: boolean): StepDerivation {
+	const summarySource = boundedStepSummarySource(stepText)
+	const cached = !isFinalStep && stepDerivationCache.get(summarySource)
+	if (cached) return cached
+	const summaryDetails = summarizeThinkingTextDetailed(summarySource)
+	const role = inferThinkingRole(`${summaryDetails.summary}\n${summarySource}`)
+	const derivation: StepDerivation = { summaryDetails, role }
+	if (isFinalStep) return derivation
+	while (
+		stepDerivationCache.size >= STEP_DERIVATION_CACHE_MAX_ENTRIES ||
+		stepDerivationCacheChars + summarySource.length > STEP_DERIVATION_CACHE_MAX_CHARS
+	) {
+		const oldest = stepDerivationCache.keys().next().value
+		if (oldest === undefined) break
+		stepDerivationCache.delete(oldest)
+		stepDerivationCacheChars -= oldest.length
+	}
+	stepDerivationCache.set(summarySource, derivation)
+	stepDerivationCacheChars += summarySource.length
+	return derivation
+}
+
+export const clearStepDerivationCacheForTesting = () => {
+	stepDerivationCache.clear()
+	stepDerivationCacheChars = 0
+}
+
+export const getStepDerivationCacheSizeForTesting = () => stepDerivationCache.size
+
+const isRedactedPlaceholderBlock = (block: ThinkingSourceBlock): boolean =>
+	block.redacted === true && !block.text.trim()
+
 export function deriveThinkingSteps(blocks: ThinkingSourceBlock[]): DerivedThinkingStep[] {
 	const steps: DerivedThinkingStep[] = []
+	// The still-growing step is the last one derived from text, which is not
+	// necessarily in the last block: trailing redacted placeholders don't count.
+	let lastTextBlockIndex = -1
+	for (let index = blocks.length - 1; index >= 0; index -= 1) {
+		if (!isRedactedPlaceholderBlock(blocks[index]!)) {
+			lastTextBlockIndex = index
+			break
+		}
+	}
 	blocks.forEach((block, blockIndex) => {
-		if (block.redacted && !block.text.trim()) {
+		if (isRedactedPlaceholderBlock(block)) {
 			const summary = "Reasoning is hidden by the provider."
 			steps.push({
 				id: `${block.contentIndex}-0`,
@@ -1343,8 +1412,8 @@ export function deriveThinkingSteps(blocks: ThinkingSourceBlock[]): DerivedThink
 
 		const stepTexts = splitThinkingIntoStepTexts(block.text)
 		stepTexts.forEach((stepText, stepIndex) => {
-			const summaryDetails = summarizeThinkingTextDetailed(stepText)
-			const role = inferThinkingRole(`${summaryDetails.summary}\n${stepText}`)
+			const isFinalStep = blockIndex === lastTextBlockIndex && stepIndex === stepTexts.length - 1
+			const { summaryDetails, role } = deriveStep(stepText, isFinalStep)
 			steps.push({
 				id: `${block.contentIndex}-${stepIndex}`,
 				contentIndex: block.contentIndex,

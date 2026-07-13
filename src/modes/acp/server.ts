@@ -57,7 +57,11 @@ import {
 import type { AgentSessionEvent, ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 
 import { loadConfig } from "../../extensions/permissions/config.js"
-import { PERMISSIONS_ENV_KEY } from "../../extensions/permissions/constants.js"
+import {
+	PERMISSIONS_ENV_KEY,
+	PERMISSION_MODES,
+	PERMISSION_MODES_WITH_META,
+} from "../../extensions/permissions/constants.js"
 import {
 	registerSessionPermissionFlagController,
 	unregisterSessionPermissionFlagController,
@@ -69,11 +73,7 @@ import {
 	setPermissionMode,
 } from "../../extensions/permissions/mode-controller.js"
 import { resolveMode } from "../../extensions/permissions/mode.js"
-import {
-	ALL_PERMISSION_MODES,
-	type PermissionMode,
-	type SessionPermissionFlagController,
-} from "../../extensions/permissions/types.js"
+import type { PermissionMode, SessionPermissionFlagController } from "../../extensions/permissions/types.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { createAcpUIContext } from "./acp-ui-context.js"
 import { ADVERTISED_CAPABILITIES, CAPABILITIES_KEY } from "./capabilities.js"
@@ -352,7 +352,7 @@ export class KimchiAcpAgent implements Agent {
 		switch (params.configId) {
 			case "permissions-mode": {
 				const value = params.value as PermissionMode
-				if (!ALL_PERMISSION_MODES.includes(value)) {
+				if (!PERMISSION_MODES.includes(value)) {
 					throw RequestError.invalidParams(undefined, `invalid mode ${value}`)
 				}
 				setPermissionMode(params.sessionId, value, "user")
@@ -407,8 +407,7 @@ export class KimchiAcpAgent implements Agent {
 	private async loadSessionFresh(params: LoadSessionRequest): Promise<LoadSessionResponse> {
 		const cwd = params.cwd
 		const initialMode = this.resolveInitialMode(cwd)
-		let session: AgentSession
-		session = await this.sessionLoader(params)
+		const session: AgentSession = await this.sessionLoader(params)
 		// Atomic ownership transfer mirrors newSession but covers the full
 		// register → replay → respond path: a throw at any point after the
 		// loader hands back a live session must unwind registration AND dispose,
@@ -998,22 +997,6 @@ export class KimchiAcpAgent implements Agent {
  * Exposes the four permission modes (default, plan, auto, yolo) as a select
  * option that ACP clients can read and modify.
  */
-const PERMISSION_MODE_META: Record<PermissionMode, { name: string; description: string }> = {
-	default: {
-		name: "Ask before edits",
-		description: "Approves every file change before it's made",
-	},
-	plan: { name: "Plan", description: "Thinks and plans, no edits" },
-	auto: {
-		name: "Auto",
-		description: "Runs freely, asks only for high-risk actions",
-	},
-	yolo: {
-		name: "YOLO",
-		description: "No permissions asked (use in sandboxed environments)",
-	},
-}
-
 export function buildPermissionsConfigOption(currentMode: PermissionMode): SessionConfigOption {
 	return {
 		id: "permissions-mode",
@@ -1023,10 +1006,10 @@ export function buildPermissionsConfigOption(currentMode: PermissionMode): Sessi
 		description:
 			"Control tool execution permissions: default (prompt for writes), plan (read-only), auto (classifier-gated), yolo (no restrictions)",
 		currentValue: currentMode,
-		options: ALL_PERMISSION_MODES.map((mode) => ({
-			name: PERMISSION_MODE_META[mode].name,
+		options: PERMISSION_MODES_WITH_META.map(({ mode, label, description }) => ({
+			name: label,
 			value: mode,
-			description: PERMISSION_MODE_META[mode].description,
+			description,
 		})),
 	}
 }

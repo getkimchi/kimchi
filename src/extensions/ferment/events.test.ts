@@ -8,12 +8,13 @@ import { commandToEvents } from "../../ferment/event-mapper.js"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { applyCommand } from "../../ferment/state-machine.js"
 import type { Ferment, Phase } from "../../ferment/types.js"
+import { createContext } from "../__mocks__/context.js"
 import { registerFermentEvents } from "./events.js"
 import type { FermentRuntime } from "./runtime.js"
 import { createDefaultFermentRuntime } from "./runtime.js"
 import { clearActiveFermentId, getFermentLockPath, writeFermentLock } from "./state.js"
 import { FERMENT_TOOL_NAMES } from "./tool-names.js"
-import { applyFermentToolProfile, profileForFerment } from "./tool-scope.js"
+import { profileForFerment } from "./tool-scope.js"
 
 type EventHandler = (event: unknown, ctx: unknown) => Promise<unknown> | unknown
 
@@ -363,13 +364,7 @@ describe("registerFermentEvents", () => {
 		const turnEnd = handlers.get("turn_end")
 		if (!turnEnd) throw new Error("turn_end handler was not registered")
 		const select = vi.fn().mockResolvedValueOnce("Yes, this looks right").mockResolvedValueOnce("✓ Confirm and start")
-		const ctx = {
-			ui: {
-				select,
-				input: vi.fn(),
-				notify: vi.fn(),
-			},
-		}
+		const ctx = createContext({ ui: { select } })
 
 		await turnEnd(
 			{
@@ -410,7 +405,7 @@ describe("registerFermentEvents", () => {
 		const newModel = { id: "new-model" } as unknown as Model<Api>
 		const previousModel = { id: "previous-model" } as unknown as Model<Api>
 		const modelRegistry = {} as ModelRegistry
-		const ctx = { modelRegistry }
+		const ctx = createContext({ modelRegistry })
 
 		handler({ model: newModel, previousModel }, ctx)
 
@@ -546,7 +541,7 @@ describe("turn_end connection error recovery", () => {
 		const turnEnd = handlers.get("turn_end")
 		if (!turnEnd) throw new Error("turn_end handler was not registered")
 		const notify = vi.fn()
-		const ctx = { ui: { notify } }
+		const ctx = createContext({ ui: { notify } })
 
 		await turnEnd(
 			{
@@ -611,7 +606,7 @@ describe("turn_end connection error recovery", () => {
 		const turnEnd = handlers.get("turn_end")
 		if (!turnEnd) throw new Error("turn_end handler was not registered")
 		const notify = vi.fn()
-		const ctx = { ui: { notify } }
+		const ctx = createContext({ ui: { notify } })
 
 		// Cloudflare 524 is a retryable network error.
 		await turnEnd(
@@ -865,7 +860,7 @@ describe("recoverStuckFerments lockfile awareness", () => {
 
 		const sessionStart = handlers.get("session_start")
 		if (!sessionStart) throw new Error("session_start handler was not registered")
-		await sessionStart({}, { hasUI: false })
+		await sessionStart({}, createContext({ hasUI: false }))
 
 		expect(storage.get(id)?.status).toBe("running")
 	})
@@ -887,7 +882,7 @@ describe("recoverStuckFerments lockfile awareness", () => {
 
 		const sessionStart = handlers.get("session_start")
 		if (!sessionStart) throw new Error("session_start handler was not registered")
-		await sessionStart({}, { hasUI: false })
+		await sessionStart({}, createContext({ hasUI: false }))
 
 		expect(storage.get(id)?.status).toBe("paused")
 	})

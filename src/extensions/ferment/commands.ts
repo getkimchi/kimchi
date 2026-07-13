@@ -1,9 +1,10 @@
 import { writeFileSync } from "node:fs"
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { computeStats, serializeStats } from "../../ferment/stats.js"
 import { FermentError } from "../../ferment/store.js"
 import { successCriteriaToAnswer } from "../../ferment/success-criteria.js"
 import { deriveDraftFermentTitle } from "../../ferment/title.js"
+import { getMultiModelEnabled } from "../multi-model.js"
 import { requestSharedFooterRender } from "../shared-footer.js"
 import { pr_bold, pr_dim, pr_orange, pr_success, pr_teal } from "./colors.js"
 import { type FermentCommand, parseFermentCommand } from "./command-parser.js"
@@ -33,7 +34,6 @@ import { scheduleFermentWakeUp } from "./scheduler.js"
 import { runScopingFlow, sendFermentRequestMessage } from "./scoping.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
 import { applyFermentRuntimeToolProfile, setActiveFermentAndApplyProfile } from "./tool-scope.js"
-import type { FermentUiContext } from "./ui.js"
 import { checkWorktree } from "./worktree.js"
 
 function sendBreadcrumb(
@@ -181,7 +181,7 @@ export function getFermentArgumentCompletions(
 export interface FermentCommandDeps {
 	raw: string
 	pi: ExtensionAPI
-	ctx: FermentUiContext & ExtensionCommandContext
+	ctx: ExtensionCommandContext
 	runtime: FermentRuntime
 }
 
@@ -191,11 +191,11 @@ export interface FermentCommandResult {
 
 export interface StartInteractiveFermentDeps {
 	pi: ExtensionAPI
-	ctx: FermentUiContext
+	ctx: ExtensionContext
 	runtime?: FermentRuntime
 }
 
-async function waitForHeadlessCommandTurn(ctx: FermentUiContext & ExtensionCommandContext): Promise<void> {
+async function waitForHeadlessCommandTurn(ctx: ExtensionCommandContext): Promise<void> {
 	if (ctx.hasUI) return
 	await ctx.waitForIdle()
 }
@@ -212,7 +212,7 @@ export async function startInteractiveFerment({
 		)
 		return
 	}
-	if (!ctx.ui.editor && !ctx.ui.input) {
+	if (!ctx.hasUI) {
 		ctx.ui.notify('No UI available. Use /ferment new "Name" instead.')
 		return
 	}
@@ -242,7 +242,7 @@ export async function startFermentForIntent({
 	title,
 }: {
 	pi: ExtensionAPI
-	ctx: FermentUiContext
+	ctx: ExtensionContext
 	runtime?: FermentRuntime
 	rawIntent: string
 	title?: string
@@ -284,7 +284,7 @@ export async function startFermentForIntent({
 	}
 }
 
-function setManualContinuationPolicy(pi: ExtensionAPI, ctx: FermentUiContext, runtime: FermentRuntime): void {
+function setManualContinuationPolicy(pi: ExtensionAPI, ctx: ExtensionContext, runtime: FermentRuntime): void {
 	runtime.setContinuationPolicy("manual")
 	const active = runtime.getActive()
 	if (!active) {
@@ -313,7 +313,7 @@ function recordManualBoundaryBreadcrumb(
 	sendBreadcrumb(pi, `Manual policy waiting at phase boundary for "${active.name}".`, "step")
 }
 
-function setAutomatedContinuationPolicy(pi: ExtensionAPI, ctx: FermentUiContext, runtime: FermentRuntime): void {
+function setAutomatedContinuationPolicy(pi: ExtensionAPI, ctx: ExtensionContext, runtime: FermentRuntime): void {
 	runtime.setContinuationPolicy("automated")
 	const active = runtime.getActive()
 	if (!active) {
@@ -334,7 +334,7 @@ function setAutomatedContinuationPolicy(pi: ExtensionAPI, ctx: FermentUiContext,
 
 async function confirmManualPhaseBoundaryForCommand(
 	pi: ExtensionAPI,
-	ctx: FermentUiContext,
+	ctx: ExtensionContext,
 	runtime: FermentRuntime,
 	active: NonNullable<ReturnType<FermentRuntime["getActive"]>>,
 ): Promise<boolean> {
@@ -345,7 +345,7 @@ async function confirmManualPhaseBoundaryForCommand(
 	const nextPhase = active.phases.find((phase) => phase.id === decision.action.phaseId)
 	const nextPhaseName = nextPhase?.name ?? decision.action.phaseId
 
-	if (ctx.hasUI && ctx.ui.select) {
+	if (ctx.hasUI) {
 		const choice = await ctx.ui.select(`Continue "${active.name}" to "${nextPhaseName}"?`, [
 			"Continue to next phase",
 			"Pause here",
@@ -379,7 +379,7 @@ async function confirmManualPhaseBoundaryForCommand(
 	return true
 }
 
-async function openFermentProgress(pi: ExtensionAPI, ctx: FermentUiContext, runtime: FermentRuntime): Promise<void> {
+async function openFermentProgress(pi: ExtensionAPI, ctx: ExtensionContext, runtime: FermentRuntime): Promise<void> {
 	const applyAndPersist = createApplyAndPersist(runtime)
 	const active = runtime.getActive()
 	if (!active) {
@@ -387,7 +387,7 @@ async function openFermentProgress(pi: ExtensionAPI, ctx: FermentUiContext, runt
 		return
 	}
 
-	if (!ctx.hasUI || !ctx.ui.select || !ctx.ui.confirm) {
+	if (!ctx.hasUI) {
 		ctx.ui.notify(formatFermentStatus(active, runtime.getContinuationPolicy()))
 		return
 	}
@@ -583,11 +583,7 @@ async function openFermentProgress(pi: ExtensionAPI, ctx: FermentUiContext, runt
 	}
 }
 
-function exitFermentMode(
-	pi: ExtensionAPI,
-	ctx: FermentUiContext & Pick<ExtensionCommandContext, "abort">,
-	runtime: FermentRuntime,
-): void {
+function exitFermentMode(pi: ExtensionAPI, ctx: ExtensionCommandContext, runtime: FermentRuntime): void {
 	const applyAndPersist = createApplyAndPersist(runtime)
 	const active = refreshActiveFermentForLifecycleCommand(pi, runtime)
 	sendLifecycleCommandBreadcrumb(pi, "exit", active)
@@ -996,7 +992,7 @@ export class FermentCommandController {
 			const intent = command.intent
 			let resolvedIntent = intent
 			if (!resolvedIntent) {
-				if (!ctx.hasUI || (!ctx.ui.editor && !ctx.ui.input)) {
+				if (!ctx.hasUI) {
 					ctx.ui.notify('Usage: /ferment one-shot "description of what to build"')
 					return { handled: true }
 				}
@@ -1027,7 +1023,8 @@ export class FermentCommandController {
 					"ack",
 					"ferment_ack",
 				)
-				const nudge = buildOneshotNudge(updated, resolvedIntent)
+				const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
+				const nudge = buildOneshotNudge(updated, resolvedIntent, multiModelEnabled)
 
 				safeSendMessage(
 					pi,

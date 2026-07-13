@@ -7,7 +7,7 @@ import { DEFAULT_FOOTER_PINNED, _invalidateFooterConfigCache, setPinned } from "
 import * as AGENTS from "./agents/index.js"
 import { CustomizeFooterComponent } from "./customize-footer-command.js"
 import * as FERMENT from "./ferment/index.js"
-import * as ORCHESTRATION from "./prompt-construction/prompt-enrichment.js"
+import * as MULTI_MODEL from "./multi-model.js"
 import * as TAGS from "./tags.js"
 
 // ── Real footer-config backed by in-memory JSON storage ───────────────────────
@@ -119,7 +119,7 @@ beforeEach(() => {
 	vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
 	vi.spyOn(TAGS, "getActiveTags").mockReturnValue([])
 	vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("explore")
-	vi.spyOn(ORCHESTRATION, "getMultiModelEnabled").mockReturnValue(false)
+	vi.spyOn(MULTI_MODEL, "getMultiModelEnabled").mockReturnValue(false)
 })
 
 afterEach(() => {
