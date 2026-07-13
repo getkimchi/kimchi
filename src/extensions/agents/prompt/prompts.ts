@@ -3,6 +3,7 @@
  */
 
 import type { ContextFile } from "../../prompt-construction/context-files.js"
+import { buildCoreGuidelinesSections } from "../../prompt-construction/system-prompt.js"
 import type { AgentConfig, EnvInfo } from "../personas/types.js"
 
 /** Budget limits communicated to the agent so it can plan its work. */
@@ -95,7 +96,8 @@ You have been invoked to handle a specific task autonomously.
 ${envBlock}`
 
 	const toolSection = availableToolsBlock ? `\n\n${availableToolsBlock}` : ""
-	return `${replaceHeader}${toolSection}\n\n${config.systemPrompt}${extrasSuffix}`
+	const coreGuidelines = config.includeCoreGuidelines ? `\n\n${buildCoreGuidelinesSections()}` : ""
+	return `${replaceHeader}${toolSection}\n\n${config.systemPrompt}${coreGuidelines}${extrasSuffix}`
 }
 
 export function formatTokenBudget(tokens: number): string {

@@ -188,10 +188,10 @@ You are running in single-model mode.${modelClause} All work in this session run
 Do not spawn subagents with the \`Agent\` tool by default — only do so when the user explicitly asks for delegation. When you do spawn a subagent, pass your own model ID in the \`model\` parameter by default; only use a different model if the user explicitly instructs it.`
 }
 
-const DOCUMENTS_SECTION =
+export const DOCUMENTS_SECTION =
 	"The Documents directory is shown in the Environment section. Use it for **all** intermediate and output files: plans, specs, research notes, findings, or any file passed between agents. Never write working documents to the project directory or a temporary directory."
 
-const CORE_GUIDELINES = `- Be concise in your responses. Do not repeat what you just did or summarize completed steps — act and move on.
+export const CORE_GUIDELINES = `- Be concise in your responses. Do not repeat what you just did or summarize completed steps — act and move on.
 - Before starting any task, gather all necessary context: understand the requirements, naming conventions, frameworks and libraries already in use, and how to run and test the code. Use your tools to read existing code rather than assuming.
 - Adhere to existing code conventions and patterns. Use only libraries and frameworks confirmed to be present in the codebase. Never introduce new dependencies without explicit instruction.
 - Provide complete, functional code — no placeholders, omissions, or TODOs left in delivered work.
@@ -220,10 +220,22 @@ function resolveCoreGuidelines(mode: PromptMode): string {
 	return mode === "orchestrator" ? ORCHESTRATOR_GUIDELINES : CORE_GUIDELINES
 }
 
-const FACTUAL_ACCURACY = `- Never guess, assume, or fabricate information. Every claim you make must be backed by data you concretely obtained during this session. Do not over-escalate minor issues or blame the user for poor request phrasing.
+export const FACTUAL_ACCURACY = `- Never guess, assume, or fabricate information. Every claim you make must be backed by data you concretely obtained during this session. Do not over-escalate minor issues or blame the user for poor request phrasing.
 - Never invent people's names, roles, or contact details. If human input is needed, ask the user — do not fabricate who that person should be.
 - "I don't know" is a valid answer. When requirements, specifications, or factual details are not available through your tools or the user's messages, state that clearly and ask the user to provide them. Do not fill the gap with plausible-sounding content.
 - Distinguish what you found from what you assume. If you must reason about something uncertain, label it explicitly as an assumption and ask the user to confirm before acting on it.`
+
+/**
+ * Combine the three shared guideline sections into a single string,
+ * formatted for injection into a replace-mode subagent system prompt.
+ */
+export function buildCoreGuidelinesSections(): string {
+	return [
+		`## Guidelines\n\n${CORE_GUIDELINES}`,
+		`## Factual Accuracy\n\n${FACTUAL_ACCURACY}`,
+		`## Documents\n\n${DOCUMENTS_SECTION}`,
+	].join("\n\n")
+}
 
 function buildPrompt(parts: PromptParts): string {
 	const sections: string[] = []

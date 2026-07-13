@@ -41,6 +41,21 @@ describe("DEFAULT_AGENTS", () => {
 		expect(plan.includeContextFiles).toBe(true)
 	})
 
+	it("General-Purpose agent has includeContextFiles set to true", () => {
+		const gp = DEFAULT_AGENTS.get(AGENT_GENERAL_PURPOSE) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
+		expect(gp.includeContextFiles).toBe(true)
+	})
+
+	it("General-Purpose agent has includeCoreGuidelines set to true", () => {
+		const gp = DEFAULT_AGENTS.get(AGENT_GENERAL_PURPOSE) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
+		expect(gp.includeCoreGuidelines).toBe(true)
+	})
+
+	it("General-Purpose agent uses replace prompt mode", () => {
+		const gp = DEFAULT_AGENTS.get(AGENT_GENERAL_PURPOSE) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
+		expect(gp.promptMode).toBe("replace")
+	})
+
 	it("Explore agent has roles set to explore", () => {
 		const explore = DEFAULT_AGENTS.get(AGENT_EXPLORE) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
 		expect(explore.roles).toContain("explore")
