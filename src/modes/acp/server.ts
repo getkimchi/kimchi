@@ -28,6 +28,7 @@ import {
 	type PromptResponse,
 	RequestError,
 	type SessionConfigOption,
+	type SessionConfigSelectOption,
 	type SessionModelState,
 	type SessionNotification,
 	type SetSessionConfigOptionRequest,
@@ -55,7 +56,9 @@ import {
 	initTheme,
 } from "@earendil-works/pi-coding-agent"
 import type { AgentSessionEvent, ExtensionUIContext } from "@earendil-works/pi-coding-agent"
-
+import { refFromModel, splitModelRef } from "../../extensions/model-catalog/ref-utils.js"
+import { getMultiModelEnabled, setMultiModelEnabled } from "../../extensions/multi-model.js"
+import { getOrchestratorModel } from "../../extensions/orchestration/model-roles.js"
 import { loadConfig } from "../../extensions/permissions/config.js"
 import {
 	PERMISSIONS_ENV_KEY,
@@ -73,7 +76,7 @@ import {
 	setPermissionMode,
 } from "../../extensions/permissions/mode-controller.js"
 import { resolveMode } from "../../extensions/permissions/mode.js"
-import type { PermissionMode, SessionPermissionFlagController } from "../../extensions/permissions/types.js"
+import type { PermissionMode } from "../../extensions/permissions/types.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { createAcpUIContext } from "./acp-ui-context.js"
 import { ADVERTISED_CAPABILITIES, CAPABILITIES_KEY } from "./capabilities.js"
@@ -263,9 +266,7 @@ export class KimchiAcpAgent implements Agent {
 
 			const sessionId = session.sessionId
 			const uiContext = this.createUiContext(session)
-			const permissionFlagController = registerPermissionFlagController(sessionId, initialMode, (params) =>
-				this.send(params),
-			)
+			registerPermissionFlagController(session, initialMode, (params) => this.send(params))
 			registerAcpPrompter(sessionId, createAcpPermissionPrompter(this.conn, sessionId, uiContext, buildToolCallUpdate))
 			await this.bindAcpExtensions(session, uiContext)
 
@@ -279,10 +280,11 @@ export class KimchiAcpAgent implements Agent {
 
 			this.sendAvailableCommandsUpdate(sessionId)
 
+			const configOptions = buildConfigOptions(session, () => this.resolveInitialMode(params.cwd))
 			return {
 				sessionId,
-				models: buildSessionModelState(session),
-				configOptions: [buildPermissionsConfigOption(permissionFlagController.getMode()?.mode)],
+				configOptions,
+				models: buildSessionModelState(configOptions),
 			}
 		} catch (err) {
 			unregisterAcpPrompter(session.sessionId)
@@ -316,53 +318,100 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	async unstable_setSessionModel(params: SetSessionModelRequest): Promise<SetSessionModelResponse> {
-		const entry = this.sessions.get(params.sessionId)
-		if (!entry) {
-			throw RequestError.invalidParams(undefined, `unknown sessionId ${params.sessionId}`)
-		}
-		if (entry.turn) {
-			throw RequestError.invalidRequest(undefined, "a prompt is already in progress for this session")
-		}
-		const { session } = entry
-		const availableModels = session.modelRegistry.getAvailable()
-		const selectedModel = availableModels.find((m) => getAcpModelId(m) === params.modelId)
-		if (!selectedModel) {
-			throw RequestError.invalidParams(undefined, `Unknown or unavailable model: ${params.modelId}`)
-		}
-		try {
-			await session.setModel(selectedModel)
-		} catch (err) {
-			if (err instanceof RequestError) {
-				throw err
-			}
-			throw RequestError.invalidParams(
-				undefined,
-				`Failed to switch model: ${err instanceof Error ? err.message : String(err)}`,
-			)
-		}
+		await this.doSetModel(params.sessionId, params.modelId)
 		return {}
 	}
 
 	async setSessionConfigOption(params: SetSessionConfigOptionRequest): Promise<SetSessionConfigOptionResponse> {
-		const entry = this.sessions.get(params.sessionId)
-		if (!entry) {
+		const session = this.sessions.get(params.sessionId)?.session
+		if (!session) {
 			throw RequestError.invalidParams(undefined, `unknown sessionId ${params.sessionId}`)
 		}
-
 		switch (params.configId) {
 			case "permissions-mode": {
-				const value = params.value as PermissionMode
-				if (!PERMISSION_MODES.includes(value)) {
-					throw RequestError.invalidParams(undefined, `invalid mode ${value}`)
-				}
-				setPermissionMode(params.sessionId, value, "user")
-				return {
-					configOptions: [buildPermissionsConfigOption(value)],
-				}
+				this.doSetPermissionMode(params.sessionId, params.value ? `${params.value}` : "")
+				break
+			}
+			case "model": {
+				await this.doSetModel(params.sessionId, params.value ? `${params.value}` : "")
+				break
 			}
 			default:
 				throw RequestError.invalidParams(undefined, `unknown config option ${params.configId}`)
 		}
+		return {
+			configOptions: buildConfigOptions(session, () => this.resolveInitialMode(session.sessionManager.getSessionDir())),
+		}
+	}
+
+	private doSetPermissionMode(sessionId: string, mode: string): PermissionMode {
+		const permissionMode = mode as PermissionMode
+		if (!PERMISSION_MODES.includes(permissionMode)) {
+			throw RequestError.invalidParams(undefined, `invalid mode ${permissionMode}`)
+		}
+		setPermissionMode(sessionId, permissionMode, "user")
+		return permissionMode
+	}
+
+	private async doSetModel(sessionId: string, value: string): Promise<string> {
+		const entry = this.sessions.get(sessionId)
+		if (!entry) {
+			throw RequestError.invalidParams(undefined, `unknown sessionId ${sessionId}`)
+		}
+		if (entry.turn) {
+			throw RequestError.invalidRequest(undefined, "a prompt is already in progress for this session")
+		}
+		if (!value) {
+			throw RequestError.invalidParams(undefined, "modelId is required")
+		}
+
+		const { session } = entry
+		if (value === "multi-model") {
+			const { model: orchestrator, modelRef: orchRef } = getOrchestratorModel(session.sessionId, session.modelRegistry)
+			if (!orchestrator) {
+				throw RequestError.invalidParams(undefined, `multi-model orchestrator (${orchRef}) is not available`)
+			}
+			const previousMultiModelEnabled = getMultiModelEnabled(session.sessionManager)
+			setMultiModelEnabled(sessionId, true)
+			try {
+				await session.setModel(orchestrator)
+			} catch {
+				setMultiModelEnabled(sessionId, previousMultiModelEnabled)
+				// Pi's setModel only throws "if no auth is configured for the model"
+				throw RequestError.authRequired(undefined, `orchestrator model ${orchRef} is not available: auth required`)
+			}
+			return value
+		}
+
+		const { provider, modelId } = splitModelRef(value) || {}
+		if (!provider || !modelId) {
+			throw RequestError.invalidParams(
+				undefined,
+				`invalid model format: "${value}". expected "provider/modelId" or "multi-model".`,
+			)
+		}
+		const target = session.modelRegistry.find(provider, modelId)
+		if (!target) {
+			const available = session.modelRegistry
+				.getAvailable()
+				.map((m) => refFromModel(m))
+				.sort()
+			throw RequestError.invalidParams(
+				undefined,
+				`model not found: "${value}". available models: multi-model, ${available.join(", ")}`,
+			)
+		}
+
+		const previousMultiModelEnabled = getMultiModelEnabled(session.sessionManager)
+		setMultiModelEnabled(sessionId, false)
+		try {
+			await session.setModel(target)
+		} catch (err) {
+			setMultiModelEnabled(sessionId, previousMultiModelEnabled)
+			// Pi's setModel only throws "if no auth is configured for the model"
+			throw RequestError.authRequired(undefined, `model ${refFromModel(target)} is not available: auth required`)
+		}
+		return value
 	}
 
 	async loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse> {
@@ -383,11 +432,10 @@ export class KimchiAcpAgent implements Agent {
 			this.replayTranscript(existing.session)
 			this.sendAvailableCommandsUpdate(sessionId)
 
+			const configOptions = buildConfigOptions(existing.session, () => this.resolveInitialMode(params.cwd))
 			return {
-				models: this.modelStateForSession(existing.session),
-				configOptions: [
-					buildPermissionsConfigOption(getPermissionMode(sessionId)?.mode ?? this.resolveInitialMode(params.cwd)),
-				],
+				configOptions,
+				models: buildSessionModelState(configOptions),
 			}
 		}
 		const loading = this.loadingSessions.get(sessionId)
@@ -432,7 +480,7 @@ export class KimchiAcpAgent implements Agent {
 			assertSessionHasModel(session)
 
 			const uiContext = this.createUiContext(session)
-			const permissionFlagController = registerPermissionFlagController(sid, initialMode, (params) => this.send(params))
+			registerPermissionFlagController(session, initialMode, (params) => this.send(params))
 			registerAcpPrompter(sid, createAcpPermissionPrompter(this.conn, sid, uiContext, buildToolCallUpdate))
 			await this.bindAcpExtensions(session, uiContext)
 
@@ -457,9 +505,10 @@ export class KimchiAcpAgent implements Agent {
 			this.replayTranscript(session)
 			this.sendAvailableCommandsUpdate(sid)
 
+			const configOptions = buildConfigOptions(session, () => this.resolveInitialMode(params.cwd))
 			return {
-				models: this.modelStateForSession(session),
-				configOptions: [buildPermissionsConfigOption(permissionFlagController.getMode()?.mode)],
+				configOptions,
+				models: buildSessionModelState(configOptions),
 			}
 		} catch (err) {
 			unregisterAcpPrompter(sid)
@@ -948,10 +997,6 @@ export class KimchiAcpAgent implements Agent {
 		flushText()
 	}
 
-	private modelStateForSession(session: AgentSession): SessionModelState | null {
-		return buildSessionModelState(session)
-	}
-
 	private send(params: SessionNotification): void {
 		// Fire-and-forget is safe here because the ACP SDK chains every outbound
 		// message onto a shared writeQueue Promise (see @agentclientprotocol/sdk
@@ -996,6 +1041,7 @@ export class KimchiAcpAgent implements Agent {
  * Builds a SessionConfigOption for the permissions mode setting.
  * Exposes the four permission modes (default, plan, auto, yolo) as a select
  * option that ACP clients can read and modify.
+ * Exported for testing.
  */
 export function buildPermissionsConfigOption(currentMode: PermissionMode): SessionConfigOption {
 	return {
@@ -1014,30 +1060,67 @@ export function buildPermissionsConfigOption(currentMode: PermissionMode): Sessi
 	}
 }
 
-// Exported for testing. In practice the only way model is missing here is a
-// missing / unusable credential: loadConfig() already threw on an absent
-// KIMCHI_API_KEY before we ever spawned the ACP loop, and updateModelsConfig
-// falls back to defaults rather than failing. authRequired (-32000) nudges
-// Zed toward an auth prompt instead of showing a generic "internal error".
-export function buildSessionModelState(
-	session: Pick<AgentSession, "model" | "modelRegistry">,
-): SessionModelState | null {
-	const currentModel = session.model
-	if (!currentModel) {
-		return null
-	}
-	const availableModels = session.modelRegistry.getAvailable()
+/**
+ * Builds a SessionConfigOption for the model setting.
+ * Combines the orchestrator model with multi-model support into a single select UI.
+ * Exported for testing.
+ */
+export function buildModelConfigOption(
+	session: Pick<AgentSession, "model" | "modelRegistry" | "sessionId" | "sessionManager">,
+): SessionConfigOption {
+	const multiModelEnabled = getMultiModelEnabled(session.sessionManager)
+	const {
+		model: orchestrator,
+		modelRef: orchRef,
+		modelId: orchId,
+	} = getOrchestratorModel(session.sessionId, session.modelRegistry)
+	const orchName = orchestrator?.name ?? orchId ?? orchRef
+	const options = [
+		{
+			value: "multi-model",
+			name: `Multi-model (${orchName})`,
+		},
+		...session.modelRegistry
+			.getAvailable()
+			.map((m) => ({
+				value: refFromModel(m),
+				name: m.name,
+			}))
+			.sort((a, b) => a.value.localeCompare(b.value)),
+	]
+	// biome-ignore lint/style/noNonNullAssertion: we assert model availability before session is created/loaded via assertSessionHasModel.
+	const currentValue = multiModelEnabled ? "multi-model" : refFromModel(session.model!)
 	return {
-		currentModelId: getAcpModelId(currentModel),
-		availableModels: availableModels.map((m) => ({
-			modelId: getAcpModelId(m),
-			name: m.name,
-		})),
+		id: "model",
+		name: "Model",
+		type: "select",
+		category: "model",
+		description: "Select the active AI model: single-model or multi-model (orchestrator + workers).",
+		currentValue,
+		options,
 	}
 }
 
-function getAcpModelId(model: Pick<NonNullable<AgentSession["model"]>, "provider" | "id">): string {
-	return `${model.provider}/${model.id}`
+function buildConfigOptions(
+	session: AgentSession,
+	defaultMode: PermissionMode | (() => PermissionMode),
+): SessionConfigOption[] {
+	const mode =
+		getPermissionMode(session.sessionId)?.mode ?? (typeof defaultMode === "function" ? defaultMode() : defaultMode)
+	return [buildPermissionsConfigOption(mode), buildModelConfigOption(session)]
+}
+
+export function buildSessionModelState(configOptions: SessionConfigOption[]): SessionModelState | null {
+	// biome-ignore lint/style/noNonNullAssertion: model config option is static, it is always available
+	const configOption = configOptions.find((opt) => opt.id === "model")!
+	const options = (configOption as SessionConfigOption & { type: "select" }).options as SessionConfigSelectOption[]
+	return {
+		currentModelId: configOption.currentValue as string,
+		availableModels: options.map((m) => ({
+			modelId: m.value,
+			name: m.name,
+		})),
+	}
 }
 
 export function assertSessionHasModel(session: Pick<AgentSession, "model">): void {
@@ -1054,26 +1137,25 @@ export function initializeHeadlessTheme(settingsManager: Pick<SettingsManager, "
 }
 
 function registerPermissionFlagController(
-	sessionId: string,
+	session: AgentSession,
 	initialMode: PermissionMode,
 	send: (params: SessionNotification) => void,
-): SessionPermissionFlagController {
+): void {
 	const permissionFlagController = createSessionPermissionFlagController({
 		mode: { mode: initialMode, source: "user" },
 	})
 	// Register with permissions extension so tool gating uses session-scoped mode
-	registerSessionPermissionFlagController(sessionId, permissionFlagController)
+	registerSessionPermissionFlagController(session.sessionId, permissionFlagController)
 	permissionFlagController.subscribe(({ mode }) => {
 		if (mode === undefined) return
 		send({
-			sessionId,
+			sessionId: session.sessionId,
 			update: {
 				sessionUpdate: "config_option_update",
-				configOptions: [buildPermissionsConfigOption(mode.mode)],
+				configOptions: buildConfigOptions(session, initialMode),
 			},
 		})
 	})
-	return permissionFlagController
 }
 
 // Title falls back to the truncated first user message when the session has no

@@ -1,6 +1,7 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
+import { refFromModel } from "./model-catalog/ref-utils.js"
 import {
 	contextFitsModel,
 	getLatestMessages,
@@ -12,7 +13,7 @@ import {
 import { setMultiModelEnabled } from "./multi-model.js"
 import { MODEL_CAPABILITIES } from "./orchestration/model-registry/builtin-models.js"
 import type { ModelTier } from "./orchestration/model-registry/types.js"
-import { getOrchestratorModelId, getOrchestratorModelRef, splitModelRef } from "./orchestration/model-roles.js"
+import { getOrchestratorModel, getOrchestratorModelRef } from "./orchestration/model-roles.js"
 
 /** Prevents model_select handler from re-checking what set_model tool already validated. */
 let suppressModelSelectGuard = false
@@ -65,10 +66,11 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 			const { model } = params
 
 			if (model === "multi-model") {
-				const orchRef = getOrchestratorModelRef(sessionId)
-				const orchId = getOrchestratorModelId(sessionId)
-				const parsed = splitModelRef(orchRef)
-				const orchestrator = parsed ? ctx.modelRegistry?.find(parsed.provider, parsed.modelId) : undefined
+				const {
+					model: orchestrator,
+					modelId: orchId,
+					modelRef: orchRef,
+				} = getOrchestratorModel(sessionId, ctx.modelRegistry)
 				if (!orchestrator) {
 					return {
 						content: [{ type: "text" as const, text: `Multi-model orchestrator (${orchRef}) is not available.` }],
@@ -95,11 +97,10 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 
 			const parts = model.split("/")
 			if (parts.length !== 2 || !parts[0] || !parts[1]) {
-				const available =
-					ctx.modelRegistry
-						?.getAvailable()
-						?.map((m) => `${m.provider}/${m.id}`)
-						?.sort() ?? []
+				const available = ctx.modelRegistry
+					.getAvailable()
+					.map((m) => refFromModel(m))
+					.sort()
 				return {
 					content: [
 						{
@@ -112,14 +113,12 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 			}
 
 			const [provider, modelId] = parts
-			const target = ctx.modelRegistry?.find(provider, modelId)
-
+			const target = ctx.modelRegistry.find(provider, modelId)
 			if (!target) {
-				const available =
-					ctx.modelRegistry
-						?.getAvailable()
-						?.map((m) => `${m.provider}/${m.id}`)
-						?.sort() ?? []
+				const available = ctx.modelRegistry
+					.getAvailable()
+					.map((m) => refFromModel(m))
+					.sort()
 				return {
 					content: [
 						{
@@ -180,7 +179,7 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 					content: [
 						{
 							type: "text" as const,
-							text: `Failed to switch to ${provider}/${modelId} — no API key available for this model's provider.`,
+							text: `Failed to switch to ${refFromModel(target)} — no API key available for this model's provider.`,
 						},
 					],
 					details: null,
@@ -191,7 +190,7 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 				content: [
 					{
 						type: "text" as const,
-						text: `Switched to model ${target.provider}/${target.id} (${target.name})`,
+						text: `Switched to model ${refFromModel(target)} (${target.name})`,
 					},
 				],
 				details: null,

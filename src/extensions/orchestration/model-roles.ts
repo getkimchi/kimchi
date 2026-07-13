@@ -37,6 +37,8 @@
  * ```
  */
 
+import type { Api, Model } from "@earendil-works/pi-ai"
+import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
 import {
 	type ModelCustomMetadata,
 	getModelMetadata,
@@ -45,7 +47,7 @@ import {
 export { modelIdFromRef, splitModelRef } from "./model-ref-utils.js"
 import { readConfigSetting, writeConfigSetting } from "../../config/settings.js"
 import { getProcessOrchestratorRef } from "../kimchi-process.js"
-import { modelIdFromRef } from "./model-ref-utils.js"
+import { modelIdFromRef, splitModelRef } from "./model-ref-utils.js"
 
 /** Task-type affinity tag used to match an agent persona to a model role. */
 export type ModelRole = "review" | "build" | "plan" | "explore" | "research"
@@ -320,4 +322,18 @@ export function getOrchestratorModelRef(sessionId: string | null): string {
 		if (ref) return ref
 	}
 	return getModelRoles().orchestrator
+}
+
+export function getOrchestratorModel(
+	sessionId: string,
+	modelRegistry: ModelRegistry,
+): { model: Model<Api> | undefined; modelId: string; modelRef: string } {
+	const orchRef = getOrchestratorModelRef(sessionId)
+	const orchId = modelIdFromRef(orchRef)
+	const parsed = splitModelRef(orchRef)
+	return {
+		model: parsed ? modelRegistry.find(parsed.provider, parsed.modelId) : undefined,
+		modelId: orchId,
+		modelRef: orchRef,
+	}
 }
