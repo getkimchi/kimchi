@@ -1095,7 +1095,11 @@ describe("completeFerment", () => {
 		expect(okText(first)).toContain("do not search MCP tools or invent a tool")
 		expect(mockJudgeJourneyGrade).toHaveBeenCalledTimes(1)
 
-		const second = await completeFerment(h.runtime, { ferment_id: h.fermentId }, { ctx: createContext() })
+		const second = await completeFerment(
+			h.runtime,
+			{ ferment_id: h.fermentId },
+			{ ctx: createContext() },
+		)
 
 		expect(okText(second)).toContain('Ferment "Lifecycle Test" is already complete')
 		expect(okText(second)).toContain("without clear user consent")
@@ -1109,7 +1113,11 @@ describe("completeFerment", () => {
 		const abandoned = applyAndPersist(h.fermentId, { type: "abandon", reason: "user stopped" })
 		if (!abandoned.ok) throw new Error(abandoned.error.message)
 
-		const result = await completeFerment(h.runtime, { ferment_id: h.fermentId }, { ctx: createContext() })
+		const result = await completeFerment(
+			h.runtime,
+			{ ferment_id: h.fermentId },
+			{ ctx: createContext() },
+		)
 
 		expect(errText(result)).toContain('Ferment "Lifecycle Test" is abandoned and cannot be completed')
 		expect(mockJudgeJourneyGrade).not.toHaveBeenCalled()
@@ -1127,18 +1135,26 @@ describe("completeFerment", () => {
 			recommendations: [],
 		})
 		// First attempt: B refused.
-		const result1 = await completeFerment(h.runtime, {
+		const result1 = await completeFerment(
+			h.runtime,
+			{
 			ferment_id: h.fermentId,
 			final_summary: "done",
 			gates: passingFermentGates(),
-		}, { ctx: createContext() })
+		},
+			{ ctx: createContext() },
+		)
 		expect(errText(result1)).toContain("minimum required is A")
 		// Second attempt: B accepted.
-		const result = await completeFerment(h.runtime, {
+		const result = await completeFerment(
+			h.runtime,
+			{
 			ferment_id: h.fermentId,
 			final_summary: "done",
 			gates: passingFermentGates(),
-		}, { ctx: createContext() })
+		},
+			{ ctx: createContext() },
+		)
 		expect(okText(result)).toContain("**Final grade:** B")
 		expect(okText(result)).toContain("proxy")
 		expect(h.storage.get(h.fermentId)?.grade?.grade).toBe("B")
@@ -1207,11 +1223,15 @@ describe("completeFerment", () => {
 			rationale: "Excellent. Production-ready.",
 			recommendations: recs,
 		})
-		const result = await completeFerment(h.runtime, {
+		const result = await completeFerment(
+			h.runtime,
+			{
 			ferment_id: h.fermentId,
 			final_summary: "done",
 			gates: passingFermentGates(),
-		}, { ctx: createContext() })
+		},
+			{ ctx: createContext() },
+		)
 		expect(okText(result)).toContain("**Final grade:** A")
 		expect(h.storage.get(h.fermentId)?.status).toBe("complete")
 		expect(h.storage.get(h.fermentId)?.grade?.grade).toBe("A")
@@ -1229,19 +1249,27 @@ describe("completeFerment", () => {
 			recommendations: recs,
 		})
 		// First attempt: B refused (minimum is A).
-		const result1 = await completeFerment(h.runtime, {
+		const result1 = await completeFerment(
+			h.runtime,
+			{
 			ferment_id: h.fermentId,
 			final_summary: "done",
 			gates: passingFermentGates(),
-		}, { ctx: createContext() })
+		},
+			{ ctx: createContext() },
+		)
 		expect(errText(result1)).toContain("minimum required is A")
 		expect(errText(result1)).toContain("Add edge-case test")
 		// Second attempt: B accepted (minimum relaxes to B).
-		const result2 = await completeFerment(h.runtime, {
+		const result2 = await completeFerment(
+			h.runtime,
+			{
 			ferment_id: h.fermentId,
 			final_summary: "done",
 			gates: passingFermentGates(),
-		}, { ctx: createContext() })
+		},
+			{ ctx: createContext() },
+		)
 		expect(okText(result2)).toContain("**Final grade:** B")
 		expect(h.storage.get(h.fermentId)?.status).toBe("complete")
 		expect(h.storage.get(h.fermentId)?.grade?.grade).toBe("B")
@@ -1258,11 +1286,15 @@ describe("completeFerment", () => {
 			rationale: "Operational gaps.",
 			recommendations: recs,
 		})
-		const result = await completeFerment(h.runtime, {
+		const result = await completeFerment(
+			h.runtime,
+			{
 			ferment_id: h.fermentId,
 			final_summary: "done",
 			gates: passingFermentGates(),
-		}, { ctx: createContext() })
+		},
+			{ ctx: createContext() },
+		)
 		expect(errText(result)).toContain("final LLM grader assigned grade C")
 		expect(errText(result)).toContain("retry 1/3")
 		expect(errText(result)).toContain("Fix the N+1 query in listUsers.")
@@ -1285,35 +1317,51 @@ describe("completeFerment", () => {
 		})
 
 		// First refusal: within budget.
-		const result1 = await completeFerment(h.runtime, {
+		const result1 = await completeFerment(
+			h.runtime,
+			{
 			ferment_id: h.fermentId,
 			final_summary: "attempt 1",
 			gates: passingFermentGates(),
-		}, { ctx: createContext() })
+		},
+			{ ctx: createContext() },
+		)
 		expect(errText(result1)).toContain("retry 1/3")
 
 		// Second refusal: within budget.
-		const result2 = await completeFerment(h.runtime, {
+		const result2 = await completeFerment(
+			h.runtime,
+			{
 			ferment_id: h.fermentId,
 			final_summary: "attempt 2",
 			gates: passingFermentGates(),
-		}, { ctx: createContext() })
+		},
+			{ ctx: createContext() },
+		)
 		expect(errText(result2)).toContain("retry 2/3")
 
 		// Third refusal: within budget.
-		const result3 = await completeFerment(h.runtime, {
+		const result3 = await completeFerment(
+			h.runtime,
+			{
 			ferment_id: h.fermentId,
 			final_summary: "attempt 3",
 			gates: passingFermentGates(),
-		}, { ctx: createContext() })
+		},
+			{ ctx: createContext() },
+		)
 		expect(errText(result3)).toContain("retry 3/3")
 
 		// Fourth attempt: budget exhausted — accepts the grade and ships.
-		const result4 = await completeFerment(h.runtime, {
+		const result4 = await completeFerment(
+			h.runtime,
+			{
 			ferment_id: h.fermentId,
 			final_summary: "attempt 4",
 			gates: passingFermentGates(),
-		}, { ctx: createContext() })
+		},
+			{ ctx: createContext() },
+		)
 		expect(okText(result4)).toContain("**Final grade:** C")
 		expect(h.storage.get(h.fermentId)?.status).toBe("complete")
 		expect(h.storage.get(h.fermentId)?.grade?.grade).toBe("C")
@@ -1328,11 +1376,15 @@ describe("completeFerment", () => {
 			reason: "no_auth",
 			detail: "missing api key",
 		})
-		const result = await completeFerment(h.runtime, {
+		const result = await completeFerment(
+			h.runtime,
+			{
 			ferment_id: h.fermentId,
 			final_summary: "done",
 			gates: passingFermentGates(),
-		}, { ctx: createContext() })
+		},
+			{ ctx: createContext() },
+		)
 		expect(okText(result)).toContain("**Final grade:** unavailable")
 		expect(h.storage.get(h.fermentId)?.status).toBe("complete")
 		expect(h.storage.get(h.fermentId)?.grade).toBeUndefined()
