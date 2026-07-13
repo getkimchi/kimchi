@@ -36,7 +36,7 @@ interface RefreshBillingStatusOptions {
 
 export const LOW_CREDITS_THRESHOLD_USD = 5
 export const COMMUNITY_TIER_HEADER_NOTICE =
-	"You are using Community tier. For faster performance, upgrade to Coder at app.kimchi.dev/pricing"
+	"You are using Community tier. For faster performance, upgrade to Coder at https://app.kimchi.dev/pricing"
 export const BILLING_EXHAUSTED_MESSAGE = "You ran out of credits. Top up at https://app.kimchi.dev/billing"
 const BILLING_REFRESH_TIMEOUT_MS = 5000
 

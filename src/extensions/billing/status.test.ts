@@ -47,7 +47,9 @@ describe("billing status", () => {
 			creditStatus: "exhausted",
 			remainingCredits: 0,
 		})
-		expect(getCommunityTierHeaderNotice()).toBe(COMMUNITY_TIER_HEADER_NOTICE)
+		expect(getCommunityTierHeaderNotice()).toBe(
+			"You are using Community tier. For faster performance, upgrade to Coder at https://app.kimchi.dev/pricing",
+		)
 		expect(getBillingWarning()).toBeUndefined()
 		expect(getBillingStatusLine()).toEqual({ amount: "$0.00" })
 	})
