@@ -7,8 +7,13 @@
  */
 
 import { basename } from "node:path"
-import type { ExtensionAPI, ExtensionContext, TurnEndEvent } from "@earendil-works/pi-coding-agent"
-import { loadConfig } from "../config.js"
+import {
+	type ExtensionAPI,
+	type ExtensionContext,
+	SettingsManager,
+	type TurnEndEvent,
+} from "@earendil-works/pi-coding-agent"
+import { RETRY_DEFAULTS, loadConfig } from "../config.js"
 import { fetchWithRetry } from "../utils/http.js"
 
 export const SESSION_NAME_MODEL = "deepseek-v4-flash"
@@ -16,6 +21,14 @@ const SESSION_NAME_SYSTEM_PROMPT =
 	"You are a title generator. Respond with ONLY a short title. 1-5 words, no quotes, no explanation, no markdown."
 const HINT_MAX_LEN = 500
 const SESSION_NAME_TIMEOUT_MS = 10_000
+
+function getSessionNameMaxRetries(cwd: string): number {
+	try {
+		return Math.min(SettingsManager.create(cwd).getRetrySettings().maxRetries, 2)
+	} catch {
+		return Math.min(RETRY_DEFAULTS.maxRetries, 2)
+	}
+}
 
 function capHint(hint: string): string {
 	if (hint.length <= HINT_MAX_LEN) return hint
@@ -117,6 +130,7 @@ export async function suggestSessionName(ctx: ExtensionContext, hint?: string, q
 	if (!apiKey) return fallback
 
 	try {
+		const maxRetries = getSessionNameMaxRetries(ctx.cwd)
 		const response = await fetchWithRetry(
 			`${config.llmEndpoint.replace(/\/+$/, "")}/chat/completions`,
 			{
@@ -135,7 +149,7 @@ export async function suggestSessionName(ctx: ExtensionContext, hint?: string, q
 					temperature: 0,
 				}),
 			},
-			{ timeoutMs: SESSION_NAME_TIMEOUT_MS, retry: { maxRetries: Math.min(config.retry.maxRetries, 2) } },
+			{ timeoutMs: SESSION_NAME_TIMEOUT_MS, retry: { maxRetries } },
 		)
 
 		if (!response.ok) {

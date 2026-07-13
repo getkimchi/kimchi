@@ -55,7 +55,7 @@ import {
 	initTheme,
 } from "@earendil-works/pi-coding-agent"
 import type { AgentSessionEvent, ExtensionUIContext } from "@earendil-works/pi-coding-agent"
-import { isHideThinkingEnabled } from "../../extensions/hide-thinking.js"
+
 import { loadConfig } from "../../extensions/permissions/config.js"
 import { PERMISSIONS_ENV_KEY } from "../../extensions/permissions/constants.js"
 import {
@@ -761,13 +761,9 @@ export class KimchiAcpAgent implements Agent {
 		const sessionId = session.sessionId
 		const entries = session.sessionManager.getBranch()
 		const toolResults = collectToolResults(entries)
-		// Evaluate hide-thinking once per replay — readHideThinkingSetting()
-		// hits disk synchronously, so a 200-turn session would otherwise do
-		// hundreds of blocking reads.
-		const emitThinking = shouldEmitThinking("")
+
 		for (const entry of entries) {
-			if (!entry || typeof entry !== "object") continue
-			if (entry.type !== "message") continue
+			if (!entry || typeof entry !== "object" || entry.type !== "message") continue
 			const msg = entry.message
 			if (msg.role === "user") {
 				const text = userMessageText(msg.content)
@@ -780,7 +776,7 @@ export class KimchiAcpAgent implements Agent {
 					},
 				})
 			} else if (msg.role === "assistant") {
-				this.replayAssistantBlocks(sessionId, msg.content, toolResults, emitThinking, this.sessions.get(sessionId))
+				this.replayAssistantBlocks(sessionId, msg.content, toolResults, this.sessions.get(sessionId))
 			}
 			// toolResult: handled inline alongside its originating toolCall above.
 		}
@@ -803,7 +799,6 @@ export class KimchiAcpAgent implements Agent {
 	 */
 	private seedBlockCounterFromBranch(session: AgentSession, record: SessionRecord): void {
 		const entries = session.sessionManager.getBranch()
-		const emitThinking = shouldEmitThinking("")
 
 		let count = 0
 		for (const entry of entries) {
@@ -822,14 +817,12 @@ export class KimchiAcpAgent implements Agent {
 				if (block.type === "text") {
 					if (!block.text) continue
 					countTextSegment()
-					if (emitThinking) {
-						for (const part of replayTextParts(block.text)) {
-							if (part.kind === "thinking") count++
-						}
+					for (const part of replayTextParts(block.text)) {
+						if (part.kind === "thinking") count++
 					}
 				} else if (block.type === "thinking") {
 					inTextSegment = false
-					if (!emitThinking || block.redacted || !block.thinking) continue
+					if (block.redacted || !block.thinking) continue
 					count++
 				} else {
 					// toolCall / unknown: replay flushes the text buffer before
@@ -846,7 +839,6 @@ export class KimchiAcpAgent implements Agent {
 		sessionId: string,
 		content: unknown,
 		toolResults: Map<string, ReplayToolResult>,
-		emitThinking: boolean,
 		record: SessionRecord | undefined,
 	): void {
 		if (!Array.isArray(content)) return
@@ -885,7 +877,7 @@ export class KimchiAcpAgent implements Agent {
 				for (const part of replayTextParts(text)) {
 					if (part.kind === "text") {
 						textBuffer += part.text
-					} else if (emitThinking) {
+					} else if (part.kind === "thinking") {
 						flushText()
 						const messageId = nextMessageId()
 						this.send({
@@ -904,9 +896,7 @@ export class KimchiAcpAgent implements Agent {
 				const redacted = (b as { redacted?: unknown }).redacted === true
 				// Redacted thinking has no plaintext to surface — the encrypted
 				// payload only matters for multi-turn provider continuity.
-				if (redacted) continue
-				if (typeof thinking !== "string" || thinking.length === 0) continue
-				if (!emitThinking) continue
+				if (redacted || typeof thinking !== "string" || thinking.length === 0) continue
 				const messageId = nextMessageId()
 				this.send({
 					sessionId,
@@ -1505,18 +1495,6 @@ function collectToolResults(entries: unknown[]): Map<string, ReplayToolResult> {
 		})
 	}
 	return out
-}
-
-// Native ThinkingContent blocks aren't routed through hideThinkingExtension
-// (which only mutates <think> tags inside text blocks), but the replay UX
-// should still honor the user's hideThinkingBlock setting — otherwise a user
-// who hides thinking sees a quiet live UI but a noisy replayed transcript.
-// Read the setting directly: a previous version probed filterThinkingForDisplay
-// with a synthetic <think>...</think> wrapper, which broke when the persisted
-// thinking text itself contained `</think>` (the inner regex terminated early
-// and the predicate falsely returned true).
-export function shouldEmitThinking(_thinking: string): boolean {
-	return !isHideThinkingEnabled()
 }
 
 function toolResultContent(result: unknown): ToolCallContent[] {

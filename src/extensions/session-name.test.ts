@@ -10,12 +10,37 @@ import {
 	suggestSessionName,
 } from "./session-name.js"
 
-const { mockLoadConfig } = vi.hoisted(() => ({
+const { mockGetRetrySettings, mockLoadConfig, retryDefaults } = vi.hoisted(() => ({
+	mockGetRetrySettings: vi.fn(),
 	mockLoadConfig: vi.fn(),
+	retryDefaults: {
+		enabled: true,
+		maxRetries: 1,
+		baseDelayMs: 2000,
+		provider: {
+			timeoutMs: 600000,
+			maxRetries: 0,
+			maxRetryDelayMs: 60000,
+		},
+	},
 }))
 
+vi.mock("@earendil-works/pi-coding-agent", async () => {
+	const actual = await vi.importActual<typeof import("@earendil-works/pi-coding-agent")>(
+		"@earendil-works/pi-coding-agent",
+	)
+	return {
+		...actual,
+		SettingsManager: {
+			create: vi.fn(() => ({
+				getRetrySettings: mockGetRetrySettings,
+			})),
+		},
+	}
+})
+
 vi.mock("../config.js", () => ({
-	RETRY_DEFAULTS: { maxRetries: 1 },
+	RETRY_DEFAULTS: retryDefaults,
 	loadConfig: mockLoadConfig,
 }))
 
@@ -25,11 +50,12 @@ vi.mock("node:path", async () => {
 })
 
 beforeEach(() => {
+	mockGetRetrySettings.mockReset()
+	mockGetRetrySettings.mockReturnValue({ enabled: true, maxRetries: 1, baseDelayMs: 2000 })
 	mockLoadConfig.mockReset()
 	mockLoadConfig.mockReturnValue({
 		apiKey: "",
 		llmEndpoint: "https://llm.test/openai/v1",
-		retry: { maxRetries: 1 },
 	})
 })
 
@@ -174,7 +200,6 @@ describe("suggestSessionName", () => {
 		mockLoadConfig.mockReturnValue({
 			apiKey: "test-key",
 			llmEndpoint: "https://llm.test/openai/v1",
-			retry: { maxRetries: 1 },
 		})
 		const ctx = createMockCtx([{ type: "message", message: { role: "user", content: "Please review this branch" } }])
 

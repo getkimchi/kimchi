@@ -1,16 +1,21 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
+	RETRY_DEFAULTS,
 	VENDOR_SKILL_PATHS,
 	buildSkillPathOptions,
+	checkConfigFilePermissions,
 	clearApiKey,
+	ensureHideThinkingBlockDefault,
 	getActiveVendorSkillPaths,
 	loadConfig,
+	readApiKeyFromConfigFile,
 	readGitToken,
 	readHideTips,
 	readTelemetryConfig,
+	upgradeLegacyRetrySettings,
 	writeApiKey,
 	writeDeviceId,
 	writeGitToken,
@@ -81,6 +86,11 @@ describe("loadConfig", () => {
 	it("returns empty apiKey when no key is found", () => {
 		const config = loadConfig({ configPath })
 		expect(config.apiKey).toBe("")
+	})
+
+	it("does not expose Pi retry settings as Kimchi config", () => {
+		const config = loadConfig({ configPath, cwd: tempDir })
+		expect(config).not.toHaveProperty("retry")
 	})
 
 	it("reads project config from .kimchi/config.json overriding global", () => {
@@ -714,5 +724,163 @@ describe("buildSkillPathOptions", () => {
 
 		expect(options).toContain(join(".cursor", "skills"))
 		expect(options).not.toContain(skillsDir)
+	})
+})
+
+describe("permissions", () => {
+	let tempDir: string
+	let configPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-perm-test-"))
+		configPath = join(tempDir, "config.json")
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+	})
+
+	it("writeApiKey produces config.json with mode 0600", () => {
+		writeApiKey("sekrit-key", configPath)
+		const mode = statSync(configPath).mode & 0o777
+		expect(mode).toBe(0o600)
+	})
+
+	it("writeConfigObject (via writeApiKey) chmods even when pre-existing file is loose", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "old" }), { mode: 0o644 })
+		chmodSync(configPath, 0o644)
+		expect(statSync(configPath).mode & 0o777).toBe(0o644)
+
+		writeApiKey("new-key", configPath)
+		expect(statSync(configPath).mode & 0o777).toBe(0o600)
+	})
+
+	it("checkConfigFilePermissions returns undefined for owner-only file", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "k" }), { mode: 0o600 })
+		chmodSync(configPath, 0o600)
+		expect(checkConfigFilePermissions(configPath)).toBeUndefined()
+	})
+
+	it("checkConfigFilePermissions returns warning for group-readable file", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "k" }), { mode: 0o644 })
+		chmodSync(configPath, 0o644)
+		const warning = checkConfigFilePermissions(configPath)
+		expect(warning).toBeDefined()
+		expect(warning).toContain(configPath)
+		expect(warning).toContain("chmod 600")
+	})
+
+	it("checkConfigFilePermissions returns warning for world-writable file", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "k" }), { mode: 0o606 })
+		chmodSync(configPath, 0o606)
+		const warning = checkConfigFilePermissions(configPath)
+		expect(warning).toBeDefined()
+		expect(warning).toContain(configPath)
+	})
+
+	it("checkConfigFilePermissions returns undefined when file does not exist", () => {
+		expect(checkConfigFilePermissions(join(tempDir, "missing.json"))).toBeUndefined()
+	})
+
+	it("loadConfig warns when config.json is group/world-readable", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "leaky-key" }), { mode: 0o644 })
+		chmodSync(configPath, 0o644)
+
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+		loadConfig({ configPath })
+		expect(warnSpy).toHaveBeenCalled()
+		const warning = warnSpy.mock.calls.find((c) => typeof c[0] === "string" && c[0].includes("group/world-readable"))
+		expect(warning).toBeDefined()
+		expect(warning?.[0]).toContain("chmod 600")
+		warnSpy.mockRestore()
+	})
+
+	it("loadConfig does not warn when config.json is owner-only", () => {
+		writeApiKey("safe-key", configPath)
+		expect(statSync(configPath).mode & 0o777).toBe(0o600)
+
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+		loadConfig({ configPath })
+		const permWarning = warnSpy.mock.calls.find(
+			(c) => typeof c[0] === "string" && c[0].includes("group/world-readable"),
+		)
+		expect(permWarning).toBeUndefined()
+		warnSpy.mockRestore()
+	})
+
+	it("readApiKeyFromConfigFile warns when config.json is group/world-readable", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "leaky-key" }), { mode: 0o644 })
+		chmodSync(configPath, 0o644)
+
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const key = readApiKeyFromConfigFile(configPath)
+		expect(key).toBe("leaky-key")
+		expect(warnSpy).toHaveBeenCalled()
+		const warning = warnSpy.mock.calls.find((c) => typeof c[0] === "string" && c[0].includes("group/world-readable"))
+		expect(warning).toBeDefined()
+		warnSpy.mockRestore()
+	})
+})
+
+describe("upgradeLegacyRetrySettings", () => {
+	it("seeds the defaults when no retry block exists", () => {
+		expect(upgradeLegacyRetrySettings(undefined)).toEqual(RETRY_DEFAULTS)
+	})
+
+	it("upgrades the legacy kimchi-written block to the current defaults", () => {
+		expect(upgradeLegacyRetrySettings({ maxRetries: 10 })).toEqual(RETRY_DEFAULTS)
+	})
+
+	it("keeps a user-tuned maxRetries while adding the provider block", () => {
+		expect(upgradeLegacyRetrySettings({ maxRetries: 5 })).toEqual({ ...RETRY_DEFAULTS, maxRetries: 5 })
+	})
+
+	it("keeps other user-tuned keys and maxRetries when the block is not exactly legacy", () => {
+		expect(upgradeLegacyRetrySettings({ enabled: false, maxRetries: 10 })).toEqual({
+			...RETRY_DEFAULTS,
+			enabled: false,
+			maxRetries: 10,
+		})
+	})
+
+	it("drops invalid legacy retry keys instead of writing them to pi settings", () => {
+		expect(
+			upgradeLegacyRetrySettings({
+				enabled: "false",
+				baseDelayMs: "1000",
+				maxRetries: 10,
+				extra: "ignored",
+			}),
+		).toEqual({
+			...RETRY_DEFAULTS,
+			maxRetries: 10,
+		})
+	})
+
+	it("leaves a block with a provider section alone", () => {
+		expect(upgradeLegacyRetrySettings({ maxRetries: 10, provider: { maxRetries: 1 } })).toBeUndefined()
+	})
+
+	it("leaves a non-object retry value alone", () => {
+		expect(upgradeLegacyRetrySettings(false)).toBeUndefined()
+		expect(upgradeLegacyRetrySettings(null)).toBeUndefined()
+	})
+})
+
+describe("ensureHideThinkingBlockDefault", () => {
+	it("seeds hideThinkingBlock when the key is absent", () => {
+		const settings: Record<string, unknown> = { footer: { pinned: [] } }
+		expect(ensureHideThinkingBlockDefault(settings)).toBe(true)
+		expect(settings.hideThinkingBlock).toBe(true)
+	})
+
+	it("leaves an explicit hideThinkingBlock value alone", () => {
+		const hidden = { hideThinkingBlock: true }
+		expect(ensureHideThinkingBlockDefault(hidden)).toBe(false)
+		expect(hidden.hideThinkingBlock).toBe(true)
+
+		const visible = { hideThinkingBlock: false }
+		expect(ensureHideThinkingBlockDefault(visible)).toBe(false)
+		expect(visible.hideThinkingBlock).toBe(false)
 	})
 })

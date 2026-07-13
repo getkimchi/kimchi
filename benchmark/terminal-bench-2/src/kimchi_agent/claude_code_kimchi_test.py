@@ -146,7 +146,7 @@ class ClaudeCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
                 patch("kimchi_agent.claude_code_kimchi.asyncio.sleep", new_callable=AsyncMock) as sleep,
                 patch.object(agent.logger, "warning") as warning,
             ):
-                await agent.install(object())
+                await agent.install(FakeEnvironment(stdout="", return_code=1))
 
         self.assertEqual(len(agent.root_commands), 2)
         self.assertEqual(len(agent.agent_commands), 2)
@@ -169,7 +169,7 @@ class ClaudeCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
                 patch("kimchi_agent.claude_code_kimchi.asyncio.sleep", new_callable=AsyncMock) as sleep,
                 self.assertRaises(NonZeroAgentExitCodeError) as raised,
             ):
-                await agent.install(object())
+                await agent.install(FakeEnvironment(stdout="", return_code=1))
 
         self.assertIs(raised.exception, original_error)
         self.assertEqual(len(agent.root_commands), 1)

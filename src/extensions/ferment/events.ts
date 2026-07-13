@@ -405,7 +405,8 @@ export function registerFermentEvents(
 		if (!f) return
 		if (f.status === "running" || f.status === "planned") {
 			try {
-				applyAndPersist(f.id, { type: "pause" })
+				const isOneShot = pi.getFlag?.("ferment-oneshot") === true
+				applyAndPersist(f.id, { type: isOneShot ? "abandon" : "pause" })
 			} catch {
 				// If persistence fails during shutdown, we can't fix it here.
 				// The startup scanner will recover the stale state on next launch.
@@ -528,33 +529,46 @@ export function registerFermentEvents(
 
 		// Connection / provider / gateway failure: the model's turn ended with
 		// stopReason "error" after retries were exhausted (or the error was
-		// non-retryable). Pause the ferment so its state stays valid, reset all
-		// nudge counters, and surface a clear message to the user. Without this,
-		// the ferment stays "running" and the continuation-nudge logic fires on
-		// the next tick, sending the planner straight back into the broken state.
+		// non-retryable). In interactive mode, pause the ferment so its state
+		// stays valid and surface a clear message to the user. In one-shot mode,
+		// keep the ferment running and inject a continuation nudge so the
+		// orchestrator retries on the next turn — there is no user to resume.
 		if (stopReason === "error") {
-			const errorMessage = getMessageStringField(event.message, "errorMessage")
-			const errorFerment = runtime.getActive()
-			if (errorFerment && (errorFerment.status === "running" || errorFerment.status === "planned")) {
-				const outcome = applyAndPersist(errorFerment.id, { type: "pause" })
-				if (outcome.ok) {
-					setActiveFermentAndApplyProfile(pi, runtime, outcome.ferment)
-					const detail = errorMessage ? `: ${errorMessage}` : ""
-					ctx.ui.notify?.(
-						`Interrupted: "${outcome.ferment.name}" was paused due to an error${detail}. Run /ferment resume to continue.`,
-					)
-				} else {
-					ctx.ui.notify?.(
-						`Connection error during "${errorFerment.name}" but pause failed: ${outcome.error.message}. Run /ferment pause manually.`,
-					)
+			const isOneShot = pi.getFlag?.("ferment-oneshot") === true
+
+			if (!isOneShot) {
+				const errorMessage = getMessageStringField(event.message, "errorMessage")
+				const errorFerment = runtime.getActive()
+				if (errorFerment && (errorFerment.status === "running" || errorFerment.status === "planned")) {
+					const outcome = applyAndPersist(errorFerment.id, { type: "pause" })
+					if (outcome.ok) {
+						setActiveFermentAndApplyProfile(pi, runtime, outcome.ferment)
+						const detail = errorMessage ? `: ${errorMessage}` : ""
+						ctx.ui.notify?.(
+							`Interrupted: "${outcome.ferment.name}" was paused due to an error${detail}. Run /ferment resume to continue.`,
+						)
+					} else {
+						ctx.ui.notify?.(
+							`Connection error during "${errorFerment.name}" but pause failed: ${outcome.error.message}. Run /ferment pause manually.`,
+						)
+					}
 				}
 			}
+
 			if (activeId) {
 				resetReactiveContinuationNudgeCount(activeId)
 				resetFermentStopNudgeCount(activeId)
 				resetScopingStopNudgeCount(activeId)
 				resetScopingExploreTurns(activeId)
 			}
+
+			if (isOneShot) {
+				const errorFerment = runtime.getActive()
+				if (errorFerment && (errorFerment.status === "running" || errorFerment.status === "planned")) {
+					maybeInjectReactiveContinuationNudge(pi, runtime)
+				}
+			}
+
 			return
 		}
 

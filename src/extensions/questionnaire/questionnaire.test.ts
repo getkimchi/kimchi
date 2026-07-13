@@ -291,6 +291,7 @@ describe("questionnaire environment behavior", () => {
 				],
 				cancelled: false,
 			})),
+			setWorkingVisible: vi.fn(),
 		}
 		const ctx = { hasUI: true, ui }
 		if (mode !== undefined) (ctx as { mode?: string }).mode = mode
@@ -421,5 +422,8 @@ describe("questionnaire environment behavior", () => {
 		// TUI form handles its own input via editor — the fallback's ui.input must NOT be called.
 		expect(ui.input).not.toHaveBeenCalled()
 		expect(result.details.cancelled).toBe(false)
+		// The cooking animation is hidden while the form has focus, then restored.
+		expect(ui.setWorkingVisible).toHaveBeenCalledWith(false)
+		expect(ui.setWorkingVisible).toHaveBeenLastCalledWith(true)
 	})
 })

@@ -23,7 +23,7 @@ import {
 	waitForDiagnostics,
 } from "./lsp/client.js"
 import { applyWorkspaceEdit } from "./lsp/edits.js"
-import { detectServers, findRoot, serverForFile } from "./lsp/servers.js"
+import { detectMissingCandidates, detectServers, findRoot, serverForFile } from "./lsp/servers.js"
 import type { Hover, Location, LocationLink, TextDocumentEdit, WorkspaceEdit } from "./lsp/types.js"
 import { fileToUri, formatDiagnostic, uriToFile } from "./lsp/utils.js"
 import { createSystemPromptBlocks } from "./prompt-construction/index.js"
@@ -52,6 +52,8 @@ LSP tools are available when language servers are detected on PATH (currently Ty
 export default function (pi: ExtensionAPI) {
 	let cwd = ""
 	let activeServers: ReturnType<typeof detectServers> = []
+	let degradedServers: ReturnType<typeof detectMissingCandidates> = []
+	let warned = false
 	let ui: ExtensionUIContext | undefined
 	// Tracks the pending diagnostic wait so a newer edit can cancel the previous
 	// one (avoiding stale status-bar updates) and so session_shutdown can
@@ -69,7 +71,7 @@ export default function (pi: ExtensionAPI) {
 
 	createSystemPromptBlocks(pi, "lsp").register({
 		id: "lsp-tools",
-		render: () => LSP_SYSTEM_PROMPT,
+		render: () => (activeServers.length > 0 ? LSP_SYSTEM_PROMPT : undefined),
 	})
 
 	// ── Session start: detect servers, hook file sync, shutdown on exit ─────────
@@ -86,7 +88,28 @@ export default function (pi: ExtensionAPI) {
 			idleSweepTimer = null
 		}
 
+		warned = false
+		degradedServers = []
 		activeServers = detectServers(cwd)
+
+		// Compute missing candidates independently of active servers. In a mixed
+		// repo (e.g. both go.mod and package.json present but only one server
+		// binary installed), this catches the missing server and surfaces it.
+		degradedServers = detectMissingCandidates(cwd)
+		if (degradedServers.length > 0 && ui) {
+			const names = degradedServers.map((s) => s.name).join(", ")
+			if (activeServers.length > 0) {
+				// Partial degradation: some servers active, some missing
+				const activeNames = activeServers.map((s) => s.name).join(", ")
+				ui.setStatus("lsp", `LSP: ${activeNames} · ${names} not installed`)
+			} else {
+				ui.setStatus("lsp", `LSP: ${names} not installed`)
+			}
+		} else if (activeServers.length > 0 && ui) {
+			const names = activeServers.map((s) => s.name).join(", ")
+			ui.setStatus("lsp", `LSP: ${names}`)
+		}
+
 		if (activeServers.length === 0) return
 
 		// Start idle sweep — shut down LSP servers after 15 min of inactivity.
@@ -96,12 +119,6 @@ export default function (pi: ExtensionAPI) {
 			shutdownIdleClients(IDLE_THRESHOLD_MS)
 		}, IDLE_SWEEP_INTERVAL_MS)
 		idleSweepTimer.unref()
-
-		// Update status bar with detected server names
-		if (ui) {
-			const names = activeServers.map((s) => s.name).join(", ")
-			ui.setStatus("lsp", `LSP: ${names}`)
-		}
 
 		// Eagerly start servers that have a project marker directly in sessionCwd
 		const goMarkers = ["go.mod"]
@@ -123,7 +140,20 @@ export default function (pi: ExtensionAPI) {
 			ui.setStatus("lsp", undefined)
 			ui = undefined
 		}
+		warned = false
+		degradedServers = []
 		shutdownAll()
+	})
+
+	// ── Degraded-state warning: notify once on the first agent turn ─────────────
+
+	pi.on("before_agent_start", async () => {
+		// One-time warning when in a project that would use LSP but has no
+		// server binary on PATH. No-op on subsequent turns and when not degraded.
+		if (warned || degradedServers.length === 0 || !ui?.notify) return
+		const lines = degradedServers.map((s) => `${s.name} — install with: ${s.installHint ?? s.command}`)
+		ui.notify(`LSP unavailable: language server(s) not installed for this project.\n${lines.join("\n")}`, "warning")
+		warned = true
 	})
 
 	// ── File sync: refresh LSP after agent edits files ───────────────────────────

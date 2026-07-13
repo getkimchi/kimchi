@@ -285,16 +285,6 @@ export function isScopingComplete(f: Ferment): boolean {
 	return !!(f.scoping.goal && f.scoping.criteria && f.scoping.constraints && f.scoping.phases)
 }
 
-export function getScopingProgress(f: Ferment): { answered: number; total: number } {
-	const s = f.scoping
-	let answered = 0
-	if (s.goal) answered++
-	if (s.criteria) answered++
-	if (s.constraints) answered++
-	if (s.phases) answered++
-	return { answered, total: 4 }
-}
-
 function findActivePhase(f: Ferment): Phase | undefined {
 	if (f.activePhaseId) {
 		const byId = f.phases.find((p) => p.id === f.activePhaseId)

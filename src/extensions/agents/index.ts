@@ -27,6 +27,7 @@ import { isToolExpanded, registerToolCall } from "../../expand-state.js"
 import { filterThinkingForDisplay } from "../hide-thinking.js"
 import { sessionHasImages } from "../model-guard.js"
 import { KIMCHI_DEV_PROVIDER, MODEL_CAPABILITIES } from "../orchestration/model-registry/index.js"
+import { getAllowedMultiModelRefs } from "../orchestration/model-roles.js"
 import { getMultiModelEnabled } from "../prompt-construction/prompt-enrichment.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { isStaleCtxError } from "../stale-ctx.js"
@@ -125,7 +126,7 @@ export const AGENT_TOOL_GUIDELINES = `Guidelines:
 - Use inherit_context if the agent needs the parent conversation history.`
 
 export const AGENT_MODEL_PARAMETER_DESCRIPTION =
-	'Model identifier for the spawned agent. If omitted, the agent uses the current session model. Follow your system prompt\'s delegation rules when deciding whether to provide this. Format "provider/modelId" (e.g. "kimchi-dev/minimax-m2.7"). Partial model IDs such as "kimi" or "nemotron" are accepted when unambiguous; specify the full versioned model ID when the exact version matters.'
+	'Model identifier for the spawned agent. If omitted, the agent uses the current session model. Follow your system prompt\'s delegation rules when deciding whether to provide this. Format "provider/modelId" (e.g. "kimchi-dev/minimax-m2.7"). Partial model IDs such as "kimi" or "nemotron" are accepted when unambiguous; specify the full versioned model ID when the exact version matters. In multi-model mode, only the models configured in the multi-model roles may be used.'
 
 function textResult<T = AgentDetails>(msg: string, details?: T) {
 	return { content: [{ type: "text" as const, text: msg }], details: details as unknown }
@@ -684,6 +685,27 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
+	function appendSubagentRecord(record: AgentRecord): void {
+		pi.appendEntry("subagents:record", {
+			id: record.id,
+			type: record.type,
+			description: record.description,
+			visibility: record.visibility,
+			status: record.status,
+			abortReason: record.abortReason,
+			result: record.result,
+			error: record.error,
+			startedAt: record.startedAt,
+			completedAt: record.completedAt,
+			// Persist file paths so export post-processing can read the
+			// full transcript and attach it to the export. Stripped from
+			// the export output after reading.
+			outputFile: record.outputFile,
+			sessionFile: record.sessionFile,
+			systemPrompt: record.systemPrompt,
+		})
+	}
+
 	let currentBatchAgents: { id: string; joinMode: JoinMode }[] = []
 	let batchFinalizeTimer: ReturnType<typeof setTimeout> | undefined
 	let batchCounter = 0
@@ -730,18 +752,7 @@ export default function (pi: ExtensionAPI) {
 				pi.events.emit("subagents:completed", eventData)
 			}
 
-			pi.appendEntry("subagents:record", {
-				id: record.id,
-				type: record.type,
-				description: record.description,
-				visibility: record.visibility,
-				status: record.status,
-				abortReason: record.abortReason,
-				result: record.result,
-				error: record.error,
-				startedAt: record.startedAt,
-				completedAt: record.completedAt,
-			})
+			appendSubagentRecord(record)
 
 			if (record.resultConsumed) {
 				agentActivity.delete(record.id)
@@ -1144,6 +1155,23 @@ ${AGENT_TOOL_GUIDELINES}`,
 					}
 				}
 
+				// Multi-model guard: when multi-model mode is active and the caller supplied
+				// an explicit model, the resolved model must belong to the configured
+				// multi-model role pool. This runs before budget-retry and task_ref checks
+				// so invalid models are rejected immediately.
+				if (getMultiModelEnabled() && resolvedConfig.modelFromParams) {
+					const fullRef = `${(model as { provider?: string }).provider}/${(model as { id?: string }).id}`
+					const allowed = new Set(getAllowedMultiModelRefs())
+					if (!allowed.has(fullRef)) {
+						const allowedList = Array.from(allowed)
+							.map((ref) => `  - ${ref}`)
+							.join("\n")
+						return textResult(
+							`Model "${fullRef}" is not allowed in multi-model mode.\n\nAllowed models:\n${allowedList}\n\nOmit the model parameter to use the current session model, or specify one of the allowed models.`,
+						)
+					}
+				}
+
 				const explicitTokenBudget =
 					(params as { token_budget?: number; tokenBudget?: number }).token_budget ??
 					(params as { token_budget?: number; tokenBudget?: number }).tokenBudget
@@ -1349,6 +1377,15 @@ ${AGENT_TOOL_GUIDELINES}`,
 							fgId = a.id
 							agentActivity.set(a.id, fgState)
 							widget.ensureTimer()
+							const rec = manager.getRecord(a.id)
+							if (rec?.outputFile) {
+								rec.outputCleanup = streamToOutputFile(
+									session as Parameters<typeof streamToOutputFile>[0],
+									rec.outputFile,
+									a.id,
+									ctx.cwd,
+								)
+							}
 							break
 						}
 					}
@@ -1362,6 +1399,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 				streamUpdate()
 
 				let childSessionFile: string | undefined
+				let fgOutputFile: string | undefined
 				const parentSessionDir = ctx.sessionManager.getSessionDir()
 				try {
 					childSessionFile = prepareAgentSessionFile(
@@ -1369,6 +1407,12 @@ ${AGENT_TOOL_GUIDELINES}`,
 						ctx.sessionManager.getSessionFile(),
 						ctx.cwd,
 					)?.sessionFile
+					fgOutputFile = createOutputFilePath(
+						ctx.cwd,
+						"placeholder",
+						ctx.sessionManager.getSessionId(),
+						parentSessionDir,
+					)
 				} catch (err) {
 					clearInterval(spinnerInterval)
 					const detail = err instanceof Error ? err.message : String(err)
@@ -1408,6 +1452,11 @@ ${AGENT_TOOL_GUIDELINES}`,
 				const record = manager.getRecord(spawnedId)!
 				fgId = spawnedId
 				record.detachResolver = detachResolve
+				if (fgOutputFile) {
+					record.outputFile = fgOutputFile.replace("placeholder", spawnedId)
+					record.toolCallId = toolCallId
+					writeInitialEntry(record.outputFile, spawnedId, params.prompt as string, ctx.cwd)
+				}
 
 				// biome-ignore lint/style/noNonNullAssertion: promise is always set after spawn() calls startAgent()
 				const raceResult = await Promise.race([record.promise!.then(() => "completed" as const), detachPromise])
@@ -1423,9 +1472,11 @@ ${AGENT_TOOL_GUIDELINES}`,
 						parentSessionDir,
 					)
 					record.outputFile = outputFile
-					record.toolCallId = toolCallId
 					writeInitialEntry(outputFile, spawnedId, params.prompt as string, ctx.cwd)
 					if (record.session) {
+						// Tear down the foreground streaming subscription before
+						// re-subscribing against the same session for background output.
+						record.outputCleanup?.()
 						record.outputCleanup = streamToOutputFile(
 							record.session as Parameters<typeof streamToOutputFile>[0],
 							outputFile,
@@ -1512,6 +1563,10 @@ ${AGENT_TOOL_GUIDELINES}`,
 				if (tokenText) statsParts.push(tokenText)
 				const outcome = record.status === "aborted" ? "aborted" : record.status === "stopped" ? "stopped" : "completed"
 				record.latestOutcome ??= buildAgentOutcome(record)
+				// Persist a subagents:record entry for foreground agents so exports
+				// can enrich them with full transcripts the same way background
+				// agents are handled.
+				appendSubagentRecord(record)
 				return textResult(
 					`${fallbackNote}Agent ${outcome} in ${formatMs(durationMs)} (${statsParts.join(", ")})${getStatusNote(record.status, record.abortReason)}.${getStatusInstruction(record.status, record.abortReason)}\n\n${record.result?.trim() || "No output."}${formatAgentOutcomeBlock(record.latestOutcome)}`,
 					details,

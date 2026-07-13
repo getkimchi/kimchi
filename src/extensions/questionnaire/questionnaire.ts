@@ -20,6 +20,7 @@ import { Text, truncateToWidth } from "@earendil-works/pi-tui"
 import { type Static, Type } from "typebox"
 
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
+import { withWorkingHidden } from "../ui.js"
 import { type QuestionnaireResult, promptQuestionnaireFallback } from "./questionnaire-fallback.js"
 import { createQuestionForm } from "./questionnaire-form.js"
 import { type Answer, type Question, type QuestionType, YES_NO_OPTIONS } from "./questionnaire-reducer.js"
@@ -185,7 +186,7 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 		name: "questionnaire",
 		label: "Questionnaire",
 		description:
-			"Ask the user one or more structured questions. Use for clarifying requirements, getting preferences, or confirming decisions before acting. Supports single-select, multi-select, free-text input, and yes/no confirmation. For a single question, shows a simple option list. For multiple questions, shows a tab-based interface. Prefer this over outputting questions as plain text.",
+			"Ask the user one or more structured questions. Use for clarifying requirements, getting preferences, or confirming decisions before acting. Supports single-select, multi-select, free-text input, and yes/no confirmation. For a single question, shows a simple option list. For multiple questions, shows a tab-based interface. Never call this tool twice in the same turn — batch all questions you need now into one call, and only ask follow-ups after reading the user's response. Prefer this over outputting questions as plain text.",
 		parameters: QuestionnaireParams,
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -218,8 +219,10 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 			if (ctx.mode !== "tui") {
 				result = await promptQuestionnaireFallback(ctx.ui, questions)
 			} else {
-				result = await ctx.ui.custom<QuestionnaireResult>((tui, theme, _kb, done) =>
-					createQuestionForm(tui, theme, questions, { title: params.header }, done),
+				result = await withWorkingHidden(ctx, () =>
+					ctx.ui.custom<QuestionnaireResult>((tui, theme, _kb, done) =>
+						createQuestionForm(tui, theme, questions, { title: params.header }, done),
+					),
 				)
 			}
 
