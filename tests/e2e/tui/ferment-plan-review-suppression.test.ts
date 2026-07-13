@@ -148,7 +148,7 @@ test("plan review: model stops after propose, review dialog appears, user confir
 			trace.step("ready prompt visible")
 
 			// Stage 2: enter ferment.
-			await submitFermentCommand(terminal)
+			await submitFermentCommand(terminal, trace)
 			trace.step("ran /ferment")
 
 			// Stage 3: intent prompt appears.
@@ -245,7 +245,7 @@ test("plan review: cancel restores planning tools, model can re-propose, ferment
 			trace.step("ready prompt visible")
 
 			// Stage 2: enter ferment.
-			await submitFermentCommand(terminal)
+			await submitFermentCommand(terminal, trace)
 			trace.step("ran /ferment")
 
 			// Stage 3: intent prompt.
@@ -346,7 +346,7 @@ test("plan review: existing zero-questions scoping flow still works (no regressi
 			trace.step("ready prompt visible")
 
 			// Stage 2: enter ferment.
-			await submitFermentCommand(terminal)
+			await submitFermentCommand(terminal, trace)
 			trace.step("ran /ferment")
 
 			// Stage 3: intent prompt.

@@ -147,7 +147,7 @@ test("plan review dialog does not re-appear after Esc dismissal", async ({ termi
 			})
 
 			// Stage 2: enter ferment.
-			await submitFermentCommand(terminal)
+			await submitFermentCommand(terminal, trace)
 			trace.step("ran /ferment")
 
 			// Stage 3: intent prompt appears.
@@ -238,7 +238,7 @@ test("plan review dialog does not re-appear after feedback", async ({ terminal }
 			})
 
 			// Stage 2: enter ferment.
-			await submitFermentCommand(terminal)
+			await submitFermentCommand(terminal, trace)
 			trace.step("ran /ferment")
 
 			// Stage 3: intent prompt appears.

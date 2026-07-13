@@ -19,7 +19,7 @@ import {
 	submitFermentCommand,
 	waitForText,
 } from "./support/assertions.js"
-import { TUI_TEST_CONFIG, runKimchiSession } from "./support/kimchi-fixture.js"
+import { TUI_TEST_CONFIG, type TuiScenarioTrace, runKimchiSession } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -58,11 +58,11 @@ const PROPOSE_SCOPING_PAYLOAD = JSON.stringify({
  */
 async function startFerment(
 	terminal: import("@microsoft/tui-test").Terminal,
-	trace: import("./support/kimchi-fixture.js").TuiScenarioTrace,
+	trace: TuiScenarioTrace,
 	nextStream: string,
 ) {
 	// Stage 1: enter ferment.
-	await submitFermentCommand(terminal)
+	await submitFermentCommand(terminal, trace)
 	trace.step("ran /ferment")
 
 	await waitForText(terminal, "would you like to ferment", { timeoutMs: STARTUP_TIMEOUT_MS })

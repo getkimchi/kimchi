@@ -1,4 +1,5 @@
 import type { Terminal } from "@microsoft/tui-test/lib/terminal/term.js"
+import type { TuiScenarioTrace } from "./kimchi-fixture"
 
 /** Named timeouts, tunable in one place. */
 export const STARTUP_TIMEOUT_MS = 10_000
@@ -55,9 +56,10 @@ export async function waitForText(
  * write and the return, and waiting for the slash text to render first, keeps
  * the return in the main input.
  */
-export async function submitFermentCommand(terminal: Terminal): Promise<void> {
+export async function submitFermentCommand(terminal: Terminal, trace: TuiScenarioTrace): Promise<void> {
 	terminal.write("/ferment")
 	await waitForText(terminal, "/ferment", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+	trace.step("typed /ferment")
 	terminal.submit("")
 }
 

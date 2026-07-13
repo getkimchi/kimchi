@@ -50,7 +50,7 @@ test.fail("ferment phase-review separator is not selectable", async ({ terminal 
 		},
 		async (_fixture, trace) => {
 			// Stage 1: enter ferment.
-			await submitFermentCommand(terminal)
+			await submitFermentCommand(terminal, trace)
 			trace.step("ran /ferment")
 			await waitForText(terminal, "would you like to ferment", { timeoutMs: STARTUP_TIMEOUT_MS })
 			trace.step("intent prompt visible")

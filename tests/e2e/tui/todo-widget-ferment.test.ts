@@ -165,7 +165,7 @@ test("todo tools are available during ferment execution", async ({ terminal }) =
 			trace.step("ready prompt visible")
 
 			// Stage 2: enter ferment (same entry path as ferment-new-runs-planning).
-			await submitFermentCommand(terminal)
+			await submitFermentCommand(terminal, trace)
 			trace.step("ran /ferment")
 
 			// Stage 3: intent prompt appears.

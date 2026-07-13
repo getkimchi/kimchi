@@ -116,7 +116,7 @@ test("ferment status-line segment updates after activate_ferment_phase tool call
 			trace.step("ready prompt visible")
 
 			// Stage 2: enter ferment.
-			await submitFermentCommand(terminal)
+			await submitFermentCommand(terminal, trace)
 			trace.step("ran /ferment")
 
 			// Stage 3: intent prompt.

@@ -17,7 +17,7 @@
 
 import { readFileSync, readdirSync, statSync } from "node:fs"
 import { join } from "node:path"
-import { Key, expect, test } from "@microsoft/tui-test"
+import { expect, test } from "@microsoft/tui-test"
 import {
 	INPUT_TIMEOUT_MS,
 	STARTUP_TIMEOUT_MS,
@@ -115,7 +115,7 @@ test("/ferment new runs planning and produces a scoped ferment artifact", async 
 			// submitFermentCommand types "/ferment", waits for it to render, then
 			// presses return. A one-shot submit("/ferment") can race with the editor
 			// prompt and submit "/ferment" as the intent, skipping the prompt.
-			await submitFermentCommand(terminal)
+			await submitFermentCommand(terminal, trace)
 			trace.step("ran /ferment")
 
 			// Stage 3: intent prompt appears.
