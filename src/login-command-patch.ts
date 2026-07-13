@@ -93,13 +93,14 @@ function addLoginFeedback(im: InteractiveMode, text: string): void {
 const imProto = InteractiveMode.prototype as any
 
 /**
- * Mutable delegate for the original upstream showOAuthSelector.
- * Exposed as a writable object property so tests can stub the logout
- * delegation path without relying on ESM live-binding reassignment.
+ * Mutable delegate for the original upstream handleLoginCommand.
+ * Exposed as a writable object property so tests can stub the delegation
+ * path (e.g. `/login <provider>`) without relying on ESM live-binding
+ * reassignment.
  */
-export const oauthDelegate = {
+export const handleLoginDelegate = {
 	// biome-ignore lint/suspicious/noExplicitAny: `this` context type for upstream prototype method is unknown
-	original: imProto.showOAuthSelector as (this: any, mode: "login" | "logout") => Promise<void>,
+	original: imProto.handleLoginCommand as (this: any, providerRef?: string) => Promise<void>,
 }
 
 export const warningDelegate = {
@@ -107,9 +108,36 @@ export const warningDelegate = {
 	original: imProto.showWarning as (this: any, warningMessage: string) => void,
 }
 
-/** Exported for testing: applies the prototype patch (idempotent re-apply is safe). */
+/**
+ * Validate that upstream still exposes the methods this patch depends on, then
+ * install the overrides. Exported for testing; idempotent re-apply is safe.
+ *
+ * The check covers the methods we override (handleLoginCommand, showWarning) plus
+ * the internals the bespoke menu *calls* at runtime — those are otherwise guarded
+ * with silent fallbacks, so a rename would only break a menu action when the user
+ * clicks it. Missing any of them throws, crashing at startup (consistent with the
+ * other pi patches) so a silently-broken Kimchi `/login` can't ship.
+ *
+ * NOTE: this cannot detect upstream *relocating the call site* off a still-present
+ * method (exactly how the 0.80 bump slipped through: `/login` stopped calling the
+ * patched showOAuthSelector). A bump-time `/verify` of `/login` is the guard for that.
+ */
 export function applyLoginCommandPatch(): void {
-	imProto.showOAuthSelector = patchedShowOAuthSelector
+	const required = [
+		"handleLoginCommand",
+		"showWarning",
+		"showSelector",
+		"getLoginProviderOptions",
+		"showLoginDialog",
+		"showExtensionInput",
+	] as const
+	const missing = required.filter((name) => typeof imProto[name] !== "function")
+	if (missing.length > 0) {
+		throw new Error(
+			`Kimchi login patch: upstream InteractiveMode is missing expected method(s): ${missing.join(", ")}. The pinned @earendil-works/pi-coding-agent version likely refactored the login flow; update src/login-command-patch.ts to match the new entry points.`,
+		)
+	}
+	imProto.handleLoginCommand = patchedHandleLoginCommand
 	imProto.showWarning = patchedShowWarning
 }
 
@@ -183,7 +211,10 @@ function showSubscriptionLogin(im: InteractiveMode): void {
 		!modeLike.showLoginDialog ||
 		!modeLike.session?.modelRegistry
 	) {
-		void oauthDelegate.original.call(im, "login")
+		// Guards failed (upstream internals moved) — fall back to upstream's native
+		// login menu rather than silently doing nothing. Uses the *original*
+		// handleLoginCommand (not the patched one) to avoid re-entering this menu.
+		void handleLoginDelegate.original.call(im, undefined)
 		return
 	}
 
@@ -268,12 +299,16 @@ function showLoginChoiceSelector(im: InteractiveMode): void {
 	})
 }
 
-async function patchedShowOAuthSelector(this: InteractiveMode, mode: "login" | "logout") {
-	if (mode === "login") {
+async function patchedHandleLoginCommand(this: InteractiveMode, providerRef?: string) {
+	// Upstream routes a bare `/login` through handleLoginCommand → showLoginAuthTypeSelector
+	// (this replaced the older showOAuthSelector("login") entry point in pi 0.80). Intercept
+	// only the argument-less form so the Kimchi choice menu appears; `/login <provider>`
+	// keeps upstream's direct-provider path.
+	if (!providerRef) {
 		showLoginChoiceSelector(this)
 		return
 	}
-	return oauthDelegate.original.call(this, mode)
+	return handleLoginDelegate.original.call(this, providerRef)
 }
 
 function patchedShowWarning(this: InteractiveMode, warningMessage: string): void {
