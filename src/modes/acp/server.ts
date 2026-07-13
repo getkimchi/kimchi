@@ -1072,14 +1072,19 @@ export function buildModelConfigOption(
 		modelId: orchId,
 	} = getOrchestratorModel(session.sessionId, session.modelRegistry)
 	const orchName = orchestrator?.name ?? orchId ?? orchRef
-	const options = session.modelRegistry.getAvailable().map((m) => ({
-		value: refFromModel(m),
-		name: m.name,
-	}))
-	options.push({
-		value: "multi-model",
-		name: `Multi-model (${orchName})`,
-	})
+	const options = [
+		{
+			value: "multi-model",
+			name: `Multi-model (${orchName})`,
+		},
+		...session.modelRegistry
+			.getAvailable()
+			.map((m) => ({
+				value: refFromModel(m),
+				name: m.name,
+			}))
+			.sort((a, b) => a.value.localeCompare(b.value)),
+	]
 	// biome-ignore lint/style/noNonNullAssertion: we assert model availability before session is created/loaded via assertSessionHasModel.
 	const currentValue = multiModelEnabled ? "multi-model" : refFromModel(session.model!)
 	return {

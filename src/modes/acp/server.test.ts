@@ -1658,16 +1658,16 @@ describe("buildSessionModelState", () => {
 	it("returns currentModelId and availableModels from the model config option", () => {
 		const configOptions = [
 			modelConfigOption("openai/gpt-4", [
-				{ value: "openai/gpt-4", name: "GPT-4" },
 				{ value: "anthropic/claude-3", name: "Claude 3" },
+				{ value: "openai/gpt-4", name: "GPT-4" },
 			]),
 		]
 		const result = buildSessionModelState(configOptions as unknown as Parameters<typeof buildSessionModelState>[0])
 		expect(result).toEqual({
 			currentModelId: "openai/gpt-4",
 			availableModels: [
-				{ modelId: "openai/gpt-4", name: "GPT-4" },
 				{ modelId: "anthropic/claude-3", name: "Claude 3" },
+				{ modelId: "openai/gpt-4", name: "GPT-4" },
 			],
 		})
 	})
@@ -1705,15 +1705,17 @@ describe("newSession model state", () => {
 		expect(res.models?.currentModelId).toBe("openai/gpt-4")
 		expect(res.models?.availableModels).toHaveLength(3)
 		expect(res.models?.availableModels[0]).toEqual({
-			modelId: "openai/gpt-4",
-			name: "GPT-4",
+			modelId: "multi-model",
+			name: "Multi-model (kimi-k2.7)",
 		})
 		expect(res.models?.availableModels[1]).toEqual({
 			modelId: "anthropic/claude-3",
 			name: "Claude 3",
 		})
-		expect(res.models?.availableModels[2]?.modelId).toBe("multi-model")
-		expect(res.models?.availableModels[2]?.name).toMatch(/^Multi-model \(/)
+		expect(res.models?.availableModels[2]).toEqual({
+			modelId: "openai/gpt-4",
+			name: "GPT-4",
+		})
 	})
 
 	it("rejects with authRequired when no model is active", async () => {
@@ -3689,8 +3691,8 @@ describe("KimchiAcpAgent loadSession", () => {
 		expect(res.models).toMatchObject({
 			currentModelId: "test/test-model",
 			availableModels: [
-				{ modelId: "test/test-model", name: "Test Model" },
 				{ modelId: "multi-model", name: expect.stringMatching(/^Multi-model \(/) },
+				{ modelId: "test/test-model", name: "Test Model" },
 			],
 		})
 	})
