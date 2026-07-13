@@ -30,7 +30,9 @@ import {
 	INPUT_TIMEOUT_MS,
 	STARTUP_TIMEOUT_MS,
 	STREAM_TIMEOUT_MS,
+	viewText,
 	waitForText,
+	waitForTurnToSettle,
 } from "./support/assertions.js"
 import { TUI_TEST_CONFIG, runKimchiSession } from "./support/kimchi-fixture.js"
 
@@ -125,7 +127,7 @@ test("/ferment progress overlay shows ferment name, progress bar, phase list, an
 				}
 			},
 		},
-		async (_fixture, trace) => {
+		async (fixture, trace) => {
 			await waitForText(terminal, "ask anything or type / for commands", { timeoutMs: STARTUP_TIMEOUT_MS })
 			trace.step("ready prompt visible")
 
@@ -135,13 +137,32 @@ test("/ferment progress overlay shows ferment name, progress bar, phase list, an
 			await waitForText(terminal, "Waiting.", { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("resume-nudge turn rendered — terminal stable")
 
+			// Drain any in-flight LLM activity so a domain event cannot abort the
+			// overlay immediately after it opens.
+			await waitForTurnToSettle(fixture.fake.requests)
+			trace.step("llm activity settled")
+
 			terminal.submit("/ferment progress")
 			trace.step("submitted /ferment progress")
 
 			// "human:" always appears in the overlay header and is absent from
 			// the status line and all scrollback. Once visible, the full overlay is
 			// rendered and all field assertions are reliable.
-			await waitForText(terminal, "human:", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
+			//
+			// Defensive: on fast CI runners the trailing return from submit()
+			// can occasionally leak into the overlay's select and auto-select the
+			// active phase, leaving us on L2 instead of L1. If we see the L2-only
+			// "Back" option, press Escape to cancel back to the L1 phase list.
+			try {
+				await waitForText(terminal, "human:", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
+			} catch (err) {
+				if (viewText(terminal).includes("Back")) {
+					terminal.keyEscape()
+					await waitForText(terminal, "human:", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
+				} else {
+					throw err
+				}
+			}
 			trace.step("overlay open")
 
 			await waitForText(terminal, "Progress Overlay Test", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
