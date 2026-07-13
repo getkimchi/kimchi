@@ -226,7 +226,7 @@ describe("WorkspacesPanel", () => {
 	})
 
 	describe("allowRename", () => {
-		it("shows 'r: rename' in the hint footer when allowRename=true", () => {
+		it("shows 'r: rename' in the hint row when allowRename=true", () => {
 			const { panel } = makePanel(testRows, { allowRename: true })
 			const text = panel.render(120).map(stripAnsi).join("\n")
 			expect(text).toContain("r: rename")

@@ -131,7 +131,7 @@ export default function themeSelectorExtension(pi: ExtensionAPI) {
 
 				container.addChild(selectList)
 
-				// Hint footer
+				// Hint row
 				container.addChild(new Spacer(1))
 				container.addChild(new Text(theme.fg("dim", "  Enter to select · Esc to go back"), 0, 0))
 

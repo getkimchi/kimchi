@@ -596,13 +596,13 @@ export default function (pi: ExtensionAPI) {
 		if (record.resultConsumed) return
 
 		const notification = formatTaskNotification(record, 500)
-		const footer = record.outputFile ? `\nFull transcript available at: ${record.outputFile}` : ""
+		const transcriptNote = record.outputFile ? `\nFull transcript available at: ${record.outputFile}` : ""
 
 		try {
 			pi.sendMessage<NotificationDetails>(
 				{
 					customType: "subagent-notification",
-					content: notification + footer,
+					content: notification + transcriptNote,
 					display: true,
 					details: buildNotificationDetails(record, 500, agentActivity.get(record.id)),
 				},

@@ -27,9 +27,9 @@ export type WorkspacePickerResult =
 export interface WorkspacesPanelOptions {
 	/** Append a synthetic "+ new workspace" row and bind `n` to it. */
 	allowNew?: boolean
-	/** Bind `d` to delete and show it in the hint footer. */
+	/** Bind `d` to delete and show it in the hint row. */
 	allowDelete?: boolean
-	/** Bind `r` to rename and show it in the hint footer. */
+	/** Bind `r` to rename and show it in the hint row. */
 	allowRename?: boolean
 	/** Drop the SESSIONS column entirely (used when session counts aren't fetched). */
 	hideSessions?: boolean

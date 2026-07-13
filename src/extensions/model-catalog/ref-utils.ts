@@ -1,3 +1,12 @@
+import type { Api, Model } from "@earendil-works/pi-ai"
+
+/**
+ * Combines model provider and id into a ref string.
+ */
+export function refFromModel(model: Model<Api>): string {
+	return `${model.provider}/${model.id}`
+}
+
 /**
  * Extract just the model ID from a "provider/model-id" string.
  * Returns the full string if no slash is present.

@@ -33,7 +33,7 @@ interface Harness {
 	getAvailable: ReturnType<typeof vi.fn>
 	exec: (
 		model: string,
-		opts?: { omitRegistry?: boolean; currentModel?: ModelEntry; imagesPresent?: boolean },
+		opts?: { currentModel?: ModelEntry; imagesPresent?: boolean },
 	) => Promise<{ content: Array<{ type: string; text: string }>; details: unknown }>
 }
 
@@ -77,19 +77,17 @@ function createHarness(options: { setModelResult?: boolean } = {}): Harness {
 	const tool = registered
 
 	const exec: Harness["exec"] = (model, opts = {}) => {
-		const ctx = opts.omitRegistry
-			? createContext({ getContextUsage: () => undefined, model: undefined })
-			: createContext({
-					modelRegistry: { find, getAvailable },
-					getContextUsage: () => undefined,
-					model: opts.currentModel
-						? {
-								id: opts.currentModel.id,
-								provider: opts.currentModel.provider,
-								input: opts.currentModel.input ?? ["text", "image"],
-							}
-						: { id: MODELS[0].id, provider: MODELS[0].provider, input: ["text", "image"] },
-				})
+		const ctx = createContext({
+			modelRegistry: { find, getAvailable },
+			getContextUsage: () => undefined,
+			model: opts.currentModel
+				? {
+						id: opts.currentModel.id,
+						provider: opts.currentModel.provider,
+						input: opts.currentModel.input ?? ["text", "image"],
+					}
+				: { id: MODELS[0].id, provider: MODELS[0].provider, input: ["text", "image"] },
+		})
 		return tool.execute("test-call-id", { model }, undefined, undefined, ctx)
 	}
 
@@ -194,10 +192,10 @@ describe("modelSwitchExtension", () => {
 			expect(idxMinimax).toBeGreaterThan(idxKimi)
 		})
 
-		it("handles missing modelRegistry on invalid format (empty available list)", async () => {
+		it("handles invalid model format", async () => {
 			const h = createHarness()
-			const result = await h.exec("no-slash", { omitRegistry: true })
-			expect(textOf(result)).toContain('Invalid model format: "no-slash"')
+			const result = await h.exec("kimi-k2.6")
+			expect(textOf(result)).toContain('Invalid model format: "kimi-k2.6"')
 			expect(textOf(result)).toContain("Available models:")
 			expect(h.setModel).not.toHaveBeenCalled()
 		})
@@ -214,14 +212,6 @@ describe("modelSwitchExtension", () => {
 			expect(textOf(result)).toContain("kimchi-dev/kimi-k2.6")
 			expect(h.setModel).not.toHaveBeenCalled()
 			expect(result.details).toBeNull()
-		})
-
-		it("handles missing modelRegistry on lookup (empty available list)", async () => {
-			const h = createHarness()
-			const result = await h.exec("kimchi-dev/kimi-k2.6", { omitRegistry: true })
-
-			expect(textOf(result)).toContain("Model not found: kimchi-dev/kimi-k2.6")
-			expect(h.setModel).not.toHaveBeenCalled()
 		})
 	})
 

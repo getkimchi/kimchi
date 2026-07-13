@@ -6,12 +6,12 @@ import type { ExtensionContext, ReadonlyFooterDataProvider, Theme } from "@earen
 import type { Component } from "@earendil-works/pi-tui"
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedAccentFg, resolvedSemanticFg } from "../ansi.js"
-import { readFooterConfig } from "../config/footer-config.js"
+import { readStatusLineConfig } from "../config/status-line-config.js"
 import { getActiveAgentCount } from "../extensions/agents/index.js"
 import { formatBillingStatusLine } from "../extensions/billing/status-line-format.js"
 import { getBillingStatusLine } from "../extensions/billing/status.js"
-import { formatFermentFooterDisplay } from "../extensions/ferment/footer-status.js"
 import { getActiveFerment, getFermentContinuationPolicy } from "../extensions/ferment/index.js"
+import { formatFermentStatusLineDisplay } from "../extensions/ferment/status-line.js"
 import { formatCount } from "../extensions/format.js"
 import { getMultiModelEnabled } from "../extensions/multi-model.js"
 import { getPermissionMode } from "../extensions/permissions/mode-controller.js"
@@ -44,7 +44,7 @@ type SegmentRaw =
 	| { kind: "phase"; phase: string }
 	| { kind: "ferment"; prefix: string; prefixWidth: number }
 
-/** A single piece of the footer line. */
+/** A single piece of the status line. */
 interface Segment {
 	/** Stable identifier used by compaction steps to find this segment. */
 	id: SegmentId
@@ -159,7 +159,7 @@ export function buildScriptPayload(
 	}
 }
 
-export class ScriptFooter implements Component {
+export class StatusLineScript implements Component {
 	private cachedLines: string[] = []
 
 	constructor(private getControlsLine: () => string | null) {}
@@ -338,7 +338,7 @@ function renderLine(
 /** Main layout function — applies compaction steps in order, then truncates if
  *  the fully-compacted line still doesn't fit. We deliberately do not shed
  *  whole segments: disappearing elements look worse than a clean tail truncation. */
-function layoutFooter(
+function layoutStatusLine(
 	segments: Segment[],
 	width: number,
 	ctx: CompactionContext,
@@ -361,11 +361,11 @@ function layoutFooter(
 	return truncateToWidth(line.text, width)
 }
 
-export class StatsFooter implements Component {
+export class StatusLine implements Component {
 	constructor(
 		private ctx: ExtensionContext,
 		private theme: Theme,
-		private footerData: ReadonlyFooterDataProvider,
+		private statusLineData: ReadonlyFooterDataProvider,
 	) {}
 
 	invalidate(): void {}
@@ -472,7 +472,7 @@ export class StatsFooter implements Component {
 	}
 
 	private permissionsSegment(pinned = false): Segment | null {
-		const mode = this.footerData.getExtensionStatuses().get("permissions-mode")
+		const mode = this.statusLineData.getExtensionStatuses().get("permissions-mode")
 		if (!mode) {
 			if (pinned) {
 				const text = `${this.dim("● ")}${this.dim("— ")}${this.dim("→ shift+tab")}`
@@ -484,7 +484,7 @@ export class StatsFooter implements Component {
 	}
 
 	private lspSegment(): Segment | null {
-		const lspStatus = this.footerData.getExtensionStatuses().get("lsp")
+		const lspStatus = this.statusLineData.getExtensionStatuses().get("lsp")
 		if (!lspStatus) return null
 		// Style "LSP:" as dimmed label, server names as accent. Preserve the
 		// space after the colon so the label and value don't render run-together
@@ -517,7 +517,7 @@ export class StatsFooter implements Component {
 	}
 
 	private fermentSegment(pinned = false): Segment | null {
-		const display = formatFermentFooterDisplay(getActiveFerment(), getFermentContinuationPolicy(), {
+		const display = formatFermentStatusLineDisplay(getActiveFerment(), getFermentContinuationPolicy(), {
 			dim: (s) => this.dim(s),
 			accent: (s) => this.accent(s),
 		})
@@ -544,7 +544,7 @@ export class StatsFooter implements Component {
 	}
 
 	private permissionsWarning(): string | null {
-		const text = this.footerData.getExtensionStatuses().get("permissions-warning")
+		const text = this.statusLineData.getExtensionStatuses().get("permissions-warning")
 		if (!text) return null
 		return this.theme.fg("warning", text)
 	}
@@ -553,14 +553,14 @@ export class StatsFooter implements Component {
 		// Info-line segment (rendered above the status line), NOT one of the
 		// status-line `Segment`s above — it has no SegmentId because it never
 		// participates in compaction.
-		const text = this.footerData.getExtensionStatuses().get("update-available")
+		const text = this.statusLineData.getExtensionStatuses().get("update-available")
 		if (!text) return null
 		const segText = this.theme.fg("accent", text)
 		return { text: segText, width: visibleWidth(text) }
 	}
 
 	render(width: number): string[] {
-		const config = readFooterConfig()
+		const config = readStatusLineConfig()
 		const pinnedSet = new Set<SegmentId>(config.pinned)
 
 		const tags = getActiveTags()
@@ -611,7 +611,7 @@ export class StatsFooter implements Component {
 			showCommandHint: false, // hint is appended manually after all content
 		}
 
-		const unpinnedLine = layoutFooter(unpinnedSegments, unpinnedBudget, ctx, sep, sepWidth, {
+		const unpinnedLine = layoutStatusLine(unpinnedSegments, unpinnedBudget, ctx, sep, sepWidth, {
 			text: hintText,
 			width: hintWidth,
 		})

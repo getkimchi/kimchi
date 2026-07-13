@@ -5,7 +5,7 @@ import { intro, note } from "@clack/prompts"
 /**
  * Welcome step — print the kimchi banner, version, and a one-shot
  * controls listing the user can refer back to throughout the wizard
- * (the per-prompt UI is plain clack, so there's no live footer; this
+ * (the per-prompt UI is plain clack, so there's no live status line; this
  * note is the wizard's single source of truth for keyboard shortcuts).
  */
 export function runWelcomeStep(): void {

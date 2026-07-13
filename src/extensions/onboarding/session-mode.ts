@@ -5,7 +5,7 @@ import { getCliModeArg, isPreDispatchValueFlag } from "../../cli-args.js"
 import { readHideSessionModeDialog, readSessionModeWizardSeenAt, writeSessionModeWizardSeenAt } from "../../config.js"
 
 import { setTipWidgetLocation } from "../tips/index.js"
-import { setSessionModeOnboardingFooterSuppressed } from "../ui.js"
+import { setSessionModeOnboardingStatusLineSuppressed } from "../ui.js"
 import { NoOpPickerEditor } from "./picker-editor.js"
 import {
 	SessionModePickerComponent,
@@ -189,7 +189,7 @@ function showSessionModeWizard(
 		ctx.ui.setWidget(SESSION_MODE_WIDGET_KEY, undefined, SESSION_MODE_WIDGET_OPTIONS)
 		restoreTips?.()
 		restoreTips = undefined
-		setSessionModeOnboardingFooterSuppressed(false)
+		setSessionModeOnboardingStatusLineSuppressed(false)
 		if (editorSwapped) {
 			ctx.ui.setEditorComponent(prevEditorFactory)
 			editorSwapped = false
@@ -223,7 +223,7 @@ function showSessionModeWizard(
 	}
 
 	restoreTips = setTipWidgetLocation("hidden")
-	setSessionModeOnboardingFooterSuppressed(true)
+	setSessionModeOnboardingStatusLineSuppressed(true)
 	// Mount an invisible shim so we can capture the tui reference (needed for
 	// hasOverlay polling) without contributing any visual footprint. The shim
 	// is replaced by the real picker inside activate().

@@ -26,6 +26,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 const THEME_KEY = Symbol.for("@earendil-works/pi-coding-agent:theme")
 const THEME_KEY_OLD = Symbol.for("@mariozechner/pi-coding-agent:theme")
 
+import { setProcessOrchestratorRef } from "../../extensions/kimchi-process.js"
+import { getMultiModelEnabled, setMultiModelEnabled } from "../../extensions/multi-model.js"
 import { PERMISSIONS_ENV_KEY } from "../../extensions/permissions/constants.js"
 import { PERMISSION_MODES } from "../../extensions/permissions/constants.js"
 import { getSessionPermissionFlagController } from "../../extensions/permissions/mode-controller-registry.js"
@@ -72,6 +74,8 @@ class FakeAgentSession {
 						},
 					]
 				: [],
+		find: (provider: string, id: string) =>
+			this.modelRegistry.getAvailable().find((m) => m.provider === provider && m.id === id),
 	}
 	promptImpl: (text: string, opts?: { images?: unknown[] }) => Promise<void> = async () => {}
 	abortImpl: () => Promise<void> = async () => {}
@@ -83,6 +87,8 @@ class FakeAgentSession {
 	branch: unknown[] = []
 	sessionManager = {
 		getBranch: () => this.branch,
+		getSessionId: () => this.sessionId,
+		getEntries: () => this.branch,
 	}
 	// Captures whatever setUIContext the agent installs so tests can assert
 	// on it. The real AgentSession exposes this via its extensionRunner
@@ -101,6 +107,9 @@ class FakeAgentSession {
 
 	constructor(sessionId: string) {
 		this.sessionId = sessionId
+		// Tests assume deterministic single-model state by default. The global
+		// multi-model default may differ between local and CI, so pin it here.
+		setMultiModelEnabled(sessionId, false)
 	}
 
 	subscribe(listener: AgentSessionEventListener): () => void {
@@ -1627,38 +1636,50 @@ describe("initializeHeadlessTheme", () => {
 	})
 })
 
-describe("buildSessionModelState", () => {
-	it("returns null when model is missing", () => {
-		const fake = new FakeAgentSession("s1")
-		fake.model = undefined
-		const result = buildSessionModelState(fake as unknown as Parameters<typeof buildSessionModelState>[0])
-		expect(result).toBeNull()
-	})
+function modelConfigOption(
+	currentValue: string,
+	options: { value: string; name: string }[],
+): {
+	id: "model"
+	name: string
+	type: "select"
+	category: string
+	description: string
+	currentValue: string
+	options: { value: string; name: string }[]
+} {
+	return {
+		id: "model",
+		name: "Model",
+		type: "select",
+		category: "model",
+		description: "",
+		currentValue,
+		options,
+	}
+}
 
-	it("returns currentModelId and availableModels when model is present", () => {
-		const fake = new FakeAgentSession("s1")
-		fake.model = { provider: "openai", id: "gpt-4" }
-		fake.modelRegistry = {
-			getAvailable: () => [
-				{ provider: "openai", id: "gpt-4", name: "GPT-4" },
-				{ provider: "anthropic", id: "claude-3", name: "Claude 3" },
-			],
-		}
-		const result = buildSessionModelState(fake as unknown as Parameters<typeof buildSessionModelState>[0])
+describe("buildSessionModelState", () => {
+	it("returns currentModelId and availableModels from the model config option", () => {
+		const configOptions = [
+			modelConfigOption("openai/gpt-4", [
+				{ value: "anthropic/claude-3", name: "Claude 3" },
+				{ value: "openai/gpt-4", name: "GPT-4" },
+			]),
+		]
+		const result = buildSessionModelState(configOptions as unknown as Parameters<typeof buildSessionModelState>[0])
 		expect(result).toEqual({
 			currentModelId: "openai/gpt-4",
 			availableModels: [
-				{ modelId: "openai/gpt-4", name: "GPT-4" },
 				{ modelId: "anthropic/claude-3", name: "Claude 3" },
+				{ modelId: "openai/gpt-4", name: "GPT-4" },
 			],
 		})
 	})
 
-	it("returns empty availableModels when registry has no models", () => {
-		const fake = new FakeAgentSession("s1")
-		fake.model = { provider: "openai", id: "gpt-4" }
-		fake.modelRegistry = { getAvailable: () => [] }
-		const result = buildSessionModelState(fake as unknown as Parameters<typeof buildSessionModelState>[0])
+	it("returns empty availableModels when the model config option has no entries", () => {
+		const configOptions = [modelConfigOption("openai/gpt-4", [])]
+		const result = buildSessionModelState(configOptions as unknown as Parameters<typeof buildSessionModelState>[0])
 		expect(result).toEqual({
 			currentModelId: "openai/gpt-4",
 			availableModels: [],
@@ -1671,6 +1692,7 @@ describe("newSession model state", () => {
 		const fake = new FakeAgentSession("session-model")
 		fake.model = { provider: "openai", id: "gpt-4" }
 		fake.modelRegistry = {
+			...fake.modelRegistry,
 			getAvailable: () => [
 				{ provider: "openai", id: "gpt-4", name: "GPT-4" },
 				{ provider: "anthropic", id: "claude-3", name: "Claude 3" },
@@ -1686,14 +1708,18 @@ describe("newSession model state", () => {
 		expect(res.sessionId).toBe("session-model")
 		expect(res.models).toBeDefined()
 		expect(res.models?.currentModelId).toBe("openai/gpt-4")
-		expect(res.models?.availableModels).toHaveLength(2)
+		expect(res.models?.availableModels).toHaveLength(3)
 		expect(res.models?.availableModels[0]).toEqual({
-			modelId: "openai/gpt-4",
-			name: "GPT-4",
+			modelId: "multi-model",
+			name: "Multi-model (kimi-k2.7)",
 		})
 		expect(res.models?.availableModels[1]).toEqual({
 			modelId: "anthropic/claude-3",
 			name: "Claude 3",
+		})
+		expect(res.models?.availableModels[2]).toEqual({
+			modelId: "openai/gpt-4",
+			name: "GPT-4",
 		})
 	})
 
@@ -1722,10 +1748,12 @@ describe("newSession model state", () => {
 		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
 
 		expect(res.configOptions).toBeDefined()
-		expect(res.configOptions).toHaveLength(1)
+		expect(res.configOptions).toHaveLength(2)
 		expect(res.configOptions?.[0].id).toBe("permissions-mode")
 		expect(res.configOptions?.[0].type).toBe("select")
 		expect(res.configOptions?.[0].currentValue).toBeDefined()
+		expect(res.configOptions?.[1].id).toBe("model")
+		expect(res.configOptions?.[1].type).toBe("select")
 	})
 })
 
@@ -1785,6 +1813,7 @@ describe("unstable_setSessionModel", () => {
 		const fake = new FakeAgentSession("switch-session")
 		fake.model = { provider: "provider-a", id: "model-a" }
 		fake.modelRegistry = {
+			...fake.modelRegistry,
 			getAvailable: () => [
 				{ provider: "provider-a", id: "model-a", name: "Model A" },
 				{ provider: "provider-b", id: "model-b", name: "Model B" },
@@ -1810,6 +1839,7 @@ describe("unstable_setSessionModel", () => {
 		const fake = new FakeAgentSession("switch-session")
 		fake.model = { provider: "provider-a", id: "model-a" }
 		fake.modelRegistry = {
+			...fake.modelRegistry,
 			getAvailable: () => [{ provider: "provider-a", id: "model-a", name: "Model A" }],
 		}
 		const factory: AcpSessionFactory = async () => asSession(fake)
@@ -1831,6 +1861,7 @@ describe("unstable_setSessionModel", () => {
 		const fake = new FakeAgentSession("switch-session")
 		fake.model = { provider: "provider-a", id: "model-a" }
 		fake.modelRegistry = {
+			...fake.modelRegistry,
 			getAvailable: () => [
 				{ provider: "provider-a", id: "model-a", name: "Model A" },
 				{ provider: "provider-b", id: "model-b", name: "Model B" },
@@ -1891,9 +1922,10 @@ describe("setSessionConfigOption", () => {
 			value: "plan",
 		})
 
-		expect(res.configOptions).toHaveLength(1)
+		expect(res.configOptions).toHaveLength(2)
 		expect(res.configOptions[0].id).toBe("permissions-mode")
 		expect(res.configOptions[0].currentValue).toBe("plan")
+		expect(res.configOptions[1].id).toBe("model")
 	})
 
 	it("sets all valid permission modes", async () => {
@@ -1913,8 +1945,9 @@ describe("setSessionConfigOption", () => {
 				configId: "permissions-mode",
 				value: mode,
 			})
-			expect(res.configOptions).toHaveLength(1)
+			expect(res.configOptions).toHaveLength(2)
 			expect(res.configOptions[0].currentValue).toBe(mode)
+			expect(res.configOptions[1].id).toBe("model")
 		}
 	})
 
@@ -2002,6 +2035,274 @@ describe("setSessionConfigOption", () => {
 		const selectOption = res.configOptions[0] as any
 		expect(selectOption.options).toHaveLength(4)
 		expect(selectOption.options.map((o: { value: string }) => o.value)).toEqual(PERMISSION_MODES)
+	})
+
+	describe("model config option", () => {
+		it("switches to a valid single model", async () => {
+			const fake = new FakeAgentSession("test-session-model-single")
+			fake.model = { provider: "provider-a", id: "model-a" }
+			fake.modelRegistry = {
+				...fake.modelRegistry,
+				getAvailable: () => [
+					{ provider: "provider-a", id: "model-a", name: "Model A" },
+					{ provider: "provider-b", id: "model-b", name: "Model B" },
+				],
+			}
+			const agent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: "/tmp/fake-agent-dir",
+				sessionFactory: async () => asSession(fake),
+			})
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			const res = await agent.setSessionConfigOption({
+				sessionId: "test-session-model-single",
+				configId: "model",
+				value: "provider-b/model-b",
+			})
+
+			expect(fake.model).toMatchObject({ provider: "provider-b", id: "model-b" })
+			const modelOption = res.configOptions?.find((o) => o.id === "model")
+			expect(modelOption?.currentValue).toBe("provider-b/model-b")
+		})
+
+		it("restores previous multi-model state when switching to a single model fails", async () => {
+			const sessionId = "test-session-model-restore"
+			const fake = new FakeAgentSession(sessionId)
+			fake.model = { provider: "provider-a", id: "model-a", name: "Model A" }
+			fake.modelRegistry = {
+				...fake.modelRegistry,
+				getAvailable: () => [
+					{ provider: "provider-a", id: "model-a", name: "Model A" },
+					{ provider: "provider-b", id: "model-b", name: "Model B" },
+				],
+			}
+			fake.setModel = async () => {
+				throw new Error("auth failed")
+			}
+			// Start in multi-model mode so we can verify the flag is restored on failure.
+			setMultiModelEnabled(sessionId, true)
+			const agent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: "/tmp/fake-agent-dir",
+				sessionFactory: async () => asSession(fake),
+			})
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			await expect(
+				agent.setSessionConfigOption({
+					sessionId,
+					configId: "model",
+					value: "provider-b/model-b",
+				}),
+			).rejects.toThrow(/model provider-b\/model-b is not available: auth required/)
+
+			expect(getMultiModelEnabled(fake.sessionManager as Pick<SessionManager, "getEntries" | "getSessionId">)).toBe(
+				true,
+			)
+		})
+
+		it("switches to multi-model when orchestrator is available", async () => {
+			const sessionId = "test-session-model-multi"
+			const fake = new FakeAgentSession(sessionId)
+			fake.model = { provider: "provider-a", id: "model-a", name: "Model A" }
+			fake.modelRegistry = {
+				...fake.modelRegistry,
+				getAvailable: () => [
+					{ provider: "provider-a", id: "model-a", name: "Model A" },
+					{ provider: "orchestrator-provider", id: "orchestrator-model", name: "Orchestrator Model" },
+				],
+			}
+			// Wire the orchestrator model explicitly instead of relying on the global default role.
+			setProcessOrchestratorRef(sessionId, "orchestrator-provider/orchestrator-model")
+			const agent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: "/tmp/fake-agent-dir",
+				sessionFactory: async () => asSession(fake),
+			})
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			const res = await agent.setSessionConfigOption({
+				sessionId,
+				configId: "model",
+				value: "multi-model",
+			})
+
+			expect(fake.model).toMatchObject({ provider: "orchestrator-provider", id: "orchestrator-model" })
+			const modelOption = res.configOptions?.find((o) => o.id === "model")
+			expect(modelOption?.currentValue).toBe("multi-model")
+		})
+
+		it("restores previous multi-model state when switching to multi-model fails", async () => {
+			const sessionId = "test-session-model-multi-restore"
+			const fake = new FakeAgentSession(sessionId)
+			fake.model = { provider: "provider-a", id: "model-a", name: "Model A" }
+			fake.modelRegistry = {
+				...fake.modelRegistry,
+				getAvailable: () => [
+					{ provider: "provider-a", id: "model-a", name: "Model A" },
+					{ provider: "orchestrator-provider", id: "orchestrator-model", name: "Orchestrator Model" },
+				],
+			}
+			fake.setModel = async () => {
+				throw new Error("auth failed")
+			}
+			// Wire the orchestrator model explicitly instead of relying on the global default role.
+			setProcessOrchestratorRef(sessionId, "orchestrator-provider/orchestrator-model")
+			const agent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: "/tmp/fake-agent-dir",
+				sessionFactory: async () => asSession(fake),
+			})
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			await expect(
+				agent.setSessionConfigOption({
+					sessionId,
+					configId: "model",
+					value: "multi-model",
+				}),
+			).rejects.toThrow(/orchestrator model orchestrator-provider\/orchestrator-model is not available: auth required/)
+
+			expect(getMultiModelEnabled(fake.sessionManager as Pick<SessionManager, "getEntries" | "getSessionId">)).toBe(
+				false,
+			)
+		})
+
+		it("rejects multi-model when orchestrator is not available", async () => {
+			const fake = new FakeAgentSession("test-session-model-multi-missing")
+			fake.model = { provider: "provider-a", id: "model-a", name: "Model A" }
+			fake.modelRegistry = {
+				...fake.modelRegistry,
+				getAvailable: () => [{ provider: "provider-a", id: "model-a", name: "Model A" }],
+			}
+			const agent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: "/tmp/fake-agent-dir",
+				sessionFactory: async () => asSession(fake),
+			})
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			await expect(
+				agent.setSessionConfigOption({
+					sessionId: "test-session-model-multi-missing",
+					configId: "model",
+					value: "multi-model",
+				}),
+			).rejects.toThrow(/multi-model orchestrator .* is not available/)
+		})
+
+		it("rejects invalid model format", async () => {
+			const fake = new FakeAgentSession("test-session-model-format")
+			const agent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: "/tmp/fake-agent-dir",
+				sessionFactory: async () => asSession(fake),
+			})
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			await expect(
+				agent.setSessionConfigOption({
+					sessionId: "test-session-model-format",
+					configId: "model",
+					value: "not-a-valid-ref",
+				}),
+			).rejects.toThrow(/invalid model format/)
+		})
+
+		it("rejects unknown single model", async () => {
+			const fake = new FakeAgentSession("test-session-model-unknown")
+			fake.model = { provider: "provider-a", id: "model-a", name: "Model A" }
+			fake.modelRegistry = {
+				...fake.modelRegistry,
+				getAvailable: () => [{ provider: "provider-a", id: "model-a", name: "Model A" }],
+			}
+			const agent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: "/tmp/fake-agent-dir",
+				sessionFactory: async () => asSession(fake),
+			})
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			await expect(
+				agent.setSessionConfigOption({
+					sessionId: "test-session-model-unknown",
+					configId: "model",
+					value: "provider-b/model-b",
+				}),
+			).rejects.toThrow(/model not found/)
+		})
+
+		it("returns updated configOptions when model changes", async () => {
+			const fake = new FakeAgentSession("test-session-model-return")
+			fake.model = { provider: "provider-a", id: "model-a", name: "Model A" }
+			fake.modelRegistry = {
+				...fake.modelRegistry,
+				getAvailable: () => [
+					{ provider: "provider-a", id: "model-a", name: "Model A" },
+					{ provider: "provider-b", id: "model-b", name: "Model B" },
+				],
+			}
+			const agent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: "/tmp/fake-agent-dir",
+				sessionFactory: async () => asSession(fake),
+			})
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			const res = await agent.setSessionConfigOption({
+				sessionId: "test-session-model-return",
+				configId: "model",
+				value: "provider-b/model-b",
+			})
+
+			const modelOption = res.configOptions?.find((o) => o.id === "model")
+			expect(modelOption?.currentValue).toBe("provider-b/model-b")
+		})
+
+		it("rejects model change when a prompt is in progress", async () => {
+			const fake = new FakeAgentSession("test-session-model-busy")
+			fake.model = { provider: "provider-a", id: "model-a", name: "Model A" }
+			fake.modelRegistry = {
+				...fake.modelRegistry,
+				getAvailable: () => [
+					{ provider: "provider-a", id: "model-a", name: "Model A" },
+					{ provider: "provider-b", id: "model-b", name: "Model B" },
+				],
+			}
+			let releasePrompt!: () => void
+			const promptReleased = new Promise<void>((resolve) => {
+				releasePrompt = resolve
+			})
+			fake.promptImpl = async () => {
+				fake.emit({ type: "agent_start" })
+				await promptReleased
+			}
+			const agent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: "/tmp/fake-agent-dir",
+				sessionFactory: async () => asSession(fake),
+			})
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			const promptP = agent.prompt({
+				sessionId: "test-session-model-busy",
+				prompt: [{ type: "text", text: "x" }],
+			})
+			await delay(10)
+
+			await expect(
+				agent.setSessionConfigOption({
+					sessionId: "test-session-model-busy",
+					configId: "model",
+					value: "provider-b/model-b",
+				}),
+			).rejects.toThrow(/prompt is already in progress/)
+
+			// Release the prompt so the test runner doesn't wait on it.
+			releasePrompt()
+			await promptP
+		})
 	})
 
 	it("emits config_option_update when permission mode changes", async () => {
@@ -3281,8 +3582,9 @@ describe("KimchiAcpAgent loadSession", () => {
 			})
 
 			expect(res.configOptions).toBeDefined()
-			expect(res.configOptions).toHaveLength(1)
+			expect(res.configOptions).toHaveLength(2)
 			expect(res.configOptions?.[0].id).toBe("permissions-mode")
+			expect(res.configOptions?.[1].id).toBe("model")
 		} finally {
 			rmSync(tmpDir, { recursive: true, force: true })
 		}
@@ -3381,6 +3683,7 @@ describe("KimchiAcpAgent loadSession", () => {
 		// "live" while loadSession rejects — blocking re-load with invalidRequest.
 		const fake = new FakeAgentSession("replay-boom")
 		fake.sessionManager = {
+			...fake.sessionManager,
 			getBranch: () => {
 				throw new Error("branch read failed")
 			},
@@ -3395,7 +3698,7 @@ describe("KimchiAcpAgent loadSession", () => {
 		).rejects.toThrow(/branch read failed/)
 		expect(fake.disposed).toBe(true)
 		// Re-load must not see the failed session as already-live.
-		fake.sessionManager = { getBranch: () => [] }
+		fake.sessionManager = { ...fake.sessionManager, getBranch: () => [] }
 		fake.disposed = false
 		await expect(
 			agent.loadSession({
@@ -3410,6 +3713,7 @@ describe("KimchiAcpAgent loadSession", () => {
 		const fake = new FakeAgentSession("loaded-1")
 		fake.model = { provider: "test", id: "test-model", name: "Test Model" }
 		fake.modelRegistry = {
+			...fake.modelRegistry,
 			getAvailable: () => [{ provider: "test", id: "test-model", name: "Test Model" }],
 		}
 		fake.branch = [
@@ -3466,7 +3770,10 @@ describe("KimchiAcpAgent loadSession", () => {
 		})
 		expect(res.models).toMatchObject({
 			currentModelId: "test/test-model",
-			availableModels: [{ modelId: "test/test-model", name: "Test Model" }],
+			availableModels: [
+				{ modelId: "multi-model", name: expect.stringMatching(/^Multi-model \(/) },
+				{ modelId: "test/test-model", name: "Test Model" },
+			],
 		})
 	})
 

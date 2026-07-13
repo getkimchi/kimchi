@@ -22,7 +22,7 @@ test.use(TUI_TEST_CONFIG)
  * Tests cover the user-visible surface of that editor at the TUI level:
  *
  *   - Main menu opens with the role summary blocks for every role and
- *     the two footer entries ("Edit model metadata...", "Reset all to
+ *     the two bottom-row entries ("Edit model metadata...", "Reset all to
  *     defaults").
  *   - "Reset all to defaults" persists the DEFAULT_MODEL_ROLES and
  *     surfaces an "Model roles reset to defaults." notification.
@@ -41,7 +41,7 @@ const TWO_MODELS = [
 	{ slug: "heavy", displayName: "Fake Heavy", contextWindow: 1_000_000, maxTokens: 4096 },
 ] as const
 
-test("/multi-model opens the main menu with the role summary and footer entries", async ({ terminal }) => {
+test("/multi-model opens the main menu with the role summary and bottom-row entries", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		{
@@ -66,10 +66,10 @@ test("/multi-model opens the main menu with the role summary and footer entries"
 			}
 			trace.step("all seven role sections visible")
 
-			// The two footer actions added in this commit.
+			// The two bottom-row actions added in this commit.
 			await expect(terminal.getByText("Edit model metadata...")).toBeVisible()
 			await expect(terminal.getByText("Reset all to defaults")).toBeVisible()
-			trace.step("footer entries visible")
+			trace.step("bottom-row entries visible")
 
 			// Escape returns to the prompt.
 			terminal.keyEscape()
@@ -295,7 +295,7 @@ test("/multi-model Enter on first row of toggle-select confirms without scrollin
 	)
 })
 
-test("/multi-model toggle-select has no Done/Add custom rows and uses new footer", async ({ terminal }) => {
+test("/multi-model toggle-select has no Done/Add custom rows and uses new bottom row", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		{
@@ -322,11 +322,11 @@ test("/multi-model toggle-select has no Done/Add custom rows and uses new footer
 			expect(view).not.toContain("Add custom")
 			trace.step("no Done or Add custom rows visible")
 
-			// Footer uses the new key set with (N selected) count and
+			// Bottom row uses the new key set with (N selected) count and
 			// does NOT mention the removed "c custom" keybinding.
 			expect(view).not.toContain("c custom")
 			expect(view).toMatch(/\(\d+ selected\)/)
-			trace.step("footer shows new key set with (N selected)")
+			trace.step("bottom row shows new key set with (N selected)")
 		},
 	)
 })
@@ -436,8 +436,8 @@ test("/multi-model Space toggles checkbox state in toggle-select", async ({ term
 test("/multi-model toggle-select title count updates after Space toggle", async ({ terminal }) => {
 	// Regression: the title was previously interpolated at call-time and
 	// stayed frozen at the initial count while Space toggles updated the
-	// footer count, producing a cosmetic mismatch. The title must be
-	// rebuilt on every render so both title and footer show the same number.
+	// bottom-row count, producing a cosmetic mismatch. The title must be
+	// rebuilt on every render so both title and bottom row show the same number.
 	await runKimchiSession(
 		terminal,
 		{
@@ -459,11 +459,11 @@ test("/multi-model toggle-select title count updates after Space toggle", async 
 			// Initial state: the Builder role's current assignment is the
 			// single-model default "kimchi-dev/kimi-k2.6" (not in TWO_MODELS
 			// but it still counts toward selected.size), so the title and
-			// footer both read "(1 selected)".
+			// bottom row both read "(1 selected)".
 			const beforeView = viewText(terminal)
 			expect(beforeView).toMatch(/Builder\s+\u2014\s+toggle models \(1 selected\)/)
 			expect(beforeView).toMatch(/\(1 selected\)/)
-			trace.step("initial title and footer both show 1 selected")
+			trace.step("initial title and bottom row both show 1 selected")
 
 			// Space toggles the cursor row (row 0 — "basic") into the
 			// selection. Send Space without a trailing Enter so the picker
@@ -471,13 +471,13 @@ test("/multi-model toggle-select title count updates after Space toggle", async 
 			terminal.write(" ")
 			await new Promise((resolve) => setTimeout(resolve, 100))
 
-			// Both the title and the footer must now agree on "(2 selected)".
+			// Both the title and the bottom row must now agree on "(2 selected)".
 			// Without the fix the title would still read "(1 selected)" while
-			// the footer correctly reads "(2 selected)".
+			// the bottom row correctly reads "(2 selected)".
 			const afterView = viewText(terminal)
 			expect(afterView).toMatch(/Builder\s+\u2014\s+toggle models \(2 selected\)/)
 			expect(afterView).toMatch(/\(2 selected\)/)
-			trace.step("title and footer both show 2 selected after Space")
+			trace.step("title and bottom row both show 2 selected after Space")
 
 			// Escape cancels without persisting.
 			terminal.keyEscape()
