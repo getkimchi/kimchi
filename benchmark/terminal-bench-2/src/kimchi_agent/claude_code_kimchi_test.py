@@ -81,7 +81,7 @@ class FailingClaudeCodeKimchi(RecordingClaudeCodeKimchi):
 
     async def exec_as_agent(self, _environment, command: str, env=None, cwd=None, timeout_sec=None):
         await super().exec_as_agent(_environment, command, env=env, cwd=cwd, timeout_sec=timeout_sec)
-        if len(self.agent_commands) == 2:
+        if len(self.agent_commands) == 3:
             raise self.failure
 
 
@@ -97,7 +97,9 @@ class InstallRecordingClaudeCodeKimchi(ClaudeCodeKimchi):
 
     async def exec_as_agent(self, _environment, command: str, env=None, cwd=None, timeout_sec=None):
         self.agent_commands.append(command)
-        if self.failures:
+        # Only raise failures for commands inside the Claude Code installer
+        # retry loop, not for the git install/config steps we prepend.
+        if self.failures and "git config" not in command:
             raise self.failures.pop(0)
 
 
@@ -148,8 +150,8 @@ class ClaudeCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
             ):
                 await agent.install(FakeEnvironment(stdout="", return_code=1))
 
-        self.assertEqual(len(agent.root_commands), 2)
-        self.assertEqual(len(agent.agent_commands), 2)
+        self.assertEqual(len(agent.root_commands), 3)
+        self.assertEqual(len(agent.agent_commands), 3)
         sleep.assert_awaited_once_with(CLAUDE_CODE_INSTALL_RETRY_DELAYS_SEC[0])
         warning.assert_called_once()
 
@@ -172,8 +174,8 @@ class ClaudeCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
                 await agent.install(FakeEnvironment(stdout="", return_code=1))
 
         self.assertIs(raised.exception, original_error)
-        self.assertEqual(len(agent.root_commands), 1)
-        self.assertEqual(len(agent.agent_commands), 1)
+        self.assertEqual(len(agent.root_commands), 2)
+        self.assertEqual(len(agent.agent_commands), 2)
         sleep.assert_not_awaited()
 
     async def test_runs_claude_code_against_selected_kimchi_model(self) -> None:
@@ -185,8 +187,8 @@ class ClaudeCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
 
             await agent.run("solve it", object(), AgentContext())
 
-        self.assertEqual(len(agent.agent_commands), 2)
-        setup_command, run_command = agent.agent_commands
+        self.assertEqual(len(agent.agent_commands), 3)
+        _git_command, setup_command, run_command = agent.agent_commands
         env = agent.agent_envs[0]
         self.assertIsNotNone(env)
 

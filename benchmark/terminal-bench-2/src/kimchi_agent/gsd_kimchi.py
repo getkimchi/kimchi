@@ -15,6 +15,7 @@ from kimchi_agent.gateway import (
     KimchiGatewayMixin,
     KimchiModelMetadata,
 )
+from kimchi_agent.git_install import git_config_command, git_init_and_commit_baseline_command
 from kimchi_agent.messages import SessionEntry
 
 CONTAINER_LOGS_DIR = "/logs/agent"
@@ -75,6 +76,10 @@ class GsdKimchi(KimchiGatewayMixin, BaseInstalledAgent):
                 " fi"
             ),
             env={"DEBIAN_FRONTEND": "noninteractive"},
+        )
+        await self.exec_as_agent(
+            environment,
+            command=git_config_command(),
         )
 
         version_spec = f"@{self._version}" if self._version else "@latest"
@@ -256,6 +261,11 @@ git:
         await self.exec_as_agent(
             environment,
             command=self._build_config_command(model),
+            env=env,
+        )
+        await self.exec_as_agent(
+            environment,
+            command=f"cd /app && {git_init_and_commit_baseline_command()}",
             env=env,
         )
         await self.exec_as_agent(

@@ -14,6 +14,12 @@ from kimchi_agent.gateway import (
     KIMCHI_PROVIDER,
     KimchiGatewayMixin,
 )
+from kimchi_agent.git_install import (
+    GIT_INSTALL_COMMAND,
+    GIT_INSTALL_ENV,
+    git_config_command,
+    git_init_and_commit_baseline_command,
+)
 
 SMALL_MODEL_ENV = "OPENCODE_SMALL_MODEL"
 OPENCODE_RUNTIME_ENV_KEYS = {
@@ -34,6 +40,18 @@ class OpenCodeKimchi(KimchiGatewayMixin, OpenCode):
     @staticmethod
     def name() -> str:
         return "opencode-kimchi"
+
+    async def install(self, environment: BaseEnvironment) -> None:
+        await self.exec_as_root(
+            environment,
+            command=GIT_INSTALL_COMMAND,
+            env=GIT_INSTALL_ENV,
+        )
+        await self.exec_as_agent(
+            environment,
+            command=git_config_command(),
+        )
+        await super().install(environment)
 
     def _model_config(self, api_key: str, model_name: str | None) -> dict[str, Any]:
         model = self._model_metadata_for(api_key, model_name)
@@ -127,6 +145,11 @@ class OpenCodeKimchi(KimchiGatewayMixin, OpenCode):
         api_key = env[KIMCHI_API_KEY_ENV]
         config_command = self._build_register_config_command(api_key, small_model_name)
 
+        await self.exec_as_agent(
+            environment,
+            command=f"cd /app && {git_init_and_commit_baseline_command()}",
+            env=env,
+        )
         skills_command = self._build_register_skills_command()
         if skills_command:
             await self.exec_as_agent(environment, command=skills_command, env=env)

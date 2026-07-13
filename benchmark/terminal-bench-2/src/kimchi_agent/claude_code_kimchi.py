@@ -15,6 +15,12 @@ from kimchi_agent.gateway import (
     KimchiGatewayMixin,
     KimchiModelMetadata,
 )
+from kimchi_agent.git_install import (
+    GIT_INSTALL_COMMAND,
+    GIT_INSTALL_ENV,
+    git_config_command,
+    git_init_and_commit_baseline_command,
+)
 
 CLAUDE_CODE_AUTO_COMPACT_PERCENT = 85
 CLAUDE_CODE_OUTPUT_RESERVE_TOKENS = 32_768
@@ -134,6 +140,16 @@ class ClaudeCodeKimchi(KimchiGatewayMixin, ClaudeCode):
         )
 
     async def install(self, environment: BaseEnvironment) -> None:
+        await self.exec_as_root(
+            environment,
+            command=GIT_INSTALL_COMMAND,
+            env=GIT_INSTALL_ENV,
+        )
+        await self.exec_as_agent(
+            environment,
+            command=git_config_command(),
+        )
+
         retrying = AsyncRetrying(
             retry=retry_if_exception(self._is_retryable_install_exception),
             wait=wait_chain(*(wait_fixed(delay) for delay in CLAUDE_CODE_INSTALL_RETRY_DELAYS_SEC)),
@@ -338,6 +354,11 @@ class ClaudeCodeKimchi(KimchiGatewayMixin, ClaudeCode):
     ) -> None:
         env = self._build_env()
 
+        await self.exec_as_agent(
+            environment,
+            command=f"cd /app && {git_init_and_commit_baseline_command()}",
+            env=env,
+        )
         await self.exec_as_agent(
             environment,
             command=self._build_setup_command(),

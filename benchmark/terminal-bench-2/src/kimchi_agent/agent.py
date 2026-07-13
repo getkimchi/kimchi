@@ -17,6 +17,12 @@ from harbor.models.trial.result import AgentInfo, ModelInfo
 from pydantic import ValidationError
 
 from kimchi_agent.config import KimchiAgentConfig
+from kimchi_agent.git_install import (
+    GIT_INSTALL_COMMAND,
+    GIT_INSTALL_ENV,
+    git_config_command,
+    git_init_and_commit_baseline_command,
+)
 from kimchi_agent.messages import SessionEntry
 from kimchi_agent.release import BINARY_RELPATH, SHARE_RELPATH, GitHubClient
 
@@ -270,6 +276,17 @@ class Kimchi(BaseInstalledAgent):
 
         await self.exec_as_root(
             environment,
+            command=GIT_INSTALL_COMMAND,
+            env=GIT_INSTALL_ENV,
+        )
+
+        await self.exec_as_agent(
+            environment,
+            command=git_config_command(),
+        )
+
+        await self.exec_as_root(
+            environment,
             command=(
                 f"mkdir -p {INSTALL_DIR} && "
                 f"cp -a {shlex.quote(UPLOAD_STAGE_DIR)}/. {shlex.quote(INSTALL_DIR)}/ && "
@@ -405,6 +422,10 @@ class Kimchi(BaseInstalledAgent):
                 'mkdir -p "$ext_dir" && '
                 f'cp -a {shlex.quote(CONTAINER_EXTENSION_STAGE_DIR)}/. "$ext_dir/"'
             )
+        # Ensure a git repo exists in the task working directory with a
+        # committed baseline, but never clobber one that the task image ships
+        # with (e.g. fix-git).
+        parts.append(f"cd /app && {git_init_and_commit_baseline_command()}")
         harness_settings = self._harness_settings_command()
         if harness_settings:
             parts.append(harness_settings)

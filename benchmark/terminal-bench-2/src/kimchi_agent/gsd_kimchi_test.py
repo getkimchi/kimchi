@@ -80,10 +80,11 @@ class GsdKimchiTest(unittest.IsolatedAsyncioTestCase):
             await agent.install(object())
 
         self.assertEqual(len(agent.root_commands), 1)
-        self.assertEqual(len(agent.agent_commands), 1)
+        self.assertEqual(len(agent.agent_commands), 2)
         self.assertIn("git", agent.root_commands[0])
-        self.assertIn("npm install -g gsd-pi@latest", agent.agent_commands[0])
-        self.assertIn("gsd --version", agent.agent_commands[0])
+        self.assertIn("git config", agent.agent_commands[0])
+        self.assertIn("npm install -g gsd-pi@latest", agent.agent_commands[1])
+        self.assertIn("gsd --version", agent.agent_commands[1])
 
     def test_version_command_tolerates_system_node_install(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -104,7 +105,7 @@ class GsdKimchiTest(unittest.IsolatedAsyncioTestCase):
 
             await agent.install(object())
 
-        self.assertIn("npm install -g gsd-pi@3.0.0", agent.agent_commands[0])
+        self.assertIn("npm install -g gsd-pi@3.0.0", agent.agent_commands[1])
 
     async def test_registers_and_runs_selected_kimchi_model(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -115,8 +116,8 @@ class GsdKimchiTest(unittest.IsolatedAsyncioTestCase):
 
             await agent.run("solve it", object(), AgentContext())
 
-        self.assertEqual(len(agent.agent_commands), 2)
-        config_command, run_command = agent.agent_commands
+        self.assertEqual(len(agent.agent_commands), 3)
+        config_command, _git_command, run_command = agent.agent_commands
         self.assertIn("/tmp/terminal-bench-gsd-home/agent/models.json", config_command)
         self.assertIn("/tmp/terminal-bench-gsd-home/agent/settings.json", config_command)
         self.assertIn("/tmp/terminal-bench-gsd-home/preferences.md", config_command)

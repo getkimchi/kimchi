@@ -99,8 +99,8 @@ class OpenCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
 
             await agent.run("solve it", object(), AgentContext())
 
-        self.assertEqual(len(agent.agent_commands), 2)
-        config = extract_echo_json(agent.agent_commands[0])
+        self.assertEqual(len(agent.agent_commands), 3)
+        config = extract_echo_json(agent.agent_commands[1])
         self.assertEqual(config["model"], "kimchi-dev/minimax-m2.7")
         self.assertEqual(config["small_model"], "kimchi-dev/minimax-m2.7")
         self.assertIn("minimax-m2.7", config["provider"][KIMCHI_PROVIDER]["models"])
@@ -108,7 +108,7 @@ class OpenCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(config["provider"][KIMCHI_PROVIDER]["options"]["baseURL"], KIMCHI_OPENAI_BASE_URL)
         self.assertEqual(config["provider"][KIMCHI_PROVIDER]["options"]["apiKey"], "{env:KIMCHI_API_KEY}")
 
-        run_command = agent.agent_commands[1]
+        run_command = agent.agent_commands[2]
         self.assertIn("opencode --model=kimchi-dev/minimax-m2.7", run_command)
         self.assertIn("run --format=json --thinking --dangerously-skip-permissions --", run_command)
         self.assertEqual(agent.agent_envs[0]["KIMCHI_API_KEY"], "test-key")
@@ -135,13 +135,13 @@ class OpenCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
 
             await agent.run("solve it", object(), AgentContext())
 
-        config = extract_echo_json(agent.agent_commands[0])
+        config = extract_echo_json(agent.agent_commands[1])
         model_config = config["provider"][KIMCHI_PROVIDER]["models"]["new-model"]
         self.assertFalse(model_config["reasoning"])
         self.assertTrue(model_config["tool_call"])
         self.assertEqual(model_config["limit"], {"context": 12345, "output": 6789})
-        self.assertIn("opencode --model=kimchi-dev/new-model", agent.agent_commands[1])
-        self.assertNotIn("--thinking", agent.agent_commands[1])
+        self.assertIn("opencode --model=kimchi-dev/new-model", agent.agent_commands[2])
+        self.assertNotIn("--thinking", agent.agent_commands[2])
 
     async def test_rejects_model_missing_from_metadata_endpoint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -189,7 +189,7 @@ class OpenCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
 
             await agent.run("solve it", object(), AgentContext())
 
-        config = extract_echo_json(agent.agent_commands[0])
+        config = extract_echo_json(agent.agent_commands[1])
         self.assertEqual(config["mcp"]["local-tools"], {"type": "local", "command": ["tool-server", "--fast"]})
         self.assertEqual(config["mcp"]["remote-tools"], {"type": "remote", "url": "https://example.test/mcp"})
 
@@ -211,7 +211,7 @@ class OpenCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
 
             await agent.run("solve it", object(), AgentContext())
 
-        config = extract_echo_json(agent.agent_commands[0])
+        config = extract_echo_json(agent.agent_commands[1])
         provider = config["provider"][KIMCHI_PROVIDER]
         self.assertEqual(config["share"], "disabled")
         self.assertEqual(provider["options"]["baseURL"], KIMCHI_OPENAI_BASE_URL)
@@ -228,10 +228,10 @@ class OpenCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
 
             await agent.run("solve it", object(), AgentContext())
 
-        self.assertEqual(len(agent.agent_commands), 3)
-        self.assertIn("~/.config/opencode/skills", agent.agent_commands[0])
-        self.assertIn("opencode.json", agent.agent_commands[1])
-        self.assertIn("opencode --model=kimchi-dev/kimi-k2.5", agent.agent_commands[2])
+        self.assertEqual(len(agent.agent_commands), 4)
+        self.assertIn("~/.config/opencode/skills", agent.agent_commands[1])
+        self.assertIn("opencode.json", agent.agent_commands[2])
+        self.assertIn("opencode --model=kimchi-dev/kimi-k2.5", agent.agent_commands[3])
 
     async def test_opencode_extra_env_overrides_default_fake_vcs(self) -> None:
         opencode_env = {
@@ -269,7 +269,7 @@ class OpenCodeKimchiTest(unittest.IsolatedAsyncioTestCase):
 
             await agent.run("solve it", object(), AgentContext())
 
-        config = extract_echo_json(agent.agent_commands[0])
+        config = extract_echo_json(agent.agent_commands[1])
         models = config["provider"][KIMCHI_PROVIDER]["models"]
         self.assertEqual(config["small_model"], "kimchi-dev/minimax-m2.7")
         self.assertIn("kimi-k2.5", models)
