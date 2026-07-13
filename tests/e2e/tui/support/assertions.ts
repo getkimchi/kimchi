@@ -45,6 +45,22 @@ export async function waitForText(
  * follow-up completions. Polls request count until stable for settleForMs.
  * Shared across TUI E2E tests that need to wait for the agent to fully settle.
  */
+/**
+ * Types `/ferment` into the main prompt and submits it.
+ *
+ * A one-shot `terminal.submit("/ferment")` can race with the editor prompt
+ * that opens immediately after the command runs: the trailing return may be
+ * processed by the editor, causing it to submit the literal `/ferment` as the
+ * intent and skip the "What would you like to ferment?" prompt. Splitting the
+ * write and the return, and waiting for the slash text to render first, keeps
+ * the return in the main input.
+ */
+export async function submitFermentCommand(terminal: Terminal): Promise<void> {
+	terminal.write("/ferment")
+	await waitForText(terminal, "/ferment", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+	terminal.submit("")
+}
+
 export async function waitForTurnToSettle(requests: { length: number }): Promise<void> {
 	const settleForMs = 1_200
 	const timeoutMs = 30_000

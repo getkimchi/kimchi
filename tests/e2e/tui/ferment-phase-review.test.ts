@@ -1,5 +1,11 @@
 import { test } from "@microsoft/tui-test"
-import { INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
+import {
+	INPUT_TIMEOUT_MS,
+	STARTUP_TIMEOUT_MS,
+	STREAM_TIMEOUT_MS,
+	submitFermentCommand,
+	waitForText,
+} from "./support/assertions.js"
 import { TUI_TEST_CONFIG, runKimchiSession } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -44,7 +50,7 @@ test.fail("ferment phase-review separator is not selectable", async ({ terminal 
 		},
 		async (_fixture, trace) => {
 			// Stage 1: enter ferment.
-			terminal.submit("/ferment")
+			await submitFermentCommand(terminal)
 			trace.step("ran /ferment")
 			await waitForText(terminal, "would you like to ferment", { timeoutMs: STARTUP_TIMEOUT_MS })
 			trace.step("intent prompt visible")

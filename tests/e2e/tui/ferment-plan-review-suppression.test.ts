@@ -17,7 +17,14 @@
 import { readFileSync, readdirSync } from "node:fs"
 import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
-import { INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, waitForText, viewText } from "./support/assertions.js"
+import {
+	INPUT_TIMEOUT_MS,
+	STARTUP_TIMEOUT_MS,
+	STREAM_TIMEOUT_MS,
+	submitFermentCommand,
+	viewText,
+	waitForText,
+} from "./support/assertions.js"
 import { TUI_TEST_CONFIG, runKimchiSession } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -141,7 +148,7 @@ test("plan review: model stops after propose, review dialog appears, user confir
 			trace.step("ready prompt visible")
 
 			// Stage 2: enter ferment.
-			terminal.submit("/ferment")
+			await submitFermentCommand(terminal)
 			trace.step("ran /ferment")
 
 			// Stage 3: intent prompt appears.
@@ -238,7 +245,7 @@ test("plan review: cancel restores planning tools, model can re-propose, ferment
 			trace.step("ready prompt visible")
 
 			// Stage 2: enter ferment.
-			terminal.submit("/ferment")
+			await submitFermentCommand(terminal)
 			trace.step("ran /ferment")
 
 			// Stage 3: intent prompt.
@@ -339,7 +346,7 @@ test("plan review: existing zero-questions scoping flow still works (no regressi
 			trace.step("ready prompt visible")
 
 			// Stage 2: enter ferment.
-			terminal.submit("/ferment")
+			await submitFermentCommand(terminal)
 			trace.step("ran /ferment")
 
 			// Stage 3: intent prompt.

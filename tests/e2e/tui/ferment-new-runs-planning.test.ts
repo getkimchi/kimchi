@@ -18,7 +18,13 @@
 import { readFileSync, readdirSync, statSync } from "node:fs"
 import { join } from "node:path"
 import { Key, expect, test } from "@microsoft/tui-test"
-import { INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
+import {
+	INPUT_TIMEOUT_MS,
+	STARTUP_TIMEOUT_MS,
+	STREAM_TIMEOUT_MS,
+	submitFermentCommand,
+	waitForText,
+} from "./support/assertions.js"
 import { TUI_TEST_CONFIG, runKimchiSession } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -106,7 +112,10 @@ test("/ferment new runs planning and produces a scoped ferment artifact", async 
 			trace.step("ready prompt visible")
 
 			// Stage 2: enter ferment.
-			terminal.submit("/ferment")
+			// submitFermentCommand types "/ferment", waits for it to render, then
+			// presses return. A one-shot submit("/ferment") can race with the editor
+			// prompt and submit "/ferment" as the intent, skipping the prompt.
+			await submitFermentCommand(terminal)
 			trace.step("ran /ferment")
 
 			// Stage 3: intent prompt appears.

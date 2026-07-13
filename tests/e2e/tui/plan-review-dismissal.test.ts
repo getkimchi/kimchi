@@ -19,7 +19,14 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs"
 import { join } from "node:path"
 import type { Terminal } from "@microsoft/tui-test/lib/terminal/term.js"
 import { expect, test } from "@microsoft/tui-test"
-import { INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, viewText, waitForText } from "./support/assertions.js"
+import {
+	INPUT_TIMEOUT_MS,
+	STARTUP_TIMEOUT_MS,
+	STREAM_TIMEOUT_MS,
+	submitFermentCommand,
+	viewText,
+	waitForText,
+} from "./support/assertions.js"
 import { TUI_TEST_CONFIG, runKimchiSession } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -140,7 +147,7 @@ test("plan review dialog does not re-appear after Esc dismissal", async ({ termi
 			})
 
 			// Stage 2: enter ferment.
-			terminal.submit("/ferment")
+			await submitFermentCommand(terminal)
 			trace.step("ran /ferment")
 
 			// Stage 3: intent prompt appears.
@@ -231,7 +238,7 @@ test("plan review dialog does not re-appear after feedback", async ({ terminal }
 			})
 
 			// Stage 2: enter ferment.
-			terminal.submit("/ferment")
+			await submitFermentCommand(terminal)
 			trace.step("ran /ferment")
 
 			// Stage 3: intent prompt appears.

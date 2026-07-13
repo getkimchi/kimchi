@@ -1,5 +1,12 @@
 import { expect, test } from "@microsoft/tui-test"
-import { INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, viewText, waitForText } from "./support/assertions.js"
+import {
+	INPUT_TIMEOUT_MS,
+	STARTUP_TIMEOUT_MS,
+	STREAM_TIMEOUT_MS,
+	submitFermentCommand,
+	viewText,
+	waitForText,
+} from "./support/assertions.js"
 import { TUI_TEST_CONFIG, runKimchiSession } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -158,7 +165,7 @@ test("todo tools are available during ferment execution", async ({ terminal }) =
 			trace.step("ready prompt visible")
 
 			// Stage 2: enter ferment (same entry path as ferment-new-runs-planning).
-			terminal.submit("/ferment")
+			await submitFermentCommand(terminal)
 			trace.step("ran /ferment")
 
 			// Stage 3: intent prompt appears.
