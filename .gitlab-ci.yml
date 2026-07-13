@@ -1,6 +1,6 @@
 spec:
   include:
-    - local: /.gitlab/ci/terminal-bench-2.inputs.yml
+    - local: /.gitlab/ci/benchmark.inputs.yml
 ---
 
 stages:
@@ -18,20 +18,20 @@ workflow:
         PIPELINE_NAME: 'Benchmarks Tests — MR !$CI_MERGE_REQUEST_IID'
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       variables:
-        PIPELINE_NAME: 'Terminal Bench $[[ inputs.dataset_version ]] — $[[ inputs.agent ]] · $[[ inputs.model ]] · $[[ inputs.target_ref ]] · ferment=$[[ inputs.kimchi_ferment_oneshot ]] · tasks_all=$[[ inputs.tasks_all ]]'
-        TERMINAL_BENCH_RESOURCE_GROUP: terminal-bench-$[[ inputs.dataset_version ]]-$[[ inputs.agent ]]-scheduled
+        PIPELINE_NAME: '$[[ inputs.benchmark ]] — $[[ inputs.agent ]] · $[[ inputs.model ]] · $[[ inputs.target_ref ]] · ferment=$[[ inputs.kimchi_ferment_oneshot ]] · tasks_all=$[[ inputs.tasks_all ]]'
+        TERMINAL_BENCH_RESOURCE_GROUP: $[[ inputs.benchmark ]]-$[[ inputs.agent ]]-scheduled
     - if: '$CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"'
       variables:
-        PIPELINE_NAME: 'Terminal Bench $[[ inputs.dataset_version ]] — $[[ inputs.agent ]] · $[[ inputs.model ]] · $[[ inputs.target_ref ]] · ferment=$[[ inputs.kimchi_ferment_oneshot ]] · tasks_all=$[[ inputs.tasks_all ]]'
-        TERMINAL_BENCH_RESOURCE_GROUP: 'terminal-bench-$[[ inputs.dataset_version ]]-$[[ inputs.agent ]]-$[[ inputs.target_ref ]]'
+        PIPELINE_NAME: '$[[ inputs.benchmark ]] — $[[ inputs.agent ]] · $[[ inputs.model ]] · $[[ inputs.target_ref ]] · ferment=$[[ inputs.kimchi_ferment_oneshot ]] · tasks_all=$[[ inputs.tasks_all ]]'
+        TERMINAL_BENCH_RESOURCE_GROUP: '$[[ inputs.benchmark ]]-$[[ inputs.agent ]]-$[[ inputs.target_ref ]]'
     - when: never
 
 include:
   - local: /.gitlab/ci/terminal-bench-2.yml
     rules:
-      - if: '$CI_PIPELINE_SOURCE == "schedule" || $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"'
+      - if: '("$[[ inputs.benchmark ]]" == "terminal-bench-2" || "$[[ inputs.benchmark ]]" == "terminal-bench-2-1") && ($CI_PIPELINE_SOURCE == "schedule" || $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api")'
     inputs:
-      dataset_version: $[[ inputs.dataset_version ]]
+      benchmark: $[[ inputs.benchmark ]]
       agent: $[[ inputs.agent ]]
       target_ref: $[[ inputs.target_ref ]]
       benchmark_tag: $[[ inputs.benchmark_tag ]]

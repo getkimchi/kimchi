@@ -6,6 +6,60 @@ import itertools
 
 from harbor_runner import build_harbor_command
 
+# --- Task argument resolution ---
+
+
+def test_task_arg_not_prefixed_for_non_terminal_bench_dataset() -> None:
+    """Non-terminal-bench task names are passed as-is (no 'terminal-bench/' prefix)."""
+    cmd = build_harbor_command(
+        tasks=["some-task"],
+        agent_import_path="kimchi_agent:Kimchi",
+        model="kimchi-dev/minimax-m3",
+        dataset="other-dataset",
+        parallelism=1,
+        attempts=1,
+        timeout_multiplier=1.0,
+    )
+
+    pairs = list(itertools.pairwise(cmd))
+    assert ("-i", "some-task") in pairs
+    assert not any(v.startswith("terminal-bench/") for _, v in pairs if _ == "-i")
+
+
+def test_task_arg_prefixed_for_terminal_bench_dataset() -> None:
+    """Terminal-bench bare task names get 'terminal-bench/' prefix."""
+    cmd = build_harbor_command(
+        tasks=["fix-git"],
+        agent_import_path="kimchi_agent:Kimchi",
+        model="kimchi-dev/minimax-m3",
+        dataset="terminal-bench/terminal-bench-2-1",
+        parallelism=1,
+        attempts=1,
+        timeout_multiplier=1.0,
+    )
+
+    pairs = list(itertools.pairwise(cmd))
+    assert ("-i", "terminal-bench/fix-git") in pairs
+
+
+def test_task_arg_with_slash_not_double_prefixed() -> None:
+    """Task names that already contain '/' are not double-prefixed."""
+    cmd = build_harbor_command(
+        tasks=["terminal-bench/fix-git"],
+        agent_import_path="kimchi_agent:Kimchi",
+        model="kimchi-dev/minimax-m3",
+        dataset="terminal-bench/terminal-bench-2-1",
+        parallelism=1,
+        attempts=1,
+        timeout_multiplier=1.0,
+    )
+
+    pairs = list(itertools.pairwise(cmd))
+    assert ("-i", "terminal-bench/fix-git") in pairs
+
+
+# --- Basic command construction ---
+
 
 def test_command_includes_required_flags() -> None:
     cmd = build_harbor_command(

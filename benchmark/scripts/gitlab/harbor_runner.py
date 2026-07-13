@@ -14,6 +14,19 @@ from pathlib import Path
 from typing import Any
 
 
+def _resolve_task_arg(task: str, dataset: str) -> str:
+    """Resolve a bare task name to the Harbor -i argument.
+
+    Terminal-bench tasks need the "terminal-bench/" prefix when bare.
+    All other datasets pass task names as-is.
+    """
+    if "/" in task:
+        return task
+    if dataset.startswith("terminal-bench"):
+        return f"terminal-bench/{task}"
+    return task
+
+
 def build_harbor_command(
     *,
     tasks: list[str],
@@ -73,7 +86,7 @@ def build_harbor_command(
         cmd.extend(["--agent-kwarg", f"version={claude_code_version}"])
 
     for task in tasks:
-        task_arg = task if "/" in task else f"terminal-bench/{task}"
+        task_arg = _resolve_task_arg(task, dataset)
         cmd.extend(["-i", task_arg])
 
     return cmd

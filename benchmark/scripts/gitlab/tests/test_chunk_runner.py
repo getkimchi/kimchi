@@ -13,12 +13,83 @@ from chunk_runner import (
     _all_trial_dirs_for_task,
     _build_gcs_key_prefix,
     _derive_configuration,
+    _fetch_all_tasks,
     _write_run_metadata,
     main,
     process_trial_results,
     run_id_from_chunk_attempt,
 )
 from outcome import Outcome
+
+_BENCH_SCRIPTS_DIR = Path(__file__).parent.parent
+
+
+def test_fetch_all_tasks_reads_terminal_bench_from_file() -> None:
+    """_fetch_all_tasks reads terminal-bench tasks from the static JSON file."""
+    tasks = _fetch_all_tasks("terminal-bench/terminal-bench-2-1", bench_dir=_BENCH_SCRIPTS_DIR)
+
+    assert "adaptive-rejection-sampler" in tasks
+    assert "fix-git" in tasks
+    assert "install-windows-3.11" in tasks  # TB2.1 uses dots
+    assert len(tasks) == 89
+
+
+def test_fetch_all_tasks_raises_for_unknown_dataset(tmp_path: Path) -> None:
+    """_fetch_all_tasks raises RuntimeError for a dataset with no static file."""
+    with pytest.raises(RuntimeError, match="No task list file for dataset"):
+        _fetch_all_tasks("unknown-dataset", bench_dir=tmp_path)
+
+
+def test_fetch_all_tasks_has_separate_files_per_dataset_version() -> None:
+    """TB2 and TB2.1 have separate task list files because task names differ.
+
+    install-windows-3-11 (TB2, hyphens) vs install-windows-3.11 (TB2.1, dots).
+    The old hardcoded list used 'install-windows-3?11' as a wildcard
+    to match both — now each file has the exact name.
+    """
+    tasks_v2 = _fetch_all_tasks("terminal-bench/terminal-bench-2", bench_dir=_BENCH_SCRIPTS_DIR)
+    tasks_v21 = _fetch_all_tasks("terminal-bench/terminal-bench-2-1", bench_dir=_BENCH_SCRIPTS_DIR)
+
+    assert len(tasks_v2) == 89
+    assert len(tasks_v21) == 89
+    assert "install-windows-3-11" in tasks_v2
+    assert "install-windows-3.11" in tasks_v21
+
+
+def test_all_trial_dirs_matches_long_name_via_prefix(tmp_results_dir: Path) -> None:
+    """_all_trial_dirs_for_task finds trial dirs when Harbor truncates the task name.
+
+    Instance IDs of 70+ chars. Harbor truncates them when
+    creating trial directories (e.g. 'instance_flipt-io__flipt-02e2163__zB3HPks').
+    The function should match by checking if the full task name starts with
+    the trial dir's prefix (everything before the last '__').
+    """
+    long_task = "instance_flipt-io__flipt-02e21636c58e86c51119b63e0fb5ca7b813b07b1"
+    truncated_dir = "instance_flipt-io__flipt-02e2163__zB3HPks"
+    trial = tmp_results_dir / "run-1" / truncated_dir
+    trial.mkdir(parents=True)
+    (trial / "result.json").write_text(json.dumps({
+        "trial_name": truncated_dir,
+        "verifier_result": {"rewards": {"reward": 0.0}},
+    }))
+
+    found = _all_trial_dirs_for_task(tmp_results_dir, long_task)
+    assert len(found) == 1
+    assert found[0].name == truncated_dir
+
+
+def test_all_trial_dirs_matches_short_name_via_prefix(tmp_results_dir: Path) -> None:
+    """Short task names (terminal-bench) still match via directory name prefix."""
+    trial = tmp_results_dir / "run-1" / "fix-git__abc123"
+    trial.mkdir(parents=True)
+    (trial / "result.json").write_text(json.dumps({
+        "trial_name": "fix-git",
+        "verifier_result": {"rewards": {"reward": 1.0}},
+    }))
+
+    found = _all_trial_dirs_for_task(tmp_results_dir, "fix-git")
+    assert len(found) == 1
+    assert found[0].name == "fix-git__abc123"
 
 
 def _write_result(trial_dir: Path, payload: dict) -> None:

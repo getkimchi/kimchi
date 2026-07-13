@@ -21,7 +21,6 @@ source of truth. Resume state lives in the local artifact.
 
 from __future__ import annotations
 
-import fnmatch
 import json
 import os
 import re
@@ -59,102 +58,38 @@ from classify import classify
 from harbor_runner import build_harbor_command, format_command_for_log, run_harbor
 from outcome import Outcome
 
+# Directory containing static per-dataset task lists (JSON arrays of task name strings).
+# These are committed to git to avoid flaky Harbor CLI calls at runtime.
+_DATASETS_DIR = Path(__file__).parent / "datasets"
+
+# Maps Harbor dataset slugs to static file basenames.
+_DATASET_FILE_MAP: dict[str, str] = {
+    "terminal-bench/terminal-bench-2": "terminal-bench-2.json",
+    "terminal-bench/terminal-bench-2-1": "terminal-bench-2-1.json",
+}
+
 
 def _fetch_all_tasks(dataset: str, bench_dir: Path) -> list[str]:
-    # Hardcoded instead of queried from Harbor at runtime: the Harbor registry
-    # backend (Supabase/PostgREST) occasionally fails with PGRST002 on cold
-    # start, which would abort the entire benchmark job.
-    return [
-        "adaptive-rejection-sampler",
-        "bn-fit-modify",
-        "break-filter-js-from-html",
-        "build-cython-ext",
-        "build-pmars",
-        "build-pov-ray",
-        "caffe-cifar-10",
-        "cancel-async-tasks",
-        "chess-best-move",
-        "circuit-fibsqrt",
-        "cobol-modernization",
-        "code-from-image",
-        "compile-compcert",
-        "configure-git-webserver",
-        "constraints-scheduling",
-        "count-dataset-tokens",
-        "crack-7z-hash",
-        "custom-memory-heap-crash",
-        "db-wal-recovery",
-        "distribution-search",
-        "dna-assembly",
-        "dna-insert",
-        "extract-elf",
-        "extract-moves-from-video",
-        "feal-differential-cryptanalysis",
-        "feal-linear-cryptanalysis",
-        "filter-js-from-html",
-        "financial-document-processor",
-        "fix-code-vulnerability",
-        "fix-git",
-        "fix-ocaml-gc",
-        "gcode-to-text",
-        "git-leak-recovery",
-        "git-multibranch",
-        "gpt2-codegolf",
-        "headless-terminal",
-        "hf-model-inference",
-        "install-windows-3?11",
-        "kv-store-grpc",
-        "large-scale-text-editing",
-        "largest-eigenval",
-        "llm-inference-batching-scheduler",
-        "log-summary-date-ranges",
-        "mailman",
-        "make-doom-for-mips",
-        "make-mips-interpreter",
-        "mcmc-sampling-stan",
-        "merge-diff-arc-agi-task",
-        "model-extraction-relu-logits",
-        "modernize-scientific-stack",
-        "mteb-leaderboard",
-        "mteb-retrieve",
-        "multi-source-data-merger",
-        "nginx-request-logging",
-        "openssl-selfsigned-cert",
-        "overfull-hbox",
-        "password-recovery",
-        "path-tracing",
-        "path-tracing-reverse",
-        "polyglot-c-py",
-        "polyglot-rust-c",
-        "portfolio-optimization",
-        "protein-assembly",
-        "prove-plus-comm",
-        "pypi-server",
-        "pytorch-model-cli",
-        "pytorch-model-recovery",
-        "qemu-alpine-ssh",
-        "qemu-startup",
-        "query-optimize",
-        "raman-fitting",
-        "regex-chess",
-        "regex-log",
-        "reshard-c4-data",
-        "rstan-to-pystan",
-        "sam-cell-seg",
-        "sanitize-git-repo",
-        "schemelike-metacircular-eval",
-        "sparql-university",
-        "sqlite-db-truncate",
-        "sqlite-with-gcov",
-        "torch-pipeline-parallelism",
-        "torch-tensor-parallelism",
-        "train-fasttext",
-        "tune-mjcf",
-        "video-processing",
-        "vulnerable-secret",
-        "winning-avg-corewars",
-        "write-compressor",
-    ]
+    # Read from a static JSON file instead of querying Harbor at runtime: the
+    # Harbor registry backend (Supabase/PostgREST) occasionally fails with
+    # PGRST002 on cold start, which would abort the entire benchmark job.
+    filename = _DATASET_FILE_MAP.get(dataset)
+    if filename is None:
+        raise RuntimeError(
+            f"No task list file for dataset {dataset!r}. "
+            f"Known datasets: {sorted(_DATASET_FILE_MAP)}"
+        )
+    task_file = _DATASETS_DIR / filename
+    if not task_file.is_file():
+        raise RuntimeError(
+            f"Task list file not found: {task_file}"
+        )
+    tasks = json.loads(task_file.read_text(encoding="utf-8"))
+    if not isinstance(tasks, list) or not all(isinstance(t, str) for t in tasks):
+        raise RuntimeError(
+            f"Task list file {task_file} must be a JSON array of strings"
+        )
+    return tasks
 
 
 def run_id_from_chunk_attempt(*, chunk_index: int, chunk_attempt: int) -> str:
@@ -176,18 +111,34 @@ def _all_trial_dirs_for_task(results_dir: Path, task_name: str) -> list[Path]:
     """Find all trial directories for a bare task name (e.g. 'task-a').
 
     Searches all run subdirectories under results_dir and returns every
-    trial dir whose name matches '{task_name}__*'. Sorted by name
-    (ascending) for deterministic ordering. Returns empty list if none found.
+    matching trial dir, sorted by name (ascending) for deterministic ordering.
+    Returns empty list if none found.
+
+    Harbor truncates long task names when creating trial directories (e.g.
+    instance IDs of 70+ chars are truncated to
+    'instance_ansible__ansible-0ea40e__e4a9yJi'). So we can't rely on the
+    directory name starting with `{task_name}__`. Instead, we match by
+    checking if the task name starts with the trial dir's prefix (everything
+    before the last `__` separator).
     """
     if not results_dir.is_dir():
         return []
-    pattern = f"{task_name}__*"
     matches: list[Path] = []
     for run_dir in results_dir.iterdir():
         if not run_dir.is_dir():
             continue
         for trial_dir in run_dir.iterdir():
-            if trial_dir.is_dir() and fnmatch.fnmatch(trial_dir.name, pattern):
+            if not (trial_dir.is_dir() and "__" in trial_dir.name):
+                continue
+            # Fast path: directory name starts with `{task_name}__` (short names).
+            if trial_dir.name.startswith(f"{task_name}__"):
+                matches.append(trial_dir)
+                continue
+            # Slow path: Harbor truncated the task name. The trial dir name
+            # is `{truncated_prefix}__{suffix}`. Check if the full task name
+            # starts with the truncated prefix.
+            prefix = trial_dir.name.rsplit("__", 1)[0]
+            if task_name.startswith(prefix):
                 matches.append(trial_dir)
     return sorted(matches, key=lambda p: p.name)
 
