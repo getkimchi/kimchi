@@ -57,6 +57,7 @@ export interface FakeResponseScript {
 	closeSocketAfterChunks?: number
 	status?: number
 	body?: unknown
+	headers?: Record<string, string>
 	/** Route this script to the subagent queue (consumed by subagent requests). */
 	forSubagent?: boolean
 }
@@ -74,6 +75,7 @@ export interface FakeOpenAiServer {
 interface StartFakeOpenAiServerOptions {
 	models?: FakeModel[]
 	responses: FakeResponseScript[]
+	creditsResponses?: unknown[]
 }
 
 export const DEFAULT_MODEL: Required<FakeModel> = {
@@ -117,6 +119,8 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 			mainQueue.push(script)
 		}
 	}
+	const creditsQueue = [...(options.creditsResponses ?? [])]
+	let lastCreditsResponse: unknown
 
 	const server = createServer(async (req, res) => {
 		const body = await readJsonBody(req)
@@ -152,6 +156,13 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 						status: "active",
 					})),
 				})
+				return
+			}
+
+			if (req.method === "GET" && req.url?.startsWith("/v1/credits")) {
+				const credits = creditsQueue.shift() ?? lastCreditsResponse ?? { serverless: false }
+				lastCreditsResponse = credits
+				writeJson(res, 200, credits)
 				return
 			}
 
@@ -212,30 +223,36 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
 
 async function writeChatCompletion(res: ServerResponse, script: FakeResponseScript, body: unknown): Promise<void> {
 	if (script.status && script.status >= 400) {
-		writeJson(res, script.status, script.body ?? { error: "scripted fake model error" })
+		writeJson(res, script.status, script.body ?? { error: "scripted fake model error" }, script.headers)
 		return
 	}
 
 	const request = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
 	const model = typeof request.model === "string" ? request.model : DEFAULT_MODEL.slug
 	if (request.stream === false) {
-		writeJson(res, 200, {
-			id: "chatcmpl_fake",
-			object: "chat.completion",
-			created: unixNow(),
-			model,
-			choices: [
-				{
-					index: 0,
-					message: { role: "assistant", content: (script.stream ?? []).join("") },
-					finish_reason: "stop",
-				},
-			],
-		})
+		writeJson(
+			res,
+			200,
+			{
+				id: "chatcmpl_fake",
+				object: "chat.completion",
+				created: unixNow(),
+				model,
+				choices: [
+					{
+						index: 0,
+						message: { role: "assistant", content: (script.stream ?? []).join("") },
+						finish_reason: "stop",
+					},
+				],
+			},
+			script.headers,
+		)
 		return
 	}
 
 	res.writeHead(200, {
+		...script.headers,
 		"Content-Type": "text/event-stream",
 		"Cache-Control": "no-cache",
 		Connection: "keep-alive",
@@ -411,8 +428,8 @@ function writeSse(res: ServerResponse, event: unknown): void {
 	res.write(`data: ${JSON.stringify(event)}\n\n`)
 }
 
-function writeJson(res: ServerResponse, status: number, body: unknown): void {
-	res.writeHead(status, { "Content-Type": "application/json" })
+function writeJson(res: ServerResponse, status: number, body: unknown, headers?: Record<string, string>): void {
+	res.writeHead(status, { ...headers, "Content-Type": "application/json" })
 	res.end(JSON.stringify(body))
 }
 

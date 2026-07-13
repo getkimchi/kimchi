@@ -2,6 +2,7 @@ import { resolve } from "node:path"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { clearApiKey, loadConfig, writeApiKey } from "../../config.js"
 import { chatCompletionsApi, updateModelsConfig, validateApiKey } from "../../models.js"
+import { refreshBillingStatusFromConfig } from "../billing/status.js"
 import { KIMCHI_PROVIDER_ID, setKimchiAuthToken } from "./flow.js"
 
 const KIMCHI_LOGOUT_PATCHED = Symbol("kimchi.logoutPatched")
@@ -20,6 +21,7 @@ export default function loginExtension(pi: ExtensionAPI): void {
 		const configKey = loadConfig().apiKey
 		if (configKey) {
 			setKimchiAuthToken(ctx.modelRegistry, configKey, "oauth")
+			void refreshBillingStatusFromConfig()
 		}
 
 		const patchedAuthStorage = authStorage as typeof authStorage & { [KIMCHI_LOGOUT_PATCHED]?: boolean }
@@ -30,6 +32,7 @@ export default function loginExtension(pi: ExtensionAPI): void {
 			originalLogout(provider)
 			if (provider === KIMCHI_PROVIDER_ID) {
 				clearApiKey()
+				void refreshBillingStatusFromConfig()
 			}
 		}
 		patchedAuthStorage[KIMCHI_LOGOUT_PATCHED] = true
@@ -56,6 +59,7 @@ export default function loginExtension(pi: ExtensionAPI): void {
 				}
 				writeApiKey(key)
 				await updateModelsConfig(modelsJsonPath, key)
+				void refreshBillingStatusFromConfig()
 				return { access: key, refresh: "", expires: Number.MAX_SAFE_INTEGER }
 			},
 			refreshToken: (credentials) => Promise.resolve(credentials),

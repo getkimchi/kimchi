@@ -61,7 +61,8 @@ function createHarness(options: { hasUI: boolean }) {
 	} as unknown as ExtensionAPI
 
 	const registry = new TipRegistry()
-	tipsExtension({ registry })(api)
+	const emptyBillingProvider = { source: "kimchi.billing", getTips: () => [] }
+	tipsExtension({ registry, billingProvider: emptyBillingProvider })(api)
 
 	const harness = {
 		component: () => component,
@@ -167,6 +168,83 @@ describe("tips extension", () => {
 		expect(harness.ui.setWidget).not.toHaveBeenCalledWith(TIPS_WIDGET_KEY, expect.any(Function), {
 			placement: "aboveEditor",
 		})
+	})
+
+	it("still shows billing warnings when tips are disabled", () => {
+		mockHideTips.mockReturnValue(true)
+		const handlers = new Map<string, Handler>()
+		let component: { render(width: number): string[] } | undefined
+		const ui = {
+			setWidget: vi.fn((_key: string, content: unknown) => {
+				if (typeof content === "function") {
+					component = content({ requestRender: vi.fn() } as unknown as TUI, theme()) as {
+						render(width: number): string[]
+					}
+				}
+			}),
+			notify: vi.fn(),
+			custom: vi.fn(),
+		}
+		const ctx = { hasUI: true, ui, cwd: "/test" }
+		const api = {
+			on: vi.fn((event: string, handler: Handler) => {
+				handlers.set(event, handler)
+			}),
+			registerCommand: vi.fn(),
+		} as unknown as ExtensionAPI
+		const registry = new TipRegistry()
+		registry.registerProvider({
+			source: "kimchi.ferment",
+			getTips: () => [
+				{
+					id: "ferment-active",
+					scope: "contextual",
+					message: "Ferment is active.",
+					priority: 20_000,
+				},
+			],
+		})
+		tipsExtension({
+			registry,
+			billingProvider: {
+				source: "kimchi.billing",
+				getTips: () => [
+					{
+						id: "billing-low",
+						scope: "contextual",
+						message: "Heads up: your credits are running low ($5 remaining).",
+						priority: 10_000,
+						tone: "warning",
+						showPrefix: false,
+					},
+					{
+						id: "billing-exhausted",
+						scope: "contextual",
+						message:
+							"You ran out of credits. Keep using Kimchi in restricted mode or top up at https://app.kimchi.dev/billing",
+						priority: 11_000,
+						tone: "error",
+						showPrefix: false,
+					},
+				],
+			},
+		})(api)
+
+		handlers.get("session_start")?.({ reason: "startup" }, ctx)
+		harnesses.push({ shutdown: () => handlers.get("session_shutdown")?.({ reason: "quit" }, ctx) })
+
+		expect(ui.setWidget).toHaveBeenCalledWith(TIPS_WIDGET_KEY, expect.any(Function), {
+			placement: "aboveEditor",
+		})
+		expect(component?.render(120).join("\n")).toContain("You ran out of credits.")
+
+		ui.setWidget.mockClear()
+		handlers.get("turn_end")?.({ message: { role: "assistant" } }, ctx)
+
+		expect(ui.setWidget).not.toHaveBeenCalledWith(TIPS_WIDGET_KEY, undefined, {
+			placement: "aboveEditor",
+		})
+		expect(component?.render(120).join("\n")).toContain("You ran out of credits.")
 	})
 
 	it("handles /tips disable command", async () => {

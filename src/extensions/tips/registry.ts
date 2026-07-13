@@ -43,6 +43,9 @@ export class TipRegistry {
 					id: tip.id,
 					scope: tip.scope,
 					message: tip.message,
+					priority: tip.priority,
+					tone: tip.tone,
+					showPrefix: tip.showPrefix,
 				})
 			}
 		}

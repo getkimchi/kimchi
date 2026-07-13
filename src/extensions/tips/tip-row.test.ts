@@ -10,6 +10,8 @@ function theme(): Theme {
 			if (color === "accent") return `\x1b[36m${text}\x1b[39m`
 			if (color === "dim") return `\x1b[2m${text}\x1b[22m`
 			if (color === "success") return `\x1b[32m${text}\x1b[39m`
+			if (color === "warning") return `\x1b[33m${text}\x1b[39m`
+			if (color === "error") return `\x1b[31m${text}\x1b[39m`
 			return `\x1b[90m${text}\x1b[39m`
 		}),
 		bg: vi.fn((_color: string, text: string) => text),
@@ -93,5 +95,67 @@ describe("TipRow", () => {
 		expect(line).toContain("\x1b[90mTip:\x1b[39m")
 		expect(line).toContain("\x1b[36m/ferment\x1b[39m")
 		expect(line).not.toContain("`")
+	})
+
+	it("renders warning tips without the Tip prefix", () => {
+		const [line] = renderTipRow(
+			{
+				source: "kimchi.billing",
+				id: "billing-low",
+				scope: "contextual",
+				message: "Heads up: your credits are running low ($5 remaining).",
+				tone: "warning",
+				showPrefix: false,
+			},
+			theme(),
+			120,
+		)
+
+		expect(line).not.toContain("Tip:")
+		expect(line).toContain("\x1b[33mHeads up: your credits are running low ($5 remaining).\x1b[39m")
+	})
+
+	it("wraps standalone warning tips instead of truncating the billing URL", () => {
+		const lines = renderTipRow(
+			{
+				source: "kimchi.billing",
+				id: "billing-low",
+				scope: "contextual",
+				message:
+					"Heads up: your credits are running low ($5 remaining). Top up now to avoid slowdowns and rate limits: https://app.kimchi.dev/billing",
+				tone: "warning",
+				showPrefix: false,
+			},
+			theme(),
+			80,
+		)
+
+		expect(lines.length).toBeGreaterThan(1)
+		expect(lines.join(" ")).toContain("https://app.kimchi.dev/billing")
+		for (const line of lines) {
+			expect(visibleWidth(line)).toBeLessThanOrEqual(80)
+		}
+	})
+
+	it("wraps standalone error tips instead of truncating the billing URL", () => {
+		const lines = renderTipRow(
+			{
+				source: "kimchi.billing",
+				id: "billing-exhausted",
+				scope: "contextual",
+				message:
+					"You ran out of credits. Keep using Kimchi in restricted mode or top up at https://app.kimchi.dev/billing",
+				tone: "error",
+				showPrefix: false,
+			},
+			theme(),
+			72,
+		)
+
+		expect(lines.length).toBeGreaterThan(1)
+		expect(lines.join(" ")).toContain("https://app.kimchi.dev/billing")
+		for (const line of lines) {
+			expect(visibleWidth(line)).toBeLessThanOrEqual(72)
+		}
 	})
 })

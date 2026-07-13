@@ -46,8 +46,8 @@ afterEach(() => {
 // ── STATUS_LINE_ELEMENTS metadata ────────────────────────────────────────────
 
 describe("STATUS_LINE_ELEMENTS", () => {
-	it("has 9 entries", () => {
-		expect(STATUS_LINE_ELEMENTS).toHaveLength(9)
+	it("has 10 entries", () => {
+		expect(STATUS_LINE_ELEMENTS).toHaveLength(10)
 	})
 
 	it("every entry has id, label, description", () => {
@@ -60,7 +60,18 @@ describe("STATUS_LINE_ELEMENTS", () => {
 
 	it("covers all StatusLineElementId values", () => {
 		const ids = STATUS_LINE_ELEMENTS.map((e) => e.id).sort()
-		const expected = ["permissions", "model", "ferment", "agents", "context", "usage", "phase", "tags", "team"].sort()
+		const expected = [
+			"permissions",
+			"model",
+			"ferment",
+			"agents",
+			"context",
+			"usage",
+			"phase",
+			"tags",
+			"team",
+			"billing",
+		].sort()
 		expect(ids).toEqual(expected)
 	})
 })
@@ -99,6 +110,11 @@ describe("readStatusLineConfig", () => {
 	it("returns { pinned: ['context'] } when config exists", () => {
 		memfs.set(SETTINGS_PATH, JSON.stringify({ statusLine: { pinned: ["context"] } }, null, 2))
 		expect(readStatusLineConfig().pinned).toEqual(["context"])
+	})
+
+	it("keeps billing when pinned in config", () => {
+		memfs.set(SETTINGS_PATH, JSON.stringify({ statusLine: { pinned: ["billing"] } }, null, 2))
+		expect(readStatusLineConfig().pinned).toEqual(["billing"])
 	})
 
 	it("ignores non-string items in the pinned array", () => {

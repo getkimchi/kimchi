@@ -1,17 +1,12 @@
 import { execFileSync } from "node:child_process"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { dirname, join, resolve } from "node:path"
+import { join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { Shell } from "@microsoft/tui-test"
 import type { Terminal } from "@microsoft/tui-test/lib/terminal/term.js"
 import { STARTUP_TIMEOUT_MS, fullText, viewText, waitForText } from "./assertions.js"
-import {
-	type FakeOllamaModel,
-	type FakeOllamaServer,
-	type StartFakeOllamaServerOptions,
-	startFakeOllamaServer,
-} from "./fake-ollama-server.js"
+import { type StartFakeOllamaServerOptions, startFakeOllamaServer } from "./fake-ollama-server.js"
 import {
 	DEFAULT_MODEL,
 	type FakeModel,
@@ -77,6 +72,7 @@ export interface SeedHomeResult {
 interface CreateKimchiFixtureOptions {
 	models?: FakeModel[]
 	responses: FakeResponseScript[]
+	creditsResponses?: unknown[]
 	/** `git init` the work dir so repo-checking flows (e.g. ferment) don't prompt to init one. */
 	gitInit?: boolean
 	/**

@@ -13,6 +13,8 @@ import { LogoHeader } from "../components/logo.js"
 import { StatusLine, StatusLineScript, buildScriptPayload, readStatusLineCommand } from "../components/status-line.js"
 import { collapseAll, expandNext, resetState } from "../expand-state.js"
 import { refreshGitBranch } from "../utils.js"
+import { formatBillingStatusLine } from "./billing/status-line-format.js"
+import { getBillingStatusLine, getCommunityTierHeaderNotice, subscribeBillingStatus } from "./billing/status.js"
 import { isBareExitAlias } from "./exit-utils.js"
 import { getActiveFerment, getFermentContinuationPolicy } from "./ferment/index.js"
 import { formatFermentStatusLineDisplay } from "./ferment/status-line.js"
@@ -242,6 +244,8 @@ export default function uiExtension(pi: ExtensionAPI) {
 	let scriptStatusLine: StatusLineScript | null = null
 	let scriptTui: TUI | null = null
 	let uiTui: TUI | null = null
+	let headerTui: TUI | null = null
+	let unregisterBillingStatus: (() => void) | undefined
 	let scriptCmd: string | null = null
 	let scriptPending = false
 	let scriptGeneration = 0
@@ -269,7 +273,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 		)
 	}
 
-	pi.on("session_start", (event, ctx) => {
+	pi.on("session_start", (_event, ctx) => {
 		const sessionId = ctx.sessionManager.getSessionId()
 
 		setSessionModeOnboardingStatusLineSuppressed(false)
@@ -282,14 +286,26 @@ export default function uiExtension(pi: ExtensionAPI) {
 		linesRemoved = 0
 		scriptGeneration++
 		scriptPending = false
+		unregisterBillingStatus?.()
+		unregisterBillingStatus = subscribeBillingStatus(() => {
+			headerTui?.requestRender()
+			uiTui?.requestRender()
+		})
 
 		ctx.ui.setHeader((tui, theme) => {
+			headerTui = tui
 			branchPoller.start(() => tui.requestRender())
-			const logo = new LogoHeader(theme, { getBranch: () => branchPoller.getBranch() })
+			const logo = new LogoHeader(theme, {
+				getBranch: () => branchPoller.getBranch(),
+				getRightColumnNotice: getCommunityTierHeaderNotice,
+			})
 			const header: DisposableComponent = {
 				render: (w) => logo.render(w),
 				invalidate: () => logo.invalidate(),
-				dispose: () => branchPoller.stop(),
+				dispose: () => {
+					if (headerTui === tui) headerTui = null
+					branchPoller.stop()
+				},
 			}
 			return header
 		})
@@ -310,6 +326,8 @@ export default function uiExtension(pi: ExtensionAPI) {
 				if (ferment) parts.push(ferment.text)
 				const perm = statusLineData.getExtensionStatuses().get("permissions-mode")
 				if (perm) parts.push(perm)
+				const billing = getBillingStatusLine()
+				if (billing) parts.push(formatBillingStatusLine(billing, theme))
 				const modelId = getMultiModelEnabled(ctx.sessionManager)
 					? `multi-model (${getOrchestratorModelId(sessionId)})`
 					: (ctx.model?.id ?? "n/a")
@@ -595,6 +613,9 @@ export default function uiExtension(pi: ExtensionAPI) {
 	})
 	pi.on("session_shutdown", () => {
 		setSessionModeOnboardingStatusLineSuppressed(false)
+		unregisterBillingStatus?.()
+		unregisterBillingStatus = undefined
+		headerTui = null
 	})
 
 	pi.on("tool_result", (event) => {
