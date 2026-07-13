@@ -60,6 +60,8 @@ setup-image:
 .terminal-bench-2-chunk:
   stage: benchmark
   image: "$BENCH_IMAGE"
+  tags:
+    - long
   needs:
     - job: setup-image
       artifacts: true
@@ -198,6 +200,8 @@ $[[ inputs.benchmark ]]-analyze:
       when: always
     - when: never
   image: "$BENCH_IMAGE"
+  tags:
+    - long
   id_tokens: {}
   needs:
     - job: setup-image
