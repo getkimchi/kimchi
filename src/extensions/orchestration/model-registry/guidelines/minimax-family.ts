@@ -41,7 +41,9 @@ export const MINIMAX_FAMILY_BUILD = `During **build** phase (MiniMax M2 family):
 - Outline-then-diff: state the change in 1–3 bullets, then emit the minimal diff. No "clever" refactors, no surprise restructuring.
 - STAY IN SCOPE. Do NOT add features, error handling, concurrency primitives, or abstractions the task did not explicitly ask for. M2's known failure mode is over-reaching — resist it.
 - Verify library methods exist before calling them — do NOT hallucinate APIs.
-- Limit each turn to a single focused goal. M2 has excellent state tracking when goals are limited per turn; it degrades when asked to do everything in parallel.`
+- Limit each turn to a single focused goal. M2 has excellent state tracking when goals are limited per turn; it degrades when asked to do everything in parallel.
+- Prefer writing code immediately over extended thinking. If you find yourself reasoning through the entire design before writing any code, stop — write the first function, test it, then write the next. Do not produce long thinking blocks without tool calls.
+- If a task seems too large to complete in the given budget, report this early rather than attempting to think through everything and running out of time.`
 
 /** M2 family review: flag architecture-level failure modes in reviewed code. */
 export const MINIMAX_FAMILY_REVIEW = `During **review** phase (MiniMax M2 family):

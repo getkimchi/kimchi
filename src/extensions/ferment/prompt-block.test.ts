@@ -1,21 +1,12 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it } from "vitest"
 import type { Ferment, FermentStatus } from "../../ferment/types.js"
 import { runAsAgentWorker } from "../agent-worker-context.js"
 import { registerAgents } from "../agents/personas/agent-types.js"
 import { setPermissionMode } from "../permissions/mode-controller.js"
 
-// Mock getMultiModelEnabled so tests can control delegationMode (strict vs relaxed)
-// without depending on real config state. Default to true (multi-model / strict)
-// so existing assertions for strict-mode content continue to pass. Individual
-// tests can override via `setMultiModelEnabled(false)`.
-const getMultiModelEnabledMock = vi.fn(() => true)
-vi.mock("../multi-model.js", (importOriginal) => {
-	return importOriginal<typeof import("../multi-model.js")>().then((mod) => ({
-		...mod,
-		getMultiModelEnabled: () => getMultiModelEnabledMock(),
-	}))
-})
+// Delegation mode is always "relaxed" — the ferment prompt block no longer
+// reads getMultiModelEnabled. Tests assert on relaxed-mode content.
 
 import { createContext } from "../__mocks__/context.js"
 import { buildFermentPromptBlock } from "./prompt-block.js"
@@ -101,18 +92,12 @@ function makeNoActiveFermentRuntime(): FermentRuntime {
 // all rule-survival tests still recognise the planner supplement.
 const STATE_MACHINE_HEADER = "**State machine —"
 const KNOWLEDGE_HEADER = "**Knowledge capture:**"
-const FILE_RULE = "NEVER write, edit, or read files yourself"
+const RELAXED_DELEGATION = "may execute steps directly"
 const CREATE_GUARD = "There is no `create_ferment` tool"
 const PAUSED_HEADER = "## Ferment Paused"
 const PAUSED_RULE = "Do NOT call any ferment tools"
 
 describe("buildFermentPromptBlock", () => {
-	beforeEach(() => {
-		// Default to multi-model (strict) so existing assertions pass.
-		// Individual tests override with getMultiModelEnabledMock(false).
-		getMultiModelEnabledMock.mockReturnValue(true)
-	})
-
 	afterEach(() => {
 		registerAgents(new Map())
 	})
@@ -170,7 +155,7 @@ describe("buildFermentPromptBlock", () => {
 		it("returns planner supplement for draft status (one-shot scoping must not break)", () => {
 			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status: "draft" }))
 			expect(out).toContain(STATE_MACHINE_HEADER)
-			expect(out).toContain(FILE_RULE)
+			expect(out).toContain(RELAXED_DELEGATION)
 		})
 	})
 
@@ -183,7 +168,7 @@ describe("buildFermentPromptBlock", () => {
 				for (const surface of ["normal", "oneshot"] as const) {
 					const out = buildFermentPromptBlock(makeMockCtx(), PI_BY_NAME[surface], makeRuntime({ status }))
 					expect(out, `surface=${surface} status=${status}`).toContain(STATE_MACHINE_HEADER)
-					expect(out, `surface=${surface} status=${status}`).toContain(FILE_RULE)
+					expect(out, `surface=${surface} status=${status}`).toContain(RELAXED_DELEGATION)
 					expect(out, `surface=${surface} status=${status}`).toContain(KNOWLEDGE_HEADER)
 					expect(out, `surface=${surface} status=${status}`).toContain("## Upfront Contract")
 				}
@@ -193,7 +178,7 @@ describe("buildFermentPromptBlock", () => {
 		it("preserves planner rules for draft when ferment-oneshot is set", () => {
 			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status: "draft" }))
 			expect(out).toContain(STATE_MACHINE_HEADER)
-			expect(out).toContain(FILE_RULE)
+			expect(out).toContain(RELAXED_DELEGATION)
 			expect(out).toContain(KNOWLEDGE_HEADER)
 			expect(out).toContain(CREATE_GUARD)
 		})
@@ -419,7 +404,7 @@ describe("buildFermentPromptBlock", () => {
 	})
 
 	describe("parity between ferment-oneshot flag states", () => {
-		const PARITY_SUBSTRINGS = [STATE_MACHINE_HEADER, FILE_RULE, KNOWLEDGE_HEADER]
+		const PARITY_SUBSTRINGS = [STATE_MACHINE_HEADER, RELAXED_DELEGATION, KNOWLEDGE_HEADER]
 
 		it("both flag states emit the same load-bearing planner substrings for an active running ferment", () => {
 			const runtime = makeRuntime({ status: "running" })
@@ -519,11 +504,7 @@ describe("buildFermentPromptBlock", () => {
 		})
 	})
 
-	describe("single-model (relaxed) delegation mode", () => {
-		beforeEach(() => {
-			getMultiModelEnabledMock.mockReturnValue(false)
-		})
-
+	describe("relaxed delegation mode (always active)", () => {
 		it("does NOT mandate delegation — allows direct execution", () => {
 			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime({ status: "running" })) ?? ""
 			expect(out).not.toContain("NEVER implement a step inline")
