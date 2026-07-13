@@ -25,7 +25,7 @@
 import { randomUUID } from "node:crypto"
 import { mkdirSync, realpathSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { test } from "@microsoft/tui-test"
+import { expect, test } from "@microsoft/tui-test"
 import {
 	INPUT_TIMEOUT_MS,
 	STARTUP_TIMEOUT_MS,
@@ -149,18 +149,29 @@ test("/ferment progress overlay shows ferment name, progress bar, phase list, an
 			// the status line and all scrollback. Once visible, the full overlay is
 			// rendered and all field assertions are reliable.
 			//
-			// Defensive: on fast CI runners the trailing return from submit()
-			// can occasionally leak into the overlay's select and auto-select the
-			// active phase, leaving us on L2 instead of L1. If we see the L2-only
-			// "Back" option, press Escape to cancel back to the L1 phase list.
+			// Defensive: a fast CI runner may process submit()'s trailing return
+			// before the overlay finishes opening, leaving us on L2. Only recover
+			// when we can prove L2 ("Back" visible, "human:" absent), and assert
+			// Escape actually returns us to L1.
 			try {
 				await waitForText(terminal, "human:", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
 			} catch (err) {
-				if (viewText(terminal).includes("Back")) {
+				const originalError = err
+				let text: string
+				try {
+					text = viewText(terminal)
+				} catch {
+					throw originalError
+				}
+				const onL2 = text.includes("Back") && !text.includes("human:")
+				if (!onL2) throw originalError
+
+				try {
 					terminal.keyEscape()
 					await waitForText(terminal, "human:", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
-				} else {
-					throw err
+					expect(viewText(terminal)).not.toContain("Back")
+				} catch {
+					throw originalError
 				}
 			}
 			trace.step("overlay open")
