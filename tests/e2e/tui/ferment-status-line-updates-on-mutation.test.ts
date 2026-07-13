@@ -1,17 +1,17 @@
 /**
- * E2E TUI test: the ferment footer segment reflects state changes driven by
- * tool calls (activate_ferment_phase, start_ferment_step, ...).
+ * E2E TUI test: the ferment status-line segment reflects state changes driven
+ * by tool calls (activate_ferment_phase, start_ferment_step, ...).
  *
  * Regression: `createApplyAndPersist` (the canonical path for all ferment
  * tool-call mutations) updated the in-memory active ferment via
- * `runtime.setActive()` but never requested a footer re-render. The footer's
- * ferment segment reads `getActive()` at render time, so without an explicit
- * render request the status line went stale until a keypress or message render
- * happened. The fix calls `requestSharedFooterRender()` after every
+ * `runtime.setActive()` but never requested a status-line re-render. The
+ * status line's ferment segment reads `getActive()` at render time, so without
+ * an explicit render request it went stale until a keypress or message render
+ * happened. The fix calls `requestSharedStatusLineRender()` after every
  * successful mutation.
  *
  * This test starts a ferment, scopes it, and has the model call
- * `activate_ferment_phase`. The footer must show the ferment name + "Running".
+ * `activate_ferment_phase`. The status line must show the ferment name + "Running".
  */
 
 import { test } from "@microsoft/tui-test"
@@ -22,11 +22,11 @@ test.use(TUI_TEST_CONFIG)
 
 const PROPOSE_SCOPING_PAYLOAD = JSON.stringify({
 	ferment_id: "__FERMENT_ID__",
-	title: "Footer Update Test",
-	goal: "Verify the footer ferment segment updates on tool-call mutations.",
-	success_criteria: ["Footer shows Running after activate_ferment_phase"],
+	title: "Status Line Update Test",
+	goal: "Verify the status-line ferment segment updates on tool-call mutations.",
+	success_criteria: ["Status line shows Running after activate_ferment_phase"],
 	constraints: [],
-	assumptions: "The footer segment is pinned.",
+	assumptions: "The status-line segment is pinned.",
 	phases: [
 		{
 			name: "Implementation",
@@ -42,11 +42,11 @@ const PROPOSE_SCOPING_PAYLOAD = JSON.stringify({
 	],
 })
 
-test("ferment footer segment updates after activate_ferment_phase tool call", async ({ terminal }) => {
+test("ferment status-line segment updates after activate_ferment_phase tool call", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		{
-			artifactName: "ferment-footer-updates-on-mutation",
+			artifactName: "ferment-status-line-updates-on-mutation",
 			gitInit: true,
 			responses: [
 				// Turn 1: orientation text then propose_ferment_scoping.
@@ -117,7 +117,7 @@ test("ferment footer segment updates after activate_ferment_phase tool call", as
 			trace.step("intent prompt visible")
 
 			// Stage 4: submit intent → model proposes scoping.
-			terminal.submit("Verify footer updates on mutation")
+			terminal.submit("Verify status line updates on mutation")
 			trace.step("submitted intent")
 
 			// Stage 5: plan-review dialog.
@@ -129,12 +129,12 @@ test("ferment footer segment updates after activate_ferment_phase tool call", as
 			terminal.submit("")
 			trace.step("confirmed 'Start execution'")
 
-			// Stage 7: footer must show the ferment name + "Running" status.
+			// Stage 7: status line must show the ferment name + "Running" status.
 			// The ferment segment now renders whenever a ferment is active, even
 			// when not pinned (matches the ScriptFooter path). This guards the
 			// "doesn't show when there's an active ferment" regression.
-			await waitForText(terminal, /Footer Update Test · Running/, { timeoutMs: 30_000 })
-			trace.step("footer shows ferment name + Running status")
+			await waitForText(terminal, /Status Line Update Test · Running/, { timeoutMs: 30_000 })
+			trace.step("status line shows ferment name + Running status")
 		},
 	)
 })

@@ -62,7 +62,7 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 
 	runPreflight(ctx, args)
 
-	// Show an inline footer status while we resolve the workspace — the
+	// Show an inline status line message while we resolve the workspace — the
 	// progress overlay can't open until we know which workspace to attach
 	// to, and `listWorkspaces` over the network can take a few hundred ms.
 	ctx.ui.setStatus(STATUS_KEY, "Teleport: resolving workspace…")

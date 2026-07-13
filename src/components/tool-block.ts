@@ -36,8 +36,8 @@ export class ToolBlockView extends Container {
 	private headerRight = ""
 	private showDivider = false
 	private dividerColorFn: (s: string) => string = (s) => s
-	private footerLeft = ""
-	private footerRight = ""
+	private bottomLeft = ""
+	private bottomRight = ""
 	private extraLines: string[] = []
 	private branchColorFn: ((s: string) => string) | null = null
 
@@ -55,16 +55,16 @@ export class ToolBlockView extends Container {
 		this.showDivider = false
 	}
 
-	setFooter(left: string, right: string): void {
-		this.footerLeft = left
-		this.footerRight = right
+	setBottomRow(left: string, right: string): void {
+		this.bottomLeft = left
+		this.bottomRight = right
 	}
 
 	setExtra(lines: string[]): void {
 		this.extraLines = lines
 	}
 
-	/** When set, footer renders as `└─ summary` instead of a horizontal divider + footer line. */
+	/** When set, bottom renders as `└─ summary` instead of a horizontal divider + bottom line. */
 	setBranchMode(colorFn: (s: string) => string): void {
 		this.branchColorFn = colorFn
 		this.showDivider = false
@@ -78,27 +78,27 @@ export class ToolBlockView extends Container {
 		if (this.showDivider) {
 			lines.push(this.dividerColorFn("─".repeat(width)))
 		}
-		if (this.footerLeft || this.footerRight) {
+		if (this.bottomLeft || this.bottomRight) {
 			if (this.branchColorFn) {
-				const footerLines = this.footerLeft.split("\n")
+				const bottomLines = this.bottomLeft.split("\n")
 				const terminator = this.extraLines.length > 0 ? "├─" : "└─"
-				if (footerLines.length === 1) {
+				if (bottomLines.length === 1) {
 					const connector = `${this.branchColorFn(terminator)} `
-					lines.push(buildAlignedLine(connector + this.footerLeft, this.footerRight, width))
+					lines.push(buildAlignedLine(connector + this.bottomLeft, this.bottomRight, width))
 				} else {
-					for (let i = 0; i < footerLines.length; i++) {
-						const isLast = i === footerLines.length - 1
+					for (let i = 0; i < bottomLines.length; i++) {
+						const isLast = i === bottomLines.length - 1
 						const pfx = `${this.branchColorFn(isLast ? terminator : "│ ")} `
-						lines.push(truncateLine(pfx + footerLines[i], width))
+						lines.push(truncateLine(pfx + bottomLines[i], width))
 					}
 				}
 			} else {
-				const footerLines = this.footerLeft.split("\n")
-				if (footerLines.length === 1) {
-					lines.push(buildAlignedLine(this.footerLeft, this.footerRight, width))
+				const bottomLines = this.bottomLeft.split("\n")
+				if (bottomLines.length === 1) {
+					lines.push(buildAlignedLine(this.bottomLeft, this.bottomRight, width))
 				} else {
-					for (const fl of footerLines) {
-						lines.push(truncateLine(fl, width))
+					for (const bl of bottomLines) {
+						lines.push(truncateLine(bl, width))
 					}
 				}
 			}
@@ -154,7 +154,7 @@ export function buildToolCallHeader(
 
 	view.setHeader(left, right)
 	view.hideDivider()
-	view.setFooter("", "")
+	view.setBottomRow("", "")
 	view.setExtra([])
 }
 

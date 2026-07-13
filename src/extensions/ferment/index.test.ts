@@ -26,10 +26,10 @@ import {
 import { createApplyAndPersist } from "./tool-helpers.js"
 import { completeFerment, scopeFerment } from "./tools/lifecycle.js"
 
-const requestSharedFooterRenderMock = vi.hoisted(() => vi.fn())
+const requestSharedStatusLineRenderMock = vi.hoisted(() => vi.fn())
 
-vi.mock("../shared-footer.js", () => ({
-	requestSharedFooterRender: requestSharedFooterRenderMock,
+vi.mock("../shared-status-line.js", () => ({
+	requestSharedStatusLineRender: requestSharedStatusLineRenderMock,
 }))
 
 // Stub the journey-grade judge so completeFerment doesn't try to call a real
@@ -104,7 +104,7 @@ afterEach(() => {
 	setContinuationPolicy("manual")
 	globalTipRegistry.clear()
 	clearAllPendingPlanReviews()
-	requestSharedFooterRenderMock.mockClear()
+	requestSharedStatusLineRenderMock.mockClear()
 	resetAllReactiveContinuationNudgeCounts()
 	Reflect.deleteProperty(process.env, "KIMCHI_SUBAGENT")
 	vi.unstubAllEnvs()
@@ -167,12 +167,12 @@ describe("fermentExtension stop-policy shortcut", () => {
 		await shortcut.handler(ctx)
 		expect(isAutomatedContinuationEnabled()).toBe(true)
 		expect(notify).not.toHaveBeenCalled()
-		expect(requestSharedFooterRenderMock).toHaveBeenCalledTimes(1)
+		expect(requestSharedStatusLineRenderMock).toHaveBeenCalledTimes(1)
 
 		await shortcut.handler(ctx)
 		expect(isAutomatedContinuationEnabled()).toBe(false)
 		expect(notify).not.toHaveBeenCalled()
-		expect(requestSharedFooterRenderMock).toHaveBeenCalledTimes(2)
+		expect(requestSharedStatusLineRenderMock).toHaveBeenCalledTimes(2)
 	})
 
 	it("allows toggling while the active ferment is paused", async () => {
@@ -187,7 +187,7 @@ describe("fermentExtension stop-policy shortcut", () => {
 		await shortcut.handler(ctx)
 
 		expect(isAutomatedContinuationEnabled()).toBe(true)
-		expect(requestSharedFooterRenderMock).toHaveBeenCalledTimes(1)
+		expect(requestSharedStatusLineRenderMock).toHaveBeenCalledTimes(1)
 	})
 
 	it("silently no-ops when no executable ferment is active", async () => {
@@ -201,7 +201,7 @@ describe("fermentExtension stop-policy shortcut", () => {
 		await shortcut.handler(ctx)
 
 		expect(isAutomatedContinuationEnabled()).toBe(false)
-		expect(requestSharedFooterRenderMock).not.toHaveBeenCalled()
+		expect(requestSharedStatusLineRenderMock).not.toHaveBeenCalled()
 	})
 })
 
@@ -1011,7 +1011,7 @@ describe("fermentExtension question dropdown", () => {
 			await vi.runOnlyPendingTimersAsync()
 
 			expect(runtime.getContinuationPolicy()).toBe("automated")
-			expect(requestSharedFooterRenderMock).toHaveBeenCalled()
+			expect(requestSharedStatusLineRenderMock).toHaveBeenCalled()
 			expect(storage.get(draft.id)?.status).toBe("planned")
 			expect(getPendingPlanReview(draft.id)).toBeUndefined()
 			expect(pi.sendMessage).toHaveBeenCalledWith(

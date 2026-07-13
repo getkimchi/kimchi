@@ -31,14 +31,14 @@ const tipWidgetLocationMock = vi.hoisted(() => ({
 	set: vi.fn(),
 }))
 
-const requestSharedFooterRenderMock = vi.hoisted(() => vi.fn())
+const requestSharedStatusLineRenderMock = vi.hoisted(() => vi.fn())
 
 vi.mock("../tips/index.js", () => ({
 	setTipWidgetLocation: tipWidgetLocationMock.set,
 }))
 
-vi.mock("../shared-footer.js", () => ({
-	requestSharedFooterRender: requestSharedFooterRenderMock,
+vi.mock("../shared-status-line.js", () => ({
+	requestSharedStatusLineRender: requestSharedStatusLineRenderMock,
 }))
 
 const writeFileSyncMock = vi.mocked(writeFileSync)
@@ -48,7 +48,7 @@ beforeEach(() => {
 	tipWidgetLocationMock.restore.mockReset()
 	tipWidgetLocationMock.set.mockReset()
 	tipWidgetLocationMock.set.mockReturnValue(tipWidgetLocationMock.restore)
-	requestSharedFooterRenderMock.mockReset()
+	requestSharedStatusLineRenderMock.mockReset()
 })
 
 afterEach(() => {
@@ -352,7 +352,7 @@ describe("FermentCommandController", () => {
 		expect(h.storage.list()).toHaveLength(0)
 		expect(h.runtime.setActive).not.toHaveBeenCalled()
 		expect(h.pi.setActiveTools).not.toHaveBeenCalled()
-		expect(requestSharedFooterRenderMock).not.toHaveBeenCalled()
+		expect(requestSharedStatusLineRenderMock).not.toHaveBeenCalled()
 		expect(h.ctx.abort).not.toHaveBeenCalled()
 		expect(h.runtime.getContinuationPolicy()).toBe("manual")
 	})
@@ -391,7 +391,7 @@ describe("FermentCommandController", () => {
 			}),
 			{ triggerTurn: false },
 		)
-		expect(requestSharedFooterRenderMock).toHaveBeenCalledTimes(2)
+		expect(requestSharedStatusLineRenderMock).toHaveBeenCalledTimes(2)
 		expect(h.ctx.abort).toHaveBeenCalledTimes(1)
 	})
 

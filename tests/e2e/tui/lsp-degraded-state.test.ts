@@ -11,11 +11,11 @@ test.use(TUI_TEST_CONFIG)
  *  lsp-tools prompt block is active (i.e. at least one server binary on PATH). */
 const LSP_PROMPT_PHRASE = "Prefer them over text-based alternatives"
 
-/** Footer status-bar text for degraded LSP: marker present, binary missing. */
-const LSP_DEGRADED_FOOTER = "gopls not installed"
+/** Status-line text for degraded LSP: marker present, binary missing. */
+const LSP_DEGRADED_STATUS_LINE = "gopls not installed"
 
-/** Footer status-bar text for active LSP: binary on PATH and marker present. */
-const LSP_ACTIVE_FOOTER = "typescript-language-server"
+/** Status-line text for active LSP: binary on PATH and marker present. */
+const LSP_ACTIVE_STATUS_LINE = "typescript-language-server"
 
 /** Returns true if any recorded provider request body contains the phrase. */
 function anyRequestContains(fixture: KimchiFixture, phrase: string): boolean {
@@ -44,9 +44,9 @@ test("LSP degraded state shows status-bar segment and omits prompt in a Go proje
 			},
 		},
 		async (fixture, trace) => {
-			// Wait for the footer to render the degraded LSP segment.
-			trace.step("checking footer for degraded LSP status")
-			expect(viewText(terminal)).toContain(LSP_DEGRADED_FOOTER)
+			// Wait for the status line to render the degraded LSP segment.
+			trace.step("checking status line for degraded LSP status")
+			expect(viewText(terminal)).toContain(LSP_DEGRADED_STATUS_LINE)
 
 			// Submit a prompt to trigger before_agent_start (which fires the
 			// one-time warning) and settle the turn.
@@ -75,7 +75,7 @@ test("LSP segment absent when no project markers are present", async ({ terminal
 			env: { KIMCHI_LSP_BINARIES: "typescript-language-server,gopls" },
 		},
 		async (fixture, trace) => {
-			trace.step("checking footer for absence of LSP segment")
+			trace.step("checking status line for absence of LSP segment")
 			expect(viewText(terminal)).not.toContain("LSP:")
 
 			terminal.submit("hello")
@@ -108,8 +108,8 @@ test("LSP active state shows status-bar segment and includes prompt in a TS proj
 			},
 		},
 		async (fixture, trace) => {
-			trace.step("checking footer for active LSP status")
-			expect(viewText(terminal)).toContain(LSP_ACTIVE_FOOTER)
+			trace.step("checking status line for active LSP status")
+			expect(viewText(terminal)).toContain(LSP_ACTIVE_STATUS_LINE)
 
 			terminal.submit("hello")
 			trace.step("submitted prompt")

@@ -27,7 +27,7 @@ const HELP_ROWS: HelpRow[] = [
 const MAX_HEIGHT_PCT = 0.9
 
 // Lines outside the scrollable viewport:
-//   top border (1) + footer empty row (1) + footer hint (1) + bottom border (1)
+//   top border (1) + bottom row (1) + hint row (1) + bottom border (1)
 const CHROME_LINES = 4
 
 export default function helpExtension(pi: ExtensionAPI) {

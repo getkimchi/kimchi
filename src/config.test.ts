@@ -869,7 +869,7 @@ describe("upgradeLegacyRetrySettings", () => {
 
 describe("ensureHideThinkingBlockDefault", () => {
 	it("seeds hideThinkingBlock when the key is absent", () => {
-		const settings: Record<string, unknown> = { footer: { pinned: [] } }
+		const settings: Record<string, unknown> = { statusLine: { pinned: [] } }
 		expect(ensureHideThinkingBlockDefault(settings)).toBe(true)
 		expect(settings.hideThinkingBlock).toBe(true)
 	})
