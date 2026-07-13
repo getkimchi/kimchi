@@ -1,4 +1,4 @@
-import { getModels } from "@earendil-works/pi-ai"
+import { getModels } from "@earendil-works/pi-ai/compat"
 import { InteractiveMode, initTheme } from "@earendil-works/pi-coding-agent"
 import { Text } from "@earendil-works/pi-tui"
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest"
@@ -6,10 +6,10 @@ import * as configModule from "./config.js"
 import * as loginPatch from "./login-command-patch.js"
 import * as modelsModule from "./models.js"
 
-const { applyLoginCommandPatch, oauthDelegate, warningDelegate } = loginPatch
+const { applyLoginCommandPatch, handleLoginDelegate, warningDelegate } = loginPatch
 
-vi.mock("@earendil-works/pi-ai", async () => {
-	const actual = await vi.importActual("@earendil-works/pi-ai")
+vi.mock("@earendil-works/pi-ai/compat", async () => {
+	const actual = await vi.importActual("@earendil-works/pi-ai/compat")
 	return {
 		...(actual as object),
 		getModels: vi.fn().mockReturnValue([]),
@@ -124,7 +124,19 @@ async function selectSubscriptionLoginOption(fakeIm: FakeIm): Promise<void> {
 	await Promise.resolve()
 }
 
-it("intercepts showOAuthSelector('login') and runs Kimchi browser auth", async () => {
+/** Invoke the patched `/login` entry point (handleLoginCommand) against a fake InteractiveMode. */
+function invokeLoginCommand(fakeIm: FakeIm, providerRef?: string): Promise<void> {
+	// biome-ignore lint/suspicious/noExplicitAny: handleLoginCommand is a private upstream prototype method
+	return (InteractiveMode.prototype as any).handleLoginCommand.call(fakeIm, providerRef)
+}
+
+/** Invoke the patched showWarning against a fake InteractiveMode. */
+function invokeShowWarning(fakeIm: FakeIm, message: string): void {
+	// biome-ignore lint/suspicious/noExplicitAny: showWarning is a private upstream prototype method
+	;(InteractiveMode.prototype as any).showWarning.call(fakeIm, message)
+}
+
+it("intercepts bare /login (handleLoginCommand) and runs Kimchi browser auth", async () => {
 	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-login-test")
 	const cliAuthModule = await import("./cli-auth/index.js")
 	const authSpy = vi.spyOn(cliAuthModule, "authenticateViaBrowser").mockResolvedValue({ token: "test-token-123" })
@@ -133,9 +145,7 @@ it("intercepts showOAuthSelector('login') and runs Kimchi browser auth", async (
 	registry.getAvailable.mockReturnValue([{ id: "kimi-k2.6", provider: "kimchi-dev" }])
 
 	const fakeIm = makeFakeInteractiveMode(registry)
-	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
-	const patched = (InteractiveMode.prototype as any).showOAuthSelector
-	await patched.call(fakeIm, "login")
+	await invokeLoginCommand(fakeIm)
 	await selectCurrentLoginOption(fakeIm)
 
 	expect(fakeIm.showSelector).toHaveBeenCalledOnce()
@@ -166,9 +176,7 @@ it("does not reuse a saved Kimchi key for explicit /login", async () => {
 	registry.getAvailable.mockReturnValue([{ id: "kimi-k2.6", provider: "kimchi-dev" }])
 
 	const fakeIm = makeFakeInteractiveMode(registry)
-	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
-	const patched = (InteractiveMode.prototype as any).showOAuthSelector
-	await patched.call(fakeIm, "login")
+	await invokeLoginCommand(fakeIm)
 	await selectCurrentLoginOption(fakeIm)
 
 	expect(authSpy).toHaveBeenCalledOnce()
@@ -197,9 +205,7 @@ it("surfaces the login URL in the TUI so it can be copied into the right browser
 	registry.getAvailable.mockReturnValue([{ id: "kimi-k2.6", provider: "kimchi-dev" }])
 
 	const fakeIm = makeFakeInteractiveMode(registry)
-	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
-	const patched = (InteractiveMode.prototype as any).showOAuthSelector
-	await patched.call(fakeIm, "login")
+	await invokeLoginCommand(fakeIm)
 	await selectCurrentLoginOption(fakeIm)
 
 	// Must be an intact OSC 8 hyperlink target (BEL-terminated, like upstream
@@ -221,9 +227,7 @@ it("falls back to the first available model when the default is not present", as
 	registry.getAvailable.mockReturnValue([{ id: "other-model", provider: "kimchi-dev" }])
 
 	const fakeIm = makeFakeInteractiveMode(registry)
-	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
-	const patched = (InteractiveMode.prototype as any).showOAuthSelector
-	await patched.call(fakeIm, "login")
+	await invokeLoginCommand(fakeIm)
 	await selectCurrentLoginOption(fakeIm)
 
 	expect(fakeIm.session.setModel).toHaveBeenCalledWith({
@@ -245,9 +249,7 @@ it("reports failure when no models are available for the provider", async () => 
 	registry.getAvailable.mockReturnValue([])
 
 	const fakeIm = makeFakeInteractiveMode(registry)
-	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
-	const patched = (InteractiveMode.prototype as any).showOAuthSelector
-	await patched.call(fakeIm, "login")
+	await invokeLoginCommand(fakeIm)
 	await selectCurrentLoginOption(fakeIm)
 
 	expect(fakeIm.showError).toHaveBeenCalledWith(
@@ -263,9 +265,7 @@ it("shows error when browser auth fails", async () => {
 
 	const registry = makeFakeModelRegistry()
 	const fakeIm = makeFakeInteractiveMode(registry)
-	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
-	const patched = (InteractiveMode.prototype as any).showOAuthSelector
-	await patched.call(fakeIm, "login")
+	await invokeLoginCommand(fakeIm)
 	await selectCurrentLoginOption(fakeIm)
 
 	expect(fakeIm.showError).toHaveBeenCalledWith("Kimchi login failed: Browser closed")
@@ -281,9 +281,7 @@ it("prompts for Kimchi API key and endpoint with the default endpoint", async ()
 	const fakeIm = makeFakeInteractiveMode(registry)
 	fakeIm.showExtensionInput.mockResolvedValueOnce("api-key-123").mockResolvedValueOnce("")
 
-	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
-	const patched = (InteractiveMode.prototype as any).showOAuthSelector
-	await patched.call(fakeIm, "login")
+	await invokeLoginCommand(fakeIm)
 	await selectApiKeyLoginOption(fakeIm)
 	await waitForMockCall(fakeIm.session.setModel)
 
@@ -324,9 +322,7 @@ it("uses a custom Kimchi endpoint for API-key model discovery and config persist
 	const fakeIm = makeFakeInteractiveMode(registry)
 	fakeIm.showExtensionInput.mockResolvedValueOnce(" api-key-456 ").mockResolvedValueOnce(" https://custom.example/ ")
 
-	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
-	const patched = (InteractiveMode.prototype as any).showOAuthSelector
-	await patched.call(fakeIm, "login")
+	await invokeLoginCommand(fakeIm)
 	await selectApiKeyLoginOption(fakeIm)
 	await waitForMockCall(fakeIm.session.setModel)
 
@@ -362,9 +358,7 @@ it("does not persist API-key login when model discovery rejects an invalid key",
 	const fakeIm = makeFakeInteractiveMode(registry)
 	fakeIm.showExtensionInput.mockResolvedValueOnce("bad-key").mockResolvedValueOnce("https://llm.kimchi.dev")
 
-	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
-	const patched = (InteractiveMode.prototype as any).showOAuthSelector
-	await patched.call(fakeIm, "login")
+	await invokeLoginCommand(fakeIm)
 	await selectApiKeyLoginOption(fakeIm)
 	await waitForMockCall(fakeIm.showError)
 
@@ -388,9 +382,7 @@ it("does not persist API-key login when the endpoint is unreachable", async () =
 	const fakeIm = makeFakeInteractiveMode(registry)
 	fakeIm.showExtensionInput.mockResolvedValueOnce("api-key-123").mockResolvedValueOnce("https://offline.example")
 
-	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
-	const patched = (InteractiveMode.prototype as any).showOAuthSelector
-	await patched.call(fakeIm, "login")
+	await invokeLoginCommand(fakeIm)
 	await selectApiKeyLoginOption(fakeIm)
 	await waitForMockCall(fakeIm.showError)
 
@@ -415,9 +407,7 @@ it("rolls back API-key auth when fresh discovery succeeds but no Kimchi models b
 	const fakeIm = makeFakeInteractiveMode(registry)
 	fakeIm.showExtensionInput.mockResolvedValueOnce("api-key-123").mockResolvedValueOnce("https://llm.kimchi.dev")
 
-	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
-	const patched = (InteractiveMode.prototype as any).showOAuthSelector
-	await patched.call(fakeIm, "login")
+	await invokeLoginCommand(fakeIm)
 	await selectApiKeyLoginOption(fakeIm)
 	await waitForMockCall(fakeIm.showError)
 
@@ -441,9 +431,7 @@ it("routes the subscription option to upstream OAuth providers without showing K
 		{ id: "anthropic", name: "Claude", authType: "oauth" },
 	])
 
-	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
-	const patched = (InteractiveMode.prototype as any).showOAuthSelector
-	await patched.call(fakeIm, "login")
+	await invokeLoginCommand(fakeIm)
 	await selectSubscriptionLoginOption(fakeIm)
 	fakeIm.selectorComponent.handleInput("\n")
 	await waitForMockCall(fakeIm.showLoginDialog)
@@ -453,7 +441,7 @@ it("routes the subscription option to upstream OAuth providers without showing K
 })
 
 it("pre-populates subscription provider models in models.json before upstream login", async () => {
-	const piAi = await import("@earendil-works/pi-ai")
+	const piAi = await import("@earendil-works/pi-ai/compat")
 	const getModelsMock = vi.mocked(piAi.getModels)
 	getModelsMock.mockReturnValue([
 		{
@@ -479,9 +467,7 @@ it("pre-populates subscription provider models in models.json before upstream lo
 
 	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-test-models")
 
-	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
-	const patched = (InteractiveMode.prototype as any).showOAuthSelector
-	await patched.call(fakeIm, "login")
+	await invokeLoginCommand(fakeIm)
 	await selectSubscriptionLoginOption(fakeIm)
 	fakeIm.selectorComponent.handleInput("\n")
 	await waitForMockCall(fakeIm.showLoginDialog)
@@ -523,9 +509,7 @@ it("does not crash when registry.getAvailable returns empty after subscription l
 	const fakeIm = makeFakeInteractiveMode(registry)
 	fakeIm.getLoginProviderOptions.mockReturnValue([{ id: "openai", name: "OpenAI", authType: "oauth" }])
 
-	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
-	const patched = (InteractiveMode.prototype as any).showOAuthSelector
-	await patched.call(fakeIm, "login")
+	await invokeLoginCommand(fakeIm)
 	await selectSubscriptionLoginOption(fakeIm)
 	fakeIm.selectorComponent.handleInput("\n")
 	await waitForMockCall(fakeIm.showLoginDialog)
@@ -546,9 +530,7 @@ it("does not crash when registry.getAvailable throws after subscription login", 
 	const fakeIm = makeFakeInteractiveMode(registry)
 	fakeIm.getLoginProviderOptions.mockReturnValue([{ id: "openai", name: "OpenAI", authType: "oauth" }])
 
-	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
-	const patched = (InteractiveMode.prototype as any).showOAuthSelector
-	await patched.call(fakeIm, "login")
+	await invokeLoginCommand(fakeIm)
 	await selectSubscriptionLoginOption(fakeIm)
 	fakeIm.selectorComponent.handleInput("\n")
 	await waitForMockCall(fakeIm.showLoginDialog)
@@ -559,23 +541,23 @@ it("does not crash when registry.getAvailable throws after subscription login", 
 	syncSpy.mockRestore()
 })
 
-it("passes through to original showOAuthSelector for 'logout' mode", async () => {
-	// Stub oauthDelegate.original so the logout delegation path is exercised
-	// without calling into the real upstream implementation (which requires a
-	// fully constructed InteractiveMode with private methods).
+it("delegates `/login <provider>` to the upstream provider login flow", async () => {
+	// Stub handleLoginDelegate.original so the delegation path is exercised without
+	// calling into the real upstream implementation (which requires a fully
+	// constructed InteractiveMode with private methods). A provider argument must
+	// bypass the Kimchi choice menu and go straight to upstream.
 	const stub = vi.fn().mockResolvedValue(undefined)
-	const saved = oauthDelegate.original
-	oauthDelegate.original = stub
+	const saved = handleLoginDelegate.original
+	handleLoginDelegate.original = stub
 
 	try {
 		const fakeIm = makeFakeInteractiveMode(makeFakeModelRegistry())
-		// biome-ignore lint/suspicious/noExplicitAny: not present in public type
-		const patched = (InteractiveMode.prototype as any).showOAuthSelector
-		await patched.call(fakeIm, "logout")
+		await invokeLoginCommand(fakeIm, "kimchi")
 		expect(stub).toHaveBeenCalledOnce()
-		expect(stub).toHaveBeenCalledWith("logout")
+		expect(stub).toHaveBeenCalledWith("kimchi")
+		expect(fakeIm.showSelector).not.toHaveBeenCalled()
 	} finally {
-		oauthDelegate.original = saved
+		handleLoginDelegate.original = saved
 	}
 })
 
@@ -588,9 +570,7 @@ it("suppresses stale startup no-model warning after startup auth selected a mode
 		const fakeIm = makeFakeInteractiveMode(makeFakeModelRegistry())
 		fakeIm.session.model = { id: "kimi-k2.6", provider: "kimchi-dev" }
 
-		// biome-ignore lint/suspicious/noExplicitAny: not present in public type
-		const patched = (InteractiveMode.prototype as any).showWarning
-		patched.call(fakeIm, "No models available. Use /login to log into a provider via OAuth or API key.")
+		invokeShowWarning(fakeIm, "No models available. Use /login to log into a provider via OAuth or API key.")
 
 		expect(stub).not.toHaveBeenCalled()
 	} finally {
@@ -606,9 +586,7 @@ it("keeps real no-model warnings when no model became available", () => {
 	try {
 		const fakeIm = makeFakeInteractiveMode(makeFakeModelRegistry())
 
-		// biome-ignore lint/suspicious/noExplicitAny: not present in public type
-		const patched = (InteractiveMode.prototype as any).showWarning
-		patched.call(fakeIm, "No models available. Use /login to log into a provider via OAuth or API key.")
+		invokeShowWarning(fakeIm, "No models available. Use /login to log into a provider via OAuth or API key.")
 
 		expect(stub).toHaveBeenCalledOnce()
 	} finally {

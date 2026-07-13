@@ -19,7 +19,7 @@
  * failures into JudgeFlag for a uniform on-disk audit trail.
  */
 
-import { complete } from "@earendil-works/pi-ai"
+import { complete } from "@earendil-works/pi-ai/compat"
 import type { Grade } from "../../ferment/types.js"
 import { getModelRoles, splitModelRef } from "../orchestration/model-roles.js"
 import { getJudgeModel, getJudgeModelRegistry } from "./state.js"
