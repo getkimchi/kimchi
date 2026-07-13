@@ -11,9 +11,9 @@ import { Markdown } from "@earendil-works/pi-tui"
 import type { Static } from "typebox"
 import { findFirstPlannedPhase } from "../../../ferment/engine.js"
 import type { Ferment, Phase } from "../../../ferment/types.js"
-import { getMultiModelEnabled } from "../../multi-model.js"
 import type { Grade } from "../../../ferment/types.js"
 import { runWithOverlay, spawnGraderAgent } from "../../agents/index.js"
+import { getMultiModelEnabled } from "../../multi-model.js"
 import { withWorkingHidden } from "../../ui.js"
 import { askUserForm } from "../ask-user.js"
 import { gradeColor, pr_bold } from "../colors.js"
@@ -96,7 +96,7 @@ export interface PhaseHandlerServices {
 
 export interface PhaseExecutionContext {
 	pi: ExtensionAPI
-	ctx: ExtensionContext
+	ctx?: ExtensionContext
 }
 
 export const defaultPhaseHandlerServices: PhaseHandlerServices = {
@@ -255,7 +255,7 @@ async function maybeCompleteManualPhaseBoundary(
 			return toolOk(
 				formatManualPhaseBoundaryContinue(
 					ferment,
-					getMultiModelEnabled(ctx.sessionManager),
+					getMultiModelEnabled(ctx?.sessionManager ?? null),
 					completedPhase,
 					nextPhase,
 					projectChecksLine,
@@ -282,7 +282,7 @@ export async function completePhase(
 	const phase = resolvePhase(f, params.phase_id)
 	if (!phase) return toolErr("Phase not found.")
 
-	const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
+	const multiModelEnabled = getMultiModelEnabled(ctx?.sessionManager ?? null)
 
 	// FSM validation: complete_ferment_phase requires all phases to be terminal
 	const fsmError = validateFsmTransition(f, "COMPLETE_PHASE", { phaseId: phase.id })
@@ -408,7 +408,7 @@ export async function completePhase(
 						],
 					},
 				],
-				{ ferment: f, pi, ctx, runtime },
+				{ ferment: f, pi, ctx: ctx ?? ({} as ExtensionContext), runtime },
 			)
 
 			const escalationChoice = escalationResponse.failed ? undefined : escalationResponse.answers?.[0]?.value
@@ -571,7 +571,7 @@ export async function completePhase(
 		phase,
 		projectChecksLine,
 		warnSection,
-		ctx,
+		ctx ?? ({} as ExtensionContext),
 	)
 	if (manualBoundary) return manualBoundary
 
@@ -620,7 +620,7 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 			const f = runtime.getStorage().get(params.ferment_id)
 			if (!f) return toolErr("Ferment not found.")
 
-			const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
+			const multiModelEnabled = getMultiModelEnabled(ctx?.sessionManager ?? null)
 
 			let target = params.phase_id ? f.phases.find((p) => p.id === params.phase_id) : undefined
 			if (!target && params.phase_id) {
@@ -748,7 +748,7 @@ export function registerPhaseTools(pi: ExtensionAPI, runtime: FermentRuntime = d
 				)
 			}
 
-			const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
+			const multiModelEnabled = getMultiModelEnabled(ctx?.sessionManager ?? null)
 
 			// FSM validation: refine_ferment_phase is only valid in PHASE_ACTIVE state
 			const fsmError = validateFsmTransition(f, "REFINE_PHASE", { phaseId: phase.id })
@@ -816,7 +816,7 @@ ${renderGateGuidance("complete_ferment_phase")}`,
 			const phase = resolvePhase(f, params.phase_id)
 			if (!phase) return toolErr("Phase not found.")
 
-			const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
+			const multiModelEnabled = getMultiModelEnabled(ctx?.sessionManager ?? null)
 
 			// FSM validation: phase must be active to skip
 			const fsmError = validateFsmTransition(f, "SKIP_PHASE", { phaseId: phase.id })
@@ -849,7 +849,7 @@ ${renderGateGuidance("complete_ferment_phase")}`,
 			const phase = resolvePhase(f, params.phase_id)
 			if (!phase) return toolErr("Phase not found.")
 
-			const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
+			const multiModelEnabled = getMultiModelEnabled(ctx?.sessionManager ?? null)
 
 			// FSM validation: phase must be active to fail
 			const fsmError = validateFsmTransition(f, "FAIL_PHASE", { phaseId: phase.id })
