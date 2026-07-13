@@ -611,34 +611,83 @@ export type GraderSpawner = (prompt: string) => Promise<GraderSubagentResult>
  *  with a valid grade field anywhere in the text — the subagent may produce
  *  the grade JSON in an earlier turn and then continue with follow-up text.
  *  Returns undefined if no parseable grade JSON is found. */
-function parseGraderResponse(text: string): JudgePhaseGradeOk | undefined {
+function parseGraderResponse(text: string): GradedResult | undefined {
 	// Try parsing the full text as JSON first (common case: final message IS the JSON)
-	const direct = tryParseJson<{ grade?: string; rationale?: string; recommendations?: unknown }>(text)
+	const direct = tryParseJson<GradeJson>(text)
 	if (direct !== undefined && isGrade(direct.grade)) {
-		const rationale = typeof direct.rationale === "string" ? direct.rationale.slice(0, 800) : "(no rationale provided)"
-		const recommendations = normalizeRecommendations(direct.recommendations)
-		return { ok: true, grade: direct.grade, rationale, recommendations }
+		return buildGradedResult(direct)
 	}
 
 	// Scan for a JSON object containing a grade field anywhere in the text.
-	// This handles the case where the subagent produced the grade JSON mid-session
-	// and then continued with follow-up text (e.g. "Already completed the grade...").
-	const gradeJsonPattern = /\{[^{}]*"grade"\s*:\s*"[A-F]"[^{}]*\}/g
-	const matches = text.match(gradeJsonPattern)
-	if (matches) {
-		// Try from the last match (most recent grade)
-		for (let i = matches.length - 1; i >= 0; i--) {
-			const parsed = tryParseJson<{ grade?: string; rationale?: string; recommendations?: unknown }>(matches[i])
-			if (parsed !== undefined && isGrade(parsed.grade)) {
-				const rationale =
-					typeof parsed.rationale === "string" ? parsed.rationale.slice(0, 800) : "(no rationale provided)"
-				const recommendations = normalizeRecommendations(parsed.recommendations)
-				return { ok: true, grade: parsed.grade, rationale, recommendations }
-			}
+	// Uses a brace-balanced scan instead of a regex so that nested braces in
+	// rationale strings or recommendations don't cause false negatives.
+	const gradeJsons = extractJsonObjects(text)
+	// Try from the last match (most recent grade)
+	for (let i = gradeJsons.length - 1; i >= 0; i--) {
+		const parsed = tryParseJson<GradeJson>(gradeJsons[i])
+		if (parsed !== undefined && isGrade(parsed.grade)) {
+			return buildGradedResult(parsed)
 		}
 	}
 
 	return undefined
+}
+
+/** Shape of the grader's JSON output. */
+type GradeJson = { grade?: string; rationale?: string; recommendations?: unknown }
+
+/** Shared result type for both phase and journey grade parsing. */
+type GradedResult = { ok: true; grade: Grade; rationale: string; recommendations: string[] }
+
+/** Build a GradedResult from parsed JSON. */
+function buildGradedResult(parsed: GradeJson): GradedResult {
+	const rationale = typeof parsed.rationale === "string" ? parsed.rationale.slice(0, 800) : "(no rationale provided)"
+	const recommendations = normalizeRecommendations(parsed.recommendations)
+	return { ok: true, grade: parsed.grade as Grade, rationale, recommendations }
+}
+
+/** Extract all top-level JSON objects from a text string using a
+ *  brace-balanced scan. Handles nested braces inside strings and values. */
+function extractJsonObjects(text: string): string[] {
+	const results: string[] = []
+	let i = 0
+	while (i < text.length) {
+		const open = text.indexOf("{", i)
+		if (open === -1) break
+		let depth = 0
+		let inString = false
+		let escape = false
+		let end = -1
+		for (let j = open; j < text.length; j++) {
+			const ch = text[j]
+			if (inString) {
+				if (escape) {
+					escape = false
+				} else if (ch === "\\") {
+					escape = true
+				} else if (ch === '"') {
+					inString = false
+				}
+			} else {
+				if (ch === '"') inString = true
+				else if (ch === "{") depth++
+				else if (ch === "}") {
+					depth--
+					if (depth === 0) {
+						end = j
+						break
+					}
+				}
+			}
+		}
+		if (end !== -1) {
+			results.push(text.slice(open, end + 1))
+			i = end + 1
+		} else {
+			i = open + 1
+		}
+	}
+	return results
 }
 
 /** Grade a phase using a subagent with tool access. Falls back to the

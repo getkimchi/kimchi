@@ -579,7 +579,7 @@ export async function spawnGraderAgent(
 				}
 			}
 		}
-		fullText = assistantTexts.join("\n\n")
+		fullText = assistantTexts.join("\n\n") || fullText
 	}
 	return { text: fullText, status: record.status }
 }
