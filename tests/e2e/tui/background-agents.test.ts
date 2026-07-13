@@ -163,6 +163,10 @@ test("Ctrl+X kills background agents one by one", async ({ terminal }) => {
 			await waitForText(terminal, "ctrl+x to kill", { timeoutMs: 5_000, full: false })
 			trace.step("two background agents running")
 
+			// Give both agents a moment to fully detach their streams before killing;
+			// without this the first kill can race with the second agent startup.
+			await new Promise((resolve) => setTimeout(resolve, 200))
+
 			// Kill the most recent one (second bg — listAgents sorts by startedAt desc)
 			terminal.keyPress("x", { ctrl: true })
 			await waitForText(terminal, "Stopped", { timeoutMs: 5_000, full: false })
