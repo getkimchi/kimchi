@@ -319,7 +319,7 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	async unstable_setSessionModel(params: SetSessionModelRequest): Promise<SetSessionModelResponse> {
-		await this.setModel(params.sessionId, params.modelId)
+		await this.doSetModel(params.sessionId, params.modelId)
 		return {}
 	}
 
@@ -330,11 +330,11 @@ export class KimchiAcpAgent implements Agent {
 		}
 		switch (params.configId) {
 			case "permissions-mode": {
-				this.setPermissionMode(params.sessionId, params.value ? `${params.value}` : "")
+				this.doSetPermissionMode(params.sessionId, params.value ? `${params.value}` : "")
 				break
 			}
 			case "model": {
-				await this.setModel(params.sessionId, params.value ? `${params.value}` : "")
+				await this.doSetModel(params.sessionId, params.value ? `${params.value}` : "")
 				break
 			}
 			default:
@@ -345,7 +345,7 @@ export class KimchiAcpAgent implements Agent {
 		}
 	}
 
-	private setPermissionMode(sessionId: string, mode: string): PermissionMode {
+	private doSetPermissionMode(sessionId: string, mode: string): PermissionMode {
 		const permissionMode = mode as PermissionMode
 		if (!PERMISSION_MODES.includes(permissionMode)) {
 			throw RequestError.invalidParams(undefined, `invalid mode ${permissionMode}`)
@@ -354,7 +354,7 @@ export class KimchiAcpAgent implements Agent {
 		return permissionMode
 	}
 
-	private async setModel(sessionId: string, value: string): Promise<string> {
+	private async doSetModel(sessionId: string, value: string): Promise<string> {
 		const entry = this.sessions.get(sessionId)
 		if (!entry) {
 			throw RequestError.invalidParams(undefined, `unknown sessionId ${sessionId}`)
