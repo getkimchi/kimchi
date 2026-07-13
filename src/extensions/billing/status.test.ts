@@ -49,7 +49,7 @@ describe("billing status", () => {
 		})
 		expect(getCommunityTierHeaderNotice()).toBe(COMMUNITY_TIER_HEADER_NOTICE)
 		expect(getBillingWarning()).toBeUndefined()
-		expect(getBillingStatusLine()).toEqual({ amount: "$0" })
+		expect(getBillingStatusLine()).toEqual({ amount: "$0.00" })
 	})
 
 	it("still accepts internal free/free-slow tiers if proxy mapping is not deployed yet", () => {
@@ -70,7 +70,7 @@ describe("billing status", () => {
 		})
 		expect(getCommunityTierHeaderNotice()).toBe(COMMUNITY_TIER_HEADER_NOTICE)
 		expect(getBillingWarning()).toBeUndefined()
-		expect(getBillingStatusLine()).toEqual({ amount: "$2" })
+		expect(getBillingStatusLine()).toEqual({ amount: "$2.00" })
 	})
 
 	it("maps legacy paid tier names to Coder and uses billing_status for warnings", () => {
@@ -89,8 +89,8 @@ describe("billing status", () => {
 			remainingCredits: 4.5,
 		})
 		expect(getCommunityTierHeaderNotice()).toBeUndefined()
-		expect(getBillingWarning()?.message).toContain("$4.5 remaining")
-		expect(getBillingStatusLine()).toEqual({ amount: "$4.5" })
+		expect(getBillingWarning()?.message).toContain("$4.50 remaining")
+		expect(getBillingStatusLine()).toEqual({ amount: "$4.50" })
 	})
 
 	it("shows a low-credit warning for paid users when billing_status is low_balance", () => {
@@ -106,7 +106,7 @@ describe("billing status", () => {
 		expect(getBillingWarning()).toEqual({
 			kind: "low",
 			message:
-				"Heads up: your credits are running low ($5 remaining). Top up now to avoid slowdowns and rate limits: https://app.kimchi.dev/billing",
+				"Heads up: your credits are running low ($5.00 remaining). Top up now to avoid slowdowns and rate limits: https://app.kimchi.dev/billing",
 		})
 	})
 
@@ -144,8 +144,8 @@ describe("billing status", () => {
 			restrictedMode: false,
 			remainingCredits: 4,
 		})
-		expect(getBillingWarning()?.message).toContain("$4 remaining")
-		expect(getBillingStatusLine()).toEqual({ amount: "$4" })
+		expect(getBillingWarning()?.message).toContain("$4.00 remaining")
+		expect(getBillingStatusLine()).toEqual({ amount: "$4.00" })
 	})
 
 	it("does not warn on low remaining credits when billing_status is ok", () => {
@@ -159,10 +159,10 @@ describe("billing status", () => {
 
 		expect(getBillingStatus()).toMatchObject({ plan: "coder", isPaidTier: true, creditStatus: "ok" })
 		expect(getBillingWarning()).toBeUndefined()
-		expect(getBillingStatusLine()).toEqual({ amount: "$4" })
+		expect(getBillingStatusLine()).toEqual({ amount: "$4.00" })
 	})
 
-	it("formats footer remaining credits as dollars without the plan name", () => {
+	it("formats status-line remaining credits as dollars without the plan name", () => {
 		observeCreditsPayload({
 			serverless: true,
 			tier: "coder",
@@ -171,7 +171,7 @@ describe("billing status", () => {
 			remaining: "0.10",
 		})
 
-		expect(getBillingStatusLine()).toEqual({ amount: "$0.1" })
+		expect(getBillingStatusLine()).toEqual({ amount: "$0.10" })
 	})
 
 	it("accepts USD-labelled credits and rejects Euro-labelled credits", () => {
@@ -182,7 +182,7 @@ describe("billing status", () => {
 			billing_status: "ok",
 			remaining: "USD 4.5",
 		})
-		expect(getBillingStatusLine()).toEqual({ amount: "$4.5" })
+		expect(getBillingStatusLine()).toEqual({ amount: "$4.50" })
 
 		observeCreditsPayload({
 			serverless: true,
@@ -209,7 +209,7 @@ describe("billing status", () => {
 			kind: "exhausted",
 			message: BILLING_EXHAUSTED_MESSAGE,
 		})
-		expect(getBillingStatusLine()).toEqual({ amount: "$0" })
+		expect(getBillingStatusLine()).toEqual({ amount: "$0.00" })
 	})
 
 	it("treats old-mothership snapshots with omitted tier as paid/unknown display, not Community", () => {
@@ -230,7 +230,7 @@ describe("billing status", () => {
 		expect(getBillingStatus()?.isPaidTier).toBeUndefined()
 		expect(getCommunityTierHeaderNotice()).toBeUndefined()
 		expect(getBillingWarning()).toBeUndefined()
-		expect(getBillingStatusLine()).toEqual({ amount: "$12.5" })
+		expect(getBillingStatusLine()).toEqual({ amount: "$12.50" })
 	})
 
 	it("does not show Community upsell when credits API omits tier during rollout", () => {
@@ -244,7 +244,7 @@ describe("billing status", () => {
 		expect(getBillingStatus()).toMatchObject({ isPaidTier: true, creditStatus: "low", remainingCredits: 5 })
 		expect(getCommunityTierHeaderNotice()).toBeUndefined()
 		expect(getBillingWarning()?.kind).toBe("low")
-		expect(getBillingStatusLine()).toEqual({ amount: "$5" })
+		expect(getBillingStatusLine()).toEqual({ amount: "$5.00" })
 	})
 
 	it("matches backend low-balance fallback threshold when billing_status is absent", () => {
@@ -312,7 +312,7 @@ describe("billing status", () => {
 			remainingCredits: 10,
 		})
 		expect(getBillingWarning()).toBeUndefined()
-		expect(getBillingStatusLine()).toEqual({ amount: "$10" })
+		expect(getBillingStatusLine()).toEqual({ amount: "$10.00" })
 	})
 
 	it("clears stale billing state when credentials change", () => {
@@ -488,7 +488,7 @@ describe("billing status", () => {
 		expect(getBillingStatus()?.plan).toBeUndefined()
 		expect(getBillingStatus()?.isPaidTier).toBeUndefined()
 		expect(getCommunityTierHeaderNotice()).toBeUndefined()
-		expect(getBillingStatusLine()).toEqual({ amount: "$10" })
+		expect(getBillingStatusLine()).toEqual({ amount: "$10.00" })
 	})
 
 	it("ignores absent and malformed credits payloads without changing state", () => {

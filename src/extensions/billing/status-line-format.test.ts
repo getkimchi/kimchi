@@ -22,6 +22,6 @@ describe("formatBillingStatusLine", () => {
 	it("dims the fixed label and accents the dollar balance", () => {
 		const t = theme()
 
-		expect(formatBillingStatusLine({ amount: "$10" }, t)).toBe(`<dim>Credits:</dim> <accent>$10${RST_FG}`)
+		expect(formatBillingStatusLine({ amount: "$10.00" }, t)).toBe(`<dim>Credits:</dim> <accent>$10.00${RST_FG}`)
 	})
 })

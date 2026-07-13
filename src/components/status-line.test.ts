@@ -502,7 +502,7 @@ describe("StatusLine segment coverage", () => {
 			const statusLine = new StatusLine(createMockContext(), theme, createMockStatusLineData())
 			const visible = renderVisible(statusLine, 200)
 
-			expect(visible).toContain("Credits: $5")
+			expect(visible).toContain("Credits: $5.00")
 		})
 	})
 
@@ -518,7 +518,7 @@ describe("StatusLine segment coverage", () => {
 		const statusLine = new StatusLine(createMockContext(), theme, createMockStatusLineData())
 		const visible = renderVisible(statusLine, 200)
 
-		expect(visible).not.toContain("Credits: $5")
+		expect(visible).not.toContain("Credits: $5.00")
 	})
 })
 

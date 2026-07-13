@@ -316,8 +316,7 @@ function readBoolean(record: Record<string, unknown>, keys: readonly string[]): 
 
 function formatCreditsAmount(amount: number): string {
 	const rounded = Math.round(amount * 100) / 100
-	const value = Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(2).replace(/0$/, "")
-	return `$${value}`
+	return `$${rounded.toFixed(2)}`
 }
 
 function hasSignificantChange(previous: BillingStatus | undefined, next: BillingStatus): boolean {

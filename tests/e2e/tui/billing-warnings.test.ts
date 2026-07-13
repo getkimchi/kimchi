@@ -34,20 +34,20 @@ test("shows paid balance at startup and low-credit warning after a model respons
 				const agentDir = join(homeDir, ".config", "kimchi", "harness")
 				writeFileSync(
 					join(agentDir, "settings.json"),
-					JSON.stringify({ footer: { pinned: ["billing"] } }, null, "\t"),
+					JSON.stringify({ statusLine: { pinned: ["billing"] } }, null, "\t"),
 					"utf-8",
 				)
 			},
 		},
 		async () => {
-			await waitForText(terminal, "Credits: $10", { full: true })
+			await waitForText(terminal, "Credits: $10.00", { full: true })
 
 			terminal.submit("Use a few credits")
 
 			await expect(terminal.getByText("Done.", { full: true })).toBeVisible()
 			await waitForText(terminal, "Heads up: your credits are running low", { full: true })
 			await waitForText(terminal, "https://app.kimchi.dev/billing", { full: true })
-			await waitForText(terminal, "Credits: $5", { full: true })
+			await waitForText(terminal, "Credits: $5.00", { full: true })
 		},
 	)
 })
