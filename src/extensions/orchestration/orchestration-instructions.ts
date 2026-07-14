@@ -147,8 +147,8 @@ The review agent runs tests, checks lint, and verifies the implementation matche
 
 function buildAgentDelegation(delegatePlanning: boolean): string {
 	const planBullet = delegatePlanning
-		? "- When delegating \`plan\` before \`build\`, have the Plan agent write a Markdown spec file (full method signatures, file paths, interfaces) to the Documents directory. Pass that file path to the build Agent — it must not rediscover what was already decided."
-		: "- When writing the plan yourself before \`build\`, write the Markdown spec file (full method signatures, file paths, interfaces) to the Documents directory. Pass that file path to the build Agent — it must not rediscover what was already decided."
+		? "- When delegating `plan` before `build`, have the Plan agent write a Markdown spec file (full method signatures, file paths, interfaces) to the Documents directory. Pass that file path to the build Agent — it must not rediscover what was already decided."
+		: "- When writing the plan yourself before `build`, write the Markdown spec file (full method signatures, file paths, interfaces) to the Documents directory. Pass that file path to the build Agent — it must not rediscover what was already decided."
 
 	return `### Agent delegation
 
@@ -268,8 +268,10 @@ function buildPlanPhaseDirectives(ctx: PhaseDirectiveContext): string {
 	lines.push("")
 
 	if (delegatePlanning) {
-		const models = modelListForRole(ctx.roles!.planner)
-		lines.push(`- DO delegate plan drafting to Agent(type: "Plan", model: ${models}). A separate planner model is configured — use it.`)
+		const models = ctx.roles ? modelListForRole(ctx.roles.planner) : "a Planner model"
+		lines.push(
+			`- DO delegate plan drafting to Agent(type: "Plan", model: ${models}). A separate planner model is configured — use it.`,
+		)
 		lines.push(
 			"- Have the Plan agent write the Markdown spec (full method signatures, file paths, interfaces) to the Documents directory.",
 		)

@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest"
 import { DEFAULT_MODEL_ROLES } from "./model-roles.js"
-import { orchestratorShouldReceivePhaseGuidelines, resolveModelRoleNames, shouldDelegatePlanning } from "./orchestrator-roles.js"
+import {
+	orchestratorShouldReceivePhaseGuidelines,
+	resolveModelRoleNames,
+	shouldDelegatePlanning,
+} from "./orchestrator-roles.js"
 
 describe("resolveModelRoleNames", () => {
 	it("returns orchestrator and planner for default kimi-k2.7 orchestrator", () => {
