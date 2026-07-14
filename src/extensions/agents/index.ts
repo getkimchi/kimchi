@@ -452,6 +452,7 @@ function buildNotificationDetails(
 }
 
 let activeManager: AgentManager | undefined
+let activeWidget: { ensureTimer: () => void; update: () => void; markFinished: (id: string) => void } | undefined
 let budgetRetryBlock: BudgetRetryBlock | undefined
 const budgetRetryCandidates = new Map<string, BudgetRetryCandidate>()
 
@@ -483,6 +484,86 @@ export function getAgentRecordForTaskValidation(id: string): Readonly<AgentRecor
 	const record = activeManager?.getRecord(id)
 	if (!record || record.visibility === "system") return undefined
 	return { ...record, latestOutcome: record.latestOutcome ?? buildAgentOutcome(record) }
+}
+
+/**
+ * Run an async function while showing a transient entry in the agent overlay.
+ * The description appears in the agents widget ("N running" footer + overlay)
+ * for the duration of the call — the same visual feedback as a real subagent.
+ *
+ * Falls back to calling fn() directly when no agent system is active
+ * (e.g. unit tests, non-TUI contexts).
+ */
+export async function runWithOverlay<T>(description: string, fn: () => Promise<T>): Promise<T> {
+	if (!activeManager) return fn()
+	const id = activeManager.registerTransient(description)
+	activeWidget?.ensureTimer()
+	activeWidget?.update()
+	try {
+		return await fn()
+	} finally {
+		activeManager.completeTransient(id)
+		activeWidget?.markFinished(id)
+		activeWidget?.update()
+	}
+}
+
+/** Spawn a Grader subagent (read-only + bash, bounded turns) and wait for its
+ *  result. Returns the agent's final text response and status. Used by the
+ *  ferment grader to independently verify agent claims with tool access.
+ *
+ *  Returns undefined when the agent system is not active (e.g. unit tests,
+ *  non-TUI contexts) so callers can fall back to a single-shot LLM call. */
+export async function spawnGraderAgent(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	prompt: string,
+): Promise<{ text: string; status: string } | undefined> {
+	if (!activeManager) return undefined
+	const AGENT_GRADER_TYPE = "Grader"
+
+	// Prepare a persisted session file so the grader's transcript is saved
+	// alongside the parent session for post-mortem analysis.
+	let sessionFile: string | undefined
+	let sessionDir: string | undefined
+	try {
+		const parentSessionDir = ctx.sessionManager.getSessionDir()
+		const parentSessionFile = ctx.sessionManager.getSessionFile()
+		if (parentSessionDir && parentSessionFile) {
+			const prepared = prepareAgentSessionFile(parentSessionDir, parentSessionFile, ctx.cwd)
+			sessionFile = prepared?.sessionFile
+			sessionDir = parentSessionDir
+		}
+	} catch {
+		// Session file creation is best-effort — the grader can still run
+		// without a persisted session, it just won't have a transcript file.
+	}
+
+	// Allow the grader to be cancelled when the parent session shuts down.
+	const abortController = new AbortController()
+
+	const record = await activeManager.spawnAndWait(pi, ctx, AGENT_GRADER_TYPE, prompt, {
+		description: "Ferment grader",
+		visibility: "system",
+		sessionFile,
+		sessionDir,
+		signal: abortController.signal,
+	})
+	// Collect all assistant text from the session — the grade JSON may appear
+	// in an earlier turn, not just the final response.
+	let fullText = record.result ?? ""
+	if (record.session) {
+		// Collect all assistant text — the grade JSON may appear in an earlier
+		// turn, not just the final response.
+		const assistantText = (record.session?.messages ?? [])
+			.filter((msg) => msg.role === "assistant")
+			.flatMap((msg) => msg.content)
+			.filter((part): part is { type: "text"; text: string } => part.type === "text")
+			.map((part) => part.text)
+			.join("\n\n")
+		fullText = assistantText || fullText
+	}
+	return { text: fullText, status: record.status }
 }
 
 function readAgentTaskRef(params: Record<string, unknown>): AgentTaskRef | undefined {
@@ -812,6 +893,7 @@ export default function (pi: ExtensionAPI) {
 	let currentUi: ExtensionUIContext | undefined
 
 	const widget = new AgentWidget(manager, agentActivity)
+	activeWidget = widget
 	const listUserVisibleAgents = () => manager.listAgents().filter((a) => a.visibility !== "system")
 
 	pi.on("session_shutdown", async () => {

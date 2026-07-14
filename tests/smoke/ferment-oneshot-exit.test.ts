@@ -248,7 +248,12 @@ function oneShotCompletionScript(): FakeResponseScript[] {
 			],
 		},
 		{
-			// Complete the Ferment; the following request is the judge response.
+			// judgePhaseGrade LLM call triggered inside complete_ferment_phase.
+			// Must be scripted so the fake server does not advance to the wrong response.
+			stream: ['{"grade":"A","rationale":"Clean phase.","recommendations":[]}'],
+		},
+		{
+			// Complete the Ferment; the following request is the journey-grade judge response.
 			toolCalls: [
 				{
 					id: "call_complete_ferment",
@@ -265,7 +270,7 @@ function oneShotCompletionScript(): FakeResponseScript[] {
 		},
 		{
 			// Return the one-shot judge JSON that Ferment expects after completion.
-			stream: ['{"grade":"A","rationale":"The linked-worker one-shot lifecycle completed cleanly."}'],
+			stream: ['{"grade":"A","rationale":"The linked-worker one-shot lifecycle completed cleanly.","recommendations":[]}'],
 		},
 		{
 			// Final assistant text must be emitted before agent_end and process exit.

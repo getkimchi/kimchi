@@ -558,6 +558,40 @@ export class AgentManager {
 		return [...this.agents.values()].sort((a, b) => b.startedAt - a.startedAt)
 	}
 
+	/** Register a transient agent record for visual purposes (overlay/widget)
+	 *  without starting a full agent loop. The caller is responsible for
+	 *  calling completeTransient(id) when done. */
+	registerTransient(description: string): string {
+		const id = randomUUID().slice(0, 17)
+		const record: AgentRecord = {
+			id,
+			type: "general-purpose" as SubagentType,
+			description,
+			visibility: "user",
+			status: "running",
+			toolUses: 0,
+			startedAt: Date.now(),
+			currentAttemptId: 0,
+			maxTurns: 1,
+			resumeAttempts: [],
+			lifetimeUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			compactionCount: 0,
+		}
+		this.agents.set(id, record)
+		return id
+	}
+
+	/** Mark a transient agent record as complete and schedule cleanup. */
+	completeTransient(id: string): void {
+		const record = this.agents.get(id)
+		if (!record) return
+		record.status = "completed"
+		record.completedAt = Date.now()
+		// Schedule removal after a short delay — long enough for the widget to
+		// render one final "✓ done" frame, but not so long it lingers in listAgents().
+		setTimeout(() => this.agents.delete(id), 2000)
+	}
+
 	abort(id: string): boolean {
 		const record = this.agents.get(id)
 		if (!record) return false
