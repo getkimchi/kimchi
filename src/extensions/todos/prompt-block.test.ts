@@ -22,12 +22,10 @@ describe("todo prompt block", () => {
 		expect(block).toContain("For any non-trivial task, maintain a todo list.")
 		expect(block).toContain("code changes, debugging, reviews, investigations")
 		expect(block).toContain("Skip todos only for a single straightforward answer")
-		expect(block).toContain("different from leaving TODO comments/placeholders in code")
 		expect(block).toContain("Use create_todos for the initial list before starting multi-step work")
 		expect(block).toContain("add_todo for one missing item")
 		expect(block).toContain("mark_todo for one status change")
 		expect(block).toContain("clear_todos only when the work is done or obsolete")
-		expect(block).toContain("before your final response")
 		expect(block).not.toContain("Current global todos:")
 	})
 
@@ -162,6 +160,85 @@ describe("todo state prompt block (headless)", () => {
 			todos: [{ content: "first", status: "completed" }],
 		})
 		expect(__test_renderTodoStateMarkdown()).toContain("- [x] first")
+	})
+})
+
+describe("renderTodoStateMarkdown scope filter", () => {
+	beforeEach(() => {
+		__resetTodoStore()
+		setCurrentSessionHasUI(false)
+	})
+
+	it("renders only the requested global scope", () => {
+		applyWriteTodos({
+			scope: { kind: "global" },
+			todos: [{ content: "global item", status: "pending" }],
+		})
+		applyWriteTodos({
+			scope: { kind: "ferment", phaseId: "p1" },
+			todos: [
+				{ content: "[Phase 1] Phase one", status: "in_progress", activeForm: "Phase one" },
+				{ content: "↳ step alpha", status: "pending" },
+			],
+		})
+
+		const md = __test_renderTodoStateMarkdown({ kind: "global" })
+		expect(md).toBeDefined()
+		expect(md).toContain("## Current Todos")
+		expect(md).toContain("**Global**")
+		expect(md).toContain("- [ ] global item")
+		expect(md).not.toContain("[Phase 1]")
+		expect(md).not.toContain("step alpha")
+	})
+
+	it("renders only the requested ferment scope", () => {
+		applyWriteTodos({
+			scope: { kind: "global" },
+			todos: [{ content: "global item", status: "pending" }],
+		})
+		applyWriteTodos({
+			scope: { kind: "ferment", phaseId: "p1" },
+			todos: [
+				{ content: "[Phase 1] Phase one", status: "in_progress", activeForm: "Phase one" },
+				{ content: "↳ step alpha", status: "pending" },
+			],
+		})
+		applyWriteTodos({
+			scope: { kind: "ferment", phaseId: "p2" },
+			todos: [
+				{ content: "[Phase 2] Phase two", status: "in_progress", activeForm: "Phase two" },
+				{ content: "↳ step beta", status: "completed" },
+			],
+		})
+
+		const md = __test_renderTodoStateMarkdown({ kind: "ferment", phaseId: "p1" })
+		expect(md).toContain("**[Phase 1] Phase one**")
+		expect(md).toContain("- [ ] ↳ step alpha")
+		expect(md).not.toContain("global item")
+		expect(md).not.toContain("[Phase 2]")
+		expect(md).not.toContain("step beta")
+	})
+
+	it("returns undefined when the requested scope has no todos", () => {
+		applyWriteTodos({
+			scope: { kind: "ferment", phaseId: "p1" },
+			todos: [
+				{ content: "[Phase 1] Phase one", status: "in_progress", activeForm: "Phase one" },
+				{ content: "↳ step alpha", status: "pending" },
+			],
+		})
+
+		// Empty global scope (key absent from store).
+		expect(__test_renderTodoStateMarkdown({ kind: "global" })).toBeUndefined()
+		// Absent ferment scope (different phaseId).
+		expect(__test_renderTodoStateMarkdown({ kind: "ferment", phaseId: "p2" })).toBeUndefined()
+		// Absent ferment-step scope.
+		expect(__test_renderTodoStateMarkdown({ kind: "ferment-step", phaseId: "p1", stepId: "s1" })).toBeUndefined()
+	})
+
+	it("returns undefined when the store is empty regardless of the requested scope", () => {
+		expect(__test_renderTodoStateMarkdown({ kind: "global" })).toBeUndefined()
+		expect(__test_renderTodoStateMarkdown({ kind: "ferment", phaseId: "p1" })).toBeUndefined()
 	})
 })
 

@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext, SessionEntry, Theme } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
-import todosExtension, { TODO_CHECKPOINT_MESSAGE, TODO_RECONCILE_MESSAGE } from "./index.js"
+import todosExtension, { TODO_INSTRUCTION } from "./index.js"
 import { __resetTodoStore, applyWriteTodos, getTodosForScope } from "./store.js"
 import { TODO_TOOL_NAMES, UPDATE_TODOS_TOOL_NAME } from "./tool.js"
 import { TODO_TOOL_RESULT_SCHEMA_VERSION, type TodoStatus } from "./types.js"
@@ -246,15 +246,15 @@ describe("todos extension session state", () => {
 		expect(checkpoint.customType).toBe(TODO_CUSTOM_ENTRY_TYPE)
 		expect(checkpoint.display).toBe(false)
 		expect(checkpoint.details).toEqual({ reason: "todo_checkpoint" })
-		expect(checkpoint.content[0].text).toContain(TODO_CHECKPOINT_MESSAGE)
+		expect(checkpoint.content[0].text).toContain(TODO_INSTRUCTION)
 		expect(checkpoint.content[0].text).toContain("impossible")
 		expect(checkpoint.content[0].text).toContain("blocked")
-		expect(checkpoint.content[0].text).toContain("#1 [in_progress] check work")
+		expect(checkpoint.content[0].text).toContain("- [~] check work")
 		const repeated = (await harness.fire("context", { messages: [] }, ctx)) as {
 			messages: Array<{ details: unknown; content: Array<{ text: string }> }>
 		}
 		expect(repeated.messages[0].details).toEqual({ reason: "todo_checkpoint" })
-		expect(repeated.messages[0].content[0].text).toContain("#1 [in_progress] check work")
+		expect(repeated.messages[0].content[0].text).toContain("- [~] check work")
 	})
 
 	it("clears checkpoint pressure after a todo write", async () => {
@@ -287,7 +287,7 @@ describe("todos extension session state", () => {
 				content: [
 					{
 						type: "text",
-						text: expect.stringContaining(TODO_RECONCILE_MESSAGE),
+						text: expect.stringContaining(TODO_INSTRUCTION),
 					},
 				],
 				display: false,
