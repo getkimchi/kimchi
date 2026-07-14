@@ -57,7 +57,11 @@ type HookToolResultEventResult = {
 export function createCommandHookAdapter(definition: CommandHookAdapterDefinition): (pi: ExtensionAPI) => void {
 	return (pi) => {
 		let stopHookFollowUpPending = false
-		let batchedToolResults: Array<{ tool_name: string; tool_use_id: string; is_error: boolean }> = []
+		let batchedToolResults: Array<{
+			tool_name: string
+			tool_use_id: string
+			is_error: boolean
+		}> = []
 		const pendingSystemPrompt: { context?: string } = {}
 		// Custom bus events (pi.events.on) carry no ExtensionContext, so keep the
 		// most recent one from core events for the subagent lifecycle hooks.
@@ -89,7 +93,9 @@ export function createCommandHookAdapter(definition: CommandHookAdapterDefinitio
 		pi.on("turn_start", async (event, ctx) => {
 			latestCtx = ctx
 			batchedToolResults = []
-			await runObserver(definition, "TurnStart", ctx, { turn_id: String(event.turnIndex) })
+			await runObserver(definition, "TurnStart", ctx, {
+				turn_id: String(event.turnIndex),
+			})
 		})
 		pi.on("tool_execution_end", (event) => {
 			batchedToolResults.push({
@@ -158,7 +164,11 @@ export function createCommandHookAdapter(definition: CommandHookAdapterDefinitio
 		})
 		pi.events.on("notification", async (data) => {
 			if (!latestCtx) return
-			await runObserver(definition, "Notification", latestCtx, data as Record<string, unknown>)
+			try {
+				await runObserver(definition, "Notification", latestCtx, notificationPayload(data))
+			} catch (err) {
+				console.error(`Notification hook failed: ${err instanceof Error ? err.message : String(err)}`)
+			}
 		})
 	}
 }
@@ -357,7 +367,12 @@ async function runPostToolUse(
 	if (result.additionalContext) sendAdditionalContext(definition, pi, result.additionalContext, "steer")
 	if (result.block) {
 		return {
-			content: [{ type: "text", text: result.reason ?? "Hook blocked normal tool result processing." }],
+			content: [
+				{
+					type: "text",
+					text: result.reason ?? "Hook blocked normal tool result processing.",
+				},
+			],
 			isError: true,
 		}
 	}
@@ -656,11 +671,17 @@ function lastAssistantTextFromMessages(messages: AgentEndEvent["messages"]): str
 	return null
 }
 
-function lastAssistantStop(messages: AgentEndEvent["messages"]): { stopReason?: string; errorMessage?: string } {
+function lastAssistantStop(messages: AgentEndEvent["messages"]): {
+	stopReason?: string
+	errorMessage?: string
+} {
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const message = messages[i]
 		if (isRecord(message) && message.role === "assistant") {
-			return { stopReason: stringValue(message.stopReason), errorMessage: stringValue(message.errorMessage) }
+			return {
+				stopReason: stringValue(message.stopReason),
+				errorMessage: stringValue(message.errorMessage),
+			}
 		}
 	}
 	return {}
@@ -695,6 +716,15 @@ function messagePayload(message: TurnEndEvent["message"]): Record<string, unknow
 	return {
 		message_role: isRecord(message) ? (stringValue(message.role) ?? null) : null,
 		message_text: lastAssistantText(message),
+	}
+}
+
+function notificationPayload(data: unknown): Record<string, unknown> {
+	const event = asRecord(data) ?? {}
+	return {
+		notification_type: stringValue(event.notification_type) ?? null,
+		tool_name: stringValue(event.tool_name) ?? null,
+		tool_use_id: stringValue(event.tool_use_id) ?? null,
 	}
 }
 

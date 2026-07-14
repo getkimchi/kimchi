@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { KIMCHI_HOOKS_ADAPTER_DEFINITION, discoverKimchiHookResources } from "./definition.js"
+import { discoverKimchiHookResources, KIMCHI_HOOKS_ADAPTER_DEFINITION } from "./definition.js"
 
 let dir: string
 

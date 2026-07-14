@@ -215,7 +215,7 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 				)
 			}
 
-			if (pi.events) {
+			if (pi.events?.emit) {
 				pi.events.emit("notification", { notification_type: "agent_needs_input" })
 			}
 

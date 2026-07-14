@@ -3,8 +3,8 @@ import { join, resolve } from "node:path"
 import {
 	type CommandHookAdapterDefinition,
 	type CommandHookSource,
-	FULL_COMMAND_HOOK_EVENTS,
 	discoverCommandHookResources,
+	FULL_COMMAND_HOOK_EVENTS,
 } from "../hook-adapters/discovery.js"
 
 export const KIMCHI_HOOKS_ADAPTER_DEFINITION: CommandHookAdapterDefinition = {

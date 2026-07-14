@@ -938,7 +938,7 @@ async function handleConfirm(
 		const prompter = resolvePrompter(opts.ctx)
 		if (!prompter) return { block: true, reason: "No UI to confirm permission" }
 
-		if (opts.pi?.events) {
+		if (opts.pi?.events?.emit) {
 			opts.pi.events.emit("notification", {
 				notification_type: "permission_prompt",
 				tool_name: event.toolName,
@@ -974,7 +974,7 @@ export async function handleCompoundConfirm(
 		const prompter = resolvePrompter(opts.ctx)
 		if (!prompter) return { block: true, reason: "No UI to confirm permission" }
 
-		if (opts.pi?.events) {
+		if (opts.pi?.events?.emit) {
 			opts.pi.events.emit("notification", {
 				notification_type: "permission_prompt",
 				tool_name: event.toolName,
