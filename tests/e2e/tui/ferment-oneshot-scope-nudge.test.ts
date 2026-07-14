@@ -139,14 +139,25 @@ test("--ferment-oneshot survives two text-only stops and completes scoping on th
 			// Stage 8: assert the third response actually invoked scope_ferment.
 			// We check the recorded requests for a tool_call to scope_ferment —
 			// do NOT treat prose mentioning the tool as success.
-			const scopeToolCallBodies = chatPosts.filter((r) => {
+			const scopeToolCallBodies = chatPosts.map((r) => {
 				const body = typeof r.body === "string" ? r.body : JSON.stringify(r.body ?? "")
-				return body.includes('"scope_ferment"') && body.includes('"tool_calls"')
+				return body.includes('"scope_ferment"') && body.includes('"tool_calls"') ? body : undefined
 			})
-			expect(scopeToolCallBodies.length).toBeGreaterThanOrEqual(1)
+			const scopeToolCallBody = scopeToolCallBodies.find((body) => body !== undefined)
+			expect(scopeToolCallBody).toBeDefined()
 			trace.step("scope_ferment tool call was actually sent — not just prose")
 
-			// Stage 9: prove the tool succeeded by reading the persisted Ferment,
+			// The request containing the assistant's scope_ferment tool call has
+			// cumulative conversation history. Therefore each lifecycle-stop retry
+			// instruction must appear exactly once in that request: one instruction
+			// for each preceding text-only stop, with no duplicate scheduling.
+			const firstRetryInstructions = scopeToolCallBody?.match(/previous turn stopped without a tool call/g) ?? []
+			const secondRetryInstructions = scopeToolCallBody?.match(/Lifecycle action still pending \(retry 2\/2\)/g) ?? []
+			expect(firstRetryInstructions).toHaveLength(1)
+			expect(secondRetryInstructions).toHaveLength(1)
+			trace.step("exactly one lifecycle retry instruction recorded per text-only stop")
+
+			// Stage 10: prove the tool succeeded by reading the persisted Ferment,
 			// rather than inferring success from the model's scripted follow-up.
 			const fermentsDir = join(fixture.workDir, ".kimchi", "ferments")
 			const deadline = Date.now() + STREAM_TIMEOUT_MS

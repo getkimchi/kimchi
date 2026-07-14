@@ -573,7 +573,12 @@ export function registerFermentEvents(
 			// action independently.
 			if (isOneShot) {
 				const errorFerment = runtime.getActive()
-				if (errorFerment && (errorFerment.status === "running" || errorFerment.status === "planned")) {
+				const canRecover =
+					errorFerment &&
+					errorFerment.status !== "paused" &&
+					errorFerment.status !== "complete" &&
+					errorFerment.status !== "abandoned"
+				if (canRecover) {
 					scheduleNextFermentAction(pi, errorFerment, runtime, {
 						tag: "Error recovery",
 						deliverAs: "steer",

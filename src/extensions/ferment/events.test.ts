@@ -780,6 +780,69 @@ describe("turn_end lifecycle obligation guard", () => {
 })
 
 describe("turn_end error recovery in one-shot mode", () => {
+	it("recovers a draft ferment without consuming its lifecycle-stop retry budget", async () => {
+		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-oneshot-draft-error-")))
+		const draft = storage.create("Draft Error Ferment")
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: () => storage,
+			getContinuationPolicy: () => "automated",
+			isAutomatedContinuationEnabled: () => true,
+		}
+		runtime.setActive(draft)
+
+		const { handlers, pi } = createPi()
+		;(pi.getFlag as ReturnType<typeof vi.fn>).mockImplementation((name: string) =>
+			name === "ferment-oneshot" ? true : undefined,
+		)
+		registerFermentEvents(pi, runtime)
+		const turnEnd = handlers.get("turn_end")
+		if (!turnEnd) throw new Error("turn_end handler was not registered")
+		const ctx = createContext({ hasUI: false })
+
+		await turnEnd(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "error",
+					errorMessage: "Connection error: socket closed",
+					content: [],
+				},
+			},
+			ctx,
+		)
+
+		const errorRecoveryCalls = vi
+			.mocked(pi.sendMessage)
+			.mock.calls.filter(([message]) => message.customType === "ferment_continuation_nudge")
+		expect(errorRecoveryCalls).toHaveLength(1)
+		expect(errorRecoveryCalls[0]?.[0]).toEqual(
+			expect.objectContaining({
+				content: [expect.objectContaining({ text: expect.stringContaining("scope: collect") })],
+				details: expect.objectContaining({ action: "scope" }),
+			}),
+		)
+		expect(storage.get(draft.id)?.status).toBe("draft")
+
+		vi.mocked(pi.sendMessage).mockClear()
+		await turnEnd({ message: { role: "assistant", stopReason: "stop", content: [] } }, ctx)
+		await turnEnd({ message: { role: "assistant", stopReason: "stop", content: [] } }, ctx)
+		await turnEnd({ message: { role: "assistant", stopReason: "stop", content: [] } }, ctx)
+
+		const lifecycleRetryCalls = vi
+			.mocked(pi.sendMessage)
+			.mock.calls.filter(([message]) => message.customType === "ferment_continuation_nudge")
+		const exhaustionCalls = vi
+			.mocked(pi.sendMessage)
+			.mock.calls.filter(
+				([message]) =>
+					message.customType === "ferment_breadcrumb" &&
+					(message.details as { variant?: string } | undefined)?.variant === "warning",
+			)
+		expect(lifecycleRetryCalls).toHaveLength(2)
+		expect(exhaustionCalls).toHaveLength(1)
+	})
+
 	it('does not pause the ferment when stopReason is "error" in one-shot mode', async () => {
 		const { storage, ferment } = setupScopedRunningFerment("ferment-oneshot-error-", "One-shot Error Ferment")
 		const runtime: FermentRuntime = {
