@@ -66,7 +66,7 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		kind: "extensions",
 		label: "Bash-tool guard",
 		description:
-			"Steer the LLM away from using `bash` (cat/sed/echo) for tasks that have a dedicated read/edit/write tool. Catches read/edit/write anti-patterns and suggests the right tool.",
+			"Steer the LLM away from using `bash` (cat/sed/echo) for tasks that have a dedicated read/edit/write tool, and remind it that `cd` does not persist between bash calls. Catches read/edit/write anti-patterns and suggests the right tool.",
 		defaultEnabled: true,
 	},
 	{
