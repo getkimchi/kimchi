@@ -56,7 +56,13 @@
 // ---------------------------------------------------------------------------
 
 /** Discriminating label baked into the profile name (mode + phase). */
-export type ToolProfile = "idle" | "worker" | "planning-adhoc" | "planning-ferment" | "implementation-ferment"
+export type ToolProfile =
+	| "idle"
+	| "worker"
+	| "planning-adhoc"
+	| "planning-ferment"
+	| "implementation-ferment"
+	| "orchestrator"
 
 /** Which execution mode gates this tool's availability. */
 export type ToolMode = "shared" | "adhoc" | "ferment"
@@ -207,6 +213,30 @@ export const WRITE_TOOLS: ToolEntry[] = [
 	{ name: "get_subagent_result", modes: ["ferment"] },
 ]
 
+/**
+ * Orchestrator-only tools — the coordination surface when multi-model mode
+ * is active and no ferment is controlling the toolset.
+ *
+ * The orchestrator cannot read files, write code, run commands, or search the
+ * web directly. All interaction with the world goes through sub-agents.
+ * Todo tools are included so the orchestrator can track its own plan.
+ * `questionnaire` is included for interactive clarification (no-op in headless).
+ */
+export const ORCHESTRATOR_TOOLS: ToolEntry[] = [
+	// Delegation tools
+	{ name: "Agent", modes: ["shared"] },
+	{ name: "resume_subagent", modes: ["shared"] },
+	{ name: "get_subagent_result", modes: ["shared"] },
+	// Todo tracking
+	{ name: "create_todos", modes: ["shared"] },
+	{ name: "update_todos", modes: ["shared"] },
+	{ name: "add_todo", modes: ["shared"] },
+	{ name: "mark_todo", modes: ["shared"] },
+	{ name: "clear_todos", modes: ["shared"] },
+	// User interaction (interactive mode; no-op in headless)
+	{ name: "questionnaire", modes: ["shared"], routing: "interactive" },
+]
+
 // ---------------------------------------------------------------------------
 // Derivation
 // ---------------------------------------------------------------------------
@@ -257,5 +287,8 @@ export function getToolsForProfile(profile: ToolProfile): ToolEntry[] {
 				// All write tools in ferment implementation mode
 				...WRITE_TOOLS.filter((t) => t.modes.includes("ferment")),
 			]
+
+		case "orchestrator":
+			return ORCHESTRATOR_TOOLS
 	}
 }

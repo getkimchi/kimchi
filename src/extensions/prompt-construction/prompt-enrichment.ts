@@ -37,6 +37,7 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
 import { isResourceEnabled } from "../../resources/store.js"
+import * as ToolProfileManager from "../../shared/planning/tool-profile-manager.js"
 import { getKimchiProjectSkillPaths } from "../../skill-paths.js"
 import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
@@ -48,6 +49,7 @@ import {
 	getConfiguredNativeSkillNames,
 	getConfiguredSkillResourcePaths,
 } from "../claude-code-skills/definition.js"
+import { hasActiveFerment } from "../ferment/state.js"
 import { bumpStallCounter } from "../ferment/todo-sync.js"
 import { getProcessOrchestratorRef, setProcessOrchestratorRef } from "../kimchi-process.js"
 import { getMultiModelEnabled, setAndPersistMultiModelEnabled } from "../multi-model.js"
@@ -288,6 +290,32 @@ export default function (skillPaths: string[]) {
 							console.warn("failed to force orchestrator model:", err)
 						}
 					}
+				}
+
+				// Apply the orchestrator tool restriction when multi-model is active
+				// and no ferment is controlling the toolset. Ferment applies its own
+				// profiles via applyFermentRuntimeToolProfile; the snapshot layer
+				// prevents this from overriding ferment's toolset.
+				if (multiModelEnabled && !hasActiveFerment()) {
+					ToolProfileManager.apply("orchestrator", "adhoc", pi)
+				}
+			})
+
+			// Capture the session manager for turn_start.
+			let capturedSessionManager: Pick<
+				import("@earendil-works/pi-coding-agent").SessionManager,
+				"getSessionId" | "getEntries"
+			> | null = null
+			pi.on("session_start", async (_event, ctx) => {
+				if (ctx.sessionManager) {
+					capturedSessionManager = ctx.sessionManager
+				}
+			})
+
+			// Re-apply the orchestrator profile on every turn start.
+			pi.on("turn_start", async () => {
+				if (capturedSessionManager && getMultiModelEnabled(capturedSessionManager) && !hasActiveFerment()) {
+					ToolProfileManager.apply("orchestrator", "adhoc", pi)
 				}
 			})
 

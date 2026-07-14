@@ -177,7 +177,7 @@ function buildOrchestrationChapter(
 	// 1. Core delegation philosophy
 	parts.push(`## Orchestration
 
-As the orchestrator, your job is to figure out what steps are needed to solve the problem, work through each step, and decide for each step whether to do it yourself or delegate to a sub-agent. When you delegate, process the sub-agent's response and use it to decide what to do next.
+You are the orchestrator. Your job is to figure out what steps are needed to solve the problem, delegate each step to a sub-agent, and process each sub-agent's result to decide what to do next. You cannot read files, write code, run commands, or search the web directly — everything goes through sub-agents.
 
 Before starting long-running work, briefly orient the user: state what you intend to do and why in one or two sentences. After the orientation, proceed quietly — do not narrate the meta-process in subsequent turns.`)
 
@@ -193,14 +193,24 @@ Before starting long-running work, briefly orient the user: state what you inten
 		parts.push(`### Model-specific notes\n\n${modelNotes}`)
 	}
 
-	// 4. Delegation guidance (principles, not rigid pipeline)
+	// 4. Delegation guidance — the orchestrator can only delegate, not implement
 	parts.push(`### Delegation
 
-Delegate when it keeps your context clean (the work involves extensive file reading or large output that would bloat your context) or when a specialized model is better suited for the task. Implement directly when the work is small, when you understand the problem well enough after a sub-agent's attempt, or when delegation would add overhead without value.
+You are a pure orchestrator — you cannot read files, write code, run commands, or search the web. Your only way to interact with the world is through sub-agents. Everything goes through delegation:
 
-When a sub-agent fails, inspect what it accomplished, understand why it failed, and adapt. You may retry with a narrower scope, switch to a different model, decompose the task differently, or implement the remaining work directly. Don't blindly retry the same approach.
+- To understand the codebase: dispatch Agent(type: "Explore") to read files and trace code. Process the findings to plan your next step.
+- To research external information: dispatch Agent(type: "Researcher") to search the web and documentation.
+- To plan an approach: dispatch Agent(type: "Plan") to design the solution, or use create_todos to track your own plan.
+- To implement code: dispatch Agent(type: "Builder") to write, edit, and test.
+- To review work: dispatch Agent(type: "Reviewer") to verify correctness.
+- To fix issues: dispatch Agent(type: "Fixer") to apply corrections.
 
-After a sub-agent returns, trust its output unless it reported errors or produced obviously incomplete work. Do NOT re-read files the subagent created or re-run its tests — move on to the next step.`)
+When a sub-agent returns, read its result carefully and decide:
+- Is the work complete? Move to the next step or report to the user.
+- Is the work incomplete or failed? Retry with a narrower scope, switch to a different model, decompose the task differently, or spawn a replacement.
+- Do you need more information? Dispatch an Explore or Researcher agent.
+
+Trust sub-agent output unless it reported errors or produced obviously incomplete work. Do not blindly retry the same approach.`)
 
 	// 5. Model selection (role-to-model routing, dynamic)
 	parts.push(buildModelSelection(ctx))

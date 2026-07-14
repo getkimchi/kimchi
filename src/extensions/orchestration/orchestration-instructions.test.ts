@@ -70,9 +70,9 @@ describe("resolveOrchestrationInstructions", () => {
 			roles: DEFAULT_MODEL_ROLES,
 		})
 		expect(result).toContain("### Delegation")
-		expect(result).toContain("keeps your context clean")
-		expect(result).toContain("Implement directly when the work is small")
-		expect(result).toContain("Don't blindly retry the same approach")
+		expect(result).toContain("You cannot read files, write code")
+		expect(result).toContain("everything goes through sub-agents")
+		expect(result).toContain("Do not blindly retry the same approach")
 	})
 
 	it("exempts Explore from markdown artifact handoff rules", () => {
