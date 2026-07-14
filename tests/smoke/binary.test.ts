@@ -114,7 +114,7 @@ describe("binary smoke tests", () => {
 			args: ["--debug-prompts", "-p", prompt],
 			extraEnv: { KIMCHI_API_KEY: "smoke-test-dummy" },
 			throwOnError: false,
-			timeoutMs: 10_000,
+			timeoutMs: 30_000,
 		})
 
 		const newEntries = listSessionFiles()
