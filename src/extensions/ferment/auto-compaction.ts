@@ -368,6 +368,55 @@ function isExpectedCompactionError(error: Error): boolean {
 	return EXPECTED_COMPACTION_ERROR_MESSAGES.some((message) => error.message.includes(message))
 }
 
+/**
+ * Fire `ctx.inlineCompact` with the shared ferment compaction options (compactor
+ * model override, thinking level, keepRecent floor, force). Assumes the caller
+ * has already verified `ctx.inlineCompact` is a function.
+ *
+ * Never throws: returns `{ result }` on success or `{ error }` on failure. The
+ * caller owns in-flight bookkeeping, breadcrumbs, and continuation scheduling so
+ * the stage-boundary and mid-turn paths stay free to diverge on those while
+ * sharing the one call that must not drift — the `inlineCompact` invocation.
+ */
+async function invokeInlineCompaction(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	customInstructions: string,
+	options: StageCompactionOptions,
+): Promise<{ result?: CompactionResult; error?: Error }> {
+	const inlineCompact = ctx.inlineCompact
+	if (typeof inlineCompact !== "function") {
+		return { error: new Error("inlineCompact unavailable") }
+	}
+	const compactorModel = resolveCompactorModel(ctx)
+	if (compactorModel.fallbackWarning) {
+		tryPiAction(() => {
+			pi.appendEntry("ferment_breadcrumb", { text: compactorModel.fallbackWarning })
+		})
+	}
+	try {
+		const result = await inlineCompact({
+			customInstructions,
+			// Optional override so compaction's summarization call can run on a
+			// separate (e.g. cheaper) model instead of the session's active one.
+			// Undefined when unconfigured — inlineCompact falls back to the session
+			// model exactly as before.
+			model: compactorModel.model,
+			thinkingLevel: options.thinkingLevel,
+			keepRecentTokens: Math.max(
+				options.minKeepRecentTokens,
+				Math.floor((ctx.model?.contextWindow ?? 0) * options.keepRecentWindowFraction),
+			),
+			// Ferment compaction is event-driven (stage boundary / mid-turn overrun),
+			// not threshold driven. Force keeps automated runs compacting proactively.
+			force: true,
+		})
+		return { result }
+	} catch (error) {
+		return { error: error instanceof Error ? error : new Error(String(error)) }
+	}
+}
+
 // ─── Main entry point ─────────────────────────────────────────────────────────
 
 /**
@@ -540,38 +589,16 @@ async function triggerCompactionForPending(
 		// is a valid cut point, so the cut lands here and the next stage keeps
 		// exactly what it needs: compaction summary + plan handoff.
 		appendHandoffEntry(undefined, undefined, true)
-		const compactorModel = resolveCompactorModel(ctx)
-		if (compactorModel.fallbackWarning) {
-			tryPiAction(() => {
-				pi.appendEntry("ferment_breadcrumb", { text: compactorModel.fallbackWarning })
-			})
-		}
-		try {
-			const result = await ctx.inlineCompact({
-				customInstructions,
-				// Optional override so compaction's summarization call can run on a
-				// separate (e.g. cheaper) model instead of the session's active one.
-				// Undefined when unconfigured/unavailable — inlineCompact falls back
-				// to the session model exactly as before.
-				model: compactorModel.model,
-				thinkingLevel: options.thinkingLevel,
-				keepRecentTokens: Math.max(
-					options.minKeepRecentTokens,
-					Math.floor((ctx.model?.contextWindow ?? 0) * options.keepRecentWindowFraction),
-				),
-				// Ferment compaction is stage-boundary driven, not threshold driven.
-				// Force keeps automated runs compacting proactively between stages.
-				force: true,
-			})
-			runtime.clearCompactionInFlight(fermentId)
+		const { result, error } = await invokeInlineCompaction(pi, ctx, customInstructions, options)
+		runtime.clearCompactionInFlight(fermentId)
+		if (result) {
 			tryPiAction(() => {
 				pi.appendEntry("ferment_breadcrumb", {
 					text: `Stage compaction complete: ${(result.tokensBefore ?? 0).toLocaleString()} tokens before compaction`,
 				})
 			})
 			scheduleContinuationBestEffort()
-		} catch (error) {
-			runtime.clearCompactionInFlight(fermentId)
+		} else {
 			const message = error instanceof Error ? error.message : String(error)
 			// The handoff entry is already appended; persist the skip reason
 			// separately so headless runs (where ui.notify is a no-op) remain
@@ -614,14 +641,20 @@ async function triggerCompactionForPending(
  * path is driven directly by turn_end token usage and must resume the
  * in-progress step after compaction.
  *
+ * Uses `ctx.inlineCompact` when available (transparent, no run abort) and falls
+ * back to the legacy `ctx.compact` otherwise. One-shot runs never compact
+ * mid-turn: an overrun there is a planning-quality signal, so it is recorded as
+ * a planning failure instead of papered over.
+ *
  * @param totalTokens - Current session token count from the assistant usage event.
  */
-export function maybeTriggerMidTurnFermentCompaction(
+export async function maybeTriggerMidTurnFermentCompaction(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
 	runtime: FermentRuntime,
 	totalTokens: number,
-): void {
+	options: StageCompactionOptions = DEFAULT_STAGE_COMPACTION_OPTIONS,
+): Promise<void> {
 	const isOneShot = readFermentOneshotFlag(pi)
 	if (isOneShot === undefined) return
 	if (isOneShot) {
@@ -664,41 +697,67 @@ export function maybeTriggerMidTurnFermentCompaction(
 	runtime.markCompactionInFlight(fermentId)
 
 	const customInstructions = buildMidTurnCustomInstructions(activeFerment, activePhase, activeStep)
+
+	/** Resume the in-progress step after a successful compaction: the LLM's
+	 *  next-action reasoning was discarded with the old history, so steer it
+	 *  back into the exact step that was running when the context filled. */
+	function resumeInProgressStep(result: CompactionResult): void {
+		const freshFerment = runtime.getStorage().get(fermentId)
+		if (!freshFerment) return
+
+		const { phase, step } = findActivePhaseAndStep(freshFerment)
+		tryPiAction(() => {
+			pi.appendEntry("ferment_breadcrumb", {
+				text: `Mid-turn compaction resume: ferment "${freshFerment.name}" · phase ${phase?.index ?? "?"}/${freshFerment.phases.length} "${phase?.name ?? "unknown"}" · step ${step?.index ?? "?"}/${phase?.steps.length ?? 0} · ${(result.tokensBefore ?? 0).toLocaleString()} tokens before compaction`,
+			})
+		})
+
+		if (freshFerment.status === "running") {
+			runtime.setActive(freshFerment)
+			scheduleNextFermentAction(pi, freshFerment, runtime, {
+				tag: "Auto-compaction continuation",
+				deliverAs: "steer",
+			})
+		}
+	}
+
 	function handleCompactionFailure(error: unknown): void {
 		runtime.clearCompactionInFlight(fermentId)
 		if (error instanceof Error && !isExpectedCompactionError(error)) {
 			ctx.ui?.notify?.(`Mid-turn compaction failed: ${error.message}`, "warning")
 			// ui.notify is a no-op in headless runs — persist the failure so
 			// archives show why the context kept growing past the threshold.
-			pi.appendEntry("ferment_breadcrumb", {
-				text: `Mid-turn compaction failed: ${error.message}`,
+			tryPiAction(() => {
+				pi.appendEntry("ferment_breadcrumb", {
+					text: `Mid-turn compaction failed: ${error.message}`,
+				})
 			})
 		}
 	}
 
+	// Preferred path: transparent inline compaction (no run abort). Mirrors the
+	// stage-boundary path's invocation via the shared helper so the two cannot
+	// drift; the only differences are the mid-turn instructions and the
+	// step-resume continuation below.
+	if (typeof ctx.inlineCompact === "function") {
+		const { result, error } = await invokeInlineCompaction(pi, ctx, customInstructions, options)
+		if (result) {
+			runtime.clearCompactionInFlight(fermentId)
+			resumeInProgressStep(result)
+		} else {
+			handleCompactionFailure(error)
+		}
+		return
+	}
+
+	// Legacy fallback: ctx.compact aborts the current run, so the step resumes on
+	// the next user turn rather than transparently.
 	try {
 		ctx.compact({
 			customInstructions,
 			onComplete: (result: CompactionResult) => {
 				runtime.clearCompactionInFlight(fermentId)
-
-				const freshFerment = runtime.getStorage().get(fermentId)
-				if (!freshFerment) return
-
-				const { phase, step } = findActivePhaseAndStep(freshFerment)
-				tryPiAction(() => {
-					pi.appendEntry("ferment_breadcrumb", {
-						text: `Mid-turn compaction resume: ferment "${freshFerment.name}" · phase ${phase?.index ?? "?"}/${freshFerment.phases.length} "${phase?.name ?? "unknown"}" · step ${step?.index ?? "?"}/${phase?.steps.length ?? 0} · ${(result.tokensBefore ?? 0).toLocaleString()} tokens before compaction`,
-					})
-				})
-
-				if (freshFerment.status === "running") {
-					runtime.setActive(freshFerment)
-					scheduleNextFermentAction(pi, freshFerment, runtime, {
-						tag: "Auto-compaction continuation",
-						deliverAs: "steer",
-					})
-				}
+				resumeInProgressStep(result)
 			},
 			onError: handleCompactionFailure,
 		})

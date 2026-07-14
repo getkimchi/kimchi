@@ -1300,6 +1300,73 @@ describe("maybeTriggerMidTurnFermentCompaction", () => {
 		expect(runtime.isCompactionInFlight(ferment.id)).toBe(false)
 		expect(ctx.ui?.notify).toHaveBeenCalledWith(expect.stringContaining("sync compact failure"), "warning")
 	})
+
+	it("prefers ctx.inlineCompact over ctx.compact and schedules resume on success", async () => {
+		const ferment = makeFermentWithPhase()
+		ferment.phases[0].status = "active"
+		ferment.phases[0].steps[0].status = "running"
+		const runtime = makeMidTurnRuntime(ferment)
+		const pi = makePi()
+		const ctx = makeMidTurnCtx()
+		ctx.inlineCompact = vi.fn(async () => ({
+			summary: "compacted",
+			firstKeptEntryId: "entry-1",
+			tokensBefore: 88_000,
+		}))
+
+		await maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, CONTEXT_WINDOW - 1)
+
+		expect(ctx.compact).not.toHaveBeenCalled()
+		expect(ctx.inlineCompact).toHaveBeenCalledWith(
+			expect.objectContaining({
+				customInstructions: expect.stringContaining("In-progress step"),
+				force: true,
+				// 5% of the 100k window is 5k — clamped up to the 20k floor.
+				keepRecentTokens: 20_000,
+				thinkingLevel: "off",
+			}),
+		)
+		expect(runtime.isCompactionInFlight(ferment.id)).toBe(false)
+		expect(pi.appendEntry).toHaveBeenCalledWith(
+			"ferment_breadcrumb",
+			expect.objectContaining({ text: expect.stringContaining("Mid-turn compaction resume") }),
+		)
+	})
+
+	it("clears in-flight and notifies when inlineCompact rejects with an unexpected error", async () => {
+		const ferment = makeFermentWithPhase()
+		ferment.phases[0].status = "active"
+		ferment.phases[0].steps[0].status = "running"
+		const runtime = makeMidTurnRuntime(ferment)
+		const pi = makePi()
+		const ctx = makeMidTurnCtx()
+		ctx.inlineCompact = vi.fn(async () => {
+			throw new Error("disk full")
+		})
+
+		await maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, CONTEXT_WINDOW - 1)
+
+		expect(ctx.compact).not.toHaveBeenCalled()
+		expect(runtime.isCompactionInFlight(ferment.id)).toBe(false)
+		expect(ctx.ui?.notify).toHaveBeenCalledWith(expect.stringContaining("disk full"), "warning")
+	})
+
+	it("clears in-flight without notifying when inlineCompact rejects with an expected error", async () => {
+		const ferment = makeFermentWithPhase()
+		ferment.phases[0].status = "active"
+		ferment.phases[0].steps[0].status = "running"
+		const runtime = makeMidTurnRuntime(ferment)
+		const pi = makePi()
+		const ctx = makeMidTurnCtx()
+		ctx.inlineCompact = vi.fn(async () => {
+			throw new Error("no summarizable messages")
+		})
+
+		await maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, CONTEXT_WINDOW - 1)
+
+		expect(runtime.isCompactionInFlight(ferment.id)).toBe(false)
+		expect(ctx.ui?.notify).not.toHaveBeenCalled()
+	})
 })
 
 describe("in-flight tool-call guard", () => {

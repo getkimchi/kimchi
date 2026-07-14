@@ -633,8 +633,15 @@ export function registerFermentEvents(
 		// Mid-turn guard: if the context crossed the auto-compaction threshold
 		// while a step is still in progress, compact now and resume the step.
 		// Only acts on tool-use turns; stop/error/aborted are handled elsewhere.
+		// Awaited so the compacted session and step-resume nudge are in place
+		// before pi-mono builds the next turn's context (see note below); wrapped
+		// because this handler has no outer catch and must never reject out.
 		if (event.message.role === "assistant" && event.message.stopReason === "toolUse") {
-			maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, event.message.usage?.totalTokens ?? 0)
+			try {
+				await maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, event.message.usage?.totalTokens ?? 0)
+			} catch (err) {
+				ctx.ui?.notify?.(`Mid-turn compaction error: ${err instanceof Error ? err.message : String(err)}`, "warning")
+			}
 		}
 
 		// After a turn ends, `prepareNextTurn` in pi-mono builds the next turn's
