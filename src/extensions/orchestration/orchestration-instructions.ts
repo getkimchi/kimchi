@@ -183,9 +183,9 @@ ${renderDelegationThinkingLevelTable()}
 
 **Self-performed work:** when you decide to do a phase yourself instead of delegating, call \`set_phase\` with the same phase-scoped \`thinking\` level you would have passed to an Agent. Use the \`simple\` column for quick/small work and the \`complex\` column for multi-step or subtle work. This updates your own reasoning level for the phase; reset to a lower coordination level when you go back to delegating.
 
-**Retry escalation:** when spawning a replacement or \`resume_subagent\` after \`budget_exhausted\` or a stalled approach, bump \`thinking\` one tier from the prior call (see retry column). If you are redoing self-performed work, bump the \`set_phase\` \`thinking\` value the same way. Do not exceed the per-scope ceiling (explore max medium, research max high, build max xhigh). Combine with model-tier escalation when appropriate.
+**Retry escalation:** when spawning a replacement or \`resume_subagent\` after \`budget_exhausted\` or a stalled approach, bump \`thinking\` one tier from the prior call (see retry column). If you are redoing self-performed work, bump the \`set_phase\` \`thinking\` value the same way. Do not exceed the per-scope ceiling shown in the retry column. Combine with model-tier escalation when appropriate.
 
-**Non-reasoning models:** if the target model does not support extended thinking, use \`off\` or the highest level the model supports — never request levels the model cannot run.`
+**Non-reasoning models:** if the target model shows Extended thinking: no in Your team above, use \`off\` or the highest level the model supports — never request levels the model cannot run.`
 
 const TOKEN_BUDGETS = `### Token budgets and turn caps
 
@@ -451,6 +451,7 @@ function defaultDescription(ref: string, roleNames: string[]): string {
 interface ResolvedModelMeta {
 	tier: ModelTier
 	vision: boolean
+	reasoning: boolean
 	description: string
 }
 
@@ -485,9 +486,10 @@ function resolveModelMeta(
 
 	const tier = custom?.tier ?? descriptor?.capabilities.tier ?? "standard"
 	const vision = custom?.vision ?? descriptor?.capabilities.vision ?? false
+	const reasoning = custom?.reasoning ?? descriptor?.capabilities.reasoning ?? false
 	const description = custom?.description ?? descriptor?.capabilities.description ?? defaultDescription(ref, roleNames)
 
-	return { tier, vision, description }
+	return { tier, vision, reasoning, description }
 }
 
 function formatModelEntry(
@@ -504,7 +506,8 @@ function formatModelEntry(
 	const meta = resolveModelMeta(ref, registry, customConfigs, roles)
 	const tierInfo = `Tier: ${meta.tier}`
 	const visionInfo = ` | Vision: ${meta.vision ? "yes" : "no"}`
-	const metaSuffix = ` — ${tierInfo}${visionInfo}`
+	const reasoningInfo = ` | Extended thinking: ${meta.reasoning ? "yes" : "no"}`
+	const metaSuffix = ` — ${tierInfo}${visionInfo}${reasoningInfo}`
 
 	const lines = [`- **${displayName}** (id: \`${ref}\`${providerInfo})${metaSuffix}`]
 	const roleLabel = teamRole?.toLowerCase()
@@ -535,7 +538,9 @@ function formatCurrentModelCapabilities(
 	const ownRoles = resolveModelRoleNames(currentModelId, roles)
 
 	const lines: string[] = []
-	lines.push(`Tier: ${meta.tier} | Vision: ${meta.vision ? "yes" : "no"}`)
+	lines.push(
+		`Tier: ${meta.tier} | Vision: ${meta.vision ? "yes" : "no"} | Extended thinking: ${meta.reasoning ? "yes" : "no"}`,
+	)
 	lines.push(meta.description)
 	lines.push("")
 

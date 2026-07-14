@@ -130,6 +130,7 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 		"kimi-k2.6",
 		{
 			vision: true,
+			reasoning: true,
 			tier: "heavy",
 			description: KIMI_K26_DESCRIPTION,
 			guidelines: guidelinesMap({
@@ -149,6 +150,7 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 		"kimi-k2.7",
 		{
 			vision: true,
+			reasoning: true,
 			tier: "heavy",
 			description: KIMI_K27_DESCRIPTION,
 			guidelines: guidelinesMap({
@@ -165,6 +167,7 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 		"minimax-m3",
 		{
 			vision: true,
+			reasoning: true,
 			tier: "heavy",
 			description: MINIMAX_M3_DESCRIPTION,
 			guidelines: guidelinesMap({
@@ -180,6 +183,7 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 		"minimax-m2.7",
 		{
 			vision: false,
+			reasoning: true,
 			tier: "standard",
 			description: MINIMAX_M27_DESCRIPTION,
 			guidelines: guidelinesMap({
@@ -197,6 +201,7 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 		"nemotron-3-ultra-fp4",
 		{
 			vision: false,
+			reasoning: false,
 			tier: "light",
 			description: NEMOTRON_3_ULTRA_DESCRIPTION,
 			guidelines: guidelinesMap({
