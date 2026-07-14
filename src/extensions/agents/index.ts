@@ -512,16 +512,11 @@ export async function runWithOverlay<T>(description: string, fn: () => Promise<T
 	activeWidget?.ensureTimer()
 	activeWidget?.update()
 	try {
-		const result = await fn()
+		return await fn()
+	} finally {
 		activeManager.completeTransient(id)
 		activeWidget?.markFinished(id)
 		activeWidget?.update()
-		return result
-	} catch (err) {
-		activeManager.completeTransient(id)
-		activeWidget?.markFinished(id)
-		activeWidget?.update()
-		throw err
 	}
 }
 
@@ -556,30 +551,29 @@ export async function spawnGraderAgent(
 		// without a persisted session, it just won't have a transcript file.
 	}
 
+	// Allow the grader to be cancelled when the parent session shuts down.
+	const abortController = new AbortController()
+
 	const record = await activeManager.spawnAndWait(pi, ctx, AGENT_GRADER_TYPE, prompt, {
 		description: "Ferment grader",
 		visibility: "system",
 		sessionFile,
 		sessionDir,
+		signal: abortController.signal,
 	})
 	// Collect all assistant text from the session — the grade JSON may appear
 	// in an earlier turn, not just the final response.
 	let fullText = record.result ?? ""
 	if (record.session) {
-		const messages = record.session.messages ?? []
-		const assistantTexts: string[] = []
-		for (const msg of messages) {
-			if (msg.role !== "assistant") continue
-			const content = msg.content
-			if (!Array.isArray(content)) continue
-			for (const c of content) {
-				if (typeof c === "object" && c !== null && "type" in c && c.type === "text" && "text" in c) {
-					const t = c.text
-					if (typeof t === "string" && t.trim()) assistantTexts.push(t)
-				}
-			}
-		}
-		fullText = assistantTexts.join("\n\n") || fullText
+		// Collect all assistant text — the grade JSON may appear in an earlier
+		// turn, not just the final response.
+		const assistantText = (record.session?.messages ?? [])
+			.filter((msg) => msg.role === "assistant")
+			.flatMap((msg) => msg.content)
+			.filter((part): part is { type: "text"; text: string } => part.type === "text")
+			.map((part) => part.text)
+			.join("\n\n")
+		fullText = assistantText || fullText
 	}
 	return { text: fullText, status: record.status }
 }
