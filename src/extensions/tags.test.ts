@@ -51,6 +51,7 @@ function makePi(): ExtensionAPI & {
 		setActiveTools: (next: string[]) => {
 			activeTools = next
 		},
+		setThinkingLevel: vi.fn(),
 		on: (event: string, handler: Handler) => {
 			const existing = handlers.get(event) ?? []
 			existing.push(handler)
@@ -176,6 +177,21 @@ describe("tags system prompt block", () => {
 			content: [{ type: "text", text: "Phase changed to: explore" }],
 			details: { phase: "explore" },
 		})
+		expect(pi.setThinkingLevel).not.toHaveBeenCalled()
+	})
+
+	it("set_phase updates thinking level when performing a phase itself", async () => {
+		const pi = makeTagsPi()
+
+		const result = await pi.tools
+			.get("set_phase")
+			?.execute("call-1", { phase: "plan", thinking: "high" }, undefined, undefined, { hasUI: false })
+
+		expect(result).toMatchObject({
+			content: [{ type: "text", text: "Phase changed to: plan" }],
+			details: { phase: "plan", thinking: "high" },
+		})
+		expect(pi.setThinkingLevel).toHaveBeenCalledWith("high")
 	})
 })
 

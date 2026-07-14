@@ -89,6 +89,20 @@ describe("ModelRegistry — known models only", () => {
 		const registry = new ModelRegistry([metadata(id, { display_name: "" })])
 		expect(registry.getAll()[0].name.length).toBeGreaterThan(0)
 	})
+
+	it("propagates reasoning capability from API metadata into descriptor", () => {
+		const id = ACTIVE_IDS[0]
+		const registry = new ModelRegistry([metadata(id, { reasoning: true })])
+		const model = registry.getAll()[0]
+		expect(model.capabilities.reasoning).toBe(true)
+	})
+
+	it("defaults reasoning to false when API metadata says false", () => {
+		const id = ACTIVE_IDS[0]
+		const registry = new ModelRegistry([metadata(id, { reasoning: false })])
+		const model = registry.getAll()[0]
+		expect(model.capabilities.reasoning).toBe(false)
+	})
 })
 
 describe("ModelRegistry — unknown model in API", () => {

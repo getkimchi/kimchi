@@ -110,7 +110,7 @@ export const AGENT_TOOL_GUIDELINES = `Guidelines:
 - Provide clear, detailed prompts so the agent can work autonomously.
 - Agent results are returned as text — summarize them for the user.
 - Use resume_subagent to continue a previous agent's work; get_subagent_result for background status; steer_subagent for mid-run steering.
-- Use thinking to request an extended thinking level when the selected agent profile does not fix one.
+- Use thinking to request an extended thinking level on Agent calls per the Orchestration **Thinking levels** table.
 - Use token_budget, max_duration, and inherit_context per the Orchestration section.`
 
 export const AGENT_MODEL_PARAMETER_DESCRIPTION =
@@ -1049,7 +1049,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 				thinking: Type.Optional(
 					Type.String({
 						description:
-							"Requested thinking level: off, minimal, low, medium, high, xhigh. Agent profiles with fixed thinking keep their profile value.",
+							"Requested thinking level: off, minimal, low, medium, high, xhigh. Orchestrator-provided values override agent profile defaults. Omit only when Orchestration does not require an explicit level.",
 					}),
 				),
 				max_turns: Type.Optional(

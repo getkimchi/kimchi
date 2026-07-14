@@ -229,6 +229,18 @@ describe("resolveOrchestrationInstructions", () => {
 		expect(result).toContain("error propagation path")
 	})
 
+	it("includes thinking levels guidance and delegation table", () => {
+		const result = resolveAsString({
+			currentModelId: "kimi-k2.6",
+			registry,
+			roles: DEFAULT_MODEL_ROLES,
+		})
+		expect(result).toContain("### Thinking levels")
+		expect(result).toContain("Always pass a `thinking` parameter on every Agent call")
+		expect(result).toContain("| Build chunk | Builder |")
+		expect(result).toContain("Orchestrator-provided `thinking` overrides agent profile defaults")
+	})
+
 	it("includes review row in budget table", () => {
 		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
@@ -396,7 +408,7 @@ describe("resolveOrchestrationInstructions with custom configs", () => {
 		expect(result).toContain("Tier: heavy")
 		expect(result).toContain("You have these roles: **planner**")
 		expect(result).toContain("Vision: yes")
-		expect(result).toContain("External orchestrator model.")
+		expect(result).toContain("Extended thinking:")
 	})
 
 	it("external model without custom config defaults to standard tier and vision no", () => {
@@ -417,6 +429,7 @@ describe("resolveOrchestrationInstructions with custom configs", () => {
 		expect(result).toContain("unknown-model")
 		expect(result).toContain("Tier: standard")
 		expect(result).toContain("Vision: no")
+		expect(result).toContain("Extended thinking: no")
 		expect(result).toContain("This model was configured by the user to handle builder work.")
 		expect(result).not.toContain("Tier: undefined")
 	})
@@ -441,6 +454,7 @@ describe("resolveOrchestrationInstructions with custom configs", () => {
 		expect(result).toContain("bare-external/model")
 		expect(result).toContain("Tier: standard")
 		expect(result).toContain("Vision: no")
+		expect(result).toContain("Extended thinking: no")
 		expect(result).toContain("This model was configured by the user to handle builder work.")
 		expect(result).not.toContain("Tier: undefined")
 		expect(result).not.toContain("Vision: undefined")
