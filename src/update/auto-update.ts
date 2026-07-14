@@ -24,6 +24,34 @@ const SKIP_SUBCOMMANDS = new Set(["update", "setup", "mcp", "login", "install"])
 // Pure flags that suppress auto-update. Checked anywhere in argv.
 const SKIP_FLAGS = new Set(["--no-auto-update", "--version", "-v", "--help", "-h"])
 
+// Non-interactive CLI modes where an update/re-exec before startup would
+// corrupt the protocol stream or surprise external clients. Mirrors the
+// logic in cli-args.ts:isProtocolOrPrintMode but stays self-contained so
+// auto-update.ts doesn't pull pi-coding-agent into the early import chain
+// (entry.ts dynamically imports this module before cli.js).
+const NON_INTERACTIVE_MODES = new Set(["json", "rpc", "acp"])
+
+/** Return true when argv selects a non-interactive mode (ACP/JSON/RPC/print/
+ *  export). In those modes stdout/stderr belong to the caller and a re-exec
+ *  mid-startup would corrupt the protocol stream or break scripts. */
+export function isNonInteractiveLaunch(argv: readonly string[]): boolean {
+	// --mode=<value> or --mode <value>
+	for (let i = 0; i < argv.length; i += 1) {
+		const arg = argv[i]
+		if (arg === "--mode" && i + 1 < argv.length) {
+			if (NON_INTERACTIVE_MODES.has(argv[i + 1])) return true
+		}
+		if (arg.startsWith("--mode=")) {
+			if (NON_INTERACTIVE_MODES.has(arg.slice("--mode=".length))) return true
+		}
+	}
+	// --print / -p: piped output mode
+	if (argv.includes("--print") || argv.includes("-p")) return true
+	// --export: writes to a file and exits
+	if (argv.includes("--export") || argv.some((a) => a.startsWith("--export="))) return true
+	return false
+}
+
 function warn(message: string): void {
 	process.stderr.write(`${LOG_PREFIX} ${message}\n`)
 }
@@ -131,6 +159,7 @@ export interface MaybeAutoUpdateOnLaunchOptions {
  *   - KIMCHI_NO_UPDATE_CHECK is set
  *   - argv contains a subcommand (`update`/`setup`/`mcp`/`login`/`install`)
  *   - argv contains `--no-auto-update`, `--version`, `-v`, `--help`, `-h`
+ *   - argv selects a non-interactive mode (ACP/JSON/RPC/print/export)
  *   - isHomebrewInstall() returns true
  *   - running on a canary build (canary users stay on the canary track;
  *     currency is checked via `kimchi update --canary`)
@@ -156,6 +185,7 @@ export async function maybeAutoUpdateOnLaunch(opts: MaybeAutoUpdateOnLaunchOptio
 	try {
 		if (process.env.KIMCHI_NO_UPDATE_CHECK) return
 		if (argvHasSkipTrigger(process.argv)) return
+		if (isNonInteractiveLaunch(process.argv)) return
 		if (isHomebrewInstall()) return
 		if (parseCanarySha7(getVersion()) !== null) return
 		if (!loadAutoUpdateSetting()) return

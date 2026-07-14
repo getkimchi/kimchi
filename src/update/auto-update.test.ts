@@ -30,7 +30,8 @@ vi.mock("./workflow.js", () => ({
 }))
 
 const autoUpdate = await import("./auto-update.js")
-const { maybeAutoUpdateOnLaunch, performReExec, argvHasSkipTrigger, ReExecUnavailableError } = autoUpdate
+const { maybeAutoUpdateOnLaunch, performReExec, argvHasSkipTrigger, isNonInteractiveLaunch, ReExecUnavailableError } =
+	autoUpdate
 
 const originalEnvNoCheck = process.env.KIMCHI_NO_UPDATE_CHECK
 const originalPlatform = process.platform
@@ -228,6 +229,74 @@ describe("argvHasSkipTrigger — pure function over an argv array", () => {
 
 	it("returns false for an unrelated --flag=value argument", () => {
 		expect(argvHasSkipTrigger(["node", "kimchi", "--command=serve"])).toBe(false)
+	})
+})
+
+describe("isNonInteractiveLaunch — pure function over an argv array", () => {
+	it("returns true for --mode=acp", () => {
+		expect(isNonInteractiveLaunch(["node", "kimchi", "--mode=acp"])).toBe(true)
+	})
+
+	it("returns true for --mode json", () => {
+		expect(isNonInteractiveLaunch(["node", "kimchi", "--mode", "json"])).toBe(true)
+	})
+
+	it("returns true for --mode=rpc", () => {
+		expect(isNonInteractiveLaunch(["node", "kimchi", "--mode=rpc"])).toBe(true)
+	})
+
+	it("returns true for --print", () => {
+		expect(isNonInteractiveLaunch(["node", "kimchi", "--print"])).toBe(true)
+	})
+
+	it("returns true for -p", () => {
+		expect(isNonInteractiveLaunch(["node", "kimchi", "-p"])).toBe(true)
+	})
+
+	it("returns true for --export", () => {
+		expect(isNonInteractiveLaunch(["node", "kimchi", "--export"])).toBe(true)
+	})
+
+	it("returns true for --export=file.html", () => {
+		expect(isNonInteractiveLaunch(["node", "kimchi", "--export=file.html"])).toBe(true)
+	})
+
+	it("returns false for a plain TUI launch", () => {
+		expect(isNonInteractiveLaunch(["node", "kimchi"])).toBe(false)
+	})
+
+	it("returns false for --mode=tui", () => {
+		expect(isNonInteractiveLaunch(["node", "kimchi", "--mode=tui"])).toBe(false)
+	})
+
+	it("returns false for unrelated flags", () => {
+		expect(isNonInteractiveLaunch(["node", "kimchi", "--theme", "dark"])).toBe(false)
+	})
+})
+
+describe("maybeAutoUpdateOnLaunch — non-interactive mode skip", () => {
+	it("skips when argv selects a non-interactive mode (--mode=acp)", async () => {
+		const originalArgv = process.argv
+		process.argv = ["node", "kimchi", "--mode=acp"]
+		try {
+			await maybeAutoUpdateOnLaunch()
+			expect(mockCheckForUpdate).not.toHaveBeenCalled()
+			expect(mockApplyUpdate).not.toHaveBeenCalled()
+			expect(execveSpy).not.toHaveBeenCalled()
+		} finally {
+			process.argv = originalArgv
+		}
+	})
+
+	it("skips when argv contains --print", async () => {
+		const originalArgv = process.argv
+		process.argv = ["node", "kimchi", "--print"]
+		try {
+			await maybeAutoUpdateOnLaunch()
+			expect(mockCheckForUpdate).not.toHaveBeenCalled()
+		} finally {
+			process.argv = originalArgv
+		}
 	})
 })
 
