@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import {
-	GLOBAL_TODO_SCOPE,
 	__resetTodoStore,
 	applyWriteTodos,
 	clearTodoStore,
+	GLOBAL_TODO_SCOPE,
 	getTodoCountsForScope,
 	getTodoState,
 	getTodosForScope,

@@ -1,8 +1,8 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
 import type { TelemetryConfig } from "../../config.js"
-import { getVersion } from "../../utils.js"
 import { fetchWithRetry } from "../../utils/http.js"
+import { getVersion } from "../../utils.js"
 import { nowNano, strAttr } from "./helpers.js"
 
 // ---------------------------------------------------------------------------

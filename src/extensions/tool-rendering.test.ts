@@ -1,4 +1,4 @@
-import { type Theme, ToolExecutionComponent, UserMessageComponent, initTheme } from "@earendil-works/pi-coding-agent"
+import { initTheme, type Theme, ToolExecutionComponent, UserMessageComponent } from "@earendil-works/pi-coding-agent"
 import { visibleWidth } from "@earendil-works/pi-tui"
 import { beforeAll, describe, expect, it } from "vitest"
 import toolRenderingExtension, {
@@ -11,6 +11,7 @@ import toolRenderingExtension, {
 	splitLeadingOsc133Markers,
 	summarizeMcpToolInvocationArgs,
 	summarizeOpenAiToolCall,
+	type ToolRenderContext,
 	toolHeader,
 } from "./tool-rendering.js"
 
@@ -170,14 +171,15 @@ describe("hidden tool block rendering", () => {
 
 describe("elapsed time helpers", () => {
 	it("returns 0 when no timestamps exist", () => {
-		expect(getToolElapsedMs({ state: {} })).toBe(0)
-		expect(getToolElapsedMs({})).toBe(0)
+		expect(getToolElapsedMs({ state: {} } as ToolRenderContext)).toBe(0)
+		expect(getToolElapsedMs({} as ToolRenderContext)).toBe(0)
+		// @ts-expect-error
 		expect(getToolElapsedMs(null)).toBe(0)
 	})
 
 	it("returns elapsed time for a running tool (no end timestamp)", () => {
 		const startedAt = Date.now() - 5000
-		const elapsed = getToolElapsedMs({ state: { _executionStartedAt: startedAt } })
+		const elapsed = getToolElapsedMs({ state: { _executionStartedAt: startedAt } } as ToolRenderContext)
 		expect(elapsed).toBeGreaterThanOrEqual(5000)
 		expect(elapsed).toBeLessThan(6000)
 	})
@@ -185,7 +187,9 @@ describe("elapsed time helpers", () => {
 	it("returns exact elapsed time for a completed tool", () => {
 		const startedAt = 1000
 		const endedAt = 3500
-		const elapsed = getToolElapsedMs({ state: { _executionStartedAt: startedAt, _executionEndedAt: endedAt } })
+		const elapsed = getToolElapsedMs({
+			state: { _executionStartedAt: startedAt, _executionEndedAt: endedAt },
+		} as ToolRenderContext)
 		expect(elapsed).toBe(2500)
 	})
 

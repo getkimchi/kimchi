@@ -7,6 +7,7 @@ import { getAgentDir } from "./utils.js"
 
 let _defaultConfigPath: string | undefined
 function getDefaultConfigPath(): string {
+	// biome-ignore lint/suspicious/noAssignInExpressions: result is cached
 	return (_defaultConfigPath ??= join(getAgentDir(), "mcp.json"))
 }
 const PROJECT_CONFIG_NAME = ".kimchi/mcp.json"
@@ -193,7 +194,7 @@ export function writeDirectToolsConfig(
 		const targetPath = prov.path
 
 		if (!byPath.has(targetPath)) byPath.set(targetPath, [])
-		byPath.get(targetPath)!.push({ name: serverName, value, prov })
+		byPath.get(targetPath)?.push({ name: serverName, value, prov })
 	}
 
 	for (const [filePath, entries] of byPath) {
@@ -227,7 +228,7 @@ export function writeDirectToolsConfig(
 
 		mkdirSync(dirname(filePath), { recursive: true })
 		const tmpPath = `${filePath}.${process.pid}.tmp`
-		writeFileSync(tmpPath, JSON.stringify(raw, null, 2) + "\n", "utf-8")
+		writeFileSync(tmpPath, `${JSON.stringify(raw, null, 2)}\n`, "utf-8")
 		renameSync(tmpPath, filePath)
 	}
 }

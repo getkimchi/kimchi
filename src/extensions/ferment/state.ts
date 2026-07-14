@@ -11,16 +11,16 @@
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { dirname, join } from "node:path"
+import { join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import type { Ferment } from "../../ferment/types.js"
 import {
-	type PersistedRuntimeState,
 	deleteRuntimeState,
 	emptyState,
 	loadRuntimeState,
+	type PersistedRuntimeState,
 	saveRuntimeState,
 } from "./runtime-state-store.js"
 

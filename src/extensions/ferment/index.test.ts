@@ -5,14 +5,14 @@ import { join } from "node:path"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
-import { FermentStorage, clearFermentCache } from "../../ferment/store.js"
+import { clearFermentCache, FermentStorage } from "../../ferment/store.js"
 import type { Ferment } from "../../ferment/types.js"
 import { createContext } from "../__mocks__/context.js"
 import { globalTipRegistry } from "../tips/registry.js"
 import fermentExtension from "./index.js"
 import { resetAllReactiveContinuationNudgeCounts } from "./nudge.js"
 import { clearAllPendingPlanReviews, getPendingPlanReview, setPendingPlanReview } from "./plan-review.js"
-import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
+import { createDefaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import {
 	clearActiveFermentId,
 	clearPendingCompaction,
@@ -855,7 +855,7 @@ describe("fermentExtension question dropdown", () => {
 			getStorage: () => storage,
 		}
 		runtime.setContinuationPolicy("automated")
-		const applyAndPersist = createApplyAndPersist(runtime)
+		createApplyAndPersist(runtime)
 		const draft = storage.create("Plan Handoff")
 		setActive(draft)
 		const { pi } = registerFermentExtension(runtime)
@@ -1415,24 +1415,24 @@ describe("fermentExtension abort handling", () => {
 		return { storage, runtime, pi, turnEnd, ctx, notify, select, scopeAndPlan, activate, pause, complete }
 	}
 
-	it.each(["running", "planned"] as const)(
-		"pauses a %s ferment on abort, notifies, and skips nudges",
-		async (status) => {
-			const { storage, runtime, pi, turnEnd, ctx, notify, scopeAndPlan, activate } = setupAbortFixture("pause")
-			const planned = scopeAndPlan("Abort")
-			const ferment = status === "running" ? activate(planned) : planned
-			setActive(ferment)
+	it.each([
+		"running",
+		"planned",
+	] as const)("pauses a %s ferment on abort, notifies, and skips nudges", async (status) => {
+		const { storage, pi, turnEnd, ctx, notify, scopeAndPlan, activate } = setupAbortFixture("pause")
+		const planned = scopeAndPlan("Abort")
+		const ferment = status === "running" ? activate(planned) : planned
+		setActive(ferment)
 
-			await turnEnd({ message: abortedMessage([{ type: "text", text: "x" }]) }, ctx)
+		await turnEnd({ message: abortedMessage([{ type: "text", text: "x" }]) }, ctx)
 
-			expect(storage.get(ferment.id)?.status).toBe("paused")
-			expect(notify).toHaveBeenCalledWith(expect.stringContaining("/ferment resume"))
-			expect(pi.sendMessage).not.toHaveBeenCalledWith(
-				expect.objectContaining({ customType: "ferment_continuation_nudge" }),
-				expect.anything(),
-			)
-		},
-	)
+		expect(storage.get(ferment.id)?.status).toBe("paused")
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("/ferment resume"))
+		expect(pi.sendMessage).not.toHaveBeenCalledWith(
+			expect.objectContaining({ customType: "ferment_continuation_nudge" }),
+			expect.anything(),
+		)
+	})
 
 	it.each(["draft", "paused", "complete"] as const)("does not mutate a %s ferment on abort", async (status) => {
 		const { storage, pi, turnEnd, ctx, notify, scopeAndPlan, activate, pause, complete } = setupAbortFixture("noop")

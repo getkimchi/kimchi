@@ -1,12 +1,12 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
-	GATEWAY_CLASSIFICATION_AUDIT_TYPE,
-	type InfrastructureFailure,
-	KIMCHI_INFRA_ERROR_EXIT_CODE,
 	applyInfrastructureExitPolicy,
 	createInfrastructureErrorTracker,
+	GATEWAY_CLASSIFICATION_AUDIT_TYPE,
+	type InfrastructureFailure,
 	isInfrastructureProviderError,
+	KIMCHI_INFRA_ERROR_EXIT_CODE,
 } from "./infrastructure-error.js"
 import { classifyLLMGatewayError } from "./llm-gateway-error.js"
 

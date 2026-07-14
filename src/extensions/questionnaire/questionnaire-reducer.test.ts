@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest"
 import {
-	type Question,
 	currentOptions,
 	getAnswersArray,
 	initialState,
 	isSubmitTab,
+	type Question,
 	reduce,
 } from "./questionnaire-reducer.js"
 

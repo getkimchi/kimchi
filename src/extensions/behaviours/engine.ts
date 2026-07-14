@@ -25,7 +25,7 @@
 
 import type { SessionContext } from "./session-context.js"
 import type { ToolCallEvent } from "./triggers.js"
-import type { Behaviour, TriggerSource, TriggeredBehaviour } from "./types.js"
+import type { Behaviour, TriggeredBehaviour, TriggerSource } from "./types.js"
 
 export interface LoadEvent {
 	name: string
@@ -57,7 +57,7 @@ export class TriggerEngine {
 	evaluateSessionTriggers(ctx: SessionContext, turnIndex: number): LoadEvent[] {
 		return this.evaluateAll((b) => {
 			const probe = b.triggers.session
-			if (!probe || !probe(ctx)) return undefined
+			if (!probe?.(ctx)) return undefined
 			return { trigger: "session", turnIndex }
 		})
 	}
@@ -71,7 +71,7 @@ export class TriggerEngine {
 	evaluateToolTriggers(event: ToolCallEvent, turnIndex: number): LoadEvent[] {
 		return this.evaluateAll((b) => {
 			const matcher = b.triggers.tool
-			if (!matcher || !matcher(event)) return undefined
+			if (!matcher?.(event)) return undefined
 			return { trigger: "tool", turnIndex, toolName: event.toolName, toolArgs: event.input }
 		})
 	}

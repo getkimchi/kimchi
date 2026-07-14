@@ -1130,13 +1130,12 @@ describe("probeOllamaModels — heterogeneous multi-model probe", () => {
 		let maxInFlight = 0
 		const fetchImpl = makeFetchMock([
 			(url) => (url.endsWith("/api/tags") ? makeTagsResponse(tagsEntries) : null),
-			async (url, init) => {
+			async (url) => {
 				if (!url.endsWith("/api/show")) return null
 				inFlight++
 				if (inFlight > maxInFlight) maxInFlight = inFlight
 				await new Promise((resolve) => setTimeout(resolve, LATENCY_MS))
 				inFlight--
-				const body = init?.body ? (JSON.parse(init.body as string) as { name?: string }) : {}
 				return makeShowResponse({ "llama.context_length": 4096 })
 			},
 		])

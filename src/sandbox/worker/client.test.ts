@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import type { WorkspaceCredentials } from "../cloud/types.js"
-import { WorkerClient, deriveBaseUrl } from "./client.js"
+import { deriveBaseUrl, WorkerClient } from "./client.js"
 import { WorkerError } from "./types.js"
 
 function creds(overrides: Partial<WorkspaceCredentials> = {}): WorkspaceCredentials {

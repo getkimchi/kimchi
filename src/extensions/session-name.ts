@@ -13,7 +13,7 @@ import {
 	SettingsManager,
 	type TurnEndEvent,
 } from "@earendil-works/pi-coding-agent"
-import { RETRY_DEFAULTS, loadConfig } from "../config.js"
+import { loadConfig, RETRY_DEFAULTS } from "../config.js"
 import { fetchWithRetry } from "../utils/http.js"
 
 export const SESSION_NAME_MODEL = "deepseek-v4-flash"

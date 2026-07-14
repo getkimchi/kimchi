@@ -14,6 +14,7 @@ const CACHE_VERSION = 1
 const CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
 let _cachePath: string | undefined
 function getCachePath(): string {
+	// biome-ignore lint/suspicious/noAssignInExpressions: result is cached
 	return (_cachePath ??= join(getAgentDir(), "mcp-cache.json"))
 }
 
@@ -267,16 +268,10 @@ export function reconstructToolMetadata(
 			if (!resource?.name || !resource?.uri) continue
 
 			const baseName = `get_${resourceNameToToolName(resource.name)}`
-			const resourceMetadata = buildToolMetadata(
-				baseName,
-				serverName,
-				prefix,
-				definition.excludeTools,
-				{
-					description: resource.description ?? `Read resource: ${resource.uri}`,
-					resourceUri: resource.uri,
-				},
-			)
+			const resourceMetadata = buildToolMetadata(baseName, serverName, prefix, definition.excludeTools, {
+				description: resource.description ?? `Read resource: ${resource.uri}`,
+				resourceUri: resource.uri,
+			})
 
 			if (resourceMetadata) {
 				metadata.push(resourceMetadata)

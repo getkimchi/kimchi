@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs"
 import type { ExtensionAPI, Skill } from "@earendil-works/pi-coding-agent"
 import { loadSkillsFromDir } from "@earendil-works/pi-coding-agent"
-import { Type } from "typebox"
 import type { Static } from "typebox"
+import { Type } from "typebox"
 import { getClaudeCodeSkillResourcePaths, getConfiguredNativeSkillNames } from "./definition.js"
 
 interface SkillToolDetails {

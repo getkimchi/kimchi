@@ -2,8 +2,8 @@ import { matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@ea
 import { fg } from "../../ansi.js"
 import type { CachedTool, MetadataCache, ServerCacheEntry } from "./metadata-cache.js"
 import { resourceNameToToolName } from "./resource-tools.js"
-import { isToolExcluded } from "./types.js"
 import type { McpConfig, McpPanelCallbacks, McpPanelResult, ServerProvenance } from "./types.js"
+import { isToolExcluded } from "./types.js"
 
 interface PanelTheme {
 	border: string
@@ -30,7 +30,6 @@ const DEFAULT_THEME: PanelTheme = {
 	confirm: "32",
 	cancel: "31",
 }
-
 
 const RAINBOW_COLORS = [
 	"38;2;178;129;214",
@@ -124,10 +123,7 @@ export function computeVisibleWindow(
 		fixedOverheadRows: 16,
 	},
 ): { maxVis: number; startIdx: number; endIdx: number } {
-	const maxVis = Math.max(
-		limits.minVisible,
-		Math.min(limits.maxVisible, terminalRows - limits.fixedOverheadRows),
-	)
+	const maxVis = Math.max(limits.minVisible, Math.min(limits.maxVisible, terminalRows - limits.fixedOverheadRows))
 	const startIdx = Math.max(0, Math.min(cursorIndex - Math.floor(maxVis / 2), total - maxVis))
 	const endIdx = Math.min(startIdx + maxVis, total)
 	return { maxVis, startIdx, endIdx }
@@ -332,7 +328,11 @@ class McpPanel {
 			if (result.changes.size > 0) {
 				this.callbacks.onSave(result.changes)
 				// Commit saved values as the new baseline so dirty/unsaved clears.
-				this.servers.forEach((s) => s.tools.forEach((t) => { t.wasDirect = t.isDirect }))
+				this.servers.forEach((s) => {
+					s.tools.forEach((t) => {
+						t.wasDirect = t.isDirect
+					})
+				})
 				this.updateDirty()
 				this.saveNotice = "Saved ✓ — restart pi to apply"
 			}
@@ -617,15 +617,15 @@ class McpPanel {
 		const inverse = (s: string) => `\x1b[7m${s}\x1b[27m`
 
 		const row = (content: string) =>
-			fg(t.border, "│") + truncateToWidth(" " + content, innerW, "…", true) + fg(t.border, "│")
+			fg(t.border, "│") + truncateToWidth(` ${content}`, innerW, "…", true) + fg(t.border, "│")
 		const emptyRow = () => fg(t.border, "│") + " ".repeat(innerW) + fg(t.border, "│")
-		const divider = () => fg(t.border, "├" + "─".repeat(innerW) + "┤")
+		const divider = () => fg(t.border, `├${"─".repeat(innerW)}┤`)
 
 		const titleText = " MCP Servers "
 		const borderLen = innerW - visibleWidth(titleText)
 		const leftB = Math.floor(borderLen / 2)
 		const rightB = borderLen - leftB
-		lines.push(fg(t.border, "╭" + "─".repeat(leftB)) + fg(t.title, titleText) + fg(t.border, "─".repeat(rightB) + "╮"))
+		lines.push(fg(t.border, `╭${"─".repeat(leftB)}`) + fg(t.title, titleText) + fg(t.border, `${"─".repeat(rightB)}╮`))
 
 		lines.push(emptyRow())
 
@@ -648,16 +648,11 @@ class McpPanel {
 			lines.push(emptyRow())
 		} else {
 			const total = this.visibleItems.length
-			const { maxVis, startIdx, endIdx } = computeVisibleWindow(
-				this.tui.terminal.rows,
-				this.cursorIndex,
-				total,
-				{
-					maxVisible: McpPanel.MAX_VISIBLE,
-					minVisible: McpPanel.MIN_VISIBLE,
-					fixedOverheadRows: McpPanel.FIXED_OVERHEAD_ROWS,
-				},
-			)
+			const { maxVis, startIdx, endIdx } = computeVisibleWindow(this.tui.terminal.rows, this.cursorIndex, total, {
+				maxVisible: McpPanel.MAX_VISIBLE,
+				minVisible: McpPanel.MIN_VISIBLE,
+				fixedOverheadRows: McpPanel.FIXED_OVERHEAD_ROWS,
+			})
 
 			lines.push(emptyRow())
 
@@ -725,14 +720,14 @@ class McpPanel {
 
 		lines.push(emptyRow())
 		const hints = [
-			italic("↑↓") + " navigate",
-			italic("space") + " toggle",
-			italic("⏎") + " expand",
-			italic("ctrl+r") + " reconnect",
-			italic("?") + " desc search",
-			italic("ctrl+s") + " save",
-			italic("esc") + " clear/close",
-			italic("ctrl+c") + " quit",
+			`${italic("↑↓")} navigate`,
+			`${italic("space")} toggle`,
+			`${italic("⏎")} expand`,
+			`${italic("ctrl+r")} reconnect`,
+			`${italic("?")} desc search`,
+			`${italic("ctrl+s")} save`,
+			`${italic("esc")} clear/close`,
+			`${italic("ctrl+c")} quit`,
 		]
 		const gap = "  "
 		const gapW = 2
@@ -753,7 +748,7 @@ class McpPanel {
 		}
 		if (curLine) lines.push(row(fg(t.hint, curLine)))
 
-		lines.push(fg(t.border, "╰" + "─".repeat(innerW) + "╯"))
+		lines.push(fg(t.border, `╰${"─".repeat(innerW)}╯`))
 
 		return lines
 	}
@@ -809,9 +804,7 @@ class McpPanel {
 		// any whitespace/control sequence to a single space before truncating.
 		const flatDesc = tool.description ? tool.description.replace(/\s+/g, " ").trim() : ""
 		const descStr =
-			maxDescLen > 5 && flatDesc
-				? fg(t.description, "— " + truncateToWidth(flatDesc, maxDescLen, "…"))
-				: ""
+			maxDescLen > 5 && flatDesc ? fg(t.description, `— ${truncateToWidth(flatDesc, maxDescLen, "…")}`) : ""
 
 		return `  ${cursor} ${toggleIcon} ${nameStr} ${descStr}`
 	}

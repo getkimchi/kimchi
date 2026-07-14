@@ -23,7 +23,7 @@
  * scaled down to a single ferment context.
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 import { resolveFermentsDir } from "../../ferment/store.js"
 import type { JudgeFlag, ReviewOutcome } from "./judge.js"

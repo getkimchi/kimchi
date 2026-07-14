@@ -4,9 +4,9 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
-	SESSION_NAME_MODEL,
 	deterministicFallback,
 	extractFirstUserMessage,
+	SESSION_NAME_MODEL,
 	suggestSessionName,
 } from "./session-name.js"
 

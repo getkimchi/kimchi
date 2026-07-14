@@ -322,9 +322,12 @@ export function assertGateCoverage(verdicts: ReadonlyArray<{ id: string }> | und
  *
  *  Accepts a TypeBox-derived shape (id widened to string) and narrows on
  *  lookup. */
-export function validateGateVerdict(v: { id: string; verdict: string; rationale: string; evidence: string }):
-	| string
-	| null {
+export function validateGateVerdict(v: {
+	id: string
+	verdict: string
+	rationale: string
+	evidence: string
+}): string | null {
 	if (!v.id) return "gate verdict missing id"
 	const def = getGateDefinition(v.id)
 	if (!def) return `gate verdict has unknown id: ${v.id}`

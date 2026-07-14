@@ -12,9 +12,9 @@ import { type Component, Container, type TUI } from "@earendil-works/pi-tui"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
 import { loadConfig, writeApiKey } from "../../config.js"
 import {
+	isTransientModelsError,
 	ModelsFetchError,
 	type PiModelConfig,
-	isTransientModelsError,
 	syncProviderModels,
 	updateModelsConfig,
 } from "../../models.js"

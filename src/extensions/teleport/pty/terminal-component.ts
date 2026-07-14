@@ -1,4 +1,4 @@
-import { CURSOR_MARKER, type Component, type TUI, visibleWidth } from "@earendil-works/pi-tui"
+import { type Component, CURSOR_MARKER, type TUI, visibleWidth } from "@earendil-works/pi-tui"
 import type { CellData, XtermCore } from "./xterm-core.js"
 
 const DEFAULT_COLOR = 256
@@ -187,46 +187,6 @@ function toCtrlChar(key: string): string | null {
 	if (c === "-" || c === " ") return "\x1f"
 	if (c === "@" || c === "`") return "\x00"
 	return null
-}
-
-interface MouseScroll {
-	direction: "up" | "down"
-	x: number
-	y: number
-}
-
-function parseMouseScroll(data: string): MouseScroll | undefined {
-	// SGR scroll: ESC [ < 64 ; x ; y M   (scroll up)
-	// SGR scroll: ESC [ < 65 ; x ; y M   (scroll down)
-	// biome-ignore lint/suspicious/noControlCharactersInRegex: ESC introduces the SGR mouse-scroll CSI
-	const sgrMatch = data.match(/^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/)
-	if (sgrMatch) {
-		const button = Number.parseInt(sgrMatch[1], 10)
-		if (button === 64) {
-			return { direction: "up", x: Number.parseInt(sgrMatch[2], 10), y: Number.parseInt(sgrMatch[3], 10) }
-		}
-		if (button === 65) {
-			return { direction: "down", x: Number.parseInt(sgrMatch[2], 10), y: Number.parseInt(sgrMatch[3], 10) }
-		}
-	}
-
-	// X10 scroll: ESC [ M <buttonByte> <xByte> <yByte>
-	// buttonByte = 64 + 32 = 96 (\x60) for scroll up
-	// buttonByte = 65 + 32 = 97 (\x61) for scroll down
-	if (data.length === 6 && data.startsWith("\x1b[M")) {
-		const buttonByte = data.charCodeAt(3)
-		const xByte = data.charCodeAt(4)
-		const yByte = data.charCodeAt(5)
-		const button = buttonByte - 32
-		if (button === 64) {
-			return { direction: "up", x: xByte - 32, y: yByte - 32 }
-		}
-		if (button === 65) {
-			return { direction: "down", x: xByte - 32, y: yByte - 32 }
-		}
-	}
-
-	return undefined
 }
 
 export interface TerminalSink {

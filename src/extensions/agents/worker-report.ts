@@ -1,4 +1,4 @@
-import { type ExtensionAPI, defineTool } from "@earendil-works/pi-coding-agent"
+import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
 import type { AgentReport } from "./personas/types.js"
 import { textResult } from "./tool-result.js"

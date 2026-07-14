@@ -23,11 +23,11 @@ vi.mock("../../config/json.js", async (importOriginal) => {
 
 import { type ModelCustomMetadata, resetModelMetadataCache, saveModelMetadata } from "./model-metadata.js"
 import {
-	DEFAULT_MODEL_ROLES,
-	type ModelRoles,
 	applyRoleAugmentation,
+	DEFAULT_MODEL_ROLES,
 	extractCustomConfigs,
 	getAllowedMultiModelRefs,
+	type ModelRoles,
 	modelIdFromRef,
 	normalizeRoleModels,
 	parseModelRoles,

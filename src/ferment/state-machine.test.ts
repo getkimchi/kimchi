@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, it } from "vitest"
-import { type Command, type TransitionContext, applyCommand } from "./state-machine.js"
+import { applyCommand, type Command, type TransitionContext } from "./state-machine.js"
 import type { Ferment, JudgeGrade, Phase, Step, StepResult } from "./types.js"
 
 const NOW = "2026-05-08T15:00:00.000Z"

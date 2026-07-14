@@ -3,13 +3,13 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import {
-	type ResolverIO,
 	collectProbes,
 	parseRemoteHost,
+	type ResolverIO,
 	resolveSessionContext,
 	walkAndMatch,
 } from "./session-context.js"
-import { path, all, any, cli, gitRemote } from "./triggers.js"
+import { all, any, cli, gitRemote, path } from "./triggers.js"
 
 describe("parseRemoteHost", () => {
 	const cases: Array<{ url: string; expected: string | undefined }> = [

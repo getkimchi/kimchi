@@ -7,7 +7,7 @@ import {
 	getResourceDefinitions,
 	invalidateResourceDefinitionsCache,
 } from "../../resources/definitions.js"
-import { FULL_COMMAND_HOOK_EVENTS, discoverCommandHookResources } from "../hook-adapters/discovery.js"
+import { discoverCommandHookResources, FULL_COMMAND_HOOK_EVENTS } from "../hook-adapters/discovery.js"
 import { PLUGIN_PACKAGE_HOOK_ADAPTER_DEFINITION } from "./definition.js"
 
 // Isolate filesystem env
@@ -27,13 +27,11 @@ beforeEach(() => {
 
 afterEach(() => {
 	if (oldHome === undefined) {
-		// biome-ignore lint/performance/noDelete: process.env requires delete to truly unset.
 		delete process.env.HOME
 	} else {
 		process.env.HOME = oldHome
 	}
 	if (oldAgentDir === undefined) {
-		// biome-ignore lint/performance/noDelete: process.env requires delete to truly unset.
 		delete process.env.KIMCHI_CODING_AGENT_DIR
 	} else {
 		process.env.KIMCHI_CODING_AGENT_DIR = oldAgentDir

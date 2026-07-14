@@ -3,7 +3,7 @@ import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { AGENT_DEFINITIONS, discoverAgent } from "../index.js"
-import { SKILLS_ONLY_AGENTS, makeSkillsOnlyAgent } from "./skills-only.js"
+import { makeSkillsOnlyAgent, SKILLS_ONLY_AGENTS } from "./skills-only.js"
 
 describe("skills-only agents", () => {
 	let tempDir: string

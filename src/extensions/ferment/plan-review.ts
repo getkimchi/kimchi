@@ -1,11 +1,11 @@
 import {
 	type ExtensionContext,
 	ExtensionEditorComponent,
+	getMarkdownTheme,
 	type KeybindingsManager,
 	type Theme,
-	getMarkdownTheme,
 } from "@earendil-works/pi-coding-agent"
-import { type Component, Container, Key, Markdown, Spacer, type TUI, Text, matchesKey } from "@earendil-works/pi-tui"
+import { type Component, Container, Key, Markdown, matchesKey, Spacer, Text, type TUI } from "@earendil-works/pi-tui"
 import { withWorkingHidden } from "./prompt-ui.js"
 
 export interface PendingPlanReview {
@@ -34,9 +34,9 @@ export function getPendingPlanReview(fermentId: string): PendingPlanReview | und
 	return pendingPlanReviews.get(fermentId)
 }
 
-export function getCurrentPendingPlanReview(runtime: { getActiveId(): string | undefined }):
-	| PendingPlanReview
-	| undefined {
+export function getCurrentPendingPlanReview(runtime: {
+	getActiveId(): string | undefined
+}): PendingPlanReview | undefined {
 	const activeId = runtime.getActiveId()
 	return activeId ? pendingPlanReviews.get(activeId) : undefined
 }

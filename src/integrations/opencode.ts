@@ -1,8 +1,8 @@
 import { execFileSync } from "node:child_process"
-import { THIRD_PARTY_MAX_RETRIES, readTelemetryConfig } from "../config.js"
 import { readJson, writeJson } from "../config/json.js"
 import type { ConfigScope } from "../config/scope.js"
 import { resolveScopePath } from "../config/scope.js"
+import { readTelemetryConfig, THIRD_PARTY_MAX_RETRIES } from "../config.js"
 import type { ModelMetadata } from "../models.js"
 import { fetchWithRetry } from "../utils/http.js"
 import {

@@ -1,9 +1,9 @@
 import { writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
-import type { KimchiFixture } from "./support/kimchi-fixture.js"
-import { TUI_TEST_CONFIG, runKimchiSession } from "./support/kimchi-fixture.js"
 import { viewText, waitForTurnToSettle } from "./support/assertions.js"
+import type { KimchiFixture } from "./support/kimchi-fixture.js"
+import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -94,9 +94,7 @@ test("LSP segment absent when no project markers are present", async ({ terminal
 //             → active LSP, prompt block present, no degraded warning
 // =============================================================================
 
-test("LSP active state shows status-bar segment and includes prompt in a TS project", async ({
-	terminal,
-}) => {
+test("LSP active state shows status-bar segment and includes prompt in a TS project", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		{

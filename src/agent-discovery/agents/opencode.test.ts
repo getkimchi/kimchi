@@ -21,10 +21,6 @@ describe("openCode AgentDefinition", () => {
 		return join(tempDir, name)
 	}
 
-	function skillsPath(name = "skills"): string {
-		return join(tempDir, name)
-	}
-
 	function writeConfig(path: string, data: unknown): void {
 		writeFileSync(path, JSON.stringify(data))
 	}

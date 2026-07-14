@@ -3,9 +3,9 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { appendBeforeBody, postProcessHtmlExport, postProcessJsonlExport } from "./export-post-process.js"
+import type { ConfigChangeRecord, SessionStartMetadata } from "./session-metadata-store.js"
 import * as sessionMetadataStore from "./session-metadata-store.js"
 import { _resetSessionMetadataStore } from "./session-metadata-store.js"
-import type { ConfigChangeRecord, SessionStartMetadata } from "./session-metadata-store.js"
 
 function mockMetadata(): SessionStartMetadata {
 	return {

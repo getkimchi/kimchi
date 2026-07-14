@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import { WorkspacesPanel, createWorkspacesPanel } from "./workspaces-panel.js"
+import { createWorkspacesPanel, WorkspacesPanel } from "./workspaces-panel.js"
 import type { WorkspaceRow } from "./workspaces-table.js"
 
 const NOW = new Date("2026-05-17T12:00:00Z")

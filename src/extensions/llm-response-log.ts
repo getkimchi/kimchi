@@ -5,7 +5,6 @@
  * as custom session entries for debugging and analytics.
  */
 
-import type { AssistantMessage, ToolCall } from "@earendil-works/pi-ai"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 
 interface LLMResponseDebugEntry {

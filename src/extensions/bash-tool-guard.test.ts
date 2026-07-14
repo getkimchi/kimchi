@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest"
 import bashToolGuardExtension, {
+	applyDescriptionOverride,
+	BASH_TOOL_DESCRIPTION,
 	type BashCategory,
 	type BashGuardBlockResult,
 	type BashGuardWarnResult,
-	BASH_TOOL_DESCRIPTION,
 	BashToolGuard,
-	TOOL_PREFERENCES_BLOCK,
-	applyDescriptionOverride,
 	classifyBashCommand,
+	TOOL_PREFERENCES_BLOCK,
 	toolDescriptionOverride,
 } from "./bash-tool-guard.js"
 

@@ -4,7 +4,6 @@ import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-wor
 import type {
 	AgentOutcome,
 	AgentRecord,
-	AgentReport,
 	AgentResumeAttempt,
 	AgentTaskRef,
 	AgentVisibility,
@@ -17,11 +16,11 @@ import type { WorkerReportSubmission } from "../worker-report.js"
 import {
 	MIN_FINALIZE_TOKEN_BUDGET,
 	MIN_TOKEN_BUDGET,
-	type ToolActivity,
 	resumeAgent,
 	runAgent,
+	type ToolActivity,
 } from "./agent-runner.js"
-import { type LifetimeUsage, addUsage } from "./usage.js"
+import { addUsage, type LifetimeUsage } from "./usage.js"
 
 export type OnAgentComplete = (record: AgentRecord) => void
 export type OnAgentStart = (record: AgentRecord) => void
@@ -337,7 +336,7 @@ export class AgentManager {
 			// biome-ignore lint/style/noNonNullAssertion: shift() is guaranteed non-undefined inside while(length > 0) loop
 			const next = this.queue.shift()!
 			const record = this.agents.get(next.id)
-			if (!record || record.status !== "queued") continue
+			if (record?.status !== "queued") continue
 			// Snapshot the slot count so we can detect (and undo) startAgent's
 			// background-slot increment when it throws synchronously. Without this,
 			// a synchronous throw in startAgent leaks runningBackground forever.
@@ -372,7 +371,7 @@ export class AgentManager {
 
 	detachToBackground(id: string): boolean {
 		const record = this.agents.get(id)
-		if (!record || record.status !== "running" || record.isBackground) return false
+		if (record?.status !== "running" || record.isBackground) return false
 		if (!record.detachResolver) return false
 
 		record.isBackground = true

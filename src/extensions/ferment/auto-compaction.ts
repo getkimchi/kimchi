@@ -17,8 +17,7 @@
  * Failures warn via `ctx.ui.notify` and never block the pipeline.
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import type { CompactionResult } from "@earendil-works/pi-coding-agent"
+import type { CompactionResult, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { determineNextAction } from "../../ferment/engine.js"
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
 import { COMPACTION_RESERVE_TOKENS } from "../compaction-thresholds.js"

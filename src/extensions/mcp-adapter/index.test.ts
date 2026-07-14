@@ -1,10 +1,10 @@
 import type { ExtensionAPI, ToolInfo } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { type EnvironmentInfo, buildSystemPrompt } from "../prompt-construction/system-prompt.js"
+import { buildSystemPrompt, type EnvironmentInfo } from "../prompt-construction/system-prompt.js"
+import mcpAdapter from "./index.js"
 import { executeCall, executeDescribe, executeSearch } from "./proxy-modes.js"
 import type { McpExtensionState } from "./state.js"
 import type { DirectToolSpec, ToolMetadata } from "./types.js"
-import mcpAdapter from "./index.js"
 
 const testEnv: EnvironmentInfo = {
 	os: "Linux",
@@ -68,11 +68,7 @@ afterEach(() => {
 // Helpers for inject-path tests
 // ---------------------------------------------------------------------------
 
-function makeMetadata(
-	rawName: string,
-	serverName: string,
-	prefix: "server" | "none" | "short",
-): ToolMetadata {
+function makeMetadata(rawName: string, serverName: string, prefix: "server" | "none" | "short"): ToolMetadata {
 	// Mirrors what buildToolMetadata in tool-metadata.ts produces
 	const p =
 		prefix === "none"
@@ -235,20 +231,10 @@ describe.each(["none", "server", "short"] as const)("inject-path (toolPrefix=%s)
 		const state = makeState(meta, SERVER)
 		const capturedSpecs: DirectToolSpec[] = []
 
-		executeSearch(
-			state,
-			"chat",
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			5,
-			undefined,
-			(specs) => {
-				capturedSpecs.push(...specs)
-				return specs.map((s) => s.prefixedName)
-			},
-		)
+		executeSearch(state, "chat", undefined, undefined, undefined, undefined, 5, undefined, (specs) => {
+			capturedSpecs.push(...specs)
+			return specs.map((s) => s.prefixedName)
+		})
 
 		expect(capturedSpecs).toHaveLength(1)
 		expect(capturedSpecs[0].originalName).toBe(RAW_NAME)
@@ -260,20 +246,10 @@ describe.each(["none", "server", "short"] as const)("inject-path (toolPrefix=%s)
 		const state = makeState(meta, SERVER)
 		let injectedNames: string[] = []
 
-		const result = executeSearch(
-			state,
-			"chat",
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			5,
-			undefined,
-			(specs) => {
-				injectedNames = specs.map((s) => s.prefixedName)
-				return injectedNames
-			},
-		)
+		const result = executeSearch(state, "chat", undefined, undefined, undefined, undefined, 5, undefined, (specs) => {
+			injectedNames = specs.map((s) => s.prefixedName)
+			return injectedNames
+		})
 
 		const block = result.content[0]
 		const text = block.type === "text" ? block.text : ""

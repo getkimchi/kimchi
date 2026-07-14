@@ -10,13 +10,12 @@ import { type ExtensionAPI, type ExtensionContext, getMarkdownTheme } from "@ear
 import { Markdown } from "@earendil-works/pi-tui"
 import type { Static } from "typebox"
 import { findFirstPlannedPhase } from "../../../ferment/engine.js"
-import type { Ferment, Phase } from "../../../ferment/types.js"
-import type { Grade } from "../../../ferment/types.js"
+import type { Ferment, Grade, Phase } from "../../../ferment/types.js"
 import { runWithOverlay, spawnGraderAgent } from "../../agents/index.js"
 import { getMultiModelEnabled } from "../../multi-model.js"
 import { withWorkingHidden } from "../../ui.js"
 import { askUserForm } from "../ask-user.js"
-import { gradeColor, pr_bold } from "../colors.js"
+import { gradeColor } from "../colors.js"
 import { decideContinuation } from "../continuation.js"
 import { formatDecisionsAndMemories } from "../format.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
@@ -30,10 +29,10 @@ import {
 	judgePhaseGradeViaSubagent,
 } from "../judge.js"
 import { onPhaseCompleted } from "../nudge.js"
-import { type PhaseEvidence, captureGitHead, gatherPhaseEvidence } from "../phase-evidence.js"
+import { captureGitHead, gatherPhaseEvidence, type PhaseEvidence } from "../phase-evidence.js"
 import { type ProjectCheckResult, runProjectChecks, summarizeProjectChecks } from "../project-tests.js"
 import { hashFlags, writeEscalationArtifact, writeReviewEvidence } from "../review-evidence.js"
-import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
+import { defaultFermentRuntime, type FermentRuntime } from "../runtime.js"
 import { safeSendMessage } from "../safe-send.js"
 import { MAX_BLOCK_RETRIES } from "../state.js"
 import {
@@ -153,7 +152,7 @@ function formatManualPhaseBoundaryWait(
 	projectChecksLine: string,
 	warnSection: string,
 	reason?: string,
-	summaryLine = `**Phase "${completedPhase.name}"** done.`,
+	_summaryLine = `**Phase "${completedPhase.name}"** done.`,
 ): string {
 	const reasonLine = reason ? `\n\n${reason}` : ""
 	return (

@@ -31,9 +31,9 @@ import type { AssistantMessage } from "@earendil-works/pi-ai"
 import {
 	type ExtensionAPI,
 	type ExtensionContext,
-	type Skill,
 	getAgentDir,
 	loadSkills,
+	type Skill,
 } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
 import { isResourceEnabled } from "../../resources/store.js"
@@ -61,7 +61,6 @@ import {
 	stripUiOnlyMessages,
 } from "../orchestration/continuation-nudge.js"
 import { ModelRegistry } from "../orchestration/model-registry/index.js"
-import { registerModelRolesCommand } from "../orchestration/model-roles-command.js"
 import {
 	extractCustomConfigs,
 	getModelRoles,
@@ -71,14 +70,15 @@ import {
 	splitModelRef,
 	validateModelRoles,
 } from "../orchestration/model-roles.js"
+import { registerModelRolesCommand } from "../orchestration/model-roles-command.js"
 import { getCurrentPhase } from "../tags.js"
 import { type ContextFile, loadGlobalContextFiles, loadProjectContextFiles } from "./context-files.js"
 import {
+	buildSystemPrompt,
 	DELEGATION_TOOL_NAMES,
 	type EnvironmentInfo,
 	type PromptMode,
 	type ToolInfo,
-	buildSystemPrompt,
 } from "./system-prompt.js"
 
 function safeUsername(): string {

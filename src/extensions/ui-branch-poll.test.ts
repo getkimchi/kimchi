@@ -142,9 +142,9 @@ describe("createBranchPoller", () => {
 	})
 
 	it("skips overlapping refreshes", () => {
-		let calls = 0
+		let _calls = 0
 		const refreshBranch = vi.fn((cb: (b: string | undefined) => void) => {
-			calls++
+			_calls++
 			cb("main")
 		})
 		const onChange = vi.fn()

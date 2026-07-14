@@ -4,8 +4,8 @@ import type { ExtensionContext, ReadonlyFooterDataProvider, Theme } from "@earen
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { StatusLine } from "../components/status-line.js"
 import {
-	DEFAULT_STATUS_LINE_PINNED,
 	_invalidateStatusLineConfigCache,
+	DEFAULT_STATUS_LINE_PINNED,
 	setStatusLineElementPinned,
 } from "../config/status-line-config.js"
 import * as AGENTS from "./agents/index.js"

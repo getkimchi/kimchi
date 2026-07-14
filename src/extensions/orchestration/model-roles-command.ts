@@ -7,26 +7,26 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent"
-import { Key, type TUI, matchesKey, wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import type { Component } from "@earendil-works/pi-tui"
+import { Key, matchesKey, type TUI, wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import { getAvailableModels } from "../../startup-context.js"
 import { setProcessOrchestratorRef } from "../kimchi-process.js"
 import { withSuppressedModelSelectGuard } from "../model-switch.js"
 import { getMultiModelEnabled } from "../multi-model.js"
-import { type Question, type QuestionFormResult, YES_NO_OPTIONS, createQuestionForm } from "../questionnaire/index.js"
+import { createQuestionForm, type Question, type QuestionFormResult, YES_NO_OPTIONS } from "../questionnaire/index.js"
 import {
-	type ModelCustomMetadata,
 	deleteModelMetadata,
 	getModelMetadata,
+	type ModelCustomMetadata,
 	resolveModelMetadata,
 	saveModelMetadata,
 } from "./model-metadata.js"
 import {
 	DEFAULT_MODEL_ROLES,
-	type ModelRoles,
-	type RoleModelAssignment,
 	getModelRoles,
+	type ModelRoles,
 	normalizeRoleModels,
+	type RoleModelAssignment,
 	saveModelRoles,
 	splitModelRef,
 } from "./model-roles.js"

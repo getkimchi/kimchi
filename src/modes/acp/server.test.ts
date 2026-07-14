@@ -28,20 +28,19 @@ const THEME_KEY_OLD = Symbol.for("@mariozechner/pi-coding-agent:theme")
 
 import { setProcessOrchestratorRef } from "../../extensions/kimchi-process.js"
 import { getMultiModelEnabled, setMultiModelEnabled } from "../../extensions/multi-model.js"
-import { PERMISSIONS_ENV_KEY } from "../../extensions/permissions/constants.js"
-import { PERMISSION_MODES } from "../../extensions/permissions/constants.js"
+import { PERMISSION_MODES, PERMISSIONS_ENV_KEY } from "../../extensions/permissions/constants.js"
 import { getSessionPermissionFlagController } from "../../extensions/permissions/mode-controller-registry.js"
 import { getAcpPrompter } from "./permission-prompter-registry.js"
 import {
 	type AcpSessionFactory,
 	type AcpSessionLister,
 	type AcpSessionLoader,
-	KimchiAcpAgent,
 	assertSessionHasModel,
 	buildSessionModelState,
 	describeToolCall,
 	initializeHeadlessTheme,
 	isHiddenToolCall,
+	KimchiAcpAgent,
 	stripAnsi,
 	toAcpSessionInfo,
 	userMessageText,

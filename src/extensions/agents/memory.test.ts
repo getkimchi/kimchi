@@ -16,7 +16,6 @@ describe("resolveMemoryDir", () => {
 	})
 
 	afterEach(() => {
-		// biome-ignore lint/performance/noDelete: env var must be deleted, not set to "undefined"
 		delete process.env.PI_CODING_AGENT_DIR
 	})
 

@@ -5,11 +5,11 @@
  * Uses Node.js http module for compatibility.
  */
 
-import { type IncomingMessage, type Server, type ServerResponse, createServer } from "http"
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
 import {
-	OAUTH_CALLBACK_PATH,
 	getConfiguredOAuthCallbackPort,
 	getOAuthCallbackPort,
+	OAUTH_CALLBACK_PATH,
 	setOAuthCallbackPort,
 } from "./mcp-oauth-provider.js"
 
@@ -109,6 +109,7 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
 		res.end(HTML_ERROR(errorMsg))
 		// Reject promise after response is sent (defer to allow test to attach handler)
 		if (pendingAuths.has(state)) {
+			// biome-ignore lint/style/noNonNullAssertion: asserted above
 			const pending = pendingAuths.get(state)!
 			clearTimeout(pending.timeout)
 			pendingAuths.delete(state)
@@ -132,6 +133,7 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
 		return
 	}
 
+	// biome-ignore lint/style/noNonNullAssertion: asserted above
 	const pending = pendingAuths.get(state)!
 
 	// Clear timeout and resolve the pending promise
@@ -249,7 +251,7 @@ export function cancelPendingCallback(oauthState: string): void {
 export async function stopCallbackServer(): Promise<void> {
 	if (server) {
 		await new Promise<void>((resolve) => {
-			server!.close(() => {
+			server?.close(() => {
 				resolve()
 			})
 		})

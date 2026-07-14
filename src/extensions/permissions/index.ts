@@ -9,11 +9,11 @@ import { getAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
 import * as EntryTriggerRegistry from "../../shared/planning/entry-trigger-registry.js"
 import { parseSharedPlan } from "../../shared/planning/plan-decomposition.js"
 import {
-	PLAN_MODE_STOP_NUDGE,
 	contentHasToolCall,
 	extractTextFromContent,
 	hasPlanCompletionSignal,
 	isNudgeSuppressed,
+	PLAN_MODE_STOP_NUDGE,
 	shouldNudge,
 } from "../../shared/planning/planning-stop-nudge.js"
 import * as PromptSupplementRegistry from "../../shared/planning/prompt-supplement-registry.js"
@@ -29,26 +29,26 @@ import { isFermentToolName, isUserFacingFermentToolName } from "../ferment/tool-
 import { setActiveFermentAndApplyProfile } from "../ferment/tool-scope.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import type { SystemPromptBlock } from "../prompt-construction/system-prompt-blocks.js"
-import { type ToolVisibilityAPI, createToolVisibility } from "../prompt-construction/tool-visibility.js"
+import { createToolVisibility, type ToolVisibilityAPI } from "../prompt-construction/tool-visibility.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
 import { classifyToolCall } from "./classifier.js"
 import { registerCommands } from "./commands.js"
 import { type LoadedConfig, loadConfig } from "./config.js"
 import { BUILTIN_DENY, DEFAULT_CONFIG, PERMISSION_MODES_WITH_META as MODES, PERMISSIONS_ENV_KEY } from "./constants.js"
-import { getSessionPermissionFlagController } from "./mode-controller-registry.js"
-import { getPermissionMode, getSessionPermissionsEnvKey, setPermissionMode } from "./mode-controller.js"
 import { resolveMode } from "./mode.js"
+import { getPermissionMode, getSessionPermissionsEnvKey, setPermissionMode } from "./mode-controller.js"
+import { getSessionPermissionFlagController } from "./mode-controller-registry.js"
 import { saveApprovedPlan } from "./plan-persistence.js"
 import type { ToolPermissionPrompter } from "./prompter.js"
+import planModeSupplement from "./prompts/plan-mode-supplement.js"
 import {
-	type CompoundSubcommand,
 	buildPermissionChoices,
+	type CompoundSubcommand,
 	promptForCompoundApproval,
 	terminalPrompter,
 	withWorkingHidden,
 } from "./prompts.js"
-import planModeSupplement from "./prompts/plan-mode-supplement.js"
 import { evaluateRules, parseRules, stringifyRule } from "./rules.js"
 import { SessionMemory } from "./session-memory.js"
 import {

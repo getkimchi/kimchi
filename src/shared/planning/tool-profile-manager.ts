@@ -37,8 +37,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { isFermentOnlyToolName } from "../../extensions/ferment/tool-names.js"
 import { getDisabledToolNames } from "../../extensions/prompt-construction/tool-visibility.js"
 import { getReadOnlyToolNames } from "./read-only-tool-registry.js"
-import { getToolsForProfile } from "./tool-catalog.js"
 import type { ToolProfile } from "./tool-catalog.js"
+import { getToolsForProfile } from "./tool-catalog.js"
 
 // ---------------------------------------------------------------------------
 // Module-level state

@@ -10,8 +10,8 @@ import { maybeTriggerFermentCompaction, maybeTriggerMidTurnFermentCompaction } f
 import { formatDuration } from "./colors.js"
 import { extractContextualOptions, extractTrailingQuestion } from "./contextual-options.js"
 import { decideContinuation } from "./continuation.js"
-import { emitFermentCreated } from "./domain-events-emitter.js"
 import { FERMENT_EVENTS, type FermentStalledPayload } from "./domain-events.js"
+import { emitFermentCreated } from "./domain-events-emitter.js"
 import { autoInitFromEnv, ensureGitRepo } from "./git-init.js"
 import {
 	appendRefEntry,
@@ -28,7 +28,7 @@ import { buildOneshotNudge } from "./oneshot.js"
 import { editPhaseProposal } from "./phase-editor.js"
 import { promptEditor, promptSelect } from "./prompt-ui.js"
 import { loadFermentSilently, resumeFerment } from "./resume.js"
-import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
+import { defaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import { safeSendMessage } from "./safe-send.js"
 import { scheduleFermentWakeUp } from "./scheduler.js"
 import { confirmPendingScope } from "./scoping-confirmation.js"

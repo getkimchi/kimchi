@@ -634,7 +634,7 @@ function kimchiToolInput(
 function skillNameFromReadPath(event: ToolResultEvent): string | undefined {
 	if (event.toolName !== "read" || event.isError) return undefined
 	const path = stringValue(event.input.path)
-	if (!path || !path.endsWith("/SKILL.md")) return undefined
+	if (!path?.endsWith("/SKILL.md")) return undefined
 	const parts = path.split("/")
 	return parts.at(-2) || undefined
 }

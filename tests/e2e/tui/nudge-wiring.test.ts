@@ -1,7 +1,7 @@
 import { expect, test } from "@microsoft/tui-test"
-import type { KimchiFixture } from "./support/kimchi-fixture.js"
-import { TUI_TEST_CONFIG, runKimchiSession } from "./support/kimchi-fixture.js"
 import { waitForTurnToSettle } from "./support/assertions.js"
+import type { KimchiFixture } from "./support/kimchi-fixture.js"
+import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 

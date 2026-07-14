@@ -1,6 +1,6 @@
 import { existsSync, realpathSync } from "node:fs"
 import { homedir } from "node:os"
-import { dirname, join, normalize } from "node:path"
+import { join, normalize } from "node:path"
 
 const APP_DIR = "kimchi"
 

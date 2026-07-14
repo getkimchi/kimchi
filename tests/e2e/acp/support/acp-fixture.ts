@@ -6,12 +6,12 @@
 import { type ChildProcess, spawn } from "node:child_process"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { dirname, join, resolve } from "node:path"
+import { join, resolve } from "node:path"
 import { Readable, Writable } from "node:stream"
 import { setTimeout as delay } from "node:timers/promises"
 import { fileURLToPath } from "node:url"
-import * as acp from "@agentclientprotocol/sdk"
 import type { ClientSideConnection } from "@agentclientprotocol/sdk"
+import * as acp from "@agentclientprotocol/sdk"
 import {
 	type FakeOpenAiServer,
 	type FakeResponseScript,
@@ -315,13 +315,13 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 			abort.abort()
 		})
 
-		// biome-ignore lint/style/noNonNullAssertion: <explanation>
+		// biome-ignore lint/style/noNonNullAssertion: defined at this point
 		const writable = Writable.toWeb(proc.stdin!)
-		// biome-ignore lint/style/noNonNullAssertion: <explanation>
+		// biome-ignore lint/style/noNonNullAssertion: defined at this point
 		const readable = Readable.toWeb(proc.stdout!) as ReadableStream<Uint8Array>
 		client = new RecordingClient()
 		const stream = acp.ndJsonStream(writable, readable)
-		// biome-ignore lint/style/noNonNullAssertion: <explanation>
+		// biome-ignore lint/style/noNonNullAssertion: defined at this point
 		const conn = new acp.ClientSideConnection(() => client!, stream)
 
 		// If kimchi crashes on startup this rejects within the timeout.

@@ -6,7 +6,7 @@ import { getActiveFerment } from "../ferment/index.js"
 import { type CumulativeState, collectMetrics, createCumulativeState } from "./accumulator.js"
 import { toAttrs } from "./helpers.js"
 import { getSessionType } from "./session-type.js"
-import { type LogRecord, buildLogRecord, sendLogBatch, sendMetrics } from "./transport.js"
+import { buildLogRecord, type LogRecord, sendLogBatch, sendMetrics } from "./transport.js"
 
 // ---------------------------------------------------------------------------
 // Constants

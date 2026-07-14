@@ -11,7 +11,7 @@
 
 import { expect, test } from "@microsoft/tui-test"
 import { STREAM_TIMEOUT_MS, viewText, waitForText } from "./support/assertions.js"
-import { PROMPT_READY, TUI_TEST_CONFIG, runKimchiSession } from "./support/kimchi-fixture.js"
+import { PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 

@@ -15,9 +15,6 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
 import {
 	DIM,
-	RST_ALL,
-	RST_FG,
-	SUCCESS_FG,
 	formatDuration,
 	gradeColor,
 	phaseBullet,
@@ -26,11 +23,14 @@ import {
 	pr_orange,
 	pr_success,
 	pr_teal,
+	RST_ALL,
+	RST_FG,
+	SUCCESS_FG,
 	stepBulletChar,
 	truncateLabel,
 } from "./colors.js"
 import { promptEditor } from "./prompt-ui.js"
-import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
+import { defaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
 
 // Parallel-group markers — one compact form for inline list rows, one verbose

@@ -7,8 +7,7 @@
  * 3. maybeTriggerFermentCompaction — integration: no-op, trigger, onComplete, onError, in-flight guard
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import type { CompactionResult, SessionEntry } from "@earendil-works/pi-coding-agent"
+import type { CompactionResult, ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
 import {
@@ -22,7 +21,7 @@ import {
 } from "./auto-compaction.js"
 import type { FermentRuntime } from "./runtime.js"
 import { createDefaultFermentRuntime } from "./runtime.js"
-import { type PendingCompaction, clearPendingCompaction, setPendingCompaction } from "./state.js"
+import { clearPendingCompaction, type PendingCompaction, setPendingCompaction } from "./state.js"
 
 // ─── Mock the dynamic require of engine.js in auto-compaction.ts ───────────────
 // auto-compaction.ts uses require() inside buildNextActionDescription to avoid

@@ -71,12 +71,6 @@ Best for: codebase exploration, research, and trivial re-verification (confirmin
 after a fix). \
 Not suitable for: code review, building code, or any task requiring correctness judgment.`
 
-const CLAUDE_OPUS_46_DESCRIPTION = `\
-Anthropic's flagship Claude model. Dominates at architectural planning and complex task \
-decomposition — when a hard problem needs a superior plan, this is the model to delegate to. \
-Also excels at deep reasoning, research, and exploration across large codebases. Best for \
-complex multi-step tasks requiring careful analysis and methodical planning.`
-
 /** Filter out empty layers and join with double newlines. */
 function concatGuidelines(...layers: string[]): string {
 	return layers.filter(Boolean).join("\n\n")

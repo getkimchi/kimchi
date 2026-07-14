@@ -28,6 +28,7 @@ import {
 	type Decision,
 	type Ferment,
 	type FermentStatus,
+	inSameParallelCohort,
 	type JudgeGrade,
 	type Memory,
 	type MemoryCategory,
@@ -36,7 +37,6 @@ import {
 	type Step,
 	type StepResult,
 	type StepStatus,
-	inSameParallelCohort,
 } from "./types.js"
 
 // ─── Commands ─────────────────────────────────────────────────────────────────
@@ -466,7 +466,7 @@ function handleActivatePhase(
 ): TransitionResult {
 	const found = requirePhase(ferment, cmd.phaseId)
 	if (isTransitionError(found)) return fail(found)
-	const { phase, index } = found
+	const { phase } = found
 
 	const guard = requirePhaseStatus(phase, ["planned", "failed"])
 	if (guard) return fail(guard)

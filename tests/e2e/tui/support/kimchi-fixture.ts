@@ -5,7 +5,7 @@ import { join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { Shell } from "@microsoft/tui-test"
 import type { Terminal } from "@microsoft/tui-test/lib/terminal/term.js"
-import { STARTUP_TIMEOUT_MS, fullText, viewText, waitForText } from "./assertions.js"
+import { fullText, STARTUP_TIMEOUT_MS, viewText, waitForText } from "./assertions.js"
 import { type StartFakeOllamaServerOptions, startFakeOllamaServer } from "./fake-ollama-server.js"
 import {
 	DEFAULT_MODEL,

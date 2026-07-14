@@ -1,8 +1,8 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { FermentError, FermentStorage, clearFermentCache, detectProjectRoot, resolveFermentsDir } from "./store.js"
+import { clearFermentCache, detectProjectRoot, FermentError, FermentStorage, resolveFermentsDir } from "./store.js"
 import type { FermentV3, Phase, Step } from "./types.js"
 
 function createTempDir() {

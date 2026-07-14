@@ -40,11 +40,13 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
 import {
-	type ModelCustomMetadata,
 	getModelMetadata,
+	type ModelCustomMetadata,
 	resetModelMetadataCache as resetMetadataCache,
 } from "./model-metadata.js"
+
 export { modelIdFromRef, splitModelRef } from "./model-ref-utils.js"
+
 import { readConfigSetting, writeConfigSetting } from "../../config/settings.js"
 import { getProcessOrchestratorRef } from "../kimchi-process.js"
 import { modelIdFromRef, splitModelRef } from "./model-ref-utils.js"

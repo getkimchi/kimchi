@@ -6,7 +6,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import type { Ferment, Phase } from "../../ferment/types.js"
 import { __resetTodoStore, applyWriteTodos, getTodosForScope } from "../todos/store.js"
 import { FERMENT_EVENTS } from "./domain-events.js"

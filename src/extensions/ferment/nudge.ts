@@ -32,10 +32,10 @@ import {
 	shouldNudge,
 } from "../../shared/planning/planning-stop-nudge.js"
 import { decideContinuation } from "./continuation.js"
-import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
+import { defaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import { safeSendMessage } from "./safe-send.js"
 import { scheduleNextFermentAction } from "./scheduler.js"
-import { MAX_SCOPING_EXPLORE_TURNS, bumpScopingExploreTurns, resetScopingExploreTurns } from "./state.js"
+import { bumpScopingExploreTurns, MAX_SCOPING_EXPLORE_TURNS, resetScopingExploreTurns } from "./state.js"
 
 export function appendRefEntry(pi: ExtensionAPI, fermentId: string): void {
 	safeSendMessage(pi, {

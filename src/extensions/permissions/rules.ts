@@ -1,8 +1,8 @@
 import micromatch from "micromatch"
 import {
-	FILE_TOOLS,
 	bashSegmentForms,
 	extractBashProgram,
+	FILE_TOOLS,
 	parseCommandSegments,
 	rememberedScopeTokens,
 } from "./taxonomy.js"

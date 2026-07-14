@@ -19,8 +19,8 @@
 		"dev": "make -C tools/proxy-helper/ copy-for-dev && bun run --preload ./src/set-package-dir.ts src/entry.ts",
 		"dev:overlay": "scripts/dev-overlay.sh",
 		"dev:setup": "bun run --preload ./src/set-package-dir.ts src/entry.ts setup",
-		"lint": "biome check src/ scripts/",
-		"lint:fix": "biome check --write src/ scripts/",
+		"lint": "biome check src/ scripts/ tests/",
+		"lint:fix": "biome check --write src/ scripts/ tests/",
 		"typecheck": "tsc --noEmit",
 		"check": "pnpm run lint && pnpm run typecheck",
 		"test": "vitest run --dir src",
@@ -80,7 +80,7 @@
 		"@mariozechner/clipboard-win32-x64-msvc": "0.3.6"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "^1.9.4",
+		"@biomejs/biome": "^2.5.3",
 		"@earendil-works/pi-ai": "0.79.10",
 		"@microsoft/tui-test": "0.0.4",
 		"@mixmark-io/domino": "^2.2.0",

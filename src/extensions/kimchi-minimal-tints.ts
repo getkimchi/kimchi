@@ -20,12 +20,12 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { getActiveThemeName, onThemeChange } from "../settings-watcher.js"
 import {
-	type Rgb,
 	detectColorMode,
 	estimateTerminalBackground,
 	getProbedBackground,
 	hexToBgAnsi,
 	hexToFgAnsi,
+	type Rgb,
 	tintBackground,
 } from "../terminal-bg-probe.js"
 import { onThemeFileChange } from "../theme-file-watcher.js"

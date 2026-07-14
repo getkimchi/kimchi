@@ -7,8 +7,8 @@ import { FermentEventStore } from "../../ferment/event-store.js"
 import { applyCommand } from "../../ferment/state-machine.js"
 import fermentExtension from "./index.js"
 import { resetAllFermentStopNudgeCounts } from "./nudge.js"
-import { createDefaultFermentRuntime } from "./runtime.js"
 import type { FermentRuntime } from "./runtime.js"
+import { createDefaultFermentRuntime } from "./runtime.js"
 import { clearActiveFermentId, setContinuationPolicy, writeFermentLock } from "./state.js"
 
 type EventHandler = (event: unknown, ctx: unknown) => Promise<unknown> | unknown

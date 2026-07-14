@@ -14,14 +14,14 @@
 import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs"
 import { join } from "node:path"
 import {
+	defineTool,
 	type ExtensionAPI,
 	type ExtensionCommandContext,
 	type ExtensionContext,
 	type ExtensionUIContext,
-	defineTool,
 	getAgentDir,
 } from "@earendil-works/pi-coding-agent"
-import { Key, Text, isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
+import { isKeyRelease, Key, matchesKey, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 import { isToolExpanded, registerToolCall } from "../../expand-state.js"
 import { filterThinkingForDisplay } from "../hide-thinking.js"
@@ -51,7 +51,7 @@ import {
 import { GroupJoinManager } from "./manager/group-join.js"
 import { createOutputFilePath, streamToOutputFile, writeInitialEntry } from "./manager/output-file.js"
 import { prepareAgentSessionFile } from "./manager/session-file.js"
-import { type LifetimeUsage, addUsage, getLifetimeTotal, getSessionContextPercent } from "./manager/usage.js"
+import { addUsage, getLifetimeTotal, getSessionContextPercent, type LifetimeUsage } from "./manager/usage.js"
 import { NudgeScheduler } from "./nudge-scheduler.js"
 import {
 	BUILTIN_TOOL_NAMES,
@@ -79,20 +79,20 @@ import {
 import { resolveAgentInvocationConfig, resolveJoinMode } from "./resolution/invocation-config.js"
 import { type ModelRegistry, resolveModel } from "./resolution/model-resolver.js"
 import { registerResumeSubagentTool } from "./resume-tool.js"
-import { type SubagentsSettings, applyAndEmitLoaded, saveAndEmitChanged } from "./settings.js"
+import { applyAndEmitLoaded, type SubagentsSettings, saveAndEmitChanged } from "./settings.js"
 import {
 	type AgentActivity,
 	type AgentDetails,
 	AgentWidget,
-	SPINNER,
-	type Theme,
-	type UICtx,
 	describeActivity,
 	formatDuration,
 	formatMs,
 	formatTokens,
 	formatTurns,
 	getDisplayName,
+	SPINNER,
+	type Theme,
+	type UICtx,
 } from "./ui/agent-widget.js"
 
 // ---- Shared helpers ----
@@ -286,21 +286,6 @@ function getAbortLabel(reason?: AgentAbortReason): string {
 			return "Aborted (duration limit exceeded)"
 		default:
 			return "Aborted"
-	}
-}
-
-function getAbortNote(reason?: AgentAbortReason): string {
-	switch (reason) {
-		case "max_turns":
-			return " (aborted - max turns exceeded, output may be incomplete)"
-		case "token_budget":
-			return " (aborted - token budget exceeded, output may be incomplete)"
-		case "inactivity":
-			return " (aborted - agent became unresponsive, output may be incomplete)"
-		case "max_duration":
-			return " (aborted - wall-clock duration limit exceeded, output may be incomplete)"
-		default:
-			return " (aborted, output may be incomplete)"
 	}
 }
 
@@ -1225,7 +1210,6 @@ ${AGENT_TOOL_GUIDELINES}`,
 					}
 				}
 
-				const sessionId = ctx.sessionManager.getSessionId()
 				// Multi-model guard: when multi-model mode is active and the caller supplied
 				// an explicit model, the resolved model must belong to the configured
 				// multi-model role pool. This runs before budget-retry and task_ref checks

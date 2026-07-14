@@ -1,3 +1,5 @@
+/** biome-ignore-all lint/suspicious/noExplicitAny: accessing private props */
+
 /**
  * Compatibility assertions for pi upstream internals we monkey-patch at runtime.
  *
@@ -11,9 +13,9 @@
 
 import {
 	AssistantMessageComponent,
+	initTheme,
 	ToolExecutionComponent,
 	UserMessageComponent,
-	initTheme,
 } from "@earendil-works/pi-coding-agent"
 import { Container } from "@earendil-works/pi-tui"
 import { beforeAll, describe, expect, it } from "vitest"

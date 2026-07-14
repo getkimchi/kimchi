@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent"
-import { Key, isKeyRelease, matchesKey, truncateToWidth } from "@earendil-works/pi-tui"
+import { isKeyRelease, Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui"
 import { GLOBAL_TODO_SCOPE, getTodoCountsForScope, getTodosForScope, resolveTodoScope } from "./store.js"
 import type { TodoCounts, TodoItem, TodoScope, TodoStatus } from "./types.js"
 
