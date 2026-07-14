@@ -927,6 +927,73 @@ describe("fermentExtension question dropdown", () => {
 		)
 	})
 
+	it("does not inject nudges or dropdowns on turn_end when pending plan review exists", async () => {
+		// Regression: after propose_ferment_scoping sets a pending plan review,
+		// turn_end must NOT inject continuation nudges (which prevent agent_end
+		// from firing and showing the review dialog) or show a competing
+		// dropdown (which can prematurely confirm the scope via
+		// confirmPendingScope, causing the review dialog's confirm to fail).
+		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-index-plan-review-turn-end-guard-test-")))
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: () => storage,
+		}
+		runtime.setContinuationPolicy("automated")
+		const draft = storage.create("Turn End Guard")
+		runtime.setActive(draft)
+		runtime.setPendingScope(draft.id, {
+			goal: "Goal",
+			successCriteria: ["Works"],
+			constraints: [],
+			phases: [{ name: "Phase", goal: "Build", steps: [] }],
+		})
+		setPendingPlanReview({
+			fermentId: draft.id,
+			planMarkdown: "# Plan: Turn End Guard",
+		})
+
+		const { handlers, pi } = registerFermentExtension(runtime)
+		const turnEnd = handlers.get("turn_end")
+		if (!turnEnd) throw new Error("turn_end handler was not registered")
+		const ctx = createContext()
+
+		// Fire a text-only turn — this is the turn where the model produced a
+		// summary after propose_ferment_scoping returned "Plan ready for review".
+		await turnEnd(
+			{
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "Plan submitted for review." }],
+					stopReason: "stop",
+				},
+			},
+			ctx,
+		)
+
+		// No continuation nudge should be injected — it would prevent agent_end.
+		expect(pi.sendMessage).not.toHaveBeenCalledWith(
+			expect.objectContaining({ customType: "ferment_continuation_nudge" }),
+			expect.anything(),
+		)
+		// No scoping progress/stop nudge either.
+		expect(pi.sendMessage).not.toHaveBeenCalledWith(
+			expect.objectContaining({ customType: "ferment_scoping_progress_nudge" }),
+			expect.anything(),
+		)
+		expect(pi.sendMessage).not.toHaveBeenCalledWith(
+			expect.objectContaining({ customType: "ferment_scoping_stop_nudge" }),
+			expect.anything(),
+		)
+		// No competing dropdown — the plan review dialog is the only UI.
+		expect(ctx.ui.select).not.toHaveBeenCalled()
+		// Tools must be suppressed so the next LLM call is text-only, ending the turn.
+		expect(pi.setActiveTools).toHaveBeenCalledWith([])
+		// The pending plan review must still be set (not consumed/cleared).
+		expect(getPendingPlanReview(draft.id)).toBeDefined()
+		// The ferment must still be in draft (not prematurely scoped).
+		expect(storage.get(draft.id)?.status).toBe("draft")
+	})
+
 	it("opens pending plan review after agent_end macrotask and starts execution", async () => {
 		vi.useFakeTimers()
 		try {
