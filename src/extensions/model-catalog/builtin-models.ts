@@ -71,6 +71,12 @@ Best for: codebase exploration, research, and trivial re-verification (confirmin
 after a fix). \
 Not suitable for: code review, building code, or any task requiring correctness judgment.`
 
+const DEEPSEEK_V4_FLASH_DESCRIPTION = `\
+Fast and cost-effective model for codebase exploration and lightweight tasks. \
+Best for: codebase exploration, reading code, tracing architecture, and trivial re-verification \
+(confirming tests pass after a fix). \
+Not suitable for: code review, building code, or any task requiring correctness judgment.`
+
 /** Filter out empty layers and join with double newlines. */
 function concatGuidelines(...layers: string[]): string {
 	return layers.filter(Boolean).join("\n\n")
@@ -161,6 +167,18 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 				NEMOTRON_FAMILY_ORCHESTRATION,
 				NEMOTRON_3_ULTRA_ORCHESTRATION,
 			),
+		},
+	],
+	[
+		"deepseek-v4-flash",
+		{
+			vision: false,
+			tier: "light",
+			description: DEEPSEEK_V4_FLASH_DESCRIPTION,
+			guidelines: guidelinesMap({
+				explore: [DEFAULT_EXPLORE_GUIDELINES],
+				research: [DEFAULT_RESEARCH_GUIDELINES],
+			}),
 		},
 	],
 	// Proprietary (Anthropic) models — excluded from OSS subagent routing.
