@@ -248,7 +248,7 @@ describe("resolveOrchestrationInstructions", () => {
 			registry,
 			roles: DEFAULT_MODEL_ROLES,
 		})
-		expect(result).toContain("Review (read code + write findings report)")
+		expect(result).toContain("Review (read code + write findings)")
 		expect(result).toContain("Heavy-tier model duration scaling")
 	})
 

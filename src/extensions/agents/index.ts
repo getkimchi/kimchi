@@ -357,24 +357,18 @@ function getStatusNote(status: string, abortReason?: AgentAbortReason): string {
 	return ""
 }
 
-function getStatusInstruction(status: string, multiModelEnabled: boolean, abortReason?: AgentAbortReason): string {
+function getStatusInstruction(status: string, abortReason?: AgentAbortReason): string {
 	if (status === "aborted" && abortReason === "token_budget") {
-		return "\nThe agent ran out of its token budget. Inspect the worker report before acting. Use resume_subagent with a bounded steering prompt when remaining_steps are a direct continuation; spawn a narrower replacement Agent when remaining_steps have a clean task boundary; use resume_subagent with purpose finalize_report if the report is missing; or stop/report if blocked. Do not blindly retry the same prompt."
+		return "\nThe agent ran out of its token budget. Inspect the worker report before acting. Use resume_subagent with a bounded steering prompt when remaining_steps are a direct continuation; spawn a narrower replacement Agent when remaining_steps have a clean task boundary; use resume_subagent with purpose finalize_report if the report is missing; or implement the remaining work directly if it's small enough. Do not blindly retry the same prompt."
 	}
 	if (status === "aborted" && abortReason === "inactivity") {
-		return "\nThe agent stopped producing output and was terminated. Inspect the worker report before acting; this may indicate a stall. Resume only with a steering prompt that continues the same thread while avoiding the stalled operation, or spawn a narrower replacement Agent if remaining_steps have a clean task boundary."
+		return "\nThe agent stopped producing output and was terminated. Inspect the worker report before acting; this may indicate a stall. Resume with a steering prompt that continues the same thread while avoiding the stalled operation, spawn a narrower replacement Agent if there's a clean task boundary, or implement the remaining work directly if you understand the problem well enough."
 	}
 	if (status === "aborted" && abortReason === "max_duration") {
-		const relaxed = !multiModelEnabled
-		return relaxed
-			? "\nThe agent exceeded its maximum allowed wall-clock duration and was terminated. Inspect the worker report before acting; this may indicate a hang or blocked command. Resume only with a bounded steering prompt that avoids the stalled operation and directly continues the same thread, or spawn a follow-up Agent scoped to a narrower task boundary."
-			: "\nThe agent exceeded its maximum allowed wall-clock duration and was terminated. Inspect the worker report before acting; this may indicate a hang or blocked command. Resume only with a bounded steering prompt that avoids the stalled operation and directly continues the same thread, or spawn a follow-up Agent scoped to a narrower task boundary. Do NOT implement the remaining work yourself — the orchestrator must delegate, not build."
+		return "\nThe agent exceeded its maximum allowed wall-clock duration and was terminated. Inspect the worker report before acting; this may indicate a hang or blocked command. Resume with a bounded steering prompt that avoids the stalled operation, spawn a narrower replacement Agent if there's a clean task boundary, or implement the remaining work directly if you understand the problem well enough."
 	}
 	if (status === "aborted" && abortReason === "max_turns") {
-		const relaxed = !multiModelEnabled
-		return relaxed
-			? "\nThe agent exhausted its turn budget. Do not mark delegated work complete from an aborted result. Inspect the worker report first: use resume_subagent with a bounded steering prompt when remaining_steps are a direct continuation; spawn a narrower linked replacement Agent when remaining_steps have a clean task boundary; use resume_subagent with purpose finalize_report if the report is missing; or stop/report if blocked."
-			: "\nThe agent exhausted its turn budget. Do not mark delegated work complete from an aborted result. Inspect the worker report first: use resume_subagent with a bounded steering prompt when remaining_steps are a direct continuation; spawn a narrower linked replacement Agent when remaining_steps have a clean task boundary; use resume_subagent with purpose finalize_report if the report is missing; or stop/report if blocked. Do NOT implement the remaining work yourself — the orchestrator must delegate, not build."
+		return "\nThe agent exhausted its turn budget. Do not mark delegated work complete from an aborted result. Inspect the worker report first: use resume_subagent with a bounded steering prompt when remaining_steps are a direct continuation; spawn a narrower replacement Agent when remaining_steps have a clean task boundary; use resume_subagent with purpose finalize_report if the report is missing; or implement the remaining work directly if it's small enough. Do not blindly retry the same prompt."
 	}
 	return ""
 }
@@ -1679,11 +1673,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 
 				const timeTaken = formatMs(durationMs)
 				const note = getStatusNote(record.status, record.abortReason)
-				const instruction = getStatusInstruction(
-					record.status,
-					getMultiModelEnabled(ctx.sessionManager),
-					record.abortReason,
-				)
+				const instruction = getStatusInstruction(record.status, record.abortReason)
 				const outcomeBlock = formatAgentOutcomeBlock(record.latestOutcome)
 				return textResult(
 					`${fallbackNote}Agent ${outcome} in ${timeTaken} (${statsParts.join(", ")})${note}.${instruction}\n\n${record.result?.trim() || "No output."}${outcomeBlock}`,
