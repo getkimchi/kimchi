@@ -27,11 +27,11 @@
 
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai"
 import {
+	buildSessionContext,
 	type CompactionResult,
+	calculateContextTokens,
 	type ExtensionAPI,
 	type ExtensionContext,
-	buildSessionContext,
-	calculateContextTokens,
 	getLastAssistantUsage,
 } from "@earendil-works/pi-coding-agent"
 import { determineNextAction } from "../../ferment/engine.js"

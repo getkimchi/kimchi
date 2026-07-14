@@ -28,8 +28,8 @@ import {
 	extractCustomConfigs,
 	getAllowedMultiModelRefs,
 	getModelRoles,
-	modelIdFromRef,
 	type ModelRoles,
+	modelIdFromRef,
 	normalizeRoleModels,
 	parseModelRoles,
 	resetModelRolesCache,
@@ -588,17 +588,8 @@ describe("compactor role", () => {
 	})
 
 	describe("saveModelRoles", () => {
-		const testDir = join(tmpdir(), `kimchi-model-roles-compactor-test-${process.pid}`)
-		const testPath = join(testDir, "settings.json")
-
-		afterEach(() => {
-			try {
-				rmSync(testDir, { recursive: true, force: true })
-			} catch {}
-		})
-
 		it("persists a configured compactor override", () => {
-			saveModelRoles({ ...DEFAULT_MODEL_ROLES, compactor: CUSTOM_COMPACTOR_MODEL }, testPath)
+			saveModelRoles({ ...DEFAULT_MODEL_ROLES, compactor: CUSTOM_COMPACTOR_MODEL })
 			const saved = JSON.parse(readFileSync(testPath, "utf-8"))
 			expect(saved.modelRoles.compactor).toBe(CUSTOM_COMPACTOR_MODEL)
 		})

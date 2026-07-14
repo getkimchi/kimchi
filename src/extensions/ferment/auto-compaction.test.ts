@@ -19,10 +19,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
 import { applyRoleAugmentation, resetModelRolesCache } from "../orchestration/model-roles.js"
 import {
-	DEFAULT_STAGE_COMPACTION_OPTIONS,
 	buildCustomInstructions,
 	buildHandoffDetails,
 	buildMidTurnCustomInstructions,
+	DEFAULT_STAGE_COMPACTION_OPTIONS,
 	isToolCallInFlight,
 	isToolCallInFlightInSession,
 	maybeTriggerFermentCompaction,
