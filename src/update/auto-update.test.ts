@@ -432,7 +432,7 @@ describe("maybeAutoUpdateOnLaunch — deadline / abort handling", () => {
 		expect(execveSpy).not.toHaveBeenCalled()
 	})
 
-	it("skips re-exec when signal aborts during applyUpdate", async () => {
+	it("proceeds with re-exec after applyUpdate completes even if signal aborts mid-install", async () => {
 		const controller = new AbortController()
 		mockCheckForUpdate.mockResolvedValue({
 			currentVersion: "1.0.0",
@@ -447,9 +447,11 @@ describe("maybeAutoUpdateOnLaunch — deadline / abort handling", () => {
 			return { from: "v1.1.0", to: "v1.1.0" }
 		})
 
+		// Once applyUpdate has committed, we proceed with re-exec regardless
+		// of signal state — the install must complete atomically.
 		await expect(maybeAutoUpdateOnLaunch({ signal: controller.signal })).resolves.toBeUndefined()
 		expect(mockApplyUpdate).toHaveBeenCalledOnce()
-		expect(execveSpy).not.toHaveBeenCalled()
+		expect(execveSpy).toHaveBeenCalledOnce()
 	})
 
 	it("logs an audit line with tag + releaseUrl before applying", async () => {

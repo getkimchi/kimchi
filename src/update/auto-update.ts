@@ -53,6 +53,27 @@ export function isNonInteractiveLaunch(argv: readonly string[]): boolean {
 	return false
 }
 
+/** Race a promise against a timeout. Returns the promise's result if it
+ *  resolves before `ms` elapses; rejects with a TimeoutError otherwise.
+ *  Used to cap the checkForUpdate phase without abandoning applyUpdate. */
+class TimeoutError extends Error {
+	constructor() {
+		super("auto-update check timed out")
+		this.name = "TimeoutError"
+	}
+}
+
+function raceWithTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+	let timer: ReturnType<typeof setTimeout> | undefined
+	const timeout = new Promise<never>((_, reject) => {
+		timer = setTimeout(() => reject(new TimeoutError()), ms)
+		;(timer as { unref?: () => void }).unref?.()
+	})
+	return Promise.race([promise, timeout]).finally(() => {
+		if (timer) clearTimeout(timer)
+	})
+}
+
 function warn(message: string): void {
 	process.stderr.write(`${LOG_PREFIX} ${message}\n`)
 }
@@ -167,16 +188,17 @@ export function argvHasSkipTrigger(argv: readonly string[]): boolean {
 	return false
 }
 
-/** Default startup budget for the auto-update check. The caller (entry.ts)
- *  races the call against this deadline via `AbortSignal`; we check it
- *  after each await and skip the re-exec swap if the deadline has passed,
- *  so a slow network never blocks the user past the budget. */
+/** Default startup budget for the update *check* phase. Only
+ *  `checkForUpdate` is raced against this deadline; once we commit to
+ *  `applyUpdate` we await it fully so the install is never torn down
+ *  mid-swap by a timeout. This prevents cli.js from booting while
+ *  `applyUpdate` is still mutating files on disk. */
 const AUTO_UPDATE_DEFAULT_TIMEOUT_MS = 5_000
 
 export interface MaybeAutoUpdateOnLaunchOptions {
-	/** When the signal aborts, the function bails out at the next checkpoint
-	 *  without performing the re-exec swap. Used by entry.ts to cap startup
-	 *  time even when the network is slow. */
+	/** Optional external signal (e.g. from entry.ts). Checked at
+	 *  checkpoints before applyUpdate starts; ignored once the install
+	 *  has committed. */
 	signal?: AbortSignal
 }
 
@@ -233,9 +255,15 @@ export async function maybeAutoUpdateOnLaunch(opts: MaybeAutoUpdateOnLaunchOptio
 		if (!loadAutoUpdateSetting()) return
 		if (opts.signal?.aborted) return
 
+		// Race only the *check* phase against the deadline. Once we commit
+		// to applyUpdate below, we await it fully — a timeout there would
+		// leave the install half-finished with cli.js booting concurrently.
 		let check: Awaited<ReturnType<typeof checkForUpdate>>
 		try {
-			check = await checkForUpdate({ currentVersion: getVersion(), skipCache: true, canary: false })
+			check = await raceWithTimeout(
+				checkForUpdate({ currentVersion: getVersion(), skipCache: true, canary: false }),
+				AUTO_UPDATE_DEFAULT_TIMEOUT_MS,
+			)
 		} catch (err) {
 			warn(`update check failed: ${(err as Error).message}`)
 			return
@@ -246,23 +274,14 @@ export async function maybeAutoUpdateOnLaunch(opts: MaybeAutoUpdateOnLaunchOptio
 		}
 		if (!check.hasUpdate) return
 
-		// Audit log: every auto-update attempt is recorded with the tag and
-		// release URL before the binary is downloaded. Checksum verification
-		// happens inside applyUpdate; this line is the operator-visible trail.
+		// Commit point: from here on we await applyUpdate fully. No external
+		// Promise.race can abandon it — the install must complete before
+		// cli.js boots.
 		warn(`applying update ${check.tag} from ${check.releaseUrl || "<no url>"}`)
 		try {
 			await applyUpdate({ tag: check.tag })
 		} catch (err) {
 			warn(`update apply failed: ${(err as Error).message}`)
-			return
-		}
-		if (opts.signal?.aborted) {
-			// Update is already on disk via atomicInstall's .old rotation on
-			// Windows, or staged for next launch on Linux/macOS (no rename
-			// happens until the user runs `kimchi update`). Bail without
-			// re-exec — the user's UI must not be torn down after they've
-			// already seen it.
-			warn(`update ${check.tag} applied but deadline exceeded; restart to use the new version`)
 			return
 		}
 
