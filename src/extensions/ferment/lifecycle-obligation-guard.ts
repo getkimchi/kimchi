@@ -244,7 +244,7 @@ export function clearAllLifecycleGuards(): void {
  * Evaluates a zero-tool assistant turn and decides whether to schedule a
  * retry, report exhaustion, or do nothing.
  *
- * Pure: does not call any pi API. The caller owns the scheduling side effects.
+ * Pi-independent: does not call any pi API. The caller owns the scheduling side effects.
  */
 export function evaluateLifecycleStop(obligation: LifecycleObligation): LifecycleGuardDecision {
 	const state = retryStates.get(obligation.fermentId)
