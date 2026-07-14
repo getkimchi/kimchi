@@ -14,7 +14,7 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
 import { isHomebrewInstall } from "../update/paths.js"
 import { loadAutoUpdateSetting, saveAutoUpdateSetting } from "../update/settings.js"
-import { applyUpdate, checkForUpdate } from "../update/workflow.js"
+import { applyUpdate, checkForUpdate, parseCanarySha7 } from "../update/workflow.js"
 import { getVersion } from "../utils.js"
 
 const LOG_PREFIX = "[kimchi-auto-update]"
@@ -43,11 +43,13 @@ export interface ManualUpdateResult {
  * captured into the returned `{ ok, message }` payload.
  */
 export async function runManualUpdate(): Promise<ManualUpdateResult> {
+	const current = getVersion()
+	const isCanary = parseCanarySha7(current) !== null
 	try {
 		const check = await checkForUpdate({
-			currentVersion: getVersion(),
+			currentVersion: current,
 			skipCache: true,
-			canary: false,
+			canary: isCanary,
 		})
 		if (!check.hasUpdate) {
 			return { ok: true, message: `Already up to date (${getVersion()})` }
@@ -90,8 +92,10 @@ const UPDATE_NOW_LABEL = "Update kimchi now"
  * failed/disabled check simply hides the item.
  */
 async function updateAvailable(): Promise<boolean> {
+	const current = getVersion()
+	const isCanary = parseCanarySha7(current) !== null
 	try {
-		const check = await checkForUpdate({ currentVersion: getVersion(), canary: false })
+		const check = await checkForUpdate({ currentVersion: current, canary: isCanary })
 		return check.hasUpdate
 	} catch {
 		return false

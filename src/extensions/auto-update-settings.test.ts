@@ -16,6 +16,8 @@ const mockSaveAutoUpdateSetting = vi.fn()
 const mockIsHomebrewInstall = vi.fn(() => false)
 const mockGetVersion = vi.fn(() => "1.0.0")
 
+const mockParseCanarySha7 = vi.fn(() => null as string | null)
+
 vi.mock("../update/paths.js", () => ({
 	isHomebrewInstall: mockIsHomebrewInstall,
 }))
@@ -28,6 +30,7 @@ vi.mock("../update/settings.js", () => ({
 vi.mock("../update/workflow.js", () => ({
 	checkForUpdate: mockCheckForUpdate,
 	applyUpdate: mockApplyUpdate,
+	parseCanarySha7: mockParseCanarySha7,
 }))
 vi.mock("../utils.js", () => ({
 	getVersion: mockGetVersion,
@@ -54,10 +57,12 @@ function resetMocks(): void {
 	mockSaveAutoUpdateSetting.mockReset()
 	mockIsHomebrewInstall.mockReset()
 	mockGetVersion.mockReset()
+	mockParseCanarySha7.mockReset()
 	mockLoadAutoUpdateSetting.mockReturnValue(true)
 	mockLoadAutoUpdateNoticeShown.mockReturnValue(false)
 	mockIsHomebrewInstall.mockReturnValue(false)
 	mockGetVersion.mockReturnValue("1.0.0")
+	mockParseCanarySha7.mockReturnValue(null)
 	mockCheckForUpdate.mockResolvedValue({
 		currentVersion: "1.0.0",
 		latestVersion: "1.0.0",
@@ -136,7 +141,7 @@ describe("auto-update setting reflects in the toggle label state", () => {
 })
 
 describe("runManualUpdate — happy path", () => {
-	it("calls checkForUpdate with skipCache: true and canary: false", async () => {
+	it("calls checkForUpdate with skipCache: true and canary: false on stable", async () => {
 		mockCheckForUpdate.mockResolvedValue({
 			currentVersion: "1.0.0",
 			latestVersion: "1.0.0",
@@ -150,6 +155,25 @@ describe("runManualUpdate — happy path", () => {
 			currentVersion: "1.0.0",
 			skipCache: true,
 			canary: false,
+		})
+	})
+
+	it("checks canary channel when running a canary build", async () => {
+		mockGetVersion.mockReturnValue("0.0.0-canary.20260509.abc1234")
+		mockParseCanarySha7.mockReturnValue("abc1234")
+		mockCheckForUpdate.mockResolvedValue({
+			currentVersion: "0.0.0-canary.20260509.abc1234",
+			latestVersion: "0.0.0-canary.20260510.def5678",
+			tag: "canary",
+			releaseUrl: "",
+			hasUpdate: false,
+			cached: false,
+		})
+		await runManualUpdate()
+		expect(mockCheckForUpdate).toHaveBeenCalledWith({
+			currentVersion: "0.0.0-canary.20260509.abc1234",
+			skipCache: true,
+			canary: true,
 		})
 	})
 
