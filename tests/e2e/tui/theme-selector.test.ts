@@ -1,6 +1,6 @@
 import { expect, test } from "@microsoft/tui-test"
 import { INPUT_TIMEOUT_MS, waitForText } from "./support/assertions.js"
-import { PROMPT_READY, TUI_TEST_CONFIG, runKimchiSession } from "./support/kimchi-fixture.js"
+import { PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -21,32 +21,28 @@ test.use(TUI_TEST_CONFIG)
  */
 
 test("theme selector opens and shows available themes", async ({ terminal }) => {
-	await runKimchiSession(
-		terminal,
-		{ artifactName: "theme-selector-opens", responses: [] },
-		async (_fixture, trace) => {
-			// Write then submit separately — one-shot "/theme\r" races startup.
-			// Trailing space switches autocomplete to argument mode (no args → cleared),
-			// so Enter cannot trigger the slash-command autocomplete accept that doubles
-			// the text when the stored prefix is stale.
-			terminal.write("/theme ")
-			await waitForText(terminal, "/theme ", { timeoutMs: INPUT_TIMEOUT_MS })
-			trace.step("typed /theme")
-			terminal.submit("")
-			await waitForText(terminal, "Theme", { timeoutMs: INPUT_TIMEOUT_MS })
-			trace.step("theme selector open")
+	await runKimchiSession(terminal, { artifactName: "theme-selector-opens", responses: [] }, async (_fixture, trace) => {
+		// Write then submit separately — one-shot "/theme\r" races startup.
+		// Trailing space switches autocomplete to argument mode (no args → cleared),
+		// so Enter cannot trigger the slash-command autocomplete accept that doubles
+		// the text when the stored prefix is stale.
+		terminal.write("/theme ")
+		await waitForText(terminal, "/theme ", { timeoutMs: INPUT_TIMEOUT_MS })
+		trace.step("typed /theme")
+		terminal.submit("")
+		await waitForText(terminal, "Theme", { timeoutMs: INPUT_TIMEOUT_MS })
+		trace.step("theme selector open")
 
-			// The heading and description should be visible.
-			await expect(terminal.getByText("Theme")).toBeVisible()
-			await expect(terminal.getByText("Select color theme")).toBeVisible()
-			trace.step("heading and description visible")
+		// The heading and description should be visible.
+		await expect(terminal.getByText("Theme")).toBeVisible()
+		await expect(terminal.getByText("Select color theme")).toBeVisible()
+		trace.step("heading and description visible")
 
-			// Close via Escape to leave the session in a clean state.
-			terminal.keyEscape()
-			await waitForText(terminal, PROMPT_READY, { timeoutMs: INPUT_TIMEOUT_MS })
-			trace.step("returned to prompt")
-		},
-	)
+		// Close via Escape to leave the session in a clean state.
+		terminal.keyEscape()
+		await waitForText(terminal, PROMPT_READY, { timeoutMs: INPUT_TIMEOUT_MS })
+		trace.step("returned to prompt")
+	})
 })
 
 test("theme selector escape cancels and restores prompt", async ({ terminal }) => {

@@ -14,7 +14,7 @@
  *   Used by callers that need the full coaching message.
  */
 
-import { type Ferment, type FermentAction, type Phase, type Step, inSameParallelCohort } from "./types.js"
+import { type Ferment, type FermentAction, inSameParallelCohort, type Phase, type Step } from "./types.js"
 
 // ─── Declarative Action Types ─────────────────────────────────────────────────
 

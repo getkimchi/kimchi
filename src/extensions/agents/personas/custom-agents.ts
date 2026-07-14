@@ -7,7 +7,7 @@
  *   3. Project: <cwd>/.kimchi/agents/*.md (highest — overrides everything)
  */
 
-import { existsSync, readFileSync, readdirSync } from "node:fs"
+import { existsSync, readdirSync, readFileSync } from "node:fs"
 import { basename, join } from "node:path"
 import { getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent"
 import { getInstalledPackageResourceDirs } from "../package-resources.js"

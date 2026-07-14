@@ -16,7 +16,6 @@ describe("keyboard-capability", () => {
 		it("returns false in non-TTY envs (CI / vitest)", async () => {
 			const originalTermEmulator = process.env.TERMINAL_EMULATOR
 			try {
-				// biome-ignore lint/performance/noDelete: ensure no JetBrains detection leaks in.
 				delete process.env.TERMINAL_EMULATOR
 				const { probeKittyKeyboardSupport, getKittyKeyboardSupport } = await import("./keyboard-capability.js")
 				const result = await probeKittyKeyboardSupport()
@@ -42,7 +41,6 @@ describe("keyboard-capability", () => {
 				if (originalTermEmulator !== undefined) {
 					process.env.TERMINAL_EMULATOR = originalTermEmulator
 				} else {
-					// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete; assigning undefined would coerce to the literal string "undefined".
 					delete process.env.TERMINAL_EMULATOR
 				}
 			}
@@ -60,7 +58,6 @@ describe("keyboard-capability", () => {
 				if (originalTermEmulator !== undefined) {
 					process.env.TERMINAL_EMULATOR = originalTermEmulator
 				} else {
-					// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete; assigning undefined would coerce to the literal string "undefined".
 					delete process.env.TERMINAL_EMULATOR
 				}
 			}

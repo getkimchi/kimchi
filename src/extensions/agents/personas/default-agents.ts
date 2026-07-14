@@ -8,7 +8,6 @@
  */
 
 import { SHARED_PLANNING_PROCESS } from "../../../shared/planning/shared-planning-process.js"
-import { KIMCHI_COAUTHOR } from "../../orchestration/model-registry/guidelines/default-phase-guidelines.js"
 import {
 	AGENT_BUILDER,
 	AGENT_EXPLORE,

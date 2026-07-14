@@ -44,9 +44,7 @@ describe("writeDirectToolsConfig", () => {
 					"my-server": { command: "npx", args: ["my-server"] },
 				},
 			}
-			const provenance = new Map<string, ServerProvenance>([
-				["my-server", { path: filePath, kind: "user" }],
-			])
+			const provenance = new Map<string, ServerProvenance>([["my-server", { path: filePath, kind: "user" }]])
 			const changes = new Map<string, true | string[] | false>([["my-server", true]])
 
 			writeDirectToolsConfig(changes, provenance, fullConfig)
@@ -62,12 +60,8 @@ describe("writeDirectToolsConfig", () => {
 			const fullConfig: McpConfig = {
 				mcpServers: { "my-server": { command: "npx", args: ["my-server"] } },
 			}
-			const provenance = new Map<string, ServerProvenance>([
-				["my-server", { path: filePath, kind: "user" }],
-			])
-			const changes = new Map<string, true | string[] | false>([
-				["my-server", ["tool_a", "tool_b"]],
-			])
+			const provenance = new Map<string, ServerProvenance>([["my-server", { path: filePath, kind: "user" }]])
+			const changes = new Map<string, true | string[] | false>([["my-server", ["tool_a", "tool_b"]]])
 
 			writeDirectToolsConfig(changes, provenance, fullConfig)
 
@@ -82,9 +76,7 @@ describe("writeDirectToolsConfig", () => {
 			const fullConfig: McpConfig = {
 				mcpServers: { "my-server": { command: "npx", args: ["my-server"], directTools: true } },
 			}
-			const provenance = new Map<string, ServerProvenance>([
-				["my-server", { path: filePath, kind: "user" }],
-			])
+			const provenance = new Map<string, ServerProvenance>([["my-server", { path: filePath, kind: "user" }]])
 			const changes = new Map<string, true | string[] | false>([["my-server", false]])
 
 			writeDirectToolsConfig(changes, provenance, fullConfig)
@@ -115,8 +107,8 @@ describe("writeDirectToolsConfig", () => {
 
 			writeDirectToolsConfig(changes, provenance, fullConfig)
 
-			expect(fullConfig.mcpServers["server_a"].directTools).toBe(true)
-			expect(fullConfig.mcpServers["server_b"].directTools).toEqual(["tool_x"])
+			expect(fullConfig.mcpServers.server_a.directTools).toBe(true)
+			expect(fullConfig.mcpServers.server_b.directTools).toEqual(["tool_x"])
 		})
 
 		it("does not sync a server that has no provenance entry", () => {
@@ -150,9 +142,7 @@ describe("writeDirectToolsConfig", () => {
 			const fullConfig: McpConfig = {
 				mcpServers: { "my-server": { command: "npx", args: ["my-server"] } },
 			}
-			const provenance = new Map<string, ServerProvenance>([
-				["my-server", { path: filePath, kind: "user" }],
-			])
+			const provenance = new Map<string, ServerProvenance>([["my-server", { path: filePath, kind: "user" }]])
 			const changes = new Map<string, true | string[] | false>([["my-server", true]])
 
 			writeDirectToolsConfig(changes, provenance, fullConfig)
@@ -171,9 +161,7 @@ describe("writeDirectToolsConfig", () => {
 					"my-server": { command: "npx", args: ["my-server", "--flag"], env: { FOO: "bar" } },
 				},
 			}
-			const provenance = new Map<string, ServerProvenance>([
-				["my-server", { path: filePath, kind: "user" }],
-			])
+			const provenance = new Map<string, ServerProvenance>([["my-server", { path: filePath, kind: "user" }]])
 			const changes = new Map<string, true | string[] | false>([["my-server", true]])
 
 			writeDirectToolsConfig(changes, provenance, fullConfig)

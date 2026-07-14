@@ -1,5 +1,5 @@
-import { complete } from "@earendil-works/pi-ai"
 import type { Api, Model } from "@earendil-works/pi-ai"
+import { complete } from "@earendil-works/pi-ai"
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
 import classifierSystemPrompt from "./prompts/classifier-system-prompt.js"
 import type { ClassifierResult, ClassifierVerdict } from "./types.js"

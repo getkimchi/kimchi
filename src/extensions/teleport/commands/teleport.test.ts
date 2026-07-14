@@ -102,7 +102,7 @@ vi.mock("../ui/progress.js", () => ({
 
 import type { TeleportContext } from "../types.js"
 import { TeleportRefusal } from "./errors.js"
-import { SESSION_CREATE_TIMEOUT_MS, runTeleport } from "./teleport.js"
+import { runTeleport, SESSION_CREATE_TIMEOUT_MS } from "./teleport.js"
 
 const CREDS = {
 	connectToken: "tok-1",

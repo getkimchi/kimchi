@@ -4,17 +4,17 @@ import {
 	type LoadExtensionsResult,
 } from "@earendil-works/pi-coding-agent"
 import {
-	type PackageResourceRecord,
 	getConfiguredPackageResourceRecords,
 	isPathInsidePackage,
+	type PackageResourceRecord,
 	packageSourcesMatch,
 } from "../../resources/package-resources.js"
 import { isResourceEnabled } from "../../resources/store.js"
 import {
-	type ResolvedPaths,
 	getPackageManagerPackageIdentities,
 	isOriginalPiPackageManager,
 	mergeResolvedPaths,
+	type ResolvedPaths,
 	resolveOriginalPiPackageResources,
 } from "./index.js"
 

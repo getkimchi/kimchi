@@ -7,7 +7,7 @@
  * subagent and single-model content lives in this file.
  */
 
-import { type Skill, formatSkillsForPrompt } from "@earendil-works/pi-coding-agent"
+import { formatSkillsForPrompt, type Skill } from "@earendil-works/pi-coding-agent"
 import type { ModelCustomMetadata } from "../orchestration/model-metadata.js"
 import { buildPhaseGuidelinesSection } from "../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import type { ModelRegistry } from "../orchestration/model-registry/index.js"
@@ -16,7 +16,7 @@ import type { ModelRoles } from "../orchestration/model-roles.js"
 import { resolveOrchestrationInstructions } from "../orchestration/orchestration-instructions.js"
 import type { ContextFile } from "./context-files.js"
 import { ORCHESTRATOR_SUPPRESSED_SKILL_NAMES } from "./orchestrator-suppressed-skills.js"
-import { type SuppressibleSection, renderSystemPromptBlocks } from "./system-prompt-blocks.js"
+import { renderSystemPromptBlocks, type SuppressibleSection } from "./system-prompt-blocks.js"
 
 export interface EnvironmentInfo {
 	os: string

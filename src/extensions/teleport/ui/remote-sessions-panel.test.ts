@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
-import { RemoteSessionsPanel, createRemoteSessionsPanel } from "./remote-sessions-panel.js"
 import type { RemoteSessionNode, RemoteWorkspaceNode } from "./remote-sessions-panel.js"
+import { createRemoteSessionsPanel, RemoteSessionsPanel } from "./remote-sessions-panel.js"
 
 const NOW = new Date("2026-05-17T12:00:00Z")
 

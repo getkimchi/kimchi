@@ -1,7 +1,7 @@
 import type EventEmitter from "node:events"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { WebSocketServer } from "ws"
-import { IdeWebSocketTransport, connectToIde } from "./mcp-client.js"
+import { connectToIde, IdeWebSocketTransport } from "./mcp-client.js"
 import type { LockfileData } from "./types.js"
 
 // Mock the MCP Client so we don't need a real MCP handshake

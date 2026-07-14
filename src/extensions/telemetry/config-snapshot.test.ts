@@ -1,11 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import * as agentDiscovery from "../../agent-discovery/index.js"
 import type { AgentDiscovery } from "../../agent-discovery/index.js"
+import * as agentDiscovery from "../../agent-discovery/index.js"
 import type { KimchiConfig, SearchStrategyConfig } from "../../config.js"
 import * as multiModel from "../multi-model.js"
-import * as modelRoles from "../orchestration/model-roles.js"
 import type { ModelRoles } from "../orchestration/model-roles.js"
-import * as permissions from "../permissions/mode-controller.js"
+import * as modelRoles from "../orchestration/model-roles.js"
 import { buildConfigSnapshot } from "./config-snapshot.js"
 
 const SEARCH_STRATEGY: SearchStrategyConfig = {

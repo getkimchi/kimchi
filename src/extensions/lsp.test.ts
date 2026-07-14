@@ -33,10 +33,10 @@ vi.mock("./prompt-construction/index.js", () => ({
 // Imports after mocks are set up
 // ---------------------------------------------------------------------------
 
-import lspExtension from "./lsp.js"
 import * as clientMod from "./lsp/client.js"
 import * as editsMod from "./lsp/edits.js"
 import * as serversMod from "./lsp/servers.js"
+import lspExtension from "./lsp.js"
 import * as promptMod from "./prompt-construction/index.js"
 
 // ---------------------------------------------------------------------------

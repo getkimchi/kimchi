@@ -8,7 +8,14 @@ import { logger } from "./logger.js"
 import { supportsOAuth } from "./mcp-auth-flow.js"
 import { McpOAuthProvider } from "./mcp-oauth-provider.js"
 import { resolveNpxBinary } from "./npx-resolver.js"
-import type { McpResource, McpTool, ServerDefinition, ServerStreamResultPatchNotification, Transport } from "./types.js"
+import type {
+	McpResource,
+	McpTool,
+	ServerDefinition,
+	ServerEntry,
+	ServerStreamResultPatchNotification,
+	Transport,
+} from "./types.js"
 import { serverStreamResultPatchNotificationSchema } from "./types.js"
 
 interface ServerConnection {
@@ -32,6 +39,7 @@ export class McpServerManager {
 	async connect(name: string, definition: ServerDefinition): Promise<ServerConnection> {
 		// Dedupe concurrent connection attempts
 		if (this.connectPromises.has(name)) {
+			// biome-ignore lint/style/noNonNullAssertion: asserted above
 			return this.connectPromises.get(name)!
 		}
 
@@ -81,7 +89,7 @@ export class McpServerManager {
 			})
 		} else if (definition.url) {
 			// HTTP transport with fallback
-			transport = await this.createHttpTransport(definition, name)
+			transport = await this.createHttpTransport(definition as ServerEntry & { url: string }, name)
 		} else {
 			throw new Error(`Server ${name} has no command or url`)
 		}
@@ -129,8 +137,11 @@ export class McpServerManager {
 		}
 	}
 
-	private async createHttpTransport(definition: ServerDefinition, serverName: string): Promise<Transport> {
-		const url = new URL(definition.url!)
+	private async createHttpTransport(
+		definition: ServerDefinition & { url: string },
+		serverName: string,
+	): Promise<Transport> {
+		const url = new URL(definition.url)
 
 		// Build headers first (including any bearer token)
 		const headers = resolveHeaders(definition.headers) ?? {}
@@ -140,7 +151,7 @@ export class McpServerManager {
 			const token =
 				definition.bearerToken ?? (definition.bearerTokenEnv ? process.env[definition.bearerTokenEnv] : undefined)
 			if (token) {
-				headers["Authorization"] = `Bearer ${token}`
+				headers.Authorization = `Bearer ${token}`
 			}
 		}
 
@@ -160,7 +171,7 @@ export class McpServerManager {
 							clientSecret: definition.oauth?.clientSecret,
 							scope: definition.oauth?.scope,
 						}
-			authProvider = new McpOAuthProvider(serverName, definition.url!, oauthConfig, {
+			authProvider = new McpOAuthProvider(serverName, definition.url, oauthConfig, {
 				onRedirect: async (_authUrl) => {
 					// URL is captured by startAuth, no need to log
 				},
@@ -246,7 +257,7 @@ export class McpServerManager {
 
 	async readResource(name: string, uri: string): Promise<ReadResourceResult> {
 		const connection = this.connections.get(name)
-		if (!connection || connection.status !== "connected") {
+		if (connection?.status !== "connected") {
 			throw new Error(`Server "${name}" is not connected`)
 		}
 
@@ -302,14 +313,14 @@ export class McpServerManager {
 
 	decrementInFlight(name: string): void {
 		const connection = this.connections.get(name)
-		if (connection && connection.inFlight) {
+		if (connection?.inFlight) {
 			connection.inFlight--
 		}
 	}
 
 	isIdle(name: string, timeoutMs: number): boolean {
 		const connection = this.connections.get(name)
-		if (!connection || connection.status !== "connected") return false
+		if (connection?.status !== "connected") return false
 		if (connection.inFlight > 0) return false
 		return Date.now() - connection.lastUsedAt > timeoutMs
 	}

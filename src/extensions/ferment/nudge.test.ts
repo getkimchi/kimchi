@@ -17,8 +17,8 @@ import {
 	resetAllReactiveContinuationNudgeCounts,
 	resetScopingStopNudgeCount,
 } from "./nudge.js"
-import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
-import { MAX_SCOPING_EXPLORE_TURNS, getActive, resetScopingExploreTurns, setActive } from "./state.js"
+import { createDefaultFermentRuntime, type FermentRuntime } from "./runtime.js"
+import { getActive, MAX_SCOPING_EXPLORE_TURNS, resetScopingExploreTurns, setActive } from "./state.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
 
 function createPi(): ExtensionAPI {

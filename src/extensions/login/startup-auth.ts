@@ -6,8 +6,8 @@ import type {
 } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
 import {
-	KIMCHI_PROVIDER_ID,
 	createLoginChoiceSelector,
+	KIMCHI_PROVIDER_ID,
 	performKimchiApiKeyLoginViaExtensionUI,
 	performKimchiBrowserLoginWithDialog,
 	setKimchiAuthToken,

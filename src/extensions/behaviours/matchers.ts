@@ -12,7 +12,7 @@
  */
 
 import { bashInvokesCommand } from "./bash-tokenize.js"
-import { type ToolMatcher, all, any, tool } from "./triggers.js"
+import { all, any, type ToolMatcher, tool } from "./triggers.js"
 
 /** A condition over a single string field. RegExp form is the common case. */
 export type StringCondition = RegExp | ((value: string) => boolean)

@@ -1,5 +1,5 @@
 import { expect, test } from "@microsoft/tui-test"
-import { TUI_TEST_CONFIG, runKimchiSession } from "./support/kimchi-fixture.js"
+import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -24,7 +24,7 @@ function lastUserMessage(request: { body: unknown }): string {
 	if (!Array.isArray(messages)) return ""
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const msg = messages[i] as Record<string, unknown> | null
-		if (!msg || msg.role !== "user") continue
+		if (msg?.role !== "user") continue
 		const content = msg.content
 		if (typeof content === "string") return content
 		if (Array.isArray(content)) {
@@ -50,7 +50,9 @@ function firstChatRequest(fixture: { fake: { requests: Array<{ url: string; body
 	return chatRequests[0]
 }
 
-function withRedactionEnabled<T extends { env?: Record<string, string> }>(options: T): T & { env: Record<string, string> } {
+function withRedactionEnabled<T extends { env?: Record<string, string> }>(
+	options: T,
+): T & { env: Record<string, string> } {
 	return { ...options, env: { ...options.env, KIMCHI_REDACTION_ENABLED: "1" } }
 }
 

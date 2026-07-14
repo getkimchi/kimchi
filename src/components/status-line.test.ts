@@ -7,7 +7,7 @@ import { setBillingStatusForTest } from "../extensions/billing/status.js"
 import * as FERMENT from "../extensions/ferment/index.js"
 import * as MULTI_MODEL from "../extensions/multi-model.js"
 import * as TAGS from "../extensions/tags.js"
-import { SHORTCUT_TAIL, StatusLine, buildContextCompact, buildModelAbbrev, buildPhaseCompact } from "./status-line.js"
+import { buildContextCompact, buildModelAbbrev, buildPhaseCompact, SHORTCUT_TAIL, StatusLine } from "./status-line.js"
 
 // ── Mock status-line-config.ts ───────────────────────────────────────────────
 // Controls which elements appear as pinned in each test.

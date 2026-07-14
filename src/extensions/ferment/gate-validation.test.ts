@@ -1,5 +1,5 @@
-import { validateToolArguments } from "@earendil-works/pi-ai"
 import type { ToolCall } from "@earendil-works/pi-ai"
+import { validateToolArguments } from "@earendil-works/pi-ai"
 import { Type } from "typebox"
 import { describe, expect, it } from "vitest"
 import { assertGateFieldsPresent, validateGatesOrErr } from "./gate-validation.js"

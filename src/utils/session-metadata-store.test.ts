@@ -1,16 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import * as agentDiscovery from "../agent-discovery/index.js"
 import type { AgentDiscovery } from "../agent-discovery/index.js"
+import * as agentDiscovery from "../agent-discovery/index.js"
 import type { KimchiConfig, SearchStrategyConfig } from "../config.js"
 import * as multiModel from "../extensions/multi-model.js"
 import {
-	type ConfigChangeRecord,
-	type SessionStartMetadata,
 	_resetSessionMetadataStore,
+	type ConfigChangeRecord,
 	captureSessionStart,
 	getConfigChanges,
 	getSessionStartMetadata,
 	recordConfigChange,
+	type SessionStartMetadata,
 } from "./session-metadata-store.js"
 
 const SEARCH_STRATEGY: SearchStrategyConfig = {

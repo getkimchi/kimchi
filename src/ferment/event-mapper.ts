@@ -20,8 +20,8 @@
  */
 
 import { v7 as uuidv7 } from "uuid"
-import { applyFermentEvent, stateHash } from "./event-store.js"
 import type { FermentEvent, FermentEventType } from "./event-store.js"
+import { applyFermentEvent, stateHash } from "./event-store.js"
 import type { Command } from "./state-machine.js"
 import type { Ferment } from "./types.js"
 

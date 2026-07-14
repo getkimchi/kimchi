@@ -1,5 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs"
-import { mkdirSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -59,10 +58,8 @@ describe("checkForUpdate version comparison", () => {
 	})
 
 	afterEach(() => {
-		// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete; assigning undefined would coerce to the literal string "undefined".
 		if (prevHome === undefined) delete process.env.HOME
 		else process.env.HOME = prevHome
-		// biome-ignore lint/performance/noDelete: same as above.
 		if (prevXdg === undefined) delete process.env.XDG_CACHE_HOME
 		else process.env.XDG_CACHE_HOME = prevXdg
 		rmSync(tmp, { recursive: true, force: true })
@@ -109,10 +106,8 @@ describe("checkForUpdate explicit tag", () => {
 	})
 
 	afterEach(() => {
-		// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete; assigning undefined would coerce to the literal string "undefined".
 		if (prevHome === undefined) delete process.env.HOME
 		else process.env.HOME = prevHome
-		// biome-ignore lint/performance/noDelete: same as above.
 		if (prevXdg === undefined) delete process.env.XDG_CACHE_HOME
 		else process.env.XDG_CACHE_HOME = prevXdg
 		rmSync(tmp, { recursive: true, force: true })
@@ -210,10 +205,8 @@ describe("checkForUpdate canary path", () => {
 	})
 
 	afterEach(() => {
-		// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete; assigning undefined would coerce to the literal string "undefined".
 		if (prevHome === undefined) delete process.env.HOME
 		else process.env.HOME = prevHome
-		// biome-ignore lint/performance/noDelete: same as above.
 		if (prevXdg === undefined) delete process.env.XDG_CACHE_HOME
 		else process.env.XDG_CACHE_HOME = prevXdg
 		rmSync(tmp, { recursive: true, force: true })
@@ -408,18 +401,14 @@ describe("applyUpdate share destination", () => {
 
 		// Isolate from host env so resolution is deterministic.
 		prevXdgData = process.env.XDG_DATA_HOME
-		// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete; assigning undefined would coerce to the literal string "undefined".
 		delete process.env.XDG_DATA_HOME
 		prevPiPackageDir = process.env.PI_PACKAGE_DIR
-		// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete; assigning undefined would coerce to the literal string "undefined".
 		delete process.env.PI_PACKAGE_DIR
 	})
 
 	afterEach(() => {
-		// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete; assigning undefined would coerce to the literal string "undefined".
 		if (prevXdgData === undefined) delete process.env.XDG_DATA_HOME
 		else process.env.XDG_DATA_HOME = prevXdgData
-		// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete; assigning undefined would coerce to the literal string "undefined".
 		if (prevPiPackageDir === undefined) delete process.env.PI_PACKAGE_DIR
 		else process.env.PI_PACKAGE_DIR = prevPiPackageDir
 		rmSync(extractRoot, { recursive: true, force: true })

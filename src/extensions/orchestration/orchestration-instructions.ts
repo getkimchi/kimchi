@@ -8,7 +8,6 @@
 
 import { renderDelegationThinkingLevelTable, renderOrchestratorThinkingTable } from "../agents/thinking-level-policy.js"
 import { renderAgentWorkerBudgetTable } from "../agents/worker-budget-policy.js"
-import type { PromptMode } from "../prompt-construction/system-prompt.js"
 import type { ModelCustomMetadata } from "./model-metadata.js"
 import { resolveOrchestrationGuideline } from "./model-registry/guidelines/guidelines-resolver.js"
 import type { ModelRegistry } from "./model-registry/index.js"
@@ -440,7 +439,7 @@ function resolveDescriptor(ref: string, registry?: ModelRegistry): Orchestration
 	return registry?.getModelById(modelId)
 }
 
-function defaultDescription(ref: string, roleNames: string[]): string {
+function defaultDescription(_ref: string, roleNames: string[]): string {
 	if (roleNames.length > 0) {
 		const roles = roleNames.join(", ")
 		return `This model was configured by the user to handle ${roles} work.`

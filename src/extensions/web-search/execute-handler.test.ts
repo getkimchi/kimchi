@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import * as config from "../../config.js"
-import { DEFAULT_LIMIT, SEARCH_ENDPOINT, type SearchResponse, executeWebSearch } from "./execute-handler.js"
+import { DEFAULT_LIMIT, executeWebSearch, SEARCH_ENDPOINT, type SearchResponse } from "./execute-handler.js"
 
 vi.mock("../../config.js", () => ({ readApiKeyFromConfigFile: vi.fn() }))
 vi.mock("../../utils/http.js", () => ({

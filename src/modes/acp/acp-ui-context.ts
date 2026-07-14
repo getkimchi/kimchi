@@ -27,9 +27,9 @@ import type {
 import type { ExtensionUIContext, Theme as ThemeType } from "@earendil-works/pi-coding-agent"
 import {
 	AVAILABLE_METHODS,
-	type PiMethod,
 	getClientSupportsElicitation,
 	getClientSupportsMethod,
+	type PiMethod,
 } from "./capabilities.js"
 import { requestWithAbort } from "./utils.js"
 

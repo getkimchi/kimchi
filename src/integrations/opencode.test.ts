@@ -161,7 +161,6 @@ describe("opencode tool registration", () => {
 	})
 
 	afterEach(() => {
-		// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete; assigning undefined would coerce to the literal string "undefined".
 		if (prevHome === undefined) delete process.env.HOME
 		else process.env.HOME = prevHome
 		rmSync(scratchHome, { recursive: true, force: true })

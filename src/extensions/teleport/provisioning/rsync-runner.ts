@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import { join, dirname as nodePathDirname, posix } from "node:path"
 
 const posixDirname = posix.dirname
+
 import { estimateUploadBytes } from "./estimate-bytes.js"
 import { buildProxyCommand } from "./proxy-command.js"
 
@@ -283,10 +284,7 @@ export function buildMkdirArgv(input: BuildMkdirArgvInput): string[] {
  * Order matters for human auditability (e.g. tail -f the file) but rsync
  * itself treats the file as a set.
  */
-export function buildExcludeList(opts: {
-	extras?: readonly string[]
-	gitignored?: readonly string[]
-}): string[] {
+export function buildExcludeList(opts: { extras?: readonly string[]; gitignored?: readonly string[] }): string[] {
 	return [...BASE_EXCLUDE_GLOBS, ...(opts.gitignored ?? []), ...(opts.extras ?? [])]
 }
 

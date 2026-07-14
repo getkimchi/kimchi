@@ -10,19 +10,9 @@
  */
 
 import { createHash } from "node:crypto"
-import {
-	closeSync,
-	existsSync,
-	mkdirSync,
-	openSync,
-	readFileSync,
-	readdirSync,
-	statSync,
-	unlinkSync,
-	writeFileSync,
-} from "node:fs"
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
-import { lockSync, unlockSync } from "proper-lockfile"
+import { lockSync } from "proper-lockfile"
 import { v7 as uuidv7 } from "uuid"
 
 import { activateSinglePhase, settleAfterPhaseTerminal } from "./lifecycle.js"

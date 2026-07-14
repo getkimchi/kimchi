@@ -15,12 +15,12 @@
  *      re-appear after the model's response to the feedback.
  */
 
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs"
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs"
 import { join } from "node:path"
-import type { Terminal } from "@microsoft/tui-test/lib/terminal/term.js"
 import { expect, test } from "@microsoft/tui-test"
+import type { Terminal } from "@microsoft/tui-test/lib/terminal/term.js"
 import { INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, viewText, waitForText } from "./support/assertions.js"
-import { TUI_TEST_CONFIG, runKimchiSession } from "./support/kimchi-fixture.js"
+import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -228,7 +228,7 @@ test("plan review dialog does not re-appear after feedback", async ({ terminal }
 				{ stream: ["Got it — I'll revise the plan based on your feedback."] },
 			],
 		},
-		async (fixture, trace) => {
+		async (_fixture, trace) => {
 			// Stage 1: ready prompt visible.
 			await waitForText(terminal, "ask anything or type / for commands", {
 				timeoutMs: STARTUP_TIMEOUT_MS,

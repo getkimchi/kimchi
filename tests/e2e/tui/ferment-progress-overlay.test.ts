@@ -26,13 +26,8 @@ import { randomUUID } from "node:crypto"
 import { mkdirSync, realpathSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { test } from "@microsoft/tui-test"
-import {
-	INPUT_TIMEOUT_MS,
-	STARTUP_TIMEOUT_MS,
-	STREAM_TIMEOUT_MS,
-	waitForText,
-} from "./support/assertions.js"
-import { TUI_TEST_CONFIG, runKimchiSession } from "./support/kimchi-fixture.js"
+import { INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
+import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -111,11 +106,7 @@ test("/ferment progress overlay shows ferment name, progress bar, phase list, an
 					updatedAt: NOW,
 				}
 
-				writeFileSync(
-					join(fermentsDir, `${FERMENT_ID}.json`),
-					`${JSON.stringify(ferment, null, 2)}\n`,
-					"utf-8",
-				)
+				writeFileSync(join(fermentsDir, `${FERMENT_ID}.json`), `${JSON.stringify(ferment, null, 2)}\n`, "utf-8")
 
 				return {
 					env: {
@@ -142,12 +133,8 @@ test("/ferment progress overlay shows ferment name, progress bar, phase list, an
 			// submit can race the phase-list select and auto-drill into L2.
 			// Detect which layer opened and recover back to L1 when needed.
 			const overlayLayer = await Promise.race([
-				waitForText(terminal, "human:", { timeoutMs: STREAM_TIMEOUT_MS, full: false }).then(
-					() => "l1" as const,
-				),
-				waitForText(terminal, "Phase 1/1", { timeoutMs: STREAM_TIMEOUT_MS, full: false }).then(
-					() => "l2" as const,
-				),
+				waitForText(terminal, "human:", { timeoutMs: STREAM_TIMEOUT_MS, full: false }).then(() => "l1" as const),
+				waitForText(terminal, "Phase 1/1", { timeoutMs: STREAM_TIMEOUT_MS, full: false }).then(() => "l2" as const),
 			])
 			trace.step(`overlay opened at ${overlayLayer}`)
 

@@ -17,7 +17,7 @@
  * `resetRedactorEngine()` is exported for test isolation.
  */
 
-import { type BulkheadConfig, DEFAULT_CONFIG, type GuardrailsEngine, createEngine } from "@bulkhead-ai/core"
+import { type BulkheadConfig, createEngine, DEFAULT_CONFIG, type GuardrailsEngine } from "@bulkhead-ai/core"
 
 let engine: GuardrailsEngine | undefined
 
@@ -67,8 +67,10 @@ const CUSTOM_PATTERNS: CustomPattern[] = [
 	// CastAI API keys
 	{ name: "CASTAI_API_KEY", regex: /castai_v1_[A-Za-z0-9_-]{8,}/g },
 	// Bearer tokens (Authorization header or standalone)
+	// biome-ignore lint/complexity/noUselessEscapeInRegex: -
 	{ name: "BEARER_TOKEN", regex: /(?:Bearer\s+)([A-Za-z0-9_\-\.]{16,})/gi },
 	// OAuth tokens (Google ya29.*, Azure)
+	// biome-ignore lint/complexity/noUselessEscapeInRegex: -
 	{ name: "OAUTH_TOKEN", regex: /ya29\.[A-Za-z0-9_\-]{16,}/g },
 	// Local auth/config paths — redact user home directory paths that reveal
 	// the OS user and expose config/credential file locations.

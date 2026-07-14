@@ -17,13 +17,13 @@ const MAX_RECONNECT_RETRIES = 3
 export default function ideAdapterExtension(pi: ExtensionAPI): void {
 	let connection: IdeConnection | null = null
 	let pollTimer: ReturnType<typeof setInterval> | null = null
-	let registeredToolNames: string[] = []
+	let _registeredToolNames: string[] = []
 	let isShuttingDown = false
 	let reconnectRetries = 0
 
 	// Per-instance mutable state (isolated from other sessions/agents)
 	let pendingAtMentions: AtMentionNotification[] = []
-	let latestSelection: SelectionChangedNotification | null = null
+	let _latestSelection: SelectionChangedNotification | null = null
 	let currentCtx: ExtensionContext | null = null
 
 	function ensureMaxMentions(): void {
@@ -48,7 +48,7 @@ export default function ideAdapterExtension(pi: ExtensionAPI): void {
 	}
 
 	function localSetLatestSelection(selection: SelectionChangedNotification): void {
-		latestSelection = selection
+		_latestSelection = selection
 	}
 
 	async function discoverAndConnect(cwd: string): Promise<void> {
@@ -92,7 +92,7 @@ export default function ideAdapterExtension(pi: ExtensionAPI): void {
 		// Wire disconnect callback so we can null the handle and reconnect later
 		connection.onDisconnect = () => {
 			connection = null
-			registeredToolNames = []
+			_registeredToolNames = []
 		}
 
 		try {
@@ -101,7 +101,7 @@ export default function ideAdapterExtension(pi: ExtensionAPI): void {
 				if (isShuttingDown) break
 				registerIdeTool(pi, tool)
 			}
-			registeredToolNames = tools.map((t) => t.name)
+			_registeredToolNames = tools.map((t) => t.name)
 		} catch (err) {
 			console.warn("[ide-adapter] Failed to list IDE tools:", err)
 		}
@@ -117,7 +117,7 @@ export default function ideAdapterExtension(pi: ExtensionAPI): void {
 			label: `IDE: ${tool.name}`,
 			description: tool.description || `IDE tool: ${tool.name}`,
 			parameters: Type.Unsafe<Record<string, unknown>>(tool.inputSchema || { type: "object", properties: {} }),
-			execute: async (toolCallId: string, params: Record<string, unknown>, signal: AbortSignal, onUpdate, ctx) => {
+			execute: async (_toolCallId: string, params: Record<string, unknown>, signal: AbortSignal, _onUpdate, _ctx) => {
 				if (signal?.aborted) {
 					return {
 						content: [{ type: "text" as const, text: "Tool call aborted" }],
@@ -205,7 +205,7 @@ export default function ideAdapterExtension(pi: ExtensionAPI): void {
 			// Prevent onDisconnect from clearing a stale handle after we intentionally close
 			const conn = connection
 			connection = null
-			registeredToolNames = []
+			_registeredToolNames = []
 			conn.close().catch((err) => console.warn("[ide-adapter] Disconnect error:", err))
 		}
 	}

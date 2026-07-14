@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { __resetTodoStore, getTodosForScope } from "./store.js"
-import { CREATE_TODOS_TOOL_NAME, TODO_TOOL_NAMES, UPDATE_TODOS_TOOL_NAME, registerTodosTool } from "./tool.js"
+import { CREATE_TODOS_TOOL_NAME, registerTodosTool, TODO_TOOL_NAMES, UPDATE_TODOS_TOOL_NAME } from "./tool.js"
 
 function registeredTools() {
 	const registerTool = vi.fn()

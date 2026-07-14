@@ -24,7 +24,7 @@ import type { SuccessCriteria } from "../../ferment/success-criteria.js"
 import type { Ferment } from "../../ferment/types.js"
 import { SCOPING_DISCOVERY_GUIDANCE } from "./constants.js"
 import { promptEditor } from "./prompt-ui.js"
-import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
+import { defaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import { safeSendMessage } from "./safe-send.js"
 
 const STATUS_KEY = "ferment-scoping"

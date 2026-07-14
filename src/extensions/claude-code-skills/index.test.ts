@@ -1,8 +1,8 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
-import { type ExtensionAPI, type ToolDefinition, loadSkillsFromDir } from "@earendil-works/pi-coding-agent"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { type ExtensionAPI, loadSkillsFromDir, type ToolDefinition } from "@earendil-works/pi-coding-agent"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import claudeCodeSkillsExtension from "./index.js"
 
 let dir: string
@@ -17,7 +17,6 @@ describe("Claude Code skills extension", () => {
 
 	afterEach(() => {
 		if (oldHome === undefined) {
-			// biome-ignore lint/performance/noDelete: process.env requires delete to truly unset.
 			delete process.env.HOME
 		} else {
 			process.env.HOME = oldHome

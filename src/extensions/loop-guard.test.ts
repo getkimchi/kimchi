@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { LoopGuard, type ToolHistoryRecord, fingerprint, normalizeBashCommand } from "./loop-guard.js"
+import { fingerprint, LoopGuard, normalizeBashCommand, type ToolHistoryRecord } from "./loop-guard.js"
 
 const FP_A = "fp_a"
 const FP_B = "fp_b"

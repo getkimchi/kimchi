@@ -32,12 +32,12 @@ import { handleToolExecutionEnd, handleToolExecutionStart } from "./handlers/too
 import { SessionContext } from "./session-context.js"
 import { startSettingsChangeWatcher } from "./settings-change-emitter.js"
 import {
-	type SurveyAnsweredTelemetry,
-	type SurveyDismissedTelemetry,
-	type SurveyShownTelemetry,
 	emitSurveyAnswered,
 	emitSurveyDismissed,
 	emitSurveyShown,
+	type SurveyAnsweredTelemetry,
+	type SurveyDismissedTelemetry,
+	type SurveyShownTelemetry,
 } from "./survey.js"
 
 // ---------------------------------------------------------------------------

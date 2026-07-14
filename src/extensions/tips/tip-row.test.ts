@@ -1,7 +1,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent"
 import { visibleWidth } from "@earendil-works/pi-tui"
 import { describe, expect, it, vi } from "vitest"
-import { TipRow, renderTipRow, renderTipText } from "./tip-row.js"
+import { renderTipRow, renderTipText, TipRow } from "./tip-row.js"
 import type { TipCandidate } from "./types.js"
 
 function theme(): Theme {

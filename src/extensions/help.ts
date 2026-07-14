@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { Key, isKeyRelease, matchesKey, visibleWidth } from "@earendil-works/pi-tui"
+import { isKeyRelease, Key, matchesKey, visibleWidth } from "@earendil-works/pi-tui"
 import { SLASH_COMMANDS } from "./slash-commands.js"
 
 type HelpRow = { kind: "heading"; text: string } | { kind: "entry"; key: string; desc: string } | { kind: "spacer" }

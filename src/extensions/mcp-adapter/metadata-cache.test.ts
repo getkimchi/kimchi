@@ -11,8 +11,8 @@
  * tool path and the direct-tools cached-metadata construction.
  */
 import { describe, expect, it } from "vitest"
-import { reconstructToolMetadata, serializeTools } from "./metadata-cache.js"
 import type { ServerCacheEntry } from "./metadata-cache.js"
+import { reconstructToolMetadata, serializeTools } from "./metadata-cache.js"
 import type { McpTool } from "./types.js"
 
 const SERVER_NAME = "testserver"

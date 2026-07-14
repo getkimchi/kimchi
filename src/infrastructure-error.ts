@@ -1,8 +1,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import {
-	type LLMGatewayError,
-	LLM_GATEWAY_INFRASTRUCTURE_EXIT_CODE,
 	classifyLLMGatewayError,
+	LLM_GATEWAY_INFRASTRUCTURE_EXIT_CODE,
+	type LLMGatewayError,
 } from "./llm-gateway-error.js"
 
 export const KIMCHI_INFRA_ERROR_EXIT_CODE = LLM_GATEWAY_INFRASTRUCTURE_EXIT_CODE

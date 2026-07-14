@@ -3,8 +3,8 @@ import { existsSync } from "node:fs"
 import {
 	type BashOperations,
 	type BashSpawnContext,
-	type ExtensionAPI,
 	createLocalBashOperations,
+	type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent"
 import { applyEnabledBashHooks } from "../resources/bash-hooks.js"
 import { globalRtkLinkPath, managedRtkPath } from "../resources/rtk-install.js"

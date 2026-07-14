@@ -5,7 +5,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../../ferment/event-store.js"
 import { createContext } from "../../__mocks__/context.js"
-import { type FermentRuntime, createDefaultFermentRuntime } from "../runtime.js"
+import { createDefaultFermentRuntime, type FermentRuntime } from "../runtime.js"
 import { createApplyAndPersist } from "../tool-helpers.js"
 import { FERMENT_TOOLS } from "../tool-names.js"
 import {
@@ -1393,10 +1393,7 @@ describe("interactive ferment tool visibility (registerLifecycleTools)", () => {
 		_sessionStart: ((event: unknown, ctx: { hasUI: boolean }) => void) | null
 	}
 
-	function makePi(options: {
-		activeTools: string[]
-		oneShot?: boolean
-	}): FakePi & { setActiveCalls: string[][] } {
+	function makePi(options: { activeTools: string[]; oneShot?: boolean }): FakePi & { setActiveCalls: string[][] } {
 		const pi: FakePi & { setActiveCalls: string[][] } = {
 			registerTool: () => {},
 			on: (_event, handler) => {

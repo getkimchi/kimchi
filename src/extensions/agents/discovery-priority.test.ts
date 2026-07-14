@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 
 // Point getAgentDir() to a temp dir so global agents don't pollute project-only tests
 const FAKE_AGENT_DIR = join(tmpdir(), `kimchi-global-${Date.now()}`)

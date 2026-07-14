@@ -4,8 +4,8 @@
  * using a mock ExtensionAPI.
  */
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { BASH_TOOL_GUARD_EVENTS } from "./bash-tool-guard-events.js"
 import bashToolGuardExtension, { STEER_MESSAGE_TYPE } from "./bash-tool-guard.js"
+import { BASH_TOOL_GUARD_EVENTS } from "./bash-tool-guard-events.js"
 
 let mockMode: string | undefined = "default"
 let mockResourceEnabled = true

@@ -3,9 +3,9 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { commandToEvents } from "./event-mapper.js"
-import { type FermentEvent, FermentEventStore, applyFermentEvent, stateHash } from "./event-store.js"
+import { applyFermentEvent, type FermentEvent, FermentEventStore, stateHash } from "./event-store.js"
 import { applyCommand } from "./state-machine.js"
-import { FermentStorage, clearFermentCache } from "./store.js"
+import { clearFermentCache, FermentStorage } from "./store.js"
 import type { Phase } from "./types.js"
 
 function createTempDir() {

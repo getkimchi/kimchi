@@ -2,7 +2,7 @@
 // and child session files side-by-side on disk with bidirectional linkage — the
 // path unit tests can't reach.
 
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs"
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -16,7 +16,7 @@ interface TokenUsage {
 }
 
 interface AgentDetails {
- 	agentId?: string
+	agentId?: string
 	sessionFile?: string
 	tokenUsage?: TokenUsage
 	durationMs?: number
@@ -37,21 +37,6 @@ function readJsonl(path: string): SessionEntry[] {
 		.split("\n")
 		.filter((l) => l.trim().length > 0)
 		.map((l) => JSON.parse(l) as SessionEntry)
-}
-
-// Sum `message.usage` across every assistant message in a session file — reconstructs per-turn billing from disk.
-function sumAssistantUsage(entries: SessionEntry[]): TokenUsage {
-	const total: TokenUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
-	for (const entry of entries) {
-		if (entry.type !== "message" || entry.message?.role !== "assistant") continue
-		const u = entry.message.usage
-		if (!u) continue
-		total.input += u.input ?? 0
-		total.output += u.output ?? 0
-		total.cacheRead += u.cacheRead ?? 0
-		total.cacheWrite += u.cacheWrite ?? 0
-	}
-	return total
 }
 
 describe("Agent session tracking smoke tests", () => {
@@ -113,10 +98,7 @@ describe("Agent session tracking smoke tests", () => {
 					e.message?.role === "toolResult" &&
 					(e.message.details as AgentDetails | undefined)?.sessionFile !== undefined,
 			)
-			expect(
-				toolResult,
-				"parent session should contain an Agent tool-result with sessionFile populated",
-			).toBeDefined()
+			expect(toolResult, "parent session should contain an Agent tool-result with sessionFile populated").toBeDefined()
 			const details = toolResult?.message?.details as AgentDetails
 			expect(details.agentId).toBeDefined()
 			expect(details.sessionFile).toBe(child?.file)

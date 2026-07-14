@@ -60,7 +60,6 @@ describe("strip-images extension", () => {
 
 	describe("command registration", () => {
 		it("registers the strip-images command", () => {
-			const ctx = createMockCtx()
 			stripImagesExtension(mockPi as never)
 			expect(mockRegisterCommand).toHaveBeenCalledWith(
 				"strip-images",

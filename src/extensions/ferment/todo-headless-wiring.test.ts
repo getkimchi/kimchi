@@ -197,7 +197,7 @@ describe("ferment → todo → headless prompt wiring", () => {
 	it("scope resolves to global when no step is running", () => {
 		const ferment = makeFerment()
 		setActive(ferment)
-		const { pi, unsubscribe } = makePiWithRealEventBus()
+		const { unsubscribe } = makePiWithRealEventBus()
 
 		try {
 			// No step started — should resolve to global

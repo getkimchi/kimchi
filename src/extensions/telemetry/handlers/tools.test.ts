@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { TelemetryConfig } from "../../../config.js"
-import { SessionContext, _resetSharedAccumulators } from "../session-context.js"
+import { _resetSharedAccumulators, SessionContext } from "../session-context.js"
 import { handleToolExecutionEnd, handleToolExecutionStart, resultSizeChars } from "./tools.js"
 
 vi.mock("../../../api/me.js", () => ({

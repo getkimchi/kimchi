@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import { GitHubClient, type Repo, assetName } from "./github.js"
+import { assetName, GitHubClient, type Repo } from "./github.js"
 
 const REPO: Repo = { owner: "castai", name: "kimchi-dev", binary: "kimchi" }
 

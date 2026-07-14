@@ -4,8 +4,7 @@
  * using a mock ExtensionAPI.
  */
 import { describe, expect, it, vi } from "vitest"
-import { STEER_MESSAGE_TYPE } from "./review-write-guard.js"
-import reviewWriteGuardExtension from "./review-write-guard.js"
+import reviewWriteGuardExtension, { STEER_MESSAGE_TYPE } from "./review-write-guard.js"
 
 let mockPhase: string | undefined = "review"
 

@@ -1,4 +1,4 @@
-import { type MockInstance, afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, type MockInstance, vi } from "vitest"
 
 vi.mock("./cache.js", () => ({
 	cacheGet: vi.fn(() => undefined),

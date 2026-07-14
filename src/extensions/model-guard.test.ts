@@ -1,19 +1,18 @@
 import type { ImageContent, TextContent, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai"
 import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import type { Ferment } from "../ferment/types.js"
-
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import type { Ferment } from "../ferment/types.js"
 import { COMPACTION_RESERVE_TOKENS } from "./compaction-thresholds.js"
 import { clearActiveFermentId, setActive as setActiveFerment } from "./ferment/state.js"
 import modelGuardExtension, {
+	__resetImagesDetectedForTest,
 	estimateTokens,
 	hasImages,
-	__resetImagesDetectedForTest,
 	markImagesAsStripped,
+	resolveContextTokens,
 	sessionHasImages,
 	stripImages,
 	truncateMessages,
-	resolveContextTokens,
 } from "./model-guard.js"
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -338,11 +337,11 @@ describe("truncateMessages", () => {
 
 	it("drops oldest messages when over budget", () => {
 		// Each user message with 2000 chars = 500 tokens; 10 x 500 = 5000 < 9500 → no truncation
-		const msgs: ContextEvent["messages"] = Array.from({ length: 10 }, (_, i) => makeUser("x".repeat(2000)))
+		const msgs: ContextEvent["messages"] = Array.from({ length: 10 }, (_, _i) => makeUser("x".repeat(2000)))
 		expect(truncateMessages(msgs, DEFAULT_WINDOW)).toBe(msgs)
 
 		// 30 x 500 = 15,000 tokens > 9,500 → truncation
-		const long: ContextEvent["messages"] = Array.from({ length: 30 }, (_, i) => makeUser("x".repeat(2000)))
+		const long: ContextEvent["messages"] = Array.from({ length: 30 }, (_, _i) => makeUser("x".repeat(2000)))
 		const result = truncateMessages(long, DEFAULT_WINDOW)
 		expect(result).not.toBe(long)
 		expect(result.length).toBeLessThan(30)
