@@ -10,7 +10,9 @@
  * confirmed in one-shot mode.
  */
 
-import { test } from "@microsoft/tui-test"
+import { readdirSync, readFileSync } from "node:fs"
+import { join } from "node:path"
+import { expect, test } from "@microsoft/tui-test"
 import { INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
 import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
@@ -45,6 +47,32 @@ const PROPOSE_SCOPING_PAYLOAD = JSON.stringify({
 	],
 })
 
+/**
+ * Poll for a ferment artifact with the expected status in .kimchi/ferments/.
+ * Returns the parsed artifact or undefined if not found before the deadline.
+ */
+async function findFermentArtifact(
+	workDir: string,
+	expectedStatus: string,
+	timeoutMs = STREAM_TIMEOUT_MS,
+): Promise<Record<string, unknown> | undefined> {
+	const fermentsDir = join(workDir, ".kimchi", "ferments")
+	const deadline = Date.now() + timeoutMs
+	while (Date.now() < deadline) {
+		try {
+			const files = readdirSync(fermentsDir).filter((f) => f.endsWith(".json"))
+			for (const f of files) {
+				const content = JSON.parse(readFileSync(join(fermentsDir, f), "utf-8"))
+				if (content.status === expectedStatus) return content
+			}
+		} catch {
+			// dir doesn't exist yet or unreadable
+		}
+		await new Promise((r) => setTimeout(r, 250))
+	}
+	return undefined
+}
+
 test("plan review dialog appears in one-shot mode after propose_ferment_scoping", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
@@ -66,12 +94,12 @@ test("plan review dialog appears in one-shot mode after propose_ferment_scoping"
 					],
 				},
 				// Turn 2: tools suppressed → model produces text-only response.
+				// The test does not assert the exact text here; the important behavior
+				// is that agent_end fires and the review dialog surfaces.
 				{ stream: ["I've submitted the plan for your review."] },
-				// Turn 3: post-confirmation, keeps session alive.
-				{ stream: ["Starting execution now."] },
 			],
 		},
-		async (_fixture, trace) => {
+		async (fixture, trace) => {
 			// Stage 1: ready prompt visible.
 			await waitForText(terminal, "ask anything or type / for commands", { timeoutMs: STARTUP_TIMEOUT_MS })
 			trace.step("ready prompt visible")
@@ -91,9 +119,13 @@ test("plan review dialog appears in one-shot mode after propose_ferment_scoping"
 			terminal.submit("")
 			trace.step("confirmed 'Start execution'")
 
-			// Stage 5: post-confirmation response streams.
-			await waitForText(terminal, "Starting execution now", { timeoutMs: STREAM_TIMEOUT_MS })
-			trace.step("post-confirmation response streamed")
+			// Stage 5: verify the ferment transitions to "planned" after confirmation.
+			// In automated one-shot mode, post-confirmation turns may inject continuation
+			// nudges that compete with scripted responses, so we assert on durable state
+			// rather than the next streamed message.
+			const artifact = await findFermentArtifact(fixture.workDir, "planned")
+			expect(artifact).toBeDefined()
+			trace.step("ferment artifact found with status 'planned'")
 		},
 	)
 })
