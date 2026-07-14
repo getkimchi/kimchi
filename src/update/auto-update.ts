@@ -112,7 +112,15 @@ export function performReExec(userArgs: readonly string[], env: NodeJS.ProcessEn
 			env,
 		})
 		// Mirror the child's exit so the terminal sees the same status.
-		process.exit(result.exitCode ?? 0)
+		// When the child is killed by a signal, Bun reports exitCode as null
+		// and a signalCode string (e.g. "SIGTERM"). Coalescing null to 0 would
+		// mask the failure — use 128+signal-number (the POSIX convention) so
+		// the shell sees a non-zero exit matching the child's termination.
+		if (result.exitCode !== null) {
+			process.exit(result.exitCode)
+		}
+		const signalNum = result.signalCode ? SIGNAL_TO_NUM[result.signalCode] : undefined
+		process.exit(signalNum !== undefined ? 128 + signalNum : 1)
 	}
 
 	throw new ReExecUnavailableError()
@@ -123,7 +131,27 @@ export function performReExec(userArgs: readonly string[], env: NodeJS.ProcessEn
 type BunSpawnSync = (
 	cmd: readonly string[],
 	opts: { stdio: [string, string, string]; env: NodeJS.ProcessEnv },
-) => { exitCode: number | null }
+) => { exitCode: number | null; signalCode?: string | null }
+
+/** Map common signal names to their POSIX numbers so we can derive the
+ *  conventional 128+signal exit code when Bun reports exitCode as null. */
+const SIGNAL_TO_NUM: Record<string, number> = {
+	SIGHUP: 1,
+	SIGINT: 2,
+	SIGQUIT: 3,
+	SIGILL: 4,
+	SIGTRAP: 5,
+	SIGABRT: 6,
+	SIGBUS: 7,
+	SIGFPE: 8,
+	SIGKILL: 9,
+	SIGUSR1: 10,
+	SIGSEGV: 11,
+	SIGUSR2: 12,
+	SIGPIPE: 13,
+	SIGALRM: 14,
+	SIGTERM: 15,
+}
 
 /** Return true when any argv token should suppress auto-update. Exported so
  *  tests can drive it without mutating the worker's `process.argv` (vitest's

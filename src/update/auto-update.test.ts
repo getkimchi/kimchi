@@ -571,6 +571,34 @@ describe("performReExec — re-exec primitive selection", () => {
 		expect(exitSpy).toHaveBeenCalledWith(42)
 	})
 
+	it("uses 128+signal when child is killed by signal (exitCode null)", () => {
+		removeExecve()
+		;(globalThis as unknown as { Bun?: unknown }).Bun = {
+			spawnSync: vi.fn(() => ({ exitCode: null, signalCode: "SIGTERM" })),
+		}
+		const exitSentinel = new Error("__exit__")
+		exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {
+			throw exitSentinel
+		}) as never)
+
+		expect(() => performReExec([], process.env)).toThrow(exitSentinel)
+		expect(exitSpy).toHaveBeenCalledWith(128 + 15) // SIGTERM = 15 → exit 143
+	})
+
+	it("exits with code 1 when signalCode is null and exitCode is null", () => {
+		removeExecve()
+		;(globalThis as unknown as { Bun?: unknown }).Bun = {
+			spawnSync: vi.fn(() => ({ exitCode: null, signalCode: null })),
+		}
+		const exitSentinel = new Error("__exit__")
+		exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {
+			throw exitSentinel
+		}) as never)
+
+		expect(() => performReExec([], process.env)).toThrow(exitSentinel)
+		expect(exitSpy).toHaveBeenCalledWith(1)
+	})
+
 	it("throws ReExecUnavailableError when neither execve nor Bun.spawnSync exists", () => {
 		removeExecve()
 		;(globalThis as unknown as { Bun?: unknown }).Bun = undefined
