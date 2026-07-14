@@ -22,6 +22,18 @@ export function getActiveThemeName(): string | undefined {
 	}
 }
 
+export function getCompactionEnabled(): boolean {
+	const agentDir = process.env.KIMCHI_CODING_AGENT_DIR
+	if (!agentDir) return true
+	try {
+		const parsed: unknown = JSON.parse(readFileSync(resolve(agentDir, "settings.json"), "utf-8"))
+		const enabled = (parsed as { compaction?: { enabled?: unknown } })?.compaction?.enabled
+		return enabled !== false
+	} catch {
+		return true
+	}
+}
+
 type ThemeChangeListener = (newName: string | undefined, oldName: string | undefined) => void
 
 let watcher: FSWatcher | undefined

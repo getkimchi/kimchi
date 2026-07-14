@@ -7,7 +7,7 @@ vi.mock("node:fs", () => ({
 }))
 
 import { readFileSync, watch } from "node:fs"
-import { getActiveThemeName, onThemeChange } from "./settings-watcher.js"
+import { getActiveThemeName, getCompactionEnabled, onThemeChange } from "./settings-watcher.js"
 
 const mockReadFileSync = vi.mocked(readFileSync)
 const mockWatch = vi.mocked(watch)
@@ -55,6 +55,35 @@ describe("getActiveThemeName", () => {
 	it("returns undefined when KIMCHI_CODING_AGENT_DIR is unset", () => {
 		delete process.env.KIMCHI_CODING_AGENT_DIR
 		expect(getActiveThemeName()).toBeUndefined()
+	})
+})
+
+describe("getCompactionEnabled", () => {
+	it("returns true when compaction.enabled is true", () => {
+		mockReadFileSync.mockReturnValue(JSON.stringify({ compaction: { enabled: true } }))
+		expect(getCompactionEnabled()).toBe(true)
+	})
+
+	it("returns false when compaction.enabled is false", () => {
+		mockReadFileSync.mockReturnValue(JSON.stringify({ compaction: { enabled: false } }))
+		expect(getCompactionEnabled()).toBe(false)
+	})
+
+	it("returns true (default) when compaction key is absent", () => {
+		mockReadFileSync.mockReturnValue(JSON.stringify({ theme: "dark" }))
+		expect(getCompactionEnabled()).toBe(true)
+	})
+
+	it("returns true when settings.json is malformed JSON", () => {
+		mockReadFileSync.mockReturnValue("{ not valid json")
+		expect(getCompactionEnabled()).toBe(true)
+	})
+
+	it("returns true when settings.json is missing", () => {
+		mockReadFileSync.mockImplementation(() => {
+			throw new Error("ENOENT")
+		})
+		expect(getCompactionEnabled()).toBe(true)
 	})
 })
 
