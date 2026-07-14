@@ -85,30 +85,9 @@ function autoUpdateLabel(): string {
 
 const UPDATE_NOW_LABEL = "Update kimchi now"
 
-/**
- * Cheap "is an update available?" probe for deciding whether to show the
- * "Update kimchi now" menu item. Uses the cached check (no `skipCache`) so
- * opening `/update` doesn't block on the network, and never throws — a
- * failed/disabled check simply hides the item.
- */
-async function updateAvailable(): Promise<boolean> {
-	const current = getVersion()
-	const isCanary = parseCanarySha7(current) !== null
-	try {
-		const check = await checkForUpdate({ currentVersion: current, canary: isCanary })
-		return check.hasUpdate
-	} catch {
-		return false
-	}
-}
-
 async function showUpdateMenu(ctx: ExtensionCommandContext): Promise<void> {
-	// Only offer "Update kimchi now" when there's actually something to
-	// install; otherwise it's a no-op that reports "Already up to date".
-	const canUpdate = await updateAvailable()
-
 	while (true) {
-		const options = [...(canUpdate ? [UPDATE_NOW_LABEL] : []), autoUpdateLabel(), "View current version", "Back"]
+		const options = [UPDATE_NOW_LABEL, autoUpdateLabel(), "View current version", "Back"]
 		const choice = await ctx.ui.select("Update", options)
 		if (!choice) return
 
