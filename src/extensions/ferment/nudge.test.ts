@@ -287,7 +287,7 @@ describe("maybeInjectLifecycleObligationGuard", () => {
 		expect(resumedResult).toBe(true)
 	})
 
-	it("does not nudge for recover_phase (ambiguous recovery — choice-oriented)", () => {
+	it("nudges recover_phase with choice-oriented guidance and bounded exhaustion", () => {
 		const pi = createPi()
 		const failed = makePlannedFerment({
 			status: "running",
@@ -296,8 +296,28 @@ describe("maybeInjectLifecycleObligationGuard", () => {
 		const runtime = makeRuntime(failed)
 
 		maybeInjectLifecycleObligationGuard(pi, runtime)
+		maybeInjectLifecycleObligationGuard(pi, runtime)
+		maybeInjectLifecycleObligationGuard(pi, runtime)
 
-		expect(pi.sendMessage).not.toHaveBeenCalled()
+		const continuationCalls = (pi.sendMessage as ReturnType<typeof vi.fn>).mock.calls.filter(
+			(args: unknown[]) => (args[0] as { customType?: string })?.customType === "ferment_continuation_nudge",
+		)
+		expect(continuationCalls).toHaveLength(2)
+		const firstText = (continuationCalls[0][0] as { content: Array<{ text: string }> }).content[0].text
+		expect(firstText).toContain("requires recovery from the failed phase")
+		expect(firstText).toContain("activate_ferment_phase to retry")
+		expect(firstText).toContain("skip_ferment_phase")
+
+		const warningCalls = (pi.sendMessage as ReturnType<typeof vi.fn>).mock.calls.filter(
+			(args: unknown[]) =>
+				(args[0] as { customType?: string; details?: { variant?: string } })?.customType === "ferment_breadcrumb" &&
+				(args[0] as { details?: { variant?: string } }).details?.variant === "warning",
+		)
+		expect(warningCalls).toHaveLength(1)
+		const warningText = (warningCalls[0][0] as { content: Array<{ text: string }> }).content[0].text
+		expect(warningText).toContain('required recovery action "recover_phase" remained unresolved')
+		expect(warningText).toContain("qualifying text-only stops for the unchanged obligation")
+		expect(warningText).not.toContain("consecutive text-only stops")
 	})
 
 	it("nudges across a completed phase boundary", () => {

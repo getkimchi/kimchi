@@ -136,6 +136,7 @@ describe("deriveObligation", () => {
 		const obligation = deriveObligation(f, "automated")
 		expect(obligation).toBeDefined()
 		expect(obligation?.action.kind).toBe("scope")
+		expect(obligation?.mode).toBe("concrete")
 		expect(obligation?.toolName).toBe("scope_ferment")
 		expect(obligation?.key).toBe("ferment-1:scope")
 	})
@@ -171,7 +172,7 @@ describe("deriveObligation", () => {
 		expect(deriveObligation(f, "automated")).toBeUndefined()
 	})
 
-	it("returns undefined for recover_step (ambiguous recovery — not a single forced tool)", () => {
+	it("derives a choice-oriented obligation for recover_step", () => {
 		const f = makeRunningFermentWithStep({
 			phases: [
 				{
@@ -184,13 +185,14 @@ describe("deriveObligation", () => {
 				},
 			],
 		})
-		// The engine returns recover_step for a failed step. deriveObligation
-		// must NOT classify it as a concrete obligation.
 		const obligation = deriveObligation(f, "automated")
-		expect(obligation).toBeUndefined()
+		expect(obligation?.action.kind).toBe("recover_step")
+		expect(obligation?.mode).toBe("choice-oriented")
+		expect(obligation?.toolName).toBeUndefined()
+		expect(obligation?.key).toBe("ferment-1:recover_step:phase-1:step-1")
 	})
 
-	it("returns undefined for recover_phase (ambiguous recovery)", () => {
+	it("derives a choice-oriented obligation for recover_phase", () => {
 		const f = makePlannedFerment({
 			status: "running",
 			phases: [
@@ -205,7 +207,10 @@ describe("deriveObligation", () => {
 			],
 		})
 		const obligation = deriveObligation(f, "automated")
-		expect(obligation).toBeUndefined()
+		expect(obligation?.action.kind).toBe("recover_phase")
+		expect(obligation?.mode).toBe("choice-oriented")
+		expect(obligation?.toolName).toBeUndefined()
+		expect(obligation?.key).toBe("ferment-1:recover_phase:phase-1")
 	})
 })
 
@@ -213,9 +218,13 @@ describe("deriveObligation", () => {
 
 describe("evaluateLifecycleStop", () => {
 	function makeObligation(action: DeclarativeAction, fermentId = "ferment-1"): LifecycleObligation {
+		if (action.kind === "pause" || action.kind === "recover_step" || action.kind === "recover_phase") {
+			throw new Error(`expected concrete lifecycle action, received ${action.kind}`)
+		}
 		return {
 			key: buildObligationKey(fermentId, action),
 			action,
+			mode: "concrete",
 			toolName: "scope_ferment",
 		}
 	}
@@ -327,6 +336,7 @@ describe("clearLifecycleGuard", () => {
 		const obligation: LifecycleObligation = {
 			key: buildObligationKey("ferment-1", scopeAction),
 			action: scopeAction,
+			mode: "concrete",
 			toolName: "scope_ferment",
 		}
 		evaluateLifecycleStop(obligation) // retry 1
@@ -346,11 +356,13 @@ describe("clearLifecycleGuard", () => {
 		const obligation1: LifecycleObligation = {
 			key: buildObligationKey("ferment-1", scopeAction),
 			action: scopeAction,
+			mode: "concrete",
 			toolName: "scope_ferment",
 		}
 		const obligation2: LifecycleObligation = {
 			key: buildObligationKey("ferment-2", scopeAction),
 			action: scopeAction,
+			mode: "concrete",
 			toolName: "scope_ferment",
 		}
 		evaluateLifecycleStop(obligation1) // retry 1
@@ -395,6 +407,7 @@ describe("complete_ferment classification", () => {
 		const obligation: LifecycleObligation = {
 			key: buildObligationKey("ferment-1", completeFermentAction),
 			action: completeFermentAction,
+			mode: "concrete",
 			toolName: "complete_ferment",
 		}
 		const d1 = evaluateLifecycleStop(obligation)
@@ -406,10 +419,10 @@ describe("complete_ferment classification", () => {
 	})
 })
 
-// ─── non-obligation actions ──────────────────────────────────────────────────
+// ─── choice-oriented recovery obligations ───────────────────────────────────
 
-describe("non-obligation actions", () => {
-	it("recover_step is not classified as a concrete obligation", () => {
+describe("choice-oriented recovery obligations", () => {
+	it("recover_step receives the standard retry budget", () => {
 		const f = makeRunningFermentWithStep({
 			phases: [
 				{
@@ -422,10 +435,15 @@ describe("non-obligation actions", () => {
 				},
 			],
 		})
-		expect(deriveObligation(f, "automated")).toBeUndefined()
+		const obligation = deriveObligation(f, "automated")
+		expect(obligation?.mode).toBe("choice-oriented")
+		if (!obligation) throw new Error("expected recovery obligation")
+		expect(evaluateLifecycleStop(obligation).type).toBe("retry")
+		expect(evaluateLifecycleStop(obligation).type).toBe("retry")
+		expect(evaluateLifecycleStop(obligation).type).toBe("exhausted")
 	})
 
-	it("recover_phase is not classified as a concrete obligation", () => {
+	it("recover_phase is classified as choice-oriented", () => {
 		const f = makePlannedFerment({
 			status: "running",
 			phases: [
@@ -439,9 +457,13 @@ describe("non-obligation actions", () => {
 				},
 			],
 		})
-		expect(deriveObligation(f, "automated")).toBeUndefined()
+		expect(deriveObligation(f, "automated")?.mode).toBe("choice-oriented")
 	})
+})
 
+// ─── non-obligation actions ──────────────────────────────────────────────────
+
+describe("non-obligation actions", () => {
 	it("pause action is not classified as a concrete obligation", () => {
 		// A paused ferment: decideContinuation returns "paused" → no obligation
 		const f = makeDraftFerment({ status: "paused" })

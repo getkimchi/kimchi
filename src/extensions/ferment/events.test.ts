@@ -712,6 +712,9 @@ describe("turn_end lifecycle obligation guard", () => {
 			)
 		expect(continuationCalls).toHaveLength(2)
 		expect(exhaustionCalls).toHaveLength(1)
+		const exhaustionText = (exhaustionCalls[0]?.[0].content as Array<{ text?: string }> | undefined)?.[0]?.text
+		expect(exhaustionText).toContain("qualifying text-only stops for the unchanged obligation")
+		expect(exhaustionText).not.toContain("consecutive text-only stops")
 	})
 
 	it("does not guard a deliberate text-only stop while plan review is pending", async () => {

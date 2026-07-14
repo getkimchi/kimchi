@@ -64,13 +64,39 @@ export const MAX_LIFECYCLE_STOP_RETRIES = 2
 
 // ─── Obligation identity ──────────────────────────────────────────────────────
 
-export interface LifecycleObligation {
+type ConcreteLifecycleAction = Extract<
+	DeclarativeAction,
+	{
+		kind:
+			| "scope"
+			| "activate_phase"
+			| "refine"
+			| "start_step"
+			| "complete_step"
+			| "verify_step"
+			| "complete_phase"
+			| "complete_ferment"
+	}
+>
+type ChoiceOrientedLifecycleAction = Extract<DeclarativeAction, { kind: "recover_step" | "recover_phase" }>
+
+interface LifecycleObligationBase<TAction extends DeclarativeAction> {
 	/** Stable key: fermentId + action.kind + phaseId? + stepId? */
 	key: string
-	action: DeclarativeAction
-	/** The public tool name the model should call, or undefined for non-forced actions. */
-	toolName?: string
+	action: TAction
 }
+
+export type LifecycleObligation =
+	| (LifecycleObligationBase<ConcreteLifecycleAction> & {
+			mode: "concrete"
+			/** The single public tool the model must call. */
+			toolName: string
+	  })
+	| (LifecycleObligationBase<ChoiceOrientedLifecycleAction> & {
+			mode: "choice-oriented"
+			/** Recovery has multiple valid transitions, so no tool is prescribed. */
+			toolName?: never
+	  })
 
 export type LifecycleGuardDecision =
 	| { type: "none" }
@@ -81,9 +107,9 @@ export type LifecycleGuardDecision =
  * Actions that represent a single forced tool obligation. The guard will
  * schedule a retry naming this exact tool.
  *
- * `recover_step` and `recover_phase` are intentionally excluded: they have
- * several legal choices (retry vs. skip vs. abandon) and the guard must not
- * claim one exact tool is mandatory.
+ * `recover_step` and `recover_phase` are classified separately below: they
+ * have several legal choices, so the guard must prompt for recovery without
+ * claiming one exact tool is mandatory.
  */
 const CONCRETE_OBLIGATION_KINDS = new Set<DeclarativeAction["kind"]>([
 	"scope",
@@ -95,6 +121,16 @@ const CONCRETE_OBLIGATION_KINDS = new Set<DeclarativeAction["kind"]>([
 	"complete_phase",
 	"complete_ferment",
 ])
+
+const CHOICE_ORIENTED_OBLIGATION_KINDS = new Set<DeclarativeAction["kind"]>(["recover_step", "recover_phase"])
+
+function isConcreteLifecycleAction(action: DeclarativeAction): action is ConcreteLifecycleAction {
+	return CONCRETE_OBLIGATION_KINDS.has(action.kind)
+}
+
+function isChoiceOrientedLifecycleAction(action: DeclarativeAction): action is ChoiceOrientedLifecycleAction {
+	return CHOICE_ORIENTED_OBLIGATION_KINDS.has(action.kind)
+}
 
 /**
  * Maps a declarative action kind to the public tool name the model must call.
@@ -137,8 +173,8 @@ export function buildObligationKey(fermentId: string, action: DeclarativeAction)
 }
 
 /**
- * Derives the current lifecycle obligation from a ferment, or undefined if
- * no concrete obligation exists. Uses `decideContinuation` with
+ * Derives the current concrete or choice-oriented lifecycle obligation from
+ * a ferment, or undefined if no guarded obligation exists. Uses `decideContinuation` with
  * `treatCompleteFermentAsContinue: true` so final completion is treated as
  * a continuable action (consistent with the existing
  * `maybeInjectFermentStopNudge` path).
@@ -151,16 +187,18 @@ export function deriveObligation(ferment: Ferment, policy: "automated" | "manual
 	if (decision.type !== "continue") return undefined
 
 	const action = decision.action
-	if (!CONCRETE_OBLIGATION_KINDS.has(action.kind)) return undefined
-
-	const toolName = toolNameForAction(action)
-	if (!toolName) return undefined
-
-	return {
-		key: buildObligationKey(ferment.id, action),
-		action,
-		toolName,
+	const key = buildObligationKey(ferment.id, action)
+	if (isConcreteLifecycleAction(action)) {
+		const toolName = toolNameForAction(action)
+		if (!toolName) return undefined
+		return { key, action, mode: "concrete", toolName }
 	}
+
+	if (isChoiceOrientedLifecycleAction(action)) {
+		return { key, action, mode: "choice-oriented" }
+	}
+
+	return undefined
 }
 
 // ─── Retry tracker ────────────────────────────────────────────────────────────
@@ -269,7 +307,16 @@ function buildRetryInstruction(
 	attempt: number,
 	maxAttempts: number,
 ): string {
-	const toolName = obligation.toolName ?? obligation.action.kind
+	if (obligation.mode === "choice-oriented") {
+		const recoveryTarget = obligation.action.kind === "recover_step" ? "failed step" : "failed phase"
+		if (attempt === 1) {
+			return `Ferment "${ferment.name}" still requires recovery from the ${recoveryTarget}. The previous turn stopped without a recovery action. Diagnose the failure and choose an appropriate recovery path from the guidance below. If no path is safe, use the user-input mechanism instead of stopping with only a summary.`
+		}
+
+		return `Lifecycle recovery still pending (retry ${attempt}/${maxAttempts}). Do not respond with only an announcement or summary. Choose and perform an appropriate recovery action from the guidance below, or use the user-input mechanism if a safe choice requires user direction.`
+	}
+
+	const toolName = obligation.toolName
 	const actionSpecificReminder =
 		obligation.action.kind === "scope"
 			? " Include the complete plan and exactly the P1/P2/P3 gate verdicts; do not fabricate missing values."
@@ -301,7 +348,7 @@ function buildRetryInstruction(
  * - The turn was not handled as a legitimate user-input question or manual boundary.
  *
  * The guard itself re-checks: automated policy, active ferment existence,
- * terminal/paused status, and concrete obligation presence.
+ * terminal/paused status, and guarded obligation presence.
  */
 export function maybeInjectLifecycleObligationGuard(
 	pi: ExtensionAPI,
@@ -343,8 +390,11 @@ export function maybeInjectLifecycleObligationGuard(
 
 	if (decision.type === "exhausted" && decision.report) {
 		const action = decision.obligation.action
-		const toolName = decision.obligation.toolName ?? action.kind
-		const breadcrumbText = `Lifecycle guard exhausted for "${fresh.name}": required action "${action.kind}" (tool: ${toolName}) was not called after ${MAX_LIFECYCLE_STOP_RETRIES} lifecycle-stop retries (${decision.attempts} consecutive text-only stops). No state transition was applied automatically.`
+		const obligationDescription =
+			decision.obligation.mode === "concrete"
+				? `required action "${action.kind}" (tool: ${decision.obligation.toolName}) was not called`
+				: `required recovery action "${action.kind}" remained unresolved`
+		const breadcrumbText = `Lifecycle guard exhausted for "${fresh.name}": ${obligationDescription} after ${MAX_LIFECYCLE_STOP_RETRIES} lifecycle-stop retries (${decision.attempts} qualifying text-only stops for the unchanged obligation). No state transition was applied automatically.`
 
 		safeSendMessage(
 			pi,
