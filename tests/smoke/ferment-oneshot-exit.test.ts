@@ -253,6 +253,10 @@ function oneShotCompletionScript(): FakeResponseScript[] {
 			stream: ['{"grade":"A","rationale":"Clean phase.","recommendations":[]}'],
 		},
 		{
+			// Stage-boundary compaction summarizes the step/phase handoff.
+			stream: ["The completed phase and next action are preserved."],
+		},
+		{
 			// Complete the Ferment; the following request is the journey-grade judge response.
 			toolCalls: [
 				{

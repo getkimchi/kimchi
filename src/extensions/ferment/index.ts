@@ -247,7 +247,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 		unregisterFermentTodoSync?.()
 	})
 
-	pi.on("agent_end", (_event, ctx) => {
+	pi.on("agent_end", async (_event, ctx) => {
 		const review = runtime.getCurrentPendingPlanReview()
 		if (!planReviewRunning && review) {
 			clearPlanReviewTimer()
@@ -260,7 +260,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 		// Drain any remaining pending compactions at agent_end (catches the case
 		// where the ferment completes within a single agent run and the turn_end
 		// handler already cleared most pending entries).
-		maybeTriggerFermentCompaction(pi, ctx, runtime)
+		await maybeTriggerFermentCompaction(pi, ctx, runtime)
 
 		// Completing the final phase does not complete the ferment: complete_ferment
 		// still has to run its C-gates and journey grading. If the model ends its run

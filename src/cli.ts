@@ -130,6 +130,7 @@ import resourceToolBlockerExtension from "./resources/tool-blocker.js"
 import { runSetupWizard } from "./setup-wizard.js"
 import { setAvailableModels } from "./startup-context.js"
 import { probeTerminalBackground } from "./terminal-bg-probe.js"
+import { installInlineCompactPatch } from "./upstream-inline-compact-patch.js"
 import { installInfrastructureRetryPatch } from "./upstream-retry-patch.js"
 import {
 	postProcessHtmlExport,
@@ -141,6 +142,7 @@ import { captureSessionStart } from "./utils/session-metadata-store.js"
 import { getVersion } from "./utils.js"
 
 installInfrastructureRetryPatch()
+installInlineCompactPatch()
 installPiNativeCompatibilityShim()
 
 function isModelCompletionFetch(input: RequestInfo | URL): boolean {

@@ -1,7 +1,6 @@
 /**
  * Role-based model configuration for multi-model orchestration.
  *
- * Seven roles:
  *   - orchestrator: runs the main loop, delegates work (single model)
  *   - planner: designs the approach, writes specs
  *   - builder: code implementation
@@ -9,6 +8,7 @@
  *   - explorer: codebase exploration, reading files, tracing architecture
  *   - researcher: research beyond codebase — web search, documentation lookup
  *   - judge: ferment verification and final grading calls
+ *   - compactor: context summarization model.
  *
  * Delegable roles (planner, builder, reviewer, explorer) accept either a
  * single model string or an array of candidates. When multiple models are
@@ -31,7 +31,8 @@
  *     "builder": ["anthropic/claude-sonnet-4-5", "openai/gpt-4o"],
  *     "reviewer": "kimchi-dev/minimax-m2.7",
  *     "explorer": "kimchi-dev/nemotron-3-ultra-fp4",
- *     "judge": "kimchi-dev/kimi-k2.6"
+ *     "judge": "kimchi-dev/kimi-k2.6",
+ *     "compactor": "kimchi-dev/nemotron-3-ultra-fp4"
  *   }
  * }
  * ```
@@ -72,9 +73,14 @@ export interface ModelRoles {
 	researcher: RoleModelAssignment
 	/** Ferment judge model(s): verification triage and final grading calls. */
 	judge: RoleModelAssignment
+	/** Context summarization model. */
+	compactor?: string
 }
 
-const DELEGABLE_ROLE_KEYS: readonly (keyof Omit<ModelRoles, "orchestrator">)[] = [
+// "compactor" is excluded from these key types (not just omitted from the arrays):
+// it's optional and single-model-only, so indexing roles[key] for key in ROLE_KEYS
+// must stay narrowed to the always-present, non-optional role keys.
+const DELEGABLE_ROLE_KEYS: readonly (keyof Omit<ModelRoles, "orchestrator" | "compactor">)[] = [
 	"planner",
 	"builder",
 	"reviewer",
@@ -82,7 +88,7 @@ const DELEGABLE_ROLE_KEYS: readonly (keyof Omit<ModelRoles, "orchestrator">)[] =
 	"researcher",
 	"judge",
 ]
-const ROLE_KEYS: readonly (keyof ModelRoles)[] = ["orchestrator", ...DELEGABLE_ROLE_KEYS]
+const ROLE_KEYS: readonly (keyof Omit<ModelRoles, "compactor">)[] = ["orchestrator", ...DELEGABLE_ROLE_KEYS]
 
 /** Hardcoded default model-to-role assignment. Users override via /multi-model. */
 export const DEFAULT_MODEL_ROLES: Readonly<ModelRoles> = {
@@ -93,6 +99,7 @@ export const DEFAULT_MODEL_ROLES: Readonly<ModelRoles> = {
 	explorer: "kimchi-dev/nemotron-3-ultra-fp4",
 	researcher: "kimchi-dev/minimax-m3",
 	judge: ["kimchi-dev/kimi-k2.7"],
+	compactor: "kimchi-dev/minimax-m3",
 }
 
 export interface ModelRolesWarning {
@@ -161,6 +168,21 @@ export function parseModelRoles(obj: ModelRoles | Record<string, unknown> | unde
 		}
 	}
 
+	// compactor is optional and single-model-only (like orchestrator), so it is
+	// handled outside ROLE_KEYS rather than widening the generic loop's types.
+	const compactorValue = obj.compactor
+	if (compactorValue != null) {
+		if (typeof compactorValue !== "string" || compactorValue.trim().length === 0) {
+			warnings.push({
+				role: "compactor",
+				configuredModel: String(compactorValue),
+				message: 'modelRoles.compactor must be a non-empty string (e.g. "kimchi-dev/nemotron-3-ultra-fp4"). Ignoring.',
+			})
+		} else {
+			roles.compactor = compactorValue.trim()
+		}
+	}
+
 	return { roles, warnings }
 }
 
@@ -188,6 +210,9 @@ export function saveModelRoles(roles: ModelRoles): void {
 		if (!isEqualRoleValue(roles[key], DEFAULT_MODEL_ROLES[key])) {
 			rolesObj[key] = roles[key]
 		}
+	}
+	if (roles.compactor !== undefined && roles.compactor !== DEFAULT_MODEL_ROLES.compactor) {
+		rolesObj.compactor = roles.compactor
 	}
 
 	if (Object.keys(rolesObj).length === 0) {
@@ -231,6 +256,9 @@ export function validateModelRoles(
 				unavailable.push({ role: key, configuredModel: ref })
 			}
 		}
+	}
+	if (roles.compactor !== undefined && !availableModelIds.has(modelIdFromRef(roles.compactor))) {
+		unavailable.push({ role: "compactor", configuredModel: roles.compactor })
 	}
 	return { unavailable }
 }
@@ -297,7 +325,9 @@ function isEqualModelRoles(a: ModelRoles, b: ModelRoles): boolean {
 	for (const key of ROLE_KEYS) {
 		if (!isEqualRoleValue(a[key], b[key])) return false
 	}
-	return true
+	// compactor is excluded from ROLE_KEYS (optional, not part of the generic
+	// loop's types — see the ROLE_KEYS comment), so it needs its own comparison.
+	return a.compactor === b.compactor
 }
 
 /**

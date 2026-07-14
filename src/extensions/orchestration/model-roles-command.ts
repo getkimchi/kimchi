@@ -43,11 +43,24 @@ const ROLE_LABELS: Record<keyof ModelRoles, { label: string; description: string
 	explorer: { label: "Explorer", description: "codebase exploration" },
 	researcher: { label: "Researcher", description: "research beyond codebase, web search" },
 	judge: { label: "Judge", description: "ferment verification and grading" },
+	// Not surfaced in this interactive picker (ROLE_KEYS below omits it) — config-file only for now.
+	compactor: { label: "Compactor", description: "summarizes ferment stage-boundary handoffs" },
 }
 
-const DELEGABLE_KEYS: (keyof ModelRoles)[] = ["planner", "builder", "reviewer", "explorer", "researcher", "judge"]
+// "compactor" is excluded here (not just from the arrays): it's optional and
+// config-file only — this interactive picker doesn't surface it, and indexing
+// roles[key]/DEFAULT_MODEL_ROLES[key] for key in these arrays must stay
+// narrowed away from compactor's `string | undefined` type.
+const DELEGABLE_KEYS: (keyof Omit<ModelRoles, "orchestrator" | "compactor">)[] = [
+	"planner",
+	"builder",
+	"reviewer",
+	"explorer",
+	"researcher",
+	"judge",
+]
 
-const ROLE_KEYS: (keyof ModelRoles)[] = ["orchestrator", ...DELEGABLE_KEYS]
+const ROLE_KEYS: (keyof Omit<ModelRoles, "compactor">)[] = ["orchestrator", ...DELEGABLE_KEYS]
 
 /**
  * Whether `collectModelMetadata()` produced something worth persisting.
@@ -71,7 +84,7 @@ export function isEqualAssignment(a: RoleModelAssignment, b: RoleModelAssignment
 	return arrA.length === arrB.length && arrA.every((v, i) => v === arrB[i])
 }
 
-export function formatRoleSummaryBlock(role: keyof ModelRoles, value: RoleModelAssignment): string {
+export function formatRoleSummaryBlock(role: keyof Omit<ModelRoles, "compactor">, value: RoleModelAssignment): string {
 	const info = ROLE_LABELS[role]
 	const models = normalizeRoleModels(value)
 	const isDefault = isEqualAssignment(value, DEFAULT_MODEL_ROLES[role])
@@ -85,7 +98,7 @@ export function formatRoleSummaryBlock(role: keyof ModelRoles, value: RoleModelA
 	return `${info.label}:\n${modelLines.join("\n")}`
 }
 
-export function formatRoleDisplay(role: keyof ModelRoles, value: RoleModelAssignment): string {
+export function formatRoleDisplay(role: keyof Omit<ModelRoles, "compactor">, value: RoleModelAssignment): string {
 	const info = ROLE_LABELS[role]
 	const isDefault = isEqualAssignment(value, DEFAULT_MODEL_ROLES[role])
 	const suffix = isDefault ? " (default)" : ""
@@ -379,7 +392,7 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 				await showMainMenu()
 			}
 
-			const showSingleModelEditor = async (roleKey: keyof ModelRoles): Promise<void> => {
+			const showSingleModelEditor = async (roleKey: keyof Omit<ModelRoles, "compactor">): Promise<void> => {
 				const info = ROLE_LABELS[roleKey]
 				const currentModels = normalizeRoleModels(roles[roleKey])
 
@@ -424,7 +437,7 @@ export function registerModelRolesCommand(pi: ExtensionAPI): void {
 				}
 			}
 
-			const showMultiModelEditor = async (roleKey: keyof ModelRoles): Promise<void> => {
+			const showMultiModelEditor = async (roleKey: keyof Omit<ModelRoles, "compactor">): Promise<void> => {
 				const info = ROLE_LABELS[roleKey]
 				const selected = new Set(normalizeRoleModels(roles[roleKey]))
 
