@@ -156,6 +156,10 @@ export function createCommandHookAdapter(definition: CommandHookAdapterDefinitio
 			if (!latestCtx) return
 			await runObserver(definition, "SubagentStop", latestCtx, subagentStopPayload(data, true))
 		})
+		pi.events.on("notification", async (data) => {
+			if (!latestCtx) return
+			await runObserver(definition, "Notification", latestCtx, data as Record<string, unknown>)
+		})
 	}
 }
 

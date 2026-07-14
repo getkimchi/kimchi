@@ -854,6 +854,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				}
 				const result = await handleConfirm(event, {
 					ctx,
+					pi,
 					subtitle: `Classifier: ${verdict.reason}`,
 					session,
 					activeAborts: activeAbortControllers,
@@ -871,6 +872,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					if (subcommands && subcommands.length > 0) {
 						const result = await handleCompoundConfirm(event, {
 							ctx,
+							pi,
 							session,
 							activeAborts: activeAbortControllers,
 							subcommands,
@@ -883,6 +885,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			}
 			const result = await handleConfirm(event, {
 				ctx,
+				pi,
 				session,
 				activeAborts: activeAbortControllers,
 				allRules,
@@ -921,6 +924,7 @@ interface ConfirmOptions {
 	subtitle?: string
 	activeAborts: Set<AbortController>
 	allRules?: () => Rule[]
+	pi?: ExtensionAPI
 }
 
 async function handleConfirm(
@@ -933,6 +937,14 @@ async function handleConfirm(
 	try {
 		const prompter = resolvePrompter(opts.ctx)
 		if (!prompter) return { block: true, reason: "No UI to confirm permission" }
+
+		if (opts.pi?.events) {
+			opts.pi.events.emit("notification", {
+				notification_type: "permission_prompt",
+				tool_name: event.toolName,
+				tool_use_id: event.toolCallId,
+			})
+		}
 
 		const input = event.input
 		const outcome = await prompter.request({
@@ -961,6 +973,14 @@ export async function handleCompoundConfirm(
 	try {
 		const prompter = resolvePrompter(opts.ctx)
 		if (!prompter) return { block: true, reason: "No UI to confirm permission" }
+
+		if (opts.pi?.events) {
+			opts.pi.events.emit("notification", {
+				notification_type: "permission_prompt",
+				tool_name: event.toolName,
+				tool_use_id: event.toolCallId,
+			})
+		}
 
 		if (opts.ctx.mode !== "tui") {
 			// Non-TUI transports (chiefly ACP) present compound commands as one

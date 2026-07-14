@@ -256,6 +256,7 @@ describe("questionnaire environment behavior", () => {
 		on: ReturnType<typeof vi.fn>
 		getActiveTools: ReturnType<typeof vi.fn>
 		setActiveTools: ReturnType<typeof vi.fn>
+		events: { emit: ReturnType<typeof vi.fn> }
 		// Captures the registered session_start handler so tests can fire it.
 		_sessionStart: ((event: unknown, ctx: { hasUI: boolean }) => void) | null
 	}
@@ -266,6 +267,7 @@ describe("questionnaire environment behavior", () => {
 			on: vi.fn(),
 			getActiveTools: vi.fn(() => activeTools),
 			setActiveTools: vi.fn(),
+			events: { emit: vi.fn() },
 			_sessionStart: null,
 		}
 		pi.on.mockImplementation((event: string, handler: (e: unknown, ctx: { hasUI: boolean }) => void) => {
@@ -343,6 +345,53 @@ describe("questionnaire environment behavior", () => {
 		const text = result.content[0]?.text ?? ""
 		expect(text).toContain("questionnaire is unavailable")
 		expect(text).toContain("Do NOT call questionnaire again")
+	})
+
+	// ─── Notification on prompt ─────────────────────────────────────────────────
+
+	it("emits an agent_needs_input notification before prompting the user", async () => {
+		const pi = makePi(["questionnaire"])
+		questionnaireExtension(pi as unknown as ExtensionAPI)
+		const tool = pi.registerTool.mock.calls[0]?.[0] as {
+			execute: (
+				toolCallId: string,
+				params: unknown,
+				signal: AbortSignal | undefined,
+				onUpdate: unknown,
+				ctx: unknown,
+			) => Promise<{ content: { text: string }[]; details: { cancelled: boolean } }>
+		}
+
+		await tool.execute("call-1", { questions: [{ id: "ship", prompt: "Ship it?" }] }, undefined, undefined, {
+			hasUI: true,
+			ui: { custom: vi.fn(async () => ({ questions: [], answers: [], cancelled: false })) },
+			mode: "tui",
+		})
+
+		expect(pi.events.emit).toHaveBeenCalledWith("notification", {
+			notification_type: "agent_needs_input",
+		})
+	})
+
+	it("does not emit a notification when no UI is attached (early return)", async () => {
+		const pi = makePi(["questionnaire"])
+		questionnaireExtension(pi as unknown as ExtensionAPI)
+		const tool = pi.registerTool.mock.calls[0]?.[0] as {
+			execute: (
+				toolCallId: string,
+				params: unknown,
+				signal: AbortSignal | undefined,
+				onUpdate: unknown,
+				ctx: unknown,
+			) => Promise<{ content: { text: string }[]; details: { cancelled: boolean } }>
+		}
+
+		await tool.execute("call-1", { questions: [{ id: "ship", prompt: "Ship it?" }] }, undefined, undefined, {
+			hasUI: false,
+			ui: { custom: vi.fn() },
+		})
+
+		expect(pi.events.emit).not.toHaveBeenCalled()
 	})
 
 	// ─── Execute-path routing (ctx.mode) ───────────────────────────────────────

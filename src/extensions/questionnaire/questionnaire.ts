@@ -215,6 +215,10 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 				)
 			}
 
+			if (pi.events) {
+				pi.events.emit("notification", { notification_type: "agent_needs_input" })
+			}
+
 			let result: QuestionnaireResult
 			if (ctx.mode !== "tui") {
 				result = await promptQuestionnaireFallback(ctx.ui, questions)

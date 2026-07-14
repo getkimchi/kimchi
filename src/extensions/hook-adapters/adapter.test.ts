@@ -701,6 +701,40 @@ describe("hook adapter command execution", () => {
 		expect(mockSpawn).not.toHaveBeenCalled()
 	})
 
+	it("runs Notification hooks from notification bus events", async () => {
+		writeJson(join(dir, "home", ".claude", "settings.json"), {
+			hooks: {
+				Notification: [{ hooks: [{ type: "command", command: "notification-observer" }] }],
+			},
+		})
+		const child = mockBlockingHook()
+		const pi = fakePi()
+		claudeCodeHooksAdapter(pi as never)
+
+		await pi.handlers.turn_start[0]({ type: "turn_start", turnIndex: 1 }, fakeCtx())
+		await pi.eventHandlers.notification[0]({ notification_type: "permission_prompt" })
+
+		expect(mockSpawn).toHaveBeenCalledTimes(1)
+		expect(hookPayload(child)).toMatchObject({
+			hook_event_name: "Notification",
+			notification_type: "permission_prompt",
+		})
+	})
+
+	it("skips Notification hooks before any extension context is captured", async () => {
+		writeJson(join(dir, "home", ".claude", "settings.json"), {
+			hooks: {
+				Notification: [{ hooks: [{ type: "command", command: "notification-observer" }] }],
+			},
+		})
+		const pi = fakePi()
+		claudeCodeHooksAdapter(pi as never)
+
+		await pi.eventHandlers.notification[0]({ notification_type: "permission_prompt" })
+
+		expect(mockSpawn).not.toHaveBeenCalled()
+	})
+
 	it("runs observer hooks for TurnStart, MessageEnd, ModelSelect, and UserBash", async () => {
 		writeJson(join(dir, "home", ".claude", "settings.json"), {
 			hooks: {

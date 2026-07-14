@@ -163,6 +163,7 @@ function createPermissionsHarness(
 			activeTools = names.filter((name) => known.has(name))
 		}),
 		sendMessage: vi.fn(),
+		events: { emit: vi.fn() },
 	} as unknown as ExtensionAPI
 
 	permissionsExtension(pi)
@@ -1007,6 +1008,34 @@ describe("permissions ferment tool classification", () => {
 		expect(readResult).toBeUndefined()
 		expect(bashResult).toBeUndefined()
 		expect(classifyToolCall).not.toHaveBeenCalled()
+	})
+})
+
+describe("permissions notification emission", () => {
+	afterEach(() => {
+		unregisterSessionPermissionFlagController(TEST_SESSION_ID)
+	})
+
+	it("emits permission_prompt notification before showing dialog", async () => {
+		const harness = createPermissionsHarness(["write"])
+		const ctx = createMockContext([undefined]) // user denies
+		await harness.fire("session_start", {}, ctx)
+
+		const event = {
+			toolName: "write",
+			toolCallId: "tc-write-1",
+			input: { path: "foo.txt", content: "bar" },
+		}
+		await harness.fire("tool_call", event, ctx)
+
+		expect((harness.pi as unknown as { events: { emit: ReturnType<typeof vi.fn> } }).events.emit).toHaveBeenCalledWith(
+			"notification",
+			{
+				notification_type: "permission_prompt",
+				tool_name: "write",
+				tool_use_id: "tc-write-1",
+			},
+		)
 	})
 })
 
