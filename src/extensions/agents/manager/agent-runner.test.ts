@@ -354,8 +354,7 @@ describe("runAgent — telemetry extension", () => {
 		const workerFactories = mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories ?? []
 		const toolCallHandlers: Array<(event: unknown) => void> = []
 		for (const factory of workerFactories) {
-			const extensionFactory = typeof factory === "function" ? factory : factory.factory
-			extensionFactory({
+			factory({
 				on: (event: string, handler: (event: unknown) => void) => {
 					if (event === "tool_call") toolCallHandlers.push(handler)
 				},
@@ -415,8 +414,7 @@ describe("runAgent — telemetry extension", () => {
 			promptAction: async (emit) => {
 				const factory = mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories?.[3]
 				const registerTool = vi.fn()
-				const extensionFactory = typeof factory === "function" ? factory : factory?.factory
-				extensionFactory?.({ registerTool } as never)
+				factory?.({ registerTool } as never)
 				const tool = registerTool.mock.calls[0]?.[0]
 				await tool.execute(
 					"report-1",
