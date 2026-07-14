@@ -7,6 +7,7 @@ import {
 	checkConfigFilePermissions,
 	clearApiKey,
 	ensureHideThinkingBlockDefault,
+	ensureQuietStartupDefault,
 	getActiveVendorSkillPaths,
 	loadConfig,
 	RETRY_DEFAULTS,
@@ -877,5 +878,23 @@ describe("ensureHideThinkingBlockDefault", () => {
 		const visible = { hideThinkingBlock: false }
 		expect(ensureHideThinkingBlockDefault(visible)).toBe(false)
 		expect(visible.hideThinkingBlock).toBe(false)
+	})
+})
+
+describe("ensureQuietStartupDefault", () => {
+	it("seeds quietStartup when the key is absent", () => {
+		const settings: Record<string, unknown> = { statusLine: { pinned: [] } }
+		expect(ensureQuietStartupDefault(settings)).toBe(true)
+		expect(settings.quietStartup).toBe(true)
+	})
+
+	it("leaves an explicit quietStartup value alone", () => {
+		const quiet = { quietStartup: true }
+		expect(ensureQuietStartupDefault(quiet)).toBe(false)
+		expect(quiet.quietStartup).toBe(true)
+
+		const verbose = { quietStartup: false }
+		expect(ensureQuietStartupDefault(verbose)).toBe(false)
+		expect(verbose.quietStartup).toBe(false)
 	})
 })

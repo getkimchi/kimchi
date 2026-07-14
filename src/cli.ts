@@ -23,6 +23,7 @@ import "./paste-to-editor-patch.js"
 import {
 	DEFAULT_SKILL_PATHS,
 	ensureHideThinkingBlockDefault,
+	ensureQuietStartupDefault,
 	getActiveVendorSkillPaths,
 	loadConfig,
 	RETRY_DEFAULTS,
@@ -435,6 +436,7 @@ try {
 		try {
 			const existing = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>
 			let changed = ensureHideThinkingBlockDefault(existing)
+			if (ensureQuietStartupDefault(existing)) changed = true
 			const upgraded = upgradeLegacyRetrySettings(existing.retry)
 			if (upgraded) {
 				existing.retry = upgraded
