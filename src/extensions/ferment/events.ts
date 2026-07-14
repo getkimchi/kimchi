@@ -11,7 +11,7 @@ import { formatDuration } from "./colors.js"
 import { extractContextualOptions, extractTrailingQuestion } from "./contextual-options.js"
 import { decideContinuation } from "./continuation.js"
 import { emitFermentCreated } from "./domain-events-emitter.js"
-import { FERMENT_EVENTS, type FermentStalledPayload } from "./domain-events.js"
+import { FERMENT_EVENTS } from "./domain-events.js"
 import { autoInitFromEnv, ensureGitRepo } from "./git-init.js"
 import {
 	clearAllLifecycleGuards,
@@ -35,6 +35,7 @@ import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { safeSendMessage } from "./safe-send.js"
 import { scheduleFermentWakeUp, scheduleNextFermentAction } from "./scheduler.js"
 import { confirmPendingScope } from "./scoping-confirmation.js"
+import { buildStalledPayload } from "./stalled-payload.js"
 import {
 	clearActiveFermentId,
 	getActiveFermentId,
@@ -160,28 +161,6 @@ async function maybeRunManualBoundaryDropdown(
 		return true
 	}
 	return true
-}
-
-/**
- * Build the `FermentStalledPayload` for telemetry emission. Shared by
- * the crash-recovery and user-decline stall paths so the two sites
- * stay in sync as the payload evolves.
- */
-function buildStalledPayload(ferment: Ferment, now: number): FermentStalledPayload {
-	const completedPhases = ferment.phases.filter((p) => p.status === "completed").length
-	const totalPhases = ferment.phases.length
-	const phaseCompletionRatio = totalPhases > 0 ? completedPhases / totalPhases : 0
-	const lastActiveMs = ferment.lastActiveAt ? Date.parse(ferment.lastActiveAt) : Number.NaN
-	const idleDurationMs = Number.isFinite(lastActiveMs) ? now - lastActiveMs : 0
-	return {
-		fermentId: ferment.id,
-		name: ferment.name,
-		lifecycleStage: ferment.status,
-		idleDurationMs,
-		completedPhases,
-		totalPhases,
-		phaseCompletionRatio,
-	}
 }
 
 async function maybeRunUserInputDropdown(
@@ -568,9 +547,9 @@ export function registerFermentEvents(
 
 			// One-shot error recovery: schedule a continuation turn directly via
 			// the scheduler. This is a transport/provider failure, not a model-chosen
-			// bare stop, so it must NOT consume the lifecycle-stop retry budget.
-			// The guard's budget is cleared above; this call schedules the next
-			// action independently.
+			// bare stop. Error recovery deliberately clears the lifecycle-stop retry
+			// budget above, then schedules the next action independently. This gives
+			// the unchanged obligation a fresh two-retry budget after transport recovers.
 			if (isOneShot) {
 				const errorFerment = runtime.getActive()
 				const canRecover =

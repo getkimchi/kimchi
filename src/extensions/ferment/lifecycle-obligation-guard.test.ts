@@ -222,6 +222,7 @@ describe("evaluateLifecycleStop", () => {
 			throw new Error(`expected concrete lifecycle action, received ${action.kind}`)
 		}
 		return {
+			fermentId,
 			key: buildObligationKey(fermentId, action),
 			action,
 			mode: "concrete",
@@ -334,6 +335,7 @@ describe("evaluateLifecycleStop", () => {
 describe("clearLifecycleGuard", () => {
 	it("clears all retry state for a ferment", () => {
 		const obligation: LifecycleObligation = {
+			fermentId: "ferment-1",
 			key: buildObligationKey("ferment-1", scopeAction),
 			action: scopeAction,
 			mode: "concrete",
@@ -354,12 +356,14 @@ describe("clearLifecycleGuard", () => {
 
 	it("does not affect other ferments' state", () => {
 		const obligation1: LifecycleObligation = {
+			fermentId: "ferment-1",
 			key: buildObligationKey("ferment-1", scopeAction),
 			action: scopeAction,
 			mode: "concrete",
 			toolName: "scope_ferment",
 		}
 		const obligation2: LifecycleObligation = {
+			fermentId: "ferment-2",
 			key: buildObligationKey("ferment-2", scopeAction),
 			action: scopeAction,
 			mode: "concrete",
@@ -405,6 +409,7 @@ describe("complete_ferment classification", () => {
 
 	it("complete_ferment obligation receives the standard retry budget", () => {
 		const obligation: LifecycleObligation = {
+			fermentId: "ferment-1",
 			key: buildObligationKey("ferment-1", completeFermentAction),
 			action: completeFermentAction,
 			mode: "concrete",

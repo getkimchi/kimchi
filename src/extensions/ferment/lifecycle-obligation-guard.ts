@@ -42,11 +42,12 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { DeclarativeAction } from "../../ferment/engine.js"
 import type { Ferment } from "../../ferment/types.js"
 import { decideContinuation } from "./continuation.js"
-import { FERMENT_EVENTS, type FermentStalledPayload } from "./domain-events.js"
+import { FERMENT_EVENTS } from "./domain-events.js"
 import { refreshActiveFermentFromStorage } from "./nudge.js"
 import type { FermentRuntime } from "./runtime.js"
 import { safeSendMessage } from "./safe-send.js"
 import { scheduleNextFermentAction } from "./scheduler.js"
+import { buildStalledPayload } from "./stalled-payload.js"
 import { FERMENT_TOOLS } from "./tool-names.js"
 
 // ─── Retry budget ─────────────────────────────────────────────────────────────
@@ -81,6 +82,8 @@ type ConcreteLifecycleAction = Extract<
 type ChoiceOrientedLifecycleAction = Extract<DeclarativeAction, { kind: "recover_step" | "recover_phase" }>
 
 interface LifecycleObligationBase<TAction extends DeclarativeAction> {
+	/** Ferment that owns this obligation. */
+	fermentId: string
 	/** Stable key: fermentId + action.kind + phaseId? + stepId? */
 	key: string
 	action: TAction
@@ -191,11 +194,11 @@ export function deriveObligation(ferment: Ferment, policy: "automated" | "manual
 	if (isConcreteLifecycleAction(action)) {
 		const toolName = toolNameForAction(action)
 		if (!toolName) return undefined
-		return { key, action, mode: "concrete", toolName }
+		return { fermentId: ferment.id, key, action, mode: "concrete", toolName }
 	}
 
 	if (isChoiceOrientedLifecycleAction(action)) {
-		return { key, action, mode: "choice-oriented" }
+		return { fermentId: ferment.id, key, action, mode: "choice-oriented" }
 	}
 
 	return undefined
@@ -208,6 +211,8 @@ export function deriveObligation(ferment: Ferment, policy: "automated" | "manual
 // budget, not domain progress. Replay must not change domain state.
 
 interface RetryState {
+	/** Current obligation key for this Ferment. */
+	key: string
 	/** Number of retries scheduled so far for this key (0 after first stop). */
 	count: number
 	/** Whether exhaustion has already been reported for this key. */
@@ -215,40 +220,16 @@ interface RetryState {
 }
 
 /**
- * Per-ferment retry state, keyed by obligation key. Old keys for a ferment
- * are pruned when a new current key is observed so the map does not grow
- * for the life of a long Ferment.
- *
- * Outer map: fermentId → (obligationKey → RetryState)
+ * One current retry state per Ferment. Observing a different obligation key
+ * replaces the old state and starts a fresh budget.
  */
-const retryStates = new Map<string, Map<string, RetryState>>()
-
-function getFermentMap(fermentId: string): Map<string, RetryState> {
-	let m = retryStates.get(fermentId)
-	if (!m) {
-		m = new Map()
-		retryStates.set(fermentId, m)
-	}
-	return m
-}
-
-/**
- * Prunes old obligation keys for a ferment, keeping only the current key.
- * Called when a new current key is observed so the map does not grow
- * unboundedly for a long Ferment.
- */
-function pruneOldKeys(fermentId: string, currentKey: string): void {
-	const m = retryStates.get(fermentId)
-	if (!m) return
-	for (const key of m.keys()) {
-		if (key !== currentKey) m.delete(key)
-	}
-}
+const retryStates = new Map<string, RetryState>()
 
 /**
  * Clears all retry state for a ferment. Called on abort, error, pause,
- * complete, abandon, session shutdown, and successful lifecycle tool calls
- * that change the obligation key.
+ * complete, abandon, session shutdown, and explicit resume/exit paths.
+ * Normal lifecycle advancement replaces this state when its new obligation
+ * key is next observed.
  */
 export function clearLifecycleGuard(fermentId: string): void {
 	retryStates.delete(fermentId)
@@ -266,21 +247,16 @@ export function clearAllLifecycleGuards(): void {
  * Pure: does not call any pi API. The caller owns the scheduling side effects.
  */
 export function evaluateLifecycleStop(obligation: LifecycleObligation): LifecycleGuardDecision {
-	// Ferment IDs are generated UUIDs, so the first key segment is stable.
-	const fermentId = obligation.key.split(":")[0]
-	const m = getFermentMap(fermentId)
-	pruneOldKeys(fermentId, obligation.key)
-
-	const state = m.get(obligation.key)
-	if (!state) {
+	const state = retryStates.get(obligation.fermentId)
+	if (!state || state.key !== obligation.key) {
 		// First stop for this obligation.
-		m.set(obligation.key, { count: 1, reported: false })
+		retryStates.set(obligation.fermentId, { key: obligation.key, count: 1, reported: false })
 		return { type: "retry", obligation, attempt: 1, maxAttempts: MAX_LIFECYCLE_STOP_RETRIES }
 	}
 
 	const newCount = state.count + 1
 	if (newCount <= MAX_LIFECYCLE_STOP_RETRIES) {
-		m.set(obligation.key, { count: newCount, reported: false })
+		retryStates.set(obligation.fermentId, { key: obligation.key, count: newCount, reported: false })
 		return { type: "retry", obligation, attempt: newCount, maxAttempts: MAX_LIFECYCLE_STOP_RETRIES }
 	}
 
@@ -288,7 +264,7 @@ export function evaluateLifecycleStop(obligation: LifecycleObligation): Lifecycl
 	if (state.reported) {
 		return { type: "exhausted", obligation, attempts: newCount, report: false }
 	}
-	m.set(obligation.key, { count: newCount, reported: true })
+	retryStates.set(obligation.fermentId, { key: obligation.key, count: newCount, reported: true })
 	return { type: "exhausted", obligation, attempts: newCount, report: true }
 }
 
@@ -418,7 +394,7 @@ export function maybeInjectLifecycleObligationGuard(
 		// Emit stalled telemetry. Reuse the existing payload shape — the
 		// guard's stall is the same class of failure as a crash-recovery
 		// stall, just detected at a different point.
-		const stalledPayload: FermentStalledPayload = buildStalledPayload(fresh, runtime.now().getTime())
+		const stalledPayload = buildStalledPayload(fresh, runtime.now().getTime())
 		runtime.events?.emit(FERMENT_EVENTS.STALLED, stalledPayload)
 
 		return true
@@ -430,21 +406,4 @@ export function maybeInjectLifecycleObligationGuard(
 	}
 
 	return false
-}
-
-function buildStalledPayload(ferment: Ferment, now: number): FermentStalledPayload {
-	const completedPhases = ferment.phases.filter((p) => p.status === "completed").length
-	const totalPhases = ferment.phases.length
-	const phaseCompletionRatio = totalPhases > 0 ? completedPhases / totalPhases : 0
-	const lastActiveMs = ferment.lastActiveAt ? Date.parse(ferment.lastActiveAt) : Number.NaN
-	const idleDurationMs = Number.isFinite(lastActiveMs) ? now - lastActiveMs : 0
-	return {
-		fermentId: ferment.id,
-		name: ferment.name,
-		lifecycleStage: ferment.status,
-		idleDurationMs,
-		completedPhases,
-		totalPhases,
-		phaseCompletionRatio,
-	}
 }

@@ -783,7 +783,7 @@ describe("turn_end lifecycle obligation guard", () => {
 })
 
 describe("turn_end error recovery in one-shot mode", () => {
-	it("recovers a draft ferment without consuming its lifecycle-stop retry budget", async () => {
+	it("recovers a draft ferment with a fresh lifecycle-stop retry budget", async () => {
 		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-oneshot-draft-error-")))
 		const draft = storage.create("Draft Error Ferment")
 		const runtime: FermentRuntime = {
@@ -843,6 +843,69 @@ describe("turn_end error recovery in one-shot mode", () => {
 					(message.details as { variant?: string } | undefined)?.variant === "warning",
 			)
 		expect(lifecycleRetryCalls).toHaveLength(2)
+		expect(exhaustionCalls).toHaveLength(1)
+	})
+
+	it("clears the lifecycle-stop retry budget after each alternating provider error", async () => {
+		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-oneshot-alternating-errors-")))
+		const draft = storage.create("Alternating Error Ferment")
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: () => storage,
+			getContinuationPolicy: () => "automated",
+			isAutomatedContinuationEnabled: () => true,
+		}
+		runtime.setActive(draft)
+
+		const { handlers, pi } = createPi()
+		;(pi.getFlag as ReturnType<typeof vi.fn>).mockImplementation((name: string) =>
+			name === "ferment-oneshot" ? true : undefined,
+		)
+		registerFermentEvents(pi, runtime)
+		const turnEnd = handlers.get("turn_end")
+		if (!turnEnd) throw new Error("turn_end handler was not registered")
+		const ctx = createContext({ hasUI: false })
+		const bareStop = { message: { role: "assistant", stopReason: "stop", content: [] } }
+		const providerError = {
+			message: {
+				role: "assistant",
+				stopReason: "error",
+				errorMessage: "Connection error: socket closed",
+				content: [],
+			},
+		}
+
+		await turnEnd(bareStop, ctx) // lifecycle retry 1
+		await turnEnd(providerError, ctx) // clears the lifecycle budget
+		vi.mocked(pi.sendMessage).mockClear()
+
+		await turnEnd(bareStop, ctx)
+		let continuationCalls = vi
+			.mocked(pi.sendMessage)
+			.mock.calls.filter(([message]) => message.customType === "ferment_continuation_nudge")
+		expect(continuationCalls).toHaveLength(1)
+		expect(continuationCalls[0]?.[0].content).toEqual([
+			expect.objectContaining({ text: expect.stringContaining("previous turn stopped without a tool call") }),
+		])
+
+		await turnEnd(providerError, ctx) // clears the newly consumed retry again
+		vi.mocked(pi.sendMessage).mockClear()
+
+		await turnEnd(bareStop, ctx)
+		await turnEnd(bareStop, ctx)
+		await turnEnd(bareStop, ctx)
+
+		continuationCalls = vi
+			.mocked(pi.sendMessage)
+			.mock.calls.filter(([message]) => message.customType === "ferment_continuation_nudge")
+		const exhaustionCalls = vi
+			.mocked(pi.sendMessage)
+			.mock.calls.filter(
+				([message]) =>
+					message.customType === "ferment_breadcrumb" &&
+					(message.details as { variant?: string } | undefined)?.variant === "warning",
+			)
+		expect(continuationCalls).toHaveLength(2)
 		expect(exhaustionCalls).toHaveLength(1)
 	})
 
