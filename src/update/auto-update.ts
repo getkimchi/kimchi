@@ -129,12 +129,12 @@ export interface MaybeAutoUpdateOnLaunchOptions {
  *
  * Skipped when ANY of these are true:
  *   - KIMCHI_NO_UPDATE_CHECK is set
+ *   - argv contains a subcommand (`update`/`setup`/`mcp`/`login`/`install`)
+ *   - argv contains `--no-auto-update`, `--version`, `-v`, `--help`, `-h`
  *   - isHomebrewInstall() returns true
  *   - running on a canary build (canary users stay on the canary track;
  *     currency is checked via `kimchi update --canary`)
  *   - loadAutoUpdateSetting() returns false
- *   - argv contains a subcommand (`update`/`setup`/`mcp`/`login`/`install`)
- *   - argv contains `--no-auto-update`, `--version`, `-v`, `--help`, `-h`
  *   - checkForUpdate throws or reports no update
  *   - applyUpdate throws (network, checksum, smoke-test failure)
  *   - opts.signal is already aborted (caller's deadline has passed)
@@ -155,10 +155,10 @@ export interface MaybeAutoUpdateOnLaunchOptions {
 export async function maybeAutoUpdateOnLaunch(opts: MaybeAutoUpdateOnLaunchOptions = {}): Promise<void> {
 	try {
 		if (process.env.KIMCHI_NO_UPDATE_CHECK) return
+		if (argvHasSkipTrigger(process.argv)) return
 		if (isHomebrewInstall()) return
 		if (parseCanarySha7(getVersion()) !== null) return
 		if (!loadAutoUpdateSetting()) return
-		if (argvHasSkipTrigger(process.argv)) return
 		if (opts.signal?.aborted) return
 
 		let check: Awaited<ReturnType<typeof checkForUpdate>>
