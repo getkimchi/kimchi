@@ -222,6 +222,30 @@ describe("startupUpdateExtension", () => {
 			expect(notify).not.toHaveBeenCalled()
 			expect(markAutoUpdateNoticeShownMock).not.toHaveBeenCalled()
 		})
+
+		it("does not suppress footer for Homebrew users with autoUpdate enabled", async () => {
+			getVersionMock.mockReturnValue("v0.0.23")
+			loadAutoUpdateSettingMock.mockReturnValue(true)
+			loadAutoUpdateNoticeShownMock.mockReturnValue(true)
+			isHomebrewInstallMock.mockReturnValue(true)
+			checkForUpdateMock.mockResolvedValue({ hasUpdate: true })
+			const { handlers, api } = createMockApi()
+			startupUpdateExtension(api)
+			const handler = handlers.get("session_start")
+			if (!handler) throw new Error("no session_start handler")
+
+			const { ctx, setStatus, notify } = makeCtx({ hasUI: true })
+			await handler({}, ctx)
+
+			// Homebrew installs are skipped by launch auto-update, so the
+			// footer hint must still show — otherwise the user gets neither
+			// a background update nor a `brew upgrade` hint.
+			expect(checkForUpdateMock).toHaveBeenCalledOnce()
+			expect(setStatus).toHaveBeenCalledOnce()
+			const [, msg] = setStatus.mock.calls[0]
+			expect(msg).toContain("brew upgrade kimchi")
+			expect(notify).not.toHaveBeenCalled()
+		})
 	})
 
 	describe("auto-update settings error handling", () => {

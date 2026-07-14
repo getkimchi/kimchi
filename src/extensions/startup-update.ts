@@ -30,7 +30,12 @@ export default function startupUpdateExtension(pi: ExtensionAPI) {
 
 		try {
 			const autoUpdateEnabled = loadAutoUpdateSetting()
-			if (autoUpdateEnabled) {
+			// Only suppress the footer nag when on-launch auto-update can
+			// actually run. Homebrew installs are skipped by the launch
+			// auto-update path (see auto-update.ts), so a Homebrew user with
+			// autoUpdate=true would otherwise get neither a background update
+			// nor the `brew upgrade kimchi` hint.
+			if (autoUpdateEnabled && !isHomebrewInstall()) {
 				// Auto-update is on: no nag (next launch applies silently).
 				// First launch only: explain the new behavior and how to opt out.
 				if (!loadAutoUpdateNoticeShown()) {
