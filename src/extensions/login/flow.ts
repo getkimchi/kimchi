@@ -1,6 +1,6 @@
 import { resolve } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
-import { getModels } from "@earendil-works/pi-ai/compat"
+import { getModels } from "@earendil-works/pi-ai"
 import {
 	type AuthStatus,
 	type ExtensionContext,
