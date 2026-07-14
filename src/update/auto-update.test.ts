@@ -17,6 +17,7 @@ const mockApplyUpdate = vi.fn()
 const mockLoadAutoUpdateSetting = vi.fn(() => true)
 const mockIsHomebrewInstall = vi.fn(() => false)
 const mockParseCanarySha7 = vi.fn(() => null as string | null)
+const mockGetVersion = vi.fn(() => "1.0.0")
 
 vi.mock("./paths.js", () => ({
 	isHomebrewInstall: mockIsHomebrewInstall,
@@ -28,6 +29,7 @@ vi.mock("./workflow.js", () => ({
 	applyUpdate: mockApplyUpdate,
 	parseCanarySha7: mockParseCanarySha7,
 }))
+vi.mock("../utils.js", () => ({ getVersion: mockGetVersion }))
 
 const autoUpdate = await import("./auto-update.js")
 const { maybeAutoUpdateOnLaunch, performReExec, argvHasSkipTrigger, isNonInteractiveLaunch, ReExecUnavailableError } =
@@ -35,6 +37,7 @@ const { maybeAutoUpdateOnLaunch, performReExec, argvHasSkipTrigger, isNonInterac
 
 const originalEnvNoCheck = process.env.KIMCHI_NO_UPDATE_CHECK
 const originalPlatform = process.platform
+const originalExecPath = process.execPath
 const originalExecve = (process as unknown as { execve?: unknown }).execve
 let execveSpy: MockInstance<(file: string, args: readonly string[], env: NodeJS.ProcessEnv) => never> | undefined
 
@@ -44,9 +47,11 @@ function resetMocks(): void {
 	mockLoadAutoUpdateSetting.mockReset()
 	mockIsHomebrewInstall.mockReset()
 	mockParseCanarySha7.mockReset()
+	mockGetVersion.mockReset()
 	mockLoadAutoUpdateSetting.mockReturnValue(true)
 	mockIsHomebrewInstall.mockReturnValue(false)
 	mockParseCanarySha7.mockReturnValue(null)
+	mockGetVersion.mockReturnValue("1.0.0")
 	mockCheckForUpdate.mockResolvedValue({
 		currentVersion: "1.0.0",
 		latestVersion: "1.0.0",
@@ -63,6 +68,10 @@ beforeEach(() => {
 	delete process.env.KIMCHI_NO_UPDATE_CHECK
 	// Default platform: linux (CI). Individual tests can override.
 	Object.defineProperty(process, "platform", { value: "linux", configurable: true })
+	// Pretend we're running the packaged kimchi binary so the
+	// packaged-binary guard in maybeAutoUpdateOnLaunch lets us through.
+	// The test runner's real execPath is `node`, which would be rejected.
+	Object.defineProperty(process, "execPath", { value: "/usr/local/bin/kimchi", configurable: true })
 
 	// Ensure process.execve exists so vi.spyOn has a target. On Linux it's
 	// a real syscall; on hosts where it isn't defined (some macOS/Windows
@@ -93,6 +102,7 @@ afterEach(() => {
 		delete process.env.KIMCHI_NO_UPDATE_CHECK
 	} else process.env.KIMCHI_NO_UPDATE_CHECK = originalEnvNoCheck
 	Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true })
+	Object.defineProperty(process, "execPath", { value: originalExecPath, configurable: true })
 	execveSpy?.mockRestore()
 	// If the host had no execve to begin with, our Object.defineProperty
 	// stub may linger after mockRestore; clear it so we don't leak between
@@ -142,6 +152,30 @@ describe("maybeAutoUpdateOnLaunch — skip gates", () => {
 
 	it("skips when loadAutoUpdateSetting() returns false", async () => {
 		mockLoadAutoUpdateSetting.mockReturnValue(false)
+		await maybeAutoUpdateOnLaunch()
+		expect(mockCheckForUpdate).not.toHaveBeenCalled()
+		expect(mockApplyUpdate).not.toHaveBeenCalled()
+		expect(execveSpy).not.toHaveBeenCalled()
+	})
+
+	it("skips when getVersion() is 'dev' (source/dev launch)", async () => {
+		mockGetVersion.mockReturnValue("dev")
+		await maybeAutoUpdateOnLaunch()
+		expect(mockCheckForUpdate).not.toHaveBeenCalled()
+		expect(mockApplyUpdate).not.toHaveBeenCalled()
+		expect(execveSpy).not.toHaveBeenCalled()
+	})
+
+	it("skips when getVersion() is 'unknown'", async () => {
+		mockGetVersion.mockReturnValue("unknown")
+		await maybeAutoUpdateOnLaunch()
+		expect(mockCheckForUpdate).not.toHaveBeenCalled()
+		expect(mockApplyUpdate).not.toHaveBeenCalled()
+		expect(execveSpy).not.toHaveBeenCalled()
+	})
+
+	it("skips when process.execPath is not the packaged kimchi binary", async () => {
+		Object.defineProperty(process, "execPath", { value: "/usr/local/bin/node", configurable: true })
 		await maybeAutoUpdateOnLaunch()
 		expect(mockCheckForUpdate).not.toHaveBeenCalled()
 		expect(mockApplyUpdate).not.toHaveBeenCalled()

@@ -6,6 +6,7 @@
 // current version. We never throw out of this module — entry.ts wraps the
 // call in its own try/catch but we also catch internally as defense-in-depth.
 
+import { basename } from "node:path"
 import { getVersion } from "../utils.js"
 import { isHomebrewInstall } from "./paths.js"
 import { loadAutoUpdateSetting } from "./settings.js"
@@ -163,6 +164,8 @@ export interface MaybeAutoUpdateOnLaunchOptions {
  *   - isHomebrewInstall() returns true
  *   - running on a canary build (canary users stay on the canary track;
  *     currency is checked via `kimchi update --canary`)
+ *   - running from source/dev (getVersion() is "dev" or "unknown", or
+ *     process.execPath is not the packaged kimchi binary)
  *   - loadAutoUpdateSetting() returns false
  *   - checkForUpdate throws or reports no update
  *   - applyUpdate throws (network, checksum, smoke-test failure)
@@ -188,6 +191,17 @@ export async function maybeAutoUpdateOnLaunch(opts: MaybeAutoUpdateOnLaunchOptio
 		if (isNonInteractiveLaunch(process.argv)) return
 		if (isHomebrewInstall()) return
 		if (parseCanarySha7(getVersion()) !== null) return
+		// Dev/source launches: getVersion() returns "dev" when package.json has
+		// the 0.0.0 placeholder. In that case process.execPath is the Bun/Node
+		// interpreter, not a packaged kimchi binary — applyUpdate() would try
+		// to install the release binary over the interpreter.
+		if (getVersion() === "dev") return
+		if (getVersion() === "unknown") return
+		// Guard against non-packaged binaries (e.g. running via `node src/entry.ts`).
+		// The compiled binary is named "kimchi" (or "kimchi.exe" on Windows);
+		// if execPath doesn't match, we're not running the real artifact.
+		const expectedBinName = process.platform === "win32" ? "kimchi.exe" : "kimchi"
+		if (basename(process.execPath) !== expectedBinName) return
 		if (!loadAutoUpdateSetting()) return
 		if (opts.signal?.aborted) return
 
