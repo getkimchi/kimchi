@@ -10,6 +10,7 @@ import { applyCommand } from "../../ferment/state-machine.js"
 import type { Ferment, Phase } from "../../ferment/types.js"
 import { createContext } from "../__mocks__/context.js"
 import { registerFermentEvents } from "./events.js"
+import { clearAllLifecycleGuards } from "./lifecycle-obligation-guard.js"
 import type { FermentRuntime } from "./runtime.js"
 import { createDefaultFermentRuntime } from "./runtime.js"
 import { clearActiveFermentId, getFermentLockPath, writeFermentLock } from "./state.js"
@@ -49,6 +50,7 @@ function createPi() {
 
 afterEach(() => {
 	vi.unstubAllEnvs()
+	clearAllLifecycleGuards()
 	clearActiveFermentId()
 	Reflect.deleteProperty(process.env, "KIMCHI_SUBAGENT")
 })
@@ -655,6 +657,127 @@ function setupScopedRunningFerment(prefix: string, name: string) {
 	})
 	return { storage, ferment }
 }
+
+describe("turn_end lifecycle obligation guard", () => {
+	function setupAutomatedGuardFixture(name: string) {
+		const { storage, ferment } = setupScopedRunningFerment(`ferment-lifecycle-guard-${name}-`, name)
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: () => storage,
+			getContinuationPolicy: () => "automated",
+			isAutomatedContinuationEnabled: () => true,
+		}
+		const active = storage.get(ferment.id)
+		if (!active) throw new Error("ferment not found after setup")
+		runtime.setActive(active)
+
+		const { handlers, pi } = createPi()
+		;(pi as ExtensionAPI & { events: ExtensionAPI["events"] }).events = {
+			emit: vi.fn(),
+			on: vi.fn(),
+		} as unknown as ExtensionAPI["events"]
+		registerFermentEvents(pi, runtime)
+		const turnEnd = handlers.get("turn_end")
+		if (!turnEnd) throw new Error("turn_end handler was not registered")
+		return { pi, runtime, turnEnd }
+	}
+
+	it("does not replenish an unchanged obligation after an unrelated tool call", async () => {
+		const { pi, turnEnd } = setupAutomatedGuardFixture("Unrelated Tool")
+		const ctx = createContext({ hasUI: false })
+
+		await turnEnd({ message: { role: "assistant", stopReason: "stop", content: [] } }, ctx)
+		await turnEnd(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "toolUse",
+					content: [{ type: "toolCall", name: "read", id: "call-read", arguments: { path: "README.md" } }],
+				},
+			},
+			ctx,
+		)
+		await turnEnd({ message: { role: "assistant", stopReason: "stop", content: [] } }, ctx)
+		await turnEnd({ message: { role: "assistant", stopReason: "stop", content: [] } }, ctx)
+
+		const continuationCalls = vi
+			.mocked(pi.sendMessage)
+			.mock.calls.filter(([message]) => message.customType === "ferment_continuation_nudge")
+		const exhaustionCalls = vi
+			.mocked(pi.sendMessage)
+			.mock.calls.filter(
+				([message]) =>
+					message.customType === "ferment_breadcrumb" &&
+					(message.details as { variant?: string } | undefined)?.variant === "warning",
+			)
+		expect(continuationCalls).toHaveLength(2)
+		expect(exhaustionCalls).toHaveLength(1)
+	})
+
+	it("does not guard a deliberate text-only stop while plan review is pending", async () => {
+		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-lifecycle-guard-review-")))
+		const draft = storage.create("Pending Review")
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: () => storage,
+			getContinuationPolicy: () => "automated",
+			isAutomatedContinuationEnabled: () => true,
+		}
+		runtime.setActive(draft)
+		runtime.setPendingPlanReview({ fermentId: draft.id, planMarkdown: "# Plan" })
+
+		const { handlers, pi } = createPi()
+		registerFermentEvents(pi, runtime)
+		const turnEnd = handlers.get("turn_end")
+		if (!turnEnd) throw new Error("turn_end handler was not registered")
+
+		await turnEnd(
+			{ message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "Ready." }] } },
+			createContext({ hasUI: true }),
+		)
+
+		expect(pi.sendMessage).not.toHaveBeenCalledWith(
+			expect.objectContaining({ customType: "ferment_continuation_nudge" }),
+			expect.anything(),
+		)
+		expect(pi.setActiveTools).toHaveBeenCalledWith([])
+	})
+
+	it("starts a fresh retry budget after a new session begins", async () => {
+		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-lifecycle-guard-session-")))
+		const draft = storage.create("New Session")
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: () => storage,
+			getContinuationPolicy: () => "automated",
+			isAutomatedContinuationEnabled: () => true,
+		}
+		runtime.setActive(draft)
+
+		const { handlers, pi } = createPi()
+		;(pi.getFlag as ReturnType<typeof vi.fn>).mockImplementation((name: string) =>
+			name === "ferment-oneshot" ? true : undefined,
+		)
+		registerFermentEvents(pi, runtime)
+		const turnEnd = handlers.get("turn_end")
+		const sessionStart = handlers.get("session_start")
+		if (!turnEnd || !sessionStart) throw new Error("required event handler was not registered")
+
+		const ctx = createContext({ hasUI: false })
+		await turnEnd({ message: { role: "assistant", stopReason: "stop", content: [] } }, ctx)
+		await turnEnd({ message: { role: "assistant", stopReason: "stop", content: [] } }, ctx)
+		await sessionStart({}, ctx)
+		runtime.setActive(draft)
+		vi.mocked(pi.sendMessage).mockClear()
+
+		await turnEnd({ message: { role: "assistant", stopReason: "stop", content: [] } }, ctx)
+
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ customType: "ferment_continuation_nudge" }),
+			expect.objectContaining({ deliverAs: "steer" }),
+		)
+	})
+})
 
 describe("turn_end error recovery in one-shot mode", () => {
 	it('does not pause the ferment when stopReason is "error" in one-shot mode', async () => {

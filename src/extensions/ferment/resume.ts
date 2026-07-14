@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { determineNextAction } from "../../ferment/engine.js"
 import type { Ferment } from "../../ferment/types.js"
 import { formatActionNudgeLine } from "./action-tool-names.js"
+import { clearLifecycleGuard } from "./lifecycle-obligation-guard.js"
 import { appendRefEntry } from "./nudge.js"
 import { loadPendingProposal } from "./pending-proposal-store.js"
 import { triggerPendingPlanReview } from "./plan-review-trigger.js"
@@ -67,6 +68,7 @@ export function resumeFerment(
 		setActiveFermentAndApplyProfile(pi, runtime, undefined)
 		return
 	}
+	clearLifecycleGuard(existing.id)
 
 	if (existing.status === "complete" || existing.status === "abandoned") {
 		setActiveFermentAndApplyProfile(pi, runtime, undefined)

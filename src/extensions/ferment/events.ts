@@ -14,14 +14,17 @@ import { emitFermentCreated } from "./domain-events-emitter.js"
 import { FERMENT_EVENTS, type FermentStalledPayload } from "./domain-events.js"
 import { autoInitFromEnv, ensureGitRepo } from "./git-init.js"
 import {
+	clearAllLifecycleGuards,
+	clearLifecycleGuard,
+	maybeInjectLifecycleObligationGuard,
+} from "./lifecycle-obligation-guard.js"
+import {
 	appendRefEntry,
 	maybeInjectFermentStopNudge,
-	maybeInjectReactiveContinuationNudge,
 	maybeInjectScopingProgressNudge,
 	maybeInjectScopingStopNudge,
 	onFermentToolCallSeen,
 	resetFermentStopNudgeCount,
-	resetReactiveContinuationNudgeCount,
 	resetScopingStopNudgeCount,
 } from "./nudge.js"
 import { buildOneshotNudge } from "./oneshot.js"
@@ -30,7 +33,7 @@ import { promptEditor, promptSelect } from "./prompt-ui.js"
 import { loadFermentSilently, resumeFerment } from "./resume.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { safeSendMessage } from "./safe-send.js"
-import { scheduleFermentWakeUp } from "./scheduler.js"
+import { scheduleFermentWakeUp, scheduleNextFermentAction } from "./scheduler.js"
 import { confirmPendingScope } from "./scoping-confirmation.js"
 import {
 	clearActiveFermentId,
@@ -317,6 +320,7 @@ export function registerFermentEvents(
 		if (isAgentWorker()) {
 			return
 		}
+		clearAllLifecycleGuards()
 		runtime.setContinuationPolicy(ctx?.hasUI ? "manual" : "automated")
 		runtime.clearAllStepStarts()
 		runtime.clearAllScopingGates()
@@ -395,6 +399,7 @@ export function registerFermentEvents(
 
 	pi.on("session_shutdown", async () => {
 		if (isAgentWorker()) return
+		clearAllLifecycleGuards()
 		runtime.clearAllPendingPlanReviews()
 		const f = runtime.getActive()
 		if (!f) return
@@ -518,7 +523,7 @@ export function registerFermentEvents(
 				}
 			}
 			if (activeId) {
-				resetReactiveContinuationNudgeCount(activeId)
+				clearLifecycleGuard(activeId)
 				resetFermentStopNudgeCount(activeId)
 				resetScopingStopNudgeCount(activeId)
 				resetScopingExploreTurns(activeId)
@@ -555,16 +560,25 @@ export function registerFermentEvents(
 			}
 
 			if (activeId) {
-				resetReactiveContinuationNudgeCount(activeId)
+				clearLifecycleGuard(activeId)
 				resetFermentStopNudgeCount(activeId)
 				resetScopingStopNudgeCount(activeId)
 				resetScopingExploreTurns(activeId)
 			}
 
+			// One-shot error recovery: schedule a continuation turn directly via
+			// the scheduler. This is a transport/provider failure, not a model-chosen
+			// bare stop, so it must NOT consume the lifecycle-stop retry budget.
+			// The guard's budget is cleared above; this call schedules the next
+			// action independently.
 			if (isOneShot) {
 				const errorFerment = runtime.getActive()
 				if (errorFerment && (errorFerment.status === "running" || errorFerment.status === "planned")) {
-					maybeInjectReactiveContinuationNudge(pi, runtime)
+					scheduleNextFermentAction(pi, errorFerment, runtime, {
+						tag: "Error recovery",
+						deliverAs: "steer",
+						treatCompleteFermentAsContinue: true,
+					})
 				}
 			}
 
@@ -572,7 +586,19 @@ export function registerFermentEvents(
 		}
 
 		if (toolCallSeen && activeId) {
-			resetReactiveContinuationNudgeCount(activeId)
+			// An unrelated tool call is not lifecycle progress. Preserve the guard
+			// budget while the concrete obligation is unchanged; state advancement
+			// receives a fresh budget automatically through its new obligation key.
+			// Only terminal/paused state needs eager cleanup here.
+			const freshAfterTool = runtime.getStorage().get(activeId)
+			if (
+				!freshAfterTool ||
+				freshAfterTool.status === "paused" ||
+				freshAfterTool.status === "complete" ||
+				freshAfterTool.status === "abandoned"
+			) {
+				clearLifecycleGuard(activeId)
+			}
 			// A normal tool-use turn means the model is still progressing, so reset
 			// the stop-nudge budget. A tool-use turn that ended with "stop" is exactly
 			// what the stop-nudge counter is tracking, so do not reset it here.
@@ -605,7 +631,14 @@ export function registerFermentEvents(
 		const userInputHandled = await maybeRunUserInputDropdown(pi, ctx, content, f, runtime)
 		if (userInputHandled) return
 		if (!toolCallSeen) {
-			maybeInjectReactiveContinuationNudge(pi, runtime)
+			if (!hasPendingPlanReview(runtime)) {
+				// Zero-tool stop while a lifecycle obligation may be pending. The guard
+				// is automated-only; in interactive mode the user is present to steer.
+				// Returning here prevents the generic scoping/tool-using nudge paths
+				// below from sending a second message for the same turn.
+				const guarded = maybeInjectLifecycleObligationGuard(pi, runtime, callbacks)
+				if (guarded) return
+			}
 		} else if (stopReason === "stop") {
 			// The model made tool calls this turn but ended with stopReason "stop"
 			// while the ferment still requires action (e.g. completed a step then

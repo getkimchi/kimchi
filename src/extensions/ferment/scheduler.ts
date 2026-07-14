@@ -12,6 +12,7 @@ export interface ScheduleNextFermentActionOptions {
 	treatCompleteFermentAsContinue?: boolean
 	tag?: string
 	deliverAs?: "steer" | "followUp"
+	messagePrefix?: string
 }
 
 export interface ScheduleFermentWakeUpOptions {
@@ -197,7 +198,8 @@ export function scheduleNextFermentAction(
 		ferment.status === "running"
 			? `RESUMING ferment "${ferment.name}" — the previous session was interrupted. Pick up the work immediately. Do NOT explain or summarize — execute the next action below.\n\n`
 			: ""
-	const messageText = `${interruptedPrefix}${baseMsg}`
+	const messagePrefix = opts.messagePrefix ? `${opts.messagePrefix}\n\n` : ""
+	const messageText = `${interruptedPrefix}${messagePrefix}${baseMsg}`
 
 	tryPiAction(() => {
 		pi.appendEntry("ferment_breadcrumb", {

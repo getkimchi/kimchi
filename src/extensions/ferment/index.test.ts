@@ -10,7 +10,7 @@ import type { Ferment } from "../../ferment/types.js"
 import { createContext } from "../__mocks__/context.js"
 import { globalTipRegistry } from "../tips/registry.js"
 import fermentExtension from "./index.js"
-import { resetAllReactiveContinuationNudgeCounts } from "./nudge.js"
+import { clearAllLifecycleGuards } from "./lifecycle-obligation-guard.js"
 import { clearAllPendingPlanReviews, getPendingPlanReview, setPendingPlanReview } from "./plan-review.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
 import {
@@ -105,7 +105,7 @@ afterEach(() => {
 	globalTipRegistry.clear()
 	clearAllPendingPlanReviews()
 	requestSharedStatusLineRenderMock.mockClear()
-	resetAllReactiveContinuationNudgeCounts()
+	clearAllLifecycleGuards()
 	Reflect.deleteProperty(process.env, "KIMCHI_SUBAGENT")
 	vi.unstubAllEnvs()
 	clearActiveFermentId()
@@ -577,7 +577,7 @@ describe("fermentExtension question dropdown", () => {
 				content: [expect.objectContaining({ text: expect.stringContaining("complete_ferment") })],
 				details: expect.objectContaining({ action: "complete_ferment" }),
 			}),
-			{ triggerTurn: true, deliverAs: "followUp" },
+			{ triggerTurn: true, deliverAs: "steer" },
 		)
 
 		vi.mocked(pi.sendMessage).mockClear()

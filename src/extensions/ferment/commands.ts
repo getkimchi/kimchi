@@ -13,7 +13,8 @@ import { emitFermentCreated } from "./domain-events-emitter.js"
 import { FERMENT_EVENTS } from "./domain-events.js"
 import { formatFermentStatus } from "./format.js"
 import { autoInitFromEnv, ensureGitRepo } from "./git-init.js"
-import { appendRefEntry, resetReactiveContinuationNudgeCount } from "./nudge.js"
+import { clearLifecycleGuard } from "./lifecycle-obligation-guard.js"
+import { appendRefEntry } from "./nudge.js"
 import { buildOneshotNudge } from "./oneshot.js"
 import {
 	buildPhaseActionOptions,
@@ -366,6 +367,7 @@ async function confirmManualPhaseBoundaryForCommand(
 				ctx.ui.notify(`Failed to pause: ${outcome.error.message}`)
 				return true
 			}
+			clearLifecycleGuard(active.id)
 			setActiveFermentAndApplyProfile(pi, runtime, outcome.ferment)
 			runtime.clearPendingPlanReview(active.id)
 			ctx.ui.notify(`Paused "${outcome.ferment.name}". Type /ferment resume to resume.`)
@@ -465,7 +467,10 @@ async function openFermentProgress(pi: ExtensionAPI, ctx: ExtensionContext, runt
 				)
 				if (confirmed) {
 					const outcome = applyAndPersist(f.id, { type: "abandon" })
-					if (outcome.ok) setActiveFermentAndApplyProfile(pi, runtime, undefined)
+					if (outcome.ok) {
+						clearLifecycleGuard(f.id)
+						setActiveFermentAndApplyProfile(pi, runtime, undefined)
+					}
 					runtime.clearFermentState(f.id)
 					atPhaseList = false
 				}
@@ -607,7 +612,7 @@ function exitFermentMode(pi: ExtensionAPI, ctx: ExtensionCommandContext, runtime
 	runtime.clearPendingPlanReview(active.id)
 	runtime.clearPendingScope(active.id)
 	runtime.consumeScopingGate(active.id)
-	resetReactiveContinuationNudgeCount(active.id)
+	clearLifecycleGuard(active.id)
 	setActiveFermentAndApplyProfile(pi, runtime, undefined)
 	const detail = formatExitDetail(statusLabel)
 	const message = `Exited Ferment mode for "${active.name}". ${detail}`
@@ -739,6 +744,7 @@ export class FermentCommandController {
 			}
 
 			if (active.status === "paused") {
+				clearLifecycleGuard(active.id)
 				const message = `"${active.name}" is already paused. Type /ferment resume to resume.`
 				sendBreadcrumb(pi, message, "ack")
 				ctx.ui.notify(message)
@@ -754,6 +760,7 @@ export class FermentCommandController {
 				return { handled: true }
 			}
 
+			clearLifecycleGuard(active.id)
 			setActiveFermentAndApplyProfile(pi, runtime, outcome.ferment)
 			runtime.clearPendingPlanReview(active.id)
 			const message = `Paused "${outcome.ferment.name}". Type /ferment resume to resume.`
@@ -780,6 +787,7 @@ export class FermentCommandController {
 				ctx.ui.notify(message)
 				applyFermentRuntimeToolProfile(pi, runtime)
 				if (canContinue) {
+					clearLifecycleGuard(active.id)
 					scheduleFermentWakeUp(pi, runtime, { fermentId: active.id, tag: "Resume wake-up" })
 				}
 				return { handled: true }
@@ -793,6 +801,7 @@ export class FermentCommandController {
 				return { handled: true }
 			}
 
+			clearLifecycleGuard(active.id)
 			setActiveFermentAndApplyProfile(pi, runtime, outcome.ferment)
 			const message = `Resumed "${outcome.ferment.name}". Continuation policy: ${runtime.getContinuationPolicy()}.`
 			sendBreadcrumb(pi, message, "ack")
@@ -875,6 +884,7 @@ export class FermentCommandController {
 			const abandonedId = active.id
 			const out = applyAndPersist(abandonedId, { type: "abandon", reason: reason || undefined })
 			if (out.ok) {
+				clearLifecycleGuard(abandonedId)
 				setActiveFermentAndApplyProfile(pi, runtime, undefined)
 				runtime.clearFermentState(abandonedId)
 				ctx.ui.notify(`Ferment "${out.ferment.name}" abandoned.`)
