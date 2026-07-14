@@ -11,9 +11,6 @@ import type { ScopePhaseInput } from "../../ferment/state-machine.js"
 import { pr_bold, pr_dim, pr_teal, truncateLabel } from "./colors.js"
 import type { FermentRuntime } from "./runtime.js"
 
-type PhaseEditorContext = Partial<Pick<ExtensionContext, "ui">>
-type PhaseEditorUi = NonNullable<PhaseEditorContext["ui"]>
-
 const ADD_LABEL = "+ Add phase"
 const CONFIRM_LABEL = "✓ Confirm and start"
 const CANCEL_LABEL = "✗ Cancel"
@@ -25,7 +22,7 @@ function formatPhaseRow(p: ScopePhaseInput, idx: number): string {
 }
 
 async function editPhaseDetails(
-	ui: PhaseEditorUi,
+	ui: ExtensionContext["ui"],
 	phase: ScopePhaseInput,
 	canMoveUp: boolean,
 	canMoveDown: boolean,
@@ -77,7 +74,7 @@ async function editPhaseDetails(
 	return { action: "back", phase }
 }
 
-async function addPhase(ui: PhaseEditorUi, runtime?: FermentRuntime): Promise<ScopePhaseInput | undefined> {
+async function addPhase(ui: ExtensionContext["ui"], runtime?: FermentRuntime): Promise<ScopePhaseInput | undefined> {
 	if (!ui.input) return undefined
 	const name = await ui.input("New phase name:", "")
 	runtime?.markHumanInput()
@@ -88,7 +85,7 @@ async function addPhase(ui: PhaseEditorUi, runtime?: FermentRuntime): Promise<Sc
 }
 
 export async function editPhaseProposal(
-	ctx: PhaseEditorContext,
+	ctx: ExtensionContext,
 	phases: ScopePhaseInput[],
 	runtime?: FermentRuntime,
 ): Promise<ScopePhaseInput[] | undefined> {

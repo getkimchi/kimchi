@@ -1,12 +1,12 @@
 import {
+	type ExtensionContext,
 	ExtensionEditorComponent,
 	type KeybindingsManager,
 	type Theme,
 	getMarkdownTheme,
 } from "@earendil-works/pi-coding-agent"
 import { type Component, Container, Key, Markdown, Spacer, type TUI, Text, matchesKey } from "@earendil-works/pi-tui"
-import { getPromptUi, withWorkingHidden } from "./prompt-ui.js"
-import type { FermentUi } from "./ui.js"
+import { withWorkingHidden } from "./prompt-ui.js"
 
 export interface PendingPlanReview {
 	fermentId: string
@@ -50,11 +50,11 @@ export function clearAllPendingPlanReviews(): void {
 }
 
 export async function promptPlanReview(
-	ctx: { ui?: FermentUi } | undefined,
+	ctx: ExtensionContext,
 	opts: { planMarkdown: string },
 ): Promise<PlanReviewOutcome | undefined> {
-	const ui = getPromptUi(ctx)
-	if (!ui?.custom) return undefined
+	if (ctx.mode !== "tui") return undefined
+	const ui = ctx.ui
 	return withWorkingHidden(
 		ui,
 		() =>

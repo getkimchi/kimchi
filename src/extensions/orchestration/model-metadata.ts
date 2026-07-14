@@ -34,6 +34,7 @@ const ModelCustomMetadataSchema = Type.Object({
 	tier: Type.Optional(ModelTierSchema),
 	description: Type.Optional(Type.String()),
 	vision: Type.Optional(Type.Boolean()),
+	reasoning: Type.Optional(Type.Boolean()),
 })
 
 export type ModelCustomMetadata = Static<typeof ModelCustomMetadataSchema>
@@ -96,7 +97,12 @@ function validateMetadataEntry(value: unknown): ModelCustomMetadata | undefined 
 	// Entry must carry at least one defined field; otherwise it has no signal
 	// and would clutter settings.json with empty rows that resolveModelMetadata
 	// would ignore anyway.
-	if (entry.tier === undefined && entry.description === undefined && entry.vision === undefined) {
+	if (
+		entry.tier === undefined &&
+		entry.description === undefined &&
+		entry.vision === undefined &&
+		entry.reasoning === undefined
+	) {
 		return undefined
 	}
 	return entry
@@ -180,11 +186,19 @@ export function deleteModelMetadata(ref: string, settingsPath?: string): void {
 export function resolveModelMetadata(
 	ref: string,
 	settingsPath?: string,
-): { source: "builtin" | "custom"; tier?: ModelTier; description?: string; vision?: boolean } | undefined {
+):
+	| { source: "builtin" | "custom"; tier?: ModelTier; description?: string; vision?: boolean; reasoning?: boolean }
+	| undefined {
 	// 1. Check cached custom metadata for the exact ref
 	const custom = getModelMetadata(settingsPath).get(ref)
 	if (custom) {
-		return { source: "custom", tier: custom.tier, description: custom.description, vision: custom.vision }
+		return {
+			source: "custom",
+			tier: custom.tier,
+			description: custom.description,
+			vision: custom.vision,
+			reasoning: custom.reasoning,
+		}
 	}
 
 	// 2. Check MODEL_CAPABILITIES — strip provider prefix to get model ID
@@ -196,6 +210,7 @@ export function resolveModelMetadata(
 			tier: entry.tier,
 			description: entry.description,
 			vision: entry.vision,
+			reasoning: entry.reasoning,
 		}
 	}
 

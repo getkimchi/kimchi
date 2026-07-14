@@ -41,6 +41,17 @@
 #
 #                                 showError delegates to the inherited SessionMode.showError so
 #                                 extensions can surface error overlays (not toasts).
+#   7. dist/modes/interactive/components/model-selector.js — accept sessionId constructor
+#      dist/modes/interactive/interactive-mode.js            parameter and key all reads/writes
+#                                                            to process.__kimchiMultiModelEnabled
+#                                                            and process.__kimchiOrchestratorRef
+#                                                            through Map<sessionId, value> instead
+#                                                            of plain globals, so multi-model state
+#                                                            is per-session.
+#   8. dist/core/tools/bash.js — destroy child stdio streams 500ms after a timeout kill
+#      so the tool call returns even when setsid'd grandchildren (e.g. bubblewrap used
+#      by opam install on Linux) escape the process group SIGKILL and keep the stdout
+#      pipe open, which would otherwise cause waitForChildProcess to hang indefinitely.
 #
 # Tracking: open an upstream PR against pi-mono to ship before_provider_headers as
 # a first-class extension hook in ExtensionRunner and ExtensionAPI. Also track a
@@ -58,7 +69,12 @@
 #   - Item 5: individual fixes land upstream and the patched version is updated.
 #   - Item 6 (previewTheme + showError): upstream pi-coding-agent ships previewTheme
 #     and showError on ExtensionUIContext and the fixed version is pinned in package.json.
-#
+#   - Item 7: Kimchi-specific multi-model settings.
+#   - Item 8 (bash timeout stream destroy): upstream pi-coding-agent's
+#     createLocalBashOperations destroys child stdio after a timeout kill (or
+#     waitForChildProcess gains a max-wait that forces resolution), and the
+#     fixed version is pinned in package.json.
+
 diff --git a/dist/cli/args.js b/dist/cli/args.js
 index 6bd8f43b4402dbd24f9262c4c059b2c06693a79c..ad705421fb9087efd8ad2cfbfe8709d198245751 100644
 --- a/dist/cli/args.js
@@ -258,6 +274,27 @@ index e386db6d62622a8c77c7d7e9844e63020d8af39a..f2f9e0161b47f7111df88f429c36feb7
              });
          },
          onPayload: async (payload, _model) => {
+diff --git a/dist/core/tools/bash.js b/dist/core/tools/bash.js
+index 98b69bb9ccf6464dfaec7b2271cf78677cb73ce9..659fe9c52d0acac4080abfc6d3b92d865d141a4c 100644
+--- a/dist/core/tools/bash.js
++++ b/dist/core/tools/bash.js
+@@ -62,6 +62,16 @@ export function createLocalBashOperations(options) {
+                         timedOut = true;
+                         if (child.pid)
+                             killProcessTree(child.pid);
++                        // Destroy stdio streams after a short grace so the tool
++                        // call returns even when setsid'd grandchildren (e.g.
++                        // bubblewrap used by opam install on Linux) escape the
++                        // process-group SIGKILL, inherit the pipe, and keep
++                        // writing — which would re-arm waitForChildProcess's
++                        // grace timer indefinitely.
++                        setTimeout(() => {
++                            child.stdout?.destroy();
++                            child.stderr?.destroy();
++                        }, 500);
+                     }, timeout * 1000);
+                 }
+                 // Stream stdout and stderr.
 diff --git a/dist/core/tools/edit.js b/dist/core/tools/edit.js
 index bf8a79ebfdbe23415cd1effdd3db0b9ebfd804bc..f69116ceafe8ee7f1e2dbfeaa37f60c5d97aa84c 100644
 --- a/dist/core/tools/edit.js
@@ -360,15 +397,33 @@ index 8220e06bc1e2b136c4b84c4af3cd29fd21b98a9f..b213a26c7ac002776850a59d7cafce4c
      dispose() {
          this.countdown?.dispose();
 diff --git a/dist/modes/interactive/components/model-selector.js b/dist/modes/interactive/components/model-selector.js
-index 8f8c5019a46285adc43b6116aaed0c0758efd2db..fb542c2c07502b7e8e6156e6b97c30b21c3eb83c 100644
+index 8f8c5019a46285adc43b6116aaed0c0758efd2db..03db595639c8a66d25778dae1ecde841d1edfdfb 100644
 --- a/dist/modes/interactive/components/model-selector.js
 +++ b/dist/modes/interactive/components/model-selector.js
-@@ -118,6 +118,13 @@ export class ModelSelectorComponent extends Container {
+@@ -31,13 +31,15 @@ export class ModelSelectorComponent extends Container {
+     onCancelCallback;
+     errorMessage;
+     tui;
++    sessionId;
+     scopedModels;
+     scope = "all";
+     scopeText;
+     scopeHintText;
+-    constructor(tui, currentModel, settingsManager, modelRegistry, scopedModels, onSelect, onCancel, initialSearchInput) {
++    constructor(tui, currentModel, settingsManager, modelRegistry, scopedModels, onSelect, onCancel, initialSearchInput, sessionId) {
+         super();
+         this.tui = tui;
++        this.sessionId = sessionId;
+         this.currentModel = currentModel;
+         this.settingsManager = settingsManager;
+         this.modelRegistry = modelRegistry;
+@@ -118,6 +120,14 @@ export class ModelSelectorComponent extends Container {
              return;
          }
          this.allModels = this.sortModels(models);
-+        if (process.__kimchiOrchestratorRef) {
-+            const orchId = process.__kimchiOrchestratorRef.split('/').pop();
++        const orchRef = process.__kimchiOrchestratorRef instanceof Map ? process.__kimchiOrchestratorRef.get(this.sessionId) : undefined;
++        if (orchRef) {
++            const orchId = orchRef.split('/').pop();
 +            const orchEntry = this.allModels.find(m => m.id === orchId);
 +            if (orchEntry) {
 +                this.allModels.unshift({ provider: 'orchestration', id: 'multi-model', model: orchEntry.model, _isMultiModel: true });
@@ -377,12 +432,12 @@ index 8f8c5019a46285adc43b6116aaed0c0758efd2db..fb542c2c07502b7e8e6156e6b97c30b2
          this.scopedModels = this.scopedModels.map((scoped) => {
              const refreshed = this.modelRegistry.find(scoped.model.provider, scoped.model.id);
              return refreshed ? { ...scoped, model: refreshed } : scoped;
-@@ -127,6 +134,13 @@ export class ModelSelectorComponent extends Container {
+@@ -127,6 +137,13 @@ export class ModelSelectorComponent extends Container {
              id: scoped.model.id,
              model: scoped.model,
          }));
-+        if (process.__kimchiOrchestratorRef) {
-+            const orchIdScoped = process.__kimchiOrchestratorRef.split('/').pop();
++        if (orchRef) {
++            const orchIdScoped = orchRef.split('/').pop();
 +            const orchScopedEntry = this.scopedModelItems.find(m => m.id === orchIdScoped);
 +            if (orchScopedEntry) {
 +                this.scopedModelItems.unshift({ provider: 'orchestration', id: 'multi-model', model: orchScopedEntry.model, _isMultiModel: true });
@@ -391,12 +446,12 @@ index 8f8c5019a46285adc43b6116aaed0c0758efd2db..fb542c2c07502b7e8e6156e6b97c30b2
          this.activeModels = this.scope === "scoped" ? this.scopedModelItems : this.allModels;
          this.filteredModels = this.activeModels;
          const currentIndex = this.filteredModels.findIndex((item) => modelsAreEqual(this.currentModel, item.model));
-@@ -185,17 +199,21 @@ export class ModelSelectorComponent extends Container {
+@@ -185,17 +202,21 @@ export class ModelSelectorComponent extends Container {
              if (!item)
                  continue;
              const isSelected = i === this.selectedIndex;
 -            const isCurrent = modelsAreEqual(this.currentModel, item.model);
-+            const isMultiModelEnabled = !!process.__kimchiMultiModelEnabled;
++            const isMultiModelEnabled = process.__kimchiMultiModelEnabled instanceof Map ? !!process.__kimchiMultiModelEnabled.get(this.sessionId) : false;
 +            const isCurrent = item._isMultiModel
 +                ? isMultiModelEnabled
 +                : !isMultiModelEnabled && modelsAreEqual(this.currentModel, item.model);
@@ -416,12 +471,15 @@ index 8f8c5019a46285adc43b6116aaed0c0758efd2db..fb542c2c07502b7e8e6156e6b97c30b2
                  const providerBadge = theme.fg("muted", `[${item.provider}]`);
                  const checkmark = isCurrent ? theme.fg("success", " ✓") : "";
                  line = `${modelText} ${providerBadge}${checkmark}`;
-@@ -268,6 +286,8 @@ export class ModelSelectorComponent extends Container {
+@@ -268,6 +289,11 @@ export class ModelSelectorComponent extends Container {
          }
      }
      handleSelect(model) {
 +        const selectedItem = this.filteredModels[this.selectedIndex];
-+        process.__kimchiMultiModelEnabled = !!selectedItem?._isMultiModel;
++        if (!(process.__kimchiMultiModelEnabled instanceof Map)) {
++            process.__kimchiMultiModelEnabled = new Map();
++        }
++        process.__kimchiMultiModelEnabled.set(this.sessionId, !!selectedItem?._isMultiModel);
          // Save as new default
          this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
          this.onSelectCallback(model);
@@ -481,7 +539,7 @@ index 0e85e9006835b754e38a7af725b4f1ca18eb3a61..94ea3d983a2abe039a7729d452f60c32
              color: (content) => theme.fg("userMessageText", content),
          }, { preserveOrderedListMarkers: true }));
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index 85c551f8630bc7d021825359095a8b552cbfb518..3b97e69d382bb0315b4907568fddb446e6cefe56 100644
+index 85c551f8630bc7d021825359095a8b552cbfb518..a412b3131d64a985026f8487fdf9f8ce5c914869 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
 @@ -1592,6 +1592,7 @@ export class InteractiveMode {
@@ -518,26 +576,30 @@ index 85c551f8630bc7d021825359095a8b552cbfb518..3b97e69d382bb0315b4907568fddb446
          };
      }
      /**
-@@ -3425,6 +3436,29 @@ export class InteractiveMode {
+@@ -3425,6 +3436,33 @@ export class InteractiveMode {
              this.showModelSelector();
              return;
          }
 +        // Handle "multi-model" as a virtual model selection
 +        if (searchTerm === 'multi-model') {
-+            const orchRef = process.__kimchiOrchestratorRef;
++            const sessionId = this.sessionManager.getSessionId();
++            const orchRef = process.__kimchiOrchestratorRef instanceof Map ? process.__kimchiOrchestratorRef.get(sessionId) : undefined;
 +            const orchParts = orchRef ? orchRef.split('/') : [];
 +            const orchProvider = orchParts.length >= 2 ? orchParts.slice(0, -1).join('/') : undefined;
 +            const orchModelId = orchParts.length >= 2 ? orchParts[orchParts.length - 1] : undefined;
 +            const orchestratorModel = orchProvider && orchModelId ? this.session.modelRegistry.find(orchProvider, orchModelId) : undefined;
 +            if (orchestratorModel) {
-+                process.__kimchiMultiModelEnabled = true;
++                if (!(process.__kimchiMultiModelEnabled instanceof Map)) {
++                    process.__kimchiMultiModelEnabled = new Map();
++                }
++                process.__kimchiMultiModelEnabled.set(sessionId, true);
 +                try {
 +                    await this.session.setModel(orchestratorModel);
 +                    this.footer.invalidate();
 +                    this.updateEditorBorderColor();
 +                    this.showStatus('Model: multi-model');
 +                } catch (error) {
-+                    process.__kimchiMultiModelEnabled = false;
++                    process.__kimchiMultiModelEnabled.set(sessionId, false);
 +                    this.showError(error instanceof Error ? error.message : String(error));
 +                }
 +            } else {
@@ -548,11 +610,29 @@ index 85c551f8630bc7d021825359095a8b552cbfb518..3b97e69d382bb0315b4907568fddb446
          const model = await this.findExactModelMatch(searchTerm);
          if (model) {
              try {
-diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
---- a/dist/modes/interactive/interactive-mode.js
-+++ b/dist/modes/interactive/interactive-mode.js
-@@ -4291,3 +4292,3 @@
+@@ -3539,6 +3577,7 @@ export class InteractiveMode {
+     }
+     showModelSelector(initialSearchInput) {
+         this.showSelector((done) => {
++            const sessionId = this.sessionManager.getSessionId();
+             const selector = new ModelSelectorComponent(this.ui, this.session.model, this.settingsManager, this.session.modelRegistry, this.session.scopedModels, async (model) => {
+                 try {
+                     await this.session.setModel(model);
+@@ -3556,7 +3595,7 @@ export class InteractiveMode {
+             }, () => {
+                 done();
+                 this.ui.requestRender();
+-            }, initialSearchInput);
++            }, initialSearchInput, sessionId);
+             return { component: selector, focus: selector };
+         });
+     }
+@@ -4255,7 +4294,7 @@ export class InteractiveMode {
+         const outputPath = this.getPathCommandArgument(text, "/export");
+         try {
              if (outputPath?.endsWith(".jsonl")) {
 -                const filePath = this.session.exportToJsonl(outputPath);
 +                const filePath = await this.session.exportToJsonl(outputPath);
                  this.showStatus(`Session exported to: ${filePath}`);
+             }
+             else {

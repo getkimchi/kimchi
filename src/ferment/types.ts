@@ -135,6 +135,11 @@ export interface JudgeGrade {
 	rationale: string
 	gradedAt: string
 	deltas?: Delta[]
+	/** Concrete fixes the grader recommends to reach A. Empty/omitted when the
+	 *  grade is A (or when the judge was unreachable). Each entry is a rendered
+	 *  bullet covering what is wrong, why it matters, what must change, and
+	 *  what evidence would prove the fix. */
+	recommendations?: string[]
 	/** Legacy marker for older completions that persisted a placeholder grade
 	 *  when the journey-grade judge was unreachable. New completions leave
 	 *  Ferment.grade unset instead of recording a synthetic grade. */

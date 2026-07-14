@@ -1,12 +1,12 @@
-import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
 import { AGENT_DEFINITIONS, discoverAgent } from "../../agent-discovery/index.js"
 import type { KimchiConfig } from "../../config.js"
+import { readJson } from "../../config/json.js"
+import { getMultiModelEnabled } from "../multi-model.js"
 import { getModelRoles, normalizeRoleModels } from "../orchestration/model-roles.js"
 import type { RoleModelAssignment } from "../orchestration/model-roles.js"
-import { PERMISSIONS_ENV_KEY } from "../permissions/constants.js"
-import { getDisplayPermissionMode } from "../permissions/index.js"
-import { getMultiModelEnabled } from "../prompt-construction/prompt-enrichment.js"
+import { PERMISSIONS_ENV_KEY, PERMISSION_MODES } from "../permissions/constants.js"
+import type { PermissionMode } from "../permissions/types.js"
 
 /**
  * Snapshot of the launch-time harness configuration emitted alongside the
@@ -36,8 +36,6 @@ export interface ConfigSnapshot {
 
 /** Default provider for this harness. */
 const DEFAULT_PROVIDER = "cast-ai"
-/** Permission modes recognized by the harness. */
-const PERMISSION_MODES = new Set(["default", "plan", "auto", "yolo"])
 
 /**
  * Parse pi's `settings.json` (under `KIMCHI_CODING_AGENT_DIR`) once.
@@ -48,9 +46,7 @@ function readAgentSettings(): Record<string, unknown> {
 	const agentDir = process.env.KIMCHI_CODING_AGENT_DIR
 	if (!agentDir) return {}
 	try {
-		const raw = readFileSync(resolve(agentDir, "settings.json"), "utf-8")
-		const parsed: unknown = JSON.parse(raw)
-		return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {}
+		return readJson(resolve(agentDir, "settings.json"))
 	} catch {
 		return {}
 	}
@@ -81,17 +77,15 @@ function resolveProvider(settings: Record<string, unknown>): string {
 /**
  * Permission mode as known at launch.
  *
- * `getDisplayPermissionMode()` reflects the value cached by the permissions
+ * `getPermissionMode(sessionId)` reflects the value cached by the permissions
  * extension, but that cache is only populated during session init — so at the
  * (pre-session) launch site it is not yet set. Fall back to the env-derived
  * mode (`KIMCHI_PERMISSIONS`), which is available synchronously at launch, and
  * finally to `"default"`.
  */
-function resolvePermissionMode(): string {
-	const displayed = getDisplayPermissionMode()
-	if (displayed) return displayed
+function getDefaultPermissionMode(): string {
 	const envMode = process.env[PERMISSIONS_ENV_KEY]
-	if (envMode && PERMISSION_MODES.has(envMode)) return envMode
+	if (envMode && PERMISSION_MODES.includes(envMode as PermissionMode)) return envMode
 	return "default"
 }
 
@@ -159,10 +153,10 @@ export function buildConfigSnapshot(config: KimchiConfig, telemetryEnabled: bool
 			"config.provider": resolveProvider(settings),
 			"config.search_provider": config.mcpSearch.strategy,
 			"config.telemetry_enabled": telemetryEnabled,
-			"config.permission_mode": resolvePermissionMode(),
-			"config.agents_enabled": getMultiModelEnabled(),
+			"config.permission_mode": getDefaultPermissionMode(),
+			"config.agents_enabled": getMultiModelEnabled(null),
 			"config.mcp_server_count": countMcpServers(),
-			"config.multi_model_enabled": getMultiModelEnabled(),
+			"config.multi_model_enabled": getMultiModelEnabled(null),
 			"config.model_roles.orchestrator": serializeRole(roles.orchestrator),
 			"config.model_roles.planner": serializeRole(roles.planner),
 			"config.model_roles.builder": serializeRole(roles.builder),

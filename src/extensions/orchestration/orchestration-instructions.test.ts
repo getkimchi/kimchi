@@ -9,8 +9,8 @@ import {
 } from "./orchestration-instructions.js"
 
 function resolveAsString(ctx: OrchestrationInstructionsContext): string {
-	const { teamSection, instructionsSection } = resolveOrchestrationInstructions(ctx)
-	return [teamSection, instructionsSection].filter(Boolean).join("\n\n")
+	const { instructionsSection } = resolveOrchestrationInstructions(ctx)
+	return instructionsSection
 }
 
 const ALL_KNOWN_IDS = [...MODEL_CAPABILITIES.keys()]
@@ -38,38 +38,38 @@ describe("resolveOrchestrationInstructions", () => {
 			registry,
 			roles: DEFAULT_MODEL_ROLES,
 		})
-		expect(result).toContain("Orchestrate the work")
+		expect(result).toContain("## Orchestration")
 	})
 
-	it("shows role assignments with Your Team section", () => {
+	it("shows role assignments with Your team subsection", () => {
 		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
 			roles: DEFAULT_MODEL_ROLES,
 		})
-		expect(result).toContain("## Your Team")
+		expect(result).toContain("### Your team")
 		expect(result).toContain("### Builder")
 		expect(result).toContain("### Reviewer")
 		expect(result).toContain("### Explorer")
 	})
 
-	it("shows Your Capabilities section with orchestrator roles", () => {
+	it("shows Your roles subsection with orchestrator roles", () => {
 		const result = resolveAsString({
 			currentModelId: "kimi-k2.7",
 			registry,
 			roles: DEFAULT_MODEL_ROLES,
 		})
-		expect(result).toContain("## Your Capabilities")
-		expect(result).toContain("You have these roles: **planner, reviewer**")
+		expect(result).toContain("### Your roles")
+		expect(result).toContain("Perform a phase yourself only when Orchestration")
 	})
 
-	it("uses DO/DONT directives in Step 3", () => {
+	it("uses DO/DONT directives in phase responsibilities", () => {
 		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
 			roles: DEFAULT_MODEL_ROLES,
 		})
-		expect(result).toContain("Your responsibilities per phase")
+		expect(result).toContain("Phase responsibilities")
 		expect(result).toContain("#### Plan phase")
 		expect(result).toContain("#### Build phase")
 		expect(result).toContain("#### Review phase")
@@ -92,6 +92,8 @@ describe("resolveOrchestrationInstructions", () => {
 		expect(result).toContain(
 			"For artifact-producing agents (Plan, Reviewer, Fixer, and Researcher when the research is non-trivial)",
 		)
+		expect(result).toContain("one decision-relevant question to answer")
+		expect(result).toContain("Return decision-ready findings to the parent; do not write files.")
 		expect(result).not.toContain("Pass plans and structured findings as Markdown files")
 	})
 
@@ -127,18 +129,20 @@ describe("resolveOrchestrationInstructions", () => {
 		expect(result).toContain("kimchi-dev/nemotron-3-ultra-fp4")
 	})
 
-	it("generates DO directive for plan when orchestrator is planner", () => {
+	it("describes flexible planning ownership when orchestrator is planner", () => {
 		const result = resolveAsString({
 			currentModelId: "kimi-k2.7",
 			registry,
 			roles: DEFAULT_MODEL_ROLES,
 		})
 		expect(result).not.toContain("### Planner")
-		expect(result).toContain("DO write the plan yourself")
-		expect(result).not.toContain("DO NOT write the plan yourself")
+		expect(result).toContain("Decide whether to write the plan yourself or delegate to a Plan agent")
+		expect(result).toContain("If writing yourself")
+		expect(result).toContain("If delegating")
+		expect(result).toContain('Agent(type: "Plan"')
 	})
 
-	it("generates DO NOT directive for plan when orchestrator is not planner", () => {
+	it("describes flexible planning ownership when orchestrator is not planner", () => {
 		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
 			registry,
@@ -149,9 +153,8 @@ describe("resolveOrchestrationInstructions", () => {
 		})
 		expect(result).toContain("### Planner")
 		expect(result).toContain("anthropic/claude-opus-4-7")
-		expect(result).toContain("DO NOT write the plan yourself")
-		expect(result).toContain('delegate planning to Agent(type: "Plan"')
-		expect(result).not.toContain("DO write the plan yourself")
+		expect(result).toContain("Decide whether to write the plan yourself or delegate to a Plan agent")
+		expect(result).toContain('Agent(type: "Plan"')
 	})
 
 	it("renders tier and description for models in Your Team", () => {
@@ -169,14 +172,27 @@ describe("resolveOrchestrationInstructions", () => {
 			currentModelId: "kimi-k2.6",
 			registry,
 		})
-		expect(result).toContain("Orchestrate the work")
+		expect(result).toContain("## Orchestration")
 		expect(result).toContain("Token budgets")
 		expect(result).toContain("token_budget")
 		expect(result).toContain("Plan verification")
-		expect(result).toContain("What makes a good plan")
+		expect(result).toContain("Plan quality checklist")
 		expect(result).toContain("Skip verification when")
 		expect(result).toContain("Require verification when")
 		expect(result).not.toContain("## Your Team")
+		expect(result).not.toContain("## Your Capabilities")
+	})
+
+	it("renders team roster with roles even when registry is absent", () => {
+		const result = resolveAsString({
+			currentModelId: "kimi-k2.6",
+			roles: DEFAULT_MODEL_ROLES,
+		})
+		expect(result).toContain("### Your team")
+		expect(result).toContain("### Builder")
+		expect(result).toContain("### Reviewer")
+		expect(result).toContain("### Explorer")
+		expect(result).toContain("Tier: standard")
 	})
 
 	it("includes concurrency test mandate in plan checklist", () => {
@@ -213,6 +229,18 @@ describe("resolveOrchestrationInstructions", () => {
 		expect(result).toContain("error propagation path")
 	})
 
+	it("includes thinking levels guidance and delegation table", () => {
+		const result = resolveAsString({
+			currentModelId: "kimi-k2.6",
+			registry,
+			roles: DEFAULT_MODEL_ROLES,
+		})
+		expect(result).toContain("### Thinking levels")
+		expect(result).toContain("Always pass a `thinking` parameter on every Agent call")
+		expect(result).toContain("| Build chunk | Builder |")
+		expect(result).toContain("Orchestrator-provided `thinking` overrides agent profile defaults")
+	})
+
 	it("includes review row in budget table", () => {
 		const result = resolveAsString({
 			currentModelId: "kimi-k2.6",
@@ -221,6 +249,29 @@ describe("resolveOrchestrationInstructions", () => {
 		})
 		expect(result).toContain("Review (read code + write findings report)")
 		expect(result).toContain("Heavy-tier model duration scaling")
+	})
+
+	it("advises but does not mandate delegating review to a Reviewer agent", () => {
+		const result = resolveAsString({
+			currentModelId: "kimi-k2.6",
+			registry,
+			roles: DEFAULT_MODEL_ROLES,
+		})
+		expect(result).toContain("Prefer delegating review to a Reviewer agent")
+		expect(result).toContain("You may review yourself only when")
+		expect(result).not.toContain("DO NOT review code yourself")
+		expect(result).not.toContain("Always delegate to a Reviewer")
+	})
+
+	it("discourages General-Purpose agents for specialized phases", () => {
+		const result = resolveAsString({
+			currentModelId: "kimi-k2.6",
+			registry,
+			roles: DEFAULT_MODEL_ROLES,
+		})
+		expect(result).toContain(
+			"Do NOT use General-Purpose agents for implementation, review, exploration, research, or planning",
+		)
 	})
 
 	it("does not include lightweight re-verification guidance", () => {
@@ -232,13 +283,13 @@ describe("resolveOrchestrationInstructions", () => {
 		expect(result).not.toContain("Prefer lightweight re-verification")
 	})
 
-	it("includes model-specific orchestration guidelines when provided", () => {
+	it("includes model-specific orchestration notes when provided", () => {
 		const result = resolveAsString({
 			currentModelId: "minimax-m3",
 			registry,
 			roles: DEFAULT_MODEL_ROLES,
 		})
-		expect(result).toContain("### Orchestration Guidelines")
+		expect(result).toContain("### Model-specific notes")
 		expect(result).toContain("MiniMax M2 family")
 	})
 
@@ -259,6 +310,51 @@ describe("resolveOrchestrationInstructions", () => {
 		expect(result).toContain("### Builder")
 		expect(result).toContain("minimax-m2.7")
 		expect(result).toContain("### Reviewer")
+	})
+
+	it("uses complexity-based model tier examples instead of a lightest-tier default", () => {
+		const result = resolveAsString({
+			currentModelId: "kimi-k2.6",
+			registry,
+			roles: DEFAULT_MODEL_ROLES,
+		})
+		expect(result).toContain("Match the model tier to the task complexity")
+		expect(result).toContain("single file edit")
+		expect(result).toContain("multi-file packages")
+		expect(result).toContain("state machines")
+		expect(result).toContain("security-critical logic")
+		expect(result).not.toContain("Default to the lightest-tier model")
+	})
+
+	it("uses observable planning factors instead of 'planning capacity'", () => {
+		const result = resolveAsString({
+			currentModelId: "kimi-k2.6",
+			registry,
+			roles: DEFAULT_MODEL_ROLES,
+		})
+		expect(result).toContain("how well you already understand the domain and constraints")
+		expect(result).not.toContain("planning capacity")
+	})
+
+	it("replaces 'self-validate' with 'validate it by re-reading'", () => {
+		const result = resolveAsString({
+			currentModelId: "kimi-k2.6",
+			registry,
+			roles: DEFAULT_MODEL_ROLES,
+		})
+		expect(result).toContain("validate it by re-reading")
+		expect(result).not.toContain("self-validate")
+	})
+
+	it("requires the full revised plan with changed sections marked on re-verification", () => {
+		const result = resolveAsString({
+			currentModelId: "kimi-k2.6",
+			registry,
+			roles: DEFAULT_MODEL_ROLES,
+		})
+		expect(result).toContain("return the full revised plan to the verifier")
+		expect(result).toContain("changed sections clearly marked")
+		expect(result).not.toContain("send ONLY the changed sections")
 	})
 })
 
@@ -312,7 +408,7 @@ describe("resolveOrchestrationInstructions with custom configs", () => {
 		expect(result).toContain("Tier: heavy")
 		expect(result).toContain("You have these roles: **planner**")
 		expect(result).toContain("Vision: yes")
-		expect(result).toContain("External orchestrator model.")
+		expect(result).toContain("Extended thinking:")
 	})
 
 	it("external model without custom config defaults to standard tier and vision no", () => {
@@ -333,6 +429,7 @@ describe("resolveOrchestrationInstructions with custom configs", () => {
 		expect(result).toContain("unknown-model")
 		expect(result).toContain("Tier: standard")
 		expect(result).toContain("Vision: no")
+		expect(result).toContain("Extended thinking: no")
 		expect(result).toContain("This model was configured by the user to handle builder work.")
 		expect(result).not.toContain("Tier: undefined")
 	})
@@ -357,6 +454,7 @@ describe("resolveOrchestrationInstructions with custom configs", () => {
 		expect(result).toContain("bare-external/model")
 		expect(result).toContain("Tier: standard")
 		expect(result).toContain("Vision: no")
+		expect(result).toContain("Extended thinking: no")
 		expect(result).toContain("This model was configured by the user to handle builder work.")
 		expect(result).not.toContain("Tier: undefined")
 		expect(result).not.toContain("Vision: undefined")

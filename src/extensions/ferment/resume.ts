@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { determineNextAction, getScopingProgress } from "../../ferment/engine.js"
+import { determineNextAction } from "../../ferment/engine.js"
 import type { Ferment } from "../../ferment/types.js"
 import { formatActionNudgeLine } from "./action-tool-names.js"
 import { appendRefEntry } from "./nudge.js"
@@ -153,8 +153,7 @@ export function resumeFerment(
 
 	const action = determineNextAction(existing)
 	const baseMsg = action ? formatActionNudgeLine(action) : ""
-	const scopeProgress = getScopingProgress(existing)
-	const breadcrumb = `Resumed ferment: "${existing.name}" [${existing.status}] ${runtime.getContinuationPolicy()} policy · scoping ${scopeProgress.answered}/${scopeProgress.total}`
+	const breadcrumb = `Resumed ferment: "${existing.name}" [${existing.status}] ${runtime.getContinuationPolicy()} policy`
 
 	const imperative =
 		existing.status === "running"
@@ -171,16 +170,36 @@ export function resumeFerment(
 		},
 		{ triggerTurn: false },
 	)
-	safeSendMessage(
-		pi,
-		{
-			customType: "ferment_resume_nudge",
-			content: [{ type: "text", text: imperative }],
-			display: false,
-			details: undefined,
-		},
-		{ triggerTurn: true },
-	)
+
+	if (existing.status !== "paused") {
+		safeSendMessage(
+			pi,
+			{
+				customType: "ferment_resume_nudge",
+				content: [{ type: "text", text: imperative }],
+				display: false,
+				details: undefined,
+			},
+			{ triggerTurn: true },
+		)
+	} else {
+		safeSendMessage(
+			pi,
+			{
+				customType: "ferment_paused_notice",
+				content: [
+					{
+						type: "text",
+						text: `Ferment "${existing.name}" is currently ${existing.status}. Ask the user to run /ferment resume to continue.`,
+					},
+				],
+				display: true,
+				details: undefined,
+			},
+			{ triggerTurn: false },
+		)
+		return
+	}
 
 	// `resumeFerment` already sent a `ferment_resume_nudge` with triggerTurn for
 	// this ferment. Passing `skipNudge` prevents `scheduleFermentWakeUp` from

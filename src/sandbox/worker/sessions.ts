@@ -17,12 +17,13 @@ export async function createSession(
 	client: WorkerClient,
 	name: string,
 	req: CreateSessionRequest,
-	opts: { sessionFile?: string; signal?: AbortSignal } = {},
+	opts: { sessionFile?: string; signal?: AbortSignal; timeoutMs?: number } = {},
 ): Promise<Session> {
 	const s = await client.postMultipart<Omit<Session, "name">>(
 		`/session/${encodeURIComponent(name)}`,
 		{ request: req, sessionFile: opts.sessionFile },
 		opts.signal,
+		opts.timeoutMs,
 	)
 	return { ...s, name }
 }

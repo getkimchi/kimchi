@@ -2,7 +2,7 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import { readJson, writeJson } from "./json.js"
 
-export type FooterElementId =
+export type StatusLineElementId =
 	| "permissions"
 	| "model"
 	| "ferment"
@@ -12,17 +12,18 @@ export type FooterElementId =
 	| "phase"
 	| "tags"
 	| "team"
+	| "billing"
 
-export type FooterConfig = { pinned: FooterElementId[] }
+export type StatusLineConfig = { pinned: StatusLineElementId[] }
 
-const FOOTER_KEY = "footer"
+const STATUS_LINE_KEY = "statusLine"
 
-export const DEFAULT_FOOTER_PINNED: FooterElementId[] = ["agents", "context", "usage"]
+export const DEFAULT_STATUS_LINE_PINNED: StatusLineElementId[] = ["agents", "context", "usage"]
 
-/** All footer elements for the settings UI.
+/** All status line elements for the settings UI.
  *  canPin=false marks elements that are always visible and cannot be toggled. */
-export const FOOTER_ELEMENTS: Array<{
-	id: FooterElementId
+export const STATUS_LINE_ELEMENTS: Array<{
+	id: StatusLineElementId
 	label: string
 	description: string
 	canPin?: boolean
@@ -74,6 +75,11 @@ export const FOOTER_ELEMENTS: Array<{
 		label: "Team",
 		description: "Team tag value",
 	},
+	{
+		id: "billing",
+		label: "Billing",
+		description: "Plan and credit balance",
+	},
 ]
 
 function getSettingsPath(): string {
@@ -84,47 +90,47 @@ function asRecord(value: unknown): Record<string, unknown> {
 	return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {}
 }
 
-let _config: FooterConfig | null = null
+let _config: StatusLineConfig | null = null
 
 /** Reset the in-memory config cache. Exposed for test isolation only. */
-export function _invalidateFooterConfigCache(): void {
+export function _invalidateStatusLineConfigCache(): void {
 	_config = null
 }
 
-export function readFooterConfig(): FooterConfig {
+export function readStatusLineConfig(): StatusLineConfig {
 	if (_config !== null) return _config
 	const settings = readJson(getSettingsPath())
-	if (!(FOOTER_KEY in settings)) {
-		_config = { pinned: [...DEFAULT_FOOTER_PINNED] }
+	if (!(STATUS_LINE_KEY in settings)) {
+		_config = { pinned: [...DEFAULT_STATUS_LINE_PINNED] }
 		return _config
 	}
-	const raw = asRecord(settings[FOOTER_KEY])
+	const raw = asRecord(settings[STATUS_LINE_KEY])
 	const pinned = Array.isArray(raw.pinned)
-		? raw.pinned.filter((v): v is FooterElementId => FOOTER_ELEMENTS.some((e) => e.id === v))
+		? raw.pinned.filter((v): v is StatusLineElementId => STATUS_LINE_ELEMENTS.some((e) => e.id === v))
 		: []
 	_config = { pinned }
 	return _config
 }
 
-export function writeFooterConfig(config: FooterConfig): void {
+export function writeStatusLineConfig(config: StatusLineConfig): void {
 	const path = getSettingsPath()
 	const settings = readJson(path)
-	settings[FOOTER_KEY] = config
+	settings[STATUS_LINE_KEY] = config
 	writeJson(path, settings)
 	_config = { pinned: [...config.pinned] }
 }
 
-export function setPinned(id: FooterElementId, pinned: boolean): void {
-	const current = readFooterConfig()
+export function setStatusLineElementPinned(id: StatusLineElementId, pinned: boolean): void {
+	const current = readStatusLineConfig()
 	const set = new Set(current.pinned)
 	if (pinned) {
 		set.add(id)
 	} else {
 		set.delete(id)
 	}
-	writeFooterConfig({ pinned: [...set] })
+	writeStatusLineConfig({ pinned: [...set] })
 }
 
-export function isPinned(id: FooterElementId): boolean {
-	return readFooterConfig().pinned.includes(id)
+export function isStatusLineElementPinned(id: StatusLineElementId): boolean {
+	return readStatusLineConfig().pinned.includes(id)
 }

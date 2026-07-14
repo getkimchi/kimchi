@@ -23,6 +23,7 @@ import "./paste-to-editor-patch.js"
 import {
 	DEFAULT_SKILL_PATHS,
 	RETRY_DEFAULTS,
+	ensureHideThinkingBlockDefault,
 	getActiveVendorSkillPaths,
 	loadConfig,
 	readTelemetryConfig,
@@ -36,13 +37,15 @@ import activityExtension from "./extensions/activity.js"
 import agentsExtension from "./extensions/agents/index.js"
 import assistantPrefixExtension from "./extensions/assistant-prefix.js"
 import bashDefaultTimeoutExtension from "./extensions/bash-default-timeout.js"
+import bashTimeoutGuidanceExtension from "./extensions/bash-timeout-guidance.js"
 import bashToolGuardExtension from "./extensions/bash-tool-guard.js"
 import behavioursExtension from "./extensions/behaviours/index.js"
+import { refreshBillingStatusFromConfig } from "./extensions/billing/status.js"
 import branchCommandExtension from "./extensions/branch-command.js"
 import claudeCodeHooksAdapter from "./extensions/claude-code-hook-adapter/index.js"
 import claudeCodeSkillsExtension from "./extensions/claude-code-skills/index.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
-import customizeFooterExtension from "./extensions/customize-footer-command.js"
+import customizeStatusLineExtension from "./extensions/customize-status-line-command.js"
 import explorationGuardExtension from "./extensions/exploration-guard.js"
 import fermentExtension from "./extensions/ferment/index.js"
 import helpExtension from "./extensions/help.js"
@@ -71,6 +74,7 @@ import promptEnrichmentExtension from "./extensions/prompt-construction/prompt-e
 import promptSummaryExtension from "./extensions/prompt-summary.js"
 import questionnaireExtension from "./extensions/questionnaire/index.js"
 import reportBugExtension from "./extensions/report-bug.js"
+import requestTimingExtension from "./extensions/request-timing.js"
 import reviewWriteGuardExtension from "./extensions/review-write-guard.js"
 import rtkRewriteExtension from "./extensions/rtk-rewrite.js"
 import sessionMetadataExtension from "./extensions/session-metadata/index.js"
@@ -138,6 +142,63 @@ import { captureSessionStart } from "./utils/session-metadata-store.js"
 installInfrastructureRetryPatch()
 installPiNativeCompatibilityShim()
 
+function isModelCompletionFetch(input: RequestInfo | URL): boolean {
+	const url =
+		typeof input === "string"
+			? input
+			: input instanceof URL
+				? input.href
+				: typeof (input as { url?: unknown }).url === "string"
+					? (input as { url: string }).url
+					: ""
+	return /\/chat\/completions(?:$|[?#])/.test(url)
+}
+
+function withBillingRefreshAfterResponseSettles(response: Response, refreshBilling: () => Promise<unknown>): Response {
+	const body = response.body
+	if (!body) {
+		void refreshBilling()
+		return response
+	}
+
+	const reader = body.getReader()
+	let refreshScheduled = false
+	const refreshOnce = () => {
+		if (refreshScheduled) return
+		refreshScheduled = true
+		void refreshBilling()
+	}
+	const wrappedBody = new ReadableStream<Uint8Array>({
+		async pull(controller) {
+			try {
+				const { done, value } = await reader.read()
+				if (done) {
+					controller.close()
+					refreshOnce()
+					return
+				}
+				controller.enqueue(value)
+			} catch (error) {
+				refreshOnce()
+				controller.error(error)
+			}
+		},
+		async cancel(reason) {
+			try {
+				await reader.cancel(reason)
+			} finally {
+				refreshOnce()
+			}
+		},
+	})
+
+	return new Response(wrappedBody, {
+		status: response.status,
+		statusText: response.statusText,
+		headers: response.headers,
+	})
+}
+
 function getSubcommand(args: string[]): string {
 	if (args.includes("--version") || args.includes("-v")) return "version"
 	if (args.includes("--help") || args.includes("-h")) return "help"
@@ -180,7 +241,8 @@ const _origExportToJsonl = (AgentSession as any).prototype.exportToJsonl
 ;(AgentSession as any).prototype.exportToJsonl = async function (outputPath?: string) {
 	const filePath = _origExportToJsonl.call(this, outputPath)
 	try {
-		postProcessJsonlExport(filePath)
+		const systemPrompt = typeof this.systemPrompt === "string" ? this.systemPrompt : undefined
+		postProcessJsonlExport(filePath, { systemPrompt })
 	} catch (err) {
 		console.warn("[export-post-process] Failed to post-process JSONL export:", err)
 	}
@@ -363,23 +425,27 @@ try {
 			if ((err as NodeJS.ErrnoException).code === "ENOENT") {
 				writeFileSync(
 					settingsPath,
-					`${JSON.stringify({ quietStartup: true, theme: "kimchi-minimal", retry: RETRY_DEFAULTS }, null, 2)}\n`,
+					`${JSON.stringify({ quietStartup: true, theme: "kimchi-minimal", retry: RETRY_DEFAULTS, hideThinkingBlock: true }, null, 2)}\n`,
 				)
 			} else {
 				console.error(`Warning: could not read ${settingsPath}: ${(err as Error).message}`)
 			}
 		}
 
-		// Seed Kimchi retry defaults for Pi; Pi handles global/project settings merging.
+		// Seed Kimchi harness defaults for Pi; Pi handles global/project settings merging.
 		try {
-			const existing = JSON.parse(readFileSync(settingsPath, "utf-8"))
+			const existing = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>
+			let changed = ensureHideThinkingBlockDefault(existing)
 			const upgraded = upgradeLegacyRetrySettings(existing.retry)
 			if (upgraded) {
 				existing.retry = upgraded
+				changed = true
+			}
+			if (changed) {
 				writeFileSync(settingsPath, `${JSON.stringify(existing, null, 2)}\n`)
 			}
 		} catch {
-			/* retry sync is best-effort */
+			/* settings sync is best-effort */
 		}
 
 		// Bundled themes are write-through cache — owned by the package, not the user.
@@ -478,12 +544,16 @@ try {
 		if (!(globalThis.fetch as typeof globalThis.fetch & { [key: symbol]: boolean })[fetchPatchedSymbol]) {
 			const userAgent = `kimchi/${getVersion()}`
 			const originalFetch = globalThis.fetch.bind(globalThis)
-			const patchedFetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+			const refreshBilling = () => refreshBillingStatusFromConfig({ fetch: originalFetch })
+			const patchedFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
 				const headers = new Headers(init?.headers)
 				if (!headers.has("user-agent")) {
 					headers.set("user-agent", userAgent)
 				}
-				return originalFetch(input, { ...init, headers })
+				const response = await originalFetch(input, { ...init, headers })
+				return isModelCompletionFetch(input)
+					? withBillingRefreshAfterResponseSettles(response, refreshBilling)
+					: response
 			}
 			;(patchedFetch as typeof patchedFetch & { [key: symbol]: boolean })[fetchPatchedSymbol] = true
 			globalThis.fetch = patchedFetch
@@ -527,6 +597,7 @@ try {
 			// takes effect immediately without a process restart.
 			bashDefaultTimeoutExtension,
 			bashToolGuardExtension,
+			bashTimeoutGuidanceExtension,
 			...enabledExtensionFactories([
 				{ id: "plugins.mcp-apps", factory: mcpAdapterExtension },
 			] satisfies ManagedExtensionFactory[]),
@@ -567,7 +638,7 @@ try {
 			] satisfies ManagedExtensionFactory[]),
 			helpExtension,
 			themeSelectorExtension,
-			customizeFooterExtension,
+			customizeStatusLineExtension,
 			inputHistoryExtension,
 			reportBugExtension,
 			tagsExtension,
@@ -588,6 +659,7 @@ try {
 			piiRedactionExtension,
 			stripImagesExtension,
 			traceIdExtension,
+			requestTimingExtension,
 			llmResponseLogExtension,
 			activityExtension,
 			infrastructureErrorTracker.extension,

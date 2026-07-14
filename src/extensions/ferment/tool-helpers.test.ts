@@ -4,6 +4,7 @@ import { join } from "node:path"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import type { Ferment } from "../../ferment/types.js"
+import * as sharedStatusLine from "../shared-status-line.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
 
@@ -117,5 +118,32 @@ describe("createApplyAndPersist", () => {
 
 		expect(outcome.ok).toBe(true)
 		if (outcome.ok) expect(outcome.ferment.status).toBe("planned")
+	})
+
+	it("requests a status-line re-render after every successful mutation", () => {
+		// Regression: tool-call mutations (start_ferment_step, complete_ferment_step,
+		// activate_ferment_phase, ...) flow through createApplyAndPersist. The status
+		// line's ferment segment reads getActive() at render time, so without an explicit
+		// render request the status line goes stale until a keypress or message
+		// render happens. Each successful mutation must trigger requestSharedStatusLineRender.
+		const renderSpy = vi.spyOn(sharedStatusLine, "requestSharedStatusLineRender").mockImplementation(() => {})
+		const { runtime, storage } = createRuntime()
+		const applyAndPersist = createApplyAndPersist(runtime)
+		const ferment = scopeDraft(applyAndPersist, storage.create("Render On Mutate"))
+		renderSpy.mockClear()
+
+		// Successful mutation triggers a render request.
+		const phase = ferment.phases[0]
+		const activate = applyAndPersist(ferment.id, { type: "activate_phase", phaseId: phase.id })
+		expect(activate.ok).toBe(true)
+		expect(renderSpy).toHaveBeenCalledTimes(1)
+
+		// Failed mutation does NOT trigger a render request (no state change).
+		// complete_ferment fails because the phase is still active (non-terminal).
+		renderSpy.mockClear()
+		const reject = applyAndPersist(ferment.id, { type: "complete_ferment" })
+		expect(reject.ok).toBe(false)
+		expect(renderSpy).not.toHaveBeenCalled()
+		renderSpy.mockRestore()
 	})
 })

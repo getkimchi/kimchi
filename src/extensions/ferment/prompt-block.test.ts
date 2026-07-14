@@ -10,13 +10,14 @@ import { setPermissionMode } from "../permissions/mode-controller.js"
 // so existing assertions for strict-mode content continue to pass. Individual
 // tests can override via `setMultiModelEnabled(false)`.
 const getMultiModelEnabledMock = vi.fn(() => true)
-vi.mock("../prompt-construction/prompt-enrichment.js", (importOriginal) => {
-	return importOriginal<typeof import("../prompt-construction/prompt-enrichment.js")>().then((mod) => ({
+vi.mock("../multi-model.js", (importOriginal) => {
+	return importOriginal<typeof import("../multi-model.js")>().then((mod) => ({
 		...mod,
 		getMultiModelEnabled: () => getMultiModelEnabledMock(),
 	}))
 })
 
+import { createContext } from "../__mocks__/context.js"
 import { buildFermentPromptBlock } from "./prompt-block.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
 import type { ContinuationPolicy } from "./state.js"
@@ -26,7 +27,7 @@ const TEST_SESSION_ID = "test-session"
 function makeMockCtx(): ExtensionContext {
 	// Set up permission mode for the test session
 	setPermissionMode(TEST_SESSION_ID, "default", "user")
-	return { sessionManager: { getSessionId: () => TEST_SESSION_ID } } as unknown as ExtensionContext
+	return createContext({ sessionManager: { getSessionId: () => TEST_SESSION_ID } })
 }
 
 function makePi(oneshot: boolean): ExtensionAPI {

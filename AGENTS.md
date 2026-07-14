@@ -47,23 +47,27 @@ Example: `gh pr create --label "bug" ...`
 
 ## Before Adding Features
 
-This repo extends `@earendil-works/pi-coding-agent` (pi-mono). Most
-capabilities you might be asked to add already exist upstream or in a
-sibling package. Re-implementing them locally creates maintenance debt
-and divergence. Before writing any new feature, work through the phases
-below.
+Before adding a new capability, check whether it already exists upstream
+or in a sibling package. This repo extends `@earendil-works/pi-coding-agent`
+(pi-mono), so re-implementing upstream features creates maintenance debt
+and divergence.
 
-### Phase A — Frame (sequential)
+Use the checklist below **during the Explore/Research/Plan phases** of your
+orchestration workflow. It does not replace your main orchestration
+pipeline; it replaces the normal Explore/Research/Plan content for
+feature-work sessions.
+
+### Frame the capability
 
 1. **State the capability in one sentence.** What does the user actually
    need? (e.g. "read pasted images from the clipboard", not "add a
    clipboard extension".) This sentence is the search term every
-   investigation in Phase B uses.
+   subsequent investigation uses.
 
-### Phase B — Investigate (run in parallel)
+### Investigate upstream options
 
-Steps B1, B2, B3 are **independent lookups** — none of them depends on
-the others' results. Run them concurrently, not serially:
+The following lookups are **independent** — none of them depends on the
+others' results. Run them concurrently, not serially:
 
 - If you can do them yourself in a single turn, batch the tool calls
   (one `grep`, one `web_fetch`/`web_search`, one issues lookup) in the
@@ -71,34 +75,34 @@ the others' results. Run them concurrently, not serially:
 - If they warrant delegation (large codebase scan, deep registry
   triage), spawn up to 3 parallel subagents — one per step — per the
   delegation rules in your system prompt. Do NOT spawn them serially.
-- Do NOT short-circuit Phase B when one step returns a hit. All three
-  results feed into Phase C; partial information leads to wrong layer
-  choices (e.g. picking "reimpl" because step B1 was empty, without
-  knowing step B2 found a sibling package).
+- Do NOT short-circuit the investigation when one step returns a hit.
+  All three results feed into the decision; partial information leads
+  to wrong layer choices (e.g. picking "reimpl" because B1 was empty,
+  without knowing B2 found a sibling package).
 
-**B1. Search upstream source you already depend on.** The pinned
-pi-mono version is the source of truth for what your harness actually
-runs against:
+**1. Search upstream source you already depend on.** The pinned pi-mono
+version is the source of truth for what your harness actually runs
+against:
 ```bash
 grep -r "<concept>" node_modules/@earendil-works/pi-coding-agent/dist
 ```
 Also check exported utilities, the `Extension` interface, and existing
 hooks (`onPasteImage`, `onSubmit` transforms, etc.).
 
-**B2. Check the pi.dev package registry.** Scan https://pi.dev/packages
+**2. Check the pi.dev package registry.** Scan https://pi.dev/packages
 for sibling packages — especially under the `@earendil-works/*` scope.
 ~60 seconds, names and one-line descriptions only. Goal: eliminate "I
 didn't know that package existed." Do NOT deep-read READMEs at this
 stage.
 
-**B3. Check upstream issues/PRs/discussions** for the capability. It
-may be in flight, recently merged, or explicitly rejected with a
-reason.
+**3. Check upstream issues/PRs/discussions** for the capability. It may
+be in flight, recently merged, or explicitly rejected with a reason.
 
-### Phase C — Decide & implement (sequential, consumes all of Phase B)
+### Decide the implementation layer
 
-2. **Choose the implementation layer.** Stop at the FIRST layer that
-   fits. Do not "upgrade" to a heavier layer because it feels cleaner:
+After the investigation is complete, choose the layer. Stop at the FIRST
+layer that fits. Do not "upgrade" to a heavier layer because it feels
+cleaner:
    - **Re-export** — upstream is fine as-is.
    - **Adapter / decorator** — wrap upstream, add pre/post-processing.
    - **Extension hook** — register against an upstream callback API.
@@ -107,10 +111,10 @@ reason.
    - **From-scratch reimplementation** — last resort, only for genuinely
      product-specific code (CastAI auth, branding, custom telemetry).
 
-3. **If from-scratch:** justify in the PR/commit description why all of
-   Phase B came up empty. If you find yourself duplicating ≥50% of an
-   upstream file, STOP and ask the user whether to upstream the fix
-   instead.
+**If from-scratch:** justify in the PR/commit description why the
+investigation came up empty. If you find yourself duplicating ≥50% of an
+upstream file, STOP and ask the user whether to upstream the fix
+instead.
 
 ### Patches are debt
 

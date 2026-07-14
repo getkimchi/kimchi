@@ -81,6 +81,7 @@ export const AGENT_RESEARCHER = "Researcher"
 export const AGENT_BUILDER = "Builder"
 export const AGENT_REVIEWER = "Reviewer"
 export const AGENT_FIXER = "Fixer"
+export const AGENT_GRADER = "Grader"
 
 /** Names of the embedded default agents (in canonical display order). */
 export const DEFAULT_AGENT_NAMES = [
@@ -91,6 +92,7 @@ export const DEFAULT_AGENT_NAMES = [
 	AGENT_BUILDER,
 	AGENT_REVIEWER,
 	AGENT_FIXER,
+	AGENT_GRADER,
 ] as const
 
 /** Memory scope for persistent agent memory. */
@@ -190,6 +192,8 @@ export interface AgentRecord {
 	toolCallId?: string
 	/** Path to the streaming output transcript file. */
 	outputFile?: string
+	/** The system prompt used for this agent run. */
+	systemPrompt?: string
 	/** Persisted session file for this agent run, when the parent session is persisted. */
 	sessionFile?: string
 	/** Cleanup function for the output file stream subscription. */

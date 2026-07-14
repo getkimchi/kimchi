@@ -12,7 +12,8 @@ import { commandToEvents } from "../../ferment/event-mapper.js"
 import type { Command, TransitionError } from "../../ferment/state-machine.js"
 import { applyCommand } from "../../ferment/state-machine.js"
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
-import { getMultiModelEnabled } from "../prompt-construction/prompt-enrichment.js"
+import { getMultiModelEnabled } from "../multi-model.js"
+import { requestSharedStatusLineRender } from "../shared-status-line.js"
 import { publicToolNameForActionKind } from "./action-tool-names.js"
 import { emitFermentDomainEvent } from "./domain-events-emitter.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
@@ -29,7 +30,7 @@ export function toolErr(text: string) {
 	return { details: undefined, content: [{ type: "text" as const, text }], isError: true }
 }
 
-export function formatNextActionHint(ferment: Ferment): string | undefined {
+export function formatNextActionHint(ferment: Ferment, multiModelEnabled: boolean): string | undefined {
 	const action = determineNextAction(ferment)
 	if (!action) return undefined
 	const toolName = publicToolNameForActionKind(action.kind)
@@ -59,7 +60,7 @@ export function formatNextActionHint(ferment: Ferment): string | undefined {
 		}
 		case "start_step": {
 			const label = stepLabel ?? `step "${action.stepId}"`
-			const relaxed = !getMultiModelEnabled()
+			const relaxed = !multiModelEnabled
 			const startStepSuffix = relaxed
 				? ". Then either spawn an Agent worker for the implementation, or execute the step directly - choose whichever is more efficient."
 				: ", then immediately spawn an Agent worker for the implementation."
@@ -67,7 +68,7 @@ export function formatNextActionHint(ferment: Ferment): string | undefined {
 		}
 		case "complete_step": {
 			const label = stepLabel ?? `step "${action.stepId}"`
-			const relaxed = !getMultiModelEnabled()
+			const relaxed = !multiModelEnabled
 			const completeStepSuffix = relaxed
 				? " If you executed the step directly (no subagent), omit worker_agent_id and include just the summary and gates."
 				: ""
@@ -102,13 +103,13 @@ export function formatNextActionHint(ferment: Ferment): string | undefined {
 	}
 }
 
-export function withNextActionHint(text: string, ferment: Ferment | undefined): string {
-	const hint = ferment ? formatNextActionHint(ferment) : undefined
+export function withNextActionHint(text: string, ferment: Ferment | undefined, multiModelEnabled: boolean): string {
+	const hint = ferment ? formatNextActionHint(ferment, multiModelEnabled) : undefined
 	return hint ? `${text}\n\n${hint}` : text
 }
 
-export function toolErrWithNextAction(text: string, ferment: Ferment | undefined) {
-	return toolErr(withNextActionHint(text, ferment))
+export function toolErrWithNextAction(text: string, ferment: Ferment | undefined, multiModelEnabled: boolean) {
+	return toolErr(withNextActionHint(text, ferment, multiModelEnabled))
 }
 
 // ─── Resolvers ────────────────────────────────────────────────────────────────
@@ -200,6 +201,12 @@ export function createApplyAndPersist(runtime: FermentRuntime) {
 		)
 		if (outcome.ok) {
 			runtime.setActive(outcome.ferment)
+			// The status line's ferment segment reads getActive() at render time,
+			// but tool-call mutations happen mid-agent-run with no natural render
+			// trigger. Request a re-render so the status line reflects the
+			// new phase/step/state immediately instead of going stale until the
+			// next user keypress or message render.
+			requestSharedStatusLineRender()
 			if (runtime.events) {
 				try {
 					emitFermentDomainEvent(runtime.events, cmd, outcome.ferment)
@@ -221,6 +228,6 @@ export function applyAndPersist(fermentId: string, cmd: Command): ApplyOutcome {
  * Convert any error with a `message` field into a tool-error result.
  * Centralized so error wording stays consistent across all tool handlers.
  */
-export function failedToolResult(error: { message: string }, ferment?: Ferment) {
-	return toolErr(withNextActionHint(error.message, ferment))
+export function failedToolResult(error: { message: string }, ferment: Ferment | undefined, multiModelEnabled: boolean) {
+	return toolErr(withNextActionHint(error.message, ferment, multiModelEnabled))
 }

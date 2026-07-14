@@ -27,6 +27,9 @@ import { parseTeleportArgs } from "./args.js"
 import { refuse, warn } from "./errors.js"
 import { resolveWorkspaceRef } from "./workspace-ref.js"
 
+/** Per-call timeout for createSession: 5min — the 30s WorkerClient default aborts mid-flight on large repos. */
+export const SESSION_CREATE_TIMEOUT_MS = 5 * 60_000
+
 export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promise<void> {
 	if (hasHelpFlag(rawArgs)) {
 		await promptTeleportHelp(ctx.ui)
@@ -59,7 +62,7 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 
 	runPreflight(ctx, args)
 
-	// Show an inline footer status while we resolve the workspace — the
+	// Show an inline status line message while we resolve the workspace — the
 	// progress overlay can't open until we know which workspace to attach
 	// to, and `listWorkspaces` over the network can take a few hundred ms.
 	ctx.ui.setStatus(STATUS_KEY, "Teleport: resolving workspace…")
@@ -271,6 +274,7 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 			initialSession = await createSession(client, sessionName, req, {
 				sessionFile: sessionFileToUpload,
 				signal,
+				timeoutMs: SESSION_CREATE_TIMEOUT_MS,
 			})
 		} catch (err) {
 			if (signal.aborted) throw err

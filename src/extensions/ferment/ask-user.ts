@@ -25,14 +25,13 @@
  * session-level, whereas a Ferment can outlive the session that created it.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { renderLabeledSuccessCriteria } from "../../ferment/success-criteria.js"
 import type { Ferment, ScopingQuestionType } from "../../ferment/types.js"
 import { YES_NO_OPTIONS, normalizeQuestionType } from "../questionnaire/index.js"
 import { type JudgeApiResult, judgeApiCall } from "./judge.js"
 import { promptForm } from "./prompt-ui.js"
 import type { FermentRuntime } from "./runtime.js"
-import type { FermentUi } from "./ui.js"
 
 export interface AskUserOption {
 	/** Stable id the agent (or judge) returns. */
@@ -104,9 +103,7 @@ export type AskUserResponse = AskUserSuccess | AskUserFailure
 export interface AskUserContext {
 	ferment: Ferment
 	pi: ExtensionAPI
-	/** TUI hook. Accepts `Partial<FermentUi>` (matches `StepUiContext` /
-	 *  `PhaseUiContext`) — the only method we actually read is `select`. */
-	ctx?: { ui?: Partial<FermentUi> }
+	ctx: ExtensionContext
 	/** Optional. When provided, `askUser` calls `runtime.markHumanInput()`
 	 *  on user-answered responses so downstream signals (nudge throttling,
 	 *  prompt-block freshness) reflect the interaction. */

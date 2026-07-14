@@ -2,6 +2,8 @@ import type { Skill } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it } from "vitest"
 import type { ModelMetadata } from "../../models.js"
 import { MODEL_CAPABILITIES, ModelRegistry } from "../orchestration/model-registry/index.js"
+import { DEFAULT_MODEL_ROLES } from "../orchestration/model-roles.js"
+import { ORCHESTRATOR_SUPPRESSED_SKILL_NAMES } from "./orchestrator-suppressed-skills.js"
 import { type EnvironmentInfo, buildSystemPrompt, formatEnvironmentSection } from "./system-prompt.js"
 
 const testEnv: EnvironmentInfo = {
@@ -105,7 +107,7 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain("## Available Tools")
 			expect(result).toContain("## Documents")
 			expect(result).toContain("## Guidelines")
-			expect(result).toContain("Orchestrate the work")
+			expect(result).toContain("## Orchestration")
 			expect(result).toContain("Token budgets")
 			expect(result).toContain("token_budget")
 		})
@@ -258,19 +260,99 @@ describe("buildSystemPrompt", () => {
 			expect(envPos).toBeLessThan(contextPos)
 		})
 
-		it("includes phase guidelines when phase is provided", () => {
+		it("omits worker build phase guidelines for orchestrator", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
-				currentModelId: "minimax-m2.7",
+				currentModelId: "kimi-k2.7",
 				currentPhase: "build",
+				registry,
+				roles: DEFAULT_MODEL_ROLES,
+				mode: "orchestrator",
+			})
+			expect(result).not.toContain("## Phase Guidelines (build)")
+		})
+
+		it("omits explore phase guidelines when orchestrator lacks explorer role", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				currentModelId: "kimi-k2.7",
+				currentPhase: "explore",
+				registry,
+				roles: DEFAULT_MODEL_ROLES,
+				mode: "orchestrator",
+			})
+			expect(result).not.toContain("## Phase Guidelines (explore)")
+		})
+
+		it("includes plan phase guidelines when orchestrator owns planner role", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				currentModelId: "kimi-k2.7",
+				currentPhase: "plan",
+				registry,
+				roles: DEFAULT_MODEL_ROLES,
+				mode: "orchestrator",
+			})
+			expect(result).toContain("## Phase Guidelines (plan)")
+		})
+
+		it("uses orchestrator-specific core guidelines", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				roles: DEFAULT_MODEL_ROLES,
+				mode: "orchestrator",
+			})
+			expect(result).toContain("Follow **Orchestration** for what to do yourself vs delegate")
+			expect(result).not.toContain("Provide complete, functional code")
+		})
+
+		it("suppresses conflicting superpowers skills in orchestrator mode", () => {
+			const skills = [
+				createSkill({ name: "brainstorming", description: "Brainstorm" }),
+				createSkill({ name: "subagent-driven-development", description: "Alternate delegation workflow" }),
+			]
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				skills,
+				roles: DEFAULT_MODEL_ROLES,
+				mode: "orchestrator",
+			})
+			expect(result).toContain("brainstorming")
+			expect(result).not.toContain("subagent-driven-development")
+		})
+
+		it("documents the canonical names of suppressed orchestrator-conflicting skills", () => {
+			expect([...ORCHESTRATOR_SUPPRESSED_SKILL_NAMES].sort()).toEqual([
+				"dispatching-parallel-agents",
+				"executing-plans",
+				"finishing-a-development-branch",
+				"receiving-code-review",
+				"requesting-code-review",
+				"subagent-driven-development",
+				"systematic-debugging",
+				"test-driven-development",
+				"verification-before-completion",
+				"writing-plans",
+			])
+		})
+
+		it("includes thinking levels in orchestrator mode", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
 				registry,
 				mode: "orchestrator",
 			})
-			expect(result).toContain("## Phase Guidelines (build)")
+			expect(result).toContain("### Thinking levels")
+			expect(result).toContain("| Build chunk | Builder |")
 		})
 
-		it("includes orchestration guidelines when model is provided", () => {
+		it("includes model-specific orchestration notes when model is provided", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
@@ -278,21 +360,26 @@ describe("buildSystemPrompt", () => {
 				registry,
 				mode: "orchestrator",
 			})
-			expect(result).toContain("### Orchestration Guidelines")
+			expect(result).toContain("### Model-specific notes")
 			expect(result).toContain("MiniMax M2 family")
 		})
 
-		it("includes both phase guidelines and orchestration guidelines in orchestrator mode", () => {
+		it("includes plan phase guidelines alongside model-specific orchestration notes", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
 				currentModelId: "minimax-m3",
-				currentPhase: "build",
+				currentPhase: "plan",
 				registry,
+				roles: {
+					...DEFAULT_MODEL_ROLES,
+					orchestrator: "kimchi-dev/minimax-m3",
+					planner: "kimchi-dev/minimax-m3",
+				},
 				mode: "orchestrator",
 			})
-			expect(result).toContain("## Phase Guidelines (build)")
-			expect(result).toContain("### Orchestration Guidelines")
+			expect(result).toContain("## Phase Guidelines (plan)")
+			expect(result).toContain("### Model-specific notes")
 		})
 	})
 
@@ -336,7 +423,7 @@ describe("buildSystemPrompt", () => {
 				env: testEnv,
 				mode: "subagent",
 			})
-			expect(result).not.toContain("Orchestrate the work")
+			expect(result).not.toContain("## Orchestration")
 			expect(result).not.toContain("Model selection for delegation")
 		})
 
@@ -434,7 +521,7 @@ describe("buildSystemPrompt", () => {
 				env: testEnv,
 				mode: "single",
 			})
-			expect(result).not.toContain("Orchestrate the work")
+			expect(result).not.toContain("## Orchestration")
 			expect(result).not.toContain("Model selection for delegation")
 			expect(result).not.toContain("Token budgets")
 			expect(result).not.toContain("Sharing context between agents")

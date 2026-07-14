@@ -1,14 +1,16 @@
 import { writeFileSync } from "node:fs"
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { computeStats, serializeStats } from "../../ferment/stats.js"
 import { FermentError } from "../../ferment/store.js"
 import { successCriteriaToAnswer } from "../../ferment/success-criteria.js"
 import { deriveDraftFermentTitle } from "../../ferment/title.js"
-import { requestSharedFooterRender } from "../shared-footer.js"
+import { getMultiModelEnabled } from "../multi-model.js"
+import { requestSharedStatusLineRender } from "../shared-status-line.js"
 import { pr_bold, pr_dim, pr_orange, pr_success, pr_teal } from "./colors.js"
 import { type FermentCommand, parseFermentCommand } from "./command-parser.js"
 import { decideContinuation } from "./continuation.js"
 import { emitFermentCreated } from "./domain-events-emitter.js"
+import { FERMENT_EVENTS } from "./domain-events.js"
 import { formatFermentStatus } from "./format.js"
 import { autoInitFromEnv, ensureGitRepo } from "./git-init.js"
 import { appendRefEntry, resetReactiveContinuationNudgeCount } from "./nudge.js"
@@ -32,7 +34,6 @@ import { scheduleFermentWakeUp } from "./scheduler.js"
 import { runScopingFlow, sendFermentRequestMessage } from "./scoping.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
 import { applyFermentRuntimeToolProfile, setActiveFermentAndApplyProfile } from "./tool-scope.js"
-import type { FermentUiContext } from "./ui.js"
 import { checkWorktree } from "./worktree.js"
 
 function sendBreadcrumb(
@@ -180,7 +181,7 @@ export function getFermentArgumentCompletions(
 export interface FermentCommandDeps {
 	raw: string
 	pi: ExtensionAPI
-	ctx: FermentUiContext & ExtensionCommandContext
+	ctx: ExtensionCommandContext
 	runtime: FermentRuntime
 }
 
@@ -190,11 +191,11 @@ export interface FermentCommandResult {
 
 export interface StartInteractiveFermentDeps {
 	pi: ExtensionAPI
-	ctx: FermentUiContext
+	ctx: ExtensionContext
 	runtime?: FermentRuntime
 }
 
-async function waitForHeadlessCommandTurn(ctx: FermentUiContext & ExtensionCommandContext): Promise<void> {
+async function waitForHeadlessCommandTurn(ctx: ExtensionCommandContext): Promise<void> {
 	if (ctx.hasUI) return
 	await ctx.waitForIdle()
 }
@@ -211,7 +212,7 @@ export async function startInteractiveFerment({
 		)
 		return
 	}
-	if (!ctx.ui.editor && !ctx.ui.input) {
+	if (!ctx.hasUI) {
 		ctx.ui.notify('No UI available. Use /ferment new "Name" instead.')
 		return
 	}
@@ -241,7 +242,7 @@ export async function startFermentForIntent({
 	title,
 }: {
 	pi: ExtensionAPI
-	ctx: FermentUiContext
+	ctx: ExtensionContext
 	runtime?: FermentRuntime
 	rawIntent: string
 	title?: string
@@ -283,7 +284,7 @@ export async function startFermentForIntent({
 	}
 }
 
-function setManualContinuationPolicy(pi: ExtensionAPI, ctx: FermentUiContext, runtime: FermentRuntime): void {
+function setManualContinuationPolicy(pi: ExtensionAPI, ctx: ExtensionContext, runtime: FermentRuntime): void {
 	runtime.setContinuationPolicy("manual")
 	const active = runtime.getActive()
 	if (!active) {
@@ -312,7 +313,7 @@ function recordManualBoundaryBreadcrumb(
 	sendBreadcrumb(pi, `Manual policy waiting at phase boundary for "${active.name}".`, "step")
 }
 
-function setAutomatedContinuationPolicy(pi: ExtensionAPI, ctx: FermentUiContext, runtime: FermentRuntime): void {
+function setAutomatedContinuationPolicy(pi: ExtensionAPI, ctx: ExtensionContext, runtime: FermentRuntime): void {
 	runtime.setContinuationPolicy("automated")
 	const active = runtime.getActive()
 	if (!active) {
@@ -333,7 +334,7 @@ function setAutomatedContinuationPolicy(pi: ExtensionAPI, ctx: FermentUiContext,
 
 async function confirmManualPhaseBoundaryForCommand(
 	pi: ExtensionAPI,
-	ctx: FermentUiContext,
+	ctx: ExtensionContext,
 	runtime: FermentRuntime,
 	active: NonNullable<ReturnType<FermentRuntime["getActive"]>>,
 ): Promise<boolean> {
@@ -344,7 +345,7 @@ async function confirmManualPhaseBoundaryForCommand(
 	const nextPhase = active.phases.find((phase) => phase.id === decision.action.phaseId)
 	const nextPhaseName = nextPhase?.name ?? decision.action.phaseId
 
-	if (ctx.hasUI && ctx.ui.select) {
+	if (ctx.hasUI) {
 		const choice = await ctx.ui.select(`Continue "${active.name}" to "${nextPhaseName}"?`, [
 			"Continue to next phase",
 			"Pause here",
@@ -378,7 +379,7 @@ async function confirmManualPhaseBoundaryForCommand(
 	return true
 }
 
-async function openFermentProgress(pi: ExtensionAPI, ctx: FermentUiContext, runtime: FermentRuntime): Promise<void> {
+async function openFermentProgress(pi: ExtensionAPI, ctx: ExtensionContext, runtime: FermentRuntime): Promise<void> {
 	const applyAndPersist = createApplyAndPersist(runtime)
 	const active = runtime.getActive()
 	if (!active) {
@@ -386,118 +387,203 @@ async function openFermentProgress(pi: ExtensionAPI, ctx: FermentUiContext, runt
 		return
 	}
 
-	if (!ctx.hasUI || !ctx.ui.select || !ctx.ui.confirm) {
+	if (!ctx.hasUI) {
 		ctx.ui.notify(formatFermentStatus(active, runtime.getContinuationPolicy()))
 		return
 	}
 	const select = ctx.ui.select.bind(ctx.ui)
 	const confirm = ctx.ui.confirm.bind(ctx.ui)
 
-	let atPhaseList = true
-	while (atPhaseList) {
-		const f = runtime.getStorage().get(active.id) ?? active
-		const phaseListOpts = buildPhaseListOptions(f)
-		const phaseListPhaseCount = f.phases.length
+	// Auto-refresh: when a ferment domain event fires (step started/completed,
+	// phase activated, etc.), abort the current select() so it re-opens with
+	// fresh data. Without this, the overlay shows stale counts while the
+	// agent makes progress in the background.
+	//
+	// Each select() call receives an AbortSignal. When a relevant event fires,
+	// we abort the current controller and create a new one. The select()
+	// returns undefined on abort, which the navigation loop treats as "stay on
+	// this layer" — so the user sees the title/options refresh in place.
+	const REFRESH_EVENTS = [
+		FERMENT_EVENTS.STEP_STARTED,
+		FERMENT_EVENTS.STEP_COMPLETED,
+		FERMENT_EVENTS.STEP_FAILED,
+		FERMENT_EVENTS.PHASE_STARTED,
+		FERMENT_EVENTS.PHASE_COMPLETED,
+		FERMENT_EVENTS.SUSPENDED,
+		FERMENT_EVENTS.RESUMED,
+		FERMENT_EVENTS.STALLED,
+	] as const
 
-		const l1choice = await select(buildPhaseListTitle(f, runtime), phaseListOpts)
+	let currentController: AbortController | undefined
 
-		if (!l1choice || l1choice === "Close") {
-			atPhaseList = false
-			continue
+	const refreshHandler = () => {
+		currentController?.abort()
+	}
+	const unsubscribers: (() => void)[] = []
+	for (const evt of REFRESH_EVENTS) {
+		unsubscribers.push(pi.events.on(evt, refreshHandler))
+	}
+	const unsubscribe = () => {
+		for (const unsub of unsubscribers) unsub()
+	}
+
+	// Auto-refreshing select: retries with fresh title/options when the
+	// underlying ferment state changes while the dialog is open.
+	async function liveSelect(buildTitle: () => string, buildOptions: () => string[]): Promise<string | undefined> {
+		while (true) {
+			const controller = new AbortController()
+			currentController = controller
+			const choice = await select(buildTitle(), buildOptions(), { signal: controller.signal })
+			currentController = undefined
+			// If aborted by a domain event, loop and re-render with fresh data.
+			if (choice === undefined && controller.signal.aborted) continue
+			return choice
 		}
+	}
 
-		if (l1choice === "Abandon ferment") {
-			const confirmed = await confirm(
-				`Abandon "${f.name}"?`,
-				"Marks the ferment abandoned. Work done so far is preserved.",
+	try {
+		let atPhaseList = true
+		while (atPhaseList) {
+			const f = runtime.getStorage().get(active.id) ?? active
+			const phaseListOpts = buildPhaseListOptions(f)
+			const phaseListPhaseCount = f.phases.length
+
+			const l1choice = await liveSelect(
+				() => buildPhaseListTitle(runtime.getStorage().get(active.id) ?? active, runtime),
+				() => buildPhaseListOptions(runtime.getStorage().get(active.id) ?? active),
 			)
-			if (confirmed) {
-				const outcome = applyAndPersist(f.id, { type: "abandon" })
-				if (outcome.ok) setActiveFermentAndApplyProfile(pi, runtime, undefined)
-				runtime.clearFermentState(f.id)
+
+			if (!l1choice || l1choice === "Close") {
 				atPhaseList = false
-			}
-			continue
-		}
-
-		const l1idx = phaseListOpts.indexOf(l1choice)
-		if (l1idx < 0 || l1idx >= phaseListPhaseCount) continue
-		const selectedPhaseIndex = f.phases[l1idx].index
-
-		let atStepList = true
-		while (atStepList) {
-			const f2 = runtime.getStorage().get(f.id) ?? f
-			const ph = f2.phases.find((p) => p.index === selectedPhaseIndex)
-			if (!ph) {
-				atStepList = false
-				break
+				continue
 			}
 
-			const stepOpts = buildPhaseStepOptions(ph)
-			const stepCount = ph.steps.length
-
-			const l2choice = await select(buildPhaseDetailTitle(f2, ph), stepOpts)
-
-			if (!l2choice || l2choice === "Back") {
-				atStepList = false
-				break
-			}
-
-			if (l2choice === "Phase actions") {
-				let atPhaseActions = true
-				while (atPhaseActions) {
-					const f3 = runtime.getStorage().get(f.id) ?? f
-					const ph3 = f3.phases.find((p) => p.index === selectedPhaseIndex)
-					if (!ph3) {
-						atPhaseActions = false
-						break
-					}
-					const actionChoice = await select(buildPhaseDetailTitle(f3, ph3), buildPhaseActionOptions(f3, ph3))
-					if (!actionChoice || actionChoice === "Back to steps") {
-						atPhaseActions = false
-						break
-					}
-					await handlePhaseAction(actionChoice, f3, ph3, ctx, runtime)
+			if (l1choice === "Abandon ferment") {
+				const confirmed = await confirm(
+					`Abandon "${f.name}"?`,
+					"Marks the ferment abandoned. Work done so far is preserved.",
+				)
+				if (confirmed) {
+					const outcome = applyAndPersist(f.id, { type: "abandon" })
+					if (outcome.ok) setActiveFermentAndApplyProfile(pi, runtime, undefined)
+					runtime.clearFermentState(f.id)
+					atPhaseList = false
 				}
 				continue
 			}
 
-			const l2idx = stepOpts.indexOf(l2choice)
-			if (l2idx < 0 || l2idx >= stepCount) continue
-			const selectedStepIndex = ph.steps[l2idx].index
+			const l1idx = phaseListOpts.indexOf(l1choice)
+			if (l1idx < 0 || l1idx >= phaseListPhaseCount) continue
+			const selectedPhaseIndex = f.phases[l1idx].index
 
-			let atStepDetail = true
-			while (atStepDetail) {
-				const f3 = runtime.getStorage().get(f.id) ?? f
-				const ph3 = f3.phases.find((p) => p.index === selectedPhaseIndex)
-				if (!ph3) {
-					atStepDetail = false
-					break
-				}
-				const st = ph3.steps.find((s) => s.index === selectedStepIndex)
-				if (!st) {
-					atStepDetail = false
+			let atStepList = true
+			while (atStepList) {
+				const f2 = runtime.getStorage().get(f.id) ?? f
+				const ph = f2.phases.find((p) => p.index === selectedPhaseIndex)
+				if (!ph) {
+					atStepList = false
 					break
 				}
 
-				const stepActionOpts = buildStepActionOptions(ph3, st)
-				const l3choice = await select(buildStepDetailTitle(ph3, st), stepActionOpts)
+				const stepOpts = buildPhaseStepOptions(ph)
+				const stepCount = ph.steps.length
 
-				if (!l3choice || l3choice === "Back to phase") {
-					atStepDetail = false
+				const l2choice = await liveSelect(
+					() => {
+						const lf = runtime.getStorage().get(f.id) ?? f
+						const lph = lf.phases.find((p) => p.index === selectedPhaseIndex)
+						return lph ? buildPhaseDetailTitle(lf, lph) : buildPhaseDetailTitle(lf, ph)
+					},
+					() => {
+						const lf = runtime.getStorage().get(f.id) ?? f
+						const lph = lf.phases.find((p) => p.index === selectedPhaseIndex)
+						return lph ? buildPhaseStepOptions(lph) : stepOpts
+					},
+				)
+
+				if (!l2choice || l2choice === "Back") {
+					atStepList = false
 					break
 				}
-				await handleStepAction(l3choice, f3, ph3, st, ctx, runtime)
+
+				if (l2choice === "Phase actions") {
+					let atPhaseActions = true
+					while (atPhaseActions) {
+						const f3 = runtime.getStorage().get(f.id) ?? f
+						const ph3 = f3.phases.find((p) => p.index === selectedPhaseIndex)
+						if (!ph3) {
+							atPhaseActions = false
+							break
+						}
+						const actionChoice = await liveSelect(
+							() => {
+								const lf = runtime.getStorage().get(f.id) ?? f
+								const lph = lf.phases.find((p) => p.index === selectedPhaseIndex)
+								return lph ? buildPhaseDetailTitle(lf, lph) : buildPhaseDetailTitle(lf, ph3)
+							},
+							() => {
+								const lf = runtime.getStorage().get(f.id) ?? f
+								const lph = lf.phases.find((p) => p.index === selectedPhaseIndex)
+								return lph ? buildPhaseActionOptions(lf, lph) : buildPhaseActionOptions(f3, ph3)
+							},
+						)
+						if (!actionChoice || actionChoice === "Back to steps") {
+							atPhaseActions = false
+							break
+						}
+						await handlePhaseAction(actionChoice, f3, ph3, ctx, runtime)
+					}
+					continue
+				}
+
+				const l2idx = stepOpts.indexOf(l2choice)
+				if (l2idx < 0 || l2idx >= stepCount) continue
+				const selectedStepIndex = ph.steps[l2idx].index
+
+				let atStepDetail = true
+				while (atStepDetail) {
+					const f3 = runtime.getStorage().get(f.id) ?? f
+					const ph3 = f3.phases.find((p) => p.index === selectedPhaseIndex)
+					if (!ph3) {
+						atStepDetail = false
+						break
+					}
+					const st = ph3.steps.find((s) => s.index === selectedStepIndex)
+					if (!st) {
+						atStepDetail = false
+						break
+					}
+
+					const stepActionOpts = buildStepActionOptions(ph3, st)
+					const l3choice = await liveSelect(
+						() => {
+							const lf = runtime.getStorage().get(f.id) ?? f
+							const lph = lf.phases.find((p) => p.index === selectedPhaseIndex)
+							const lst = lph?.steps.find((s) => s.index === selectedStepIndex)
+							return lst ? buildStepDetailTitle(lph ?? ph3, lst) : buildStepDetailTitle(ph3, st)
+						},
+						() => {
+							const lf = runtime.getStorage().get(f.id) ?? f
+							const lph = lf.phases.find((p) => p.index === selectedPhaseIndex)
+							const lst = lph?.steps.find((s) => s.index === selectedStepIndex)
+							return lst ? buildStepActionOptions(lph ?? ph3, lst) : stepActionOpts
+						},
+					)
+
+					if (!l3choice || l3choice === "Back to phase") {
+						atStepDetail = false
+						break
+					}
+					await handleStepAction(l3choice, f3, ph3, st, ctx, runtime)
+				}
 			}
 		}
+	} finally {
+		unsubscribe()
 	}
 }
 
-function exitFermentMode(
-	pi: ExtensionAPI,
-	ctx: FermentUiContext & Pick<ExtensionCommandContext, "abort">,
-	runtime: FermentRuntime,
-): void {
+function exitFermentMode(pi: ExtensionAPI, ctx: ExtensionCommandContext, runtime: FermentRuntime): void {
 	const applyAndPersist = createApplyAndPersist(runtime)
 	const active = refreshActiveFermentForLifecycleCommand(pi, runtime)
 	sendLifecycleCommandBreadcrumb(pi, "exit", active)
@@ -527,7 +613,7 @@ function exitFermentMode(
 	const message = `Exited Ferment mode for "${active.name}". ${detail}`
 	sendBreadcrumb(pi, message, "ack", "ferment_ack")
 	ctx.ui.notify(message)
-	requestSharedFooterRender()
+	requestSharedStatusLineRender()
 	ctx.abort()
 }
 
@@ -906,7 +992,7 @@ export class FermentCommandController {
 			const intent = command.intent
 			let resolvedIntent = intent
 			if (!resolvedIntent) {
-				if (!ctx.hasUI || (!ctx.ui.editor && !ctx.ui.input)) {
+				if (!ctx.hasUI) {
 					ctx.ui.notify('Usage: /ferment one-shot "description of what to build"')
 					return { handled: true }
 				}
@@ -937,7 +1023,8 @@ export class FermentCommandController {
 					"ack",
 					"ferment_ack",
 				)
-				const nudge = buildOneshotNudge(updated, resolvedIntent)
+				const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
+				const nudge = buildOneshotNudge(updated, resolvedIntent, multiModelEnabled)
 
 				safeSendMessage(
 					pi,

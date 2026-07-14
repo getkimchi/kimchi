@@ -4,7 +4,7 @@
  * Manages LLM request tags for usage tracking and cost attribution.
  * Features:
  * - Slash commands: /tags, /tags add <key:value>, /tags remove <key:value>, /tags clear
- * - Footer display of active tags with color coding
+ * - Status line display of active tags with color coding
  * - Integration with before_provider_request hook
  *
  * Tags are stored per-session and persisted via session entries.
@@ -22,12 +22,13 @@ import type {
 } from "@earendil-works/pi-coding-agent"
 import { Container, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
+import type { ThinkingLevel } from "./agents/personas/types.js"
 import { createSystemPromptBlocks } from "./prompt-construction/index.js"
 import { isStaleCtxError } from "./stale-ctx.js"
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const FOOTER_STATUS_KEY = "active-tags"
+const STATUS_LINE_TAGS_KEY = "active-tags"
 const TAGS_CONFIG_FILE = resolve(homedir(), ".config", "kimchi", "tags.json")
 const HARNESS_SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "settings.json")
 
@@ -54,7 +55,9 @@ type Phase = (typeof VALID_PHASES)[number]
 
 const PHASE_TAGGING_PROMPT = `## Phase Tagging for Analytics
 
-The session starts in \`explore\` phase by default. Call \`set_phase\` when the work type changes — pick one of \`explore\`, \`research\`, \`plan\`, \`build\`, or \`review\`. Only one phase is active at a time; the most recent call wins. Subagents set their phase automatically from their persona, so this tool is for tagging the main thread's work.`
+The session starts in \`explore\` phase by default. Call \`set_phase\` when the work type changes — pick one of \`explore\`, \`research\`, \`plan\`, \`build\`, or \`review\`. Only one phase is active at a time; the most recent call wins. Subagents set their phase automatically from their persona, so this tool is for tagging the main thread's work.
+
+When the orchestrator decides to perform a phase itself (not delegate), include the matching \`thinking\` parameter from the Orchestration **Thinking levels** table. Leave \`thinking\` unset when only tagging coordination work or when delegating the phase to an Agent.`
 
 export function isValidPhase(phase: string): phase is Phase {
 	return VALID_PHASES.includes(phase as Phase)
@@ -234,7 +237,7 @@ export class TagManager {
 	}
 }
 
-// ─── Footer formatting ────────────────────────────────────────────────────────
+// ─── Status line formatting ──────────────────────────────────────────────────
 
 function getColorForKey(key: string): ThemeColor {
 	// Deterministic color based on key name
@@ -242,7 +245,7 @@ function getColorForKey(key: string): ThemeColor {
 	return TAG_COLORS[hash % TAG_COLORS.length]
 }
 
-function formatTagsForFooter(tags: string[], theme: Theme, phase: Phase | undefined): string {
+function formatTagsForStatusLine(tags: string[], theme: Theme, phase: Phase | undefined): string {
 	// Group tags by key for display
 	const grouped = new Map<string, string[]>()
 	for (const tag of tags) {
@@ -289,13 +292,13 @@ function formatTagsForFooter(tags: string[], theme: Theme, phase: Phase | undefi
 	return statusParts.join("  ")
 }
 
-function updateFooterStatus(tagManager: TagManager, ctx: ExtensionContext): void {
+function updateStatusLineTags(tagManager: TagManager, ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return
 
 	const allTags = tagManager.getAllTags()
 	const currentPhase = tagManager.getPhase()
-	const statusText = formatTagsForFooter(allTags, ctx.ui.theme, currentPhase)
-	ctx.ui.setStatus(FOOTER_STATUS_KEY, statusText)
+	const statusText = formatTagsForStatusLine(allTags, ctx.ui.theme, currentPhase)
+	ctx.ui.setStatus(STATUS_LINE_TAGS_KEY, statusText)
 }
 
 // ─── Command handlers ─────────────────────────────────────────────────────────
@@ -323,14 +326,14 @@ async function handlePhaseCommand(args: string, ctx: ExtensionCommandContext, ta
 
 		if (choice === "none (clear)") {
 			tagManager.setPhase(undefined)
-			updateFooterStatus(tagManager, ctx)
+			updateStatusLineTags(tagManager, ctx)
 			ctx.ui.notify("Phase cleared", "info")
 			return
 		}
 
 		const next = choice as Phase
 		tagManager.setPhase(next)
-		updateFooterStatus(tagManager, ctx)
+		updateStatusLineTags(tagManager, ctx)
 		ctx.ui.notify(`Phase changed to: ${next}`, "info")
 		return
 	}
@@ -339,7 +342,7 @@ async function handlePhaseCommand(args: string, ctx: ExtensionCommandContext, ta
 	if (trimmed === "none" || trimmed === "clear" || trimmed === "off") {
 		tagManager.setPhase(undefined)
 		if (ctx.hasUI) {
-			updateFooterStatus(tagManager, ctx)
+			updateStatusLineTags(tagManager, ctx)
 			ctx.ui.notify("Phase cleared", "info")
 		} else {
 			console.log("Phase cleared")
@@ -357,7 +360,7 @@ async function handlePhaseCommand(args: string, ctx: ExtensionCommandContext, ta
 
 	tagManager.setPhase(trimmed)
 	if (ctx.hasUI) {
-		updateFooterStatus(tagManager, ctx)
+		updateStatusLineTags(tagManager, ctx)
 		ctx.ui.notify(`Phase changed to: ${trimmed}`, "info")
 	} else {
 		console.log(`Phase changed to: ${trimmed}`)
@@ -420,7 +423,7 @@ function handleTagsCommand(args: string, ctx: ExtensionCommandContext, tagManage
 		const failed = results.filter((r) => !r.success)
 
 		if (succeeded.length > 0) {
-			updateFooterStatus(tagManager, ctx)
+			updateStatusLineTags(tagManager, ctx)
 		}
 
 		const lines: string[] = []
@@ -459,7 +462,7 @@ function handleTagsCommand(args: string, ctx: ExtensionCommandContext, tagManage
 		const failed = results.filter((r) => !r.success)
 
 		if (succeeded.length > 0) {
-			updateFooterStatus(tagManager, ctx)
+			updateStatusLineTags(tagManager, ctx)
 		}
 
 		const lines: string[] = []
@@ -482,7 +485,7 @@ function handleTagsCommand(args: string, ctx: ExtensionCommandContext, tagManage
 
 	if (trimmed === "clear") {
 		const result = tagManager.clear()
-		updateFooterStatus(tagManager, ctx)
+		updateStatusLineTags(tagManager, ctx)
 		ctx.ui.notify(`Cleared ${result.removed} user-defined tag(s).`, "info")
 		return
 	}
@@ -509,6 +512,13 @@ const SetPhaseParams = Type.Object({
 		description: "The phase to set. Valid phases: explore, plan, build, review, research",
 		enum: ["explore", "plan", "build", "review", "research"],
 	}),
+	thinking: Type.Optional(
+		Type.String({
+			description:
+				"Optional thinking level to use when the orchestrator performs this phase itself (not delegating). Set per the Orchestration Thinking levels table.",
+			enum: ["off", "minimal", "low", "medium", "high", "xhigh"],
+		}),
+	),
 })
 
 // ─── Extension entry point ─────────────────────────────────────────────────────
@@ -566,21 +576,25 @@ export default function tagsExtension(pi: ExtensionAPI) {
 		name: "set_phase",
 		label: "Set Phase",
 		description:
-			"Set the current work phase for usage tracking and analytics. The session starts in explore. Call when transitioning between phases (e.g., exploration to planning, or planning to building). The phase is included as a tag in subsequent LLM requests.",
+			"Set the current work phase for usage tracking and analytics. The session starts in explore. Call when transitioning between phases (e.g., exploration to planning, or planning to building). The phase is included as a tag in subsequent LLM requests. When the orchestrator decides to perform a phase itself rather than delegating, pass `thinking` to match the Orchestration Thinking levels table.",
 		parameters: SetPhaseParams,
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const phase = params.phase as Phase
+			const thinking = params.thinking as ThinkingLevel | undefined
 
 			tagManager.setPhase(phase)
+			if (thinking) {
+				pi.setThinkingLevel(thinking)
+			}
 
 			if (ctx.hasUI) {
-				updateFooterStatus(tagManager, ctx)
+				updateStatusLineTags(tagManager, ctx)
 			}
 
 			return {
 				content: [{ type: "text", text: `Phase changed to: ${phase}` }],
-				details: { phase, model: ctx.model?.id },
+				details: { phase, thinking, model: ctx.model?.id },
 			}
 		},
 
@@ -592,13 +606,14 @@ export default function tagsExtension(pi: ExtensionAPI) {
 			if (readHidePhaseChanges()) {
 				return new Text("", 0, 0)
 			}
-			const details = result.details as { phase: string; model?: string } | undefined
+			const details = result.details as { phase: string; thinking?: ThinkingLevel; model?: string } | undefined
 			const phase = details?.phase ?? "unknown"
 			const model = details?.model
+			const thinkingSuffix = details?.thinking ? theme.fg("dim", ` · thinking ${details.thinking}`) : ""
 			const dash = theme.fg("dim", "- ")
 			const label = theme.bold(theme.fg("toolTitle", `Phase changed: ${phase}`))
 			const modelSuffix = model ? theme.fg("dim", ` [${model}]`) : ""
-			return new Text(dash + label + modelSuffix, 0, 0)
+			return new Text(dash + label + modelSuffix + thinkingSuffix, 0, 0)
 		},
 	})
 
@@ -607,10 +622,10 @@ export default function tagsExtension(pi: ExtensionAPI) {
 		render: () => PHASE_TAGGING_PROMPT,
 	})
 
-	// Initialize footer status and default phase on session start
+	// Initialize status line tags status and default phase on session start
 	pi.on("session_start", async (_event, ctx) => {
 		tagManager.setPhase("explore")
-		updateFooterStatus(tagManager, ctx)
+		updateStatusLineTags(tagManager, ctx)
 	})
 
 	// Inject tags into every LLM request

@@ -12,6 +12,7 @@ interface TipGroup {
 const KNOWN_LABELS: Record<string, string> = {
 	"kimchi.general": "General",
 	"kimchi.ferment": "Ferment",
+	"kimchi.billing": "Billing",
 }
 
 export function sourceToLabel(source: string): string {
@@ -78,7 +79,7 @@ function buildDisplayLines(groups: TipGroup[], theme: Theme, contentWidth: numbe
 			const prefixWidth = 2 + numStr.length + 1 // "  " + "N." + " "
 			const indentStr = " ".repeat(prefixWidth)
 
-			const formatted = formatTipMessage(tip.message, theme)
+			const formatted = formatTipMessage(tip.message, theme, tip.tone)
 			const messageWidth = Math.max(8, contentWidth - prefixWidth)
 			const wrapped = wrapTextWithAnsi(formatted, messageWidth)
 

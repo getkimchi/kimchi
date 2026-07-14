@@ -94,6 +94,40 @@ describe("redactJsonlExport", () => {
 		const result = readFileSync(filePath, "utf-8")
 		expect(result).toContain("not json at all")
 	})
+
+	it("preserves traceIds and traceId in JSONL export entries", async () => {
+		const entries = [
+			JSON.stringify({
+				type: "message",
+				id: "msg-assistant",
+				message: { role: "assistant", content: "Hello" },
+				traceIds: ["9f4e8d2c1b0a5f6e"],
+			}),
+			JSON.stringify({
+				type: "custom",
+				id: "diag-1",
+				customType: "request_diagnostics",
+				data: {
+					status: 200,
+					durationMs: 42,
+					traceId: "diag-trace-123",
+				},
+			}),
+		].join("\n")
+		const filePath = makeTmpFile(entries)
+
+		await redactJsonlExport(filePath)
+
+		const result = readFileSync(filePath, "utf-8")
+		// Both trace ID strings survive redaction unchanged
+		expect(result).toContain("9f4e8d2c1b0a5f6e")
+		expect(result).toContain("diag-trace-123")
+		expect(result).not.toContain("[REDACTED-")
+		// Structure preserved
+		expect(result).toContain('"request_diagnostics"')
+		expect(result).toContain('"traceIds"')
+		expect(result).toContain('"traceId"')
+	})
 })
 
 describe("redactHtmlExport", () => {
@@ -145,5 +179,93 @@ describe("redactHtmlExport", () => {
 
 		const result = readFileSync(filePath, "utf-8")
 		expect(result).toBe(original)
+	})
+
+	it("preserves traceIds and traceId in base64-encoded HTML session data", async () => {
+		const sessionData = {
+			entries: [
+				{
+					type: "message",
+					id: "msg-assistant",
+					message: { role: "assistant", content: "Hello" },
+					traceIds: ["9f4e8d2c1b0a5f6e"],
+				},
+				{
+					type: "custom",
+					id: "diag-1",
+					customType: "request_diagnostics",
+					data: { status: 200, traceId: "diag-trace-123" },
+				},
+			],
+		}
+		const base64 = Buffer.from(JSON.stringify(sessionData)).toString("base64")
+		const dir = mkdtempSync(join(tmpdir(), "kimchi-html-test-"))
+		const filePath = join(dir, "export.html")
+		writeFileSync(
+			filePath,
+			`<html><body><script id="session-data" type="application/json">${base64}</script></body></html>`,
+			"utf-8",
+		)
+
+		await redactHtmlExport(filePath)
+
+		const result = readFileSync(filePath, "utf-8")
+		const match = result.match(/<script id="session-data" type="application\/json">([A-Za-z0-9+/=]+)<\/script>/)
+		expect(match).not.toBeNull()
+		if (!match?.[1]) throw new Error("session-data not found")
+		const decoded = JSON.parse(Buffer.from(match[1], "base64").toString("utf-8")) as {
+			entries: Array<{ traceIds?: string[]; data?: { traceId?: string } }>
+		}
+		// Both trace ID strings survive redaction unchanged (verified via decoded payload)
+		expect(decoded.entries[0].traceIds).toEqual(["9f4e8d2c1b0a5f6e"])
+		expect(decoded.entries[1].data?.traceId).toBe("diag-trace-123")
+		// No redaction markers applied to trace IDs
+		expect(JSON.stringify(decoded)).not.toContain("[REDACTED-")
+	})
+
+	it("redacts secrets from subagent-data iframe payloads", async () => {
+		const sessionData = {
+			entries: [
+				{
+					type: "user",
+					id: "msg-1",
+					content: "Main session is clean",
+				},
+			],
+		}
+		const subAgentData = {
+			header: { type: "session", id: "agent-1" },
+			entries: [
+				{
+					type: "message",
+					id: "sa:agent-1:0",
+					message: { role: "user", content: "Key: AKIAIOSFODNN7EXAMPLE" },
+				},
+			],
+		}
+		const sessionB64 = Buffer.from(JSON.stringify(sessionData)).toString("base64")
+		const subAgentB64 = Buffer.from(JSON.stringify(subAgentData)).toString("base64")
+		const dir = mkdtempSync(join(tmpdir(), "kimchi-html-test-"))
+		const filePath = join(dir, "export.html")
+		writeFileSync(
+			filePath,
+			`<html><body><script id="session-data" type="application/json">${sessionB64}</script><script type="application/json" id="subagent-data-agent-1">${subAgentB64}</script></body></html>`,
+			"utf-8",
+		)
+
+		await redactHtmlExport(filePath)
+
+		const result = readFileSync(filePath, "utf-8")
+		expect(result).not.toContain("AKIAIOSFODNN7EXAMPLE")
+
+		const subMatch = result.match(
+			/<script type="application\/json" id="subagent-data-agent-1">([A-Za-z0-9+/=]+)<\/script>/,
+		)
+		expect(subMatch).not.toBeNull()
+		if (!subMatch?.[1]) throw new Error("subagent-data not found")
+		const decoded = JSON.parse(Buffer.from(subMatch[1], "base64").toString("utf-8")) as {
+			entries: Array<{ message: { content: string } }>
+		}
+		expect(decoded.entries[0].message.content).toContain("[REDACTED-AWS_ACCESS_KEY]")
 	})
 })

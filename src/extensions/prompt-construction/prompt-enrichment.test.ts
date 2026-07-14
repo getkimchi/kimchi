@@ -3,11 +3,12 @@ import { arch, version as osVersion, platform, release, tmpdir } from "node:os"
 import { join } from "node:path"
 import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ToolInfo } from "@earendil-works/pi-coding-agent"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { type Mock, afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import * as config from "../../config.js"
 import type { ModelMetadata } from "../../models.js"
 import { setResourceOverride } from "../../resources/store.js"
 import * as startupContext from "../../startup-context.js"
+import { createContext } from "../__mocks__/context.js"
 import * as agentWorkerContext from "../agent-worker-context.js"
 import { CLAUDE_CODE_SKILLS_RESOURCE_ID } from "../claude-code-skills/definition.js"
 import type { OrchestratorMessages } from "../orchestration/continuation-nudge.js"
@@ -185,6 +186,7 @@ describe("prompt enrichment tool visibility", () => {
 		] as ToolInfo[]
 		let activeTools = tools.map((tool) => tool.name)
 		const pi = {
+			appendEntry: vi.fn(),
 			registerFlag: () => {},
 			registerCommand: () => {},
 			on: (event: string, handler: (event: unknown, ctx: unknown) => Promise<unknown> | unknown) => {
@@ -206,14 +208,7 @@ describe("prompt enrichment tool visibility", () => {
 		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
 
 		try {
-			const result = (await beforeAgentStart(
-				{},
-				{
-					cwd: "/tmp",
-					model: undefined,
-					hasUI: false,
-				},
-			)) as { systemPrompt: string }
+			const result = (await beforeAgentStart({}, createContext({ hasUI: false }))) as { systemPrompt: string }
 
 			expect(result.systemPrompt).toContain('<tool name="read">')
 			expect(result.systemPrompt).not.toContain('<tool name="bash">')
@@ -229,6 +224,7 @@ describe("prompt enrichment tool visibility", () => {
 			{ name: "bash", description: "Execute shell commands" },
 		] as ToolInfo[]
 		const pi = {
+			appendEntry: vi.fn(),
 			registerFlag: () => {},
 			registerCommand: () => {},
 			on: (event: string, handler: (event: unknown, ctx: unknown) => Promise<unknown> | unknown) => {
@@ -244,14 +240,7 @@ describe("prompt enrichment tool visibility", () => {
 		const beforeAgentStart = handlers.get("before_agent_start")
 		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
 
-		const result = (await beforeAgentStart(
-			{},
-			{
-				cwd: "/tmp",
-				model: undefined,
-				hasUI: false,
-			},
-		)) as { systemPrompt: string }
+		const result = (await beforeAgentStart({}, createContext({ hasUI: false }))) as { systemPrompt: string }
 
 		expect(result.systemPrompt).toContain('<tool name="read">')
 		expect(result.systemPrompt).not.toContain('<tool name="bash">')
@@ -272,10 +261,7 @@ describe("prompt enrichment environment context", () => {
 			const { beforeAgentStart } = buildPromptExtensionWithHandlers()
 			if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
 
-			const result = (await beforeAgentStart(
-				{},
-				{ cwd: "/tmp", model: undefined, hasUI: false, sessionManager: { getSessionId: () => "session-1" } },
-			)) as { systemPrompt: string }
+			const result = (await beforeAgentStart({}, createContext({ hasUI: false }))) as { systemPrompt: string }
 
 			expect(result.systemPrompt).toContain(`- OS release: ${release()}`)
 			expect(result.systemPrompt).toContain(`- OS version: ${osVersion()}`)
@@ -343,10 +329,7 @@ describe("prompt enrichment Claude Code skills", () => {
 		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
 		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
 
-		const result = (await beforeAgentStart(
-			{},
-			{ cwd, model: undefined, hasUI: false, sessionManager: { getSessionId: () => "session-1" } },
-		)) as { systemPrompt: string }
+		const result = (await beforeAgentStart({}, createContext({ cwd, hasUI: false }))) as { systemPrompt: string }
 
 		expect(result.systemPrompt).toContain("<available_skills>")
 		expect(result.systemPrompt).toContain("<name>typescript-safety</name>")
@@ -375,10 +358,7 @@ describe("prompt enrichment Claude Code skills", () => {
 		const { beforeAgentStart } = buildPromptExtensionWithHandlers([])
 		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
 
-		const result = (await beforeAgentStart(
-			{},
-			{ cwd, model: undefined, hasUI: false, sessionManager: { getSessionId: () => "session-1" } },
-		)) as { systemPrompt: string }
+		const result = (await beforeAgentStart({}, createContext({ cwd, hasUI: false }))) as { systemPrompt: string }
 
 		expect(result.systemPrompt).toContain("<available_skills>")
 		expect(result.systemPrompt).toContain("<name>typescript-safety</name>")
@@ -394,10 +374,7 @@ describe("prompt enrichment Claude Code skills", () => {
 		const { beforeAgentStart } = buildPromptExtensionWithHandlers([configuredSkills])
 		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
 
-		const result = (await beforeAgentStart(
-			{},
-			{ cwd, model: undefined, hasUI: false, sessionManager: { getSessionId: () => "session-1" } },
-		)) as { systemPrompt: string }
+		const result = (await beforeAgentStart({}, createContext({ cwd, hasUI: false }))) as { systemPrompt: string }
 
 		expect(result.systemPrompt).toContain("<available_skills>")
 		expect(result.systemPrompt).toContain("<name>typescript-safety</name>")
@@ -413,10 +390,7 @@ describe("prompt enrichment Claude Code skills", () => {
 		const { beforeAgentStart } = buildPromptExtensionWithHandlers([configuredSkills])
 		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
 
-		const result = (await beforeAgentStart(
-			{},
-			{ cwd, model: undefined, hasUI: false, sessionManager: { getSessionId: () => "session-1" } },
-		)) as { systemPrompt: string }
+		const result = (await beforeAgentStart({}, createContext({ cwd, hasUI: false }))) as { systemPrompt: string }
 
 		expect(result.systemPrompt).toContain("<available_skills>")
 		expect(result.systemPrompt).toContain("<name>typescript-safety</name>")
@@ -429,10 +403,7 @@ describe("prompt enrichment Claude Code skills", () => {
 		const { beforeAgentStart } = buildPromptExtensionWithHandlers([".claude/skills"])
 		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
 
-		const result = (await beforeAgentStart(
-			{},
-			{ cwd, model: undefined, hasUI: false, sessionManager: { getSessionId: () => "session-1" } },
-		)) as { systemPrompt: string }
+		const result = (await beforeAgentStart({}, createContext({ cwd, hasUI: false }))) as { systemPrompt: string }
 
 		expect(result.systemPrompt).toContain("<available_skills>")
 		expect(result.systemPrompt).toContain("<name>typescript-safety</name>")
@@ -449,10 +420,7 @@ describe("prompt enrichment Claude Code skills", () => {
 		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
 		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
 
-		const result = (await beforeAgentStart(
-			{},
-			{ cwd, model: undefined, hasUI: false, sessionManager: { getSessionId: () => "session-1" } },
-		)) as { systemPrompt: string }
+		const result = (await beforeAgentStart({}, createContext({ cwd, hasUI: false }))) as { systemPrompt: string }
 
 		expect(result.systemPrompt).not.toContain("<available_skills>")
 		expect(result.systemPrompt).not.toContain("typescript-safety")
@@ -467,10 +435,7 @@ describe("prompt enrichment Claude Code skills", () => {
 		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
 		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
 
-		const result = (await beforeAgentStart(
-			{},
-			{ cwd, model: undefined, hasUI: false, sessionManager: { getSessionId: () => "session-1" } },
-		)) as { systemPrompt: string }
+		const result = (await beforeAgentStart({}, createContext({ cwd, hasUI: false }))) as { systemPrompt: string }
 
 		expect(result.systemPrompt).toContain("<available_skills>")
 		expect(result.systemPrompt).toContain("<name>typescript-safety</name>")
@@ -484,10 +449,7 @@ describe("prompt enrichment Claude Code skills", () => {
 		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
 		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
 
-		const result = (await beforeAgentStart(
-			{},
-			{ cwd, model: undefined, hasUI: false, sessionManager: { getSessionId: () => "session-1" } },
-		)) as { systemPrompt: string }
+		const result = (await beforeAgentStart({}, createContext({ cwd, hasUI: false }))) as { systemPrompt: string }
 
 		expect(result.systemPrompt).toContain("<available_skills>")
 		expect(result.systemPrompt).toContain("<name>typescript-safety</name>")
@@ -502,10 +464,7 @@ describe("prompt enrichment Claude Code skills", () => {
 		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
 		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
 
-		const result = (await beforeAgentStart(
-			{},
-			{ cwd, model: undefined, hasUI: false, sessionManager: { getSessionId: () => "session-1" } },
-		)) as { systemPrompt: string }
+		const result = (await beforeAgentStart({}, createContext({ cwd, hasUI: false }))) as { systemPrompt: string }
 
 		expect(result.systemPrompt).not.toContain("<name>typescript-safety</name>")
 	})
@@ -524,12 +483,7 @@ describe("append system prompt", () => {
 
 		const result = (await beforeAgentStart(
 			{ systemPromptOptions: { appendSystemPrompt: "Custom appended instructions" } },
-			{
-				cwd: "/tmp",
-				model: undefined,
-				hasUI: false,
-				sessionManager: { getSessionId: () => "session-1" },
-			},
+			createContext({ hasUI: false }),
 		)) as { systemPrompt: string }
 
 		expect(result.systemPrompt).toContain("Custom appended instructions")
@@ -543,22 +497,12 @@ describe("append system prompt", () => {
 
 		const resultWithout = (await beforeAgentStart(
 			{ systemPromptOptions: {} },
-			{
-				cwd: "/tmp",
-				model: undefined,
-				hasUI: false,
-				sessionManager: { getSessionId: () => "session-1" },
-			},
+			createContext({ hasUI: false, sessionManager: { getSessionId: () => "session-1" } }),
 		)) as { systemPrompt: string }
 
 		const resultWithEmpty = (await beforeAgentStart(
 			{ systemPromptOptions: { appendSystemPrompt: undefined } },
-			{
-				cwd: "/tmp",
-				model: undefined,
-				hasUI: false,
-				sessionManager: { getSessionId: () => "session-2" },
-			},
+			createContext({ hasUI: false, sessionManager: { getSessionId: () => "session-2" } }),
 		)) as { systemPrompt: string }
 
 		// Both should produce the same prompt (no trailing append)
@@ -571,22 +515,12 @@ describe("append system prompt", () => {
 
 		const resultBaseline = (await beforeAgentStart(
 			{ systemPromptOptions: {} },
-			{
-				cwd: "/tmp",
-				model: undefined,
-				hasUI: false,
-				sessionManager: { getSessionId: () => "session-1" },
-			},
+			createContext({ hasUI: false, sessionManager: { getSessionId: () => "session-1" } }),
 		)) as { systemPrompt: string }
 
 		const resultWhitespace = (await beforeAgentStart(
 			{ systemPromptOptions: { appendSystemPrompt: "   \n  " } },
-			{
-				cwd: "/tmp",
-				model: undefined,
-				hasUI: false,
-				sessionManager: { getSessionId: () => "session-2" },
-			},
+			createContext({ hasUI: false, sessionManager: { getSessionId: () => "session-2" } }),
 		)) as { systemPrompt: string }
 
 		// Whitespace-only should be skipped — prompt unchanged
@@ -668,6 +602,7 @@ describe("model role startup warnings", () => {
 function buildPromptExtensionWithHandlers(skillPaths: string[] = []) {
 	const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<unknown> | unknown>()
 	const pi = {
+		appendEntry: vi.fn(),
 		registerFlag: () => {},
 		registerCommand: () => {},
 		on: (event: string, handler: (event: unknown, ctx: unknown) => Promise<unknown> | unknown) => {
@@ -704,20 +639,6 @@ describe("deprecated model notification", () => {
 	const deprecatedModelId = "kimi-k2.6-old"
 	const replacementModelId = "kimi-k2.7"
 
-	function makeMockContext(modelId: string | undefined, sessionId = "test-session-1") {
-		return {
-			cwd: "/tmp",
-			model: modelId ? { id: modelId, provider: "kimchi-dev" } : undefined,
-			hasUI: true,
-			sessionManager: {
-				getSessionId: () => sessionId,
-			},
-			ui: {
-				notify: vi.fn(),
-			},
-		}
-	}
-
 	function setupAvailableModels(models: readonly ModelMetadata[]) {
 		vi.spyOn(startupContext, "getAvailableModels").mockReturnValue(models)
 	}
@@ -725,6 +646,7 @@ describe("deprecated model notification", () => {
 	function buildExtensionWithHandlers() {
 		const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<unknown> | unknown>()
 		const pi = {
+			appendEntry: () => {},
 			registerFlag: () => {},
 			registerCommand: () => {},
 			on: (event: string, handler: (event: unknown, ctx: unknown) => Promise<unknown> | unknown) => {
@@ -767,10 +689,10 @@ describe("deprecated model notification", () => {
 		const { sessionStart } = buildExtensionWithHandlers()
 		if (!sessionStart) throw new Error("session_start handler not registered")
 
-		const ctx = makeMockContext(deprecatedModelId)
+		const ctx = createContext({ model: { provider: "kimchi-dev", id: deprecatedModelId } })
 		await sessionStart({}, ctx)
 
-		const notifyMock = (ctx as { ui: { notify: ReturnType<typeof vi.fn> } }).ui.notify
+		const notifyMock = ctx.ui.notify as Mock
 		expect(notifyMock.mock.calls.length).toBe(1)
 		expect(notifyMock).toHaveBeenCalledWith(
 			`Model "${deprecatedModelId}" is deprecated. Switch to "${replacementModelId}" for better performance.`,
@@ -795,10 +717,10 @@ describe("deprecated model notification", () => {
 		const { sessionStart } = buildExtensionWithHandlers()
 		if (!sessionStart) throw new Error("session_start handler not registered")
 
-		const ctx = makeMockContext(deprecatedModelId)
+		const ctx = createContext({ model: { provider: "kimchi-dev", id: deprecatedModelId } })
 		await sessionStart({}, ctx)
 
-		const notifyMock = (ctx as { ui: { notify: ReturnType<typeof vi.fn> } }).ui.notify
+		const notifyMock = ctx.ui.notify as Mock
 		expect(notifyMock.mock.calls.length).toBe(1)
 		expect(notifyMock).toHaveBeenCalledWith(
 			`Model "${deprecatedModelId}" is deprecated. It may be removed in a future update.`,
@@ -822,10 +744,10 @@ describe("deprecated model notification", () => {
 		const { sessionStart } = buildExtensionWithHandlers()
 		if (!sessionStart) throw new Error("session_start handler not registered")
 
-		const ctx = makeMockContext("active-model")
+		const ctx = createContext({ model: { provider: "kimchi-dev", id: "active-model" } })
 		await sessionStart({}, ctx)
 
-		const notifyMock = (ctx as { ui: { notify: ReturnType<typeof vi.fn> } }).ui.notify
+		const notifyMock = ctx.ui.notify as Mock
 		expect(notifyMock.mock.calls.length).toBe(0)
 	})
 
@@ -853,13 +775,14 @@ describe("deprecated model notification", () => {
 		if (!sessionStart) throw new Error("session_start handler not registered")
 
 		// First session
-		const ctx1 = makeMockContext(deprecatedModelId, "session-1")
-		await sessionStart({}, ctx1)
+
+		const ctx = createContext({ model: { provider: "kimchi-dev", id: deprecatedModelId } })
+		await sessionStart({}, ctx)
 
 		// Second session_start for same session should not fire again
-		await sessionStart({}, ctx1)
+		await sessionStart({}, ctx)
 
-		const notifyMock = (ctx1 as { ui: { notify: ReturnType<typeof vi.fn> } }).ui.notify
+		const notifyMock = ctx.ui.notify as Mock
 		expect(notifyMock.mock.calls.length).toBe(1)
 	})
 
@@ -887,7 +810,7 @@ describe("deprecated model notification", () => {
 		if (!sessionStart) throw new Error("session_start handler not registered")
 		if (!sessionShutdown) throw new Error("session_shutdown handler not registered")
 
-		const ctx = makeMockContext(deprecatedModelId, "session-1")
+		const ctx = createContext({ model: { provider: "kimchi-dev", id: deprecatedModelId } })
 
 		// Fire session_start
 		await sessionStart({}, ctx)
@@ -896,7 +819,7 @@ describe("deprecated model notification", () => {
 		// Fire session_start again with same session ID — should notify again
 		await sessionStart({}, ctx)
 
-		const notifyMock = (ctx as { ui: { notify: ReturnType<typeof vi.fn> } }).ui.notify
+		const notifyMock = ctx.ui.notify as Mock
 		// Should have fired twice — once at each session_start
 		expect(notifyMock.mock.calls.length).toBe(2)
 	})
@@ -924,10 +847,10 @@ describe("deprecated model notification", () => {
 		const { sessionStart } = buildExtensionWithHandlers()
 		if (!sessionStart) throw new Error("session_start handler not registered")
 
-		const ctx = makeMockContext(deprecatedModelId)
+		const ctx = createContext({ model: { provider: "kimchi-dev", id: deprecatedModelId } })
 		await sessionStart({}, ctx)
 
-		const notifyMock = (ctx as { ui: { notify: ReturnType<typeof vi.fn> } }).ui.notify
+		const notifyMock = ctx.ui.notify as Mock
 		expect(notifyMock.mock.calls.length).toBe(1)
 		expect(notifyMock).toHaveBeenCalledWith(
 			`Model "${deprecatedModelId}" is deprecated. It may be removed in a future update.`,

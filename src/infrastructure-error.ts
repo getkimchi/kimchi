@@ -1,30 +1,45 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import {
+	type LLMGatewayError,
+	LLM_GATEWAY_INFRASTRUCTURE_EXIT_CODE,
+	classifyLLMGatewayError,
+} from "./llm-gateway-error.js"
 
-export const KIMCHI_INFRA_ERROR_EXIT_CODE = 74
+export const KIMCHI_INFRA_ERROR_EXIT_CODE = LLM_GATEWAY_INFRASTRUCTURE_EXIT_CODE
 const KIMCHI_INFRA_ERROR_PREFIX = "KIMCHI_INFRA_ERROR"
 
-// Provider verdicts (auth, quota, rate limits, context overflow) are checked
-// first: they are answers from a working provider, not transport failures,
-// even when the surrounding message also mentions a connection problem.
-const NON_INFRA_PROVIDER_ERROR_RE =
-	/unauthorized|authentication[_\s]?(?:error|failed)|invalid api key|\b401\b|\b403\b|permission denied|account.{0,40}\b(?:terminated|suspended|deactivated|disabled)\b|context window|context overflow|maximum context|prompt too long|quota|billing|insufficient_quota|out of budget|usage limit|rate.?limit|too many requests|\b429\b/i
+/** Session-log entry type carrying the audit trail of each gateway-error classification. */
+export const GATEWAY_CLASSIFICATION_AUDIT_TYPE = "kimchi_error_classification"
 
-// Provider infrastructure failures: nothing usable came back from the provider,
-// so the run can be retried by a supervisor. Shared by the retry patch,
-// process-wide breaker, and final exit classification so they stay aligned.
-const INFRA_PROVIDER_ERROR_RE =
-	/\b5(?:00|02|03|04|24|29)\b|bad gateway|service unavailable|gateway timeout|internal server error|overloaded|cloudflare.*timeout|timeout.*cloudflare|socket(?: connection was)? closed|socket hang up|other side closed|connection closed|broken pipe|fetch failed|network.?error|connection.?error|connection.?refused|connection.?lost|upstream.?connect|reset before headers|ended without|stream ended before message_stop|http2 request did not get a response|timed? out|\btimeout\b|\bterminated\b|unexpectedly|EPIPE|ERR_SOCKET_CLOSED|ERR_STREAM_PREMATURE_CLOSE|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|connection reset/i
+/**
+ * Append an audit-trail entry to the session log recording what the classifier
+ * was given (the raw provider error) and what it decided. Best-effort by design:
+ * audit logging must never break a run, so a failure to persist the entry is
+ * logged and swallowed rather than propagated.
+ */
+function recordClassificationAudit(pi: ExtensionAPI, rawMessage: string, error: LLMGatewayError | undefined): void {
+	try {
+		pi.appendEntry(GATEWAY_CLASSIFICATION_AUDIT_TYPE, {
+			rawMessage,
+			reason: error?.reason ?? "unclassified",
+			retryable: error?.retryable ?? false,
+			isInfrastructure: error?.isInfrastructure ?? false,
+			exitCode: error?.exitCode() ?? null,
+			httpStatusCode: error?.httpStatusCode ?? null,
+		})
+	} catch (cause) {
+		console.error(`KIMCHI: failed to record gateway classification audit entry: ${cause}`)
+	}
+}
 
 export interface InfrastructureFailure {
-	errorMessage: string
+	error: LLMGatewayError
 	consecutiveInfraErrors: number
 	sessionPath?: string
 }
 
 export function isInfrastructureProviderError(errorMessage: string): boolean {
-	if (!errorMessage) return false
-	if (NON_INFRA_PROVIDER_ERROR_RE.test(errorMessage)) return false
-	return INFRA_PROVIDER_ERROR_RE.test(errorMessage)
+	return classifyLLMGatewayError(errorMessage)?.isInfrastructure ?? false
 }
 
 export interface InfrastructureErrorTracker {
@@ -35,10 +50,10 @@ export interface InfrastructureErrorTracker {
 }
 
 /**
- * Tracks provider transport failures as they happen, via message_end events.
+ * Tracks provider failures as they happen, via message_end events.
  * A failure is only reported while it is trailing: any later assistant message
- * that is not an infra error (a successful turn, or a provider verdict such as
- * a rate limit) clears it, mirroring upstream's reset-on-success retry rule.
+ * that is not an infra exit error clears it, mirroring upstream's
+ * reset-on-success retry rule.
  */
 export function createInfrastructureErrorTracker(): InfrastructureErrorTracker {
 	let failure: InfrastructureFailure | undefined
@@ -48,14 +63,17 @@ export function createInfrastructureErrorTracker(): InfrastructureErrorTracker {
 			pi.on("message_end", (event, ctx) => {
 				const message = event.message
 				if (message.role !== "assistant") return
-				if (
-					message.stopReason === "error" &&
-					typeof message.errorMessage === "string" &&
-					isInfrastructureProviderError(message.errorMessage)
-				) {
+
+				let error: LLMGatewayError | undefined
+				if (message.stopReason === "error" && typeof message.errorMessage === "string") {
+					error = classifyLLMGatewayError(message.errorMessage)
+					recordClassificationAudit(pi, message.errorMessage, error)
+				}
+
+				if (error?.isInfrastructure) {
 					const sessionPath = ctx.sessionManager?.getSessionFile?.()
 					failure = {
-						errorMessage: message.errorMessage,
+						error,
 						consecutiveInfraErrors: (failure?.consecutiveInfraErrors ?? 0) + 1,
 						...(sessionPath ? { sessionPath } : {}),
 					}
@@ -72,7 +90,7 @@ function formatInfrastructureFailureMessage(failure: InfrastructureFailure): str
 	const countText =
 		failure.consecutiveInfraErrors > 1 ? ` after ${failure.consecutiveInfraErrors} consecutive infra errors` : ""
 	const sessionText = failure.sessionPath ? ` Session: ${failure.sessionPath}` : ""
-	return `${KIMCHI_INFRA_ERROR_PREFIX}: provider transport failure${countText}; exiting with code ${KIMCHI_INFRA_ERROR_EXIT_CODE}. Last error: ${failure.errorMessage}${sessionText}`
+	return `${KIMCHI_INFRA_ERROR_PREFIX}: provider infrastructure failure${countText}; exiting with code ${failure.error.exitCode()}. Last error: ${failure.error.rawMessage}${sessionText}`
 }
 
 /**
@@ -83,6 +101,7 @@ function formatInfrastructureFailureMessage(failure: InfrastructureFailure): str
  */
 export function applyInfrastructureExitPolicy(failure: InfrastructureFailure | undefined): boolean {
 	if (!failure) return false
+	if (!failure.error.isInfrastructure) return false
 	console.error(formatInfrastructureFailureMessage(failure))
 	process.exitCode = KIMCHI_INFRA_ERROR_EXIT_CODE
 	return true

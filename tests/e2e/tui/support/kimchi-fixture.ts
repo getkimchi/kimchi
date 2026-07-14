@@ -1,17 +1,12 @@
 import { execFileSync } from "node:child_process"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { dirname, join, resolve } from "node:path"
+import { join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { Shell } from "@microsoft/tui-test"
 import type { Terminal } from "@microsoft/tui-test/lib/terminal/term.js"
 import { STARTUP_TIMEOUT_MS, fullText, viewText, waitForText } from "./assertions.js"
-import {
-	type FakeOllamaModel,
-	type FakeOllamaServer,
-	type StartFakeOllamaServerOptions,
-	startFakeOllamaServer,
-} from "./fake-ollama-server.js"
+import { type StartFakeOllamaServerOptions, startFakeOllamaServer } from "./fake-ollama-server.js"
 import {
 	DEFAULT_MODEL,
 	type FakeModel,
@@ -77,6 +72,7 @@ export interface SeedHomeResult {
 interface CreateKimchiFixtureOptions {
 	models?: FakeModel[]
 	responses: FakeResponseScript[]
+	creditsResponses?: unknown[]
 	/** `git init` the work dir so repo-checking flows (e.g. ferment) don't prompt to init one. */
 	gitInit?: boolean
 	/**
@@ -139,12 +135,12 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 			"utf-8",
 		)
 
-		// Explicitly pin nothing so footer segments don't appear in the terminal during
-		// E2E tests. Without this, readFooterConfig() would return DEFAULT_FOOTER_PINNED
+		// Explicitly pin nothing so status line segments don't appear in the terminal during
+		// E2E tests. Without this, readStatusLineConfig() would return DEFAULT_STATUS_LINE_PINNED
 		// (context, agents, phase, usage) and change the terminal layout for every test.
 		writeFileSync(
 			join(agentDir, "settings.json"),
-			JSON.stringify({ footer: { pinned: [] } }, null, "\t"),
+			JSON.stringify({ statusLine: { pinned: [] }, hideThinkingBlock: true }, null, "\t"),
 			"utf-8",
 		)
 
@@ -230,10 +226,19 @@ export async function stopKimchi(terminal: Terminal): Promise<void> {
 /** Create fixture, launch kimchi, wait for ready, run `body`, always tear down (artifact on throw). */
 export async function runKimchiSession(
 	terminal: Terminal,
-	options: CreateKimchiFixtureOptions & { artifactName: string },
+	options: CreateKimchiFixtureOptions & {
+		artifactName: string
+		/**
+		 * Optional hook that runs AFTER launch but BEFORE the PROMPT_READY wait.
+		 * Use to dismiss startup dialogs (e.g. a ferment resume dialog triggered
+		 * by KIMCHI_ACTIVE_FERMENT) that would otherwise block PROMPT_READY.
+		 * The hook receives the terminal so it can interact with the UI.
+		 */
+		beforeReady?: (terminal: Terminal) => Promise<void>
+	},
 	body: (fixture: KimchiFixture, trace: TuiScenarioTrace) => Promise<void>,
 ): Promise<void> {
-	const { artifactName, ...fixtureOptions } = options
+	const { artifactName, beforeReady, ...fixtureOptions } = options
 	const fixture = await createKimchiFixture(fixtureOptions)
 	let artifactWritten = false
 	const steps: TuiStepSnapshot[] = []
@@ -245,6 +250,7 @@ export async function runKimchiSession(
 
 	try {
 		launchKimchi(terminal, fixture, fixtureOptions.extraArgs ?? [], { ...fixtureOptions.env, ...fixture.seedEnv })
+		if (beforeReady) await beforeReady(terminal)
 		await waitForText(terminal, PROMPT_READY, { timeoutMs: STARTUP_TIMEOUT_MS })
 		trace.step("ready prompt visible")
 		await body(fixture, trace)

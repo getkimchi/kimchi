@@ -9,14 +9,11 @@ describe("summaryForStatus", () => {
 })
 
 describe("AGENT_TOOL_GUIDELINES", () => {
-	it("tells orchestrators to keep Explore prompts narrow and read-only", () => {
-		expect(AGENT_TOOL_GUIDELINES).toContain("one decision-relevant question")
-		expect(AGENT_TOOL_GUIDELINES).toContain("a qualitative stop condition tied to that question")
-		expect(AGENT_TOOL_GUIDELINES).toContain("Explore is read-only")
-		expect(AGENT_TOOL_GUIDELINES).toContain("Do not ask Explore agents to write reports")
-		expect(AGENT_TOOL_GUIDELINES).toContain("You should consume the returned findings directly")
-		expect(AGENT_TOOL_GUIDELINES).toContain("Return decision-ready findings to the parent; do not write files.")
-		expect(AGENT_TOOL_GUIDELINES).toContain("write a complete implementation spec")
+	it("points orchestrators to the Orchestration section instead of duplicating delegation rules", () => {
+		expect(AGENT_TOOL_GUIDELINES).toContain("Follow the **Orchestration** section")
+		expect(AGENT_TOOL_GUIDELINES).toContain("Explore-agent prompt shaping")
+		expect(AGENT_TOOL_GUIDELINES).not.toContain("Return decision-ready findings to the parent; do not write files.")
+		expect(AGENT_TOOL_GUIDELINES).not.toContain("write a complete implementation spec")
 	})
 })
 
@@ -80,7 +77,7 @@ vi.mock("./settings.js", () => ({
 	applyAndEmitLoaded: vi.fn(),
 	saveAndEmitChanged: vi.fn(),
 }))
-vi.mock("../prompt-construction/prompt-enrichment.js", () => ({ getMultiModelEnabled: vi.fn().mockReturnValue(false) }))
+vi.mock("../multi-model.js", () => ({ getMultiModelEnabled: vi.fn().mockReturnValue(false) }))
 vi.mock("../model-guard.js", () => ({ sessionHasImages: vi.fn().mockReturnValue(false) }))
 vi.mock("../shared-input.js", () => ({ isRawInputCaptureActive: vi.fn().mockReturnValue(false) }))
 vi.mock("../hide-thinking.js", () => ({ filterThinkingForDisplay: vi.fn().mockReturnValue("") }))
@@ -90,7 +87,15 @@ vi.mock("../orchestration/model-registry/index.js", () => ({
 	MODEL_CAPABILITIES: {},
 }))
 
+vi.mock("../orchestration/model-roles.js", () => ({
+	getAllowedMultiModelRefs: vi
+		.fn()
+		.mockReturnValue(["kimchi-dev/kimi-k2.7", "kimchi-dev/minimax-m3", "kimchi-dev/nemotron-3-ultra-fp4"]),
+}))
+
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { getMultiModelEnabled } from "../multi-model.js"
+import { getAllowedMultiModelRefs } from "../orchestration/model-roles.js"
 import agentsExtension from "./index.js"
 import { AgentManager as MockedAgentManager } from "./manager/agent-manager.js"
 
@@ -195,5 +200,283 @@ describe("session_shutdown nudge race (integration)", () => {
 
 		// No sendMessage should have been called — the batch timer was cleared
 		expect(pi.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("onComplete appends a subagents:record entry with file paths for export enrichment", async () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+
+		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		expect(managerInstance).toBeDefined()
+
+		const fakeRecord = {
+			id: "record-agent",
+			type: "Reviewer",
+			description: "Review branch changes",
+			visibility: "user",
+			status: "completed",
+			result: "Looks good",
+			error: undefined,
+			abortReason: undefined,
+			startedAt: 1_000,
+			completedAt: 2_000,
+			outputFile: "/tmp/agent-outputs/session/tasks/record-agent.output",
+			sessionFile: "/tmp/agent-outputs/session/record-agent.jsonl",
+			toolUses: 3,
+			lifetimeUsage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 },
+		}
+		managerInstance.onComplete(fakeRecord)
+
+		expect(pi.appendEntry).toHaveBeenCalledWith("subagents:record", {
+			id: "record-agent",
+			type: "Reviewer",
+			description: "Review branch changes",
+			visibility: "user",
+			status: "completed",
+			abortReason: undefined,
+			result: "Looks good",
+			error: undefined,
+			startedAt: 1_000,
+			completedAt: 2_000,
+			outputFile: "/tmp/agent-outputs/session/tasks/record-agent.output",
+			sessionFile: "/tmp/agent-outputs/session/record-agent.jsonl",
+			systemPrompt: undefined,
+		})
+	})
+})
+
+// ---- Multi-mode model guard ----
+//
+// These tests exercise the registered Agent tool's execute() handler to
+// verify the multi-model guard: when multi-model mode is active, explicit
+// model parameters must belong to the configured role pool.
+
+interface MockModelEntry {
+	id: string
+	name: string
+	provider: string
+	input: string[]
+}
+
+/**
+ * Build a mock ModelRegistry whose find()/getAvailable()/getAll() return
+ * ModelEntry-shaped objects sufficient for resolveModel() to resolve
+ * explicit and partial model IDs.
+ */
+function makeMockModelRegistry(entries: MockModelEntry[]): unknown {
+	const all = entries.map((e) => ({
+		id: e.id,
+		name: e.name,
+		provider: e.provider,
+		input: e.input,
+	}))
+	const availableSet = new Set(all.map((m) => `${m.provider}/${m.id}`.toLowerCase()))
+	return {
+		find: (provider: string, modelId: string) => all.find((m) => m.provider === provider && m.id === modelId),
+		getAll: () => all,
+		getAvailable: () => all.filter((m) => availableSet.has(`${m.provider}/${m.id}`.toLowerCase())),
+	}
+}
+
+/**
+ * Build an ExtensionContext-like object suitable for invoking the Agent
+ * tool's execute(). Uses run_in_background to avoid the foreground
+ * spinner/await-promise machinery which the AgentManager mock does not
+ * fully satisfy.
+ */
+function makeMockCtx(modelRegistry: unknown, parentModel?: unknown): unknown {
+	return {
+		ui: undefined,
+		mode: "json",
+		hasUI: false,
+		cwd: "/tmp",
+		sessionManager: {
+			getBranch: () => [],
+			getSessionDir: () => "/tmp",
+			getSessionFile: () => "/tmp/session.json",
+			getSessionId: () => "test-session",
+		},
+		modelRegistry,
+		model: parentModel,
+		isIdle: () => true,
+		isProjectTrusted: () => true,
+		signal: undefined,
+		abort: () => {},
+		hasPendingMessages: () => false,
+		shutdown: () => {},
+		getContextUsage: () => undefined,
+		compact: () => {},
+		getSystemPrompt: () => "",
+	}
+}
+
+/** Retrieve the registered "Agent" tool from pi.registerTool mock calls. */
+function getRegisteredAgentTool(pi: ReturnType<typeof makeMockPi>): {
+	execute: (
+		id: string,
+		params: Record<string, unknown>,
+		signal: AbortSignal | undefined,
+		onUpdate: unknown,
+		ctx: unknown,
+	) => Promise<{ content: { type: string; text: string }[] }>
+} {
+	const calls = (pi.registerTool as ReturnType<typeof vi.fn>).mock.calls
+	const tool = calls.map((c: unknown[]) => c[0]).find((t: unknown) => (t as { name?: string }).name === "Agent")
+	expect(tool).toBeDefined()
+	return tool as unknown as {
+		execute: (
+			id: string,
+			params: Record<string, unknown>,
+			signal: AbortSignal | undefined,
+			onUpdate: unknown,
+			ctx: unknown,
+		) => Promise<{ content: { type: string; text: string }[] }>
+	}
+}
+
+describe("Agent tool multi-mode model guard", () => {
+	beforeEach(() => {
+		vi.useRealTimers()
+		vi.clearAllMocks()
+		vi.mocked(getMultiModelEnabled).mockReturnValue(false)
+		vi.mocked(getAllowedMultiModelRefs).mockReturnValue([
+			"kimchi-dev/kimi-k2.7",
+			"kimchi-dev/minimax-m3",
+			"kimchi-dev/nemotron-3-ultra-fp4",
+		])
+	})
+
+	it("calls spawn when multi-mode is enabled and the model is allowed", async () => {
+		vi.mocked(getMultiModelEnabled).mockReturnValue(true)
+		const pi = makeMockPi()
+		agentsExtension(pi)
+
+		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		expect(managerInstance).toBeDefined()
+
+		const registry = makeMockModelRegistry([
+			{ id: "kimi-k2.7", name: "Kimi K2.7", provider: "kimchi-dev", input: ["text"] },
+			{ id: "gpt-4o", name: "GPT-4o", provider: "openai", input: ["text", "image"] },
+		])
+		const ctx = makeMockCtx(registry, { id: "kimi-k2.7", provider: "kimchi-dev" })
+		const tool = getRegisteredAgentTool(pi)
+
+		const result = await tool.execute(
+			"call-1",
+			{
+				prompt: "do work",
+				description: "test",
+				subagent_type: "general-purpose",
+				model: "kimchi-dev/kimi-k2.7",
+				run_in_background: true,
+			},
+			undefined,
+			undefined,
+			ctx,
+		)
+
+		expect(managerInstance.spawn).toHaveBeenCalledTimes(1)
+		const text = result.content[0]?.text ?? ""
+		expect(text).not.toContain("not allowed in multi-model mode")
+	})
+
+	it("rejects a disallowed model when multi-mode is enabled and does not spawn", async () => {
+		vi.mocked(getMultiModelEnabled).mockReturnValue(true)
+		const pi = makeMockPi()
+		agentsExtension(pi)
+
+		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		expect(managerInstance).toBeDefined()
+
+		const registry = makeMockModelRegistry([
+			{ id: "kimi-k2.7", name: "Kimi K2.7", provider: "kimchi-dev", input: ["text"] },
+			{ id: "gpt-4o", name: "GPT-4o", provider: "openai", input: ["text", "image"] },
+		])
+		const ctx = makeMockCtx(registry, { id: "kimi-k2.7", provider: "kimchi-dev" })
+		const tool = getRegisteredAgentTool(pi)
+
+		const result = await tool.execute(
+			"call-2",
+			{
+				prompt: "do work",
+				description: "test",
+				subagent_type: "general-purpose",
+				model: "openai/gpt-4o",
+				run_in_background: true,
+			},
+			undefined,
+			undefined,
+			ctx,
+		)
+
+		expect(managerInstance.spawn).not.toHaveBeenCalled()
+		const text = result.content[0]?.text ?? ""
+		expect(text).toContain("not allowed in multi-model mode")
+		expect(text).toContain("openai/gpt-4o")
+		// Allowed models should be listed in the rejection message.
+		expect(text).toContain("kimchi-dev/kimi-k2.7")
+		expect(text).toContain("kimchi-dev/minimax-m3")
+		expect(text).toContain("kimchi-dev/nemotron-3-ultra-fp4")
+	})
+
+	it("calls spawn when multi-mode is disabled even for a disallowed model (existing behavior)", async () => {
+		vi.mocked(getMultiModelEnabled).mockReturnValue(false)
+		const pi = makeMockPi()
+		agentsExtension(pi)
+
+		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		expect(managerInstance).toBeDefined()
+
+		const registry = makeMockModelRegistry([
+			{ id: "gpt-4o", name: "GPT-4o", provider: "openai", input: ["text", "image"] },
+		])
+		const ctx = makeMockCtx(registry, { id: "kimi-k2.7", provider: "kimchi-dev" })
+		const tool = getRegisteredAgentTool(pi)
+
+		const result = await tool.execute(
+			"call-3",
+			{
+				prompt: "do work",
+				description: "test",
+				subagent_type: "general-purpose",
+				model: "openai/gpt-4o",
+				run_in_background: true,
+			},
+			undefined,
+			undefined,
+			ctx,
+		)
+
+		expect(managerInstance.spawn).toHaveBeenCalledTimes(1)
+		const text = result.content[0]?.text ?? ""
+		expect(text).not.toContain("not allowed in multi-model mode")
+	})
+
+	it("calls spawn when no model parameter is supplied regardless of multi-mode", async () => {
+		vi.mocked(getMultiModelEnabled).mockReturnValue(true)
+		const pi = makeMockPi()
+		agentsExtension(pi)
+
+		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		expect(managerInstance).toBeDefined()
+
+		const registry = makeMockModelRegistry([
+			{ id: "kimi-k2.7", name: "Kimi K2.7", provider: "kimchi-dev", input: ["text"] },
+		])
+		const parentModel = { id: "kimi-k2.7", provider: "kimchi-dev", name: "Kimi K2.7" }
+		const ctx = makeMockCtx(registry, parentModel)
+		const tool = getRegisteredAgentTool(pi)
+
+		const result = await tool.execute(
+			"call-4",
+			{ prompt: "do work", description: "test", subagent_type: "general-purpose", run_in_background: true },
+			undefined,
+			undefined,
+			ctx,
+		)
+
+		expect(managerInstance.spawn).toHaveBeenCalledTimes(1)
+		const text = result.content[0]?.text ?? ""
+		expect(text).not.toContain("not allowed in multi-model mode")
 	})
 })

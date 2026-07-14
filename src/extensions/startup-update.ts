@@ -7,10 +7,10 @@ const UPDATE_STATUS_KEY = "update-available"
 
 /**
  * Startup-time check for new kimchi versions. Uses cache (24h) and displays
- * a message on the footer (right side, centered) if an update is available.
+ * a message on the status line (right side, centered) if an update is available.
  * Silently fails on errors to not block harness launch.
  *
- * The message is displayed via setStatus and read by the footer renderer.
+ * The message is displayed via setStatus and read by the status line renderer.
  */
 export default function startupUpdateExtension(pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx: ExtensionContext) => {

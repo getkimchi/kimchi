@@ -9,32 +9,29 @@ import { Key, isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import type { Component, TUI } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedAccentFg } from "../ansi.js"
 import { PromptEditor } from "../components/editor.js"
-import { ScriptFooter, StatsFooter, buildScriptPayload, readStatusLineCommand } from "../components/footer.js"
 import { LogoHeader } from "../components/logo.js"
+import { StatusLine, StatusLineScript, buildScriptPayload, readStatusLineCommand } from "../components/status-line.js"
 import { collapseAll, expandNext, resetState } from "../expand-state.js"
-import { getGitBranch, refreshGitBranch } from "../utils.js"
+import { refreshGitBranch } from "../utils.js"
+import { formatBillingStatusLine } from "./billing/status-line-format.js"
+import { getBillingStatusLine, getCommunityTierHeaderNotice, subscribeBillingStatus } from "./billing/status.js"
 import { isBareExitAlias } from "./exit-utils.js"
-import { formatFermentFooterDisplay } from "./ferment/footer-status.js"
 import { getActiveFerment, getFermentContinuationPolicy } from "./ferment/index.js"
+import { formatFermentStatusLineDisplay } from "./ferment/status-line.js"
 import { formatDuration } from "./format.js"
 import { sessionHasImages } from "./model-guard.js"
-import { splitModelRef } from "./orchestration/model-roles.js"
-import {
-	getMultiModelEnabled,
-	getOrchestratorModelId,
-	getOrchestratorModelRef,
-	setMultiModelEnabled,
-} from "./prompt-construction/prompt-enrichment.js"
-import {
-	isSessionModeOnboardingFooterSuppressed,
-	registerSharedFooterRenderer,
-	setSessionModeOnboardingFooterSuppressed,
-} from "./shared-footer.js"
+import { getMultiModelEnabled, setMultiModelEnabled } from "./multi-model.js"
+import { getOrchestratorModelId, getOrchestratorModelRef, splitModelRef } from "./orchestration/model-roles.js"
 import { isRawInputCaptureActive } from "./shared-input.js"
+import {
+	isSessionModeOnboardingStatusLineSuppressed,
+	registerSharedStatusLineRenderer,
+	setSessionModeOnboardingStatusLineSuppressed,
+} from "./shared-status-line.js"
 import { createWorkingAnimator } from "./spinner.js"
 import { createBranchPoller } from "./ui-branch-poll.js"
 
-export { requestSharedFooterRender, setSessionModeOnboardingFooterSuppressed } from "./shared-footer.js"
+export { requestSharedStatusLineRender, setSessionModeOnboardingStatusLineSuppressed } from "./shared-status-line.js"
 
 function modelsAreEqual(a: Model<Api>, b: Model<Api>): boolean {
 	return a.provider === b.provider && a.id === b.id
@@ -123,7 +120,7 @@ const branchPoller = createBranchPoller({
 
 type DisposableComponent = Component & { dispose?(): void }
 
-class SuppressibleFooter implements Component {
+class SuppressibleStatusLine implements Component {
 	private readonly requestRender: () => void
 	private readonly unregisterRequestRender: () => void
 
@@ -132,7 +129,7 @@ class SuppressibleFooter implements Component {
 		tui: TUI,
 	) {
 		this.requestRender = () => tui.requestRender()
-		this.unregisterRequestRender = registerSharedFooterRenderer(this.requestRender)
+		this.unregisterRequestRender = registerSharedStatusLineRenderer(this.requestRender)
 	}
 
 	dispose(): void {
@@ -145,7 +142,7 @@ class SuppressibleFooter implements Component {
 	}
 
 	render(width: number): string[] {
-		return isSessionModeOnboardingFooterSuppressed() ? [] : this.inner.render(width)
+		return isSessionModeOnboardingStatusLineSuppressed() ? [] : this.inner.render(width)
 	}
 }
 
@@ -172,7 +169,13 @@ export function setSessionIndicator(text: string | null): void {
 	currentEditor?.setSessionIndicator(text)
 }
 
-function runScript(scriptPath: string, payload: object, tui: TUI, footer: ScriptFooter, onDone: () => void): void {
+function runScript(
+	scriptPath: string,
+	payload: object,
+	tui: TUI,
+	scriptStatusLine: StatusLineScript,
+	onDone: () => void,
+): void {
 	const child = spawn(scriptPath, [], {
 		env: process.env,
 		timeout: 1000,
@@ -193,7 +196,7 @@ function runScript(scriptPath: string, payload: object, tui: TUI, footer: Script
 	const settle = (lines: string[] | null) => {
 		if (settled) return
 		settled = true
-		if (lines) footer.setLines(lines)
+		if (lines) scriptStatusLine.setLines(lines)
 		tui.requestRender()
 		onDone()
 	}
@@ -238,9 +241,11 @@ export async function withWorkingHidden<T>(
 
 export default function uiExtension(pi: ExtensionAPI) {
 	let unsubModelCycleInput: (() => void) | null = null
-	let scriptFooter: ScriptFooter | null = null
+	let scriptStatusLine: StatusLineScript | null = null
 	let scriptTui: TUI | null = null
 	let uiTui: TUI | null = null
+	let headerTui: TUI | null = null
+	let unregisterBillingStatus: (() => void) | undefined
 	let scriptCmd: string | null = null
 	let scriptPending = false
 	let scriptGeneration = 0
@@ -253,7 +258,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 	let piToolsExpanded = false
 
 	const refresh = (status: "idle" | "generating") => {
-		if (!currentCtx?.hasUI || !scriptFooter || !scriptTui || !scriptCmd) return
+		if (!currentCtx?.hasUI || !scriptStatusLine || !scriptTui || !scriptCmd) return
 		if (scriptPending) return
 		scriptPending = true
 		const gen = scriptGeneration
@@ -261,15 +266,17 @@ export default function uiExtension(pi: ExtensionAPI) {
 			scriptCmd,
 			buildScriptPayload(currentCtx, status, sessionStartMs, linesAdded, linesRemoved),
 			scriptTui,
-			scriptFooter,
+			scriptStatusLine,
 			() => {
 				if (scriptGeneration === gen) scriptPending = false
 			},
 		)
 	}
 
-	pi.on("session_start", (event, ctx) => {
-		setSessionModeOnboardingFooterSuppressed(false)
+	pi.on("session_start", (_event, ctx) => {
+		const sessionId = ctx.sessionManager.getSessionId()
+
+		setSessionModeOnboardingStatusLineSuppressed(false)
 		stopWorkingAnimation?.()
 		stopWorkingAnimation = undefined
 		resetState()
@@ -279,39 +286,55 @@ export default function uiExtension(pi: ExtensionAPI) {
 		linesRemoved = 0
 		scriptGeneration++
 		scriptPending = false
+		unregisterBillingStatus?.()
+		unregisterBillingStatus = subscribeBillingStatus(() => {
+			headerTui?.requestRender()
+			uiTui?.requestRender()
+		})
 
 		ctx.ui.setHeader((tui, theme) => {
+			headerTui = tui
 			branchPoller.start(() => tui.requestRender())
-			const logo = new LogoHeader(theme, { getBranch: () => branchPoller.getBranch() })
+			const logo = new LogoHeader(theme, {
+				getBranch: () => branchPoller.getBranch(),
+				getRightColumnNotice: getCommunityTierHeaderNotice,
+			})
 			const header: DisposableComponent = {
 				render: (w) => logo.render(w),
 				invalidate: () => logo.invalidate(),
-				dispose: () => branchPoller.stop(),
+				dispose: () => {
+					if (headerTui === tui) headerTui = null
+					branchPoller.stop()
+				},
 			}
 			return header
 		})
-		ctx.ui.setFooter((tui, theme, footerData) => {
+		ctx.ui.setFooter((tui, theme, statusLineData) => {
 			uiTui = tui
 			const cmd = readStatusLineCommand()
 			if (!cmd) {
 				scriptCmd = null
-				return new SuppressibleFooter(new StatsFooter(ctx, theme, footerData), tui)
+				return new SuppressibleStatusLine(new StatusLine(ctx, theme, statusLineData), tui)
 			}
 			scriptCmd = cmd
 			const getControlsLine = (): string | null => {
 				const parts: string[] = []
-				const ferment = formatFermentFooterDisplay(getActiveFerment(), getFermentContinuationPolicy(), {
+				const ferment = formatFermentStatusLineDisplay(getActiveFerment(), getFermentContinuationPolicy(), {
 					dim: (s) => theme.fg("dim", s),
 					accent: (s) => `${resolvedAccentFg(theme)}${s}${RST_FG}`,
 				})
 				if (ferment) parts.push(ferment.text)
-				const perm = footerData.getExtensionStatuses().get("permissions-mode")
+				const perm = statusLineData.getExtensionStatuses().get("permissions-mode")
 				if (perm) parts.push(perm)
-				const modelId = getMultiModelEnabled() ? `multi-model (${getOrchestratorModelId()})` : (ctx.model?.id ?? "n/a")
+				const billing = getBillingStatusLine()
+				if (billing) parts.push(formatBillingStatusLine(billing, theme))
+				const modelId = getMultiModelEnabled(ctx.sessionManager)
+					? `multi-model (${getOrchestratorModelId(sessionId)})`
+					: (ctx.model?.id ?? "n/a")
 				parts.push(`${resolvedAccentFg(theme)}${modelId}${RST_FG} ${theme.fg("dim", "→ ctrl+p")}`)
 				return parts.join(` ${theme.fg("dim", "·")} `)
 			}
-			scriptFooter = new ScriptFooter(getControlsLine)
+			scriptStatusLine = new StatusLineScript(getControlsLine)
 			scriptTui = tui
 			scriptPending = true
 			const gen = scriptGeneration
@@ -319,12 +342,12 @@ export default function uiExtension(pi: ExtensionAPI) {
 				cmd,
 				buildScriptPayload(ctx, "idle", sessionStartMs, linesAdded, linesRemoved),
 				tui,
-				scriptFooter,
+				scriptStatusLine,
 				() => {
 					if (scriptGeneration === gen) scriptPending = false
 				},
 			)
-			return new SuppressibleFooter(scriptFooter, tui)
+			return new SuppressibleStatusLine(scriptStatusLine, tui)
 		})
 
 		ctx.ui.setEditorComponent((tui, editorTheme, keybindings) => {
@@ -376,7 +399,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 							? allAvailable.filter((m) => enabledIds.has(`${m.provider}/${m.id}`))
 							: allAvailable
 						const current = ctx.model
-						const orchRef = getOrchestratorModelRef()
+						const orchRef = getOrchestratorModelRef(sessionId)
 						const orchParsed = splitModelRef(orchRef)
 						const orchestratorModel = orchParsed
 							? ctx.modelRegistry.find(orchParsed.provider, orchParsed.modelId)
@@ -385,7 +408,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 						// Cycle order: model[0] → ... → model[last] → multi-model → model[0]
 						// kimi-k2.6 appears as a regular model AND multi-model appears
 						// as a separate virtual entry right after the last real model.
-						if (getMultiModelEnabled()) {
+						if (getMultiModelEnabled(ctx.sessionManager)) {
 							// Currently on the virtual multi-model entry — wrap to first real model.
 							// Check ALL models (including the orchestrator itself) because we are
 							// leaving the virtual entry, not a real model — the orchestrator in
@@ -403,10 +426,10 @@ export default function uiExtension(pi: ExtensionAPI) {
 									break
 								}
 								if (firstReal) {
-									setMultiModelEnabled(false)
+									setMultiModelEnabled(sessionId, false)
 									if (current && modelsAreEqual(firstReal, current)) {
 										// Model object is the same (orchestrator → orchestrator) so setModel
-										// won't emit model_select and the footer won't re-render.
+										// won't emit model_select and the status line won't re-render.
 										// Force a re-render via a no-op status update.
 										ctx.ui.setStatus("__model_cycle", undefined)
 									} else {
@@ -437,10 +460,10 @@ export default function uiExtension(pi: ExtensionAPI) {
 
 							if (wouldWrap && orchestratorModel) {
 								// Reached end of real models — enter multi-model.
-								setMultiModelEnabled(true)
+								setMultiModelEnabled(sessionId, true)
 								if (modelsAreEqual(orchestratorModel, current)) {
 									// Already on the orchestrator — setModel won't emit model_select
-									// so the footer won't re-render.  Force it.
+									// so the status line won't re-render.  Force it.
 									ctx.ui.setStatus("__model_cycle", undefined)
 								} else {
 									pi.setModel(orchestratorModel).catch((err) => {
@@ -589,7 +612,10 @@ export default function uiExtension(pi: ExtensionAPI) {
 		uiTui?.requestRender()
 	})
 	pi.on("session_shutdown", () => {
-		setSessionModeOnboardingFooterSuppressed(false)
+		setSessionModeOnboardingStatusLineSuppressed(false)
+		unregisterBillingStatus?.()
+		unregisterBillingStatus = undefined
+		headerTui = null
 	})
 
 	pi.on("tool_result", (event) => {

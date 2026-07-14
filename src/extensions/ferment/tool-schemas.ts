@@ -302,6 +302,12 @@ export const CompletePhaseParams = Type.Object({
 	ferment_id: Type.String(),
 	phase_id: Type.String(),
 	summary: Type.String(),
+	evidence: Type.Optional(
+		Type.String({
+			description:
+				"Execution evidence for the LLM grader. Paste real command outputs and verification results that prove the phase work was done correctly — e.g. bash command + exit code + stdout, test suite output, file contents, or tool invocation transcripts. This is especially important when no git diff is available (non-repo environments). Bounded to ~4 KB; truncate long outputs to the relevant portions. Example: '$ python3 verify.py\nAll 5 tests passed\n$ cat /app/result.txt\n42'",
+		}),
+	),
 	gates: Type.Array(GateVerdictSchema, {
 		description:
 			'Phase-scope gate verdicts. Required ids: F1 (real verification vs proxies), F2 (combined output meets phase goal), F3 (what was deferred). A \'flag\' verdict refuses phase advancement and feeds the retry/escalation pipeline. Example: [{"id":"F1","verdict":"pass","rationale":"Mixed verification is acceptable; load-bearing steps use real tests","evidence":"Step 2 uses pnpm test; Step 1 is proxy but non-critical"}, {"id":"F2","verdict":"pass","rationale":"All steps together produced the expected artifact","evidence":"src/new-feature.ts created and compiled"}, {"id":"F3","verdict":"pass","rationale":"Nothing deferred; all planned work completed","evidence":"n/a"}]',
@@ -317,6 +323,12 @@ export const SkipPhaseParams = Type.Object({
 export const CompleteFermentParams = Type.Object({
 	ferment_id: Type.String(),
 	final_summary: Type.Optional(Type.String()),
+	evidence: Type.Optional(
+		Type.String({
+			description:
+				"Execution evidence for the final LLM grader. Paste real command outputs and verification results that prove the ferment goal was achieved — e.g. bash command + exit code + stdout, test suite output, file contents, or tool invocation transcripts. This is especially important when no git diff is available (non-repo environments). Bounded to ~4 KB; truncate long outputs to the relevant portions.",
+		}),
+	),
 	gates: Type.Optional(
 		Type.Array(GateVerdictSchema, {
 			description:

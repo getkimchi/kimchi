@@ -24,11 +24,17 @@
 
 import { execSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, writeFileSync } from "node:fs"
 import { arch, homedir, version as osVersion, platform, release, userInfo } from "node:os"
 import { join } from "node:path"
 import type { AssistantMessage } from "@earendil-works/pi-ai"
-import { type ExtensionAPI, type Skill, getAgentDir, loadSkills } from "@earendil-works/pi-coding-agent"
+import {
+	type ExtensionAPI,
+	type ExtensionContext,
+	type Skill,
+	getAgentDir,
+	loadSkills,
+} from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
 import { isResourceEnabled } from "../../resources/store.js"
 import { getKimchiProjectSkillPaths } from "../../skill-paths.js"
@@ -43,13 +49,9 @@ import {
 	getConfiguredSkillResourcePaths,
 } from "../claude-code-skills/definition.js"
 import { bumpStallCounter } from "../ferment/todo-sync.js"
+import { getProcessOrchestratorRef, setProcessOrchestratorRef } from "../kimchi-process.js"
+import { getMultiModelEnabled, setAndPersistMultiModelEnabled } from "../multi-model.js"
 import {
-	getProcessMultiModelEnabled,
-	setProcessMultiModelEnabled,
-	setProcessOrchestratorRef,
-} from "../kimchi-process.js"
-import {
-	CONTINUATION_NUDGE_TEXT,
 	ContinuationNudge,
 	EMPTY_TURN_NUDGE_TEXT,
 	EmptyTurnNudge,
@@ -63,6 +65,8 @@ import { registerModelRolesCommand } from "../orchestration/model-roles-command.
 import {
 	extractCustomConfigs,
 	getModelRoles,
+	getOrchestratorModelId,
+	getOrchestratorModelRef,
 	modelIdFromRef,
 	splitModelRef,
 	validateModelRoles,
@@ -96,71 +100,37 @@ function readGitRemote(cwd: string): string | undefined {
 	}
 }
 
-const HARNESS_SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "settings.json")
-
-function readMultiModelSetting(): boolean {
-	try {
-		const raw = readFileSync(HARNESS_SETTINGS_PATH, "utf-8")
-		const parsed = JSON.parse(raw)
-		if (typeof parsed.multiModel === "boolean") return parsed.multiModel
-	} catch {
-		// absent or unreadable
-	}
-	return true
-}
-
-function writeMultiModelSetting(enabled: boolean): void {
-	try {
-		let current: Record<string, unknown> = {}
-		try {
-			current = JSON.parse(readFileSync(HARNESS_SETTINGS_PATH, "utf-8"))
-		} catch {
-			// absent or malformed — start fresh
-		}
-		current.multiModel = enabled
-		const dir = join(homedir(), ".config", "kimchi", "harness")
-		if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-		writeFileSync(HARNESS_SETTINGS_PATH, `${JSON.stringify(current, null, 2)}\n`)
-	} catch {
-		// best-effort
-	}
-}
-
-function hasExplicitModelFlag(): boolean {
-	const args = process.argv
-	for (let i = 0; i < args.length; i++) {
-		if (args[i] === "--model" || args[i]?.startsWith("--model=")) return true
-	}
-	return false
-}
-
-const initialMultiModel = hasExplicitModelFlag() ? false : readMultiModelSetting()
-let multiModelEnabled = initialMultiModel
-setProcessMultiModelEnabled(initialMultiModel)
-setProcessOrchestratorRef(getOrchestratorModelRef())
-
-/**
- * Orchestrator model ID (without provider prefix).
- * Reads from the live model-roles config — updates when `/multi-model` changes roles.
- */
-export function getOrchestratorModelId(): string {
-	return modelIdFromRef(getModelRoles().orchestrator)
-}
-
-/**
- * Orchestrator model reference (provider/model-id).
- * Reads from the live model-roles config — updates when `/multi-model` changes roles.
- */
-export function getOrchestratorModelRef(): string {
-	return getModelRoles().orchestrator
-}
-// DELEGATION_TOOL_NAMES is imported from system-prompt.js — the canonical set.
-
 // Tracks sessions that have already received a deprecation notification to avoid duplicate alerts.
 const deprecatedNotificationFired = new Set<string>()
 
 export function _resetDeprecatedNotificationTracking(): void {
 	deprecatedNotificationFired.clear()
+}
+
+/**
+ * Sync multi-model and orchestrator state to the process side-channel
+ * and reconcile persistence. Called from both session_start and
+ * before_agent_start for consistency.
+ *
+ * Returns the effective boolean and orchestrator ref. The boolean
+ * comes from resolution.value — setAndPersistMultiModelEnabled returns
+ * a MultiModelResolution internally, but callers of this helper
+ * only need the boolean.
+ */
+function syncSessionModelState(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+): { multiModelEnabled: boolean; orchestratorModelRef: string } {
+	const sessionId = ctx.sessionManager.getSessionId()
+
+	const resolution = setAndPersistMultiModelEnabled(sessionId, ctx.sessionManager, pi)
+
+	const orchestratorModelRef = getOrchestratorModelRef(sessionId)
+	if (getProcessOrchestratorRef(sessionId) !== orchestratorModelRef) {
+		setProcessOrchestratorRef(sessionId, orchestratorModelRef)
+	}
+
+	return { multiModelEnabled: resolution.value, orchestratorModelRef }
 }
 
 function isDelegationToolCallName(name: string | undefined): boolean {
@@ -244,23 +214,6 @@ export function stripEmptyToolCalls(messages: OrchestratorMessages): Orchestrato
 	return changed ? filtered : messages
 }
 
-export function getMultiModelEnabled(): boolean {
-	const processFlag = getProcessMultiModelEnabled()
-	if (processFlag !== undefined && processFlag !== multiModelEnabled) {
-		multiModelEnabled = processFlag
-		writeMultiModelSetting(processFlag)
-	}
-	return multiModelEnabled
-}
-
-export function setMultiModelEnabled(enabled: boolean): void {
-	multiModelEnabled = enabled
-	// Only update the enabled flag — the orchestrator ref is managed separately
-	// via setProcessOrchestratorRef() when roles actually change, not here.
-	setProcessMultiModelEnabled(enabled)
-	writeMultiModelSetting(enabled)
-}
-
 export function isSubagent(): boolean {
 	return isAgentWorker()
 }
@@ -328,13 +281,16 @@ export default function (skillPaths: string[]) {
 			})
 
 			pi.on("session_start", async (_event, ctx) => {
+				const { multiModelEnabled, orchestratorModelRef } = syncSessionModelState(pi, ctx)
+				const orchestratorModelId = modelIdFromRef(orchestratorModelRef)
+
 				notifyIfDeprecated(ctx)
 
 				// In multi-model mode the orchestrator must always be the configured
 				// orchestrator model. Force-switch if the user has a different model
 				// selected via /models.
-				if (multiModelEnabled && ctx.model?.id !== getOrchestratorModelId()) {
-					const ref = splitModelRef(getOrchestratorModelRef())
+				if (multiModelEnabled && ctx.model?.id !== orchestratorModelId) {
+					const ref = splitModelRef(orchestratorModelRef)
 					const orchestratorModel = ref ? ctx.modelRegistry?.find(ref.provider, ref.modelId) : undefined
 					if (orchestratorModel) {
 						try {
@@ -491,6 +447,10 @@ export default function (skillPaths: string[]) {
 		})
 
 		pi.on("before_agent_start", async (event, ctx) => {
+			syncSessionModelState(pi, ctx)
+
+			const sessionId = ctx.sessionManager.getSessionId()
+
 			const activeToolNames = new Set(pi.getActiveTools())
 			const tools = pi.getAllTools().filter((tool) => activeToolNames.has(tool.name))
 			cachedContextFiles ??= [...loadGlobalContextFiles(), ...loadProjectContextFiles(ctx.cwd)]
@@ -536,7 +496,11 @@ export default function (skillPaths: string[]) {
 				gitRemote: isGitRepo ? (cachedGitRemote ?? undefined) : undefined,
 			}
 
-			const mode: PromptMode = subagentMode ? "subagent" : multiModelEnabled ? "orchestrator" : "single"
+			const mode: PromptMode = subagentMode
+				? "subagent"
+				: getMultiModelEnabled(ctx.sessionManager)
+					? "orchestrator"
+					: "single"
 			const roles = mode === "orchestrator" ? getModelRoles() : undefined
 			const customConfigs = mode === "orchestrator" && roles ? extractCustomConfigs(roles) : undefined
 
@@ -545,7 +509,7 @@ export default function (skillPaths: string[]) {
 				env,
 				contextFiles: cachedContextFiles,
 				skills: cachedSkills,
-				currentModelId: mode === "orchestrator" ? getOrchestratorModelId() : ctx.model?.id,
+				currentModelId: mode === "orchestrator" ? getOrchestratorModelId(sessionId) : ctx.model?.id,
 				currentPhase: getCurrentPhase(),
 				registry: registry,
 				mode,

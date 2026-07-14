@@ -248,7 +248,12 @@ function oneShotCompletionScript(): FakeResponseScript[] {
 			],
 		},
 		{
-			// Complete the Ferment; the following request is the judge response.
+			// judgePhaseGrade LLM call triggered inside complete_ferment_phase.
+			// Must be scripted so the fake server does not advance to the wrong response.
+			stream: ['{"grade":"A","rationale":"Clean phase.","recommendations":[]}'],
+		},
+		{
+			// Complete the Ferment; the following request is the journey-grade judge response.
 			toolCalls: [
 				{
 					id: "call_complete_ferment",
@@ -265,7 +270,7 @@ function oneShotCompletionScript(): FakeResponseScript[] {
 		},
 		{
 			// Return the one-shot judge JSON that Ferment expects after completion.
-			stream: ['{"grade":"A","rationale":"The linked-worker one-shot lifecycle completed cleanly."}'],
+			stream: ['{"grade":"A","rationale":"The linked-worker one-shot lifecycle completed cleanly.","recommendations":[]}'],
 		},
 		{
 			// Final assistant text must be emitted before agent_end and process exit.
@@ -363,9 +368,9 @@ async function runOneshot(options: {
 				KIMCHI_API_KEY: "fake",
 				KIMCHI_FERMENTS_DIR: options.fermentsDir,
 				KIMCHI_TELEMETRY_ENABLED: "0",
-				// Redaction is enabled by default, but it strips ferment UUIDs from
-				// the system prompt, which the fake server needs for __FERMENT_ID__
-				// substitution. Disable it in this lifecycle smoke test.
+				// Explicitly disable redaction in this lifecycle smoke test — it
+				// strips ferment UUIDs from the system prompt, which the fake
+				// server needs for __FERMENT_ID__ substitution.
 				KIMCHI_REDACTION_ENABLED: "0",
 			},
 			stdio: ["pipe", "pipe", "pipe"],

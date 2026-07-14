@@ -8,6 +8,7 @@ import {
 	buildSkillPathOptions,
 	checkConfigFilePermissions,
 	clearApiKey,
+	ensureHideThinkingBlockDefault,
 	getActiveVendorSkillPaths,
 	loadConfig,
 	readApiKeyFromConfigFile,
@@ -863,5 +864,23 @@ describe("upgradeLegacyRetrySettings", () => {
 	it("leaves a non-object retry value alone", () => {
 		expect(upgradeLegacyRetrySettings(false)).toBeUndefined()
 		expect(upgradeLegacyRetrySettings(null)).toBeUndefined()
+	})
+})
+
+describe("ensureHideThinkingBlockDefault", () => {
+	it("seeds hideThinkingBlock when the key is absent", () => {
+		const settings: Record<string, unknown> = { statusLine: { pinned: [] } }
+		expect(ensureHideThinkingBlockDefault(settings)).toBe(true)
+		expect(settings.hideThinkingBlock).toBe(true)
+	})
+
+	it("leaves an explicit hideThinkingBlock value alone", () => {
+		const hidden = { hideThinkingBlock: true }
+		expect(ensureHideThinkingBlockDefault(hidden)).toBe(false)
+		expect(hidden.hideThinkingBlock).toBe(true)
+
+		const visible = { hideThinkingBlock: false }
+		expect(ensureHideThinkingBlockDefault(visible)).toBe(false)
+		expect(visible.hideThinkingBlock).toBe(false)
 	})
 })

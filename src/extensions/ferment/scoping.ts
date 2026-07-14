@@ -17,7 +17,7 @@
  * unchanged — the LLM handles scoping conversationally.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { determineNextAction } from "../../ferment/engine.js"
 import type { ScopePhaseInput } from "../../ferment/state-machine.js"
 import type { SuccessCriteria } from "../../ferment/success-criteria.js"
@@ -26,11 +26,10 @@ import { SCOPING_DISCOVERY_GUIDANCE } from "./constants.js"
 import { promptEditor } from "./prompt-ui.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { safeSendMessage } from "./safe-send.js"
-import type { FermentUiContext } from "./ui.js"
 
 const STATUS_KEY = "ferment-scoping"
 
-function setCookingStatus(ctx: FermentUiContext, message: string | undefined): void {
+function setCookingStatus(ctx: ExtensionContext, message: string | undefined): void {
 	ctx.ui.setStatus?.(STATUS_KEY, message)
 }
 
@@ -138,11 +137,11 @@ function buildScopePrompt(runtime: FermentRuntime, fermentId: string): string {
 export async function runScopingFlow(
 	f: Ferment,
 	pi: ExtensionAPI,
-	ctx: FermentUiContext,
+	ctx: ExtensionContext,
 	runtime: FermentRuntime = defaultFermentRuntime,
 	preIntent?: string,
 ): Promise<void> {
-	if (!ctx.ui.editor && !ctx.ui.input) {
+	if (!ctx.hasUI) {
 		// Headless fallback: let the LLM handle scoping conversationally
 		const prompt = buildScopePrompt(runtime, f.id)
 		safeSendMessage(
