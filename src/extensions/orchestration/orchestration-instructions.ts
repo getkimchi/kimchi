@@ -268,7 +268,7 @@ function buildPlanPhaseDirectives(ctx: PhaseDirectiveContext): string {
 	lines.push("")
 
 	if (delegatePlanning) {
-		const models = ctx.roles ? modelListForRole(ctx.roles.planner) : "a Planner model"
+		const models = modelListForRole(ctx.roles!.planner)
 		lines.push(`- DO delegate plan drafting to Agent(type: "Plan", model: ${models}). A separate planner model is configured — use it.`)
 		lines.push(
 			"- Have the Plan agent write the Markdown spec (full method signatures, file paths, interfaces) to the Documents directory.",
