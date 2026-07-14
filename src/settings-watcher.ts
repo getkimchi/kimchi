@@ -22,7 +22,16 @@ export function getActiveThemeName(): string | undefined {
 	}
 }
 
+let cachedCompactionEnabled: boolean | undefined
+
 export function getCompactionEnabled(): boolean {
+	if (cachedCompactionEnabled !== undefined) return cachedCompactionEnabled
+	cachedCompactionEnabled = readCompactionEnabledFromDisk()
+	ensureWatcher()
+	return cachedCompactionEnabled
+}
+
+function readCompactionEnabledFromDisk(): boolean {
 	const agentDir = process.env.KIMCHI_CODING_AGENT_DIR
 	if (!agentDir) return true
 	try {
@@ -31,6 +40,20 @@ export function getCompactionEnabled(): boolean {
 		return enabled !== false
 	} catch {
 		return true
+	}
+}
+
+/** @internal Test-only: reset the compaction cache and close the watcher so tests get a clean state. */
+export function __resetCompactionCacheForTest(): void {
+	cachedCompactionEnabled = undefined
+	if (watcher) {
+		watcher.close()
+		watcher = undefined
+	}
+	listeners.clear()
+	if (debounceTimer) {
+		clearTimeout(debounceTimer)
+		debounceTimer = undefined
 	}
 }
 
@@ -43,6 +66,7 @@ let debounceTimer: NodeJS.Timeout | undefined
 
 function fire(): void {
 	debounceTimer = undefined
+	cachedCompactionEnabled = undefined
 	const current = getActiveThemeName()
 	if (current === lastSeenTheme) return
 	const previous = lastSeenTheme
@@ -83,7 +107,7 @@ export function onThemeChange(listener: ThemeChangeListener): () => void {
 	listeners.add(listener)
 	return () => {
 		listeners.delete(listener)
-		if (listeners.size === 0 && watcher) {
+		if (listeners.size === 0 && cachedCompactionEnabled === undefined && watcher) {
 			watcher.close()
 			watcher = undefined
 		}
