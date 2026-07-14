@@ -23,7 +23,7 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
 const { loadAutoUpdateSetting, saveAutoUpdateSetting, loadAutoUpdateNoticeShown, markAutoUpdateNoticeShown } =
 	await import("./settings.js")
 
-const settingsPath = (): string => join(fakeAgentDir, "settings.json")
+const statePath = (): string => join(fakeAgentDir, "auto-update.json")
 
 beforeEach(() => {
 	fakeAgentDir = mkdtempSync(join(tmpdir(), "kimchi-update-settings-"))
@@ -39,27 +39,27 @@ describe("loadAutoUpdateSetting", () => {
 	})
 
 	it("returns false when the file exists but has no autoUpdate key", () => {
-		writeFileSync(settingsPath(), JSON.stringify({ theme: "dark" }))
+		writeFileSync(statePath(), JSON.stringify({ theme: "dark" }))
 		expect(loadAutoUpdateSetting()).toBe(false)
 	})
 
 	it("returns false when autoUpdate is explicitly false", () => {
-		writeFileSync(settingsPath(), JSON.stringify({ autoUpdate: false }))
+		writeFileSync(statePath(), JSON.stringify({ autoUpdate: false }))
 		expect(loadAutoUpdateSetting()).toBe(false)
 	})
 
 	it("returns true when autoUpdate is explicitly true", () => {
-		writeFileSync(settingsPath(), JSON.stringify({ autoUpdate: true }))
+		writeFileSync(statePath(), JSON.stringify({ autoUpdate: true }))
 		expect(loadAutoUpdateSetting()).toBe(true)
 	})
 
 	it("returns false (defensive default) when autoUpdate is the wrong type", () => {
-		writeFileSync(settingsPath(), JSON.stringify({ autoUpdate: "yes" }))
+		writeFileSync(statePath(), JSON.stringify({ autoUpdate: "yes" }))
 		expect(loadAutoUpdateSetting()).toBe(false)
 	})
 
 	it("returns false and warns when the file contains malformed JSON", () => {
-		writeFileSync(settingsPath(), "{not valid json")
+		writeFileSync(statePath(), "{not valid json")
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
 		try {
 			expect(loadAutoUpdateSetting()).toBe(false)
@@ -84,9 +84,9 @@ describe("saveAutoUpdateSetting", () => {
 	})
 
 	it("preserves unrelated keys when writing", () => {
-		writeFileSync(settingsPath(), JSON.stringify({ theme: "dark", autoUpdate: true, autoUpdateNoticeShown: false }))
+		writeFileSync(statePath(), JSON.stringify({ theme: "dark", autoUpdate: true, autoUpdateNoticeShown: false }))
 		saveAutoUpdateSetting(false)
-		const round = JSON.parse(readFileSync(settingsPath(), "utf-8")) as Record<string, unknown>
+		const round = JSON.parse(readFileSync(statePath(), "utf-8")) as Record<string, unknown>
 		expect(round.autoUpdate).toBe(false)
 		expect(round.theme).toBe("dark")
 		expect(round.autoUpdateNoticeShown).toBe(false)
@@ -113,24 +113,24 @@ describe("loadAutoUpdateNoticeShown", () => {
 	})
 
 	it("returns false when the key is absent", () => {
-		writeFileSync(settingsPath(), JSON.stringify({ theme: "dark" }))
+		writeFileSync(statePath(), JSON.stringify({ theme: "dark" }))
 		expect(loadAutoUpdateNoticeShown()).toBe(false)
 	})
 
 	it("returns true when the key is true", () => {
-		writeFileSync(settingsPath(), JSON.stringify({ autoUpdateNoticeShown: true }))
+		writeFileSync(statePath(), JSON.stringify({ autoUpdateNoticeShown: true }))
 		expect(loadAutoUpdateNoticeShown()).toBe(true)
 	})
 
 	it("returns false when the key is the wrong type", () => {
-		writeFileSync(settingsPath(), JSON.stringify({ autoUpdateNoticeShown: "yes" }))
+		writeFileSync(statePath(), JSON.stringify({ autoUpdateNoticeShown: "yes" }))
 		expect(loadAutoUpdateNoticeShown()).toBe(false)
 	})
 })
 
 describe("markAutoUpdateNoticeShown", () => {
 	it("flips the notice flag to true", () => {
-		writeFileSync(settingsPath(), JSON.stringify({ autoUpdate: true }))
+		writeFileSync(statePath(), JSON.stringify({ autoUpdate: true }))
 		markAutoUpdateNoticeShown()
 		expect(loadAutoUpdateNoticeShown()).toBe(true)
 	})
@@ -143,9 +143,9 @@ describe("markAutoUpdateNoticeShown", () => {
 	})
 
 	it("preserves unrelated keys", () => {
-		writeFileSync(settingsPath(), JSON.stringify({ theme: "dark", autoUpdate: true }))
+		writeFileSync(statePath(), JSON.stringify({ theme: "dark", autoUpdate: true }))
 		markAutoUpdateNoticeShown()
-		const round = JSON.parse(readFileSync(settingsPath(), "utf-8")) as Record<string, unknown>
+		const round = JSON.parse(readFileSync(statePath(), "utf-8")) as Record<string, unknown>
 		expect(round.autoUpdateNoticeShown).toBe(true)
 		expect(round.autoUpdate).toBe(true)
 		expect(round.theme).toBe("dark")
