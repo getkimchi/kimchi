@@ -388,6 +388,14 @@ export function maybeInjectLifecycleObligationGuard(
 		return true
 	}
 
+	// Exhaustion is also a handled final-completion outcome for this run.
+	// Without setting the shared latch, the legacy agent_end fallback would
+	// immediately schedule another complete_ferment turn and bypass the guard's
+	// bounded retry budget.
+	if (decision.type === "exhausted" && decision.obligation.action.kind === "complete_ferment") {
+		callbacks?.onFinalCompletionNudgeScheduled?.()
+	}
+
 	if (decision.type === "exhausted" && decision.report) {
 		const action = decision.obligation.action
 		const obligationDescription =

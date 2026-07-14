@@ -604,6 +604,55 @@ describe("fermentExtension question dropdown", () => {
 			}),
 			expect.anything(),
 		)
+
+		// The tool-using stop above does not consume the text-only lifecycle
+		// budget, so one final bare stop receives retry 2/2.
+		vi.mocked(pi.sendMessage).mockClear()
+		await turnEnd(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "stop",
+					content: [{ type: "text", text: "Completing now." }],
+				},
+			},
+			ctx,
+		)
+		await agentEnd({ type: "agent_end" }, ctx)
+
+		const retryCalls = vi
+			.mocked(pi.sendMessage)
+			.mock.calls.filter(([message]) => message.customType === "ferment_continuation_nudge")
+		expect(retryCalls).toHaveLength(1)
+
+		// Once retry 2/2 is exhausted, the diagnostic is terminal for this
+		// unchanged obligation. agent_end must not re-open the legacy final-
+		// completion path and silently grant another opportunity.
+		vi.mocked(pi.sendMessage).mockClear()
+		await turnEnd(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "stop",
+					content: [{ type: "text", text: "Still no tool call." }],
+				},
+			},
+			ctx,
+		)
+		await agentEnd({ type: "agent_end" }, ctx)
+
+		const postExhaustionContinuationCalls = vi
+			.mocked(pi.sendMessage)
+			.mock.calls.filter(([message]) => message.customType === "ferment_continuation_nudge")
+		const exhaustionCalls = vi
+			.mocked(pi.sendMessage)
+			.mock.calls.filter(
+				([message]) =>
+					message.customType === "ferment_breadcrumb" &&
+					(message.details as { variant?: string } | undefined)?.variant === "warning",
+			)
+		expect(postExhaustionContinuationCalls).toHaveLength(0)
+		expect(exhaustionCalls).toHaveLength(1)
 	})
 
 	it("does not reactively nudge from subagent processes", async () => {
