@@ -7,6 +7,7 @@
 // call in its own try/catch but we also catch internally as defense-in-depth.
 
 import { basename } from "node:path"
+import { type CliMode, getCliModeArg, hasExportFlag, hasPrintFlag, PROTOCOL_MODES } from "../cli-modes.js"
 import { getVersion } from "../utils.js"
 import { isHomebrewInstall } from "./paths.js"
 import { loadAutoUpdateSetting } from "./settings.js"
@@ -25,32 +26,19 @@ const SKIP_SUBCOMMANDS = new Set(["update", "setup", "mcp", "login", "install"])
 // Pure flags that suppress auto-update. Checked anywhere in argv.
 const SKIP_FLAGS = new Set(["--no-auto-update", "--version", "-v", "--help", "-h"])
 
-// Non-interactive CLI modes where an update/re-exec before startup would
-// corrupt the protocol stream or surprise external clients. Mirrors the
-// logic in cli-args.ts:isProtocolOrPrintMode but stays self-contained so
-// auto-update.ts doesn't pull pi-coding-agent into the early import chain
-// (entry.ts dynamically imports this module before cli.js).
-const NON_INTERACTIVE_MODES = new Set(["json", "rpc", "acp"])
+// Re-exports for test files that import from this module.
+export { type CliMode, getCliModeArg, hasExportFlag, hasPrintFlag, PROTOCOL_MODES } from "../cli-modes.js"
 
 /** Return true when argv selects a non-interactive mode (ACP/JSON/RPC/print/
  *  export). In those modes stdout/stderr belong to the caller and a re-exec
- *  mid-startup would corrupt the protocol stream or break scripts. */
+ *  mid-startup would corrupt the protocol stream or break scripts.
+ *
+ *  Broader than cli-args.ts:isProtocolOrPrintMode: also skips `--export`,
+ *  which writes to a file and exits — a re-exec there would surprise the
+ *  caller just as much as in protocol modes. */
 export function isNonInteractiveLaunch(argv: readonly string[]): boolean {
-	// --mode=<value> or --mode <value>
-	for (let i = 0; i < argv.length; i += 1) {
-		const arg = argv[i]
-		if (arg === "--mode" && i + 1 < argv.length) {
-			if (NON_INTERACTIVE_MODES.has(argv[i + 1])) return true
-		}
-		if (arg.startsWith("--mode=")) {
-			if (NON_INTERACTIVE_MODES.has(arg.slice("--mode=".length))) return true
-		}
-	}
-	// --print / -p: piped output mode
-	if (argv.includes("--print") || argv.includes("-p")) return true
-	// --export: writes to a file and exits
-	if (argv.includes("--export") || argv.some((a) => a.startsWith("--export="))) return true
-	return false
+	const mode = getCliModeArg(argv)
+	return (mode !== undefined && PROTOCOL_MODES.has(mode as CliMode)) || hasPrintFlag(argv) || hasExportFlag(argv)
 }
 
 /** Race a promise against a timeout. Returns the promise's result if it

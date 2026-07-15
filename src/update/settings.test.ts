@@ -5,7 +5,7 @@
 // `forTest` re-export noise and matches the pattern already used by
 // src/extensions/agents/discovery-priority.test.ts and friends.
 
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"

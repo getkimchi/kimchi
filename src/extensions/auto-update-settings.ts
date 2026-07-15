@@ -22,10 +22,10 @@ const LOG_PREFIX = "[kimchi-auto-update]"
 // Re-export pure helpers so tests can drive them without booting the TUI.
 export { argvHasSkipTrigger } from "../update/auto-update.js"
 export {
-	loadAutoUpdateSetting,
-	saveAutoUpdateSetting,
 	loadAutoUpdateNoticeShown,
+	loadAutoUpdateSetting,
 	markAutoUpdateNoticeShown,
+	saveAutoUpdateSetting,
 } from "../update/settings.js"
 
 export interface ManualUpdateResult {
