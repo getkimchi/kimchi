@@ -94,6 +94,11 @@ async function showUpdateMenu(ctx: ExtensionCommandContext): Promise<void> {
 		if (choice === UPDATE_NOW_LABEL) {
 			const result = await runManualUpdate()
 			ctx.ui.notify(result.message, result.ok ? "info" : "error")
+			// If the update succeeded and auto-update is still off, suggest
+			// enabling it so the user doesn't have to update manually next time.
+			if (result.ok && !loadAutoUpdateSetting()) {
+				ctx.ui.notify("Tip: enable auto-update from /update so kimchi stays up to date automatically.", "info")
+			}
 			return
 		}
 
