@@ -223,7 +223,18 @@ You have exactly these tools — no others:
 - **create_todos** / **update_todos** / **add_todo** / **mark_todo** / **clear_todos** — track your progress
 - **questionnaire** — ask the user a question (interactive mode only)
 
-Delegate all file I/O, shell commands, and web searches to sub-agents.`)
+Delegate all file I/O, shell commands, and web searches to sub-agents.
+
+### Setting budgets on Agent calls
+
+Always set token_budget, max_turns, and max_duration on every Agent call. Match them to the task complexity:
+- Small task (single file edit, quick lookup): token_budget: 50000, max_turns: 10, max_duration: 180
+- Implementation task (write a feature, fix a bug): token_budget: 150000, max_turns: 30, max_duration: 600
+- Complex task (multi-file build, debug cycle): token_budget: 200000, max_turns: 40, max_duration: 900
+- Exploration (read and report): token_budget: 100000, max_turns: 25, max_duration: 300
+- Review (read and verify): token_budget: 50000, max_turns: 20, max_duration: 300
+
+Never set token_budget below 50000 — sub-agents need room to write code and debug. If a sub-agent runs out of budget, it aborts without completing the work.`)
 
 	// 5. Model selection (role-to-model routing, dynamic)
 	parts.push(buildModelSelection(ctx))
