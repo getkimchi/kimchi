@@ -25,9 +25,6 @@ const SKIP_SUBCOMMANDS = new Set(["update", "setup", "mcp", "login", "install"])
 // Pure flags that suppress auto-update. Checked anywhere in argv.
 const SKIP_FLAGS = new Set(["--no-auto-update", "--version", "-v", "--help", "-h"])
 
-// Re-exports for test files that import from this module.
-export { type CliMode, getCliModeArg, hasExportFlag, hasPrintFlag, PROTOCOL_MODES } from "../cli-modes.js"
-
 /** Return true when argv selects a non-interactive mode (ACP/JSON/RPC/print/
  *  export). In those modes stdout/stderr belong to the caller and a re-exec
  *  mid-startup would corrupt the protocol stream or break scripts.
