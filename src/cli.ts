@@ -37,6 +37,7 @@ import { isBunBinary } from "./env.js"
 import activityExtension from "./extensions/activity.js"
 import agentsExtension from "./extensions/agents/index.js"
 import assistantPrefixExtension from "./extensions/assistant-prefix.js"
+import autoUpdateSettingsExtension from "./extensions/auto-update-settings.js"
 import bashDefaultTimeoutExtension from "./extensions/bash-default-timeout.js"
 import bashTimeoutGuidanceExtension from "./extensions/bash-timeout-guidance.js"
 import bashToolGuardExtension from "./extensions/bash-tool-guard.js"
@@ -54,6 +55,7 @@ import hideThinkingExtension from "./extensions/hide-thinking.js"
 import ideAdapterExtension from "./extensions/ide-adapter/index.js"
 import infrastructureBreakerExtension from "./extensions/infrastructure-breaker.js"
 import inputHistoryExtension from "./extensions/input-history.js"
+import kimchiHooksAdapter from "./extensions/kimchi-hooks/index.js"
 import kimchiMinimalTintsExtension from "./extensions/kimchi-minimal-tints.js"
 import llmResponseLogExtension from "./extensions/llm-response-log.js"
 import loginExtension from "./extensions/login/index.js"
@@ -582,6 +584,7 @@ try {
 			: []
 		const effectiveSkillPaths = [...new Set([...skillPaths, ...getActiveVendorSkillPaths()])]
 		const extensionFactories = [
+			autoUpdateSettingsExtension,
 			startupUpdateExtension,
 			superpowersExtension,
 			sessionNameExtension(),
@@ -622,6 +625,7 @@ try {
 			// SessionStart steering blocks into the system prompt. Gated per-package
 			// by each package's own resource toggle (see pluginPackageHookSources).
 			pluginPackageHooksAdapter,
+			kimchiHooksAdapter,
 			permissionsExtension,
 			resourcesExtension,
 			resourceToolBlockerExtension,

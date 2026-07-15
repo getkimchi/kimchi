@@ -260,9 +260,9 @@ describe("DEFAULT_MODEL_ROLES", () => {
 		expect(reviewers).not.toContain("kimchi-dev/minimax-m3")
 	})
 
-	it("explorer pool contains nemotron", () => {
+	it("explorer pool contains deepseek-v4-flash", () => {
 		const explorers = normalizeRoleModels(DEFAULT_MODEL_ROLES.explorer)
-		expect(explorers).toContain("kimchi-dev/nemotron-3-ultra-fp4")
+		expect(explorers).toContain("kimchi-dev/deepseek-v4-flash")
 	})
 
 	it("planner pool contains kimi-k2.7", () => {
@@ -370,7 +370,7 @@ describe("saveModelRoles", () => {
 })
 
 describe("validateModelRoles", () => {
-	const available = new Set(["kimi-k2.6", "kimi-k2.7", "minimax-m2.7", "minimax-m3", "nemotron-3-ultra-fp4"])
+	const available = new Set(["kimi-k2.6", "kimi-k2.7", "minimax-m2.7", "minimax-m3", "deepseek-v4-flash"])
 
 	it("returns no unavailable roles when all defaults are available", () => {
 		const result = validateModelRoles(DEFAULT_MODEL_ROLES, available)
@@ -492,9 +492,9 @@ describe("getAllowedMultiModelRefs", () => {
 	it("returns sorted unique refs for default roles", () => {
 		applyRoleAugmentation(() => ({ ...DEFAULT_MODEL_ROLES }))
 		expect(getAllowedMultiModelRefs()).toEqual([
+			"kimchi-dev/deepseek-v4-flash",
 			"kimchi-dev/kimi-k2.7",
 			"kimchi-dev/minimax-m3",
-			"kimchi-dev/nemotron-3-ultra-fp4",
 		])
 	})
 
