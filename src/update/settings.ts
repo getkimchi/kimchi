@@ -15,9 +15,9 @@
 // there are no unrelated keys to clobber, and the tmp name includes the
 // PID so concurrent processes don't collide on the rename.
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
-import { dirname, join } from "node:path"
+import { join } from "node:path"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
+import { readJson, writeJson } from "../config/json.js"
 
 /** Path to the dedicated auto-update state file. Separate from the shared
  *  settings.json so read-modify-writes here can never clobber unrelated keys. */
@@ -33,29 +33,16 @@ interface AutoUpdateState {
 }
 
 function readState(path: string): AutoUpdateState {
-	if (!existsSync(path)) return {}
 	try {
-		const parsed = JSON.parse(readFileSync(path, "utf-8")) as unknown
-		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-			return parsed as AutoUpdateState
-		}
-		return {}
+		return readJson(path) as AutoUpdateState
 	} catch (err) {
+		// readJson throws on malformed JSON (by design — corrupt configs should
+		// be visible). Auto-update is non-critical, so swallow and return the
+		// default state rather than crashing the session.
 		const reason = err instanceof Error ? err.message : String(err)
 		console.warn(`[kimchi-update] Ignoring malformed auto-update state at ${path}: ${reason}`)
 		return {}
 	}
-}
-
-/** Atomic write using a process-unique tmp name to avoid collisions
- *  between concurrent kimchi processes. */
-function writeState(path: string, next: AutoUpdateState): void {
-	mkdirSync(dirname(path), { recursive: true })
-	// Include PID in the tmp name so two concurrent processes don't
-	// race on the same `auto-update.json.tmp` file.
-	const tmp = `${path}.${process.pid}.tmp`
-	writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`, "utf-8")
-	renameSync(tmp, path)
 }
 
 /** Default for autoUpdate is `false` (opt-in) for the initial rollout.
@@ -77,11 +64,11 @@ export function loadAutoUpdateNoticeShown(): boolean {
 export function saveAutoUpdateSetting(enabled: boolean): void {
 	const path = autoUpdateStatePath()
 	const next = { ...readState(path), autoUpdate: enabled }
-	writeState(path, next)
+	writeJson(path, next)
 }
 
 export function markAutoUpdateNoticeShown(): void {
 	const path = autoUpdateStatePath()
 	const next = { ...readState(path), autoUpdateNoticeShown: true }
-	writeState(path, next)
+	writeJson(path, next)
 }
