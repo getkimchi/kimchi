@@ -1,0 +1,71 @@
+.header{
+
+    height:72px;
+
+    padding:0 28px;
+
+    background:var(--surface);
+
+    display:flex;
+
+    align-items:center;
+
+    justify-content:space-between;
+
+}
+
+.header h1{
+
+    margin:0;
+
+    font-size:22px;
+
+    font-weight:700;
+
+}
+
+.header p{
+
+    margin-top:4px;
+
+    color:var(--text-secondary);
+
+    font-size:13px;
+
+}
+
+.status{
+
+    padding:8px 14px;
+
+    border-radius:999px;
+
+    font-size:13px;
+
+    font-weight:600;
+
+}
+
+.status-ready{
+
+    background:#e8fff0;
+
+    color:#11823b;
+
+}
+
+.status-connecting{
+
+    background:#fff7df;
+
+    color:#ad7700;
+
+}
+
+.status-error{
+
+    background:#ffe7e7;
+
+    color:#c62828;
+
+}

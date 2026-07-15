@@ -1,0 +1,124 @@
+.app{
+
+    display:flex;
+
+    width:100vw;
+    height:100vh;
+
+    overflow:hidden;
+
+}
+
+/* Sidebar */
+
+.app aside{
+
+    width:var(--sidebar-width);
+
+    background:var(--surface);
+
+    border-right:1px solid var(--border);
+
+    display:flex;
+
+    flex-direction:column;
+
+}
+
+/* Main */
+
+.app main{
+
+    flex:1;
+
+    display:flex;
+
+    flex-direction:column;
+
+    background:var(--background);
+
+}
+
+/* Cards */
+
+.card{
+
+    background:var(--surface);
+
+    border:1px solid var(--border);
+
+    border-radius:var(--radius);
+
+    box-shadow:var(--shadow-sm);
+
+}
+
+/* Primary Button */
+
+.btn-primary{
+
+    border:none;
+
+    background:var(--primary);
+
+    color:white;
+
+    border-radius:14px;
+
+    padding:14px 18px;
+
+    font-weight:600;
+
+    transition:var(--transition);
+
+}
+
+.btn-primary:hover{
+
+    background:var(--primary-hover);
+
+}
+
+.btn-primary:disabled{
+
+    opacity:.55;
+
+    cursor:not-allowed;
+
+}
+
+/* Secondary */
+
+.btn-secondary{
+
+    background:white;
+
+    border:1px solid var(--border);
+
+    border-radius:14px;
+
+    padding:14px 18px;
+
+}
+
+/* Scrollbars */
+
+::-webkit-scrollbar{
+
+    width:10px;
+
+}
+
+::-webkit-scrollbar-thumb{
+
+    background:#d6d6df;
+
+    border-radius:999px;
+
+}
+
+::-webkit-scrollbar-thumb:hover{
+
+    background:#bbbbc5;
+
+}

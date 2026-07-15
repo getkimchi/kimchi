@@ -10,7 +10,7 @@
 //                                   plus package.json → dist/share/kimchi/
 //                                   so the compiled binary resolves assets from the shared data directory
 
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs"
 import { platform } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"

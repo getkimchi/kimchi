@@ -1,0 +1,97 @@
+.setup-page {
+
+    width: 100%;
+    height: 100%;
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    background: var(--background);
+
+}
+
+.setup-card {
+
+    width: 100%;
+    max-width: 380px;
+
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-lg);
+
+    padding: 40px 36px;
+
+    text-align: center;
+
+}
+
+.setup-emoji {
+
+    font-size: 40px;
+    line-height: 1;
+    margin-bottom: 16px;
+
+}
+
+.setup-card h1 {
+
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--text);
+    margin: 0 0 8px;
+
+}
+
+.setup-card p {
+
+    font-size: 14px;
+    color: var(--text-secondary);
+    margin: 0 0 24px;
+    line-height: 1.5;
+
+}
+
+.setup-input {
+
+    width: 100%;
+
+    padding: 13px 14px;
+
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+
+    font-size: 14px;
+    color: var(--text);
+
+    margin-bottom: 12px;
+
+    transition: var(--transition);
+
+}
+
+.setup-input:focus {
+
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(109, 74, 255, 0.15);
+
+}
+
+.setup-submit {
+
+    width: 100%;
+
+}
+
+.setup-error {
+
+    margin: 14px 0 0;
+
+    font-size: 13px;
+    color: var(--danger);
+    line-height: 1.5;
+    white-space: pre-line;
+
+}

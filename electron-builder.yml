@@ -1,0 +1,42 @@
+appId: dev.kimchi.gui
+
+productName: Kimchi
+
+executableName: kimchi
+
+directories:
+  output: dist
+
+files:
+  - dist/electron/**
+  - out/renderer/**
+  - package.json
+
+extraResources:
+  - from: dist/bin
+    to: bin
+
+  - from: dist/share
+    to: share
+
+extraMetadata:
+  main: dist/electron/main/index.js
+
+asar: true
+
+win:
+  target:
+    - portable
+  artifactName: ${env.GUI_ARTIFACT_NAME}.${ext}
+
+linux:
+  target:
+    - AppImage
+  artifactName: ${env.GUI_ARTIFACT_NAME}.${ext}
+
+mac:
+  target:
+    - dmg
+  artifactName: ${env.GUI_ARTIFACT_NAME}.${ext}
+
+npmRebuild: false
