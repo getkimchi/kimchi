@@ -312,9 +312,12 @@ function buildRetryInstruction(
  * a lifecycle obligation unmet, and either schedules a retry or reports
  * exhaustion.
  *
- * Returns true if the guard acted (scheduled a retry or emitted an
- * exhaustion diagnostic), false if it did nothing (caller should fall
- * through to existing handling).
+ * Returns true when the guard owns the turn — either it scheduled a retry,
+ * emitted an exhaustion diagnostic, or is absorbing a subsequent text-only
+ * stop for an already-exhausted obligation (no message sent, but the turn
+ * must not fall through to fallback nudges that would re-engage the
+ * exhausted obligation). Returns false when the guard has nothing to do
+ * for this turn (caller should fall through to existing handling).
  *
  * Prerequisites the caller must guarantee:
  * - The message role is `assistant`.

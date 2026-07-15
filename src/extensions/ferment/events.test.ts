@@ -746,6 +746,42 @@ describe("turn_end lifecycle obligation guard", () => {
 		expect(pi.setActiveTools).toHaveBeenCalledWith([])
 	})
 
+	it("falls through to the guard when the model asks a question in automated mode", async () => {
+		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-lifecycle-guard-question-")))
+		const draft = storage.create("Question Ferment")
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: () => storage,
+			getContinuationPolicy: () => "automated",
+			isAutomatedContinuationEnabled: () => true,
+		}
+		runtime.setActive(draft)
+
+		const { handlers, pi } = createPi()
+		registerFermentEvents(pi, runtime)
+		const turnEnd = handlers.get("turn_end")
+		if (!turnEnd) throw new Error("turn_end handler was not registered")
+
+		await turnEnd(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "stop",
+					content: [{ type: "text", text: "Does this plan look right?" }],
+				},
+			},
+			createContext({ hasUI: false }),
+		)
+
+		// A trailing question in automated mode is not a legitimate user-input
+		// stop — there is no user to answer it. The guard must fire and schedule
+		// a retry toward the required lifecycle tool call.
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ customType: "ferment_continuation_nudge" }),
+			expect.objectContaining({ deliverAs: "steer" }),
+		)
+	})
+
 	it("starts a fresh retry budget after a new session begins", async () => {
 		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-lifecycle-guard-session-")))
 		const draft = storage.create("New Session")

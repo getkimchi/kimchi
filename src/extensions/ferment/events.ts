@@ -1,7 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { clearFermentCache } from "../../ferment/store.js"
 import { deriveDraftFermentTitle } from "../../ferment/title.js"
-import type { Ferment } from "../../ferment/types.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { deferExtensionAction } from "../deferred-action.js"
 import { getMultiModelEnabled } from "../multi-model.js"
@@ -174,7 +173,10 @@ async function maybeRunUserInputDropdown(
 	if (!prompt) return false
 	const boundaryHandled = await maybeRunManualBoundaryDropdown(pi, ctx, prompt, f, runtime)
 	if (boundaryHandled) return true
-	if (!ctx.hasUI) return true
+	// In automated mode (no UI) there is no user to answer a question.
+	// Let the turn fall through to the lifecycle obligation guard, which
+	// will re-nudge the model toward the required lifecycle tool call.
+	if (!ctx.hasUI) return false
 
 	const choice = await promptSelect(ctx, prompt.title, prompt.options)
 	if (!choice) return true
