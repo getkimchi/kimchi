@@ -2,12 +2,12 @@ import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent"
 import {
 	Container,
 	Key,
+	matchesKey,
 	type SelectItem,
 	SelectList,
 	type SelectListLayoutOptions,
 	Spacer,
 	Text,
-	matchesKey,
 	truncateToWidth,
 } from "@earendil-works/pi-tui"
 import { readSurveySeenAt, writeSurveySeenAt } from "../../config.js"

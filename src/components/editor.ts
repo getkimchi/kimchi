@@ -1,7 +1,7 @@
-import { CustomEditor, type Theme } from "@earendil-works/pi-coding-agent"
 import type { KeybindingsManager } from "@earendil-works/pi-coding-agent"
+import { CustomEditor, type Theme } from "@earendil-works/pi-coding-agent"
 import type { EditorTheme, TUI } from "@earendil-works/pi-tui"
-import { Editor, isKittyProtocolActive, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
+import { isKittyProtocolActive, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
 import { RST_FG } from "../ansi.js"
 
 const CHEVRON_WIDTH = 2

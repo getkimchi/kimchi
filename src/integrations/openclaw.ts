@@ -1,19 +1,17 @@
 import { execFileSync, spawnSync } from "node:child_process"
 import { existsSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { dirname, join } from "node:path"
+import { join } from "node:path"
 import { readJson, writeFileAtomic, writeJson } from "../config/json.js"
 import type { ConfigScope } from "../config/scope.js"
 import { resolveScopePath } from "../config/scope.js"
+import type { ModelMetadata } from "../models.js"
 import { API_KEY_ENV, BASE_URL, PROVIDER_NAME } from "./constants.js"
 import { findBinary } from "./detect.js"
-import { type ModelRole, resolveAllModelRoles, resolveModelRole } from "./models.js"
-import { compareSemverGte } from "./opencode.js"
+import { type ModelRole, resolveAllModelRoles } from "./models.js"
 import { register } from "./registry.js"
 
 const OPENCLAW_CONFIG_PATH = "~/.openclaw/openclaw.json"
-const OPENCLAW_BATCH_MIN_VERSION = "2026.3.17"
-const OPENCLAW_VERSION_REGEX = /OpenClaw\s+(\d{4}\.\d+\.\d+)/
 
 /**
  * Build the OpenClaw provider block — the JSON dropped at
@@ -166,7 +164,7 @@ async function writeOpenClawViaCLI(
 async function writeOpenClawDirect(
 	scope: ConfigScope,
 	apiKey: string,
-	models: readonly import("../models.js").ModelMetadata[],
+	models: readonly ModelMetadata[],
 ): Promise<void> {
 	if (models.length === 0) throw new Error("No models available — is the API key valid?")
 
@@ -204,7 +202,7 @@ async function writeOpenClawDirect(
 async function writeOpenClaw(
 	scope: ConfigScope,
 	apiKey: string,
-	models: readonly import("../models.js").ModelMetadata[],
+	models: readonly ModelMetadata[],
 	_options?: { telemetryEnabled?: boolean },
 ): Promise<void> {
 	if (!apiKey) {

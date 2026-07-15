@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest"
 import { SHARED_PLANNING_PROCESS } from "../../../shared/planning/shared-planning-process.js"
 import { DEFAULT_AGENTS } from "../personas/default-agents.js"
-import { AGENT_EXPLORE, AGENT_GENERAL_PURPOSE, AGENT_PLAN, AGENT_RESEARCHER, type EnvInfo } from "../personas/types.js"
+import {
+	AGENT_EXPLORE,
+	AGENT_GENERAL_PURPOSE,
+	AGENT_PLAN,
+	AGENT_RESEARCHER,
+	type AgentConfig,
+	type EnvInfo,
+} from "../personas/types.js"
 import { buildAgentPrompt, formatTokenBudget } from "./prompts.js"
 
 const FIXED_ENV: EnvInfo = {
@@ -22,49 +29,38 @@ function getRequired(name: string): ReturnType<typeof DEFAULT_AGENTS.get> & obje
 }
 
 describe("default agents — subagent system prompt snapshot", () => {
-	it("General-Purpose agent assembles expected prompt (append mode)", () => {
+	it("General-Purpose agent assembles expected prompt (replace mode)", () => {
 		const agent = getRequired(AGENT_GENERAL_PURPOSE)
 		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT, {
 			activeToolNames: ["read", "bash", "edit", "write", "grep", "find", "ls"],
 		})
-		expect(output).toMatchInlineSnapshot(`
-			"# Environment
-			Working directory: /home/testuser/projects/myapp
-			Git repository: yes
-			Branch: main
-			Platform: linux
-
-			<inherited_system_prompt>
-			You are a kimchi coding agent. You orchestrate sub-agents and tools to solve complex tasks.
-			</inherited_system_prompt>
-
-			## Available Tools
-			- read
-			- bash
-			- edit
-			- write
-			- grep
-			- find
-			- ls
-
-			<sub_agent_context>
-			You are operating as a sub-agent invoked to handle a specific task.
-			- Use the read tool instead of cat/head/tail
-			- Use the edit tool instead of sed/awk
-			- Use the write tool instead of echo/heredoc
-			- Use the find tool instead of bash find/ls for file search
-			- Use the grep tool instead of bash grep/rg for content search
-			- Make independent tool calls in parallel
-			- Use absolute file paths
-			- Do not use emojis
-			- Be concise but complete
-			- Messages prefixed with "[Orchestrator]" are system instructions from the agent loop, not user input. Do not attribute them to the user.
-			</sub_agent_context>"
-		`)
+		// Replace mode: no inherited_system_prompt or sub_agent_context tags
+		expect(output).not.toContain("<inherited_system_prompt>")
+		expect(output).not.toContain("<sub_agent_context>")
+		// Replace mode header
+		expect(output).toContain("You are a kimchi coding agent sub-agent.")
+		// Config systemPrompt is present
+		expect(output).toContain("You are a general-purpose coding agent for complex, multi-step tasks.")
+		expect(output).toContain("## Working Style")
+		// Core guidelines are injected (includeCoreGuidelines: true)
+		expect(output).toContain("Be concise in your responses")
+		expect(output).toContain("Never guess, assume, or fabricate")
+		expect(output).toContain("Documents directory")
+		// Available tools are listed
+		expect(output).toContain("## Available Tools")
+		expect(output).toContain("- read")
+		expect(output).toContain("- bash")
 	})
 
-	it("strips inherited Available Tools and adds the subagent-local tool list", () => {
-		const agent = getRequired(AGENT_GENERAL_PURPOSE)
+	it("strips inherited Available Tools and adds the subagent-local tool list (append mode via synthetic config)", () => {
+		const appendAgent: AgentConfig = {
+			name: "Test-Append",
+			description: "Test append agent",
+			extensions: true,
+			skills: true,
+			systemPrompt: "",
+			promptMode: "append",
+		}
 		const parentPrompt = `# Parent
 
 ## Available Tools
@@ -77,7 +73,7 @@ Keep this h3 section.
 
 ## Rules
 Keep these parent rules.`
-		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, parentPrompt, {
+		const output = buildAgentPrompt(appendAgent, FIXED_CWD, FIXED_ENV, parentPrompt, {
 			activeToolNames: ["read", "bash"],
 		})
 
@@ -311,5 +307,52 @@ describe("budget block in system prompt", () => {
 		expect(output).toContain("<budget>")
 		expect(output).toContain("Turn limit: 15 turns")
 		expect(output).toContain("Output token budget: ~100k")
+	})
+})
+
+describe("includeCoreGuidelines", () => {
+	it("includes core guidelines when includeCoreGuidelines is true (replace mode)", () => {
+		const agent: AgentConfig = {
+			name: "Test-Core",
+			description: "Test",
+			extensions: true,
+			skills: true,
+			systemPrompt: "Do the thing.",
+			promptMode: "replace",
+			includeCoreGuidelines: true,
+		}
+		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT)
+		expect(output).toContain("Be concise in your responses")
+		expect(output).toContain("Never guess, assume, or fabricate")
+		expect(output).toContain("Documents directory")
+	})
+
+	it("does not include core guidelines when includeCoreGuidelines is absent (replace mode)", () => {
+		const agent: AgentConfig = {
+			name: "Test-NoCore",
+			description: "Test",
+			extensions: true,
+			skills: true,
+			systemPrompt: "Do the thing.",
+			promptMode: "replace",
+		}
+		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT)
+		expect(output).not.toContain("Be concise in your responses")
+		expect(output).not.toContain("Never guess, assume, or fabricate")
+	})
+
+	it("does not include core guidelines in append mode even if flag is true", () => {
+		const agent: AgentConfig = {
+			name: "Test-Append-Core",
+			description: "Test",
+			extensions: true,
+			skills: true,
+			systemPrompt: "",
+			promptMode: "append",
+			includeCoreGuidelines: true,
+		}
+		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT)
+		expect(output).not.toContain("## Guidelines")
+		expect(output).not.toContain("## Factual Accuracy")
 	})
 })

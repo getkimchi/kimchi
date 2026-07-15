@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type {
@@ -13,7 +13,7 @@ import { registerAcpPrompter, unregisterAcpPrompter } from "../../modes/acp/perm
 import { runAsAgentWorker } from "../agent-worker-context.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import { FERMENT_TOOLS } from "../ferment/tool-names.js"
-import { type EnvironmentInfo, buildSystemPrompt } from "../prompt-construction/system-prompt.js"
+import { buildSystemPrompt, type EnvironmentInfo } from "../prompt-construction/system-prompt.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
 import { classifyToolCall } from "./classifier.js"
@@ -24,8 +24,8 @@ import permissionsExtension, {
 	isLaunchedWithYolo,
 	notifyFermentActive,
 } from "./index.js"
-import { unregisterSessionPermissionFlagController } from "./mode-controller-registry.js"
 import { getPermissionMode } from "./mode-controller.js"
+import { unregisterSessionPermissionFlagController } from "./mode-controller-registry.js"
 import { SessionMemory } from "./session-memory.js"
 import type { Rule } from "./types.js"
 
@@ -1192,7 +1192,7 @@ describe("permissions ACP prompter", () => {
 			request: async (req) => {
 				requests.push(req.toolCallId)
 				const remember = req.choices.find((choice) => choice.kind === "allow-remember")
-				if (!remember || remember.kind !== "allow-remember") throw new Error("missing remember choice")
+				if (remember?.kind !== "allow-remember") throw new Error("missing remember choice")
 				return { kind: "allow-remember", rule: remember.rule }
 			},
 		})

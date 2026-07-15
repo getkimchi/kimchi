@@ -2,7 +2,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js"
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js"
 import WebSocket from "ws"
-import type { IdeConnection, IdeTool, LockfileData } from "./types.js"
+import type { IdeConnection, LockfileData } from "./types.js"
 
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10000
 
@@ -118,7 +118,7 @@ class IdeWebSocketTransport implements Transport {
 			this.ws.once("close", () => resolve())
 			try {
 				this.ws.close()
-			} catch (_err) {
+			} catch {
 				resolve()
 			}
 		})

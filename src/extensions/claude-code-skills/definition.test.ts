@@ -21,7 +21,6 @@ describe("Claude Code skill discovery", () => {
 
 	afterEach(() => {
 		if (oldHome === undefined) {
-			// biome-ignore lint/performance/noDelete: process.env requires delete to truly unset.
 			delete process.env.HOME
 		} else {
 			process.env.HOME = oldHome

@@ -7,6 +7,8 @@ import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-a
  */
 import type { Component, TUI } from "@earendil-works/pi-tui"
 import { describe, expect, it, vi } from "vitest"
+import type { RoleModelAssignment } from "./model-roles.js"
+import { splitModelRef } from "./model-roles.js"
 import {
 	collectModelMetadata,
 	formatRoleAssignment,
@@ -15,8 +17,6 @@ import {
 	hasMetadataContent,
 	isEqualAssignment,
 } from "./model-roles-command.js"
-import type { RoleModelAssignment } from "./model-roles.js"
-import { splitModelRef } from "./model-roles.js"
 
 // Mock model-metadata module
 vi.mock("./model-metadata.js", () => ({
@@ -26,11 +26,11 @@ vi.mock("./model-metadata.js", () => ({
 	getModelMetadata: vi.fn(() => new Map()),
 }))
 
+import type { QuestionFormResult } from "../questionnaire/questionnaire-form.js"
 // Spy on the shared form factory so we can assert what questions / header
 // were rendered without booting the real TUI. The factory itself is loaded
 // for real so its reducer wiring is exercised end-to-end.
 import * as questionnaireForm from "../questionnaire/questionnaire-form.js"
-import type { QuestionFormResult } from "../questionnaire/questionnaire-form.js"
 import type { Answer, Question } from "../questionnaire/questionnaire-reducer.js"
 
 vi.mock("../questionnaire/questionnaire-form.js", async () => {
@@ -66,7 +66,7 @@ const createMockCtx = (
 				// Wire a wrapper around createQuestionForm so we can capture the
 				// questions + header that the caller passed to it.
 				const original = vi.mocked(questionnaireForm.createQuestionForm)
-				original.mockImplementationOnce((_tui, _theme, questions, header, done) => {
+				original.mockImplementationOnce((_tui, _theme, questions, header, _done) => {
 					factoryArgs.questions = questions
 					factoryArgs.header = header
 					return {

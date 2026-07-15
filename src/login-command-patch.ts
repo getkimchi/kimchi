@@ -9,10 +9,10 @@
 import { type AuthStatus, InteractiveMode, OAuthSelectorComponent } from "@earendil-works/pi-coding-agent"
 import { Spacer, Text } from "@earendil-works/pi-tui"
 import {
-	KIMCHI_DEFAULT_ENDPOINT,
-	KIMCHI_PROVIDER_ID,
 	createLoginChoiceSelector,
 	formatBrowserLoginMessage,
+	KIMCHI_DEFAULT_ENDPOINT,
+	KIMCHI_PROVIDER_ID,
 	performKimchiApiKeyLogin,
 	performKimchiBrowserLogin,
 	prePopulateSubscriptionModels,

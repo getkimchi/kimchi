@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import {
-	INFRA_BREAKER_THRESHOLD_ENV,
 	configureInfrastructureBreaker,
+	INFRA_BREAKER_THRESHOLD_ENV,
 	installInfrastructureRetryPatch,
 	isInfrastructureBreakerTripped,
 	isInfrastructureErrorRetryable,

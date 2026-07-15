@@ -5,14 +5,14 @@ import { join } from "node:path"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
-import { FermentStorage, clearFermentCache } from "../../ferment/store.js"
+import { clearFermentCache, FermentStorage } from "../../ferment/store.js"
 import type { Ferment } from "../../ferment/types.js"
 import { createContext } from "../__mocks__/context.js"
 import { globalTipRegistry } from "../tips/registry.js"
 import fermentExtension from "./index.js"
 import { resetAllReactiveContinuationNudgeCounts } from "./nudge.js"
 import { clearAllPendingPlanReviews, getPendingPlanReview, setPendingPlanReview } from "./plan-review.js"
-import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
+import { createDefaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import {
 	clearActiveFermentId,
 	clearPendingCompaction,
@@ -855,7 +855,7 @@ describe("fermentExtension question dropdown", () => {
 			getStorage: () => storage,
 		}
 		runtime.setContinuationPolicy("automated")
-		const applyAndPersist = createApplyAndPersist(runtime)
+		createApplyAndPersist(runtime)
 		const draft = storage.create("Plan Handoff")
 		setActive(draft)
 		const { pi } = registerFermentExtension(runtime)
@@ -925,6 +925,73 @@ describe("fermentExtension question dropdown", () => {
 			expect.objectContaining({ customType: "ferment_continuation_nudge" }),
 			expect.anything(),
 		)
+	})
+
+	it("does not inject nudges or dropdowns on turn_end when pending plan review exists", async () => {
+		// Regression: after propose_ferment_scoping sets a pending plan review,
+		// turn_end must NOT inject continuation nudges (which prevent agent_end
+		// from firing and showing the review dialog) or show a competing
+		// dropdown (which can prematurely confirm the scope via
+		// confirmPendingScope, causing the review dialog's confirm to fail).
+		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-index-plan-review-turn-end-guard-test-")))
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: () => storage,
+		}
+		runtime.setContinuationPolicy("automated")
+		const draft = storage.create("Turn End Guard")
+		runtime.setActive(draft)
+		runtime.setPendingScope(draft.id, {
+			goal: "Goal",
+			successCriteria: ["Works"],
+			constraints: [],
+			phases: [{ name: "Phase", goal: "Build", steps: [] }],
+		})
+		setPendingPlanReview({
+			fermentId: draft.id,
+			planMarkdown: "# Plan: Turn End Guard",
+		})
+
+		const { handlers, pi } = registerFermentExtension(runtime)
+		const turnEnd = handlers.get("turn_end")
+		if (!turnEnd) throw new Error("turn_end handler was not registered")
+		const ctx = createContext()
+
+		// Fire a text-only turn — this is the turn where the model produced a
+		// summary after propose_ferment_scoping returned "Plan ready for review".
+		await turnEnd(
+			{
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "Plan submitted for review." }],
+					stopReason: "stop",
+				},
+			},
+			ctx,
+		)
+
+		// No continuation nudge should be injected — it would prevent agent_end.
+		expect(pi.sendMessage).not.toHaveBeenCalledWith(
+			expect.objectContaining({ customType: "ferment_continuation_nudge" }),
+			expect.anything(),
+		)
+		// No scoping progress/stop nudge either.
+		expect(pi.sendMessage).not.toHaveBeenCalledWith(
+			expect.objectContaining({ customType: "ferment_scoping_progress_nudge" }),
+			expect.anything(),
+		)
+		expect(pi.sendMessage).not.toHaveBeenCalledWith(
+			expect.objectContaining({ customType: "ferment_scoping_stop_nudge" }),
+			expect.anything(),
+		)
+		// No competing dropdown — the plan review dialog is the only UI.
+		expect(ctx.ui.select).not.toHaveBeenCalled()
+		// Tools must be suppressed so the next LLM call is text-only, ending the turn.
+		expect(pi.setActiveTools).toHaveBeenCalledWith([])
+		// The pending plan review must still be set (not consumed/cleared).
+		expect(getPendingPlanReview(draft.id)).toBeDefined()
+		// The ferment must still be in draft (not prematurely scoped).
+		expect(storage.get(draft.id)?.status).toBe("draft")
 	})
 
 	it("opens pending plan review after agent_end macrotask and starts execution", async () => {
@@ -1415,24 +1482,24 @@ describe("fermentExtension abort handling", () => {
 		return { storage, runtime, pi, turnEnd, ctx, notify, select, scopeAndPlan, activate, pause, complete }
 	}
 
-	it.each(["running", "planned"] as const)(
-		"pauses a %s ferment on abort, notifies, and skips nudges",
-		async (status) => {
-			const { storage, runtime, pi, turnEnd, ctx, notify, scopeAndPlan, activate } = setupAbortFixture("pause")
-			const planned = scopeAndPlan("Abort")
-			const ferment = status === "running" ? activate(planned) : planned
-			setActive(ferment)
+	it.each([
+		"running",
+		"planned",
+	] as const)("pauses a %s ferment on abort, notifies, and skips nudges", async (status) => {
+		const { storage, pi, turnEnd, ctx, notify, scopeAndPlan, activate } = setupAbortFixture("pause")
+		const planned = scopeAndPlan("Abort")
+		const ferment = status === "running" ? activate(planned) : planned
+		setActive(ferment)
 
-			await turnEnd({ message: abortedMessage([{ type: "text", text: "x" }]) }, ctx)
+		await turnEnd({ message: abortedMessage([{ type: "text", text: "x" }]) }, ctx)
 
-			expect(storage.get(ferment.id)?.status).toBe("paused")
-			expect(notify).toHaveBeenCalledWith(expect.stringContaining("/ferment resume"))
-			expect(pi.sendMessage).not.toHaveBeenCalledWith(
-				expect.objectContaining({ customType: "ferment_continuation_nudge" }),
-				expect.anything(),
-			)
-		},
-	)
+		expect(storage.get(ferment.id)?.status).toBe("paused")
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("/ferment resume"))
+		expect(pi.sendMessage).not.toHaveBeenCalledWith(
+			expect.objectContaining({ customType: "ferment_continuation_nudge" }),
+			expect.anything(),
+		)
+	})
 
 	it.each(["draft", "paused", "complete"] as const)("does not mutate a %s ferment on abort", async (status) => {
 		const { storage, pi, turnEnd, ctx, notify, scopeAndPlan, activate, pause, complete } = setupAbortFixture("noop")

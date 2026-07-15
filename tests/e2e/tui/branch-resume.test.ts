@@ -1,11 +1,11 @@
 import { expect, test } from "@microsoft/tui-test"
-import { STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, fullText, waitForText } from "./support/assertions.js"
+import { fullText, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
 import {
-	PROMPT_READY,
-	TUI_TEST_CONFIG,
 	createKimchiFixture,
 	launchKimchi,
+	PROMPT_READY,
 	stopKimchi,
+	TUI_TEST_CONFIG,
 } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -29,7 +29,7 @@ test("branch creates a named resumable session for -r", async ({ terminal }) => 
 
 		const match = fullText(terminal).match(/You can resume a branch of this session with -r ([0-9a-f-]{36})/)
 		expect(match).not.toBeNull()
-		const sessionId = match![1]
+		const sessionId = match?.[1]
 
 		terminal.submit("/session")
 		await waitForText(terminal, new RegExp(`Name:\\s*${escapeRegExp(branchName)}`), {

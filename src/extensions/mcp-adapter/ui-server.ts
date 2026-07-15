@@ -10,6 +10,8 @@ import { applyCspMeta, buildCspMetaContent, buildHostHtmlTemplate } from "./host
 import { logger } from "./logger.js"
 import type { McpServerManager } from "./server-manager.js"
 import {
+	extractUiPromptText,
+	getVisualizationStreamEnvelope,
 	type UiDisplayMode,
 	type UiDisplayModeRequest,
 	type UiDisplayModeResult,
@@ -22,8 +24,6 @@ import {
 	type UiResourceContent,
 	type UiSessionMessages,
 	type UiStreamSummary,
-	extractUiPromptText,
-	getVisualizationStreamEnvelope,
 } from "./types.js"
 
 const MAX_BODY_SIZE = 2 * 1024 * 1024
@@ -333,7 +333,7 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
 				}
 
 				const connection = options.manager.getConnection(options.serverName)
-				if (!connection || connection.status !== "connected") {
+				if (connection?.status !== "connected") {
 					sendJson(res, 503, { ok: false, error: `Server "${options.serverName}" is not connected` })
 					return
 				}
@@ -444,7 +444,7 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
 
 			if (url.pathname === "/proxy/ui/complete") {
 				const reason =
-					typeof (params as { reason?: string }).reason === "string" ? (params as { reason?: string }).reason! : "done"
+					typeof (params as { reason?: string }).reason === "string" ? (params as { reason: string }).reason : "done"
 				markCompleted(reason)
 				sendJson(res, 200, { ok: true, result: {} })
 				setTimeout(() => {

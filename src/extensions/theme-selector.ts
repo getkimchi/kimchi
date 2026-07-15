@@ -6,15 +6,15 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
-import { type Theme, getSelectListTheme } from "@earendil-works/pi-coding-agent"
+import { getSelectListTheme, type Theme } from "@earendil-works/pi-coding-agent"
 import {
 	Container,
 	type KeybindingsManager,
 	type SelectItem,
 	SelectList,
 	Spacer,
-	type TUI,
 	Text,
+	type TUI,
 } from "@earendil-works/pi-tui"
 
 // Mirror of upstream's private SETTINGS_SUBMENU_SELECT_LIST_LAYOUT constant

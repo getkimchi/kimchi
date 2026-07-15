@@ -138,6 +138,8 @@ export interface AgentConfig {
 	isolated?: boolean
 	/** Whether to inject project context files (CLAUDE.md, AGENTS.md) into the system prompt. Default: false. */
 	includeContextFiles?: boolean
+	/** Whether to inject shared core guidelines (CORE_GUIDELINES, FACTUAL_ACCURACY, DOCUMENTS_SECTION) into the system prompt in replace mode. Default: false. */
+	includeCoreGuidelines?: boolean
 	/** Persistent memory scope — agents with memory get a persistent directory and MEMORY.md */
 	memory?: MemoryScope
 	/** Isolation mode — "worktree" runs the agent in a temporary git worktree */

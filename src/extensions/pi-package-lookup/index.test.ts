@@ -3,12 +3,12 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import {
-	PI_PACKAGE_LOOKUP_RESOURCE_ID,
-	type ResolvedPaths,
 	getOriginalPiAgentDir,
 	getOriginalPiConfiguredPackages,
 	isOriginalPiPackageLookupEnabled,
 	mergeResolvedPaths,
+	PI_PACKAGE_LOOKUP_RESOURCE_ID,
+	type ResolvedPaths,
 	resolveOriginalPiPackageResources,
 } from "./index.js"
 

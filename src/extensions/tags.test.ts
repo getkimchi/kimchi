@@ -3,8 +3,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { type EnvironmentInfo, buildSystemPrompt } from "./prompt-construction/system-prompt.js"
-import tagsExtension, { TagManager, isValidTag, parseTag } from "./tags.js"
+import { buildSystemPrompt, type EnvironmentInfo } from "./prompt-construction/system-prompt.js"
+import tagsExtension, { isValidTag, parseTag, TagManager } from "./tags.js"
 
 const testEnv: EnvironmentInfo = {
 	os: "Linux",

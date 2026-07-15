@@ -1,4 +1,4 @@
-import { FILE_TOOLS, extractBashProgram, splitLeadingEnv } from "./taxonomy.js"
+import { extractBashProgram, FILE_TOOLS, splitLeadingEnv } from "./taxonomy.js"
 import type { Rule } from "./types.js"
 
 export interface Scope {

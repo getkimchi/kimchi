@@ -1,7 +1,7 @@
 import type { ExtensionContext, ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent"
 import type { Component, TUI } from "@earendil-works/pi-tui"
 import type { ScopingQuestionType } from "../../ferment/types.js"
-import { type Answer, type Question, type QuestionType, createQuestionForm } from "../questionnaire/index.js"
+import { type Answer, createQuestionForm, type Question, type QuestionType } from "../questionnaire/index.js"
 import { setTipWidgetLocation } from "../tips/index.js"
 
 type PromptUi = Pick<ExtensionUIContext, "select" | "input" | "editor" | "custom" | "setWorkingVisible">

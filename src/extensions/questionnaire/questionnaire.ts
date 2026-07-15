@@ -21,7 +21,7 @@ import { type Static, Type } from "typebox"
 
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { withWorkingHidden } from "../ui.js"
-import { type QuestionnaireResult, promptQuestionnaireFallback } from "./questionnaire-fallback.js"
+import { promptQuestionnaireFallback, type QuestionnaireResult } from "./questionnaire-fallback.js"
 import { createQuestionForm } from "./questionnaire-form.js"
 import { type Answer, type Question, type QuestionType, YES_NO_OPTIONS } from "./questionnaire-reducer.js"
 

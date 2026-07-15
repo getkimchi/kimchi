@@ -4,7 +4,7 @@ import { join } from "node:path"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../../ferment/event-store.js"
-import { type FermentRuntime, createDefaultFermentRuntime } from "../runtime.js"
+import { createDefaultFermentRuntime, type FermentRuntime } from "../runtime.js"
 import { clearAllStepStarts, clearPendingCompaction, getPendingCompaction } from "../state.js"
 import { createApplyAndPersist } from "../tool-helpers.js"
 
@@ -15,13 +15,13 @@ vi.mock("../../agents/index.js", () => ({
 
 import { createContext } from "../../__mocks__/context.js"
 import {
-	type StepHandlerServices,
-	type VerificationResult,
 	completeStep,
 	defaultStepHandlerServices,
 	registerStepTools,
+	type StepHandlerServices,
 	startStep,
 	suggestWorkerLimits,
+	type VerificationResult,
 } from "./steps.js"
 
 interface RegisteredTool {

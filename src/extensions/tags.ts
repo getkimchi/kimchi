@@ -20,7 +20,7 @@ import type {
 	Theme,
 	ThemeColor,
 } from "@earendil-works/pi-coding-agent"
-import { Container, Text } from "@earendil-works/pi-tui"
+import { Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 import type { ThinkingLevel } from "./agents/personas/types.js"
 import { createSystemPromptBlocks } from "./prompt-construction/index.js"

@@ -3,7 +3,7 @@ import { arch, version as osVersion, platform, release, tmpdir } from "node:os"
 import { join } from "node:path"
 import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ToolInfo } from "@earendil-works/pi-coding-agent"
-import { type Mock, afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest"
 import * as config from "../../config.js"
 import type { ModelMetadata } from "../../models.js"
 import { setResourceOverride } from "../../resources/store.js"
@@ -13,8 +13,8 @@ import * as agentWorkerContext from "../agent-worker-context.js"
 import { CLAUDE_CODE_SKILLS_RESOURCE_ID } from "../claude-code-skills/definition.js"
 import type { OrchestratorMessages } from "../orchestration/continuation-nudge.js"
 import promptEnrichmentExtension, {
-	stripEmptyToolCalls,
 	_resetDeprecatedNotificationTracking,
+	stripEmptyToolCalls,
 } from "./prompt-enrichment.js"
 import { createToolVisibility } from "./tool-visibility.js"
 
@@ -270,7 +270,6 @@ describe("prompt enrichment environment context", () => {
 			expect(result.systemPrompt).toContain("- Shell: /bin/test-shell")
 		} finally {
 			if (oldShell === undefined) {
-				// biome-ignore lint/performance/noDelete: process.env requires delete to truly unset.
 				delete process.env.SHELL
 			} else {
 				process.env.SHELL = oldShell
@@ -300,19 +299,16 @@ describe("prompt enrichment Claude Code skills", () => {
 
 	afterEach(() => {
 		if (oldAgentDir === undefined) {
-			// biome-ignore lint/performance/noDelete: process.env requires delete to truly unset.
 			delete process.env.KIMCHI_CODING_AGENT_DIR
 		} else {
 			process.env.KIMCHI_CODING_AGENT_DIR = oldAgentDir
 		}
 		if (oldHome === undefined) {
-			// biome-ignore lint/performance/noDelete: process.env requires delete to truly unset.
 			delete process.env.HOME
 		} else {
 			process.env.HOME = oldHome
 		}
 		if (oldXdgCacheHome === undefined) {
-			// biome-ignore lint/performance/noDelete: process.env requires delete to truly unset.
 			delete process.env.XDG_CACHE_HOME
 		} else {
 			process.env.XDG_CACHE_HOME = oldXdgCacheHome

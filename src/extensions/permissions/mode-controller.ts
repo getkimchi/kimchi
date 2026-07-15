@@ -1,9 +1,9 @@
 import { PERMISSIONS_ENV_KEY } from "./constants.js"
+import { parseModeString } from "./mode.js"
 import {
 	getSessionPermissionFlagController,
 	registerSessionPermissionFlagController,
 } from "./mode-controller-registry.js"
-import { parseModeString } from "./mode.js"
 import type {
 	PermissionMode,
 	PermissionModeRuntimeSource,

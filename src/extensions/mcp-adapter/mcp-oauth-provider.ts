@@ -13,13 +13,13 @@ import type {
 	OAuthTokens,
 } from "@modelcontextprotocol/sdk/shared/auth.js"
 import {
-	type StoredClientInfo,
-	type StoredTokens,
 	clearAllCredentials,
 	clearClientInfo,
 	clearTokens,
 	getAuthEntry,
 	getAuthForUrl,
+	type StoredClientInfo,
+	type StoredTokens,
 	updateClientInfo,
 	updateCodeVerifier,
 	updateOAuthState,

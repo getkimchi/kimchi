@@ -22,10 +22,11 @@ import "./login-command-patch.js"
 import "./paste-to-editor-patch.js"
 import {
 	DEFAULT_SKILL_PATHS,
-	RETRY_DEFAULTS,
 	ensureHideThinkingBlockDefault,
+	ensureQuietStartupDefault,
 	getActiveVendorSkillPaths,
 	loadConfig,
+	RETRY_DEFAULTS,
 	readTelemetryConfig,
 	upgradeLegacyRetrySettings,
 	writeApiKey,
@@ -106,9 +107,9 @@ import webFetchExtension from "./extensions/web-fetch/index.js"
 import webSearchExtension from "./extensions/web-search/index.js"
 import { normalizeAtFileArgs } from "./fs-paths.js"
 import {
-	KIMCHI_INFRA_ERROR_EXIT_CODE,
 	applyInfrastructureExitPolicy,
 	createInfrastructureErrorTracker,
+	KIMCHI_INFRA_ERROR_EXIT_CODE,
 } from "./infrastructure-error.js"
 import {
 	injectExperimentalProvider,
@@ -124,13 +125,13 @@ import {
 	resolveOllamaHost,
 } from "./ollama.js"
 import resourcesExtension from "./resources/extension.js"
-import { type ManagedExtensionFactory, enabledExtensionFactories } from "./resources/filter.js"
+import { enabledExtensionFactories, type ManagedExtensionFactory } from "./resources/filter.js"
 import resourceToolBlockerExtension from "./resources/tool-blocker.js"
 import { runSetupWizard } from "./setup-wizard.js"
 import { setAvailableModels } from "./startup-context.js"
 import { probeTerminalBackground } from "./terminal-bg-probe.js"
+import { installInlineCompactPatch } from "./upstream-inline-compact-patch.js"
 import { installInfrastructureRetryPatch } from "./upstream-retry-patch.js"
-import { getVersion } from "./utils.js"
 import {
 	postProcessHtmlExport,
 	postProcessJsonlExport,
@@ -138,8 +139,10 @@ import {
 	redactJsonlExport,
 } from "./utils/export-post-process.js"
 import { captureSessionStart } from "./utils/session-metadata-store.js"
+import { getVersion } from "./utils.js"
 
 installInfrastructureRetryPatch()
+installInlineCompactPatch()
 installPiNativeCompatibilityShim()
 
 function isModelCompletionFetch(input: RequestInfo | URL): boolean {
@@ -295,7 +298,6 @@ try {
 		let config = loadConfig()
 
 		const envKey = process.env.KIMCHI_API_KEY || undefined
-		// biome-ignore lint/performance/noDelete: process.env coerces assignments to strings, so `= undefined` would set it to the literal "undefined"
 		delete process.env.KIMCHI_API_KEY
 		if (envKey && !config.apiKey) {
 			writeApiKey(envKey)
@@ -436,6 +438,7 @@ try {
 		try {
 			const existing = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>
 			let changed = ensureHideThinkingBlockDefault(existing)
+			if (ensureQuietStartupDefault(existing)) changed = true
 			const upgraded = upgradeLegacyRetrySettings(existing.retry)
 			if (upgraded) {
 				existing.retry = upgraded

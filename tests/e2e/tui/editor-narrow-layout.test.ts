@@ -1,6 +1,5 @@
-import { expect, test } from "@microsoft/tui-test"
-import { Shell } from "@microsoft/tui-test"
-import { INPUT_TIMEOUT_MS, fullText, waitForText } from "./support/assertions.js"
+import { expect, Shell, test } from "@microsoft/tui-test"
+import { fullText, INPUT_TIMEOUT_MS, waitForText } from "./support/assertions.js"
 import { runKimchiSession } from "./support/kimchi-fixture.js"
 
 // Regression test for the "indicator squeezes the editor" bug.

@@ -1,8 +1,7 @@
 import type { AssistantMessage, ThinkingContent } from "@earendil-works/pi-ai"
 import { AssistantMessageComponent as _AssistantMessageComponent } from "@earendil-works/pi-coding-agent"
-import { Markdown, Spacer, Text } from "@earendil-works/pi-tui"
 import type { Component, MarkdownTheme } from "@earendil-works/pi-tui"
-import { truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
+import { Markdown, Spacer, Text, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import { ThinkingStepsComponent, tailRawLinesFromBlocks } from "./render.js"
 import {
 	decrementPatchRefCount,
@@ -96,7 +95,7 @@ class LiveThinkingPreview implements Component {
 			this.theme.fg("accent", "•"),
 			this.theme.fg("muted", "•"),
 		]
-		const pulse = pulseFrames[Math.floor(nowMs / 180) % pulseFrames.length] ?? pulseFrames[0]!
+		const pulse = pulseFrames[Math.floor(nowMs / 180) % pulseFrames.length] ?? pulseFrames[0]
 		const header = ` ${truncateToWidth(
 			`${this.theme.fg("muted", "▍")} ${this.theme.fg("dim", "Thinking")} ${pulse}`,
 			innerWidth,
@@ -182,9 +181,9 @@ function installPatch(theme: ThinkingThemeLike): () => void {
 	}
 
 	const withOriginalInstanceMethods = <T>(instance: AssistantMessageComponentPrototype, callback: () => T): T => {
-		const ownUpdateContent = Object.prototype.hasOwnProperty.call(instance, "updateContent")
-		const ownSetHideThinkingBlock = Object.prototype.hasOwnProperty.call(instance, "setHideThinkingBlock")
-		const ownSetHiddenThinkingLabel = Object.prototype.hasOwnProperty.call(instance, "setHiddenThinkingLabel")
+		const ownUpdateContent = Object.hasOwn(instance, "updateContent")
+		const ownSetHideThinkingBlock = Object.hasOwn(instance, "setHideThinkingBlock")
+		const ownSetHiddenThinkingLabel = Object.hasOwn(instance, "setHiddenThinkingLabel")
 		const previousUpdateContent = instance.updateContent
 		const previousSetHideThinkingBlock = instance.setHideThinkingBlock
 		const previousSetHiddenThinkingLabel = instance.setHiddenThinkingLabel

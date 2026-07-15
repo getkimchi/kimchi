@@ -7,7 +7,6 @@ import { getToolsForProfile } from "./tool-catalog.js"
 import {
 	apply,
 	applyCooperativeTweak,
-	installTurnBoundaryReset,
 	isSnapshotAppliedThisTurn,
 	reapplyCurrentProfile,
 	resetAll,
@@ -15,7 +14,6 @@ import {
 
 /** Build a fresh mock ExtensionAPI. */
 const makeMockPi = (overrides: { allTools?: Array<{ name: string }> } = {}): ExtensionAPI => {
-	const setActiveTools = vi.fn()
 	const on = vi.fn()
 	const getAllTools = vi.fn(() => overrides.allTools ?? [])
 	// The cooperative visibility layer calls pi.getActiveTools() and

@@ -1,7 +1,7 @@
 // ACP (Agent Client Protocol) mode: JSON-RPC 2.0 over stdio using
 // @agentclientprotocol/sdk. Lets IDE extensions, Zed, openclaw drive kimchi in-process.
 
-import { closeSync, openSync, readFileSync, readSync, readdirSync } from "node:fs"
+import { closeSync, openSync, readdirSync, readFileSync, readSync } from "node:fs"
 import { join } from "node:path"
 import { Readable, Writable } from "node:stream"
 import {
@@ -23,6 +23,7 @@ import {
 	type LoadSessionResponse,
 	type NewSessionRequest,
 	type NewSessionResponse,
+	ndJsonStream,
 	PROTOCOL_VERSION,
 	type PromptRequest,
 	type PromptResponse,
@@ -39,43 +40,42 @@ import {
 	type ToolCallLocation,
 	type ToolCallUpdate,
 	type ToolKind,
-	ndJsonStream,
 } from "@agentclientprotocol/sdk"
 import type { ImageContent } from "@earendil-works/pi-ai"
+import type { AgentSessionEvent, ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 import {
 	type AgentSession,
 	AuthStorage,
+	createAgentSession,
 	DefaultResourceLoader,
 	type ExtensionFactory,
+	initTheme,
 	ModelRegistry,
 	type SessionInfo as PiSessionInfo,
 	type SessionHeader,
 	SessionManager,
 	SettingsManager,
-	createAgentSession,
-	initTheme,
 } from "@earendil-works/pi-coding-agent"
-import type { AgentSessionEvent, ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 import { refFromModel, splitModelRef } from "../../extensions/model-catalog/ref-utils.js"
 import { getMultiModelEnabled, setMultiModelEnabled } from "../../extensions/multi-model.js"
 import { getOrchestratorModel } from "../../extensions/orchestration/model-roles.js"
 import { loadConfig } from "../../extensions/permissions/config.js"
 import {
-	PERMISSIONS_ENV_KEY,
 	PERMISSION_MODES,
 	PERMISSION_MODES_WITH_META,
+	PERMISSIONS_ENV_KEY,
 } from "../../extensions/permissions/constants.js"
-import {
-	registerSessionPermissionFlagController,
-	unregisterSessionPermissionFlagController,
-} from "../../extensions/permissions/mode-controller-registry.js"
+import { resolveMode } from "../../extensions/permissions/mode.js"
 import {
 	clearPermissionMode,
 	createSessionPermissionFlagController,
 	getPermissionMode,
 	setPermissionMode,
 } from "../../extensions/permissions/mode-controller.js"
-import { resolveMode } from "../../extensions/permissions/mode.js"
+import {
+	registerSessionPermissionFlagController,
+	unregisterSessionPermissionFlagController,
+} from "../../extensions/permissions/mode-controller-registry.js"
 import type { PermissionMode } from "../../extensions/permissions/types.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { createAcpUIContext } from "./acp-ui-context.js"
@@ -406,7 +406,7 @@ export class KimchiAcpAgent implements Agent {
 		setMultiModelEnabled(sessionId, false)
 		try {
 			await session.setModel(target)
-		} catch (err) {
+		} catch {
 			setMultiModelEnabled(sessionId, previousMultiModelEnabled)
 			// Pi's setModel only throws "if no auth is configured for the model"
 			throw RequestError.authRequired(undefined, `model ${refFromModel(target)} is not available: auth required`)
@@ -631,7 +631,7 @@ export class KimchiAcpAgent implements Agent {
 		return this.shutdownPromise
 	}
 
-	private async doShutdown(cause: "signal" | "disconnect"): Promise<void> {
+	private async doShutdown(_cause: "signal" | "disconnect"): Promise<void> {
 		// Drain any in-flight turn promises before tearing down the session.
 		// On the signal path we process.exit immediately so this is mostly
 		// cosmetic, but runAcpMode's finally also calls shutdown when conn.closed
@@ -850,7 +850,7 @@ export class KimchiAcpAgent implements Agent {
 
 		let count = 0
 		for (const entry of entries) {
-			if (!entry || entry.type !== "message" || entry.message.role !== "assistant") continue
+			if (entry?.type !== "message" || entry.message.role !== "assistant") continue
 
 			let inTextSegment = false
 			const countTextSegment = () => {
@@ -1551,7 +1551,7 @@ function collectToolResults(entries: unknown[]): Map<string, ReplayToolResult> {
 					isError?: unknown
 			  }
 			| undefined
-		if (!m || m.role !== "toolResult" || typeof m.toolCallId !== "string") continue
+		if (m?.role !== "toolResult" || typeof m.toolCallId !== "string") continue
 		out.set(m.toolCallId, {
 			content: m.content,
 			isError: m.isError === true,

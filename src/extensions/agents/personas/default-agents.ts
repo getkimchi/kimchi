@@ -8,7 +8,6 @@
  */
 
 import { SHARED_PLANNING_PROCESS } from "../../../shared/planning/shared-planning-process.js"
-import { KIMCHI_COAUTHOR } from "../../orchestration/model-registry/guidelines/default-phase-guidelines.js"
 import {
 	AGENT_BUILDER,
 	AGENT_EXPLORE,
@@ -33,8 +32,18 @@ function buildDefaultAgents(): Map<string, AgentConfig> {
 				description: "General-purpose agent for complex, multi-step tasks",
 				extensions: true,
 				skills: true,
-				systemPrompt: "",
-				promptMode: "append",
+				includeContextFiles: true,
+				includeCoreGuidelines: true,
+				systemPrompt: `You are a general-purpose coding agent for complex, multi-step tasks.
+You have full access to read, write, edit files, and execute commands.
+
+## Working Style
+- Make independent tool calls in parallel for efficiency
+- Use absolute file paths in all references
+- Do not use emojis
+- Be concise but complete
+- Messages prefixed with "[Orchestrator]" are automated system instructions from the agent loop, not user input. Do not attribute them to the user.`,
+				promptMode: "replace",
 				isDefault: true,
 			},
 		],

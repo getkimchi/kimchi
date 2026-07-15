@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { LLMGatewayError, classifyLLMGatewayError } from "./llm-gateway-error.js"
+import { classifyLLMGatewayError, LLMGatewayError } from "./llm-gateway-error.js"
 
 describe("classifyLLMGatewayError", () => {
 	it.each([

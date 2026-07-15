@@ -3,8 +3,8 @@ import { mkdirSync, writeFileSync } from "node:fs"
 import { tmpdir, userInfo } from "node:os"
 import { dirname, join } from "node:path"
 import type { AgentToolResult, ExtensionContext, ToolInfo } from "@earendil-works/pi-coding-agent"
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js"
 import { truncateTail } from "@earendil-works/pi-coding-agent"
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js"
 import type { SearchStrategy } from "./bm25.js"
 import {
 	getFailureAgeSeconds,
@@ -19,7 +19,7 @@ import { buildToolMetadata, findToolByName, formatSchema, getToolNames, isReadOn
 import { transformMcpContent } from "./tool-registrar.js"
 import type { DirectToolSpec, McpContent, ToolMetadata } from "./types.js"
 import { getServerPrefix, parseUiPromptHandoff } from "./types.js"
-import { type UiSessionRuntime, maybeStartUiSession } from "./ui-session.js"
+import { maybeStartUiSession, type UiSessionRuntime } from "./ui-session.js"
 import { truncateAtWord } from "./utils.js"
 
 type ProxyToolResult = AgentToolResult<Record<string, unknown>>
@@ -35,11 +35,7 @@ interface NativeToolStatus {
 
 type NativeToolStatusLookup = (toolName: string) => NativeToolStatus | undefined
 
-function nativeToolResult(
-	mode: "call" | "describe",
-	toolName: string,
-	status: NativeToolStatus,
-): ProxyToolResult {
+function nativeToolResult(mode: "call" | "describe", toolName: string, status: NativeToolStatus): ProxyToolResult {
 	const activeInstruction = status.active
 		? `Call it directly as ${toolName}; do not call it through mcp({ tool: "${toolName}" }).`
 		: "It is not active in the current context, so do not call it now and do not route it through MCP."
@@ -75,7 +71,7 @@ function applyTruncation(content: ContentBlock[]): ContentBlock[] {
 
 function applyOffload(
 	content: ContentBlock[],
-	toolName: string,
+	_toolName: string,
 	maxChars: number,
 	ctx: ExtensionContext,
 ): ContentBlock[] {
@@ -88,7 +84,7 @@ function applyOffload(
 	const nonText = content.filter((c) => c.type !== "text")
 
 	// Lightweight format detection — avoids JSON.parse on large strings
-	const ext = /^\s*[\{\[]/.test(combined) ? "json" : "txt"
+	const ext = /^\s*[{[]/.test(combined) ? "json" : "txt"
 
 	// Derive output directory from session file
 	let dir: string
@@ -107,7 +103,7 @@ function applyOffload(
 	} catch (err) {
 		console.warn(`[mcp-adapter] applyOffload: failed to write tool result to disk:`, err)
 		// Hard-slice fallback — do NOT use truncateTail; it fails on single-line blobs
-		const sliced = combined.slice(0, maxChars) + "\n\n... [Truncated due to I/O error]"
+		const sliced = `${combined.slice(0, maxChars)}\n\n... [Truncated due to I/O error]`
 		return [...nonText, { type: "text" as const, text: sliced }]
 	}
 
@@ -755,7 +751,7 @@ export async function executeCall(
 	if (!serverName && !toolMeta && prefixMode !== "none") {
 		const candidates = Object.keys(state.config.mcpServers)
 			.map((name) => ({ name, prefix: getServerPrefix(name, prefixMode) }))
-			.filter((c) => c.prefix && toolName.startsWith(c.prefix + "_"))
+			.filter((c) => c.prefix && toolName.startsWith(`${c.prefix}_`))
 			.sort((a, b) => b.prefix.length - a.prefix.length)
 
 		for (const { name: configuredServer } of candidates) {
@@ -830,7 +826,7 @@ export async function executeCall(
 			}
 		}
 	}
-	if (!connection || connection.status !== "connected") {
+	if (connection?.status !== "connected") {
 		const failedAgo = getFailureAgeSeconds(state, serverName)
 		if (failedAgo !== null) {
 			return {
@@ -1004,7 +1000,9 @@ export async function executeCall(
 			}
 		}
 
-		const finalContent = (content.length > 0 ? content : [{ type: "text" as const, text: "(empty result)" }]) as ContentBlock[]
+		const finalContent = (
+			content.length > 0 ? content : [{ type: "text" as const, text: "(empty result)" }]
+		) as ContentBlock[]
 		const truncated = ctx
 			? applyOffload(finalContent, toolName, maxToolResultChars ?? 10_000, ctx)
 			: applyTruncation(finalContent)

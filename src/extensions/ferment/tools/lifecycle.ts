@@ -13,9 +13,9 @@ import { Markdown } from "@earendil-works/pi-tui"
 import type { Static } from "typebox"
 import type { Command, ScopePhaseInput } from "../../../ferment/state-machine.js"
 import {
-	type SuccessCriteria,
 	normalizeSuccessCriteriaInput,
 	renderSuccessCriteria,
+	type SuccessCriteria,
 } from "../../../ferment/success-criteria.js"
 import { deriveDraftFermentTitle, normalizeFermentTitle } from "../../../ferment/title.js"
 import {
@@ -42,10 +42,10 @@ import { PENDING_PROPOSAL_SCHEMA_VERSION, savePendingProposal } from "../pending
 import { gatherPhaseEvidence } from "../phase-evidence.js"
 import { promptEditor, promptForm, promptSelect } from "../prompt-ui.js"
 import { readLatestPhaseReviews } from "../review-evidence.js"
-import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
+import { defaultFermentRuntime, type FermentRuntime } from "../runtime.js"
 import { safeSendMessage } from "../safe-send.js"
-import { confirmPendingScope } from "../scoping-confirmation.js"
 import type { PendingScope } from "../scoping.js"
+import { confirmPendingScope } from "../scoping-confirmation.js"
 import { MAX_BLOCK_RETRIES } from "../state.js"
 import {
 	createApplyAndPersist,
@@ -192,7 +192,7 @@ function renderBullets(label: string, items: string[]): string {
 	return [renderedLabel, ...lines].join("\n")
 }
 
-function renderStep(index: number, description: string): string {
+function renderStep(_index: number, description: string): string {
 	const lines = wrapText(description, 84)
 	if (lines.length === 0) return "- —"
 	return lines.map((line, lineIndex) => (lineIndex === 0 ? `- ${line}` : `  ${line}`)).join("\n")
@@ -891,7 +891,7 @@ ${renderGateGuidance("scope_ferment")}`,
 				params.goal,
 			)
 			if (!resolveResult.ok) return resolveResult.error
-			const { fermentId, created: createdFerment } = resolveResult
+			const { fermentId } = resolveResult
 
 			// 4. Replace pending buffer wholesale.
 			const ferment = runtime.getStorage().get(fermentId)

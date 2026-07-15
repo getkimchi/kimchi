@@ -5,8 +5,7 @@ import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { setResourceOverride } from "../../resources/store.js"
 import claudeCodeHooksAdapter from "../claude-code-hook-adapter/index.js"
-import { createCommandHookAdapter } from "./adapter.js"
-import { parseCommandHookOutput, runCommandHook } from "./adapter.js"
+import { createCommandHookAdapter, parseCommandHookOutput, runCommandHook } from "./adapter.js"
 
 vi.mock("node:child_process", () => ({
 	spawn: vi.fn(),
@@ -33,13 +32,11 @@ describe("hook adapter command execution", () => {
 	afterEach(() => {
 		vi.useRealTimers()
 		if (oldHome === undefined) {
-			// biome-ignore lint/performance/noDelete: process.env requires delete to truly unset.
 			delete process.env.HOME
 		} else {
 			process.env.HOME = oldHome
 		}
 		if (oldAgentDir === undefined) {
-			// biome-ignore lint/performance/noDelete: process.env requires delete to truly unset.
 			delete process.env.KIMCHI_CODING_AGENT_DIR
 		} else {
 			process.env.KIMCHI_CODING_AGENT_DIR = oldAgentDir
@@ -1032,7 +1029,11 @@ function mockBlockingHook({
 	stdout = "",
 	stderr = "",
 	code = 0,
-}: { stdout?: string; stderr?: string; code?: number } = {}): ReturnType<typeof fakeChild> {
+}: {
+	stdout?: string
+	stderr?: string
+	code?: number
+} = {}): ReturnType<typeof fakeChild> {
 	const child = fakeChild()
 	mockSpawn.mockReturnValueOnce(child)
 	child.stdin.end.mockImplementationOnce(() => {

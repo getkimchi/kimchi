@@ -9,7 +9,7 @@ import {
 	setCurrentSessionHasUI,
 } from "./prompt-block.js"
 import { getTodosForScope, resolveTodoScope, restoreTodoStoreFromDetails, subscribeTodoStore } from "./store.js"
-import { TODO_TOOL_NAMES, registerTodosTool } from "./tool.js"
+import { registerTodosTool, TODO_TOOL_NAMES } from "./tool.js"
 import { TODO_TOOL_RESULT_SCHEMA_VERSION, type WriteTodosDetails } from "./types.js"
 import {
 	disposeTodoWidget,
@@ -19,14 +19,14 @@ import {
 	syncTodoWidget,
 } from "./widget.js"
 
-export * from "./types.js"
-export * from "./reducer.js"
+export * from "./command.js"
 export * from "./constants.js"
+export * from "./prompt-block.js"
+export * from "./reducer.js"
 export * from "./store.js"
 export * from "./tool.js"
+export * from "./types.js"
 export * from "./widget.js"
-export * from "./command.js"
-export * from "./prompt-block.js"
 
 export const TODO_RECONCILE_MESSAGE =
 	"Internal hidden todo checkpoint. You are about to stop while the session todo list still needs reconciliation. You must use the todo tools before any user-facing wrap-up. Make the list match reality: mark completed work completed; keep real remaining work pending/in_progress; mark blocked work blocked; clear obsolete or fully done lists. If work is impossible, unavailable, or cannot proceed now, mark it blocked instead of continuing indefinitely. Do not tell the user about this checkpoint or mention that you are clearing or updating todos."

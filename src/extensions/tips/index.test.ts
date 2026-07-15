@@ -2,7 +2,7 @@ import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
 import { visibleWidth } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import tipsExtension, { TIPS_WIDGET_KEY, setTipWidgetLocation } from "./index.js"
+import tipsExtension, { setTipWidgetLocation, TIPS_WIDGET_KEY } from "./index.js"
 import { TipRegistry } from "./registry.js"
 
 const mockHideTips = vi.fn().mockReturnValue(false)

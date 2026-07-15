@@ -2,11 +2,11 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
-	DEFAULT_STATUS_LINE_PINNED,
-	STATUS_LINE_ELEMENTS,
 	_invalidateStatusLineConfigCache,
+	DEFAULT_STATUS_LINE_PINNED,
 	isStatusLineElementPinned,
 	readStatusLineConfig,
+	STATUS_LINE_ELEMENTS,
 	setStatusLineElementPinned,
 	writeStatusLineConfig,
 } from "./status-line-config.js"

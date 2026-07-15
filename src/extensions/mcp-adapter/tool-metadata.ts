@@ -21,10 +21,7 @@ const READ_ONLY_NAME_PREFIXES = /^(get|search|list|read|fetch)/
  * A tool with `readOnlyHint: false` (or any annotations present) is never
  * promoted by the heuristic — the explicit annotation wins.
  */
-export function isReadOnlyMcpTool(meta: {
-	originalName: string
-	annotations?: ToolAnnotations
-}): boolean {
+export function isReadOnlyMcpTool(meta: { originalName: string; annotations?: ToolAnnotations }): boolean {
 	if (meta.annotations?.readOnlyHint === true) return true
 	if (meta.annotations === undefined && READ_ONLY_NAME_PREFIXES.test(meta.originalName)) {
 		// The name heuristic is best-effort: a tool with no annotations but a

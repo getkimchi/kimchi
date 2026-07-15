@@ -1,7 +1,7 @@
 import { expect, test } from "@microsoft/tui-test"
+import { fullText, STREAM_TIMEOUT_MS, viewText, waitForText } from "./support/assertions.js"
 import type { FakeResponseScript } from "./support/fake-openai-server.js"
-import { STREAM_TIMEOUT_MS, fullText, viewText, waitForText } from "./support/assertions.js"
-import { TUI_TEST_CONFIG, runKimchiSession } from "./support/kimchi-fixture.js"
+import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -161,7 +161,9 @@ test("cooking animation is visible during plain-text responses", async ({ termin
 	)
 })
 
-test("cooking animation stays visible during tool execution and the gap before the next message", async ({ terminal }) => {
+test("cooking animation stays visible during tool execution and the gap before the next message", async ({
+	terminal,
+}) => {
 	await runSession(
 		terminal,
 		{
@@ -205,7 +207,9 @@ test("cooking animation stays visible during tool execution and the gap before t
 	)
 })
 
-test("cooking animation is hidden while a questionnaire form is shown and restored after answering", async ({ terminal }) => {
+test("cooking animation is hidden while a questionnaire form is shown and restored after answering", async ({
+	terminal,
+}) => {
 	await runSession(
 		terminal,
 		{

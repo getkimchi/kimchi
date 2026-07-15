@@ -19,7 +19,7 @@ describe("generateState", () => {
 })
 
 describe("startCallbackServer", () => {
-	async function request(port: number, path: string, opts?: { remoteAddress?: string }): Promise<Response> {
+	async function request(port: number, path: string): Promise<Response> {
 		const url = `http://127.0.0.1:${port}${path}`
 		const res = await fetch(url, { signal: AbortSignal.timeout(1000) })
 		return res
@@ -67,7 +67,6 @@ describe("startCallbackServer", () => {
 			server.close()
 		} finally {
 			if (previous === undefined) {
-				// biome-ignore lint/performance/noDelete: must truly unset, not stringify to "undefined"
 				delete process.env.KIMCHI_OAUTH_TEMPLATE_DIR
 			} else {
 				process.env.KIMCHI_OAUTH_TEMPLATE_DIR = previous

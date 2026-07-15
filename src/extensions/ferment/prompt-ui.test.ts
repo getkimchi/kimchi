@@ -169,7 +169,7 @@ function singleQuestion(
 }
 
 function renderLines(
-	prompt: string,
+	_prompt: string,
 	width: number,
 	questionOverrides: Parameters<typeof singleQuestion>[0] = {},
 ): string[] {

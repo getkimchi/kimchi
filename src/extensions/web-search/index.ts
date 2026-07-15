@@ -10,7 +10,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { Container, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 import { formatCount } from "../format.js"
-import { type SpinnerState, clearSpinner, spinnerFrame, tickSpinner } from "../spinner.js"
+import { clearSpinner, type SpinnerState, spinnerFrame, tickSpinner } from "../spinner.js"
 import { executeWebSearch } from "./execute-handler.js"
 
 type WebSearchState = SpinnerState

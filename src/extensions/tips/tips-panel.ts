@@ -1,5 +1,5 @@
 import type { Theme } from "@earendil-works/pi-coding-agent"
-import { Key, decodeKittyPrintable, matchesKey, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
+import { decodeKittyPrintable, Key, matchesKey, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import { formatTipMessage } from "./tip-row.js"
 import type { TipCandidate } from "./types.js"
 

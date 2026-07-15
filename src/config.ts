@@ -166,6 +166,17 @@ export function ensureHideThinkingBlockDefault(settings: Record<string, unknown>
 	return true
 }
 
+/**
+ * Seed quietStartup when absent so settings.json files predating this default
+ * (or otherwise missing the key) don't fall back to pi's verbose startup
+ * listing (the `[Extensions]`/`[Themes]` resource dump).
+ */
+export function ensureQuietStartupDefault(settings: Record<string, unknown>): boolean {
+	if ("quietStartup" in settings) return false
+	settings.quietStartup = true
+	return true
+}
+
 export const THIRD_PARTY_MAX_RETRIES = 4
 
 export const SEARCH_STRATEGY_DEFAULTS: SearchStrategyConfig = {

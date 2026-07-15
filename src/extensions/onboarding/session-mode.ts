@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext, SessionStartEvent } from "@earendil-works/pi-coding-agent"
 
 type EditorFactory = ReturnType<ExtensionContext["ui"]["getEditorComponent"]>
+
 import { getCliModeArg, isPreDispatchValueFlag } from "../../cli-args.js"
 import { readHideSessionModeDialog, readSessionModeWizardSeenAt, writeSessionModeWizardSeenAt } from "../../config.js"
 
@@ -8,11 +9,11 @@ import { setTipWidgetLocation } from "../tips/index.js"
 import { setSessionModeOnboardingStatusLineSuppressed } from "../ui.js"
 import { NoOpPickerEditor } from "./picker-editor.js"
 import {
+	initialSessionModePickerState,
+	keyToSessionModePickerEvent,
 	SessionModePickerComponent,
 	type SessionModePickerResult,
 	type SessionModePickerState,
-	initialSessionModePickerState,
-	keyToSessionModePickerEvent,
 } from "./session-mode-picker.js"
 
 // Stateless editor — share a single instance across factory invocations so

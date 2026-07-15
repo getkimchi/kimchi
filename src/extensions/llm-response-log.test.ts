@@ -44,7 +44,7 @@ function makeMockPI() {
 		appendEntry: appendEntryMock,
 	} as unknown as ExtensionAPI & { appendEntry: typeof appendEntryMock }
 
-	async function trigger(event: string, payload: MessageEndEvent) {
+	async function trigger(_event: string, payload: MessageEndEvent) {
 		for (const handler of handlers) {
 			await handler(payload)
 		}

@@ -6,7 +6,6 @@ import { getMissingConfiguredDirectToolServers, resolveDirectTools } from "./dir
 import { McpLifecycleManager } from "./lifecycle.js"
 import { logger } from "./logger.js"
 import {
-	type ServerCacheEntry,
 	computeServerHash,
 	getMetadataCachePath,
 	isServerCacheValid,
@@ -14,6 +13,7 @@ import {
 	overwriteMetadataCache,
 	purgeStaleEntries,
 	reconstructToolMetadata,
+	type ServerCacheEntry,
 	saveMetadataCache,
 	serializeResources,
 	serializeTools,
@@ -250,10 +250,7 @@ export async function initializeMcp(
 							"info",
 						)
 					} else {
-						ctx.ui.notify(
-							`MCP: direct tools for ${bootstrapped.join(", ")} will be available after restart`,
-							"info",
-						)
+						ctx.ui.notify(`MCP: direct tools for ${bootstrapped.join(", ")} will be available after restart`, "info")
 					}
 				}
 			}
@@ -280,7 +277,7 @@ export async function initializeMcp(
 
 export function updateServerMetadata(state: McpExtensionState, serverName: string): void {
 	const connection = state.manager.getConnection(serverName)
-	if (!connection || connection.status !== "connected") return
+	if (connection?.status !== "connected") return
 
 	const definition = state.config.mcpServers[serverName]
 	if (!definition) return
@@ -293,7 +290,7 @@ export function updateServerMetadata(state: McpExtensionState, serverName: strin
 
 export function updateMetadataCache(state: McpExtensionState, serverName: string): void {
 	const connection = state.manager.getConnection(serverName)
-	if (!connection || connection.status !== "connected") return
+	if (connection?.status !== "connected") return
 
 	const definition = state.config.mcpServers[serverName]
 	if (!definition) return

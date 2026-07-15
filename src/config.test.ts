@@ -3,19 +3,20 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
-	RETRY_DEFAULTS,
-	VENDOR_SKILL_PATHS,
 	buildSkillPathOptions,
 	checkConfigFilePermissions,
 	clearApiKey,
 	ensureHideThinkingBlockDefault,
+	ensureQuietStartupDefault,
 	getActiveVendorSkillPaths,
 	loadConfig,
+	RETRY_DEFAULTS,
 	readApiKeyFromConfigFile,
 	readGitToken,
 	readHideTips,
 	readTelemetryConfig,
 	upgradeLegacyRetrySettings,
+	VENDOR_SKILL_PATHS,
 	writeApiKey,
 	writeDeviceId,
 	writeGitToken,
@@ -396,19 +397,15 @@ describe("readTelemetryConfig", () => {
 		configPath = join(tempDir, "config.json")
 		savedApiKey = process.env.KIMCHI_API_KEY
 		savedTelemetryEnabled = process.env.KIMCHI_TELEMETRY_ENABLED
-		// biome-ignore lint/performance/noDelete: env var must be deleted, not set to "undefined"
 		delete process.env.KIMCHI_API_KEY
-		// biome-ignore lint/performance/noDelete: env var must be deleted, not set to "undefined"
 		delete process.env.KIMCHI_TELEMETRY_ENABLED
 	})
 
 	afterEach(() => {
 		rmSync(tempDir, { recursive: true, force: true })
 		if (savedApiKey !== undefined) process.env.KIMCHI_API_KEY = savedApiKey
-		// biome-ignore lint/performance/noDelete: env var must be deleted, not set to "undefined"
 		else delete process.env.KIMCHI_API_KEY
 		if (savedTelemetryEnabled !== undefined) process.env.KIMCHI_TELEMETRY_ENABLED = savedTelemetryEnabled
-		// biome-ignore lint/performance/noDelete: env var must be deleted, not set to "undefined"
 		else delete process.env.KIMCHI_TELEMETRY_ENABLED
 	})
 
@@ -681,7 +678,6 @@ describe("getActiveVendorSkillPaths", () => {
 	afterEach(() => {
 		if (originalHome !== undefined) process.env.HOME = originalHome
 		else {
-			// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete; assigning undefined would coerce to the literal string "undefined".
 			delete process.env.HOME
 		}
 		rmSync(mockHome, { recursive: true, force: true })
@@ -882,5 +878,23 @@ describe("ensureHideThinkingBlockDefault", () => {
 		const visible = { hideThinkingBlock: false }
 		expect(ensureHideThinkingBlockDefault(visible)).toBe(false)
 		expect(visible.hideThinkingBlock).toBe(false)
+	})
+})
+
+describe("ensureQuietStartupDefault", () => {
+	it("seeds quietStartup when the key is absent", () => {
+		const settings: Record<string, unknown> = { statusLine: { pinned: [] } }
+		expect(ensureQuietStartupDefault(settings)).toBe(true)
+		expect(settings.quietStartup).toBe(true)
+	})
+
+	it("leaves an explicit quietStartup value alone", () => {
+		const quiet = { quietStartup: true }
+		expect(ensureQuietStartupDefault(quiet)).toBe(false)
+		expect(quiet.quietStartup).toBe(true)
+
+		const verbose = { quietStartup: false }
+		expect(ensureQuietStartupDefault(verbose)).toBe(false)
+		expect(verbose.quietStartup).toBe(false)
 	})
 })

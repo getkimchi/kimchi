@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { TelemetryConfig } from "../../../config.js"
-import { SessionContext, _resetSharedAccumulators } from "../session-context.js"
+import { _resetSharedAccumulators, SessionContext } from "../session-context.js"
 import { handleAgentEnd, handleBeforeAgentStart, handleMessageEnd, handleMessageStart } from "./messages.js"
+
 const BASE_TS = new Date("2026-06-02T10:00:00.000Z").getTime()
 
 vi.mock("../../../startup-context.js", () => ({

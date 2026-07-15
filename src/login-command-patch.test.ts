@@ -6,7 +6,7 @@ import * as configModule from "./config.js"
 import * as loginPatch from "./login-command-patch.js"
 import * as modelsModule from "./models.js"
 
-const { applyLoginCommandPatch, oauthDelegate, warningDelegate } = loginPatch
+const { oauthDelegate, warningDelegate } = loginPatch
 
 vi.mock("@earendil-works/pi-ai", async () => {
 	const actual = await vi.importActual("@earendil-works/pi-ai")

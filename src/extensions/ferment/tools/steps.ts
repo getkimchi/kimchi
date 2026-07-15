@@ -20,9 +20,9 @@ import { renderGateGuidance } from "../gate-registry.js"
 import { assertGateFieldsPresent, validateGatesOrErr } from "../gate-validation.js"
 import { type JudgeVerdict, judgeStepVerification } from "../judge.js"
 import { onStepCompleted } from "../nudge.js"
-import { type PhaseEvidence, captureGitHead, gatherPhaseEvidence } from "../phase-evidence.js"
+import { captureGitHead, gatherPhaseEvidence, type PhaseEvidence } from "../phase-evidence.js"
 import { promptEditor } from "../prompt-ui.js"
-import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
+import { defaultFermentRuntime, type FermentRuntime } from "../runtime.js"
 import { safeSendMessage } from "../safe-send.js"
 import {
 	createApplyAndPersist,
@@ -149,8 +149,7 @@ function validateLinkedWorker(params: CompleteStepArgs): string | null {
 	}
 	const ref = record.taskRef
 	if (
-		!ref ||
-		ref.kind !== "ferment_step" ||
+		ref?.kind !== "ferment_step" ||
 		ref.ferment_id !== params.ferment_id ||
 		ref.phase_id !== params.phase_id ||
 		ref.step_id !== params.step_id

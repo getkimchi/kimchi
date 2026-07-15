@@ -2,11 +2,11 @@ import { describe, expect, it } from "vitest"
 import {
 	ADHOC_MODE_TOOLS,
 	FERMENT_MODE_TOOLS,
+	getToolsForProfile,
 	SHARED_CORE_TOOLS,
 	type ToolEntry,
 	type ToolProfile,
 	WRITE_TOOLS,
-	getToolsForProfile,
 } from "./tool-catalog.js"
 
 const namesOf = (entries: ToolEntry[]): string[] => entries.map((t) => t.name)

@@ -1,5 +1,5 @@
 import { mkdtempSync, writeFileSync } from "node:fs"
-import { type Server, createServer } from "node:http"
+import { createServer, type Server } from "node:http"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"

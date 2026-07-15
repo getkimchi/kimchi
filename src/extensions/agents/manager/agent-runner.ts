@@ -5,12 +5,12 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import {
 	type AgentSession,
 	type AgentSessionEvent,
+	createAgentSession,
 	DefaultResourceLoader,
 	type ExtensionAPI,
+	getAgentDir,
 	SessionManager,
 	SettingsManager,
-	createAgentSession,
-	getAgentDir,
 } from "@earendil-works/pi-coding-agent"
 import { readTelemetryConfig } from "../../../config.js"
 import { getAvailableModels } from "../../../startup-context.js"
@@ -42,11 +42,11 @@ import {
 	type ThinkingLevel,
 } from "../personas/types.js"
 import { buildParentContext, extractText } from "../prompt/context.js"
-import { type PromptExtras, buildAgentPrompt, formatTokenBudget } from "../prompt/prompts.js"
+import { buildAgentPrompt, formatTokenBudget, type PromptExtras } from "../prompt/prompts.js"
 import { preloadSkills } from "../prompt/skill-loader.js"
-import { WORKER_REPORT_TOOL_NAME, type WorkerReportCapability, createWorkerReportExtension } from "../worker-report.js"
+import { createWorkerReportExtension, WORKER_REPORT_TOOL_NAME, type WorkerReportCapability } from "../worker-report.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "./constants.js"
-import { type LifetimeUsage, addUsage, getLifetimeTotal, getOutputTotal, getSessionUsage } from "./usage.js"
+import { addUsage, getLifetimeTotal, getOutputTotal, getSessionUsage, type LifetimeUsage } from "./usage.js"
 
 /**
  * Names of tools that subagents must NOT inherit from the parent session.
@@ -729,7 +729,6 @@ async function runAgentInner(
 		if (agentConfig?.name) {
 			// Restore persona env — important for sequential runs in the same process.
 			if (prevPersona === undefined) {
-				// biome-ignore lint/performance/noDelete: must remove not set to undefined
 				delete process.env.KIMCHI_AGENT_PERSONA
 			} else {
 				process.env.KIMCHI_AGENT_PERSONA = prevPersona

@@ -40,11 +40,11 @@ import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
 import { STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
 import {
-	PROMPT_READY,
-	TUI_TEST_CONFIG,
 	createKimchiFixture,
 	launchKimchi,
+	PROMPT_READY,
 	stopKimchi,
+	TUI_TEST_CONFIG,
 } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -123,8 +123,8 @@ test("chat round-trips through ollama when launched with --provider ollama", asy
 			providers?: Record<string, { models?: Array<{ id?: string }> }>
 		}
 		expect(persisted.providers).toBeDefined()
-		expect(persisted.providers!.ollama).toBeDefined()
-		const ollamaIds = (persisted.providers!.ollama.models ?? []).map((model) => model.id).filter(Boolean)
+		expect(persisted.providers?.ollama).toBeDefined()
+		const ollamaIds = (persisted.providers?.ollama.models ?? []).map((model) => model.id).filter(Boolean)
 		expect(ollamaIds).toContain("llava:13b")
 		expect(ollamaIds).toContain("qwen2.5:14b")
 		expect(ollamaIds).toContain("mistral:7b")

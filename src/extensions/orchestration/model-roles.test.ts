@@ -23,11 +23,12 @@ vi.mock("../../config/json.js", async (importOriginal) => {
 
 import { type ModelCustomMetadata, resetModelMetadataCache, saveModelMetadata } from "./model-metadata.js"
 import {
-	DEFAULT_MODEL_ROLES,
-	type ModelRoles,
 	applyRoleAugmentation,
+	DEFAULT_MODEL_ROLES,
 	extractCustomConfigs,
 	getAllowedMultiModelRefs,
+	getModelRoles,
+	type ModelRoles,
 	modelIdFromRef,
 	normalizeRoleModels,
 	parseModelRoles,
@@ -41,6 +42,9 @@ afterEach(() => {
 	resetModelRolesCache()
 	resetModelMetadataCache()
 })
+
+const DEFAULT_COMPACTOR_MODEL = "kimchi-dev/minimax-m3"
+const CUSTOM_COMPACTOR_MODEL = "kimchi-dev/nemotron-3-ultra-fp4"
 
 describe("parseModelRoles", () => {
 	it("returns defaults when raw is undefined", () => {
@@ -73,6 +77,7 @@ describe("parseModelRoles", () => {
 			explorer: "kimchi-dev/nemotron-3-ultra-fp4",
 			researcher: "kimchi-dev/nemotron-3-ultra-fp4",
 			judge: "kimchi-dev/claude-opus-4-6",
+			compactor: DEFAULT_COMPACTOR_MODEL,
 		}
 		const { roles } = parseModelRoles(custom)
 		expect(roles).toEqual(custom)
@@ -417,7 +422,7 @@ describe("validateModelRoles", () => {
 		expect(result.unavailable.length).toBeGreaterThanOrEqual(5)
 		const flaggedRoles = new Set(result.unavailable.map((u) => u.role))
 		expect(flaggedRoles).toEqual(
-			new Set(["orchestrator", "planner", "builder", "reviewer", "explorer", "researcher", "judge"]),
+			new Set(["orchestrator", "planner", "builder", "reviewer", "explorer", "researcher", "judge", "compactor"]),
 		)
 	})
 })
@@ -454,16 +459,6 @@ describe("saveModelRoles", () => {
 		try {
 			rmSync(testDir, { recursive: true, force: true })
 		} catch {}
-	})
-
-	it("saves string roles to modelRoles key", () => {
-		const roles: ModelRoles = {
-			...DEFAULT_MODEL_ROLES,
-			builder: "anthropic/claude-sonnet-4-5",
-		}
-		saveModelRoles(roles)
-		const saved = JSON.parse(readFileSync(testPath, "utf-8"))
-		expect(saved.modelRoles.builder).toBe("anthropic/claude-sonnet-4-5")
 	})
 
 	it("does not write modelMetadata", () => {
@@ -560,5 +555,56 @@ describe("getAllowedMultiModelRefs", () => {
 			"provider-e/model-5",
 			"provider-f/model-6",
 		])
+	})
+})
+
+describe("compactor role", () => {
+	it("defaults to nemotron", () => {
+		expect(DEFAULT_MODEL_ROLES.compactor).toBe(DEFAULT_COMPACTOR_MODEL)
+	})
+
+	it("parses a valid compactor override", () => {
+		const { roles, warnings } = parseModelRoles({ compactor: CUSTOM_COMPACTOR_MODEL })
+		expect(roles.compactor).toBe(CUSTOM_COMPACTOR_MODEL)
+		expect(warnings).toHaveLength(0)
+	})
+
+	it("warns and ignores a non-string compactor value", () => {
+		const { roles, warnings } = parseModelRoles({ compactor: 42 })
+		expect(roles.compactor).toBe(DEFAULT_COMPACTOR_MODEL)
+		expect(warnings).toHaveLength(1)
+		expect(warnings[0].role).toBe("compactor")
+	})
+
+	it("validateModelRoles flags an unavailable compactor model", () => {
+		const roles: ModelRoles = { ...DEFAULT_MODEL_ROLES, compactor: "kimchi-dev/does-not-exist" }
+		const result = validateModelRoles(roles, new Set(["kimi-k2.7"]))
+		expect(result.unavailable).toContainEqual({ role: "compactor", configuredModel: "kimchi-dev/does-not-exist" })
+	})
+
+	it("validateModelRoles does not flag the default compactor when available", () => {
+		const result = validateModelRoles(DEFAULT_MODEL_ROLES, new Set(["minimax-m3"]))
+		expect(result.unavailable.some((u) => u.role === "compactor")).toBe(false)
+	})
+
+	describe("saveModelRoles", () => {
+		it("persists a configured compactor override", () => {
+			saveModelRoles({ ...DEFAULT_MODEL_ROLES, compactor: CUSTOM_COMPACTOR_MODEL })
+			const saved = JSON.parse(readFileSync(testPath, "utf-8"))
+			expect(saved.modelRoles.compactor).toBe(CUSTOM_COMPACTOR_MODEL)
+		})
+	})
+})
+
+describe("applyRoleAugmentation", () => {
+	it("persists a transform that only changes compactor", () => {
+		applyRoleAugmentation((roles) => ({ ...roles, compactor: CUSTOM_COMPACTOR_MODEL }))
+		expect(getModelRoles().compactor).toBe(CUSTOM_COMPACTOR_MODEL)
+	})
+
+	it("is a no-op when the transform returns an equal ModelRoles", () => {
+		const before = getModelRoles()
+		applyRoleAugmentation((roles) => ({ ...roles }))
+		expect(getModelRoles()).toEqual(before)
 	})
 })

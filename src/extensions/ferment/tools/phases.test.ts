@@ -5,10 +5,10 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../../ferment/event-store.js"
 import { createContext } from "../../__mocks__/context.js"
-import { type FermentRuntime, createDefaultFermentRuntime } from "../runtime.js"
+import { createDefaultFermentRuntime, type FermentRuntime } from "../runtime.js"
 import { setActive } from "../state.js"
 import { createApplyAndPersist } from "../tool-helpers.js"
-import { type PhaseHandlerServices, completePhase, registerPhaseTools } from "./phases.js"
+import { completePhase, type PhaseHandlerServices, registerPhaseTools } from "./phases.js"
 
 function okText(result: { content: { text: string }[]; isError?: boolean }): string {
 	if (result.isError) throw new Error(`Expected ok, got error: ${result.content[0]?.text}`)

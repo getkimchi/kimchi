@@ -21,17 +21,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { clearFermentCache } from "../../ferment/store.js"
 import {
-	PENDING_PROPOSAL_SCHEMA_VERSION,
-	type PendingProposalData,
 	deletePendingProposal,
 	loadPendingProposal,
+	PENDING_PROPOSAL_SCHEMA_VERSION,
+	type PendingProposalData,
 	savePendingProposal,
 } from "./pending-proposal-store.js"
 import { clearPendingPlanReviewTrigger } from "./plan-review-trigger.js"
 import { resumeFerment } from "./resume.js"
-import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
-import { confirmPendingScope } from "./scoping-confirmation.js"
+import { createDefaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import { clearAllPendingScopes, setPendingScope } from "./scoping.js"
+import { confirmPendingScope } from "./scoping-confirmation.js"
 import { clearAllScopingGates, clearAllStepStarts, setActive } from "./state.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
 

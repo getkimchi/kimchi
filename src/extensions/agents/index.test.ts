@@ -43,7 +43,7 @@ vi.mock("./manager/agent-manager.js", () => {
 				onComplete,
 				onStart,
 				_records: records,
-				spawn: vi.fn((pi, ctx, type, prompt, options) => {
+				spawn: vi.fn((_pi, _ctx, type, _prompt, options) => {
 					const id = `mock-${records.size}`
 					records.set(id, { id, type, status: "running", ...options })
 					return id

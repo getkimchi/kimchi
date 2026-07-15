@@ -29,8 +29,8 @@ vi.mock("./transport.js", () => ({
 
 import { getMe } from "../../api/me.js"
 import { ensureDeviceId } from "../../posthog-device.js"
-import { getVersion } from "../../utils.js"
 import * as osMetadata from "../../utils/os-metadata.js"
+import { getVersion } from "../../utils.js"
 import { _resetUserCache, drain, sendPreSessionEvent } from "./pre-session.js"
 import { sendLog } from "./transport.js"
 

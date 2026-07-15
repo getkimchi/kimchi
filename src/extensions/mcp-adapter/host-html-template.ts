@@ -23,7 +23,7 @@ export function buildHostHtmlTemplate(input: HostHtmlTemplateInput): string {
 
 	const sessionToken = safeInlineJSON(input.sessionToken)
 	const toolArgs = safeInlineJSON(input.toolArgs)
-	const uiHtml = safeInlineJSON(resourceHtml)
+	const _uiHtml = safeInlineJSON(resourceHtml)
 	const serverName = safeInlineJSON(input.serverName)
 	const toolName = safeInlineJSON(input.toolName)
 	const hostContextJson = safeInlineJSON(hostContext)

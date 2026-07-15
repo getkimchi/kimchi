@@ -17,8 +17,9 @@ import {
 	resetAllReactiveContinuationNudgeCounts,
 	resetScopingStopNudgeCount,
 } from "./nudge.js"
-import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
-import { MAX_SCOPING_EXPLORE_TURNS, getActive, resetScopingExploreTurns, setActive } from "./state.js"
+import { createDefaultFermentRuntime, type FermentRuntime } from "./runtime.js"
+import { scheduleNextFermentAction } from "./scheduler.js"
+import { getActive, MAX_SCOPING_EXPLORE_TURNS, resetScopingExploreTurns, setActive } from "./state.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
 
 function createPi(): ExtensionAPI {
@@ -134,7 +135,7 @@ describe("ferment nudges", () => {
 			getStorage: () =>
 				({
 					get: () => current,
-				}) as unknown as FermentRuntime["getStorage"] extends () => infer T ? T : never,
+				}) as unknown as ReturnType<FermentRuntime["getStorage"]>,
 			getContinuationPolicy: () => "automated",
 			isAutomatedContinuationEnabled: () => true,
 		}
@@ -168,7 +169,7 @@ describe("ferment nudges", () => {
 			getStorage: () =>
 				({
 					get: () => boundary,
-				}) as unknown as FermentRuntime["getStorage"] extends () => infer T ? T : never,
+				}) as unknown as ReturnType<FermentRuntime["getStorage"]>,
 			getContinuationPolicy: () => "automated",
 			isAutomatedContinuationEnabled: () => true,
 		}
@@ -224,6 +225,35 @@ describe("ferment nudges", () => {
 		expect(setActiveSpy).toHaveBeenCalledWith(undefined)
 	})
 
+	it("does not schedule a stale action when storage says the ferment completed", () => {
+		const pi = createPi()
+		const setActiveSpy = vi.fn()
+		const stale = makeDraftFerment({
+			status: "planned",
+			phases: [{ id: "phase-1", index: 1, name: "Phase", goal: "Build", status: "planned", steps: [] }],
+		})
+		const completed = makeDraftFerment({
+			...stale,
+			status: "complete",
+			phases: [{ ...stale.phases[0], status: "completed" }],
+		})
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: () =>
+				({
+					get: () => completed,
+				}) as unknown as ReturnType<FermentRuntime["getStorage"]>,
+			setActive: setActiveSpy,
+			getContinuationPolicy: () => "automated",
+		}
+
+		scheduleNextFermentAction(pi, stale, runtime, { deliverAs: "followUp" })
+
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+		expect(pi.appendEntry).not.toHaveBeenCalled()
+		expect(setActiveSpy).toHaveBeenCalledWith(undefined)
+	})
+
 	it("does not count idle reactive checks toward the loop guard", () => {
 		const pi = createPi()
 		const readyToComplete = makeDraftFerment({
@@ -236,7 +266,7 @@ describe("ferment nudges", () => {
 			getStorage: () =>
 				({
 					get: () => readyToComplete,
-				}) as unknown as FermentRuntime["getStorage"] extends () => infer T ? T : never,
+				}) as unknown as ReturnType<FermentRuntime["getStorage"]>,
 			getContinuationPolicy: () => "automated",
 			isAutomatedContinuationEnabled: () => true,
 		}
@@ -270,7 +300,7 @@ describe("ferment nudges", () => {
 							status: "planned",
 							phases: [{ id: "phase-1", index: 1, name: "Phase", goal: "Build", status: "planned", steps: [] }],
 						}),
-				}) as unknown as FermentRuntime["getStorage"] extends () => infer T ? T : never,
+				}) as unknown as ReturnType<FermentRuntime["getStorage"]>,
 			getContinuationPolicy: () => "automated",
 			isAutomatedContinuationEnabled: () => true,
 		}
@@ -305,7 +335,7 @@ describe("ferment nudges", () => {
 			getStorage: () =>
 				({
 					get: () => current,
-				}) as unknown as FermentRuntime["getStorage"] extends () => infer T ? T : never,
+				}) as unknown as ReturnType<FermentRuntime["getStorage"]>,
 			getContinuationPolicy: () => "automated",
 			isAutomatedContinuationEnabled: () => true,
 		}
@@ -336,7 +366,7 @@ describe("ferment nudges", () => {
 			getStorage: () =>
 				({
 					get: () => failed,
-				}) as unknown as FermentRuntime["getStorage"] extends () => infer T ? T : never,
+				}) as unknown as ReturnType<FermentRuntime["getStorage"]>,
 			getContinuationPolicy: () => "automated",
 			isAutomatedContinuationEnabled: () => true,
 		}
@@ -562,7 +592,7 @@ describe("maybeInjectFermentStopNudge", () => {
 			getStorage: () =>
 				({
 					get: () => ferment,
-				}) as unknown as FermentRuntime["getStorage"] extends () => infer T ? T : never,
+				}) as unknown as ReturnType<FermentRuntime["getStorage"]>,
 			getContinuationPolicy: () => "automated",
 			isAutomatedContinuationEnabled: () => automated,
 		}
