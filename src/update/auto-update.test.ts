@@ -454,6 +454,38 @@ describe("maybeAutoUpdateOnLaunch — deadline / abort handling", () => {
 		expect(execveSpy).toHaveBeenCalledOnce()
 	})
 
+	it("skips re-exec when applyUpdate times out", async () => {
+		vi.useFakeTimers()
+		const originalWrite = process.stderr.write.bind(process.stderr)
+		const writeSpy = vi.fn((_chunk: string | Uint8Array, _enc?: unknown, _cb?: unknown) => true)
+		;(process.stderr.write as unknown) = writeSpy
+		try {
+			mockCheckForUpdate.mockResolvedValue({
+				currentVersion: "1.0.0",
+				latestVersion: "1.1.0",
+				tag: "v1.1.0",
+				releaseUrl: "https://example/v1.1.0",
+				hasUpdate: true,
+				cached: false,
+			})
+			// Never resolves — simulates a hung download
+			mockApplyUpdate.mockReturnValue(new Promise(() => {}))
+
+			const pending = maybeAutoUpdateOnLaunch()
+			// Advance past both the 5s check timeout and the 30s apply timeout
+			await vi.advanceTimersByTimeAsync(31_000)
+			await expect(pending).resolves.toBeUndefined()
+
+			expect(mockApplyUpdate).toHaveBeenCalledOnce()
+			expect(execveSpy).not.toHaveBeenCalled()
+			const lines = writeSpy.mock.calls.map((c) => String(c[0])).join("")
+			expect(lines).toContain("timed out")
+		} finally {
+			vi.useRealTimers()
+			;(process.stderr.write as unknown) = originalWrite
+		}
+	})
+
 	it("logs an audit line with tag + releaseUrl before applying", async () => {
 		const stderr = makeStderrSpy()
 		try {

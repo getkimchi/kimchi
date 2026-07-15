@@ -183,6 +183,12 @@ export function argvHasSkipTrigger(argv: readonly string[]): boolean {
  *  `applyUpdate` is still mutating files on disk. */
 const AUTO_UPDATE_DEFAULT_TIMEOUT_MS = 5_000
 
+/** Hard cap on the apply phase. We never abandon applyUpdate mid-swap, but
+ *  a hung network or filesystem during download/copy shouldn't stall TUI
+ *  startup indefinitely. If applyUpdate hasn't finished after 30 seconds
+ *  we log a warning and continue on the current version. */
+const AUTO_UPDATE_APPLY_TIMEOUT_MS = 30_000
+
 export interface MaybeAutoUpdateOnLaunchOptions {
 	/** Optional external signal (e.g. from entry.ts). Checked at
 	 *  checkpoints before applyUpdate starts; ignored once the install
@@ -263,12 +269,18 @@ export async function maybeAutoUpdateOnLaunch(opts: MaybeAutoUpdateOnLaunchOptio
 		if (!check.hasUpdate) return
 
 		// Commit point: from here on we await applyUpdate fully. No external
-		// Promise.race can abandon it — the install must complete before
-		// cli.js boots.
+		// Promise.race can abandon it mid-swap — the install must complete
+		// before cli.js boots. We do cap with a 30s hard timeout so a hung
+		// network or filesystem doesn't stall startup indefinitely; on
+		// timeout we log a warning and continue on the current version.
 		warn(`applying update ${check.tag} from ${check.releaseUrl || "<no url>"}`)
 		try {
-			await applyUpdate({ tag: check.tag })
+			await raceWithTimeout(applyUpdate({ tag: check.tag }), AUTO_UPDATE_APPLY_TIMEOUT_MS)
 		} catch (err) {
+			if (err instanceof TimeoutError) {
+				warn(`update apply timed out after ${AUTO_UPDATE_APPLY_TIMEOUT_MS / 1000}s; skipping this launch`)
+				return
+			}
 			warn(`update apply failed: ${(err as Error).message}`)
 			return
 		}
