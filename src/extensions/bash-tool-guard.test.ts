@@ -50,6 +50,7 @@ describe("classifyBashCommand — read patterns", () => {
 
 	it("flags `rtk cat foo.ts` (strips RTK wrapper)", () => {
 		expect(classifyBashCommand("rtk cat foo.ts")?.category).toBe("read")
+		expect(classifyBashCommand("rtk rtk cat foo.ts")?.category).toBe("read")
 	})
 
 	it("does not flag `cat` (no args, stdin)", () => {

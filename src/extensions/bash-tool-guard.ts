@@ -63,7 +63,7 @@ import {
 	type BashToolGuardWarnPayload,
 } from "./bash-tool-guard-events.js"
 import { getPermissionMode } from "./permissions/mode-controller.js"
-import { parseCommandSegments } from "./permissions/taxonomy.js"
+import { parseCommandSegments, stripRtk } from "./permissions/taxonomy.js"
 import { createSystemPromptBlocks } from "./prompt-construction/system-prompt-blocks.js"
 
 const RESOURCE_ID = "extensions.bash-tool-guard"
@@ -303,10 +303,6 @@ function isFileReader(tool: string, tokens: string[]): boolean {
 	// stdin has no positional file arg and is harmless — don't flag it.
 	const positional = tokens.slice(1).filter((t) => !t.startsWith("-"))
 	return positional.length > 0
-}
-
-function stripRtk(tokens: string[]): string[] {
-	return tokens[0] === "rtk" ? tokens.slice(1) : tokens
 }
 
 function escapeRegex(s: string): string {

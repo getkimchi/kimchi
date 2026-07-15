@@ -164,12 +164,11 @@ export async function promptForCompoundApproval(opts: {
 
 	if (selected === compoundChoices[0]) return { kind: "allow-all-once" }
 	if (selected === compoundChoices[1]) {
-		const rules: Rule[] = commands.map((cmd) => ({
-			toolName: opts.toolName,
-			content: `${cmd.command.split(" ")[0]} *`,
-			behavior: "allow",
-			source: "session",
-		}))
+		const rules = commands.flatMap<Rule>((cmd) => {
+			const scope = suggestScope(opts.toolName, { command: cmd.command })
+			const content = scope.wildcardContent
+			return content ? [{ toolName: scope.toolName, content, behavior: "allow", source: "session" }] : []
+		})
 		return { kind: "allow-all-remember", rules }
 	}
 	if (selected === compoundChoices[2]) return { kind: "pick-per-subcommand" }
