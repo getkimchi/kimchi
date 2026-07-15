@@ -274,10 +274,7 @@ export default function (skillPaths: string[]) {
 			// Capture the session manager for turn_start re-application of the
 			// orchestrator tool profile. Declared before session_start so both
 			// handlers can access it.
-			let capturedSessionManager: Pick<
-				import("@earendil-works/pi-coding-agent").SessionManager,
-				"getSessionId" | "getEntries"
-			> | null = null
+			let orchestratorProfileActive = false
 
 			pi.on("session_start", async (_event, ctx) => {
 				const { multiModelEnabled, orchestratorModelRef } = syncSessionModelState(pi, ctx)
@@ -306,17 +303,15 @@ export default function (skillPaths: string[]) {
 				// prevents this from overriding ferment's toolset.
 				if (multiModelEnabled && !hasActiveFerment()) {
 					ToolProfileManager.apply("orchestrator", "adhoc", pi)
-				}
-
-				// Capture the session manager for turn_start re-application.
-				if (ctx.sessionManager) {
-					capturedSessionManager = ctx.sessionManager
+					orchestratorProfileActive = true
 				}
 			})
 
 		// Re-apply the orchestrator profile on every turn start.
+		// Use a simple boolean flag set in session_start — if multi-model was
+		// active at session start, re-apply the profile on every turn.
 		pi.on("turn_start", async () => {
-			if (capturedSessionManager && getMultiModelEnabled(capturedSessionManager) && !hasActiveFerment()) {
+			if (orchestratorProfileActive && !hasActiveFerment()) {
 				ToolProfileManager.apply("orchestrator", "adhoc", pi)
 			}
 		})

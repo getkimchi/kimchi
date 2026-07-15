@@ -1,10 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import {
-	AGENT_MODEL_PARAMETER_DESCRIPTION,
-	AGENT_TOOL_GUIDELINES,
-	resolveRoleModelRef,
-	summaryForStatus,
-} from "./index.js"
+import { AGENT_MODEL_PARAMETER_DESCRIPTION, AGENT_TOOL_GUIDELINES, summaryForStatus } from "./index.js"
 
 describe("summaryForStatus", () => {
 	it("labels token-budget aborts distinctly from max-turn aborts", () => {
@@ -99,15 +94,16 @@ vi.mock("../orchestration/model-roles.js", () => ({
 	getModelRoles: vi.fn().mockReturnValue({
 		orchestrator: "kimchi-dev/kimi-k2.7",
 		planner: "kimchi-dev/kimi-k2.7",
-		builder: "kimchi-dev/minimax-m3",
-		reviewer: "kimchi-dev/kimi-k2.7",
+		builder: ["kimchi-dev/minimax-m3"],
+		reviewer: ["kimchi-dev/kimi-k2.7"],
 		explorer: "kimchi-dev/nemotron-3-ultra-fp4",
 		researcher: "kimchi-dev/minimax-m3",
+		judge: ["kimchi-dev/kimi-k2.7"],
 	}),
-	normalizeRoleModels: vi.fn((assignment: unknown) => {
-		if (typeof assignment === "string") return [assignment]
-		if (Array.isArray(assignment)) return assignment
-		return []
+	normalizeRoleModels: vi.fn((v: string | string[]) => (Array.isArray(v) ? v : [v])),
+	splitModelRef: vi.fn((ref: string) => {
+		const [provider, ...rest] = ref.split("/")
+		return rest.length > 0 ? { provider, modelId: rest.join("/") } : undefined
 	}),
 }))
 
@@ -499,38 +495,130 @@ describe("Agent tool multi-mode model guard", () => {
 	})
 })
 
-describe("resolveRoleModelRef", () => {
-	// These tests verify the agent-type-to-role mapping used when the orchestrator
-	// omits the model parameter. Without this, sub-agents default to the
-	// orchestrator's model instead of the configured role model.
-
-	it("maps Builder to builder role", () => {
-		const ref = resolveRoleModelRef("Builder")
-		expect(ref).toBeDefined()
-		expect(typeof ref).toBe("string")
+describe("Agent tool token budget clamping", () => {
+	beforeEach(() => {
+		vi.useRealTimers()
+		vi.clearAllMocks()
+		vi.mocked(getMultiModelEnabled).mockReturnValue(false)
 	})
 
-	it("maps Fixer to builder role (same model pool)", () => {
-		const builderRef = resolveRoleModelRef("Builder")
-		const fixerRef = resolveRoleModelRef("Fixer")
-		expect(fixerRef).toBeDefined()
-		expect(fixerRef).toBe(builderRef)
+	it("clamps tiny token_budget up to minimum when multi-model is active", async () => {
+		vi.mocked(getMultiModelEnabled).mockReturnValue(true)
+		const pi = makeMockPi()
+		agentsExtension(pi)
+
+		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		expect(managerInstance).toBeDefined()
+
+		const registry = makeMockModelRegistry([
+			{ id: "minimax-m3", name: "MiniMax M3", provider: "kimchi-dev", input: ["text"] },
+			{ id: "kimi-k2.7", name: "Kimi K2.7", provider: "kimchi-dev", input: ["text"] },
+		])
+		const ctx = makeMockCtx(registry, { id: "kimi-k2.7", provider: "kimchi-dev" })
+		const tool = getRegisteredAgentTool(pi)
+
+		await tool.execute(
+			"call-clamp-1",
+			{ prompt: "do work", description: "test", subagent_type: "Builder", run_in_background: true, token_budget: 2000 },
+			undefined,
+			undefined,
+			ctx,
+		)
+
+		expect(managerInstance.spawn).toHaveBeenCalledTimes(1)
+		const spawnCall = managerInstance.spawn.mock.calls[0]
+		const options = spawnCall[4]
+		// The clamped budget should be at least 80000 (AGENT_WORKER_BUDGETS.default.tokenBudget)
+		expect(options.tokenBudget).toBeGreaterThanOrEqual(80000)
 	})
 
-	it("maps General-Purpose to builder role (cheaper model)", () => {
-		const builderRef = resolveRoleModelRef("Builder")
-		const gpRef = resolveRoleModelRef("General-Purpose")
-		expect(gpRef).toBeDefined()
-		expect(gpRef).toBe(builderRef)
+	it("does not clamp when multi-model is disabled", async () => {
+		vi.mocked(getMultiModelEnabled).mockReturnValue(false)
+		const pi = makeMockPi()
+		agentsExtension(pi)
+
+		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		const registry = makeMockModelRegistry([
+			{ id: "kimi-k2.7", name: "Kimi K2.7", provider: "kimchi-dev", input: ["text"] },
+		])
+		const ctx = makeMockCtx(registry, { id: "kimi-k2.7", provider: "kimchi-dev" })
+		const tool = getRegisteredAgentTool(pi)
+
+		await tool.execute(
+			"call-clamp-2",
+			{ prompt: "do work", description: "test", subagent_type: "Builder", run_in_background: true, token_budget: 2000 },
+			undefined,
+			undefined,
+			ctx,
+		)
+
+		const spawnCall = managerInstance.spawn.mock.calls[0]
+		const options = spawnCall[4]
+		// No clamping when multi-model is off
+		expect(options.tokenBudget).toBe(2000)
 	})
 
-	it("maps Explore to explorer role", () => {
-		const explorerRef = resolveRoleModelRef("Explore")
-		expect(explorerRef).toBeDefined()
-		expect(typeof explorerRef).toBe("string")
+	it("does not clamp when budget is already above minimum", async () => {
+		vi.mocked(getMultiModelEnabled).mockReturnValue(true)
+		const pi = makeMockPi()
+		agentsExtension(pi)
+
+		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		const registry = makeMockModelRegistry([
+			{ id: "minimax-m3", name: "MiniMax M3", provider: "kimchi-dev", input: ["text"] },
+		])
+		const ctx = makeMockCtx(registry, { id: "kimi-k2.7", provider: "kimchi-dev" })
+		const tool = getRegisteredAgentTool(pi)
+
+		await tool.execute(
+			"call-clamp-3",
+			{
+				prompt: "do work",
+				description: "test",
+				subagent_type: "Builder",
+				run_in_background: true,
+				token_budget: 200000,
+			},
+			undefined,
+			undefined,
+			ctx,
+		)
+
+		const spawnCall = managerInstance.spawn.mock.calls[0]
+		const options = spawnCall[4]
+		expect(options.tokenBudget).toBe(200000)
+	})
+})
+
+describe("Agent tool default max_turns", () => {
+	beforeEach(() => {
+		vi.useRealTimers()
+		vi.clearAllMocks()
+		vi.mocked(getMultiModelEnabled).mockReturnValue(false)
 	})
 
-	it("returns undefined for unknown agent types", () => {
-		expect(resolveRoleModelRef("Unknown")).toBeUndefined()
+	it("defaults max_turns to 15 when not specified", async () => {
+		vi.mocked(getMultiModelEnabled).mockReturnValue(false)
+		const pi = makeMockPi()
+		agentsExtension(pi)
+
+		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		const registry = makeMockModelRegistry([
+			{ id: "kimi-k2.7", name: "Kimi K2.7", provider: "kimchi-dev", input: ["text"] },
+		])
+		const ctx = makeMockCtx(registry, { id: "kimi-k2.7", provider: "kimchi-dev" })
+		const tool = getRegisteredAgentTool(pi)
+
+		await tool.execute(
+			"call-mt-1",
+			{ prompt: "do work", description: "test", subagent_type: "Builder", run_in_background: true },
+			undefined,
+			undefined,
+			ctx,
+		)
+
+		const spawnCall = managerInstance.spawn.mock.calls[0]
+		const options = spawnCall[4]
+		expect(options.maxTurns).toBe(30)
 	})
 })
