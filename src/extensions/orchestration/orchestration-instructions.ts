@@ -60,7 +60,7 @@ const AGENT_MANAGEMENT = `### Agent management
 - If an Agent call returns an error of any kind (including protocol violation, timeout, or exit error): first assess whether the failure is retryable (e.g. transient timeouts or protocol violations) or not (e.g. missing files, permission errors, or invalid inputs). For retryable failures, call a replacement Agent with a corrected or simplified prompt — allow at most one retry per delegated step. You may also implement the remaining work directly when it's small enough and you understand the problem well enough after the sub-agent's attempt.
 - **When a subagent returns agent_outcome.outcome other than "completed"**: the work is likely partial or invalid. Inspect agent_outcome.report before acting. Resume the same Agent only when remaining_steps are a direct continuation and preserving session context is valuable; use a changed-approach resume when the same thread still matters but the prior approach stalled; spawn a NEW follow-up Agent when remaining_steps have a clean narrower task boundary; run a short finalizer resume when the report is missing or the work appears finished but did not return completed; or implement the remaining work directly if it's small enough. Do not blindly retry the same prompt. **Include dependency context** in any replacement prompt: paste the public type signatures and function signatures of packages the follow-up agent will import (e.g. structs, interfaces, exported functions from earlier chunks) directly in the prompt so it does not waste turns re-reading files.
 - Do NOT call Agent for work you can do in a single tool call.
-- Do NOT use General-Purpose agents for implementation, review, exploration, research, or planning. Route work to the specialized agent for the corresponding phase. Use General-Purpose only for tasks that genuinely do not match any specialized persona.
+- Use General-Purpose agents as a last resort only — when no specialized persona fits the task. Always prefer the specialized agent: Builder for implementation, Explore for codebase reading, Reviewer for verification, Researcher for web research, Plan for design. General-Purpose agents lack specialization and produce lower-quality results.
 - Use \`inherit_context: true\` only when the Agent needs the parent conversation history. Otherwise keep the default fresh context.
 - Inline images in your conversation are forwarded automatically to vision-capable Agents when needed. If no vision-capable model is available, the harness will automatically switch to one.
 - Scope every Explore prompt with exact starting files and/or directories, prioritized symbols/search terms, one decision-relevant question to answer, allowed expansion rules for when it may follow imports/callers/related tests, and a qualitative stop condition tied to that question. Before delegating Explore, do cheap parent-side discovery/existence checks so the prompt starts from real anchors. Good Explore prompt: "Inspect /app/src/program.cbl. Answer only: what are the SELECT/FD entries and PIC-derived record widths? Follow no procedure logic. Stop once record layouts are known. Return decision-ready findings to the parent; do not write files." Bad Explore prompt: "Analyze the COBOL program and write a complete implementation spec."
@@ -210,7 +210,18 @@ When a sub-agent returns, read its result carefully and decide:
 - Is the work incomplete or failed? Retry with a narrower scope, switch to a different model, decompose the task differently, or spawn a replacement.
 - Do you need more information? Dispatch an Explore or Researcher agent.
 
-Trust sub-agent output unless it reported errors or produced obviously incomplete work. Do not blindly retry the same approach.`)
+Trust sub-agent output unless it reported errors or produced obviously incomplete work. Do not blindly retry the same approach.
+
+### Your available tools
+
+You have exactly these tools — no others:
+- **Agent** — dispatch a sub-agent (Builder, Explore, Reviewer, Researcher, Plan, Fixer, or General-Purpose)
+- **resume_subagent** — resume a previously aborted sub-agent with a steering prompt
+- **get_subagent_result** — check the status and output of a background sub-agent
+- **create_todos** / **update_todos** / **add_todo** / **mark_todo** / **clear_todos** — track your progress
+- **questionnaire** — ask the user a question (interactive mode only)
+
+Delegate all file I/O, shell commands, and web searches to sub-agents.`)
 
 	// 5. Model selection (role-to-model routing, dynamic)
 	parts.push(buildModelSelection(ctx))

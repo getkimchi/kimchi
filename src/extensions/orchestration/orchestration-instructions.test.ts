@@ -264,9 +264,7 @@ describe("resolveOrchestrationInstructions", () => {
 			registry,
 			roles: DEFAULT_MODEL_ROLES,
 		})
-		expect(result).toContain(
-			"Do NOT use General-Purpose agents for implementation, review, exploration, research, or planning",
-		)
+		expect(result).toContain("Use General-Purpose agents as a last resort only")
 	})
 
 	it("does not include lightweight re-verification guidance", () => {
