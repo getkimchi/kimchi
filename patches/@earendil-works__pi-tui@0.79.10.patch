@@ -1,3 +1,20 @@
+# Patch: kimchi-dev fixes for pi-tui
+#
+# NOTE for upgraders: `pnpm patch-commit` regenerates this file and STRIPS this
+# header — re-add it (and re-run `pnpm install` to refresh the lockfile hash)
+# after every regeneration.
+#
+# Changes included:
+#   1. dist/components/box.js       — stroke-width accounting for bordered boxes
+#   2. dist/components/markdown.js  — stroke-width accounting for bordered markdown
+#   3. dist/components/text.js      — stroke-width accounting for bordered text
+#   4. dist/utils.js                — applyStrokeToLine helper
+#   5. dist/tui.js                  — make ESC[3J (erase scrollback) opt-in via
+#                                    PI_TUI_NO_CLEAR_SCROLLBACK=1 to avoid iTerm2
+#                                    snapping the viewport to the session start
+#                                    in long sessions / large diffs.
+#                                    See: https://github.com/getkimchi/kimchi/issues/863
+
 diff --git a/dist/components/box.js b/dist/components/box.js
 index 5de0f24bfe4e9ccb7b9476dae9ea55f882acce75..e8bf2e8986ec53c8189a58764e47e16d50d8793a 100644
 --- a/dist/components/box.js
@@ -134,6 +151,22 @@ index 0d840239c41181e24dfc60237c3338081c6b48d5..7208d53add7d89955c799f73d9d5ce13
              emptyLines.push(line);
          }
          const result = [...emptyLines, ...contentLines, ...emptyLines];
+diff --git a/dist/tui.js b/dist/tui.js
+index 62574431ce65ff9e6d7e68407b2563dcef5c8f3e..60fa69fd09776448a88e67d4e0ce0e4fb9640871 100644
+--- a/dist/tui.js
++++ b/dist/tui.js
+@@ -1004,7 +1004,10 @@ export class TUI extends Container {
+             let buffer = "\x1b[?2026h"; // Begin synchronized output
+             if (clear) {
+                 buffer += this.deleteKittyImages(this.previousKittyImageIds);
+-                buffer += "\x1b[2J\x1b[H\x1b[3J"; // Clear screen, home, then clear scrollback
++                buffer += "\x1b[2J\x1b[H"; // Clear screen and home
++                if (process.env.PI_TUI_NO_CLEAR_SCROLLBACK !== "1") {
++                    buffer += "\x1b[3J"; // Clear scrollback (disabled by PI_TUI_NO_CLEAR_SCROLLBACK=1 to avoid iTerm2 viewport jump)
++                }
+             }
+             for (let i = 0; i < newLines.length; i++) {
+                 if (i > 0)
 diff --git a/dist/utils.js b/dist/utils.js
 index bc550a400f3ac921263a8f2fa1753335b4fded8c..a9314e7ed5f39c4f31a5d38b17f84c07ccce8020 100644
 --- a/dist/utils.js
