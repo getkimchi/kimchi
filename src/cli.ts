@@ -54,6 +54,7 @@ import hideThinkingExtension from "./extensions/hide-thinking.js"
 import ideAdapterExtension from "./extensions/ide-adapter/index.js"
 import infrastructureBreakerExtension from "./extensions/infrastructure-breaker.js"
 import inputHistoryExtension from "./extensions/input-history.js"
+import kimchiHooksAdapter from "./extensions/kimchi-hooks/index.js"
 import kimchiMinimalTintsExtension from "./extensions/kimchi-minimal-tints.js"
 import llmResponseLogExtension from "./extensions/llm-response-log.js"
 import loginExtension from "./extensions/login/index.js"
@@ -622,6 +623,7 @@ try {
 			// SessionStart steering blocks into the system prompt. Gated per-package
 			// by each package's own resource toggle (see pluginPackageHookSources).
 			pluginPackageHooksAdapter,
+			kimchiHooksAdapter,
 			permissionsExtension,
 			resourcesExtension,
 			resourceToolBlockerExtension,
