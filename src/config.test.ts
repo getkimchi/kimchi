@@ -6,6 +6,7 @@ import {
 	buildSkillPathOptions,
 	checkConfigFilePermissions,
 	clearApiKey,
+	DEFAULT_INFERENCE_TIMEOUT_MS,
 	ensureHideThinkingBlockDefault,
 	ensureQuietStartupDefault,
 	getActiveVendorSkillPaths,
@@ -92,6 +93,45 @@ describe("loadConfig", () => {
 	it("does not expose Pi retry settings as Kimchi config", () => {
 		const config = loadConfig({ configPath, cwd: tempDir })
 		expect(config).not.toHaveProperty("retry")
+	})
+
+	it("loads the inference timeout default and valid model overrides", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				inferenceTimeoutMs: 240_000,
+				inferenceTimeoutOverrides: {
+					"minimax/minimax-m3": 120_000,
+					"kimi-k2.7": 420_000,
+				},
+			}),
+		)
+
+		const config = loadConfig({ configPath, cwd: tempDir })
+		expect(config.inferenceTimeoutMs).toBe(240_000)
+		expect(config.inferenceTimeoutOverrides).toEqual({
+			"minimax/minimax-m3": 120_000,
+			"kimi-k2.7": 420_000,
+		})
+	})
+
+	it("falls back safely when inference timeout values are invalid", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				inferenceTimeoutMs: -1,
+				inferenceTimeoutOverrides: {
+					negative: -100,
+					fractional: 1.5,
+					string: "120000",
+					valid: 180_000,
+				},
+			}),
+		)
+
+		const config = loadConfig({ configPath, cwd: tempDir })
+		expect(config.inferenceTimeoutMs).toBe(DEFAULT_INFERENCE_TIMEOUT_MS)
+		expect(config.inferenceTimeoutOverrides).toEqual({ valid: 180_000 })
 	})
 
 	it("reads project config from .kimchi/config.json overriding global", () => {

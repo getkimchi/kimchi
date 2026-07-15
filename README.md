@@ -342,6 +342,22 @@ The API key is resolved in this order:
 
 Run `kimchi setup` for an interactive first-time configuration.
 
+### Inference timeout
+
+Each model inference has a hard wall-clock deadline of five minutes by default. The deadline includes both waiting for response headers and consuming the complete streamed response, so tokens or keepalive events do not extend it. Configure the default and model-specific overrides in `~/.config/kimchi/config.json` (or the project's `.kimchi/config.json`):
+
+```json
+{
+  "inferenceTimeoutMs": 300000,
+  "inferenceTimeoutOverrides": {
+    "minimax/minimax-m3": 120000,
+    "kimi-k2.7": 420000
+  }
+}
+```
+
+Provider-qualified `provider/model` entries take precedence over model-only entries. Values must be positive integer milliseconds.
+
 ### Agent config
 
 Kimchi stores its configuration (settings, sessions, models) under:

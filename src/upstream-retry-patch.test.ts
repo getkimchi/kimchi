@@ -3,14 +3,53 @@ import {
 	configureInfrastructureBreaker,
 	INFRA_BREAKER_THRESHOLD_ENV,
 	installInfrastructureRetryPatch,
+	isInferenceTimeout,
 	isInfrastructureBreakerTripped,
 	isInfrastructureErrorRetryable,
 	recordInfrastructureBreakerFailure,
 	resetInfrastructureBreaker,
 	resolveInfrastructureBreakerThreshold,
+	MAX_INFERENCE_TIMEOUT_RETRIES,
 } from "./upstream-retry-patch.js"
 
 describe("upstream retry patch", () => {
+	it("identifies only the stable inference timeout error", () => {
+		const timeout = { stopReason: "error" as const, errorMessage: "inference_timeout: model exceeded deadline" }
+		expect(isInferenceTimeout(timeout)).toBe(true)
+		expect(isInfrastructureErrorRetryable(timeout)).toBe(false)
+		expect(isInferenceTimeout({ stopReason: "aborted", errorMessage: "inference_timeout: user cancelled" })).toBe(false)
+		expect(isInferenceTimeout({ stopReason: "error", errorMessage: "request timeout" })).toBe(false)
+	})
+
+	it("caps inference_timeout at two retries without changing other retry preparation", async () => {
+		const originalPrepare = vi.fn(async () => true)
+		const sessionClass = {
+			prototype: {
+				_isRetryableError: () => true,
+				_prepareRetry: originalPrepare,
+			},
+		}
+		installInfrastructureRetryPatch(sessionClass)
+		const session = Object.create(sessionClass.prototype) as { _retryAttempt: number }
+		const timeout = { stopReason: "error", errorMessage: "inference_timeout: model exceeded deadline" }
+		const other = { stopReason: "error", errorMessage: "503 Service Unavailable" }
+
+		session._retryAttempt = 0
+		await expect(sessionClass.prototype._prepareRetry?.call(session, timeout)).resolves.toBe(true)
+		session._retryAttempt = 1
+		await expect(sessionClass.prototype._prepareRetry?.call(session, timeout)).resolves.toBe(true)
+		session._retryAttempt = 2
+		await expect(sessionClass.prototype._prepareRetry?.call(session, timeout)).resolves.toBe(false)
+		expect(originalPrepare).toHaveBeenCalledTimes(MAX_INFERENCE_TIMEOUT_RETRIES)
+
+		await expect(sessionClass.prototype._prepareRetry?.call(session, other)).resolves.toBe(true)
+		expect(originalPrepare).toHaveBeenCalledTimes(MAX_INFERENCE_TIMEOUT_RETRIES + 1)
+
+		// A new upstream retry chain gets a fresh timeout budget.
+		session._retryAttempt = 0
+		await expect(sessionClass.prototype._prepareRetry?.call(session, timeout)).resolves.toBe(true)
+	})
+
 	it("classifies infrastructure provider errors as retryable", () => {
 		expect(isInfrastructureErrorRetryable({ stopReason: "error", errorMessage: "524 status code (no body)" })).toBe(
 			true,

@@ -1,14 +1,28 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import { AgentSession } from "@earendil-works/pi-coding-agent"
 import { classifyLLMGatewayError } from "./llm-gateway-error.js"
+import { INFERENCE_TIMEOUT_ERROR_PREFIX } from "./inference-timeout.js"
 
 type RetryableMessage = Partial<Pick<AssistantMessage, "stopReason" | "errorMessage">>
 type RetryableClassifier = (message: RetryableMessage) => boolean
+type RetryPreparer = (message: RetryableMessage) => Promise<boolean>
 type PatchableAgentSession = {
 	prototype: {
 		_isRetryableError?: RetryableClassifier
+		_prepareRetry?: RetryPreparer
 		_kimchiInfrastructureRetryPatch?: boolean
 	}
+}
+
+export const MAX_INFERENCE_TIMEOUT_RETRIES = 2
+const inferenceTimeoutRetryCounts = new WeakMap<object, number>()
+
+export function isInferenceTimeout(message: RetryableMessage): boolean {
+	return (
+		message.stopReason === "error" &&
+		typeof message.errorMessage === "string" &&
+		message.errorMessage.startsWith(`${INFERENCE_TIMEOUT_ERROR_PREFIX}:`)
+	)
 }
 
 export function isInfrastructureErrorRetryable(message: RetryableMessage): boolean {
@@ -90,6 +104,7 @@ export function installInfrastructureRetryPatch(
 	if (proto._kimchiInfrastructureRetryPatch) return
 	const original = proto._isRetryableError
 	if (!original) return
+	const originalPrepareRetry = proto._prepareRetry
 
 	proto._isRetryableError = function patchedIsRetryableError(message: RetryableMessage): boolean {
 		const infrastructure = isInfrastructureErrorRetryable(message)
@@ -98,6 +113,19 @@ export function installInfrastructureRetryPatch(
 		// ordinary upstream-retryable verdicts pass through uncounted.
 		if (!infrastructure) return true
 		return !isInfrastructureBreakerTripped()
+	}
+	if (originalPrepareRetry) {
+		proto._prepareRetry = async function patchedPrepareRetry(this: { _retryAttempt?: number }, message) {
+			// Upstream resets _retryAttempt to zero when a retry chain ends. Use that
+			// boundary to keep this timeout-only budget independent per inference.
+			if ((this._retryAttempt ?? 0) === 0) inferenceTimeoutRetryCounts.delete(this)
+			if (isInferenceTimeout(message)) {
+				const timeoutRetries = inferenceTimeoutRetryCounts.get(this) ?? 0
+				if (timeoutRetries >= MAX_INFERENCE_TIMEOUT_RETRIES) return false
+				inferenceTimeoutRetryCounts.set(this, timeoutRetries + 1)
+			}
+			return originalPrepareRetry.call(this, message)
+		}
 	}
 	proto._kimchiInfrastructureRetryPatch = true
 }

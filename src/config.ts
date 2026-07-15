@@ -11,6 +11,9 @@ const KIMCHI_LLM_ENDPOINT = "https://llm.kimchi.dev/openai/v1"
 const DEFAULT_TELEMETRY_LOGS_ENDPOINT = "https://api.cast.ai/ai-optimizer/v1beta/logs:ingest"
 const DEFAULT_TELEMETRY_METRICS_ENDPOINT = "https://api.cast.ai/ai-optimizer/v1beta/metrics:ingest"
 
+/** Hard wall-clock limit for one LLM inference, including its streamed body. */
+export const DEFAULT_INFERENCE_TIMEOUT_MS = 300_000
+
 export const ALWAYS_SHOWN_SKILL_PATHS = [join(".config", "kimchi", "harness", "skills")]
 
 export const OPTIONAL_SKILL_PATHS = [join(".pi", "agent", "skills"), join(".claude", "skills")]
@@ -192,6 +195,8 @@ export interface KimchiConfig {
 	apiKey: string
 	agentConfigDir: string
 	llmEndpoint: string
+	inferenceTimeoutMs: number
+	inferenceTimeoutOverrides: Record<string, number>
 	/** The user-configured endpoint, undefined if not explicitly set. Use this when passing to updateModelsConfig. */
 	customLlmEndpoint: string | undefined
 	maxToolResultChars: number
@@ -229,6 +234,8 @@ export function readApiKeyFromConfigFile(configPath: string = KIMCHI_CONFIG_PATH
 function readConfigExtras(configPath: string): {
 	apiKey?: string
 	llmEndpoint?: string
+	inferenceTimeoutMs?: number
+	inferenceTimeoutOverrides?: Record<string, number>
 	maxToolResultChars?: number
 	mcpSearchLimit?: number
 	mcpSearch?: Partial<SearchStrategyConfig>
@@ -296,6 +303,8 @@ function readConfigExtras(configPath: string): {
 		// Read llmEndpoint
 		const llmEndpoint =
 			typeof parsed.llmEndpoint === "string" && parsed.llmEndpoint.length > 0 ? parsed.llmEndpoint : undefined
+		const inferenceTimeoutMs = parseInferenceTimeoutMs(parsed.inferenceTimeoutMs)
+		const inferenceTimeoutOverrides = parseInferenceTimeoutOverrides(parsed.inferenceTimeoutOverrides)
 
 		// Read deviceId (camelCase, then snake_case for backwards compat)
 		const deviceId =
@@ -313,6 +322,8 @@ function readConfigExtras(configPath: string): {
 		return {
 			apiKey,
 			llmEndpoint,
+			inferenceTimeoutMs,
+			inferenceTimeoutOverrides,
 			maxToolResultChars,
 			mcpSearchLimit,
 			mcpSearch,
@@ -326,6 +337,21 @@ function readConfigExtras(configPath: string): {
 	} catch {
 		return {}
 	}
+}
+
+function parseInferenceTimeoutMs(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined
+}
+
+function parseInferenceTimeoutOverrides(value: unknown): Record<string, number> | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
+	const parsed: Record<string, number> = {}
+	for (const [model, timeoutMs] of Object.entries(value)) {
+		const normalizedModel = model.trim()
+		const normalizedTimeout = parseInferenceTimeoutMs(timeoutMs)
+		if (normalizedModel && normalizedTimeout !== undefined) parsed[normalizedModel] = normalizedTimeout
+	}
+	return Object.keys(parsed).length > 0 ? parsed : undefined
 }
 
 /**
@@ -488,6 +514,9 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 	const extras = {
 		apiKey: projectExtras.apiKey ?? globalExtras.apiKey,
 		llmEndpoint: projectExtras.llmEndpoint ?? globalExtras.llmEndpoint,
+		inferenceTimeoutMs: projectExtras.inferenceTimeoutMs ?? globalExtras.inferenceTimeoutMs,
+		inferenceTimeoutOverrides:
+			projectExtras.inferenceTimeoutOverrides ?? globalExtras.inferenceTimeoutOverrides,
 		maxToolResultChars: projectExtras.maxToolResultChars ?? globalExtras.maxToolResultChars,
 		mcpSearchLimit: projectExtras.mcpSearchLimit ?? globalExtras.mcpSearchLimit,
 		mcpSearch: { ...globalExtras.mcpSearch, ...projectExtras.mcpSearch },
@@ -502,6 +531,8 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		apiKey: extras.apiKey ?? "",
 		agentConfigDir: AGENT_CONFIG_DIR,
 		llmEndpoint: extras.llmEndpoint ?? KIMCHI_LLM_ENDPOINT,
+		inferenceTimeoutMs: extras.inferenceTimeoutMs ?? DEFAULT_INFERENCE_TIMEOUT_MS,
+		inferenceTimeoutOverrides: extras.inferenceTimeoutOverrides ?? {},
 		customLlmEndpoint: extras.llmEndpoint,
 		maxToolResultChars: extras.maxToolResultChars ?? 10_000,
 		mcpSearchLimit: extras.mcpSearchLimit ?? 5,

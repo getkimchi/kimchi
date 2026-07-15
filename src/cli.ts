@@ -113,6 +113,7 @@ import {
 	createInfrastructureErrorTracker,
 	KIMCHI_INFRA_ERROR_EXIT_CODE,
 } from "./infrastructure-error.js"
+import { createInferenceTimeoutFetch, type InferenceTimeoutRecord } from "./inference-timeout.js"
 import {
 	injectExperimentalProvider,
 	isTransientModelsError,
@@ -147,61 +148,8 @@ installInfrastructureRetryPatch()
 installInlineCompactPatch()
 installPiNativeCompatibilityShim()
 
-function isModelCompletionFetch(input: RequestInfo | URL): boolean {
-	const url =
-		typeof input === "string"
-			? input
-			: input instanceof URL
-				? input.href
-				: typeof (input as { url?: unknown }).url === "string"
-					? (input as { url: string }).url
-					: ""
-	return /\/chat\/completions(?:$|[?#])/.test(url)
-}
-
-function withBillingRefreshAfterResponseSettles(response: Response, refreshBilling: () => Promise<unknown>): Response {
-	const body = response.body
-	if (!body) {
-		void refreshBilling()
-		return response
-	}
-
-	const reader = body.getReader()
-	let refreshScheduled = false
-	const refreshOnce = () => {
-		if (refreshScheduled) return
-		refreshScheduled = true
-		void refreshBilling()
-	}
-	const wrappedBody = new ReadableStream<Uint8Array>({
-		async pull(controller) {
-			try {
-				const { done, value } = await reader.read()
-				if (done) {
-					controller.close()
-					refreshOnce()
-					return
-				}
-				controller.enqueue(value)
-			} catch (error) {
-				refreshOnce()
-				controller.error(error)
-			}
-		},
-		async cancel(reason) {
-			try {
-				await reader.cancel(reason)
-			} finally {
-				refreshOnce()
-			}
-		},
-	})
-
-	return new Response(wrappedBody, {
-		status: response.status,
-		statusText: response.statusText,
-		headers: response.headers,
-	})
+function logInferenceTimeout(record: InferenceTimeoutRecord): void {
+	console.error(`KIMCHI_INFERENCE_TIMEOUT ${JSON.stringify(record)}`)
 }
 
 function getSubcommand(args: string[]): string {
@@ -550,16 +498,24 @@ try {
 			const userAgent = `kimchi/${getVersion()}`
 			const originalFetch = globalThis.fetch.bind(globalThis)
 			const refreshBilling = () => refreshBillingStatusFromConfig({ fetch: originalFetch })
-			const patchedFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+			const userAgentFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
 				const headers = new Headers(init?.headers)
 				if (!headers.has("user-agent")) {
 					headers.set("user-agent", userAgent)
 				}
-				const response = await originalFetch(input, { ...init, headers })
-				return isModelCompletionFetch(input)
-					? withBillingRefreshAfterResponseSettles(response, refreshBilling)
-					: response
+				return originalFetch(input, { ...init, headers })
 			}
+			const providerByModel = new Map(models.map((model) => [model.slug, model.provider]))
+			const patchedFetch = createInferenceTimeoutFetch({
+				fetchImpl: userAgentFetch,
+				settings: {
+					defaultMs: config.inferenceTimeoutMs,
+					overrides: config.inferenceTimeoutOverrides,
+				},
+				resolveProvider: (model) => providerByModel.get(model),
+				onTimeout: logInferenceTimeout,
+				onResponseSettled: refreshBilling,
+			})
 			;(patchedFetch as typeof patchedFetch & { [key: symbol]: boolean })[fetchPatchedSymbol] = true
 			globalThis.fetch = patchedFetch
 		}
