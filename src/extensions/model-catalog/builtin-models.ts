@@ -179,6 +179,7 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 				explore: [DEFAULT_EXPLORE_GUIDELINES],
 				research: [DEFAULT_RESEARCH_GUIDELINES],
 			}),
+			orchestrationGuidelines: "When orchestrating (deepseek-v4-flash): No model-specific orchestration overrides — follow the default delegation rules.",
 		},
 	],
 	// Proprietary (Anthropic) models — excluded from OSS subagent routing.
