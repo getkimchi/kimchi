@@ -46,7 +46,7 @@ import { defaultFermentRuntime, type FermentRuntime } from "../runtime.js"
 import { safeSendMessage } from "../safe-send.js"
 import type { PendingScope } from "../scoping.js"
 import { confirmPendingScope } from "../scoping-confirmation.js"
-import { MAX_BLOCK_RETRIES } from "../state.js"
+import { continuationPolicyForNewFerment, MAX_BLOCK_RETRIES } from "../state.js"
 import {
 	createApplyAndPersist,
 	failedToolResult,
@@ -502,6 +502,7 @@ async function resolveProposeFermentTarget(
 	await ensureGitRepo({ ui: ctx.ui })
 	const shortName = deriveDraftFermentTitle(title)
 	const f = storage.create(shortName, goal)
+	runtime.setContinuationPolicy(continuationPolicyForNewFerment(ctx.hasUI, pi.getFlag?.("ferment-oneshot") === true))
 	setActiveFermentAndApplyProfile(pi, runtime, f)
 	if (pi.events) {
 		emitFermentCreated(pi.events, f)

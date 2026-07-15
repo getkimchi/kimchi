@@ -214,6 +214,32 @@ export function setContinuationPolicy(policy: ContinuationPolicy): void {
 	continuationPolicy = policy
 }
 
+/**
+ * Determine the continuation policy for a newly-created ferment.
+ *
+ * A previous ferment may have switched the policy to "automated" (e.g. the
+ * user selected "Start execution in auto mode" in the plan review dialog).
+ * That choice is ferment-scoped and must not leak into the next ferment.
+ *
+ * Policy rule:
+ *   explicit one-shot flag OR no UI → "automated"
+ *   otherwise                        → "manual"
+ *
+ * This mirrors the `session_start` handler's logic
+ * (`ctx?.hasUI ? "manual" : "automated"`) extended with the one-shot flag.
+ *
+ * Call this ONLY at ferment creation sites — never during resume, switch,
+ * re-proposal, or plan-review confirmation, where the policy is an explicit
+ * user choice for the current ferment.
+ *
+ * The caller is responsible for applying the result via
+ * `runtime.setContinuationPolicy(...)` so that the policy is written through
+ * the same runtime abstraction that reads it.
+ */
+export function continuationPolicyForNewFerment(hasUI: boolean, isOneShot: boolean): ContinuationPolicy {
+	return isOneShot || !hasUI ? "automated" : "manual"
+}
+
 export function isAutomatedContinuationEnabled(): boolean {
 	return continuationPolicy === "automated"
 }

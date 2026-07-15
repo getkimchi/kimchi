@@ -11,11 +11,13 @@ import {
 	FermentCommandController,
 	getFermentArgumentCompletions,
 	registerFermentCommands,
+	startFermentForIntent,
 	startInteractiveFerment,
 } from "./commands.js"
 import { maybeInjectReactiveContinuationNudge } from "./nudge.js"
 import { clearAllPendingPlanReviews, getPendingPlanReview, setPendingPlanReview } from "./plan-review.js"
 import { createDefaultFermentRuntime, type FermentRuntime } from "./runtime.js"
+import type { ContinuationPolicy } from "./state.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
 
 vi.mock("node:fs", async (importOriginal) => {
@@ -641,6 +643,98 @@ describe("FermentCommandController", () => {
 
 		expect(result).toEqual({ handled: true })
 		expect(h.ctx.ui.notify).toHaveBeenCalledWith("Export failed: permission denied")
+	})
+})
+
+describe("continuation policy reset on new ferment creation", () => {
+	it("/ferment one-shot resets policy to automated", async () => {
+		const h = createHarness()
+		h.runtime.setContinuationPolicy("manual")
+		const controller = new FermentCommandController()
+
+		await controller.execute(
+			{ type: "one-shot", intent: "fix the failing smoke test" },
+			{ raw: 'one-shot "fix the failing smoke test"', pi: h.pi, ctx: h.ctx, runtime: h.runtime },
+		)
+
+		expect(h.runtime.getContinuationPolicy()).toBe("automated")
+	})
+
+	it("startFermentForIntent resets policy to manual for interactive UI", async () => {
+		const h = createHarness()
+		h.runtime.setContinuationPolicy("automated")
+		const interactiveCtx = createContext({
+			...h.ctx,
+			hasUI: true,
+			ui: { ...h.ctx.ui, confirm: vi.fn().mockResolvedValue(true) },
+		}) as unknown as ExtensionCommandContext
+
+		await startFermentForIntent({ pi: h.pi, ctx: interactiveCtx, runtime: h.runtime, rawIntent: "Add OAuth support" })
+
+		expect(h.runtime.getContinuationPolicy()).toBe("manual")
+	})
+
+	it("startFermentForIntent resets policy to automated for headless (no UI)", async () => {
+		const h = createHarness()
+		h.runtime.setContinuationPolicy("manual")
+
+		await startFermentForIntent({ pi: h.pi, ctx: h.ctx, runtime: h.runtime, rawIntent: "Add OAuth support" })
+
+		expect(h.runtime.getContinuationPolicy()).toBe("automated")
+	})
+
+	it("policy reset writes through the runtime, not global state", async () => {
+		const baseH = createHarness()
+		// Simulate an isolated runtime whose policy methods use local state
+		// instead of the module-level global.
+		let isolatedPolicy: ContinuationPolicy = "automated"
+		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-isolated-policy-")))
+		const isolatedRuntime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: () => storage,
+			getContinuationPolicy: () => isolatedPolicy,
+			setContinuationPolicy: (p: ContinuationPolicy) => {
+				isolatedPolicy = p
+			},
+		}
+		const interactiveCtx = createContext({
+			...baseH.ctx,
+			hasUI: true,
+			ui: { ...baseH.ctx.ui, confirm: vi.fn().mockResolvedValue(true) },
+		}) as unknown as ExtensionCommandContext
+
+		await startFermentForIntent({
+			pi: baseH.pi,
+			ctx: interactiveCtx,
+			runtime: isolatedRuntime,
+			rawIntent: "Add OAuth support",
+		})
+
+		expect(isolatedRuntime.getContinuationPolicy()).toBe("manual")
+	})
+
+	it("/ferment new resets policy to manual for interactive UI", async () => {
+		const h = createHarness()
+		h.runtime.setContinuationPolicy("automated")
+		const commands = new Map<string, RegisteredCommand>()
+		const pi = {
+			...h.pi,
+			registerCommand: (name: string, command: RegisteredCommand) => {
+				commands.set(name, command)
+			},
+		} as unknown as ExtensionAPI
+		registerFermentCommands(pi, h.runtime)
+		const interactiveCtx = createContext({
+			...h.ctx,
+			hasUI: true,
+			ui: { ...h.ctx.ui, confirm: vi.fn().mockResolvedValue(true) },
+		}) as unknown as ExtensionCommandContext
+
+		const fermentCommand = commands.get("ferment")
+		if (!fermentCommand) throw new Error("ferment command was not registered")
+		await fermentCommand.handler('new "Next ferment"', interactiveCtx)
+
+		expect(h.runtime.getContinuationPolicy()).toBe("manual")
 	})
 })
 

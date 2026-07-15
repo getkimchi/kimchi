@@ -32,6 +32,7 @@ import { defaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import { safeSendMessage } from "./safe-send.js"
 import { scheduleFermentWakeUp } from "./scheduler.js"
 import { runScopingFlow, sendFermentRequestMessage } from "./scoping.js"
+import { continuationPolicyForNewFerment } from "./state.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
 import { applyFermentRuntimeToolProfile, setActiveFermentAndApplyProfile } from "./tool-scope.js"
 import { checkWorktree } from "./worktree.js"
@@ -263,6 +264,7 @@ export async function startFermentForIntent({
 		await ensureGitRepo({ ui: ctx.ui })
 		const shortName = deriveDraftFermentTitle(title ?? rawIntent)
 		const f = storage.create(shortName, rawIntent)
+		runtime.setContinuationPolicy(continuationPolicyForNewFerment(ctx.hasUI, pi.getFlag?.("ferment-oneshot") === true))
 		setActiveFermentAndApplyProfile(pi, runtime, f)
 		emitFermentCreated(pi.events, f)
 		appendRefEntry(pi, f.id)
@@ -1010,9 +1012,9 @@ export class FermentCommandController {
 					ui: ctx.ui,
 					autoInit: pi.getFlag?.("init-git") === true || autoInitFromEnv(),
 				})
-				runtime.setContinuationPolicy("automated")
 				const shortName = deriveDraftFermentTitle(resolvedIntent)
 				const f = storage.create(shortName, resolvedIntent)
+				runtime.setContinuationPolicy(continuationPolicyForNewFerment(ctx.hasUI, true))
 				const updated = f
 				setActiveFermentAndApplyProfile(pi, runtime, updated)
 				emitFermentCreated(pi.events, updated)
@@ -1078,6 +1080,9 @@ export class FermentCommandController {
 			await ensureGitRepo({ ui: ctx.ui })
 			const shortName = deriveDraftFermentTitle(rawName)
 			const f = storage.create(shortName, rawName)
+			runtime.setContinuationPolicy(
+				continuationPolicyForNewFerment(ctx.hasUI, pi.getFlag?.("ferment-oneshot") === true),
+			)
 			setActiveFermentAndApplyProfile(pi, runtime, f)
 			emitFermentCreated(pi.events, f)
 			appendRefEntry(pi, f.id)

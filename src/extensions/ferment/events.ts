@@ -34,6 +34,7 @@ import { scheduleFermentWakeUp } from "./scheduler.js"
 import { confirmPendingScope } from "./scoping-confirmation.js"
 import {
 	clearActiveFermentId,
+	continuationPolicyForNewFerment,
 	getActiveFermentId,
 	isFermentLockedByLiveProcess,
 	removeFermentLock,
@@ -425,8 +426,10 @@ export function registerFermentEvents(
 
 		try {
 			// Bootstrap path: no UI available yet, so only auto-init when the user
-			// opted in via --init-git or KIMCHI_AUTO_GIT_INIT=1.
-			runtime.setContinuationPolicy("automated")
+			// opted in via --init-git or KIMCHI_AUTO_GIT_INIT=1. This handler has
+			// no ExtensionContext, but isOneShot=true forces "automated" regardless
+			// of hasUI, matching the previous setContinuationPolicy("automated").
+			runtime.setContinuationPolicy(continuationPolicyForNewFerment(false, true))
 			await ensureGitRepo({
 				autoInit: pi.getFlag?.("init-git") === true || autoInitFromEnv(),
 			})
