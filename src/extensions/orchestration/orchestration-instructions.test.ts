@@ -272,7 +272,7 @@ describe("resolveOrchestrationInstructions", () => {
 				reviewer: "anthropic/claude-opus-4-7",
 			},
 		})
-		expect(result).toContain("Prefer delegating review to a Reviewer agent")
+		expect(result).toContain("DO delegate review to a Reviewer agent")
 		expect(result).toContain("DO NOT review yourself")
 		expect(result).not.toContain("You may self-review")
 	})

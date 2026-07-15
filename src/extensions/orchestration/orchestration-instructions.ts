@@ -14,7 +14,7 @@ import type { ModelRegistry } from "./model-registry/index.js"
 import type { ModelTier, OrchestrationModelDescriptor } from "./model-registry/types.js"
 import type { ModelRoles, RoleModelAssignment } from "./model-roles.js"
 import { modelIdFromRef, normalizeRoleModels, splitModelRef } from "./model-roles.js"
-import { resolveModelRoleNames, shouldDelegatePlanning } from "./orchestrator-roles.js"
+import { resolveModelRoleNames, shouldDelegatePlanning, shouldDelegateReview } from "./orchestrator-roles.js"
 
 export interface OrchestrationInstructionsContext {
 	currentModelId?: string
@@ -268,7 +268,10 @@ function buildPlanPhaseDirectives(ctx: PhaseDirectiveContext): string {
 	lines.push("")
 
 	if (delegatePlanning) {
-		const models = ctx.roles ? modelListForRole(ctx.roles.planner) : "a Planner model"
+		if (!ctx.roles) {
+			throw new Error("Invariant: ctx.roles must be defined when delegatePlanning is true")
+		}
+		const models = modelListForRole(ctx.roles.planner)
 		lines.push(
 			`- DO delegate plan drafting to Agent(type: "Plan", model: ${models}). A separate planner model is configured — use it.`,
 		)
@@ -322,19 +325,25 @@ function buildBuildPhaseDirectives(ctx: PhaseDirectiveContext): string {
 }
 
 function buildReviewPhaseDirectives(ctx: PhaseDirectiveContext): string {
-	const owns = ctx.ownRoles.includes("reviewer")
+	const delegateReview = shouldDelegateReview(ctx.currentModelId, ctx.roles)
 	const lines: string[] = []
 	const models = ctx.roles ? modelListForRole(ctx.roles.reviewer) : "a Reviewer model"
 
 	lines.push("#### Review phase")
 	lines.push("")
-	lines.push(
-		"- Prefer delegating review to a Reviewer agent in a fresh context. Independent review provides unbiased judgment and catches issues the orchestrator may have accepted.",
-	)
+	if (delegateReview) {
+		lines.push(
+			"- DO delegate review to a Reviewer agent in a fresh context. Independent review provides unbiased judgment and catches issues the orchestrator may have accepted.",
+		)
+	} else {
+		lines.push(
+			"- Prefer delegating review to a Reviewer agent in a fresh context. Independent review provides unbiased judgment and catches issues the orchestrator may have accepted.",
+		)
+	}
 	lines.push(
 		`- Delegate to Agent(type: "Reviewer", model: ${models}) by default. Use the Reviewer model(s) configured in **Your team**. If both standard and heavy-tier Reviewers are configured, prefer the standard-tier for simple changes and reserve the heavy-tier for complex concurrency, security-critical logic, or novel architectural patterns.`,
 	)
-	if (owns) {
+	if (!delegateReview) {
 		lines.push(
 			"- You may self-review only for trivial and low-risk changes. If you self-review, explicitly state that you are doing so and why. For all other changes, delegate.",
 		)

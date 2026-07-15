@@ -70,3 +70,16 @@ export function shouldDelegatePlanning(currentModelId: string | undefined, roles
 	if (!roles || !currentModelId) return false
 	return !resolveModelRoleNames(currentModelId, roles).includes("planner")
 }
+
+/**
+ * Determine whether review should be delegated to a Reviewer agent.
+ *
+ * Review is delegated when the orchestrator model is NOT a reviewer model —
+ * i.e. a separate reviewer model is configured. When the orchestrator IS a
+ * reviewer, it may self-review for trivial and low-risk changes per
+ * Orchestration phase responsibilities.
+ */
+export function shouldDelegateReview(currentModelId: string | undefined, roles?: ModelRoles): boolean {
+	if (!roles || !currentModelId) return false
+	return !resolveModelRoleNames(currentModelId, roles).includes("reviewer")
+}
