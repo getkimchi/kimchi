@@ -202,7 +202,7 @@ describe("Agent tool token budget clamping (integration with real multi-model)",
 	it("getMultiModelEnabled returns true when settings.json has multiModel:true", () => {
 		const sm = {
 			getSessionId: () => "test-session-integration",
-			getEntries: () => [] as unknown[],
+			getEntries: () => [] as never[],
 		}
 		expect(getMultiModelEnabled(sm)).toBe(true)
 	})
