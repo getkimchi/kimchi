@@ -28,12 +28,7 @@ import { filterThinkingForDisplay } from "../hide-thinking.js"
 import { sessionHasImages } from "../model-guard.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { KIMCHI_DEV_PROVIDER, MODEL_CAPABILITIES } from "../orchestration/model-registry/index.js"
-import {
-	type DEFAULT_MODEL_ROLES,
-	getAllowedMultiModelRefs,
-	getModelRoles,
-	normalizeRoleModels,
-} from "../orchestration/model-roles.js"
+import { getAllowedMultiModelRefs, getModelRoles, normalizeRoleModels } from "../orchestration/model-roles.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { isStaleCtxError } from "../stale-ctx.js"
 import { trackSubagentSpawned } from "../telemetry/index.js"
@@ -99,14 +94,15 @@ import {
 	type Theme,
 	type UICtx,
 } from "./ui/agent-widget.js"
+import { AGENT_WORKER_BUDGETS } from "./worker-budget-policy.js"
 
 // ---- Shared helpers ----
 
 /**
  * Maps an agent persona type to its model-roles key.
- * Returns null for types that don't have a configured role.
+ * Returns undefined for types that don't have a configured role.
  */
-export function agentTypeToRoleKey(subagentType: string): keyof typeof DEFAULT_MODEL_ROLES | null {
+function agentTypeToRoleKey(subagentType: string): keyof typeof DEFAULT_MODEL_ROLES | null {
 	const map: Record<string, keyof typeof DEFAULT_MODEL_ROLES> = {
 		Builder: "builder",
 		Reviewer: "reviewer",
@@ -125,7 +121,7 @@ export function agentTypeToRoleKey(subagentType: string): keyof typeof DEFAULT_M
  * the agent type. Returns the first model ref (e.g. "kimchi-dev/minimax-m3")
  * or undefined if no role mapping exists.
  */
-export function resolveRoleModelRef(subagentType: string): string | undefined {
+function resolveRoleModelRef(subagentType: string): string | undefined {
 	const roleKey = agentTypeToRoleKey(subagentType)
 	if (!roleKey) return undefined
 	const roles = getModelRoles()
@@ -134,6 +130,8 @@ export function resolveRoleModelRef(subagentType: string): string | undefined {
 	const modelRefs = normalizeRoleModels(assignment)
 	return modelRefs[0]
 }
+
+import type { DEFAULT_MODEL_ROLES } from "../orchestration/model-roles.js"
 
 // Give aborted sub-agents a bounded chance to reach runner finally blocks.
 // If they do not settle, manager.dispose() still runs hard-fallback cleanup.
@@ -327,6 +325,21 @@ function getAbortLabel(reason?: AgentAbortReason): string {
 	}
 }
 
+function _getAbortNote(reason?: AgentAbortReason): string {
+	switch (reason) {
+		case "max_turns":
+			return " (aborted - max turns exceeded, output may be incomplete)"
+		case "token_budget":
+			return " (aborted - token budget exceeded, output may be incomplete)"
+		case "inactivity":
+			return " (aborted - agent became unresponsive, output may be incomplete)"
+		case "max_duration":
+			return " (aborted - wall-clock duration limit exceeded, output may be incomplete)"
+		default:
+			return " (aborted, output may be incomplete)"
+	}
+}
+
 function getStatusLabel(status: string, error?: string, abortReason?: AgentAbortReason): string {
 	switch (status) {
 		case "error":
@@ -359,16 +372,16 @@ function getStatusNote(status: string, abortReason?: AgentAbortReason): string {
 
 function getStatusInstruction(status: string, abortReason?: AgentAbortReason): string {
 	if (status === "aborted" && abortReason === "token_budget") {
-		return "\nThe agent ran out of its token budget. Inspect the worker report before acting. Use resume_subagent with a bounded steering prompt when remaining_steps are a direct continuation; spawn a narrower replacement Agent when remaining_steps have a clean task boundary; use resume_subagent with purpose finalize_report if the report is missing; or implement the remaining work directly if it's small enough. Do not blindly retry the same prompt."
+		return "\nThe agent ran out of its token budget. Inspect agent_outcome.report to see what was completed. If remaining_steps are a direct continuation, call resume_subagent with a fresh max_turns/max_duration/token_budget and a bounded steering prompt. If remaining_steps have a clean task boundary, spawn a new Agent with a narrower scope. If the report is missing, call resume_subagent with purpose finalize_report."
 	}
 	if (status === "aborted" && abortReason === "inactivity") {
-		return "\nThe agent stopped producing output and was terminated. Inspect the worker report before acting; this may indicate a stall. Resume with a steering prompt that continues the same thread while avoiding the stalled operation, spawn a narrower replacement Agent if there's a clean task boundary, or implement the remaining work directly if you understand the problem well enough."
+		return "\nThe agent stopped producing output and was terminated. This may indicate a stall. Inspect agent_outcome.report. If the remaining work is a direct continuation, call resume_subagent with a steering prompt that avoids the stalled operation. If there is a clean task boundary, spawn a new Agent with a narrower scope."
 	}
 	if (status === "aborted" && abortReason === "max_duration") {
-		return "\nThe agent exceeded its maximum allowed wall-clock duration and was terminated. Inspect the worker report before acting; this may indicate a hang or blocked command. Resume with a bounded steering prompt that avoids the stalled operation, spawn a narrower replacement Agent if there's a clean task boundary, or implement the remaining work directly if you understand the problem well enough."
+		return "\nThe agent exceeded its wall-clock duration. This may indicate a hang or slow operation. Inspect agent_outcome.report. If the remaining work is a direct continuation, call resume_subagent with a fresh max_duration and a steering prompt that avoids the stalled operation. If there is a clean task boundary, spawn a new Agent with a narrower scope. Do not spawn a new Agent for the same task \u2014 resume_subagent preserves the agent context and progress."
 	}
 	if (status === "aborted" && abortReason === "max_turns") {
-		return "\nThe agent exhausted its turn budget. Do not mark delegated work complete from an aborted result. Inspect the worker report first: use resume_subagent with a bounded steering prompt when remaining_steps are a direct continuation; spawn a narrower replacement Agent when remaining_steps have a clean task boundary; use resume_subagent with purpose finalize_report if the report is missing; or implement the remaining work directly if it's small enough. Do not blindly retry the same prompt."
+		return "\nThe agent exhausted its turn budget. Do not mark this work complete. Inspect agent_outcome.report. If remaining_steps are a direct continuation, call resume_subagent with a fresh max_turns and a bounded steering prompt. If there is a clean task boundary, spawn a new Agent with a narrower scope. If the report is missing, call resume_subagent with purpose finalize_report."
 	}
 	return ""
 }
@@ -1242,6 +1255,8 @@ ${AGENT_TOOL_GUIDELINES}`,
 					}
 				}
 
+				const _sessionId = ctx.sessionManager.getSessionId()
+
 				// When multi-model is enabled and the caller did NOT specify a model,
 				// resolve the default model from the role config based on the agent
 				// type. This ensures Builder calls use the configured builder model,
@@ -1251,13 +1266,10 @@ ${AGENT_TOOL_GUIDELINES}`,
 					if (roleModelRef) {
 						const resolved = resolveModel(roleModelRef, ctx.modelRegistry as ModelRegistry)
 						if (typeof resolved !== "string") {
-							// resolveModel returns `unknown | string` — the cast is required because
-							// ModelRegistry.find() returns unknown. Same pattern as line 1243.
 							model = resolved as typeof ctx.model
 						}
 					}
 				}
-
 				// Multi-model guard: when multi-model mode is active and the caller supplied
 				// an explicit model, the resolved model must belong to the configured
 				// multi-model role pool. This runs before budget-retry and task_ref checks
@@ -1278,11 +1290,26 @@ ${AGENT_TOOL_GUIDELINES}`,
 				const explicitTokenBudget =
 					(params as { token_budget?: number; tokenBudget?: number }).token_budget ??
 					(params as { token_budget?: number; tokenBudget?: number }).tokenBudget
+
+				// Enforce minimum token budget when multi-model is active. The
+				// orchestrator often passes tiny budgets (2000-8000) that are too
+				// small for any real implementation work — a single file write can
+				// exceed 2000 output tokens. Clamp to the minimum from the budget
+				// table so Builders have enough room to complete their work.
+				const MIN_TOKEN_BUDGET = AGENT_WORKER_BUDGETS.default.tokenBudget
+				const effectiveTokenBudget = (() => {
+					const raw = resolvedConfig.tokenBudget
+					if (raw == null) return undefined
+					if (getMultiModelEnabled(ctx.sessionManager) && raw < MIN_TOKEN_BUDGET) {
+						return MIN_TOKEN_BUDGET
+					}
+					return raw
+				})()
 				const activeBudgetRetryBlock = budgetRetryBlock
 				if (
 					activeBudgetRetryBlock &&
 					shouldBlockBudgetRetry(activeBudgetRetryBlock, {
-						tokenBudget: resolvedConfig.tokenBudget,
+						tokenBudget: effectiveTokenBudget ?? resolvedConfig.tokenBudget,
 						subagentType,
 						description: params.description as string,
 						prompt: params.prompt as string,
@@ -1340,7 +1367,8 @@ ${AGENT_TOOL_GUIDELINES}`,
 						: undefined
 				const agentTags: string[] = []
 				if (thinking) agentTags.push(`thinking: ${thinking}`)
-				if (resolvedConfig.tokenBudget != null) agentTags.push(`budget: ${formatTokens(resolvedConfig.tokenBudget)}`)
+				if (resolvedConfig.tokenBudget != null)
+					agentTags.push(`budget: ${formatTokens(effectiveTokenBudget ?? resolvedConfig.tokenBudget)}`)
 				if (isolated) agentTags.push("isolated")
 				const effectiveMaxTurns = normalizeMaxTurns(resolvedConfig.maxTurns ?? getDefaultMaxTurns())
 				const detailBase = {
@@ -1388,7 +1416,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 							visibility,
 							model: model as Parameters<typeof manager.spawn>[4]["model"],
 							maxTurns: effectiveMaxTurns,
-							tokenBudget: resolvedConfig.tokenBudget,
+							tokenBudget: effectiveTokenBudget ?? resolvedConfig.tokenBudget,
 							taskRef,
 							maxDuration: resolvedConfig.maxDuration,
 							isolated,
@@ -1534,7 +1562,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 						visibility,
 						model: model as Parameters<typeof manager.spawn>[4]["model"],
 						maxTurns: effectiveMaxTurns,
-						tokenBudget: resolvedConfig.tokenBudget,
+						tokenBudget: effectiveTokenBudget ?? resolvedConfig.tokenBudget,
 						taskRef,
 						maxDuration: resolvedConfig.maxDuration,
 						isolated,

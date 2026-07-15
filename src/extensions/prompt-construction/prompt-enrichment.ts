@@ -271,6 +271,14 @@ export default function (skillPaths: string[]) {
 				deprecatedNotificationFired.delete(sessionId)
 			})
 
+			// Capture the session manager for turn_start re-application of the
+			// orchestrator tool profile. Declared before session_start so both
+			// handlers can access it.
+			let capturedSessionManager: Pick<
+				import("@earendil-works/pi-coding-agent").SessionManager,
+				"getSessionId" | "getEntries"
+			> | null = null
+
 			pi.on("session_start", async (_event, ctx) => {
 				const { multiModelEnabled, orchestratorModelRef } = syncSessionModelState(pi, ctx)
 				const orchestratorModelId = modelIdFromRef(orchestratorModelRef)
@@ -299,25 +307,19 @@ export default function (skillPaths: string[]) {
 				if (multiModelEnabled && !hasActiveFerment()) {
 					ToolProfileManager.apply("orchestrator", "adhoc", pi)
 				}
-			})
 
-			// Capture the session manager for turn_start.
-			let capturedSessionManager: Pick<
-				import("@earendil-works/pi-coding-agent").SessionManager,
-				"getSessionId" | "getEntries"
-			> | null = null
-			pi.on("session_start", async (_event, ctx) => {
+				// Capture the session manager for turn_start re-application.
 				if (ctx.sessionManager) {
 					capturedSessionManager = ctx.sessionManager
 				}
 			})
 
-			// Re-apply the orchestrator profile on every turn start.
-			pi.on("turn_start", async () => {
-				if (capturedSessionManager && getMultiModelEnabled(capturedSessionManager) && !hasActiveFerment()) {
-					ToolProfileManager.apply("orchestrator", "adhoc", pi)
-				}
-			})
+		// Re-apply the orchestrator profile on every turn start.
+		pi.on("turn_start", async () => {
+			if (capturedSessionManager && getMultiModelEnabled(capturedSessionManager) && !hasActiveFerment()) {
+				ToolProfileManager.apply("orchestrator", "adhoc", pi)
+			}
+		})
 
 			pi.on("model_select", async (_event, ctx) => {
 				notifyIfDeprecated(ctx)
