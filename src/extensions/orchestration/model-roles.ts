@@ -30,7 +30,7 @@
  *     "orchestrator": "anthropic/claude-sonnet-4-5",
  *     "builder": ["anthropic/claude-sonnet-4-5", "openai/gpt-4o"],
  *     "reviewer": "kimchi-dev/minimax-m2.7",
- *     "explorer": "kimchi-dev/nemotron-3-ultra-fp4",
+ *     "explorer": "kimchi-dev/deepseek-v4-flash",
  *     "judge": "kimchi-dev/kimi-k2.6",
  *     "compactor": "kimchi-dev/nemotron-3-ultra-fp4"
  *   }
@@ -96,7 +96,7 @@ export const DEFAULT_MODEL_ROLES: Readonly<ModelRoles> = {
 	planner: "kimchi-dev/kimi-k2.7",
 	builder: ["kimchi-dev/minimax-m3"],
 	reviewer: ["kimchi-dev/kimi-k2.7"],
-	explorer: "kimchi-dev/nemotron-3-ultra-fp4",
+	explorer: "kimchi-dev/deepseek-v4-flash",
 	researcher: "kimchi-dev/minimax-m3",
 	judge: ["kimchi-dev/kimi-k2.7"],
 	compactor: "kimchi-dev/minimax-m3",
