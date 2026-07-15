@@ -46,6 +46,7 @@ import branchCommandExtension from "./extensions/branch-command.js"
 import claudeCodeHooksAdapter from "./extensions/claude-code-hook-adapter/index.js"
 import claudeCodeSkillsExtension from "./extensions/claude-code-skills/index.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
+import codeRagExtension from "./extensions/code-rag/index.js"
 import customizeStatusLineExtension from "./extensions/customize-status-line-command.js"
 import explorationGuardExtension from "./extensions/exploration-guard.js"
 import fermentExtension from "./extensions/ferment/index.js"
@@ -655,6 +656,7 @@ try {
 				{ id: "tools.web_fetch", factory: webFetchExtension },
 				{ id: "tools.web_search", factory: webSearchExtension },
 			] satisfies ManagedExtensionFactory[]),
+			codeRagExtension,
 			modelSwitchExtension,
 			modelGuardExtension,
 			orphanToolResultRepairExtension,
