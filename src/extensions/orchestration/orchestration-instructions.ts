@@ -14,7 +14,7 @@ import type { ModelRegistry } from "./model-registry/index.js"
 import type { ModelTier, OrchestrationModelDescriptor } from "./model-registry/types.js"
 import type { ModelRoles, RoleModelAssignment } from "./model-roles.js"
 import { modelIdFromRef, normalizeRoleModels, splitModelRef } from "./model-roles.js"
-import { resolveModelRoleNames } from "./orchestrator-roles.js"
+import { resolveModelRoleNames, shouldDelegatePlanning, shouldDelegateReview } from "./orchestrator-roles.js"
 
 export interface OrchestrationInstructionsContext {
 	currentModelId?: string
@@ -90,7 +90,12 @@ const PLAN_SPEC_REQUIREMENTS = `The spec MUST break the work into **small, indep
 
 Chunks must be ordered so each one can build on the previous.`
 
-const PLAN_VERIFICATION = `**Plan verification (required for complex tasks, optional for simple):** After self-validation (see Phase Guidelines), decide whether the plan needs external verification.
+function buildPlanVerification(delegatePlanning: boolean): string {
+	const validationClause = delegatePlanning
+		? "After validating the Plan agent's returned spec (see above)"
+		: "After self-validation (see Phase Guidelines)"
+
+	return `**Plan verification (required for complex tasks, optional for simple):** ${validationClause}, decide whether the plan needs external verification.
 
 **Skip verification when ALL of these apply:**
 - Single-file change or 2 files maximum
@@ -104,7 +109,7 @@ const PLAN_VERIFICATION = `**Plan verification (required for complex tasks, opti
 - Requirements are unclear, incomplete, or have multiple interpretations
 - The task involves concurrency, state machines, or distributed logic
 
-**Verification prompt:** The verifier receives: (1) the original task description, (2) the plan spec file path. Verifier reads both, then outputs a brief markdown verdict:
+**Verification prompt:** Delegate to a Reviewer agent (Agent(type: "Reviewer")). The verifier receives: (1) the original task description, (2) the plan spec file path. Verifier reads both, then outputs a brief markdown verdict:
 - APPROVED — the plan is complete, buildable, and aligned with requirements.
 - NEEDS_REVISION — list specific gaps with file/chunk references.
 
@@ -113,6 +118,7 @@ The verifier MUST check **build feasibility** and **complexity classification** 
 - **Complexity accuracy**: is the chunk classified correctly? A chunk using concurrency primitives, worker pools, channels, mutexes, signal handling, graph algorithms (topological sort, cycle detection, BFS/DFS), or any logic where correctness depends on subtle ordering MUST be marked \`complex\`. A chunk marked \`simple\` that contains any of these is a classification error.
 - **Chunk scope**: does any single chunk combine multiple independent concurrency concerns (e.g. worker pool scheduling AND signal handling AND fail-fast cancellation)? A chunk that stacks 3+ concurrency mechanisms must be split — models spend excessive generation time reasoning about all interactions at once, frequently hitting duration limits. Split along natural seams: e.g. one chunk for the core execution loop with worker pool, a separate chunk for signal handling and graceful shutdown wired on top.
 If any chunk fails either check, the verdict MUST be NEEDS_REVISION with the specific gaps listed.`
+}
 
 const REVIEW_PHASE = `**Review output contract:** Instruct the review agent to write its findings to a Markdown file in the Documents directory (e.g. \`.kimchi/docs/review.md\`). The file MUST contain:
 - **Verdict**: APPROVED or NEEDS_FIXES
@@ -139,12 +145,17 @@ The review agent runs tests, checks lint, and verifies the implementation matche
 
 **Review verdicts are final**: Never edit a review report to change its verdict. If a flag is genuinely wrong, add a separate rationale note alongside the original review — do not alter the reviewer's output.`
 
-const AGENT_DELEGATION = `### Agent delegation
+function buildAgentDelegation(delegatePlanning: boolean): string {
+	const planBullet = delegatePlanning
+		? "- When delegating `plan` before `build`, have the Plan agent write a Markdown spec file (full method signatures, file paths, interfaces) to the Documents directory. Pass that file path to the build Agent — it must not rediscover what was already decided."
+		: "- When writing the plan yourself before `build`, write the Markdown spec file (full method signatures, file paths, interfaces) to the Documents directory. Pass that file path to the build Agent — it must not rediscover what was already decided."
+
+	return `### Agent delegation
 
 **Orchestrator discipline**: Between delegation calls, you may do at most 5 tool calls (e.g. reading the spec file, setting the phase, checking a subagent result). If you find yourself doing reads, edits, bash calls, or writes on implementation files, STOP — you are doing a subagent's job. Delegate it instead. **Post-abort anti-pattern**: When a subagent aborts (budget or turns), do NOT manually complete its remaining work — this is the most common violation. Spawn a follow-up Agent scoped to the unfinished portion. List what the aborted agent completed and what remains.
 
 - Write Agent prompts that are fully self-contained. Agents start with fresh context by default — include necessary instructions directly, or point them to a Markdown file containing larger context.
-- When delegating \`plan\` before \`build\`, have the Plan agent write a Markdown spec file (full method signatures, file paths, interfaces) to the Documents directory. Pass that file path to the build Agent — it must not rediscover what was already decided.
+${planBullet}
 - Spawn independent subtasks in parallel with \`run_in_background: true\`: do NOT run more than 3 concurrent Agents.
 - After an Agent returns, TRUST its output unless the subagent itself reported errors or produced obviously incomplete work. Do NOT re-read source files just to verify a successful subagent's findings — this is the most common source of wasted orchestrator turns. For artifact-producing agents (Plan, Reviewer, Fixer, and Researcher when the research is non-trivial), have the subagent write its substantive output to a Markdown file in the Documents directory and return the file path. Read ONLY that file (or pass it to the next subagent). Explore is the exception: Explore agents return decision-ready findings directly in the Agent result and must not be asked to write Markdown files, reports, docs, notes, or scratch files. For build agents specifically: if the agent reports tests pass and compilation succeeds, move on to the next chunk or to review. Do NOT re-read the code it wrote. For correction tasks, call Agent again with the correction task rather than fixing inline.
 - If an Agent call returns an error of any kind (including protocol violation, timeout, or exit error): do NOT attempt to implement or debug the work yourself. First assess whether the failure is retryable (e.g. transient timeouts or protocol violations) or not (e.g. missing files, permission errors, or invalid inputs). For retryable failures, call a replacement Agent with a corrected or simplified prompt — allow at most one retry per delegated step. For non-retryable failures, report the failure clearly and stop immediately without retrying.
@@ -167,6 +178,7 @@ If the role is configured with only one model, use that model. Read the model's 
 Always pass a \`thinking\` parameter on every Agent call — never omit it. Use the **Thinking levels** table below. Match each build chunk's \`complexity\` from the plan spec (\`simple\` or \`complex\`). On retry after \`budget_exhausted\` or a stalled approach, bump \`thinking\` one tier (respect per-scope ceilings in the table).
 
 **Tool descriptions vs. Orchestration:** Tool descriptions summarize capabilities. Detailed policy for delegation, budgets, model selection, and artifact handoff lives in this Orchestration section. If a tool description appears to set policy differently, follow Orchestration.`
+}
 
 const THINKING_LEVELS = `### Thinking levels
 
@@ -236,6 +248,7 @@ A plan is "good" when an independent model can build from it without asking ques
 
 interface PhaseDirectiveContext {
 	ownRoles: string[]
+	currentModelId?: string
 	roles?: ModelRoles
 	registry?: ModelRegistry
 	customConfigs?: ReadonlyMap<string, ModelCustomMetadata>
@@ -248,25 +261,37 @@ function modelListForRole(assignment: RoleModelAssignment): string {
 }
 
 function buildPlanPhaseDirectives(ctx: PhaseDirectiveContext): string {
-	const models = ctx.roles ? modelListForRole(ctx.roles.planner) : "a Planner model"
+	const delegatePlanning = shouldDelegatePlanning(ctx.currentModelId, ctx.roles)
 	const lines: string[] = []
 
 	lines.push("#### Plan phase")
 	lines.push("")
-	lines.push(
-		"- Decide whether to write the plan yourself or delegate to a Plan agent. Base the choice on cost, how well you already understand the domain and constraints, and whether a fresh architectural perspective would improve the spec.",
-	)
-	lines.push(
-		"- If writing yourself: produce a Markdown spec file in the Documents directory and validate it by re-reading the spec against every requirement from the original task.",
-	)
-	lines.push(
-		`- If delegating: use Agent(type: "Plan", model: ${models}). Have the Plan agent write the Markdown spec (full method signatures, file paths, interfaces) to the Documents directory. Self-validate the returned spec before proceeding.`,
-	)
+
+	if (delegatePlanning) {
+		if (!ctx.roles) {
+			throw new Error("Invariant: ctx.roles must be defined when delegatePlanning is true")
+		}
+		const models = modelListForRole(ctx.roles.planner)
+		lines.push(
+			`- DO delegate plan drafting to Agent(type: "Plan", model: ${models}). A separate planner model is configured — use it.`,
+		)
+		lines.push(
+			"- Have the Plan agent write the Markdown spec (full method signatures, file paths, interfaces) to the Documents directory.",
+		)
+		lines.push(
+			"- After the Plan agent returns: validate its spec by re-reading it against every requirement from the original task before proceeding to build. Do NOT proceed on an unvalidated spec.",
+		)
+	} else {
+		lines.push("- DO write the plan yourself. You are the planner model — no Plan agent is configured.")
+		lines.push(
+			"- Produce a Markdown spec file in the Documents directory and validate it by re-reading the spec against every requirement from the original task.",
+		)
+	}
 
 	lines.push("")
 	lines.push(PLAN_SPEC_REQUIREMENTS)
 	lines.push("")
-	lines.push(PLAN_VERIFICATION)
+	lines.push(buildPlanVerification(delegatePlanning))
 	lines.push("")
 	lines.push(
 		"**Handling the verdict:** If APPROVED: proceed to build phase. If NEEDS_REVISION: fix or delegate the gaps, then return the full revised plan to the verifier with the changed sections clearly marked. Maximum one re-verification round; if still not approved, proceed with documented reservations.",
@@ -300,20 +325,31 @@ function buildBuildPhaseDirectives(ctx: PhaseDirectiveContext): string {
 }
 
 function buildReviewPhaseDirectives(ctx: PhaseDirectiveContext): string {
+	const delegateReview = shouldDelegateReview(ctx.currentModelId, ctx.roles)
 	const lines: string[] = []
 	const models = ctx.roles ? modelListForRole(ctx.roles.reviewer) : "a Reviewer model"
 
 	lines.push("#### Review phase")
 	lines.push("")
-	lines.push(
-		"- Prefer delegating review to a Reviewer agent in a fresh context. Independent review provides unbiased judgment and catches issues the orchestrator may have accepted.",
-	)
+	if (delegateReview) {
+		lines.push(
+			"- DO delegate review to a Reviewer agent in a fresh context. Independent review provides unbiased judgment and catches issues the orchestrator may have accepted.",
+		)
+	} else {
+		lines.push(
+			"- Prefer delegating review to a Reviewer agent in a fresh context. Independent review provides unbiased judgment and catches issues the orchestrator may have accepted.",
+		)
+	}
 	lines.push(
 		`- Delegate to Agent(type: "Reviewer", model: ${models}) by default. Use the Reviewer model(s) configured in **Your team**. If both standard and heavy-tier Reviewers are configured, prefer the standard-tier for simple changes and reserve the heavy-tier for complex concurrency, security-critical logic, or novel architectural patterns.`,
 	)
-	lines.push(
-		"- You may review yourself only when the Reviewer role is unavailable or the change is trivial and low-risk. If you self-review, explicitly state that you are doing so and why.",
-	)
+	if (!delegateReview) {
+		lines.push(
+			"- You may self-review only for trivial and low-risk changes. If you self-review, explicitly state that you are doing so and why. For all other changes, delegate.",
+		)
+	} else {
+		lines.push("- DO NOT review yourself. You do not have the reviewer role. Always delegate.")
+	}
 	lines.push("- DO pass the spec file path and the full list of created files.")
 	lines.push("")
 	lines.push(REVIEW_PHASE)
@@ -376,7 +412,7 @@ function buildOrchestrationChapter(
 ): string {
 	const ownRoles = currentModelId && roles ? resolveModelRoleNames(currentModelId, roles) : []
 
-	const ctx: PhaseDirectiveContext = { ownRoles, roles, registry, customConfigs }
+	const ctx: PhaseDirectiveContext = { ownRoles, currentModelId, roles, registry, customConfigs }
 
 	const parts: string[] = []
 
@@ -405,6 +441,8 @@ Read **Your roles** above. The sections below tell you exactly what to DO and wh
 
 Pass durable artifacts as Markdown files in the Documents directory: plans/specs, review findings, verification reports, and non-trivial research notes. Explore findings are not durable artifacts; consume them directly from the Agent result.`)
 
+	const delegatePlanning = shouldDelegatePlanning(currentModelId, roles)
+
 	parts.push(buildPlanPhaseDirectives(ctx))
 	parts.push(buildBuildPhaseDirectives(ctx))
 	parts.push(buildReviewPhaseDirectives(ctx))
@@ -412,7 +450,7 @@ Pass durable artifacts as Markdown files in the Documents directory: plans/specs
 	parts.push(buildResearchPhaseDirectives(ctx))
 
 	parts.push(STEP_4_EXECUTE)
-	parts.push(AGENT_DELEGATION)
+	parts.push(buildAgentDelegation(delegatePlanning))
 	parts.push(THINKING_LEVELS)
 	parts.push(TOKEN_BUDGETS)
 	parts.push(PLAN_QUALITY_CHECKLIST)
@@ -579,7 +617,7 @@ function formatCurrentModelCapabilities(
 
 	if (owned.length > 0) {
 		lines.push(
-			`You have these roles: **${owned.join(", ")}**. Perform a phase yourself only when Orchestration **Phase responsibilities** says DO for that phase. Otherwise delegate — even for roles you hold (review is always delegated).`,
+			`You have these roles: **${owned.join(", ")}**. Perform a phase yourself only when Orchestration **Phase responsibilities** says DO for that phase. Otherwise delegate.`,
 		)
 	}
 	if (delegated.length > 0) {
