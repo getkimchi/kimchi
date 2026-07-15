@@ -299,6 +299,44 @@ The block stays active until the step is either completed (`complete_ferment_ste
 
 ---
 
+## Lifecycle obligation guard (automated mode)
+
+In automated mode, the model can end a turn with no tool calls while the
+Ferment state still requires a concrete lifecycle transition — for example,
+announcing "I'll call `scope_ferment` now" but stopping without actually
+calling it. Without recovery, the session silently stalls.
+
+The **lifecycle obligation guard** detects these text-only stops and retries
+with a bounded budget. It is automated-only; in interactive mode the user is
+present to steer.
+
+**How it works:**
+
+1. When a zero-tool assistant turn ends in automated mode, the guard derives
+   the current lifecycle obligation from the Ferment state machine (e.g.
+   `scope`, `activate_phase`, `start_step`, `complete_ferment`).
+2. If an obligation is outstanding, the guard schedules a retry via `steer`
+   delivery, naming the exact tool the model must call.
+3. The retry budget is **2 retries per obligation** — the model gets at most
+   three total opportunities for one unchanged obligation before the guard
+   gives up.
+4. The budget is keyed by the obligation identity
+   (`fermentId:actionKind:phaseId?:stepId?`), not by Ferment ID. An
+   unrelated `read` or `grep` tool call does not reset the budget — only a
+   real state transition (which produces a new obligation key) grants a fresh
+   budget automatically.
+5. When the budget is exhausted, the guard emits one visible warning
+   breadcrumb and a `FERMENT_EVENTS.STALLED` telemetry event. No state is
+   fabricated or silently skipped.
+
+Recovery actions (`recover_step`, `recover_phase`) are classified as
+**choice-oriented** — the guard prompts the model to pick a recovery path
+from the contextual guidance, but does not prescribe a single tool.
+
+Provider/transport errors (`stopReason: "error"`) use a separate recovery
+path that clears the lifecycle-stop budget before scheduling, so the
+unchanged obligation gets a fresh two-retry budget after transport recovers.
+
 ## Worker budget tiers
 
 `start_ferment_step` accepts a `budget_tier` parameter that controls the worker's runtime limits. Three explicit tiers — pick by the shape of the work, not by prompt keywords:
@@ -623,6 +661,11 @@ state service would consume the same module.
 | File | Role |
 |------|------|
 | `src/extensions/ferment/index.ts` | Extension entrypoint — event handlers, slash commands |
+| `src/extensions/ferment/events.ts` | `turn_end` / `agent_end` handlers — nudge dispatch, abort/error recovery, lifecycle guard integration |
+| `src/extensions/ferment/lifecycle-obligation-guard.ts` | Lifecycle obligation guard — retry budget, obligation keying, exhaustion diagnostics (automated mode) |
+| `src/extensions/ferment/stalled-payload.ts` | Shared `FermentStalledPayload` builder for `FERMENT_EVENTS.STALLED` telemetry (used by crash-recovery and the guard) |
+| `src/extensions/ferment/nudge.ts` | Tool-using stop nudges, scoping progress/stop nudges, scoping explore turn tracking |
+| `src/extensions/ferment/scheduler.ts` | `scheduleNextFermentAction` — builds and delivers continuation nudges via `steer` / `followUp` |
 | `src/extensions/ferment/tools/*.ts` | Tool registrations (lifecycle, phases, steps, knowledge) |
 | `src/extensions/ferment/tool-scope.ts` | Lifecycle-keyed tool profiles (`planning` / `implementation`) via `pi.setActiveTools()` |
 | `src/extensions/ferment/tool-helpers.ts` | `applyAndPersist` bridge + result builders |

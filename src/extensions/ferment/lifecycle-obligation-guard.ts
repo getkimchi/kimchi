@@ -286,10 +286,10 @@ function buildRetryInstruction(
 	if (obligation.mode === "choice-oriented") {
 		const recoveryTarget = obligation.action.kind === "recover_step" ? "failed step" : "failed phase"
 		if (attempt === 1) {
-			return `Ferment "${ferment.name}" still requires recovery from the ${recoveryTarget}. The previous turn stopped without a recovery action. Diagnose the failure and choose an appropriate recovery path from the guidance below. If no path is safe, use the user-input mechanism instead of stopping with only a summary.`
+			return `Ferment "${ferment.name}" still requires recovery from the ${recoveryTarget}. The previous turn stopped without a recovery action. Diagnose the failure and choose the safest recovery path from the guidance below. If no path is safe, stop — the guard will report the stall after retries are exhausted.`
 		}
 
-		return `Lifecycle recovery still pending (retry ${attempt}/${maxAttempts}). Do not respond with only an announcement or summary. Choose and perform an appropriate recovery action from the guidance below, or use the user-input mechanism if a safe choice requires user direction.`
+		return `Lifecycle recovery still pending (retry ${attempt}/${maxAttempts}). Do not respond with only an announcement or summary. Choose and perform an appropriate recovery action from the guidance below. If no safe choice exists, stop — the guard will report the stall.`
 	}
 
 	const toolName = obligation.toolName
@@ -304,7 +304,7 @@ function buildRetryInstruction(
 		return `Ferment "${ferment.name}" still requires ${toolName}. The previous turn stopped without a tool call. Call ${toolName} now using the required Ferment/phase/step identifiers and payload.${actionSpecificReminder}`
 	}
 
-	return `Lifecycle action still pending (retry ${attempt}/${maxAttempts}). Do not respond with an announcement or summary. Emit the required ${toolName} call now. If the action cannot safely be performed, use the appropriate user-input or recovery mechanism instead of stopping silently.${actionSpecificReminder}`
+	return `Lifecycle action still pending (retry ${attempt}/${maxAttempts}). Do not respond with an announcement or summary. Emit the required ${toolName} call now. If the action cannot safely be performed, stop — the guard will report the stall after retries are exhausted.${actionSpecificReminder}`
 }
 
 /**
