@@ -1,3 +1,5 @@
+import { readdirSync, readFileSync } from "node:fs"
+import { join } from "node:path"
 import type { Terminal } from "@microsoft/tui-test/lib/terminal/term.js"
 
 /** Named timeouts, tunable in one place. */
@@ -38,6 +40,32 @@ export async function waitForText(
 		text = read()
 	}
 	throw new Error(`Timed out waiting for ${String(pattern)}.\n\nTerminal:\n${text}`)
+}
+
+/**
+ * Poll for a ferment artifact with the expected status in .kimchi/ferments/.
+ * Returns the parsed artifact or undefined if not found before the deadline.
+ */
+export async function findFermentArtifact(
+	workDir: string,
+	expectedStatus: string,
+	timeoutMs = STREAM_TIMEOUT_MS,
+): Promise<Record<string, unknown> | undefined> {
+	const fermentsDir = join(workDir, ".kimchi", "ferments")
+	const deadline = Date.now() + timeoutMs
+	while (Date.now() < deadline) {
+		try {
+			const files = readdirSync(fermentsDir).filter((f) => f.endsWith(".json"))
+			for (const f of files) {
+				const content = JSON.parse(readFileSync(join(fermentsDir, f), "utf-8"))
+				if (content.status === expectedStatus) return content
+			}
+		} catch {
+			// dir doesn't exist yet or unreadable
+		}
+		await new Promise((r) => setTimeout(r, 250))
+	}
+	return undefined
 }
 
 /**

@@ -23,6 +23,7 @@ import "./paste-to-editor-patch.js"
 import {
 	DEFAULT_SKILL_PATHS,
 	ensureHideThinkingBlockDefault,
+	ensureQuietStartupDefault,
 	getActiveVendorSkillPaths,
 	loadConfig,
 	RETRY_DEFAULTS,
@@ -129,6 +130,7 @@ import resourceToolBlockerExtension from "./resources/tool-blocker.js"
 import { runSetupWizard } from "./setup-wizard.js"
 import { setAvailableModels } from "./startup-context.js"
 import { probeTerminalBackground } from "./terminal-bg-probe.js"
+import { installInlineCompactPatch } from "./upstream-inline-compact-patch.js"
 import { installInfrastructureRetryPatch } from "./upstream-retry-patch.js"
 import {
 	postProcessHtmlExport,
@@ -140,6 +142,7 @@ import { captureSessionStart } from "./utils/session-metadata-store.js"
 import { getVersion } from "./utils.js"
 
 installInfrastructureRetryPatch()
+installInlineCompactPatch()
 installPiNativeCompatibilityShim()
 
 function isModelCompletionFetch(input: RequestInfo | URL): boolean {
@@ -435,6 +438,7 @@ try {
 		try {
 			const existing = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>
 			let changed = ensureHideThinkingBlockDefault(existing)
+			if (ensureQuietStartupDefault(existing)) changed = true
 			const upgraded = upgradeLegacyRetrySettings(existing.retry)
 			if (upgraded) {
 				existing.retry = upgraded

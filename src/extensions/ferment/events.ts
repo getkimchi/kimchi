@@ -564,7 +564,13 @@ export function registerFermentEvents(
 			if (isOneShot) {
 				const errorFerment = runtime.getActive()
 				if (errorFerment && (errorFerment.status === "running" || errorFerment.status === "planned")) {
-					maybeInjectReactiveContinuationNudge(pi, runtime)
+					// Pending plan review is only attached to draft ferments, so the
+					// status check above already excludes it. Guard explicitly anyway:
+					// a continuation nudge here would start a new turn and prevent
+					// agent_end from showing the review dialog.
+					if (!hasPendingPlanReview(runtime)) {
+						maybeInjectReactiveContinuationNudge(pi, runtime)
+					}
 				}
 			}
 
@@ -583,6 +589,27 @@ export function registerFermentEvents(
 
 		const f = runtime.getActive()
 		if (!f) return
+
+		// When a pending plan review exists (propose_ferment_scoping returned
+		// "Plan ready for review"), skip ALL nudge/dropdown/compaction logic.
+		// The review dialog is shown by the agent_end handler via setTimeout(0).
+		// If we inject continuation nudges here, they trigger new turns which
+		// prevent agent_end from firing — the review dialog never appears and
+		// the ferment is stuck in draft. Similarly, maybeRunUserInputDropdown
+		// can show a competing dropdown that prematurely confirms the scope
+		// via confirmPendingScope, which then causes the plan review's
+		// confirm to fail with MISSING_PENDING_SCOPE.
+		//
+		// Apply the tool profile suppression (pi.setActiveTools([])) and return
+		// immediately so the turn ends naturally and agent_end fires.
+		//
+		// This suppression must happen in turn_end, not turn_start: pi-mono's
+		// prepareNextTurn builds the next turn's tool snapshot after turn_end
+		// but before turn_start, so turn_start is too late.
+		if (hasPendingPlanReview(runtime)) {
+			applyFermentRuntimeToolProfile(pi, runtime)
+			return
+		}
 
 		// During draft scoping, detect when the model is stuck exploring
 		// without progressing through the scoping steps. Fires for both
@@ -628,35 +655,20 @@ export function registerFermentEvents(
 		// Trigger compaction after any turn that completed a step or phase.
 		// Fires between turns in automated-continuation mode, so the next
 		// phase starts with a fresh compacted session.
-		maybeTriggerFermentCompaction(pi, ctx, runtime)
+		await maybeTriggerFermentCompaction(pi, ctx, runtime)
 
 		// Mid-turn guard: if the context crossed the auto-compaction threshold
 		// while a step is still in progress, compact now and resume the step.
 		// Only acts on tool-use turns; stop/error/aborted are handled elsewhere.
+		// Awaited so the compacted session and step-resume nudge are in place
+		// before pi-mono builds the next turn's context (see note below); wrapped
+		// because this handler has no outer catch and must never reject out.
 		if (event.message.role === "assistant" && event.message.stopReason === "toolUse") {
-			maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, event.message.usage?.totalTokens ?? 0)
-		}
-
-		// After a turn ends, `prepareNextTurn` in pi-mono builds the next turn's
-		// context using `this.activeToolNames` (the snapshot set by
-		// `pi.setActiveTools`). This happens AFTER `turn_end` fires but BEFORE
-		// the next `turn_start`. So to suppress tools for the next LLM call (e.g.
-		// after `propose_ferment_scoping` sets a pending plan review), we must
-		// apply the tool profile here in `turn_end` — not `turn_start`, which
-		// fires too late (the context is already built).
-		//
-		// When `propose_ferment_scoping` sets a pending review mid-turn,
-		// `applyFermentRuntimeToolProfile` suppresses all tools via
-		// `pi.setActiveTools([])`. The next LLM call sees an empty toolset,
-		// produces text-only output (stopReason: "stop"), ending the turn and
-		// firing `agent_end` which triggers the review dialog.
-		//
-		// This is placed at the end of the handler so that the nudge/dropdown
-		// logic above runs first. Those early-return paths still suppress tools
-		// when a pending review exists, which is correct — the model should not
-		// have tools until the review is resolved.
-		if (hasPendingPlanReview(runtime)) {
-			applyFermentRuntimeToolProfile(pi, runtime)
+			try {
+				await maybeTriggerMidTurnFermentCompaction(pi, ctx, runtime, event.message.usage?.totalTokens ?? 0)
+			} catch (err) {
+				ctx.ui?.notify?.(`Mid-turn compaction error: ${err instanceof Error ? err.message : String(err)}`, "warning")
+			}
 		}
 	})
 }

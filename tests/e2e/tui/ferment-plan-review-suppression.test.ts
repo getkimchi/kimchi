@@ -14,10 +14,15 @@
  * 3. Regression — the existing zero-questions scoping flow still works.
  */
 
-import { readdirSync, readFileSync } from "node:fs"
-import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
-import { INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, viewText, waitForText } from "./support/assertions.js"
+import {
+	findFermentArtifact,
+	INPUT_TIMEOUT_MS,
+	STARTUP_TIMEOUT_MS,
+	STREAM_TIMEOUT_MS,
+	viewText,
+	waitForText,
+} from "./support/assertions.js"
 import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -77,32 +82,6 @@ const PROPOSE_SCOPING_PAYLOAD_2 = JSON.stringify({
 		{ id: "P3", verdict: "pass", rationale: "tests", evidence: "n/a" },
 	],
 })
-
-/**
- * Poll for a ferment artifact with the expected status in .kimchi/ferments/.
- * Returns the parsed artifact or undefined if not found before the deadline.
- */
-async function findFermentArtifact(
-	workDir: string,
-	expectedStatus: string,
-	timeoutMs = STREAM_TIMEOUT_MS,
-): Promise<Record<string, unknown> | undefined> {
-	const fermentsDir = join(workDir, ".kimchi", "ferments")
-	const deadline = Date.now() + timeoutMs
-	while (Date.now() < deadline) {
-		try {
-			const files = readdirSync(fermentsDir).filter((f) => f.endsWith(".json"))
-			for (const f of files) {
-				const content = JSON.parse(readFileSync(join(fermentsDir, f), "utf-8"))
-				if (content.status === expectedStatus) return content
-			}
-		} catch {
-			// dir doesn't exist yet or unreadable
-		}
-		await new Promise((r) => setTimeout(r, 250))
-	}
-	return undefined
-}
 
 // ---------------------------------------------------------------------------
 // Test 1: Full scoping flow with review confirmation
