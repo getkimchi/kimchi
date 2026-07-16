@@ -9,7 +9,7 @@ export interface CreateFermentOptions {
 	isOneShot: boolean
 }
 
-/** Create a ferment and initialize the policy that belongs to that ferment. */
+/** Create a ferment and reset the session policy to the appropriate default for it. */
 export function createFerment(runtime: FermentRuntime, options: CreateFermentOptions): Ferment {
 	const ferment = runtime.getStorage().create(options.name, options.goal)
 	runtime.setContinuationPolicy(continuationPolicyForNewFerment(options.hasUI, options.isOneShot))
