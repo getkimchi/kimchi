@@ -59,7 +59,12 @@ Platform: ${env.platform}`
 	}
 	if (extras?.skillBlocks?.length) {
 		for (const skill of extras.skillBlocks) {
-			extraSections.push(`\n# Preloaded Skill: ${skill.name}\n${skill.content}`)
+			if (skill.name === "_available_skills") {
+				// Compact list — just names and descriptions, not full skill text
+				extraSections.push(`# Available Skills\n\nUse the Skill tool to load a skill by name.\n\n${skill.content}`)
+			} else {
+				extraSections.push(`\n# Preloaded Skill: ${skill.name}\n${skill.content}`)
+			}
 		}
 	}
 	const contextBlock = buildContextBlock(extras?.contextFiles)

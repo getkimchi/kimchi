@@ -43,7 +43,7 @@ import {
 } from "../personas/types.js"
 import { buildParentContext, extractText } from "../prompt/context.js"
 import { buildAgentPrompt, formatTokenBudget, type PromptExtras } from "../prompt/prompts.js"
-import { preloadSkills } from "../prompt/skill-loader.js"
+import { preloadSkills, listAvailableSkillNames } from "../prompt/skill-loader.js"
 import { createWorkerReportExtension, WORKER_REPORT_TOOL_NAME, type WorkerReportCapability } from "../worker-report.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "./constants.js"
 import { addUsage, getLifetimeTotal, getOutputTotal, getSessionUsage, type LifetimeUsage } from "./usage.js"
@@ -364,9 +364,25 @@ async function runAgentInner(
 		if (loaded.length > 0) {
 			extras.skillBlocks = loaded
 		}
+	} else if (skills === true) {
+		// When skills === true, inject a compact skill list (names + descriptions)
+		// into the prompt so the sub-agent knows what skills exist. The full
+		// skill content is loaded on-demand via the Skill tool.
+		const skillList = listAvailableSkillNames(effectiveCwd)
+		if (skillList.length > 0) {
+			const skillSummary = skillList.map((s) => `- ${s.name}${s.description ? `: ${s.description}` : ""}`).join("\n")
+			extras.skillBlocks = [{ name: "_available_skills", content: skillSummary }]
+		}
 	}
 
 	let toolNames = getToolNamesForType(type)
+
+	// Ensure the Skill tool is available when skills are enabled
+	if (skills === true || Array.isArray(skills)) {
+		if (!toolNames.includes("Skill")) {
+			toolNames = [...toolNames, "Skill"]
+		}
+	}
 
 	if (agentConfig?.memory) {
 		const existingNames = new Set(toolNames)

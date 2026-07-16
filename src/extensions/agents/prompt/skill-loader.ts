@@ -18,6 +18,36 @@ export interface PreloadedSkill {
 }
 
 /**
+ * Discover all available skill names (without loading full content).
+ * Used to show sub-agents what skills exist without polluting the prompt.
+ */
+export function listAvailableSkillNames(cwd: string): { name: string; description: string }[] {
+	const resolvedPaths = DEFAULT_SKILL_PATHS.map((p) => {
+		if (isAbsolute(p)) {
+			return p
+		}
+		if (p.startsWith(".config/")) {
+			return join(homedir(), p)
+		}
+		return join(cwd, p)
+	})
+
+	const allSkills = new Map<string, Skill>()
+	for (const dir of resolvedPaths) {
+		try {
+			const { skills } = loadSkillsFromDir({ dir, source: dir })
+			for (const skill of skills) {
+				allSkills.set(skill.name, skill)
+			}
+		} catch {
+			// Directory missing or unreadable — skip silently
+		}
+	}
+
+	return Array.from(allSkills.values()).map((s) => ({ name: s.name, description: s.description ?? "" }))
+}
+
+/**
  * Attempt to load named skills using pi's official loadSkillsFromDir for each path
  * in kimchi's DEFAULT_SKILL_PATHS. Project-level paths are resolved relative to cwd;
  * paths starting with ".config/" are resolved relative to homedir.
