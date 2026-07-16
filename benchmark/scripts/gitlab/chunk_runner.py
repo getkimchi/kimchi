@@ -36,6 +36,7 @@ from bench_config import (
     DEFAULT_BENCHMARK_RESULTS_DIR,
     DEFAULT_BENCHMARK_RUN_METADATA,
     DEFAULT_CODING_AGENT,
+    DEFAULT_KIMCHI_COMPACTION,
     DEFAULT_MODEL,
     ENV_BENCH_RUN_DATE,
     ENV_BENCH_TASKS_ALL,
@@ -44,6 +45,7 @@ from bench_config import (
     ENV_BENCHMARK_RUN_METADATA,
     ENV_BENCHMARK_TARGET_REF,
     ENV_CODING_AGENT,
+    ENV_KIMCHI_COMPACTION,
     ENV_KIMCHI_FERMENT_ONESHOT,
     ENV_MODEL,
     MULTI_MODEL,
@@ -254,6 +256,26 @@ def _configuration_segment() -> str:
     return "multi-mode" if is_multi_model() else "single-model"
 
 
+def _compaction_disabled() -> bool:
+    """Resolve the KIMCHI_COMPACTION tri-state to "is compaction disabled".
+
+    'auto' (the default) disables compaction exactly for ferment one-shot runs
+    (per-stage compaction was measured eating 21-41% of trial wall time there);
+    'enabled'/'disabled' force it either way for A/B runs. Raises ValueError on
+    any other value so a typo in the CI input fails the run loudly instead of
+    silently benchmarking the wrong configuration.
+    """
+    raw = os.environ.get(ENV_KIMCHI_COMPACTION, DEFAULT_KIMCHI_COMPACTION)
+    choice = raw.strip().lower() or DEFAULT_KIMCHI_COMPACTION
+    if choice == "auto":
+        return _env_bool(ENV_KIMCHI_FERMENT_ONESHOT, False)
+    if choice not in ("enabled", "disabled"):
+        raise ValueError(
+            f"{ENV_KIMCHI_COMPACTION} must be 'enabled', 'disabled' or 'auto', got {raw!r}"
+        )
+    return choice == "disabled"
+
+
 def _build_gcs_key_prefix() -> str:
     """Build the GCS key prefix for this run. Pipeline-level (not job-level).
 
@@ -337,6 +359,7 @@ def _write_run_metadata(
         "configuration": _derive_configuration(),
         "multi_mode": coding_agent == "kimchi" and is_multi_model(model),
         "ferment": _env_bool("KIMCHI_FERMENT_ONESHOT", False),
+        "compaction_disabled": _compaction_disabled(),
         "tasks_all": _env_bool(ENV_BENCH_TASKS_ALL, False),
         "selected_tasks": selected_tasks,
         "parameters": {
@@ -694,6 +717,11 @@ def main() -> int:
     coding_agent = os.environ.get(ENV_CODING_AGENT, DEFAULT_CODING_AGENT)
     model = os.environ.get(ENV_MODEL, DEFAULT_MODEL)
     kimchi_ferment_oneshot = _env_bool(ENV_KIMCHI_FERMENT_ONESHOT, False)
+    try:
+        kimchi_disable_compaction = _compaction_disabled()
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     dataset = os.environ.get("DATASET", "terminal-bench/terminal-bench-2")
     api_key = os.environ.get("KIMCHI_API_KEY")
     if model == MULTI_MODEL and coding_agent != "kimchi":
@@ -795,6 +823,7 @@ def main() -> int:
         jobs_dir=results_dir,
         job_name=job_name,
         kimchi_ferment_oneshot=kimchi_ferment_oneshot,
+        kimchi_disable_compaction=kimchi_disable_compaction,
         coding_agent=coding_agent,
         llm_params=llm_params,
         llm_per_model_params=llm_per_model_params,

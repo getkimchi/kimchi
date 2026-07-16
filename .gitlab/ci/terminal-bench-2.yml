@@ -91,6 +91,7 @@ setup-image:
     GCS_UPLOAD_REQUIRED: "true"
     BENCH_TASKS_ALL: "$[[ inputs.tasks_all ]]"
     KIMCHI_FERMENT_ONESHOT: "$[[ inputs.kimchi_ferment_oneshot ]]"
+    KIMCHI_COMPACTION: "$[[ inputs.kimchi_compaction ]]"
     RUN_ID: "gitlab-p$CI_PIPELINE_ID"
     BENCH_CHUNK_INDEX: "$CHUNK"
     BENCH_CHUNK_COUNT: 3
@@ -121,6 +122,7 @@ setup-image:
       fi
       echo "model:                    ${MODEL}"
       echo "kimchi_ferment_oneshot:   ${KIMCHI_FERMENT_ONESHOT}"
+      echo "kimchi_compaction:        ${KIMCHI_COMPACTION}"
       echo "parallelism:              ${BENCH_PARALLELISM}"
       echo "attempts:                 ${BENCH_ATTEMPTS}"
       echo "timeout_multiplier:       ${BENCH_TIMEOUT_MULTIPLIER}"

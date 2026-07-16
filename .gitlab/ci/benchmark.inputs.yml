@@ -45,6 +45,14 @@ inputs:
     description: "Run each task through Kimchi ferment one-shot workflow. Ignored unless agent is kimchi."
     type: boolean
     default: false
+  kimchi_compaction:
+    description: "Kimchi auto-compaction. 'auto' (default) disables it for ferment one-shot runs and keeps it on otherwise; 'enabled'/'disabled' force it. Ignored unless agent is kimchi."
+    type: string
+    default: "auto"
+    options:
+      - "auto"
+      - "enabled"
+      - "disabled"
   retry_agent_timeout:
     description: "Retry chunks whose agent runs hit an AgentTimeoutError verdict. Infra errors are always retried."
     type: boolean

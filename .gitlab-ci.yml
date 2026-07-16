@@ -43,6 +43,7 @@ include:
       tasks: $[[ inputs.tasks ]]
       model: $[[ inputs.model ]]
       kimchi_ferment_oneshot: $[[ inputs.kimchi_ferment_oneshot ]]
+      kimchi_compaction: $[[ inputs.kimchi_compaction ]]
       analyze_results: $[[ inputs.analyze_results ]]
       tasks_all: $[[ inputs.tasks_all ]]
       retry_agent_timeout: $[[ inputs.retry_agent_timeout ]]

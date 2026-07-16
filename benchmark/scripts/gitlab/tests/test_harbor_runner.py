@@ -155,6 +155,38 @@ def test_command_includes_kimchi_ferment_oneshot_kwarg() -> None:
     assert ("--agent-kwarg", "ferment-oneshot=true") in pairs
 
 
+def test_command_includes_kimchi_disable_compaction_kwarg() -> None:
+    cmd = build_harbor_command(
+        tasks=["task-a"],
+        agent_import_path="kimchi_agent:Kimchi",
+        model="kimchi-dev/kimi-k2.6",
+        dataset="terminal-bench/terminal-bench-2",
+        parallelism=1,
+        attempts=1,
+        timeout_multiplier=1.0,
+        kimchi_disable_compaction=True,
+    )
+
+    pairs = list(itertools.pairwise(cmd))
+    assert ("--agent-kwarg", "disable-compaction=true") in pairs
+
+
+def test_command_omits_disable_compaction_kwarg_by_default() -> None:
+    """Compaction enabled (the default) must not add the kwarg, keeping the
+    command compatible with checkouts that predate it."""
+    cmd = build_harbor_command(
+        tasks=["task-a"],
+        agent_import_path="kimchi_agent:Kimchi",
+        model="kimchi-dev/kimi-k2.6",
+        dataset="terminal-bench/terminal-bench-2",
+        parallelism=1,
+        attempts=1,
+        timeout_multiplier=1.0,
+    )
+
+    assert "disable-compaction=true" not in cmd
+
+
 def test_command_includes_job_name_when_provided() -> None:
     """--job-name is forwarded when the caller passes it (chunk_runner does this)."""
     cmd = build_harbor_command(

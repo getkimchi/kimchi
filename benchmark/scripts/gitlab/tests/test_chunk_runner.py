@@ -12,6 +12,7 @@ import pytest
 from chunk_runner import (
     _all_trial_dirs_for_task,
     _build_gcs_key_prefix,
+    _compaction_disabled,
     _derive_configuration,
     _fetch_all_tasks,
     _write_run_metadata,
@@ -651,14 +652,56 @@ def test_restore_prior_artifact_uses_include_retried(
         ({"CODING_AGENT": "kimchi", "MODEL": "kimchi-dev/kimi-k2.7", "KIMCHI_FERMENT_ONESHOT": "true"}, "single-model-ferment"),  # noqa: E501
         # defaults: CODING_AGENT=kimchi with a concrete model
         ({}, "single-model"),
+        # KIMCHI_COMPACTION does not affect the configuration label; the resolved
+        # value is recorded separately as run-metadata "compaction_disabled"
+        ({"CODING_AGENT": "kimchi", "MODEL": "kimchi-dev/kimi-k2.7", "KIMCHI_COMPACTION": "disabled"}, "single-model"),
+        ({"CODING_AGENT": "kimchi", "MODEL": "kimchi-dev/kimi-k2.7", "KIMCHI_FERMENT_ONESHOT": "true", "KIMCHI_COMPACTION": "auto"}, "single-model-ferment"),  # noqa: E501
     ],
 )
 def test_derive_configuration(env: dict, expected: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    for key in ("CODING_AGENT", "MODEL", "KIMCHI_FERMENT_ONESHOT"):
+    for key in ("CODING_AGENT", "MODEL", "KIMCHI_FERMENT_ONESHOT", "KIMCHI_COMPACTION"):
         monkeypatch.delenv(key, raising=False)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
     assert _derive_configuration() == expected
+
+
+# ---------------------------------------------------------------------------
+# _compaction_disabled
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "env,expected",
+    [
+        # default is auto: compaction stays on except for ferment one-shot runs
+        ({}, False),
+        ({"KIMCHI_FERMENT_ONESHOT": "true"}, True),
+        ({"KIMCHI_COMPACTION": "enabled"}, False),
+        ({"KIMCHI_COMPACTION": "disabled"}, True),
+        # explicit values ignore ferment-oneshot
+        ({"KIMCHI_COMPACTION": "enabled", "KIMCHI_FERMENT_ONESHOT": "true"}, False),
+        ({"KIMCHI_COMPACTION": "disabled", "KIMCHI_FERMENT_ONESHOT": "false"}, True),
+        # auto follows ferment-oneshot
+        ({"KIMCHI_COMPACTION": "auto"}, False),
+        ({"KIMCHI_COMPACTION": "auto", "KIMCHI_FERMENT_ONESHOT": "true"}, True),
+        # tolerant parsing: case and surrounding whitespace, empty falls back to default
+        ({"KIMCHI_COMPACTION": " Disabled "}, True),
+        ({"KIMCHI_COMPACTION": ""}, False),
+    ],
+)
+def test_compaction_disabled_resolution(env: dict, expected: bool, monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in ("KIMCHI_COMPACTION", "KIMCHI_FERMENT_ONESHOT"):
+        monkeypatch.delenv(key, raising=False)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    assert _compaction_disabled() is expected
+
+
+def test_compaction_disabled_rejects_unknown_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A typo in the CI input must fail loudly, not silently benchmark the wrong configuration."""
+    monkeypatch.setenv("KIMCHI_COMPACTION", "off")
+    with pytest.raises(ValueError, match="KIMCHI_COMPACTION"):
+        _compaction_disabled()
 
 
 # ---------------------------------------------------------------------------
@@ -837,6 +880,7 @@ def test_write_run_metadata_is_pipeline_level(
     monkeypatch.setenv("CODING_AGENT", "kimchi")
     monkeypatch.setenv("MODEL", "multi-model")
     monkeypatch.setenv("KIMCHI_FERMENT_ONESHOT", "false")
+    monkeypatch.delenv("KIMCHI_COMPACTION", raising=False)
     monkeypatch.setenv("CI_COMMIT_REF_NAME", "benchmarks")
     monkeypatch.setenv("CI_COMMIT_SHA", "abc1234567890abcdef1234567890abcdef12345")
     monkeypatch.setenv("CI_PIPELINE_ID", "1001")
@@ -860,6 +904,9 @@ def test_write_run_metadata_is_pipeline_level(
     assert metadata["model_name"] == "multi-model"
     assert metadata["configuration"] == "multi-mode"
     assert metadata["multi_mode"] is True
+    # KIMCHI_COMPACTION unset defaults to auto; ferment is off here, so
+    # compaction stays enabled.
+    assert metadata["compaction_disabled"] is False
     assert "/model_provider=kimchi/model=multi-model/configuration=multi-mode/" in metadata["gcs"]["prefix"]
 
 
