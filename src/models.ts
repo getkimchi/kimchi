@@ -6,17 +6,17 @@ const KIMCHI_API = "https://llm.kimchi.dev"
 const FETCH_TIMEOUT_MS = 20000
 
 /**
- * Maps upstream provider (from the models metadata API) to pi API type.
- * Non-ai-enabler providers get their own kimchi-dev/* sub-provider with
- * the appropriate native API, enabling features like Anthropic prompt caching.
+ * Overrides for non-ai-enabler providers that need a specific pi API type.
+ * Providers not listed here default to "openai-completions".
  */
-const KIMCHI_SUB_PROVIDER_APIS: Record<string, string> = {
+const KIMCHI_SUB_PROVIDER_API_OVERRIDES: Record<string, string> = {
 	anthropic: "anthropic-messages",
 }
 
-/** Base URL suffix for each sub-provider API type. */
+/** Base URL suffix for each pi API type. Defaults to "/openai/v1". */
 const KIMCHI_SUB_PROVIDER_BASE_URL_SUFFIXES: Record<string, string> = {
 	"anthropic-messages": "/anthropic",
+	"openai-completions": "/openai/v1",
 }
 
 function normalizeKimchiEndpoint(endpoint?: string): string {
@@ -228,10 +228,9 @@ function buildModelsConfig(models: ModelMetadata[], endpoint?: string) {
 	}
 
 	for (const [upstreamProvider, group] of byProvider) {
-		const api = KIMCHI_SUB_PROVIDER_APIS[upstreamProvider]
-		if (!api) continue // skip unknown upstream providers
+		const api = KIMCHI_SUB_PROVIDER_API_OVERRIDES[upstreamProvider] ?? "openai-completions"
 		const subProviderId = `kimchi-dev/${upstreamProvider}`
-		const suffix = KIMCHI_SUB_PROVIDER_BASE_URL_SUFFIXES[api] ?? ""
+		const suffix = KIMCHI_SUB_PROVIDER_BASE_URL_SUFFIXES[api] ?? "/openai/v1"
 		providers[subProviderId] = {
 			baseUrl: `${normalizeKimchiEndpoint(endpoint)}${suffix}`,
 			apiKey: "$KIMCHI_API_KEY",

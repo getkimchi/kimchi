@@ -107,12 +107,17 @@ describe("PROJECT_PATH_REGEX — matches project-path-like property names", () =
 		expect(PROJECT_PATH_REGEX.test(name)).toBe(true)
 	})
 
-	it.each(["path", "projectDir", "root", "repo", "project_path_extra", "cwd", "workingDirectory"])(
-		'does NOT match "%s"',
-		(name) => {
-			expect(PROJECT_PATH_REGEX.test(name)).toBe(false)
-		},
-	)
+	it.each([
+		"path",
+		"projectDir",
+		"root",
+		"repo",
+		"project_path_extra",
+		"cwd",
+		"workingDirectory",
+	])('does NOT match "%s"', (name) => {
+		expect(PROJECT_PATH_REGEX.test(name)).toBe(false)
+	})
 })
 
 describe("CWD_REGEX — matches working-directory-like property names", () => {
