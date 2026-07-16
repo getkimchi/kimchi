@@ -1578,6 +1578,77 @@ describe("maybeTriggerFermentCompaction — /settings Auto-compact toggle", () =
 	})
 })
 
+// Paired tests proving the Auto-compact toggle turns stage compaction on/off for a
+// *one-shot* ferment specifically (isOneShot=true with inline compaction available —
+// the only path a one-shot run actually compacts).
+describe("maybeTriggerFermentCompaction — one-shot Auto-compact toggle", () => {
+	let storageMap: Map<string, Ferment>
+	let mockStorage: ReturnType<typeof makeMockStorage>
+	let runtime: FermentRuntime
+	let pi: ExtensionAPI
+	let ctx: ExtensionContext
+
+	beforeEach(() => {
+		storageMap = new Map()
+		mockStorage = makeMockStorage(storageMap)
+		runtime = makeRuntime({
+			getStorage: () => mockStorage as unknown as import("../../ferment/event-store.js").FermentEventStore,
+		})
+		pi = makePi()
+		ctx = makeCtx()
+		// One-shot ferment with inline compaction available — the path that compacts.
+		pi.getFlag = vi.fn((name) => (name === "ferment-oneshot" ? true : undefined))
+		ctx.model = { contextWindow: 100_000 } as ExtensionContext["model"]
+		ctx.inlineCompact = vi.fn(async () => ({ tokensBefore: 1_000 }) as CompactionResult)
+		vi.mocked(getCompactionEnabled).mockReturnValue(true)
+	})
+
+	afterEach(() => {
+		runtime.clearCompactionInFlight("ferment-1")
+		clearPendingCompaction("ferment-1")
+		vi.restoreAllMocks()
+		// restoreAllMocks does not reliably reset module-mock implementations, so
+		// re-pin the enabled default to avoid leaking a `false` into other blocks.
+		vi.mocked(getCompactionEnabled).mockReturnValue(true)
+	})
+
+	function seedPendingOneShot(): Ferment {
+		const ferment = makeFermentWithPhase(
+			{ id: "phase-1", name: "Phase", goal: "Goal" },
+			{ id: "step-1", description: "Do it" },
+		)
+		storageMap.set(ferment.id, ferment)
+		runtime.setActive(ferment)
+		setPendingCompaction(ferment.id, makePendingStep(ferment.id, "phase-1", "step-1"))
+		return ferment
+	}
+
+	it("compacts a one-shot ferment when the Auto-compact toggle is ENABLED", async () => {
+		vi.mocked(getCompactionEnabled).mockReturnValue(true)
+		const ferment = seedPendingOneShot()
+
+		await maybeTriggerFermentCompaction(pi, ctx, runtime)
+
+		// Compaction ran via inline compaction, and the pending entry was drained.
+		expect(ctx.inlineCompact).toHaveBeenCalledWith(expect.objectContaining({ force: true }))
+		expect(runtime.getPendingCompaction(ferment.id)).toBeUndefined()
+	})
+
+	it("does NOT compact a one-shot ferment when the Auto-compact toggle is DISABLED", async () => {
+		vi.mocked(getCompactionEnabled).mockReturnValue(false)
+		const ferment = seedPendingOneShot()
+
+		await maybeTriggerFermentCompaction(pi, ctx, runtime)
+
+		// The toggle gates the one-shot path before any compaction call fires.
+		expect(ctx.inlineCompact).not.toHaveBeenCalled()
+		expect(ctx.compact).not.toHaveBeenCalled()
+		// The pending entry is left untouched (not drained), so it can still run later
+		// if the toggle is turned back on.
+		expect(runtime.getPendingCompaction(ferment.id)).toBeDefined()
+	})
+})
+
 describe("maybeTriggerMidTurnFermentCompaction — /settings Auto-compact toggle", () => {
 	beforeEach(() => {
 		vi.mocked(getCompactionEnabled).mockReturnValue(true)

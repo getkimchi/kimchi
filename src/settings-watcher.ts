@@ -1,56 +1,108 @@
-import { type FSWatcher, readFileSync, watch } from "node:fs"
+import { type FSWatcher, watch } from "node:fs"
 import { resolve } from "node:path"
+import { CONFIG_DIR_NAME, getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent"
 
-// Pi-coding-agent doesn't expose a theme_change event for extensions, so we
-// watch settings.json ourselves. The /settings UI updates `theme` here after
-// it has already swapped the in-memory Theme — we use the file write as the
-// signal that an extension's theme-derived state needs to be re-applied.
+// Pi-coding-agent doesn't expose a settings/theme_change event for extensions, so
+// we read settings through pi's own SettingsManager and watch its settings files
+// ourselves. The /settings UI writes the file after it has already swapped the
+// in-memory state — we use the file write as the signal to drop our cached manager
+// and re-apply any settings-derived state (e.g. an extension's theme).
+
+// A process-global SettingsManager mirroring pi's own settings — global
+// (<agentDir>/settings.json) and project (<cwd>/.pi/settings.json), merged the way
+// pi merges them. Every read goes through this instead of hand-parsing the file.
+// Cached and dropped/rebuilt lazily whenever either watched file changes, so
+// callers always see current settings.
+//
+// Read-only by contract: never call set*/save on this instance. It is a second
+// manager over the same files as the session's own — a write here would race pi's
+// in-memory state (pi wouldn't see it until its own reload()). The one exception
+// is setProjectTrusted, which only mutates in-memory merge state and never
+// persists.
+//
+// process.cwd() is captured per construction; if the session's cwd ever diverges
+// from the process cwd (rare), the project scope read here may point elsewhere.
+let settingsManager: SettingsManager | undefined
+
+// Last project-trust decision reported by a caller with session context
+// (ctx.isProjectTrusted()). Defaults to untrusted — the same conservative
+// bootstrap default pi's resource loader uses before real trust is resolved — so
+// an untrusted repo's .pi/settings.json can never influence reads that happen
+// before trust is known.
+let projectTrusted = false
+
+/**
+ * Sync the session's project-trust decision onto the settings reader. Callers with
+ * an ExtensionContext should pass ctx.isProjectTrusted() so project-scope settings
+ * are honored exactly when pi's own session honors them. setProjectTrusted
+ * re-reads the project scope in-memory; it never writes settings files.
+ */
+export function setSettingsProjectTrusted(trusted: boolean): void {
+	projectTrusted = trusted
+	try {
+		settingsManager?.setProjectTrusted(trusted)
+	} catch {
+		// Rebuild with the right trust on the next read.
+		settingsManager = undefined
+	}
+}
+
+/**
+ * Lazily construct (and cache) a SettingsManager over pi's settings, resolving the
+ * agent dir the same way pi does (getAgentDir() → env or default). Returns
+ * undefined only when construction fails, so callers must supply a safe fallback.
+ * The instance is dropped and rebuilt on the next read after either settings file
+ * changes.
+ */
+export function getSettingsManager(): SettingsManager | undefined {
+	if (!settingsManager) {
+		try {
+			settingsManager = SettingsManager.create(process.cwd(), getAgentDir(), { projectTrusted })
+		} catch {
+			return undefined
+		}
+	}
+	// Re-arm on every access: a watcher that died (fs.watch error) or never armed
+	// (settings file didn't exist yet) is recreated on the next read instead of
+	// staying dead for the process lifetime. Steady-state cost is two truthy checks.
+	ensureWatchers()
+	return settingsManager
+}
 
 export function getActiveThemeName(): string | undefined {
-	const agentDir = process.env.KIMCHI_CODING_AGENT_DIR
-	if (!agentDir) return undefined
 	try {
-		const raw = readFileSync(resolve(agentDir, "settings.json"), "utf-8")
-		const parsed: unknown = JSON.parse(raw)
-		if (parsed && typeof parsed === "object" && "theme" in parsed) {
-			const v = (parsed as { theme: unknown }).theme
-			return typeof v === "string" ? v : undefined
-		}
-		return undefined
+		return getSettingsManager()?.getThemeSetting()
 	} catch {
 		return undefined
 	}
 }
 
-let cachedCompactionEnabled: boolean | undefined
-
-export function getCompactionEnabled(): boolean {
-	if (cachedCompactionEnabled !== undefined) return cachedCompactionEnabled
-	cachedCompactionEnabled = readCompactionEnabledFromDisk()
-	ensureWatcher()
-	return cachedCompactionEnabled
-}
-
-function readCompactionEnabledFromDisk(): boolean {
-	const agentDir = process.env.KIMCHI_CODING_AGENT_DIR
-	if (!agentDir) return true
+/**
+ * Whether the /settings Auto-compact toggle is enabled, read via pi's own
+ * accessor (missing key defaults to enabled). Pass the session's
+ * ctx.isProjectTrusted() when available so project-scope settings apply exactly
+ * when pi's own session applies them; omitted, the last-synced trust is used
+ * (untrusted until a caller reports otherwise).
+ */
+export function getCompactionEnabled(isProjectTrusted?: boolean): boolean {
+	if (isProjectTrusted !== undefined && isProjectTrusted !== projectTrusted) {
+		setSettingsProjectTrusted(isProjectTrusted)
+	}
 	try {
-		const parsed: unknown = JSON.parse(readFileSync(resolve(agentDir, "settings.json"), "utf-8"))
-		const enabled = (parsed as { compaction?: { enabled?: unknown } })?.compaction?.enabled
-		return enabled !== false
+		return getSettingsManager()?.getCompactionEnabled() ?? true
 	} catch {
 		return true
 	}
 }
 
-/** @internal Test-only: reset the compaction cache and close the watcher so tests get a clean state. */
-export function __resetCompactionCacheForTest(): void {
-	cachedCompactionEnabled = undefined
-	if (watcher) {
-		watcher.close()
-		watcher = undefined
-	}
+/** @internal Test-only: drop the cached manager, close watchers, and clear listeners so tests get a clean state. */
+export function __resetSettingsWatcherForTest(): void {
+	settingsManager = undefined
+	projectTrusted = false
+	closeWatchers()
+	themeSeeded = false
 	listeners.clear()
+	lastSeenTheme = undefined
 	if (debounceTimer) {
 		clearTimeout(debounceTimer)
 		debounceTimer = undefined
@@ -59,14 +111,24 @@ export function __resetCompactionCacheForTest(): void {
 
 type ThemeChangeListener = (newName: string | undefined, oldName: string | undefined) => void
 
-let watcher: FSWatcher | undefined
+let globalWatcher: FSWatcher | undefined
+let projectWatcher: FSWatcher | undefined
+let themeSeeded = false
 let lastSeenTheme: string | undefined
 const listeners = new Set<ThemeChangeListener>()
 let debounceTimer: NodeJS.Timeout | undefined
 
+function scheduleFire(): void {
+	// fs.watch fires multiple events per write on macOS; debounce to one.
+	if (debounceTimer) clearTimeout(debounceTimer)
+	debounceTimer = setTimeout(fire, 30)
+	// Never let the debounce window keep a finished process alive (one-shot runs).
+	debounceTimer.unref?.()
+}
+
 function fire(): void {
 	debounceTimer = undefined
-	cachedCompactionEnabled = undefined
+	settingsManager = undefined
 	const current = getActiveThemeName()
 	if (current === lastSeenTheme) return
 	const previous = lastSeenTheme
@@ -80,36 +142,58 @@ function fire(): void {
 	}
 }
 
-function ensureWatcher(): void {
-	if (watcher) return
-	const agentDir = process.env.KIMCHI_CODING_AGENT_DIR
-	if (!agentDir) return
-	lastSeenTheme = getActiveThemeName()
+// Watch both settings files pi reads — global <agentDir>/settings.json and project
+// <cwd>/.pi/settings.json — so a change to either drops the cached manager and the
+// next read reflects it. Watchers are unref'd (they never keep the process alive).
+// Each watcher is re-armed independently whenever it is missing, so a watch that
+// failed (file absent) or died (error) recovers on the next settings read.
+function ensureWatchers(): void {
+	if (!themeSeeded) {
+		// Seed before the getActiveThemeName call below — it re-enters this
+		// function via getSettingsManager, and the flag bounds that recursion.
+		themeSeeded = true
+		lastSeenTheme = getActiveThemeName()
+	}
+	globalWatcher ??= startWatch(resolve(getAgentDir(), "settings.json"), () => {
+		globalWatcher = undefined
+	})
+	projectWatcher ??= startWatch(resolve(process.cwd(), CONFIG_DIR_NAME, "settings.json"), () => {
+		projectWatcher = undefined
+	})
+}
+
+function startWatch(path: string, onDead: () => void): FSWatcher | undefined {
 	try {
-		watcher = watch(resolve(agentDir, "settings.json"), { persistent: false }, () => {
-			// fs.watch fires multiple events per write on macOS; debounce to one.
-			if (debounceTimer) clearTimeout(debounceTimer)
-			debounceTimer = setTimeout(fire, 30)
-		})
-		watcher.unref?.()
-		watcher.on("error", (err) => {
+		const w = watch(path, { persistent: false }, scheduleFire)
+		w.unref?.()
+		w.on("error", (err) => {
 			console.warn("[settings-watcher] watch error:", err)
-			watcher?.close()
-			watcher = undefined
+			w.close()
+			onDead()
+			// Events may have been missed while the watcher was dying — force a
+			// fresh read (which also re-arms the watcher) on the next access.
+			settingsManager = undefined
 		})
+		return w
 	} catch {
-		// settings.json may not exist yet — listeners just won't fire.
+		// The file may not exist yet — especially the project .pi/settings.json.
+		// ensureWatchers retries on the next settings read; until then live
+		// updates for this file just won't fire.
+		return undefined
 	}
 }
 
+function closeWatchers(): void {
+	globalWatcher?.close()
+	globalWatcher = undefined
+	projectWatcher?.close()
+	projectWatcher = undefined
+}
+
 export function onThemeChange(listener: ThemeChangeListener): () => void {
-	ensureWatcher()
+	ensureWatchers()
 	listeners.add(listener)
 	return () => {
 		listeners.delete(listener)
-		if (listeners.size === 0 && cachedCompactionEnabled === undefined && watcher) {
-			watcher.close()
-			watcher = undefined
-		}
 	}
 }

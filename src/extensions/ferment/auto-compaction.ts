@@ -129,6 +129,20 @@ function readFermentOneshotFlag(pi: ExtensionAPI): boolean | undefined {
 	return isOneShot
 }
 
+/**
+ * Best-effort read of the session's project-trust decision. Passed to
+ * getCompactionEnabled so project-scope settings apply exactly when pi's own
+ * session applies them. Undefined (stale ctx, sloppy mock) leaves the reader's
+ * last-synced trust untouched.
+ */
+function readProjectTrust(ctx: ExtensionContext): boolean | undefined {
+	try {
+		return ctx.isProjectTrusted?.()
+	} catch {
+		return undefined
+	}
+}
+
 // ─── In-flight tool-call guard ────────────────────────────────────────────────
 
 export { isToolCallInFlight } from "../../tool-call-in-flight.js"
@@ -444,7 +458,7 @@ export async function maybeTriggerFermentCompaction(
 	if (isOneShot && !hasInlineCompact) return false
 
 	// /settings Auto-compact toggle (settings.json compaction.enabled).
-	if (!getCompactionEnabled()) return false
+	if (!getCompactionEnabled(readProjectTrust(ctx))) return false
 
 	// Root-cause guard: defer compaction while a tool call is in flight (the
 	// trailing assistant toolCall has no matching toolResult yet). Compacting
@@ -678,7 +692,7 @@ export async function maybeTriggerMidTurnFermentCompaction(
 	}
 
 	// /settings Auto-compact toggle — see maybeTriggerFermentCompaction.
-	if (!getCompactionEnabled()) return
+	if (!getCompactionEnabled(readProjectTrust(ctx))) return
 
 	const model = ctx.model
 	if (!model) return
