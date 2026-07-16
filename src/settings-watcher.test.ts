@@ -237,6 +237,67 @@ describe("getSettingsManager", () => {
 		expect(mockCreate).toHaveBeenCalledTimes(2)
 		expect(mockWatch).toHaveBeenCalledTimes(3)
 	})
+
+	it("drops the watcher and cache even when close() throws during error handling", () => {
+		vi.spyOn(console, "warn").mockImplementation(() => {})
+		const watcher = createMockWatcher()
+		watcher.close.mockImplementation(() => {
+			throw new Error("already destroyed")
+		})
+		mockWatch.mockReturnValue(watcher as unknown as ReturnType<typeof watch>)
+
+		getSettingsManager()
+		expect(mockCreate).toHaveBeenCalledTimes(1)
+
+		const errorHandler = watcher.on.mock.calls.find((c) => c[0] === "error")?.[1] as (err: Error) => void
+		expect(() => errorHandler(new Error("EPERM"))).not.toThrow()
+
+		// Cache was dropped despite close() throwing — the next read rebuilds.
+		getSettingsManager()
+		expect(mockCreate).toHaveBeenCalledTimes(2)
+	})
+
+	it("delivers a theme change that happened while a watcher was dead", () => {
+		vi.spyOn(console, "warn").mockImplementation(() => {})
+		const watcher = createMockWatcher()
+		mockWatch.mockReturnValue(watcher as unknown as ReturnType<typeof watch>)
+		mockCreate.mockReturnValue(asManager(fakeManager({ theme: "light" })))
+		const listener = vi.fn()
+		onThemeChange(listener) // seeds lastSeenTheme = "light"
+
+		// The global watcher dies; the theme changes while nothing is watching.
+		const errorHandler = watcher.on.mock.calls.find((c) => c[0] === "error")?.[1] as (err: Error) => void
+		errorHandler(new Error("EPERM"))
+		mockCreate.mockReturnValue(asManager(fakeManager({ theme: "dark" })))
+
+		// The next read re-arms the watcher and schedules a catch-up fire.
+		getSettingsManager()
+		vi.runAllTimers()
+
+		expect(listener).toHaveBeenCalledWith("dark", "light")
+	})
+
+	it("catches up on changes that happened while a settings file was unwatched", () => {
+		// Global settings.json doesn't exist yet — its watch throws until it appears.
+		const globalPath = "/fake/agent/dir/settings.json"
+		let globalFileMissing = true
+		mockWatch.mockImplementation(((path: unknown) => {
+			if (globalFileMissing && path === globalPath) throw new Error("ENOENT")
+			return createMockWatcher() as unknown as ReturnType<typeof watch>
+		}) as unknown as typeof watch)
+		mockCreate.mockReturnValue(asManager(fakeManager({ theme: "light" })))
+		const listener = vi.fn()
+		onThemeChange(listener) // seeds "light"; the global watch fails to arm
+
+		// The file appears with a different theme; the next read arms the watch
+		// and the catch-up fire delivers the change that predates it.
+		mockCreate.mockReturnValue(asManager(fakeManager({ theme: "dark" })))
+		globalFileMissing = false
+		getSettingsManager()
+		vi.runAllTimers()
+
+		expect(listener).toHaveBeenCalledWith("dark", "light")
+	})
 })
 
 describe("onThemeChange", () => {

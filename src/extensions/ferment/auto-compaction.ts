@@ -40,6 +40,7 @@ import { getCompactionEnabled } from "../../settings-watcher.js"
 import { isToolCallInFlight } from "../../tool-call-in-flight.js"
 import { COMPACTION_RESERVE_TOKENS } from "../compaction-thresholds.js"
 import { getModelRoles, splitModelRef } from "../orchestration/model-roles.js"
+import { isStaleCtxError } from "../stale-ctx.js"
 import type { FermentRuntime } from "./runtime.js"
 import { safeSendMessage, tryPiAction } from "./safe-send.js"
 import { scheduleNextFermentAction } from "./scheduler.js"
@@ -133,12 +134,17 @@ function readFermentOneshotFlag(pi: ExtensionAPI): boolean | undefined {
  * Best-effort read of the session's project-trust decision. Passed to
  * getCompactionEnabled so project-scope settings apply exactly when pi's own
  * session applies them. Undefined (stale ctx, sloppy mock) leaves the reader's
- * last-synced trust untouched.
+ * last-synced trust untouched. Matches the tryPiAction idiom: stale-ctx errors
+ * are routine (post-shutdown/reload) and stay silent; anything else is traced
+ * so a broken trust accessor doesn't fail invisibly.
  */
 function readProjectTrust(ctx: ExtensionContext): boolean | undefined {
 	try {
 		return ctx.isProjectTrusted?.()
-	} catch {
+	} catch (err) {
+		if (!isStaleCtxError(err)) {
+			console.warn("[ferment] failed to read project trust:", err)
+		}
 		return undefined
 	}
 }

@@ -142,11 +142,23 @@ function fire(): void {
 	}
 }
 
+// True while the corresponding settings file is unwatched (watch failed to arm or
+// died); a successful re-arm then schedules a catch-up fire so changes that
+// happened while unwatched are still observed.
+let globalWatchBroken = false
+let projectWatchBroken = false
+
 // Watch both settings files pi reads — global <agentDir>/settings.json and project
 // <cwd>/.pi/settings.json — so a change to either drops the cached manager and the
-// next read reflects it. Watchers are unref'd (they never keep the process alive).
-// Each watcher is re-armed independently whenever it is missing, so a watch that
-// failed (file absent) or died (error) recovers on the next settings read.
+// next read reflects it. Each watcher is re-armed independently whenever it is
+// missing, so a watch that failed (file absent) or died (error) recovers on the
+// next settings read, and the catch-up fire delivers anything missed meanwhile.
+//
+// The watchers are intentionally process-lifetime: there is no dispose. They are
+// unref'd (never keep the process alive), and two fs.watch handles are the
+// steady-state cost of keeping the settings cache and theme listeners live —
+// tying their lifetime to individual consumers is what previously broke sharing
+// between the two.
 function ensureWatchers(): void {
 	if (!themeSeeded) {
 		// Seed before the getActiveThemeName call below — it re-enters this
@@ -154,12 +166,30 @@ function ensureWatchers(): void {
 		themeSeeded = true
 		lastSeenTheme = getActiveThemeName()
 	}
-	globalWatcher ??= startWatch(resolve(getAgentDir(), "settings.json"), () => {
-		globalWatcher = undefined
-	})
-	projectWatcher ??= startWatch(resolve(process.cwd(), CONFIG_DIR_NAME, "settings.json"), () => {
-		projectWatcher = undefined
-	})
+	if (!globalWatcher) {
+		globalWatcher = startWatch(resolve(getAgentDir(), "settings.json"), () => {
+			globalWatcher = undefined
+			globalWatchBroken = true
+		})
+		if (globalWatcher) {
+			if (globalWatchBroken) scheduleFire()
+			globalWatchBroken = false
+		} else {
+			globalWatchBroken = true
+		}
+	}
+	if (!projectWatcher) {
+		projectWatcher = startWatch(resolve(process.cwd(), CONFIG_DIR_NAME, "settings.json"), () => {
+			projectWatcher = undefined
+			projectWatchBroken = true
+		})
+		if (projectWatcher) {
+			if (projectWatchBroken) scheduleFire()
+			projectWatchBroken = false
+		} else {
+			projectWatchBroken = true
+		}
+	}
 }
 
 function startWatch(path: string, onDead: () => void): FSWatcher | undefined {
@@ -168,11 +198,15 @@ function startWatch(path: string, onDead: () => void): FSWatcher | undefined {
 		w.unref?.()
 		w.on("error", (err) => {
 			console.warn("[settings-watcher] watch error:", err)
-			w.close()
+			// Cleanup first: even if close() throws, the watcher must be marked
+			// dead and the cache dropped (events may have been missed while dying).
 			onDead()
-			// Events may have been missed while the watcher was dying — force a
-			// fresh read (which also re-arms the watcher) on the next access.
 			settingsManager = undefined
+			try {
+				w.close()
+			} catch {
+				// Watcher already destroyed.
+			}
 		})
 		return w
 	} catch {
@@ -184,10 +218,20 @@ function startWatch(path: string, onDead: () => void): FSWatcher | undefined {
 }
 
 function closeWatchers(): void {
-	globalWatcher?.close()
+	try {
+		globalWatcher?.close()
+	} catch {
+		// Watcher already destroyed.
+	}
 	globalWatcher = undefined
-	projectWatcher?.close()
+	globalWatchBroken = false
+	try {
+		projectWatcher?.close()
+	} catch {
+		// Watcher already destroyed.
+	}
 	projectWatcher = undefined
+	projectWatchBroken = false
 }
 
 export function onThemeChange(listener: ThemeChangeListener): () => void {
