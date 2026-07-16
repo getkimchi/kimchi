@@ -666,6 +666,28 @@ describe("turn_end compaction guard", () => {
 		expect(compact).not.toHaveBeenCalled()
 	})
 
+	it("still compacts (and warns) when the project-trust accessor throws unexpectedly", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		try {
+			const { pi, trigger } = makeMockPI()
+			modelGuardExtension(pi)
+			const compact = vi.fn()
+			const ctx = makeMockCtx({
+				model: { id: "kimi-k2.6", input: ["text"], contextWindow: CONTEXT_WINDOW } as ExtensionContext["model"],
+				compact,
+			})
+			ctx.isProjectTrusted = vi.fn(() => {
+				throw new Error("trust state unavailable")
+			})
+			await trigger("turn_end", makeTurnEndEvent(THRESHOLD + 1, "toolUse"), ctx)
+			// Trust falls back to the reader's last-synced value; the guard still runs.
+			expect(compact).toHaveBeenCalledOnce()
+			expect(warn).toHaveBeenCalledWith(expect.stringContaining("failed to read project trust"), expect.any(Error))
+		} finally {
+			warn.mockRestore()
+		}
+	})
+
 	it("does NOT compact when the /settings Auto-compact toggle is disabled", async () => {
 		vi.mocked(getCompactionEnabled).mockReturnValue(false)
 		const { pi, trigger } = makeMockPI()
