@@ -488,6 +488,7 @@ This script checks and installs node, pnpm, and bun if missing, initializes git 
 ```bash
 git clone git@github.com:getkimchi/kimchi.git
 cd kimchi
+# Currently a no-op (no submodules after superpowers removal); kept for future use
 git submodule update --init --recursive
 corepack enable
 pnpm install

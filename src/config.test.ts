@@ -8,7 +8,6 @@ import {
 	clearApiKey,
 	ensureHideThinkingBlockDefault,
 	ensureQuietStartupDefault,
-	getActiveVendorSkillPaths,
 	loadConfig,
 	RETRY_DEFAULTS,
 	readApiKeyFromConfigFile,
@@ -16,7 +15,6 @@ import {
 	readHideTips,
 	readTelemetryConfig,
 	upgradeLegacyRetrySettings,
-	VENDOR_SKILL_PATHS,
 	writeApiKey,
 	writeDeviceId,
 	writeGitToken,
@@ -662,36 +660,6 @@ describe("readGitToken / writeGitToken", () => {
 	it("round-trips write then read", () => {
 		writeGitToken("github.com", "ghp_roundtrip", configPath)
 		expect(readGitToken("github.com", configPath)).toBe("ghp_roundtrip")
-	})
-})
-
-describe("getActiveVendorSkillPaths", () => {
-	let originalHome: string | undefined
-	let mockHome: string
-
-	beforeEach(() => {
-		originalHome = process.env.HOME
-		mockHome = mkdtempSync(join(tmpdir(), "kimchi-vendor-test-"))
-		process.env.HOME = mockHome
-	})
-
-	afterEach(() => {
-		if (originalHome !== undefined) process.env.HOME = originalHome
-		else {
-			delete process.env.HOME
-		}
-		rmSync(mockHome, { recursive: true, force: true })
-	})
-
-	it("returns vendor paths when vendor dir exists and no sentinel", () => {
-		mkdirSync(join(mockHome, ".config", "kimchi", "vendor", "superpowers", "skills"), { recursive: true })
-		expect(getActiveVendorSkillPaths()).toEqual(VENDOR_SKILL_PATHS)
-	})
-
-	it("returns empty array when sentinel exists in harness skills dir", () => {
-		mkdirSync(join(mockHome, ".config", "kimchi", "harness", "skills", "using-superpowers"), { recursive: true })
-		writeFileSync(join(mockHome, ".config", "kimchi", "harness", "skills", "using-superpowers", "SKILL.md"), "")
-		expect(getActiveVendorSkillPaths()).toEqual([])
 	})
 })
 
