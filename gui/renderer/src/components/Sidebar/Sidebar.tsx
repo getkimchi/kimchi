@@ -48,7 +48,7 @@ export default function Sidebar({ onOpenSettings }: Props) {
 
         const diff = Date.now() - c.createdAt.getTime();
 
-        return diff > 86400000 && diff < 86400000 * 7;
+        return diff >= 86400000 * 2 && diff < 86400000 * 7;
 
     });
 
@@ -133,7 +133,7 @@ export default function Sidebar({ onOpenSettings }: Props) {
                         selected={c.id === currentConversationId}
 
                         onClick={() => setCurrentConversationId(c.id)}
-                        onDelete={() => deleteConversation(c.id)}
+                        onDelete={() => setConversationToDelete(c.id)}
 
                     />
 

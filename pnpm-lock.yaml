@@ -36,7 +36,7 @@ importers:
         version: 0.79.10(patch_hash=e821592e009160d9501e7047340e284867de484433216a8f9c5a9a4c05fd4322)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)
       '@earendil-works/pi-tui':
         specifier: 0.79.10
-        version: 0.79.10(patch_hash=3651856bfe24d881276c225f7ae61b415aaea13347e8667a70d24a3e0e1b3a38)
+        version: 0.79.10(patch_hash=019141c7f01eabbdb737b0e8eed4a5ef6a724cfc8eb4e8d77e4dbe930d5e8529)
       '@fontsource/inter':
         specifier: ^5.2.8
         version: 5.2.8

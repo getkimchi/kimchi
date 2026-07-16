@@ -32,30 +32,36 @@ export default function ChatInput({
 
     async function loadModels() {
 
-        const models = await window.kimchi.getModels();
+        try {
 
-        setModels(models);
+            const models = await window.kimchi.getModels();
 
-        const current = await window.kimchi.getCurrentModel();
+            setModels(models);
 
-        if (current) {
+            const current = await window.kimchi.getCurrentModel();
 
-            const selected = models.find(
-                m => m.id === current.model
-            );
+            if (current) {
 
+                const selected = models.find(
+                    m => m.id === current.model
+                );
 
-            if (selected) {
+                if (selected) {
 
-                setSelectedModel(selected.id);
+                    setSelectedModel(selected.id);
 
-                return;
+                    return;
+                }
             }
-        }
 
+            if (models.length > 0) {
+                setSelectedModel(models[0].id);
+            }
 
-        if (models.length > 0) {
-            setSelectedModel(models[0].id);
+        } catch (err) {
+
+            console.error("Failed to load models:", err);
+
         }
     }
 
@@ -137,20 +143,23 @@ export default function ChatInput({
             <select
                 className="model-selector"
                 value={selectedModel}
+                disabled={disabled || sending}
                 onChange={async (e) => {
 
                     const value = e.target.value;
-
-                    setSelectedModel(value);
+                    const previous = selectedModel;
 
                     try {
 
-                        const result = await window.kimchi.setCurrentModel(value);
+                        await window.kimchi.setCurrentModel(value);
 
+                        setSelectedModel(value);
 
                     } catch (err) {
 
                         console.error("setCurrentModel failed:", err);
+
+                        setSelectedModel(previous);
 
                     }
 

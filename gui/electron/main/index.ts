@@ -172,29 +172,54 @@ async function startKimchi() {
     // itself (e.g. missing API key / auth not configured yet) instead of
     // just saying "not connected".
     let stderrTail = "";
-    kimchiProcess.stderr?.on("data", (chunk: Buffer) => {
+    const proc = kimchiProcess;
+
+    const onStderrData = (chunk: Buffer) => {
         const text = chunk.toString("utf8");
         process.stderr.write(text); // still show it live in this terminal
         stderrTail = (stderrTail + text).slice(-4000);
-    });
+    };
+    proc.stderr?.on("data", onStderrData);
 
-    kimchiProcess.on("error", (err) => {
+    const onError = (err: Error) => {
         console.error("Failed to spawn kimchi:", err);
-    });
+    };
+    proc.once("error", onError);
 
     let exitedEarly: { code: number | null; signal: NodeJS.Signals | null } | null = null;
-    kimchiProcess.on("exit", (code, signal) => {
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+
+        // Only tear down module-level state / notify the renderer if this
+        // exited process is still the one we're tracking — an old process
+        // from a prior reconnect can still fire this handler after being
+        // superseded, and we don't want it clobbering a newer connection.
+        const wasActiveProcess = kimchiProcess === proc;
 
         if (!sessionId) {
             // Died before we ever got a working session — startKimchi()'s
             // catch block will read exitedEarly/stderrTail to explain why.
             exitedEarly = { code, signal };
+        } else if (wasActiveProcess) {
+            // The process died mid-session (after having been ready) —
+            // let the renderer know instead of leaving a stale "ready" status.
+            currentStatus = {
+                state: "error",
+                message: "Kimchi process exited unexpectedly.",
+            };
+            mainWindow?.webContents.send("kimchi:status", currentStatus);
         }
-        conn = null;
-        sessionId = null;
-        kimchiProcess = null;
-        validationSessionId = null;
-    });
+
+        proc.stderr?.removeListener("data", onStderrData);
+        proc.removeListener("error", onError);
+
+        if (wasActiveProcess) {
+            conn = null;
+            sessionId = null;
+            kimchiProcess = null;
+            validationSessionId = null;
+        }
+    };
+    proc.once("exit", onExit);
 
     const writable = Writable.toWeb(kimchiProcess.stdin);
     const readable = Readable.toWeb(kimchiProcess.stdout);
@@ -288,6 +313,13 @@ async function startKimchi() {
               "terminal, which this GUI can't provide), e.g.:\n  bun run dev:setup\nThen restart this app."
             : "";
         const detail = stderrTail.trim() ? `\n\nLast output from kimchi:\n${stderrTail.trim()}` : "";
+
+        // Don't leave a partially-started process running in the background —
+        // the "exit" handler above will finish clearing kimchiProcess/conn/etc.
+        if (kimchiProcess === proc) {
+            proc.kill();
+        }
+
         throw new Error(`${err instanceof Error ? err.message : String(err)}${hint}${detail}`);
     }
 
@@ -596,6 +628,12 @@ app.whenReady().then(async () => {
 app.on("window-all-closed", () => {
     if (process.platform !== "darwin") {
         app.quit();
+    }
+});
+
+app.on("activate", () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+        createWindow();
     }
 });
 
