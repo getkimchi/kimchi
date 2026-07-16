@@ -1,13 +1,8 @@
-import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext, SessionEntry, SessionManager } from "@earendil-works/pi-coding-agent"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { registerTodosCommand } from "./command.js"
 import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
-import {
-	appendTodoPromptBlockIfMissing,
-	registerTodoPromptBlock,
-	registerTodoStateBlock,
-	setCurrentSessionHasUI,
-} from "./prompt-block.js"
+import { appendTodoPromptBlockIfMissing, registerTodoPromptBlock, registerTodoStateBlock } from "./prompt-block.js"
 import { getTodosForScope, resolveTodoScope, restoreTodoStoreFromDetails, subscribeTodoStore } from "./store.js"
 import { registerTodosTool, TODO_TOOL_NAMES } from "./tool.js"
 import { TODO_TOOL_RESULT_SCHEMA_VERSION, type WriteTodosDetails } from "./types.js"
@@ -78,20 +73,25 @@ function getWriteTodosDetails(entry: SessionEntry): WriteTodosDetails | undefine
 	return undefined
 }
 
-export function restoreTodoStoreFromSessionEntries(entries: readonly SessionEntry[]): void {
-	restoreTodoStoreFromDetails(entries.map(getWriteTodosDetails).filter((details) => details !== undefined))
+function restoreTodoStoreFromSessionEntries(sessionManager: Pick<SessionManager, "getBranch" | "getSessionId">): void {
+	const sessionId = sessionManager.getSessionId()
+	const entries = sessionManager.getBranch()
+	restoreTodoStoreFromDetails(
+		entries.map(getWriteTodosDetails).filter((details) => details !== undefined),
+		sessionId,
+	)
 }
 
-function currentTodoStateKey(): string | undefined {
+function currentTodoStateKey(sessionId: string): string | undefined {
 	const scope = resolveTodoScope()
-	const todos = getTodosForScope(scope)
+	const todos = getTodosForScope(scope, sessionId)
 	if (todos.length === 0) return undefined
 	return JSON.stringify({ scope, todos: todos.map((todo) => [todo.id, todo.status, todo.content]) })
 }
 
-function currentTodoStateText(): string | undefined {
+function currentTodoStateText(sessionId: string): string | undefined {
 	const scope = resolveTodoScope()
-	const todos = getTodosForScope(scope)
+	const todos = getTodosForScope(scope, sessionId)
 	if (todos.length === 0) return undefined
 	const scopeText = scope.kind === "global" ? "global" : JSON.stringify(scope)
 	return [
@@ -131,6 +131,7 @@ function isTerminalAssistantTurn(
 export default function todosExtension(pi: ExtensionAPI): void {
 	registerTodosTool(pi)
 	registerTodoPromptBlock(pi)
+
 	pi.on("before_agent_start", (event) => {
 		const systemPrompt = appendTodoPromptBlockIfMissing(event.systemPrompt)
 		return systemPrompt ? { systemPrompt } : undefined
@@ -138,59 +139,66 @@ export default function todosExtension(pi: ExtensionAPI): void {
 
 	if (isAgentWorker()) return
 
-	let latestCtx: ExtensionContext | undefined
-	let unsubscribeTodoStore: (() => void) | undefined
-	let workSinceTodoWrite = false
+	registerTodosCommand(pi)
+	registerTodoShortcut(pi)
 
-	const resetTodoProcessState = () => {
-		workSinceTodoWrite = false
+	let unsubscribeTodoStore: (() => void) | undefined
+	const _workSinceTodoWrite = new Map<string, boolean>()
+
+	const setWorkSinceTodoWrite = (sessionId: string, value: boolean) => {
+		_workSinceTodoWrite.set(sessionId, value)
 	}
 
-	const maybeSteerTodoReconciliation = (message: unknown) => {
-		if (!workSinceTodoWrite) return
+	const getWorkSinceTodoWrite = (sessionId: string): boolean => {
+		return _workSinceTodoWrite.get(sessionId) ?? false
+	}
+
+	const maybeSteerTodoReconciliation = (message: unknown, ctx: ExtensionContext) => {
+		const sessionId = ctx.sessionManager.getSessionId()
+
+		if (!getWorkSinceTodoWrite(sessionId)) return
 		if (!hasVisibleText(message)) return
 		// If the model has no todo tools available (e.g. during a ferment plan
 		// review where all tools are suppressed), it cannot reconcile todos.
 		// Sending a follow-up would trap it in a text-only loop. Reset the flag
 		// and defer reconciliation until tools are restored.
 		if (!anyTodoToolsAvailable(pi)) {
-			resetTodoProcessState()
+			setWorkSinceTodoWrite(sessionId, false)
 			return
 		}
-		if (!currentTodoStateKey()) {
-			resetTodoProcessState()
+		if (!currentTodoStateKey(sessionId)) {
+			setWorkSinceTodoWrite(sessionId, false)
 			return
 		}
-		const stateText = currentTodoStateText()
+		const stateText = currentTodoStateText(sessionId)
 		const promptText = stateText ? `${TODO_RECONCILE_MESSAGE}\n\n${stateText}` : TODO_RECONCILE_MESSAGE
 		pi.sendMessage(hiddenTodoMessage("reconcile_todos", promptText), { deliverAs: "followUp" })
 	}
 
-	registerTodosCommand(pi)
-	registerTodoShortcut(pi)
-	// Headless (one-shot) runs have no widget; the todo-state prompt block
-	// renders the same content as markdown so the orchestrator agent can see
-	// it. Self-gates on currentSessionHasUI inside the block's render fn.
-	registerTodoStateBlock(pi)
-
 	const replayAndSync = (ctx: ExtensionContext) => {
-		latestCtx = ctx
-		restoreTodoStoreFromSessionEntries(ctx.sessionManager.getBranch())
-		resetTodoProcessState()
+		const sessionId = ctx.sessionManager.getSessionId()
+
+		restoreTodoStoreFromSessionEntries(ctx.sessionManager)
+		setWorkSinceTodoWrite(sessionId, false)
 		syncTodoWidget(ctx)
 	}
 
 	pi.on("session_start", (_event, ctx) => {
-		resetTodoProcessState()
-		resetTodoWidgetState()
+		// Headless (one-shot) runs have no widget; the todo-state prompt block
+		// renders the same content as markdown so the orchestrator agent can see
+		// it. Self-gates on currentSessionHasUI inside the block's render fn.
+		registerTodoStateBlock(pi, ctx)
+
+		resetTodoWidgetState(ctx)
 		ensureTodoWidget(ctx)
-		setCurrentSessionHasUI(ctx.hasUI)
+
 		unsubscribeTodoStore?.()
 		unsubscribeTodoStore = subscribeTodoStore(() => {
-			workSinceTodoWrite = false
-			if (!latestCtx?.hasUI) return
-			syncTodoWidget(latestCtx)
+			const sessionId = ctx.sessionManager.getSessionId()
+			setWorkSinceTodoWrite(sessionId, false)
+			syncTodoWidget(ctx)
 		})
+
 		replayAndSync(ctx)
 	})
 
@@ -198,18 +206,23 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		replayAndSync(ctx)
 	})
 
-	pi.on("tool_execution_end", (event) => {
+	pi.on("tool_execution_end", (event, ctx) => {
 		if (event.isError || TODO_REPLAY_TOOL_NAME_SET.has(event.toolName)) return
-		if (currentTodoStateKey()) workSinceTodoWrite = true
+		const sessionId = ctx.sessionManager.getSessionId()
+		if (currentTodoStateKey(sessionId)) {
+			setWorkSinceTodoWrite(sessionId, true)
+		}
 	})
 
-	pi.on("context", (event) => {
-		if (!workSinceTodoWrite) return undefined
+	pi.on("context", (event, ctx) => {
+		const sessionId = ctx.sessionManager.getSessionId()
+
+		if (!getWorkSinceTodoWrite(sessionId)) return undefined
 		// Same guard as maybeSteerTodoReconciliation: if todo tools are not
 		// available (e.g. ferment plan review), skip checkpoint injection.
 		if (!anyTodoToolsAvailable(pi)) return undefined
-		const stateText = currentTodoStateText()
-		if (!stateText) return resetTodoProcessState()
+		const stateText = currentTodoStateText(sessionId)
+		if (!stateText) return setWorkSinceTodoWrite(sessionId, false)
 		return {
 			messages: [
 				...event.messages,
@@ -225,14 +238,12 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	pi.on("turn_end", (event, ctx) => {
 		if (!isTerminalAssistantTurn(event, ctx)) return
 		syncTodoWidget(ctx)
-		maybeSteerTodoReconciliation(event.message)
+		maybeSteerTodoReconciliation(event.message, ctx)
 	})
 
 	pi.on("session_shutdown", (_event, ctx) => {
 		unsubscribeTodoStore?.()
 		unsubscribeTodoStore = undefined
-		latestCtx = undefined
-		setCurrentSessionHasUI(true)
 		disposeTodoWidget(ctx)
 	})
 }

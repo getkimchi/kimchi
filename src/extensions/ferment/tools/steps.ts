@@ -111,7 +111,13 @@ export interface StepHandlerServices {
 		exitCode: number,
 	): Promise<JudgeVerdict>
 	onStepCompleted(runtime: FermentRuntime): void
-	buildWorkerContext: typeof buildWorkerContext
+	buildWorkerContext: (
+		ferment: Ferment,
+		phase: Phase,
+		step: Step,
+		sessionId: string,
+		opts?: { includeDecisions?: boolean; includeMemories?: boolean },
+	) => string
 	runVerification(args: VerificationExecution): Promise<VerificationResult>
 }
 
@@ -351,7 +357,9 @@ Do NOT call start_ferment_step again without user input.`,
 			: ""
 
 	const workerContext =
-		freshPhase && freshStep ? services.buildWorkerContext(outcome.ferment, freshPhase, freshStep) : ""
+		freshPhase && freshStep
+			? services.buildWorkerContext(outcome.ferment, freshPhase, freshStep, ctx.sessionManager.getSessionId())
+			: ""
 	const contextBlock = workerContext ? `\n\nWorker context (pass to subagent verbatim):\n${workerContext}` : ""
 	const taskRef = {
 		kind: "ferment_step" as const,

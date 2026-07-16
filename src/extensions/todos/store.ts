@@ -6,12 +6,28 @@ export const GLOBAL_TODO_SCOPE: TodoScope = { kind: "global" }
 
 export type TodoScopeProvider = () => TodoScope | undefined
 
-let state = createEmptyTodosSliceState()
+/** Per-session todo state. Keyed by session id so that two concurrent keyed
+ * sessions in the same process do not see each other's todos. */
+const stateMap = new Map<string, TodosSliceState>()
 const todoStoreListeners = new Set<(details: WriteTodosDetails) => void>()
 const activeScopeProviders: TodoScopeProvider[] = []
 
-export function getTodoState(): TodosSliceState {
-	return state
+function getSessionState(sessionId: string): TodosSliceState {
+	const existing = stateMap.get(sessionId)
+	if (existing) {
+		return existing
+	}
+	const created = createEmptyTodosSliceState()
+	stateMap.set(sessionId, created)
+	return created
+}
+
+function setSessionState(sessionId: string, next: TodosSliceState): void {
+	stateMap.set(sessionId, next)
+}
+
+export function getTodoState(sessionId: string): TodosSliceState {
+	return getSessionState(sessionId)
 }
 
 export function resolveTodoScope(scopeInput?: unknown): TodoScope {
@@ -35,20 +51,21 @@ function notifyTodoStoreListeners(details: WriteTodosDetails): void {
 	}
 }
 
-export function applyWriteTodos(params: WriteTodosParams): WriteTodosDetails {
+export function applyWriteTodos(params: WriteTodosParams, sessionId: string): WriteTodosDetails {
 	const scope = resolveWriteTodoScope(params)
-	const result = reduceReplaceList(state, { ...params, scope })
-	state = result.state
+	const current = getSessionState(sessionId)
+	const result = reduceReplaceList(current, { ...params, scope })
+	setSessionState(sessionId, result.state)
 	notifyTodoStoreListeners(result.details)
 	return result.details
 }
 
-export function getTodosForScope(scope: TodoScope = GLOBAL_TODO_SCOPE): TodoItem[] {
-	return state.byScope[getTodoScopeKey(scope)]?.todos ?? []
+export function getTodosForScope(scope: TodoScope, sessionId: string): TodoItem[] {
+	return getSessionState(sessionId).byScope[getTodoScopeKey(scope)]?.todos ?? []
 }
 
-export function getTodoCountsForScope(scope: TodoScope = GLOBAL_TODO_SCOPE): TodoCounts {
-	const todos = getTodosForScope(scope)
+export function getTodoCountsForScope(scope: TodoScope, sessionId: string): TodoCounts {
+	const todos = getTodosForScope(scope, sessionId)
 	return {
 		total: todos.length,
 		completed: todos.filter((todo) => todo.status === "completed").length,
@@ -73,20 +90,20 @@ export function registerActiveTodoScopeProvider(provider: TodoScopeProvider): ()
 	}
 }
 
-export function clearTodoStore(): void {
-	state = createEmptyTodosSliceState()
+export function clearTodoStore(sessionId: string): void {
+	stateMap.delete(sessionId)
 }
 
-export function restoreTodoStoreFromDetails(details: readonly WriteTodosDetails[]): void {
+export function restoreTodoStoreFromDetails(details: readonly WriteTodosDetails[], sessionId: string): void {
 	let restored = createEmptyTodosSliceState()
 	for (const detail of details) {
 		restored = reduceReplaceList(restored, { scope: detail.scope, todos: detail.todos }).state
 	}
-	state = restored
+	setSessionState(sessionId, restored)
 }
 
 export function __resetTodoStore(): void {
-	clearTodoStore()
+	stateMap.clear()
 	activeScopeProviders.length = 0
 	todoStoreListeners.clear()
 }

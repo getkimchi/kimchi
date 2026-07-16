@@ -84,8 +84,8 @@ export function createSystemPromptBlocks(pi: ExtensionAPI, owner: string): Syste
 		handles = new Set()
 		handlesByPi.set(pi, handles)
 		pi.on("session_start", (_event, ctx) => {
-			const sessionId = ctx?.sessionManager?.getSessionId()
-			if (sessionId) sessionIdByPi.set(pi, sessionId)
+			const sessionId = ctx.sessionManager.getSessionId()
+			sessionIdByPi.set(pi, sessionId)
 		})
 		pi.on("session_shutdown", () => {
 			handlesByPi.delete(pi)

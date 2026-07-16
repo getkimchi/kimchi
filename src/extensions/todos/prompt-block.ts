@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { getActive } from "../ferment/state.js"
 import { getTurnsSinceStepTodoWrite } from "../ferment/todo-sync.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
@@ -30,23 +30,6 @@ export function registerTodoPromptBlock(pi: ExtensionAPI): void {
 	})
 }
 
-// ─── Live todo state for headless / one-shot runs ─────────────────────────────
-// In interactive sessions the todo widget renders the current state. In
-// headless runs there is no widget, so we surface the same state as a markdown
-// block injected into the system prompt. The block self-gates: when the UI is
-// present it returns undefined (no duplication), and when the store is empty
-// it also returns undefined (no prompt pollution).
-
-/** Module-level mirror of `ctx.hasUI` for the active session. Set by
- *  `todosExtension` from `session_start`, cleared on `session_shutdown`.
- *  Defaults to `true` so that pre-session renders (e.g. in tests) safely skip
- *  rather than injecting headless-only content into an interactive prompt. */
-export let currentSessionHasUI = true
-
-export function setCurrentSessionHasUI(value: boolean): void {
-	currentSessionHasUI = value
-}
-
 function statusGlyph(status: TodoStatus): string {
 	switch (status) {
 		case "completed":
@@ -69,8 +52,8 @@ function formatTodoLine(todo: TodoItem): string {
 /** Render the current todo store as a markdown section suitable for injection
  *  into the system prompt. Returns `undefined` when there is nothing to show
  *  (no scopes at all) so the block pipeline skips it. */
-export function renderTodoStateMarkdown(): string | undefined {
-	const state = getTodoState()
+export function renderTodoStateMarkdown(sessionId: string): string | undefined {
+	const state = getTodoState(sessionId)
 	const scopeKeys = Object.keys(state.byScope)
 	if (scopeKeys.length === 0) return undefined
 
@@ -152,12 +135,13 @@ export function renderTodoStateMarkdown(): string | undefined {
  *  - returns `undefined` when the active session has a UI (widget handles it)
  *  - returns `undefined` when the store is empty
  *  Both cases let the existing prompt-block pipeline skip cleanly. */
-export function registerTodoStateBlock(pi: ExtensionAPI): void {
+export function registerTodoStateBlock(pi: ExtensionAPI, ctx: ExtensionContext): void {
 	createSystemPromptBlocks(pi, "todos").register({
 		id: "todo-state",
 		render: () => {
-			if (currentSessionHasUI) return undefined
-			return renderTodoStateMarkdown()
+			if (ctx.hasUI) return undefined
+			const sessionId = ctx.sessionManager.getSessionId()
+			return renderTodoStateMarkdown(sessionId)
 		},
 	})
 }
@@ -165,9 +149,10 @@ export function registerTodoStateBlock(pi: ExtensionAPI): void {
 /** Applies the full gate (currentSessionHasUI check) exactly as the registered
  *  system-prompt block does. Use this in tests to validate the complete path
  *  rather than calling the raw renderer directly. */
-export function renderTodoStateBlock(): string | undefined {
-	if (currentSessionHasUI) return undefined
-	return renderTodoStateMarkdown()
+export function renderTodoStateBlock(ctx: ExtensionContext): string | undefined {
+	if (ctx.hasUI) return undefined
+	const sessionId = ctx.sessionManager.getSessionId()
+	return renderTodoStateMarkdown(sessionId)
 }
 
 export {
