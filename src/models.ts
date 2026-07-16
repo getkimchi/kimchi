@@ -170,7 +170,7 @@ function metadataToModel(m: ModelMetadata): PiModelConfig {
 	// - cacheControlFormat: "anthropic" so pi injects cache_control markers
 	// - supportsUsageInStreaming: true so stream_options.include_usage is sent
 	const compat =
-		m.provider === "anthropic"
+		m.provider === "anthropic" || m.slug.startsWith("claude-")
 			? ({ supportsReasoningEffort: false, cacheControlFormat: "anthropic", supportsUsageInStreaming: true } as const)
 			: undefined
 	return {

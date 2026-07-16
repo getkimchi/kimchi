@@ -132,6 +132,32 @@ describe("updateModelsConfig", () => {
 		expect(config.providers["kimchi-dev"].models[0]).not.toHaveProperty("compat")
 	})
 
+	it("sets compat for claude-* models regardless of upstream provider (e.g. azure_ai)", async () => {
+		const CLAUDE_ON_AZURE: unknown = {
+			slug: "claude-sonnet-4-6",
+			display_name: "",
+			provider: "azure_ai",
+			reasoning: true,
+			input_modalities: ["text", "image"],
+			is_serverless: false,
+			limits: { context_window: 1_000_000, max_output_tokens: 128_000 },
+		}
+		vi.mocked(fetch).mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({ models: [CLAUDE_ON_AZURE] }),
+		} as Response)
+
+		await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		expect(config.providers["kimchi-dev/azure_ai"]).toBeDefined()
+		expect(config.providers["kimchi-dev/azure_ai"].models[0].compat).toEqual({
+			supportsReasoningEffort: false,
+			cacheControlFormat: "anthropic",
+			supportsUsageInStreaming: true,
+		})
+	})
+
 	it("splits ai-enabler models into kimchi-dev and non-ai-enabler models into kimchi-dev/{provider}", async () => {
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
