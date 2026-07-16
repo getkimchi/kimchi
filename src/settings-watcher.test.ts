@@ -7,7 +7,12 @@ vi.mock("node:fs", () => ({
 }))
 
 import { readFileSync, watch } from "node:fs"
-import { getActiveThemeName, onThemeChange } from "./settings-watcher.js"
+import {
+	__resetCompactionCacheForTest,
+	getActiveThemeName,
+	getCompactionEnabled,
+	onThemeChange,
+} from "./settings-watcher.js"
 
 const mockReadFileSync = vi.mocked(readFileSync)
 const mockWatch = vi.mocked(watch)
@@ -22,6 +27,7 @@ function getWatchCallback(): (() => void) | undefined {
 
 beforeEach(() => {
 	process.env.KIMCHI_CODING_AGENT_DIR = "/fake/agent/dir"
+	__resetCompactionCacheForTest()
 	mockReadFileSync.mockReset()
 	mockWatch.mockReset()
 	mockWatch.mockReturnValue(createMockWatcher() as unknown as ReturnType<typeof watch>)
@@ -55,6 +61,54 @@ describe("getActiveThemeName", () => {
 	it("returns undefined when KIMCHI_CODING_AGENT_DIR is unset", () => {
 		delete process.env.KIMCHI_CODING_AGENT_DIR
 		expect(getActiveThemeName()).toBeUndefined()
+	})
+})
+
+describe("getCompactionEnabled", () => {
+	it("returns true when compaction.enabled is true", () => {
+		mockReadFileSync.mockReturnValue(JSON.stringify({ compaction: { enabled: true } }))
+		expect(getCompactionEnabled()).toBe(true)
+	})
+
+	it("returns false when compaction.enabled is false", () => {
+		mockReadFileSync.mockReturnValue(JSON.stringify({ compaction: { enabled: false } }))
+		expect(getCompactionEnabled()).toBe(false)
+	})
+
+	it("returns true (default) when compaction key is absent", () => {
+		mockReadFileSync.mockReturnValue(JSON.stringify({ theme: "dark" }))
+		expect(getCompactionEnabled()).toBe(true)
+	})
+
+	it("returns true when settings.json is malformed JSON", () => {
+		mockReadFileSync.mockReturnValue("{ not valid json")
+		expect(getCompactionEnabled()).toBe(true)
+	})
+
+	it("returns true when settings.json is missing", () => {
+		mockReadFileSync.mockImplementation(() => {
+			throw new Error("ENOENT")
+		})
+		expect(getCompactionEnabled()).toBe(true)
+	})
+
+	it("caches the value and re-reads after the watcher fires", () => {
+		mockReadFileSync.mockReturnValue(JSON.stringify({ compaction: { enabled: false } }))
+		expect(getCompactionEnabled()).toBe(false)
+
+		// Second call should NOT hit disk (cache hit).
+		mockReadFileSync.mockClear()
+		getCompactionEnabled()
+		expect(mockReadFileSync).not.toHaveBeenCalled()
+
+		// Simulate settings.json change → watcher fires → cache invalidated.
+		mockReadFileSync.mockReturnValue(JSON.stringify({ compaction: { enabled: true } }))
+		const unsub = onThemeChange(vi.fn())
+		getWatchCallback()?.()
+		vi.runAllTimers()
+
+		expect(getCompactionEnabled()).toBe(true)
+		unsub()
 	})
 })
 

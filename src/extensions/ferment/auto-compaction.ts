@@ -36,6 +36,7 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import { determineNextAction } from "../../ferment/engine.js"
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
+import { getCompactionEnabled } from "../../settings-watcher.js"
 import { isToolCallInFlight } from "../../tool-call-in-flight.js"
 import { COMPACTION_RESERVE_TOKENS } from "../compaction-thresholds.js"
 import { getModelRoles, splitModelRef } from "../orchestration/model-roles.js"
@@ -442,6 +443,9 @@ export async function maybeTriggerFermentCompaction(
 	if (isOneShot === undefined) return false
 	if (isOneShot && !hasInlineCompact) return false
 
+	// /settings Auto-compact toggle (settings.json compaction.enabled).
+	if (!getCompactionEnabled()) return false
+
 	// Root-cause guard: defer compaction while a tool call is in flight (the
 	// trailing assistant toolCall has no matching toolResult yet). Compacting
 	// now would summarise away the toolCall and orphan the toolResult appended
@@ -672,6 +676,9 @@ export async function maybeTriggerMidTurnFermentCompaction(
 		}
 		return
 	}
+
+	// /settings Auto-compact toggle — see maybeTriggerFermentCompaction.
+	if (!getCompactionEnabled()) return
 
 	const model = ctx.model
 	if (!model) return
