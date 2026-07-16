@@ -2,12 +2,12 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { getActive } from "../ferment/state.js"
 import { getTurnsSinceStepTodoWrite } from "../ferment/todo-sync.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
-import { parseTodoScopeKey } from "./scope.js"
+import { getTodoScopeKey, parseTodoScopeKey } from "./scope.js"
 import { getTodoState } from "./store.js"
 import type { TodoItem, TodoScope, TodoStatus } from "./types.js"
 
 const TODO_GUIDANCE =
-	"## Todos\nFor any non-trivial task, maintain a todo list. This includes code changes, debugging, reviews, investigations, multi-file reads, or anything with more than one meaningful step. Skip todos only for a single straightforward answer or a purely conversational task. Using todo tools is for tracking your work in the session; it is different from leaving TODO comments/placeholders in code, which you must not do unless explicitly requested. Use create_todos for the initial list before starting multi-step work, add_todo for one missing item, mark_todo for one status change, update_todos for batch replacement, and clear_todos only when the work is done or obsolete. Keep the list tactical and update it after meaningful progress, before switching to the next item, and before your final response. Keep at most one item in_progress when possible; when a current list is visible, continue the in_progress item before starting pending work. When updating an existing list, preserve user-created todos and existing ids unless the user asked to remove or rewrite them; append new todos after existing todos."
+	"## Todos\nFor any non-trivial task, maintain a todo list. This includes code changes, debugging, reviews, investigations, multi-file reads, or anything with more than one meaningful step. Skip todos only for a single straightforward answer or a purely conversational task. Use create_todos for the initial list before starting multi-step work, add_todo for one missing item, mark_todo for one status change, update_todos for batch replacement, and clear_todos only when the work is done or obsolete. Keep the list tactical and update it after meaningful progress, before switching to the next item. Keep at most one item in_progress when possible; when a current list is visible, continue the in_progress item before starting pending work. When updating an existing list, preserve user-created todos and existing ids unless the user asked to remove or rewrite them; append new todos after existing todos."
 
 const FERMENT_TODO_GUIDANCE =
 	"\n\nWhen working inside a ferment step, break the step into concrete sub-tasks using add_todo before writing code. Each sub-task should be a specific verifiable action (run a command, write a file, check an output). Mark each sub-task as you complete it rather than batch-replacing the entire list at the end."
@@ -68,10 +68,17 @@ function formatTodoLine(todo: TodoItem): string {
 
 /** Render the current todo store as a markdown section suitable for injection
  *  into the system prompt. Returns `undefined` when there is nothing to show
- *  (no scopes at all) so the block pipeline skips it. */
-export function renderTodoStateMarkdown(): string | undefined {
+ *  (no scopes at all, or the requested scope has no todos) so the block
+ *  pipeline skips it.
+ *
+ *  When `scope` is provided, only that scope is rendered; otherwise every
+ *  populated scope is rendered. This is the single source of truth for todo
+ *  state rendering — the headless prompt block, reconcile follow-ups, and
+ *  context checkpoints all go through here so the model sees one consistent
+ *  shape. */
+export function renderTodoStateMarkdown(scope?: TodoScope): string | undefined {
 	const state = getTodoState()
-	const scopeKeys = Object.keys(state.byScope)
+	const scopeKeys = scope ? [getTodoScopeKey(scope)] : Object.keys(state.byScope)
 	if (scopeKeys.length === 0) return undefined
 
 	const global: TodoItem[] = []
@@ -109,6 +116,11 @@ export function renderTodoStateMarkdown(): string | undefined {
 			})
 		}
 	}
+
+	// If the requested scope(s) produced no entries, return undefined rather
+	// than emitting an empty `## Current Todos` header. The header is only
+	// useful when there is at least one section of content to anchor it.
+	if (global.length === 0 && fermentScopes.length === 0 && stepScopes.length === 0) return undefined
 
 	const lines: string[] = []
 	lines.push("## Current Todos")

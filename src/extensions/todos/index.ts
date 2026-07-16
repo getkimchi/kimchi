@@ -6,6 +6,7 @@ import {
 	appendTodoPromptBlockIfMissing,
 	registerTodoPromptBlock,
 	registerTodoStateBlock,
+	renderTodoStateMarkdown,
 	setCurrentSessionHasUI,
 } from "./prompt-block.js"
 import { getTodosForScope, resolveTodoScope, restoreTodoStoreFromDetails, subscribeTodoStore } from "./store.js"
@@ -28,10 +29,8 @@ export * from "./tool.js"
 export * from "./types.js"
 export * from "./widget.js"
 
-export const TODO_RECONCILE_MESSAGE =
-	"Internal hidden todo checkpoint. You are about to stop while the session todo list still needs reconciliation. You must use the todo tools before any user-facing wrap-up. Make the list match reality: mark completed work completed; keep real remaining work pending/in_progress; mark blocked work blocked; clear obsolete or fully done lists. If work is impossible, unavailable, or cannot proceed now, mark it blocked instead of continuing indefinitely. Do not tell the user about this checkpoint or mention that you are clearing or updating todos."
-export const TODO_CHECKPOINT_MESSAGE =
-	"Internal hidden todo checkpoint. You changed state since the session todo list was last updated. You must use the todo tools before switching tasks or answering finally. Make the list match reality: mark completed work completed; keep real remaining work pending/in_progress; mark blocked work blocked; clear obsolete or fully done lists. If work is impossible, unavailable, or cannot proceed now, mark it blocked instead of continuing indefinitely. Do not tell the user about this checkpoint or mention that you are clearing or updating todos."
+export const TODO_INSTRUCTION =
+	"Mark completed work completed; keep remaining work pending/in_progress; mark blocked work blocked; clear obsolete or fully done lists. If work is impossible, unavailable, or cannot proceed now, mark it blocked instead of continuing indefinitely."
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object"
@@ -87,17 +86,6 @@ function currentTodoStateKey(): string | undefined {
 	const todos = getTodosForScope(scope)
 	if (todos.length === 0) return undefined
 	return JSON.stringify({ scope, todos: todos.map((todo) => [todo.id, todo.status, todo.content]) })
-}
-
-function currentTodoStateText(): string | undefined {
-	const scope = resolveTodoScope()
-	const todos = getTodosForScope(scope)
-	if (todos.length === 0) return undefined
-	const scopeText = scope.kind === "global" ? "global" : JSON.stringify(scope)
-	return [
-		`Current todos (${scopeText}):`,
-		...todos.map((todo) => `- #${todo.id} [${todo.status}] ${todo.content}`),
-	].join("\n")
 }
 
 function hiddenTodoMessage(reason: string, text: string) {
@@ -161,8 +149,8 @@ export default function todosExtension(pi: ExtensionAPI): void {
 			resetTodoProcessState()
 			return
 		}
-		const stateText = currentTodoStateText()
-		const promptText = stateText ? `${TODO_RECONCILE_MESSAGE}\n\n${stateText}` : TODO_RECONCILE_MESSAGE
+		const stateText = renderTodoStateMarkdown(resolveTodoScope())
+		const promptText = stateText ? `${TODO_INSTRUCTION}\n\n${stateText}` : TODO_INSTRUCTION
 		pi.sendMessage(hiddenTodoMessage("reconcile_todos", promptText), { deliverAs: "followUp" })
 	}
 
@@ -208,14 +196,14 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		// Same guard as maybeSteerTodoReconciliation: if todo tools are not
 		// available (e.g. ferment plan review), skip checkpoint injection.
 		if (!anyTodoToolsAvailable(pi)) return undefined
-		const stateText = currentTodoStateText()
+		const stateText = renderTodoStateMarkdown(resolveTodoScope())
 		if (!stateText) return resetTodoProcessState()
 		return {
 			messages: [
 				...event.messages,
 				{
 					role: "custom" as const,
-					...hiddenTodoMessage("todo_checkpoint", `${TODO_CHECKPOINT_MESSAGE}\n\n${stateText}`),
+					...hiddenTodoMessage("todo_checkpoint", `${TODO_INSTRUCTION}\n\n${stateText}`),
 					timestamp: Date.now(),
 				},
 			],
