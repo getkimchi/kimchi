@@ -226,7 +226,7 @@ You are a pure orchestrator — you cannot read files, write code, run commands,
 
 **Break the task into phases before delegating.** Do not pass the entire task to a single sub-agent. Instead, decide what phases of work are needed and delegate each phase as a self-contained unit. For example, instead of dispatching a Builder to "build and train CIFAR-10", dispatch separate Builders for: (1) install dependencies and build the framework, (2) prepare training data, (3) train the model and verify output. Each phase should be completable within the budget you set.
 
-**Match the budget to the task.** The budget you set determines what the sub-agent can accomplish. A 4000-token budget is enough for a single file read and small edit. A full feature implementation needs at least 150000 tokens and 30 turns. If a phase cannot be completed within a reasonable budget, decompose it further.
+**Match the budget to the task.** The budget you set determines what the sub-agent can accomplish. A sub-agent typically takes 5-15 seconds per turn, so max_duration should be at least (expected_turns × 15) seconds. A 4000-token budget is enough for a single file read and small edit. A full feature implementation needs at least 150000 tokens, 30 turns, and 600 seconds. If a phase cannot be completed within a reasonable budget, decompose it further. When resuming an aborted sub-agent, set a HIGHER max_duration than the original — the previous budget was insufficient.
 
 When a sub-agent returns, read its result carefully and decide:
 - Is the work complete? Move to the next phase or report to the user.
