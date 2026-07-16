@@ -249,16 +249,18 @@ describe("argvHasSkipTrigger — pure function over an argv array", () => {
 		expect(argvHasSkipTrigger(["node", "kimchi", "UPDATE"])).toBe(true)
 	})
 
-	it("does NOT treat arbitrary --flag=value as a positional subcommand", () => {
+	it("does NOT treat --flag=value as a subcommand", () => {
 		expect(argvHasSkipTrigger(["node", "kimchi", "--some-flag=update"])).toBe(false)
-	})
-
-	it("recognizes a subcommand after a flag (e.g. kimchi --some-flag update)", () => {
-		expect(argvHasSkipTrigger(["node", "kimchi", "--some-flag", "update"])).toBe(true)
 	})
 
 	it("does NOT treat a flag value as a subcommand (e.g. --tag=update)", () => {
 		expect(argvHasSkipTrigger(["node", "kimchi", "--tag=update"])).toBe(false)
+	})
+
+	it("does NOT treat a positional after a flag as a subcommand (e.g. kimchi --some-flag update)", () => {
+		// Only argv[2] is checked — scanning later positionals would cause
+		// false positives like `kimchi --tag update`.
+		expect(argvHasSkipTrigger(["node", "kimchi", "--some-flag", "update"])).toBe(false)
 	})
 
 	it("returns false for a plain TUI launch with no skip trigger", () => {

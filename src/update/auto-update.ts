@@ -16,10 +16,11 @@ import { applyUpdate, checkForUpdate, parseCanarySha7 } from "./workflow.js"
 const LOG_PREFIX = "[kimchi-auto-update]"
 
 // Subcommands that suppress auto-update so we never recurse into
-// `kimchi update --force` etc. Compared case-insensitively against any
-// positional argument (not just argv[2]) so `kimchi --some-flag update`
-// is also recognized. Only bare positional tokens are checked —
-// `--flag=update` is a flag value, not a subcommand.
+// `kimchi update --force` etc. Compared case-insensitively against
+// argv[2] only — the first positional argument. We deliberately do NOT
+// scan later positionals: `kimchi --tag update` would be a false positive
+// if we treated any bare token as a subcommand, and pi's parseArgs doesn't
+// expose a resolved subcommand field we could use instead.
 const SKIP_SUBCOMMANDS = new Set(["update", "setup", "mcp", "login", "install"])
 
 // Pure flags that suppress auto-update. Checked anywhere in argv.
@@ -53,6 +54,14 @@ function raceWithTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 		timer = setTimeout(() => reject(new TimeoutError()), ms)
 		;(timer as { unref?: () => void }).unref?.()
 	})
+	// Suppress unhandled rejection from the original promise if the
+	// timeout wins the race. The promise is abandoned but may still
+	// reject later (network error, checksum failure, etc.) — without
+	// this handler Node/Bun would emit an unhandledRejection that can
+	// crash the process. If the promise rejects *before* the timeout,
+	// Promise.race propagates the rejection normally and this handler
+	// is a no-op.
+	promise.catch(() => {})
 	return Promise.race([promise, timeout]).finally(() => {
 		if (timer) clearTimeout(timer)
 	})
@@ -166,13 +175,12 @@ export function argvHasSkipTrigger(argv: readonly string[]): boolean {
 	for (const arg of argv) {
 		if (SKIP_FLAGS.has(arg)) return true
 	}
-	// Subcommand anywhere in argv (case-insensitive). Only bare positional
-	// tokens are checked — arguments starting with `--` are flag values, not
-	// subcommands.
-	for (let i = 2; i < argv.length; i += 1) {
-		const arg = argv[i]
-		if (!arg.startsWith("-") && SKIP_SUBCOMMANDS.has(arg.toLowerCase())) return true
-	}
+	// Subcommand at argv[2] only (case-insensitive). We intentionally
+	// don't scan later positionals — a flag value like `kimchi --tag update`
+	// would be a false positive, and parseArgs doesn't expose a resolved
+	// subcommand we could use instead.
+	const first = argv[2]
+	if (first !== undefined && SKIP_SUBCOMMANDS.has(first.toLowerCase())) return true
 	return false
 }
 
