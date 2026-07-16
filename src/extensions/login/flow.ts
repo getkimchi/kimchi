@@ -88,7 +88,6 @@ interface ProviderModelLike {
 interface ModelRegistryLike<TModel extends ProviderModelLike = ProviderModelLike> {
 	authStorage: AuthStorageLike
 	refresh(): void
-	getAll(): TModel[]
 	getAvailable(): TModel[]
 	getProviderAuthStatus(providerId: string): AuthStatus
 }
@@ -175,19 +174,7 @@ export function setKimchiAuthToken(
 			? { type: "oauth" as const, access: token, refresh: "", expires: Number.MAX_SAFE_INTEGER }
 			: { type: "api_key" as const, key: token }
 
-	// Set auth on the primary kimchi-dev provider
 	modelRegistry.authStorage.set(KIMCHI_PROVIDER_ID, credential)
-
-	// Set auth on all kimchi-dev/* sub-providers currently in the registry
-	const subProviders = new Set(
-		modelRegistry
-			.getAll()
-			.map((m) => m.provider)
-			.filter((p) => p.startsWith("kimchi-dev") && p !== KIMCHI_PROVIDER_ID),
-	)
-	for (const providerId of subProviders) {
-		modelRegistry.authStorage.set(providerId, credential)
-	}
 }
 
 export interface KimchiBrowserLoginHost {
