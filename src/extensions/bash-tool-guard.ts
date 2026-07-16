@@ -17,6 +17,15 @@
  *      the substitution rules explicit. Goal: the model picks the
  *      dedicated tool the first time, not after being told.
  *
+ *      The description override is delivered via `pi.registerTool()` on
+ *      `session_start`, re-registering the bash tool with an overridden
+ *      `description` but the same `execute`/`renderCall`/`renderResult`.
+ *      This writes into the real tool-definition registry, which every
+ *      later `pi.getAllTools()` call reads from — unlike mutating a
+ *      `pi.getAllTools()` result in place, which returns a fresh,
+ *      disposable array of fresh objects on every call and never reaches
+ *      the prompt builder's own later call.
+ *
  *   2. **Guard (downstream).** Inspects each bash call. If the command
  *      is a file-reading / in-place-edit / file-writing pattern that
  *      has a dedicated tool, emits a steer message pointing at the
@@ -55,6 +64,7 @@
  */
 
 import type { ExtensionAPI, ExtensionContext, InputEvent } from "@earendil-works/pi-coding-agent"
+import { createBashToolDefinition } from "@earendil-works/pi-coding-agent"
 import { isResourceEnabled } from "../resources/store.js"
 import {
 	BASH_TOOL_GUARD_EVENTS,
@@ -168,9 +178,10 @@ Use bash only for: build commands, test runners, git, package managers, shell sc
 /**
  * Replacement description for the bash tool. Keeps the original output
  * truncation behaviour from upstream but explicitly excludes the
- * file-operation substitutions and lists what bash IS for. Mutated
- * onto the upstream tool object on `session_start` so the kimchi prompt
- * builder picks up the new description when it renders the tool list.
+ * file-operation substitutions and lists what bash IS for. Delivered via
+ * `pi.registerTool()` on `session_start` (see `bashToolGuardExtension`)
+ * rather than by mutating a `pi.getAllTools()` result — the registry
+ * write is what actually reaches the rendered system prompt.
  */
 export const BASH_TOOL_DESCRIPTION = `
 Execute a bash command for operations without a dedicated tool: build commands, test runners, git, package managers, system administration, shell scripting.
@@ -178,6 +189,8 @@ Execute a bash command for operations without a dedicated tool: build commands, 
 DO NOT use bash for: reading files (use \`read\`), editing files (use \`edit\`), writing files (use \`write\`), searching file contents (use \`grep\`), finding files by pattern (use \`find\`), or listing directories (use \`ls\`) — dedicated tools are faster and unlock LSP context.
 
 Returns stdout and stderr. Output is truncated to last 2000 lines or 50KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.
+
+Each command runs in a fresh shell rooted at the session working directory; \`cd\` does NOT persist between bash tool calls. Use absolute paths, or chain \`cd <dir> && <command>\` within a single call.
 `.trim()
 
 /**
@@ -547,20 +560,20 @@ export default function bashToolGuardExtension(pi: ExtensionAPI, options?: BashG
 		render: () => TOOL_PREFERENCES_BLOCK,
 	})
 
-	pi.on("session_start", (_event, _ctx) => {
-		ctx = _ctx
+	pi.on("session_start", (_event, sessionCtx) => {
+		ctx = sessionCtx
 		guard.reset()
 
-		// Override the bash tool's description in place. The kimchi
-		// prompt-enrichment handler reads pi.getAllTools() and passes
-		// the same object references to buildSystemPrompt, so the
-		// mutation propagates to the rendered prompt. If the tool
-		// objects are cloned elsewhere (e.g. tool discovery UI), the
-		// worst case is they show a more accurate description there too.
-		const bashTool = pi.getAllTools().find((t) => t.name === "bash")
-		if (bashTool) {
-			bashTool.description = BASH_TOOL_DESCRIPTION
-		}
+		// Re-register the bash tool with the overridden description.
+		// `registerTool()` writes into the real tool-definition registry
+		// (upstream's documented way to override a built-in tool), so it
+		// is visible to every later `pi.getAllTools()` call — including
+		// the one the kimchi prompt-enrichment handler makes to build the
+		// system prompt. Re-created on every `session_start` (not once at
+		// factory-load time) so `cwd` tracks the actual resolved session
+		// cwd across resumes/forks, and so a fresh bash tool object is
+		// registered even if a previous session already registered one.
+		pi.registerTool(applyDescriptionOverride(createBashToolDefinition(sessionCtx.cwd)))
 	})
 
 	pi.on("input", (event: InputEvent) => {

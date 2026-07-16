@@ -1,5 +1,13 @@
+/**
+ * Pure-function unit tests for bash-tool-guard.ts: command classification,
+ * the BashToolGuard class, and description-override helpers.
+ *
+ * Tests that exercise the wired `bashToolGuardExtension` against a mock
+ * ExtensionAPI (session_start/tool_call handlers) live in
+ * bash-tool-guard.integration.test.ts instead.
+ */
 import { describe, expect, it } from "vitest"
-import bashToolGuardExtension, {
+import {
 	applyDescriptionOverride,
 	BASH_TOOL_DESCRIPTION,
 	type BashCategory,
@@ -746,6 +754,11 @@ describe("BASH_TOOL_DESCRIPTION", () => {
 		// change runtime semantics. Verify the truncation info survives.
 		expect(BASH_TOOL_DESCRIPTION).toMatch(/truncat/i)
 	})
+
+	it("documents that cd does not persist between bash tool calls", () => {
+		expect(BASH_TOOL_DESCRIPTION).toContain("does NOT persist")
+		expect(BASH_TOOL_DESCRIPTION).toContain("cd <dir> && <command>")
+	})
 })
 
 describe("toolDescriptionOverride", () => {
@@ -780,112 +793,5 @@ describe("applyDescriptionOverride", () => {
 		const tool = { name: "read", description: "Read file contents" }
 		const result = applyDescriptionOverride(tool)
 		expect(result.description).toBe("Read file contents")
-	})
-})
-
-describe("bashToolGuardExtension — preference integration", () => {
-	interface MockTool {
-		name: string
-		description: string
-	}
-
-	interface MockPI {
-		handlers: Record<string, Array<(event: unknown) => unknown>>
-		on(event: string, handler: (event: unknown) => unknown): void
-		setTools(tools: MockTool[]): void
-		getAllTools(): MockTool[]
-	}
-
-	function createMockPI(): MockPI {
-		const handlers: MockPI["handlers"] = {}
-		let tools: MockTool[] = []
-		return {
-			handlers,
-			setTools(t) {
-				tools = t
-			},
-			getAllTools() {
-				return tools
-			},
-			on(event, handler) {
-				if (!handlers[event]) handlers[event] = []
-				handlers[event].push(handler)
-			},
-		}
-	}
-
-	function fireSessionStart(pi: MockPI): void {
-		const handlers = pi.handlers.session_start ?? []
-		for (const handler of handlers) handler({})
-	}
-
-	it("mutates the bash tool description on session_start", () => {
-		const pi = createMockPI()
-		// The extension requires more API surface than the mock
-		// provides — cast through `unknown` so the test stays focused
-		// on the session_start hook behavior.
-		bashToolGuardExtension(pi as unknown as Parameters<typeof bashToolGuardExtension>[0])
-
-		const tools = [
-			{ name: "read", description: "Read file contents" },
-			{ name: "bash", description: "Execute bash commands (ls, grep, find, etc.)" },
-			{ name: "edit", description: "Edit a file" },
-		]
-		pi.setTools(tools)
-
-		fireSessionStart(pi)
-
-		expect(tools[1].description).toBe(BASH_TOOL_DESCRIPTION)
-	})
-
-	it("does not mutate non-bash tools", () => {
-		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as Parameters<typeof bashToolGuardExtension>[0])
-
-		const tools = [
-			{ name: "read", description: "Read file contents" },
-			{ name: "edit", description: "Edit a file" },
-			{ name: "grep", description: "Search file contents" },
-		]
-		pi.setTools(tools)
-
-		fireSessionStart(pi)
-
-		// All non-bash tools should be byte-for-byte unchanged.
-		expect(tools[0].description).toBe("Read file contents")
-		expect(tools[1].description).toBe("Edit a file")
-		expect(tools[2].description).toBe("Search file contents")
-	})
-
-	it("is safe when no bash tool is registered", () => {
-		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as Parameters<typeof bashToolGuardExtension>[0])
-
-		pi.setTools([{ name: "read", description: "Read file contents" }])
-
-		expect(() => fireSessionStart(pi)).not.toThrow()
-	})
-
-	it("is safe when the tool list is empty", () => {
-		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as Parameters<typeof bashToolGuardExtension>[0])
-		pi.setTools([])
-		expect(() => fireSessionStart(pi)).not.toThrow()
-	})
-
-	it("mutates the actual tool object so downstream reads see the change", () => {
-		// The kimchi prompt-enrichment handler reads pi.getAllTools() and
-		// passes the same object references to buildSystemPrompt. If the
-		// extension returns a new object, the mutation never reaches the
-		// prompt. Guard against accidental reassignment.
-		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as Parameters<typeof bashToolGuardExtension>[0])
-		const bashTool = { name: "bash", description: "old" }
-		pi.setTools([bashTool])
-
-		fireSessionStart(pi)
-
-		expect(pi.getAllTools()[0]).toBe(bashTool)
-		expect(bashTool.description).toBe(BASH_TOOL_DESCRIPTION)
 	})
 })
