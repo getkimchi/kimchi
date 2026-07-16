@@ -228,7 +228,7 @@ function formatLifetimeTokens(o: { lifetimeUsage: LifetimeUsage }): string {
 	return t > 0 ? formatTokens(t) : ""
 }
 
-function createActivityTracker(maxTurns?: number, onStreamUpdate?: () => void) {
+function createActivityTracker(maxTurns?: number, onStreamUpdate?: (opts?: { textDelta?: string }) => void) {
 	const state: AgentActivity = {
 		activeTools: new Map(),
 		toolUses: 0,
@@ -254,9 +254,9 @@ function createActivityTracker(maxTurns?: number, onStreamUpdate?: () => void) {
 			}
 			onStreamUpdate?.()
 		},
-		onTextDelta: (_delta: string, fullText: string) => {
+		onTextDelta: (delta: string, fullText: string) => {
 			state.responseText = fullText
-			onStreamUpdate?.()
+			onStreamUpdate?.({ textDelta: delta })
 		},
 		onTurnEnd: (turnCount: number) => {
 			state.turnCount = turnCount
@@ -1402,9 +1402,11 @@ ${AGENT_TOOL_GUIDELINES}`,
 				const startedAt = Date.now()
 				let fgId: string | undefined
 				let fgDetached = false
+				let lastStreamedContent: string | undefined
 
-				const streamUpdate = () => {
+				const streamUpdate = ({ textDelta }: { textDelta?: string } = {}) => {
 					if (fgDetached) return
+					const activity = describeActivity(fgState.activeTools, fgState.responseText)
 					const details: AgentDetails = {
 						...detailBase,
 						toolUses: fgState.toolUses,
@@ -1413,11 +1415,19 @@ ${AGENT_TOOL_GUIDELINES}`,
 						maxTurns: fgState.maxTurns,
 						durationMs: Date.now() - startedAt,
 						status: "running",
-						activity: describeActivity(fgState.activeTools, fgState.responseText),
+						activity,
 						spinnerFrame: spinnerFrame % SPINNER.length,
 					}
+					const contentText = textDelta !== undefined ? textDelta : activity
+					if (contentText === lastStreamedContent) {
+						// Spinner-only tick: keep the TUI alive (details carry the new
+						// spinner frame) but don't forward duplicate content to other consumers (e.g. ACP).
+						onUpdate?.({ content: [], details })
+						return
+					}
+					lastStreamedContent = contentText
 					onUpdate?.({
-						content: [{ type: "text", text: `${fgState.toolUses} tool uses...` }],
+						content: [{ type: "text", text: contentText }],
 						details: details as unknown,
 					})
 				}

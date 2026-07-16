@@ -45,8 +45,38 @@ vi.mock("./manager/agent-manager.js", () => {
 				_records: records,
 				spawn: vi.fn((_pi, _ctx, type, _prompt, options) => {
 					const id = `mock-${records.size}`
-					records.set(id, { id, type, status: "running", ...options })
+					let resolvePromise: () => void = () => {}
+					const promise = new Promise<void>((resolve) => {
+						resolvePromise = resolve
+					})
+					records.set(id, {
+						id,
+						type,
+						status: "completed",
+						description: "",
+						result: "done",
+						toolUses: 0,
+						startedAt: Date.now(),
+						completedAt: Date.now(),
+						lifetimeUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+						promise,
+						resolvePromise,
+						...options,
+					})
 					return id
+				}),
+				invokeCallback: vi.fn((id: string, name: string, ...args: unknown[]) => {
+					const record = records.get(id) as Record<string, unknown> | undefined
+					const cb = record?.[name]
+					if (typeof cb === "function") (cb as (...a: unknown[]) => unknown)(...args)
+				}),
+				setSession: vi.fn((id: string, session: unknown) => {
+					const record = records.get(id) as { session?: unknown } | undefined
+					if (record) record.session = session
+				}),
+				resolveSpawnPromise: vi.fn((id: string) => {
+					const record = records.get(id) as { resolvePromise?: () => void } | undefined
+					record?.resolvePromise?.()
 				}),
 				getRecord: vi.fn((id: string) => records.get(id)),
 				listAgents: vi.fn(() => [...records.values()]),
@@ -478,5 +508,125 @@ describe("Agent tool multi-mode model guard", () => {
 		expect(managerInstance.spawn).toHaveBeenCalledTimes(1)
 		const text = result.content[0]?.text ?? ""
 		expect(text).not.toContain("not allowed in multi-model mode")
+	})
+})
+
+// ---- Foreground Agent streaming content ----
+//
+// When an Agent runs in the foreground, its in-progress tool_call_update
+// content is forwarded to ACP clients. The content must describe what the
+// subagent is actually doing (matching the TUI activity line), not a generic
+// "x tool uses..." placeholder.
+
+describe("Agent tool foreground streaming", () => {
+	beforeEach(() => {
+		vi.useRealTimers()
+		vi.clearAllMocks()
+		vi.mocked(getMultiModelEnabled).mockReturnValue(false)
+	})
+
+	it("streams subagent text deltas through onUpdate instead of 'x tool uses'", async () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+
+		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value as {
+			spawn: ReturnType<typeof vi.fn>
+			setSession: ReturnType<typeof vi.fn>
+			invokeCallback: ReturnType<typeof vi.fn>
+			resolveSpawnPromise: ReturnType<typeof vi.fn>
+		}
+		expect(managerInstance).toBeDefined()
+
+		const registry = makeMockModelRegistry([])
+		const ctx = makeMockCtx(registry)
+		const tool = getRegisteredAgentTool(pi)
+
+		const onUpdate = vi.fn()
+		const executePromise = tool.execute(
+			"call-stream",
+			{
+				prompt: "explore the repo",
+				description: "Explore repo",
+				subagent_type: "Explore",
+				run_in_background: false,
+			},
+			undefined,
+			onUpdate,
+			ctx,
+		)
+
+		const id = managerInstance.spawn.mock.results[0].value as string
+		const fakeSession = { messages: [], subscribe: vi.fn(() => vi.fn()) }
+		managerInstance.setSession(id, fakeSession)
+		managerInstance.invokeCallback(id, "onSessionCreated", fakeSession)
+		managerInstance.invokeCallback(id, "onTextDelta", "I am exploring the codebase", "I am exploring the codebase")
+
+		managerInstance.resolveSpawnPromise(id)
+		await executePromise
+
+		const texts = onUpdate.mock.calls
+			.map((call) => {
+				const payload = call[0] as { content?: Array<{ type?: string; text?: string }> }
+				return payload.content?.[0]?.text
+			})
+			.filter((text): text is string => text !== undefined)
+
+		expect(texts.length).toBeGreaterThan(0)
+		expect(texts.some((text) => text.includes("tool uses"))).toBe(false)
+		expect(texts).toContain("I am exploring the codebase")
+	})
+
+	it("sends empty content on spinner ticks when nothing meaningful changed", async () => {
+		vi.useFakeTimers()
+		const pi = makeMockPi()
+		agentsExtension(pi)
+
+		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value as {
+			spawn: ReturnType<typeof vi.fn>
+			setSession: ReturnType<typeof vi.fn>
+			invokeCallback: ReturnType<typeof vi.fn>
+			resolveSpawnPromise: ReturnType<typeof vi.fn>
+		}
+		expect(managerInstance).toBeDefined()
+
+		const registry = makeMockModelRegistry([])
+		const ctx = makeMockCtx(registry)
+		const tool = getRegisteredAgentTool(pi)
+
+		const onUpdate = vi.fn()
+		const executePromise = tool.execute(
+			"call-spinner",
+			{
+				prompt: "do nothing",
+				description: "Spinner test",
+				subagent_type: "Explore",
+				run_in_background: false,
+			},
+			undefined,
+			onUpdate,
+			ctx,
+		)
+
+		const id = managerInstance.spawn.mock.results[0].value as string
+		const fakeSession = { messages: [], subscribe: vi.fn(() => vi.fn()) }
+		managerInstance.setSession(id, fakeSession)
+		managerInstance.invokeCallback(id, "onSessionCreated", fakeSession)
+
+		// Let the spinner tick several times without any text/tool change.
+		vi.advanceTimersByTime(250)
+
+		managerInstance.resolveSpawnPromise(id)
+		await executePromise
+
+		const nonEmptyContents = onUpdate.mock.calls
+			.map((call) => {
+				const payload = call[0] as { content?: Array<{ type?: string; text?: string }> }
+				return payload.content?.[0]?.text
+			})
+			.filter((text): text is string => text !== undefined)
+
+		// Only the initial "thinking…" update should carry content; subsequent
+		// spinner-only ticks must be empty so ACP doesn't receive duplicates.
+		expect(nonEmptyContents).toEqual(["thinking…"])
 	})
 })
