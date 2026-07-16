@@ -1,4 +1,5 @@
 import asyncio
+import json
 import shlex
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -150,6 +151,10 @@ class Kimchi(BaseInstalledAgent):
         disable_multi_model = _coerce_bool_kwarg(
             kwargs.pop("disable-multi-model", False), "disable-multi-model"
         )
+        # Compaction follows kimchi's default (on) unless explicitly disabled.
+        disable_compaction = _coerce_bool_kwarg(
+            kwargs.pop("disable-compaction", False), "disable-compaction"
+        )
 
         super().__init__(*args, **kwargs)
         selected_multi_model = self.model_name == MULTI_MODEL
@@ -165,6 +170,7 @@ class Kimchi(BaseInstalledAgent):
                 "multi-model selection conflicts with legacy 'disable-multi-model=true'"
             )
         self._multi_model_enabled = selected_multi_model
+        self._disable_compaction = disable_compaction
         config_kwargs = {}
         api_key = self._get_env(KIMCHI_API_KEY_ENV)
         if api_key is not None:
@@ -331,9 +337,9 @@ class Kimchi(BaseInstalledAgent):
             # mounted logs directory.
             f"rm -f {shlex.quote(CONTAINER_AGENT_PGID_FILE)}",
         ]
-        multi_model_settings = self._multi_model_settings_command()
-        if multi_model_settings:
-            parts.append(multi_model_settings)
+        harness_settings = self._harness_settings_command()
+        if harness_settings:
+            parts.append(harness_settings)
         skills_registration = self._skills_registration_command()
         if skills_registration:
             parts.append(skills_registration)
@@ -366,11 +372,22 @@ class Kimchi(BaseInstalledAgent):
         )
         return " && ".join(parts)
 
-    def _multi_model_settings_command(self) -> str:
-        if not self._multi_model_enabled:
+    def _harness_settings_command(self) -> str:
+        # Compose the global harness settings (~/.config/kimchi/harness/
+        # settings.json) as one JSON object — the file is written wholesale, so
+        # every key must land in a single write or the last writer clobbers the
+        # rest.
+        settings: dict[str, Any] = {}
+        if self._multi_model_enabled:
+            settings["multiModel"] = True
+        if self._disable_compaction:
+            # Read by kimchi through pi's SettingsManager: disables upstream
+            # threshold auto-compaction and both ferment compaction paths.
+            settings["compaction"] = {"enabled": False}
+        if not settings:
             return ""
 
-        settings_json = '{"multiModel":true}'
+        settings_json = json.dumps(settings, separators=(",", ":"))
         return (
             f"mkdir -p {CONTAINER_HARNESS_SETTINGS_DIR} && "
             f"printf '%s\\n' {shlex.quote(settings_json)} > {CONTAINER_HARNESS_SETTINGS}"
