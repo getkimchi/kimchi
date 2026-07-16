@@ -14,6 +14,7 @@ import { clearAllLifecycleGuards } from "./lifecycle-obligation-guard.js"
 import type { FermentRuntime } from "./runtime.js"
 import { createDefaultFermentRuntime } from "./runtime.js"
 import { clearActiveFermentId, getFermentLockPath, writeFermentLock } from "./state.js"
+import { filterSentMessages } from "./test-helpers.js"
 import { FERMENT_TOOL_NAMES } from "./tool-names.js"
 import { profileForFerment } from "./tool-scope.js"
 
@@ -720,19 +721,11 @@ describe("turn_end lifecycle obligation guard", () => {
 		await turnEnd({ message: { role: "assistant", stopReason: "stop", content: [] } }, ctx)
 		await turnEnd({ message: { role: "assistant", stopReason: "stop", content: [] } }, ctx)
 
-		const continuationCalls = vi
-			.mocked(pi.sendMessage)
-			.mock.calls.filter(([message]) => message.customType === "ferment_continuation_nudge")
-		const exhaustionCalls = vi
-			.mocked(pi.sendMessage)
-			.mock.calls.filter(
-				([message]) =>
-					message.customType === "ferment_breadcrumb" &&
-					(message.details as { variant?: string } | undefined)?.variant === "warning",
-			)
+		const continuationCalls = filterSentMessages(vi.mocked(pi.sendMessage), "ferment_continuation_nudge")
+		const exhaustionCalls = filterSentMessages(vi.mocked(pi.sendMessage), "ferment_breadcrumb", "warning")
 		expect(continuationCalls).toHaveLength(2)
 		expect(exhaustionCalls).toHaveLength(1)
-		const exhaustionText = (exhaustionCalls[0]?.[0].content as Array<{ text?: string }> | undefined)?.[0]?.text
+		const exhaustionText = exhaustionCalls[0]?.content?.[0]?.text
 		expect(exhaustionText).toContain("qualifying text-only stops for the unchanged obligation")
 		expect(exhaustionText).not.toContain("consecutive text-only stops")
 	})
@@ -832,11 +825,9 @@ describe("turn_end error recovery in one-shot mode", () => {
 			ctx,
 		)
 
-		const errorRecoveryCalls = vi
-			.mocked(pi.sendMessage)
-			.mock.calls.filter(([message]) => message.customType === "ferment_continuation_nudge")
+		const errorRecoveryCalls = filterSentMessages(vi.mocked(pi.sendMessage), "ferment_continuation_nudge")
 		expect(errorRecoveryCalls).toHaveLength(1)
-		expect(errorRecoveryCalls[0]?.[0]).toEqual(
+		expect(errorRecoveryCalls[0]).toEqual(
 			expect.objectContaining({
 				content: [expect.objectContaining({ text: expect.stringContaining("scope: collect") })],
 				details: expect.objectContaining({ action: "scope" }),
@@ -849,16 +840,8 @@ describe("turn_end error recovery in one-shot mode", () => {
 		await turnEnd({ message: { role: "assistant", stopReason: "stop", content: [] } }, ctx)
 		await turnEnd({ message: { role: "assistant", stopReason: "stop", content: [] } }, ctx)
 
-		const lifecycleRetryCalls = vi
-			.mocked(pi.sendMessage)
-			.mock.calls.filter(([message]) => message.customType === "ferment_continuation_nudge")
-		const exhaustionCalls = vi
-			.mocked(pi.sendMessage)
-			.mock.calls.filter(
-				([message]) =>
-					message.customType === "ferment_breadcrumb" &&
-					(message.details as { variant?: string } | undefined)?.variant === "warning",
-			)
+		const lifecycleRetryCalls = filterSentMessages(vi.mocked(pi.sendMessage), "ferment_continuation_nudge")
+		const exhaustionCalls = filterSentMessages(vi.mocked(pi.sendMessage), "ferment_breadcrumb", "warning")
 		expect(lifecycleRetryCalls).toHaveLength(2)
 		expect(exhaustionCalls).toHaveLength(1)
 	})
@@ -886,11 +869,9 @@ describe("turn_end error recovery in one-shot mode", () => {
 		vi.mocked(pi.sendMessage).mockClear()
 
 		await turnEnd(bareStop, ctx)
-		let continuationCalls = vi
-			.mocked(pi.sendMessage)
-			.mock.calls.filter(([message]) => message.customType === "ferment_continuation_nudge")
+		let continuationCalls = filterSentMessages(vi.mocked(pi.sendMessage), "ferment_continuation_nudge")
 		expect(continuationCalls).toHaveLength(1)
-		expect(continuationCalls[0]?.[0].content).toEqual([
+		expect(continuationCalls[0]?.content).toEqual([
 			expect.objectContaining({ text: expect.stringContaining("previous turn stopped without a tool call") }),
 		])
 
@@ -901,16 +882,8 @@ describe("turn_end error recovery in one-shot mode", () => {
 		await turnEnd(bareStop, ctx)
 		await turnEnd(bareStop, ctx)
 
-		continuationCalls = vi
-			.mocked(pi.sendMessage)
-			.mock.calls.filter(([message]) => message.customType === "ferment_continuation_nudge")
-		const exhaustionCalls = vi
-			.mocked(pi.sendMessage)
-			.mock.calls.filter(
-				([message]) =>
-					message.customType === "ferment_breadcrumb" &&
-					(message.details as { variant?: string } | undefined)?.variant === "warning",
-			)
+		continuationCalls = filterSentMessages(vi.mocked(pi.sendMessage), "ferment_continuation_nudge")
+		const exhaustionCalls = filterSentMessages(vi.mocked(pi.sendMessage), "ferment_breadcrumb", "warning")
 		expect(continuationCalls).toHaveLength(2)
 		expect(exhaustionCalls).toHaveLength(1)
 	})

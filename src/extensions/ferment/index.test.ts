@@ -23,6 +23,7 @@ import {
 	setContinuationPolicy,
 	setPendingCompaction,
 } from "./state.js"
+import { filterSentMessages } from "./test-helpers.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
 import { completeFerment, scopeFerment } from "./tools/lifecycle.js"
 
@@ -620,9 +621,7 @@ describe("fermentExtension question dropdown", () => {
 		)
 		await agentEnd({ type: "agent_end" }, ctx)
 
-		const retryCalls = vi
-			.mocked(pi.sendMessage)
-			.mock.calls.filter(([message]) => message.customType === "ferment_continuation_nudge")
+		const retryCalls = filterSentMessages(vi.mocked(pi.sendMessage), "ferment_continuation_nudge")
 		expect(retryCalls).toHaveLength(1)
 
 		// Once retry 2/2 is exhausted, the diagnostic is terminal for this
@@ -641,16 +640,8 @@ describe("fermentExtension question dropdown", () => {
 		)
 		await agentEnd({ type: "agent_end" }, ctx)
 
-		const postExhaustionContinuationCalls = vi
-			.mocked(pi.sendMessage)
-			.mock.calls.filter(([message]) => message.customType === "ferment_continuation_nudge")
-		const exhaustionCalls = vi
-			.mocked(pi.sendMessage)
-			.mock.calls.filter(
-				([message]) =>
-					message.customType === "ferment_breadcrumb" &&
-					(message.details as { variant?: string } | undefined)?.variant === "warning",
-			)
+		const postExhaustionContinuationCalls = filterSentMessages(vi.mocked(pi.sendMessage), "ferment_continuation_nudge")
+		const exhaustionCalls = filterSentMessages(vi.mocked(pi.sendMessage), "ferment_breadcrumb", "warning")
 		expect(postExhaustionContinuationCalls).toHaveLength(0)
 		expect(exhaustionCalls).toHaveLength(1)
 	})

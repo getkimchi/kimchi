@@ -18,6 +18,7 @@ import {
 } from "./nudge.js"
 import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
 import { MAX_SCOPING_EXPLORE_TURNS, getActive, resetScopingExploreTurns, setActive } from "./state.js"
+import { filterSentMessages } from "./test-helpers.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
 
 function createPi(): ExtensionAPI {
@@ -210,9 +211,7 @@ describe("maybeInjectLifecycleObligationGuard", () => {
 		maybeInjectLifecycleObligationGuard(pi, runtime) // retry 2
 
 		// Both calls should have scheduled a continuation nudge (steer).
-		const calls = (pi.sendMessage as ReturnType<typeof vi.fn>).mock.calls.filter(
-			(args: unknown[]) => (args[0] as { customType?: string })?.customType === "ferment_continuation_nudge",
-		)
+		const calls = filterSentMessages(vi.mocked(pi.sendMessage), "ferment_continuation_nudge")
 		expect(calls.length).toBe(2)
 	})
 
@@ -224,11 +223,9 @@ describe("maybeInjectLifecycleObligationGuard", () => {
 		maybeInjectLifecycleObligationGuard(pi, runtime)
 		maybeInjectLifecycleObligationGuard(pi, runtime)
 
-		const calls = (pi.sendMessage as ReturnType<typeof vi.fn>).mock.calls.filter(
-			(args: unknown[]) => (args[0] as { customType?: string })?.customType === "ferment_continuation_nudge",
-		)
-		const firstText = (calls[0][0] as { content: Array<{ text: string }> }).content[0].text
-		const secondText = (calls[1][0] as { content: Array<{ text: string }> }).content[0].text
+		const calls = filterSentMessages(vi.mocked(pi.sendMessage), "ferment_continuation_nudge")
+		const firstText = calls[0]?.content?.[0]?.text
+		const secondText = calls[1]?.content?.[0]?.text
 		expect(firstText).toContain("previous turn stopped without a tool call")
 		expect(secondText).toContain("retry 2/2")
 		expect(secondText).toContain("Do not respond with an announcement or summary")
@@ -249,13 +246,9 @@ describe("maybeInjectLifecycleObligationGuard", () => {
 		expect(fourth).toBe(true) // guard acted (suppressed), but no new message
 
 		// The third call should have emitted a visible breadcrumb + telemetry
-		const breadcrumbCalls = (pi.sendMessage as ReturnType<typeof vi.fn>).mock.calls.filter(
-			(args: unknown[]) => (args[0] as { customType?: string })?.customType === "ferment_breadcrumb",
-		)
+		const breadcrumbCalls = filterSentMessages(vi.mocked(pi.sendMessage), "ferment_breadcrumb")
 		expect(breadcrumbCalls.length).toBe(1)
-		expect((breadcrumbCalls[0][0] as { content: Array<{ text: string }> }).content[0].text).toContain(
-			"Lifecycle guard exhausted",
-		)
+		expect(breadcrumbCalls[0]?.content?.[0]?.text).toContain("Lifecycle guard exhausted")
 		expect(runtime.events?.emit).toHaveBeenCalledWith(
 			"ferment:stalled",
 			expect.objectContaining({ fermentId: ferment.id }),
@@ -299,22 +292,16 @@ describe("maybeInjectLifecycleObligationGuard", () => {
 		maybeInjectLifecycleObligationGuard(pi, runtime)
 		maybeInjectLifecycleObligationGuard(pi, runtime)
 
-		const continuationCalls = (pi.sendMessage as ReturnType<typeof vi.fn>).mock.calls.filter(
-			(args: unknown[]) => (args[0] as { customType?: string })?.customType === "ferment_continuation_nudge",
-		)
+		const continuationCalls = filterSentMessages(vi.mocked(pi.sendMessage), "ferment_continuation_nudge")
 		expect(continuationCalls).toHaveLength(2)
-		const firstText = (continuationCalls[0][0] as { content: Array<{ text: string }> }).content[0].text
+		const firstText = continuationCalls[0]?.content?.[0]?.text
 		expect(firstText).toContain("requires recovery from the failed phase")
 		expect(firstText).toContain("activate_ferment_phase to retry")
 		expect(firstText).toContain("skip_ferment_phase")
 
-		const warningCalls = (pi.sendMessage as ReturnType<typeof vi.fn>).mock.calls.filter(
-			(args: unknown[]) =>
-				(args[0] as { customType?: string; details?: { variant?: string } })?.customType === "ferment_breadcrumb" &&
-				(args[0] as { details?: { variant?: string } }).details?.variant === "warning",
-		)
+		const warningCalls = filterSentMessages(vi.mocked(pi.sendMessage), "ferment_breadcrumb", "warning")
 		expect(warningCalls).toHaveLength(1)
-		const warningText = (warningCalls[0][0] as { content: Array<{ text: string }> }).content[0].text
+		const warningText = warningCalls[0]?.content?.[0]?.text
 		expect(warningText).toContain('required recovery action "recover_phase" remained unresolved')
 		expect(warningText).toContain("qualifying text-only stops for the unchanged obligation")
 		expect(warningText).not.toContain("consecutive text-only stops")
