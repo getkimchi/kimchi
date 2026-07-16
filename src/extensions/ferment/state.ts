@@ -222,6 +222,38 @@ export function setAutomatedContinuationEnabled(v: boolean): void {
 	continuationPolicy = v ? "automated" : "manual"
 }
 
+// ─── Lifecycle obligation guard retry state ──────────────────────────────────
+// Session-local recovery budget. This is deliberately not persisted: it tracks
+// agent-loop stalls, not Ferment domain progress. Successful persisted lifecycle
+// transitions clear the entry through FermentRuntime's coordination hook.
+
+export interface LifecycleGuardRetryState {
+	/** Current obligation key for this Ferment. */
+	key: string
+	/** Number of retries scheduled so far for this key. */
+	count: number
+	/** Whether exhaustion has already been reported for this key. */
+	reported: boolean
+}
+
+const lifecycleGuardRetryStates = new Map<string, LifecycleGuardRetryState>()
+
+export function getLifecycleGuardRetryState(fermentId: string): LifecycleGuardRetryState | undefined {
+	return lifecycleGuardRetryStates.get(fermentId)
+}
+
+export function setLifecycleGuardRetryState(fermentId: string, state: LifecycleGuardRetryState): void {
+	lifecycleGuardRetryStates.set(fermentId, state)
+}
+
+export function clearLifecycleGuardRetryState(fermentId: string): void {
+	lifecycleGuardRetryStates.delete(fermentId)
+}
+
+export function clearAllLifecycleGuardRetryStates(): void {
+	lifecycleGuardRetryStates.clear()
+}
+
 // ─── Last human input timestamp (used by the /ferment progress dialog title) ─
 
 let lastHumanInputAt: Date | undefined
@@ -661,6 +693,7 @@ export function clearFermentState(fermentId: string): void {
 	scopingInteractive.delete(fermentId)
 	scopingConfirmed.delete(fermentId)
 	scopingExploreTurns.delete(fermentId)
+	clearLifecycleGuardRetryState(fermentId)
 	const prefix = `${fermentId}:`
 	stepStartCounts.clearByPrefix(prefix)
 	blockRetryCounts.clearByPrefix(prefix)

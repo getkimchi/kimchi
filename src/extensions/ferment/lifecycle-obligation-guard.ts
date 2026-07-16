@@ -48,6 +48,12 @@ import type { FermentRuntime } from "./runtime.js"
 import { safeSendMessage } from "./safe-send.js"
 import { scheduleNextFermentAction } from "./scheduler.js"
 import { buildStalledPayload } from "./stalled-payload.js"
+import {
+	clearAllLifecycleGuardRetryStates,
+	clearLifecycleGuardRetryState,
+	getLifecycleGuardRetryState,
+	setLifecycleGuardRetryState,
+} from "./state.js"
 import { FERMENT_TOOLS } from "./tool-names.js"
 
 // ─── Retry budget ─────────────────────────────────────────────────────────────
@@ -210,34 +216,18 @@ export function deriveObligation(ferment: Ferment, policy: "automated" | "manual
 // Not persisted to the Ferment event store — this is an agent-loop recovery
 // budget, not domain progress. Replay must not change domain state.
 
-interface RetryState {
-	/** Current obligation key for this Ferment. */
-	key: string
-	/** Number of retries scheduled so far for this key (0 after first stop). */
-	count: number
-	/** Whether exhaustion has already been reported for this key. */
-	reported: boolean
-}
-
-/**
- * One current retry state per Ferment. Observing a different obligation key
- * replaces the old state and starts a fresh budget.
- */
-const retryStates = new Map<string, RetryState>()
-
 /**
  * Clears all retry state for a ferment. Called on abort, error, pause,
- * complete, abandon, session shutdown, and explicit resume/exit paths.
- * Normal lifecycle advancement replaces this state when its new obligation
- * key is next observed.
+ * complete, abandon, session shutdown, explicit resume/exit paths, and every
+ * successfully persisted lifecycle transition.
  */
 export function clearLifecycleGuard(fermentId: string): void {
-	retryStates.delete(fermentId)
+	clearLifecycleGuardRetryState(fermentId)
 }
 
 /** Clears all retry state for all ferments. Used by tests and session reset. */
 export function clearAllLifecycleGuards(): void {
-	retryStates.clear()
+	clearAllLifecycleGuardRetryStates()
 }
 
 /**
@@ -247,16 +237,16 @@ export function clearAllLifecycleGuards(): void {
  * Pi-independent: does not call any pi API. The caller owns the scheduling side effects.
  */
 export function evaluateLifecycleStop(obligation: LifecycleObligation): LifecycleGuardDecision {
-	const state = retryStates.get(obligation.fermentId)
+	const state = getLifecycleGuardRetryState(obligation.fermentId)
 	if (!state || state.key !== obligation.key) {
 		// First stop for this obligation.
-		retryStates.set(obligation.fermentId, { key: obligation.key, count: 1, reported: false })
+		setLifecycleGuardRetryState(obligation.fermentId, { key: obligation.key, count: 1, reported: false })
 		return { type: "retry", obligation, attempt: 1, maxAttempts: MAX_LIFECYCLE_STOP_RETRIES }
 	}
 
 	const newCount = state.count + 1
 	if (newCount <= MAX_LIFECYCLE_STOP_RETRIES) {
-		retryStates.set(obligation.fermentId, { key: obligation.key, count: newCount, reported: false })
+		setLifecycleGuardRetryState(obligation.fermentId, { key: obligation.key, count: newCount, reported: false })
 		return { type: "retry", obligation, attempt: newCount, maxAttempts: MAX_LIFECYCLE_STOP_RETRIES }
 	}
 
@@ -264,7 +254,7 @@ export function evaluateLifecycleStop(obligation: LifecycleObligation): Lifecycl
 	if (state.reported) {
 		return { type: "exhausted", obligation, attempts: newCount, report: false }
 	}
-	retryStates.set(obligation.fermentId, { key: obligation.key, count: newCount, reported: true })
+	setLifecycleGuardRetryState(obligation.fermentId, { key: obligation.key, count: newCount, reported: true })
 	return { type: "exhausted", obligation, attempts: newCount, report: true }
 }
 

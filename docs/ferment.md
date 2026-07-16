@@ -322,9 +322,10 @@ present to steer.
    gives up.
 4. The budget is keyed by the obligation identity
    (`fermentId:actionKind:phaseId?:stepId?`), not by Ferment ID. An
-   unrelated `read` or `grep` tool call does not reset the budget — only a
-   real state transition (which produces a new obligation key) grants a fresh
-   budget automatically.
+   unrelated `read` or `grep` tool call does not reset the budget. Every
+   successfully persisted lifecycle transition explicitly clears the previous
+   guard episode, so a later recurrence of the same obligation receives a
+   fresh budget.
 5. When the budget is exhausted, the guard emits one visible warning
    breadcrumb and a `FERMENT_EVENTS.STALLED` telemetry event. No state is
    fabricated or silently skipped.
