@@ -172,7 +172,20 @@ describe("buildSystemPrompt", () => {
 			expect(globalPos).toBeLessThan(projectPos)
 		})
 
-		it("injects skills", () => {
+		it("injects skills in single mode", () => {
+			const skills = [createSkill({ name: "deploy", description: "Deploy the app to production" })]
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				skills,
+				mode: "single",
+			})
+			expect(result).toContain("available_skills")
+			expect(result).toContain("deploy")
+			expect(result).toContain("Deploy the app to production")
+		})
+
+		it("suppresses all skills in orchestrator mode", () => {
 			const skills = [createSkill({ name: "deploy", description: "Deploy the app to production" })]
 			const result = buildSystemPrompt({
 				tools,
@@ -180,9 +193,8 @@ describe("buildSystemPrompt", () => {
 				skills,
 				mode: "orchestrator",
 			})
-			expect(result).toContain("available_skills")
-			expect(result).toContain("deploy")
-			expect(result).toContain("Deploy the app to production")
+			expect(result).not.toContain("available_skills")
+			expect(result).not.toContain("deploy")
 		})
 
 		it("excludes skills with disableModelInvocation", () => {
@@ -194,7 +206,7 @@ describe("buildSystemPrompt", () => {
 				tools,
 				env: testEnv,
 				skills,
-				mode: "orchestrator",
+				mode: "single",
 			})
 			expect(result).toContain("safe-skill")
 			expect(result).not.toContain("hidden-skill")
@@ -310,7 +322,7 @@ describe("buildSystemPrompt", () => {
 			expect(result).not.toContain("Provide complete, functional code")
 		})
 
-		it("suppresses conflicting superpowers skills in orchestrator mode", () => {
+		it("suppresses all skills in orchestrator mode including previously allowed ones", () => {
 			const skills = [
 				createSkill({ name: "brainstorming", description: "Brainstorm" }),
 				createSkill({ name: "subagent-driven-development", description: "Alternate delegation workflow" }),
@@ -322,7 +334,7 @@ describe("buildSystemPrompt", () => {
 				roles: DEFAULT_MODEL_ROLES,
 				mode: "orchestrator",
 			})
-			expect(result).toContain("brainstorming")
+			expect(result).not.toContain("brainstorming")
 			expect(result).not.toContain("subagent-driven-development")
 		})
 

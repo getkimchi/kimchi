@@ -15,7 +15,6 @@ import type { Phase } from "../orchestration/model-registry/types.js"
 import type { ModelRoles } from "../orchestration/model-roles.js"
 import { resolveOrchestrationInstructions } from "../orchestration/orchestration-instructions.js"
 import type { ContextFile } from "./context-files.js"
-import { ORCHESTRATOR_SUPPRESSED_SKILL_NAMES } from "./orchestrator-suppressed-skills.js"
 import { renderSystemPromptBlocks, type SuppressibleSection } from "./system-prompt-blocks.js"
 
 export interface EnvironmentInfo {
@@ -213,7 +212,7 @@ const ORCHESTRATOR_GUIDELINES = `- Be concise in your responses. Do not repeat w
 
 function filterSkillsForMode(skills: readonly Skill[] | undefined, mode: PromptMode): readonly Skill[] | undefined {
 	if (!skills || mode !== "orchestrator") return skills
-	return skills.filter((skill) => !ORCHESTRATOR_SUPPRESSED_SKILL_NAMES.has(skill.name))
+	return []
 }
 
 function resolveCoreGuidelines(mode: PromptMode): string {
