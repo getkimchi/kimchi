@@ -1,5 +1,6 @@
 import type { AssistantMessage, ImageContent, TextContent, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai"
 import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { getCompactionEnabled } from "../settings-watcher.js"
 import { COMPACTION_RESERVE_TOKENS } from "./compaction-thresholds.js"
 import { hasActiveFerment } from "./ferment/state.js"
 
@@ -355,6 +356,19 @@ export default function createModelGuardExtension(_pi: ExtensionAPI) {
 
 		// Use the same threshold as upstream auto-compaction: contextWindow - reserveTokens.
 		if (usage.totalTokens <= model.contextWindow - COMPACTION_RESERVE_TOKENS) return
+
+		// /settings Auto-compact toggle (settings.json compaction.enabled).
+		// ctx.compact() is upstream's manual path and does not check the toggle
+		// itself, so this stopgap must gate on it explicitly — otherwise it
+		// compacts even when the user (or a benchmark harness) disabled
+		// auto-compaction.
+		let projectTrusted: boolean | undefined
+		try {
+			projectTrusted = ctx.isProjectTrusted?.()
+		} catch {
+			projectTrusted = undefined
+		}
+		if (!getCompactionEnabled(projectTrusted)) return
 
 		// Threshold exceeded mid-turn. Compact now.
 		//
