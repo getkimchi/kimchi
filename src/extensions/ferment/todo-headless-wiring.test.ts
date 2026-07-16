@@ -429,12 +429,12 @@ describe("stall detection via step todo write tracking", () => {
 			emitFermentDomainEvent(pi.events, { type: "activate_phase", phaseId: "phase-1" }, ferment)
 			emitFermentDomainEvent(pi.events, { type: "start_step", phaseId: "phase-1", stepId: "step-1" }, ferment)
 
-			expect(getTurnsSinceStepTodoWrite()).toBe(0)
-			bumpStallCounter()
-			expect(getTurnsSinceStepTodoWrite()).toBe(1)
-			bumpStallCounter()
-			bumpStallCounter()
-			expect(getTurnsSinceStepTodoWrite()).toBe(3)
+			expect(getTurnsSinceStepTodoWrite(TEST_SESSION_ID)).toBe(0)
+			bumpStallCounter(TEST_SESSION_ID)
+			expect(getTurnsSinceStepTodoWrite(TEST_SESSION_ID)).toBe(1)
+			bumpStallCounter(TEST_SESSION_ID)
+			bumpStallCounter(TEST_SESSION_ID)
+			expect(getTurnsSinceStepTodoWrite(TEST_SESSION_ID)).toBe(3)
 		} finally {
 			unsubscribe()
 		}
@@ -460,10 +460,10 @@ describe("stall detection via step todo write tracking", () => {
 			emitFermentDomainEvent(pi.events, { type: "activate_phase", phaseId: "phase-1" }, ferment)
 			emitFermentDomainEvent(pi.events, { type: "start_step", phaseId: "phase-1", stepId: "step-1" }, ferment)
 
-			bumpStallCounter()
-			bumpStallCounter()
-			bumpStallCounter()
-			expect(getTurnsSinceStepTodoWrite()).toBe(3)
+			bumpStallCounter(TEST_SESSION_ID)
+			bumpStallCounter(TEST_SESSION_ID)
+			bumpStallCounter(TEST_SESSION_ID)
+			expect(getTurnsSinceStepTodoWrite(TEST_SESSION_ID)).toBe(3)
 
 			// Writing to the step scope resets the counter
 			applyWriteTodos(
@@ -473,7 +473,7 @@ describe("stall detection via step todo write tracking", () => {
 				},
 				TEST_SESSION_ID,
 			)
-			expect(getTurnsSinceStepTodoWrite()).toBe(0)
+			expect(getTurnsSinceStepTodoWrite(TEST_SESSION_ID)).toBe(0)
 		} finally {
 			unsubscribe()
 		}
@@ -509,7 +509,7 @@ describe("stall detection via step todo write tracking", () => {
 			)
 
 			// Bump past threshold (5 turns)
-			for (let i = 0; i < 6; i++) bumpStallCounter()
+			for (let i = 0; i < 6; i++) bumpStallCounter(TEST_SESSION_ID)
 
 			const md = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
 			expect(md).toContain("\u26a0 Step todos have not been updated for 6 turns")
@@ -548,7 +548,7 @@ describe("stall detection via step todo write tracking", () => {
 			)
 
 			// Only 3 turns — below threshold
-			for (let i = 0; i < 3; i++) bumpStallCounter()
+			for (let i = 0; i < 3; i++) bumpStallCounter(TEST_SESSION_ID)
 
 			const md = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
 			expect(md).not.toContain("\u26a0 Step todos have not been updated")
@@ -559,9 +559,9 @@ describe("stall detection via step todo write tracking", () => {
 
 	it("stall counter returns 0 when no step is running", () => {
 		// No step started — bumping should have no effect
-		bumpStallCounter()
-		bumpStallCounter()
-		expect(getTurnsSinceStepTodoWrite()).toBe(0)
+		bumpStallCounter(TEST_SESSION_ID)
+		bumpStallCounter(TEST_SESSION_ID)
+		expect(getTurnsSinceStepTodoWrite(TEST_SESSION_ID)).toBe(0)
 	})
 })
 
@@ -613,7 +613,7 @@ describe("parallel step tracking", () => {
 			emitFermentDomainEvent(pi.events, { type: "start_step", phaseId: "phase-1", stepId: "step-a" }, ferment)
 			emitFermentDomainEvent(pi.events, { type: "start_step", phaseId: "phase-1", stepId: "step-b" }, ferment)
 
-			const running = __getRunningSteps()
+			const running = __getRunningSteps(TEST_SESSION_ID)
 			expect(running.size).toBe(2)
 			expect(running.has("phase-1/step-a")).toBe(true)
 			expect(running.has("phase-1/step-b")).toBe(true)
@@ -635,7 +635,7 @@ describe("parallel step tracking", () => {
 			// Complete step-a only
 			emitFermentDomainEvent(pi.events, { type: "complete_step", phaseId: "phase-1", stepId: "step-a" }, ferment)
 
-			const running = __getRunningSteps()
+			const running = __getRunningSteps(TEST_SESSION_ID)
 			expect(running.size).toBe(1)
 			expect(running.has("phase-1/step-a")).toBe(false)
 			expect(running.has("phase-1/step-b")).toBe(true)

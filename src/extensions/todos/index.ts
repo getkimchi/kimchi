@@ -142,15 +142,28 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	registerTodosCommand(pi)
 	registerTodoShortcut(pi)
 
-	let unsubscribeTodoStore: (() => void) | undefined
 	const _workSinceTodoWrite = new Map<string, boolean>()
+	const _activeSessionContexts = new Map<string, ExtensionContext>()
+	let unsubscribeTodoStore: (() => void) | undefined
 
-	const setWorkSinceTodoWrite = (sessionId: string, value: boolean) => {
+	function setWorkSinceTodoWrite(sessionId: string, value: boolean): void {
 		_workSinceTodoWrite.set(sessionId, value)
 	}
 
-	const getWorkSinceTodoWrite = (sessionId: string): boolean => {
+	function getWorkSinceTodoWrite(sessionId: string): boolean {
 		return _workSinceTodoWrite.get(sessionId) ?? false
+	}
+
+	function setSessionContext(sessionId: string, ctx: ExtensionContext): void {
+		_activeSessionContexts.set(sessionId, ctx)
+	}
+
+	function getSessionContext(sessionId: string): ExtensionContext | undefined {
+		return _activeSessionContexts.get(sessionId)
+	}
+
+	function deleteSessionContext(sessionId: string): void {
+		_activeSessionContexts.delete(sessionId)
 	}
 
 	const maybeSteerTodoReconciliation = (message: unknown, ctx: ExtensionContext) => {
@@ -184,6 +197,9 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	}
 
 	pi.on("session_start", (_event, ctx) => {
+		const sessionId = ctx.sessionManager.getSessionId()
+		setSessionContext(sessionId, ctx)
+
 		// Headless (one-shot) runs have no widget; the todo-state prompt block
 		// renders the same content as markdown so the orchestrator agent can see
 		// it. It receives the session context and self-gates on ctx.hasUI.
@@ -193,10 +209,10 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		ensureTodoWidget(ctx)
 
 		unsubscribeTodoStore?.()
-		unsubscribeTodoStore = subscribeTodoStore(() => {
-			const sessionId = ctx.sessionManager.getSessionId()
-			setWorkSinceTodoWrite(sessionId, false)
-			syncTodoWidget(ctx)
+		unsubscribeTodoStore = subscribeTodoStore((_, emitterSessionId) => {
+			setWorkSinceTodoWrite(emitterSessionId, false)
+			const sessionCtx = getSessionContext(emitterSessionId)
+			if (sessionCtx) syncTodoWidget(sessionCtx)
 		})
 
 		replayAndSync(ctx)
@@ -245,5 +261,8 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		unsubscribeTodoStore?.()
 		unsubscribeTodoStore = undefined
 		disposeTodoWidget(ctx)
+
+		const sessionId = ctx.sessionManager.getSessionId()
+		deleteSessionContext(sessionId)
 	})
 }

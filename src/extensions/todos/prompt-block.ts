@@ -118,7 +118,7 @@ export function renderTodoStateMarkdown(sessionId: string): string | undefined {
 
 	// Stall detection: if a ferment step is running and the step-scope
 	// todos haven't been updated in several turns, nudge the model.
-	const staleTurns = getTurnsSinceStepTodoWrite()
+	const staleTurns = getTurnsSinceStepTodoWrite(sessionId)
 	if (staleTurns >= 5) {
 		lines.push("")
 		lines.push(
@@ -146,7 +146,7 @@ export function registerTodoStateBlock(pi: ExtensionAPI, ctx: ExtensionContext):
 	})
 }
 
-/** Applies the full gate (currentSessionHasUI check) exactly as the registered
+/** Applies the full gate (ctx.hasUI check) exactly as the registered
  *  system-prompt block does. Use this in tests to validate the complete path
  *  rather than calling the raw renderer directly. */
 export function renderTodoStateBlock(ctx: ExtensionContext): string | undefined {

@@ -9,7 +9,7 @@ export type TodoScopeProvider = () => TodoScope | undefined
 /** Per-session todo state. Keyed by session id so that two concurrent keyed
  * sessions in the same process do not see each other's todos. */
 const stateMap = new Map<string, TodosSliceState>()
-const todoStoreListeners = new Set<(details: WriteTodosDetails) => void>()
+const todoStoreListeners = new Set<(details: WriteTodosDetails, sessionId: string) => void>()
 const activeScopeProviders: TodoScopeProvider[] = []
 
 function getSessionState(sessionId: string): TodosSliceState {
@@ -45,9 +45,9 @@ function resolveWriteTodoScope(params: WriteTodosParams): TodoScope {
 	return resolveTodoScope(params.scope)
 }
 
-function notifyTodoStoreListeners(details: WriteTodosDetails): void {
+function notifyTodoStoreListeners(details: WriteTodosDetails, sessionId: string): void {
 	for (const listener of [...todoStoreListeners]) {
-		listener(details)
+		listener(details, sessionId)
 	}
 }
 
@@ -56,7 +56,7 @@ export function applyWriteTodos(params: WriteTodosParams, sessionId: string): Wr
 	const current = getSessionState(sessionId)
 	const result = reduceReplaceList(current, { ...params, scope })
 	setSessionState(sessionId, result.state)
-	notifyTodoStoreListeners(result.details)
+	notifyTodoStoreListeners(result.details, sessionId)
 	return result.details
 }
 
@@ -75,7 +75,7 @@ export function getTodoCountsForScope(scope: TodoScope, sessionId: string): Todo
 	}
 }
 
-export function subscribeTodoStore(listener: (details: WriteTodosDetails) => void): () => void {
+export function subscribeTodoStore(listener: (details: WriteTodosDetails, sessionId: string) => void): () => void {
 	todoStoreListeners.add(listener)
 	return () => {
 		todoStoreListeners.delete(listener)

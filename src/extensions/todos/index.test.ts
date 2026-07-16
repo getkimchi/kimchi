@@ -271,6 +271,32 @@ describe("todos extension session state", () => {
 		expect(await harness.fire("context", { messages: [] }, ctx)).toBeUndefined()
 	})
 
+	it("only resets checkpoint pressure for the session that wrote todos", async () => {
+		const harness = createTodosHarness()
+		const ctxA = createContext("session-a", [])
+		const ctxB = createContext("session-b", [])
+
+		// Start both sessions. The second start registers the active subscriber;
+		// the fix ensures the subscriber uses the writing session id rather than
+		// closing over session-b's context.
+		await harness.fire("session_start", { reason: "new" }, ctxA)
+		await harness.fire("session_start", { reason: "new" }, ctxB)
+
+		applyWriteTodos({ todos: [{ content: "A work", status: "in_progress" }] }, "session-a")
+		applyWriteTodos({ todos: [{ content: "B work", status: "in_progress" }] }, "session-b")
+
+		// Both sessions do non-todo work, creating checkpoint pressure.
+		await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctxA)
+		await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctxB)
+		expect(await harness.fire("context", { messages: [] }, ctxA)).toBeDefined()
+		expect(await harness.fire("context", { messages: [] }, ctxB)).toBeDefined()
+
+		// Session A writes todos. Only A's pressure should clear.
+		applyWriteTodos({ todos: [{ id: 1, content: "A work", status: "completed" }] }, "session-a")
+		expect(await harness.fire("context", { messages: [] }, ctxA)).toBeUndefined()
+		expect(await harness.fire("context", { messages: [] }, ctxB)).toBeDefined()
+	})
+
 	it("queues reconciliation follow-ups after visible terminal stops", async () => {
 		const harness = createTodosHarness()
 		const ctx = createContext("session", [])

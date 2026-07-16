@@ -18,7 +18,10 @@
  *
  * Every todo-store call is scoped to the session id passed to
  * `registerFermentTodoSync` so that concurrent sessions sharing the same
- * process do not see each other's ferment todos.
+ * process do not see each other's ferment todos. The bridge's internal
+ * state (id maps, suspended snapshots, running steps, stall counter) is
+ * also keyed by session id, so each session owns its own bucket and
+ * unsubscribe only tears down that session's state.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
@@ -46,24 +49,35 @@ import {
 import { getActive } from "./state.js"
 
 // ─── Stable ID tracking ──────────────────────────────────────────────────────
-// Map structure: `${fermentId}:${phaseId}` → Map<stepId | "header", todoId>
-// The phase header gets a synthetic key "header" to distinguish it from steps.
+// All four top-level Maps are keyed by session id so concurrent sessions
+// never see each other's bridge state. The second-level key keeps each
+// phase / ferment / running-step bucket independent.
+//
+//   todoIdMaps: sessionId → (fermentId:phaseId → stepKey → todoId)
+//   suspendedSnapshots: sessionId → fermentId → ScopeSnapshot[]
+//   runningSteps: sessionId → phaseId/stepId → RunningStep
+//   turnsSinceStepTodoWrite: sessionId → count
 
-const todoIdMaps = new Map<string, Map<string, number>>()
+const todoIdMaps = new Map<string, Map<string, Map<string, number>>>()
 
-function getOrCreateIdMap(fermentId: string, phaseId: string): Map<string, number> {
+function getOrCreateIdMap(fermentId: string, phaseId: string, sessionId: string): Map<string, number> {
+	let sessionBuckets = todoIdMaps.get(sessionId)
+	if (!sessionBuckets) {
+		sessionBuckets = new Map()
+		todoIdMaps.set(sessionId, sessionBuckets)
+	}
 	const key = `${fermentId}:${phaseId}`
-	let map = todoIdMaps.get(key)
+	let map = sessionBuckets.get(key)
 	if (!map) {
 		map = new Map()
-		todoIdMaps.set(key, map)
+		sessionBuckets.set(key, map)
 	}
 	return map
 }
 
-function clearIdMap(fermentId: string, phaseId: string): void {
+function clearIdMap(fermentId: string, phaseId: string, sessionId: string): void {
 	const key = `${fermentId}:${phaseId}`
-	todoIdMaps.delete(key)
+	todoIdMaps.get(sessionId)?.delete(key)
 }
 
 // ─── Suspend / resume snapshot ──────────────────────────────────────────────
@@ -76,10 +90,10 @@ interface ScopeSnapshot {
 	todos: TodoItem[]
 }
 
-const suspendedSnapshots = new Map<string, ScopeSnapshot[]>()
+const suspendedSnapshots = new Map<string, Map<string, ScopeSnapshot[]>>()
 
-function clearSnapshot(fermentId: string): void {
-	suspendedSnapshots.delete(fermentId)
+function clearSnapshot(sessionId: string, fermentId: string): void {
+	suspendedSnapshots.get(sessionId)?.delete(fermentId)
 }
 
 /** Find every todo scope (in the current store) whose phaseId matches one of
@@ -155,10 +169,11 @@ function stepStatusToTodoStatus(stepStatus: StepStatus): TodoStatus {
 function buildPhaseTodos(
 	phase: Phase,
 	fermentId: string,
+	sessionId: string,
 ): {
 	todos: TodoDraft[]
 } {
-	const idMap = getOrCreateIdMap(fermentId, phase.id)
+	const idMap = getOrCreateIdMap(fermentId, phase.id, sessionId)
 	const todos: TodoDraft[] = []
 
 	// Phase header — use phase.name as the content, status is always in_progress
@@ -186,8 +201,8 @@ function buildPhaseTodos(
 	return { todos }
 }
 
-function syncTodoIds(fermentId: string, phaseId: string, writtenTodos: TodoItem[]): void {
-	const idMap = getOrCreateIdMap(fermentId, phaseId)
+function syncTodoIds(fermentId: string, phaseId: string, sessionId: string, writtenTodos: TodoItem[]): void {
+	const idMap = getOrCreateIdMap(fermentId, phaseId, sessionId)
 	// Match written todos back to ferment entities via the internal _syncKey.
 	// This is deterministic regardless of how the store reorders, filters,
 	// or reassigns IDs, and avoids the fragility of correlating on user-
@@ -219,11 +234,11 @@ function handlePhaseStarted(raw: unknown, sessionId: string): void {
 		return
 	}
 
-	const { todos } = buildPhaseTodos(phase, ferment.id)
+	const { todos } = buildPhaseTodos(phase, ferment.id, sessionId)
 	const details = applyWriteTodos({ scope: { kind: "ferment", phaseId: payload.phaseId }, todos }, sessionId)
 
 	// Capture the assigned IDs for future updates
-	syncTodoIds(ferment.id, payload.phaseId, details.todos)
+	syncTodoIds(ferment.id, payload.phaseId, sessionId, details.todos)
 }
 
 // ─── Active step tracking for scope provider ────────────────────────────────
@@ -237,38 +252,53 @@ function handlePhaseStarted(raw: unknown, sessionId: string): void {
 
 type RunningStep = { phaseId: string; stepId: string }
 
-const runningSteps = new Map<string, RunningStep>()
+const runningSteps = new Map<string, Map<string, RunningStep>>()
 
 function stepKey(phaseId: string, stepId: string): string {
 	return `${phaseId}/${stepId}`
 }
 
-/** Exported for tests only. */
-export function __getRunningSteps(): ReadonlyMap<string, RunningStep> {
-	return runningSteps
+function getRunningStepsBucket(sessionId: string): Map<string, RunningStep> {
+	let bucket = runningSteps.get(sessionId)
+	if (!bucket) {
+		bucket = new Map()
+		runningSteps.set(sessionId, bucket)
+	}
+	return bucket
+}
+
+/** Exported for tests only. Returns the running-step bucket for a specific
+ *  session id so tests can assert without leaking across other sessions. */
+export function __getRunningSteps(sessionId: string): ReadonlyMap<string, RunningStep> {
+	return runningSteps.get(sessionId) ?? new Map<string, RunningStep>()
 }
 
 /**
  * Number of orchestrator turns since any step-scope todos were last written.
- * Increments only while at least one step is running; resets when any
- * active step's scope is written to.
+ * Per-session so concurrent sessions do not share a counter. Increments only
+ * while at least one step is running for the session; resets when any active
+ * step's scope is written to.
  */
-let turnsSinceStepTodoWrite = 0
+const turnsSinceStepTodoWrite = new Map<string, number>()
 
 /** Call once per orchestrator turn_end to track how long the step scope
- *  has been untouched. Only increments when a step is actually running. */
-export function bumpStallCounter(): void {
-	if (runningSteps.size > 0) turnsSinceStepTodoWrite++
+ *  has been untouched. Only increments when a step is actually running
+ *  for the given session. */
+export function bumpStallCounter(sessionId: string): void {
+	const bucket = runningSteps.get(sessionId)
+	if (!bucket?.size) return
+	turnsSinceStepTodoWrite.set(sessionId, (turnsSinceStepTodoWrite.get(sessionId) ?? 0) + 1)
 }
 
 /** Returns the number of turns since any step-scope todos were last written,
- *  or 0 when no step is running. */
-export function getTurnsSinceStepTodoWrite(): number {
-	if (runningSteps.size === 0) return 0
-	return turnsSinceStepTodoWrite
+ *  or 0 when no step is running for the given session. */
+export function getTurnsSinceStepTodoWrite(sessionId: string): number {
+	const bucket = runningSteps.get(sessionId)
+	if (!bucket?.size) return 0
+	return turnsSinceStepTodoWrite.get(sessionId) ?? 0
 }
 
-function handleStepStarted(raw: unknown): void {
+function handleStepStarted(raw: unknown, sessionId: string): void {
 	const payload = raw as FermentStepStartedPayload
 	const ferment = getActive()
 	if (!ferment || ferment.id !== payload.fermentId) return
@@ -276,11 +306,11 @@ function handleStepStarted(raw: unknown): void {
 	// Track the running step so the scope provider can auto-scope todo calls.
 	// Multiple parallel siblings coexist in the map; the scope provider handles
 	// the ambiguity when more than one is active.
-	runningSteps.set(stepKey(payload.phaseId, payload.stepId), {
+	getRunningStepsBucket(sessionId).set(stepKey(payload.phaseId, payload.stepId), {
 		phaseId: payload.phaseId,
 		stepId: payload.stepId,
 	})
-	turnsSinceStepTodoWrite = 0
+	turnsSinceStepTodoWrite.set(sessionId, 0)
 }
 
 function clearStepTodos(phaseId: string, stepId: string, sessionId: string): void {
@@ -309,9 +339,10 @@ function handleStepCompleted(raw: unknown, sessionId: string): void {
 	// Clear the step-level implementation todos and stop tracking this step
 	// (parallel siblings remain tracked in runningSteps).
 	clearStepTodos(payload.phaseId, payload.stepId, sessionId)
-	runningSteps.delete(stepKey(payload.phaseId, payload.stepId))
+	const bucket = runningSteps.get(sessionId)
+	bucket?.delete(stepKey(payload.phaseId, payload.stepId))
 
-	const idMap = getOrCreateIdMap(ferment.id, payload.phaseId)
+	const idMap = getOrCreateIdMap(ferment.id, payload.phaseId, sessionId)
 	const stepTodoId = idMap.get(payload.stepId)
 	if (stepTodoId === undefined) {
 		console.warn(`[todo-sync] STEP_COMPLETED for step ${payload.stepId} but no todo ID recorded. Skipping update.`)
@@ -351,9 +382,9 @@ function handleStepFailed(raw: unknown, sessionId: string): void {
 	// Clear the step-level implementation todos and stop tracking this step
 	// (parallel siblings remain tracked in runningSteps).
 	clearStepTodos(payload.phaseId, payload.stepId, sessionId)
-	runningSteps.delete(stepKey(payload.phaseId, payload.stepId))
+	runningSteps.get(sessionId)?.delete(stepKey(payload.phaseId, payload.stepId))
 
-	const idMap = getOrCreateIdMap(ferment.id, payload.phaseId)
+	const idMap = getOrCreateIdMap(ferment.id, payload.phaseId, sessionId)
 	const stepTodoId = idMap.get(payload.stepId)
 	if (stepTodoId === undefined) {
 		console.warn(`[todo-sync] STEP_FAILED for step ${payload.stepId} but no todo ID recorded. Skipping update.`)
@@ -384,7 +415,7 @@ function handlePhaseCompleted(raw: unknown, sessionId: string): void {
 	if (currentTodos.length === 0) {
 		// No todos written for this phase (edge case: phase with zero steps that
 		// completed before PHASE_STARTED fired). Nothing to update.
-		clearIdMap(payload.fermentId, payload.phaseId)
+		clearIdMap(payload.fermentId, payload.phaseId, sessionId)
 		return
 	}
 
@@ -400,7 +431,7 @@ function handlePhaseCompleted(raw: unknown, sessionId: string): void {
 	applyWriteTodos({ scope: { kind: "ferment", phaseId: payload.phaseId }, todos: updated }, sessionId)
 
 	// Cleanup: drop the ID map for this phase since the phase is now complete
-	clearIdMap(payload.fermentId, payload.phaseId)
+	clearIdMap(payload.fermentId, payload.phaseId, sessionId)
 }
 
 function handleFermentSuspended(raw: unknown, sessionId: string): void {
@@ -416,11 +447,16 @@ function handleFermentSuspended(raw: unknown, sessionId: string): void {
 	if (snapshots.length === 0) {
 		// Nothing to snapshot — make sure no stale snapshot from a prior cycle
 		// leaks into a future resume.
-		clearSnapshot(ferment.id)
+		clearSnapshot(sessionId, ferment.id)
 		return
 	}
 
-	suspendedSnapshots.set(ferment.id, snapshots)
+	let sessionBuckets = suspendedSnapshots.get(sessionId)
+	if (!sessionBuckets) {
+		sessionBuckets = new Map()
+		suspendedSnapshots.set(sessionId, sessionBuckets)
+	}
+	sessionBuckets.set(ferment.id, snapshots)
 	clearScopeTodos(snapshots, sessionId)
 }
 
@@ -432,9 +468,10 @@ function handleFermentResumed(raw: unknown, sessionId: string): void {
 	const ferment = getActive()
 	if (!ferment || ferment.id !== payload.fermentId) return
 
-	const snapshots = suspendedSnapshots.get(ferment.id)
+	const sessionBuckets = suspendedSnapshots.get(sessionId)
+	const snapshots = sessionBuckets?.get(ferment.id)
 	if (!snapshots) return // RESUMED without prior SUSPENDED — no-op
-	suspendedSnapshots.delete(ferment.id)
+	sessionBuckets?.delete(ferment.id)
 
 	// Only restore scopes that still belong to this ferment. If phases were
 	// added/removed between suspend and resume, stale scopes are skipped.
@@ -460,7 +497,7 @@ function handleFermentCompleted(raw: unknown, sessionId: string): void {
 	}
 	// Drop any snapshot left behind by a prior SUSPENDED that was never
 	// resumed (e.g. ferment was abandoned mid-suspend). Nothing to restore.
-	clearSnapshot(ferment.id)
+	clearSnapshot(sessionId, ferment.id)
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
@@ -470,7 +507,9 @@ function handleFermentCompleted(raw: unknown, sessionId: string): void {
  * specific session id. Every store call inside the bridge targets that
  * session's bucket; concurrent sessions do not see each other's ferment todos.
  *
- * Returns an unsubscribe function that removes all listeners and cleans up state.
+ * Returns an unsubscribe function that removes all listeners and cleans up
+ * only this session's bridge state (id maps, suspended snapshots, running
+ * steps, and stall counter for that session id).
  */
 export function registerFermentTodoSync(pi: ExtensionAPI, sessionId: string): () => void {
 	const unsubscribes: Array<() => void> = []
@@ -480,8 +519,9 @@ export function registerFermentTodoSync(pi: ExtensionAPI, sessionId: string): ()
 	// steps are active, return undefined to force the caller to pass an
 	// explicit scope — avoids silently writing to the wrong step.
 	const unregisterScope = registerActiveTodoScopeProvider(() => {
-		if (runningSteps.size !== 1) return undefined
-		const [, step] = [...runningSteps.entries()][0]
+		const bucket = runningSteps.get(sessionId)
+		if (bucket?.size !== 1) return undefined
+		const [, step] = [...bucket.entries()][0]
 		return {
 			kind: "ferment-step" as const,
 			phaseId: step.phaseId,
@@ -489,18 +529,21 @@ export function registerFermentTodoSync(pi: ExtensionAPI, sessionId: string): ()
 		}
 	})
 
-	// Reset the stall counter whenever ANY running step's todo scope is written to.
-	const unsubscribeTodoListener = subscribeTodoStore((details) => {
-		if (runningSteps.size === 0) return
+	// Reset the stall counter whenever ANY running step's todo scope is written
+	// to within this bridge's session.
+	const unsubscribeTodoListener = subscribeTodoStore((details, emitterSessionId) => {
+		if (emitterSessionId !== sessionId) return
+		const bucket = runningSteps.get(sessionId)
+		if (!bucket?.size) return
 		if (details.scope.kind !== "ferment-step") return
 		const scope = details.scope as { phaseId: string; stepId: string }
-		if (runningSteps.has(stepKey(scope.phaseId, scope.stepId))) {
-			turnsSinceStepTodoWrite = 0
+		if (bucket.has(stepKey(scope.phaseId, scope.stepId))) {
+			turnsSinceStepTodoWrite.set(sessionId, 0)
 		}
 	})
 
 	unsubscribes.push(pi.events.on(FERMENT_EVENTS.PHASE_STARTED, (raw) => handlePhaseStarted(raw, sessionId)))
-	unsubscribes.push(pi.events.on(FERMENT_EVENTS.STEP_STARTED, handleStepStarted))
+	unsubscribes.push(pi.events.on(FERMENT_EVENTS.STEP_STARTED, (raw) => handleStepStarted(raw, sessionId)))
 	unsubscribes.push(pi.events.on(FERMENT_EVENTS.STEP_COMPLETED, (raw) => handleStepCompleted(raw, sessionId)))
 	unsubscribes.push(pi.events.on(FERMENT_EVENTS.STEP_FAILED, (raw) => handleStepFailed(raw, sessionId)))
 	unsubscribes.push(pi.events.on(FERMENT_EVENTS.PHASE_COMPLETED, (raw) => handlePhaseCompleted(raw, sessionId)))
@@ -514,10 +557,16 @@ export function registerFermentTodoSync(pi: ExtensionAPI, sessionId: string): ()
 		}
 		unregisterScope()
 		unsubscribeTodoListener()
-		runningSteps.clear()
-		turnsSinceStepTodoWrite = 0
-		// Clear all in-memory state on unsubscribe to avoid memory leaks.
-		todoIdMaps.clear()
-		suspendedSnapshots.clear()
+
+		// Tear down only this session's bridge state. Other sessions sharing
+		// the process keep their buckets intact.
+		runningSteps.delete(sessionId)
+		turnsSinceStepTodoWrite.delete(sessionId)
+
+		todoIdMaps.get(sessionId)?.clear()
+		todoIdMaps.delete(sessionId)
+
+		suspendedSnapshots.get(sessionId)?.clear()
+		suspendedSnapshots.delete(sessionId)
 	}
 }

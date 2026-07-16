@@ -1,7 +1,10 @@
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import type { Ferment } from "../../ferment/types.js"
+import type { Ferment, Phase } from "../../ferment/types.js"
 import { createContext } from "../__mocks__/context.js"
+import { FERMENT_EVENTS } from "../ferment/domain-events.js"
 import { setActive } from "../ferment/state.js"
+import { bumpStallCounter, registerFermentTodoSync } from "../ferment/todo-sync.js"
 import {
 	__test_renderTodoPromptBlock,
 	__test_renderTodoStateMarkdown,
@@ -11,6 +14,81 @@ import {
 import { __resetTodoStore, applyWriteTodos } from "./store.js"
 
 const TEST_SESSION_ID = "test-session"
+
+// ─── Cross-session stall-counter helpers ────────────────────────────────────
+
+function createFakePI(): {
+	pi: ExtensionAPI
+	emit: (channel: string, payload: unknown) => void
+} {
+	const listeners = new Map<string, Array<(payload: unknown) => void>>()
+
+	const events = {
+		on: (channel: string, handler: (payload: unknown) => void) => {
+			if (!listeners.has(channel)) {
+				listeners.set(channel, [])
+			}
+			const list = listeners.get(channel)
+			if (list) {
+				list.push(handler)
+			}
+			return () => {
+				const list = listeners.get(channel)
+				if (list) {
+					const idx = list.indexOf(handler)
+					if (idx !== -1) list.splice(idx, 1)
+				}
+			}
+		},
+		emit: (channel: string, payload: unknown) => {
+			const list = listeners.get(channel)
+			if (list) {
+				for (const fn of list) {
+					fn(payload)
+				}
+			}
+		},
+	}
+
+	const pi = {
+		events,
+	} as unknown as ExtensionAPI
+
+	return { pi, emit: events.emit }
+}
+
+function createTestFerment(phaseId: string, stepCount: number): Ferment {
+	const steps = Array.from({ length: stepCount }, (_, i) => ({
+		id: `step-${i + 1}`,
+		index: i + 1,
+		description: `Step ${i + 1}`,
+		status: "pending" as const,
+	}))
+
+	const phase: Phase = {
+		id: phaseId,
+		index: 1,
+		name: "Test Phase",
+		goal: "Test phase goal",
+		status: "active",
+		steps,
+	}
+
+	return {
+		id: "ferment-prompt-block-test",
+		name: "Test Ferment",
+		status: "running",
+		worktree: { path: "/tmp" },
+		scoping: {},
+		phases: [phase],
+		decisions: [],
+		memories: [],
+		createdAt: new Date().toISOString(),
+		updatedAt: new Date().toISOString(),
+	}
+}
+
+// ─── Test suites ────────────────────────────────────────────────────────────
 
 describe("todo prompt block", () => {
 	beforeEach(() => {
@@ -242,5 +320,47 @@ describe("ferment-conditional todo guidance", () => {
 		setActive(undefined)
 		const block = __test_renderTodoPromptBlock()
 		expect(block).not.toContain("When working inside a ferment step")
+	})
+})
+
+describe("cross-session stall counter isolation", () => {
+	afterEach(() => {
+		setActive(undefined)
+	})
+
+	it("only warns about stalls for the session whose step is running", () => {
+		const { pi, emit } = createFakePI()
+		const ferment = createTestFerment("phase-1", 1)
+		setActive(ferment)
+
+		const unsubA = registerFermentTodoSync(pi, "session-a")
+
+		emit(FERMENT_EVENTS.PHASE_STARTED, {
+			fermentId: ferment.id,
+			phaseId: "phase-1",
+			phaseIndex: 1,
+			phaseName: "Test Phase",
+		})
+		emit(FERMENT_EVENTS.STEP_STARTED, {
+			fermentId: ferment.id,
+			phaseId: "phase-1",
+			stepId: "step-1",
+			stepIndex: 1,
+		})
+
+		// Bump session A's stall counter enough times to trigger the warning.
+		for (let i = 0; i < 5; i++) {
+			bumpStallCounter("session-a")
+		}
+
+		// Session A should see the stall warning.
+		const mdA = __test_renderTodoStateMarkdown("session-a")
+		expect(mdA).toContain("Step todos have not been updated for 5 turns")
+
+		// Session B has no running step and no stall counter; no warning.
+		const mdB = __test_renderTodoStateMarkdown("session-b")
+		expect(mdB).toBeUndefined()
+
+		unsubA()
 	})
 })

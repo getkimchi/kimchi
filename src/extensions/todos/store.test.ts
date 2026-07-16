@@ -138,10 +138,24 @@ describe("todo store", () => {
 		const unsubscribe = subscribeTodoStore(listener)
 
 		const details = applyWriteTodos({ todos: [{ content: "alpha", status: "pending" }] }, TEST_SESSION_ID)
-		expect(listener).toHaveBeenCalledWith(details)
+		expect(listener).toHaveBeenCalledWith(details, TEST_SESSION_ID)
 
 		unsubscribe()
 		applyWriteTodos({ todos: [{ content: "bravo", status: "pending" }] }, TEST_SESSION_ID)
 		expect(listener).toHaveBeenCalledTimes(1)
+	})
+
+	it("notifies subscribers with the writing session id, not the subscriber's session", () => {
+		const listener = vi.fn()
+		const unsubscribe = subscribeTodoStore(listener)
+
+		applyWriteTodos({ todos: [{ content: "from A", status: "pending" }] }, "session-a")
+		applyWriteTodos({ todos: [{ content: "from B", status: "pending" }] }, "session-b")
+
+		expect(listener).toHaveBeenCalledTimes(2)
+		expect(listener.mock.calls[0]?.[1]).toBe("session-a")
+		expect(listener.mock.calls[1]?.[1]).toBe("session-b")
+
+		unsubscribe()
 	})
 })
