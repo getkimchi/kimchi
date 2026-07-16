@@ -69,15 +69,12 @@ describe("isTerminalUiMode", () => {
 		expect(isTerminalUiMode([], tty)).toBe(true)
 	})
 
-	it.each([
-		["--mode", "acp"],
-		["--mode", "rpc"],
-		["--mode=json"],
-		["--print"],
-		["-p"],
-	])("returns false for protocol or print args %j", (...args) => {
-		expect(isTerminalUiMode(args, tty)).toBe(false)
-	})
+	it.each([["--mode", "acp"], ["--mode", "rpc"], ["--mode=json"], ["--print"], ["-p"]])(
+		"returns false for protocol or print args %j",
+		(...args) => {
+			expect(isTerminalUiMode(args, tty)).toBe(false)
+		},
+	)
 
 	it("returns false when stdin or stdout is not a TTY", () => {
 		expect(isTerminalUiMode([], { stdinIsTTY: false, stdoutIsTTY: true })).toBe(false)
@@ -109,15 +106,12 @@ describe("isPreDispatchValueFlag", () => {
 		expect(isPreDispatchValueFlag(arg)).toBe(true)
 	})
 
-	it.each([
-		["--continue"],
-		["--resume"],
-		["--no-tools"],
-		["--no-themes"],
-		["fix tests"],
-	])("does not treat %s as a value flag", (arg) => {
-		expect(isPreDispatchValueFlag(arg)).toBe(false)
-	})
+	it.each([["--continue"], ["--resume"], ["--no-tools"], ["--no-themes"], ["fix tests"]])(
+		"does not treat %s as a value flag",
+		(arg) => {
+			expect(isPreDispatchValueFlag(arg)).toBe(false)
+		},
+	)
 })
 
 describe("normalizeResumeIdArgs", () => {
@@ -140,14 +134,12 @@ describe("normalizeResumeIdArgs", () => {
 		expect(normalizeResumeIdArgs(input)).toEqual(expected)
 	})
 
-	it.each([
-		[["-r"]],
-		[["--resume"]],
-		[["-r", "--model", "fake"]],
-		[["-r", "continue the review"]],
-	])("leaves bare resume picker args unchanged", (input) => {
-		expect(normalizeResumeIdArgs(input)).toEqual(input)
-	})
+	it.each([[["-r"]], [["--resume"]], [["-r", "--model", "fake"]], [["-r", "continue the review"]]])(
+		"leaves bare resume picker args unchanged",
+		(input) => {
+			expect(normalizeResumeIdArgs(input)).toEqual(input)
+		},
+	)
 })
 
 describe("isCliAtFileArg", () => {

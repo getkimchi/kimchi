@@ -176,15 +176,12 @@ describe("buildSessionModeLaunchContext", () => {
 		expect(launch(["--mode", "acp"], { nonInteractiveMode: true }).nonInteractiveMode).toBe(true)
 	})
 
-	it.each([
-		["--continue"],
-		["-c"],
-		["--resume"],
-		["--session", "abc123"],
-		["--fork", "abc123"],
-	])("detects explicit session launch for %s", (...args) => {
-		expect(launch(args).explicitSession).toBe(true)
-	})
+	it.each([["--continue"], ["-c"], ["--resume"], ["--session", "abc123"], ["--fork", "abc123"]])(
+		"detects explicit session launch for %s",
+		(...args) => {
+			expect(launch(args).explicitSession).toBe(true)
+		},
+	)
 
 	it("does not treat unknown extension flag values as initial messages", () => {
 		expect(launch(["--custom-flag", "value"]).explicitDefaultIntent).toBe(false)

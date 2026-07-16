@@ -1527,24 +1527,24 @@ describe("fermentExtension abort handling", () => {
 		return { storage, runtime, pi, turnEnd, ctx, notify, select, scopeAndPlan, activate, pause, complete }
 	}
 
-	it.each([
-		"running",
-		"planned",
-	] as const)("pauses a %s ferment on abort, notifies, and skips nudges", async (status) => {
-		const { storage, pi, turnEnd, ctx, notify, scopeAndPlan, activate } = setupAbortFixture("pause")
-		const planned = scopeAndPlan("Abort")
-		const ferment = status === "running" ? activate(planned) : planned
-		setActive(ferment)
+	it.each(["running", "planned"] as const)(
+		"pauses a %s ferment on abort, notifies, and skips nudges",
+		async (status) => {
+			const { storage, pi, turnEnd, ctx, notify, scopeAndPlan, activate } = setupAbortFixture("pause")
+			const planned = scopeAndPlan("Abort")
+			const ferment = status === "running" ? activate(planned) : planned
+			setActive(ferment)
 
-		await turnEnd({ message: abortedMessage([{ type: "text", text: "x" }]) }, ctx)
+			await turnEnd({ message: abortedMessage([{ type: "text", text: "x" }]) }, ctx)
 
-		expect(storage.get(ferment.id)?.status).toBe("paused")
-		expect(notify).toHaveBeenCalledWith(expect.stringContaining("/ferment resume"))
-		expect(pi.sendMessage).not.toHaveBeenCalledWith(
-			expect.objectContaining({ customType: "ferment_continuation_nudge" }),
-			expect.anything(),
-		)
-	})
+			expect(storage.get(ferment.id)?.status).toBe("paused")
+			expect(notify).toHaveBeenCalledWith(expect.stringContaining("/ferment resume"))
+			expect(pi.sendMessage).not.toHaveBeenCalledWith(
+				expect.objectContaining({ customType: "ferment_continuation_nudge" }),
+				expect.anything(),
+			)
+		},
+	)
 
 	it.each(["draft", "paused", "complete"] as const)("does not mutate a %s ferment on abort", async (status) => {
 		const { storage, pi, turnEnd, ctx, notify, scopeAndPlan, activate, pause, complete } = setupAbortFixture("noop")
