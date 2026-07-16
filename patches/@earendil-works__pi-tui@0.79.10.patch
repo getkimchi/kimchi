@@ -13,7 +13,15 @@
 #                                    PI_TUI_NO_CLEAR_SCROLLBACK=1 to avoid iTerm2
 #                                    snapping the viewport to the session start
 #                                    in long sessions / large diffs.
+#                                    When the flag is enabled, changes that fall
+#                                    entirely above the visible viewport no longer
+#                                    trigger a destructive full redraw. If visible
+#                                    content also changed, the diff is clamped to
+#                                    the viewport top so only visible lines are
+#                                    re-rendered, preventing scrollback duplication
+#                                    and flicker.
 #                                    See: https://github.com/getkimchi/kimchi/issues/863
+#                                    See: https://github.com/getkimchi/kimchi/issues/869
 
 diff --git a/dist/components/box.js b/dist/components/box.js
 index 5de0f24bfe4e9ccb7b9476dae9ea55f882acce75..e8bf2e8986ec53c8189a58764e47e16d50d8793a 100644
@@ -152,7 +160,7 @@ index 0d840239c41181e24dfc60237c3338081c6b48d5..7208d53add7d89955c799f73d9d5ce13
          }
          const result = [...emptyLines, ...contentLines, ...emptyLines];
 diff --git a/dist/tui.js b/dist/tui.js
-index 62574431ce65ff9e6d7e68407b2563dcef5c8f3e..60fa69fd09776448a88e67d4e0ce0e4fb9640871 100644
+index 62574431ce65ff9e6d7e68407b2563dcef5c8f3e..931d5ea829da5ec4fc3902edb2fe68ce7069549b 100644
 --- a/dist/tui.js
 +++ b/dist/tui.js
 @@ -1004,7 +1004,10 @@ export class TUI extends Container {
@@ -167,6 +175,36 @@ index 62574431ce65ff9e6d7e68407b2563dcef5c8f3e..60fa69fd09776448a88e67d4e0ce0e4f
              }
              for (let i = 0; i < newLines.length; i++) {
                  if (i > 0)
+@@ -1165,11 +1168,25 @@ export class TUI extends Container {
+             return;
+         }
+         // Differential rendering can only touch what was actually visible.
+-        // If the first changed line is above the previous viewport, we need a full redraw.
++        // If the first changed line is above the previous viewport, we used to do a
++        // full redraw. That clears the screen and re-emits the entire transcript,
++        // duplicating scrollback and causing flicker / jump-to-bottom. Instead, if
++        // only scrollback content changed, just update internal state. If visible
++        // content also changed, clamp the diff to the viewport top and render only
++        // the visible portion.
+         if (firstChanged < prevViewportTop) {
+-            logRedraw(`firstChanged < viewportTop (${firstChanged} < ${prevViewportTop})`);
+-            fullRender(true);
+-            return;
++            if (lastChanged < prevViewportTop) {
++                logRedraw(`firstChanged < viewportTop (${firstChanged} < ${prevViewportTop}) but no visible changes`);
++                this.positionHardwareCursor(cursorPos, newLines.length);
++                this.previousLines = newLines;
++                this.previousKittyImageIds = this.collectKittyImageIds(newLines);
++                this.previousWidth = width;
++                this.previousHeight = height;
++                this.previousViewportTop = prevViewportTop;
++                return;
++            }
++            logRedraw(`firstChanged < viewportTop (${firstChanged} < ${prevViewportTop}), clamping to viewport`);
++            firstChanged = prevViewportTop;
+         }
+         // Render from first changed line to end
+         // Build buffer with all updates wrapped in synchronized output
 diff --git a/dist/utils.js b/dist/utils.js
 index bc550a400f3ac921263a8f2fa1753335b4fded8c..a9314e7ed5f39c4f31a5d38b17f84c07ccce8020 100644
 --- a/dist/utils.js

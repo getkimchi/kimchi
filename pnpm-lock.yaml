@@ -12,7 +12,7 @@ patchedDependencies:
     hash: e821592e009160d9501e7047340e284867de484433216a8f9c5a9a4c05fd4322
     path: patches/@earendil-works__pi-coding-agent@0.79.10.patch
   '@earendil-works/pi-tui@0.79.10':
-    hash: 019141c7f01eabbdb737b0e8eed4a5ef6a724cfc8eb4e8d77e4dbe930d5e8529
+    hash: 163c23be370700002f254b074e3b4a1862cebea4a74b1213e4ef121b84d6a603
     path: patches/@earendil-works__pi-tui@0.79.10.patch
   playwright-core@1.59.1:
     hash: 1f27acbc8250451c9eea2efa9b19956afcb881a2b7a69ad4550cf8e59f15e102
@@ -36,7 +36,7 @@ importers:
         version: 0.79.10(patch_hash=e821592e009160d9501e7047340e284867de484433216a8f9c5a9a4c05fd4322)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)
       '@earendil-works/pi-tui':
         specifier: 0.79.10
-        version: 0.79.10(patch_hash=019141c7f01eabbdb737b0e8eed4a5ef6a724cfc8eb4e8d77e4dbe930d5e8529)
+        version: 0.79.10(patch_hash=163c23be370700002f254b074e3b4a1862cebea4a74b1213e4ef121b84d6a603)
       '@modelcontextprotocol/ext-apps':
         specifier: ^1.7.1
         version: 1.7.1(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(zod@4.4.3)
@@ -2831,7 +2831,7 @@ snapshots:
     dependencies:
       '@earendil-works/pi-agent-core': 0.79.10(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)
       '@earendil-works/pi-ai': 0.79.10(patch_hash=a9d385c837d7062a1b38fd9d81d5405543cf7149753ed9a67f685e520913453e)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)
-      '@earendil-works/pi-tui': 0.79.10(patch_hash=019141c7f01eabbdb737b0e8eed4a5ef6a724cfc8eb4e8d77e4dbe930d5e8529)
+      '@earendil-works/pi-tui': 0.79.10(patch_hash=163c23be370700002f254b074e3b4a1862cebea4a74b1213e4ef121b84d6a603)
       '@silvia-odwyer/photon-node': 0.3.4
       chalk: 5.6.2
       cross-spawn: 7.0.6
@@ -2857,7 +2857,7 @@ snapshots:
       - ws
       - zod
 
-  '@earendil-works/pi-tui@0.79.10(patch_hash=019141c7f01eabbdb737b0e8eed4a5ef6a724cfc8eb4e8d77e4dbe930d5e8529)':
+  '@earendil-works/pi-tui@0.79.10(patch_hash=163c23be370700002f254b074e3b4a1862cebea4a74b1213e4ef121b84d6a603)':
     dependencies:
       get-east-asian-width: 1.6.0
       marked: 18.0.5

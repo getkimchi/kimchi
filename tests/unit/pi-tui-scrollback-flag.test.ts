@@ -50,6 +50,11 @@ function flushRender(ms = 50): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+/** Count how many rendered content lines (line-*) appear in the output. */
+function countRenderedLines(output: string): number {
+	return (output.match(/line-\d+/g) ?? []).length
+}
+
 beforeEach(() => {
 	vi.stubEnv("PI_TUI_NO_CLEAR_SCROLLBACK", "1")
 })
@@ -99,4 +104,74 @@ it("emits ESC[3J by default", async () => {
 	expect(output).toContain("\x1b[2J")
 	expect(output).toContain("\x1b[H")
 	expect(output).toContain("\x1b[3J")
+})
+
+it("does not full-redraw when only scrollback content changes", async () => {
+	const { writes, terminal } = makeMockTerminal()
+	const tui = new TUI(terminal, false)
+
+	let lines = Array.from({ length: 50 }, (_, i) => `line-${i}`)
+	tui.addChild({
+		render: () => lines,
+		invalidate: () => {},
+	})
+
+	// Initial full render (force=true resets state and emits everything).
+	tui.requestRender(true)
+	await flushRender()
+
+	const initialOutput = writes.join("")
+	expect(initialOutput).toContain("\x1b[2J")
+	expect(countRenderedLines(initialOutput)).toBe(50)
+
+	// Simulate a change to a line that is now in scrollback (line 0), leaving
+	// the visible viewport unchanged. Before the patch this triggered
+	// fullRender(true) and re-emitted the whole transcript, duplicating
+	// scrollback. Now it should update internal state without writing output.
+	writes.length = 0
+	lines = lines.map((line, i) => (i === 0 ? "changed-line-0" : line))
+	tui.requestRender(false)
+	await flushRender()
+
+	const followUpOutput = writes.join("")
+	expect(followUpOutput).not.toContain("\x1b[2J")
+	expect(followUpOutput).not.toContain("\x1b[3J")
+	// No visible lines were re-emitted.
+	expect(countRenderedLines(followUpOutput)).toBe(0)
+})
+
+it("only renders visible changes when scrollback + viewport both change", async () => {
+	const { writes, terminal } = makeMockTerminal()
+	const tui = new TUI(terminal, false)
+
+	let lines = Array.from({ length: 50 }, (_, i) => `line-${i}`)
+	tui.addChild({
+		render: () => lines,
+		invalidate: () => {},
+	})
+
+	tui.requestRender(true)
+	await flushRender()
+
+	const initialOutput = writes.join("")
+	expect(initialOutput).toContain("\x1b[2J")
+	expect(countRenderedLines(initialOutput)).toBe(50)
+
+	// Change line 0 (scrollback) and line 49 (visible). The renderer should
+	// clamp the diff to the visible viewport and avoid a full clear+redraw.
+	writes.length = 0
+	lines = lines.map((line, i) => {
+		if (i === 0) return "changed-line-0"
+		if (i === 49) return "changed-line-49"
+		return line
+	})
+	tui.requestRender(false)
+	await flushRender()
+
+	const followUpOutput = writes.join("")
+	expect(followUpOutput).not.toContain("\x1b[2J")
+	expect(followUpOutput).not.toContain("\x1b[3J")
+	// It should render the changed visible line, not all 50 lines.
+	expect(followUpOutput).toContain("changed-line-49")
+	expect(countRenderedLines(followUpOutput)).toBeLessThan(50)
 })
