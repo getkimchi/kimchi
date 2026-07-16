@@ -24,7 +24,6 @@ import {
 	DEFAULT_SKILL_PATHS,
 	ensureHideThinkingBlockDefault,
 	ensureQuietStartupDefault,
-	getActiveVendorSkillPaths,
 	loadConfig,
 	RETRY_DEFAULTS,
 	readTelemetryConfig,
@@ -87,7 +86,6 @@ import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
 import stripImagesExtension from "./extensions/strip-images.js"
-import superpowersExtension from "./extensions/superpowers.js"
 import surveysExtension from "./extensions/surveys/index.js"
 import tagsExtension from "./extensions/tags.js"
 import { buildConfigSnapshot } from "./extensions/telemetry/config-snapshot.js"
@@ -582,11 +580,10 @@ try {
 		const terminalUiExtensionFactories = isTerminalUiMode(rawArgs, terminalIo)
 			? [terminalColorsExtension, kimchiMinimalTintsExtension, uiExtension]
 			: []
-		const effectiveSkillPaths = [...new Set([...skillPaths, ...getActiveVendorSkillPaths()])]
+		const effectiveSkillPaths = [...new Set([...skillPaths])]
 		const extensionFactories = [
 			autoUpdateSettingsExtension,
 			startupUpdateExtension,
-			superpowersExtension,
 			sessionNameExtension(),
 			shutdownMarkerExtension,
 			statsExtension,

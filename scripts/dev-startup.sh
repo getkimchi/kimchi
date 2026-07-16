@@ -38,7 +38,7 @@ else
     echo -e "${GREEN}   ✓ pnpm already installed ($(pnpm --version))${NC}"
 fi
 
-# Initialize submodules
+# Initialize submodules (currently a no-op — no submodules after superpowers removal — kept for future use)
 echo -e "${GREEN}📦 Initializing git submodules...${NC}"
 git submodule update --init --recursive
 
