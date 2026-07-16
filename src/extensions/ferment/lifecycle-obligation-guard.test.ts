@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest"
 import type { DeclarativeAction } from "../../ferment/engine.js"
 import type { Ferment } from "../../ferment/types.js"
 import {
+	type LifecycleGuardDecision,
 	type LifecycleObligation,
 	MAX_LIFECYCLE_STOP_RETRIES,
 	buildObligationKey,
@@ -100,6 +101,13 @@ const completeFermentAction: DeclarativeAction = {
 afterEach(() => {
 	clearAllLifecycleGuards()
 })
+
+// ─── Test helpers ─────────────────────────────────────────────────────────────
+
+function expectRetry(decision: LifecycleGuardDecision): Extract<LifecycleGuardDecision, { type: "retry" }> {
+	expect(decision.type).toBe("retry")
+	return decision as Extract<LifecycleGuardDecision, { type: "retry" }>
+}
 
 // ─── buildObligationKey ──────────────────────────────────────────────────────
 
@@ -230,49 +238,18 @@ describe("evaluateLifecycleStop", () => {
 		}
 	}
 
-	it("first qualifying stop returns retry attempt 1", () => {
+	it.each([
+		{ stops: 1, expected: { type: "retry", attempt: 1, maxAttempts: MAX_LIFECYCLE_STOP_RETRIES } },
+		{ stops: 2, expected: { type: "retry", attempt: 2, maxAttempts: MAX_LIFECYCLE_STOP_RETRIES } },
+		{ stops: 3, expected: { type: "exhausted", attempts: 3, report: true } },
+		{ stops: 4, expected: { type: "exhausted", report: false } },
+	])("after $stops qualifying stop(s) for the same key, decision is $expected.type", ({ stops, expected }) => {
 		const obligation = makeObligation(scopeAction)
-		const decision = evaluateLifecycleStop(obligation)
-		expect(decision.type).toBe("retry")
-		if (decision.type === "retry") {
-			expect(decision.attempt).toBe(1)
-			expect(decision.maxAttempts).toBe(MAX_LIFECYCLE_STOP_RETRIES)
+		let decision: LifecycleGuardDecision = { type: "none" }
+		for (let i = 0; i < stops; i++) {
+			decision = evaluateLifecycleStop(obligation)
 		}
-	})
-
-	it("second qualifying stop for the same key returns retry attempt 2", () => {
-		const obligation = makeObligation(scopeAction)
-		evaluateLifecycleStop(obligation)
-		const decision = evaluateLifecycleStop(obligation)
-		expect(decision.type).toBe("retry")
-		if (decision.type === "retry") {
-			expect(decision.attempt).toBe(2)
-			expect(decision.maxAttempts).toBe(MAX_LIFECYCLE_STOP_RETRIES)
-		}
-	})
-
-	it("third qualifying stop returns exhausted with report=true", () => {
-		const obligation = makeObligation(scopeAction)
-		evaluateLifecycleStop(obligation) // retry 1
-		evaluateLifecycleStop(obligation) // retry 2
-		const decision = evaluateLifecycleStop(obligation) // exhausted
-		expect(decision.type).toBe("exhausted")
-		if (decision.type === "exhausted") {
-			expect(decision.report).toBe(true)
-			expect(decision.attempts).toBe(3)
-		}
-	})
-
-	it("re-evaluating an exhausted key does not request duplicate reporting", () => {
-		const obligation = makeObligation(scopeAction)
-		evaluateLifecycleStop(obligation) // retry 1
-		evaluateLifecycleStop(obligation) // retry 2
-		evaluateLifecycleStop(obligation) // exhausted, report=true
-		const decision = evaluateLifecycleStop(obligation) // exhausted again
-		expect(decision.type).toBe("exhausted")
-		if (decision.type === "exhausted") {
-			expect(decision.report).toBe(false)
-		}
+		expect(decision).toMatchObject(expected)
 	})
 
 	it("state advancement to a different action key provides a fresh budget", () => {
@@ -284,11 +261,8 @@ describe("evaluateLifecycleStop", () => {
 
 		// Now the ferment advanced to activate_phase — different key, fresh budget
 		const activateObligation = makeObligation(activatePhaseAction)
-		const decision = evaluateLifecycleStop(activateObligation)
-		expect(decision.type).toBe("retry")
-		if (decision.type === "retry") {
-			expect(decision.attempt).toBe(1)
-		}
+		const decision = expectRetry(evaluateLifecycleStop(activateObligation))
+		expect(decision.attempt).toBe(1)
 	})
 
 	it("a different step ID produces a fresh budget", () => {
@@ -304,11 +278,8 @@ describe("evaluateLifecycleStop", () => {
 			canParallel: false,
 		}
 		const step2Obligation = makeObligation(step2Action)
-		const decision = evaluateLifecycleStop(step2Obligation)
-		expect(decision.type).toBe("retry")
-		if (decision.type === "retry") {
-			expect(decision.attempt).toBe(1)
-		}
+		const decision = expectRetry(evaluateLifecycleStop(step2Obligation))
+		expect(decision.attempt).toBe(1)
 	})
 
 	it("prunes old keys when a new current key is observed", () => {
@@ -322,11 +293,8 @@ describe("evaluateLifecycleStop", () => {
 
 		// Now go back to scope — it should be a fresh budget because the old
 		// scope key was pruned when activate_phase was observed.
-		const decision = evaluateLifecycleStop(scopeObligation)
-		expect(decision.type).toBe("retry")
-		if (decision.type === "retry") {
-			expect(decision.attempt).toBe(1)
-		}
+		const decision = expectRetry(evaluateLifecycleStop(scopeObligation))
+		expect(decision.attempt).toBe(1)
 	})
 })
 
@@ -347,11 +315,8 @@ describe("clearLifecycleGuard", () => {
 		clearLifecycleGuard("ferment-1")
 
 		// After clearing, the same obligation should start fresh
-		const decision = evaluateLifecycleStop(obligation)
-		expect(decision.type).toBe("retry")
-		if (decision.type === "retry") {
-			expect(decision.attempt).toBe(1)
-		}
+		const decision = expectRetry(evaluateLifecycleStop(obligation))
+		expect(decision.attempt).toBe(1)
 	})
 
 	it("does not affect other ferments' state", () => {
@@ -375,11 +340,8 @@ describe("clearLifecycleGuard", () => {
 		clearLifecycleGuard("ferment-1")
 
 		// ferment-2 should still have its budget consumed
-		const decision = evaluateLifecycleStop(obligation2)
-		expect(decision.type).toBe("retry")
-		if (decision.type === "retry") {
-			expect(decision.attempt).toBe(2)
-		}
+		const decision = expectRetry(evaluateLifecycleStop(obligation2))
+		expect(decision.attempt).toBe(2)
 	})
 })
 
@@ -479,13 +441,5 @@ describe("non-obligation actions", () => {
 		// A complete ferment: determineNextAction returns undefined → no obligation
 		const f = makePlannedFerment({ status: "complete" })
 		expect(deriveObligation(f, "automated")).toBeUndefined()
-	})
-})
-
-// ─── MAX_LIFECYCLE_STOP_RETRIES constant ─────────────────────────────────────
-
-describe("MAX_LIFECYCLE_STOP_RETRIES", () => {
-	it("is set to 2 (two retries after the original stop)", () => {
-		expect(MAX_LIFECYCLE_STOP_RETRIES).toBe(2)
 	})
 })
