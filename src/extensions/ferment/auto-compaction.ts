@@ -40,6 +40,7 @@ import { getCompactionEnabled } from "../../settings-watcher.js"
 import { isToolCallInFlight } from "../../tool-call-in-flight.js"
 import { COMPACTION_RESERVE_TOKENS } from "../compaction-thresholds.js"
 import { getModelRoles, splitModelRef } from "../orchestration/model-roles.js"
+import { isStaleCtxError } from "../stale-ctx.js"
 import type { FermentRuntime } from "./runtime.js"
 import { safeSendMessage, tryPiAction } from "./safe-send.js"
 import { scheduleNextFermentAction } from "./scheduler.js"
@@ -127,6 +128,25 @@ function readFermentOneshotFlag(pi: ExtensionAPI): boolean | undefined {
 		isOneShot = pi.getFlag?.("ferment-oneshot") === true
 	})
 	return isOneShot
+}
+
+/**
+ * Best-effort read of the session's project-trust decision. Passed to
+ * getCompactionEnabled so project-scope settings apply exactly when pi's own
+ * session applies them. Undefined (stale ctx, sloppy mock) leaves the reader's
+ * last-synced trust untouched. Matches the tryPiAction idiom: stale-ctx errors
+ * are routine (post-shutdown/reload) and stay silent; anything else is traced
+ * so a broken trust accessor doesn't fail invisibly.
+ */
+function readProjectTrust(ctx: ExtensionContext): boolean | undefined {
+	try {
+		return ctx.isProjectTrusted?.()
+	} catch (err) {
+		if (!isStaleCtxError(err)) {
+			console.warn("[ferment] failed to read project trust:", err)
+		}
+		return undefined
+	}
 }
 
 // ─── In-flight tool-call guard ────────────────────────────────────────────────
@@ -444,7 +464,7 @@ export async function maybeTriggerFermentCompaction(
 	if (isOneShot && !hasInlineCompact) return false
 
 	// /settings Auto-compact toggle (settings.json compaction.enabled).
-	if (!getCompactionEnabled()) return false
+	if (!getCompactionEnabled(readProjectTrust(ctx))) return false
 
 	// Root-cause guard: defer compaction while a tool call is in flight (the
 	// trailing assistant toolCall has no matching toolResult yet). Compacting
@@ -678,7 +698,7 @@ export async function maybeTriggerMidTurnFermentCompaction(
 	}
 
 	// /settings Auto-compact toggle — see maybeTriggerFermentCompaction.
-	if (!getCompactionEnabled()) return
+	if (!getCompactionEnabled(readProjectTrust(ctx))) return
 
 	const model = ctx.model
 	if (!model) return
