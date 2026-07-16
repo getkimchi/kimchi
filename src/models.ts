@@ -165,8 +165,15 @@ export interface PiModelConfig {
 function metadataToModel(m: ModelMetadata): PiModelConfig {
 	// TODO: our LiteLLM gateway does not support `thinking.type.enabled` for Anthropic >Opus 4.6 models
 	// Therefore, we disable it for now. Revisit, once we upgrade our LiteLLM version.
+	// Band-aid: the models metadata API returns the same Claude slug under both
+	// "anthropic" and "azure_ai" providers. Pi's mergeCustomModels silently picks
+	// the last entry by (providerName, id) — if the azure_ai entry wins, the compat
+	// block is lost and cache_control markers are never injected. All Claude models
+	// support Anthropic-style prompt caching regardless of the upstream provider, so
+	// match on slug prefix rather than provider. Remove once the API stops returning
+	// duplicate slugs or pi deduplicates by (provider, id).
 	const compat =
-		m.provider === "anthropic"
+		m.provider === "anthropic" || m.slug.startsWith("claude-")
 			? ({ supportsReasoningEffort: false, cacheControlFormat: "anthropic" } as const)
 			: undefined
 	return {
