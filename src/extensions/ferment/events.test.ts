@@ -658,32 +658,52 @@ function setupScopedRunningFerment(prefix: string, name: string) {
 	return { storage, ferment }
 }
 
-describe("turn_end lifecycle obligation guard", () => {
-	function setupAutomatedGuardFixture(name: string) {
-		const { storage, ferment } = setupScopedRunningFerment(`ferment-lifecycle-guard-${name}-`, name)
-		const runtime: FermentRuntime = {
-			...createDefaultFermentRuntime(),
-			getStorage: () => storage,
-			getContinuationPolicy: () => "automated",
-			isAutomatedContinuationEnabled: () => true,
-		}
-		const active = storage.get(ferment.id)
-		if (!active) throw new Error("ferment not found after setup")
-		runtime.setActive(active)
+function createDraftFerment(prefix: string, name: string) {
+	const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), prefix)))
+	const ferment = storage.create(name)
+	return { storage, ferment }
+}
 
-		const { handlers, pi } = createPi()
-		;(pi as ExtensionAPI & { events: ExtensionAPI["events"] }).events = {
-			emit: vi.fn(),
-			on: vi.fn(),
-		} as unknown as ExtensionAPI["events"]
-		registerFermentEvents(pi, runtime)
+function setupAutomatedGuardFixture(
+	name: string,
+	options?: { state?: "draft" | "running"; automated?: boolean; oneshot?: boolean },
+) {
+	const state = options?.state ?? "running"
+	const automated = options?.automated ?? true
+	const oneshot = options?.oneshot ?? false
+	const { storage, ferment } =
+		state === "draft"
+			? createDraftFerment(`ferment-lifecycle-guard-${name}-`, name)
+			: setupScopedRunningFerment(`ferment-lifecycle-guard-${name}-`, name)
+	const runtime: FermentRuntime = {
+		...createDefaultFermentRuntime(),
+		getStorage: () => storage,
+		getContinuationPolicy: () => (automated ? "automated" : "manual"),
+		isAutomatedContinuationEnabled: () => automated,
+	}
+	const active = storage.get(ferment.id)
+	if (!active) throw new Error("ferment not found after setup")
+	runtime.setActive(active)
+
+	const { handlers, pi } = createPi()
+	if (oneshot) {
+		;(pi.getFlag as ReturnType<typeof vi.fn>).mockImplementation((flagName: string) =>
+			flagName === "ferment-oneshot" ? true : undefined,
+		)
+	}
+	;(pi as ExtensionAPI & { events: ExtensionAPI["events"] }).events = {
+		emit: vi.fn(),
+		on: vi.fn(),
+	} as unknown as ExtensionAPI["events"]
+	registerFermentEvents(pi, runtime)
+	return { pi, runtime, storage, ferment, handlers }
+}
+
+describe("turn_end lifecycle obligation guard", () => {
+	it("does not replenish an unchanged obligation after an unrelated tool call", async () => {
+		const { pi, handlers } = setupAutomatedGuardFixture("Unrelated Tool")
 		const turnEnd = handlers.get("turn_end")
 		if (!turnEnd) throw new Error("turn_end handler was not registered")
-		return { pi, runtime, turnEnd }
-	}
-
-	it("does not replenish an unchanged obligation after an unrelated tool call", async () => {
-		const { pi, turnEnd } = setupAutomatedGuardFixture("Unrelated Tool")
 		const ctx = createContext({ hasUI: false })
 
 		await turnEnd({ message: { role: "assistant", stopReason: "stop", content: [] } }, ctx)
@@ -718,19 +738,8 @@ describe("turn_end lifecycle obligation guard", () => {
 	})
 
 	it("does not guard a deliberate text-only stop while plan review is pending", async () => {
-		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-lifecycle-guard-review-")))
-		const draft = storage.create("Pending Review")
-		const runtime: FermentRuntime = {
-			...createDefaultFermentRuntime(),
-			getStorage: () => storage,
-			getContinuationPolicy: () => "automated",
-			isAutomatedContinuationEnabled: () => true,
-		}
-		runtime.setActive(draft)
-		runtime.setPendingPlanReview({ fermentId: draft.id, planMarkdown: "# Plan" })
-
-		const { handlers, pi } = createPi()
-		registerFermentEvents(pi, runtime)
+		const { pi, runtime, ferment, handlers } = setupAutomatedGuardFixture("Pending Review", { state: "draft" })
+		runtime.setPendingPlanReview({ fermentId: ferment.id, planMarkdown: "# Plan" })
 		const turnEnd = handlers.get("turn_end")
 		if (!turnEnd) throw new Error("turn_end handler was not registered")
 
@@ -747,18 +756,7 @@ describe("turn_end lifecycle obligation guard", () => {
 	})
 
 	it("falls through to the guard when the model asks a question in automated mode", async () => {
-		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-lifecycle-guard-question-")))
-		const draft = storage.create("Question Ferment")
-		const runtime: FermentRuntime = {
-			...createDefaultFermentRuntime(),
-			getStorage: () => storage,
-			getContinuationPolicy: () => "automated",
-			isAutomatedContinuationEnabled: () => true,
-		}
-		runtime.setActive(draft)
-
-		const { handlers, pi } = createPi()
-		registerFermentEvents(pi, runtime)
+		const { pi, handlers } = setupAutomatedGuardFixture("Question Ferment", { state: "draft" })
 		const turnEnd = handlers.get("turn_end")
 		if (!turnEnd) throw new Error("turn_end handler was not registered")
 
@@ -783,21 +781,10 @@ describe("turn_end lifecycle obligation guard", () => {
 	})
 
 	it("starts a fresh retry budget after a new session begins", async () => {
-		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-lifecycle-guard-session-")))
-		const draft = storage.create("New Session")
-		const runtime: FermentRuntime = {
-			...createDefaultFermentRuntime(),
-			getStorage: () => storage,
-			getContinuationPolicy: () => "automated",
-			isAutomatedContinuationEnabled: () => true,
-		}
-		runtime.setActive(draft)
-
-		const { handlers, pi } = createPi()
-		;(pi.getFlag as ReturnType<typeof vi.fn>).mockImplementation((name: string) =>
-			name === "ferment-oneshot" ? true : undefined,
-		)
-		registerFermentEvents(pi, runtime)
+		const { pi, runtime, ferment, handlers } = setupAutomatedGuardFixture("New Session", {
+			state: "draft",
+			oneshot: true,
+		})
 		const turnEnd = handlers.get("turn_end")
 		const sessionStart = handlers.get("session_start")
 		if (!turnEnd || !sessionStart) throw new Error("required event handler was not registered")
@@ -806,7 +793,7 @@ describe("turn_end lifecycle obligation guard", () => {
 		await turnEnd({ message: { role: "assistant", stopReason: "stop", content: [] } }, ctx)
 		await turnEnd({ message: { role: "assistant", stopReason: "stop", content: [] } }, ctx)
 		await sessionStart({}, ctx)
-		runtime.setActive(draft)
+		runtime.setActive(ferment)
 		vi.mocked(pi.sendMessage).mockClear()
 
 		await turnEnd({ message: { role: "assistant", stopReason: "stop", content: [] } }, ctx)
@@ -820,21 +807,15 @@ describe("turn_end lifecycle obligation guard", () => {
 
 describe("turn_end error recovery in one-shot mode", () => {
 	it("recovers a draft ferment with a fresh lifecycle-stop retry budget", async () => {
-		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-oneshot-draft-error-")))
-		const draft = storage.create("Draft Error Ferment")
-		const runtime: FermentRuntime = {
-			...createDefaultFermentRuntime(),
-			getStorage: () => storage,
-			getContinuationPolicy: () => "automated",
-			isAutomatedContinuationEnabled: () => true,
-		}
-		runtime.setActive(draft)
-
-		const { handlers, pi } = createPi()
-		;(pi.getFlag as ReturnType<typeof vi.fn>).mockImplementation((name: string) =>
-			name === "ferment-oneshot" ? true : undefined,
-		)
-		registerFermentEvents(pi, runtime)
+		const {
+			pi,
+			storage,
+			ferment: draft,
+			handlers,
+		} = setupAutomatedGuardFixture("Draft Error Ferment", {
+			state: "draft",
+			oneshot: true,
+		})
 		const turnEnd = handlers.get("turn_end")
 		if (!turnEnd) throw new Error("turn_end handler was not registered")
 		const ctx = createContext({ hasUI: false })
@@ -883,21 +864,10 @@ describe("turn_end error recovery in one-shot mode", () => {
 	})
 
 	it("clears the lifecycle-stop retry budget after each alternating provider error", async () => {
-		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-oneshot-alternating-errors-")))
-		const draft = storage.create("Alternating Error Ferment")
-		const runtime: FermentRuntime = {
-			...createDefaultFermentRuntime(),
-			getStorage: () => storage,
-			getContinuationPolicy: () => "automated",
-			isAutomatedContinuationEnabled: () => true,
-		}
-		runtime.setActive(draft)
-
-		const { handlers, pi } = createPi()
-		;(pi.getFlag as ReturnType<typeof vi.fn>).mockImplementation((name: string) =>
-			name === "ferment-oneshot" ? true : undefined,
-		)
-		registerFermentEvents(pi, runtime)
+		const { pi, handlers } = setupAutomatedGuardFixture("Alternating Error Ferment", {
+			state: "draft",
+			oneshot: true,
+		})
 		const turnEnd = handlers.get("turn_end")
 		if (!turnEnd) throw new Error("turn_end handler was not registered")
 		const ctx = createContext({ hasUI: false })
@@ -1030,20 +1000,9 @@ describe("turn_end error recovery in one-shot mode", () => {
 
 describe("session_shutdown one-shot recovery", () => {
 	it("abandons the ferment in one-shot mode", async () => {
-		const { storage, ferment } = setupScopedRunningFerment("ferment-oneshot-shutdown-", "Shutdown Ferment")
-		const runtime: FermentRuntime = {
-			...createDefaultFermentRuntime(),
-			getStorage: () => storage,
-		}
-		const active = storage.get(ferment.id)
-		if (!active) throw new Error("ferment not found after setup")
-		runtime.setActive(active)
-
-		const { handlers, pi } = createPi()
-		;(pi.getFlag as ReturnType<typeof vi.fn>).mockImplementation((name: string) =>
-			name === "ferment-oneshot" ? true : undefined,
-		)
-		registerFermentEvents(pi, runtime)
+		const { storage, ferment, handlers } = setupAutomatedGuardFixture("Shutdown Ferment", {
+			oneshot: true,
+		})
 		const shutdown = handlers.get("session_shutdown")
 		if (!shutdown) throw new Error("session_shutdown handler was not registered")
 
@@ -1054,18 +1013,9 @@ describe("session_shutdown one-shot recovery", () => {
 	})
 
 	it("pauses the ferment in interactive mode", async () => {
-		const { storage, ferment } = setupScopedRunningFerment("ferment-oneshot-shutdown-", "Shutdown Ferment")
-		const runtime: FermentRuntime = {
-			...createDefaultFermentRuntime(),
-			getStorage: () => storage,
-		}
-		const active = storage.get(ferment.id)
-		if (!active) throw new Error("ferment not found after setup")
-		runtime.setActive(active)
-
-		const { handlers, pi } = createPi()
-		;(pi.getFlag as ReturnType<typeof vi.fn>).mockReturnValue(undefined)
-		registerFermentEvents(pi, runtime)
+		const { storage, ferment, handlers } = setupAutomatedGuardFixture("Shutdown Ferment", {
+			automated: false,
+		})
 		const shutdown = handlers.get("session_shutdown")
 		if (!shutdown) throw new Error("session_shutdown handler was not registered")
 
