@@ -190,6 +190,19 @@ MODEL=multi-model ./scripts/run-local.sh -n 8 -k 3
 
 With no custom role config in the task container, the tested Kimchi revision supplies its default role configuration. The adapter writes `{"multiModel":true}` to the in-container harness settings before launching kimchi so orchestration is enabled even in a fresh benchmark image.
 
+### Compaction
+
+Compaction follows kimchi's default (on). Pass `disable-compaction=true` to turn it off for a run: the adapter then writes `{"compaction":{"enabled":false}}` to the in-container harness settings (`~/.config/kimchi/harness/settings.json`) before launching kimchi, which turns off upstream threshold auto-compaction, ferment stage-boundary and mid-turn compaction, and the model-guard mid-turn stopgap.
+
+To A/B compaction on vs. off, hold model + dataset constant and toggle the kwarg:
+
+```bash
+# one-shot ferment, compaction on (default)
+./scripts/run-local.sh -i terminal-bench/fix-git --agent-kwarg ferment-oneshot=true
+# one-shot ferment, compaction off
+./scripts/run-local.sh -i terminal-bench/fix-git --agent-kwarg ferment-oneshot=true --agent-kwarg disable-compaction=true
+```
+
 ### One-shot ferment per task
 
 Pass `ferment-oneshot=true` to wrap each trial in a one-shot exec-mode ferment. The agent boots into kimchi's progressive-refinement project mode and runs `scope_ferment` → `activate_ferment_phase` → `start_ferment_step` → `complete_ferment_step` → `complete_ferment` autonomously, delegating each step's implementation to a subagent worker. One-shot uses a static planner tool profile for the whole run, so current-ferment lifecycle tools are present from the first model call.
