@@ -188,18 +188,41 @@ function metadataToModel(m: ModelMetadata): PiModelConfig {
 }
 
 function buildModelsConfig(models: ModelMetadata[], endpoint?: string) {
-	return {
-		providers: {
-			"kimchi-dev": {
-				baseUrl: chatCompletionsApi(endpoint),
-				apiKey: "$KIMCHI_API_KEY",
-				api: "openai-completions",
-				authHeader: true,
-				headers: { "User-Agent": `kimchi/${getVersion()}` },
-				models: models.map(metadataToModel),
-			},
+	const aiEnablerModels = models.filter((m) => m.provider === "ai-enabler")
+	const otherModels = models.filter((m) => m.provider !== "ai-enabler")
+
+	// Group non-ai-enabler models by upstream provider
+	const byProvider = new Map<string, ModelMetadata[]>()
+	for (const m of otherModels) {
+		const group = byProvider.get(m.provider) ?? []
+		group.push(m)
+		byProvider.set(m.provider, group)
+	}
+
+	const providers: Record<string, unknown> = {
+		"kimchi-dev": {
+			baseUrl: chatCompletionsApi(endpoint),
+			apiKey: "$KIMCHI_API_KEY",
+			api: "openai-completions",
+			authHeader: true,
+			headers: { "User-Agent": `kimchi/${getVersion()}` },
+			models: aiEnablerModels.map(metadataToModel),
 		},
 	}
+
+	for (const [upstreamProvider, group] of byProvider) {
+		const subProviderId = `kimchi-dev/${upstreamProvider}`
+		providers[subProviderId] = {
+			baseUrl: chatCompletionsApi(endpoint),
+			apiKey: "$KIMCHI_API_KEY",
+			api: "openai-completions",
+			authHeader: true,
+			headers: { "User-Agent": `kimchi/${getVersion()}` },
+			models: group.map(metadataToModel),
+		}
+	}
+
+	return { providers }
 }
 
 export interface ModelsConfigResult {
@@ -234,9 +257,16 @@ function readCachedMetadata(modelsJsonPath: string): ModelMetadata[] | undefined
 	try {
 		const raw = readFileSync(modelsJsonPath, "utf-8")
 		const parsed = JSON.parse(raw)
-		const models = parsed?.providers?.["kimchi-dev"]?.models
-		if (!Array.isArray(models) || models.length === 0) return undefined
-		return (models as PiModelConfig[]).map(modelToMetadata)
+		const providers = parsed?.providers ?? {}
+		const result: ModelMetadata[] = []
+		for (const [name, provider] of Object.entries(providers)) {
+			if (!name.startsWith("kimchi-dev")) continue
+			const models = (provider as { models?: PiModelConfig[] }).models
+			if (!Array.isArray(models) || models.length === 0) continue
+			result.push(...models.map(modelToMetadata))
+		}
+		if (result.length === 0) return undefined
+		return result
 	} catch {
 		return undefined
 	}
@@ -248,7 +278,13 @@ function readExistingProviders(modelsJsonPath: string): Record<string, unknown> 
 		const raw = readFileSync(modelsJsonPath, "utf-8")
 		const config = JSON.parse(raw)
 		const providers = config?.providers ?? {}
-		const { "kimchi-dev": _kimchi, "kimchi-experimental": _exp, ...rest } = providers as Record<string, unknown>
+		// Strip all kimchi-managed providers (kimchi-dev and kimchi-dev/* sub-providers)
+		// plus kimchi-experimental, so they get regenerated on refresh.
+		const rest: Record<string, unknown> = {}
+		for (const [name, value] of Object.entries(providers as Record<string, unknown>)) {
+			if (name.startsWith("kimchi-dev") || name === "kimchi-experimental") continue
+			rest[name] = value
+		}
 		return rest
 	} catch {
 		return {}

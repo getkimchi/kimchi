@@ -110,7 +110,10 @@ describe("updateModelsConfig", () => {
 		await updateModelsConfig(modelsJsonPath, "test-key")
 
 		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
-		expect(config.providers["kimchi-dev"].models[0].compat).toEqual({
+		expect(config.providers["kimchi-dev/anthropic"]).toBeDefined()
+		expect(config.providers["kimchi-dev/anthropic"].api).toBe("openai-completions")
+		expect(config.providers["kimchi-dev/anthropic"].baseUrl).toBe("https://llm.kimchi.dev/openai/v1")
+		expect(config.providers["kimchi-dev/anthropic"].models[0].compat).toEqual({
 			supportsReasoningEffort: false,
 			cacheControlFormat: "anthropic",
 			supportsUsageInStreaming: true,
@@ -129,7 +132,7 @@ describe("updateModelsConfig", () => {
 		expect(config.providers["kimchi-dev"].models[0]).not.toHaveProperty("compat")
 	})
 
-	it("puts AI-Enabler models first and preserves API order for others, all under kimchi-dev", async () => {
+	it("splits ai-enabler models into kimchi-dev and non-ai-enabler models into kimchi-dev/{provider}", async () => {
 		vi.mocked(fetch).mockResolvedValueOnce({
 			ok: true,
 			json: async () => ({ models: [OPUS_46, GLM, SONNET_46, KIMI] }),
@@ -138,9 +141,19 @@ describe("updateModelsConfig", () => {
 		await updateModelsConfig(modelsJsonPath, "test-key")
 
 		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
-		expect(Object.keys(config.providers)).toEqual(["kimchi-dev"])
-		const ids = config.providers["kimchi-dev"].models.map((m: { id: string }) => m.id)
-		expect(ids).toEqual(["glm-5-fp8", "kimi-k2.5", "claude-opus-4-6", "claude-sonnet-4-6"])
+		expect(Object.keys(config.providers)).toEqual(["kimchi-dev", "kimchi-dev/anthropic"])
+
+		// ai-enabler models stay in kimchi-dev
+		const devIds = config.providers["kimchi-dev"].models.map((m: { id: string }) => m.id)
+		expect(devIds).toEqual(["glm-5-fp8", "kimi-k2.5"])
+
+		// anthropic models go to kimchi-dev/anthropic
+		const anthropicIds = config.providers["kimchi-dev/anthropic"].models.map((m: { id: string }) => m.id)
+		expect(anthropicIds).toEqual(["claude-opus-4-6", "claude-sonnet-4-6"])
+
+		// All providers use openai-completions
+		expect(config.providers["kimchi-dev"].api).toBe("openai-completions")
+		expect(config.providers["kimchi-dev/anthropic"].api).toBe("openai-completions")
 	})
 
 	it("uses correct URL, Authorization header, and timeout", async () => {
