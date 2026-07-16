@@ -10,6 +10,7 @@ import { maybeTriggerFermentCompaction, maybeTriggerMidTurnFermentCompaction } f
 import { formatDuration } from "./colors.js"
 import { extractContextualOptions, extractTrailingQuestion } from "./contextual-options.js"
 import { decideContinuation } from "./continuation.js"
+import { createFerment } from "./create.js"
 import { FERMENT_EVENTS, type FermentStalledPayload } from "./domain-events.js"
 import { emitFermentCreated } from "./domain-events-emitter.js"
 import { autoInitFromEnv, ensureGitRepo } from "./git-init.js"
@@ -34,7 +35,6 @@ import { scheduleFermentWakeUp } from "./scheduler.js"
 import { confirmPendingScope } from "./scoping-confirmation.js"
 import {
 	clearActiveFermentId,
-	continuationPolicyForNewFerment,
 	getActiveFermentId,
 	isFermentLockedByLiveProcess,
 	removeFermentLock,
@@ -426,16 +426,17 @@ export function registerFermentEvents(
 
 		try {
 			// Bootstrap path: no UI available yet, so only auto-init when the user
-			// opted in via --init-git or KIMCHI_AUTO_GIT_INIT=1. This handler has
-			// no ExtensionContext, but isOneShot=true forces "automated" regardless
-			// of hasUI, matching the previous setContinuationPolicy("automated").
-			runtime.setContinuationPolicy(continuationPolicyForNewFerment(false, true))
+			// opted in via --init-git or KIMCHI_AUTO_GIT_INIT=1.
 			await ensureGitRepo({
 				autoInit: pi.getFlag?.("init-git") === true || autoInitFromEnv(),
 			})
-			const storage = runtime.getStorage()
 			const shortName = deriveDraftFermentTitle(intent)
-			const f = storage.create(shortName, intent)
+			const f = createFerment(runtime, {
+				name: shortName,
+				goal: intent,
+				hasUI: false,
+				isOneShot: true,
+			})
 			const updated = f
 			runtime.setActive(updated)
 			emitFermentCreated(pi.events, updated)

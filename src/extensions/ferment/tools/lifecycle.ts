@@ -31,6 +31,7 @@ import { createToolVisibility } from "../../prompt-construction/tool-visibility.
 import { YES_NO_OPTIONS } from "../../questionnaire/index.js"
 import { askUserForm, normalizeAskUserQuestions, toScopingQuestionType } from "../ask-user.js"
 import { pr_bold, pr_dim } from "../colors.js"
+import { createFerment } from "../create.js"
 import { emitFermentCreated } from "../domain-events-emitter.js"
 import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { renderGateGuidance } from "../gate-registry.js"
@@ -46,7 +47,7 @@ import { defaultFermentRuntime, type FermentRuntime } from "../runtime.js"
 import { safeSendMessage } from "../safe-send.js"
 import type { PendingScope } from "../scoping.js"
 import { confirmPendingScope } from "../scoping-confirmation.js"
-import { continuationPolicyForNewFerment, MAX_BLOCK_RETRIES } from "../state.js"
+import { MAX_BLOCK_RETRIES } from "../state.js"
 import {
 	createApplyAndPersist,
 	failedToolResult,
@@ -501,8 +502,12 @@ async function resolveProposeFermentTarget(
 	// Bootstrap a new draft ferment from the proposal, mirroring /ferment new.
 	await ensureGitRepo({ ui: ctx.ui })
 	const shortName = deriveDraftFermentTitle(title)
-	const f = storage.create(shortName, goal)
-	runtime.setContinuationPolicy(continuationPolicyForNewFerment(ctx.hasUI, pi.getFlag?.("ferment-oneshot") === true))
+	const f = createFerment(runtime, {
+		name: shortName,
+		goal,
+		hasUI: ctx.hasUI,
+		isOneShot: pi.getFlag?.("ferment-oneshot") === true,
+	})
 	setActiveFermentAndApplyProfile(pi, runtime, f)
 	if (pi.events) {
 		emitFermentCreated(pi.events, f)

@@ -9,6 +9,7 @@ import { requestSharedStatusLineRender } from "../shared-status-line.js"
 import { pr_bold, pr_dim, pr_orange, pr_success, pr_teal } from "./colors.js"
 import { type FermentCommand, parseFermentCommand } from "./command-parser.js"
 import { decideContinuation } from "./continuation.js"
+import { createFerment } from "./create.js"
 import { FERMENT_EVENTS } from "./domain-events.js"
 import { emitFermentCreated } from "./domain-events-emitter.js"
 import { formatFermentStatus } from "./format.js"
@@ -32,7 +33,6 @@ import { defaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import { safeSendMessage } from "./safe-send.js"
 import { scheduleFermentWakeUp } from "./scheduler.js"
 import { runScopingFlow, sendFermentRequestMessage } from "./scoping.js"
-import { continuationPolicyForNewFerment } from "./state.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
 import { applyFermentRuntimeToolProfile, setActiveFermentAndApplyProfile } from "./tool-scope.js"
 import { checkWorktree } from "./worktree.js"
@@ -255,7 +255,6 @@ export async function startFermentForIntent({
 		)
 		return undefined
 	}
-	const storage = runtime.getStorage()
 	ctx.ui.setStatus?.("ferment-scoping", "🫧  Fermenting · creating…")
 	try {
 		// Mirror the /ferment new path: prompt the user about git init if needed.
@@ -263,8 +262,12 @@ export async function startFermentForIntent({
 		// either way with whatever branch/commit info is present.
 		await ensureGitRepo({ ui: ctx.ui })
 		const shortName = deriveDraftFermentTitle(title ?? rawIntent)
-		const f = storage.create(shortName, rawIntent)
-		runtime.setContinuationPolicy(continuationPolicyForNewFerment(ctx.hasUI, pi.getFlag?.("ferment-oneshot") === true))
+		const f = createFerment(runtime, {
+			name: shortName,
+			goal: rawIntent,
+			hasUI: ctx.hasUI,
+			isOneShot: pi.getFlag?.("ferment-oneshot") === true,
+		})
 		setActiveFermentAndApplyProfile(pi, runtime, f)
 		emitFermentCreated(pi.events, f)
 		appendRefEntry(pi, f.id)
@@ -1013,8 +1016,12 @@ export class FermentCommandController {
 					autoInit: pi.getFlag?.("init-git") === true || autoInitFromEnv(),
 				})
 				const shortName = deriveDraftFermentTitle(resolvedIntent)
-				const f = storage.create(shortName, resolvedIntent)
-				runtime.setContinuationPolicy(continuationPolicyForNewFerment(ctx.hasUI, true))
+				const f = createFerment(runtime, {
+					name: shortName,
+					goal: resolvedIntent,
+					hasUI: ctx.hasUI,
+					isOneShot: true,
+				})
 				const updated = f
 				setActiveFermentAndApplyProfile(pi, runtime, updated)
 				emitFermentCreated(pi.events, updated)
@@ -1079,10 +1086,12 @@ export class FermentCommandController {
 			// User can decline; ferment still proceeds with no branch/commit info.
 			await ensureGitRepo({ ui: ctx.ui })
 			const shortName = deriveDraftFermentTitle(rawName)
-			const f = storage.create(shortName, rawName)
-			runtime.setContinuationPolicy(
-				continuationPolicyForNewFerment(ctx.hasUI, pi.getFlag?.("ferment-oneshot") === true),
-			)
+			const f = createFerment(runtime, {
+				name: shortName,
+				goal: rawName,
+				hasUI: ctx.hasUI,
+				isOneShot: pi.getFlag?.("ferment-oneshot") === true,
+			})
 			setActiveFermentAndApplyProfile(pi, runtime, f)
 			emitFermentCreated(pi.events, f)
 			appendRefEntry(pi, f.id)
