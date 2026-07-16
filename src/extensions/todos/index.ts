@@ -186,7 +186,7 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	pi.on("session_start", (_event, ctx) => {
 		// Headless (one-shot) runs have no widget; the todo-state prompt block
 		// renders the same content as markdown so the orchestrator agent can see
-		// it. Self-gates on currentSessionHasUI inside the block's render fn.
+		// it. It receives the session context and self-gates on ctx.hasUI.
 		registerTodoStateBlock(pi, ctx)
 
 		resetTodoWidgetState(ctx)
