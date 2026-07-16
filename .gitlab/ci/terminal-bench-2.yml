@@ -37,7 +37,7 @@ setup-image:
   timeout: 30 min
   resource_group: "$TERMINAL_BENCH_RESOURCE_GROUP"
   rules:
-    - if: '$SUMMARY_ONLY == "true"'
+    - if: '$SUMMARY_ONLY == "true" || $TB21_RETRY_TRIGGER == "true" || $TB21_RETRY_SCHEDULE == "true"'
       when: never
     - when: on_success
   variables:
@@ -73,7 +73,7 @@ setup-image:
   retry: 2
   allow_failure: true
   rules:
-    - if: '$SUMMARY_ONLY == "true"'
+    - if: '$SUMMARY_ONLY == "true" || $TB21_RETRY_TRIGGER == "true" || $TB21_RETRY_SCHEDULE == "true"'
       when: never
     - when: on_success
   variables:
@@ -161,7 +161,7 @@ $[[ inputs.benchmark ]]-chunks:
 $[[ inputs.benchmark ]]-summary:
   stage: postprocess
   rules:
-    - if: '$SUMMARY_ONLY == "true"'
+    - if: '$SUMMARY_ONLY == "true" || $TB21_RETRY_TRIGGER == "true" || $TB21_RETRY_SCHEDULE == "true"'
       when: never
     - when: always
   image: mirror.gcr.io/library/node:22-bookworm
@@ -194,7 +194,7 @@ $[[ inputs.benchmark ]]-summary:
 $[[ inputs.benchmark ]]-analyze:
   stage: postprocess
   rules:
-    - if: '$SUMMARY_ONLY == "true"'
+    - if: '$SUMMARY_ONLY == "true" || $TB21_RETRY_TRIGGER == "true" || $TB21_RETRY_SCHEDULE == "true"'
       when: never
     - if: $[[ inputs.analyze_results ]] == true
       when: always
@@ -230,7 +230,7 @@ $[[ inputs.benchmark ]]-analyze:
 $[[ inputs.benchmark ]]-upload-analysis:
   stage: postprocess
   rules:
-    - if: '$SUMMARY_ONLY == "true"'
+    - if: '$SUMMARY_ONLY == "true" || $TB21_RETRY_TRIGGER == "true" || $TB21_RETRY_SCHEDULE == "true"'
       when: never
     - if: $[[ inputs.analyze_results ]] == true
       when: on_success

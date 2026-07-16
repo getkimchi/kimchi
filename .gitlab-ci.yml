@@ -9,6 +9,7 @@ stages:
   - postprocess
   - notify
   - summarize
+  - maintenance
 
 workflow:
   name: '$PIPELINE_NAME'
@@ -16,6 +17,9 @@ workflow:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       variables:
         PIPELINE_NAME: 'Benchmarks Tests — MR !$CI_MERGE_REQUEST_IID'
+    - if: '$TB21_RETRY_TRIGGER == "true" || $TB21_RETRY_SCHEDULE == "true"'
+      variables:
+        PIPELINE_NAME: 'TB2.1 Failed Pipeline Retry'
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       variables:
         PIPELINE_NAME: '$[[ inputs.benchmark ]] — $[[ inputs.agent ]] · $[[ inputs.model ]] · $[[ inputs.target_ref ]] · ferment=$[[ inputs.kimchi_ferment_oneshot ]] · tasks_all=$[[ inputs.tasks_all ]]'
@@ -27,6 +31,7 @@ workflow:
     - when: never
 
 include:
+  - local: /.gitlab/ci/tb21-failed-pipeline-retry.yml
   - local: /.gitlab/ci/terminal-bench-2.yml
     rules:
       - if: '("$[[ inputs.benchmark ]]" == "terminal-bench-2" || "$[[ inputs.benchmark ]]" == "terminal-bench-2-1") && ($CI_PIPELINE_SOURCE == "schedule" || $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api")'

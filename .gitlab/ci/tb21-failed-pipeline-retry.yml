@@ -1,0 +1,32 @@
+spec:
+  include:
+    - local: /.gitlab/ci/benchmark.inputs.yml
+---
+
+# Scheduled maintenance job that retries failed daily TB2.1 benchmark pipelines.
+#
+# This job is triggered by a dedicated pipeline schedule (not the benchmark
+# schedules themselves). Create a schedule on the `benchmarks` branch with a
+# variable TB21_RETRY_SCHEDULE=true, for example running every 4 hours.
+
+tb21-retry-failed-pipelines:
+  stage: maintenance
+  image: ghcr.io/astral-sh/uv:python3.14-bookworm
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $TB21_RETRY_SCHEDULE == "true"'
+      when: on_success
+    - if: '$CI_PIPELINE_SOURCE == "api" && $TB21_RETRY_TRIGGER == "true"'
+      when: on_success
+    - when: never
+  variables:
+    TB21_RETRY_DRY_RUN: "false"
+    TB21_RETRY_MAX_PER_RUN: "3"
+    TB21_RETRY_STATUS_FILTER: "failed"
+  script:
+    - cd benchmark/scripts/gitlab
+    - uv run --no-dev retry_failed_scheduled_pipelines.py
+  artifacts:
+    when: always
+    expire_in: 7 days
+    paths:
+      - benchmark/scripts/gitlab/tb21-retry-report.json
