@@ -14,12 +14,15 @@
 import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs"
 import { join } from "node:path"
 import {
+	type AgentSession,
 	defineTool,
 	type ExtensionAPI,
 	type ExtensionCommandContext,
 	type ExtensionContext,
 	type ExtensionUIContext,
 	getAgentDir,
+	type ModelRegistry,
+	type Theme,
 } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, Key, matchesKey, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
@@ -77,7 +80,7 @@ import {
 	type SubagentType,
 } from "./personas/types.js"
 import { resolveAgentInvocationConfig, resolveJoinMode } from "./resolution/invocation-config.js"
-import { type ModelRegistry, resolveModel } from "./resolution/model-resolver.js"
+import { resolveModel } from "./resolution/model-resolver.js"
 import { registerResumeSubagentTool } from "./resume-tool.js"
 import { applyAndEmitLoaded, type SubagentsSettings, saveAndEmitChanged } from "./settings.js"
 import {
@@ -91,8 +94,6 @@ import {
 	formatTurns,
 	getDisplayName,
 	SPINNER,
-	type Theme,
-	type UICtx,
 } from "./ui/agent-widget.js"
 
 // ---- Shared helpers ----
@@ -178,24 +179,22 @@ function extractImagePathsFromSession(ctx: ExtensionContext): string[] {
 			if (Array.isArray(content)) {
 				for (const block of content) {
 					if (block.type !== "toolCall") continue
-					const toolBlock = block as { id?: string; name?: string; arguments?: Record<string, unknown> }
-					if (toolBlock.name === "read" && toolBlock.id && typeof toolBlock.arguments?.path === "string") {
-						readPathsByToolCallId.set(toolBlock.id, toolBlock.arguments.path)
+					if (block.name === "read" && block.id && typeof block.arguments?.path === "string") {
+						readPathsByToolCallId.set(block.id, block.arguments.path)
 					}
 				}
 			}
 		} else if (msg.role === "toolResult") {
-			const toolResultMsg = msg as { toolCallId?: string; content?: unknown[] }
-			const content = toolResultMsg.content
+			const content = msg.content
 			if (Array.isArray(content)) {
-				const hasImage = content.some((block) => (block as { type?: string }).type === "image")
-				const path = toolResultMsg.toolCallId ? readPathsByToolCallId.get(toolResultMsg.toolCallId) : undefined
+				const hasImage = content.some((block) => block.type === "image")
+				const path = msg.toolCallId ? readPathsByToolCallId.get(msg.toolCallId) : undefined
 				if (hasImage && path) {
 					imagePaths.add(path)
 				}
 			}
-			if (toolResultMsg.toolCallId) {
-				readPathsByToolCallId.delete(toolResultMsg.toolCallId)
+			if (msg.toolCallId) {
+				readPathsByToolCallId.delete(msg.toolCallId)
 			}
 		}
 	}
@@ -262,8 +261,8 @@ function createActivityTracker(maxTurns?: number, onStreamUpdate?: (opts?: { tex
 			state.turnCount = turnCount
 			onStreamUpdate?.()
 		},
-		onSessionCreated: (session: unknown) => {
-			state.session = session as AgentActivity["session"]
+		onSessionCreated: (session: AgentSession) => {
+			state.session = session
 		},
 		onAssistantUsage: (usage: LifetimeUsage) => {
 			addUsage(state.lifetimeUsage, usage)
@@ -399,7 +398,7 @@ function buildDetails(
 		turnCount: activity?.turnCount,
 		maxTurns: activity?.maxTurns,
 		durationMs: (record.completedAt ?? Date.now()) - record.startedAt,
-		status: record.status as AgentDetails["status"],
+		status: record.status,
 		agentId: record.id,
 		sessionFile: record.sessionFile,
 		error: record.error,
@@ -908,11 +907,11 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	pi.on("tool_execution_start", async (_event, ctx) => {
-		widget.setUICtx(ctx.ui as UICtx)
+		widget.setUICtx(ctx.ui)
 		widget.onTurnStart()
 
 		if (ctx.hasUI) {
-			const newUi = ctx.ui as ExtensionUIContext
+			const newUi = ctx.ui
 			// Re-subscribe if the UI context changed (e.g. after a session switch).
 			// The terminal-input handler must use the live UI reference, not a
 			// stale closure captured from the first invocation.
@@ -1090,8 +1089,8 @@ ${AGENT_TOOL_GUIDELINES}`,
 				// Defense-in-depth: `visibility` is not in this tool's public schema (see execute()),
 				// but if an LLM hallucinates the arg we'd rather hide the tool call than render it.
 				if ((args as Record<string, unknown>).visibility === "system") return new Text("", 0, 0)
-				const displayName = args.subagent_type ? getDisplayName(args.subagent_type as string) : "Agent"
-				const desc = (args.description as string) ?? ""
+				const displayName = args.subagent_type ? getDisplayName(args.subagent_type) : "Agent"
+				const desc = args.description ?? ""
 				return new Text(
 					`▸ ${theme.fg("toolTitle", theme.bold(displayName))}${desc ? `  ${theme.fg("muted", desc)}` : ""}`,
 					0,
@@ -1182,7 +1181,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 			},
 
 			execute: async (toolCallId, params, signal, onUpdate, ctx) => {
-				widget.setUICtx(ctx.ui as UICtx)
+				widget.setUICtx(ctx.ui)
 
 				reloadCustomAgents()
 
@@ -1195,18 +1194,15 @@ ${AGENT_TOOL_GUIDELINES}`,
 
 				const customConfig = getAgentConfig(subagentType)
 
-				const resolvedConfig = resolveAgentInvocationConfig(
-					customConfig,
-					params as Parameters<typeof resolveAgentInvocationConfig>[1],
-				)
+				const resolvedConfig = resolveAgentInvocationConfig(customConfig, params)
 
 				let model = ctx.model
 				if (resolvedConfig.modelInput) {
-					const resolvedModel = resolveModel(resolvedConfig.modelInput, ctx.modelRegistry as ModelRegistry)
+					const resolvedModel = resolveModel(resolvedConfig.modelInput, ctx.modelRegistry)
 					if (typeof resolvedModel === "string") {
 						if (resolvedConfig.modelFromParams) return textResult(resolvedModel)
 					} else {
-						model = resolvedModel as typeof ctx.model
+						model = resolvedModel
 					}
 				}
 
@@ -1215,7 +1211,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 				// multi-model role pool. This runs before budget-retry and task_ref checks
 				// so invalid models are rejected immediately.
 				if (getMultiModelEnabled(ctx.sessionManager) && resolvedConfig.modelFromParams) {
-					const fullRef = `${(model as { provider?: string }).provider}/${(model as { id?: string }).id}`
+					const fullRef = `${model?.provider}/${model?.id}`
 					const allowed = new Set(getAllowedMultiModelRefs())
 					if (!allowed.has(fullRef)) {
 						const allowedList = Array.from(allowed)
@@ -1227,17 +1223,15 @@ ${AGENT_TOOL_GUIDELINES}`,
 					}
 				}
 
-				const explicitTokenBudget =
-					(params as { token_budget?: number; tokenBudget?: number }).token_budget ??
-					(params as { token_budget?: number; tokenBudget?: number }).tokenBudget
+				const explicitTokenBudget = params.token_budget ?? (params as { tokenBudget?: number }).tokenBudget
 				const activeBudgetRetryBlock = budgetRetryBlock
 				if (
 					activeBudgetRetryBlock &&
 					shouldBlockBudgetRetry(activeBudgetRetryBlock, {
 						tokenBudget: resolvedConfig.tokenBudget,
 						subagentType,
-						description: params.description as string,
-						prompt: params.prompt as string,
+						description: params.description,
+						prompt: params.prompt,
 					})
 				) {
 					return textResult(
@@ -1270,9 +1264,9 @@ ${AGENT_TOOL_GUIDELINES}`,
 				// Image forwarding: when session has images and subagent model supports vision,
 				// extract image paths from read tool calls and prepend them to the prompt.
 				const effectivePrompt = (() => {
-					const base = params.prompt as string
+					const base = params.prompt
 					if (!sessionHasImages()) return base
-					const modelInput = (model as { input?: string[] } | undefined)?.input
+					const modelInput = model?.input
 					if (!modelInput?.includes("image")) return base
 
 					const imagePaths = extractImagePathsFromSession(ctx)
@@ -1283,12 +1277,10 @@ ${AGENT_TOOL_GUIDELINES}`,
 				})()
 
 				const parentModelId = ctx.model?.id
-				const effectiveModelId = (model as { id?: string } | undefined)?.id
+				const effectiveModelId = model?.id
 				const agentModelName =
 					effectiveModelId && effectiveModelId !== parentModelId
-						? ((model as { name?: string; id?: string } | undefined)?.name ?? effectiveModelId)
-								.replace(/^Claude\s+/i, "")
-								.toLowerCase()
+						? (model?.name ?? effectiveModelId).replace(/^Claude\s+/i, "").toLowerCase()
 						: undefined
 				const agentTags: string[] = []
 				if (thinking) agentTags.push(`thinking: ${thinking}`)
@@ -1297,7 +1289,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 				const effectiveMaxTurns = normalizeMaxTurns(resolvedConfig.maxTurns ?? getDefaultMaxTurns())
 				const detailBase = {
 					displayName,
-					description: params.description as string,
+					description: params.description,
 					subagentType,
 					visibility,
 					modelName: agentModelName,
@@ -1321,24 +1313,19 @@ ${AGENT_TOOL_GUIDELINES}`,
 
 					let id: string
 					const origBgOnSession = bgCallbacks.onSessionCreated
-					bgCallbacks.onSessionCreated = (session: unknown) => {
+					bgCallbacks.onSessionCreated = (session) => {
 						origBgOnSession(session)
 						const rec = manager.getRecord(id)
 						if (rec?.outputFile) {
-							rec.outputCleanup = streamToOutputFile(
-								session as Parameters<typeof streamToOutputFile>[0],
-								rec.outputFile,
-								id,
-								ctx.cwd,
-							)
+							rec.outputCleanup = streamToOutputFile(session, rec.outputFile, id, ctx.cwd)
 						}
 					}
 
 					try {
 						id = manager.spawn(pi, ctx, subagentType, effectivePrompt, {
-							description: params.description as string,
+							description: params.description,
 							visibility,
-							model: model as Parameters<typeof manager.spawn>[4]["model"],
+							model,
 							maxTurns: effectiveMaxTurns,
 							tokenBudget: resolvedConfig.tokenBudget,
 							taskRef,
@@ -1361,14 +1348,14 @@ ${AGENT_TOOL_GUIDELINES}`,
 						record.joinMode = joinMode
 						record.toolCallId = toolCallId
 						record.outputFile = createOutputFilePath(ctx.cwd, id, ctx.sessionManager.getSessionId(), parentSessionDir)
-						writeInitialEntry(record.outputFile, id, params.prompt as string, ctx.cwd)
+						writeInitialEntry(record.outputFile, id, params.prompt, ctx.cwd)
 					}
 					if (explicitTokenBudget != null) {
 						budgetRetryCandidates.set(id, {
 							budget: explicitTokenBudget,
 							subagentType,
-							description: params.description as string,
-							prompt: params.prompt as string,
+							description: params.description,
+							prompt: params.prompt,
 						})
 					}
 
@@ -1393,7 +1380,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 					const isQueued = record?.status === "queued"
 					return textResult(
 						`Agent ${isQueued ? "queued" : "started"} in background.\nAgent ID: ${id}\nType: ${displayName}\nDescription: ${params.description}\n${record?.outputFile ? `Output file: ${record.outputFile}\n` : ""}${isQueued ? `Position: queued (max ${manager.getMaxConcurrent()} concurrent)\n` : ""}\nYou will be notified when this agent completes.\nUse get_subagent_result to retrieve full results, or steer_subagent to send it messages.\nDo not duplicate this agent's work.`,
-						{ ...detailBase, toolUses: 0, tokens: "", durationMs: 0, status: "background" as const, agentId: id },
+						{ ...detailBase, toolUses: 0, tokens: "", durationMs: 0, status: "background", agentId: id },
 					)
 				}
 
@@ -1428,14 +1415,14 @@ ${AGENT_TOOL_GUIDELINES}`,
 					lastStreamedContent = contentText
 					onUpdate?.({
 						content: [{ type: "text", text: contentText }],
-						details: details as unknown,
+						details,
 					})
 				}
 
 				const { state: fgState, callbacks: fgCallbacks } = createActivityTracker(effectiveMaxTurns, streamUpdate)
 
 				const origOnSession = fgCallbacks.onSessionCreated
-				fgCallbacks.onSessionCreated = (session: unknown) => {
+				fgCallbacks.onSessionCreated = (session) => {
 					origOnSession(session)
 					for (const a of manager.listAgents()) {
 						if (a.session === session) {
@@ -1444,12 +1431,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 							widget.ensureTimer()
 							const rec = manager.getRecord(a.id)
 							if (rec?.outputFile) {
-								rec.outputCleanup = streamToOutputFile(
-									session as Parameters<typeof streamToOutputFile>[0],
-									rec.outputFile,
-									a.id,
-									ctx.cwd,
-								)
+								rec.outputCleanup = streamToOutputFile(session, rec.outputFile, a.id, ctx.cwd)
 							}
 							break
 						}
@@ -1492,9 +1474,9 @@ ${AGENT_TOOL_GUIDELINES}`,
 				let spawnedId: string
 				try {
 					spawnedId = manager.spawn(pi, ctx, subagentType, effectivePrompt, {
-						description: params.description as string,
+						description: params.description,
 						visibility,
-						model: model as Parameters<typeof manager.spawn>[4]["model"],
+						model,
 						maxTurns: effectiveMaxTurns,
 						tokenBudget: resolvedConfig.tokenBudget,
 						taskRef,
@@ -1520,7 +1502,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 				if (fgOutputFile) {
 					record.outputFile = fgOutputFile.replace("placeholder", spawnedId)
 					record.toolCallId = toolCallId
-					writeInitialEntry(record.outputFile, spawnedId, params.prompt as string, ctx.cwd)
+					writeInitialEntry(record.outputFile, spawnedId, params.prompt, ctx.cwd)
 				}
 
 				// biome-ignore lint/style/noNonNullAssertion: promise is always set after spawn() calls startAgent()
@@ -1537,17 +1519,12 @@ ${AGENT_TOOL_GUIDELINES}`,
 						parentSessionDir,
 					)
 					record.outputFile = outputFile
-					writeInitialEntry(outputFile, spawnedId, params.prompt as string, ctx.cwd)
+					writeInitialEntry(outputFile, spawnedId, params.prompt, ctx.cwd)
 					if (record.session) {
 						// Tear down the foreground streaming subscription before
 						// re-subscribing against the same session for background output.
 						record.outputCleanup?.()
-						record.outputCleanup = streamToOutputFile(
-							record.session as Parameters<typeof streamToOutputFile>[0],
-							outputFile,
-							spawnedId,
-							ctx.cwd,
-						)
+						record.outputCleanup = streamToOutputFile(record.session, outputFile, spawnedId, ctx.cwd)
 					}
 
 					const joinMode = resolveJoinMode(getDefaultJoinMode(), true)
@@ -1558,8 +1535,8 @@ ${AGENT_TOOL_GUIDELINES}`,
 						budgetRetryCandidates.set(spawnedId, {
 							budget: explicitTokenBudget,
 							subagentType,
-							description: params.description as string,
-							prompt: params.prompt as string,
+							description: params.description,
+							prompt: params.prompt,
 						})
 					}
 					if (joinMode != null && joinMode !== "async") {
@@ -1585,7 +1562,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 							toolUses: fgState.toolUses,
 							tokens: formatLifetimeTokens(fgState),
 							durationMs: Date.now() - startedAt,
-							status: "background" as const,
+							status: "background",
 							agentId: spawnedId,
 						},
 					)
@@ -1617,8 +1594,8 @@ ${AGENT_TOOL_GUIDELINES}`,
 						? {
 								budget: explicitTokenBudget,
 								subagentType,
-								description: params.description as string,
-								prompt: params.prompt as string,
+								description: params.description,
+								prompt: params.prompt,
 							}
 						: undefined,
 				)
@@ -1730,14 +1707,14 @@ ${AGENT_TOOL_GUIDELINES}`,
 			},
 
 			execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {
-				const record = manager.getRecord(params.agent_id as string)
+				const record = manager.getRecord(params.agent_id)
 				if (!record) {
 					return textResult(`Agent not found: "${params.agent_id}". It may have been cleaned up.`)
 				}
 
 				if (params.wait && record.status === "running" && record.promise) {
 					record.resultConsumed = true
-					cancelNudge(params.agent_id as string)
+					cancelNudge(params.agent_id)
 					await record.promise
 				}
 
@@ -1776,7 +1753,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 
 				if (record.status !== "running" && record.status !== "queued") {
 					record.resultConsumed = true
-					cancelNudge(params.agent_id as string)
+					cancelNudge(params.agent_id)
 				}
 
 				if (params.verbose && record.session) {
@@ -1830,7 +1807,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 				}),
 			}),
 			execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {
-				const record = manager.getRecord(params.agent_id as string)
+				const record = manager.getRecord(params.agent_id)
 				if (!record) {
 					return textResult(`Agent not found: "${params.agent_id}". It may have been cleaned up.`)
 				}
@@ -1841,7 +1818,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 				}
 				if (!record.session) {
 					if (!record.pendingSteers) record.pendingSteers = []
-					record.pendingSteers.push(params.message as string)
+					record.pendingSteers.push(params.message)
 					pi.events.emit("subagents:steered", { id: record.id, message: params.message })
 					return textResult(
 						`Steering message queued for agent ${record.id}. It will be delivered once the session initializes.`,
@@ -1849,7 +1826,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 				}
 
 				try {
-					await steerAgent(record.session, params.message as string)
+					await steerAgent(record.session, params.message)
 					pi.events.emit("subagents:steered", { id: record.id, message: params.message })
 					const tokens = formatLifetimeTokens(record)
 					const contextPercent = getSessionContextPercent(record.session)
@@ -1967,7 +1944,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 		const entries = allNames.map((name) => {
 			const cfg = getAgentConfig(name)
 			const disabled = cfg?.enabled === false
-			const model = getModelLabel(name, ctx.modelRegistry as ModelRegistry)
+			const model = getModelLabel(name, ctx.modelRegistry)
 			const indicator = sourceIndicator(cfg)
 			const prefix = `${indicator}${name} · ${model}`
 			const desc = disabled ? "(disabled)" : (cfg?.description ?? name)
@@ -2274,7 +2251,7 @@ memory: <"user" (global), "project" (per-project), or "local" (gitignored per-pr
 
 Write the file using the write tool. Only write the file, nothing else.`
 
-		const record = await manager.spawnAndWait(pi, ctx as ExtensionContext, AGENT_GENERAL_PURPOSE, generatePrompt, {
+		const record = await manager.spawnAndWait(pi, ctx, AGENT_GENERAL_PURPOSE, generatePrompt, {
 			description: `Generate ${name} agent`,
 			maxTurns: 5,
 		})

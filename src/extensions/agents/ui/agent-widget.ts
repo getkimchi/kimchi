@@ -2,6 +2,7 @@
  * agent-widget.ts — Persistent widget showing running/completed agents above the editor.
  */
 
+import type { ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent"
 import { truncateToWidth } from "@earendil-works/pi-tui"
 import { remountTipWidget } from "../../tips/index.js"
 import type { AgentManager } from "../manager/agent-manager.js"
@@ -23,20 +24,6 @@ const TOOL_DISPLAY: Record<string, string> = {
 	grep: "searching",
 	find: "finding files",
 	ls: "listing",
-}
-
-export type Theme = {
-	fg(color: string, text: string): string
-	bold(text: string): string
-}
-
-export type UICtx = {
-	setStatus(key: string, text: string | undefined): void
-	setWidget(
-		key: string,
-		content: undefined | ((tui: unknown, theme: Theme) => { render(width: number): string[]; invalidate(): void }),
-		options?: { placement?: "aboveEditor" | "belowEditor" },
-	): void
 }
 
 export interface AgentActivity {
@@ -146,7 +133,7 @@ export function describeActivity(activeTools: Map<string, string>, responseText?
 }
 
 export class AgentWidget {
-	private uiCtx: UICtx | undefined
+	private uiCtx: ExtensionUIContext | undefined
 	private widgetFrame = 0
 	private widgetInterval: ReturnType<typeof setInterval> | undefined
 	private finishedTurnAge = new Map<string, number>()
@@ -161,7 +148,7 @@ export class AgentWidget {
 		private agentActivity: Map<string, AgentActivity>,
 	) {}
 
-	setUICtx(ctx: UICtx) {
+	setUICtx(ctx: ExtensionUIContext) {
 		if (ctx !== this.uiCtx) {
 			this.uiCtx = ctx
 			this.widgetRegistered = false
