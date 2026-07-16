@@ -12,12 +12,12 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
-import { createAutoUpdateTipProvider } from "./auto-update/tips.js"
-import { registerTipProvider } from "./tips/registry.js"
 import { isHomebrewInstall } from "../update/paths.js"
 import { loadAutoUpdateSetting, saveAutoUpdateSetting } from "../update/settings.js"
 import { applyUpdate, checkForUpdate, parseCanarySha7 } from "../update/workflow.js"
 import { getVersion } from "../utils.js"
+import { createAutoUpdateTipProvider } from "./auto-update/tips.js"
+import { registerTipProvider } from "./tips/registry.js"
 
 const LOG_PREFIX = "[kimchi-auto-update]"
 

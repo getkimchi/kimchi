@@ -64,7 +64,6 @@ function resetMocks(): void {
 
 beforeEach(() => {
 	resetMocks()
-	// biome-ignore lint/performance/noDelete: setting to undefined produces the literal string "undefined", which is truthy and would pollute subsequent tests
 	delete process.env.KIMCHI_NO_UPDATE_CHECK
 	// Default platform: linux (CI). Individual tests can override.
 	Object.defineProperty(process, "platform", { value: "linux", configurable: true })
@@ -98,7 +97,6 @@ beforeEach(() => {
 
 afterEach(() => {
 	if (originalEnvNoCheck === undefined) {
-		// biome-ignore lint/performance/noDelete: setting to undefined produces the literal string "undefined", which is truthy and would pollute subsequent tests
 		delete process.env.KIMCHI_NO_UPDATE_CHECK
 	} else process.env.KIMCHI_NO_UPDATE_CHECK = originalEnvNoCheck
 	Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true })
