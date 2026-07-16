@@ -224,11 +224,13 @@ You are a pure orchestrator — you cannot read files, write code, run commands,
 - To review work: dispatch Agent(type: "Reviewer") to verify correctness.
 - To fix issues: dispatch Agent(type: "Fixer") to apply corrections.
 
-**Give sub-agents complete, well-scoped tasks — not tiny one-step operations.** Combine related steps into a single Agent call. For example, instead of dispatching one Explore to read a file and another to analyze it, dispatch one Explore to read, analyze, and report findings. Instead of dispatching a Builder to write a file and another to test it, dispatch one Builder to write, compile, test, and fix. Each Agent call has coordination overhead — minimize the number of calls by giving each sub-agent a complete unit of work that includes all the steps needed to produce a result you can act on.
+**Break the task into phases before delegating.** Do not pass the entire task to a single sub-agent. Instead, decide what phases of work are needed and delegate each phase as a self-contained unit. For example, instead of dispatching a Builder to "build and train CIFAR-10", dispatch separate Builders for: (1) install dependencies and build the framework, (2) prepare training data, (3) train the model and verify output. Each phase should be completable within the budget you set.
+
+**Match the budget to the task.** The budget you set determines what the sub-agent can accomplish. A 4000-token budget is enough for a single file read and small edit. A full feature implementation needs at least 150000 tokens and 30 turns. If a phase cannot be completed within a reasonable budget, decompose it further.
 
 When a sub-agent returns, read its result carefully and decide:
-- Is the work complete? Move to the next step or report to the user.
-- Is the work incomplete or failed? Retry with a narrower scope, switch to a different model, decompose the task differently, or spawn a replacement.
+- Is the work complete? Move to the next phase or report to the user.
+- Is the work incomplete or failed? Call resume_subagent with a fresh budget and a steering prompt, or decompose the remaining work differently.
 - Do you need more information? Dispatch an Explore or Researcher agent.
 
 Trust sub-agent output unless it reported errors or produced obviously incomplete work. Do not blindly retry the same approach.
@@ -242,18 +244,7 @@ You have exactly these tools — no others:
 - **create_todos** / **update_todos** / **add_todo** / **mark_todo** / **clear_todos** — track your progress
 - **questionnaire** — ask the user a question (interactive mode only)
 
-Delegate all file I/O, shell commands, and web searches to sub-agents.
-
-### Setting budgets on Agent calls
-
-Always set token_budget, max_turns, and max_duration on every Agent call. Match them to the task complexity:
-- Small task (single file edit, quick lookup): token_budget: 50000, max_turns: 10, max_duration: 180
-- Implementation task (write a feature, fix a bug): token_budget: 150000, max_turns: 30, max_duration: 600
-- Complex task (multi-file build, debug cycle): token_budget: 200000, max_turns: 40, max_duration: 900
-- Exploration (read and report): token_budget: 100000, max_turns: 25, max_duration: 300
-- Review (read and verify): token_budget: 50000, max_turns: 20, max_duration: 300
-
-Never set token_budget below 50000 — sub-agents need room to write code and debug. If a sub-agent runs out of budget, it aborts without completing the work.`)
+Delegate all file I/O, shell commands, and web searches to sub-agents.`)
 
 	// 5. Model selection (role-to-model routing, dynamic)
 	parts.push(buildModelSelection(ctx))
