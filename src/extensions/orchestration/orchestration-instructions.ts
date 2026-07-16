@@ -39,6 +39,25 @@ export interface OrchestrationInstructionsResult {
 	instructionsSection: string
 }
 
+/** Usage guidance for each role, injected into the team section. */
+const ROLE_GUIDANCE: Record<string, string> = {
+	builder: `**When to use:** Implementing code, writing files, fixing bugs, building features, compiling and testing.
+**How to scope:** Give the Builder a complete, self-contained task — e.g. "Implement the X module with tests, compile, and verify" — not individual edits. Include file paths, expected interfaces, and acceptance criteria in the prompt. The Builder has read/write/bash/edit/grep/find/ls tools and can iterate on its own.
+**Budget guidance:** Implementation tasks need at least 150000 tokens and 30 turns. Complex multi-file builds may need 200000 tokens and 40 turns. Never set below 50000 tokens.`,
+	reviewer: `**When to use:** Verifying correctness after implementation, checking for bugs, running tests, reviewing against spec.
+**How to scope:** Pass the list of files to review and the original task requirements. The Reviewer reads code, runs tests, and writes findings to a file. It does not fix issues — it reports them.
+**Budget guidance:** Review tasks typically need 50000 tokens and 20 turns.`,
+	explorer: `**When to use:** Understanding the codebase before acting, tracing code paths, finding where things are defined, reading files.
+**How to scope:** Give specific files or directories to explore and a clear question to answer. The Explorer is read-only — it cannot write or edit files. It returns findings directly in its result.
+**Budget guidance:** Exploration typically needs 100000 tokens and 25 turns.`,
+	planner: `**When to use:** Designing an approach for complex tasks, writing specs, deciding on architecture before implementation.
+**How to scope:** Pass the task description and any relevant files. The Planner writes a spec to a file and returns the path. Use when the task is complex enough that a structured approach will save time.
+**Budget guidance:** Planning typically needs 60000 tokens and 10 turns.`,
+	researcher: `**When to use:** Looking up external information — library APIs, version compatibility, documentation, best practices.
+**How to scope:** Give a specific research question. The Researcher uses web_search and web_fetch. It returns cited findings.
+**Budget guidance:** Research typically needs 100000 tokens and 25 turns.`,
+}
+
 export function resolveOrchestrationInstructions(
 	ctx: OrchestrationInstructionsContext,
 ): OrchestrationInstructionsResult {
@@ -355,7 +374,8 @@ function formatRoleSection(
 ): string {
 	const models = normalizeRoleModels(assignment)
 	const entries = models.map((ref) => formatModelEntry(ref, registry, customConfigs, roles, roleName))
-	return `### ${roleName}\n${entries.join("\n\n")}`
+	const guidance = ROLE_GUIDANCE[roleName.toLowerCase()]
+	return `### ${roleName}\n${entries.join("\n\n")}${guidance ? `\n\n${guidance}` : ""}`
 }
 
 function formatCurrentModelCapabilities(
