@@ -4,7 +4,7 @@ import { join } from "node:path"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
-import type { Ferment } from "../../ferment/types.js"
+import type { Ferment, ScopingAnswer } from "../../ferment/types.js"
 import { clearAllLifecycleGuards, maybeInjectLifecycleObligationGuard } from "./lifecycle-obligation-guard.js"
 import {
 	hasScopingProgressTool,
@@ -21,6 +21,12 @@ import { MAX_SCOPING_EXPLORE_TURNS, getActive, resetScopingExploreTurns, setActi
 import { filterSentMessages } from "./test-helpers.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
 
+const FIXED_TIMESTAMP = "2026-01-01T00:00:00.000Z"
+
+function confirmedAnswer(answer: string): ScopingAnswer {
+	return { answer, confirmedAt: FIXED_TIMESTAMP }
+}
+
 function createPi(): ExtensionAPI {
 	return {
 		appendEntry: vi.fn(),
@@ -30,7 +36,6 @@ function createPi(): ExtensionAPI {
 }
 
 function makeDraftFerment(overrides: Partial<Ferment> = {}): Ferment {
-	const now = "2026-01-01T00:00:00.000Z"
 	return {
 		id: "ferment-1",
 		name: "Injected Nudge",
@@ -40,8 +45,8 @@ function makeDraftFerment(overrides: Partial<Ferment> = {}): Ferment {
 		phases: [],
 		decisions: [],
 		memories: [],
-		createdAt: now,
-		updatedAt: now,
+		createdAt: FIXED_TIMESTAMP,
+		updatedAt: FIXED_TIMESTAMP,
 		...overrides,
 	}
 }
@@ -90,10 +95,10 @@ describe("maybeInjectLifecycleObligationGuard", () => {
 		return makeDraftFerment({
 			status: "planned",
 			scoping: {
-				goal: { answer: "Goal", confirmedAt: "2026-01-01T00:00:00.000Z" },
-				criteria: { answer: "Criteria", confirmedAt: "2026-01-01T00:00:00.000Z" },
-				constraints: { answer: "Constraints", confirmedAt: "2026-01-01T00:00:00.000Z" },
-				phases: { answer: "1 phase", confirmedAt: "2026-01-01T00:00:00.000Z" },
+				goal: confirmedAnswer("Goal"),
+				criteria: confirmedAnswer("Criteria"),
+				constraints: confirmedAnswer("Constraints"),
+				phases: confirmedAnswer("1 phase"),
 			},
 			phases: [{ id: "phase-1", index: 1, name: "Phase", goal: "Build", status: "planned", steps: [] }],
 			...overrides,
