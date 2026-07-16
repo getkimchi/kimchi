@@ -30,6 +30,7 @@ type SegmentId =
 	| "team"
 	| "billing"
 	| "lsp"
+	| "code-rag"
 
 /** Raw inputs preserved on segments that have compact forms, so compaction
  *  steps can rebuild the colorized text without round-tripping through ANSI.
@@ -497,6 +498,13 @@ export class StatusLine implements Component {
 		return { id: "lsp", text, width: visibleWidth(text) }
 	}
 
+	private codeRagSegment(): Segment | null {
+		const status = this.statusLineData.getExtensionStatuses().get("code-rag")
+		if (!status) return null
+		const text = `${this.dim("RAG:")} ${this.accent(status)}`
+		return { id: "code-rag", text, width: visibleWidth(text) }
+	}
+
 	private billingSegment(pinned = false): Segment | null {
 		if (!pinned) return null
 		const line = getBillingStatusLine()
@@ -579,6 +587,7 @@ export class StatusLine implements Component {
 			this.tagsSegment(tags, pinnedSet.has("tags")),
 			this.teamSegment(tags, pinnedSet.has("team")),
 			this.lspSegment(),
+			this.codeRagSegment(),
 		].filter((s): s is Segment => s !== null)
 
 		const unpinnedSegments = allSegments.filter((s) => !pinnedSet.has(s.id))

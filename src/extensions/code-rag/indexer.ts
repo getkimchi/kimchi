@@ -444,19 +444,28 @@ export interface SearchOutcome {
 	totalChunks: number
 }
 
+export interface SearchOptions {
+	signal?: AbortSignal
+	onProgress?: (progress: IndexProgress) => void
+	/** Skip the pre-search freshness refresh entirely (e.g. while an explicit
+	 *  /index build is running, to avoid two concurrent index writers). */
+	skipRefresh?: boolean
+}
+
 export async function searchIndex(
 	cwd: string,
 	query: string,
 	limit: number,
-	signal?: AbortSignal,
+	options: SearchOptions = {},
 ): Promise<SearchOutcome> {
 	const update = await updateIndex(cwd, {
-		signal,
-		maxChangedFiles: MAX_STALE_FILES_PER_SEARCH,
+		signal: options.signal,
+		maxChangedFiles: options.skipRefresh ? 0 : MAX_STALE_FILES_PER_SEARCH,
 		requireExisting: true,
+		onProgress: options.onProgress,
 	})
 	const chunks = loadRuntimeChunks(cwd)
-	const [queryVector] = await embedTexts([formatQueryForEmbedding(query)], { signal })
+	const [queryVector] = await embedTexts([formatQueryForEmbedding(query)], { signal: options.signal })
 
 	const queryTokens = query
 		.toLowerCase()
