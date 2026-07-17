@@ -20,6 +20,7 @@ import * as PromptSupplementRegistry from "../../shared/planning/prompt-suppleme
 import * as ToolProfileManager from "../../shared/planning/tool-profile-manager.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
+import { createFerment } from "../ferment/create.js"
 import { emitFermentCreated } from "../ferment/domain-events-emitter.js"
 import { appendRefEntry } from "../ferment/nudge.js"
 import { defaultFermentRuntime } from "../ferment/runtime.js"
@@ -601,7 +602,12 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				// the draft via /ferment list when they want to implement it.
 				if (parsed.chunks.length === 0) {
 					const draftName = parsed.goal.split("\n")[0] || "Plan from --plan mode"
-					const draft = storage.create(draftName, parsed.goal || text.trim())
+					const draft = createFerment(runtime, {
+						name: draftName,
+						goal: parsed.goal || text.trim(),
+						hasUI: ctx.hasUI,
+						isOneShot: pi.getFlag("ferment-oneshot") === true,
+					})
 					defaultFermentRuntime.setActive(draft)
 					if (pi.events) emitFermentCreated(pi.events, draft)
 					appendRefEntry(pi, draft.id)
@@ -616,7 +622,12 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				// proper ID, is visible to runtime.getActive(), the scheduler, and
 				// the compaction / resume paths.
 				const fermentName = parsed.goal.split("\n")[0].slice(0, 80) || "Plan from --plan mode"
-				const draft = storage.create(fermentName, parsed.goal)
+				const draft = createFerment(runtime, {
+					name: fermentName,
+					goal: parsed.goal,
+					hasUI: ctx.hasUI,
+					isOneShot: pi.getFlag("ferment-oneshot") === true,
+				})
 				// Scope it using the structured fields from the shared plan.
 				const applyAndPersist = createApplyAndPersist(runtime)
 				const scoped = applyAndPersist(draft.id, {

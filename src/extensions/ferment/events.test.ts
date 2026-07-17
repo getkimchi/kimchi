@@ -9,6 +9,7 @@ import { FermentEventStore } from "../../ferment/event-store.js"
 import { applyCommand } from "../../ferment/state-machine.js"
 import type { Ferment, Phase } from "../../ferment/types.js"
 import { createContext } from "../__mocks__/context.js"
+import { FERMENT_EVENTS } from "./domain-events.js"
 import { registerFermentEvents } from "./events.js"
 import { clearAllLifecycleGuards } from "./lifecycle-obligation-guard.js"
 import type { FermentRuntime } from "./runtime.js"
@@ -45,6 +46,10 @@ function createPi() {
 		sendMessage: vi.fn(),
 		sendUserMessage: vi.fn(),
 		setModel: vi.fn(),
+		events: {
+			emit: vi.fn(),
+			on: vi.fn(() => () => {}),
+		} as unknown as ExtensionAPI["events"],
 	} as unknown as ExtensionAPI
 	return { handlers, pi }
 }
@@ -152,10 +157,6 @@ describe("registerFermentEvents", () => {
 		}
 		try {
 			const { handlers, pi } = createPi()
-			;(pi as ExtensionAPI & { events: ExtensionAPI["events"] }).events = {
-				emit: vi.fn(),
-				on: vi.fn(),
-			} as unknown as ExtensionAPI["events"]
 			;(pi.getFlag as ReturnType<typeof vi.fn>).mockImplementation((name: string) =>
 				name === "ferment-oneshot" ? true : undefined,
 			)
@@ -188,6 +189,37 @@ describe("registerFermentEvents", () => {
 			expect(lastCall).not.toContain("start_ferment_step")
 		} finally {
 			runtime.setActive(undefined)
+			rmSync(storageDir, { recursive: true, force: true })
+		}
+	})
+
+	it("--ferment-oneshot bootstrap initializes automated continuation policy", async () => {
+		const storageDir = mkdtempSync(join(tmpdir(), "ferment-events-oneshot-policy-"))
+		const storage = new FermentEventStore(storageDir)
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: () => storage,
+		}
+		try {
+			const { handlers, pi } = createPi()
+			;(pi.getFlag as ReturnType<typeof vi.fn>).mockImplementation((name: string) =>
+				name === "ferment-oneshot" ? true : undefined,
+			)
+
+			runtime.setContinuationPolicy("manual")
+			registerFermentEvents(pi, runtime)
+			const sessionStart = handlers.get("session_start")
+			const input = handlers.get("input")
+			if (!sessionStart) throw new Error("session_start handler was not registered")
+			if (!input) throw new Error("input handler was not registered")
+
+			await sessionStart({}, { hasUI: false })
+			await input({ text: "Fix the benchmark task", source: "interactive" }, {})
+
+			expect(runtime.getContinuationPolicy()).toBe("automated")
+		} finally {
+			runtime.setActive(undefined)
+			runtime.setContinuationPolicy("manual")
 			rmSync(storageDir, { recursive: true, force: true })
 		}
 	})
@@ -536,10 +568,6 @@ describe("turn_end connection error recovery", () => {
 		runtime.setActive(active)
 
 		const { handlers, pi } = createPi()
-		;(pi as ExtensionAPI & { events: ExtensionAPI["events"] }).events = {
-			emit: vi.fn(),
-			on: vi.fn(),
-		} as unknown as ExtensionAPI["events"]
 		registerFermentEvents(pi, runtime)
 		const turnEnd = handlers.get("turn_end")
 		if (!turnEnd) throw new Error("turn_end handler was not registered")
@@ -601,10 +629,6 @@ describe("turn_end connection error recovery", () => {
 		runtime.setActive(active)
 
 		const { handlers, pi } = createPi()
-		;(pi as ExtensionAPI & { events: ExtensionAPI["events"] }).events = {
-			emit: vi.fn(),
-			on: vi.fn(),
-		} as unknown as ExtensionAPI["events"]
 		registerFermentEvents(pi, runtime)
 		const turnEnd = handlers.get("turn_end")
 		if (!turnEnd) throw new Error("turn_end handler was not registered")
@@ -903,10 +927,6 @@ describe("turn_end error recovery in one-shot mode", () => {
 		;(pi.getFlag as ReturnType<typeof vi.fn>).mockImplementation((name: string) =>
 			name === "ferment-oneshot" ? true : undefined,
 		)
-		;(pi as ExtensionAPI & { events: ExtensionAPI["events"] }).events = {
-			emit: vi.fn(),
-			on: vi.fn(),
-		} as unknown as ExtensionAPI["events"]
 		registerFermentEvents(pi, runtime)
 		const turnEnd = handlers.get("turn_end")
 		if (!turnEnd) throw new Error("turn_end handler was not registered")
@@ -944,10 +964,6 @@ describe("turn_end error recovery in one-shot mode", () => {
 
 		const { handlers, pi } = createPi()
 		;(pi.getFlag as ReturnType<typeof vi.fn>).mockReturnValue(undefined)
-		;(pi as ExtensionAPI & { events: ExtensionAPI["events"] }).events = {
-			emit: vi.fn(),
-			on: vi.fn(),
-		} as unknown as ExtensionAPI["events"]
 		registerFermentEvents(pi, runtime)
 		const turnEnd = handlers.get("turn_end")
 		if (!turnEnd) throw new Error("turn_end handler was not registered")
@@ -995,10 +1011,6 @@ describe("turn_end error recovery in one-shot mode", () => {
 		;(pi.getFlag as ReturnType<typeof vi.fn>).mockImplementation((name: string) =>
 			name === "ferment-oneshot" ? true : undefined,
 		)
-		;(pi as ExtensionAPI & { events: ExtensionAPI["events"] }).events = {
-			emit: vi.fn(),
-			on: vi.fn(),
-		} as unknown as ExtensionAPI["events"]
 		registerFermentEvents(pi, runtime)
 		const turnEnd = handlers.get("turn_end")
 		if (!turnEnd) throw new Error("turn_end handler was not registered")
@@ -1146,6 +1158,7 @@ describe("recoverStuckFerments lockfile awareness", () => {
 		await sessionStart({}, createContext({ hasUI: false }))
 
 		expect(storage.get(id)?.status).toBe("paused")
+		expect(pi.events.emit).toHaveBeenCalledWith(FERMENT_EVENTS.STALLED, expect.objectContaining({ fermentId: id }))
 	})
 
 	it("still pauses a running ferment when no lockfile exists", async () => {
@@ -1163,6 +1176,7 @@ describe("recoverStuckFerments lockfile awareness", () => {
 		await sessionStart({}, { hasUI: false })
 
 		expect(storage.get(id)?.status).toBe("paused")
+		expect(pi.events.emit).toHaveBeenCalledWith(FERMENT_EVENTS.STALLED, expect.objectContaining({ fermentId: id }))
 	})
 
 	it("surfaces recovered ferment names to the user via notification", async () => {
@@ -1173,10 +1187,6 @@ describe("recoverStuckFerments lockfile awareness", () => {
 			setActive: vi.fn(),
 		}
 		const { handlers, pi } = createPi()
-		;(pi as ExtensionAPI & { events: ExtensionAPI["events"] }).events = {
-			emit: vi.fn(),
-			on: vi.fn(),
-		} as unknown as ExtensionAPI["events"]
 		registerFermentEvents(pi, runtime)
 
 		const sessionStart = handlers.get("session_start")
@@ -1188,5 +1198,6 @@ describe("recoverStuckFerments lockfile awareness", () => {
 		expect(notify).toHaveBeenCalledWith(
 			expect.stringContaining('Recovered 1 ferment interrupted in a previous session: "Test"'),
 		)
+		expect(pi.events.emit).toHaveBeenCalledWith(FERMENT_EVENTS.STALLED, expect.objectContaining({ fermentId: id }))
 	})
 })

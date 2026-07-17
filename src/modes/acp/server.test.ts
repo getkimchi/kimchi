@@ -1688,7 +1688,9 @@ describe("buildSessionModelState", () => {
 
 describe("newSession model state", () => {
 	it("returns model state in the response when a model is available", async () => {
-		const fake = new FakeAgentSession("session-model")
+		const sessionId = "session-model"
+		setProcessOrchestratorRef(sessionId, "kimchi-dev/kimi-k2.7")
+		const fake = new FakeAgentSession(sessionId)
 		fake.model = { provider: "openai", id: "gpt-4" }
 		fake.modelRegistry = {
 			...fake.modelRegistry,
