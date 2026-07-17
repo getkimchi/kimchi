@@ -95,6 +95,7 @@ function createHarness() {
 		appendEntry: vi.fn(),
 		sendMessage: vi.fn(),
 		sendUserMessage: vi.fn(),
+		getFlag: vi.fn(() => undefined),
 		getActiveTools: vi.fn(() => activeTools),
 		getAllTools: vi.fn(() => allTools),
 		setActiveTools: vi.fn((names: string[]) => {
