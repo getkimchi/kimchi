@@ -12,7 +12,8 @@ export type StatusLineElementId =
 	| "phase"
 	| "tags"
 	| "team"
-	| "billing"
+	| "credits"
+	| "budget"
 
 export type StatusLineConfig = { pinned: StatusLineElementId[] }
 
@@ -76,9 +77,14 @@ export const STATUS_LINE_ELEMENTS: Array<{
 		description: "Team tag value",
 	},
 	{
-		id: "billing",
-		label: "Billing",
-		description: "Plan and credit balance",
+		id: "credits",
+		label: "Credits",
+		description: "Remaining credit balance",
+	},
+	{
+		id: "budget",
+		label: "Budget",
+		description: "Budget usage and limit",
 	},
 ]
 
@@ -105,10 +111,16 @@ export function readStatusLineConfig(): StatusLineConfig {
 		return _config
 	}
 	const raw = asRecord(settings[STATUS_LINE_KEY])
-	const pinned = Array.isArray(raw.pinned)
-		? raw.pinned.filter((v): v is StatusLineElementId => STATUS_LINE_ELEMENTS.some((e) => e.id === v))
-		: []
-	_config = { pinned }
+	const values = Array.isArray(raw.pinned) ? raw.pinned : []
+	const pinned: StatusLineElementId[] = []
+	for (const value of values) {
+		if (value === "billing") {
+			pinned.push("credits", "budget")
+		} else if (STATUS_LINE_ELEMENTS.some((element) => element.id === value)) {
+			pinned.push(value as StatusLineElementId)
+		}
+	}
+	_config = { pinned: [...new Set(pinned)] }
 	return _config
 }
 

@@ -41,6 +41,7 @@ import bashDefaultTimeoutExtension from "./extensions/bash-default-timeout.js"
 import bashTimeoutGuidanceExtension from "./extensions/bash-timeout-guidance.js"
 import bashToolGuardExtension from "./extensions/bash-tool-guard.js"
 import behavioursExtension from "./extensions/behaviours/index.js"
+import budgetCommandExtension from "./extensions/billing/command.js"
 import { refreshBillingStatusFromConfig } from "./extensions/billing/status.js"
 import branchCommandExtension from "./extensions/branch-command.js"
 import claudeCodeHooksAdapter from "./extensions/claude-code-hook-adapter/index.js"
@@ -588,6 +589,7 @@ try {
 			sessionNameExtension(),
 			shutdownMarkerExtension,
 			statsExtension,
+			budgetCommandExtension,
 			branchCommandExtension,
 			...terminalUiExtensionFactories,
 			loginExtension,

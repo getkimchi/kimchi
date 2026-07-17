@@ -499,24 +499,49 @@ describe("StatusLine segment coverage", () => {
 		expect(visible).not.toContain("team:")
 	})
 
-	it("billing segment shows compact credit status", () => {
-		withPinned(["billing"], () => {
-			setBillingStatusForTest({
-				serverless: true,
-				plan: "coder",
-				isPaidTier: true,
-				remainingCredits: 5,
-				creditStatus: "low",
-				updatedAt: "2026-07-07T00:00:00.000Z",
-			})
+	it("credits and budget can be pinned independently", () => {
+		setBillingStatusForTest({
+			serverless: true,
+			plan: "coder",
+			isPaidTier: true,
+			remainingCredits: 5,
+			creditStatus: "low",
+			budget: {
+				period: { startTime: "2026-07-01T00:00:00Z", endTime: "2026-08-01T00:00:00Z" },
+				budgets: [
+					{
+						scope: "USER",
+						scopeId: "owner",
+						budgetLimitUsd: "2000.000000",
+						totalSpendUsd: "274.594050",
+						providerBudgets: [],
+					},
+				],
+			},
+			updatedAt: "2026-07-07T00:00:00.000Z",
+		})
+
+		withPinned(["credits"], () => {
 			const statusLine = new StatusLine(createMockContext(), theme, createMockStatusLineData())
 			const visible = renderVisible(statusLine, 200)
 
 			expect(visible).toContain("Credits: $5.00")
+			expect(visible).not.toContain("Budget:")
+		})
+
+		withPinned(["budget"], () => {
+			const statusLine = new StatusLine(createMockContext(), theme, createMockStatusLineData())
+			const visible = renderVisible(statusLine, 200)
+			const compact = renderVisible(statusLine, 42)
+
+			expect(visible).not.toContain("Credits:")
+			expect(visible).toContain("Budget: 13.73% ($274.59/$2k)")
+			expect(compact).toContain("Budget: 13.73%")
+			expect(compact).not.toContain("$274.59/$2k")
 		})
 	})
 
-	it("billing segment is hidden when unpinned", () => {
+	it("credits segment is hidden when unpinned", () => {
 		setBillingStatusForTest({
 			serverless: true,
 			plan: "coder",
