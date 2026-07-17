@@ -30,9 +30,17 @@ OS_RAW="$(uname -s | tr '[:upper:]' '[:lower:]')"
 case "$OS_RAW" in
 darwin*) OS="darwin" ;;
 linux*) OS="linux" ;;
+mingw* | msys* | cygwin*)
+	echo -e "${RED}Windows is not supported natively.${NC}" >&2
+	echo "There is no native Windows build yet. Run this installer from inside the" >&2
+	echo "Windows Subsystem for Linux (WSL), where the Linux build works." >&2
+	echo "Set up WSL: https://learn.microsoft.com/windows/wsl/install" >&2
+	exit 1
+	;;
 *)
 	echo -e "${RED}Unsupported OS: $OS_RAW${NC}" >&2
-	echo "Windows: download the .zip from https://github.com/${REPO}/releases" >&2
+	echo "Kimchi ships builds for macOS (darwin) and Linux only." >&2
+	echo "See https://github.com/${REPO}/releases for available downloads." >&2
 	exit 1
 	;;
 esac
