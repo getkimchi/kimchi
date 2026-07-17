@@ -1,28 +1,28 @@
-# Agent Guidelines for Kimchi-Dev
+# Agent guidelines for Kimchi
 
-You are editing the kimchi-code CLI harness. This repo extends the pi-mono SDK (`@earendil-works/pi-coding-agent`) — core agent loop lives upstream; this repo adds extensions in `src/extensions/`.
+You are editing the kimchi coding harness. This repo extends the pi-mono SDK (`@earendil-works/pi-coding-agent`) — core agent loop lives upstream; this repo adds extensions in `src/extensions/`.
 
 ## Environment
 
 - **Package manager**: pnpm (NEVER use npm/yarn)
 - **Runtime**: Bun for dev (`pnpm run dev`), Node 22+ for built binaries
-- **Test runner**: vitest (`pnpm run test` — unit, `pnpm run test:smoke` — e2e)
+- **Test runner**: vitest (`pnpm run test` — unit, `pnpm run test:smoke`, `pnpm run test:e2e:tui`, `pnpm run test:e2e:acp` — e2e)
 - **Linter**: biome (`pnpm run lint`, `pnpm run lint:fix`)
 - **Type check**: TypeScript (`pnpm run typecheck`)
 
-## Hard Constraints
+## Hard constraints
 
 - **NEVER modify `patches/` files directly** — patches apply at install; changes here don't affect runtime
 - **NEVER touch `src/core/export-html/` HTML templates** — bundled JS is auto-generated from source
 - **Test files**: Co-locate as `*.test.ts` alongside source (NOT in a separate test/ folder)
 
-## Development Patterns
+## Development patterns
 
 - **Auto-formatting**: `lint:fix` runs automatically after file edits (PostToolUse hook) — don't run manually
 - **Pre-commit**: `.husky/pre-commit` runs `pnpm run lint` — CI runs full `check` (lint + typecheck)
 - **README changes**: Run `./scripts/copy-resources.js --dev` after editing to propagate to dist/
 
-## Testing Expectations
+## Testing expectations
 
 - **Always add or update tests with behavior changes.** Bug fixes should include a regression test that fails before the fix; new features should cover the user-visible behavior they introduce. If a test is not practical, say why in the PR/commit notes.
 - **Keep unit/integration tests close to the code** as `*.test.ts` beside the source file. Prefer focused tests that exercise the contract of the module or extension being changed.
@@ -33,7 +33,7 @@ You are editing the kimchi-code CLI harness. This repo extends the pi-mono SDK (
 - **Quarantine only for unstable tests.** Use `tests/e2e/tui/skip-list.js` with a specific reason and remove the entry as soon as the instability is fixed.
 - **Don't hand-write common dependency mocks in tests.** Avoid creating `ExtensionContext` (`ctx`) or `ExtensionAPI` (`pi`) mocks inline inside a test file. Use shared mocks (e.g. under `src/extensions/__mocks__/**` for unit tests) when they exist, and add new ones there if several tests need the same dependency. Don't copy-paste partial mocks across tests.
 
-## Code Clean-Up Checklist
+## Code clean-up checklist
 
 AI agents often introduce a few recurring issues (likely picked up from existing code patterns). Before finishing a PR, review the diff for these and clean them up:
 
@@ -54,12 +54,12 @@ AI agents often introduce a few recurring issues (likely picked up from existing
 
 When you spot these, ask the agent to clean them up before the final PR review.
 
-## Documents Directory
+## Documentation directory
 
 - `.kimchi/docs/` → Transient AI working files — git-ignored, do NOT commit
 - `/docs/` → Permanent project documentation — commit here
 
-## PR Labeling
+## PR labeling
 
 A CI job auto-labels PRs based on the PR template checklist. If you create a PR directly via `gh pr create`, assign the correct label(s) explicitly:
 
@@ -72,7 +72,7 @@ A CI job auto-labels PRs based on the PR template checklist. If you create a PR 
 
 Example: `gh pr create --label "bug" ...`
 
-## Before Adding Features
+## Before adding features
 
 Before adding a new capability, check whether it already exists upstream
 or in a sibling package. This repo extends `@earendil-works/pi-coding-agent`
@@ -127,7 +127,7 @@ stage.
 **3. Check upstream issues/PRs/discussions** for the capability. It may
 be in flight, recently merged, or explicitly rejected with a reason.
 
-## Patches & Upstream Changes
+## Decide the implementation layer
 
 Once you've confirmed a capability involves upstream behaviour, choose the
 integration layer. Stop at the FIRST layer that fits. Do not "upgrade" to a
