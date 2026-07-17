@@ -506,7 +506,7 @@ async function resolveProposeFermentTarget(
 		name: shortName,
 		goal,
 		hasUI: ctx.hasUI,
-		isOneShot: pi.getFlag?.("ferment-oneshot") === true,
+		isOneShot: pi.getFlag("ferment-oneshot") === true,
 	})
 	setActiveFermentAndApplyProfile(pi, runtime, f)
 	if (pi.events) {
