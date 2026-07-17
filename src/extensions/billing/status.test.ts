@@ -454,7 +454,7 @@ describe("billing status", () => {
 
 		expect(getBillingStatus()?.budget?.budgets[0]?.scope).toBe("USER")
 		expect(getBillingStatus()?.budget?.budgets[0]?.budgetType).toBe("BUDGET_TYPE_PER_USER")
-		expect(getBillingStatusLine()).toEqual({ budget: "$1.8k/$2k" })
+		expect(getBillingStatusLine()).toEqual({ budget: "90.00% ($1.8k/$2k)" })
 	})
 
 	it("preserves credits and clears only budget state when an older proxy returns 404", async () => {
@@ -667,7 +667,7 @@ describe("billing status", () => {
 			fetch: (() => Promise.resolve(new Response(JSON.stringify(payload), { status: 200 }))) as typeof fetch,
 		})
 
-		expect(getBillingStatusLine()).toEqual({ budget: "$100.00/$25" })
+		expect(getBillingStatusLine()).toEqual({ budget: "400.00% ($100.00/$25)" })
 		expect(getBillingWarnings()).toEqual([
 			{
 				kind: "exhausted",

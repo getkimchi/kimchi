@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 const refreshBillingStatusFromConfigMock = vi.hoisted(() => vi.fn(async () => undefined))
@@ -29,9 +29,20 @@ function registeredBudgetCommand(): BudgetCommand {
 function commandContext(): { ctx: ExtensionCommandContext; notify: ReturnType<typeof vi.fn> } {
 	const notify = vi.fn()
 	return {
-		ctx: { hasUI: true, ui: { notify } } as unknown as ExtensionCommandContext,
+		ctx: { hasUI: true, ui: { notify, theme: theme() } } as unknown as ExtensionCommandContext,
 		notify,
 	}
+}
+
+function theme(): Theme {
+	return {
+		fg: vi.fn((color: string, text: string) => `<${color}>${text}</${color}>`),
+		bold: vi.fn((text: string) => `<bold>${text}</bold>`),
+	} as unknown as Theme
+}
+
+function unstyled(value: string): string {
+	return value.replace(/<[^>]+>/g, "")
 }
 
 function billingStatus(budget: BudgetSnapshot | undefined): BillingStatus {
@@ -74,12 +85,17 @@ describe("formatBudgetBreakdown", () => {
 			],
 		}
 
-		const output = formatBudgetBreakdown(snapshot).join("\n")
-		expect(output).toContain("Budget — Jul 1–Aug 1 UTC")
-		expect(output).toContain("ACTIVE    Personal")
+		const output = formatBudgetBreakdown(snapshot, theme()).join("\n")
+		expect(output).toContain("<accent>Budget</accent>")
+		expect(unstyled(output)).toContain("Budget  Jul 1–Aug 1 UTC")
+		expect(unstyled(output)).toContain("BUDGET")
+		expect(unstyled(output)).not.toContain("STATUS")
+		expect(unstyled(output)).not.toContain("● OK")
+		expect(output).toContain("<success>")
+		expect(unstyled(output)).toContain("Personal")
 		expect(output).toContain("anthropic")
 		expect(output).toContain("68.30%")
-		expect(output).toContain("ACTIVE    Organization per-user hard")
+		expect(unstyled(output)).toContain("Organization per-user hard")
 	})
 
 	it("renders disabled and unlimited provider limits without inventing dollar caps", () => {
@@ -109,9 +125,11 @@ describe("formatBudgetBreakdown", () => {
 			],
 		}
 
-		const output = formatBudgetBreakdown(snapshot).join("\n")
-		expect(output).toContain("disabled-provider   $0.00 / disabled")
-		expect(output).toContain("unlimited-provider  $1.00 / unlimited")
+		const output = formatBudgetBreakdown(snapshot, theme()).join("\n")
+		expect(unstyled(output)).toContain("disabled-provider")
+		expect(unstyled(output)).toContain("$0.00   disabled")
+		expect(unstyled(output)).toContain("unlimited-provider")
+		expect(unstyled(output)).toContain("$1.00  unlimited")
 		expect(output.split("\n").find((line) => line.includes("disabled-provider"))).not.toContain("%")
 		expect(output.split("\n").find((line) => line.includes("unlimited-provider"))).not.toContain("%")
 	})

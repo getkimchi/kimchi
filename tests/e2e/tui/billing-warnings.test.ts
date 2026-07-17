@@ -34,7 +34,7 @@ test("shows paid balance at startup and low-credit warning after a model respons
 				const agentDir = join(homeDir, ".config", "kimchi", "harness")
 				writeFileSync(
 					join(agentDir, "settings.json"),
-					JSON.stringify({ statusLine: { pinned: ["billing"] } }, null, "\t"),
+					JSON.stringify({ statusLine: { pinned: ["credits", "budget"] } }, null, "\t"),
 					"utf-8",
 				)
 			},
@@ -136,25 +136,25 @@ test("shows caller budget in the footer and command, then refreshes a budget war
 				const agentDir = join(homeDir, ".config", "kimchi", "harness")
 				writeFileSync(
 					join(agentDir, "settings.json"),
-					JSON.stringify({ statusLine: { pinned: ["billing"] } }, null, "\t"),
+					JSON.stringify({ statusLine: { pinned: ["credits", "budget"] } }, null, "\t"),
 					"utf-8",
 				)
 			},
 		},
 		async () => {
 			await waitForText(terminal, "Credits: $18.40", { full: true })
-			await waitForText(terminal, "Budget: $274.59/$2k", { full: true })
+			await waitForText(terminal, "Budget: 13.73% ($274.59/$2k)", { full: true })
 
 			terminal.submit("/budget")
-			await waitForText(terminal, "Budget — Jul 1–Aug 1 UTC", { full: true })
-			await waitForText(terminal, "ACTIVE    Personal", { full: true })
-			await waitForText(terminal, "ACTIVE    Organization per-user hard", { full: true })
+			await waitForText(terminal, "Budget  Jul 1–Aug 1 UTC", { full: true })
+			await waitForText(terminal, "Personal", { full: true })
+			await waitForText(terminal, "Organization per-user hard", { full: true })
 			await waitForText(terminal, "anthropic", { full: true })
 
 			terminal.submit("Use a few credits")
 			await expect(terminal.getByText("Done.", { full: true })).toBeVisible()
 			await waitForText(terminal, "Budget warning: Personal budget is 90% used ($1.8k/$2k).", { full: true })
-			await waitForText(terminal, "Budget: $1.8k/$2k", { full: true })
+			await waitForText(terminal, "Budget: 90.00% ($1.8k/$2k)", { full: true })
 		},
 	)
 })
@@ -180,7 +180,7 @@ test("shows an exhausted budget warning after a model response", async ({ termin
 				const agentDir = join(homeDir, ".config", "kimchi", "harness")
 				writeFileSync(
 					join(agentDir, "settings.json"),
-					JSON.stringify({ statusLine: { pinned: ["billing"] } }, null, "\t"),
+					JSON.stringify({ statusLine: { pinned: ["credits", "budget"] } }, null, "\t"),
 					"utf-8",
 				)
 			},
@@ -189,7 +189,7 @@ test("shows an exhausted budget warning after a model response", async ({ termin
 			terminal.submit("Use the remaining budget")
 			await expect(terminal.getByText("Done.", { full: true })).toBeVisible()
 			await waitForText(terminal, "Budget exhausted: Personal budget is fully used ($2k/$2k).", { full: true })
-			await waitForText(terminal, "Budget: $2k/$2k", { full: true })
+			await waitForText(terminal, "Budget: 100.00% ($2k/$2k)", { full: true })
 		},
 	)
 })

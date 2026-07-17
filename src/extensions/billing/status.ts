@@ -294,7 +294,7 @@ export function getBillingStatusLine(
 			: formatCreditsAmount(status.remainingCredits)
 	const displayBudget = getDisplayBudget(status.budget)
 	const budget = displayBudget
-		? `${formatBudgetAmount(displayBudget.totalSpendUsd)}/${formatBudgetLimit(displayBudget.budgetLimitUsd)}`
+		? `${budgetUsagePercentage(displayBudget).toFixed(2)}% (${formatBudgetAmount(displayBudget.totalSpendUsd)}/${formatBudgetLimit(displayBudget.budgetLimitUsd)})`
 		: undefined
 	if (!amount && !budget) return undefined
 	return { ...(amount ? { amount } : {}), ...(budget ? { budget } : {}) }
