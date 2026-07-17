@@ -52,7 +52,7 @@ AI agents often introduce a few recurring issues (likely picked up from existing
 - **Defensive optional chaining** — writing `pi?.getFlag?.(...)` when `pi` is known to exist.  
   **Fix:** only optional-chain when the value can actually be missing. Don't add dead production code to compensate for weak test mocks—improve the mocks instead.
 
-When you spot these, ask the agent to clean them up before the final PR review.
+When you spot these, clean them up before the final PR review.
 
 ## Documentation directory
 
