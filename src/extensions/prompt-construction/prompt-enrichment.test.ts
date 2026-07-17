@@ -904,7 +904,8 @@ describe("continuation nudge turn_end handler", () => {
 
 		const fire = async (event: string, payload: unknown) => {
 			const handlers = handlerMap.get(event) ?? []
-			for (const h of handlers) await h(payload)
+			const ctx = createContext({ model: { provider: "test", id: "test-model" } })
+			for (const h of handlers) await h(payload, ctx)
 		}
 
 		return { fire, sendMessageCalls }

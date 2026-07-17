@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
 import { applyWriteTodos, getTodosForScope, resolveTodoScope } from "./store.js"
 import { TODO_STATUSES, type TodoDraft, type TodoItem, type TodoStatus, type WriteTodosParams } from "./types.js"
@@ -94,9 +94,12 @@ function normalizeTodoStatus(value: unknown, fallback: TodoStatus = "pending"): 
 	throw new Error(`Invalid todo status '${String(value)}'`)
 }
 
-function scopedTodos(scopeInput: unknown): { scope: ReturnType<typeof resolveTodoScope>; todos: TodoItem[] } {
+function scopedTodos(
+	scopeInput: unknown,
+	sessionId: string,
+): { scope: ReturnType<typeof resolveTodoScope>; todos: TodoItem[] } {
 	const scope = resolveTodoScope(scopeInput)
-	return { scope, todos: getTodosForScope(scope) }
+	return { scope, todos: getTodosForScope(scope, sessionId) }
 }
 
 function todoDraftWithOptionalFields(params: AddTodoParams): TodoDraft {
@@ -110,9 +113,16 @@ function todoDraftWithOptionalFields(params: AddTodoParams): TodoDraft {
 	}
 }
 
-async function executeWriteTodos(_toolCallId: string, params: WriteTodosParams) {
+async function executeWriteTodos(
+	_toolCallId: string,
+	params: WriteTodosParams,
+	_signal: AbortSignal | undefined,
+	_onUpdate: unknown,
+	ctx: ExtensionContext,
+) {
+	const sessionId = ctx.sessionManager.getSessionId()
 	try {
-		const details = applyWriteTodos(params)
+		const details = applyWriteTodos(params, sessionId)
 		return {
 			content: [{ type: "text" as const, text: `Updated ${details.todos.length} todos.` }],
 			details,
@@ -125,11 +135,18 @@ async function executeWriteTodos(_toolCallId: string, params: WriteTodosParams) 
 	}
 }
 
-async function executeAddTodo(_toolCallId: string, params: AddTodoParams) {
+async function executeAddTodo(
+	_toolCallId: string,
+	params: AddTodoParams,
+	_signal: AbortSignal | undefined,
+	_onUpdate: unknown,
+	ctx: ExtensionContext,
+) {
+	const sessionId = ctx.sessionManager.getSessionId()
 	try {
-		const { scope, todos } = scopedTodos(params.scope)
+		const { scope, todos } = scopedTodos(params.scope, sessionId)
 		const knownIds = new Set(todos.map((todo) => todo.id))
-		const details = applyWriteTodos({ scope, todos: [...todos, todoDraftWithOptionalFields(params)] })
+		const details = applyWriteTodos({ scope, todos: [...todos, todoDraftWithOptionalFields(params)] }, sessionId)
 		// Storage order is id-based; identify the new item by id rather than position.
 		const added = details.todos.find((todo) => !knownIds.has(todo.id))
 		return {
@@ -144,11 +161,18 @@ async function executeAddTodo(_toolCallId: string, params: AddTodoParams) {
 	}
 }
 
-async function executeMarkTodo(_toolCallId: string, params: MarkTodoParams) {
+async function executeMarkTodo(
+	_toolCallId: string,
+	params: MarkTodoParams,
+	_signal: AbortSignal | undefined,
+	_onUpdate: unknown,
+	ctx: ExtensionContext,
+) {
+	const sessionId = ctx.sessionManager.getSessionId()
 	try {
 		const id = normalizeTodoId(params.id)
 		const status = normalizeTodoStatus(params.status)
-		const { scope, todos } = scopedTodos(params.scope)
+		const { scope, todos } = scopedTodos(params.scope, sessionId)
 		let found = false
 		const nextTodos = todos.map((todo) => {
 			if (todo.id !== id) return todo
@@ -162,7 +186,7 @@ async function executeMarkTodo(_toolCallId: string, params: MarkTodoParams) {
 		})
 		if (!found) throw new Error(`Todo #${id} not found`)
 
-		const details = applyWriteTodos({ scope, todos: nextTodos })
+		const details = applyWriteTodos({ scope, todos: nextTodos }, sessionId)
 		return {
 			content: [{ type: "text" as const, text: `Marked todo #${id} ${status}.` }],
 			details,
@@ -175,10 +199,17 @@ async function executeMarkTodo(_toolCallId: string, params: MarkTodoParams) {
 	}
 }
 
-async function executeClearTodos(_toolCallId: string, params: ClearTodosParams) {
+async function executeClearTodos(
+	_toolCallId: string,
+	params: ClearTodosParams,
+	_signal: AbortSignal | undefined,
+	_onUpdate: unknown,
+	ctx: ExtensionContext,
+) {
+	const sessionId = ctx.sessionManager.getSessionId()
 	try {
 		const scope = resolveTodoScope(params.scope)
-		const details = applyWriteTodos({ scope, todos: [] })
+		const details = applyWriteTodos({ scope, todos: [] }, sessionId)
 		return {
 			content: [{ type: "text" as const, text: "Cleared todos." }],
 			details,

@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext, SessionEntry, Theme } from "@earen
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
 import todosExtension, { TODO_CHECKPOINT_MESSAGE, TODO_RECONCILE_MESSAGE } from "./index.js"
-import { __resetTodoStore, applyWriteTodos, getTodosForScope } from "./store.js"
+import { __resetTodoStore, applyWriteTodos, GLOBAL_TODO_SCOPE, getTodosForScope } from "./store.js"
 import { TODO_TOOL_NAMES, UPDATE_TODOS_TOOL_NAME } from "./tool.js"
 import { TODO_TOOL_RESULT_SCHEMA_VERSION, type TodoStatus } from "./types.js"
 
@@ -128,7 +128,7 @@ describe("todos extension session state", () => {
 
 	it("restores todos from the active session branch instead of the previous store", async () => {
 		const harness = createTodosHarness()
-		applyWriteTodos({ todos: [{ content: "stale previous session", status: "pending" }] })
+		applyWriteTodos({ todos: [{ content: "stale previous session", status: "pending" }] }, "previous-session")
 
 		await harness.fire(
 			"session_start",
@@ -139,16 +139,18 @@ describe("todos extension session state", () => {
 			]),
 		)
 
-		expect(getTodosForScope().map((todo) => todo.content)).toEqual(["current resumed todo"])
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, "resumed-session").map((todo) => todo.content)).toEqual([
+			"current resumed todo",
+		])
 	})
 
 	it("clears stale todos when the replacement session has no todo history", async () => {
 		const harness = createTodosHarness()
-		applyWriteTodos({ todos: [{ content: "stale previous session", status: "pending" }] })
+		applyWriteTodos({ todos: [{ content: "stale previous session", status: "pending" }] }, "previous-session")
 
 		await harness.fire("session_start", { reason: "fork" }, createContext("forked-session", []))
 
-		expect(getTodosForScope()).toEqual([])
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, "forked-session")).toEqual([])
 	})
 
 	it("replays todos when the active session tree branch changes", async () => {
@@ -159,7 +161,7 @@ describe("todos extension session state", () => {
 			createContext("session", [writeTodosEntry("a", "root todo")]),
 		)
 
-		expect(getTodosForScope().map((todo) => todo.content)).toEqual(["root todo"])
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, "session").map((todo) => todo.content)).toEqual(["root todo"])
 
 		await harness.fire(
 			"session_tree",
@@ -167,7 +169,7 @@ describe("todos extension session state", () => {
 			createContext("session", [writeTodosEntry("b", "branch todo", "in_progress")]),
 		)
 
-		expect(getTodosForScope().map((todo) => todo.content)).toEqual(["branch todo"])
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, "session").map((todo) => todo.content)).toEqual(["branch todo"])
 	})
 
 	it("restores slash-command todo edits from custom entries", async () => {
@@ -179,7 +181,7 @@ describe("todos extension session state", () => {
 			createContext("session", [customTodosEntry("c", "command todo")]),
 		)
 
-		expect(getTodosForScope().map((todo) => todo.content)).toEqual(["command todo"])
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, "session").map((todo) => todo.content)).toEqual(["command todo"])
 	})
 
 	it("restores todos from every todo tool result", async () => {
@@ -193,8 +195,8 @@ describe("todos extension session state", () => {
 				createContext("session", [writeTodosEntry("u", `${toolName} todo`, "completed", toolName)]),
 			)
 
-			expect(getTodosForScope().map((todo) => todo.content)).toEqual([`${toolName} todo`])
-			expect(getTodosForScope()[0]?.status).toBe("completed")
+			expect(getTodosForScope(GLOBAL_TODO_SCOPE, "session").map((todo) => todo.content)).toEqual([`${toolName} todo`])
+			expect(getTodosForScope(GLOBAL_TODO_SCOPE, "session")[0]?.status).toBe("completed")
 		}
 	})
 
@@ -207,8 +209,8 @@ describe("todos extension session state", () => {
 			createContext("session", [writeTodosEntry("legacy", "legacy todo", "in_progress", "write_todos")]),
 		)
 
-		expect(getTodosForScope().map((todo) => todo.content)).toEqual(["legacy todo"])
-		expect(getTodosForScope()[0]?.status).toBe("in_progress")
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, "session").map((todo) => todo.content)).toEqual(["legacy todo"])
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, "session")[0]?.status).toBe("in_progress")
 	})
 
 	it("adds todo guidance to a system prompt that missed extension prompt blocks", async () => {
@@ -236,7 +238,7 @@ describe("todos extension session state", () => {
 		const ctx = createContext("session", [])
 		await harness.fire("session_start", { reason: "new" }, ctx)
 
-		applyWriteTodos({ todos: [{ content: "check work", status: "in_progress" }] })
+		applyWriteTodos({ todos: [{ content: "check work", status: "in_progress" }] }, "session")
 		await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
 
 		const result = (await harness.fire("context", { messages: [] }, ctx)) as {
@@ -262,11 +264,37 @@ describe("todos extension session state", () => {
 		const ctx = createContext("session", [])
 		await harness.fire("session_start", { reason: "new" }, ctx)
 
-		applyWriteTodos({ todos: [{ content: "check work", status: "in_progress" }] })
+		applyWriteTodos({ todos: [{ content: "check work", status: "in_progress" }] }, "session")
 		await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
-		applyWriteTodos({ todos: [{ id: 1, content: "check work", status: "completed" }] })
+		applyWriteTodos({ todos: [{ id: 1, content: "check work", status: "completed" }] }, "session")
 
 		expect(await harness.fire("context", { messages: [] }, ctx)).toBeUndefined()
+	})
+
+	it("only resets checkpoint pressure for the session that wrote todos", async () => {
+		const harness = createTodosHarness()
+		const ctxA = createContext("session-a", [])
+		const ctxB = createContext("session-b", [])
+
+		// Start both sessions. The second start registers the active subscriber;
+		// the fix ensures the subscriber uses the writing session id rather than
+		// closing over session-b's context.
+		await harness.fire("session_start", { reason: "new" }, ctxA)
+		await harness.fire("session_start", { reason: "new" }, ctxB)
+
+		applyWriteTodos({ todos: [{ content: "A work", status: "in_progress" }] }, "session-a")
+		applyWriteTodos({ todos: [{ content: "B work", status: "in_progress" }] }, "session-b")
+
+		// Both sessions do non-todo work, creating checkpoint pressure.
+		await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctxA)
+		await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctxB)
+		expect(await harness.fire("context", { messages: [] }, ctxA)).toBeDefined()
+		expect(await harness.fire("context", { messages: [] }, ctxB)).toBeDefined()
+
+		// Session A writes todos. Only A's pressure should clear.
+		applyWriteTodos({ todos: [{ id: 1, content: "A work", status: "completed" }] }, "session-a")
+		expect(await harness.fire("context", { messages: [] }, ctxA)).toBeUndefined()
+		expect(await harness.fire("context", { messages: [] }, ctxB)).toBeDefined()
 	})
 
 	it("queues reconciliation follow-ups after visible terminal stops", async () => {
@@ -274,7 +302,7 @@ describe("todos extension session state", () => {
 		const ctx = createContext("session", [])
 		await harness.fire("session_start", { reason: "new" }, ctx)
 
-		applyWriteTodos({ todos: [{ content: "still active", status: "in_progress" }] })
+		applyWriteTodos({ todos: [{ content: "still active", status: "in_progress" }] }, "session")
 		await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
 		await harness.fire("turn_end", terminalTurnWithText(), ctx)
 		await harness.fire("input", { type: "input", text: "", source: "extension", streamingBehavior: "followUp" }, ctx)
@@ -306,7 +334,7 @@ describe("todos extension session state", () => {
 		expect(checkpoint.messages[0].details).toEqual({ reason: "todo_checkpoint" })
 		expect(checkpoint.messages[0].content[0].text).toContain("still active")
 
-		applyWriteTodos({ todos: [{ id: 1, content: "still active", status: "completed" }] })
+		applyWriteTodos({ todos: [{ id: 1, content: "still active", status: "completed" }] }, "session")
 		await harness.fire("turn_end", terminalTurn(), ctx)
 		expect(harness.sendMessage).toHaveBeenCalledTimes(2)
 	})
@@ -316,7 +344,7 @@ describe("todos extension session state", () => {
 		const ctx = createContext("session", [])
 		await harness.fire("session_start", { reason: "new" }, ctx)
 
-		applyWriteTodos({ todos: [{ content: "still active", status: "in_progress" }] })
+		applyWriteTodos({ todos: [{ content: "still active", status: "in_progress" }] }, "session")
 		await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
 		await harness.fire("turn_end", terminalTurn("stop"), ctx)
 
@@ -333,7 +361,7 @@ describe("todos extension session state", () => {
 		const ctx = createContext("session", [])
 		await harness.fire("session_start", { reason: "new" }, ctx)
 
-		applyWriteTodos({ todos: [{ content: "new plan", status: "pending" }] })
+		applyWriteTodos({ todos: [{ content: "new plan", status: "pending" }] }, "session")
 		await harness.fire("turn_end", terminalTurn(), ctx)
 
 		expect(harness.sendMessage).not.toHaveBeenCalled()
@@ -348,7 +376,7 @@ describe("todos extension session state", () => {
 		})
 		await harness.fire("session_start", { reason: "new" }, ctx)
 
-		applyWriteTodos({ todos: [{ content: "visible active todo", status: "in_progress" }] })
+		applyWriteTodos({ todos: [{ content: "visible active todo", status: "in_progress" }] }, "session")
 		const component = setWidget.mock.calls[0][1]
 		const instance = component({ requestRender: vi.fn() }, theme)
 		instance.dispose()
@@ -363,7 +391,7 @@ describe("todos extension session state", () => {
 		const harness = createTodosHarness()
 		const ctx = createContext("session", [])
 		await harness.fire("session_start", { reason: "new" }, ctx)
-		applyWriteTodos({ todos: [{ content: "still active", status: "in_progress" }] })
+		applyWriteTodos({ todos: [{ content: "still active", status: "in_progress" }] }, "session")
 		await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
 
 		await harness.fire("turn_end", { message: { role: "assistant", stopReason: "aborted" }, toolResults: [] }, ctx)
@@ -381,7 +409,7 @@ describe("todos extension session state", () => {
 		const ctx = createContext("session", [])
 		await harness.fire("session_start", { reason: "new" }, ctx)
 
-		applyWriteTodos({ todos: [{ content: "still active", status: "in_progress" }] })
+		applyWriteTodos({ todos: [{ content: "still active", status: "in_progress" }] }, "session")
 		await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
 		await harness.fire("turn_end", terminalTurnWithText(), ctx)
 
@@ -396,10 +424,27 @@ describe("todos extension session state", () => {
 		const ctx = createContext("session", [])
 		await harness.fire("session_start", { reason: "new" }, ctx)
 
-		applyWriteTodos({ todos: [{ content: "still active", status: "in_progress" }] })
+		applyWriteTodos({ todos: [{ content: "still active", status: "in_progress" }] }, "session")
 		await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
 
 		const result = await harness.fire("context", { messages: [] }, ctx)
 		expect(result).toBeUndefined()
+	})
+
+	it("isolates todos between concurrent sessions", async () => {
+		const harness = createTodosHarness()
+		const ctxA = createContext("session-a", [writeTodosEntry("a1", "alpha for A", "in_progress")])
+		const ctxB = createContext("session-b", [])
+
+		await harness.fire("session_start", { reason: "new" }, ctxA)
+		await harness.fire("session_start", { reason: "new" }, ctxB)
+
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, "session-a").map((todo) => todo.content)).toEqual(["alpha for A"])
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, "session-b")).toEqual([])
+
+		// Writes targeted at session-b must not bleed into session-a.
+		applyWriteTodos({ todos: [{ content: "beta for B", status: "pending" }] }, "session-b")
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, "session-a").map((todo) => todo.content)).toEqual(["alpha for A"])
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, "session-b").map((todo) => todo.content)).toEqual(["beta for B"])
 	})
 })

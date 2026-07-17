@@ -130,9 +130,6 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 
 	const unregisterFermentTips = registerTipProvider(createFermentTipProvider(runtime))
 	let unregisterFermentTodoSync: (() => void) | undefined
-	if (!isAgentWorker()) {
-		unregisterFermentTodoSync = registerFermentTodoSync(pi)
-	}
 	let planReviewTimer: ReturnType<typeof setTimeout> | undefined
 	let planReviewRunning = false
 	let finalCompletionNudgedThisRun = false
@@ -238,6 +235,16 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	pi.on("session_start", (_event, _ctx) => {
 		ctx = _ctx
 		runtime.clearMidTurnOneshotWarnings()
+
+		// (Re)wire the ferment todo bridge to the current session id. The
+		// session-scoped todo store requires every store call to target a
+		// specific session; the bridge captures the id at subscribe time so its
+		// internal handlers stay pure.
+		unregisterFermentTodoSync?.()
+		unregisterFermentTodoSync = undefined
+		if (!isAgentWorker()) {
+			unregisterFermentTodoSync = registerFermentTodoSync(pi, ctx.sessionManager.getSessionId())
+		}
 	})
 
 	pi.on("session_shutdown", () => {
@@ -245,6 +252,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 		runtime.clearAllPendingPlanReviews()
 		unregisterFermentTips()
 		unregisterFermentTodoSync?.()
+		unregisterFermentTodoSync = undefined
 	})
 
 	pi.on("agent_end", async (_event, ctx) => {
