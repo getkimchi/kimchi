@@ -37,7 +37,7 @@ setup-image:
   timeout: 30 min
   resource_group: "$BENCHMARK_RESOURCE_GROUP"
   rules:
-    - if: '$SUMMARY_ONLY == "true" || $TB21_RETRY_TRIGGER == "true" || $TB21_RETRY_SCHEDULE == "true"'
+    - if: '$SUMMARY_ONLY == "true"'
       when: never
     - when: on_success
   variables:
@@ -57,7 +57,7 @@ setup-image:
     reports:
       dotenv: bench.env
 
-.terminal-bench-2-chunk:
+.swe-bench-pro-chunk:
   stage: benchmark
   image: "$BENCH_IMAGE"
   tags:
@@ -69,11 +69,11 @@ setup-image:
     - name: mirror.gcr.io/library/docker:27.5.1-dind
       alias: docker
       command: ["--registry-mirror", "https://mirror.gcr.io"]
-  timeout: 12 hours
+  timeout: 24 hours
   retry: 2
   allow_failure: true
   rules:
-    - if: '$SUMMARY_ONLY == "true" || $TB21_RETRY_TRIGGER == "true" || $TB21_RETRY_SCHEDULE == "true"'
+    - if: '$SUMMARY_ONLY == "true"'
       when: never
     - when: on_success
   variables:
@@ -81,9 +81,9 @@ setup-image:
     BENCH_PARALLELISM: "$[[ inputs.parallelism ]]"
     BENCH_ATTEMPTS: "$[[ inputs.attempts ]]"
     BENCH_TIMEOUT_MULTIPLIER: "$[[ inputs.timeout_multiplier ]]"
-    BENCHMARK_NAME: $[[ inputs.benchmark ]]
-    BENCHMARK_RESULTS_DIR: benchmark/$[[ inputs.benchmark ]]/jobs
-    DATASET: terminal-bench/$[[ inputs.benchmark ]]
+    BENCHMARK_NAME: swe-bench-pro
+    BENCHMARK_RESULTS_DIR: benchmark/swe-bench-pro/jobs
+    DATASET: swebenchpro
     BENCHMARK_TARGET_REF: "$[[ inputs.target_ref ]]"
     BENCHMARK_TAG: "$[[ inputs.benchmark_tag ]]"
     CODING_AGENT: "$[[ inputs.agent ]]"
@@ -94,7 +94,7 @@ setup-image:
     KIMCHI_COMPACTION: "$[[ inputs.kimchi_compaction ]]"
     RUN_ID: "gitlab-p$CI_PIPELINE_ID"
     BENCH_CHUNK_INDEX: "$CHUNK"
-    BENCH_CHUNK_COUNT: 3
+    BENCH_CHUNK_COUNT: 5
     BENCH_JOB_MAX_RETRIES: 2
     BENCH_RETRY_AGENT_TIMEOUT: "$[[ inputs.retry_agent_timeout ]]"
     BENCH_LLM_TEMPERATURE: "$[[ inputs.temperature ]]"
@@ -111,7 +111,7 @@ setup-image:
     - export SELECTED_TASKS_JSON='$[[ inputs.tasks ]]'
     - |
       echo "=========================================="
-      echo "$[[ inputs.benchmark ]] — CI inputs"
+      echo "SWE-bench Pro — CI inputs"
       echo "=========================================="
       echo "agent:                    ${CODING_AGENT}"
       echo "dataset:                  ${DATASET}"
@@ -151,28 +151,28 @@ setup-image:
     when: always
     expire_in: 30 days
     paths:
-      - benchmark/$[[ inputs.benchmark ]]/jobs/
+      - benchmark/swe-bench-pro/jobs/
       - .benchmark/run-metadata.json
 
-$[[ inputs.benchmark ]]-chunks:
-  extends: .terminal-bench-2-chunk
+swe-bench-pro-chunks:
+  extends: .swe-bench-pro-chunk
   parallel:
     matrix:
-      - CHUNK: [0, 1, 2]
+      - CHUNK: [0, 1, 2, 3, 4]
 
-$[[ inputs.benchmark ]]-summary:
+swe-bench-pro-summary:
   stage: postprocess
   rules:
-    - if: '$SUMMARY_ONLY == "true" || $TB21_RETRY_TRIGGER == "true" || $TB21_RETRY_SCHEDULE == "true"'
+    - if: '$SUMMARY_ONLY == "true"'
       when: never
     - when: always
   image: mirror.gcr.io/library/node:22-bookworm
   needs:
-    - job: $[[ inputs.benchmark ]]-chunks
+    - job: swe-bench-pro-chunks
       artifacts: true
   variables:
     <<: *gcp-auth-vars
-    BENCHMARK_RESULTS_DIR: benchmark/$[[ inputs.benchmark ]]/jobs
+    BENCHMARK_RESULTS_DIR: benchmark/swe-bench-pro/jobs
     BENCHMARK_TARGET_REF: "$[[ inputs.target_ref ]]"
     BENCH_RETRY_AGENT_TIMEOUT: "$[[ inputs.retry_agent_timeout ]]"
     DEBIAN_FRONTEND: noninteractive
@@ -188,15 +188,15 @@ $[[ inputs.benchmark ]]-summary:
   artifacts:
     when: always
     expire_in: 30 days
-    name: "$[[ inputs.benchmark ]]-summary-$CI_COMMIT_REF_SLUG-$CI_PIPELINE_ID"
+    name: "swe-bench-pro-summary-$CI_COMMIT_REF_SLUG-$CI_PIPELINE_ID"
     paths:
       - .benchmark/run-metadata.json
       - .benchmark/summary.json
 
-$[[ inputs.benchmark ]]-analyze:
+swe-bench-pro-analyze:
   stage: postprocess
   rules:
-    - if: '$SUMMARY_ONLY == "true" || $TB21_RETRY_TRIGGER == "true" || $TB21_RETRY_SCHEDULE == "true"'
+    - if: '$SUMMARY_ONLY == "true"'
       when: never
     - if: $[[ inputs.analyze_results ]] == true
       when: always
@@ -208,13 +208,13 @@ $[[ inputs.benchmark ]]-analyze:
   needs:
     - job: setup-image
       artifacts: true
-    - job: $[[ inputs.benchmark ]]-chunks
+    - job: swe-bench-pro-chunks
       artifacts: true
-    - job: $[[ inputs.benchmark ]]-summary
+    - job: swe-bench-pro-summary
       artifacts: true
   timeout: 3h 30min
   variables:
-    BENCHMARK_RESULTS_DIR: benchmark/$[[ inputs.benchmark ]]/jobs
+    BENCHMARK_RESULTS_DIR: benchmark/swe-bench-pro/jobs
     DEBIAN_FRONTEND: noninteractive
     FF_TIMESTAMPS: "true"
     KIMCHI_ANALYSIS_MODEL: "kimchi-dev/glm-5.2-fp8"
@@ -225,23 +225,23 @@ $[[ inputs.benchmark ]]-analyze:
   artifacts:
     when: always
     expire_in: 30 days
-    name: "$[[ inputs.benchmark ]]-analysis-$CI_COMMIT_REF_SLUG-$CI_PIPELINE_ID"
+    name: "swe-bench-pro-analysis-$CI_COMMIT_REF_SLUG-$CI_PIPELINE_ID"
     paths:
       - .benchmark/analysis.html
 
-$[[ inputs.benchmark ]]-upload-analysis:
+swe-bench-pro-upload-analysis:
   stage: postprocess
   rules:
-    - if: '$SUMMARY_ONLY == "true" || $TB21_RETRY_TRIGGER == "true" || $TB21_RETRY_SCHEDULE == "true"'
+    - if: '$SUMMARY_ONLY == "true"'
       when: never
     - if: $[[ inputs.analyze_results ]] == true
       when: on_success
     - when: never
   image: mirror.gcr.io/library/node:22-bookworm
   needs:
-    - job: $[[ inputs.benchmark ]]-summary
+    - job: swe-bench-pro-summary
       artifacts: true
-    - job: $[[ inputs.benchmark ]]-analyze
+    - job: swe-bench-pro-analyze
       artifacts: true
   variables:
     <<: *gcp-auth-vars

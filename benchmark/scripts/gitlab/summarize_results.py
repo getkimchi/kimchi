@@ -778,7 +778,15 @@ def summarize_trial(trial_dir: Path, attempt: int, warnings: list[str]) -> Trial
     error_evidence = extract_error_evidence(result, trial_dir, session_files, warnings, error_subcategory)
     error_message = error_evidence.text or exception_message
     total_time_seconds = trial_total_time(result, session_scan)
-    task = trial_dir.name.split("__", 1)[0]
+    # Prefer task_name from result.json (full name for swe-bench-pro, which
+    # contains "__"). Strip any "source/" prefix Harbor adds (e.g.
+    # "terminal-bench/sample-task"). Fall back to the trial dir name for
+    # benchmarks that don't store task_name.
+    task = (
+        task.rsplit("/", 1)[-1]
+        if (task := string_or_none(result.get("task_name")))
+        else trial_dir.name.split("__", 1)[0]
+    )
 
     agent_timeout_analysis = _convert_decimals(result.get("agent_timeout_analysis"))
     if not isinstance(agent_timeout_analysis, dict):

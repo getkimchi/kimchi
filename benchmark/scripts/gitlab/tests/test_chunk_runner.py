@@ -15,6 +15,7 @@ from chunk_runner import (
     _compaction_disabled,
     _derive_configuration,
     _fetch_all_tasks,
+    _task_name_from_result,
     _write_run_metadata,
     main,
     process_trial_results,
@@ -34,6 +35,14 @@ def test_fetch_all_tasks_reads_terminal_bench_from_file() -> None:
     assert "install-windows-3.11" in tasks  # TB2.1 uses dots
     assert len(tasks) == 89
 
+
+
+def test_fetch_all_tasks_reads_swebenchpro_from_file() -> None:
+    """_fetch_all_tasks reads swebenchpro tasks from the static JSON file."""
+    tasks = _fetch_all_tasks("swebenchpro", bench_dir=_BENCH_SCRIPTS_DIR)
+
+    assert len(tasks) == 731
+    assert tasks[0].startswith("instance_")
 
 def test_fetch_all_tasks_raises_for_unknown_dataset(tmp_path: Path) -> None:
     """_fetch_all_tasks raises RuntimeError for a dataset with no static file."""
@@ -91,6 +100,102 @@ def test_all_trial_dirs_matches_short_name_via_prefix(tmp_results_dir: Path) -> 
     found = _all_trial_dirs_for_task(tmp_results_dir, "fix-git")
     assert len(found) == 1
     assert found[0].name == "fix-git__abc123"
+
+
+def test_task_name_from_result_reads_field(tmp_path: Path) -> None:
+    """_task_name_from_result reads the exact task_name Harbor recorded."""
+    trial = tmp_path / "task-a__abc1234"
+    trial.mkdir(parents=True)
+    (trial / "result.json").write_text(json.dumps({"task_name": "task-a"}))
+
+    assert _task_name_from_result(trial) == "task-a"
+
+
+def test_task_name_from_result_strips_source_prefix(tmp_path: Path) -> None:
+    """Harbor sometimes prefixes task_name with a source, e.g. 'terminal-bench/task-a'."""
+    trial = tmp_path / "task-a__abc1234"
+    trial.mkdir(parents=True)
+    (trial / "result.json").write_text(json.dumps({"task_name": "terminal-bench/task-a"}))
+
+    assert _task_name_from_result(trial) == "task-a"
+
+
+def test_task_name_from_result_missing_file_returns_none(tmp_path: Path) -> None:
+    """Returns None when result.json doesn't exist (trial still running/crashed)."""
+    trial = tmp_path / "task-a__abc1234"
+    trial.mkdir(parents=True)
+
+    assert _task_name_from_result(trial) is None
+
+
+def test_task_name_from_result_malformed_json_returns_none(tmp_path: Path) -> None:
+    """Returns None when result.json is corrupted rather than raising."""
+    trial = tmp_path / "task-a__abc1234"
+    trial.mkdir(parents=True)
+    (trial / "result.json").write_text("not valid json{")
+
+    assert _task_name_from_result(trial) is None
+
+
+def test_task_name_from_result_missing_field_returns_none(tmp_path: Path) -> None:
+    """Returns None when result.json lacks a task_name field."""
+    trial = tmp_path / "task-a__abc1234"
+    trial.mkdir(parents=True)
+    (trial / "result.json").write_text(json.dumps({"trial_name": "task-a__abc1234"}))
+
+    assert _task_name_from_result(trial) is None
+
+
+def test_all_trial_dirs_prefers_exact_task_name_over_truncated_prefix(
+    tmp_results_dir: Path,
+) -> None:
+    """Regression test: distinct SWE-bench Pro instance IDs sharing the same
+    32-char truncated directory prefix must not collide.
+
+    Real dataset example: 'instance_element-hq__element-web-<sha-1>-vnan' and
+    'instance_element-hq__element-web-<sha-2>-vnan' both truncate to the
+    identical 'instance_element-hq__element-web' prefix. Matching by
+    truncated-prefix alone (the old behavior) would attribute task B's
+    trial to task A. Matching against the authoritative task_name in
+    result.json must not have this collision.
+    """
+    task_a = "instance_element-hq__element-web-1077729a19c0ce902e713cf6fab42c91fb7907f1-vnan"
+    task_b = "instance_element-hq__element-web-1216285ed2e82e62f8780b6702aa0f9abdda0b34-vnan"
+    assert task_a[:32].rstrip("_-") == task_b[:32].rstrip("_-"), (
+        "fixture must reproduce the real truncated-prefix collision"
+    )
+
+    trial_a = tmp_results_dir / "run-1" / "instance_element-hq__element-web__zB3HPks"
+    trial_a.mkdir(parents=True)
+    (trial_a / "result.json").write_text(json.dumps({
+        "trial_name": "instance_element-hq__element-web__zB3HPks",
+        "task_name": task_a,
+        "verifier_result": {"rewards": {"reward": 1.0}},
+    }))
+
+    found_for_a = _all_trial_dirs_for_task(tmp_results_dir, task_a)
+    found_for_b = _all_trial_dirs_for_task(tmp_results_dir, task_b)
+
+    assert [p.name for p in found_for_a] == ["instance_element-hq__element-web__zB3HPks"]
+    assert found_for_b == [], (
+        "task_b must not match task_a's trial dir despite sharing a truncated prefix"
+    )
+
+
+def test_all_trial_dirs_falls_back_to_truncated_prefix_without_result_json(
+    tmp_results_dir: Path,
+) -> None:
+    """Without a readable result.json (e.g. trial crashed before writing it),
+    falls back to the truncated directory-name prefix heuristic."""
+    long_task = "instance_flipt-io__flipt-02e21636c58e86c51119b63e0fb5ca7b813b07b1"
+    truncated_dir = "instance_flipt-io__flipt-02e2163__zB3HPks"
+    trial = tmp_results_dir / "run-1" / truncated_dir
+    trial.mkdir(parents=True)
+    # No result.json written at all.
+
+    found = _all_trial_dirs_for_task(tmp_results_dir, long_task)
+    assert len(found) == 1
+    assert found[0].name == truncated_dir
 
 
 def _write_result(trial_dir: Path, payload: dict) -> None:

@@ -518,6 +518,7 @@ class WriteSummaryMissingTasksTest(unittest.TestCase):
             write_json(trial_dir / "result.json", {
                 **BASE_RESULT,
                 "trial_name": "ran-task__abc123",
+                "task_name": "terminal-bench/ran-task",
                 "outcome": "scored_pass",
                 "error_category": None,
                 "error_subcategory": None,
@@ -556,6 +557,7 @@ class WriteSummaryMissingTasksTest(unittest.TestCase):
                 write_json(trial_dir / "result.json", {
                     **BASE_RESULT,
                     "trial_name": f"{task}__abc123",
+                    "task_name": f"terminal-bench/{task}",
                     "outcome": "scored_fail",
                     "error_category": None,
                     "error_subcategory": None,
@@ -579,6 +581,103 @@ class WriteSummaryMissingTasksTest(unittest.TestCase):
             self.assertEqual(rc, 0)
 
 
+class WriteSummarySweBenchProTaskNamesTest(unittest.TestCase):
+    """SWE-bench Pro task names contain multiple '__' segments.
+
+    The trial directory name truncates the full task name (Harbor uses a
+    short prefix + random suffix). The task field must be derived from
+    result.json's task_name, not from splitting the directory name on '__',
+    so that selected_tasks matching works and distinct tasks aren't collapsed.
+    """
+
+    def test_swe_bench_pro_task_with_double_underscore_matches_selected_tasks(self) -> None:
+        """write_summary returns 0 when a swe-bench-pro task with '__' in its name ran."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            results_dir = tmp_path / "jobs" / "run-1"
+            results_dir.mkdir(parents=True)
+
+            full_task = "instance_ansible__ansible-4c5ce5a1a9e79a845-v1055803c3a812189"
+            trial_dir = results_dir / "instance_ansible__ansible__BYQTNFe"
+            trial_dir.mkdir()
+            write_json(trial_dir / "result.json", {
+                **BASE_RESULT,
+                "trial_name": "instance_ansible__ansible__BYQTNFe",
+                "task_name": full_task,
+                "outcome": "scored_fail",
+                "error_category": None,
+                "error_subcategory": None,
+            })
+            sessions_dir = trial_dir / "agent" / "sessions"
+            sessions_dir.mkdir(parents=True)
+            (sessions_dir / "main.jsonl").write_text("\n", encoding="utf-8")
+
+            metadata_path = tmp_path / "run-metadata.json"
+            write_json(metadata_path, {
+                "benchmark": "swe-bench-pro",
+                "coding_agent": "kimchi",
+                "model": "kimchi-dev/kimi-k2.6",
+                "results_dir": str(results_dir),
+                "selected_tasks": [full_task],
+            })
+
+            output_path = tmp_path / "summary.json"
+            err_buf = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), \
+                 contextlib.redirect_stderr(err_buf):
+                rc = summarize_results.write_summary(metadata_path, output_path, results_dir_override=results_dir)
+            self.assertEqual(rc, 0)
+            self.assertNotIn("never produced a trial", err_buf.getvalue())
+
+            summary = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(summary["totals"]["tasks"]["expected"], 1)
+            self.assertEqual(summary["totals"]["trials"]["recorded"], 1)
+
+    def test_two_distinct_swe_bench_pro_tasks_not_collapsed(self) -> None:
+        """Two tasks with the same repo family but different full names must not be merged."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            results_dir = tmp_path / "jobs" / "run-1"
+            results_dir.mkdir(parents=True)
+
+            task_a = "instance_flipt-io__flipt-abc123-vdef456"
+            task_b = "instance_flipt-io__flipt-xyz789-vghi012"
+            for task in (task_a, task_b):
+                trial_dir = results_dir / f"instance_flipt-io__flipt__{task[-6:]}"
+                trial_dir.mkdir()
+                write_json(trial_dir / "result.json", {
+                    **BASE_RESULT,
+                    "trial_name": trial_dir.name,
+                    "task_name": task,
+                    "outcome": "scored_fail",
+                    "error_category": None,
+                    "error_subcategory": None,
+                })
+                sessions_dir = trial_dir / "agent" / "sessions"
+                sessions_dir.mkdir(parents=True)
+                (sessions_dir / "main.jsonl").write_text("\n", encoding="utf-8")
+
+            metadata_path = tmp_path / "run-metadata.json"
+            write_json(metadata_path, {
+                "benchmark": "swe-bench-pro",
+                "coding_agent": "kimchi",
+                "model": "kimchi-dev/kimi-k2.6",
+                "results_dir": str(results_dir),
+                "selected_tasks": [task_a, task_b],
+            })
+
+            output_path = tmp_path / "summary.json"
+            with contextlib.redirect_stdout(io.StringIO()), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                rc = summarize_results.write_summary(metadata_path, output_path, results_dir_override=results_dir)
+            self.assertEqual(rc, 0)
+
+            summary = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(summary["totals"]["tasks"]["expected"], 2)
+            self.assertEqual(len(summary["trials"]), 2)
+            trial_tasks = {t["task"] for t in summary["trials"]}
+            self.assertEqual(trial_tasks, {task_a, task_b})
+
 
 class TestWriteSummaryAllErroredTasks(unittest.TestCase):
     """Tasks that ran but only produced error/infra verdicts should warn, not fail."""
@@ -599,6 +698,7 @@ class TestWriteSummaryAllErroredTasks(unittest.TestCase):
             write_json(trial_dir / "result.json", {
                 **BASE_RESULT,
                 "trial_name": "errored-task__abc123",
+                "task_name": "terminal-bench/errored-task",
                 "outcome": "error",
                 "error_category": "infra",
                 "error_subcategory": "agent_process_killed",
@@ -637,6 +737,7 @@ class TestWriteSummaryAllErroredTasks(unittest.TestCase):
             write_json(trial_dir / "result.json", {
                 **BASE_RESULT,
                 "trial_name": "task-a__abc123",
+                "task_name": "terminal-bench/task-a",
                 "outcome": "scored_fail",
                 "error_category": None,
                 "error_subcategory": None,

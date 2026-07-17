@@ -1,11 +1,12 @@
 inputs:
   benchmark:
-    description: "Which benchmark to run. 'terminal-bench-2' (original TB2) or 'terminal-bench-2-1' (TB2.1, default)."
+    description: "Which benchmark to run. 'terminal-bench-2-1' (TB2.1, default), 'terminal-bench-2' (original TB2), or 'swe-bench-pro'."
     type: string
     default: "terminal-bench-2-1"
     options:
       - "terminal-bench-2"
       - "terminal-bench-2-1"
+      - "swe-bench-pro"
   agent:
     description: "Benchmark agent to run."
     type: string
@@ -27,7 +28,7 @@ inputs:
     type: boolean
     default: false
   tasks:
-    description: "Benchmark tasks to run. Defaults to a Terminal Bench 2 subset chosen as the most informative tasks (explaining ~96% of variance in total score). Ignored when `tasks_all` is true."
+    description: "Benchmark tasks to run. Defaults to a Terminal Bench 2 subset chosen as the most informative tasks (explaining ~96% of variance in total score). Ignored when `tasks_all` is true. For SWE-bench Pro, pass instance IDs from datasets/swebenchpro.json."
     type: array
     default: [hf-model-inference, fix-code-vulnerability, build-cython-ext, bn-fit-modify, fix-git, mteb-leaderboard, cobol-modernization, merge-diff-arc-agi-task, extract-elf, pytorch-model-recovery]
   model:

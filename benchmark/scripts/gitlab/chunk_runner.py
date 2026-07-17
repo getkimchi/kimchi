@@ -68,6 +68,7 @@ _DATASETS_DIR = Path(__file__).parent / "datasets"
 _DATASET_FILE_MAP: dict[str, str] = {
     "terminal-bench/terminal-bench-2": "terminal-bench-2.json",
     "terminal-bench/terminal-bench-2-1": "terminal-bench-2-1.json",
+    "swebenchpro": "swebenchpro.json",
 }
 
 
@@ -109,6 +110,25 @@ def list_trial_dirs(results_dir: Path) -> list[Path]:
     return out
 
 
+def _task_name_from_result(trial_dir: Path) -> str | None:
+    """Read the exact, untruncated task name Harbor recorded for this trial.
+
+    Returns None if result.json is missing, malformed, or lacks task_name.
+    Strips any "source/" prefix Harbor adds (e.g. "terminal-bench/sample-task"),
+    matching the convention `expected_tasks` (bare names) uses — see the
+    identical stripping logic in summarize_results.py's summarize_trial().
+    """
+    result_path = trial_dir / "result.json"
+    if not result_path.is_file():
+        return None
+    try:
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    task_name = result.get("task_name") if isinstance(result, dict) else None
+    return task_name.rsplit("/", 1)[-1] if isinstance(task_name, str) else None
+
+
 def _all_trial_dirs_for_task(results_dir: Path, task_name: str) -> list[Path]:
     """Find all trial directories for a bare task name (e.g. 'task-a').
 
@@ -117,11 +137,17 @@ def _all_trial_dirs_for_task(results_dir: Path, task_name: str) -> list[Path]:
     Returns empty list if none found.
 
     Harbor truncates long task names when creating trial directories (e.g.
-    instance IDs of 70+ chars are truncated to
-    'instance_ansible__ansible-0ea40e__e4a9yJi'). So we can't rely on the
-    directory name starting with `{task_name}__`. Instead, we match by
-    checking if the task name starts with the trial dir's prefix (everything
-    before the last `__` separator).
+    instance IDs of 70+ chars are truncated to a fixed-length prefix, e.g.
+    'instance_ansible__ansible-0ea40e__e4a9yJi'). Matching on that truncated
+    directory-name prefix alone is unsafe: many SWE-bench Pro instance IDs
+    for the same repo share their first 32 characters (differing only in the
+    commit SHA that follows), so a naive prefix comparison can attribute one
+    task's trial to a different task entirely.
+
+    To avoid that collision, prefer the exact `task_name` Harbor recorded
+    inside the trial's own result.json — it is never truncated. Only fall
+    back to the truncated directory-name prefix heuristic when result.json
+    is missing/unreadable (e.g. a trial that crashed before writing it).
     """
     if not results_dir.is_dir():
         return []
@@ -132,13 +158,23 @@ def _all_trial_dirs_for_task(results_dir: Path, task_name: str) -> list[Path]:
         for trial_dir in run_dir.iterdir():
             if not (trial_dir.is_dir() and "__" in trial_dir.name):
                 continue
-            # Fast path: directory name starts with `{task_name}__` (short names).
+            recorded_task_name = _task_name_from_result(trial_dir)
+            if recorded_task_name is not None:
+                # Authoritative path: exact match against Harbor's own record.
+                if recorded_task_name == task_name:
+                    matches.append(trial_dir)
+                continue
+            # Fallback path: no readable task_name (e.g. trial crashed before
+            # result.json was written). Directory name starts with
+            # `{task_name}__` for short (untruncated) names.
             if trial_dir.name.startswith(f"{task_name}__"):
                 matches.append(trial_dir)
                 continue
-            # Slow path: Harbor truncated the task name. The trial dir name
+            # Last resort: Harbor truncated the task name. The trial dir name
             # is `{truncated_prefix}__{suffix}`. Check if the full task name
-            # starts with the truncated prefix.
+            # starts with the truncated prefix. This can still collide across
+            # tasks sharing a prefix, but only applies when we have no
+            # authoritative task_name to compare against.
             prefix = trial_dir.name.rsplit("__", 1)[0]
             if task_name.startswith(prefix):
                 matches.append(trial_dir)

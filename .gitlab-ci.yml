@@ -23,11 +23,11 @@ workflow:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       variables:
         PIPELINE_NAME: '$[[ inputs.benchmark ]] — $[[ inputs.agent ]] · $[[ inputs.model ]] · $[[ inputs.target_ref ]] · ferment=$[[ inputs.kimchi_ferment_oneshot ]] · tasks_all=$[[ inputs.tasks_all ]]'
-        TERMINAL_BENCH_RESOURCE_GROUP: $[[ inputs.benchmark ]]-$[[ inputs.agent ]]-scheduled
+        BENCHMARK_RESOURCE_GROUP: $[[ inputs.benchmark ]]-$[[ inputs.agent ]]-scheduled
     - if: '$CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"'
       variables:
         PIPELINE_NAME: '$[[ inputs.benchmark ]] — $[[ inputs.agent ]] · $[[ inputs.model ]] · $[[ inputs.target_ref ]] · ferment=$[[ inputs.kimchi_ferment_oneshot ]] · tasks_all=$[[ inputs.tasks_all ]]'
-        TERMINAL_BENCH_RESOURCE_GROUP: '$[[ inputs.benchmark ]]-$[[ inputs.agent ]]-$[[ inputs.target_ref ]]'
+        BENCHMARK_RESOURCE_GROUP: '$[[ inputs.benchmark ]]-$[[ inputs.agent ]]-$[[ inputs.target_ref ]]'
     - when: never
 
 include:
@@ -46,6 +46,27 @@ include:
       kimchi_compaction: $[[ inputs.kimchi_compaction ]]
       analyze_results: $[[ inputs.analyze_results ]]
       tasks_all: $[[ inputs.tasks_all ]]
+      retry_agent_timeout: $[[ inputs.retry_agent_timeout ]]
+      parallelism: $[[ inputs.parallelism ]]
+      attempts: $[[ inputs.attempts ]]
+      timeout_multiplier: $[[ inputs.timeout_multiplier ]]
+      temperature: $[[ inputs.temperature ]]
+      top_p: $[[ inputs.top_p ]]
+      top_k: $[[ inputs.top_k ]]
+      max_tokens: $[[ inputs.max_tokens ]]
+  - local: /.gitlab/ci/swe-bench-pro.yml
+    rules:
+      - if: '"$[[ inputs.benchmark ]]" == "swe-bench-pro" && ($CI_PIPELINE_SOURCE == "schedule" || $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api")'
+    inputs:
+      agent: $[[ inputs.agent ]]
+      target_ref: $[[ inputs.target_ref ]]
+      benchmark_tag: $[[ inputs.benchmark_tag ]]
+      tasks: $[[ inputs.tasks ]]
+      tasks_all: $[[ inputs.tasks_all ]]
+      model: $[[ inputs.model ]]
+      kimchi_ferment_oneshot: $[[ inputs.kimchi_ferment_oneshot ]]
+      kimchi_compaction: $[[ inputs.kimchi_compaction ]]
+      analyze_results: $[[ inputs.analyze_results ]]
       retry_agent_timeout: $[[ inputs.retry_agent_timeout ]]
       parallelism: $[[ inputs.parallelism ]]
       attempts: $[[ inputs.attempts ]]
