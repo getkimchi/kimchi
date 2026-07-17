@@ -4,7 +4,6 @@ import type { Ferment } from "../../ferment/types.js"
 import {
 	type LifecycleGuardDecision,
 	type LifecycleObligation,
-	MAX_LIFECYCLE_STOP_RETRIES,
 	buildObligationKey,
 	clearAllLifecycleGuards,
 	clearLifecycleGuard,
@@ -239,9 +238,9 @@ describe("evaluateLifecycleStop", () => {
 	}
 
 	it.each([
-		{ stops: 1, expected: { type: "retry", attempt: 1, maxAttempts: MAX_LIFECYCLE_STOP_RETRIES } },
-		{ stops: 2, expected: { type: "retry", attempt: 2, maxAttempts: MAX_LIFECYCLE_STOP_RETRIES } },
-		{ stops: 3, expected: { type: "exhausted", attempts: 3, report: true } },
+		{ stops: 1, expected: { type: "retry", attempt: 1 } },
+		{ stops: 2, expected: { type: "retry", attempt: 2 } },
+		{ stops: 3, expected: { type: "exhausted", report: true } },
 		{ stops: 4, expected: { type: "exhausted", report: false } },
 	])("after $stops qualifying stop(s) for the same key, decision is $expected.type", ({ stops, expected }) => {
 		const obligation = makeObligation(scopeAction)

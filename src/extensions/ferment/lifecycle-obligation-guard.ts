@@ -111,8 +111,8 @@ export type LifecycleObligation =
 
 export type LifecycleGuardDecision =
 	| { type: "none" }
-	| { type: "retry"; obligation: LifecycleObligation; attempt: number; maxAttempts: number }
-	| { type: "exhausted"; obligation: LifecycleObligation; attempts: number; report: boolean }
+	| { type: "retry"; obligation: LifecycleObligation; attempt: number }
+	| { type: "exhausted"; obligation: LifecycleObligation; report: boolean }
 
 /**
  * Actions that represent a single forced tool obligation. The guard will
@@ -243,21 +243,21 @@ export function evaluateLifecycleStop(obligation: LifecycleObligation): Lifecycl
 	if (!state || state.key !== obligation.key) {
 		// First stop for this obligation.
 		setLifecycleGuardRetryState(obligation.fermentId, { key: obligation.key, count: 1, reported: false })
-		return { type: "retry", obligation, attempt: 1, maxAttempts: MAX_LIFECYCLE_STOP_RETRIES }
+		return { type: "retry", obligation, attempt: 1 }
 	}
 
 	const newCount = state.count + 1
 	if (newCount <= MAX_LIFECYCLE_STOP_RETRIES) {
 		setLifecycleGuardRetryState(obligation.fermentId, { key: obligation.key, count: newCount, reported: false })
-		return { type: "retry", obligation, attempt: newCount, maxAttempts: MAX_LIFECYCLE_STOP_RETRIES }
+		return { type: "retry", obligation, attempt: newCount }
 	}
 
 	// Budget exhausted.
 	if (state.reported) {
-		return { type: "exhausted", obligation, attempts: newCount, report: false }
+		return { type: "exhausted", obligation, report: false }
 	}
 	setLifecycleGuardRetryState(obligation.fermentId, { key: obligation.key, count: newCount, reported: true })
-	return { type: "exhausted", obligation, attempts: newCount, report: true }
+	return { type: "exhausted", obligation, report: true }
 }
 
 // ─── Pi-dependent wrapper ─────────────────────────────────────────────────────
@@ -269,19 +269,14 @@ export interface LifecycleGuardCallbacks {
 	onFinalCompletionNudgeScheduled?: () => void
 }
 
-function buildRetryInstruction(
-	ferment: Ferment,
-	obligation: LifecycleObligation,
-	attempt: number,
-	maxAttempts: number,
-): string {
+function buildRetryInstruction(ferment: Ferment, obligation: LifecycleObligation, attempt: number): string {
 	if (obligation.mode === "choice-oriented") {
 		const recoveryTarget = obligation.action.kind === "recover_step" ? "failed step" : "failed phase"
 		if (attempt === 1) {
 			return `Ferment "${ferment.name}" still requires recovery from the ${recoveryTarget}. The previous turn stopped without a recovery action. Diagnose the failure and choose the safest recovery path from the guidance below. If no path is safe, stop — the guard will report the stall after retries are exhausted.`
 		}
 
-		return `Lifecycle recovery still pending (retry ${attempt}/${maxAttempts}). Do not respond with only an announcement or summary. Choose and perform an appropriate recovery action from the guidance below. If no safe choice exists, stop — the guard will report the stall.`
+		return `Lifecycle recovery still pending (retry ${attempt}/${MAX_LIFECYCLE_STOP_RETRIES}). Do not respond with only an announcement or summary. Choose and perform an appropriate recovery action from the guidance below. If no safe choice exists, stop — the guard will report the stall.`
 	}
 
 	const toolName = obligation.toolName
@@ -296,7 +291,7 @@ function buildRetryInstruction(
 		return `Ferment "${ferment.name}" still requires ${toolName}. The previous turn stopped without a tool call. Call ${toolName} now using the required Ferment/phase/step identifiers and payload.${actionSpecificReminder}`
 	}
 
-	return `Lifecycle action still pending (retry ${attempt}/${maxAttempts}). Do not respond with an announcement or summary. Emit the required ${toolName} call now. If the action cannot safely be performed, stop — the guard will report the stall after retries are exhausted.${actionSpecificReminder}`
+	return `Lifecycle action still pending (retry ${attempt}/${MAX_LIFECYCLE_STOP_RETRIES}). Do not respond with an announcement or summary. Emit the required ${toolName} call now. If the action cannot safely be performed, stop — the guard will report the stall after retries are exhausted.${actionSpecificReminder}`
 }
 
 /**
@@ -347,10 +342,10 @@ export function maybeInjectLifecycleObligationGuard(
 
 	if (decision.type === "retry") {
 		scheduleNextFermentAction(pi, fresh, runtime, {
-			tag: `Lifecycle guard retry ${decision.attempt}/${decision.maxAttempts}`,
+			tag: `Lifecycle guard retry ${decision.attempt}/${MAX_LIFECYCLE_STOP_RETRIES}`,
 			deliverAs: "steer",
 			treatCompleteFermentAsContinue: true,
-			messagePrefix: buildRetryInstruction(fresh, decision.obligation, decision.attempt, decision.maxAttempts),
+			messagePrefix: buildRetryInstruction(fresh, decision.obligation, decision.attempt),
 		})
 		if (decision.obligation.action.kind === "complete_ferment") {
 			callbacks?.onFinalCompletionNudgeScheduled?.()
@@ -372,7 +367,7 @@ export function maybeInjectLifecycleObligationGuard(
 			decision.obligation.mode === "concrete"
 				? `required action "${action.kind}" (tool: ${decision.obligation.toolName}) was not called`
 				: `required recovery action "${action.kind}" remained unresolved`
-		const breadcrumbText = `Lifecycle guard exhausted for "${fresh.name}": ${obligationDescription} after ${MAX_LIFECYCLE_STOP_RETRIES} lifecycle-stop retries (${decision.attempts} qualifying text-only stops for the unchanged obligation). No state transition was applied automatically.`
+		const breadcrumbText = `Lifecycle guard exhausted for "${fresh.name}": ${obligationDescription} after ${MAX_LIFECYCLE_STOP_RETRIES} lifecycle-stop retries (${MAX_LIFECYCLE_STOP_RETRIES + 1} qualifying text-only stops for the unchanged obligation). No state transition was applied automatically.`
 
 		safeSendMessage(
 			pi,
