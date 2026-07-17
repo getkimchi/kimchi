@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext, ExtensionFactory, WidgetPlacement } from "@earendil-works/pi-coding-agent"
 import { readHideTips, writeHideTips } from "../../config.js"
+import { AUTO_UPDATE_TIP } from "../auto-update/tips.js"
 import { subscribeBillingStatus } from "../billing/status.js"
 import { createBillingTipProvider } from "../billing/tips.js"
 import { FERMENT_TIPS } from "../ferment/tips.js"
@@ -250,6 +251,12 @@ function collectAllTips(registry: TipRegistry): TipCandidate[] {
 		seen.add(tip.id)
 		all.push({ ...tip, source: "kimchi.ferment" })
 	}
+
+	// Static auto-update tip — always shown in the catalog regardless of
+	// whether auto-update is currently enabled. The dynamic provider
+	// (createAutoUpdateTipProvider) gates visibility in the tips widget.
+	seen.add(AUTO_UPDATE_TIP.id)
+	all.push({ ...AUTO_UPDATE_TIP, source: "kimchi.auto-update" })
 
 	// Any additional tips from third-party providers not already included
 	for (const candidate of registry.getEligibleTips()) {

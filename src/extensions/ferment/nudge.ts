@@ -3,8 +3,6 @@
  *
  * - `appendRefEntry`: writes a hidden session entry that survives compaction —
  *   used so resumed sessions can find the active ferment.
- * - `maybeInjectReactiveContinuationNudge`: under automated policy, injects an
- *   action-specific prompt only after an assistant turn stalls without tool calls.
  * - `maybeInjectFermentStopNudge`: under automated policy, injects an action-
  *   specific prompt when the model ends its turn with `stopReason "stop"` after
  *   making tool calls — i.e. it did real work but chose to stop rather than
@@ -18,6 +16,11 @@
  * Action nudges use `deliverAs: "steer"` so they are consumed at the next
  * agent-loop boundary. A follow-up waits until the current loop drains; by then
  * the ferment may have advanced and the eagerly-rendered action can be stale.
+ *
+ * Zero-tool (text-only) stops are handled by the lifecycle obligation guard
+ * in `lifecycle-obligation-guard.ts`, which replaced the former reactive
+ * continuation nudge. See that module for the retry budget and exhaustion
+ * semantics.
  *
  * User abort (Esc/Ctrl+C) is handled at the `turn_end` boundary in `events.ts`.
  */
@@ -35,7 +38,13 @@ import { decideContinuation } from "./continuation.js"
 import { defaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import { safeSendMessage } from "./safe-send.js"
 import { scheduleNextFermentAction } from "./scheduler.js"
-import { bumpScopingExploreTurns, MAX_SCOPING_EXPLORE_TURNS, resetScopingExploreTurns } from "./state.js"
+import {
+	bumpScopingExploreTurns,
+	isInactiveOrPaused,
+	isTerminal,
+	MAX_SCOPING_EXPLORE_TURNS,
+	resetScopingExploreTurns,
+} from "./state.js"
 
 export function appendRefEntry(pi: ExtensionAPI, fermentId: string): void {
 	safeSendMessage(pi, {
@@ -46,21 +55,9 @@ export function appendRefEntry(pi: ExtensionAPI, fermentId: string): void {
 	})
 }
 
-const MAX_CONSECUTIVE_REACTIVE_NUDGES = 1
-const reactiveNudgeCounts = new Map<string, number>()
-
 // ─── Ferment stop nudge (tool-call turn that ended with stopReason "stop") ────
-// Separate counter so it doesn't count down the reactive (text-only) budget.
 const MAX_CONSECUTIVE_STOP_NUDGES = 2
 const stopNudgeCounts = new Map<string, number>()
-
-export function resetReactiveContinuationNudgeCount(fermentId: string): void {
-	reactiveNudgeCounts.delete(fermentId)
-}
-
-export function resetAllReactiveContinuationNudgeCounts(): void {
-	reactiveNudgeCounts.clear()
-}
 
 export function resetFermentStopNudgeCount(fermentId: string): void {
 	stopNudgeCounts.delete(fermentId)
@@ -78,53 +75,11 @@ export function refreshActiveFermentFromStorage(runtime: FermentRuntime): Fermen
 	return fresh
 }
 
-export function maybeInjectReactiveContinuationNudge(
-	pi: ExtensionAPI,
-	runtime: FermentRuntime = defaultFermentRuntime,
-): void {
-	if (!runtime.isAutomatedContinuationEnabled()) return
-	const id = runtime.getActiveId()
-	if (!id) return
-	const fresh = refreshActiveFermentFromStorage(runtime)
-	const inactive = !fresh || fresh.status === "complete" || fresh.status === "abandoned"
-	if (inactive) runtime.setActive(undefined)
-	if (inactive || fresh.status === "paused") {
-		resetReactiveContinuationNudgeCount(id)
-		return
-	}
-
-	const decision = decideContinuation(fresh, runtime.getContinuationPolicy())
-	if (decision.type !== "continue") return
-
-	const count = reactiveNudgeCounts.get(fresh.id) ?? 0
-	if (count >= MAX_CONSECUTIVE_REACTIVE_NUDGES) {
-		const suppressionText = `Continuation nudge suppressed after ${count} consecutive text-only assistant turns for "${fresh.name}".`
-		safeSendMessage(
-			pi,
-			{
-				customType: "ferment_breadcrumb",
-				content: [{ type: "text", text: suppressionText }],
-				display: true,
-				details: { text: suppressionText, variant: "step" },
-			},
-			{ triggerTurn: false },
-		)
-		return
-	}
-
-	reactiveNudgeCounts.set(fresh.id, count + 1)
-	scheduleNextFermentAction(pi, fresh, runtime, {
-		tag: "Reactive continuation nudge",
-		deliverAs: "steer",
-	})
-}
-
 /**
  * Fired from `turn_end` when the assistant made tool calls this turn but then
  * ended with `stopReason === "stop"` while a ferment still requires action.
  *
- * The reactive continuation nudge only fires on *text-only* turns
- * (`!toolCallSeen`). Without this nudge, the pattern:
+ * Without this nudge, the pattern:
  *
  *   complete_ferment_step → summary text → [stop]
  *
@@ -141,9 +96,8 @@ export function maybeInjectFermentStopNudge(
 	const id = runtime.getActiveId()
 	if (!id) return false
 	const fresh = refreshActiveFermentFromStorage(runtime)
-	const inactive = !fresh || fresh.status === "complete" || fresh.status === "abandoned"
-	if (inactive) runtime.setActive(undefined)
-	if (inactive || fresh.status === "paused") {
+	if (!fresh || isTerminal(fresh)) runtime.setActive(undefined)
+	if (!fresh || isInactiveOrPaused(fresh)) {
 		stopNudgeCounts.delete(id)
 		return false
 	}

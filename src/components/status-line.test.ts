@@ -7,7 +7,14 @@ import { setBillingStatusForTest } from "../extensions/billing/status.js"
 import * as FERMENT from "../extensions/ferment/index.js"
 import * as MULTI_MODEL from "../extensions/multi-model.js"
 import * as TAGS from "../extensions/tags.js"
-import { buildContextCompact, buildModelAbbrev, buildPhaseCompact, SHORTCUT_TAIL, StatusLine } from "./status-line.js"
+import {
+	buildContextCompact,
+	buildModelAbbrev,
+	buildPhaseCompact,
+	buildScriptPayload,
+	SHORTCUT_TAIL,
+	StatusLine,
+} from "./status-line.js"
 
 // ── Mock status-line-config.ts ───────────────────────────────────────────────
 // Controls which elements appear as pinned in each test.
@@ -88,6 +95,35 @@ function createMockStatusLineData(opts?: {
 		getExtensionStatuses: vi.fn(() => statuses),
 	} as unknown as ReadonlyFooterDataProvider
 }
+
+describe("buildScriptPayload", () => {
+	afterEach(() => setBillingStatusForTest(undefined))
+
+	it("passes credits and budget to custom status-line scripts", () => {
+		setBillingStatusForTest({
+			serverless: true,
+			remainingCredits: 5,
+			budget: {
+				period: { startTime: "2026-07-01T00:00:00Z", endTime: "2026-08-01T00:00:00Z" },
+				budgets: [
+					{
+						scope: "USER",
+						scopeId: "owner",
+						budgetLimitUsd: "2000.000000",
+						totalSpendUsd: "274.594050",
+						providerBudgets: [],
+					},
+				],
+			},
+			updatedAt: "2026-07-07T00:00:00.000Z",
+		})
+
+		const payload = buildScriptPayload(createMockContext(), "idle", 0, 0, 0)
+
+		expect(payload.credits).toBe("$5.00")
+		expect(payload.budget).toBe("13.73% ($274.59/$2k)")
+	})
+})
 
 /** Save the current platform and stub it to `value`. Returns a cleanup fn. */
 function stubPlatform(value: NodeJS.Platform): () => void {
@@ -544,6 +580,18 @@ describe("StatusLine segment coverage", () => {
 		const visible = renderVisible(statusLine, 200)
 
 		expect(visible).not.toContain("Credits: $5.00")
+	})
+
+	it("passes the active session id to phase and tag lookups", () => {
+		withPinned(["phase", "tags"], () => {
+			const getCurrentPhaseSpy = vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("explore")
+			const getActiveTagsSpy = vi.spyOn(TAGS, "getActiveTags").mockReturnValue(["env:prod"])
+			const ctx = createMockContext()
+			const sl = new StatusLine(ctx, theme, createMockStatusLineData())
+			renderVisible(sl, 200)
+			expect(getCurrentPhaseSpy).toHaveBeenCalledWith("test-session")
+			expect(getActiveTagsSpy).toHaveBeenCalledWith(ctx.sessionManager)
+		})
 	})
 })
 

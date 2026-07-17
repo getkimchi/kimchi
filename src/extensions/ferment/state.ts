@@ -28,6 +28,23 @@ import {
 
 let activeFerment: Ferment | undefined
 
+/** True only for the genuinely-final statuses (`complete`, `abandoned`).
+ *  A missing ferment is NOT terminal — it is simply absent — so `undefined`
+ *  returns false. Use {@link isInactiveOrPaused} for the broader bail-out
+ *  predicate that also treats a missing or paused ferment as inactive. */
+export function isTerminal(ferment: Ferment | undefined): boolean {
+	return !!ferment && (ferment.status === "complete" || ferment.status === "abandoned")
+}
+
+/** The "bail out / clear guard" predicate: missing, terminal, or paused.
+ *  Used by the lifecycle-obligation guard, stop-nudge, scheduler, and error-
+ *  recovery paths to decide whether a ferment can no longer make progress
+ *  this turn. Keeps the five hand-written `!f || f.status === ...` sites
+ *  from drifting as statuses evolve. */
+export function isInactiveOrPaused(ferment: Ferment | undefined): boolean {
+	return !ferment || isTerminal(ferment) || ferment.status === "paused"
+}
+
 export function getActive(): Ferment | undefined {
 	return activeFerment
 }
@@ -247,6 +264,38 @@ export function isAutomatedContinuationEnabled(): boolean {
 
 export function setAutomatedContinuationEnabled(v: boolean): void {
 	continuationPolicy = v ? "automated" : "manual"
+}
+
+// ─── Lifecycle obligation guard retry state ──────────────────────────────────
+// Session-local recovery budget. This is deliberately not persisted: it tracks
+// agent-loop stalls, not Ferment domain progress. Successful persisted lifecycle
+// transitions clear the entry through FermentRuntime's coordination hook.
+
+export interface LifecycleGuardRetryState {
+	/** Current obligation key for this Ferment. */
+	key: string
+	/** Number of retries scheduled so far for this key (1 after the first stop). */
+	count: number
+	/** Whether exhaustion has already been reported for this key. */
+	reported: boolean
+}
+
+const lifecycleGuardRetryStates = new Map<string, LifecycleGuardRetryState>()
+
+export function getLifecycleGuardRetryState(fermentId: string): LifecycleGuardRetryState | undefined {
+	return lifecycleGuardRetryStates.get(fermentId)
+}
+
+export function setLifecycleGuardRetryState(fermentId: string, state: LifecycleGuardRetryState): void {
+	lifecycleGuardRetryStates.set(fermentId, state)
+}
+
+export function clearLifecycleGuardRetryState(fermentId: string): void {
+	lifecycleGuardRetryStates.delete(fermentId)
+}
+
+export function clearAllLifecycleGuardRetryStates(): void {
+	lifecycleGuardRetryStates.clear()
 }
 
 // ─── Last human input timestamp (used by the /ferment progress dialog title) ─
@@ -688,6 +737,7 @@ export function clearFermentState(fermentId: string): void {
 	scopingInteractive.delete(fermentId)
 	scopingConfirmed.delete(fermentId)
 	scopingExploreTurns.delete(fermentId)
+	clearLifecycleGuardRetryState(fermentId)
 	const prefix = `${fermentId}:`
 	stepStartCounts.clearByPrefix(prefix)
 	blockRetryCounts.clearByPrefix(prefix)

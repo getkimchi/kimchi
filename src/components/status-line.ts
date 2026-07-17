@@ -117,6 +117,7 @@ export function buildScriptPayload(
 			lastTurn = { input: u.input, output: u.output }
 		}
 	}
+	const billing = getBillingStatusLine()
 
 	return {
 		// kimchi fields
@@ -126,6 +127,8 @@ export function buildScriptPayload(
 			limit: usage?.contextWindow ?? null,
 			percent: usage?.percent ?? null,
 		},
+		credits: billing?.amount ?? null,
+		budget: billing?.budget ?? null,
 		workspace: { cwd: ctx.cwd, current_dir: ctx.cwd },
 		status,
 		session: {
@@ -157,7 +160,7 @@ export function buildScriptPayload(
 		multi_model: {
 			enabled: getMultiModelEnabled(ctx.sessionManager),
 		},
-		phase: getCurrentPhase(),
+		phase: getCurrentPhase(sessionId),
 	}
 }
 
@@ -441,7 +444,7 @@ export class StatusLine implements Component {
 
 	private phaseSegment(pinned = false): Segment | null {
 		if (!pinned) return null
-		const phase = getCurrentPhase()
+		const phase = getCurrentPhase(this.ctx.sessionManager.getSessionId())
 		if (!phase) {
 			const text = `${this.dim("phase:")}${this.dim("—")}`
 			return { id: "phase", text, width: visibleWidth(text), raw: { kind: "phase", phase: "—" } }
@@ -574,7 +577,7 @@ export class StatusLine implements Component {
 		const config = readStatusLineConfig()
 		const pinnedSet = new Set<SegmentId>(config.pinned)
 
-		const tags = getActiveTags()
+		const tags = getActiveTags(this.ctx.sessionManager)
 			.map(parseTag)
 			.filter((t): t is { key: string; value: string } => t !== null)
 
