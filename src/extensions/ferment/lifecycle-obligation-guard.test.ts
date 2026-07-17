@@ -104,8 +104,10 @@ afterEach(() => {
 // ─── Test helpers ─────────────────────────────────────────────────────────────
 
 function expectRetry(decision: LifecycleGuardDecision): Extract<LifecycleGuardDecision, { type: "retry" }> {
-	expect(decision.type).toBe("retry")
-	return decision as Extract<LifecycleGuardDecision, { type: "retry" }>
+	if (decision.type !== "retry") {
+		throw new Error(`expected retry decision, received ${decision.type}`)
+	}
+	return decision
 }
 
 // ─── buildObligationKey ──────────────────────────────────────────────────────
