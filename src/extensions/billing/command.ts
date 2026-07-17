@@ -95,7 +95,7 @@ async function handleBudgetCommand(ctx: ExtensionCommandContext): Promise<void> 
 
 export default function budgetCommandExtension(pi: ExtensionAPI): void {
 	pi.registerCommand("budget", {
-		description: "Show the current API key budget and usage",
+		description: "Show current budget and usage",
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			await handleBudgetCommand(ctx)
 		},
