@@ -73,6 +73,7 @@ interface CreateKimchiFixtureOptions {
 	models?: FakeModel[]
 	responses: FakeResponseScript[]
 	creditsResponses?: unknown[]
+	budgetResponses?: unknown[]
 	/** `git init` the work dir so repo-checking flows (e.g. ferment) don't prompt to init one. */
 	gitInit?: boolean
 	/**

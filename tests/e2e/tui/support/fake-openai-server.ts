@@ -76,6 +76,7 @@ interface StartFakeOpenAiServerOptions {
 	models?: FakeModel[]
 	responses: FakeResponseScript[]
 	creditsResponses?: unknown[]
+	budgetResponses?: unknown[]
 }
 
 export const DEFAULT_MODEL: Required<FakeModel> = {
@@ -120,7 +121,9 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 		}
 	}
 	const creditsQueue = [...(options.creditsResponses ?? [])]
+	const budgetQueue = [...(options.budgetResponses ?? [])]
 	let lastCreditsResponse: unknown
+	let lastBudgetResponse: unknown
 
 	const server = createServer(async (req, res) => {
 		const body = await readJsonBody(req)
@@ -163,6 +166,17 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 				const credits = creditsQueue.shift() ?? lastCreditsResponse ?? { serverless: false }
 				lastCreditsResponse = credits
 				writeJson(res, 200, credits)
+				return
+			}
+
+			if (req.method === "GET" && req.url?.startsWith("/v1/budget")) {
+				if (budgetQueue.length === 0 && lastBudgetResponse === undefined) {
+					writeJson(res, 404, { error: "Budget endpoint is not supported by this fake proxy" })
+					return
+				}
+				const budget = budgetQueue.shift() ?? lastBudgetResponse
+				lastBudgetResponse = budget
+				writeJson(res, 200, budget)
 				return
 			}
 
