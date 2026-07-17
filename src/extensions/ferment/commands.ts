@@ -266,7 +266,7 @@ export async function startFermentForIntent({
 			name: shortName,
 			goal: rawIntent,
 			hasUI: ctx.hasUI,
-			isOneShot: pi.getFlag?.("ferment-oneshot") === true,
+			isOneShot: pi.getFlag("ferment-oneshot") === true,
 		})
 		setActiveFermentAndApplyProfile(pi, runtime, f)
 		emitFermentCreated(pi.events, f)
