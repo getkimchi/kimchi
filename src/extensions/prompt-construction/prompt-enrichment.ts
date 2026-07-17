@@ -37,7 +37,6 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
 import { isResourceEnabled } from "../../resources/store.js"
-import * as ToolProfileManager from "../../shared/planning/tool-profile-manager.js"
 import { getKimchiProjectSkillPaths } from "../../skill-paths.js"
 import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
@@ -49,7 +48,6 @@ import {
 	getConfiguredNativeSkillNames,
 	getConfiguredSkillResourcePaths,
 } from "../claude-code-skills/definition.js"
-import { hasActiveFerment } from "../ferment/state.js"
 import { bumpStallCounter } from "../ferment/todo-sync.js"
 import { getProcessOrchestratorRef, setProcessOrchestratorRef } from "../kimchi-process.js"
 import { getMultiModelEnabled, setAndPersistMultiModelEnabled } from "../multi-model.js"
@@ -274,7 +272,6 @@ export default function (skillPaths: string[]) {
 			// Capture the session manager for turn_start re-application of the
 			// orchestrator tool profile. Declared before session_start so both
 			// handlers can access it.
-			let orchestratorProfileActive = false
 
 			pi.on("session_start", async (_event, ctx) => {
 				const { multiModelEnabled, orchestratorModelRef } = syncSessionModelState(pi, ctx)
@@ -297,24 +294,12 @@ export default function (skillPaths: string[]) {
 					}
 				}
 
-				// Apply the orchestrator tool restriction when multi-model is active
-				// and no ferment is controlling the toolset. Ferment applies its own
-				// profiles via applyFermentRuntimeToolProfile; the snapshot layer
-				// prevents this from overriding ferment's toolset.
-				if (multiModelEnabled && !hasActiveFerment()) {
-					ToolProfileManager.apply("orchestrator", "adhoc", pi)
-					orchestratorProfileActive = true
-				}
+				// Tool restriction removed — orchestrator gets all tools but is
+				// guided by the prompt to prefer delegation for context-heavy work.
+				// Ferment still controls the toolset when active via its own profiles.
 			})
 
-		// Re-apply the orchestrator profile on every turn start.
-		// Use a simple boolean flag set in session_start — if multi-model was
-		// active at session start, re-apply the profile on every turn.
-		pi.on("turn_start", async () => {
-			if (orchestratorProfileActive && !hasActiveFerment()) {
-				ToolProfileManager.apply("orchestrator", "adhoc", pi)
-			}
-		})
+		// Tool restriction re-application removed — orchestrator keeps all tools.
 
 			pi.on("model_select", async (_event, ctx) => {
 				notifyIfDeprecated(ctx)
