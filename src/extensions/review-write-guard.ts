@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { getCurrentPhase } from "./tags.js"
 
 const IMPLEMENTATION_TOOLS = new Set(["edit", "write"])
@@ -29,6 +29,8 @@ const BUILD_BLOCK_REASON =
 	"The orchestrator must not do a subagent's job. Spawn a fix Agent with the remaining work."
 
 export class OrchestratorWriteGuard {
+	private readonly ctx: ExtensionContext
+
 	private readonly implementationTools: Set<string>
 	private readonly delegationTools: Set<string>
 	private readonly buildPhaseThreshold: number
@@ -38,7 +40,9 @@ export class OrchestratorWriteGuard {
 	private buildWriteCount = 0
 	private buildSteered = false
 
-	constructor(options: OrchestratorWriteGuardOptions = {}) {
+	constructor(ctx: ExtensionContext, options: OrchestratorWriteGuardOptions = {}) {
+		this.ctx = ctx
+
 		this.implementationTools = options.implementationTools ?? new Set(IMPLEMENTATION_TOOLS)
 		this.delegationTools = new Set(DELEGATION_TOOLS)
 		this.buildPhaseThreshold = options.buildPhaseThreshold ?? 2
@@ -52,7 +56,7 @@ export class OrchestratorWriteGuard {
 	}
 
 	checkToolCall(toolName: string): { block: true; reason: string } | { steer: string } | undefined {
-		const phase = getCurrentPhase()
+		const phase = getCurrentPhase(this.ctx.sessionManager.getSessionId())
 
 		if (this.delegationTools.has(toolName)) {
 			this.subagentReturnedInBuild = false
@@ -86,7 +90,7 @@ export class OrchestratorWriteGuard {
 	}
 
 	recordSubagentReturn(): void {
-		const phase = getCurrentPhase()
+		const phase = getCurrentPhase(this.ctx.sessionManager.getSessionId())
 		if (phase === "build") {
 			this.subagentReturnedInBuild = true
 			this.buildWriteCount = 0
@@ -104,19 +108,31 @@ export class OrchestratorWriteGuard {
 }
 
 export default function reviewWriteGuardExtension(pi: ExtensionAPI, options?: OrchestratorWriteGuardOptions): void {
-	const guard = new OrchestratorWriteGuard(options)
+	const guardMap = new Map<string, OrchestratorWriteGuard>()
 
-	pi.on("session_start", () => {
+	function getOrchestratorWriteGuard(ctx: ExtensionContext): OrchestratorWriteGuard {
+		const sessionId = ctx.sessionManager.getSessionId()
+		let guard = guardMap.get(sessionId)
+		if (!guard) {
+			guard = new OrchestratorWriteGuard(ctx, options)
+			guardMap.set(sessionId, guard)
+		}
+		return guard
+	}
+
+	pi.on("session_start", (_event, ctx) => {
+		const guard = getOrchestratorWriteGuard(ctx)
 		guard.reset()
 	})
 
-	pi.on("tool_call", (event) => {
+	pi.on("tool_call", (event, ctx) => {
 		if (!event.toolName) return
 
 		if (event.toolName === "Agent") {
 			return { block: false }
 		}
 
+		const guard = getOrchestratorWriteGuard(ctx)
 		const result = guard.checkToolCall(event.toolName)
 		if (!result) return { block: false }
 
@@ -135,8 +151,9 @@ export default function reviewWriteGuardExtension(pi: ExtensionAPI, options?: Or
 		return { block: false }
 	})
 
-	pi.on("tool_result", (event) => {
+	pi.on("tool_result", (event, ctx) => {
 		if (event.toolName === "Agent") {
+			const guard = getOrchestratorWriteGuard(ctx)
 			guard.recordSubagentReturn()
 		}
 	})

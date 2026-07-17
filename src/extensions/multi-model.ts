@@ -16,7 +16,7 @@ export interface MultiModelResolution {
 // 3. Persisted session-log value (last custom entry in session entries)          → source: "persisted"
 // 4. Global config default (settings.json "multiModel" key, default true)        → source: "global"
 
-const _multiModelEntryType = "multi_model_enabled" as const
+const MULTI_MODEL_SESSION_ENTRY_TYPE = "multi_model_enabled"
 
 /** Whether --model was passed on the CLI. */
 export function hasExplicitModelFlag(): boolean {
@@ -37,7 +37,8 @@ export function getPersistedMultiModelEnabled(sessionManager: Pick<SessionManage
 	const lastEntry = sessionManager
 		.getEntries()
 		.findLast(
-			(item): item is CustomEntry<boolean> => item.type === "custom" && item.customType === _multiModelEntryType,
+			(item): item is CustomEntry<boolean> =>
+				item.type === "custom" && item.customType === MULTI_MODEL_SESSION_ENTRY_TYPE,
 		)
 	return lastEntry?.data
 }
@@ -113,7 +114,7 @@ export function setAndPersistMultiModelEnabled(
 	// we persist even if --model was also present (runtime outranks cli).
 	if (persisted !== resolution.value && resolution.source !== "cli") {
 		const append = "appendCustomEntry" in appendCtx ? appendCtx.appendCustomEntry : appendCtx.appendEntry
-		append(_multiModelEntryType, resolution.value)
+		append(MULTI_MODEL_SESSION_ENTRY_TYPE, resolution.value)
 	}
 
 	return resolution
