@@ -83,6 +83,7 @@ import rtkRewriteExtension from "./extensions/rtk-rewrite.js"
 import sessionMetadataExtension from "./extensions/session-metadata/index.js"
 import sessionNameExtension from "./extensions/session-name.js"
 import orphanToolResultRepairExtension from "./extensions/session-repair/orphan-tool-result-repair.js"
+import settingsTrustSyncExtension from "./extensions/settings-trust-sync.js"
 import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
@@ -107,6 +108,7 @@ import uiExtension from "./extensions/ui.js"
 import webFetchExtension from "./extensions/web-fetch/index.js"
 import webSearchExtension from "./extensions/web-search/index.js"
 import { normalizeAtFileArgs } from "./fs-paths.js"
+import { installGlobalFetchInstrumentation } from "./http/instrument-fetch.js"
 import {
 	applyInfrastructureExitPolicy,
 	createInfrastructureErrorTracker,
@@ -145,63 +147,6 @@ import { getVersion } from "./utils.js"
 installInfrastructureRetryPatch()
 installInlineCompactPatch()
 installPiNativeCompatibilityShim()
-
-function isModelCompletionFetch(input: RequestInfo | URL): boolean {
-	const url =
-		typeof input === "string"
-			? input
-			: input instanceof URL
-				? input.href
-				: typeof (input as { url?: unknown }).url === "string"
-					? (input as { url: string }).url
-					: ""
-	return /\/chat\/completions(?:$|[?#])/.test(url)
-}
-
-function withBillingRefreshAfterResponseSettles(response: Response, refreshBilling: () => Promise<unknown>): Response {
-	const body = response.body
-	if (!body) {
-		void refreshBilling()
-		return response
-	}
-
-	const reader = body.getReader()
-	let refreshScheduled = false
-	const refreshOnce = () => {
-		if (refreshScheduled) return
-		refreshScheduled = true
-		void refreshBilling()
-	}
-	const wrappedBody = new ReadableStream<Uint8Array>({
-		async pull(controller) {
-			try {
-				const { done, value } = await reader.read()
-				if (done) {
-					controller.close()
-					refreshOnce()
-					return
-				}
-				controller.enqueue(value)
-			} catch (error) {
-				refreshOnce()
-				controller.error(error)
-			}
-		},
-		async cancel(reason) {
-			try {
-				await reader.cancel(reason)
-			} finally {
-				refreshOnce()
-			}
-		},
-	})
-
-	return new Response(wrappedBody, {
-		status: response.status,
-		statusText: response.statusText,
-		headers: response.headers,
-	})
-}
 
 function getSubcommand(args: string[]): string {
 	if (args.includes("--version") || args.includes("-v")) return "version"
@@ -544,24 +489,10 @@ try {
 		// Suppress Node.js warnings (same as pi-mono's own cli.js)
 		process.emitWarning = () => {}
 
-		const fetchPatchedSymbol = Symbol.for("kimchi.fetchPatched")
-		if (!(globalThis.fetch as typeof globalThis.fetch & { [key: symbol]: boolean })[fetchPatchedSymbol]) {
-			const userAgent = `kimchi/${getVersion()}`
-			const originalFetch = globalThis.fetch.bind(globalThis)
-			const refreshBilling = () => refreshBillingStatusFromConfig({ fetch: originalFetch })
-			const patchedFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-				const headers = new Headers(init?.headers)
-				if (!headers.has("user-agent")) {
-					headers.set("user-agent", userAgent)
-				}
-				const response = await originalFetch(input, { ...init, headers })
-				return isModelCompletionFetch(input)
-					? withBillingRefreshAfterResponseSettles(response, refreshBilling)
-					: response
-			}
-			;(patchedFetch as typeof patchedFetch & { [key: symbol]: boolean })[fetchPatchedSymbol] = true
-			globalThis.fetch = patchedFetch
-		}
+		installGlobalFetchInstrumentation({
+			userAgent: `kimchi/${getVersion()}`,
+			onModelCompletionSettled: (originalFetch) => refreshBillingStatusFromConfig({ fetch: originalFetch }),
+		})
 
 		const interactiveStartupContext = {
 			nonInteractiveMode: acpMode,
@@ -583,6 +514,9 @@ try {
 			: []
 		const effectiveSkillPaths = [...new Set([...skillPaths])]
 		const extensionFactories = [
+			// First so its session_start handler syncs project trust onto the
+			// settings watcher before any other handler reads settings.
+			settingsTrustSyncExtension,
 			autoUpdateSettingsExtension,
 			startupUpdateExtension,
 			sessionNameExtension(),

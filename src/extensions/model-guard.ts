@@ -3,7 +3,6 @@ import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-wor
 import { getCompactionEnabled } from "../settings-watcher.js"
 import { COMPACTION_RESERVE_TOKENS } from "./compaction-thresholds.js"
 import { hasActiveFerment } from "./ferment/state.js"
-import { isStaleCtxError } from "./stale-ctx.js"
 
 /** Messages that have a content array we can inspect for images. */
 type ContentMessage = UserMessage | AssistantMessage | ToolResultMessage
@@ -384,19 +383,9 @@ export default function createModelGuardExtension(_pi: ExtensionAPI) {
 		// ctx.compact() is upstream's manual path and does not check the toggle
 		// itself, so this stopgap must gate on it explicitly — otherwise it
 		// compacts even when the user (or a benchmark harness) disabled
-		// auto-compaction. Undefined trust leaves the settings reader's
-		// last-synced trust untouched; stale-ctx errors are routine
-		// (post-shutdown/reload) and stay silent, anything else is warned so a
-		// broken trust accessor doesn't fail invisibly.
-		let projectTrusted: boolean | undefined
-		try {
-			projectTrusted = ctx.isProjectTrusted?.()
-		} catch (err) {
-			if (!isStaleCtxError(err)) {
-				console.warn("[model-guard] failed to read project trust:", err)
-			}
-		}
-		if (!getCompactionEnabled(projectTrusted)) return
+		// auto-compaction. Project trust is already synced onto the settings
+		// reader by settingsTrustSyncExtension at session_start.
+		if (!getCompactionEnabled()) return
 
 		// Threshold exceeded mid-turn. Compact now.
 		//

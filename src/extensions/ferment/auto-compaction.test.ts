@@ -1576,39 +1576,6 @@ describe("maybeTriggerFermentCompaction — /settings Auto-compact toggle", () =
 		// The pending compaction must be left untouched (not drained).
 		expect(runtime.getPendingCompaction(ferment.id)).toBeDefined()
 	})
-
-	it("passes the session's project-trust decision to getCompactionEnabled", async () => {
-		ctx.isProjectTrusted = vi.fn(() => true)
-
-		await maybeTriggerFermentCompaction(pi, ctx, runtime)
-
-		expect(vi.mocked(getCompactionEnabled)).toHaveBeenCalledWith(true)
-	})
-
-	it("warns when the trust accessor fails unexpectedly, and still evaluates the toggle", async () => {
-		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
-		ctx.isProjectTrusted = vi.fn(() => {
-			throw new Error("boom")
-		})
-
-		await maybeTriggerFermentCompaction(pi, ctx, runtime)
-
-		expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("project trust"), expect.any(Error))
-		// Trust stays unknown — the toggle is still consulted with undefined.
-		expect(vi.mocked(getCompactionEnabled)).toHaveBeenCalledWith(undefined)
-	})
-
-	it("stays silent when the trust accessor throws a stale-ctx error", async () => {
-		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
-		ctx.isProjectTrusted = vi.fn(() => {
-			throw new Error(STALE_CTX_MESSAGE)
-		})
-
-		await maybeTriggerFermentCompaction(pi, ctx, runtime)
-
-		expect(warnSpy).not.toHaveBeenCalled()
-		expect(vi.mocked(getCompactionEnabled)).toHaveBeenCalledWith(undefined)
-	})
 })
 
 // Paired tests proving the Auto-compact toggle turns stage compaction on/off for a
