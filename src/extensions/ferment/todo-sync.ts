@@ -518,7 +518,8 @@ export function registerFermentTodoSync(pi: ExtensionAPI, sessionId: string): ()
 	// calls target that step's ferment-step scope. When multiple parallel
 	// steps are active, return undefined to force the caller to pass an
 	// explicit scope — avoids silently writing to the wrong step.
-	const unregisterScope = registerActiveTodoScopeProvider(() => {
+	const unregisterScope = registerActiveTodoScopeProvider((requestedSessionId) => {
+		if (requestedSessionId !== sessionId) return undefined
 		const bucket = runningSteps.get(sessionId)
 		if (bucket?.size !== 1) return undefined
 		const [, step] = [...bucket.entries()][0]

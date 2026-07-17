@@ -76,11 +76,13 @@ function createMockContext(opts?: MockContextOpts): ExtensionContext {
 }
 
 function createMockStatusLineData(opts?: {
+	goal?: string
 	permissionsMode?: string
 	permissionsWarning?: string
 	updateAvailable?: string
 }): ReadonlyFooterDataProvider {
 	const statuses = new Map<string, string>()
+	if (opts?.goal) statuses.set("goal", opts.goal)
 	if (opts?.permissionsMode) statuses.set("permissions-mode", opts.permissionsMode)
 	if (opts?.permissionsWarning) statuses.set("permissions-warning", opts.permissionsWarning)
 	if (opts?.updateAvailable) statuses.set("update-available", opts.updateAvailable)
@@ -287,6 +289,14 @@ describe("StatusLine behavioural acceptance at representative widths", () => {
 		expect(visible).toContain("/ for commands")
 		expect(visibleWidth(raw)).toBe(160)
 		expect(visible.endsWith("/ for commands")).toBe(true)
+	})
+
+	it("shows Goal feedback in the status line without an emoji", () => {
+		statusLineData = createMockStatusLineData({ goal: "Goal running · 1h 5m · 1.5k tokens" })
+		const { visible } = renderAt(160)
+
+		expect(visible).toContain("Goal running · 1h 5m · 1.5k tokens")
+		expect(visible).not.toContain("🎯")
 	})
 
 	it("width 160: pinned elements present, hint still at far right", () => {

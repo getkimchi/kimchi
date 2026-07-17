@@ -65,6 +65,25 @@ describe("ResourceManagerComponent", () => {
 		expect(isResourceEnabled("hooks.rtk-rewrite")).toBe(false)
 		expect(selectedIndex(component)).toBe(1)
 	})
+
+	it("renders an experimental tab with goal mode disabled by default", () => {
+		const theme = {
+			fg: (_color: string, text: string) => text,
+			bg: (_color: string, text: string) => text,
+			bold: (text: string) => text,
+		} as Theme
+		const component = createResourceManager(
+			{ requestRender: vi.fn(), terminal: { rows: 40 } } as unknown as TUI,
+			theme,
+			vi.fn(),
+			"experimental",
+		)
+
+		const rendered = component.render(120).join("\n")
+		expect(rendered).toContain("Experimental")
+		expect(rendered).toContain("Goal mode")
+		expect(rendered).toContain("disabled")
+	})
 })
 
 function selectedIndex(component: unknown): number {

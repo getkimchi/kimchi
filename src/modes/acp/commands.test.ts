@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import { SLASH_COMMANDS } from "../../extensions/slash-commands.js"
-import { AVAILABLE_COMMANDS } from "./commands.js"
+import { AVAILABLE_COMMANDS, buildAvailableCommands } from "./commands.js"
 
 describe("AVAILABLE_COMMANDS — ACP advertisement", () => {
 	it("exposes at least one command", () => {
@@ -12,6 +12,13 @@ describe("AVAILABLE_COMMANDS — ACP advertisement", () => {
 		const bug = AVAILABLE_COMMANDS.find((c) => c.name === "bug")
 		expect(bug).toBeDefined()
 		expect(bug?.description).toBe(SLASH_COMMANDS.bug.hint)
+	})
+
+	it("advertises /goal only when the experimental feature is enabled", () => {
+		expect(buildAvailableCommands(false).some((command) => command.name === "goal")).toBe(false)
+		expect(buildAvailableCommands(true)).toContainEqual(
+			expect.objectContaining({ name: "goal", description: SLASH_COMMANDS.goal.hint }),
+		)
 	})
 
 	it("every advertised name is a real slash command", () => {
