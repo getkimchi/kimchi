@@ -606,7 +606,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 						name: draftName,
 						goal: parsed.goal || text.trim(),
 						hasUI: ctx.hasUI,
-						isOneShot: pi.getFlag?.("ferment-oneshot") === true,
+						isOneShot: pi.getFlag("ferment-oneshot") === true,
 					})
 					defaultFermentRuntime.setActive(draft)
 					if (pi.events) emitFermentCreated(pi.events, draft)
