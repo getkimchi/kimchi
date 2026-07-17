@@ -12,6 +12,7 @@ import { createContext } from "../__mocks__/context.js"
 import * as agentWorkerContext from "../agent-worker-context.js"
 import { CLAUDE_CODE_SKILLS_RESOURCE_ID } from "../claude-code-skills/definition.js"
 import type { OrchestratorMessages } from "../orchestration/continuation-nudge.js"
+import * as tags from "../tags.js"
 import promptEnrichmentExtension, {
 	_resetDeprecatedNotificationTracking,
 	stripEmptyToolCalls,
@@ -275,6 +276,18 @@ describe("prompt enrichment environment context", () => {
 				process.env.SHELL = oldShell
 			}
 		}
+	})
+
+	it("reads the current phase using the active session id", async () => {
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		const getCurrentPhaseSpy = vi.spyOn(tags, "getCurrentPhase").mockReturnValue("plan")
+		const ctx = createContext({ hasUI: false, sessionManager: { getSessionId: () => "enrichment-session" } })
+
+		await beforeAgentStart({}, ctx)
+
+		expect(getCurrentPhaseSpy).toHaveBeenCalledWith("enrichment-session")
 	})
 })
 

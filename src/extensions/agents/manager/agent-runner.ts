@@ -709,10 +709,11 @@ async function runAgentInner(
 		process.env.KIMCHI_AGENT_PERSONA = agentConfig.name
 	}
 
-	const prevPhase = getCurrentPhase()
+	const sessionId = ctx.sessionManager.getSessionId()
+	const prevPhase = getCurrentPhase(sessionId)
 	const personaPhase = agentConfig?.roles?.[0]
 	if (personaPhase) {
-		setCurrentPhase(personaPhase)
+		setCurrentPhase(sessionId, personaPhase)
 	}
 
 	try {
@@ -735,7 +736,7 @@ async function runAgentInner(
 			}
 		}
 		if (personaPhase) {
-			setCurrentPhase(prevPhase)
+			setCurrentPhase(sessionId, prevPhase)
 		}
 	}
 

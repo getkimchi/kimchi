@@ -11,27 +11,35 @@ export function getConfigSetting<T>(
 	config: Record<string, unknown>,
 	key: string,
 	satisfies: Satisfies<T>,
+	fallback?: T,
 ): T | undefined {
 	const value = config[key]
 	if (satisfies(value)) {
 		return value
 	}
-	return undefined
+	return fallback ?? undefined
 }
 
-/** If `sessionId` is null, retrieve global configuration setting. */
-export function readConfigSetting<T>(key: string, satisfies: Satisfies<T>): T | undefined {
+export function readConfigSetting<T>(key: string, satisfies: Satisfies<T>): T | undefined
+export function readConfigSetting<T>(key: string, satisfies: Satisfies<T>, fallback: T): T
+export function readConfigSetting<T>(key: string, satisfies: Satisfies<T>, fallback?: T): T | undefined {
 	try {
 		const parsed = readJson(HARNESS_SETTINGS_PATH)
-		return getConfigSetting(parsed, key, satisfies)
+		return getConfigSetting(parsed, key, satisfies, fallback)
 	} catch {
 		// thrown if the file is malformed: fall through
 	}
-	return undefined
+	return fallback ?? undefined
 }
 
-export async function readConfigSettingAsync<T>(key: string, satisfies: Satisfies<T>): Promise<T | undefined> {
-	return readConfigSetting(key, satisfies)
+export function readConfigSettingAsync<T>(key: string, satisfies: Satisfies<T>): Promise<T | undefined>
+export function readConfigSettingAsync<T>(key: string, satisfies: Satisfies<T>, fallback: T): Promise<T>
+export async function readConfigSettingAsync<T>(
+	key: string,
+	satisfies: Satisfies<T>,
+	fallback?: T,
+): Promise<T | undefined> {
+	return readConfigSetting(key, satisfies, fallback)
 }
 
 export function writeConfigSetting<T>(key: string, value: T): void {
