@@ -457,25 +457,31 @@ it("pre-populates subscription provider models in models.json before upstream lo
 	const getModelsMock = vi.mocked(piAi.getModels)
 	getModelsMock.mockReturnValue([
 		{
-			id: "codex",
-			name: "Codex",
-			provider: "openai",
-			api: "openai-chat",
-			baseUrl: "https://api.openai.com/v1/chat/completions",
+			id: "claude-sonnet-4.6",
+			name: "Claude Sonnet 4.6",
+			provider: "github-copilot",
+			api: "anthropic-messages",
+			baseUrl: "https://api.individual.githubcopilot.com",
+			headers: {
+				"User-Agent": "GitHubCopilotChat/0.35.0",
+				"Editor-Version": "vscode/1.107.0",
+				"Editor-Plugin-Version": "copilot-chat/0.35.0",
+				"Copilot-Integration-Id": "vscode-chat",
+			},
 			input: ["text"],
 			contextWindow: 200000,
 			maxTokens: 8192,
 			reasoning: false,
 			cost: { input: 3, output: 12, cacheRead: 0, cacheWrite: 0 },
 		},
-	] as ReturnType<typeof getModelsMock>)
+	] as unknown as ReturnType<typeof getModelsMock>)
 
 	const modelsModule = await import("./models.js")
 	const syncSpy = vi.spyOn(modelsModule, "syncProviderModels").mockImplementation(() => {})
 
 	const registry = makeFakeModelRegistry()
 	const fakeIm = makeFakeInteractiveMode(registry)
-	fakeIm.getLoginProviderOptions.mockReturnValue([{ id: "openai", name: "OpenAI", authType: "oauth" }])
+	fakeIm.getLoginProviderOptions.mockReturnValue([{ id: "github-copilot", name: "GitHub Copilot", authType: "oauth" }])
 
 	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-test-models")
 
@@ -486,7 +492,7 @@ it("pre-populates subscription provider models in models.json before upstream lo
 	fakeIm.selectorComponent.handleInput("\n")
 	await waitForMockCall(fakeIm.showLoginDialog)
 
-	expect(fakeIm.showLoginDialog).toHaveBeenCalledWith("openai", "OpenAI")
+	expect(fakeIm.showLoginDialog).toHaveBeenCalledWith("github-copilot", "GitHub Copilot")
 	expect(syncSpy).toHaveBeenCalledOnce()
 	const [_path, providerId, configs, providerConfig] = syncSpy.mock.calls[0] as unknown as [
 		string,
@@ -494,16 +500,22 @@ it("pre-populates subscription provider models in models.json before upstream lo
 		unknown[],
 		unknown,
 	]
-	expect(providerId).toBe("openai")
+	expect(providerId).toBe("github-copilot")
 	expect(providerConfig).toMatchObject({
-		api: "openai-chat",
-		baseUrl: "https://api.openai.com/v1/chat/completions",
+		api: "anthropic-messages",
+		baseUrl: "https://api.individual.githubcopilot.com",
 	})
 	expect(configs).toHaveLength(1)
 	expect(configs[0]).toMatchObject({
-		id: "codex",
-		name: "Codex",
-		provider: "openai",
+		id: "claude-sonnet-4.6",
+		name: "Claude Sonnet 4.6",
+		provider: "github-copilot",
+		headers: {
+			"User-Agent": "GitHubCopilotChat/0.35.0",
+			"Editor-Version": "vscode/1.107.0",
+			"Editor-Plugin-Version": "copilot-chat/0.35.0",
+			"Copilot-Integration-Id": "vscode-chat",
+		},
 		input: ["text"],
 		contextWindow: 200000,
 		maxTokens: 8192,

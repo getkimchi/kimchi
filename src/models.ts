@@ -160,6 +160,8 @@ export interface PiModelConfig {
 	api?: string
 	/** Model-level base URL: upstream custom-provider parseModels falls through to this field. */
 	baseUrl?: string
+	/** Model-level request headers required by upstream providers such as GitHub Copilot. */
+	headers?: Record<string, string>
 }
 
 function metadataToModel(m: ModelMetadata): PiModelConfig {

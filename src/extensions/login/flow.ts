@@ -127,6 +127,7 @@ function upstreamModelToPiConfig(m: Model<Api>, providerId: string): PiModelConf
 		cost: m.cost,
 		provider: providerId,
 		compat: m.compat as PiModelConfig["compat"],
+		...(m.headers ? { headers: m.headers } : {}),
 	}
 }
 
