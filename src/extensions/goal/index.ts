@@ -549,11 +549,12 @@ export default function goalExtension(pi: ExtensionAPI): void {
 					ctx.ui.notify(formatGoalSummary(currentGoal, liveElapsedMs()), "info")
 					return
 				}
-				if (command.action === "set") return await handleSetGoal(command.objective, command.tokenBudget, ctx)
-				if (command.action === "edit") return await handleEditGoal(command.objective, ctx)
-				if (command.action === "pause") return await handlePauseGoal(ctx)
-				if (command.action === "resume") return await handleResumeGoal(ctx)
-				await handleClearGoal(ctx)
+				if (command.action === "set") await handleSetGoal(command.objective, command.tokenBudget, ctx)
+				else if (command.action === "edit") await handleEditGoal(command.objective, ctx)
+				else if (command.action === "pause") await handlePauseGoal(ctx)
+				else if (command.action === "resume") await handleResumeGoal(ctx)
+				else await handleClearGoal(ctx)
+				if (!ctx.hasUI) await ctx.waitForIdle()
 			} catch (error) {
 				ctx.ui.notify(errorMessage(error), "warning")
 			}

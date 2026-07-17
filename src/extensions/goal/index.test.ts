@@ -93,6 +93,26 @@ describe("goal extension", () => {
 		expect(replacement?.id).not.toBe(first?.id)
 	})
 
+	it("waits for a headless goal turn before resolving the command", async () => {
+		const headlessHarness = createHarness({ hasUI: false })
+		let releaseIdle: () => void = () => undefined
+		const idle = new Promise<void>((resolve) => {
+			releaseIdle = resolve
+		})
+		headlessHarness.waitForIdle.mockReturnValueOnce(idle)
+
+		let resolved = false
+		const command = headlessHarness.command("ship feature A").then(() => {
+			resolved = true
+		})
+		await vi.waitFor(() => expect(headlessHarness.waitForIdle).toHaveBeenCalledOnce())
+		expect(resolved).toBe(false)
+
+		releaseIdle()
+		await command
+		expect(resolved).toBe(true)
+	})
+
 	it("starts replacement accounting with its own turn", async () => {
 		const dateNow = vi.spyOn(Date, "now").mockReturnValue(1_000)
 		await harness.command("first")
@@ -537,7 +557,7 @@ describe("goal extension", () => {
 	})
 })
 
-function createHarness() {
+function createHarness(options: { hasUI?: boolean } = {}) {
 	const handlers = new Map<string, ExtensionHandler[]>()
 	const commands = new Map<string, CommandConfig>()
 	const tools = new Map<string, ToolConfig>()
@@ -558,6 +578,7 @@ function createHarness() {
 		branch.push(customEntry(customType, data))
 	})
 	const sendMessage = vi.fn()
+	const waitForIdle = vi.fn(async (): Promise<void> => undefined)
 	const pi = {
 		on: vi.fn((event: string, handler: ExtensionHandler) => {
 			const list = handlers.get(event) ?? []
@@ -571,9 +592,10 @@ function createHarness() {
 		getActiveTools: vi.fn(() => activeTools),
 	} as unknown as ExtensionAPI
 	const ctx = {
-		hasUI: true,
+		hasUI: options.hasUI ?? true,
 		mode: "tui",
 		ui,
+		waitForIdle,
 		isIdle: () => idle,
 		hasPendingMessages: () => pending,
 		sessionManager: {
@@ -591,6 +613,7 @@ function createHarness() {
 		ui,
 		appendEntry,
 		sendMessage,
+		waitForIdle,
 		get branch() {
 			return branch
 		},
