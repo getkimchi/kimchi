@@ -38,7 +38,13 @@ import { decideContinuation } from "./continuation.js"
 import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
 import { safeSendMessage } from "./safe-send.js"
 import { scheduleNextFermentAction } from "./scheduler.js"
-import { MAX_SCOPING_EXPLORE_TURNS, bumpScopingExploreTurns, resetScopingExploreTurns } from "./state.js"
+import {
+	MAX_SCOPING_EXPLORE_TURNS,
+	bumpScopingExploreTurns,
+	isInactiveOrPaused,
+	isTerminal,
+	resetScopingExploreTurns,
+} from "./state.js"
 
 export function appendRefEntry(pi: ExtensionAPI, fermentId: string): void {
 	safeSendMessage(pi, {
@@ -90,9 +96,8 @@ export function maybeInjectFermentStopNudge(
 	const id = runtime.getActiveId()
 	if (!id) return false
 	const fresh = refreshActiveFermentFromStorage(runtime)
-	const inactive = !fresh || fresh.status === "complete" || fresh.status === "abandoned"
-	if (inactive) runtime.setActive(undefined)
-	if (inactive || fresh.status === "paused") {
+	if (!fresh || isTerminal(fresh)) runtime.setActive(undefined)
+	if (!fresh || isInactiveOrPaused(fresh)) {
 		stopNudgeCounts.delete(id)
 		return false
 	}

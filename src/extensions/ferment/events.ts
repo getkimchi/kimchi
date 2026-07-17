@@ -39,6 +39,7 @@ import {
 	clearActiveFermentId,
 	getActiveFermentId,
 	isFermentLockedByLiveProcess,
+	isInactiveOrPaused,
 	removeFermentLock,
 	resetScopingExploreTurns,
 } from "./state.js"
@@ -554,12 +555,9 @@ export function registerFermentEvents(
 			// the unchanged obligation a fresh two-retry budget after transport recovers.
 			if (isOneShot) {
 				const errorFerment = runtime.getActive()
-				const canRecover =
-					errorFerment &&
-					errorFerment.status !== "paused" &&
-					errorFerment.status !== "complete" &&
-					errorFerment.status !== "abandoned"
-				if (canRecover) {
+				// One-shot error recovery fires only when the ferment is still live —
+				// paused/complete/abandoned ferments must not be auto-continued.
+				if (errorFerment && !isInactiveOrPaused(errorFerment)) {
 					scheduleNextFermentAction(pi, errorFerment, runtime, {
 						tag: "Error recovery",
 						deliverAs: "steer",
@@ -577,12 +575,7 @@ export function registerFermentEvents(
 			// receives a fresh budget automatically through its new obligation key.
 			// Only terminal/paused state needs eager cleanup here.
 			const freshAfterTool = runtime.getStorage().get(activeId)
-			if (
-				!freshAfterTool ||
-				freshAfterTool.status === "paused" ||
-				freshAfterTool.status === "complete" ||
-				freshAfterTool.status === "abandoned"
-			) {
+			if (isInactiveOrPaused(freshAfterTool)) {
 				clearLifecycleGuard(activeId)
 			}
 			// A normal tool-use turn means the model is still progressing, so reset

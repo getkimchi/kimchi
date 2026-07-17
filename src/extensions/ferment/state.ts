@@ -28,6 +28,23 @@ import {
 
 let activeFerment: Ferment | undefined
 
+/** True only for the genuinely-final statuses (`complete`, `abandoned`).
+ *  A missing ferment is NOT terminal — it is simply absent — so `undefined`
+ *  returns false. Use {@link isInactiveOrPaused} for the broader bail-out
+ *  predicate that also treats a missing or paused ferment as inactive. */
+export function isTerminal(ferment: Ferment | undefined): boolean {
+	return !!ferment && (ferment.status === "complete" || ferment.status === "abandoned")
+}
+
+/** The "bail out / clear guard" predicate: missing, terminal, or paused.
+ *  Used by the lifecycle-obligation guard, stop-nudge, scheduler, and error-
+ *  recovery paths to decide whether a ferment can no longer make progress
+ *  this turn. Keeps the five hand-written `!f || f.status === ...` sites
+ *  from drifting as statuses evolve. */
+export function isInactiveOrPaused(ferment: Ferment | undefined): boolean {
+	return !ferment || isTerminal(ferment) || ferment.status === "paused"
+}
+
 export function getActive(): Ferment | undefined {
 	return activeFerment
 }
@@ -230,7 +247,7 @@ export function setAutomatedContinuationEnabled(v: boolean): void {
 export interface LifecycleGuardRetryState {
 	/** Current obligation key for this Ferment. */
 	key: string
-	/** Number of retries scheduled so far for this key. */
+	/** Number of retries scheduled so far for this key (1 after the first stop). */
 	count: number
 	/** Whether exhaustion has already been reported for this key. */
 	reported: boolean

@@ -52,6 +52,8 @@ import {
 	clearAllLifecycleGuardRetryStates,
 	clearLifecycleGuardRetryState,
 	getLifecycleGuardRetryState,
+	isInactiveOrPaused,
+	isTerminal,
 	setLifecycleGuardRetryState,
 } from "./state.js"
 import { FERMENT_TOOLS } from "./tool-names.js"
@@ -330,11 +332,10 @@ export function maybeInjectLifecycleObligationGuard(
 	if (!id) return false
 
 	const fresh = refreshActiveFermentFromStorage(runtime)
-	const inactive = !fresh || fresh.status === "complete" || fresh.status === "abandoned"
-	if (inactive) {
+	if (!fresh || isTerminal(fresh)) {
 		runtime.setActive(undefined)
 	}
-	if (inactive || fresh.status === "paused") {
+	if (!fresh || isInactiveOrPaused(fresh)) {
 		clearLifecycleGuard(id)
 		return false
 	}
