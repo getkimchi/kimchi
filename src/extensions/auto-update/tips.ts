@@ -2,7 +2,7 @@ import { isHomebrewInstall } from "../../update/paths.js"
 import { loadAutoUpdateSetting } from "../../update/settings.js"
 import type { Tip, TipProvider } from "../tips/types.js"
 
-const AUTO_UPDATE_TIP: Tip = {
+export const AUTO_UPDATE_TIP: Tip = {
 	id: "enable-auto-update",
 	scope: "general",
 	message: "Run `/update` to enable auto-update so kimchi stays up to date automatically.",
