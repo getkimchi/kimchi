@@ -648,22 +648,20 @@ describe("turn_end compaction guard", () => {
 		const freshCtx = makeMockCtx({
 			ui: { notify } as unknown as ExtensionContext["ui"],
 		})
-		await trigger("session_compact", {
-			type: "session_compact",
-			compactionEntry: { tokensBefore: THRESHOLD + 1 },
-			fromExtension: true,
-			reason: "manual",
-			willRetry: false,
-		}, freshCtx)
+		await trigger(
+			"session_compact",
+			{
+				type: "session_compact",
+				compactionEntry: { tokensBefore: THRESHOLD + 1 },
+				fromExtension: true,
+				reason: "manual",
+				willRetry: false,
+			},
+			freshCtx,
+		)
 
-		expect(notify).toHaveBeenCalledWith(
-			expect.stringContaining("Context compacted"),
-			"info",
-		)
-		expect(notify).toHaveBeenCalledWith(
-			expect.stringContaining((THRESHOLD + 1).toLocaleString()),
-			"info",
-		)
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("Context compacted"), "info")
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining((THRESHOLD + 1).toLocaleString()), "info")
 	})
 
 	it("does not notify from session_compact when compaction was not triggered by this guard", async () => {
@@ -676,14 +674,63 @@ describe("turn_end compaction guard", () => {
 		const ctx = makeMockCtx({
 			ui: { notify } as unknown as ExtensionContext["ui"],
 		})
-		await trigger("session_compact", {
-			type: "session_compact",
-			compactionEntry: { tokensBefore: 100_000 },
-			fromExtension: false,
-			reason: "threshold",
-			willRetry: false,
-		}, ctx)
+		await trigger(
+			"session_compact",
+			{
+				type: "session_compact",
+				compactionEntry: { tokensBefore: 100_000 },
+				fromExtension: false,
+				reason: "threshold",
+				willRetry: false,
+			},
+			ctx,
+		)
 		expect(notify).not.toHaveBeenCalled()
+	})
+
+	it("does not notify from session_compact when flag is set but fromExtension is false", async () => {
+		// fromExtension guard: even if the flag is set (e.g. a concurrent
+		// threshold compaction fires between our ctx.compact() and the event),
+		// we must not consume the flag for a non-extension compaction.
+		const { pi, trigger } = makeMockPI()
+		modelGuardExtension(pi)
+		const compact = vi.fn()
+		const notify = vi.fn()
+		const ctx = makeMockCtx({
+			model: { id: "kimi-k2.6", input: ["text"], contextWindow: CONTEXT_WINDOW } as ExtensionContext["model"],
+			compact,
+			ui: { notify } as unknown as ExtensionContext["ui"],
+		})
+		await trigger("turn_end", makeTurnEndEvent(THRESHOLD + 1, "toolUse"), ctx)
+		expect(compact).toHaveBeenCalledOnce()
+
+		// A threshold compaction fires before our extension-triggered one
+		await trigger(
+			"session_compact",
+			{
+				type: "session_compact",
+				compactionEntry: { tokensBefore: 100_000 },
+				fromExtension: false,
+				reason: "threshold",
+				willRetry: false,
+			},
+			ctx,
+		)
+		expect(notify).not.toHaveBeenCalled()
+
+		// Now our extension-triggered compaction fires
+		await trigger(
+			"session_compact",
+			{
+				type: "session_compact",
+				compactionEntry: { tokensBefore: THRESHOLD + 1 },
+				fromExtension: true,
+				reason: "manual",
+				willRetry: false,
+			},
+			ctx,
+		)
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("Context compacted"), "info")
 	})
 
 	it("warns and clears flag when onError fires (compaction failure)", async () => {
@@ -710,13 +757,17 @@ describe("turn_end compaction guard", () => {
 			const freshCtx = makeMockCtx({
 				ui: { notify } as unknown as ExtensionContext["ui"],
 			})
-			await trigger("session_compact", {
-				type: "session_compact",
-				compactionEntry: { tokensBefore: 100 },
-				fromExtension: true,
-				reason: "manual",
-				willRetry: false,
-			}, freshCtx)
+			await trigger(
+				"session_compact",
+				{
+					type: "session_compact",
+					compactionEntry: { tokensBefore: 100 },
+					fromExtension: true,
+					reason: "manual",
+					willRetry: false,
+				},
+				freshCtx,
+			)
 			expect(notify).not.toHaveBeenCalled()
 		} finally {
 			warn.mockRestore()

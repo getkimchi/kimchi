@@ -105,7 +105,7 @@ export function getLatestMessagesTimestamp(): number {
 	return latestMessagesTimestamp
 }
 
-function resetImageState(): void {
+function resetSessionState(): void {
 	imagesDetected = false
 	imagesStripped = false
 	pendingMidTurnCompaction = false
@@ -117,7 +117,7 @@ function resetImageState(): void {
 /**
  * @internal Exported for unit tests — production code uses session_start/session_shutdown hooks.
  */
-export const __resetImagesDetectedForTest = resetImageState
+export const __resetImagesDetectedForTest = resetSessionState
 
 /**
  * Rough token estimation: 4 chars per token for text, images counted separately.
@@ -282,15 +282,17 @@ export function truncateMessages(messages: ContextEvent["messages"], maxTokens: 
 }
 
 export default function createModelGuardExtension(_pi: ExtensionAPI) {
-	_pi.on("session_start", resetImageState)
-	_pi.on("session_shutdown", resetImageState)
+	_pi.on("session_start", resetSessionState)
+	_pi.on("session_shutdown", resetSessionState)
 
 	// ctx.compact() replaces the session internally, invalidating the ctx
 	// captured in the turn_end handler. The session_compact event fires
 	// afterwards with a fresh ctx, so we notify from there instead of from
 	// the stale onComplete/onError closures.
 	_pi.on("session_compact", (event, ctx: ExtensionContext) => {
-		if (!pendingMidTurnCompaction) return
+		// Only consume the flag for compactions triggered by this guard's
+		// ctx.compact() call — not for /compact or threshold-triggered ones.
+		if (!pendingMidTurnCompaction || !event.fromExtension) return
 		pendingMidTurnCompaction = false
 		ctx.ui?.notify(
 			`Context compacted (${(event.compactionEntry.tokensBefore ?? 0).toLocaleString()} tokens → summary). Continue to resume.`,
