@@ -31,8 +31,6 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
 	}
 })
 
-const ensureSuperpowersInstalledMock = vi.fn()
-
 vi.mock("../update/paths.js", () => ({
 	isHomebrewInstall: () => isHomebrewInstallMock(),
 }))
@@ -43,10 +41,6 @@ vi.mock("../update/workflow.js", () => ({
 vi.mock("../utils.js", () => ({
 	getVersion: () => getVersionMock(),
 }))
-vi.mock("../extensions/superpowers/installer.js", () => ({
-	ensureSuperpowersInstalled: (...args: unknown[]) => ensureSuperpowersInstalledMock(...args),
-}))
-
 const { runUpdate } = await import("./update.js")
 
 describe("runUpdate flag parsing", () => {
@@ -310,8 +304,6 @@ describe("runUpdate non-interactive composition", () => {
 		setProgressCallbackMock.mockReset()
 		settingsManagerCreateMock.mockReset()
 		settingsManagerCreateMock.mockReturnValue({})
-		ensureSuperpowersInstalledMock.mockReset()
-		ensureSuperpowersInstalledMock.mockResolvedValue(true)
 	})
 
 	afterEach(() => {
@@ -359,8 +351,6 @@ describe("runUpdate package targets", () => {
 		checkForUpdateMock.mockReset()
 		checkForUpdateMock.mockResolvedValue({ hasUpdate: false })
 		applyUpdateMock.mockReset()
-		ensureSuperpowersInstalledMock.mockReset()
-		ensureSuperpowersInstalledMock.mockResolvedValue(true)
 		listConfiguredPackagesMock.mockReset()
 		listConfiguredPackagesMock.mockReturnValue([
 			{ source: "npm:context-mode", scope: "user", filtered: false, installedPath: "/packages/context-mode" },
@@ -418,18 +408,5 @@ describe("runUpdate package targets", () => {
 
 		expect(code).toBe(0)
 		expect(applyUpdateMock).not.toHaveBeenCalled()
-		expect(ensureSuperpowersInstalledMock).not.toHaveBeenCalled()
-	})
-
-	it("succeeds even if superpowers install throws", async () => {
-		checkForUpdateMock.mockResolvedValue({
-			hasUpdate: true,
-			latestVersion: "v0.0.80",
-			tag: "v0.0.80",
-		})
-		applyUpdateMock.mockResolvedValue(undefined)
-		ensureSuperpowersInstalledMock.mockRejectedValue(new Error("offline"))
-		const code = await runUpdate(["--force"])
-		expect(code).toBe(0)
 	})
 })

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { TelemetryConfig } from "../../config.js"
-import { buildLogRecord, sendLog, sendLogBatch, sendMetrics } from "./transport.js"
 import type { MetricData } from "./transport.js"
+import { buildLogRecord, sendLog, sendLogBatch, sendMetrics } from "./transport.js"
 
 vi.mock("../../utils/http.js", () => ({
 	fetchWithRetry: (url: string, init?: RequestInit) => globalThis.fetch(url, init),

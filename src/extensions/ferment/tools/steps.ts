@@ -20,9 +20,9 @@ import { renderGateGuidance } from "../gate-registry.js"
 import { assertGateFieldsPresent, validateGatesOrErr } from "../gate-validation.js"
 import { type JudgeVerdict, judgeStepVerification } from "../judge.js"
 import { onStepCompleted } from "../nudge.js"
-import { type PhaseEvidence, captureGitHead, gatherPhaseEvidence } from "../phase-evidence.js"
+import { captureGitHead, gatherPhaseEvidence, type PhaseEvidence } from "../phase-evidence.js"
 import { promptEditor } from "../prompt-ui.js"
-import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
+import { defaultFermentRuntime, type FermentRuntime } from "../runtime.js"
 import { safeSendMessage } from "../safe-send.js"
 import {
 	createApplyAndPersist,
@@ -111,7 +111,13 @@ export interface StepHandlerServices {
 		exitCode: number,
 	): Promise<JudgeVerdict>
 	onStepCompleted(runtime: FermentRuntime): void
-	buildWorkerContext: typeof buildWorkerContext
+	buildWorkerContext: (
+		ferment: Ferment,
+		phase: Phase,
+		step: Step,
+		sessionId: string,
+		opts?: { includeDecisions?: boolean; includeMemories?: boolean },
+	) => string
 	runVerification(args: VerificationExecution): Promise<VerificationResult>
 }
 
@@ -149,8 +155,7 @@ function validateLinkedWorker(params: CompleteStepArgs): string | null {
 	}
 	const ref = record.taskRef
 	if (
-		!ref ||
-		ref.kind !== "ferment_step" ||
+		ref?.kind !== "ferment_step" ||
 		ref.ferment_id !== params.ferment_id ||
 		ref.phase_id !== params.phase_id ||
 		ref.step_id !== params.step_id
@@ -352,7 +357,9 @@ Do NOT call start_ferment_step again without user input.`,
 			: ""
 
 	const workerContext =
-		freshPhase && freshStep ? services.buildWorkerContext(outcome.ferment, freshPhase, freshStep) : ""
+		freshPhase && freshStep
+			? services.buildWorkerContext(outcome.ferment, freshPhase, freshStep, ctx.sessionManager.getSessionId())
+			: ""
 	const contextBlock = workerContext ? `\n\nWorker context (pass to subagent verbatim):\n${workerContext}` : ""
 	const taskRef = {
 		kind: "ferment_step" as const,

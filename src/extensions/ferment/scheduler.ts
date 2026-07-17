@@ -167,10 +167,18 @@ function shouldSuppressHiddenNudge(action: DeclarativeAction, policy: Continuati
 
 export function scheduleNextFermentAction(
 	pi: ExtensionAPI,
-	ferment: Ferment,
+	scheduledFerment: Ferment,
 	runtime: FermentRuntime,
 	opts: ScheduleNextFermentActionOptions = {},
 ): void {
+	const ferment = runtime.getStorage().get(scheduledFerment.id) ?? scheduledFerment
+	if (ferment.status === "complete" || ferment.status === "abandoned" || ferment.status === "paused") {
+		if (ferment.status === "complete" || ferment.status === "abandoned") runtime.setActive(undefined)
+		else runtime.setActive(ferment)
+		return
+	}
+	runtime.setActive(ferment)
+
 	const decision = decideContinuation(ferment, runtime.getContinuationPolicy(), opts)
 	if (decision.type === "wait_manual_boundary") {
 		tryPiAction(() => {

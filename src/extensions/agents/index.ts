@@ -14,14 +14,14 @@
 import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs"
 import { join } from "node:path"
 import {
+	defineTool,
 	type ExtensionAPI,
 	type ExtensionCommandContext,
 	type ExtensionContext,
 	type ExtensionUIContext,
-	defineTool,
 	getAgentDir,
 } from "@earendil-works/pi-coding-agent"
-import { Key, Text, isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
+import { isKeyRelease, Key, matchesKey, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 import { isToolExpanded, registerToolCall } from "../../expand-state.js"
 import { filterThinkingForDisplay } from "../hide-thinking.js"
@@ -51,7 +51,7 @@ import {
 import { GroupJoinManager } from "./manager/group-join.js"
 import { createOutputFilePath, streamToOutputFile, writeInitialEntry } from "./manager/output-file.js"
 import { prepareAgentSessionFile } from "./manager/session-file.js"
-import { type LifetimeUsage, addUsage, getLifetimeTotal, getSessionContextPercent } from "./manager/usage.js"
+import { addUsage, getLifetimeTotal, getSessionContextPercent, type LifetimeUsage } from "./manager/usage.js"
 import { NudgeScheduler } from "./nudge-scheduler.js"
 import {
 	BUILTIN_TOOL_NAMES,
@@ -79,20 +79,20 @@ import {
 import { resolveAgentInvocationConfig, resolveJoinMode } from "./resolution/invocation-config.js"
 import { type ModelRegistry, resolveModel } from "./resolution/model-resolver.js"
 import { registerResumeSubagentTool } from "./resume-tool.js"
-import { type SubagentsSettings, applyAndEmitLoaded, saveAndEmitChanged } from "./settings.js"
+import { applyAndEmitLoaded, type SubagentsSettings, saveAndEmitChanged } from "./settings.js"
 import {
 	type AgentActivity,
 	type AgentDetails,
 	AgentWidget,
-	SPINNER,
-	type Theme,
-	type UICtx,
 	describeActivity,
 	formatDuration,
 	formatMs,
 	formatTokens,
 	formatTurns,
 	getDisplayName,
+	SPINNER,
+	type Theme,
+	type UICtx,
 } from "./ui/agent-widget.js"
 
 // ---- Shared helpers ----
@@ -102,28 +102,16 @@ import {
 const SUBAGENT_SHUTDOWN_WAIT_MS = 5_000
 
 export const AGENT_TOOL_GUIDELINES = `Guidelines:
+- Follow the **Orchestration** section for workflow, delegation, model selection, budgets, Explore-agent prompt shaping, and artifact handoff.
 - If the user explicitly asks to use the Agent tool, call Agent exactly once with the requested agent type and token_budget. Do not refuse or preflight the budget in prose; let the tool enforce it.
 - For parallel work, use run_in_background: true on each agent. Foreground calls run sequentially — only one executes at a time.
-- Keep each Agent call focused on a single outcome. Agents succeed when given 1–2 files or one mechanical change; they time out when asked to perform multi-file patch-and-verify workflows in one call. Split large tasks into smaller, independent Agent calls.
-- Use Explore for bounded fact-finding that answers one decision-relevant question for the parent orchestrator. Before delegating requested files, directories, or symbols to Explore, do cheap parent-side discovery/existence checks with available read-only tools so the prompt starts from real anchors.
-- Scope every Explore prompt with exact starting files and/or directories, prioritized symbols/search terms, one question to answer, allowed expansion rules for when it may follow imports/callers/related tests, and a qualitative stop condition tied to that question. Keep the scope bounded by relevance, not by a hard maximum file count.
-- Explore is read-only and should return decision-ready findings to you. Do not ask Explore agents to write reports, create docs, edit files, save findings to disk, or produce polished artifacts. You should consume the returned findings directly and decide the next step.
-- If you cannot provide concrete starting points for Explore, run a cheap parent-side search first or ask a narrower follow-up instead of sending a broad exploration prompt.
-- Good Explore prompt: "Inspect /app/src/program.cbl. Answer only: what are the SELECT/FD entries and PIC-derived record widths? Follow no procedure logic. Stop once record layouts are known. Return decision-ready findings to the parent; do not write files."
-- Bad Explore prompt: "Analyze the COBOL program and write a complete implementation spec."
-- Use Plan for architecture and implementation planning.
-- Use Researcher for web/docs research with cited sources.
-- Use General-Purpose for complex tasks that need file editing.
+- Keep each Agent call focused on a single outcome. Split large tasks into smaller, independent Agent calls.
+- Agent types: Explore (read-only fact-finding), Plan (spec writing), Researcher (cited web/docs research), Builder (implementation), Reviewer (findings report), Fixer (apply review fixes), General-Purpose (fallback when none of the specialized personas fit).
 - Provide clear, detailed prompts so the agent can work autonomously.
 - Agent results are returned as text — summarize them for the user.
-- Use run_in_background for work you don't need immediately. You will be notified when it completes.
-- Use resume with an agent ID to continue a previous agent's work.
-- Use steer_subagent to send mid-run messages to a running background agent.
-- Use thinking to request an extended thinking level when the selected agent profile does not fix one.
-- Use token_budget to cap the agent's cumulative output token usage when the task scope is small or bounded. Only output tokens (tokens generated by the agent) count toward the budget; input tokens do not.
-- Treat token_budget as a hard caller constraint. If an agent aborts because of token_budget, do not retry with a higher budget unless the user explicitly asks.
-- Use max_duration for long-running agents that might hang or run indefinitely (e.g., build tasks with many test iterations, background tasks with unpredictable completion times). Timeouts protect against stalled work without relying on token budgets. Short-lived agents (single queries, simple edits) typically do not need a duration limit.
-- Use inherit_context if the agent needs the parent conversation history.`
+- Use resume_subagent to continue a previous agent's work; get_subagent_result for background status; steer_subagent for mid-run steering.
+- Use thinking to request an extended thinking level on Agent calls per the Orchestration **Thinking levels** table.
+- Use token_budget, max_duration, and inherit_context per the Orchestration section.`
 
 export const AGENT_MODEL_PARAMETER_DESCRIPTION =
 	'Model identifier for the spawned agent. If omitted, the agent uses the current session model. Follow your system prompt\'s delegation rules when deciding whether to provide this. Format "provider/modelId" (e.g. "kimchi-dev/minimax-m2.7"). Partial model IDs such as "kimi" or "nemotron" are accepted when unambiguous; specify the full versioned model ID when the exact version matters. In multi-model mode, only the models configured in the multi-model roles may be used.'
@@ -301,21 +289,6 @@ function getAbortLabel(reason?: AgentAbortReason): string {
 	}
 }
 
-function getAbortNote(reason?: AgentAbortReason): string {
-	switch (reason) {
-		case "max_turns":
-			return " (aborted - max turns exceeded, output may be incomplete)"
-		case "token_budget":
-			return " (aborted - token budget exceeded, output may be incomplete)"
-		case "inactivity":
-			return " (aborted - agent became unresponsive, output may be incomplete)"
-		case "max_duration":
-			return " (aborted - wall-clock duration limit exceeded, output may be incomplete)"
-		default:
-			return " (aborted, output may be incomplete)"
-	}
-}
-
 function getStatusLabel(status: string, error?: string, abortReason?: AgentAbortReason): string {
 	switch (status) {
 		case "error":
@@ -464,6 +437,7 @@ function buildNotificationDetails(
 }
 
 let activeManager: AgentManager | undefined
+let activeWidget: { ensureTimer: () => void; update: () => void; markFinished: (id: string) => void } | undefined
 let budgetRetryBlock: BudgetRetryBlock | undefined
 const budgetRetryCandidates = new Map<string, BudgetRetryCandidate>()
 
@@ -495,6 +469,86 @@ export function getAgentRecordForTaskValidation(id: string): Readonly<AgentRecor
 	const record = activeManager?.getRecord(id)
 	if (!record || record.visibility === "system") return undefined
 	return { ...record, latestOutcome: record.latestOutcome ?? buildAgentOutcome(record) }
+}
+
+/**
+ * Run an async function while showing a transient entry in the agent overlay.
+ * The description appears in the agents widget ("N running" footer + overlay)
+ * for the duration of the call — the same visual feedback as a real subagent.
+ *
+ * Falls back to calling fn() directly when no agent system is active
+ * (e.g. unit tests, non-TUI contexts).
+ */
+export async function runWithOverlay<T>(description: string, fn: () => Promise<T>): Promise<T> {
+	if (!activeManager) return fn()
+	const id = activeManager.registerTransient(description)
+	activeWidget?.ensureTimer()
+	activeWidget?.update()
+	try {
+		return await fn()
+	} finally {
+		activeManager.completeTransient(id)
+		activeWidget?.markFinished(id)
+		activeWidget?.update()
+	}
+}
+
+/** Spawn a Grader subagent (read-only + bash, bounded turns) and wait for its
+ *  result. Returns the agent's final text response and status. Used by the
+ *  ferment grader to independently verify agent claims with tool access.
+ *
+ *  Returns undefined when the agent system is not active (e.g. unit tests,
+ *  non-TUI contexts) so callers can fall back to a single-shot LLM call. */
+export async function spawnGraderAgent(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	prompt: string,
+): Promise<{ text: string; status: string } | undefined> {
+	if (!activeManager) return undefined
+	const AGENT_GRADER_TYPE = "Grader"
+
+	// Prepare a persisted session file so the grader's transcript is saved
+	// alongside the parent session for post-mortem analysis.
+	let sessionFile: string | undefined
+	let sessionDir: string | undefined
+	try {
+		const parentSessionDir = ctx.sessionManager.getSessionDir()
+		const parentSessionFile = ctx.sessionManager.getSessionFile()
+		if (parentSessionDir && parentSessionFile) {
+			const prepared = prepareAgentSessionFile(parentSessionDir, parentSessionFile, ctx.cwd)
+			sessionFile = prepared?.sessionFile
+			sessionDir = parentSessionDir
+		}
+	} catch {
+		// Session file creation is best-effort — the grader can still run
+		// without a persisted session, it just won't have a transcript file.
+	}
+
+	// Allow the grader to be cancelled when the parent session shuts down.
+	const abortController = new AbortController()
+
+	const record = await activeManager.spawnAndWait(pi, ctx, AGENT_GRADER_TYPE, prompt, {
+		description: "Ferment grader",
+		visibility: "system",
+		sessionFile,
+		sessionDir,
+		signal: abortController.signal,
+	})
+	// Collect all assistant text from the session — the grade JSON may appear
+	// in an earlier turn, not just the final response.
+	let fullText = record.result ?? ""
+	if (record.session) {
+		// Collect all assistant text — the grade JSON may appear in an earlier
+		// turn, not just the final response.
+		const assistantText = (record.session?.messages ?? [])
+			.filter((msg) => msg.role === "assistant")
+			.flatMap((msg) => msg.content)
+			.filter((part): part is { type: "text"; text: string } => part.type === "text")
+			.map((part) => part.text)
+			.join("\n\n")
+		fullText = assistantText || fullText
+	}
+	return { text: fullText, status: record.status }
 }
 
 function readAgentTaskRef(params: Record<string, unknown>): AgentTaskRef | undefined {
@@ -824,6 +878,7 @@ export default function (pi: ExtensionAPI) {
 	let currentUi: ExtensionUIContext | undefined
 
 	const widget = new AgentWidget(manager, agentActivity)
+	activeWidget = widget
 	const listUserVisibleAgents = () => manager.listAgents().filter((a) => a.visibility !== "system")
 
 	pi.on("session_shutdown", async () => {
@@ -979,7 +1034,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 				thinking: Type.Optional(
 					Type.String({
 						description:
-							"Requested thinking level: off, minimal, low, medium, high, xhigh. Agent profiles with fixed thinking keep their profile value.",
+							"Requested thinking level: off, minimal, low, medium, high, xhigh. Orchestrator-provided values override agent profile defaults. Omit only when Orchestration does not require an explicit level.",
 					}),
 				),
 				max_turns: Type.Optional(
@@ -1155,7 +1210,6 @@ ${AGENT_TOOL_GUIDELINES}`,
 					}
 				}
 
-				const sessionId = ctx.sessionManager.getSessionId()
 				// Multi-model guard: when multi-model mode is active and the caller supplied
 				// an explicit model, the resolved model must belong to the configured
 				// multi-model role pool. This runs before budget-retry and task_ref checks

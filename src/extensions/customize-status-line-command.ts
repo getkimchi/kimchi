@@ -1,7 +1,7 @@
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent"
 import type { Component } from "@earendil-works/pi-tui"
-import { Key, isKeyRelease, matchesKey, visibleWidth } from "@earendil-works/pi-tui"
-import { STATUS_LINE_ELEMENTS, readStatusLineConfig, setStatusLineElementPinned } from "../config/status-line-config.js"
+import { isKeyRelease, Key, matchesKey, visibleWidth } from "@earendil-works/pi-tui"
+import { readStatusLineConfig, STATUS_LINE_ELEMENTS, setStatusLineElementPinned } from "../config/status-line-config.js"
 import { requestSharedStatusLineRender } from "./shared-status-line.js"
 
 /** Component holds only transient UI state (selectedIndex).

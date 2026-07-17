@@ -122,7 +122,7 @@ export class RemoteSessionsPanel implements Component {
 	private readonly entries: Entry[]
 
 	constructor(
-		private readonly nodes: RemoteWorkspaceNode[],
+		readonly nodes: RemoteWorkspaceNode[],
 		private readonly tui: PickerTui,
 		private readonly done: (result: RemoteSessionsResult | undefined) => void,
 	) {
@@ -171,7 +171,7 @@ export class RemoteSessionsPanel implements Component {
 		}
 		if (matchesKey(data, "r")) {
 			const entry = this.entries[this.selectedIndex]
-			if (!entry || entry.kind !== "workspace") return
+			if (entry?.kind !== "workspace") return
 			this.done({ action: "rename-workspace", node: entry.node })
 			return
 		}

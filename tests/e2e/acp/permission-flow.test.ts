@@ -212,15 +212,6 @@ describe("ACP integration — permission flow", () => {
 	})
 })
 
-/** Extract concatenated text from a tool_call_update content field. */
-function textOf(content: unknown): string {
-	if (!Array.isArray(content)) return ""
-	return content
-		.filter((c) => c && typeof c === "object" && (c as { type?: string }).type === "text")
-		.map((c) => (c as { text?: string }).text ?? "")
-		.join("")
-}
-
 /**
  * Extract the blocked-reason text from a failed tool_call_update. The shape is
  * `update.content[0].content.text` (a nested content block), not the flatter

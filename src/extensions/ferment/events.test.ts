@@ -969,6 +969,56 @@ describe("turn_end error recovery in one-shot mode", () => {
 		const stored = storage.get(ferment.id)
 		expect(stored?.status).toBe("paused")
 	})
+
+	it("does not inject a continuation nudge on one-shot error when a plan review is pending", async () => {
+		const { storage, ferment } = setupScopedRunningFerment(
+			"ferment-oneshot-error-review-",
+			"One-shot Error Review Ferment",
+		)
+		const runtime: FermentRuntime = {
+			...createDefaultFermentRuntime(),
+			getStorage: () => storage,
+			isAutomatedContinuationEnabled: () => true,
+		}
+		const active = storage.get(ferment.id)
+		if (!active) throw new Error("ferment not found after setup")
+		runtime.setActive(active)
+		// Defensive: a pending plan review is normally only attached to draft
+		// ferments, but if one is present we must not inject a continuation
+		// nudge that would prevent agent_end from showing the review dialog.
+		runtime.setPendingPlanReview({
+			fermentId: active.id,
+			planMarkdown: "# Plan",
+		})
+
+		const { handlers, pi } = createPi()
+		;(pi.getFlag as ReturnType<typeof vi.fn>).mockImplementation((name: string) =>
+			name === "ferment-oneshot" ? true : undefined,
+		)
+		;(pi as ExtensionAPI & { events: ExtensionAPI["events"] }).events = {
+			emit: vi.fn(),
+			on: vi.fn(),
+		} as unknown as ExtensionAPI["events"]
+		registerFermentEvents(pi, runtime)
+		const turnEnd = handlers.get("turn_end")
+		if (!turnEnd) throw new Error("turn_end handler was not registered")
+		const ctx = { ui: { notify: vi.fn() } }
+
+		await turnEnd(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "error",
+					errorMessage: "Connection error: socket closed",
+					content: [],
+				},
+			},
+			ctx,
+		)
+
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+		expect(storage.get(ferment.id)?.status).toBe("running")
+	})
 })
 
 describe("session_shutdown one-shot recovery", () => {

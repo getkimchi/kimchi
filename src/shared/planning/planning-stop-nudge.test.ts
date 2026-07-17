@@ -1,15 +1,15 @@
 import { describe, expect, it } from "vitest"
 import {
+	contentHasToolCall,
+	extractTextFromContent,
 	FERMENT_SCOPING_STOP_NUDGE,
 	FERMENT_SCOPING_STOP_NUDGE_INTERACTIVE,
 	FERMENT_SCOPING_STOP_NUDGE_ONESHOT,
-	MAX_PLANNING_STOP_NUDGES,
-	PLAN_MODE_STOP_NUDGE,
-	contentHasToolCall,
-	extractTextFromContent,
 	hasFermentScopingCompletionSignal,
 	hasPlanCompletionSignal,
 	isNudgeSuppressed,
+	MAX_PLANNING_STOP_NUDGES,
+	PLAN_MODE_STOP_NUDGE,
 	shouldNudge,
 } from "./planning-stop-nudge.js"
 

@@ -12,11 +12,10 @@ import { commandToEvents } from "../../ferment/event-mapper.js"
 import type { Command, TransitionError } from "../../ferment/state-machine.js"
 import { applyCommand } from "../../ferment/state-machine.js"
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
-import { getMultiModelEnabled } from "../multi-model.js"
 import { requestSharedStatusLineRender } from "../shared-status-line.js"
 import { publicToolNameForActionKind } from "./action-tool-names.js"
 import { emitFermentDomainEvent } from "./domain-events-emitter.js"
-import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
+import { defaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 
 // ─── Tool result builders ─────────────────────────────────────────────────────
 // Every tool execute returns the same { details, content, isError? } shape;

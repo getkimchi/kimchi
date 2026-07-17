@@ -81,6 +81,7 @@ export const AGENT_RESEARCHER = "Researcher"
 export const AGENT_BUILDER = "Builder"
 export const AGENT_REVIEWER = "Reviewer"
 export const AGENT_FIXER = "Fixer"
+export const AGENT_GRADER = "Grader"
 
 /** Names of the embedded default agents (in canonical display order). */
 export const DEFAULT_AGENT_NAMES = [
@@ -91,6 +92,7 @@ export const DEFAULT_AGENT_NAMES = [
 	AGENT_BUILDER,
 	AGENT_REVIEWER,
 	AGENT_FIXER,
+	AGENT_GRADER,
 ] as const
 
 /** Memory scope for persistent agent memory. */
@@ -136,6 +138,8 @@ export interface AgentConfig {
 	isolated?: boolean
 	/** Whether to inject project context files (CLAUDE.md, AGENTS.md) into the system prompt. Default: false. */
 	includeContextFiles?: boolean
+	/** Whether to inject shared core guidelines (CORE_GUIDELINES, FACTUAL_ACCURACY, DOCUMENTS_SECTION) into the system prompt in replace mode. Default: false. */
+	includeCoreGuidelines?: boolean
 	/** Persistent memory scope — agents with memory get a persistent directory and MEMORY.md */
 	memory?: MemoryScope
 	/** Isolation mode — "worktree" runs the agent in a temporary git worktree */

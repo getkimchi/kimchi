@@ -1,5 +1,5 @@
 import { expect, test } from "@microsoft/tui-test"
-import { TUI_TEST_CONFIG, runKimchiSession } from "./support/kimchi-fixture.js"
+import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 

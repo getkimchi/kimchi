@@ -58,7 +58,7 @@ async function createSessionGist(ctx: ExtensionCommandContext): Promise<string |
 				.filter(Boolean)
 			// gh outputs the gist URL on the last non-empty line
 			const gistUrl = gistLines.at(-1)
-			if (!gistUrl || !gistUrl.startsWith("https://")) {
+			if (!gistUrl?.startsWith("https://")) {
 				throw new Error(`Unexpected gh output: ${result}`)
 			}
 			return gistUrl

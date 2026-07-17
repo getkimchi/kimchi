@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { type MockInstance, afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from "vitest"
 import {
 	_resetRtkState,
 	detectRtk,
@@ -91,6 +91,7 @@ vi.mock("node:child_process", () => ({
 
 // Import the mocked functions so we can control them per-test.
 import { execFile, execFileSync } from "node:child_process"
+
 const mockExecFile = execFile as unknown as MockInstance
 const mockExecFileSync = execFileSync as unknown as MockInstance
 
@@ -158,10 +159,8 @@ describe("rewriteWithRtk", () => {
 	afterEach(() => {
 		if (tmpRtkRoot) rmSync(tmpRtkRoot, { recursive: true, force: true })
 		tmpRtkRoot = undefined
-		// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete.
 		if (previousKimchiDir === undefined) delete process.env.KIMCHI_CODING_AGENT_DIR
 		else process.env.KIMCHI_CODING_AGENT_DIR = previousKimchiDir
-		// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete.
 		if (previousHome === undefined) delete process.env.HOME
 		else process.env.HOME = previousHome
 	})
@@ -287,10 +286,8 @@ describe("rtkSpawnHook", () => {
 	afterEach(() => {
 		if (tmpRtkRoot) rmSync(tmpRtkRoot, { recursive: true, force: true })
 		tmpRtkRoot = undefined
-		// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete.
 		if (previousKimchiDir === undefined) delete process.env.KIMCHI_CODING_AGENT_DIR
 		else process.env.KIMCHI_CODING_AGENT_DIR = previousKimchiDir
-		// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete.
 		if (previousHome === undefined) delete process.env.HOME
 		else process.env.HOME = previousHome
 	})

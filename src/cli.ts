@@ -22,10 +22,10 @@ import "./login-command-patch.js"
 import "./paste-to-editor-patch.js"
 import {
 	DEFAULT_SKILL_PATHS,
-	RETRY_DEFAULTS,
 	ensureHideThinkingBlockDefault,
-	getActiveVendorSkillPaths,
+	ensureQuietStartupDefault,
 	loadConfig,
+	RETRY_DEFAULTS,
 	readTelemetryConfig,
 	upgradeLegacyRetrySettings,
 	writeApiKey,
@@ -36,9 +36,12 @@ import { isBunBinary } from "./env.js"
 import activityExtension from "./extensions/activity.js"
 import agentsExtension from "./extensions/agents/index.js"
 import assistantPrefixExtension from "./extensions/assistant-prefix.js"
+import autoUpdateSettingsExtension from "./extensions/auto-update-settings.js"
 import bashDefaultTimeoutExtension from "./extensions/bash-default-timeout.js"
+import bashTimeoutGuidanceExtension from "./extensions/bash-timeout-guidance.js"
 import bashToolGuardExtension from "./extensions/bash-tool-guard.js"
 import behavioursExtension from "./extensions/behaviours/index.js"
+import { refreshBillingStatusFromConfig } from "./extensions/billing/status.js"
 import branchCommandExtension from "./extensions/branch-command.js"
 import claudeCodeHooksAdapter from "./extensions/claude-code-hook-adapter/index.js"
 import claudeCodeSkillsExtension from "./extensions/claude-code-skills/index.js"
@@ -51,6 +54,7 @@ import hideThinkingExtension from "./extensions/hide-thinking.js"
 import ideAdapterExtension from "./extensions/ide-adapter/index.js"
 import infrastructureBreakerExtension from "./extensions/infrastructure-breaker.js"
 import inputHistoryExtension from "./extensions/input-history.js"
+import kimchiHooksAdapter from "./extensions/kimchi-hooks/index.js"
 import kimchiMinimalTintsExtension from "./extensions/kimchi-minimal-tints.js"
 import llmResponseLogExtension from "./extensions/llm-response-log.js"
 import loginExtension from "./extensions/login/index.js"
@@ -82,7 +86,6 @@ import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
 import stripImagesExtension from "./extensions/strip-images.js"
-import superpowersExtension from "./extensions/superpowers.js"
 import surveysExtension from "./extensions/surveys/index.js"
 import tagsExtension from "./extensions/tags.js"
 import { buildConfigSnapshot } from "./extensions/telemetry/config-snapshot.js"
@@ -104,9 +107,9 @@ import webFetchExtension from "./extensions/web-fetch/index.js"
 import webSearchExtension from "./extensions/web-search/index.js"
 import { normalizeAtFileArgs } from "./fs-paths.js"
 import {
-	KIMCHI_INFRA_ERROR_EXIT_CODE,
 	applyInfrastructureExitPolicy,
 	createInfrastructureErrorTracker,
+	KIMCHI_INFRA_ERROR_EXIT_CODE,
 } from "./infrastructure-error.js"
 import {
 	injectExperimentalProvider,
@@ -122,13 +125,13 @@ import {
 	resolveOllamaHost,
 } from "./ollama.js"
 import resourcesExtension from "./resources/extension.js"
-import { type ManagedExtensionFactory, enabledExtensionFactories } from "./resources/filter.js"
+import { enabledExtensionFactories, type ManagedExtensionFactory } from "./resources/filter.js"
 import resourceToolBlockerExtension from "./resources/tool-blocker.js"
 import { runSetupWizard } from "./setup-wizard.js"
 import { setAvailableModels } from "./startup-context.js"
 import { probeTerminalBackground } from "./terminal-bg-probe.js"
+import { installInlineCompactPatch } from "./upstream-inline-compact-patch.js"
 import { installInfrastructureRetryPatch } from "./upstream-retry-patch.js"
-import { getVersion } from "./utils.js"
 import {
 	postProcessHtmlExport,
 	postProcessJsonlExport,
@@ -136,9 +139,68 @@ import {
 	redactJsonlExport,
 } from "./utils/export-post-process.js"
 import { captureSessionStart } from "./utils/session-metadata-store.js"
+import { getVersion } from "./utils.js"
 
 installInfrastructureRetryPatch()
+installInlineCompactPatch()
 installPiNativeCompatibilityShim()
+
+function isModelCompletionFetch(input: RequestInfo | URL): boolean {
+	const url =
+		typeof input === "string"
+			? input
+			: input instanceof URL
+				? input.href
+				: typeof (input as { url?: unknown }).url === "string"
+					? (input as { url: string }).url
+					: ""
+	return /\/chat\/completions(?:$|[?#])/.test(url)
+}
+
+function withBillingRefreshAfterResponseSettles(response: Response, refreshBilling: () => Promise<unknown>): Response {
+	const body = response.body
+	if (!body) {
+		void refreshBilling()
+		return response
+	}
+
+	const reader = body.getReader()
+	let refreshScheduled = false
+	const refreshOnce = () => {
+		if (refreshScheduled) return
+		refreshScheduled = true
+		void refreshBilling()
+	}
+	const wrappedBody = new ReadableStream<Uint8Array>({
+		async pull(controller) {
+			try {
+				const { done, value } = await reader.read()
+				if (done) {
+					controller.close()
+					refreshOnce()
+					return
+				}
+				controller.enqueue(value)
+			} catch (error) {
+				refreshOnce()
+				controller.error(error)
+			}
+		},
+		async cancel(reason) {
+			try {
+				await reader.cancel(reason)
+			} finally {
+				refreshOnce()
+			}
+		},
+	})
+
+	return new Response(wrappedBody, {
+		status: response.status,
+		statusText: response.statusText,
+		headers: response.headers,
+	})
+}
 
 function getSubcommand(args: string[]): string {
 	if (args.includes("--version") || args.includes("-v")) return "version"
@@ -236,7 +298,6 @@ try {
 		let config = loadConfig()
 
 		const envKey = process.env.KIMCHI_API_KEY || undefined
-		// biome-ignore lint/performance/noDelete: process.env coerces assignments to strings, so `= undefined` would set it to the literal "undefined"
 		delete process.env.KIMCHI_API_KEY
 		if (envKey && !config.apiKey) {
 			writeApiKey(envKey)
@@ -377,6 +438,7 @@ try {
 		try {
 			const existing = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>
 			let changed = ensureHideThinkingBlockDefault(existing)
+			if (ensureQuietStartupDefault(existing)) changed = true
 			const upgraded = upgradeLegacyRetrySettings(existing.retry)
 			if (upgraded) {
 				existing.retry = upgraded
@@ -485,12 +547,16 @@ try {
 		if (!(globalThis.fetch as typeof globalThis.fetch & { [key: symbol]: boolean })[fetchPatchedSymbol]) {
 			const userAgent = `kimchi/${getVersion()}`
 			const originalFetch = globalThis.fetch.bind(globalThis)
-			const patchedFetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+			const refreshBilling = () => refreshBillingStatusFromConfig({ fetch: originalFetch })
+			const patchedFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
 				const headers = new Headers(init?.headers)
 				if (!headers.has("user-agent")) {
 					headers.set("user-agent", userAgent)
 				}
-				return originalFetch(input, { ...init, headers })
+				const response = await originalFetch(input, { ...init, headers })
+				return isModelCompletionFetch(input)
+					? withBillingRefreshAfterResponseSettles(response, refreshBilling)
+					: response
 			}
 			;(patchedFetch as typeof patchedFetch & { [key: symbol]: boolean })[fetchPatchedSymbol] = true
 			globalThis.fetch = patchedFetch
@@ -514,10 +580,10 @@ try {
 		const terminalUiExtensionFactories = isTerminalUiMode(rawArgs, terminalIo)
 			? [terminalColorsExtension, kimchiMinimalTintsExtension, uiExtension]
 			: []
-		const effectiveSkillPaths = [...new Set([...skillPaths, ...getActiveVendorSkillPaths()])]
+		const effectiveSkillPaths = [...new Set([...skillPaths])]
 		const extensionFactories = [
+			autoUpdateSettingsExtension,
 			startupUpdateExtension,
-			superpowersExtension,
 			sessionNameExtension(),
 			shutdownMarkerExtension,
 			statsExtension,
@@ -534,6 +600,7 @@ try {
 			// takes effect immediately without a process restart.
 			bashDefaultTimeoutExtension,
 			bashToolGuardExtension,
+			bashTimeoutGuidanceExtension,
 			...enabledExtensionFactories([
 				{ id: "plugins.mcp-apps", factory: mcpAdapterExtension },
 			] satisfies ManagedExtensionFactory[]),
@@ -555,6 +622,7 @@ try {
 			// SessionStart steering blocks into the system prompt. Gated per-package
 			// by each package's own resource toggle (see pluginPackageHookSources).
 			pluginPackageHooksAdapter,
+			kimchiHooksAdapter,
 			permissionsExtension,
 			resourcesExtension,
 			resourceToolBlockerExtension,

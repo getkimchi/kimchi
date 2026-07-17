@@ -4,7 +4,6 @@ import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-wor
 import type {
 	AgentOutcome,
 	AgentRecord,
-	AgentReport,
 	AgentResumeAttempt,
 	AgentTaskRef,
 	AgentVisibility,
@@ -17,11 +16,11 @@ import type { WorkerReportSubmission } from "../worker-report.js"
 import {
 	MIN_FINALIZE_TOKEN_BUDGET,
 	MIN_TOKEN_BUDGET,
-	type ToolActivity,
 	resumeAgent,
 	runAgent,
+	type ToolActivity,
 } from "./agent-runner.js"
-import { type LifetimeUsage, addUsage } from "./usage.js"
+import { addUsage, type LifetimeUsage } from "./usage.js"
 
 export type OnAgentComplete = (record: AgentRecord) => void
 export type OnAgentStart = (record: AgentRecord) => void
@@ -337,7 +336,7 @@ export class AgentManager {
 			// biome-ignore lint/style/noNonNullAssertion: shift() is guaranteed non-undefined inside while(length > 0) loop
 			const next = this.queue.shift()!
 			const record = this.agents.get(next.id)
-			if (!record || record.status !== "queued") continue
+			if (record?.status !== "queued") continue
 			// Snapshot the slot count so we can detect (and undo) startAgent's
 			// background-slot increment when it throws synchronously. Without this,
 			// a synchronous throw in startAgent leaks runningBackground forever.
@@ -372,7 +371,7 @@ export class AgentManager {
 
 	detachToBackground(id: string): boolean {
 		const record = this.agents.get(id)
-		if (!record || record.status !== "running" || record.isBackground) return false
+		if (record?.status !== "running" || record.isBackground) return false
 		if (!record.detachResolver) return false
 
 		record.isBackground = true
@@ -556,6 +555,40 @@ export class AgentManager {
 
 	listAgents(): AgentRecord[] {
 		return [...this.agents.values()].sort((a, b) => b.startedAt - a.startedAt)
+	}
+
+	/** Register a transient agent record for visual purposes (overlay/widget)
+	 *  without starting a full agent loop. The caller is responsible for
+	 *  calling completeTransient(id) when done. */
+	registerTransient(description: string): string {
+		const id = randomUUID().slice(0, 17)
+		const record: AgentRecord = {
+			id,
+			type: "general-purpose" as SubagentType,
+			description,
+			visibility: "user",
+			status: "running",
+			toolUses: 0,
+			startedAt: Date.now(),
+			currentAttemptId: 0,
+			maxTurns: 1,
+			resumeAttempts: [],
+			lifetimeUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			compactionCount: 0,
+		}
+		this.agents.set(id, record)
+		return id
+	}
+
+	/** Mark a transient agent record as complete and schedule cleanup. */
+	completeTransient(id: string): void {
+		const record = this.agents.get(id)
+		if (!record) return
+		record.status = "completed"
+		record.completedAt = Date.now()
+		// Schedule removal after a short delay — long enough for the widget to
+		// render one final "✓ done" frame, but not so long it lingers in listAgents().
+		setTimeout(() => this.agents.delete(id), 2000)
 	}
 
 	abort(id: string): boolean {

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync } from "node:fs"
+import { readdirSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import type { LockfileData } from "./types.js"

@@ -13,9 +13,9 @@ import { Markdown } from "@earendil-works/pi-tui"
 import type { Static } from "typebox"
 import type { Command, ScopePhaseInput } from "../../../ferment/state-machine.js"
 import {
-	type SuccessCriteria,
 	normalizeSuccessCriteriaInput,
 	renderSuccessCriteria,
+	type SuccessCriteria,
 } from "../../../ferment/success-criteria.js"
 import { deriveDraftFermentTitle, normalizeFermentTitle } from "../../../ferment/title.js"
 import {
@@ -25,6 +25,7 @@ import {
 	type ScopingQuestion,
 	type ScopingQuestionType,
 } from "../../../ferment/types.js"
+import { runWithOverlay, spawnGraderAgent } from "../../agents/index.js"
 import { getMultiModelEnabled } from "../../multi-model.js"
 import { createToolVisibility } from "../../prompt-construction/tool-visibility.js"
 import { YES_NO_OPTIONS } from "../../questionnaire/index.js"
@@ -35,17 +36,18 @@ import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
 import { renderGateGuidance } from "../gate-registry.js"
 import { assertGateFieldsPresent, validateGatesOrErr } from "../gate-validation.js"
 import { ensureGitRepo } from "../git-init.js"
-import { judgeJourneyGrade } from "../judge.js"
+import { type GraderSpawner, judgeJourneyGradeViaSubagent } from "../judge.js"
 import { clearLifecycleGuard } from "../lifecycle-obligation-guard.js"
 import { appendRefEntry } from "../nudge.js"
 import { PENDING_PROPOSAL_SCHEMA_VERSION, savePendingProposal } from "../pending-proposal-store.js"
 import { gatherPhaseEvidence } from "../phase-evidence.js"
 import { promptEditor, promptForm, promptSelect } from "../prompt-ui.js"
 import { readLatestPhaseReviews } from "../review-evidence.js"
-import { type FermentRuntime, defaultFermentRuntime } from "../runtime.js"
+import { defaultFermentRuntime, type FermentRuntime } from "../runtime.js"
 import { safeSendMessage } from "../safe-send.js"
-import { confirmPendingScope } from "../scoping-confirmation.js"
 import type { PendingScope } from "../scoping.js"
+import { confirmPendingScope } from "../scoping-confirmation.js"
+import { MAX_BLOCK_RETRIES } from "../state.js"
 import {
 	createApplyAndPersist,
 	failedToolResult,
@@ -191,7 +193,7 @@ function renderBullets(label: string, items: string[]): string {
 	return [renderedLabel, ...lines].join("\n")
 }
 
-function renderStep(index: number, description: string): string {
+function renderStep(_index: number, description: string): string {
 	const lines = wrapText(description, 84)
 	if (lines.length === 0) return "- —"
 	return lines.map((line, lineIndex) => (lineIndex === 0 ? `- ${line}` : `  ${line}`)).join("\n")
@@ -689,7 +691,7 @@ export async function scopeFerment(
 export async function completeFerment(
 	runtime: FermentRuntime,
 	params: CompleteFermentArgs,
-	{ ctx }: LifecycleExecutionContext,
+	{ ctx, spawner }: LifecycleExecutionContext & { spawner?: GraderSpawner },
 ): Promise<ToolResult> {
 	const applyAndPersist = createApplyAndPersist(runtime)
 
@@ -731,38 +733,73 @@ export async function completeFerment(
 	const ferment = fSnapshot
 	const phaseReviews = readLatestPhaseReviews(ferment.id)
 	const totalDiff = ferment.worktree.commit ? gatherPhaseEvidence(ferment.worktree.commit) : undefined
-	const journeyResult = await judgeJourneyGrade({
-		fermentName: ferment.name,
-		goal: ferment.goal ?? "",
-		successCriteria: renderSuccessCriteria(ferment.successCriteria, ""),
-		finalSummary: params.final_summary ?? "",
-		phases: ferment.phases.map((p) => {
-			const review = phaseReviews.get(p.id)
-			return {
-				name: p.name,
-				goal: p.goal,
-				status: p.status,
-				gateVerdicts: review?.gateVerdicts?.map((v) => ({
-					id: v.id,
-					verdict: v.verdict,
-					rationale: v.rationale,
-				})),
-			}
-		}),
-		fermentGates: gates.map((g) => ({ id: g.id, verdict: g.verdict, rationale: g.rationale })),
-		totalDiff: totalDiff
-			? { available: totalDiff.available, filesChanged: totalDiff.filesChanged, diffSnippet: totalDiff.diffSnippet }
-			: { available: false },
-	})
+	const journeyResult = await runWithOverlay(`Grading ferment "${ferment.name}"…`, () =>
+		judgeJourneyGradeViaSubagent(
+			{
+				fermentName: ferment.name,
+				goal: ferment.goal ?? "",
+				successCriteria: renderSuccessCriteria(ferment.successCriteria, ""),
+				finalSummary: params.final_summary ?? "",
+				phases: ferment.phases.map((p) => {
+					const review = phaseReviews.get(p.id)
+					return {
+						name: p.name,
+						goal: p.goal,
+						status: p.status,
+						gateVerdicts: review?.gateVerdicts?.map((v) => ({
+							id: v.id,
+							verdict: v.verdict,
+							rationale: v.rationale,
+						})),
+					}
+				}),
+				fermentGates: gates.map((g) => ({ id: g.id, verdict: g.verdict, rationale: g.rationale })),
+				totalDiff: totalDiff
+					? { available: totalDiff.available, filesChanged: totalDiff.filesChanged, diffSnippet: totalDiff.diffSnippet }
+					: { available: false },
+				evidence: params.evidence,
+			},
+			spawner,
+		),
+	)
 
-	// Resolve the grade. The final judge is advisory; completion gates have
-	// already decided whether shipping is allowed, so judge outages must not
-	// block the user.
-	let resolvedGrade: { grade: Grade; rationale: string } | undefined
+	// Resolve the grade. C-gates already decided ship/refuse. The judge now
+	// ENFORCES quality: a C/D/F grade refuses ship and routes through the same
+	// block-retry / escalation loop used at the phase level. A/B ships with
+	// recommendations persisted. Judge-unavailable outcomes remain advisory
+	// (do NOT refuse ship) — judge outages must not block the user.
+	const FERMENT_GRADE_KEY = "__ferment__"
+	// First attempt requires A; after rework B is also acceptable.
+	const priorFermentRetries = runtime.getBlockRetry(params.ferment_id, FERMENT_GRADE_KEY)
+	const minimumAcceptableFermentGrade = priorFermentRetries === 0 ? "A" : "B"
+	const fermentGradeOrder: Record<Grade, number> = { A: 5, B: 4, C: 3, D: 2, F: 1 }
+	let resolvedGrade: { grade: Grade; rationale: string; recommendations?: string[] } | undefined
 	let gradeRationale: string
 	if (journeyResult.ok) {
-		resolvedGrade = { grade: journeyResult.grade, rationale: journeyResult.rationale }
+		resolvedGrade = {
+			grade: journeyResult.grade,
+			rationale: journeyResult.rationale,
+			recommendations: journeyResult.recommendations,
+		}
 		gradeRationale = journeyResult.rationale
+
+		// Below minimum grade — give the agent a bounded number of retries to fix
+		// the recommendations, then accept the grade and ship.
+		if (fermentGradeOrder[journeyResult.grade] < fermentGradeOrder[minimumAcceptableFermentGrade]) {
+			const recsText = journeyResult.recommendations.map((rec, i) => `  ${i + 1}. ${rec}`).join("\n")
+			const retry = runtime.bumpBlockRetry(params.ferment_id, FERMENT_GRADE_KEY)
+
+			if (retry > MAX_BLOCK_RETRIES) {
+				// Budget exhausted — accept the grade and ship with recommendations persisted.
+				// The agent had its retries; we don't block continuation indefinitely.
+				runtime.clearBlockRetry(params.ferment_id, FERMENT_GRADE_KEY)
+				// Fall through to the ship path below with the judge's grade + recs.
+			} else {
+				return toolErr(
+					`**Ferment "${ferment.name}"** cannot complete — final LLM grader assigned grade ${journeyResult.grade}, minimum required is ${minimumAcceptableFermentGrade} (retry ${retry}/${MAX_BLOCK_RETRIES}).\n\nRecommendations:\n${recsText}\n\nAddress the recommendations above and call complete_ferment again with an updated summary.`,
+				)
+			}
+		}
 	} else {
 		const failureDetail = `${journeyResult.reason}${journeyResult.detail ? `: ${journeyResult.detail}` : ""}`
 		gradeRationale = `Judge unreachable (${failureDetail}); completion proceeded without a graded review.`
@@ -770,7 +807,7 @@ export async function completeFerment(
 
 	const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
 
-	// Persist completion and grade together when the advisory judge returns one.
+	// Persist completion and grade together.
 	const completeOutcome = applyAndPersist(params.ferment_id, {
 		type: "complete_ferment",
 		finalSummary: params.final_summary,
@@ -779,10 +816,16 @@ export async function completeFerment(
 					grade: resolvedGrade.grade,
 					rationale: resolvedGrade.rationale,
 					gradedAt: runtime.nowIso(),
+					...(resolvedGrade.recommendations && resolvedGrade.recommendations.length > 0
+						? { recommendations: resolvedGrade.recommendations }
+						: {}),
 				}
 			: undefined,
 	})
 	if (!completeOutcome.ok) return failedToolResult(completeOutcome.error, ferment, multiModelEnabled)
+
+	// Clear the ferment-level block-retry counter — ship succeeded.
+	runtime.clearBlockRetry(params.ferment_id, FERMENT_GRADE_KEY)
 
 	// Cleanup in-memory state.
 	runtime.clearFermentState(params.ferment_id)
@@ -849,7 +892,7 @@ ${renderGateGuidance("scope_ferment")}`,
 				params.goal,
 			)
 			if (!resolveResult.ok) return resolveResult.error
-			const { fermentId, created: createdFerment } = resolveResult
+			const { fermentId } = resolveResult
 
 			// 4. Replace pending buffer wholesale.
 			const ferment = runtime.getStorage().get(fermentId)
@@ -1208,7 +1251,12 @@ ${renderGateGuidance("complete_ferment")}`,
 			return new Markdown(text, 1, 0, getMarkdownTheme())
 		},
 		async execute(_, params, _signal, _onUpdate, ctx) {
-			return completeFerment(runtime, params, { ctx })
+			const spawner = async (prompt: string) => {
+				const result = await spawnGraderAgent(pi, ctx, prompt)
+				if (!result) return { text: "", status: "unavailable" }
+				return result
+			}
+			return completeFerment(runtime, params, { ctx, spawner })
 		},
 	})
 

@@ -6,7 +6,7 @@ import { FermentEventStore } from "../../ferment/event-store.js"
 import type { Ferment } from "../../ferment/types.js"
 import * as sharedStatusLine from "../shared-status-line.js"
 import { clearAllLifecycleGuards, deriveObligation, evaluateLifecycleStop } from "./lifecycle-obligation-guard.js"
-import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
+import { createDefaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
 
 function createRuntime(): { runtime: FermentRuntime; storage: FermentEventStore; setActive: ReturnType<typeof vi.fn> } {

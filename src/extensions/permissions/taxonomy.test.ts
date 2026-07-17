@@ -97,6 +97,7 @@ describe("extractBashProgram", () => {
 	it("sees through rtk wrapper to extract the real program", () => {
 		expect(extractBashProgram("rtk git status")).toEqual({ program: "git", subcommand: "status" })
 		expect(extractBashProgram("rtk ls -la")).toEqual({ program: "ls", subcommand: "-la" })
+		expect(extractBashProgram("rtk rtk git status")).toEqual({ program: "git", subcommand: "status" })
 	})
 })
 
@@ -548,6 +549,7 @@ describe("isHardBlockedBash", () => {
 		expect(isHardBlockedBash("rtk sudo ls")).toBe(true)
 		expect(isHardBlockedBash("rtk rm -rf /")).toBe(true)
 		expect(isHardBlockedBash("rtk rm -rf /etc")).toBe(true)
+		expect(isHardBlockedBash("rtk rtk rm -rf /")).toBe(true)
 	})
 })
 
@@ -654,6 +656,7 @@ describe("splitLeadingEnv", () => {
 describe("rememberedScopeTokens", () => {
 	it("keeps env, drops rtk, returns first-segment program tokens", () => {
 		expect(rememberedScopeTokens("GOWORK=off rtk go test -race")).toEqual(["GOWORK=off", "go", "test", "-race"])
+		expect(rememberedScopeTokens("GOWORK=off rtk rtk go test -race")).toEqual(["GOWORK=off", "go", "test", "-race"])
 		expect(rememberedScopeTokens("go test ./...")).toEqual(["go", "test", "./..."])
 	})
 

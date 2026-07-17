@@ -8,6 +8,8 @@ import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedAccentFg, resolvedSemanticFg } from "../ansi.js"
 import { readStatusLineConfig } from "../config/status-line-config.js"
 import { getActiveAgentCount } from "../extensions/agents/index.js"
+import { getBillingStatusLine } from "../extensions/billing/status.js"
+import { formatBillingStatusLine } from "../extensions/billing/status-line-format.js"
 import { getActiveFerment, getFermentContinuationPolicy } from "../extensions/ferment/index.js"
 import { formatFermentStatusLineDisplay } from "../extensions/ferment/status-line.js"
 import { formatCount } from "../extensions/format.js"
@@ -26,6 +28,7 @@ type SegmentId =
 	| "phase"
 	| "tags"
 	| "team"
+	| "billing"
 	| "lsp"
 
 /** Raw inputs preserved on segments that have compact forms, so compaction
@@ -494,6 +497,14 @@ export class StatusLine implements Component {
 		return { id: "lsp", text, width: visibleWidth(text) }
 	}
 
+	private billingSegment(pinned = false): Segment | null {
+		if (!pinned) return null
+		const line = getBillingStatusLine()
+		if (!line) return null
+		const text = formatBillingStatusLine(line, this.theme)
+		return { id: "billing", text, width: visibleWidth(text) }
+	}
+
 	private subagentSegment(pinned = false): Segment | null {
 		if (!pinned) return null
 		const count = getActiveAgentCount()
@@ -560,6 +571,7 @@ export class StatusLine implements Component {
 			this.fermentSegment(pinnedSet.has("ferment")),
 			this.permissionsSegment(pinnedSet.has("permissions")),
 			this.modelSegment(),
+			this.billingSegment(pinnedSet.has("billing")),
 			this.subagentSegment(pinnedSet.has("agents")),
 			this.contextSegment(pinnedSet.has("context")),
 			this.usageSegment(pinnedSet.has("usage")),

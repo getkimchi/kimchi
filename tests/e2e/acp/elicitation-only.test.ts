@@ -70,7 +70,10 @@ describe("ACP integration — elicitation only", () => {
 		// Fire-and-forget UI calls (notify + setStatus) are sent
 		// unconditionally via pi_notify — no capability gate.
 		const piNotifications = fixture.client.extNotifications.filter((n) => n.method.startsWith("_kimchi.dev/pi_"))
-		expect(piNotifications.length, "pi_notify extNotifications arrive even without advertised capabilities").toBeGreaterThanOrEqual(2)
+		expect(
+			piNotifications.length,
+			"pi_notify extNotifications arrive even without advertised capabilities",
+		).toBeGreaterThanOrEqual(2)
 		expect(fixture.client.acpWarnings(), "no [ACP] warnings (capability gate removed)").toEqual([])
 	})
 })

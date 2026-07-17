@@ -5,8 +5,8 @@
 import type { AgentSession } from "@earendil-works/pi-coding-agent"
 import {
 	type Component,
-	type TUI,
 	matchesKey,
+	type TUI,
 	truncateToWidth,
 	visibleWidth,
 	wrapTextWithAnsi,
@@ -20,6 +20,7 @@ import { extractText } from "../prompt/context.js"
 function expandTabs(s: string): string {
 	return s.replace(/\t/g, "        ")
 }
+
 import { getLifetimeTotal, getSessionContextPercent } from "../manager/usage.js"
 import type { Theme } from "./agent-widget.js"
 import {

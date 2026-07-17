@@ -3,10 +3,11 @@ import { visibleWidth } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { StatusLineElementId } from "../config/status-line-config.js"
 import * as AGENTS from "../extensions/agents/index.js"
+import { setBillingStatusForTest } from "../extensions/billing/status.js"
 import * as FERMENT from "../extensions/ferment/index.js"
 import * as MULTI_MODEL from "../extensions/multi-model.js"
 import * as TAGS from "../extensions/tags.js"
-import { SHORTCUT_TAIL, StatusLine, buildContextCompact, buildModelAbbrev, buildPhaseCompact } from "./status-line.js"
+import { buildContextCompact, buildModelAbbrev, buildPhaseCompact, SHORTCUT_TAIL, StatusLine } from "./status-line.js"
 
 // ── Mock status-line-config.ts ───────────────────────────────────────────────
 // Controls which elements appear as pinned in each test.
@@ -265,6 +266,7 @@ describe("StatusLine behavioural acceptance at representative widths", () => {
 
 	afterEach(() => {
 		vi.restoreAllMocks()
+		setBillingStatusForTest(undefined)
 		restorePlatform()
 	})
 
@@ -386,6 +388,7 @@ describe("StatusLine segment coverage", () => {
 
 	afterEach(() => {
 		vi.restoreAllMocks()
+		setBillingStatusForTest(undefined)
 		restorePlatform()
 	})
 
@@ -484,6 +487,38 @@ describe("StatusLine segment coverage", () => {
 		const sl = new StatusLine(createMockContext(), theme, createMockStatusLineData())
 		const visible = renderVisible(sl, 200)
 		expect(visible).not.toContain("team:")
+	})
+
+	it("billing segment shows compact credit status", () => {
+		withPinned(["billing"], () => {
+			setBillingStatusForTest({
+				serverless: true,
+				plan: "coder",
+				isPaidTier: true,
+				remainingCredits: 5,
+				creditStatus: "low",
+				updatedAt: "2026-07-07T00:00:00.000Z",
+			})
+			const statusLine = new StatusLine(createMockContext(), theme, createMockStatusLineData())
+			const visible = renderVisible(statusLine, 200)
+
+			expect(visible).toContain("Credits: $5.00")
+		})
+	})
+
+	it("billing segment is hidden when unpinned", () => {
+		setBillingStatusForTest({
+			serverless: true,
+			plan: "coder",
+			isPaidTier: true,
+			remainingCredits: 5,
+			creditStatus: "low",
+			updatedAt: "2026-07-07T00:00:00.000Z",
+		})
+		const statusLine = new StatusLine(createMockContext(), theme, createMockStatusLineData())
+		const visible = renderVisible(statusLine, 200)
+
+		expect(visible).not.toContain("Credits: $5.00")
 	})
 })
 

@@ -2,13 +2,13 @@ import { afterEach, describe, expect, it } from "vitest"
 import type { DeclarativeAction } from "../../ferment/engine.js"
 import type { Ferment } from "../../ferment/types.js"
 import {
-	type LifecycleGuardDecision,
-	type LifecycleObligation,
 	buildObligationKey,
 	clearAllLifecycleGuards,
 	clearLifecycleGuard,
 	deriveObligation,
 	evaluateLifecycleStop,
+	type LifecycleGuardDecision,
+	type LifecycleObligation,
 } from "./lifecycle-obligation-guard.js"
 
 // ─── Fixtures ──────────────────────────────────────────────────────────────────

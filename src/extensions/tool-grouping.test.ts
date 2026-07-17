@@ -343,7 +343,7 @@ describe("buildCurrentToolLine", () => {
 
 describe("buildGroupView", () => {
 	const plainTheme = {
-		fg: (key: string, value: string) => value,
+		fg: (_key: string, value: string) => value,
 	}
 
 	it("appends timer to right header when a tool is in-progress", () => {

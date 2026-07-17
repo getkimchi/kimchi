@@ -9,8 +9,8 @@ import { requestSharedStatusLineRender } from "../shared-status-line.js"
 import { pr_bold, pr_dim, pr_orange, pr_success, pr_teal } from "./colors.js"
 import { type FermentCommand, parseFermentCommand } from "./command-parser.js"
 import { decideContinuation } from "./continuation.js"
-import { emitFermentCreated } from "./domain-events-emitter.js"
 import { FERMENT_EVENTS } from "./domain-events.js"
+import { emitFermentCreated } from "./domain-events-emitter.js"
 import { formatFermentStatus } from "./format.js"
 import { autoInitFromEnv, ensureGitRepo } from "./git-init.js"
 import { clearLifecycleGuard } from "./lifecycle-obligation-guard.js"
@@ -29,7 +29,7 @@ import {
 } from "./progress-overlay.js"
 import { promptEditor } from "./prompt-ui.js"
 import { resumeFerment } from "./resume.js"
-import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
+import { defaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import { safeSendMessage } from "./safe-send.js"
 import { scheduleFermentWakeUp } from "./scheduler.js"
 import { runScopingFlow, sendFermentRequestMessage } from "./scoping.js"
@@ -876,7 +876,7 @@ export class FermentCommandController {
 			const reason = command.reason ?? ""
 			if (ctx.ui.select) {
 				const choice = await ctx.ui.select(`Abandon "${active.name}"?`, ["Yes, abandon it", "No, keep it"])
-				if (!choice || !choice.startsWith("Yes")) {
+				if (!choice?.startsWith("Yes")) {
 					ctx.ui.notify("Abandon cancelled.")
 					return { handled: true }
 				}

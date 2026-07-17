@@ -1,8 +1,11 @@
 import type { ExtensionAPI, ExtensionContext, ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "./__mocks__/context.js"
-import createModelGuardExtension from "./model-guard.js"
-import { __resetImagesDetectedForTest, __setLatestMessagesForTest, sessionHasImages } from "./model-guard.js"
+import createModelGuardExtension, {
+	__resetImagesDetectedForTest,
+	__setLatestMessagesForTest,
+	sessionHasImages,
+} from "./model-guard.js"
 import modelSwitchExtension, {
 	__resetModelSwitchStateForTest,
 	getModelTier,
@@ -584,9 +587,9 @@ describe("modelSwitchExtension", () => {
 
 			// Manually invoke model_select with suppressModelSelectGuard=true by
 			// wrapping in withSuppressedModelSelectGuard — the handler must skip.
-			let handlerCallCount = 0
+			let _handlerCallCount = 0
 			const notify = vi.fn(() => {
-				handlerCallCount++
+				_handlerCallCount++
 			})
 			await withSuppressedModelSelectGuard(async () => {
 				await trigger(
@@ -835,7 +838,7 @@ describe("modelSwitchExtension", () => {
 		})
 
 		it("skips when isRevertingModel guard is set", async () => {
-			const h = createHarness()
+			const _h = createHarness()
 			// Manually set the flag via module state (not exported, so test via the handler directly)
 			// We simulate this by calling the handler with isRevertingModel=true scenario
 			// Since isRevertingModel is module-scoped, we test it indirectly via the suppress flag path

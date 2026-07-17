@@ -15,7 +15,7 @@ import {
 } from "./commands.js"
 import { clearAllLifecycleGuards, maybeInjectLifecycleObligationGuard } from "./lifecycle-obligation-guard.js"
 import { clearAllPendingPlanReviews, getPendingPlanReview, setPendingPlanReview } from "./plan-review.js"
-import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
+import { createDefaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
 
 vi.mock("node:fs", async (importOriginal) => {

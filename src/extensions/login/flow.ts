@@ -12,12 +12,13 @@ import { type Component, Container, type TUI } from "@earendil-works/pi-tui"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
 import { loadConfig, writeApiKey } from "../../config.js"
 import {
+	isTransientModelsError,
 	ModelsFetchError,
 	type PiModelConfig,
-	isTransientModelsError,
 	syncProviderModels,
 	updateModelsConfig,
 } from "../../models.js"
+import { refreshBillingStatusFromConfig } from "../billing/status.js"
 
 export const KIMCHI_PROVIDER_ID = "kimchi-dev"
 export const KIMCHI_DEFAULT_MODEL_ID = "minimax-m3"
@@ -262,6 +263,7 @@ async function configureKimchiToken(
 	}
 	if (providerModels.length > 0) {
 		options.persistConfig?.()
+		void refreshBillingStatusFromConfig()
 		const selectedModel = providerModels.find((m) => m.id === KIMCHI_DEFAULT_MODEL_ID) ?? providerModels[0]
 		await host.setModel?.(selectedModel)
 		host.addFeedback?.(formatKimchiLoginSuccessMessage(selectedModel.id))

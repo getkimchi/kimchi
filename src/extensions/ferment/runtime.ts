@@ -4,10 +4,10 @@ import type { FermentEventStore } from "../../ferment/event-store.js"
 import type { Ferment } from "../../ferment/types.js"
 import { FERMENT_EVENTS } from "./domain-events.js"
 import {
-	type PendingPlanReview,
 	clearAllPendingPlanReviews,
 	clearPendingPlanReview,
 	getPendingPlanReview,
+	type PendingPlanReview,
 	setPendingPlanReview,
 } from "./plan-review.js"
 import type { AttachPendingProposalPartial, PendingScope } from "./scoping.js"
@@ -18,6 +18,7 @@ import {
 	getPendingScope,
 	setPendingScope,
 } from "./scoping.js"
+import type { ContinuationPolicy, PendingCompaction } from "./state.js"
 import {
 	bumpBlockRetry,
 	bumpStepCompleteAttempt,
@@ -63,8 +64,6 @@ import {
 	setPhaseStartRef,
 	setStepStartRef,
 } from "./state.js"
-import type { ContinuationPolicy } from "./state.js"
-import type { PendingCompaction } from "./state.js"
 
 export interface FermentRuntime {
 	/** pi.events bus — set by the ferment extension factory so all mutations

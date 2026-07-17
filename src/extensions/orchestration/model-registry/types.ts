@@ -17,6 +17,7 @@ export type Phase = "explore" | "research" | "plan" | "build" | "review"
 /** Injected into the Orchestrator LLM's context to steer model selection. */
 export interface ModelCapabilities {
 	vision: boolean
+	reasoning: boolean
 	tier: ModelTier
 	description: string
 	/** Phase-specific guideline annexes. If a phase key is present, its value

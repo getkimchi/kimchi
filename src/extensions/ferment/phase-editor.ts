@@ -78,7 +78,7 @@ async function addPhase(ui: ExtensionContext["ui"], runtime?: FermentRuntime): P
 	if (!ui.input) return undefined
 	const name = await ui.input("New phase name:", "")
 	runtime?.markHumanInput()
-	if (!name || !name.trim()) return undefined
+	if (!name?.trim()) return undefined
 	const goal = await ui.input("Phase goal:", "")
 	runtime?.markHumanInput()
 	return { name: name.trim(), goal: (goal ?? "").trim() }

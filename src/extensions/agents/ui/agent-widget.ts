@@ -5,7 +5,7 @@
 import { truncateToWidth } from "@earendil-works/pi-tui"
 import { remountTipWidget } from "../../tips/index.js"
 import type { AgentManager } from "../manager/agent-manager.js"
-import { type LifetimeUsage, type SessionLike, getLifetimeTotal, getSessionContextPercent } from "../manager/usage.js"
+import { getLifetimeTotal, getSessionContextPercent, type LifetimeUsage, type SessionLike } from "../manager/usage.js"
 import { getConfig } from "../personas/agent-types.js"
 import type { AgentAbortReason, AgentOutcome, SubagentType } from "../personas/types.js"
 

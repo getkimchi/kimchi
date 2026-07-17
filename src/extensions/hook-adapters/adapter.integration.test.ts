@@ -16,7 +16,6 @@ describe("Claude Code hook adapter integration", () => {
 
 	afterEach(() => {
 		if (oldHome === undefined) {
-			// biome-ignore lint/performance/noDelete: process.env requires delete to truly unset.
 			delete process.env.HOME
 		} else {
 			process.env.HOME = oldHome

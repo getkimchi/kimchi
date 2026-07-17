@@ -13,11 +13,11 @@
  * now") as success — the third response must contain a real tool call.
  */
 
-import { readFileSync, readdirSync } from "node:fs"
+import { readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
 import { STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
-import { TUI_TEST_CONFIG, runKimchiSession } from "./support/kimchi-fixture.js"
+import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -178,7 +178,10 @@ test("--ferment-oneshot survives two text-only stops and completes scoping on th
 				await new Promise((resolve) => setTimeout(resolve, 250))
 			}
 			expect(planned).toBeDefined()
-			expect((planned?.phases as Array<Record<string, unknown>>)[0]?.name).toBe("Implement CLI")
+			if (!planned) throw new Error("Expected a persisted planned ferment")
+			const phases = planned.phases
+			if (!Array.isArray(phases)) throw new Error("Expected planned ferment phases")
+			expect(phases[0]?.name).toBe("Implement CLI")
 			trace.step("scope_ferment succeeded — planned Ferment with persisted phase found")
 		},
 	)

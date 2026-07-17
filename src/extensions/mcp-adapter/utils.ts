@@ -1,10 +1,11 @@
 import { platform } from "node:os"
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { ExecResult, ExtensionAPI } from "@earendil-works/pi-coding-agent"
+
 export { getAgentDir } from "@earendil-works/pi-coding-agent"
 
 export async function openUrl(pi: ExtensionAPI, url: string, browser?: string): Promise<void> {
 	const os = platform()
-	let result
+	let result: ExecResult | undefined
 
 	if (os === "darwin") {
 		result = browser ? await pi.exec("open", ["-a", browser, url]) : await pi.exec("open", [url])
@@ -54,10 +55,10 @@ export function truncateAtWord(text: string, target: number): string {
 	const lastSpace = truncated.lastIndexOf(" ")
 
 	if (lastSpace > target * 0.6) {
-		return truncated.slice(0, lastSpace) + "..."
+		return `${truncated.slice(0, lastSpace)}...`
 	}
 
-	return truncated + "..."
+	return `${truncated}...`
 }
 
 /**

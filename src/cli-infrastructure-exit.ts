@@ -1,7 +1,7 @@
 import {
+	applyInfrastructureExitPolicy,
 	type InfrastructureFailure,
 	KIMCHI_INFRA_ERROR_EXIT_CODE,
-	applyInfrastructureExitPolicy,
 } from "./infrastructure-error.js"
 
 type ExitProcess = (code?: typeof process.exitCode) => void

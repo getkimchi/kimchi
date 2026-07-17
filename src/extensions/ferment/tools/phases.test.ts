@@ -5,10 +5,10 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../../ferment/event-store.js"
 import { createContext } from "../../__mocks__/context.js"
-import { type FermentRuntime, createDefaultFermentRuntime } from "../runtime.js"
+import { createDefaultFermentRuntime, type FermentRuntime } from "../runtime.js"
 import { setActive } from "../state.js"
 import { createApplyAndPersist } from "../tool-helpers.js"
-import { type PhaseHandlerServices, completePhase, registerPhaseTools } from "./phases.js"
+import { completePhase, type PhaseHandlerServices, registerPhaseTools } from "./phases.js"
 
 function okText(result: { content: { text: string }[]; isError?: boolean }): string {
 	if (result.isError) throw new Error(`Expected ok, got error: ${result.content[0]?.text}`)
@@ -65,6 +65,12 @@ function createServices(overrides: Partial<PhaseHandlerServices> = {}): PhaseHan
 		captureGitHead: vi.fn(() => undefined),
 		gatherEvidence: vi.fn(() => ({ filesChanged: "file.ts", diffSnippet: "+change", available: true })),
 		runProjectChecks: vi.fn(() => ({ cwd: "/tmp", discovered: false, anyFailed: false, checks: [] })),
+		judgePhaseGrade: vi.fn(async () => ({
+			ok: true as const,
+			grade: "A" as const,
+			rationale: "Clean.",
+			recommendations: [],
+		})),
 		onPhaseCompleted: vi.fn(),
 		...overrides,
 	}
@@ -376,5 +382,186 @@ describe("registerPhaseTools", () => {
 		const result = { content: [{ type: "text", text: "**Phase done**" }] }
 		const component = tool?.renderResult?.(result)
 		expect(component).toBeDefined()
+	})
+
+	// ── LLM phase grader enforcement ──────────────────────────────────────────
+
+	it("A-grade advances and persists recommendations", async () => {
+		const h = createHarness()
+		const recs = ["Add integration test for the retry path."]
+		const services = createServices({
+			judgePhaseGrade: vi.fn(async () => ({
+				ok: true as const,
+				grade: "A" as const,
+				rationale: "Excellent. Production-ready.",
+				recommendations: recs,
+			})),
+		})
+
+		const result = await completePhase(
+			h.runtime,
+			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: passingPhaseGates() },
+			{ pi: h.pi },
+			services,
+		)
+
+		expect(okText(result)).toContain('**Phase "Phase 1"** done')
+		const stored = h.storage.get(h.fermentId)
+		expect(stored?.phases[0].status).toBe("completed")
+		expect(stored?.phases[0].grade?.grade).toBe("A")
+		expect(stored?.phases[0].grade?.recommendations).toEqual(recs)
+	})
+
+	it("B-grade refuses on first attempt, accepts on rework", async () => {
+		const h = createHarness()
+		const recs = ["Add edge-case test for empty input.", "Wire retry into production call site."]
+		const services = createServices({
+			judgePhaseGrade: vi.fn(async () => ({
+				ok: true as const,
+				grade: "B" as const,
+				rationale: "Goal met but coverage is thin.",
+				recommendations: recs,
+			})),
+		})
+
+		// First attempt: B refused (minimum is A on first try).
+		const result1 = await completePhase(
+			h.runtime,
+			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "attempt 1", gates: passingPhaseGates() },
+			{ pi: h.pi },
+			services,
+		)
+		const err1 = result1 as { content: { text: string }[]; isError?: boolean }
+		expect(err1.isError).toBe(true)
+		expect(err1.content.map((c) => c.text).join("\n")).toContain("minimum required is A")
+
+		// Second attempt: B accepted (minimum relaxes to B after rework).
+		const result2 = await completePhase(
+			h.runtime,
+			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "attempt 2", gates: passingPhaseGates() },
+			{ pi: h.pi },
+			services,
+		)
+		expect(okText(result2)).toContain('**Phase "Phase 1"** done')
+		const stored = h.storage.get(h.fermentId)
+		expect(stored?.phases[0].status).toBe("completed")
+		expect(stored?.phases[0].grade?.grade).toBe("B")
+		expect(stored?.phases[0].grade?.recommendations).toEqual(recs)
+	})
+
+	it("C-grade refuses advancement within budget and surfaces recommendations", async () => {
+		const h = createHarness()
+		const recs = ["Fix the N+1 query in listUsers.", "Add cancellation to the fetch loop."]
+		const services = createServices({
+			judgePhaseGrade: vi.fn(async () => ({
+				ok: true as const,
+				grade: "C" as const,
+				rationale: "Operational gaps.",
+				recommendations: recs,
+			})),
+		})
+
+		const result = await completePhase(
+			h.runtime,
+			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: passingPhaseGates() },
+			{ pi: h.pi },
+			services,
+		)
+
+		const errResult = result as { content: { text: string }[]; isError?: boolean }
+		expect(errResult.isError).toBe(true)
+		const text = errResult.content.map((c) => c.text).join("\n")
+		expect(text).toContain("LLM grader assigned grade C")
+		expect(text).toContain("retry 1/3")
+		expect(text).toContain("Fix the N+1 query in listUsers.")
+		expect(text).toContain("Add cancellation to the fetch loop.")
+		// Phase must NOT be completed.
+		expect(h.storage.get(h.fermentId)?.phases[0].status).toBe("active")
+		// Retry counter must have been bumped.
+		expect(h.runtime.getBlockRetry(h.fermentId, "phase-1")).toBe(1)
+	})
+
+	it("C-grade repeated exhausts budget and advances with the grade", async () => {
+		const h = createHarness()
+		const recs = ["Fix the N+1 query in listUsers."]
+		const services = createServices({
+			judgePhaseGrade: vi.fn(async () => ({
+				ok: true as const,
+				grade: "C" as const,
+				rationale: "Operational gaps.",
+				recommendations: recs,
+			})),
+		})
+
+		// First refusal: within budget.
+		const result1 = await completePhase(
+			h.runtime,
+			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "attempt 1", gates: passingPhaseGates() },
+			{ pi: h.pi },
+			services,
+		)
+		const err1 = result1 as { content: { text: string }[]; isError?: boolean }
+		expect(err1.isError).toBe(true)
+		expect(err1.content.map((c) => c.text).join("\n")).toContain("retry 1/3")
+
+		// Second refusal: within budget.
+		const result2 = await completePhase(
+			h.runtime,
+			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "attempt 2", gates: passingPhaseGates() },
+			{ pi: h.pi },
+			services,
+		)
+		const err2 = result2 as { content: { text: string }[]; isError?: boolean }
+		expect(err2.isError).toBe(true)
+		expect(err2.content.map((c) => c.text).join("\n")).toContain("retry 2/3")
+
+		// Third refusal: within budget.
+		const result3 = await completePhase(
+			h.runtime,
+			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "attempt 3", gates: passingPhaseGates() },
+			{ pi: h.pi },
+			services,
+		)
+		const err3 = result3 as { content: { text: string }[]; isError?: boolean }
+		expect(err3.isError).toBe(true)
+		expect(err3.content.map((c) => c.text).join("\n")).toContain("retry 3/3")
+
+		// Fourth attempt: budget exhausted — accepts the grade and advances.
+		const result4 = await completePhase(
+			h.runtime,
+			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "attempt 4", gates: passingPhaseGates() },
+			{ pi: h.pi },
+			services,
+		)
+		expect(okText(result4)).toContain('**Phase "Phase 1"** done')
+		const stored = h.storage.get(h.fermentId)
+		expect(stored?.phases[0].status).toBe("completed")
+		expect(stored?.phases[0].grade?.grade).toBe("C")
+		expect(stored?.phases[0].grade?.recommendations).toEqual(recs)
+	})
+
+	it("judge-unavailable advances with advisory grade and no refusal", async () => {
+		const h = createHarness()
+		const services = createServices({
+			judgePhaseGrade: vi.fn(async () => ({
+				ok: false as const,
+				reason: "no_auth" as const,
+			})),
+		})
+
+		const result = await completePhase(
+			h.runtime,
+			{ ferment_id: h.fermentId, phase_id: "phase-1", summary: "phase done", gates: passingPhaseGates() },
+			{ pi: h.pi },
+			services,
+		)
+
+		expect(okText(result)).toContain('**Phase "Phase 1"** done')
+		const stored = h.storage.get(h.fermentId)
+		expect(stored?.phases[0].status).toBe("completed")
+		// Grade falls back to the deterministic derivedGrade (A when all gates pass).
+		expect(stored?.phases[0].grade?.grade).toBe("A")
+		// Rationale should note the judge was unavailable.
+		expect(stored?.phases[0].grade?.rationale).toContain("unavailable")
 	})
 })

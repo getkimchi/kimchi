@@ -36,7 +36,7 @@ function roleColor(role: ThinkingSemanticRole): string {
 function pulseGlyph(theme: ThinkingThemeLike, nowMs: number): string {
 	const frames = [theme.fg("dim", "·"), theme.fg("muted", "•"), theme.fg("accent", "•"), theme.fg("muted", "•")]
 	const frame = Math.floor(nowMs / 180) % frames.length
-	return frames[frame] ?? frames[0]!
+	return frames[frame] ?? frames[0]
 }
 
 type InlineSegmentStyle = "plain" | "bold" | "code"
@@ -47,13 +47,19 @@ interface InlineSegment {
 }
 
 function sanitizeThinkingText(text: string): string {
-	return text
-		.replace(/\r\n?/g, "\n")
-		.replace(/\u001b[\]PX^_][\s\S]*?(?:\u0007|\u001b\\|\u009c)/g, "")
-		.replace(/[\u0090\u0098\u009d\u009e\u009f][\s\S]*?(?:\u0007|\u001b\\|\u009c)/g, "")
-		.replace(/\u001b(?:\[[0-?]*[ -\/]*[@-~]|[ -\/]*[0-9@-~])/g, "")
-		.replace(/\u009b[0-?]*[ -\/]*[@-~]/g, "")
-		.replace(/[\x00-\x08\x0B-\x1F\x7F-\x9F]/g, "")
+	return (
+		text
+			.replace(/\r\n?/g, "\n")
+			// biome-ignore lint/suspicious/noControlCharactersInRegex: -
+			.replace(/\u001b[\]PX^_][\s\S]*?(?:\u0007|\u001b\\|\u009c)/g, "")
+			// biome-ignore lint/suspicious/noControlCharactersInRegex: -
+			.replace(/[\u0090\u0098\u009d\u009e\u009f][\s\S]*?(?:\u0007|\u001b\\|\u009c)/g, "")
+			// biome-ignore lint/suspicious/noControlCharactersInRegex: -
+			.replace(/\u001b(?:\[[0-?]*[ -/]*[@-~]|[ -/]*[0-9@-~])/g, "")
+			.replace(/\u009b[0-?]*[ -/]*[@-~]/g, "")
+			// biome-ignore lint/suspicious/noControlCharactersInRegex: -
+			.replace(/[\x00-\x08\x0B-\x1F\x7F-\x9F]/g, "")
+	)
 }
 
 function parseThinkingInlineSegments(text: string): InlineSegment[] {
@@ -83,14 +89,6 @@ function renderThinkingInlineSegment(theme: ThinkingThemeLike, segment: InlineSe
 	if (segment.style === "bold") return theme.bold(theme.fg("thinkingText", segment.text))
 	if (segment.style === "code") return theme.bold(theme.fg("accent", segment.text))
 	return theme.fg("thinkingText", segment.text)
-}
-
-function stepHeader(theme: ThinkingThemeLike, step: DerivedThinkingStep, active: boolean, connector: string): string {
-	const connectorColor = active ? "accent" : "muted"
-	const icon = theme.fg(roleColor(step.role), step.icon)
-	const renderedSummary = renderThinkingInlineMarkup(theme, step.summary)
-	const summaryText = active ? theme.bold(renderedSummary) : renderedSummary
-	return `${theme.fg(connectorColor, connector)} ${icon} ${summaryText}`
 }
 
 function wrapStepHeader(
@@ -127,7 +125,7 @@ function pickCollapsedStep(steps: DerivedThinkingStep[], activeStepId?: string):
 	let latestSuccessAfterFailureIndex = -1
 
 	for (let index = 0; index < steps.length; index += 1) {
-		const step = steps[index]!
+		const step = steps[index]
 		if (step.hasExplicitFailure) {
 			latestFailureIndex = index
 			latestSuccessAfterFailureIndex = -1
@@ -145,7 +143,7 @@ function pickCollapsedStep(steps: DerivedThinkingStep[], activeStepId?: string):
 			(right.collapsedPriority ?? 0) - (left.collapsedPriority ?? 0) ||
 			right.blockIndex - left.blockIndex ||
 			right.stepIndex - left.stepIndex,
-	)[0]!
+	)[0]
 }
 
 function wrapCollapsedSummaryText(
@@ -233,7 +231,7 @@ export function tailRawLines(text: string, maxLines: number): string {
 export function tailRawLinesFromBlocks(blocks: ThinkingSourceBlock[], maxLines: number): string {
 	let tail = ""
 	for (let index = blocks.length - 1; index >= 0; index -= 1) {
-		const block = blocks[index]!
+		const block = blocks[index]
 		const text = block.text
 		if (!text || (block.redacted && !text.trim())) continue
 		const separator = tail ? "\n" : ""
@@ -338,7 +336,7 @@ function selectSummarySteps(steps: DerivedThinkingStep[], activeStepId?: string)
 	let latestSuccessAfterFailureIndex = -1
 
 	for (let index = 0; index < steps.length; index += 1) {
-		const step = steps[index]!
+		const step = steps[index]
 		if (step.hasExplicitFailure) {
 			latestFailureIndex = index
 			latestSuccessAfterFailureIndex = -1
@@ -381,7 +379,7 @@ function selectSummarySteps(steps: DerivedThinkingStep[], activeStepId?: string)
 
 	return [...selected]
 		.sort((left, right) => left - right)
-		.map((index) => steps[index]!)
+		.map((index) => steps[index])
 		.slice(0, targetCount)
 }
 
@@ -394,7 +392,7 @@ function renderSummary(
 	const lines = [truncateToWidth(`${theme.fg("muted", "▍")} ${theme.fg("dim", "Thinking Steps · Summary")}`, width)]
 	const visibleSteps = selectSummarySteps(steps, activeStepId)
 	for (let index = 0; index < visibleSteps.length; index++) {
-		const step = visibleSteps[index]!
+		const step = visibleSteps[index]
 		const connector = index === visibleSteps.length - 1 ? "└─" : "├─"
 		lines.push(...wrapStepHeader(theme, width, step, step.id === activeStepId, connector))
 	}
@@ -485,7 +483,7 @@ function renderExpanded(
 	const lines: string[] = []
 
 	for (let index = 0; index < steps.length; index++) {
-		const step = steps[index]!
+		const step = steps[index]
 		const normalizedBody = step.body.trim()
 		if (!normalizedBody) continue
 

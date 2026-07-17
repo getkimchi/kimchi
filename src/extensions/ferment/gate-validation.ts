@@ -19,11 +19,11 @@
  */
 
 import {
-	GateCoverageError,
-	type OwnerTurn,
 	assertGateCoverage,
 	flaggedVerdicts,
+	GateCoverageError,
 	hasBlockingFlag,
+	type OwnerTurn,
 	validateGateVerdict,
 } from "./gate-registry.js"
 import { toolErr, type toolOk } from "./tool-helpers.js"

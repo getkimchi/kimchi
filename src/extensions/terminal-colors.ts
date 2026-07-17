@@ -3,7 +3,7 @@ import { basename, resolve } from "node:path"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { isProtocolOrPrintMode } from "../cli-args.js"
 import { getActiveThemeName, onThemeChange } from "../settings-watcher.js"
-import { QUERY_BG, getRawBgPayload } from "../terminal-bg-probe.js"
+import { getRawBgPayload, QUERY_BG } from "../terminal-bg-probe.js"
 
 const QUERY_FG = "\x1b]10;?\x07"
 const QUERY_TIMEOUT_MS = 200
@@ -65,7 +65,7 @@ function getThemeColors(themeName: string): { fgHex: string; bgHex: string } | n
 		const oscBgRaw: string = theme.colors?.oscBg ?? ""
 		if (!oscBgRaw) return null
 		const bgHex = resolveVar(oscBgRaw)
-		if (!bgHex || !bgHex.startsWith("#")) return null
+		if (!bgHex?.startsWith("#")) return null
 
 		const oscFgRaw: string = theme.colors?.oscFg ?? ""
 		const fgHex = oscFgRaw ? resolveVar(oscFgRaw) : ""

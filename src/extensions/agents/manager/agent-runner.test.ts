@@ -109,8 +109,8 @@ vi.mock("../../orchestration/model-registry/guidelines/guidelines-resolver.js", 
 import {
 	type AgentSession,
 	type CreateAgentSessionResult,
-	DefaultResourceLoader,
 	createAgentSession,
+	DefaultResourceLoader,
 } from "@earendil-works/pi-coding-agent"
 import { readTelemetryConfig } from "../../../config.js"
 import { DEFAULT_BASH_TIMEOUT_SECONDS } from "../../bash-default-timeout.js"
@@ -1960,7 +1960,7 @@ describe("runAgent — parent session ID env ordering", () => {
 
 		// Should be cleaned up (deleted, not just undefined)
 		expect(process.env[PARENT_SESSION_ID_ENV_KEY]).toBeUndefined()
-		expect(Object.prototype.hasOwnProperty.call(process.env, PARENT_SESSION_ID_ENV_KEY)).toBe(false)
+		expect(Object.hasOwn(process.env, PARENT_SESSION_ID_ENV_KEY)).toBe(false)
 	})
 })
 

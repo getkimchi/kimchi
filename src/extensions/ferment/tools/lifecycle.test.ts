@@ -5,7 +5,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../../ferment/event-store.js"
 import { createContext } from "../../__mocks__/context.js"
-import { type FermentRuntime, createDefaultFermentRuntime } from "../runtime.js"
+import { createDefaultFermentRuntime, type FermentRuntime } from "../runtime.js"
 import { createApplyAndPersist } from "../tool-helpers.js"
 import { FERMENT_TOOLS } from "../tool-names.js"
 import {
@@ -30,11 +30,20 @@ vi.mock("../judge.js", async () => {
 			ok: true as const,
 			grade: "A" as const,
 			rationale: "Clean delivery; gates substantiated.",
+			recommendations: [] as string[],
+		})),
+		judgeJourneyGradeViaSubagent: vi.fn(async (_input: unknown, _spawner: unknown) => ({
+			ok: true as const,
+			grade: "A" as const,
+			rationale: "Clean delivery; gates substantiated.",
+			recommendations: [] as string[],
 		})),
 	}
 })
 
-const { judgeApiCall: mockJudgeApiCall, judgeJourneyGrade: mockJudgeJourneyGrade } = await import("../judge.js")
+const { judgeApiCall: mockJudgeApiCall, judgeJourneyGradeViaSubagent: mockJudgeJourneyGrade } = await import(
+	"../judge.js"
+)
 
 interface RegisteredTool {
 	name: string
@@ -1110,11 +1119,25 @@ describe("completeFerment", () => {
 	it("persists the journey grade from the judge into ferment.grade", async () => {
 		const h = createHarness()
 		createTerminalFerment(h)
-		vi.mocked(mockJudgeJourneyGrade).mockResolvedValueOnce({
+		// B is refused on first attempt; accepted on second.
+		vi.mocked(mockJudgeJourneyGrade).mockResolvedValue({
 			ok: true,
 			grade: "B",
 			rationale: "Phase 1 verified via proxy; goal met but coverage is thin.",
+			recommendations: [],
 		})
+		// First attempt: B refused.
+		const result1 = await completeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				final_summary: "done",
+				gates: passingFermentGates(),
+			},
+			{ ctx: createContext() },
+		)
+		expect(errText(result1)).toContain("minimum required is A")
+		// Second attempt: B accepted.
 		const result = await completeFerment(
 			h.runtime,
 			{
@@ -1179,6 +1202,185 @@ describe("completeFerment", () => {
 		expect(h.storage.get(h.fermentId)?.status).toBe("complete")
 		expect(h.storage.get(h.fermentId)?.grade).toBeUndefined()
 	})
+
+	// ── Final grader enforcement ──────────────────────────────────────────────────
+
+	it("A-grade ships with recommendations persisted", async () => {
+		const h = createHarness()
+		createTerminalFerment(h)
+		const recs = ["Add integration test for the retry path."]
+		vi.mocked(mockJudgeJourneyGrade).mockResolvedValueOnce({
+			ok: true,
+			grade: "A",
+			rationale: "Excellent. Production-ready.",
+			recommendations: recs,
+		})
+		const result = await completeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				final_summary: "done",
+				gates: passingFermentGates(),
+			},
+			{ ctx: createContext() },
+		)
+		expect(okText(result)).toContain("**Final grade:** A")
+		expect(h.storage.get(h.fermentId)?.status).toBe("complete")
+		expect(h.storage.get(h.fermentId)?.grade?.grade).toBe("A")
+		expect(h.storage.get(h.fermentId)?.grade?.recommendations).toEqual(recs)
+	})
+
+	it("B-grade refused on first attempt, ships after rework", async () => {
+		const h = createHarness()
+		createTerminalFerment(h)
+		const recs = ["Add edge-case test for empty input.", "Wire retry into production call site."]
+		vi.mocked(mockJudgeJourneyGrade).mockResolvedValue({
+			ok: true,
+			grade: "B",
+			rationale: "Goal met but coverage is thin.",
+			recommendations: recs,
+		})
+		// First attempt: B refused (minimum is A).
+		const result1 = await completeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				final_summary: "done",
+				gates: passingFermentGates(),
+			},
+			{ ctx: createContext() },
+		)
+		expect(errText(result1)).toContain("minimum required is A")
+		expect(errText(result1)).toContain("Add edge-case test")
+		// Second attempt: B accepted (minimum relaxes to B).
+		const result2 = await completeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				final_summary: "done",
+				gates: passingFermentGates(),
+			},
+			{ ctx: createContext() },
+		)
+		expect(okText(result2)).toContain("**Final grade:** B")
+		expect(h.storage.get(h.fermentId)?.status).toBe("complete")
+		expect(h.storage.get(h.fermentId)?.grade?.grade).toBe("B")
+		expect(h.storage.get(h.fermentId)?.grade?.recommendations).toEqual(recs)
+	})
+
+	it("C-grade refuses ship within budget and surfaces recommendations", async () => {
+		const h = createHarness()
+		createTerminalFerment(h)
+		const recs = ["Fix the N+1 query in listUsers.", "Add cancellation to the fetch loop."]
+		vi.mocked(mockJudgeJourneyGrade).mockResolvedValueOnce({
+			ok: true,
+			grade: "C",
+			rationale: "Operational gaps.",
+			recommendations: recs,
+		})
+		const result = await completeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				final_summary: "done",
+				gates: passingFermentGates(),
+			},
+			{ ctx: createContext() },
+		)
+		expect(errText(result)).toContain("final LLM grader assigned grade C")
+		expect(errText(result)).toContain("retry 1/3")
+		expect(errText(result)).toContain("Fix the N+1 query in listUsers.")
+		expect(errText(result)).toContain("Add cancellation to the fetch loop.")
+		// Ferment must NOT be completed.
+		expect(h.storage.get(h.fermentId)?.status).not.toBe("complete")
+		// Retry counter must have been bumped.
+		expect(h.runtime.getBlockRetry(h.fermentId, "__ferment__")).toBe(1)
+	})
+
+	it("C-grade repeated exhausts budget and ships with the grade", async () => {
+		const h = createHarness()
+		createTerminalFerment(h)
+		const recs = ["Fix the N+1 query in listUsers."]
+		vi.mocked(mockJudgeJourneyGrade).mockResolvedValue({
+			ok: true,
+			grade: "C",
+			rationale: "Operational gaps.",
+			recommendations: recs,
+		})
+
+		// First refusal: within budget.
+		const result1 = await completeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				final_summary: "attempt 1",
+				gates: passingFermentGates(),
+			},
+			{ ctx: createContext() },
+		)
+		expect(errText(result1)).toContain("retry 1/3")
+
+		// Second refusal: within budget.
+		const result2 = await completeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				final_summary: "attempt 2",
+				gates: passingFermentGates(),
+			},
+			{ ctx: createContext() },
+		)
+		expect(errText(result2)).toContain("retry 2/3")
+
+		// Third refusal: within budget.
+		const result3 = await completeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				final_summary: "attempt 3",
+				gates: passingFermentGates(),
+			},
+			{ ctx: createContext() },
+		)
+		expect(errText(result3)).toContain("retry 3/3")
+
+		// Fourth attempt: budget exhausted — accepts the grade and ships.
+		const result4 = await completeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				final_summary: "attempt 4",
+				gates: passingFermentGates(),
+			},
+			{ ctx: createContext() },
+		)
+		expect(okText(result4)).toContain("**Final grade:** C")
+		expect(h.storage.get(h.fermentId)?.status).toBe("complete")
+		expect(h.storage.get(h.fermentId)?.grade?.grade).toBe("C")
+		expect(h.storage.get(h.fermentId)?.grade?.recommendations).toEqual(recs)
+	})
+
+	it("judge-unavailable ships without refusal", async () => {
+		const h = createHarness()
+		createTerminalFerment(h)
+		vi.mocked(mockJudgeJourneyGrade).mockResolvedValueOnce({
+			ok: false,
+			reason: "no_auth",
+			detail: "missing api key",
+		})
+		const result = await completeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				final_summary: "done",
+				gates: passingFermentGates(),
+			},
+			{ ctx: createContext() },
+		)
+		expect(okText(result)).toContain("**Final grade:** unavailable")
+		expect(h.storage.get(h.fermentId)?.status).toBe("complete")
+		expect(h.storage.get(h.fermentId)?.grade).toBeUndefined()
+	})
 })
 
 describe("interactive ferment tool visibility (registerLifecycleTools)", () => {
@@ -1191,10 +1393,7 @@ describe("interactive ferment tool visibility (registerLifecycleTools)", () => {
 		_sessionStart: ((event: unknown, ctx: { hasUI: boolean }) => void) | null
 	}
 
-	function makePi(options: {
-		activeTools: string[]
-		oneShot?: boolean
-	}): FakePi & { setActiveCalls: string[][] } {
+	function makePi(options: { activeTools: string[]; oneShot?: boolean }): FakePi & { setActiveCalls: string[][] } {
 		const pi: FakePi & { setActiveCalls: string[][] } = {
 			registerTool: () => {},
 			on: (_event, handler) => {

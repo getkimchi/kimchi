@@ -83,7 +83,23 @@ async def test_single_model_run_passes_model_without_multi_model_cli_flag(tmp_pa
     command = agent.agent_commands[0]
     assert "--model kimchi-dev/kimi-k2.6" in command
     assert "--multi-model" not in command
+    # Compaction defaults on (kimchi's default): no settings write at all.
     assert ".config/kimchi/harness/settings.json" not in command
+
+
+async def test_disable_compaction_writes_harness_setting(tmp_path: Path) -> None:
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="kimchi-dev/kimi-k2.6",
+        **{"disable-compaction": "true"},
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await agent.run("hello", object(), AgentContext())
+
+    command = agent.agent_commands[0]
+    assert "~/.config/kimchi/harness/settings.json" in command
+    assert '{"compaction":{"enabled":false}}' in command
 
 
 async def test_multi_model_run_omits_model_and_enables_harness_setting(tmp_path: Path) -> None:
@@ -100,10 +116,26 @@ async def test_multi_model_run_omits_model_and_enables_harness_setting(tmp_path:
     assert "--multi-model" not in command
     assert "~/.config/kimchi/harness/settings.json" in command
     assert '{"multiModel":true}' in command
-    assert not agent._multi_model_settings_command().endswith("&& ")
-    assert f"{agent._multi_model_settings_command()} && set -m" in command
+    assert "compaction" not in command
+    assert not agent._harness_settings_command().endswith("&& ")
+    assert f"{agent._harness_settings_command()} && set -m" in command
     assert agent.to_agent_info().model_info.provider == "kimchi"
     assert agent.to_agent_info().model_info.name == "multi-model"
+
+
+async def test_multi_model_with_disable_compaction_writes_both_settings_in_one_json(tmp_path: Path) -> None:
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="multi-model",
+        **{"disable-compaction": "true"},
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await agent.run("hello", object(), AgentContext())
+
+    command = agent.agent_commands[0]
+    # Both keys must land in one write — the file is written wholesale.
+    assert '{"multiModel":true,"compaction":{"enabled":false}}' in command
 
 
 def test_legacy_multi_model_kwarg_cannot_enable_mode(tmp_path: Path) -> None:

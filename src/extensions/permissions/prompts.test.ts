@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import { promptForApproval, truncate } from "./prompts.js"
+import { promptForApproval, promptForCompoundApproval, truncate } from "./prompts.js"
 
 describe("truncate helper", () => {
 	it("returns original string if under max length", () => {
@@ -63,5 +63,35 @@ describe("promptForApproval — withWorkingHidden", () => {
 		expect(ctx.ui.setWorkingVisible).toHaveBeenNthCalledWith(2, true)
 		expect(ctx.ui.setWorkingVisible).toHaveBeenNthCalledWith(3, false)
 		expect(ctx.ui.setWorkingVisible).toHaveBeenNthCalledWith(4, true)
+	})
+})
+
+describe("promptForCompoundApproval", () => {
+	it("stores program wildcards without the RTK wrapper", async () => {
+		const ctx = {
+			hasUI: true,
+			ui: {
+				select: vi.fn(async () => "Allow all from now on"),
+				setWorkingVisible: vi.fn(),
+			},
+			// biome-ignore lint/suspicious/noExplicitAny: minimal stub for test
+		} as any
+
+		const result = await promptForCompoundApproval({
+			toolName: "bash",
+			commands: [
+				{ command: "rtk git status", description: "bash(rtk git status)" },
+				{ command: "rtk kubectl get pods", description: "bash(rtk kubectl get pods)" },
+			],
+			ctx,
+		})
+
+		expect(result).toEqual({
+			kind: "allow-all-remember",
+			rules: [
+				{ toolName: "bash", content: "git *", behavior: "allow", source: "session" },
+				{ toolName: "bash", content: "kubectl *", behavior: "allow", source: "session" },
+			],
+		})
 	})
 })

@@ -4,8 +4,8 @@
  * using a mock ExtensionAPI.
  */
 import { afterEach, describe, expect, it, vi } from "vitest"
+import bashToolGuardExtension, { BASH_TOOL_DESCRIPTION, STEER_MESSAGE_TYPE } from "./bash-tool-guard.js"
 import { BASH_TOOL_GUARD_EVENTS } from "./bash-tool-guard-events.js"
-import bashToolGuardExtension, { STEER_MESSAGE_TYPE } from "./bash-tool-guard.js"
 
 let mockMode: string | undefined = "default"
 let mockResourceEnabled = true
@@ -23,9 +23,41 @@ afterEach(() => {
 	mockResourceEnabled = true
 })
 
+// Capture what session_start actually passes to createBashToolDefinition
+// (and the real definition it gets back) so tests can assert the
+// description override preserves upstream's execute/renderCall/
+// renderResult/parameters, and that cwd comes from the session_start ctx
+// rather than being hardcoded.
+let capturedCwd: string | undefined
+let capturedBase: Record<string, unknown> | undefined
+
+vi.mock("@earendil-works/pi-coding-agent", async () => {
+	const actual = await vi.importActual<typeof import("@earendil-works/pi-coding-agent")>(
+		"@earendil-works/pi-coding-agent",
+	)
+	return {
+		...actual,
+		createBashToolDefinition: (cwd: string) => {
+			capturedCwd = cwd
+			const real = actual.createBashToolDefinition(cwd)
+			capturedBase = { ...real }
+			return real
+		},
+	}
+})
+
 interface BlockResult {
 	block: true
 	reason: string
+}
+
+interface RegisteredTool {
+	name: string
+	description: string
+	execute: unknown
+	renderCall: unknown
+	renderResult: unknown
+	parameters: unknown
 }
 
 interface MockExtensionAPI {
@@ -35,19 +67,14 @@ interface MockExtensionAPI {
 	events: { emit: ReturnType<typeof vi.fn> }
 	_blockResult?: BlockResult
 	_emittedEvents: Array<{ channel: string; payload: unknown }>
-	/** getAllTools() returns the live bash tool list. The integration tests
-	 *  don't exercise the preference description override, so the default
-	 *  empty array is fine — the session_start hook only needs the call to
-	 *  not throw. Override via `setTools()` for tests that need a specific
-	 *  tool list. */
-	getAllTools: () => Array<{ name: string; description: string }>
-	setTools: (tools: Array<{ name: string; description: string }>) => void
+	registeredTools: Map<string, RegisteredTool>
+	registerTool: (tool: RegisteredTool) => void
 }
 
 function createMockPI(): MockExtensionAPI {
 	const handlers: MockExtensionAPI["handlers"] = {}
 	const _emittedEvents: MockExtensionAPI["_emittedEvents"] = []
-	let tools: Array<{ name: string; description: string }> = []
+	const registeredTools = new Map<string, RegisteredTool>()
 	return {
 		handlers,
 		on(event: string, handler) {
@@ -61,11 +88,9 @@ function createMockPI(): MockExtensionAPI {
 			}),
 		},
 		_emittedEvents,
-		getAllTools() {
-			return tools
-		},
-		setTools(t) {
-			tools = t
+		registeredTools,
+		registerTool(tool) {
+			registeredTools.set(tool.name, tool)
 		},
 	}
 }
@@ -86,13 +111,16 @@ function emit(pi: MockExtensionAPI, event: string, payload: Record<string, unkno
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type PI = import("@earendil-works/pi-coding-agent").ExtensionAPI
 
-function fakeCtx(sessionId = "test-session"): { sessionManager: { getSessionId: () => string } } {
-	return { sessionManager: { getSessionId: () => sessionId } }
+function fakeCtx(
+	sessionId = "test-session",
+	cwd = "/repo",
+): { sessionManager: { getSessionId: () => string }; cwd: string } {
+	return { sessionManager: { getSessionId: () => sessionId }, cwd }
 }
 
-function fireSessionStart(pi: MockExtensionAPI): void {
+function fireSessionStart(pi: MockExtensionAPI, ctx: ReturnType<typeof fakeCtx> = fakeCtx()): void {
 	const handlers = pi.handlers.session_start ?? []
-	for (const h of handlers) h({}, fakeCtx())
+	for (const h of handlers) h({}, ctx)
 }
 
 describe("bashToolGuardExtension wiring", () => {
@@ -767,5 +795,50 @@ describe("bashToolGuardExtension — per-category thresholds", () => {
 			input: { command: "sed -i 's/a/b/' a.ts" },
 		})
 		expect(rEdit?.block).toBe(true)
+	})
+})
+
+describe("bashToolGuardExtension - description override", () => {
+	it("registers the bash tool with the overridden description on session_start", () => {
+		const pi = createMockPI()
+		bashToolGuardExtension(pi as unknown as PI)
+
+		fireSessionStart(pi)
+
+		expect(pi.registeredTools.size).toBe(1)
+		expect(pi.registeredTools.get("bash")?.description).toBe(BASH_TOOL_DESCRIPTION)
+	})
+
+	it("preserves the upstream execute/renderCall/renderResult/parameters", () => {
+		const pi = createMockPI()
+		bashToolGuardExtension(pi as unknown as PI)
+
+		fireSessionStart(pi)
+
+		const tool = pi.registeredTools.get("bash")
+		expect(capturedBase).toBeDefined()
+		expect(tool?.execute).toBe(capturedBase?.execute)
+		expect(tool?.renderCall).toBe(capturedBase?.renderCall)
+		expect(tool?.renderResult).toBe(capturedBase?.renderResult)
+		expect(tool?.parameters).toBe(capturedBase?.parameters)
+	})
+
+	it("resolves cwd from the session_start ctx and re-registers on every session_start", () => {
+		// Resumed/forked sessions can start in a different directory than
+		// the one the extension factory originally loaded in. Re-running
+		// registerTool() on every session_start (instead of once at
+		// factory-load time) keeps the bash tool's cwd correct.
+		const pi = createMockPI()
+		bashToolGuardExtension(pi as unknown as PI)
+
+		fireSessionStart(pi, fakeCtx("test-session", "/repo-a"))
+		expect(capturedCwd).toBe("/repo-a")
+		const first = pi.registeredTools.get("bash")
+
+		fireSessionStart(pi, fakeCtx("test-session", "/repo-b"))
+		expect(capturedCwd).toBe("/repo-b")
+		const second = pi.registeredTools.get("bash")
+		expect(second).not.toBe(first)
+		expect(second?.description).toBe(BASH_TOOL_DESCRIPTION)
 	})
 })

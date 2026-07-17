@@ -9,7 +9,7 @@ import { formatRsyncFailure, runRsync } from "../provisioning/rsync-runner.js"
 import type { TeleportContext } from "../types.js"
 import { formatBytes } from "../ui/format-bytes.js"
 import { SyncProgressRow } from "../ui/sync-progress-row.js"
-import { type SyncArgs, parseSyncArgs } from "./args.js"
+import { parseSyncArgs, type SyncArgs } from "./args.js"
 import { info, refuse } from "./errors.js"
 import { resolveWorkspaceRef } from "./workspace-ref.js"
 

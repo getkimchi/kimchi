@@ -10,7 +10,7 @@
 //                                   plus package.json → dist/share/kimchi/
 //                                   so the compiled binary resolves assets from the shared data directory
 
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs"
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { platform } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -96,9 +96,4 @@ if (!isDev) {
 	}
 	mkdirSync(proxyHelperBinDest, { recursive: true })
 	cpSync(proxyHelperSrc, join(proxyHelperBinDest, proxyHelperName))
-
-	const superpowersSkillSrc = join(projectRoot, "vendor", "superpowers", "skills")
-	const superpowersSkillDst = join(projectRoot, "dist", "share", "kimchi", "vendor", "superpowers", "skills")
-	mkdirSync(superpowersSkillDst, { recursive: true })
-	cpSync(superpowersSkillSrc, superpowersSkillDst, { recursive: true })
 }

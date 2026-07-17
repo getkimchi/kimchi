@@ -14,11 +14,11 @@ import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { type Mock, afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
-import { FermentStorage, clearFermentCache } from "../../ferment/store.js"
+import { clearFermentCache, FermentStorage } from "../../ferment/store.js"
 import type { Ferment } from "../../ferment/types.js"
-import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
+import { createDefaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import { clearAllPendingScopes, getPendingScope, setPendingScope } from "./scoping.js"
 import {
 	clearAllScopingGates,
@@ -44,6 +44,13 @@ vi.mock("./judge.js", async () => {
 			ok: true as const,
 			grade: "A" as const,
 			rationale: "Clean delivery; gates substantiated.",
+			recommendations: [],
+		})),
+		judgeJourneyGradeViaSubagent: vi.fn(async () => ({
+			ok: true as const,
+			grade: "A" as const,
+			rationale: "Clean delivery; gates substantiated.",
+			recommendations: [],
 		})),
 	}
 })
@@ -51,7 +58,10 @@ vi.mock("./judge.js", async () => {
 const mockAgentRecords = vi.hoisted(() => new Map<string, unknown>())
 vi.mock("../agents/index.js", () => ({
 	getAgentRecordForTaskValidation: vi.fn((id: string) => mockAgentRecords.get(id)),
+	runWithOverlay: vi.fn((_description: string, fn: () => Promise<unknown>) => fn()),
+	spawnGraderAgent: vi.fn(async () => undefined),
 }))
+
 import { createContext } from "../__mocks__/context.js"
 import { pr_dim } from "./colors.js"
 import { clearAllPendingPlanReviews, getPendingPlanReview } from "./plan-review.js"

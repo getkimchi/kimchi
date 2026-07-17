@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { describe, expect, it } from "vitest"
@@ -248,7 +248,16 @@ function oneShotCompletionScript(): FakeResponseScript[] {
 			],
 		},
 		{
-			// Complete the Ferment; the following request is the judge response.
+			// judgePhaseGrade LLM call triggered inside complete_ferment_phase.
+			// Must be scripted so the fake server does not advance to the wrong response.
+			stream: ['{"grade":"A","rationale":"Clean phase.","recommendations":[]}'],
+		},
+		{
+			// Stage-boundary compaction summarizes the step/phase handoff.
+			stream: ["The completed phase and next action are preserved."],
+		},
+		{
+			// Complete the Ferment; the following request is the journey-grade judge response.
 			toolCalls: [
 				{
 					id: "call_complete_ferment",
@@ -265,7 +274,9 @@ function oneShotCompletionScript(): FakeResponseScript[] {
 		},
 		{
 			// Return the one-shot judge JSON that Ferment expects after completion.
-			stream: ['{"grade":"A","rationale":"The linked-worker one-shot lifecycle completed cleanly."}'],
+			stream: [
+				'{"grade":"A","rationale":"The linked-worker one-shot lifecycle completed cleanly.","recommendations":[]}',
+			],
 		},
 		{
 			// Final assistant text must be emitted before agent_end and process exit.

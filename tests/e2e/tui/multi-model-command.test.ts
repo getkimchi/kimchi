@@ -1,6 +1,6 @@
 import { expect, test } from "@microsoft/tui-test"
 import { INPUT_TIMEOUT_MS, viewText, waitForText } from "./support/assertions.js"
-import { PROMPT_READY, TUI_TEST_CONFIG, runKimchiSession } from "./support/kimchi-fixture.js"
+import { PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -597,7 +597,7 @@ async function navigateMenuTo(
 	for (let i = 0; i < 30; i += 1) {
 		const view = viewText(terminal)
 		const cursorLine = view.split("\n").find((line) => line.includes("→"))
-		if (cursorLine && cursorLine.includes(target)) {
+		if (cursorLine?.includes(target)) {
 			trace.step(`cursor on "${target}"`)
 			terminal.submit("")
 			return
@@ -608,7 +608,7 @@ async function navigateMenuTo(
 	throw new Error(`Could not navigate to menu option "${target}".`)
 }
 
-async function readSettingsJson(path: string): Promise<Record<string, any>> {
+async function readSettingsJson(path: string): Promise<Record<string, Record<string, unknown>>> {
 	const { readFileSync } = await import("node:fs")
 	let raw: string
 	try {

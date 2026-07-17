@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import type { EntryTrigger, EntryTriggerEvent, ModeState } from "./entry-trigger-registry.js"
+import type { EntryTrigger, EntryTriggerEvent } from "./entry-trigger-registry.js"
 import { clear, dispatch, has, register, size } from "./entry-trigger-registry.js"
 
 describe("entry-trigger-registry", () => {

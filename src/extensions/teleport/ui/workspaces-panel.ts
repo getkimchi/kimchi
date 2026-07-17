@@ -150,13 +150,13 @@ export class WorkspacesPanel implements Component {
 		}
 		if (this.allowDelete && matchesKey(data, "d")) {
 			const entry = this.entries[this.selectedIndex]
-			if (!entry || entry.kind !== "row") return
+			if (entry?.kind !== "row") return
 			this.done({ action: "delete", row: entry.row })
 			return
 		}
 		if (this.allowRename && matchesKey(data, "r")) {
 			const entry = this.entries[this.selectedIndex]
-			if (!entry || entry.kind !== "row") return
+			if (entry?.kind !== "row") return
 			this.done({ action: "rename", row: entry.row })
 			return
 		}

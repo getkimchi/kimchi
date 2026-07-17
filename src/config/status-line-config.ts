@@ -12,6 +12,7 @@ export type StatusLineElementId =
 	| "phase"
 	| "tags"
 	| "team"
+	| "billing"
 
 export type StatusLineConfig = { pinned: StatusLineElementId[] }
 
@@ -73,6 +74,11 @@ export const STATUS_LINE_ELEMENTS: Array<{
 		id: "team",
 		label: "Team",
 		description: "Team tag value",
+	},
+	{
+		id: "billing",
+		label: "Billing",
+		description: "Plan and credit balance",
 	},
 ]
 

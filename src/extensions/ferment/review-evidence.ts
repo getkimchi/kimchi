@@ -23,7 +23,7 @@
  * scaled down to a single ferment context.
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 import { resolveFermentsDir } from "../../ferment/store.js"
 import type { JudgeFlag, ReviewOutcome } from "./judge.js"
@@ -52,6 +52,10 @@ export interface ReviewEvidence {
 	stepSummaries?: string
 	diffAvailable: boolean
 	diffFilesChanged?: string
+	/** Agent-pasted execution evidence (command outputs, verification results).
+	 *  Persisted so post-mortem analysis can correlate grader decisions with
+	 *  the proof the agent provided. */
+	evidence?: string
 
 	/** Outputs from the reviewer + deterministic checks. */
 	flags: JudgeFlag[]
@@ -115,6 +119,8 @@ export function writeReviewEvidence(args: {
 	outcome: ReviewOutcome
 	diffFilesChanged?: string
 	diffAvailable: boolean
+	/** Agent-pasted execution evidence to persist on the review sidecar. */
+	evidence?: string
 	projectChecks?: ProjectCheckResult
 	/** Raw F-gate verdicts the agent passed at complete_ferment_phase. Persisted so the
 	 *  journey-grade judge at complete_ferment can grade based on the trail. */
@@ -142,6 +148,7 @@ export function writeReviewEvidence(args: {
 		stepSummaries: args.stepSummaries,
 		diffAvailable: args.diffAvailable,
 		diffFilesChanged: args.diffFilesChanged,
+		evidence: args.evidence,
 		flags: args.outcome.flags,
 		derivedGrade: args.outcome.grade,
 		reviewerRationale: args.outcome.rationale,

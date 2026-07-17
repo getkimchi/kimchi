@@ -27,13 +27,13 @@ import { randomUUID } from "node:crypto"
 import { existsSync, mkdirSync, writeFileSync } from "node:fs"
 import { arch, homedir, version as osVersion, platform, release, userInfo } from "node:os"
 import { join } from "node:path"
-import type { AssistantMessage } from "@earendil-works/pi-ai"
+import type { AssistantMessage, ToolCall } from "@earendil-works/pi-ai"
 import {
 	type ExtensionAPI,
 	type ExtensionContext,
-	type Skill,
 	getAgentDir,
 	loadSkills,
+	type Skill,
 } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../config.js"
 import { isResourceEnabled } from "../../resources/store.js"
@@ -61,7 +61,6 @@ import {
 	stripUiOnlyMessages,
 } from "../orchestration/continuation-nudge.js"
 import { ModelRegistry } from "../orchestration/model-registry/index.js"
-import { registerModelRolesCommand } from "../orchestration/model-roles-command.js"
 import {
 	extractCustomConfigs,
 	getModelRoles,
@@ -71,14 +70,15 @@ import {
 	splitModelRef,
 	validateModelRoles,
 } from "../orchestration/model-roles.js"
+import { registerModelRolesCommand } from "../orchestration/model-roles-command.js"
 import { getCurrentPhase } from "../tags.js"
 import { type ContextFile, loadGlobalContextFiles, loadProjectContextFiles } from "./context-files.js"
 import {
+	buildSystemPrompt,
 	DELEGATION_TOOL_NAMES,
 	type EnvironmentInfo,
 	type PromptMode,
 	type ToolInfo,
-	buildSystemPrompt,
 } from "./system-prompt.js"
 
 function safeUsername(): string {
@@ -137,25 +137,18 @@ function isDelegationToolCallName(name: string | undefined): boolean {
 	return name != null && DELEGATION_TOOL_NAMES.has(name)
 }
 
-/**
- * Shape of a tool-call content block as emitted in assistant messages.
- * Defined narrowly here because the upstream `OrchestratorMessages` type does
- * not export the per-block discriminated-union members we need to narrow on.
- */
-type ToolCallBlock = { type: "toolCall"; name: string; id?: string }
-
-function isToolCallBlock(block: unknown): block is ToolCallBlock {
+function isToolCallBlock(block: AssistantMessage["content"][number]): block is ToolCall {
 	return (
 		typeof block === "object" &&
 		block !== null &&
 		"type" in block &&
-		(block as { type: unknown }).type === "toolCall" &&
+		block.type === "toolCall" &&
 		"name" in block &&
-		typeof (block as { name: unknown }).name === "string"
+		typeof block.name === "string"
 	)
 }
 
-function isEmptyToolCallBlock(block: unknown): block is ToolCallBlock {
+function isEmptyToolCallBlock(block: AssistantMessage["content"][number]): block is ToolCall {
 	return isToolCallBlock(block) && block.name.trim() === ""
 }
 
@@ -257,12 +250,8 @@ export default function (skillPaths: string[]) {
 					)
 				}
 			}
-			function notifyIfDeprecated(ctx: {
-				sessionManager?: { getSessionId: () => string | undefined }
-				model?: { id: string }
-				ui?: { notify: (msg: string, kind?: "warning" | "error" | "info") => void }
-			}) {
-				const sessionId = ctx.sessionManager?.getSessionId() ?? "unknown"
+			function notifyIfDeprecated(ctx: ExtensionContext) {
+				const sessionId = ctx.sessionManager.getSessionId() ?? "unknown"
 				if (ctx.model && deprecatedWarnings.has(ctx.model.id) && !deprecatedNotificationFired.has(sessionId)) {
 					deprecatedNotificationFired.add(sessionId)
 					const replacement = deprecatedWarnings.get(ctx.model.id)
@@ -276,8 +265,8 @@ export default function (skillPaths: string[]) {
 			}
 
 			pi.on("session_shutdown", async (_event, ctx) => {
-				const sessionId = ctx.sessionManager?.getSessionId()
-				if (sessionId) deprecatedNotificationFired.delete(sessionId)
+				const sessionId = ctx.sessionManager.getSessionId()
+				deprecatedNotificationFired.delete(sessionId)
 			})
 
 			pi.on("session_start", async (_event, ctx) => {
@@ -316,12 +305,38 @@ export default function (skillPaths: string[]) {
 			// The reset handler is registered BEFORE the enrichment handler below because
 			// that one returns `{action: "handled"}` in interactive mode, which short-
 			// circuits the input-handler chain.
-			const continuationNudge = new ContinuationNudge()
-			const emptyTurnNudge = new EmptyTurnNudge()
-			pi.on("agent_start", async () => {
+			const continuationNudgeMap = new Map<string, ContinuationNudge>()
+			const emptyTurnNudgeMap = new Map<string, EmptyTurnNudge>()
+
+			function getContinuationNudge(sessionId: string): ContinuationNudge {
+				let nudge = continuationNudgeMap.get(sessionId)
+				if (!nudge) {
+					nudge = new ContinuationNudge()
+					continuationNudgeMap.set(sessionId, nudge)
+				}
+				return nudge
+			}
+
+			function getEmptyTurnNudge(sessionId: string): EmptyTurnNudge {
+				let nudge = emptyTurnNudgeMap.get(sessionId)
+				if (!nudge) {
+					nudge = new EmptyTurnNudge()
+					emptyTurnNudgeMap.set(sessionId, nudge)
+				}
+				return nudge
+			}
+
+			pi.on("agent_start", async (_event, ctx) => {
+				const sessionId = ctx.sessionManager.getSessionId()
+				const continuationNudge = getContinuationNudge(sessionId)
 				continuationNudge.resetForNewAgentRun()
 			})
-			pi.on("input", async (event) => {
+
+			pi.on("input", async (event, ctx) => {
+				const sessionId = ctx.sessionManager.getSessionId()
+				const continuationNudge = getContinuationNudge(sessionId)
+				const emptyTurnNudge = getEmptyTurnNudge(sessionId)
+
 				if (event.source === "extension") {
 					// Agent result arriving. Clear the delegation-pending flag so the
 					// continuation nudge can fire normally once the model has processed
@@ -333,11 +348,16 @@ export default function (skillPaths: string[]) {
 				emptyTurnNudge.resetForNewUserInput()
 			})
 
-			pi.on("tool_execution_start", async () => {
+			pi.on("tool_execution_start", async (_event, ctx) => {
+				const sessionId = ctx.sessionManager.getSessionId()
+				const continuationNudge = getContinuationNudge(sessionId)
 				continuationNudge.recordToolCall()
 			})
 
-			pi.on("message_update", (event) => {
+			pi.on("message_update", (event, ctx) => {
+				const sessionId = ctx.sessionManager.getSessionId()
+				const continuationNudge = getContinuationNudge(sessionId)
+
 				if (!continuationNudge.isNudgeResponsePending()) return
 				const ame = event.assistantMessageEvent
 				if (ame.type !== "text_delta") return
@@ -349,14 +369,19 @@ export default function (skillPaths: string[]) {
 				}
 			})
 
-			pi.on("turn_end", async (event) => {
+			pi.on("turn_end", async (event, ctx) => {
 				if (event.message.role !== "assistant") return
 				// Safe after the role guard: AgentMessage with role "assistant" is AssistantMessage.
 				const assistantMsg = event.message as AssistantMessage
 
+				const sessionId = ctx.sessionManager.getSessionId()
+				const continuationNudge = getContinuationNudge(sessionId)
+				const emptyTurnNudge = getEmptyTurnNudge(sessionId)
+
 				// Track stall: increment counter each turn so the headless prompt
 				// block can detect when the orchestrator hasn't updated step todos.
-				bumpStallCounter()
+				// Scoped to this session so concurrent sessions do not share a counter.
+				bumpStallCounter(sessionId)
 
 				// Mark each delegation tool call so the continuation nudge stays
 				// suppressed until all delegated-agent results have been received.
@@ -515,7 +540,7 @@ export default function (skillPaths: string[]) {
 				mode,
 				roles,
 				customConfigs,
-				sessionId: ctx.sessionManager?.getSessionId(),
+				sessionId: ctx.sessionManager.getSessionId(),
 			})
 
 			// The rebuilt prompt replaces pi's base prompt entirely, which would

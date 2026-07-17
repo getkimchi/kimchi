@@ -204,7 +204,7 @@ export default function promptSummaryExtension(pi: ExtensionAPI) {
 		}
 	})
 
-	pi.on("agent_end", async (event, ctx) => {
+	pi.on("agent_end", async (_event, ctx) => {
 		const grandTotal: UsageTotals = {
 			input: orchestrator.input + subagents.input,
 			output: orchestrator.output + subagents.output,

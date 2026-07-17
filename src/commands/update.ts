@@ -1,8 +1,8 @@
 import {
 	DefaultPackageManager,
-	SettingsManager,
 	getAgentDir,
 	parseArgs as parsePiArgs,
+	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
 import { isHomebrewInstall } from "../update/paths.js"
 import { applyUpdate, checkForUpdate } from "../update/workflow.js"

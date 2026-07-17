@@ -14,10 +14,7 @@ import type { ToolMetadata } from "./types.js"
 
 const SERVER = "testserver"
 
-function makeMetadata(
-	originalName: string,
-	annotations?: ToolMetadata["annotations"],
-): ToolMetadata {
+function makeMetadata(originalName: string, annotations?: ToolMetadata["annotations"]): ToolMetadata {
 	return {
 		name: `${SERVER}_${originalName}`,
 		originalName,

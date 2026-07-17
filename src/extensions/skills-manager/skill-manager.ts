@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, rename, rmdir, stat, unlink, writeFile } from "node:fs/promises"
+import { mkdir, readdir, readFile, rename, rmdir, stat, unlink, writeFile } from "node:fs/promises"
 import { dirname, join, resolve, sep } from "node:path"
 import { parse as parseYaml } from "yaml"
 

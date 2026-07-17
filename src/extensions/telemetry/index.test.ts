@@ -249,7 +249,6 @@ describe("telemetryExtension integration", () => {
 
 		await getHandler(handlers, "turn_start")({ turnIndex: 3 })
 
-		const { default: _ext, ...rest } = await import("./index.js")
 		// Verify via before_provider_headers which exposes ctx.turnIndex
 		const result = getHandler(handlers, "before_provider_headers")({ headers: {} })
 		expect((result as unknown as Record<string, string>)["X-Turn-Index"]).toBe("3")

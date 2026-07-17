@@ -21,7 +21,7 @@ import { type Static, Type } from "typebox"
 
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { withWorkingHidden } from "../ui.js"
-import { type QuestionnaireResult, promptQuestionnaireFallback } from "./questionnaire-fallback.js"
+import { promptQuestionnaireFallback, type QuestionnaireResult } from "./questionnaire-fallback.js"
 import { createQuestionForm } from "./questionnaire-form.js"
 import { type Answer, type Question, type QuestionType, YES_NO_OPTIONS } from "./questionnaire-reducer.js"
 
@@ -213,6 +213,10 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 				return errorResult(
 					"questionnaire is unavailable in this session: it requires an interactive UI and none is attached (the harness is running in a non-interactive mode such as --print, --mode json|rpc|acp, or a headless subprocess). Do NOT call questionnaire again in this session. Ask the user clarifying questions as plain text in your reply instead.",
 				)
+			}
+
+			if (pi.events?.emit) {
+				pi.events.emit("notification", { notification_type: "agent_needs_input" })
 			}
 
 			let result: QuestionnaireResult

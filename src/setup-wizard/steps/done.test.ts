@@ -88,10 +88,8 @@ describe("runDoneStep", () => {
 	})
 
 	afterEach(() => {
-		// biome-ignore lint/performance/noDelete: env-var cleanup needs a real delete; assigning undefined would coerce to the literal string "undefined".
 		if (prevHome === undefined) delete process.env.HOME
 		else process.env.HOME = prevHome
-		// biome-ignore lint/performance/noDelete: same reason as HOME above.
 		if (prevShell === undefined) delete process.env.SHELL
 		else process.env.SHELL = prevShell
 		rmSync(tmpHome, { recursive: true, force: true })

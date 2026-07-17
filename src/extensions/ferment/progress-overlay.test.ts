@@ -13,7 +13,7 @@ import {
 	handlePhaseAction,
 	handleStepAction,
 } from "./progress-overlay.js"
-import { type FermentRuntime, createDefaultFermentRuntime } from "./runtime.js"
+import { createDefaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import { getActive, setActive } from "./state.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
 

@@ -1,11 +1,11 @@
 import { resolve } from "node:path"
 import { AGENT_DEFINITIONS, discoverAgent } from "../../agent-discovery/index.js"
-import type { KimchiConfig } from "../../config.js"
 import { readJson } from "../../config/json.js"
+import type { KimchiConfig } from "../../config.js"
 import { getMultiModelEnabled } from "../multi-model.js"
-import { getModelRoles, normalizeRoleModels } from "../orchestration/model-roles.js"
 import type { RoleModelAssignment } from "../orchestration/model-roles.js"
-import { PERMISSIONS_ENV_KEY, PERMISSION_MODES } from "../permissions/constants.js"
+import { getModelRoles, normalizeRoleModels } from "../orchestration/model-roles.js"
+import { PERMISSION_MODES, PERMISSIONS_ENV_KEY } from "../permissions/constants.js"
 import type { PermissionMode } from "../permissions/types.js"
 
 /**

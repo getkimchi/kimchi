@@ -1,3 +1,6 @@
+import type { PromptMode } from "../../../prompt-construction/system-prompt.js"
+import type { ModelRoles } from "../../model-roles.js"
+import { orchestratorShouldReceivePhaseGuidelines } from "../../orchestrator-roles.js"
 import type { ModelRegistry } from "../index.js"
 import type { Phase } from "../types.js"
 import { DEFAULT_ORCHESTRATION_GUIDELINES } from "./default-orchestration-guidelines.js"
@@ -16,8 +19,14 @@ export function buildPhaseGuidelinesSection(
 	modelId: string | undefined,
 	phase: Phase | undefined,
 	registry?: ModelRegistry,
+	options?: { mode?: PromptMode; roles?: ModelRoles },
 ): string {
 	if (!phase) return ""
+	if (options?.mode === "orchestrator") {
+		if (!orchestratorShouldReceivePhaseGuidelines(phase, modelId, options.roles)) {
+			return ""
+		}
+	}
 	const guideline = resolvePhaseGuideline(phase, modelId, registry)
 	if (!guideline) return ""
 	return `## Phase Guidelines (${phase})\n\n${guideline}`

@@ -161,7 +161,7 @@ describe("redactHtmlExport", () => {
 		// Decode the redacted base64 to verify structure preserved
 		const match = result.match(/<script id="session-data" type="application\/json">([A-Za-z0-9+/=]+)<\/script>/)
 		expect(match).not.toBeNull()
-		if (!match || !match[1]) throw new Error("session-data not found")
+		if (!match?.[1]) throw new Error("session-data not found")
 		const decoded = JSON.parse(Buffer.from(match[1], "base64").toString("utf-8"))
 		expect(decoded.entries[0].id).toBe("msg-1")
 		expect(decoded.entries[0].type).toBe("user")

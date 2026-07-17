@@ -26,16 +26,16 @@ import { registerFermentCommands } from "./commands.js"
 import { decideContinuation } from "./continuation.js"
 import { registerFermentEvents } from "./events.js"
 import { deletePendingProposal } from "./pending-proposal-store.js"
-import { setPendingPlanReviewTrigger } from "./plan-review-trigger.js"
 import { type PendingPlanReview, promptPlanReview } from "./plan-review.js"
+import { setPendingPlanReviewTrigger } from "./plan-review-trigger.js"
 import { buildFermentPromptBlock } from "./prompt-block.js"
-import { type FermentRuntime, defaultFermentRuntime } from "./runtime.js"
+import { defaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import { safeSendMessage } from "./safe-send.js"
 import { scheduleFermentWakeUp, scheduleNextFermentAction } from "./scheduler.js"
-import { confirmPendingScope } from "./scoping-confirmation.js"
 import { FERMENT_REQUEST_MESSAGE_TYPE, type FermentRequestMessageDetails } from "./scoping.js"
+import { confirmPendingScope } from "./scoping-confirmation.js"
 import { getActive, getActiveId, getContinuationPolicy } from "./state.js"
-import { FERMENT_STOP_POLICY_SHORTCUT, canToggleFermentStopPolicy } from "./status-line.js"
+import { canToggleFermentStopPolicy, FERMENT_STOP_POLICY_SHORTCUT } from "./status-line.js"
 import { createFermentTipProvider } from "./tips.js"
 import { registerFermentTodoSync } from "./todo-sync.js"
 import { applyFermentRuntimeToolProfile } from "./tool-scope.js"
@@ -58,7 +58,7 @@ export function getFermentContinuationPolicy() {
 /** 1-based phase index or undefined */
 export function getCurrentPhaseIndex(): number | undefined {
 	const f = getActive()
-	if (!f || !f.activePhaseId) return undefined
+	if (!f?.activePhaseId) return undefined
 	const idx = f.phases.findIndex((p) => p.id === f.activePhaseId)
 	return idx >= 0 ? idx + 1 : undefined
 }
@@ -66,7 +66,7 @@ export function getCurrentPhaseIndex(): number | undefined {
 /** Active phase name or undefined */
 export function getCurrentPhaseName(): string | undefined {
 	const f = getActive()
-	if (!f || !f.activePhaseId) return undefined
+	if (!f?.activePhaseId) return undefined
 	return f.phases.find((p) => p.id === f.activePhaseId)?.name
 }
 
@@ -130,9 +130,6 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 
 	const unregisterFermentTips = registerTipProvider(createFermentTipProvider(runtime))
 	let unregisterFermentTodoSync: (() => void) | undefined
-	if (!isAgentWorker()) {
-		unregisterFermentTodoSync = registerFermentTodoSync(pi)
-	}
 	let planReviewTimer: ReturnType<typeof setTimeout> | undefined
 	let planReviewRunning = false
 	let finalCompletionNudgedThisRun = false
@@ -238,6 +235,16 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	pi.on("session_start", (_event, _ctx) => {
 		ctx = _ctx
 		runtime.clearMidTurnOneshotWarnings()
+
+		// (Re)wire the ferment todo bridge to the current session id. The
+		// session-scoped todo store requires every store call to target a
+		// specific session; the bridge captures the id at subscribe time so its
+		// internal handlers stay pure.
+		unregisterFermentTodoSync?.()
+		unregisterFermentTodoSync = undefined
+		if (!isAgentWorker()) {
+			unregisterFermentTodoSync = registerFermentTodoSync(pi, ctx.sessionManager.getSessionId())
+		}
 	})
 
 	pi.on("session_shutdown", () => {
@@ -245,9 +252,10 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 		runtime.clearAllPendingPlanReviews()
 		unregisterFermentTips()
 		unregisterFermentTodoSync?.()
+		unregisterFermentTodoSync = undefined
 	})
 
-	pi.on("agent_end", (_event, ctx) => {
+	pi.on("agent_end", async (_event, ctx) => {
 		const review = runtime.getCurrentPendingPlanReview()
 		if (!planReviewRunning && review) {
 			clearPlanReviewTimer()
@@ -260,7 +268,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 		// Drain any remaining pending compactions at agent_end (catches the case
 		// where the ferment completes within a single agent run and the turn_end
 		// handler already cleared most pending entries).
-		maybeTriggerFermentCompaction(pi, ctx, runtime)
+		await maybeTriggerFermentCompaction(pi, ctx, runtime)
 
 		// Completing the final phase does not complete the ferment: complete_ferment
 		// still has to run its C-gates and journey grading. If the model ends its run

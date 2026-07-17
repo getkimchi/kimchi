@@ -1,8 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
-import { DefaultPackageManager, SettingsManager } from "@earendil-works/pi-coding-agent"
 import type { PackageSource } from "@earendil-works/pi-coding-agent"
+import { DefaultPackageManager, SettingsManager } from "@earendil-works/pi-coding-agent"
 
 export const PI_PACKAGE_LOOKUP_RESOURCE_ID = "extensions.pi-package-lookup"
 

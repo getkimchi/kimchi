@@ -1,13 +1,13 @@
 import { createHash } from "node:crypto"
 import type { ExtensionAPI, ExtensionContext, ToolResultEvent } from "@earendil-works/pi-coding-agent"
 import { isAgentWorker } from "./agent-worker-context.js"
-import { LOOP_GUARD_EVENTS } from "./loop-guard-events.js"
 import type {
 	LoopGuardDetector,
 	LoopGuardEventChannel,
 	LoopGuardSubagentAbortPayload,
 	LoopGuardWarnPayload,
 } from "./loop-guard-events.js"
+import { LOOP_GUARD_EVENTS } from "./loop-guard-events.js"
 
 export interface ToolHistoryRecord {
 	toolName: string
