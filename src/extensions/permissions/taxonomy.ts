@@ -326,7 +326,7 @@ export function isHardBlockedBash(command: string): boolean {
 
 	for (const segment of parseCommandSegments(command)) {
 		// See through RTK wrapper so `rtk rm -rf /` is still caught.
-		const tokens = segment.tokens[0] === "rtk" ? segment.tokens.slice(1) : segment.tokens
+		const tokens = stripRtk(segment.tokens)
 		const program = tokens[0]
 		if (!program) continue
 		if (HARD_BLOCK_PROGRAMS.has(program)) return true
@@ -414,7 +414,7 @@ export function splitCompoundCommand(command: string): string[] | null {
 	return segments.filter((s) => s.length > 0)
 }
 
-// Canonical first-segment tokens with the rtk wrapper removed. parseCommandSegments
+// Canonical first-segment tokens with rtk wrappers removed. parseCommandSegments
 // already strips leading FOO=bar assignments, shell-tokenizes (dropping quotes), and
 // collapses whitespace; we additionally see through the rtk wrapper. Env-STRIPPING:
 // used by extractBashProgram and the hard-block / read-only / bare-rule-auto-rewrite
@@ -422,7 +422,13 @@ export function splitCompoundCommand(command: string): string[] | null {
 // uses rememberedScopeTokens instead, which PRESERVES env.
 export function bashCommandTokens(command: string): string[] {
 	const raw = firstSegmentTokens(command)
-	return raw[0] === "rtk" ? raw.slice(1) : raw
+	return stripRtk(raw)
+}
+
+export function stripRtk(tokens: string[]): string[] {
+	let first = 0
+	while (tokens[first] === "rtk") first++
+	return first === 0 ? tokens : tokens.slice(first)
 }
 
 export function extractBashProgram(command: string): { program: string; subcommand: string | undefined } {
@@ -459,7 +465,7 @@ export function splitLeadingEnv(command: string): { env: string[]; rest: string 
 export function rememberedScopeTokens(command: string): string[] {
 	const { env, rest } = splitLeadingEnv(command)
 	const tokens = parseCommandSegments(rest)[0]?.tokens ?? []
-	const prog = tokens[0] === "rtk" ? tokens.slice(1) : tokens
+	const prog = stripRtk(tokens)
 	if (prog.length === 0) return []
 	return [...env, ...prog]
 }
@@ -476,9 +482,7 @@ export function rememberedScopeTokens(command: string): string[] {
 export function bashSegmentForms(command: string): string[] {
 	return parseCommandSegments(command)
 		.map((seg) => {
-			let tokens = seg.tokens
-			while (tokens[0] === "rtk") tokens = tokens.slice(1)
-			return tokens.join(" ")
+			return stripRtk(seg.tokens).join(" ")
 		})
 		.filter((form) => form.length > 0)
 }

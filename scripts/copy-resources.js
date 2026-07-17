@@ -96,9 +96,4 @@ if (!isDev) {
 	}
 	mkdirSync(proxyHelperBinDest, { recursive: true })
 	cpSync(proxyHelperSrc, join(proxyHelperBinDest, proxyHelperName))
-
-	const superpowersSkillSrc = join(projectRoot, "vendor", "superpowers", "skills")
-	const superpowersSkillDst = join(projectRoot, "dist", "share", "kimchi", "vendor", "superpowers", "skills")
-	mkdirSync(superpowersSkillDst, { recursive: true })
-	cpSync(superpowersSkillSrc, superpowersSkillDst, { recursive: true })
 }

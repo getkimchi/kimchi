@@ -54,3 +54,32 @@ export function orchestratorShouldReceivePhaseGuidelines(
 	const needed = PHASE_DELEGABLE_ROLE[phase]
 	return resolveModelRoleNames(currentModelId, roles).includes(needed)
 }
+
+/**
+ * Determine whether plan drafting should be delegated to a Plan agent.
+ *
+ * Planning is delegated when the orchestrator model is NOT the planner model —
+ * i.e. a separate planner model is configured. When the orchestrator IS the
+ * planner (same model assigned to both roles), the orchestrator writes plans
+ * directly and no Plan agent is spawned.
+ *
+ * This replaces the ambiguous "decide whether to write the plan yourself or
+ * delegate" instruction — the code decides based on role configuration.
+ */
+export function shouldDelegatePlanning(currentModelId: string | undefined, roles?: ModelRoles): boolean {
+	if (!roles || !currentModelId) return false
+	return !resolveModelRoleNames(currentModelId, roles).includes("planner")
+}
+
+/**
+ * Determine whether review should be delegated to a Reviewer agent.
+ *
+ * Review is delegated when the orchestrator model is NOT a reviewer model —
+ * i.e. a separate reviewer model is configured. When the orchestrator IS a
+ * reviewer, it may self-review for trivial and low-risk changes per
+ * Orchestration phase responsibilities.
+ */
+export function shouldDelegateReview(currentModelId: string | undefined, roles?: ModelRoles): boolean {
+	if (!roles || !currentModelId) return false
+	return !resolveModelRoleNames(currentModelId, roles).includes("reviewer")
+}

@@ -9,7 +9,7 @@ import { RST_FG, resolvedAccentFg, resolvedSemanticFg } from "../ansi.js"
 import { readStatusLineConfig } from "../config/status-line-config.js"
 import { getActiveAgentCount } from "../extensions/agents/index.js"
 import { getBillingStatusLine } from "../extensions/billing/status.js"
-import { formatBillingStatusLine } from "../extensions/billing/status-line-format.js"
+import { formatBudgetStatusLine, formatCreditsStatusLine } from "../extensions/billing/status-line-format.js"
 import { getActiveFerment, getFermentContinuationPolicy } from "../extensions/ferment/index.js"
 import { formatFermentStatusLineDisplay } from "../extensions/ferment/status-line.js"
 import { formatCount } from "../extensions/format.js"
@@ -28,7 +28,8 @@ type SegmentId =
 	| "phase"
 	| "tags"
 	| "team"
-	| "billing"
+	| "credits"
+	| "budget"
 	| "lsp"
 
 /** Raw inputs preserved on segments that have compact forms, so compaction
@@ -42,6 +43,7 @@ type SegmentRaw =
 	| { kind: "context"; percent: number; pctColor?: "error" | "warning" }
 	| { kind: "model"; multiModel: boolean; modelId: string }
 	| { kind: "phase"; phase: string }
+	| { kind: "budget"; percentage: string }
 	| { kind: "ferment"; prefix: string; prefixWidth: number }
 
 /** A single piece of the status line. */
@@ -497,12 +499,21 @@ export class StatusLine implements Component {
 		return { id: "lsp", text, width: visibleWidth(text) }
 	}
 
-	private billingSegment(pinned = false): Segment | null {
+	private creditsSegment(pinned = false): Segment | null {
 		if (!pinned) return null
-		const line = getBillingStatusLine()
-		if (!line) return null
-		const text = formatBillingStatusLine(line, this.theme)
-		return { id: "billing", text, width: visibleWidth(text) }
+		const amount = getBillingStatusLine()?.amount
+		if (!amount) return null
+		const text = formatCreditsStatusLine(amount, this.theme)
+		return { id: "credits", text, width: visibleWidth(text) }
+	}
+
+	private budgetSegment(pinned = false): Segment | null {
+		if (!pinned) return null
+		const budget = getBillingStatusLine()?.budget
+		if (!budget) return null
+		const [percentage = budget] = budget.split(" ", 1)
+		const text = formatBudgetStatusLine(budget, this.theme)
+		return { id: "budget", text, width: visibleWidth(text), raw: { kind: "budget", percentage } }
 	}
 
 	private subagentSegment(pinned = false): Segment | null {
@@ -571,7 +582,8 @@ export class StatusLine implements Component {
 			this.fermentSegment(pinnedSet.has("ferment")),
 			this.permissionsSegment(pinnedSet.has("permissions")),
 			this.modelSegment(),
-			this.billingSegment(pinnedSet.has("billing")),
+			this.creditsSegment(pinnedSet.has("credits")),
+			this.budgetSegment(pinnedSet.has("budget")),
 			this.subagentSegment(pinnedSet.has("agents")),
 			this.contextSegment(pinnedSet.has("context")),
 			this.usageSegment(pinnedSet.has("usage")),
@@ -594,14 +606,7 @@ export class StatusLine implements Component {
 		// Reserve its space upfront so compaction uses the right budget.
 		const minHintGap = 2
 		const hintReserve = hintWidth + minHintGap
-
-		// Reserve space for pinned segments so the unpinned portion compacts correctly.
-		const pinnedTotalWidth =
-			pinnedSegments.length > 0
-				? pinnedSegments.reduce((sum, s) => sum + s.width, 0) + (pinnedSegments.length - 1) * sepWidth + sepWidth // one sep between unpinned and pinned
-				: 0
 		const contentBudget = Math.max(0, width - hintReserve)
-		const unpinnedBudget = Math.max(0, contentBudget - pinnedTotalWidth)
 
 		const ctx: CompactionContext = {
 			dim: (s) => this.dim(s),
@@ -610,6 +615,21 @@ export class StatusLine implements Component {
 				`${resolvedSemanticFg(this.theme, color as "success" | "warning" | "error")}${s}${RST_FG}`,
 			showCommandHint: false, // hint is appended manually after all content
 		}
+
+		// Reserve space for pinned segments so the unpinned portion compacts correctly.
+		const getPinnedTotalWidth = () =>
+			pinnedSegments.length > 0
+				? pinnedSegments.reduce((sum, s) => sum + s.width, 0) + (pinnedSegments.length - 1) * sepWidth + sepWidth // one sep between unpinned and pinned
+				: 0
+		let pinnedTotalWidth = getPinnedTotalWidth()
+		if (pinnedTotalWidth > contentBudget) {
+			recompactSegment(pinnedSegments, "budget", "budget", (raw) => {
+				const text = formatBudgetStatusLine(raw.percentage, this.theme)
+				return { id: "budget", text, width: visibleWidth(text), raw }
+			})
+			pinnedTotalWidth = getPinnedTotalWidth()
+		}
+		const unpinnedBudget = Math.max(0, contentBudget - pinnedTotalWidth)
 
 		const unpinnedLine = layoutStatusLine(unpinnedSegments, unpinnedBudget, ctx, sep, sepWidth, {
 			text: hintText,

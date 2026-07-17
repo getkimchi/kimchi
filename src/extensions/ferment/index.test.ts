@@ -32,6 +32,11 @@ vi.mock("../shared-status-line.js", () => ({
 	requestSharedStatusLineRender: requestSharedStatusLineRenderMock,
 }))
 
+// Default the /settings Auto-compact toggle to enabled (independent of dev machine's settings.json).
+vi.mock("../../settings-watcher.js", () => ({
+	getCompactionEnabled: () => true,
+}))
+
 // Stub the journey-grade judge so completeFerment doesn't try to call a real
 // Opus endpoint during tests. Returns a clean A by default.
 vi.mock("./judge.js", async () => {

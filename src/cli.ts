@@ -24,7 +24,6 @@ import {
 	DEFAULT_SKILL_PATHS,
 	ensureHideThinkingBlockDefault,
 	ensureQuietStartupDefault,
-	getActiveVendorSkillPaths,
 	loadConfig,
 	RETRY_DEFAULTS,
 	readTelemetryConfig,
@@ -42,6 +41,7 @@ import bashDefaultTimeoutExtension from "./extensions/bash-default-timeout.js"
 import bashTimeoutGuidanceExtension from "./extensions/bash-timeout-guidance.js"
 import bashToolGuardExtension from "./extensions/bash-tool-guard.js"
 import behavioursExtension from "./extensions/behaviours/index.js"
+import budgetCommandExtension from "./extensions/billing/command.js"
 import { refreshBillingStatusFromConfig } from "./extensions/billing/status.js"
 import branchCommandExtension from "./extensions/branch-command.js"
 import claudeCodeHooksAdapter from "./extensions/claude-code-hook-adapter/index.js"
@@ -87,7 +87,6 @@ import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
 import stripImagesExtension from "./extensions/strip-images.js"
-import superpowersExtension from "./extensions/superpowers.js"
 import surveysExtension from "./extensions/surveys/index.js"
 import tagsExtension from "./extensions/tags.js"
 import { buildConfigSnapshot } from "./extensions/telemetry/config-snapshot.js"
@@ -582,14 +581,14 @@ try {
 		const terminalUiExtensionFactories = isTerminalUiMode(rawArgs, terminalIo)
 			? [terminalColorsExtension, kimchiMinimalTintsExtension, uiExtension]
 			: []
-		const effectiveSkillPaths = [...new Set([...skillPaths, ...getActiveVendorSkillPaths()])]
+		const effectiveSkillPaths = [...new Set([...skillPaths])]
 		const extensionFactories = [
 			autoUpdateSettingsExtension,
 			startupUpdateExtension,
-			superpowersExtension,
 			sessionNameExtension(),
 			shutdownMarkerExtension,
 			statsExtension,
+			budgetCommandExtension,
 			branchCommandExtension,
 			...terminalUiExtensionFactories,
 			loginExtension,

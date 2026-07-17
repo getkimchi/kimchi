@@ -2,6 +2,7 @@ import type { ImageContent, TextContent, ToolResultMessage, UserMessage } from "
 import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { Ferment } from "../ferment/types.js"
+import { getCompactionEnabled } from "../settings-watcher.js"
 import { COMPACTION_RESERVE_TOKENS } from "./compaction-thresholds.js"
 import { clearActiveFermentId, setActive as setActiveFerment } from "./ferment/state.js"
 import modelGuardExtension, {
@@ -14,6 +15,12 @@ import modelGuardExtension, {
 	stripImages,
 	truncateMessages,
 } from "./model-guard.js"
+
+// Mock the settings-watcher so the /settings Auto-compact toggle can be
+// controlled per test without touching the real settings files.
+vi.mock("../settings-watcher.js", () => ({
+	getCompactionEnabled: vi.fn(() => true),
+}))
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -580,6 +587,10 @@ describe("turn_end compaction guard", () => {
 	const CONTEXT_WINDOW = 262_144
 	const THRESHOLD = CONTEXT_WINDOW - COMPACTION_RESERVE_TOKENS // 245,760
 
+	beforeEach(() => {
+		vi.mocked(getCompactionEnabled).mockReturnValue(true)
+	})
+
 	it("does not compact when totalTokens is below the compaction threshold", async () => {
 		const { pi, trigger } = makeMockPI()
 		modelGuardExtension(pi)
@@ -652,6 +663,41 @@ describe("turn_end compaction guard", () => {
 			compact,
 		})
 		await trigger("turn_end", makeTurnEndEvent(THRESHOLD, "toolUse"), ctx)
+		expect(compact).not.toHaveBeenCalled()
+	})
+
+	it("still compacts (and warns) when the project-trust accessor throws unexpectedly", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		try {
+			const { pi, trigger } = makeMockPI()
+			modelGuardExtension(pi)
+			const compact = vi.fn()
+			const ctx = makeMockCtx({
+				model: { id: "kimi-k2.6", input: ["text"], contextWindow: CONTEXT_WINDOW } as ExtensionContext["model"],
+				compact,
+			})
+			ctx.isProjectTrusted = vi.fn(() => {
+				throw new Error("trust state unavailable")
+			})
+			await trigger("turn_end", makeTurnEndEvent(THRESHOLD + 1, "toolUse"), ctx)
+			// Trust falls back to the reader's last-synced value; the guard still runs.
+			expect(compact).toHaveBeenCalledOnce()
+			expect(warn).toHaveBeenCalledWith(expect.stringContaining("failed to read project trust"), expect.any(Error))
+		} finally {
+			warn.mockRestore()
+		}
+	})
+
+	it("does NOT compact when the /settings Auto-compact toggle is disabled", async () => {
+		vi.mocked(getCompactionEnabled).mockReturnValue(false)
+		const { pi, trigger } = makeMockPI()
+		modelGuardExtension(pi)
+		const compact = vi.fn()
+		const ctx = makeMockCtx({
+			model: { id: "kimi-k2.6", input: ["text"], contextWindow: CONTEXT_WINDOW } as ExtensionContext["model"],
+			compact,
+		})
+		await trigger("turn_end", makeTurnEndEvent(THRESHOLD + 1, "toolUse"), ctx)
 		expect(compact).not.toHaveBeenCalled()
 	})
 

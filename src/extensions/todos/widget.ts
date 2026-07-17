@@ -33,24 +33,18 @@ interface TodoWidgetState {
 }
 
 const todoWidgetStates = new Map<string, TodoWidgetState>()
-let activeTodoWidgetSessionId: string | undefined
 
 function createTodoWidgetState(): TodoWidgetState {
 	return { visible: false, expanded: false, collapsed: false, registered: false, registrationId: 0 }
 }
 
-function todoWidgetSessionId(ctx: ExtensionContext): string {
-	return ctx.sessionManager.getSessionId()
-}
-
 function getTodoWidgetState(ctx: ExtensionContext): TodoWidgetState {
-	const sessionId = todoWidgetSessionId(ctx)
+	const sessionId = ctx.sessionManager.getSessionId()
 	let state = todoWidgetStates.get(sessionId)
 	if (!state) {
 		state = createTodoWidgetState()
 		todoWidgetStates.set(sessionId, state)
 	}
-	activeTodoWidgetSessionId = sessionId
 	return state
 }
 
@@ -65,8 +59,8 @@ function hasActiveTodos(counts: TodoCounts): boolean {
 	return counts.pending + counts.inProgress + counts.blocked > 0
 }
 
-export function summarizeTodos(): string {
-	return summarizeTodoCounts(getTodoCountsForScope(GLOBAL_TODO_SCOPE))
+export function summarizeTodos(sessionId: string): string {
+	return summarizeTodoCounts(getTodoCountsForScope(GLOBAL_TODO_SCOPE, sessionId))
 }
 
 function isFermentTodo(todo: TodoItem): boolean {
@@ -119,8 +113,8 @@ function formatScopeHeader(scope: TodoScope): string {
 	return "Todos · Global"
 }
 
-function summarizeTodosForScope(scope: TodoScope): string {
-	return summarizeTodoCounts(getTodoCountsForScope(scope))
+function summarizeTodosForScope(scope: TodoScope, sessionId: string): string {
+	return summarizeTodoCounts(getTodoCountsForScope(scope, sessionId))
 }
 
 function selectTodoWindow(todos: TodoItem[]): {
@@ -157,9 +151,9 @@ function todoWindowAfterText(hiddenAfter: number): string | undefined {
 	return hiddenAfter > 0 ? `… ${hiddenAfter} more` : undefined
 }
 
-export function buildTodoLines(theme: Theme): string[] {
+export function buildTodoLines(theme: Theme, sessionId: string): string[] {
 	const scope = resolveTodoScope()
-	const todos = getTodosForScope(scope)
+	const todos = getTodosForScope(scope, sessionId)
 
 	if (todos.length === 0) {
 		return [
@@ -169,19 +163,24 @@ export function buildTodoLines(theme: Theme): string[] {
 		]
 	}
 
-	const lines = buildTodoListHeaderLines(theme, scope)
+	const lines = buildTodoListHeaderLines(theme, scope, sessionId)
 	lines.push(...todos.map((todo, index) => todoLine(todo, index, theme, scope)))
 	return lines
 }
 
-function buildTodoListHeaderLines(theme: Theme, scope: TodoScope): string[] {
-	return [theme.fg("accent", formatScopeHeader(scope)), "", theme.fg("dim", summarizeTodosForScope(scope)), ""]
+function buildTodoListHeaderLines(theme: Theme, scope: TodoScope, sessionId: string): string[] {
+	return [
+		theme.fg("accent", formatScopeHeader(scope)),
+		"",
+		theme.fg("dim", summarizeTodosForScope(scope, sessionId)),
+		"",
+	]
 }
 
-function buildTodoWidgetLines(theme: Theme, expanded: boolean): string[] {
+function buildTodoWidgetLines(theme: Theme, expanded: boolean, sessionId: string): string[] {
 	const scope = resolveTodoScope()
-	const todos = getTodosForScope(scope)
-	const lines = buildTodoLines(theme)
+	const todos = getTodosForScope(scope, sessionId)
+	const lines = buildTodoLines(theme, sessionId)
 	const withHint = [...lines, "", theme.fg("dim", TODO_LIST_HINT_TEXT)]
 	if (expanded) return withHint
 	if (withHint.length <= MAX_TODO_WIDGET_LINES) return withHint
@@ -191,35 +190,37 @@ function buildTodoWidgetLines(theme: Theme, expanded: boolean): string[] {
 	const beforeText = todoWindowBeforeText(window.hiddenBefore)
 	const afterText = todoWindowAfterText(window.hiddenAfter)
 	return [
-		...buildTodoListHeaderLines(theme, scope),
+		...buildTodoListHeaderLines(theme, scope, sessionId),
 		...(beforeText ? [theme.fg("dim", beforeText)] : []),
 		...window.todos.map((todo, index) => todoLine(todo, window.startIndex + index, theme, scope)),
 		...(afterText ? [theme.fg("dim", afterText)] : []),
 	]
 }
 
-export function resetTodoWidgetState(): void {
-	todoWidgetStates.clear()
-	activeTodoWidgetSessionId = undefined
+export function resetTodoWidgetState(ctx: ExtensionContext): void {
+	const sessionId = ctx.sessionManager.getSessionId()
+	todoWidgetStates.delete(sessionId)
 }
 
 function requestTodoRender(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return
-	const state = todoWidgetStates.get(todoWidgetSessionId(ctx))
+	const sessionId = ctx.sessionManager.getSessionId()
+	const state = todoWidgetStates.get(sessionId)
 	if (!state?.registered) return
 	state.tui?.requestRender?.(true)
 }
 
 export function setTodosStatus(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return
+	const sessionId = ctx.sessionManager.getSessionId()
 	const scope = resolveTodoScope()
-	const counts = getTodoCountsForScope(scope)
+	const counts = getTodoCountsForScope(scope, sessionId)
 	ctx.ui.setStatus(TODO_STATUS_KEY, hasActiveTodos(counts) ? `${summarizeTodoCounts(counts)} -> F7` : undefined)
 }
 
 export function ensureTodoWidget(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return
-	const sessionId = todoWidgetSessionId(ctx)
+	const sessionId = ctx.sessionManager.getSessionId()
 	const state = getTodoWidgetState(ctx)
 	if (state.registered && state.ctx === ctx) return
 
@@ -230,14 +231,15 @@ export function ensureTodoWidget(ctx: ExtensionContext): void {
 		state.registered = false
 		state.tui = undefined
 		state.ctx = undefined
-		if (activeTodoWidgetSessionId === sessionId) activeTodoWidgetSessionId = undefined
 	}
 	const component = (tui: unknown, theme: Theme) => {
 		state.tui = tui as { requestRender?: (force?: boolean) => void }
 		return {
 			render(width: number): string[] {
 				if (!state.visible) return []
-				return buildTodoWidgetLines(theme, state.expanded).map((line) => truncateToWidth(line, Math.max(20, width - 4)))
+				return buildTodoWidgetLines(theme, state.expanded, sessionId).map((line) =>
+					truncateToWidth(line, Math.max(20, width - 4)),
+				)
 			},
 			invalidate: unregister,
 			dispose: unregister,
@@ -254,7 +256,6 @@ export function ensureTodoWidget(ctx: ExtensionContext): void {
 	ctx.ui.setWidget(TODO_WIDGET_KEY, component, TODO_WIDGET_OPTIONS)
 	state.registered = true
 	state.ctx = ctx
-	activeTodoWidgetSessionId = sessionId
 }
 
 export function openTodoWidget(ctx: ExtensionContext): void {
@@ -295,8 +296,9 @@ export function toggleTodoWidget(ctx: ExtensionContext): void {
 
 export function syncTodoWidget(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return
+	const sessionId = ctx.sessionManager.getSessionId()
 	const scope = resolveTodoScope()
-	const counts = getTodoCountsForScope(scope)
+	const counts = getTodoCountsForScope(scope, sessionId)
 	const state = getTodoWidgetState(ctx)
 	if (!state.collapsed && hasActiveTodos(counts)) openTodoWidget(ctx)
 	else clearTodoWidget(ctx)
@@ -305,7 +307,7 @@ export function syncTodoWidget(ctx: ExtensionContext): void {
 
 export function disposeTodoWidget(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return
-	const sessionId = todoWidgetSessionId(ctx)
+	const sessionId = ctx.sessionManager.getSessionId()
 	const state = todoWidgetStates.get(sessionId)
 	ctx.ui.setWidget(TODO_WIDGET_KEY, undefined, TODO_WIDGET_OPTIONS)
 	if (state) {
@@ -315,7 +317,6 @@ export function disposeTodoWidget(ctx: ExtensionContext): void {
 		state.ctx = undefined
 	}
 	todoWidgetStates.delete(sessionId)
-	if (activeTodoWidgetSessionId === sessionId) activeTodoWidgetSessionId = undefined
 }
 
 export function registerTodoShortcut(pi: ExtensionAPI): void {

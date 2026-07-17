@@ -1,7 +1,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
 import { RST_FG } from "../../ansi.js"
-import { formatBillingStatusLine } from "./status-line-format.js"
+import { formatBudgetStatusLine, formatCreditsStatusLine } from "./status-line-format.js"
 
 function theme(): Theme {
 	return {
@@ -18,10 +18,18 @@ function theme(): Theme {
 	} as unknown as Theme
 }
 
-describe("formatBillingStatusLine", () => {
+describe("billing status line format", () => {
 	it("dims the fixed label and accents the dollar balance", () => {
 		const t = theme()
 
-		expect(formatBillingStatusLine({ amount: "$10.00" }, t)).toBe(`<dim>Credits:</dim> <accent>$10.00${RST_FG}`)
+		expect(formatCreditsStatusLine("$10.00", t)).toBe(`<dim>Credits:</dim> <accent>$10.00${RST_FG}`)
+	})
+
+	it("formats budget independently from credits", () => {
+		const t = theme()
+
+		expect(formatBudgetStatusLine("13.73% ($274.59/$2k)", t)).toBe(
+			`<dim>Budget:</dim> <accent>13.73% ($274.59/$2k)${RST_FG}`,
+		)
 	})
 })

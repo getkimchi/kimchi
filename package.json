@@ -121,6 +121,21 @@
 			"@earendil-works/pi-tui@0.79.10": "patches/@earendil-works__pi-tui@0.79.10.patch",
 			"@earendil-works/pi-ai@0.79.10": "patches/@earendil-works__pi-ai@0.79.10.patch",
 			"@earendil-works/pi-coding-agent@0.79.10": "patches/@earendil-works__pi-coding-agent@0.79.10.patch"
+		},
+		"supportedArchitectures": {
+			"os": [
+				"current",
+				"linux"
+			],
+			"cpu": [
+				"current",
+				"x64"
+			],
+			"libc": [
+				"current",
+				"glibc",
+				"musl"
+			]
 		}
 	}
 }

@@ -90,7 +90,7 @@ export class CustomizeStatusLineComponent implements Component {
 		out.push(wrapRow(`  ${dimText("● ")}${dimText("ELEMENT".padEnd(maxLabelW))}  ${dimText("DESCRIPTION")}`))
 		out.push(b(`├${"─".repeat(innerW)}┤`))
 
-		// ── element rows — always exactly 9 (STATUS_LINE_ELEMENTS is a fixed constant) ──
+		// ── element rows ──────────────────────────────────────────────────────
 
 		for (let i = 0; i < STATUS_LINE_ELEMENTS.length; i++) {
 			const el = STATUS_LINE_ELEMENTS[i]
