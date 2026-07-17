@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { TelemetryConfig } from "../../../config.js"
-import { _resetSharedAccumulators, SessionContext } from "../session-context.js"
-import { emitSessionStartEvent, handleSessionInitialized, handleSessionShutdown } from "./session.js"
+import { createContext } from "../../__mocks__/context.js"
+import { _resetSharedAccumulators, TelemetryContext } from "../session-context.js"
+import { emitSessionStartEvent, handleSessionShutdown, handleSessionStart } from "./session.js"
 
 vi.mock("../../ferment/index.js", () => ({
 	getActiveFerment: vi.fn(() => undefined),
@@ -22,7 +23,7 @@ function makeConfig(overrides: Partial<TelemetryConfig> = {}): TelemetryConfig {
 	}
 }
 
-describe("handleSessionInitialized", () => {
+describe("handleSessionStart", () => {
 	let originalFetch: typeof globalThis.fetch
 
 	beforeEach(() => {
@@ -40,17 +41,20 @@ describe("handleSessionInitialized", () => {
 		vi.restoreAllMocks()
 	})
 
-	it("resets context without emitting session.start", async () => {
-		const ctx = new SessionContext(makeConfig(), "cli")
-		handleSessionInitialized(ctx, "claude-opus-4-6")
+	it("starts flush timer without emitting session.start", async () => {
+		const piCtx = createContext()
+		const ctx = new TelemetryContext(makeConfig())
+		expect(ctx.flushTimer).toBeUndefined()
 
-		expect(ctx.currentModel).toBe("claude-opus-4-6")
+		handleSessionStart(ctx, piCtx)
+
+		expect(ctx.flushTimer).toBeDefined()
 
 		ctx.flushLogBuffer()
 		await Promise.allSettled([...ctx.inFlight])
 		ctx.stopFlushTimer()
 
-		// session.start should NOT be emitted by handleSessionInitialized
+		// session.start should NOT be emitted by handleSessionStart
 		expect(globalThis.fetch).not.toHaveBeenCalled()
 	})
 })
@@ -77,8 +81,9 @@ describe("handleSessionShutdown", () => {
 		const { getActiveFerment } = await import("../../ferment/index.js")
 		vi.mocked(getActiveFerment).mockReturnValue(undefined)
 
-		const ctx = new SessionContext(makeConfig(), "cli")
-		await handleSessionShutdown(ctx, { reason: "user_exit" })
+		const piCtx = createContext()
+		const ctx = new TelemetryContext(makeConfig())
+		await handleSessionShutdown(ctx, piCtx, { reason: "user_exit" })
 
 		expect(globalThis.fetch).toHaveBeenCalled()
 		const [, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
@@ -101,8 +106,9 @@ describe("handleSessionShutdown", () => {
 		const { getActiveFerment } = await import("../../ferment/index.js")
 		vi.mocked(getActiveFerment).mockReturnValue({ id: "ferment-abc" } as never)
 
-		const ctx = new SessionContext(makeConfig(), "cli")
-		await handleSessionShutdown(ctx, { reason: "user_exit" })
+		const piCtx = createContext()
+		const ctx = new TelemetryContext(makeConfig())
+		await handleSessionShutdown(ctx, piCtx, { reason: "user_exit" })
 
 		expect(globalThis.fetch).toHaveBeenCalled()
 		const [, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
@@ -127,9 +133,10 @@ describe("handleSessionShutdown", () => {
 			.mockReturnValueOnce({ id: "f-drift" } as never)
 			.mockReturnValueOnce({ id: "f-drift" } as never)
 
-		const ctx = new SessionContext(makeConfig(), "cli")
+		const piCtx = createContext()
+		const ctx = new TelemetryContext(makeConfig())
 		ctx.emit("seed.event", {})
-		await handleSessionShutdown(ctx, { reason: "user_exit" })
+		await handleSessionShutdown(ctx, piCtx, { reason: "user_exit" })
 
 		const allRecords = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.flatMap(([, opts]: unknown[]) => {
 			const body = JSON.parse((opts as { body: string }).body)
@@ -175,9 +182,9 @@ describe("emitSessionStartEvent", () => {
 	})
 
 	it("emits session.start with correct model attribute", async () => {
-		const ctx = new SessionContext(makeConfig(), "cli")
-		ctx.currentModel = "claude-opus-4-6"
-		emitSessionStartEvent(ctx)
+		const piCtx = createContext({ model: { id: "claude-opus-4-6" } })
+		const ctx = new TelemetryContext(makeConfig())
+		emitSessionStartEvent(ctx, piCtx)
 
 		ctx.flushLogBuffer()
 		await Promise.allSettled([...ctx.inFlight])

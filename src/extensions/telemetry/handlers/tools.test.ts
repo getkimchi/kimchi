@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { TelemetryConfig } from "../../../config.js"
-import { _resetSharedAccumulators, SessionContext } from "../session-context.js"
+import { createContext } from "../../__mocks__/context.js"
+import { _resetSharedAccumulators, TelemetryContext } from "../session-context.js"
 import { handleToolExecutionEnd, handleToolExecutionStart, resultSizeChars } from "./tools.js"
 
 vi.mock("../../../api/me.js", () => ({
@@ -61,12 +62,13 @@ describe("handlers/tools", () => {
 
 	describe("read tool", () => {
 		it("emits tool_result and kimchi.file_read with language and file_hash", async () => {
-			const ctx = new SessionContext(makeConfig(), "cli")
-			ctx.currentModel = "claude-3-5-sonnet"
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
+			// model set via createContext above
 			const toolCallId = "tc-read-1"
 
 			handleToolExecutionStart(ctx, { toolCallId, toolName: "read", args: { path: "/src/app.ts" } })
-			handleToolExecutionEnd(ctx, { toolCallId, isError: false })
+			handleToolExecutionEnd(ctx, piCtx, { toolCallId, isError: false })
 
 			ctx.flushLogBuffer()
 			await Promise.allSettled([...ctx.inFlight])
@@ -87,11 +89,12 @@ describe("handlers/tools", () => {
 		})
 
 		it("does NOT emit kimchi.file_read when path is empty", async () => {
-			const ctx = new SessionContext(makeConfig(), "cli")
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
 			const toolCallId = "tc-read-2"
 
 			handleToolExecutionStart(ctx, { toolCallId, toolName: "read", args: {} })
-			handleToolExecutionEnd(ctx, { toolCallId, isError: false })
+			handleToolExecutionEnd(ctx, piCtx, { toolCallId, isError: false })
 
 			ctx.flushLogBuffer()
 			await Promise.allSettled([...ctx.inFlight])
@@ -108,7 +111,8 @@ describe("handlers/tools", () => {
 
 	describe("write tool", () => {
 		it("emits tool_result and kimchi.file_written with lines_added, language, file_hash", async () => {
-			const ctx = new SessionContext(makeConfig(), "cli")
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
 			const toolCallId = "tc-write-1"
 
 			handleToolExecutionStart(ctx, {
@@ -116,7 +120,7 @@ describe("handlers/tools", () => {
 				toolName: "write",
 				args: { path: "/src/utils.py", content: "line1\nline2\nline3\n" },
 			})
-			handleToolExecutionEnd(ctx, { toolCallId, isError: false })
+			handleToolExecutionEnd(ctx, piCtx, { toolCallId, isError: false })
 
 			ctx.flushLogBuffer()
 			await Promise.allSettled([...ctx.inFlight])
@@ -140,7 +144,8 @@ describe("handlers/tools", () => {
 
 	describe("edit tool", () => {
 		it("emits tool_result and kimchi.file_edited with file_hash, language, lines_added, lines_deleted", async () => {
-			const ctx = new SessionContext(makeConfig(), "cli")
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
 			const toolCallId = "tc-edit-1"
 
 			handleToolExecutionStart(ctx, {
@@ -148,7 +153,7 @@ describe("handlers/tools", () => {
 				toolName: "edit",
 				args: { path: "/src/main.go", edits: [{ oldText: "a\nb\nc", newText: "a\nx\ny\nz\nc" }] },
 			})
-			handleToolExecutionEnd(ctx, { toolCallId, isError: false })
+			handleToolExecutionEnd(ctx, piCtx, { toolCallId, isError: false })
 
 			ctx.flushLogBuffer()
 			await Promise.allSettled([...ctx.inFlight])
@@ -173,11 +178,12 @@ describe("handlers/tools", () => {
 
 	describe("bash tool", () => {
 		it("emits tool_result and kimchi.command_executed", async () => {
-			const ctx = new SessionContext(makeConfig(), "cli")
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
 			const toolCallId = "tc-bash-1"
 
 			handleToolExecutionStart(ctx, { toolCallId, toolName: "bash", args: { command: "ls -la" } })
-			handleToolExecutionEnd(ctx, { toolCallId, isError: false })
+			handleToolExecutionEnd(ctx, piCtx, { toolCallId, isError: false })
 
 			ctx.flushLogBuffer()
 			await Promise.allSettled([...ctx.inFlight])
@@ -195,11 +201,12 @@ describe("handlers/tools", () => {
 		})
 
 		it("emits kimchi.error on tool failure", async () => {
-			const ctx = new SessionContext(makeConfig(), "cli")
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
 			const toolCallId = "tc-bash-err"
 
 			handleToolExecutionStart(ctx, { toolCallId, toolName: "bash", args: { command: "false" } })
-			handleToolExecutionEnd(ctx, {
+			handleToolExecutionEnd(ctx, piCtx, {
 				toolCallId,
 				isError: true,
 				result: { content: [{ type: "text", text: "command failed with exit code 1" }] },
@@ -221,7 +228,7 @@ describe("handlers/tools", () => {
 			expect(error).toBeDefined()
 			expect(error?.attrs.error_type).toBe("tool_failure")
 			expect(error?.attrs.error_message).toBe("command failed with exit code 1")
-			expect(error?.attrs.model).toBe("unknown")
+			expect(error?.attrs.model).toBe("claude-3-5-sonnet")
 		})
 	})
 
@@ -231,7 +238,8 @@ describe("handlers/tools", () => {
 
 	describe("cumulative metrics", () => {
 		it("accumulates commit count for bash git commit", () => {
-			const ctx = new SessionContext(makeConfig(), "cli")
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
 			const toolCallId = "tc-commit"
 
 			handleToolExecutionStart(ctx, {
@@ -239,13 +247,14 @@ describe("handlers/tools", () => {
 				toolName: "bash",
 				args: { command: 'git commit -m "test"' },
 			})
-			handleToolExecutionEnd(ctx, { toolCallId, isError: false })
+			handleToolExecutionEnd(ctx, piCtx, { toolCallId, isError: false })
 
 			expect(ctx.cumulative.commitCount).toBe(1)
 		})
 
 		it("accumulates LOC for edit tool", () => {
-			const ctx = new SessionContext(makeConfig(), "cli")
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
 			const toolCallId = "tc-edit-loc"
 
 			handleToolExecutionStart(ctx, {
@@ -253,7 +262,7 @@ describe("handlers/tools", () => {
 				toolName: "edit",
 				args: { path: "/src/app.ts", edits: [{ oldText: "a", newText: "a\nb\nc" }] },
 			})
-			handleToolExecutionEnd(ctx, { toolCallId, isError: false })
+			handleToolExecutionEnd(ctx, piCtx, { toolCallId, isError: false })
 
 			expect(ctx.cumulative.locByLanguage.TypeScript).toBeDefined()
 			expect(ctx.cumulative.locByLanguage.TypeScript.added).toBeGreaterThan(0)
@@ -266,26 +275,28 @@ describe("handlers/tools", () => {
 
 	describe("tool usage & duration tracking", () => {
 		it("accumulates tool usage count for each tool call", () => {
-			const ctx = new SessionContext(makeConfig(), "cli")
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
 
 			handleToolExecutionStart(ctx, { toolCallId: "b1", toolName: "bash", args: { command: "ls" } })
-			handleToolExecutionEnd(ctx, { toolCallId: "b1", isError: false })
+			handleToolExecutionEnd(ctx, piCtx, { toolCallId: "b1", isError: false })
 			handleToolExecutionStart(ctx, { toolCallId: "b2", toolName: "bash", args: { command: "pwd" } })
-			handleToolExecutionEnd(ctx, { toolCallId: "b2", isError: false })
+			handleToolExecutionEnd(ctx, piCtx, { toolCallId: "b2", isError: false })
 			handleToolExecutionStart(ctx, { toolCallId: "e1", toolName: "edit", args: { path: "a.ts" } })
-			handleToolExecutionEnd(ctx, { toolCallId: "e1", isError: false })
+			handleToolExecutionEnd(ctx, piCtx, { toolCallId: "e1", isError: false })
 
 			expect(ctx.cumulative.toolUsage.bash).toBe(2)
 			expect(ctx.cumulative.toolUsage.edit).toBe(1)
 		})
 
 		it("records tool start times and cleans them up on end", () => {
-			const ctx = new SessionContext(makeConfig(), "cli")
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
 
 			handleToolExecutionStart(ctx, { toolCallId: "b1", toolName: "bash", args: { command: "ls" } })
 			expect(ctx.toolStartTimes.has("b1")).toBe(true)
 
-			handleToolExecutionEnd(ctx, { toolCallId: "b1", isError: false })
+			handleToolExecutionEnd(ctx, piCtx, { toolCallId: "b1", isError: false })
 			expect(ctx.toolStartTimes.has("b1")).toBe(false)
 		})
 	})
@@ -318,13 +329,14 @@ describe("handlers/tools", () => {
 
 	describe("tool result size attrs", () => {
 		it("emits file_size_chars and read_is_truncated=false when no limit is set", async () => {
-			const ctx = new SessionContext(makeConfig(), "cli")
-			ctx.currentModel = "claude-3-5-sonnet"
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
+			// model set via createContext above
 			const toolCallId = "tc-read-size"
 
 			// No limit arg — full file returned, not truncated
 			handleToolExecutionStart(ctx, { toolCallId, toolName: "read", args: { path: "/src/app.ts" } })
-			handleToolExecutionEnd(ctx, {
+			handleToolExecutionEnd(ctx, piCtx, {
 				toolCallId,
 				isError: false,
 				result: { content: [{ text: "file contents here" }] },
@@ -340,13 +352,14 @@ describe("handlers/tools", () => {
 		})
 
 		it("emits read_is_truncated=true when a limit arg is set", async () => {
-			const ctx = new SessionContext(makeConfig(), "cli")
-			ctx.currentModel = "claude-3-5-sonnet"
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
+			// model set via createContext above
 			const toolCallId = "tc-read-limited"
 
 			// limit arg present — caller capped the lines, result may be truncated
 			handleToolExecutionStart(ctx, { toolCallId, toolName: "read", args: { path: "/src/app.ts", limit: 50 } })
-			handleToolExecutionEnd(ctx, {
+			handleToolExecutionEnd(ctx, piCtx, {
 				toolCallId,
 				isError: false,
 				result: { content: [{ text: "file contents here" }] },
@@ -361,11 +374,12 @@ describe("handlers/tools", () => {
 		})
 
 		it("emits bash_output_size_chars on command_executed", async () => {
-			const ctx = new SessionContext(makeConfig(), "cli")
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
 			const toolCallId = "tc-bash-size"
 
 			handleToolExecutionStart(ctx, { toolCallId, toolName: "bash", args: { command: "ls" } })
-			handleToolExecutionEnd(ctx, {
+			handleToolExecutionEnd(ctx, piCtx, {
 				toolCallId,
 				isError: false,
 				result: { content: [{ text: "file1.txt\nfile2.txt\n" }] },
@@ -380,11 +394,12 @@ describe("handlers/tools", () => {
 		})
 
 		it("emits tool_result_size_chars on tool_result", async () => {
-			const ctx = new SessionContext(makeConfig(), "cli")
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
 			const toolCallId = "tc-read-size-tr"
 
 			handleToolExecutionStart(ctx, { toolCallId, toolName: "read", args: { path: "/src/app.ts" } })
-			handleToolExecutionEnd(ctx, {
+			handleToolExecutionEnd(ctx, piCtx, {
 				toolCallId,
 				isError: false,
 				result: { content: [{ text: "hello world" }] },
@@ -405,9 +420,10 @@ describe("handlers/tools", () => {
 
 	describe("edge cases", () => {
 		it("ignores toolCallId not found in pendingArgs", async () => {
-			const ctx = new SessionContext(makeConfig(), "cli")
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
 			// No start call, just end — should not throw
-			handleToolExecutionEnd(ctx, { toolCallId: "unknown-id", isError: false })
+			handleToolExecutionEnd(ctx, piCtx, { toolCallId: "unknown-id", isError: false })
 
 			await Promise.allSettled([...ctx.inFlight])
 			expect(fetchMock).not.toHaveBeenCalled()

@@ -42,6 +42,7 @@ export function createContext(
 		sessionManager: {
 			getSessionId: () => "test-session",
 			getEntries: () => [],
+			getHeader: () => null,
 			...overrides?.sessionManager,
 		} as SessionManager,
 	} as unknown as ExtensionContext

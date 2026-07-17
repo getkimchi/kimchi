@@ -82,6 +82,7 @@ import { createAcpUIContext } from "./acp-ui-context.js"
 import { ADVERTISED_CAPABILITIES, CAPABILITIES_KEY } from "./capabilities.js"
 import { AVAILABLE_COMMANDS } from "./commands.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
+import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
 
 /**
  * Produces an unbound AgentSession for a newSession request. The ACP agent owns
@@ -192,6 +193,8 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	async initialize(request: InitializeRequest): Promise<InitializeResponse> {
+		setAcpClientInfo(request.clientInfo ?? { name: "unknown", version: "0.0.0" })
+
 		this.clientCapabilities = request.clientCapabilities
 
 		const authStorage = AuthStorage.create(join(this.agentDir, "auth.json"))
@@ -645,6 +648,7 @@ export class KimchiAcpAgent implements Agent {
 			await this.disposeSessionRecord(entry)
 		}
 		this.sessions.clear()
+		resetAcpClientInfo()
 	}
 
 	private async closeSessionRecord(sessionId: string): Promise<void> {

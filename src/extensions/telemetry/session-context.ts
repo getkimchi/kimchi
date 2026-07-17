@@ -1,12 +1,17 @@
 import crypto from "node:crypto"
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { getMe } from "../../api/me.js"
 import type { TelemetryConfig } from "../../config.js"
+import { IS_ACP_MODE } from "../../modes/acp/state.js"
 import { getOsMetadata } from "../../utils/os-metadata.js"
 import { getActiveFerment } from "../ferment/index.js"
 import { type CumulativeState, collectMetrics, createCumulativeState } from "./accumulator.js"
+import { getAcpAttributes, getPiSessionAttributes } from "./handlers/utils.js"
 import { toAttrs } from "./helpers.js"
 import { getSessionType } from "./session-type.js"
 import { buildLogRecord, type LogRecord, sendLogBatch, sendMetrics } from "./transport.js"
+
+export type TelemetryAttributes = Record<string, string | number | boolean>
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -18,44 +23,46 @@ export const LOG_BATCH_FLUSH_INTERVAL_MS = 5_000
 export const LOG_BATCH_MAX_SIZE = 20
 
 // ---------------------------------------------------------------------------
-// Process-level root session ID + shared accumulators
+// Process-level ID + shared accumulators
 //
-// All agents (main + sub-agents) in the same process share rootSessionId so
+// All agents (main + sub-agents) in the same process share processId so
 // that telemetry rolls up under one session in the backend.
 //
-// Accumulators are keyed by rootSessionId (not per-instance) so that every
+// Accumulators are keyed by processId (not per-session) so that every
 // flush sends the monotonically increasing total across ALL agents. This is
 // required because the backend uses ReplacingMergeTree: rows with the same
 // ORDER BY key are deduplicated and the latest write wins.
 // ---------------------------------------------------------------------------
 
-let rootSessionId: string | undefined
+let processId: string | undefined
 const sharedAccumulators = new Map<string, CumulativeState>()
 
-function getOrCreateAccumulator(sessionId: string): CumulativeState {
-	let acc = sharedAccumulators.get(sessionId)
+function getOrCreateAccumulator(processId: string): CumulativeState {
+	let acc = sharedAccumulators.get(processId)
 	if (!acc) {
 		acc = createCumulativeState()
-		sharedAccumulators.set(sessionId, acc)
+		sharedAccumulators.set(processId, acc)
 	}
 	return acc
 }
 
 /** @internal — exposed for testing only */
 export function _resetSharedAccumulators(): void {
-	if (rootSessionId) sharedAccumulators.delete(rootSessionId)
-	rootSessionId = undefined
+	if (processId) sharedAccumulators.delete(processId)
+	processId = undefined
 }
 
 // ---------------------------------------------------------------------------
-// SessionContext — per-session telemetry state
+// SessionContext — process-level telemetry state
 // ---------------------------------------------------------------------------
 
-export class SessionContext {
+export class TelemetryContext {
 	config: TelemetryConfig
-	sessionId: string
-	sessionStartMs: number
-	source: string
+	processId: string
+	processStartMs: number
+	/**
+	 * Current model, updated from message events; used for domain events that lack a pi context.
+	 */
 	currentModel = "unknown"
 	/**
 	 * Current turn index, updated on each turn_start event.
@@ -88,14 +95,13 @@ export class SessionContext {
 	userEmailReady: Promise<void>
 	private resolveUserEmailReady!: () => void
 
-	constructor(config: TelemetryConfig, source: string) {
+	constructor(config: TelemetryConfig) {
 		this.config = config
-		this.source = source
 		this.osMetadata = getOsMetadata()
-		if (!rootSessionId) rootSessionId = crypto.randomUUID()
-		this.sessionId = rootSessionId
-		this.sessionStartMs = Date.now()
-		this.cumulative = getOrCreateAccumulator(this.sessionId)
+		if (!processId) processId = crypto.randomUUID()
+		this.processId = processId
+		this.processStartMs = Date.now()
+		this.cumulative = getOrCreateAccumulator(this.processId)
 		this.userEmailReady = new Promise<void>((resolve) => {
 			this.resolveUserEmailReady = resolve
 		})
@@ -106,11 +112,10 @@ export class SessionContext {
 		return this.cumulative.sessionStartNano
 	}
 
-	reset(source: string): void {
-		this.source = source
-		if (!rootSessionId) rootSessionId = crypto.randomUUID()
-		this.sessionId = rootSessionId
-		this.sessionStartMs = Date.now()
+	reset(): void {
+		if (!processId) processId = crypto.randomUUID()
+		this.processId = processId
+		this.processStartMs = Date.now()
 		this.currentModel = "unknown"
 		this.turnIndex = 0
 		this.sentMessages.clear()
@@ -119,7 +124,7 @@ export class SessionContext {
 		this.toolStartTimes.clear()
 		this.lastSessionType = undefined
 		this.compactionCount = 0
-		this.cumulative = getOrCreateAccumulator(this.sessionId)
+		this.cumulative = getOrCreateAccumulator(this.processId)
 		this.inFlight.clear()
 		this.shuttingDown = false
 		this.logBuffer = []
@@ -145,46 +150,59 @@ export class SessionContext {
 	 */
 	emitWithIds(
 		eventName: string,
-		ids: { ferment_id: string; phase_id?: string; step_id?: string },
-		attrs: Record<string, string | number | boolean>,
+		attrs: TelemetryAttributes & { ferment_id: string; phase_id?: string; step_id?: string },
+		ctx?: ExtensionContext,
 	): void {
-		const sessionType = getSessionType()
-		const merged: Record<string, string | number | boolean> = {
-			source: this.source,
-			session_type: sessionType,
+		const { session_type, source, ...commonAttrs } = this.getCommonAttributes(ctx)
+		const merged: TelemetryAttributes = {
+			session_type,
+			source,
 			...this.osMetadata,
-			...ids,
 			...attrs,
 			"user.account_uuid": this.userId ?? "",
+			...commonAttrs,
 		}
-		this.enqueueLogRecord(buildLogRecord(this.sessionId, eventName, toAttrs(merged)))
+		this.enqueueLogRecord(buildLogRecord(this.processId, eventName, toAttrs(merged)))
 	}
 
-	emit(eventName: string, attrs: Record<string, string | number | boolean>): void {
-		const sessionType = getSessionType()
+	emit(eventName: string, attrs?: TelemetryAttributes, ctx?: ExtensionContext): void {
 		const ferment = getActiveFerment()
+		const { session_type, source, ...commonAttrs } = this.getCommonAttributes(ctx)
 
 		// Detect and emit session.type_changed when the type transitions
-		if (this.lastSessionType !== undefined && sessionType !== this.lastSessionType) {
+		if (this.lastSessionType !== undefined && session_type !== this.lastSessionType) {
 			const changeAttrs = toAttrs({
-				session_type: sessionType,
+				session_type,
 				previous_session_type: this.lastSessionType,
-				source: this.source,
+				source,
 				ferment_id: ferment?.id ?? "",
 			})
-			this.logBuffer.push(buildLogRecord(this.sessionId, "session.type_changed", changeAttrs))
+			this.logBuffer.push(buildLogRecord(this.processId, "session.type_changed", changeAttrs))
 		}
-		this.lastSessionType = sessionType
+		this.lastSessionType = session_type
 
-		const merged = {
+		const merged: TelemetryAttributes = {
 			...attrs,
 			...this.osMetadata,
-			source: this.source,
-			session_type: sessionType,
+			session_type,
+			source,
 			ferment_id: ferment?.id ?? "",
 			"user.account_uuid": this.userId ?? "",
+			...commonAttrs,
 		}
-		this.enqueueLogRecord(buildLogRecord(this.sessionId, eventName, toAttrs(merged)))
+		this.enqueueLogRecord(buildLogRecord(this.processId, eventName, toAttrs(merged)))
+	}
+
+	private getCommonAttributes(
+		ctx?: ExtensionContext,
+	): TelemetryAttributes & { session_type: "ferment" | "coding"; source: "cli" | "acp"; model: string } {
+		return {
+			session_type: getSessionType(),
+			source: IS_ACP_MODE ? "acp" : "cli",
+			model: this.currentModel,
+			...getAcpAttributes(),
+			...(ctx ? getPiSessionAttributes(ctx) : {}),
+		}
 	}
 
 	/** Append a pre-built log record to the buffer and schedule/trigger a flush. */
@@ -218,7 +236,7 @@ export class SessionContext {
 				this.userEmailReady.then(() =>
 					sendMetrics(
 						this.config,
-						this.sessionId,
+						this.processId,
 						metrics.map((m) => ({
 							...m,
 							attrs: {

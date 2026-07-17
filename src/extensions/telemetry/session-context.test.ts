@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { TelemetryConfig } from "../../config.js"
 import * as osMetadata from "../../utils/os-metadata.js"
-import { _resetSharedAccumulators, SessionContext } from "./session-context.js"
+import { _resetSharedAccumulators, TelemetryContext } from "./session-context.js"
 
 vi.mock("../../api/me.js", () => ({
 	getMe: vi.fn().mockResolvedValue({ id: "test-user", email: "test@example.com" }),
@@ -44,7 +44,7 @@ describe("SessionContext", () => {
 		const { getActiveFerment } = await import("../ferment/index.js")
 		vi.mocked(getActiveFerment).mockReturnValue(undefined)
 
-		const ctx = new SessionContext(makeConfig(), "cli")
+		const ctx = new TelemetryContext(makeConfig())
 		ctx.emit("test.event", { custom: "value", count: 42 })
 		ctx.flushLogBuffer()
 
@@ -69,7 +69,7 @@ describe("SessionContext", () => {
 		const { getActiveFerment } = await import("../ferment/index.js")
 		vi.mocked(getActiveFerment).mockReturnValue(undefined)
 
-		const ctx = new SessionContext(makeConfig(), "cli")
+		const ctx = new TelemetryContext(makeConfig())
 		ctx.emit("test.event", { custom: "value" })
 		ctx.flushLogBuffer()
 
@@ -105,7 +105,7 @@ describe("SessionContext", () => {
 		const { getActiveFerment } = await import("../ferment/index.js")
 		vi.mocked(getActiveFerment).mockReturnValue(undefined)
 
-		const ctx = new SessionContext(makeConfig(), "cli")
+		const ctx = new TelemetryContext(makeConfig())
 		ctx.emit("test.event", { custom: "value" })
 		ctx.flushLogBuffer()
 		await Promise.allSettled([...ctx.inFlight])
@@ -125,8 +125,8 @@ describe("SessionContext", () => {
 	})
 
 	it("emitWithIds includes all four OS metadata keys", async () => {
-		const ctx = new SessionContext(makeConfig(), "cli")
-		ctx.emitWithIds("ferment.started", { ferment_id: "f-123" }, { phase: "plan" })
+		const ctx = new TelemetryContext(makeConfig())
+		ctx.emitWithIds("ferment.started", { ferment_id: "f-123" })
 		ctx.flushLogBuffer()
 
 		await Promise.allSettled([...ctx.inFlight])
@@ -150,7 +150,7 @@ describe("SessionContext", () => {
 		const { getActiveFerment } = await import("../ferment/index.js")
 		vi.mocked(getActiveFerment).mockReturnValue(undefined)
 
-		const ctx = new SessionContext(makeConfig(), "cli")
+		const ctx = new TelemetryContext(makeConfig())
 		ctx.emit("test.event", {})
 		ctx.flushLogBuffer()
 		await Promise.allSettled([...ctx.inFlight])
@@ -173,7 +173,7 @@ describe("SessionContext", () => {
 			.mockReturnValueOnce({ id: "f-1" } as never) // emit 2, call 1
 			.mockReturnValueOnce({ id: "f-1" } as never) // emit 2, call 2
 
-		const ctx = new SessionContext(makeConfig(), "cli")
+		const ctx = new TelemetryContext(makeConfig())
 		ctx.emit("event.first", {})
 		ctx.emit("event.second", {})
 		ctx.flushLogBuffer()
@@ -202,7 +202,7 @@ describe("SessionContext", () => {
 		const { getActiveFerment } = await import("../ferment/index.js")
 		vi.mocked(getActiveFerment).mockReturnValue(undefined)
 
-		const ctx = new SessionContext(makeConfig(), "cli")
+		const ctx = new TelemetryContext(makeConfig())
 		ctx.emit("event.a", {})
 		ctx.emit("event.b", {})
 		ctx.flushLogBuffer()
@@ -216,7 +216,7 @@ describe("SessionContext", () => {
 	})
 
 	it("emit buffers records instead of sending immediately", () => {
-		const ctx = new SessionContext(makeConfig(), "cli")
+		const ctx = new TelemetryContext(makeConfig())
 		ctx.emit("event.a", {})
 		ctx.emit("event.b", {})
 		expect(globalThis.fetch).not.toHaveBeenCalled()
@@ -224,7 +224,7 @@ describe("SessionContext", () => {
 	})
 
 	it("flushLogBuffer sends all buffered records in one POST", async () => {
-		const ctx = new SessionContext(makeConfig(), "cli")
+		const ctx = new TelemetryContext(makeConfig())
 		ctx.emit("event.a", {})
 		ctx.emit("event.b", {})
 		ctx.flushLogBuffer()
@@ -242,7 +242,7 @@ describe("SessionContext", () => {
 	})
 
 	it("auto-flushes when buffer reaches LOG_BATCH_MAX_SIZE", async () => {
-		const ctx = new SessionContext(makeConfig(), "cli")
+		const ctx = new TelemetryContext(makeConfig())
 		for (let i = 0; i < 20; i++) {
 			ctx.emit(`event.${i}`, {})
 		}
@@ -258,7 +258,7 @@ describe("SessionContext", () => {
 
 	it("timer-based flush sends buffered records after interval", async () => {
 		vi.useFakeTimers()
-		const ctx = new SessionContext(makeConfig(), "cli")
+		const ctx = new TelemetryContext(makeConfig())
 		ctx.emit("event.a", {})
 		expect(globalThis.fetch).not.toHaveBeenCalled()
 
@@ -270,7 +270,7 @@ describe("SessionContext", () => {
 	})
 
 	it("drain flushes the log buffer", async () => {
-		const ctx = new SessionContext(makeConfig(), "cli")
+		const ctx = new TelemetryContext(makeConfig())
 		ctx.emit("event.a", {})
 		expect(globalThis.fetch).not.toHaveBeenCalled()
 
@@ -280,42 +280,8 @@ describe("SessionContext", () => {
 		expect(ctx.logBuffer).toHaveLength(0)
 	})
 
-	it("reset clears log buffer", () => {
-		const ctx = new SessionContext(makeConfig(), "cli")
-		ctx.emit("event.a", {})
-		expect(ctx.logBuffer).toHaveLength(1)
-
-		ctx.reset("vscode")
-		expect(ctx.logBuffer).toHaveLength(0)
-	})
-
-	it("turnIndex resets to 0 on ctx.reset()", () => {
-		const ctx = new SessionContext(makeConfig(), "cli")
-		ctx.turnIndex = 5
-		ctx.reset("cli")
-		expect(ctx.turnIndex).toBe(0)
-	})
-
-	it("reset preserves rootSessionId and clears per-instance state", () => {
-		const ctx = new SessionContext(makeConfig(), "cli")
-		const originalId = ctx.sessionId
-
-		ctx.sentMessages.add("msg-1")
-		ctx.pendingArgs.set("msg-2", { toolName: "bash", args: {} })
-		ctx.messageStartTimes.set("msg-3", Date.now())
-
-		ctx.reset("vscode")
-
-		expect(ctx.sessionId).toBe(originalId)
-		expect(ctx.source).toBe("vscode")
-		expect(ctx.sentMessages.size).toBe(0)
-		expect(ctx.pendingArgs.size).toBe(0)
-		expect(ctx.messageStartTimes.size).toBe(0)
-		expect(ctx.shuttingDown).toBe(false)
-	})
-
 	it("track adds and removes promises from inFlight", async () => {
-		const ctx = new SessionContext(makeConfig({ enabled: false }), "cli")
+		const ctx = new TelemetryContext(makeConfig({ enabled: false }))
 
 		let resolver: (() => void) | undefined
 		const p = new Promise<void>((resolve) => {
@@ -336,7 +302,7 @@ describe("SessionContext", () => {
 	})
 
 	it("track is a no-op when shuttingDown", () => {
-		const ctx = new SessionContext(makeConfig({ enabled: false }), "cli")
+		const ctx = new TelemetryContext(makeConfig({ enabled: false }))
 		ctx.shuttingDown = true
 
 		const p = new Promise<void>(() => {})
@@ -345,7 +311,7 @@ describe("SessionContext", () => {
 	})
 
 	it("drain sets shuttingDown to true", async () => {
-		const ctx = new SessionContext(makeConfig({ enabled: false }), "cli")
+		const ctx = new TelemetryContext(makeConfig({ enabled: false }))
 		expect(ctx.shuttingDown).toBe(false)
 
 		await ctx.drain()
@@ -353,7 +319,7 @@ describe("SessionContext", () => {
 	})
 
 	it("drain clears messageStartTimes and stops flush timer", async () => {
-		const ctx = new SessionContext(makeConfig({ enabled: false }), "cli")
+		const ctx = new TelemetryContext(makeConfig({ enabled: false }))
 		ctx.messageStartTimes.set("msg-1", Date.now())
 		ctx.startFlushTimer()
 		expect(ctx.flushTimer).toBeDefined()
@@ -365,30 +331,19 @@ describe("SessionContext", () => {
 	})
 
 	it("two instances share the same cumulative accumulator", () => {
-		const ctx1 = new SessionContext(makeConfig(), "cli")
-		const ctx2 = new SessionContext(makeConfig(), "cli")
+		const ctx1 = new TelemetryContext(makeConfig())
+		const ctx2 = new TelemetryContext(makeConfig())
 
-		expect(ctx1.sessionId).toBe(ctx2.sessionId)
+		expect(ctx1.processId).toBe(ctx2.processId)
 		expect(ctx1.cumulative).toBe(ctx2.cumulative)
 
 		ctx1.cumulative.commitCount += 3
 		expect(ctx2.cumulative.commitCount).toBe(3)
 	})
 
-	it("reset preserves shared accumulator data from other instances", () => {
-		const ctx1 = new SessionContext(makeConfig(), "cli")
-		const ctx2 = new SessionContext(makeConfig(), "cli")
-
-		ctx1.cumulative.tokensByModel["test-model"] = { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 }
-
-		ctx2.reset("cli")
-
-		expect(ctx2.cumulative.tokensByModel["test-model"]?.output).toBe(50)
-	})
-
 	it("shared accumulators produce combined metrics on flush", async () => {
-		const ctx1 = new SessionContext(makeConfig(), "cli")
-		const ctx2 = new SessionContext(makeConfig(), "cli")
+		const ctx1 = new TelemetryContext(makeConfig())
+		const ctx2 = new TelemetryContext(makeConfig())
 
 		ctx1.cumulative.tokensByModel.m1 = { input: 100, output: 200, cacheRead: 0, cacheWrite: 0 }
 		ctx2.cumulative.tokensByModel.m1.output += 50
@@ -419,7 +374,7 @@ describe("SessionContext", () => {
 		const { getMe } = await import("../../api/me.js")
 		vi.mocked(getMe).mockResolvedValue({ id: "u1", email: "alice@test.com" })
 
-		const ctx = new SessionContext(makeConfig({ apiKey: "my-key" }), "cli")
+		const ctx = new TelemetryContext(makeConfig({ apiKey: "my-key" }))
 		await ctx.userEmailReady
 
 		expect(ctx.userEmail).toBe("alice@test.com")
@@ -441,14 +396,14 @@ describe("SessionContext", () => {
 		const { getMe } = await import("../../api/me.js")
 		vi.mocked(getMe).mockRejectedValue(new Error("network failure"))
 
-		const ctx = new SessionContext(makeConfig({ apiKey: "my-key" }), "cli")
+		const ctx = new TelemetryContext(makeConfig({ apiKey: "my-key" }))
 		await ctx.userEmailReady
 
 		expect(ctx.userEmail).toBeUndefined()
 	})
 
 	it("resolves userEmailReady immediately when no apiKey", async () => {
-		const ctx = new SessionContext(makeConfig({ apiKey: "" }), "cli")
+		const ctx = new TelemetryContext(makeConfig({ apiKey: "" }))
 		await ctx.userEmailReady
 		expect(ctx.userEmail).toBeUndefined()
 	})
@@ -457,7 +412,7 @@ describe("SessionContext", () => {
 		const { getMe } = await import("../../api/me.js")
 		vi.mocked(getMe).mockResolvedValue({ id: "user-uuid-123" })
 
-		const ctx = new SessionContext(makeConfig({ apiKey: "key" }), "cli")
+		const ctx = new TelemetryContext(makeConfig({ apiKey: "key" }))
 		await ctx.userEmailReady
 
 		ctx.emit("test.event", { foo: "bar" })
@@ -474,14 +429,5 @@ describe("SessionContext", () => {
 			),
 		)
 		expect(attrMap["user.account_uuid"]).toBe("user-uuid-123")
-	})
-
-	it("compactionCount resets to 0 on ctx.reset()", () => {
-		const ctx = new SessionContext(makeConfig(), "cli")
-		ctx.compactionCount = 3
-
-		ctx.reset("cli")
-
-		expect(ctx.compactionCount).toBe(0)
 	})
 })

@@ -1,24 +1,43 @@
-import type { SessionContext } from "../session-context.js"
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
+import type { TelemetryContext } from "../session-context.js"
 
-export function handleSessionInitialized(ctx: SessionContext, initialModel?: string): void {
-	ctx.reset(ctx.source)
-	if (initialModel) ctx.currentModel = initialModel
-	ctx.startFlushTimer()
+export function handleSessionStart(telemetry: TelemetryContext, ctx: ExtensionContext): void {
+	telemetry.reset()
+	if (ctx.model?.id) telemetry.currentModel = ctx.model.id
+	telemetry.startFlushTimer()
 }
 
-export function emitSessionStartEvent(ctx: SessionContext): void {
-	ctx.emit("session.start", { model: ctx.currentModel })
+export function emitSessionStartEvent(telemetry: TelemetryContext, ctx: ExtensionContext): void {
+	telemetry.emit("session.start", {}, ctx)
 }
 
-export async function handleSessionShutdown(ctx: SessionContext, event: { reason?: string }): Promise<void> {
-	const endedBy = event?.reason ?? "unknown"
-	ctx.emit("session.end", {
-		model: ctx.currentModel,
-		duration_ms: Date.now() - ctx.sessionStartMs,
-		ended_by: endedBy,
-		compaction_count: ctx.compactionCount,
-		turn_index: ctx.turnIndex,
-	})
-	ctx.flushLogBuffer()
-	await ctx.drain()
+export async function handleSessionShutdown(
+	telemetry: TelemetryContext,
+	ctx: ExtensionContext,
+	event: { reason?: string },
+): Promise<void> {
+	telemetry.emit(
+		"session.end",
+		{
+			duration_ms: Date.now() - telemetry.processStartMs,
+			ended_by: event?.reason ?? "unknown",
+			compaction_count: telemetry.compactionCount,
+			turn_index: telemetry.turnIndex,
+		},
+		ctx,
+	)
+	telemetry.flushLogBuffer()
+	await telemetry.drain()
+}
+
+export function handleSessionCompact(telemetry: TelemetryContext, ctx: ExtensionContext): void {
+	telemetry.compactionCount++
+	telemetry.emit(
+		"session.compacted",
+		{
+			compaction_count: telemetry.compactionCount,
+			turn_index: telemetry.turnIndex,
+		},
+		ctx,
+	)
 }
