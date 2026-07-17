@@ -4,33 +4,39 @@ import { join } from "node:path"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { FermentEventStore } from "../../ferment/event-store.js"
-import type { Ferment } from "../../ferment/types.js"
+import type { Ferment, ScopingAnswer } from "../../ferment/types.js"
+import { clearAllLifecycleGuards, maybeInjectLifecycleObligationGuard } from "./lifecycle-obligation-guard.js"
 import {
 	hasScopingProgressTool,
 	maybeInjectFermentStopNudge,
-	maybeInjectReactiveContinuationNudge,
 	maybeInjectScopingProgressNudge,
 	maybeInjectScopingStopNudge,
 	onFermentToolCallSeen,
 	onStepCompleted,
 	resetAllFermentStopNudgeCounts,
-	resetAllReactiveContinuationNudgeCounts,
 	resetScopingStopNudgeCount,
 } from "./nudge.js"
 import { createDefaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import { scheduleNextFermentAction } from "./scheduler.js"
 import { getActive, MAX_SCOPING_EXPLORE_TURNS, resetScopingExploreTurns, setActive } from "./state.js"
+import { filterSentMessages } from "./test-helpers.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
+
+const FIXED_TIMESTAMP = "2026-01-01T00:00:00.000Z"
+
+function confirmedAnswer(answer: string): ScopingAnswer {
+	return { answer, confirmedAt: FIXED_TIMESTAMP }
+}
 
 function createPi(): ExtensionAPI {
 	return {
 		appendEntry: vi.fn(),
 		sendMessage: vi.fn(),
+		events: { emit: vi.fn() },
 	} as unknown as ExtensionAPI
 }
 
 function makeDraftFerment(overrides: Partial<Ferment> = {}): Ferment {
-	const now = "2026-01-01T00:00:00.000Z"
 	return {
 		id: "ferment-1",
 		name: "Injected Nudge",
@@ -40,15 +46,15 @@ function makeDraftFerment(overrides: Partial<Ferment> = {}): Ferment {
 		phases: [],
 		decisions: [],
 		memories: [],
-		createdAt: now,
-		updatedAt: now,
+		createdAt: FIXED_TIMESTAMP,
+		updatedAt: FIXED_TIMESTAMP,
 		...overrides,
 	}
 }
 
 afterEach(() => {
 	setActive(undefined)
-	resetAllReactiveContinuationNudgeCounts()
+	clearAllLifecycleGuards()
 	resetAllFermentStopNudgeCounts()
 	resetScopingExploreTurns("ferment-1")
 })
@@ -81,100 +87,46 @@ describe("ferment nudges", () => {
 		expect(setActiveSpy).toHaveBeenCalledWith(expect.objectContaining({ id: scoped.ferment.id }))
 		expect(getActive()).toBeUndefined()
 	})
+})
 
-	it("reactively nudges after a stalled assistant turn", () => {
-		const pi = createPi()
-		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-reactive-nudge-test-")))
-		const runtime: FermentRuntime = {
-			...createDefaultFermentRuntime(),
-			getStorage: () => storage,
-			getActiveId: () => "ferment-1",
-			getContinuationPolicy: () => "automated",
-			isAutomatedContinuationEnabled: () => true,
-		}
-		const applyAndPersist = createApplyAndPersist(runtime)
-		const draft = storage.create("Reactive Nudge")
-		const scoped = applyAndPersist(draft.id, {
-			type: "scope",
-			goal: "Goal",
-			successCriteria: ["Works"],
-			constraints: [],
-			phases: [{ name: "Phase", goal: "Build", steps: [{ description: "Do it" }] }],
-		})
-		if (!scoped.ok) throw new Error(scoped.error.message)
-		runtime.getActiveId = () => draft.id
+// ─── Lifecycle obligation guard (replaces reactive continuation nudge) ────────
 
-		maybeInjectReactiveContinuationNudge(pi, runtime)
-
-		expect(pi.sendMessage).toHaveBeenCalledWith(
-			expect.objectContaining({
-				customType: "ferment_continuation_nudge",
-				content: [expect.objectContaining({ text: expect.stringContaining("activate_ferment_phase") })],
-			}),
-			{ triggerTurn: true, deliverAs: "steer" },
-		)
-	})
-
-	it("delivers the current action before later state changes can stale a queued follow-up", () => {
-		const delivered: Array<{ content?: Array<{ text?: string }> }> = []
-		const queuedFollowUps: Array<{ content?: Array<{ text?: string }> }> = []
-		const pi = {
-			appendEntry: vi.fn(),
-			sendMessage: vi.fn((message, options) => {
-				if (options?.deliverAs === "followUp") queuedFollowUps.push(message)
-				else delivered.push(message)
-			}),
-		} as unknown as ExtensionAPI
-		let current = makeDraftFerment({
+describe("maybeInjectLifecycleObligationGuard", () => {
+	function makePlannedFerment(overrides: Partial<Ferment> = {}): Ferment {
+		return makeDraftFerment({
 			status: "planned",
+			scoping: {
+				goal: confirmedAnswer("Goal"),
+				criteria: confirmedAnswer("Criteria"),
+				constraints: confirmedAnswer("Constraints"),
+				phases: confirmedAnswer("1 phase"),
+			},
 			phases: [{ id: "phase-1", index: 1, name: "Phase", goal: "Build", status: "planned", steps: [] }],
+			...overrides,
 		})
-		const runtime: FermentRuntime = {
+	}
+
+	function makeRuntime(ferment: Ferment, automated = true): FermentRuntime {
+		const events = { emit: vi.fn() } as unknown as FermentRuntime["events"]
+		return {
 			...createDefaultFermentRuntime(),
-			getActiveId: () => current.id,
+			events,
+			getActiveId: () => ferment.id,
 			getStorage: () =>
 				({
-					get: () => current,
-				}) as unknown as ReturnType<FermentRuntime["getStorage"]>,
-			getContinuationPolicy: () => "automated",
-			isAutomatedContinuationEnabled: () => true,
+					get: () => ferment,
+				}) as unknown as FermentRuntime["getStorage"] extends () => infer T ? T : never,
+			getContinuationPolicy: () => (automated ? "automated" : "manual"),
+			isAutomatedContinuationEnabled: () => automated,
 		}
+	}
 
-		maybeInjectReactiveContinuationNudge(pi, runtime)
-
-		// A follow-up is drained only after the current agent turn. The ferment may
-		// advance before then, making its eagerly-rendered action stale.
-		current = {
-			...current,
-			status: "running",
-			activePhaseId: "phase-1",
-			phases: [{ ...current.phases[0], status: "active" }],
-		}
-		expect(queuedFollowUps).toEqual([])
-		expect(delivered[0]?.content?.[0]?.text).toContain("activate_ferment_phase")
-	})
-
-	it("reactively nudges an automated ferment across a completed phase boundary", () => {
+	it("nudges after a stalled assistant turn under automated policy", () => {
 		const pi = createPi()
-		const boundary = makeDraftFerment({
-			status: "planned",
-			phases: [
-				{ id: "phase-1", index: 1, name: "Done", goal: "Build", status: "completed", steps: [] },
-				{ id: "phase-2", index: 2, name: "Next", goal: "Continue", status: "planned", steps: [] },
-			],
-		})
-		const runtime: FermentRuntime = {
-			...createDefaultFermentRuntime(),
-			getActiveId: () => boundary.id,
-			getStorage: () =>
-				({
-					get: () => boundary,
-				}) as unknown as ReturnType<FermentRuntime["getStorage"]>,
-			getContinuationPolicy: () => "automated",
-			isAutomatedContinuationEnabled: () => true,
-		}
+		const ferment = makePlannedFerment()
+		const runtime = makeRuntime(ferment)
 
-		maybeInjectReactiveContinuationNudge(pi, runtime)
+		maybeInjectLifecycleObligationGuard(pi, runtime)
 
 		expect(pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -185,10 +137,20 @@ describe("ferment nudges", () => {
 		)
 	})
 
-	it("does not reactively nudge after the ferment is complete", () => {
+	it("does not nudge under manual (interactive) policy", () => {
+		const pi = createPi()
+		const ferment = makePlannedFerment()
+		const runtime = makeRuntime(ferment, false)
+
+		maybeInjectLifecycleObligationGuard(pi, runtime)
+
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("does not nudge after the ferment is complete", () => {
 		const pi = createPi()
 		const setActiveSpy = vi.fn()
-		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-reactive-complete-test-")))
+		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-guard-complete-test-")))
 		const runtime: FermentRuntime = {
 			...createDefaultFermentRuntime(),
 			getStorage: () => storage,
@@ -219,7 +181,7 @@ describe("ferment nudges", () => {
 		if (!completed.ok) throw new Error(completed.error.message)
 		runtime.getActiveId = () => draft.id
 
-		maybeInjectReactiveContinuationNudge(pi, runtime)
+		maybeInjectLifecycleObligationGuard(pi, runtime)
 
 		expect(pi.sendMessage).not.toHaveBeenCalled()
 		expect(setActiveSpy).toHaveBeenCalledWith(undefined)
@@ -254,133 +216,149 @@ describe("ferment nudges", () => {
 		expect(setActiveSpy).toHaveBeenCalledWith(undefined)
 	})
 
-	it("does not count idle reactive checks toward the loop guard", () => {
+	it("does not count idle actions toward the retry budget", () => {
 		const pi = createPi()
-		const readyToComplete = makeDraftFerment({
-			status: "planned",
+		// All phases complete → engine returns complete_ferment, but with
+		// treatCompleteFermentAsContinue the guard treats it as continuable.
+		// A planned ferment with no phases → engine returns scope, which is continuable.
+		// Use a ferment where decideContinuation returns "idle" (no action):
+		// a complete ferment has no action.
+		const readyToComplete = makePlannedFerment({
+			status: "complete",
 			phases: [{ id: "phase-1", index: 1, name: "Phase", goal: "Build", status: "completed", steps: [] }],
 		})
-		const runtime: FermentRuntime = {
-			...createDefaultFermentRuntime(),
-			getActiveId: () => readyToComplete.id,
-			getStorage: () =>
-				({
-					get: () => readyToComplete,
-				}) as unknown as ReturnType<FermentRuntime["getStorage"]>,
-			getContinuationPolicy: () => "automated",
-			isAutomatedContinuationEnabled: () => true,
-		}
+		const runtime = makeRuntime(readyToComplete)
 
-		maybeInjectReactiveContinuationNudge(pi, runtime)
-		maybeInjectReactiveContinuationNudge(pi, runtime)
-		maybeInjectReactiveContinuationNudge(pi, runtime)
-		maybeInjectReactiveContinuationNudge(pi, runtime)
+		maybeInjectLifecycleObligationGuard(pi, runtime)
+		maybeInjectLifecycleObligationGuard(pi, runtime)
+		maybeInjectLifecycleObligationGuard(pi, runtime)
+		maybeInjectLifecycleObligationGuard(pi, runtime)
 
 		expect(pi.sendMessage).not.toHaveBeenCalled()
-		expect(pi.appendEntry).not.toHaveBeenCalledWith(
-			"ferment_breadcrumb",
-			expect.objectContaining({ text: expect.stringContaining("Continuation nudge suppressed") }),
+	})
+
+	it("schedules a second retry for the same obligation before exhausting", () => {
+		const pi = createPi()
+		const ferment = makePlannedFerment()
+		const runtime = makeRuntime(ferment)
+
+		maybeInjectLifecycleObligationGuard(pi, runtime) // retry 1
+		maybeInjectLifecycleObligationGuard(pi, runtime) // retry 2
+
+		// Both calls should have scheduled a continuation nudge (steer).
+		const calls = filterSentMessages(vi.mocked(pi.sendMessage), "ferment_continuation_nudge")
+		expect(calls.length).toBe(2)
+	})
+
+	it("makes the second retry stricter than the first", () => {
+		const pi = createPi()
+		const ferment = makePlannedFerment()
+		const runtime = makeRuntime(ferment)
+
+		maybeInjectLifecycleObligationGuard(pi, runtime)
+		maybeInjectLifecycleObligationGuard(pi, runtime)
+
+		const calls = filterSentMessages(vi.mocked(pi.sendMessage), "ferment_continuation_nudge")
+		const firstText = calls[0]?.content?.[0]?.text
+		const secondText = calls[1]?.content?.[0]?.text
+		expect(firstText).toContain("previous turn stopped without a tool call")
+		expect(secondText).toContain("retry 2/2")
+		expect(secondText).toContain("Do not respond with an announcement or summary")
+		expect(secondText).not.toBe(firstText)
+	})
+
+	it("emits an exhaustion diagnostic on the third stop and suppresses on the fourth", () => {
+		const pi = createPi()
+		const ferment = makePlannedFerment()
+		const runtime = makeRuntime(ferment)
+
+		maybeInjectLifecycleObligationGuard(pi, runtime) // retry 1
+		maybeInjectLifecycleObligationGuard(pi, runtime) // retry 2
+		const third = maybeInjectLifecycleObligationGuard(pi, runtime) // exhausted, report
+		const fourth = maybeInjectLifecycleObligationGuard(pi, runtime) // exhausted, no report
+
+		expect(third).toBe(true)
+		expect(fourth).toBe(true) // guard acted (suppressed), but no new message
+
+		// The third call should have emitted a visible breadcrumb + telemetry
+		const breadcrumbCalls = filterSentMessages(vi.mocked(pi.sendMessage), "ferment_breadcrumb")
+		expect(breadcrumbCalls.length).toBe(1)
+		expect(breadcrumbCalls[0]?.content?.[0]?.text).toContain("Lifecycle guard exhausted")
+		expect(runtime.events?.emit).toHaveBeenCalledWith(
+			"ferment:stalled",
+			expect.objectContaining({ fermentId: ferment.id }),
 		)
 	})
 
-	it("suppresses repeated reactive nudges after the loop guard cap", () => {
+	it("prunes the retry budget when a ferment is paused", () => {
 		const pi = createPi()
-		const runtime: FermentRuntime = {
-			...createDefaultFermentRuntime(),
-			getActive: () =>
-				makeDraftFerment({
-					status: "planned",
-					phases: [{ id: "phase-1", index: 1, name: "Phase", goal: "Build", status: "planned", steps: [] }],
-				}),
-			getActiveId: () => "ferment-1",
-			getStorage: () =>
-				({
-					get: () =>
-						makeDraftFerment({
-							status: "planned",
-							phases: [{ id: "phase-1", index: 1, name: "Phase", goal: "Build", status: "planned", steps: [] }],
-						}),
-				}) as unknown as ReturnType<FermentRuntime["getStorage"]>,
-			getContinuationPolicy: () => "automated",
-			isAutomatedContinuationEnabled: () => true,
-		}
+		let current = makePlannedFerment()
+		const runtime = makeRuntime(current)
 
-		maybeInjectReactiveContinuationNudge(pi, runtime)
-		maybeInjectReactiveContinuationNudge(pi, runtime)
-		maybeInjectReactiveContinuationNudge(pi, runtime)
-		maybeInjectReactiveContinuationNudge(pi, runtime)
+		maybeInjectLifecycleObligationGuard(pi, runtime) // retry 1
+		maybeInjectLifecycleObligationGuard(pi, runtime) // retry 2
 
-		// With cap=1: call 1 fires (schedules action), calls 2-4 each emit one
-		// suppression breadcrumb via pi.sendMessage. Assert on the last
-		// suppression message rather than total call count, which depends on
-		// scheduleNextFermentAction internals.
-		expect(pi.sendMessage).toHaveBeenLastCalledWith(
-			expect.objectContaining({
-				customType: "ferment_breadcrumb",
-				details: expect.objectContaining({ text: expect.stringContaining("Continuation nudge suppressed after 1") }),
-			}),
-			expect.anything(),
-		)
-	})
-
-	it("prunes the reactive loop guard when a ferment is paused", () => {
-		const pi = createPi()
-		let current = makeDraftFerment({
-			status: "planned",
-			phases: [{ id: "phase-1", index: 1, name: "Phase", goal: "Build", status: "planned", steps: [] }],
-		})
-		const runtime: FermentRuntime = {
-			...createDefaultFermentRuntime(),
-			getActiveId: () => "ferment-1",
-			getStorage: () =>
-				({
-					get: () => current,
-				}) as unknown as ReturnType<FermentRuntime["getStorage"]>,
-			getContinuationPolicy: () => "automated",
-			isAutomatedContinuationEnabled: () => true,
-		}
-
-		maybeInjectReactiveContinuationNudge(pi, runtime)
-		maybeInjectReactiveContinuationNudge(pi, runtime)
-		maybeInjectReactiveContinuationNudge(pi, runtime)
+		// Pause the ferment — the guard should clear the budget and do nothing.
 		current = { ...current, status: "paused" }
-		maybeInjectReactiveContinuationNudge(pi, runtime)
-		current = { ...current, status: "planned" }
-		maybeInjectReactiveContinuationNudge(pi, runtime)
+		runtime.getActiveId = () => current.id
+		runtime.getStorage = () =>
+			({
+				get: () => current,
+			}) as unknown as FermentRuntime["getStorage"] extends () => infer T ? T : never
 
-		// With cap=1: call 1 fires (1 msg via scheduler), call 2 suppressed (1 breadcrumb),
-		// call 3 suppressed (1 breadcrumb), call 4 paused resets the counter (0 msgs),
-		// call 5 fires again (1 msg). Total: 1 + 1 + 1 + 0 + 1 = 4.
-		expect(pi.sendMessage).toHaveBeenCalledTimes(4)
+		const pausedResult = maybeInjectLifecycleObligationGuard(pi, runtime)
+		expect(pausedResult).toBe(false)
+
+		// Resume — the budget should be fresh, so retry 1 fires again.
+		current = { ...current, status: "planned" }
+		const resumedResult = maybeInjectLifecycleObligationGuard(pi, runtime)
+		expect(resumedResult).toBe(true)
 	})
 
-	it("reactively nudges failed phase recovery with retry and bypass actions", () => {
+	it("nudges recover_phase with choice-oriented guidance and bounded exhaustion", () => {
 		const pi = createPi()
-		const failed = makeDraftFerment({
-			status: "planned",
-			phases: [{ id: "phase-1", index: 1, name: "Phase", goal: "Build", status: "failed", steps: [] }],
+		const failed = makePlannedFerment({
+			status: "running",
+			phases: [{ id: "phase-1", index: 1, name: "Failed", goal: "Build", status: "failed", steps: [] }],
 		})
-		const runtime: FermentRuntime = {
-			...createDefaultFermentRuntime(),
-			getActiveId: () => failed.id,
-			getStorage: () =>
-				({
-					get: () => failed,
-				}) as unknown as ReturnType<FermentRuntime["getStorage"]>,
-			getContinuationPolicy: () => "automated",
-			isAutomatedContinuationEnabled: () => true,
-		}
+		const runtime = makeRuntime(failed)
 
-		maybeInjectReactiveContinuationNudge(pi, runtime)
+		maybeInjectLifecycleObligationGuard(pi, runtime)
+		maybeInjectLifecycleObligationGuard(pi, runtime)
+		maybeInjectLifecycleObligationGuard(pi, runtime)
+
+		const continuationCalls = filterSentMessages(vi.mocked(pi.sendMessage), "ferment_continuation_nudge")
+		expect(continuationCalls).toHaveLength(2)
+		const firstText = continuationCalls[0]?.content?.[0]?.text
+		expect(firstText).toContain("requires recovery from the failed phase")
+		expect(firstText).toContain("activate_ferment_phase to retry")
+		expect(firstText).toContain("skip_ferment_phase")
+
+		const warningCalls = filterSentMessages(vi.mocked(pi.sendMessage), "ferment_breadcrumb", "warning")
+		expect(warningCalls).toHaveLength(1)
+		const warningText = warningCalls[0]?.content?.[0]?.text
+		expect(warningText).toContain('required recovery action "recover_phase" remained unresolved')
+		expect(warningText).toContain("qualifying text-only stops for the unchanged obligation")
+		expect(warningText).not.toContain("consecutive text-only stops")
+	})
+
+	it("nudges across a completed phase boundary", () => {
+		const pi = createPi()
+		const boundary = makePlannedFerment({
+			status: "planned",
+			phases: [
+				{ id: "phase-1", index: 1, name: "Done", goal: "Build", status: "completed", steps: [] },
+				{ id: "phase-2", index: 2, name: "Next", goal: "Continue", status: "planned", steps: [] },
+			],
+		})
+		const runtime = makeRuntime(boundary)
+
+		maybeInjectLifecycleObligationGuard(pi, runtime)
 
 		expect(pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
-				content: [
-					expect.objectContaining({
-						text: expect.stringContaining("failed phase"),
-					}),
-				],
-				details: expect.objectContaining({ action: "recover_phase" }),
+				customType: "ferment_continuation_nudge",
+				content: [expect.objectContaining({ text: expect.stringContaining("activate_ferment_phase") })],
 			}),
 			{ triggerTurn: true, deliverAs: "steer" },
 		)
@@ -714,16 +692,17 @@ describe("maybeInjectFermentStopNudge", () => {
 		expect(nudged).toBe(true)
 	})
 
-	it("does not interfere with the reactive (text-only) nudge counter", () => {
+	it("does not interfere with the lifecycle obligation guard counter", () => {
 		const pi = createPi()
 		const ferment = makeRunningFerment()
 		const runtime = makeRuntime(ferment)
 
-		// Exhaust the reactive nudge budget (cap=1) via maybeInjectReactiveContinuationNudge
-		maybeInjectReactiveContinuationNudge(pi, runtime)
-		maybeInjectReactiveContinuationNudge(pi, runtime) // suppressed by reactive cap
+		// Exhaust the lifecycle guard budget (cap=2) via maybeInjectLifecycleObligationGuard
+		maybeInjectLifecycleObligationGuard(pi, runtime)
+		maybeInjectLifecycleObligationGuard(pi, runtime)
+		maybeInjectLifecycleObligationGuard(pi, runtime) // exhausted
 
-		// Stop nudge should still fire on a fresh counter
+		// Stop nudge should still fire on a fresh counter (different mechanism)
 		const nudged = maybeInjectFermentStopNudge(pi, runtime)
 		expect(nudged).toBe(true)
 	})

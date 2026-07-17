@@ -14,6 +14,8 @@ import {
 	hasActiveFerment,
 	isCompactionInFlight,
 	isFermentLockedByLiveProcess,
+	isInactiveOrPaused,
+	isTerminal,
 	markCompactionInFlight,
 	onActiveFermentChange,
 	removeFermentLock,
@@ -297,4 +299,36 @@ describe("clearFermentState", () => {
 		// Other ferments are unaffected.
 		expect(getPendingCompaction("ferment-B")).toBeDefined()
 	})
+})
+
+describe("isTerminal", () => {
+	for (const status of ["draft", "planned", "running", "paused"] as const) {
+		it(`returns false for ${status} ferments`, () => {
+			expect(isTerminal(makeFerment(status))).toBe(false)
+		})
+	}
+	for (const status of ["complete", "abandoned"] as const) {
+		it(`returns true for ${status} ferments`, () => {
+			expect(isTerminal(makeFerment(status))).toBe(true)
+		})
+	}
+	it("returns false when the ferment is undefined", () => {
+		expect(isTerminal(undefined)).toBe(false)
+	})
+})
+
+describe("isInactiveOrPaused", () => {
+	it("returns true when the ferment is undefined", () => {
+		expect(isInactiveOrPaused(undefined)).toBe(true)
+	})
+	for (const status of ["draft", "planned", "running"] as const) {
+		it(`returns false for ${status} ferments`, () => {
+			expect(isInactiveOrPaused(makeFerment(status))).toBe(false)
+		})
+	}
+	for (const status of ["paused", "complete", "abandoned"] as const) {
+		it(`returns true for ${status} ferments`, () => {
+			expect(isInactiveOrPaused(makeFerment(status))).toBe(true)
+		})
+	}
 })

@@ -10,9 +10,11 @@ import { applyCommand } from "../../ferment/state-machine.js"
 import type { Ferment, Phase } from "../../ferment/types.js"
 import { createContext } from "../__mocks__/context.js"
 import { registerFermentEvents } from "./events.js"
+import { clearAllLifecycleGuards } from "./lifecycle-obligation-guard.js"
 import type { FermentRuntime } from "./runtime.js"
 import { createDefaultFermentRuntime } from "./runtime.js"
 import { clearActiveFermentId, getFermentLockPath, writeFermentLock } from "./state.js"
+import { filterSentMessages } from "./test-helpers.js"
 import { FERMENT_TOOL_NAMES } from "./tool-names.js"
 import { profileForFerment } from "./tool-scope.js"
 
@@ -49,6 +51,7 @@ function createPi() {
 
 afterEach(() => {
 	vi.unstubAllEnvs()
+	clearAllLifecycleGuards()
 	clearActiveFermentId()
 	Reflect.deleteProperty(process.env, "KIMCHI_SUBAGENT")
 })
@@ -656,7 +659,235 @@ function setupScopedRunningFerment(prefix: string, name: string) {
 	return { storage, ferment }
 }
 
+function createDraftFerment(prefix: string, name: string) {
+	const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), prefix)))
+	const ferment = storage.create(name)
+	return { storage, ferment }
+}
+
+function setupAutomatedGuardFixture(
+	name: string,
+	options?: { state?: "draft" | "running"; automated?: boolean; oneshot?: boolean },
+) {
+	const state = options?.state ?? "running"
+	const automated = options?.automated ?? true
+	const oneshot = options?.oneshot ?? false
+	const { storage, ferment } =
+		state === "draft"
+			? createDraftFerment(`ferment-lifecycle-guard-${name}-`, name)
+			: setupScopedRunningFerment(`ferment-lifecycle-guard-${name}-`, name)
+	const runtime: FermentRuntime = {
+		...createDefaultFermentRuntime(),
+		getStorage: () => storage,
+		getContinuationPolicy: () => (automated ? "automated" : "manual"),
+		isAutomatedContinuationEnabled: () => automated,
+	}
+	const active = storage.get(ferment.id)
+	if (!active) throw new Error("ferment not found after setup")
+	runtime.setActive(active)
+
+	const { handlers, pi } = createPi()
+	if (oneshot) {
+		;(pi.getFlag as ReturnType<typeof vi.fn>).mockImplementation((flagName: string) =>
+			flagName === "ferment-oneshot" ? true : undefined,
+		)
+	}
+	;(pi as ExtensionAPI & { events: ExtensionAPI["events"] }).events = {
+		emit: vi.fn(),
+		on: vi.fn(),
+	} as unknown as ExtensionAPI["events"]
+	registerFermentEvents(pi, runtime)
+	return { pi, runtime, storage, ferment, handlers }
+}
+
+describe("turn_end lifecycle obligation guard", () => {
+	it("does not replenish an unchanged obligation after an unrelated tool call", async () => {
+		const { pi, handlers } = setupAutomatedGuardFixture("Unrelated Tool")
+		const turnEnd = handlers.get("turn_end")
+		if (!turnEnd) throw new Error("turn_end handler was not registered")
+		const ctx = createContext({ hasUI: false })
+
+		await turnEnd({ message: { role: "assistant", stopReason: "stop", content: [] } }, ctx)
+		await turnEnd(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "toolUse",
+					content: [{ type: "toolCall", name: "read", id: "call-read", arguments: { path: "README.md" } }],
+				},
+			},
+			ctx,
+		)
+		await turnEnd({ message: { role: "assistant", stopReason: "stop", content: [] } }, ctx)
+		await turnEnd({ message: { role: "assistant", stopReason: "stop", content: [] } }, ctx)
+
+		const continuationCalls = filterSentMessages(vi.mocked(pi.sendMessage), "ferment_continuation_nudge")
+		const exhaustionCalls = filterSentMessages(vi.mocked(pi.sendMessage), "ferment_breadcrumb", "warning")
+		expect(continuationCalls).toHaveLength(2)
+		expect(exhaustionCalls).toHaveLength(1)
+		const exhaustionText = exhaustionCalls[0]?.content?.[0]?.text
+		expect(exhaustionText).toContain("qualifying text-only stops for the unchanged obligation")
+		expect(exhaustionText).not.toContain("consecutive text-only stops")
+	})
+
+	it("does not guard a deliberate text-only stop while plan review is pending", async () => {
+		const { pi, runtime, ferment, handlers } = setupAutomatedGuardFixture("Pending Review", { state: "draft" })
+		runtime.setPendingPlanReview({ fermentId: ferment.id, planMarkdown: "# Plan" })
+		const turnEnd = handlers.get("turn_end")
+		if (!turnEnd) throw new Error("turn_end handler was not registered")
+
+		await turnEnd(
+			{ message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "Ready." }] } },
+			createContext({ hasUI: true }),
+		)
+
+		expect(pi.sendMessage).not.toHaveBeenCalledWith(
+			expect.objectContaining({ customType: "ferment_continuation_nudge" }),
+			expect.anything(),
+		)
+		expect(pi.setActiveTools).toHaveBeenCalledWith([])
+	})
+
+	it("falls through to the guard when the model asks a question in automated mode", async () => {
+		const { pi, handlers } = setupAutomatedGuardFixture("Question Ferment", { state: "draft" })
+		const turnEnd = handlers.get("turn_end")
+		if (!turnEnd) throw new Error("turn_end handler was not registered")
+
+		await turnEnd(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "stop",
+					content: [{ type: "text", text: "Does this plan look right?" }],
+				},
+			},
+			createContext({ hasUI: false }),
+		)
+
+		// A trailing question in automated mode is not a legitimate user-input
+		// stop — there is no user to answer it. The guard must fire and schedule
+		// a retry toward the required lifecycle tool call.
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ customType: "ferment_continuation_nudge" }),
+			expect.objectContaining({ deliverAs: "steer" }),
+		)
+	})
+
+	it("starts a fresh retry budget after a new session begins", async () => {
+		const { pi, runtime, ferment, handlers } = setupAutomatedGuardFixture("New Session", {
+			state: "draft",
+			oneshot: true,
+		})
+		const turnEnd = handlers.get("turn_end")
+		const sessionStart = handlers.get("session_start")
+		if (!turnEnd || !sessionStart) throw new Error("required event handler was not registered")
+
+		const ctx = createContext({ hasUI: false })
+		await turnEnd({ message: { role: "assistant", stopReason: "stop", content: [] } }, ctx)
+		await turnEnd({ message: { role: "assistant", stopReason: "stop", content: [] } }, ctx)
+		await sessionStart({}, ctx)
+		runtime.setActive(ferment)
+		vi.mocked(pi.sendMessage).mockClear()
+
+		await turnEnd({ message: { role: "assistant", stopReason: "stop", content: [] } }, ctx)
+
+		expect(pi.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ customType: "ferment_continuation_nudge" }),
+			expect.objectContaining({ deliverAs: "steer" }),
+		)
+	})
+})
+
 describe("turn_end error recovery in one-shot mode", () => {
+	it("recovers a draft ferment with a fresh lifecycle-stop retry budget", async () => {
+		const {
+			pi,
+			storage,
+			ferment: draft,
+			handlers,
+		} = setupAutomatedGuardFixture("Draft Error Ferment", {
+			state: "draft",
+			oneshot: true,
+		})
+		const turnEnd = handlers.get("turn_end")
+		if (!turnEnd) throw new Error("turn_end handler was not registered")
+		const ctx = createContext({ hasUI: false })
+
+		await turnEnd(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "error",
+					errorMessage: "Connection error: socket closed",
+					content: [],
+				},
+			},
+			ctx,
+		)
+
+		const errorRecoveryCalls = filterSentMessages(vi.mocked(pi.sendMessage), "ferment_continuation_nudge")
+		expect(errorRecoveryCalls).toHaveLength(1)
+		expect(errorRecoveryCalls[0]).toEqual(
+			expect.objectContaining({
+				content: [expect.objectContaining({ text: expect.stringContaining("scope: collect") })],
+				details: expect.objectContaining({ action: "scope" }),
+			}),
+		)
+		expect(storage.get(draft.id)?.status).toBe("draft")
+
+		vi.mocked(pi.sendMessage).mockClear()
+		await turnEnd({ message: { role: "assistant", stopReason: "stop", content: [] } }, ctx)
+		await turnEnd({ message: { role: "assistant", stopReason: "stop", content: [] } }, ctx)
+		await turnEnd({ message: { role: "assistant", stopReason: "stop", content: [] } }, ctx)
+
+		const lifecycleRetryCalls = filterSentMessages(vi.mocked(pi.sendMessage), "ferment_continuation_nudge")
+		const exhaustionCalls = filterSentMessages(vi.mocked(pi.sendMessage), "ferment_breadcrumb", "warning")
+		expect(lifecycleRetryCalls).toHaveLength(2)
+		expect(exhaustionCalls).toHaveLength(1)
+	})
+
+	it("clears the lifecycle-stop retry budget after each alternating provider error", async () => {
+		const { pi, handlers } = setupAutomatedGuardFixture("Alternating Error Ferment", {
+			state: "draft",
+			oneshot: true,
+		})
+		const turnEnd = handlers.get("turn_end")
+		if (!turnEnd) throw new Error("turn_end handler was not registered")
+		const ctx = createContext({ hasUI: false })
+		const bareStop = { message: { role: "assistant", stopReason: "stop", content: [] } }
+		const providerError = {
+			message: {
+				role: "assistant",
+				stopReason: "error",
+				errorMessage: "Connection error: socket closed",
+				content: [],
+			},
+		}
+
+		await turnEnd(bareStop, ctx) // lifecycle retry 1
+		await turnEnd(providerError, ctx) // clears the lifecycle budget
+		vi.mocked(pi.sendMessage).mockClear()
+
+		await turnEnd(bareStop, ctx)
+		let continuationCalls = filterSentMessages(vi.mocked(pi.sendMessage), "ferment_continuation_nudge")
+		expect(continuationCalls).toHaveLength(1)
+		expect(continuationCalls[0]?.content).toEqual([
+			expect.objectContaining({ text: expect.stringContaining("previous turn stopped without a tool call") }),
+		])
+
+		await turnEnd(providerError, ctx) // clears the newly consumed retry again
+		vi.mocked(pi.sendMessage).mockClear()
+
+		await turnEnd(bareStop, ctx)
+		await turnEnd(bareStop, ctx)
+		await turnEnd(bareStop, ctx)
+
+		continuationCalls = filterSentMessages(vi.mocked(pi.sendMessage), "ferment_continuation_nudge")
+		const exhaustionCalls = filterSentMessages(vi.mocked(pi.sendMessage), "ferment_breadcrumb", "warning")
+		expect(continuationCalls).toHaveLength(2)
+		expect(exhaustionCalls).toHaveLength(1)
+	})
+
 	it('does not pause the ferment when stopReason is "error" in one-shot mode', async () => {
 		const { storage, ferment } = setupScopedRunningFerment("ferment-oneshot-error-", "One-shot Error Ferment")
 		const runtime: FermentRuntime = {
@@ -792,20 +1023,9 @@ describe("turn_end error recovery in one-shot mode", () => {
 
 describe("session_shutdown one-shot recovery", () => {
 	it("abandons the ferment in one-shot mode", async () => {
-		const { storage, ferment } = setupScopedRunningFerment("ferment-oneshot-shutdown-", "Shutdown Ferment")
-		const runtime: FermentRuntime = {
-			...createDefaultFermentRuntime(),
-			getStorage: () => storage,
-		}
-		const active = storage.get(ferment.id)
-		if (!active) throw new Error("ferment not found after setup")
-		runtime.setActive(active)
-
-		const { handlers, pi } = createPi()
-		;(pi.getFlag as ReturnType<typeof vi.fn>).mockImplementation((name: string) =>
-			name === "ferment-oneshot" ? true : undefined,
-		)
-		registerFermentEvents(pi, runtime)
+		const { storage, ferment, handlers } = setupAutomatedGuardFixture("Shutdown Ferment", {
+			oneshot: true,
+		})
 		const shutdown = handlers.get("session_shutdown")
 		if (!shutdown) throw new Error("session_shutdown handler was not registered")
 
@@ -816,18 +1036,9 @@ describe("session_shutdown one-shot recovery", () => {
 	})
 
 	it("pauses the ferment in interactive mode", async () => {
-		const { storage, ferment } = setupScopedRunningFerment("ferment-oneshot-shutdown-", "Shutdown Ferment")
-		const runtime: FermentRuntime = {
-			...createDefaultFermentRuntime(),
-			getStorage: () => storage,
-		}
-		const active = storage.get(ferment.id)
-		if (!active) throw new Error("ferment not found after setup")
-		runtime.setActive(active)
-
-		const { handlers, pi } = createPi()
-		;(pi.getFlag as ReturnType<typeof vi.fn>).mockReturnValue(undefined)
-		registerFermentEvents(pi, runtime)
+		const { storage, ferment, handlers } = setupAutomatedGuardFixture("Shutdown Ferment", {
+			automated: false,
+		})
 		const shutdown = handlers.get("session_shutdown")
 		if (!shutdown) throw new Error("session_shutdown handler was not registered")
 

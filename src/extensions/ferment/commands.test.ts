@@ -13,7 +13,7 @@ import {
 	registerFermentCommands,
 	startInteractiveFerment,
 } from "./commands.js"
-import { maybeInjectReactiveContinuationNudge } from "./nudge.js"
+import { clearAllLifecycleGuards, maybeInjectLifecycleObligationGuard } from "./lifecycle-obligation-guard.js"
 import { clearAllPendingPlanReviews, getPendingPlanReview, setPendingPlanReview } from "./plan-review.js"
 import { createDefaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import { createApplyAndPersist } from "./tool-helpers.js"
@@ -55,6 +55,7 @@ afterEach(() => {
 	writeFileSyncMock.mockReset()
 	writeFileSyncMock.mockImplementation(actualFs.writeFileSync)
 	clearAllPendingPlanReviews()
+	clearAllLifecycleGuards()
 })
 
 interface RegisteredCommand {
@@ -539,7 +540,7 @@ describe("FermentCommandController", () => {
 		const ferment = createPlannedFerment(h, "No Nudge After Exit")
 		h.runtime.setContinuationPolicy("automated")
 		h.runtime.setActive(ferment)
-		maybeInjectReactiveContinuationNudge(h.pi, h.runtime)
+		maybeInjectLifecycleObligationGuard(h.pi, h.runtime)
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({ customType: "ferment_continuation_nudge" }),
 			expect.objectContaining({ deliverAs: "steer" }),
@@ -548,7 +549,7 @@ describe("FermentCommandController", () => {
 		const result = await controller.execute({ type: "exit" }, { raw: "exit", pi: h.pi, ctx: h.ctx, runtime: h.runtime })
 		vi.mocked(h.pi.sendMessage).mockClear()
 
-		maybeInjectReactiveContinuationNudge(h.pi, h.runtime)
+		maybeInjectLifecycleObligationGuard(h.pi, h.runtime)
 
 		expect(result).toEqual({ handled: true })
 		expect(h.runtime.getActive()).toBeUndefined()
@@ -558,7 +559,7 @@ describe("FermentCommandController", () => {
 		if (!resumed.ok) throw new Error(resumed.error.message)
 		vi.mocked(h.pi.sendMessage).mockClear()
 
-		maybeInjectReactiveContinuationNudge(h.pi, h.runtime)
+		maybeInjectLifecycleObligationGuard(h.pi, h.runtime)
 
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({ customType: "ferment_continuation_nudge" }),

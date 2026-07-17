@@ -5,13 +5,14 @@ import { formatActionNudgeLine } from "./action-tool-names.js"
 import { decideContinuation } from "./continuation.js"
 import type { FermentRuntime } from "./runtime.js"
 import { safeSendMessage, tryPiAction } from "./safe-send.js"
-import type { ContinuationPolicy } from "./state.js"
+import { type ContinuationPolicy, isInactiveOrPaused, isTerminal } from "./state.js"
 
 export interface ScheduleNextFermentActionOptions {
 	allowManualPhaseBoundary?: boolean
 	treatCompleteFermentAsContinue?: boolean
 	tag?: string
 	deliverAs?: "steer" | "followUp"
+	messagePrefix?: string
 }
 
 export interface ScheduleFermentWakeUpOptions {
@@ -205,7 +206,8 @@ export function scheduleNextFermentAction(
 		ferment.status === "running"
 			? `RESUMING ferment "${ferment.name}" — the previous session was interrupted. Pick up the work immediately. Do NOT explain or summarize — execute the next action below.\n\n`
 			: ""
-	const messageText = `${interruptedPrefix}${baseMsg}`
+	const messagePrefix = opts.messagePrefix ? `${opts.messagePrefix}\n\n` : ""
+	const messageText = `${interruptedPrefix}${messagePrefix}${baseMsg}`
 
 	tryPiAction(() => {
 		pi.appendEntry("ferment_breadcrumb", {
@@ -230,8 +232,8 @@ export function scheduleFermentWakeUp(
 	opts: ScheduleFermentWakeUpOptions = {},
 ): void {
 	const ferment = freshFerment(runtime, opts.fermentId)
-	if (!ferment || ferment.status === "complete" || ferment.status === "abandoned" || ferment.status === "paused") {
-		if (ferment?.status === "complete" || ferment?.status === "abandoned") runtime.setActive(undefined)
+	if (!ferment || isInactiveOrPaused(ferment)) {
+		if (isTerminal(ferment)) runtime.setActive(undefined)
 		return
 	}
 
