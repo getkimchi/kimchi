@@ -70,8 +70,8 @@ describe("resolveOrchestrationInstructions", () => {
 			roles: DEFAULT_MODEL_ROLES,
 		})
 		expect(result).toContain("### Delegation")
-		expect(result).toContain("prefer delegating to sub-agents")
-		expect(result).toContain("everything goes through sub-agents")
+		expect(result).toContain("context budget")
+		expect(result).toContain("When to delegate vs work inline")
 		expect(result).toContain("Do not blindly retry the same approach")
 	})
 

@@ -268,3 +268,99 @@ export function stripUiOnlyMessages(messages: OrchestratorMessages): Orchestrato
 	)
 	return filtered.length === messages.length ? messages : filtered
 }
+
+// ---------------------------------------------------------------------------
+// Delegation nudge — context-budget-aware reminder to delegate
+// ---------------------------------------------------------------------------
+
+export const DELEGATION_NUDGE_CUSTOM_TYPE = "delegation_nudge"
+
+/** Minimum context usage percentage before the nudge can fire. */
+const DELEGATION_NUDGE_MIN_PERCENT = 50
+/** Minimum orchestrator tool calls since last delegation before the nudge fires. */
+const DELEGATION_NUDGE_MIN_TOOL_CALLS = 15
+
+/**
+ * Tracks orchestrator tool-call activity and evaluates whether a
+ * context-budget nudge should be injected into the context event.
+ *
+ * Unlike ContinuationNudge (which fires on turn_end when the model stops
+ * without calling a tool), this fires in the `context` event handler —
+ * before every LLM call — so it works in headless multi-turn sessions
+ * where a single user input drives hundreds of turns.
+ *
+ * The nudge is injected as an ephemeral user-role message appended to the
+ * messages array. It is NOT persisted — the context event handler rebuilds
+ * the nudge on each call if conditions still apply, and omits it if they
+ * don't. This mirrors Claude Code's "adaptive mid-conversation injections"
+ * pattern.
+ */
+export class DelegationNudge {
+	private toolsSinceLastDelegation = 0
+	private pendingDelegationCount = 0
+	private fired = false
+
+	resetForNewUserInput(): void {
+		this.fired = false
+	}
+
+	recordToolCall(): void {
+		this.toolsSinceLastDelegation++
+	}
+
+	/** Called when an Agent tool call is dispatched. */
+	markDelegationCall(): void {
+		this.pendingDelegationCount++
+		// Reset the tool-call counter — delegation resets the context pressure.
+		this.toolsSinceLastDelegation = 0
+	}
+
+	/** Called when an Agent result is received. */
+	clearDelegationPending(): void {
+		if (this.pendingDelegationCount > 0) this.pendingDelegationCount--
+		// A successful delegation means we can nudge again if context grows again.
+		this.fired = false
+	}
+
+	/**
+	 * Whether the delegation nudge should be injected given current context
+	 * usage and tool-call activity.
+	 *
+	 * @param contextPercent - Context window usage percentage (0-100), or null if unknown.
+	 * @returns Whether the nudge should fire.
+	 */
+	shouldNudge(contextPercent: number | null): boolean {
+		if (this.fired) return false
+		if (this.pendingDelegationCount > 0) return false
+		if (contextPercent === null) return false
+		if (contextPercent < DELEGATION_NUDGE_MIN_PERCENT) return false
+		if (this.toolsSinceLastDelegation < DELEGATION_NUDGE_MIN_TOOL_CALLS) return false
+		this.fired = true
+		return true
+	}
+
+	/**
+	 * Builds the nudge message text with live context usage data.
+	 */
+	buildNudgeText(contextPercent: number | null, contextTokens: number | null, contextWindow: number | null): string {
+		const pctStr = contextPercent !== null ? `${contextPercent}%` : "a high level"
+		const tokStr =
+			contextTokens !== null && contextWindow !== null
+				? ` (${Math.round(contextTokens / 1000)}k/${Math.round(contextWindow / 1000)}k tokens)`
+				: ""
+		const toolStr = this.toolsSinceLastDelegation
+		return `Context budget alert: your context is at ${pctStr}${tokStr} after ${toolStr} inline tool calls without delegating. If remaining work involves more file reads, test runs, or build output, delegate it to a sub-agent to preserve your reasoning quality. If you are doing quick inline work or wrapping up, continue.`
+	}
+}
+
+/**
+ * Strips delegation nudge messages from the context. These are ephemeral —
+ * injected by the context handler and removed before the next LLM call so
+ * they don't accumulate.
+ */
+export function stripDelegationNudges(messages: OrchestratorMessages): OrchestratorMessages {
+	const filtered = messages.filter(
+		(m) => !isCustomMessage(m) || (m as { customType?: string }).customType !== DELEGATION_NUDGE_CUSTOM_TYPE,
+	)
+	return filtered.length === messages.length ? messages : filtered
+}

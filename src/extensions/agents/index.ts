@@ -13,7 +13,6 @@
 
 import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs"
 import { join } from "node:path"
-import { AGENT_WORKER_BUDGETS } from "./worker-budget-policy.js"
 import {
 	defineTool,
 	type ExtensionAPI,
@@ -1368,7 +1367,8 @@ ${AGENT_TOOL_GUIDELINES}`,
 						: undefined
 				const agentTags: string[] = []
 				if (thinking) agentTags.push(`thinking: ${thinking}`)
-				if (resolvedConfig.tokenBudget != null) agentTags.push(`budget: ${formatTokens(effectiveTokenBudget ?? resolvedConfig.tokenBudget)}`)
+				if (resolvedConfig.tokenBudget != null)
+					agentTags.push(`budget: ${formatTokens(effectiveTokenBudget ?? resolvedConfig.tokenBudget)}`)
 				if (isolated) agentTags.push("isolated")
 				const effectiveMaxTurns = normalizeMaxTurns(resolvedConfig.maxTurns ?? getDefaultMaxTurns())
 				const detailBase = {

@@ -53,10 +53,13 @@ import { getProcessOrchestratorRef, setProcessOrchestratorRef } from "../kimchi-
 import { getMultiModelEnabled, setAndPersistMultiModelEnabled } from "../multi-model.js"
 import {
 	ContinuationNudge,
+	DELEGATION_NUDGE_CUSTOM_TYPE,
+	DelegationNudge,
 	EMPTY_TURN_NUDGE_TEXT,
 	EmptyTurnNudge,
 	NUDGE_CUSTOM_TYPE,
 	type OrchestratorMessages,
+	stripDelegationNudges,
 	stripStaleNudges,
 	stripUiOnlyMessages,
 } from "../orchestration/continuation-nudge.js"
@@ -299,7 +302,7 @@ export default function (skillPaths: string[]) {
 				// Ferment still controls the toolset when active via its own profiles.
 			})
 
-		// Tool restriction re-application removed — orchestrator keeps all tools.
+			// Tool restriction re-application removed — orchestrator keeps all tools.
 
 			pi.on("model_select", async (_event, ctx) => {
 				notifyIfDeprecated(ctx)
@@ -317,6 +320,7 @@ export default function (skillPaths: string[]) {
 			// circuits the input-handler chain.
 			const continuationNudgeMap = new Map<string, ContinuationNudge>()
 			const emptyTurnNudgeMap = new Map<string, EmptyTurnNudge>()
+			const delegationNudgeMap = new Map<string, DelegationNudge>()
 
 			function getContinuationNudge(sessionId: string): ContinuationNudge {
 				let nudge = continuationNudgeMap.get(sessionId)
@@ -336,6 +340,15 @@ export default function (skillPaths: string[]) {
 				return nudge
 			}
 
+			function getDelegationNudge(sessionId: string): DelegationNudge {
+				let nudge = delegationNudgeMap.get(sessionId)
+				if (!nudge) {
+					nudge = new DelegationNudge()
+					delegationNudgeMap.set(sessionId, nudge)
+				}
+				return nudge
+			}
+
 			pi.on("agent_start", async (_event, ctx) => {
 				const sessionId = ctx.sessionManager.getSessionId()
 				const continuationNudge = getContinuationNudge(sessionId)
@@ -346,22 +359,26 @@ export default function (skillPaths: string[]) {
 				const sessionId = ctx.sessionManager.getSessionId()
 				const continuationNudge = getContinuationNudge(sessionId)
 				const emptyTurnNudge = getEmptyTurnNudge(sessionId)
+				const delegationNudge = getDelegationNudge(sessionId)
 
 				if (event.source === "extension") {
-					// Agent result arriving. Clear the delegation-pending flag so the
-					// continuation nudge can fire normally once the model has processed
-					// the output (at the next turn_end, after any tool calls it makes).
+					// Agent result arriving. Clear the delegation-pending flags so the
+					// nudges can fire normally once the model has processed the output.
 					continuationNudge.clearDelegationPending()
+					delegationNudge.clearDelegationPending()
 					return
 				}
 				continuationNudge.resetForNewUserInput()
 				emptyTurnNudge.resetForNewUserInput()
+				delegationNudge.resetForNewUserInput()
 			})
 
 			pi.on("tool_execution_start", async (_event, ctx) => {
 				const sessionId = ctx.sessionManager.getSessionId()
 				const continuationNudge = getContinuationNudge(sessionId)
+				const delegationNudge = getDelegationNudge(sessionId)
 				continuationNudge.recordToolCall()
+				delegationNudge.recordToolCall()
 			})
 
 			pi.on("message_update", (event, ctx) => {
@@ -387,6 +404,7 @@ export default function (skillPaths: string[]) {
 				const sessionId = ctx.sessionManager.getSessionId()
 				const continuationNudge = getContinuationNudge(sessionId)
 				const emptyTurnNudge = getEmptyTurnNudge(sessionId)
+				const delegationNudge = getDelegationNudge(sessionId)
 
 				// Track stall: increment counter each turn so the headless prompt
 				// block can detect when the orchestrator hasn't updated step todos.
@@ -399,6 +417,7 @@ export default function (skillPaths: string[]) {
 				for (const c of assistantMsg.content) {
 					if (c.type === "toolCall" && isDelegationToolCallName((c as { name?: string }).name)) {
 						continuationNudge.markDelegationCall()
+						delegationNudge.markDelegationCall()
 					}
 				}
 
@@ -441,10 +460,33 @@ export default function (skillPaths: string[]) {
 				)
 			})
 
-			pi.on("context", async (event) => {
+			pi.on("context", async (event, ctx) => {
+				const sessionId = ctx.sessionManager.getSessionId()
+				const delegationNudge = getDelegationNudge(sessionId)
 				let messages = stripStaleNudges(event.messages)
 				messages = stripEmptyToolCalls(messages)
 				messages = stripUiOnlyMessages(messages)
+
+				// Context-budget-aware delegation nudge. Injected as an ephemeral
+				// custom message that is stripped on every context event and
+				// re-evaluated. This works in headless multi-turn sessions where
+				// turn_end fires but a single user input drives hundreds of turns.
+				messages = stripDelegationNudges(messages)
+
+				const contextUsage = ctx.getContextUsage()
+				if (contextUsage) {
+					const percent = contextUsage.percent
+					if (delegationNudge.shouldNudge(percent)) {
+						const nudgeText = delegationNudge.buildNudgeText(percent, contextUsage.tokens, contextUsage.contextWindow)
+						const nudgeMessage = {
+							role: "custom" as const,
+							customType: DELEGATION_NUDGE_CUSTOM_TYPE,
+							content: nudgeText,
+						}
+						messages = [...messages, nudgeMessage as OrchestratorMessages[number]]
+					}
+				}
+
 				if (messages !== event.messages) return { messages }
 			})
 		}

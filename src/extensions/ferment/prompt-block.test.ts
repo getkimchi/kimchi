@@ -1,11 +1,10 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it } from "vitest"
 import type { Ferment, FermentStatus } from "../../ferment/types.js"
+import { createContext } from "../__mocks__/context.js"
 import { runAsAgentWorker } from "../agent-worker-context.js"
 import { registerAgents } from "../agents/personas/agent-types.js"
 import { setPermissionMode } from "../permissions/mode-controller.js"
-
-import { createContext } from "../__mocks__/context.js"
 import { buildFermentPromptBlock } from "./prompt-block.js"
 import { createDefaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import type { ContinuationPolicy } from "./state.js"

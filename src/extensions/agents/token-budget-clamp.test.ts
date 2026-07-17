@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { AGENT_WORKER_BUDGETS } from "./worker-budget-policy.js"
 
 // We do NOT mock multi-model.js — we use the real implementation.
@@ -14,7 +14,7 @@ vi.mock("./manager/agent-manager.js", () => {
 				onComplete,
 				onStart,
 				_records: records,
-				spawn: vi.fn((pi, ctx, type, prompt, options) => {
+				spawn: vi.fn((_pi, _ctx, type, _prompt, options) => {
 					const id = `mock-${records.size}`
 					records.set(id, { id, type, status: "running", ...options })
 					return id
@@ -61,8 +61,8 @@ vi.mock("../orchestration/model-registry/index.js", () => ({
 	MODEL_CAPABILITIES: new Map(),
 }))
 
-import { getMultiModelEnabled } from "../multi-model.js"
 import { readConfigSetting, writeConfigSetting } from "../../config/settings.js"
+import { getMultiModelEnabled } from "../multi-model.js"
 import agentsExtension from "./index.js"
 import { AgentManager as MockedAgentManager } from "./manager/agent-manager.js"
 

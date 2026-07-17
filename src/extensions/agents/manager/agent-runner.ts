@@ -43,7 +43,7 @@ import {
 } from "../personas/types.js"
 import { buildParentContext, extractText } from "../prompt/context.js"
 import { buildAgentPrompt, formatTokenBudget, type PromptExtras } from "../prompt/prompts.js"
-import { preloadSkills, listAvailableSkillNames } from "../prompt/skill-loader.js"
+import { listAvailableSkillNames, preloadSkills } from "../prompt/skill-loader.js"
 import { createWorkerReportExtension, WORKER_REPORT_TOOL_NAME, type WorkerReportCapability } from "../worker-report.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "./constants.js"
 import { addUsage, getLifetimeTotal, getOutputTotal, getSessionUsage, type LifetimeUsage } from "./usage.js"
