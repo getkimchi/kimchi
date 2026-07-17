@@ -574,7 +574,7 @@ export class StatusLine implements Component {
 		const config = readStatusLineConfig()
 		const pinnedSet = new Set<SegmentId>(config.pinned)
 
-		const tags = getActiveTags(this.ctx.sessionManager.getSessionId())
+		const tags = getActiveTags(this.ctx.sessionManager)
 			.map(parseTag)
 			.filter((t): t is { key: string; value: string } => t !== null)
 

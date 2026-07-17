@@ -26,6 +26,56 @@ import tagsExtension, {
 
 const MOCK_HOME = join(tmpdir(), `kimchi-tags-mock-home-${process.pid}`)
 
+type FakeSessionEntry = {
+	type: "custom"
+	customType: string
+	data: unknown
+	id: string
+	parentId: null
+	timestamp: string
+}
+const sessionEntriesStore = new Map<string, FakeSessionEntry[]>()
+
+function clearSessionEntriesStore(): void {
+	sessionEntriesStore.clear()
+}
+
+function appendEntryForSession(sessionId: string, customType: string, data: unknown): void {
+	const entries = sessionEntriesStore.get(sessionId) ?? []
+	entries.push({
+		type: "custom",
+		customType,
+		data,
+		id: `entry-${entries.length}`,
+		parentId: null,
+		timestamp: new Date().toISOString(),
+	})
+	sessionEntriesStore.set(sessionId, entries)
+}
+
+function getSessionEntries(sessionId: string): FakeSessionEntry[] {
+	return sessionEntriesStore.get(sessionId) ?? []
+}
+
+function makeSessionManager(sessionId: string) {
+	return {
+		getSessionId: () => sessionId,
+		getEntries: () => getSessionEntries(sessionId),
+	}
+}
+
+function makeTagManager(sessionId = TEST_SESSION_ID) {
+	const appendEntry = vi.fn((customType: string, data: unknown) => {
+		appendEntryForSession(sessionId, customType, data)
+	})
+	const sessionManager = makeSessionManager(sessionId)
+	return {
+		manager: new TagManager(sessionManager, appendEntry),
+		sessionManager,
+		appendEntry,
+	}
+}
+
 const testEnv: EnvironmentInfo = {
 	os: "Linux",
 	rawPlatform: "linux",
@@ -59,6 +109,8 @@ function makePi(): ExtensionAPI & {
 	fireShutdown: () => void
 	getActiveTools: () => string[]
 	setActiveTools: (tools: string[]) => void
+	appendEntry: (customType: string, data?: unknown) => void
+	getEntries: (sessionId: string) => FakeSessionEntry[]
 	tools: Map<string, RegisteredTool>
 	commands: Map<string, RegisteredCommand>
 	runCommand: (name: string, args: string, ctx?: unknown) => Promise<unknown>
@@ -67,11 +119,12 @@ function makePi(): ExtensionAPI & {
 	const handlers = new Map<string, Handler[]>()
 	const sessionStartCtx = createContext({
 		hasUI: false,
-		sessionManager: { getSessionId: () => TEST_SESSION_ID },
+		sessionManager: makeSessionManager(TEST_SESSION_ID),
 	})
 	const tools = new Map<string, RegisteredTool>()
 	const commands = new Map<string, RegisteredCommand>()
 	let activeTools: string[] = []
+	let activeSessionId = TEST_SESSION_ID
 	const pi = {
 		registerCommand: (
 			name: string,
@@ -88,6 +141,10 @@ function makePi(): ExtensionAPI & {
 			activeTools = next
 		},
 		setThinkingLevel: vi.fn(),
+		appendEntry: (customType: string, data?: unknown) => {
+			appendEntryForSession(activeSessionId, customType, data)
+		},
+		getEntries: (sessionId: string) => getSessionEntries(sessionId),
 		on: (event: string, handler: Handler) => {
 			const existing = handlers.get(event) ?? []
 			existing.push(handler)
@@ -110,6 +167,7 @@ function makePi(): ExtensionAPI & {
 		runCommand: async (name: string, args: string, ctx = sessionStartCtx) => {
 			const command = commands.get(name)
 			if (!command) throw new Error(`Command "${name}" not registered`)
+			activeSessionId = (ctx as { sessionManager: { getSessionId: () => string } }).sessionManager.getSessionId()
 			return command.handler(args, ctx)
 		},
 	}
@@ -118,6 +176,8 @@ function makePi(): ExtensionAPI & {
 		fireShutdown: () => void
 		getActiveTools: () => string[]
 		setActiveTools: (tools: string[]) => void
+		appendEntry: (customType: string, data?: unknown) => void
+		getEntries: (sessionId: string) => FakeSessionEntry[]
 		tools: Map<string, RegisteredTool>
 		commands: Map<string, RegisteredCommand>
 		runCommand: (name: string, args: string, ctx?: unknown) => Promise<unknown>
@@ -244,6 +304,7 @@ describe("TagManager persistence", () => {
 		rmSync(MOCK_HOME, { recursive: true, force: true })
 		mkdirSync(MOCK_HOME, { recursive: true })
 		vi.stubEnv("KIMCHI_TAGS", "")
+		clearSessionEntriesStore()
 	})
 
 	afterEach(() => {
@@ -251,53 +312,65 @@ describe("TagManager persistence", () => {
 		vi.unstubAllEnvs()
 	})
 
-	it("persists added tags to config file", () => {
-		const manager = new TagManager()
+	it("persists added tags to session entries", () => {
+		const { manager, appendEntry } = makeTagManager()
 		manager.add("project:test")
 
-		const loaded = new TagManager()
+		expect(appendEntry).toHaveBeenCalledWith("kimchi_active_tags", ["project:test"])
+
+		const { manager: loaded } = makeTagManager()
 		expect(loaded.getAllTags()).toContain("project:test")
 	})
 
-	it("loads tags from config file on initialization", () => {
+	it("loads tags from session entries on initialization", () => {
+		appendEntryForSession(TEST_SESSION_ID, "kimchi_active_tags", ["env:prod", "team:backend"])
+
+		const { manager } = makeTagManager()
+		expect(manager.getAllTags()).toEqual(expect.arrayContaining(["env:prod", "team:backend"]))
+	})
+
+	it("falls back to config file for new sessions", () => {
 		const configPath = join(MOCK_HOME, ".config", "kimchi", "tags.json")
 		mkdirSync(dirname(configPath), { recursive: true })
 		writeFileSync(configPath, JSON.stringify({ tags: ["env:prod", "team:backend"] }))
 
-		const manager = new TagManager()
+		const { manager } = makeTagManager()
 		expect(manager.getAllTags()).toEqual(expect.arrayContaining(["env:prod", "team:backend"]))
 	})
 
-	it("removes tags from config file when deleted", () => {
-		const configPath = join(MOCK_HOME, ".config", "kimchi", "tags.json")
-		mkdirSync(dirname(configPath), { recursive: true })
-		writeFileSync(configPath, JSON.stringify({ tags: ["tag1:value1", "tag2:value2"] }))
+	it("falls back to env tags for new sessions", () => {
+		vi.stubEnv("KIMCHI_TAGS", "env:prod,team:backend")
 
-		const manager = new TagManager()
+		const { manager } = makeTagManager()
+		expect(manager.getAllTags()).toEqual(expect.arrayContaining(["env:prod", "team:backend"]))
+	})
+
+	it("session tags take priority over config/env for existing sessions", () => {
+		appendEntryForSession(TEST_SESSION_ID, "kimchi_active_tags", ["team:frontend"])
+		vi.stubEnv("KIMCHI_TAGS", "env:prod,team:backend")
+
+		const { manager } = makeTagManager()
+		expect(manager.getAllTags()).toEqual(["team:frontend"])
+	})
+
+	it("removes tags from session entries when deleted", () => {
+		appendEntryForSession(TEST_SESSION_ID, "kimchi_active_tags", ["tag1:value1", "tag2:value2"])
+
+		const { manager } = makeTagManager()
 		manager.remove("tag1:value1")
 
-		const loaded = new TagManager()
+		const { manager: loaded } = makeTagManager()
 		expect(loaded.getAllTags()).toEqual(["tag2:value2"])
 	})
 
-	it("clears all user tags from config file", () => {
-		const configPath = join(MOCK_HOME, ".config", "kimchi", "tags.json")
-		mkdirSync(dirname(configPath), { recursive: true })
-		writeFileSync(configPath, JSON.stringify({ tags: ["tag1:value1", "tag2:value2", "tag3:value3"] }))
+	it("clears all tags from session entries", () => {
+		appendEntryForSession(TEST_SESSION_ID, "kimchi_active_tags", ["tag1:value1", "tag2:value2", "tag3:value3"])
 
-		const manager = new TagManager()
+		const { manager } = makeTagManager()
 		manager.clear()
 
-		const loaded = new TagManager()
+		const { manager: loaded } = makeTagManager()
 		expect(loaded.getAllTags()).toEqual([])
-	})
-
-	it("creates config directory if it does not exist", () => {
-		const manager = new TagManager()
-		manager.add("test:value")
-
-		const loaded = new TagManager()
-		expect(loaded.getAllTags()).toEqual(["test:value"])
 	})
 })
 
@@ -306,6 +379,7 @@ describe("TagManager.add", () => {
 		rmSync(MOCK_HOME, { recursive: true, force: true })
 		mkdirSync(MOCK_HOME, { recursive: true })
 		vi.stubEnv("KIMCHI_TAGS", "")
+		clearSessionEntriesStore()
 	})
 
 	afterEach(() => {
@@ -314,7 +388,7 @@ describe("TagManager.add", () => {
 	})
 
 	it("returns duplicate error before limit error when tag already exists at capacity", () => {
-		const manager = new TagManager()
+		const { manager } = makeTagManager()
 		for (let i = 0; i < 10; i++) {
 			manager.add(`tag${i}:value`)
 		}
@@ -323,19 +397,19 @@ describe("TagManager.add", () => {
 	})
 
 	it("returns limit error when adding a new tag at capacity", () => {
-		const manager = new TagManager()
+		const { manager } = makeTagManager()
 		for (let i = 0; i < 10; i++) {
 			manager.add(`tag${i}:value`)
 		}
 		const result = manager.add("new:tag")
-		expect(result).toEqual({ success: false, error: "Maximum 10 tags allowed (including static tags)." })
+		expect(result).toEqual({ success: false, error: "Maximum 10 tags allowed (including default tags)." })
 	})
 })
 
 function commandContext(sessionId: string) {
 	return createContext({
 		hasUI: false,
-		sessionManager: { getSessionId: () => sessionId },
+		sessionManager: makeSessionManager(sessionId),
 		ui: {
 			theme: {
 				fg: (_color: string, text: string) => text,
@@ -409,6 +483,7 @@ describe("getActiveTags", () => {
 		rmSync(MOCK_HOME, { recursive: true, force: true })
 		mkdirSync(MOCK_HOME, { recursive: true })
 		vi.stubEnv("KIMCHI_TAGS", "")
+		clearSessionEntriesStore()
 	})
 
 	afterEach(() => {
@@ -417,21 +492,21 @@ describe("getActiveTags", () => {
 	})
 
 	it("returns an empty array before tags are added", () => {
-		expect(getActiveTags("fresh-tags-session")).toEqual([])
+		expect(getActiveTags(makeSessionManager("fresh-tags-session"))).toEqual([])
 	})
 
 	it("returns tags added through the extension command", async () => {
 		const pi = makePi()
 		tagsExtension(pi)
 		await pi.runCommand("tags", "add team:backend", commandContext("command-tags-session"))
-		expect(getActiveTags("command-tags-session")).toEqual(["team:backend"])
+		expect(getActiveTags(makeSessionManager("command-tags-session"))).toEqual(["team:backend"])
 	})
 
-	it("shares persisted tags across sessions", async () => {
+	it("isolates tags between sessions", async () => {
 		const pi = makePi()
 		tagsExtension(pi)
 		await pi.runCommand("tags", "add team:backend", commandContext("tags-session-a"))
-		expect(getActiveTags("tags-session-a")).toEqual(["team:backend"])
-		expect(getActiveTags("tags-session-b")).toEqual(["team:backend"])
+		expect(getActiveTags(makeSessionManager("tags-session-a"))).toEqual(["team:backend"])
+		expect(getActiveTags(makeSessionManager("tags-session-b"))).toEqual([])
 	})
 })

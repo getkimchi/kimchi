@@ -550,10 +550,11 @@ describe("StatusLine segment coverage", () => {
 		withPinned(["phase", "tags"], () => {
 			const getCurrentPhaseSpy = vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("explore")
 			const getActiveTagsSpy = vi.spyOn(TAGS, "getActiveTags").mockReturnValue(["env:prod"])
-			const sl = new StatusLine(createMockContext(), theme, createMockStatusLineData())
+			const ctx = createMockContext()
+			const sl = new StatusLine(ctx, theme, createMockStatusLineData())
 			renderVisible(sl, 200)
 			expect(getCurrentPhaseSpy).toHaveBeenCalledWith("test-session")
-			expect(getActiveTagsSpy).toHaveBeenCalledWith("test-session")
+			expect(getActiveTagsSpy).toHaveBeenCalledWith(ctx.sessionManager)
 		})
 	})
 })
