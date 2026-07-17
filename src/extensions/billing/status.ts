@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util"
 import { loadConfig } from "../../config.js"
 
 export type BillingPlan = "community" | "coder" | "teams" | "enterprise"
@@ -296,7 +297,7 @@ export function getBillingStatusLine(
 			: formatCreditsAmount(status.remainingCredits)
 	const displayBudget = getDisplayBudget(status.budget)
 	const budget = displayBudget
-		? `${budgetUsagePercentage(displayBudget).toFixed(2)}% (${formatBudgetAmount(displayBudget.totalSpendUsd)}/${formatBudgetLimit(displayBudget.budgetLimitUsd)})`
+		? `${budgetUsagePercentage(displayBudget).toFixed(2)}% (${formatBudgetSpendAndLimit(displayBudget)})`
 		: undefined
 	if (!amount && !budget) return undefined
 	return { ...(amount ? { amount } : {}), ...(budget ? { budget } : {}) }
@@ -570,6 +571,10 @@ export function formatBudgetLimit(value: string): string {
 	return `$${amount.toFixed(Number.isInteger(amount) ? 0 : 2)}`
 }
 
+function formatBudgetSpendAndLimit(budget: Pick<BudgetEntry, "budgetLimitUsd" | "totalSpendUsd">): string {
+	return `${formatBudgetAmount(budget.totalSpendUsd)}/${formatBudgetLimit(budget.budgetLimitUsd)}`
+}
+
 function formatCompactBudgetAmount(amount: number): string {
 	const compact = Math.round((amount / 1000) * 10) / 10
 	return `$${compact.toFixed(compact % 1 === 0 ? 0 : 1)}k`
@@ -596,13 +601,13 @@ function getBudgetWarning(status: BillingStatus | undefined): BillingWarning | u
 	if (selectedStatus === "WARNING") {
 		return {
 			kind: "low",
-			message: `Budget warning: ${budgetLabel(selected)} budget is ${Math.round(budgetUsagePercentage(selected))}% used (${formatBudgetAmount(selected.totalSpendUsd)}/${formatBudgetLimit(selected.budgetLimitUsd)}).`,
+			message: `Budget warning: ${budgetLabel(selected)} budget is ${Math.round(budgetUsagePercentage(selected))}% used (${formatBudgetSpendAndLimit(selected)}).`,
 		}
 	}
 	if (selectedStatus === "EXHAUSTED") {
 		return {
 			kind: "exhausted",
-			message: `Budget exhausted: ${budgetLabel(selected)} budget is fully used (${formatBudgetAmount(selected.totalSpendUsd)}/${formatBudgetLimit(selected.budgetLimitUsd)}).`,
+			message: `Budget exhausted: ${budgetLabel(selected)} budget is fully used (${formatBudgetSpendAndLimit(selected)}).`,
 		}
 	}
 	return undefined
@@ -653,7 +658,7 @@ function hasSignificantChange(previous: BillingStatus | undefined, next: Billing
 		previous?.remainingCredits !== next.remainingCredits ||
 		previous?.creditStatus !== next.creditStatus ||
 		previous?.restrictedMode !== next.restrictedMode ||
-		JSON.stringify(previous?.budget) !== JSON.stringify(next.budget)
+		!isDeepStrictEqual(previous?.budget, next.budget)
 	)
 }
 

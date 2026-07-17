@@ -1,6 +1,8 @@
 import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
+import { createContext } from "../__mocks__/context.js"
+
 const refreshBillingStatusFromConfigMock = vi.hoisted(() => vi.fn(async () => undefined))
 
 vi.mock("./status.js", async (importOriginal) => {
@@ -24,14 +26,6 @@ function registeredBudgetCommand(): BudgetCommand {
 	} as unknown as ExtensionAPI)
 	if (!command) throw new Error("budget command not registered")
 	return command
-}
-
-function commandContext(): { ctx: ExtensionCommandContext; notify: ReturnType<typeof vi.fn> } {
-	const notify = vi.fn()
-	return {
-		ctx: { hasUI: true, ui: { notify, theme: theme() } } as unknown as ExtensionCommandContext,
-		notify,
-	}
 }
 
 function theme(): Theme {
@@ -86,16 +80,11 @@ describe("formatBudgetBreakdown", () => {
 		}
 
 		const output = formatBudgetBreakdown(snapshot, theme()).join("\n")
+		expect(unstyled(output)).toBe(
+			"Budget  Jul 1–Aug 1 UTC\n\nBUDGET                                USED      LIMIT    USAGE\n──────────────────────────────────────────────────────────────\nPersonal                           $274.59        $2k   13.73%\n  └─ anthropic                     $273.20       $400   68.30%\n\nOrganization per-user hard         $274.59      $300k    0.09%",
+		)
 		expect(output).toContain("<accent>Budget</accent>")
-		expect(unstyled(output)).toContain("Budget  Jul 1–Aug 1 UTC")
-		expect(unstyled(output)).toContain("BUDGET")
-		expect(unstyled(output)).not.toContain("STATUS")
-		expect(unstyled(output)).not.toContain("● OK")
 		expect(output).toContain("<success>")
-		expect(unstyled(output)).toContain("Personal")
-		expect(output).toContain("anthropic")
-		expect(output).toContain("68.30%")
-		expect(unstyled(output)).toContain("Organization per-user hard")
 	})
 
 	it("renders disabled, unlimited, and zero-capped provider limits", () => {
@@ -146,7 +135,8 @@ describe("formatBudgetBreakdown", () => {
 
 describe("budget command", () => {
 	it("reports unavailable budget information after refresh fails", async () => {
-		const { ctx, notify } = commandContext()
+		const notify = vi.fn()
+		const ctx = createContext({ ui: { notify, theme: theme() } }) as ExtensionCommandContext
 
 		await registeredBudgetCommand().handler("", ctx)
 
@@ -161,7 +151,8 @@ describe("budget command", () => {
 				budgets: [],
 			}),
 		)
-		const { ctx, notify } = commandContext()
+		const notify = vi.fn()
+		const ctx = createContext({ ui: { notify, theme: theme() } }) as ExtensionCommandContext
 
 		await registeredBudgetCommand().handler("", ctx)
 

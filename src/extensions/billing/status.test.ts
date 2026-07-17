@@ -446,7 +446,16 @@ describe("billing status", () => {
 		const fetchImpl = ((input: RequestInfo | URL) => {
 			if (String(input).endsWith("/credits")) return Promise.resolve(new Response("nope", { status: 500 }))
 			return Promise.resolve(
-				new Response(JSON.stringify(budgetPayload({ budgetType: "BUDGET_TYPE_PER_USER" })), { status: 200 }),
+				new Response(
+					JSON.stringify(
+						budgetPayload({
+							budgetType: "BUDGET_TYPE_PER_USER",
+							budgetLimitUsd: "2000.000000",
+							totalSpendUsd: "1800.000000",
+						}),
+					),
+					{ status: 200 },
+				),
 			)
 		}) as typeof fetch
 
@@ -455,6 +464,26 @@ describe("billing status", () => {
 		expect(getBillingStatus()?.budget?.budgets[0]?.scope).toBe("USER")
 		expect(getBillingStatus()?.budget?.budgets[0]?.budgetType).toBe("BUDGET_TYPE_PER_USER")
 		expect(getBillingStatusLine()).toEqual({ budget: "90.00% ($1.8k/$2k)" })
+	})
+
+	it("does not notify listeners when equivalent budget object keys are reordered", async () => {
+		configureBillingCreditsApi({ apiKey: "api-key", llmEndpoint: "https://llm.kimchi.dev/openai/v1" })
+		const payload = budgetPayload()
+		setBillingStatusForTest({
+			budget: { budgets: payload.budgets, period: payload.period },
+			updatedAt: "2026-07-01T00:00:00Z",
+		})
+		const updates: Array<unknown> = []
+		const unsubscribe = subscribeBillingStatus((status) => updates.push(status))
+
+		try {
+			await refreshBudgetStatus({
+				fetch: (() => Promise.resolve(new Response(JSON.stringify(payload), { status: 200 }))) as typeof fetch,
+			})
+			expect(updates).toEqual([])
+		} finally {
+			unsubscribe()
+		}
 	})
 
 	it("preserves credits and clears only budget state when an older proxy returns 404", async () => {

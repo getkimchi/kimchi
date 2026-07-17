@@ -522,9 +522,12 @@ describe("StatusLine segment coverage", () => {
 		withPinned(["budget"], () => {
 			const statusLine = new StatusLine(createMockContext(), theme, createMockStatusLineData())
 			const visible = renderVisible(statusLine, 200)
+			const compact = renderVisible(statusLine, 42)
 
 			expect(visible).not.toContain("Credits:")
 			expect(visible).toContain("Budget: 13.73% ($274.59/$2k)")
+			expect(compact).toContain("Budget: 13.73%")
+			expect(compact).not.toContain("$274.59/$2k")
 		})
 	})
 
