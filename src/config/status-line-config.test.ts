@@ -46,8 +46,8 @@ afterEach(() => {
 // ── STATUS_LINE_ELEMENTS metadata ────────────────────────────────────────────
 
 describe("STATUS_LINE_ELEMENTS", () => {
-	it("has 10 entries", () => {
-		expect(STATUS_LINE_ELEMENTS).toHaveLength(10)
+	it("has 11 entries", () => {
+		expect(STATUS_LINE_ELEMENTS).toHaveLength(11)
 	})
 
 	it("every entry has id, label, description", () => {
@@ -70,7 +70,8 @@ describe("STATUS_LINE_ELEMENTS", () => {
 			"phase",
 			"tags",
 			"team",
-			"billing",
+			"credits",
+			"budget",
 		].sort()
 		expect(ids).toEqual(expected)
 	})
@@ -112,9 +113,9 @@ describe("readStatusLineConfig", () => {
 		expect(readStatusLineConfig().pinned).toEqual(["context"])
 	})
 
-	it("keeps billing when pinned in config", () => {
+	it("migrates the legacy billing toggle to credits and budget", () => {
 		memfs.set(SETTINGS_PATH, JSON.stringify({ statusLine: { pinned: ["billing"] } }, null, 2))
-		expect(readStatusLineConfig().pinned).toEqual(["billing"])
+		expect(readStatusLineConfig().pinned).toEqual(["credits", "budget"])
 	})
 
 	it("ignores non-string items in the pinned array", () => {

@@ -18,7 +18,7 @@ describe("billing tips", () => {
 
 		expect(createBillingTipProvider().getTips()).toEqual([
 			expect.objectContaining({
-				id: "billing-low",
+				id: "billing-low-0",
 				tone: "warning",
 				showPrefix: false,
 			}),
@@ -36,7 +36,7 @@ describe("billing tips", () => {
 
 		expect(createBillingTipProvider().getTips()).toEqual([
 			expect.objectContaining({
-				id: "billing-exhausted",
+				id: "billing-exhausted-0",
 				tone: "error",
 				showPrefix: false,
 			}),

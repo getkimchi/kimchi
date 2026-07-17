@@ -14,7 +14,7 @@ import { buildScriptPayload, readStatusLineCommand, StatusLine, StatusLineScript
 import { collapseAll, expandNext, resetState } from "../expand-state.js"
 import { refreshGitBranch } from "../utils.js"
 import { getBillingStatusLine, getCommunityTierHeaderNotice, subscribeBillingStatus } from "./billing/status.js"
-import { formatBillingStatusLine } from "./billing/status-line-format.js"
+import { formatBudgetStatusLine, formatCreditsStatusLine } from "./billing/status-line-format.js"
 import { isBareExitAlias } from "./exit-utils.js"
 import { getActiveFerment, getFermentContinuationPolicy } from "./ferment/index.js"
 import { formatFermentStatusLineDisplay } from "./ferment/status-line.js"
@@ -327,7 +327,8 @@ export default function uiExtension(pi: ExtensionAPI) {
 				const perm = statusLineData.getExtensionStatuses().get("permissions-mode")
 				if (perm) parts.push(perm)
 				const billing = getBillingStatusLine()
-				if (billing) parts.push(formatBillingStatusLine(billing, theme))
+				if (billing?.amount) parts.push(formatCreditsStatusLine(billing.amount, theme))
+				if (billing?.budget) parts.push(formatBudgetStatusLine(billing.budget, theme))
 				const modelId = getMultiModelEnabled(ctx.sessionManager)
 					? `multi-model (${getOrchestratorModelId(sessionId)})`
 					: (ctx.model?.id ?? "n/a")
