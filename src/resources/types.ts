@@ -1,4 +1,4 @@
-export const RESOURCE_KINDS = ["hooks", "extensions", "tools", "plugins", "experimental"] as const
+export const RESOURCE_KINDS = ["hooks", "extensions", "tools", "plugins"] as const
 
 export type ResourceKind = (typeof RESOURCE_KINDS)[number]
 export type ResourceId = `${ResourceKind}.${string}`

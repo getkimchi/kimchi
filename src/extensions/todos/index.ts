@@ -83,14 +83,14 @@ function restoreTodoStoreFromSessionEntries(sessionManager: Pick<SessionManager,
 }
 
 function currentTodoStateKey(sessionId: string): string | undefined {
-	const scope = resolveTodoScope(undefined, sessionId)
+	const scope = resolveTodoScope()
 	const todos = getTodosForScope(scope, sessionId)
 	if (todos.length === 0) return undefined
 	return JSON.stringify({ scope, todos: todos.map((todo) => [todo.id, todo.status, todo.content]) })
 }
 
 function currentTodoStateText(sessionId: string): string | undefined {
-	const scope = resolveTodoScope(undefined, sessionId)
+	const scope = resolveTodoScope()
 	const todos = getTodosForScope(scope, sessionId)
 	if (todos.length === 0) return undefined
 	const scopeText = scope.kind === "global" ? "global" : JSON.stringify(scope)

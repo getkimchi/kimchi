@@ -157,8 +157,6 @@ function tabIcon(tab: ResourceTab): string {
 			return "▣"
 		case "plugins":
 			return "◈"
-		case "experimental":
-			return "⚗"
 	}
 }
 
@@ -174,8 +172,6 @@ function tabDescription(tab: ResourceTab): string {
 			return "Built-in Kimchi feature modules."
 		case "plugins":
 			return "External connector and package surfaces."
-		case "experimental":
-			return "Opt-in features that may change or be removed."
 	}
 }
 

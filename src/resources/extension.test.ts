@@ -55,7 +55,6 @@ describe("resourcesExtension", () => {
 	it.each([
 		["hooks", "hooks"],
 		["plugins", "plugins"],
-		["experimental", "experimental"],
 	] as const)("opens the %s resource menu", async (commandName, kind) => {
 		const { api, commands } = makeMockPi()
 		const ctx = makeUIContext()

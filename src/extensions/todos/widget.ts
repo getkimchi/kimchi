@@ -152,7 +152,7 @@ function todoWindowAfterText(hiddenAfter: number): string | undefined {
 }
 
 export function buildTodoLines(theme: Theme, sessionId: string): string[] {
-	const scope = resolveTodoScope(undefined, sessionId)
+	const scope = resolveTodoScope()
 	const todos = getTodosForScope(scope, sessionId)
 
 	if (todos.length === 0) {
@@ -178,7 +178,7 @@ function buildTodoListHeaderLines(theme: Theme, scope: TodoScope, sessionId: str
 }
 
 function buildTodoWidgetLines(theme: Theme, expanded: boolean, sessionId: string): string[] {
-	const scope = resolveTodoScope(undefined, sessionId)
+	const scope = resolveTodoScope()
 	const todos = getTodosForScope(scope, sessionId)
 	const lines = buildTodoLines(theme, sessionId)
 	const withHint = [...lines, "", theme.fg("dim", TODO_LIST_HINT_TEXT)]
@@ -213,7 +213,7 @@ function requestTodoRender(ctx: ExtensionContext): void {
 export function setTodosStatus(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return
 	const sessionId = ctx.sessionManager.getSessionId()
-	const scope = resolveTodoScope(undefined, sessionId)
+	const scope = resolveTodoScope()
 	const counts = getTodoCountsForScope(scope, sessionId)
 	ctx.ui.setStatus(TODO_STATUS_KEY, hasActiveTodos(counts) ? `${summarizeTodoCounts(counts)} -> F7` : undefined)
 }
@@ -297,7 +297,7 @@ export function toggleTodoWidget(ctx: ExtensionContext): void {
 export function syncTodoWidget(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return
 	const sessionId = ctx.sessionManager.getSessionId()
-	const scope = resolveTodoScope(undefined, sessionId)
+	const scope = resolveTodoScope()
 	const counts = getTodoCountsForScope(scope, sessionId)
 	const state = getTodoWidgetState(ctx)
 	if (!state.collapsed && hasActiveTodos(counts)) openTodoWidget(ctx)

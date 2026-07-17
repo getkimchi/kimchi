@@ -18,7 +18,7 @@ export default function resourcesExtension(pi: ExtensionAPI): void {
 	})
 
 	pi.registerCommand("resources", {
-		description: "View/change Kimchi hooks, tools, extensions, plugins, and experimental features",
+		description: "View/change Kimchi hooks, tools, extensions, and plugins",
 		handler: async (args, ctx) => {
 			await handleResourcesCommand(args, ctx)
 		},
@@ -35,13 +35,6 @@ export default function resourcesExtension(pi: ExtensionAPI): void {
 		description: "View/change Kimchi plugins",
 		handler: async (_args, ctx) => {
 			await openResourceKindMenu(ctx, "plugins")
-		},
-	})
-
-	pi.registerCommand("experimental", {
-		description: "View/change experimental Kimchi features",
-		handler: async (_args, ctx) => {
-			await openResourceKindMenu(ctx, "experimental")
 		},
 	})
 }

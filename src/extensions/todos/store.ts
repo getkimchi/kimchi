@@ -4,7 +4,7 @@ import type { TodoCounts, TodoItem, TodoScope, TodosSliceState, WriteTodosDetail
 
 export const GLOBAL_TODO_SCOPE: TodoScope = { kind: "global" }
 
-export type TodoScopeProvider = (sessionId: string | undefined) => TodoScope | undefined
+export type TodoScopeProvider = () => TodoScope | undefined
 
 /** Per-session todo state. Keyed by session id so that two concurrent keyed
  * sessions in the same process do not see each other's todos. */
@@ -30,19 +30,19 @@ export function getTodoState(sessionId: string): TodosSliceState {
 	return getSessionState(sessionId)
 }
 
-export function resolveTodoScope(scopeInput?: unknown, sessionId?: string): TodoScope {
+export function resolveTodoScope(scopeInput?: unknown): TodoScope {
 	if (scopeInput !== undefined) return normalizeTodoScope(scopeInput)
 
 	for (const provider of activeScopeProviders) {
-		const scope = provider(sessionId)
+		const scope = provider()
 		if (scope) return scope
 	}
 
 	return GLOBAL_TODO_SCOPE
 }
 
-function resolveWriteTodoScope(params: WriteTodosParams, sessionId: string): TodoScope {
-	return resolveTodoScope(params.scope, sessionId)
+function resolveWriteTodoScope(params: WriteTodosParams): TodoScope {
+	return resolveTodoScope(params.scope)
 }
 
 function notifyTodoStoreListeners(details: WriteTodosDetails, sessionId: string): void {
@@ -52,7 +52,7 @@ function notifyTodoStoreListeners(details: WriteTodosDetails, sessionId: string)
 }
 
 export function applyWriteTodos(params: WriteTodosParams, sessionId: string): WriteTodosDetails {
-	const scope = resolveWriteTodoScope(params, sessionId)
+	const scope = resolveWriteTodoScope(params)
 	const current = getSessionState(sessionId)
 	const result = reduceReplaceList(current, { ...params, scope })
 	setSessionState(sessionId, result.state)

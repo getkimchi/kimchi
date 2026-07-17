@@ -1,35 +1,27 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, Key, matchesKey, visibleWidth } from "@earendil-works/pi-tui"
-import { isResourceEnabled } from "../resources/store.js"
-import { GOAL_RESOURCE_ID } from "./goal/constants.js"
 import { SLASH_COMMANDS } from "./slash-commands.js"
 
 type HelpRow = { kind: "heading"; text: string } | { kind: "entry"; key: string; desc: string } | { kind: "spacer" }
 
-export function buildHelpRows(goalEnabled = isResourceEnabled(GOAL_RESOURCE_ID)): HelpRow[] {
-	return [
-		{ kind: "heading", text: "Keyboard Shortcuts" },
-		{ kind: "entry", key: "Enter", desc: "Submit prompt" },
-		{ kind: "entry", key: "Shift+Enter / Ctrl+J", desc: "Newline in input" },
-		{ kind: "entry", key: "Up/Down", desc: "Navigate input history" },
-		{ kind: "entry", key: "Escape", desc: "Close dialog / Abort running agent" },
-		{ kind: "entry", key: "Ctrl+C", desc: "Clear input / Abort running agent" },
-		{ kind: "entry", key: "Ctrl+P", desc: "Cycle to next model" },
-		{ kind: "entry", key: "Shift+Tab", desc: "Change permissions mode" },
+const HELP_ROWS: HelpRow[] = [
+	{ kind: "heading", text: "Keyboard Shortcuts" },
+	{ kind: "entry", key: "Enter", desc: "Submit prompt" },
+	{ kind: "entry", key: "Shift+Enter / Ctrl+J", desc: "Newline in input" },
+	{ kind: "entry", key: "Up/Down", desc: "Navigate input history" },
+	{ kind: "entry", key: "Escape", desc: "Close dialog / Abort running agent" },
+	{ kind: "entry", key: "Ctrl+C", desc: "Clear input / Abort running agent" },
+	{ kind: "entry", key: "Ctrl+P", desc: "Cycle to next model" },
+	{ kind: "entry", key: "Shift+Tab", desc: "Change permissions mode" },
 
-		{ kind: "spacer" },
-		{ kind: "heading", text: "Slash Commands" },
-		...Object.entries(SLASH_COMMANDS)
-			.filter(([key]) => key !== "goal" || goalEnabled)
-			.map(([key, { hint }]) => ({
-				kind: "entry" as const,
-				key: `/${key}`,
-				desc: hint,
-			})),
-	]
-}
-
-const HELP_ROWS = buildHelpRows()
+	{ kind: "spacer" },
+	{ kind: "heading", text: "Slash Commands" },
+	...Object.entries(SLASH_COMMANDS).map(([key, { hint }]) => ({
+		kind: "entry" as const,
+		key: `/${key}`,
+		desc: hint,
+	})),
+]
 
 // The overlay maxHeight percentage — must match overlayOptions below.
 const MAX_HEIGHT_PCT = 0.9

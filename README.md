@@ -175,7 +175,7 @@ User-defined tags (added via `/tags add`) are persisted to `~/.config/kimchi/tag
 
 Goal mode keeps one objective active across turns in the current session branch and automatically continues work until the agent marks that exact goal revision complete or blocked. It uses the normal todo tools for tactical steps; it does not create Ferment phases, workers, or worktrees.
 
-Enable it with `/experimental`, toggle **Goal mode**, then restart Kimchi. Experimental features are disabled by default and can change or be removed.
+Enable **Goal mode (experimental)** under `/resources` → **Extensions**, then restart Kimchi. It is disabled by default and can change or be removed.
 
 | Command | Description |
 |---------|-------------|

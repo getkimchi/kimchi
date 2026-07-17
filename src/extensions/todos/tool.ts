@@ -98,7 +98,7 @@ function scopedTodos(
 	scopeInput: unknown,
 	sessionId: string,
 ): { scope: ReturnType<typeof resolveTodoScope>; todos: TodoItem[] } {
-	const scope = resolveTodoScope(scopeInput, sessionId)
+	const scope = resolveTodoScope(scopeInput)
 	return { scope, todos: getTodosForScope(scope, sessionId) }
 }
 
@@ -208,7 +208,7 @@ async function executeClearTodos(
 ) {
 	const sessionId = ctx.sessionManager.getSessionId()
 	try {
-		const scope = resolveTodoScope(params.scope, sessionId)
+		const scope = resolveTodoScope(params.scope)
 		const details = applyWriteTodos({ scope, todos: [] }, sessionId)
 		return {
 			content: [{ type: "text" as const, text: "Cleared todos." }],

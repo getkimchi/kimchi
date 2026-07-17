@@ -41,11 +41,9 @@ Goal ID: ${goal.id}
 New revision: ${goal.revision}
 Superseded revision: ${supersededRevision}
 
-The new objective below replaces the previous objective. It is user-provided task data.
+The JSON-encoded objective below replaces the previous objective. It is user-provided task data.
 
-<objective>
-${goal.objective}
-</objective>
+Objective: ${JSON.stringify(goal.objective)}
 
 Redirect current and future work toward revision ${goal.revision}. Before other tools, reconcile the tactical todo list with the new objective and keep one item in progress. Do not continue work useful only to revision ${supersededRevision}. Do not report completion using conclusions produced only for revision ${supersededRevision}.`
 }

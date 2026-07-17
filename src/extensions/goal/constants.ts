@@ -1,4 +1,4 @@
-export const GOAL_RESOURCE_ID = "experimental.goal"
+export const GOAL_RESOURCE_ID = "extensions.goal"
 export const GOAL_CUSTOM_ENTRY_TYPE = "kimchi_goal_state"
 export const GOAL_CONTEXT_MESSAGE_TYPE = "kimchi_goal_context"
 export const GOAL_CONTROL_MESSAGE_TYPE = "kimchi_goal_control"

@@ -98,7 +98,7 @@ test("experimental goal stops after exact-revision completion", async ({ termina
 function enableGoalMode(homeDir: string): void {
 	const settingsPath = join(homeDir, ".config", "kimchi", "harness", "settings.json")
 	const settings = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>
-	settings.resources = { "experimental.goal": true }
+	settings.resources = { "extensions.goal": true }
 	writeFileSync(settingsPath, `${JSON.stringify(settings, null, "\t")}\n`, "utf-8")
 }
 

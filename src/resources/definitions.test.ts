@@ -85,9 +85,9 @@ describe("resource definitions", () => {
 	})
 
 	it("registers goal mode as an opt-in experimental feature", () => {
-		expect(getResourceDefinitions().find((resource) => resource.id === "experimental.goal")).toMatchObject({
-			kind: "experimental",
-			label: "Goal mode",
+		expect(getResourceDefinitions().find((resource) => resource.id === "extensions.goal")).toMatchObject({
+			kind: "extensions",
+			label: "Goal mode (experimental)",
 			defaultEnabled: false,
 			restartRequired: true,
 		})

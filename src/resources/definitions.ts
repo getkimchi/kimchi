@@ -111,15 +111,15 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 	},
 	{
 		id: GOAL_RESOURCE_ID,
-		kind: "experimental",
-		label: "Goal mode",
+		kind: "extensions",
+		label: "Goal mode (experimental)",
 		description: "Enable persistent session goals with guarded automatic continuation.",
 		defaultEnabled: false,
 		restartRequired: true,
 	},
 ]
 
-export const RESOURCE_KINDS: readonly ResourceKind[] = ["hooks", "tools", "extensions", "plugins", "experimental"]
+export const RESOURCE_KINDS: readonly ResourceKind[] = ["hooks", "tools", "extensions", "plugins"]
 
 export const TOOL_RESOURCE_IDS: Readonly<Record<string, string>> = {
 	web_search: "tools.web_search",

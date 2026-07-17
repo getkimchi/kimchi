@@ -124,17 +124,6 @@ describe("todo store", () => {
 		expect(second).not.toHaveBeenCalled()
 	})
 
-	it("applies active scope providers only to their session", () => {
-		const scoped = { kind: "ferment-step" as const, phaseId: "phase-a", stepId: "step-a" }
-		registerActiveTodoScopeProvider((sessionId) => (sessionId === "session-a" ? scoped : undefined))
-
-		applyWriteTodos({ todos: [{ content: "A scoped", status: "pending" }] }, "session-a")
-		applyWriteTodos({ todos: [{ content: "B global", status: "pending" }] }, "session-b")
-
-		expect(getTodosForScope(scoped, "session-a").map((todo) => todo.content)).toEqual(["A scoped"])
-		expect(getTodosForScope(GLOBAL_TODO_SCOPE, "session-b").map((todo) => todo.content)).toEqual(["B global"])
-	})
-
 	it("unregisters active scope providers", () => {
 		const provider = vi.fn(() => GLOBAL_TODO_SCOPE)
 		const unregister = registerActiveTodoScopeProvider(provider)

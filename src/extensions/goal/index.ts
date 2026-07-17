@@ -89,13 +89,14 @@ export default function goalExtension(pi: ExtensionAPI): void {
 	function serializeGoalMutation<T>(sessionId: string, operation: () => Promise<T> | T): Promise<T> {
 		const previous = mutationTails.get(sessionId) ?? Promise.resolve()
 		const result = previous.then(operation, operation)
-		mutationTails.set(
-			sessionId,
-			result.then(
-				() => undefined,
-				() => undefined,
-			),
+		const tail = result.then(
+			() => undefined,
+			() => undefined,
 		)
+		mutationTails.set(sessionId, tail)
+		void tail.then(() => {
+			if (mutationTails.get(sessionId) === tail) mutationTails.delete(sessionId)
+		})
 		return result
 	}
 
@@ -148,10 +149,9 @@ export default function goalExtension(pi: ExtensionAPI): void {
 		statusRefreshTimer.unref()
 	}
 
-	function checkpointGoal(goal: SessionGoal, tokensUsed: number, nowMs: number, keepRunning: boolean): SessionGoal {
+	function checkpointGoal(goal: SessionGoal, tokensUsed: number, nowMs: number): SessionGoal {
 		const startedAt = activeSinceMs
 		const elapsed = startedAt === undefined ? 0 : Math.max(0, nowMs - startedAt)
-		activeSinceMs = keepRunning && startedAt !== undefined ? nowMs : undefined
 		if (tokensUsed === 0 && elapsed === 0) return goal
 		return addGoalAccounting(goal, goal.id, tokensUsed, elapsed, timestamp(nowMs))
 	}
@@ -351,9 +351,10 @@ export default function goalExtension(pi: ExtensionAPI): void {
 				const current = assertUnchanged(captured)
 				if (!current) throw new Error("No goal is currently set.")
 				const nowMs = Date.now()
-				const accounted = checkpointGoal(current, 0, nowMs, current.status === "active")
+				const accounted = checkpointGoal(current, 0, nowMs)
 				const next = editGoal(accounted, current.id, current.revision, editedObjective, timestamp(nowMs))
 				commitGoal(next)
+				activeSinceMs = current.status === "active" && activeSinceMs !== undefined ? nowMs : undefined
 				invalidateContinuation()
 				todoStateFor = undefined
 				syncGoalStatus(ctx)
@@ -391,9 +392,10 @@ export default function goalExtension(pi: ExtensionAPI): void {
 			}
 			if (current.status === "complete") return ctx.ui.notify("A completed goal cannot be paused.", "warning")
 			const nowMs = Date.now()
-			const accounted = checkpointGoal(current, 0, nowMs, false)
+			const accounted = checkpointGoal(current, 0, nowMs)
 			const next = setGoalStatus(accounted, current.id, current.revision, "paused", timestamp(nowMs))
 			commitGoal(next)
+			activeSinceMs = undefined
 			invalidateContinuation()
 			syncGoalStatus(ctx)
 			if (!ctx.isIdle()) {
@@ -492,7 +494,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 					}
 					const current = requireCurrentGoal(currentGoal, params.goalId, params.revision)
 					const nowMs = Date.now()
-					const accounted = checkpointGoal(current, 0, nowMs, false)
+					const accounted = checkpointGoal(current, 0, nowMs)
 					const next = setGoalStatus(
 						accounted,
 						params.goalId,
@@ -501,6 +503,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 						timestamp(nowMs),
 					)
 					commitGoal(next)
+					activeSinceMs = undefined
 					invalidateContinuation()
 					pendingTerminalFeedback = {
 						sessionId,
@@ -597,9 +600,9 @@ export default function goalExtension(pi: ExtensionAPI): void {
 
 	pi.on("tool_execution_end", (event, ctx) => {
 		if (event.isError || !TODO_TOOL_NAME_SET.has(event.toolName)) return
-		const sessionId = bindSession(ctx)
+		bindSession(ctx)
 		const goal = currentGoal
-		const expectedScopeKey = getTodoScopeKey(resolveTodoScope(undefined, sessionId))
+		const expectedScopeKey = getTodoScopeKey(resolveTodoScope())
 		const todoState = todoResultState(event.result, expectedScopeKey)
 		if (goal?.status !== "active" || !todoState) return
 		const previous = matchesGoal(todoStateFor, goal, currentSessionId) ? todoStateFor : undefined
@@ -644,13 +647,14 @@ export default function goalExtension(pi: ExtensionAPI): void {
 			const current = currentGoal
 			if (attribution?.sessionId === sessionId && current?.id === attribution.goalId) {
 				const nowMs = Date.now()
-				const accounted = checkpointGoal(current, assistantTurnTokens(event), nowMs, false)
+				const accounted = checkpointGoal(current, assistantTurnTokens(event), nowMs)
 				const reachedBudget = current.status === "active" && accounted.status === "budget_limited"
 				const interruption = current.status === "active" ? assistantTurnInterruption(event) : undefined
 				const next = interruption
 					? setGoalStatus(accounted, current.id, current.revision, "paused", timestamp(nowMs))
 					: accounted
 				if (next !== current) commitGoal(next)
+				activeSinceMs = undefined
 				if (interruption) {
 					invalidateContinuation()
 					ctx.ui.notify(
@@ -713,9 +717,10 @@ function matchesGoal(
 function assistantTurnTokens(event: TurnEndEvent): number {
 	if (event.message.role !== "assistant") return 0
 	const usage = event.message.usage
-	const total = Number.isFinite(usage.totalTokens)
+	const finite = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) ? value : 0)
+	const total = Number.isFinite(usage?.totalTokens)
 		? usage.totalTokens
-		: usage.input + usage.output + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0)
+		: finite(usage?.input) + finite(usage?.output) + finite(usage?.cacheRead) + finite(usage?.cacheWrite)
 	return Math.max(0, Math.round(total))
 }
 
@@ -723,13 +728,12 @@ function todoResultState(
 	result: unknown,
 	expectedScopeKey: string,
 ): Pick<GoalTodoState, "total" | "blocked" | "completed"> | undefined {
-	if (
-		!isRecord(result) ||
-		!isRecord(result.details) ||
-		result.details.scope === undefined ||
-		!Array.isArray(result.details.todos) ||
-		getTodoScopeKey(normalizeTodoScope(result.details.scope)) !== expectedScopeKey
-	) {
+	if (!isRecord(result) || !isRecord(result.details) || !Array.isArray(result.details.todos)) {
+		return undefined
+	}
+	try {
+		if (getTodoScopeKey(normalizeTodoScope(result.details.scope)) !== expectedScopeKey) return undefined
+	} catch {
 		return undefined
 	}
 

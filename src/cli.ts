@@ -50,6 +50,7 @@ import clipboardImageExtension from "./extensions/clipboard-image.js"
 import customizeStatusLineExtension from "./extensions/customize-status-line-command.js"
 import explorationGuardExtension from "./extensions/exploration-guard.js"
 import fermentExtension from "./extensions/ferment/index.js"
+import { GOAL_RESOURCE_ID } from "./extensions/goal/constants.js"
 import goalExtension from "./extensions/goal/index.js"
 import helpExtension from "./extensions/help.js"
 import hideThinkingExtension from "./extensions/hide-thinking.js"
@@ -644,7 +645,7 @@ try {
 				{ id: "extensions.agents", factory: agentsExtension },
 			] satisfies ManagedExtensionFactory[]),
 			...enabledExtensionFactories([
-				{ id: "experimental.goal", factory: goalExtension },
+				{ id: GOAL_RESOURCE_ID, factory: goalExtension },
 			] satisfies ManagedExtensionFactory[]),
 			helpExtension,
 			themeSelectorExtension,
