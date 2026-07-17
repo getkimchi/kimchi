@@ -75,6 +75,7 @@ function usageColor(percentage: number): "success" | "warning" | "error" {
 function formatProviderLimit(limitType: string, budgetLimitUsd: string): string {
 	if (limitType.endsWith("_DISABLED") || limitType === "DISABLED") return "disabled"
 	if (limitType.endsWith("_UNLIMITED") || limitType === "UNLIMITED") return "unlimited"
+	if (isCappedProviderLimitType(limitType) && Number(budgetLimitUsd) === 0) return "$0"
 	return formatBudgetLimit(budgetLimitUsd)
 }
 

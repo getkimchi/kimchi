@@ -98,7 +98,7 @@ describe("formatBudgetBreakdown", () => {
 		expect(unstyled(output)).toContain("Organization per-user hard")
 	})
 
-	it("renders disabled and unlimited provider limits without inventing dollar caps", () => {
+	it("renders disabled, unlimited, and zero-capped provider limits", () => {
 		const snapshot: BudgetSnapshot = {
 			period: { startTime: "2026-07-01T00:00:00Z", endTime: "2026-08-01T00:00:00Z" },
 			budgets: [
@@ -120,6 +120,12 @@ describe("formatBudgetBreakdown", () => {
 							budgetLimitUsd: "400.000000",
 							usageUsd: "1.000000",
 						},
+						{
+							provider: "zero-capped-provider",
+							limitType: "PROVIDER_BUDGET_LIMIT_TYPE_CAPPED",
+							budgetLimitUsd: "0.000000",
+							usageUsd: "0.000000",
+						},
 					],
 				},
 			],
@@ -130,6 +136,9 @@ describe("formatBudgetBreakdown", () => {
 		expect(unstyled(output)).toContain("$0.00   disabled")
 		expect(unstyled(output)).toContain("unlimited-provider")
 		expect(unstyled(output)).toContain("$1.00  unlimited")
+		const zeroCappedRow = output.split("\n").find((line) => line.includes("zero-capped-provider"))
+		expect(zeroCappedRow).toContain("$0")
+		expect(zeroCappedRow).not.toContain("unlimited")
 		expect(output.split("\n").find((line) => line.includes("disabled-provider"))).not.toContain("%")
 		expect(output.split("\n").find((line) => line.includes("unlimited-provider"))).not.toContain("%")
 	})

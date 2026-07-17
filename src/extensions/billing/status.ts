@@ -128,15 +128,17 @@ export function configureBillingCreditsApi(options: { apiKey?: string; llmEndpoi
 }
 
 export function creditsEndpointFromLlmEndpoint(llmEndpoint: string): string {
-	const trimmed = llmEndpoint.trim().replace(/\/+$/, "")
-	const proxyRoot = trimmed.replace(/\/openai\/v1$/i, "")
-	return `${proxyRoot}/v1/credits`
+	return billingEndpointFromLlmEndpoint(llmEndpoint, "credits")
 }
 
 export function budgetEndpointFromLlmEndpoint(llmEndpoint: string): string {
+	return billingEndpointFromLlmEndpoint(llmEndpoint, "budget")
+}
+
+function billingEndpointFromLlmEndpoint(llmEndpoint: string, resource: "credits" | "budget"): string {
 	const trimmed = llmEndpoint.trim().replace(/\/+$/, "")
 	const proxyRoot = trimmed.replace(/\/openai\/v1$/i, "")
-	return `${proxyRoot}/v1/budget`
+	return `${proxyRoot}/v1/${resource}`
 }
 
 export async function refreshBillingStatus(
