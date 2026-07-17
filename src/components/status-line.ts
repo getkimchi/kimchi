@@ -117,6 +117,7 @@ export function buildScriptPayload(
 			lastTurn = { input: u.input, output: u.output }
 		}
 	}
+	const billing = getBillingStatusLine()
 
 	return {
 		// kimchi fields
@@ -126,6 +127,8 @@ export function buildScriptPayload(
 			limit: usage?.contextWindow ?? null,
 			percent: usage?.percent ?? null,
 		},
+		credits: billing?.amount ?? null,
+		budget: billing?.budget ?? null,
 		workspace: { cwd: ctx.cwd, current_dir: ctx.cwd },
 		status,
 		session: {
