@@ -626,7 +626,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					name: fermentName,
 					goal: parsed.goal,
 					hasUI: ctx.hasUI,
-					isOneShot: pi.getFlag?.("ferment-oneshot") === true,
+					isOneShot: pi.getFlag("ferment-oneshot") === true,
 				})
 				// Scope it using the structured fields from the shared plan.
 				const applyAndPersist = createApplyAndPersist(runtime)
