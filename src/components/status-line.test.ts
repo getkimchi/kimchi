@@ -545,6 +545,17 @@ describe("StatusLine segment coverage", () => {
 
 		expect(visible).not.toContain("Credits: $5.00")
 	})
+
+	it("passes the active session id to phase and tag lookups", () => {
+		withPinned(["phase", "tags"], () => {
+			const getCurrentPhaseSpy = vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("explore")
+			const getActiveTagsSpy = vi.spyOn(TAGS, "getActiveTags").mockReturnValue(["env:prod"])
+			const sl = new StatusLine(createMockContext(), theme, createMockStatusLineData())
+			renderVisible(sl, 200)
+			expect(getCurrentPhaseSpy).toHaveBeenCalledWith("test-session")
+			expect(getActiveTagsSpy).toHaveBeenCalledWith("test-session")
+		})
+	})
 })
 
 describe("StatusLine info line", () => {

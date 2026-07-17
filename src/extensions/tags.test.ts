@@ -1,10 +1,30 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { dirname, join } from "node:path"
+import type { ExtensionAPI, ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { createContext } from "./__mocks__/context.js"
 import { buildSystemPrompt, type EnvironmentInfo } from "./prompt-construction/system-prompt.js"
-import tagsExtension, { isValidTag, parseTag, TagManager } from "./tags.js"
+
+vi.mock("node:os", async (importOriginal) => {
+	const { join } = await import("node:path")
+	const mod = await importOriginal<typeof import("node:os")>()
+	return {
+		...mod,
+		homedir: () => join(mod.tmpdir(), `kimchi-tags-mock-home-${process.pid}`),
+	}
+})
+
+import tagsExtension, {
+	getActiveTags,
+	getCurrentPhase,
+	isValidTag,
+	parseTag,
+	setCurrentPhase,
+	TagManager,
+} from "./tags.js"
+
+const MOCK_HOME = join(tmpdir(), `kimchi-tags-mock-home-${process.pid}`)
 
 const testEnv: EnvironmentInfo = {
 	os: "Linux",
@@ -29,20 +49,36 @@ type RegisteredTool = {
 	execute: (...args: unknown[]) => unknown
 }
 
+type RegisteredCommand = {
+	name: string
+	handler: (args: string, ctx: unknown) => unknown | Promise<unknown>
+}
+
 function makePi(): ExtensionAPI & {
 	fire: (event: string, payload?: unknown, ctx?: unknown) => Promise<unknown[]>
 	fireShutdown: () => void
 	getActiveTools: () => string[]
 	setActiveTools: (tools: string[]) => void
 	tools: Map<string, RegisteredTool>
+	commands: Map<string, RegisteredCommand>
+	runCommand: (name: string, args: string, ctx?: unknown) => Promise<unknown>
 } {
 	const shutdownHandlers: Array<() => void> = []
 	const handlers = new Map<string, Handler[]>()
-	const sessionStartCtx = { hasUI: false, sessionManager: { getSessionId: () => TEST_SESSION_ID } }
+	const sessionStartCtx = createContext({
+		hasUI: false,
+		sessionManager: { getSessionId: () => TEST_SESSION_ID },
+	})
 	const tools = new Map<string, RegisteredTool>()
+	const commands = new Map<string, RegisteredCommand>()
 	let activeTools: string[] = []
 	const pi = {
-		registerCommand: () => {},
+		registerCommand: (
+			name: string,
+			command: { handler: (args: string, ctx: unknown) => unknown | Promise<unknown> },
+		) => {
+			commands.set(name, { name, handler: command.handler })
+		},
 		registerTool: (tool: RegisteredTool) => {
 			tools.set(tool.name, tool)
 			activeTools.push(tool.name)
@@ -70,6 +106,12 @@ function makePi(): ExtensionAPI & {
 			for (const handler of shutdownHandlers) handler()
 		},
 		tools,
+		commands,
+		runCommand: async (name: string, args: string, ctx = sessionStartCtx) => {
+			const command = commands.get(name)
+			if (!command) throw new Error(`Command "${name}" not registered`)
+			return command.handler(args, ctx)
+		},
 	}
 	return pi as unknown as ExtensionAPI & {
 		fire: (event: string, payload?: unknown, ctx?: unknown) => Promise<unknown[]>
@@ -77,6 +119,8 @@ function makePi(): ExtensionAPI & {
 		getActiveTools: () => string[]
 		setActiveTools: (tools: string[]) => void
 		tools: Map<string, RegisteredTool>
+		commands: Map<string, RegisteredCommand>
+		runCommand: (name: string, args: string, ctx?: unknown) => Promise<unknown>
 	}
 }
 
@@ -142,7 +186,7 @@ describe("tags system prompt block", () => {
 		return pi
 	}
 	const setPhase = (pi: ReturnType<typeof makeTagsPi>, phase = "explore") =>
-		pi.tools.get("set_phase")?.execute("call-1", { phase }, undefined, undefined, { hasUI: false })
+		pi.tools.get("set_phase")?.execute("call-1", { phase }, undefined, undefined, createContext({ hasUI: false }))
 
 	it("registers phase tagging instructions with the extension that owns set_phase", async () => {
 		const pi = makeTagsPi()
@@ -185,7 +229,7 @@ describe("tags system prompt block", () => {
 
 		const result = await pi.tools
 			.get("set_phase")
-			?.execute("call-1", { phase: "plan", thinking: "high" }, undefined, undefined, { hasUI: false })
+			?.execute("call-1", { phase: "plan", thinking: "high" }, undefined, undefined, createContext({ hasUI: false }))
 
 		expect(result).toMatchObject({
 			content: [{ type: "text", text: "Phase changed to: plan" }],
@@ -196,83 +240,81 @@ describe("tags system prompt block", () => {
 })
 
 describe("TagManager persistence", () => {
-	let tempDir: string
-	let configPath: string
-
 	beforeEach(() => {
-		tempDir = mkdtempSync(join(tmpdir(), "kimchi-tags-test-"))
-		configPath = join(tempDir, "tags.json")
+		rmSync(MOCK_HOME, { recursive: true, force: true })
+		mkdirSync(MOCK_HOME, { recursive: true })
 		vi.stubEnv("KIMCHI_TAGS", "")
 	})
 
 	afterEach(() => {
-		rmSync(tempDir, { recursive: true, force: true })
+		rmSync(MOCK_HOME, { recursive: true, force: true })
 		vi.unstubAllEnvs()
 	})
 
 	it("persists added tags to config file", () => {
-		const manager = new TagManager(configPath)
+		const manager = new TagManager()
 		manager.add("project:test")
 
-		const loaded = new TagManager(configPath)
+		const loaded = new TagManager()
 		expect(loaded.getAllTags()).toContain("project:test")
 	})
 
 	it("loads tags from config file on initialization", () => {
+		const configPath = join(MOCK_HOME, ".config", "kimchi", "tags.json")
+		mkdirSync(dirname(configPath), { recursive: true })
 		writeFileSync(configPath, JSON.stringify({ tags: ["env:prod", "team:backend"] }))
 
-		const manager = new TagManager(configPath)
+		const manager = new TagManager()
 		expect(manager.getAllTags()).toEqual(expect.arrayContaining(["env:prod", "team:backend"]))
 	})
 
 	it("removes tags from config file when deleted", () => {
+		const configPath = join(MOCK_HOME, ".config", "kimchi", "tags.json")
+		mkdirSync(dirname(configPath), { recursive: true })
 		writeFileSync(configPath, JSON.stringify({ tags: ["tag1:value1", "tag2:value2"] }))
 
-		const manager = new TagManager(configPath)
+		const manager = new TagManager()
 		manager.remove("tag1:value1")
 
-		const loaded = new TagManager(configPath)
+		const loaded = new TagManager()
 		expect(loaded.getAllTags()).toEqual(["tag2:value2"])
 	})
 
 	it("clears all user tags from config file", () => {
+		const configPath = join(MOCK_HOME, ".config", "kimchi", "tags.json")
+		mkdirSync(dirname(configPath), { recursive: true })
 		writeFileSync(configPath, JSON.stringify({ tags: ["tag1:value1", "tag2:value2", "tag3:value3"] }))
 
-		const manager = new TagManager(configPath)
+		const manager = new TagManager()
 		manager.clear()
 
-		const loaded = new TagManager(configPath)
+		const loaded = new TagManager()
 		expect(loaded.getAllTags()).toEqual([])
 	})
 
 	it("creates config directory if it does not exist", () => {
-		const nestedPath = join(tempDir, "nested", "config", "tags.json")
-
-		const manager = new TagManager(nestedPath)
+		const manager = new TagManager()
 		manager.add("test:value")
 
-		const loaded = new TagManager(nestedPath)
+		const loaded = new TagManager()
 		expect(loaded.getAllTags()).toEqual(["test:value"])
 	})
 })
 
 describe("TagManager.add", () => {
-	let tempDir: string
-	let configPath: string
-
 	beforeEach(() => {
-		tempDir = mkdtempSync(join(tmpdir(), "kimchi-tags-test-"))
-		configPath = join(tempDir, "tags.json")
+		rmSync(MOCK_HOME, { recursive: true, force: true })
+		mkdirSync(MOCK_HOME, { recursive: true })
 		vi.stubEnv("KIMCHI_TAGS", "")
 	})
 
 	afterEach(() => {
-		rmSync(tempDir, { recursive: true, force: true })
+		rmSync(MOCK_HOME, { recursive: true, force: true })
 		vi.unstubAllEnvs()
 	})
 
 	it("returns duplicate error before limit error when tag already exists at capacity", () => {
-		const manager = new TagManager(configPath)
+		const manager = new TagManager()
 		for (let i = 0; i < 10; i++) {
 			manager.add(`tag${i}:value`)
 		}
@@ -281,11 +323,115 @@ describe("TagManager.add", () => {
 	})
 
 	it("returns limit error when adding a new tag at capacity", () => {
-		const manager = new TagManager(configPath)
+		const manager = new TagManager()
 		for (let i = 0; i < 10; i++) {
 			manager.add(`tag${i}:value`)
 		}
 		const result = manager.add("new:tag")
 		expect(result).toEqual({ success: false, error: "Maximum 10 tags allowed (including static tags)." })
+	})
+})
+
+function commandContext(sessionId: string) {
+	return createContext({
+		hasUI: false,
+		sessionManager: { getSessionId: () => sessionId },
+		ui: {
+			theme: {
+				fg: (_color: string, text: string) => text,
+				bold: (text: string) => text,
+			} as unknown as ExtensionUIContext["theme"],
+		},
+	})
+}
+
+describe("getCurrentPhase", () => {
+	beforeEach(() => {
+		rmSync(MOCK_HOME, { recursive: true, force: true })
+		mkdirSync(MOCK_HOME, { recursive: true })
+		vi.stubEnv("KIMCHI_TAGS", "")
+	})
+
+	afterEach(() => {
+		rmSync(MOCK_HOME, { recursive: true, force: true })
+		vi.unstubAllEnvs()
+	})
+
+	it("returns undefined before a phase is set", () => {
+		expect(getCurrentPhase("fresh-session")).toBeUndefined()
+	})
+
+	it("returns the phase set for a specific session", () => {
+		setCurrentPhase("get-phase-session", "plan")
+		expect(getCurrentPhase("get-phase-session")).toBe("plan")
+	})
+
+	it("isolates phases between sessions", () => {
+		setCurrentPhase("get-phase-a", "plan")
+		setCurrentPhase("get-phase-b", "build")
+		expect(getCurrentPhase("get-phase-a")).toBe("plan")
+		expect(getCurrentPhase("get-phase-b")).toBe("build")
+	})
+})
+
+describe("setCurrentPhase", () => {
+	beforeEach(() => {
+		rmSync(MOCK_HOME, { recursive: true, force: true })
+		mkdirSync(MOCK_HOME, { recursive: true })
+		vi.stubEnv("KIMCHI_TAGS", "")
+	})
+
+	afterEach(() => {
+		rmSync(MOCK_HOME, { recursive: true, force: true })
+		vi.unstubAllEnvs()
+	})
+
+	it("sets a valid phase", () => {
+		setCurrentPhase("set-phase-session", "review")
+		expect(getCurrentPhase("set-phase-session")).toBe("review")
+	})
+
+	it("ignores invalid phases", () => {
+		setCurrentPhase("invalid-phase-session", "invalid")
+		expect(getCurrentPhase("invalid-phase-session")).toBeUndefined()
+	})
+
+	it("clears the phase when given undefined", () => {
+		setCurrentPhase("clear-phase-session", "build")
+		expect(getCurrentPhase("clear-phase-session")).toBe("build")
+		setCurrentPhase("clear-phase-session", undefined)
+		expect(getCurrentPhase("clear-phase-session")).toBeUndefined()
+	})
+})
+
+describe("getActiveTags", () => {
+	beforeEach(() => {
+		rmSync(MOCK_HOME, { recursive: true, force: true })
+		mkdirSync(MOCK_HOME, { recursive: true })
+		vi.stubEnv("KIMCHI_TAGS", "")
+	})
+
+	afterEach(() => {
+		rmSync(MOCK_HOME, { recursive: true, force: true })
+		vi.unstubAllEnvs()
+	})
+
+	it("returns an empty array before tags are added", () => {
+		expect(getActiveTags("fresh-tags-session")).toEqual([])
+	})
+
+	it("returns tags added through the extension command", async () => {
+		const pi = makePi()
+		tagsExtension(pi)
+		await pi.runCommand("tags", "add team:backend", commandContext("command-tags-session"))
+		expect(getActiveTags("command-tags-session")).toEqual(["team:backend"])
+	})
+
+	it("shares persisted tags across sessions", async () => {
+		const pi = makePi()
+		tagsExtension(pi)
+		await pi.runCommand("tags", "add team:backend", commandContext("tags-session-a"))
+		expect(getActiveTags("tags-session-a")).toEqual(["team:backend"])
+		expect(getActiveTags("tags-session-b")).toEqual(["team:backend"])
 	})
 })

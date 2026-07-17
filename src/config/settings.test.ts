@@ -85,7 +85,7 @@ afterEach(() => {
 // ───────────────────────────────────────────────────────────────────────────
 
 describe("getConfigSetting", () => {
-	it("returns global config value", () => {
+	it("returns config value", () => {
 		const config = { theme: "dark" }
 		expect(getConfigSetting(config, "theme", isString)).toBe("dark")
 	})
@@ -98,6 +98,11 @@ describe("getConfigSetting", () => {
 		const config = { count: "not-a-number" }
 		expect(getConfigSetting(config, "count", isNumber)).toBeUndefined()
 	})
+
+	it("returns fallback when value fails the type guard", () => {
+		const config = { count: "not-a-number" }
+		expect(getConfigSetting(config, "count", isNumber, 50)).toEqual(50)
+	})
 })
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -105,19 +110,21 @@ describe("getConfigSetting", () => {
 // ───────────────────────────────────────────────────────────────────────────
 
 describe("readConfigSetting", () => {
-	it("reads a global setting from the store", () => {
+	it("reads a setting from the store", () => {
 		seed({ multiModel: true })
 		expect(readConfigSetting("multiModel", isBoolean)).toBe(true)
 	})
 
-	it("returns undefined when key is absent", () => {
+	it("returns undefined or fallback when key is absent", () => {
 		seed({})
 		expect(readConfigSetting("missing", isString)).toBeUndefined()
+		expect(readConfigSetting("missing", isString, "something")).toEqual("something")
 	})
 
-	it("returns undefined when readJson throws (malformed file)", () => {
+	it("returns undefined or fallback when readJson throws (malformed file)", () => {
 		readJsonError = new SyntaxError("Unexpected token")
 		expect(readConfigSetting("anything", isString)).toBeUndefined()
+		expect(readConfigSetting("anything", isString, "something")).toEqual("something")
 	})
 
 	it("returns object values when type guard matches", () => {

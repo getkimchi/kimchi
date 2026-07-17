@@ -10,9 +10,9 @@
  * Tags are stored per-session and persisted via session entries.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { dirname, join, resolve } from "node:path"
+import { resolve } from "node:path"
+import type { Api, Model } from "@earendil-works/pi-ai"
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
@@ -22,6 +22,8 @@ import type {
 } from "@earendil-works/pi-coding-agent"
 import { Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
+import { readJson, writeJson } from "../config/json.js"
+import { readConfigSetting } from "../config/settings.js"
 import type { ThinkingLevel } from "./agents/personas/types.js"
 import { createSystemPromptBlocks } from "./prompt-construction/index.js"
 import { isStaleCtxError } from "./stale-ctx.js"
@@ -30,21 +32,9 @@ import { isStaleCtxError } from "./stale-ctx.js"
 
 const STATUS_LINE_TAGS_KEY = "active-tags"
 const TAGS_CONFIG_FILE = resolve(homedir(), ".config", "kimchi", "tags.json")
-const HARNESS_SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "settings.json")
-
-function readHarnessSetting<T>(key: string, fallback: T): T {
-	try {
-		const raw = readFileSync(HARNESS_SETTINGS_PATH, "utf-8")
-		const parsed = JSON.parse(raw)
-		if (key in parsed) return parsed[key] as T
-	} catch {
-		// settings.json absent or unreadable — use fallback
-	}
-	return fallback
-}
 
 export function readHidePhaseChanges(): boolean {
-	return readHarnessSetting<boolean>("hidePhaseChanges", false)
+	return readConfigSetting("hidePhaseChanges", (value) => typeof value === "boolean", false)
 }
 
 const TAG_COLORS: ThemeColor[] = ["accent", "mdLink", "success", "warning"]
@@ -86,29 +76,26 @@ interface TagsConfig {
 }
 
 export class TagManager {
+	private readonly configFile = TAGS_CONFIG_FILE
+
 	private tags: Set<string> = new Set()
 	private staticTags: Set<string> = new Set()
 	private persistedTags: Set<string> = new Set() // Tags persisted in config file (non-static)
 	private currentPhase: Phase | undefined = undefined
-	private readonly configFile: string
 
-	constructor(configFile: string = TAGS_CONFIG_FILE) {
-		this.configFile = configFile
+	constructor() {
 		this.loadTags()
 	}
 
 	private loadTags(): void {
 		// Load from config file
 		try {
-			if (existsSync(this.configFile)) {
-				const content = readFileSync(this.configFile, "utf-8")
-				const config = JSON.parse(content) as TagsConfig
-				if (Array.isArray(config.tags)) {
-					for (const tag of config.tags) {
-						if (isValidTag(tag)) {
-							this.persistedTags.add(tag)
-							this.tags.add(tag)
-						}
+			const config = readJson(this.configFile) as TagsConfig
+			if (Array.isArray(config.tags)) {
+				for (const tag of config.tags) {
+					if (isValidTag(tag)) {
+						this.persistedTags.add(tag)
+						this.tags.add(tag)
 					}
 				}
 			}
@@ -145,14 +132,7 @@ export class TagManager {
 			// Only persist non-static tags
 			const tagsToPersist = Array.from(this.persistedTags).sort()
 			const config: TagsConfig = { tags: tagsToPersist }
-
-			// Ensure directory exists
-			const configDir = dirname(this.configFile)
-			if (!existsSync(configDir)) {
-				mkdirSync(configDir, { recursive: true })
-			}
-
-			writeFileSync(this.configFile, JSON.stringify(config, null, 2))
+			writeJson(this.configFile, config)
 		} catch {
 			// Silent fail - don't break the app if we can't write config
 		}
@@ -523,35 +503,42 @@ const SetPhaseParams = Type.Object({
 
 // ─── Extension entry point ─────────────────────────────────────────────────────
 
-let tagManagerInstance: TagManager | undefined
+const tagManagerMap = new Map<string, TagManager>()
 
-export function getCurrentPhase(): Phase | undefined {
-	return tagManagerInstance?.getPhase()
-}
-
-export function setCurrentPhase(phase: string | undefined): void {
-	if (!tagManagerInstance) return
-	if (phase === undefined) {
-		tagManagerInstance.setPhase(undefined)
-		return
+function getTagManager(sessionId: string): TagManager {
+	let tagManager = tagManagerMap.get(sessionId)
+	if (!tagManager) {
+		tagManager = new TagManager()
+		tagManagerMap.set(sessionId, tagManager)
 	}
-	if (!isValidPhase(phase)) return
-	tagManagerInstance.setPhase(phase)
+	return tagManager
 }
 
-export function getActiveTags(): string[] {
-	return tagManagerInstance?.getAllTags() ?? []
+export function getCurrentPhase(sessionId: string): Phase | undefined {
+	return getTagManager(sessionId).getPhase()
+}
+
+export function setCurrentPhase(sessionId: string, phase: string | undefined): void {
+	const tagManager = getTagManager(sessionId)
+	if (phase !== undefined && !isValidPhase(phase)) return
+	tagManager.setPhase(phase)
+}
+
+export function getActiveTags(sessionId: string): string[] {
+	return getTagManager(sessionId).getAllTags()
 }
 
 export default function tagsExtension(pi: ExtensionAPI) {
-	const tagManager = new TagManager()
-	tagManagerInstance = tagManager
+	function getExtensionTagManager(ctx: ExtensionContext): TagManager {
+		const sessionId = ctx.sessionManager.getSessionId()
+		return getTagManager(sessionId)
+	}
 
 	// Register the /tags command
 	pi.registerCommand("tags", {
 		description: "Manage LLM request tags for usage tracking",
 		handler: async (args, ctx) => {
-			handleTagsCommand(args, ctx, tagManager)
+			handleTagsCommand(args, ctx, getExtensionTagManager(ctx))
 		},
 	})
 
@@ -567,7 +554,7 @@ export default function tagsExtension(pi: ExtensionAPI) {
 			}))
 		},
 		handler: async (args, ctx) => {
-			await handlePhaseCommand(args, ctx, tagManager)
+			await handlePhaseCommand(args, ctx, getExtensionTagManager(ctx))
 		},
 	})
 
@@ -582,6 +569,7 @@ export default function tagsExtension(pi: ExtensionAPI) {
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const phase = params.phase as Phase
 			const thinking = params.thinking as ThinkingLevel | undefined
+			const tagManager = getExtensionTagManager(ctx)
 
 			tagManager.setPhase(phase)
 			if (thinking) {
@@ -624,6 +612,8 @@ export default function tagsExtension(pi: ExtensionAPI) {
 
 	// Initialize status line tags status and default phase on session start
 	pi.on("session_start", async (_event, ctx) => {
+		const tagManager = getExtensionTagManager(ctx)
+
 		tagManager.setPhase("explore")
 		updateStatusLineTags(tagManager, ctx)
 	})
@@ -633,7 +623,7 @@ export default function tagsExtension(pi: ExtensionAPI) {
 		// Tags are a Cast AI-specific API field; skip for other providers.
 		// If a request from a torn-down session reaches us after `/new` (etc.),
 		// any ctx getter throws via assertActive — bail silently in that case.
-		let model: { provider?: string; id?: string } | undefined
+		let model: Model<Api> | undefined
 		try {
 			model = ctx.model ?? undefined
 		} catch (err) {
@@ -645,6 +635,7 @@ export default function tagsExtension(pi: ExtensionAPI) {
 		const payload = event.payload as Record<string, unknown> | null
 		if (!payload || typeof payload !== "object") return
 
+		const tagManager = getExtensionTagManager(ctx)
 		const allTags = tagManager.getAllTags()
 
 		// Build reserved tags first (model + phase) so they are never dropped by the cap

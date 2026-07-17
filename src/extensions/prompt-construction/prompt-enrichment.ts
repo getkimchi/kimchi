@@ -535,7 +535,7 @@ export default function (skillPaths: string[]) {
 				contextFiles: cachedContextFiles,
 				skills: cachedSkills,
 				currentModelId: mode === "orchestrator" ? getOrchestratorModelId(sessionId) : ctx.model?.id,
-				currentPhase: getCurrentPhase(),
+				currentPhase: getCurrentPhase(sessionId),
 				registry: registry,
 				mode,
 				roles,
