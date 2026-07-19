@@ -20,6 +20,7 @@ import { dispatchSubcommand } from "./commands/dispatch.js"
 // before any module can construct an InteractiveMode instance.
 import "./login-command-patch.js"
 import "./paste-to-editor-patch.js"
+import { injectAtlasCloudProvider, readAtlasCloudModelMetadata } from "./atlascloud.js"
 import {
 	DEFAULT_SKILL_PATHS,
 	ensureHideThinkingBlockDefault,
@@ -369,6 +370,8 @@ try {
 			// registry. Probe is silent on failure — startup is never blocked.
 			await injectOllamaProvider(modelsJsonPath, resolveOllamaHost())
 			models = [...models, ...readOllamaModelMetadata(modelsJsonPath)]
+			injectAtlasCloudProvider(modelsJsonPath)
+			models = [...models, ...readAtlasCloudModelMetadata(modelsJsonPath)]
 		} catch (err) {
 			const is401 = err instanceof Error && err.message.includes("401")
 			if (is401 && process.stdin.isTTY) {
@@ -391,6 +394,8 @@ try {
 				}
 				await injectOllamaProvider(modelsJsonPath, resolveOllamaHost())
 				models = [...models, ...readOllamaModelMetadata(modelsJsonPath)]
+				injectAtlasCloudProvider(modelsJsonPath)
+				models = [...models, ...readAtlasCloudModelMetadata(modelsJsonPath)]
 			} else if (isTransientModelsError(err)) {
 				// Rate limit / gateway error with no cached models to fall back on.
 				// Don't crash startup over a transient condition — continue with an
