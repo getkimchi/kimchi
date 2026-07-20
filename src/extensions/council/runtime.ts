@@ -847,9 +847,8 @@ export function createCouncilStream({
 							reviewerCriticalFindings.some((finding) => !resolvedCriticalFindings.has(finding))
 						needsRevision =
 							config.revisionPolicy === "always" ||
-							reviewersNeedRevision ||
+							hasCriticalFindings ||
 							verdict.decision !== "accept" ||
-							verdict.critical_findings.length > 0 ||
 							verdict.unsupported_claims.length > 0 ||
 							verdict.required_checks.length > 0 ||
 							verdict.revision_instructions.length > 0 ||

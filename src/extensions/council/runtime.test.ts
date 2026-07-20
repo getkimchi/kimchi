@@ -846,7 +846,10 @@ describe("Council runtime", () => {
 		expect(runRecord?.outcome).toBe("error")
 	})
 
-	it("lets the judge explicitly resolve a reviewer critical finding", async () => {
+	it.each([
+		["resolved", true, "accepted", 3],
+		["unresolved", false, "error", 4],
+	] as const)("handles a %s reviewer critical after a clean judge verdict", async (_label, resolved, expectedOutcome, calls) => {
 		let runRecord: CouncilRunRecord | undefined
 		const completeModel = vi.fn(async (model: Model<Api>, context: Context): Promise<AssistantMessage> => {
 			const system = context.systemPrompt ?? ""
@@ -879,14 +882,16 @@ describe("Council runtime", () => {
 						decision: "accept",
 						consensus: [],
 						critical_findings: [],
-						disagreements: [
-							{
-								topic: "The draft is unsafe",
-								impact: "high",
-								resolved: true,
-								resolution: "The cited evidence contradicts this concern.",
-							},
-						],
+						disagreements: resolved
+							? [
+									{
+										topic: "The draft is unsafe",
+										impact: "high",
+										resolved: true,
+										resolution: "The cited evidence contradicts this concern.",
+									},
+								]
+							: [],
 						unsupported_claims: [],
 						required_checks: [],
 						revision_instructions: [],
@@ -900,7 +905,11 @@ describe("Council runtime", () => {
 			return response(model, "Lead draft")
 		})
 		const stream = createCouncilStream({
-			config: { ...DEFAULT_COUNCIL_CONFIG, reviewerModels: ["kimchi-dev/glm-5.2-fp8"] },
+			config: {
+				...DEFAULT_COUNCIL_CONFIG,
+				reviewerModels: ["kimchi-dev/glm-5.2-fp8"],
+				revisionPolicy: "on-issues",
+			},
 			getModelRegistry: () => modelRegistry,
 			completeModel,
 			recordRun: (record) => {
@@ -910,10 +919,15 @@ describe("Council runtime", () => {
 
 		const result = await stream.result()
 
-		expect(result.content).toEqual([{ type: "text", text: "Lead draft" }])
-		expect(result.stopReason).toBe("stop")
-		expect(runRecord?.outcome).toBe("fallback")
-		expect(completeModel).toHaveBeenCalledTimes(4)
+		if (resolved) {
+			expect(result.content).toEqual([{ type: "text", text: "Lead draft" }])
+			expect(result.stopReason).toBe("stop")
+		} else {
+			expect(result.content).toEqual([])
+			expect(result.stopReason).toBe("error")
+		}
+		expect(runRecord?.outcome).toBe(expectedOutcome)
+		expect(completeModel).toHaveBeenCalledTimes(calls)
 	})
 
 	it("falls back to the lead draft when the revision emits serialized tool-call markup", async () => {

@@ -28,7 +28,7 @@ Preset choice is explicit; Council does not guess task complexity. Use fast for 
 | Model | Review path | Revision | Call cap | Lead/internal tokens | Evidence/result | Stage/overall timeout |
 | --- | --- | --- | ---: | ---: | ---: | ---: |
 | `kimchi/council-fast` | critic only; no judge | on critic issues | 5 | 8,192 / 2,048 | 32 / 8 KiB | 60 / 240 seconds |
-| `kimchi/council` | critic + checker; judge | on reviewer or judge issues | 7 | 16,384 / 4,096 | 64 / 16 KiB | 180 / 720 seconds |
+| `kimchi/council` | critic + checker; judge | on unresolved issues after judging | 7 | 16,384 / 4,096 | 64 / 16 KiB | 180 / 720 seconds |
 | `kimchi/council-deep` | critic + checker + independent; judge | always | 8 | 32,768 / 8,192 | 128 / 32 KiB | 300 / 1,200 seconds |
 
 ## Configuration
