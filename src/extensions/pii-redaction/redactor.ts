@@ -155,15 +155,20 @@ function applyCustomPatterns(text: string): string {
  * Bearer tokens, OAuth tokens) as a second pass.
  *
  * If scanning fails (engine error, unexpected input), the original text is
- * returned unchanged — redaction must never break the prompt pipeline.
- * The error is logged per the code-review-lessons rule: no empty catch blocks.
+ * returned unchanged by default. Callers crossing a trust boundary can set
+ * `failClosed` to throw instead. Fail-open errors are logged.
  */
-export async function redactText(text: string): Promise<string> {
+export interface RedactionOptions {
+	failClosed?: boolean
+}
+
+export async function redactText(text: string, options: RedactionOptions = {}): Promise<string> {
 	try {
 		const result = await getEngine().scan(text)
 		const afterEngine = result.redactedText ?? text
 		return applyCustomPatterns(afterEngine)
 	} catch (err) {
+		if (options.failClosed) throw err
 		console.error("PII redaction scan failed, returning original text:", err)
 		return text
 	}
@@ -183,15 +188,16 @@ export async function redactText(text: string): Promise<string> {
  *
  * Returns a **new** structure; the input is never mutated.
  *
- * @param obj  Any JSON-serializable value (object, array, primitive)
- * @returns     Deep clone with all string values redacted
+ * @param obj      Any JSON-serializable value (object, array, primitive)
+ * @param options  Set `failClosed` when unredacted data must not escape
+ * @returns        Deep clone with all string values redacted
  */
-export async function redactObjectStrings<T>(obj: T): Promise<T> {
+export async function redactObjectStrings<T>(obj: T, options: RedactionOptions = {}): Promise<T> {
 	if (typeof obj === "string") {
-		return (await redactText(obj)) as T
+		return (await redactText(obj, options)) as T
 	}
 	if (Array.isArray(obj)) {
-		return Promise.all(obj.map((item) => redactObjectStrings(item))) as Promise<T>
+		return Promise.all(obj.map((item) => redactObjectStrings(item, options))) as Promise<T>
 	}
 	if (obj !== null && typeof obj === "object") {
 		const entries = Object.entries(obj as Record<string, unknown>)
@@ -206,7 +212,7 @@ export async function redactObjectStrings<T>(obj: T): Promise<T> {
 				if (typeof value === "string" && isSensitiveKey(key)) {
 					return Promise.resolve("[REDACTED-SECRET_FIELD]")
 				}
-				return redactObjectStrings(value)
+				return redactObjectStrings(value, options)
 			}),
 		)
 		const result: Record<string, unknown> = {}

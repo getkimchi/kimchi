@@ -47,6 +47,7 @@ import branchCommandExtension from "./extensions/branch-command.js"
 import claudeCodeHooksAdapter from "./extensions/claude-code-hook-adapter/index.js"
 import claudeCodeSkillsExtension from "./extensions/claude-code-skills/index.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
+import councilExtension from "./extensions/council/index.js"
 import customizeStatusLineExtension from "./extensions/customize-status-line-command.js"
 import explorationGuardExtension from "./extensions/exploration-guard.js"
 import fermentExtension from "./extensions/ferment/index.js"
@@ -592,6 +593,7 @@ try {
 			branchCommandExtension,
 			...terminalUiExtensionFactories,
 			loginExtension,
+			councilExtension,
 			startupAuthGate,
 			loopGuardExtension,
 			explorationGuardExtension,
