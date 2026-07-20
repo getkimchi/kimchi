@@ -99,7 +99,15 @@ describe("Council runtime", () => {
 						model,
 						JSON.stringify({
 							decision: "revise",
-							findings: [],
+							findings: [
+								{
+									severity: "medium",
+									statement: "The answer needs evidence",
+									evidence_refs: ["artifact_1"],
+									assumptions: [],
+									suggested_check: "Check the question",
+								},
+							],
 							recommended_changes: ["Be precise"],
 							missing_evidence: [],
 						}),
@@ -164,6 +172,9 @@ describe("Council runtime", () => {
 		expect(revisionContext?.systemPrompt).toContain("never claim an unperformed check passed")
 		expect(revisionPacket).toContain('"reviews":')
 		expect(revisionPacket).toContain('"judge":')
+		expect(revisionPacket).toContain(
+			'"evidence":[{"id":"artifact_1","type":"message","content":"What is two plus two?"}]',
+		)
 		expect(revisionPacket).toContain('"recommended_changes":["Be precise"]')
 		const judgeContext = completeModel.mock.calls.find(([, context]) =>
 			context.systemPrompt?.includes("Council judge"),
@@ -793,6 +804,26 @@ describe("Council runtime", () => {
 
 		expect(result.content).toEqual([{ type: "text", text: "Complete lead draft" }])
 		expect(completeModel).toHaveBeenCalledTimes(4)
+	})
+
+	it("rejects serialized tool-call markup from the lead", async () => {
+		const completeModel = vi.fn(async (model: Model<Api>) =>
+			response(model, "I'll inspect it. <|tool_calls_section_begin|><|tool_call_begin|>functions.grep"),
+		)
+		const stream = createCouncilStream({
+			config: DEFAULT_COUNCIL_CONFIG,
+			getModelRegistry: () => modelRegistry,
+			completeModel,
+		})(councilModel, { messages: [{ role: "user", content: "Answer", timestamp: 1 }] })
+
+		const result = await stream.result()
+
+		expect(result).toMatchObject({
+			content: [],
+			stopReason: "error",
+			errorMessage: "Council could not produce a complete lead response",
+		})
+		expect(completeModel).toHaveBeenCalledTimes(1)
 	})
 
 	it("records one failed stage with returned usage", async () => {

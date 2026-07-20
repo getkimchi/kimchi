@@ -659,6 +659,7 @@ export function createCouncilStream({
 				if (lead.stopReason !== "stop") throw new Error(`Council lead stopped with ${lead.stopReason}`)
 				const draft = textFromAssistant(lead)
 				if (!draft.trim()) throw new Error("Council lead returned no text")
+				if (hasSerializedToolCallMarkup(draft)) throw new Error("Council lead returned serialized tool-call markup")
 
 				let canonicalPacket: TaskPacket
 				try {
@@ -739,7 +740,13 @@ export function createCouncilStream({
 						result.recommended_changes.length > 0 ||
 						result.missing_evidence.length > 0,
 				)
-				let reviewData: { reviews: ReviewerResult[]; judge?: JudgeResult }
+				const referencedEvidenceIds = new Set(
+					reviewers.flatMap(({ result }) => result.findings.flatMap((finding) => finding.evidence_refs)),
+				)
+				const reviewData: { evidence: TaskPacket["evidence"]; reviews: ReviewerResult[]; judge?: JudgeResult } = {
+					evidence: canonicalPacket.evidence.filter(({ id }) => referencedEvidenceIds.has(id)),
+					reviews: reviewers,
+				}
 				let needsRevision: boolean
 				if (config.useJudge) {
 					const judgeDeadline = Date.now() + Math.min(stageTimeoutMs, overallTimeoutMs)
@@ -774,7 +781,7 @@ export function createCouncilStream({
 							parseJudgeResult,
 							repairRemainingMs,
 						)
-						reviewData = { reviews: reviewers, judge: verdict }
+						reviewData.judge = verdict
 						needsRevision =
 							config.revisionPolicy === "always" ||
 							reviewersNeedRevision ||
@@ -786,11 +793,9 @@ export function createCouncilStream({
 							verdict.disagreements.some(({ resolved }) => !resolved)
 					} catch {
 						if (parentAborted()) throw new Error("Council request aborted")
-						reviewData = { reviews: reviewers }
 						needsRevision = true
 					}
 				} else {
-					reviewData = { reviews: reviewers }
 					needsRevision = config.revisionPolicy === "always" || reviewersNeedRevision
 				}
 				if (!needsRevision) {
