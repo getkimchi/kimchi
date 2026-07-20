@@ -148,6 +148,38 @@ describe("prompt summary stale-ctx crash prevention", () => {
 		expect(isIdleCallCount).toBe(2)
 	})
 
+	it("drops a delayed summary when a newer agent turn starts", async () => {
+		const harness = createStaleCtxHarness()
+		promptSummaryExtension(harness.pi)
+		const isIdle = vi.fn().mockReturnValueOnce(false).mockReturnValue(true)
+
+		await harness.emit("agent_start")
+		await harness.emit("message_end", {
+			message: { role: "assistant", usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 } },
+		})
+		await harness.emit("agent_end", {}, { isIdle })
+		await harness.emit("agent_start")
+		await vi.advanceTimersByTimeAsync(50)
+
+		expect(harness.sent).toHaveLength(0)
+		expect(isIdle).toHaveBeenCalledOnce()
+	})
+
+	it("drops the summary when the agent stays busy past the polling budget", async () => {
+		const harness = createStaleCtxHarness()
+		promptSummaryExtension(harness.pi)
+
+		await harness.emit("agent_start")
+		await harness.emit("message_end", {
+			message: { role: "assistant", usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 } },
+		})
+		await harness.emit("agent_end", {}, { isIdle: () => false })
+		await vi.runAllTimersAsync()
+
+		expect(harness.sent).toHaveLength(0)
+		expect(vi.getTimerCount()).toBe(0)
+	})
+
 	it("silently bails when pi.sendMessage throws stale-ctx error (isIdle returned true)", async () => {
 		const harness = createStaleCtxHarness()
 		const staleError = new Error("This extension ctx is stale after session replacement or reload.")
