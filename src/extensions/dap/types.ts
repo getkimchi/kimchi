@@ -123,6 +123,19 @@ export interface Breakpoint {
 	endColumn?: number
 }
 
+/** Body of the DAP `evaluate` response. The `result` is the stringified value;
+ *  `variablesReference` is >0 when the value has children (struct/object) that
+ *  can be expanded via a subsequent `variables` request. */
+export interface DapEvaluateResult {
+	result: string
+	type?: string
+	presentationHint?: { kind?: string; attributes?: string[]; visibility?: string; lazy?: boolean }
+	variablesReference: number
+	namedVariables?: number
+	indexedVariables?: number
+	memoryReference?: string
+}
+
 export interface Thread {
 	id: number
 	name: string
@@ -232,10 +245,23 @@ export interface DapClient {
 	terminated: boolean
 }
 
+/** How the DAP client talks to the adapter subprocess.
+ *  - stdio: frame pump over the subprocess's stdin/stdout (dlv, debugpy, lldb-dap)
+ *  - tcp:   adapter listens on a port given as a CLI arg; client connects via TCP
+ *           socket and runs the same framing pump over it (js-debug's dapDebugServer.js).
+ *  See the js-debug protocol conclusion at the top of adapters.ts. */
+export type DapTransport = { kind: "stdio" } | { kind: "tcp"; portArgIndex: number; host?: string }
+
 export interface DapAdapterConfig {
 	name: string
 	command: string
 	args?: string[]
+	/** Binary name to `which`-check for detection. Defaults to `command`. Set when
+	 *  `command` is a generic interpreter — e.g. js-debug runs as `node <script>`
+	 *  but we detect the `js-debug-adapter` shim instead of `node` (always present). */
+	detectBinary?: string
+	/** Transport the DAP client uses to talk to this adapter. Defaults to stdio. */
+	transport?: DapTransport
 	languages: string[]
 	extensions: string[]
 	/** DAP `type` field for the `launch` request (e.g. "node", "python", "go", "lldb"). */
