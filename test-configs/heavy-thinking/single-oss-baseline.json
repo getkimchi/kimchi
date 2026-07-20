@@ -1,0 +1,29 @@
+{
+  "testSet": [
+    "fix-code-vulnerability",
+    "pytorch-model-recovery",
+    "cobol-modernization",
+    "merge-diff-arc-agi-task",
+    "bn-fit-modify"
+  ],
+  "taskType": "heavy-thinking",
+  "variant": "single-oss-baseline",
+  "modelRoles": {
+    "orchestrator": "kimchi-dev/kimi-k2.7",
+    "planner": "kimchi-dev/kimi-k2.7",
+    "builder": "kimchi-dev/kimi-k2.7",
+    "reviewer": "kimchi-dev/kimi-k2.7",
+    "explorer": "kimchi-dev/kimi-k2.7",
+    "judge": "kimchi-dev/kimi-k2.7"
+  },
+  "maxRetries": 3,
+  "modelMetadata": {
+    "kimchi-dev/kimi-k2.7": {
+      "tier": "heavy",
+      "vision": false
+    }
+  },
+  "multiModel": false,
+  "hideThinkingBlock": true,
+  "_purpose": "the strongest OSS model doing every role alone \u2014 tests whether a second independent reviewer/judge pass (OSS B, Mixed) actually catches errors the same model misses on its own"
+}
