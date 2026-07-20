@@ -25,7 +25,7 @@ import { getCurrentPhase } from "./tags.js"
 
 const DAP_SYSTEM_PROMPT = `## Debugger (DAP)
 
-DAP tools give you a live debugger — your first tool for understanding runtime behavior, not a last resort. **Before you trace values by hand or write a repro script, check if the debugger can answer your question directly.** A breakpoint + \`debug_eval\` shows you the actual value in seconds; reasoning through code or building a repro takes minutes and can be wrong.
+DAP tools give you a live debugger — your first tool for understanding runtime behavior, not a last resort. **Before you trace values by hand or write a repro script, check if the debugger can answer your question directly.** A breakpoint + \`debug_eval\` shows you the actual value in seconds and ~500 tokens; reasoning through code or building a repro takes minutes, ~50,000 tokens, and can still be wrong. The debugger is both faster and cheaper.
 
 **Use the debugger instead of:**
 - Tracing variable values through code by hand ("if generation is 1 here, then after the loop it becomes...") → \`debug_state_at({file, line, evaluated: ["var"]})\` shows the actual value at that line
