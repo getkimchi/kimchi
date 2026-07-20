@@ -24,15 +24,40 @@ import { getCurrentPhase } from "./tags.js"
 
 const DAP_SYSTEM_PROMPT = `## Debugger (DAP)
 
-DAP tools provide runtime debugger access. Use them to inspect program state instead of adding speculative log statements:
-- Use \`debug_launch\` to start a debug session for a program (returns a sessionId).
-- Use \`debug_set_breakpoint\` to set a breakpoint at a file:line, then \`debug_continue\` to run to it.
-- Use \`debug_locals\` and \`debug_eval\` to inspect variable values at a breakpoint.
-- Use \`debug_backtrace\` to see the call stack.
-- Use \`step_in\` / \`step_over\` / \`step_out\` to step through code.
-- Use \`debug_terminate\` to end the session when done (always clean up).
+DAP tools give you a live debugger. Use them to get **ground-truth runtime values** and trace **actual execution flow** — this is faster and more reliable than reasoning about behavior by reading code or writing repro scripts.
 
-DAP tools are available when debug adapters are detected on PATH. Adapter is auto-detected from the program file extension.`
+**Stop reasoning and use the debugger when you catch yourself:**
+- Tracing variable values through code by hand ("if generation is 1 here, then after the loop it becomes...") → use \`debug_state_at\` to see the actual value at that line
+- Wondering which code path runs or in what order → use \`debug_trace_calls\` to get the real call sequence
+- Writing a throwaway repro script to test a hypothesis about runtime behavior → \`debug_state_at\` or \`debug_watch_change\` will show you the value directly, no script needed
+- Adding \`console.log\` / \`fmt.Println\` / \`print()\` to see a value → \`debug_state_at\` with \`evaluated\` gives you the exact value at a breakpoint, with no code to clean up
+- Guessing why a program panics or throws → \`debug_last_error\` captures the exception, locals at the throw site, and the backtrace in one call
+
+A single \`debug_state_at\` call collapses an entire read→reason→repro→re-run cycle into one step. The debugger shows you what *actually happened*, not what you *think should happen*.
+
+**When to use which tool:**
+- "What is the value of X at line N?" → \`debug_state_at({file, line, evaluated: ["X"]})\`
+- "Why does this throw and what is the state when it does?" → \`debug_last_error({program})\`
+- "Which functions actually run and in what order?" → \`debug_trace_calls({program})\`
+- "How does this value change as the program steps?" → \`debug_watch_change({file, line, expression})\`
+- "I need to step through interactively" → Layer 1 tools (launch → set_breakpoint → continue → locals → step → terminate)
+
+**Layer 2 composed tools** (preferred — one call handles the full launch→breakpoint→inspect→terminate lifecycle):
+- \`debug_state_at({file, line, evaluated?})\` — set a breakpoint, run to it, return locals + backtrace + evaluated expressions + captured stdout/stderr. Auto-launches and terminates a session if no \`session_id\` is given.
+- \`debug_last_error({program})\` — run until throw; return exception type/message + locals at the throw site + backtrace. Returns null if the program completes without throwing.
+- \`debug_trace_calls({program})\` — structured call records (function name, args, return value) via sentinel-prefixed logMessage parsing.
+- \`debug_watch_change({file, line, expression})\` — watch an expression for changes; returns change locations with old/new values.
+
+**Layer 1 primitive tools** (interactive stepping when you need fine control):
+- \`debug_launch({program})\` → returns \`session_id\`
+- \`debug_set_breakpoint({session_id, file, line})\` → set a breakpoint
+- \`debug_continue({session_id})\` → run to next stop
+- \`debug_locals({session_id})\` / \`debug_eval({session_id, expression})\` → inspect values (requires a stopped session)
+- \`debug_backtrace({session_id})\` → call stack
+- \`step_in\` / \`step_over\` / \`step_out\` → step through code
+- \`debug_terminate({session_id})\` → always clean up when done
+
+The adapter is auto-detected from the program file extension (.ts/.js→js-debug, .go→dlv, .py→debugpy, .rs/.c→lldb-dap).`
 
 // All DAP tool names (Layer 1 + Layer 2). Used to toggle visibility based on
 // the current orchestrator phase — DAP tools are hidden during explore/plan
@@ -117,6 +142,9 @@ export default function (pi: ExtensionAPI) {
 	// explore/plan, disable DAP tools; when it transitions into build/review,
 	// re-enable them. Idempotent via the lastPhase cache.
 	pi.on("tool_call", (_event, ctx) => {
+		// Recover UI if not available at session_start (same pattern as LSP).
+		if (!ui && ctx.hasUI) ui = ctx.ui
+
 		const sessionId = ctx.sessionManager.getSessionId()
 		const phase = getCurrentPhase(sessionId)
 		if (phase === lastPhase) return
@@ -131,7 +159,11 @@ export default function (pi: ExtensionAPI) {
 
 	// ── Degraded-state warning: notify once on the first agent turn ─────────────
 
-	pi.on("before_agent_start", async () => {
+	pi.on("before_agent_start", async (_event, ctx) => {
+		// UI may not be available at session_start — recover it here.
+		if (!ui && ctx.hasUI) ui = ctx.ui
+		updateStatusFooter()
+
 		if (warned || missingAdapters.length === 0 || !ui?.notify) return
 		const lines = missingAdapters.map((a) => `${a.name} — install with: ${a.installHint ?? a.command}`)
 		ui.notify(`DAP unavailable: debug adapter(s) not installed for this project.\n${lines.join("\n")}`, "warning")
@@ -179,9 +211,14 @@ export default function (pi: ExtensionAPI) {
 			: adapterForFile(program, adapters)
 
 		if (!adapter) {
+			const supportedExts = allAdapters()
+				.flatMap((a) => a.extensions.map((e) => `.${e}`))
+				.join(", ")
 			throw new Error(
-				`No DAP adapter available for ${opts.adapterName ? `adapter "${opts.adapterName}"` : `file ${opts.program}`}. ` +
-					"Install a supported adapter (js-debug, debugpy, dlv, lldb-dap) or specify adapter explicitly.",
+				`No DAP adapter available for ${
+					opts.adapterName ? `adapter "${opts.adapterName}"` : `file ${opts.program}`
+				}. Supported file extensions: ${supportedExts}. ` +
+					"Tip: Use debug_state_at({file, line}) which auto-detects the adapter and manages the session lifecycle in one call.",
 			)
 		}
 
