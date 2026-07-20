@@ -80,6 +80,7 @@ export interface CouncilRunRecord {
 	runId: string
 	virtualModel: string
 	outcome: "accepted" | "revised" | "tool_use" | "fallback" | "error" | "aborted"
+	durationMs: number
 	stages: CouncilStageRecord[]
 	usage: Usage
 }
@@ -509,6 +510,7 @@ export function createCouncilStream({
 ) => AssistantMessageEventStream {
 	return (virtualModel, context, options = {}) => {
 		const stream = createAssistantMessageEventStream()
+		const started = Date.now()
 		queueMicrotask(async () => {
 			let aggregate = structuredClone(ZERO_USAGE)
 			const stages: CouncilStageRecord[] = []
@@ -925,6 +927,7 @@ export function createCouncilStream({
 						runId,
 						virtualModel: `${virtualModel.provider}/${virtualModel.id}`,
 						outcome,
+						durationMs: Date.now() - started,
 						stages,
 						usage: aggregate,
 					})

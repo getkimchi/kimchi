@@ -240,6 +240,7 @@ describe("Council runtime", () => {
 		expect(completeModel).toHaveBeenCalledTimes(2)
 		expect(runRecord?.stages.some(({ stage }) => stage === "judge" || stage === "revision")).toBe(false)
 		expect(runRecord?.outcome).toBe("accepted")
+		expect(runRecord?.durationMs).toBeGreaterThanOrEqual(0)
 	})
 
 	it("revises from reviewer feedback without a judge when issues are found", async () => {

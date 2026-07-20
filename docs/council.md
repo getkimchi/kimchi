@@ -21,6 +21,8 @@ Kimchi owns Council orchestration, limits, task-packet construction, structured 
 
 Internal reviewer and judge responses are not replayed or persisted. The public message is attributed to the selected Council model.
 
+Each session stores a `council_run` record with wall-clock duration, outcome, per-stage duration and status, and aggregate usage.
+
 ## Presets
 
 Preset choice is explicit; Council does not guess task complexity. Use fast for small or time-sensitive work, normal for routine engineering, and deep for complex or high-risk work.
