@@ -821,8 +821,123 @@ describe("upgradeLegacyRetrySettings", () => {
 		})
 	})
 
-	it("leaves a block with a provider section alone", () => {
+	// Since iteration 0 the contract is narrower than "all provider blocks are
+	// left alone": a provider block that exactly matches the previous kimchi
+	// default IS upgraded (see the test below). This input is left alone only
+	// because it is not that exact shape (2 top-level keys, not the expected 4).
+	it("leaves a non-default block with a provider section alone", () => {
 		expect(upgradeLegacyRetrySettings({ maxRetries: 10, provider: { maxRetries: 1 } })).toBeUndefined()
+	})
+
+	it("leaves the current default alone (idempotency)", () => {
+		// A block already matching RETRY_DEFAULTS must be a no-op: returning
+		// RETRY_DEFAULTS would be a harmless self-replacement today, but would
+		// silently rewrite user state if RETRY_DEFAULTS ever changed shape. This
+		// also guards against LEGACY_KIMCHI_RETRY_DEFAULTS.provider.timeoutMs
+		// being mistakenly set equal to the current default.
+		expect(upgradeLegacyRetrySettings(RETRY_DEFAULTS)).toBeUndefined()
+	})
+
+	it("upgrades the legacy kimchi default provider timeout (600_000 -> 120_000)", () => {
+		const oldDefault = {
+			enabled: true,
+			maxRetries: 3,
+			baseDelayMs: 2000,
+			provider: {
+				timeoutMs: 600_000,
+				maxRetries: 0,
+				maxRetryDelayMs: 60_000,
+			},
+		}
+		expect(upgradeLegacyRetrySettings(oldDefault)).toEqual(RETRY_DEFAULTS)
+	})
+
+	it("leaves a user-tuned provider timeout alone even if other keys match the old default", () => {
+		const userTunedTimeout = {
+			enabled: true,
+			maxRetries: 3,
+			baseDelayMs: 2000,
+			provider: {
+				timeoutMs: 300_000,
+				maxRetries: 0,
+				maxRetryDelayMs: 60_000,
+			},
+		}
+		expect(upgradeLegacyRetrySettings(userTunedTimeout)).toBeUndefined()
+	})
+
+	it("leaves a user-tuned provider.maxRetries alone even if other keys match the old default", () => {
+		const userTunedProviderRetries = {
+			enabled: true,
+			maxRetries: 3,
+			baseDelayMs: 2000,
+			provider: {
+				timeoutMs: 600_000,
+				maxRetries: 5,
+				maxRetryDelayMs: 60_000,
+			},
+		}
+		expect(upgradeLegacyRetrySettings(userTunedProviderRetries)).toBeUndefined()
+	})
+
+	it("leaves a user-tuned provider.maxRetryDelayMs alone even if other keys match the old default", () => {
+		const userTunedProviderRetryDelay = {
+			enabled: true,
+			maxRetries: 3,
+			baseDelayMs: 2000,
+			provider: {
+				timeoutMs: 600_000,
+				maxRetries: 0,
+				maxRetryDelayMs: 30_000,
+			},
+		}
+		expect(upgradeLegacyRetrySettings(userTunedProviderRetryDelay)).toBeUndefined()
+	})
+
+	it("leaves a user-tuned maxRetries alone even if provider matches the old default", () => {
+		const userTunedRetries = {
+			enabled: true,
+			maxRetries: 5,
+			baseDelayMs: 2000,
+			provider: {
+				timeoutMs: 600_000,
+				maxRetries: 0,
+				maxRetryDelayMs: 60_000,
+			},
+		}
+		expect(upgradeLegacyRetrySettings(userTunedRetries)).toBeUndefined()
+	})
+
+	it("leaves a provider block with an extra key alone even if it otherwise matches the old default", () => {
+		const withExtra = {
+			enabled: true,
+			maxRetries: 3,
+			baseDelayMs: 2000,
+			provider: {
+				timeoutMs: 600_000,
+				maxRetries: 0,
+				maxRetryDelayMs: 60_000,
+				extra: "ignored",
+			},
+		}
+		expect(upgradeLegacyRetrySettings(withExtra)).toBeUndefined()
+	})
+
+	it("leaves a partial provider block alone even if timeoutMs matches the old default", () => {
+		// A `ProviderRetrySettings` block carrying only `{ timeoutMs: 600_000 }`
+		// is not the exact shape older kimchi wrote (which always seeded all
+		// three provider keys), so it is treated as user-tuned and left alone.
+		// This contract is locked here so that broadening the upgrade match in
+		// the future is a deliberate, visible change.
+		const partialProvider = {
+			enabled: true,
+			maxRetries: 3,
+			baseDelayMs: 2000,
+			provider: {
+				timeoutMs: 600_000,
+			},
+		}
+		expect(upgradeLegacyRetrySettings(partialProvider)).toBeUndefined()
 	})
 
 	it("leaves a non-object retry value alone", () => {
