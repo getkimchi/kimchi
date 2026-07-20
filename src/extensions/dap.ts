@@ -143,7 +143,11 @@ export default function (pi: ExtensionAPI) {
 	// re-enable them. Idempotent via the lastPhase cache.
 	pi.on("tool_call", (_event, ctx) => {
 		// Recover UI if not available at session_start (same pattern as LSP).
-		if (!ui && ctx.hasUI) ui = ctx.ui
+		// ctx.ui may be present even when hasUI is false.
+		if (!ui && ctx.ui) {
+			ui = ctx.ui
+			updateStatusFooter()
+		}
 
 		const sessionId = ctx.sessionManager.getSessionId()
 		const phase = getCurrentPhase(sessionId)
@@ -161,7 +165,8 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("before_agent_start", async (_event, ctx) => {
 		// UI may not be available at session_start — recover it here.
-		if (!ui && ctx.hasUI) ui = ctx.ui
+		// Use ctx.ui directly (same as LSP) rather than gating on hasUI.
+		if (!ui && ctx.ui) ui = ctx.ui
 		updateStatusFooter()
 
 		if (warned || missingAdapters.length === 0 || !ui?.notify) return
