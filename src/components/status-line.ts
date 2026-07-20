@@ -31,6 +31,7 @@ export type SegmentId =
 	| "credits"
 	| "budget"
 	| "lsp"
+	| "dap"
 
 /** Raw inputs preserved on segments that have compact forms, so compaction
  *  steps can rebuild the colorized text without round-tripping through ANSI.
@@ -519,6 +520,19 @@ function buildPermissionsSegment(
 	return { id: "permissions", text: mode, width: visibleWidth(mode) }
 }
 
+function buildDapSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider): Segment | null {
+	const dapStatus = statusLineData.getExtensionStatuses().get("dap")
+	if (!dapStatus) return null
+	// Same label/value styling as the LSP segment: dim the "DAP:" label,
+	// accent the adapter state that follows.
+	const colonIdx = dapStatus.indexOf(":")
+	if (colonIdx === -1) return { id: "dap", text: accentText(theme, dapStatus), width: visibleWidth(dapStatus) }
+	const label = dimText(theme, dapStatus.slice(0, colonIdx + 1))
+	const value = dapStatus.slice(colonIdx + 1).trimStart()
+	const text = value.length > 0 ? `${label} ${accentText(theme, value)}` : label
+	return { id: "dap", text, width: visibleWidth(text) }
+}
+
 function buildLspSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider): Segment | null {
 	const lspStatus = statusLineData.getExtensionStatuses().get("lsp")
 	if (!lspStatus) return null
@@ -619,6 +633,7 @@ export function buildStatusLineSegments(
 		buildTagsSegment(theme, tags, pinned.has("tags")),
 		buildTeamSegment(theme, tags, pinned.has("team")),
 		buildLspSegment(theme, statusLineData),
+		buildDapSegment(theme, statusLineData),
 	].filter((s): s is Segment => s !== null)
 }
 
