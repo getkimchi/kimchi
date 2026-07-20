@@ -41,6 +41,26 @@ describe("classifyLLMGatewayError", () => {
 			reason: "transport_failure",
 		},
 		{
+			name: "undici body timeout code",
+			message: "UND_ERR_BODY_TIMEOUT",
+			reason: "transport_failure",
+		},
+		{
+			name: "undici headers timeout code",
+			message: "UND_ERR_HEADERS_TIMEOUT",
+			reason: "transport_failure",
+		},
+		{
+			name: "undici body timeout message",
+			message: "Request body timeout",
+			reason: "transport_failure",
+		},
+		{
+			name: "undici headers timeout message",
+			message: "Headers Timeout Error",
+			reason: "transport_failure",
+		},
+		{
 			name: "connection terminated unexpectedly",
 			message: "connection terminated unexpectedly",
 			reason: "transport_failure",
