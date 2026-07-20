@@ -12,6 +12,11 @@ vi.mock("../pii-redaction/redactor.js", () => ({
 }))
 
 const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+const REVIEW_FAILURE = {
+	content: [],
+	stopReason: "error",
+	errorMessage: "Council could not validate the lead response.",
+}
 
 function physicalModel(id: string): Model<Api> {
 	return {
@@ -582,7 +587,7 @@ describe("Council runtime", () => {
 			new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("test timed out")), 150)),
 		])
 
-		expect(result.content).toEqual([{ type: "text", text: "Lead under shared deadline" }])
+		expect(result).toMatchObject(REVIEW_FAILURE)
 		expect(reviewerCalls).toBe(1)
 		expect(completeModel).toHaveBeenCalledTimes(2)
 	})
@@ -620,7 +625,7 @@ describe("Council runtime", () => {
 			new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("test timed out")), 150)),
 		])
 
-		expect(result.content).toEqual([{ type: "text", text: "Lead before malformed review" }])
+		expect(result).toMatchObject(REVIEW_FAILURE)
 		expect(repairCalls).toBe(1)
 		expect(completeModel).toHaveBeenCalledTimes(3)
 	})
@@ -1269,7 +1274,10 @@ describe("Council runtime", () => {
 		expect(childOptions).not.toHaveProperty("thinkingBudgets")
 	})
 
-	it("returns the lead draft when every reviewer output is unusable", async () => {
+	it.each([
+		["judged", true, "error"],
+		["fast", false, "fallback"],
+	] as const)("handles every unusable reviewer output in %s mode", async (_mode, useJudge, expectedOutcome) => {
 		let runRecord: CouncilRunRecord | undefined
 		const completeModel = vi.fn(async (model: Model<Api>, context: Context): Promise<AssistantMessage> => {
 			const system = context.systemPrompt ?? ""
@@ -1283,7 +1291,7 @@ describe("Council runtime", () => {
 			config: {
 				...DEFAULT_COUNCIL_CONFIG,
 				reviewerModels: ["kimchi-dev/glm-5.2-fp8"],
-				useJudge: true,
+				useJudge,
 				revisionPolicy: "on-issues",
 			},
 			getModelRegistry: () => modelRegistry,
@@ -1295,13 +1303,18 @@ describe("Council runtime", () => {
 
 		const result = await stream.result()
 
-		expect(result.content).toEqual([{ type: "text", text: "Lead fallback" }])
+		if (useJudge) {
+			expect(result).toMatchObject(REVIEW_FAILURE)
+		} else {
+			expect(result.content).toEqual([{ type: "text", text: "Lead fallback" }])
+			expect(result.stopReason).toBe("stop")
+		}
 		expect(completeModel).toHaveBeenCalledTimes(3)
 		expect(runRecord?.stages.some(({ stage }) => stage === "judge" || stage === "revision")).toBe(false)
-		expect(runRecord?.outcome).toBe("fallback")
+		expect(runRecord?.outcome).toBe(expectedOutcome)
 	})
 
-	it("falls back to the lead when strict task-packet redaction fails", async () => {
+	it("fails closed when strict task-packet redaction fails", async () => {
 		redactObjectStringsMock.mockRejectedValueOnce(new Error("redactor unavailable"))
 		let runRecord: CouncilRunRecord | undefined
 		const completeModel = vi.fn(async (model: Model<Api>) => response(model, "Lead kept private"))
@@ -1316,13 +1329,13 @@ describe("Council runtime", () => {
 
 		const result = await stream.result()
 
-		expect(result.content).toEqual([{ type: "text", text: "Lead kept private" }])
+		expect(result).toMatchObject(REVIEW_FAILURE)
 		expect(completeModel).toHaveBeenCalledTimes(1)
 		expect(redactObjectStringsMock).toHaveBeenCalledWith(expect.anything(), { failClosed: true })
-		expect(runRecord?.outcome).toBe("fallback")
+		expect(runRecord?.outcome).toBe("error")
 	})
 
-	it("falls back to the lead when task-packet redaction exceeds the overall timeout", async () => {
+	it("fails closed when task-packet redaction exceeds the overall timeout", async () => {
 		redactObjectStringsMock.mockImplementationOnce(() => new Promise<never>(() => {}))
 		let runRecord: CouncilRunRecord | undefined
 		const completeModel = vi.fn(async (model: Model<Api>) => response(model, "Lead after redaction timeout"))
@@ -1344,9 +1357,9 @@ describe("Council runtime", () => {
 		clearTimeout(timeout)
 		if (result === "test-timeout") throw new Error("Council ignored its overall timeout during redaction")
 
-		expect(result.content).toEqual([{ type: "text", text: "Lead after redaction timeout" }])
+		expect(result).toMatchObject(REVIEW_FAILURE)
 		expect(completeModel).toHaveBeenCalledTimes(1)
-		expect(runRecord?.outcome).toBe("fallback")
+		expect(runRecord?.outcome).toBe("error")
 	})
 
 	it("aborts while task-packet redaction is pending", async () => {
@@ -1415,7 +1428,7 @@ describe("Council runtime", () => {
 
 		const result = await stream.result()
 
-		expect(result.content).toEqual([{ type: "text", text: "Lead fallback" }])
+		expect(result).toMatchObject(REVIEW_FAILURE)
 		expect(completeModel).toHaveBeenCalledTimes(2)
 	})
 

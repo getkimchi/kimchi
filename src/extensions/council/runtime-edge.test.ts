@@ -220,9 +220,13 @@ describe("Council runtime adversarial edges", () => {
 		)
 		const { result, record } = await runCouncil({ completeModel, config: { maxStructuredBytes: 1024 } })
 
-		expect(result.content).toEqual([{ type: "text", text: "Lead survives" }])
+		expect(result).toMatchObject({
+			content: [],
+			stopReason: "error",
+			errorMessage: "Council could not validate the lead response.",
+		})
 		expect(completeModel.mock.calls.filter(([, context]) => stage(context) === "repair")).toHaveLength(0)
-		expect(record?.outcome).toBe("fallback")
+		expect(record?.outcome).toBe("error")
 	})
 
 	it("keeps newest bounded evidence and injection strings inside untrusted data", async () => {

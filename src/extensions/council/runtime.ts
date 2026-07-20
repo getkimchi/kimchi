@@ -707,6 +707,10 @@ export function createCouncilStream({
 				const draft = textFromAssistant(lead)
 				if (!draft.trim()) throw new Error("Council lead returned no text")
 				if (hasSerializedToolCallMarkup(draft)) throw new Error("Council lead returned serialized tool-call markup")
+				const finishUnreviewed = () => {
+					if (config.useJudge) fail("Council could not validate the lead response.")
+					else finish(virtualize({ ...lead, content: leadContent }, virtualModel, aggregate), "fallback")
+				}
 				const conversationMessages = context.messages.filter(({ timestamp }) => Number.isFinite(timestamp))
 
 				let canonicalPacket: TaskPacket
@@ -719,7 +723,7 @@ export function createCouncilStream({
 					)
 				} catch {
 					if (parentAborted()) throw new Error("Council request aborted")
-					finish(virtualize({ ...lead, content: leadContent }, virtualModel, aggregate), "fallback")
+					finishUnreviewed()
 					return
 				}
 				const independentPacket = { ...canonicalPacket }
@@ -782,7 +786,7 @@ export function createCouncilStream({
 					),
 				)
 				if (reviewers.length === 0) {
-					finish(virtualize({ ...lead, content: leadContent }, virtualModel, aggregate), "fallback")
+					finishUnreviewed()
 					return
 				}
 
