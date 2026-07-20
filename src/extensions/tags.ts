@@ -27,7 +27,6 @@ import { Type } from "typebox"
 import { readJson } from "../config/json.js"
 import { readConfigSetting } from "../config/settings.js"
 import type { ThinkingLevel } from "./agents/personas/types.js"
-import { createSystemPromptBlocks } from "./prompt-construction/index.js"
 import { isStaleCtxError } from "./stale-ctx.js"
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -45,12 +44,6 @@ const TAG_COLORS: ThemeColor[] = ["accent", "mdLink", "success", "warning"]
 // Valid phases for phase tracking
 const VALID_PHASES = ["explore", "plan", "build", "review", "research"] as const
 type Phase = (typeof VALID_PHASES)[number]
-
-const PHASE_TAGGING_PROMPT = `## Phase Tagging for Analytics
-
-The session starts in \`explore\` phase by default. Call \`set_phase\` when the work type changes — pick one of \`explore\`, \`research\`, \`plan\`, \`build\`, or \`review\`. Only one phase is active at a time; the most recent call wins. Subagents set their phase automatically from their persona, so this tool is for tagging the main thread's work.
-
-When the orchestrator decides to perform a phase itself (not delegate), include the matching \`thinking\` parameter from the Orchestration **Thinking levels** table. Leave \`thinking\` unset when only tagging coordination work or when delegating the phase to an Agent.`
 
 export function isValidPhase(phase: string): phase is Phase {
 	return VALID_PHASES.includes(phase as Phase)
@@ -614,11 +607,6 @@ export default function tagsExtension(pi: ExtensionAPI) {
 			const modelSuffix = model ? theme.fg("dim", ` [${model}]`) : ""
 			return new Text(dash + label + modelSuffix + thinkingSuffix, 0, 0)
 		},
-	})
-
-	createSystemPromptBlocks(pi, "tags").register({
-		id: "phase-tagging",
-		render: () => PHASE_TAGGING_PROMPT,
 	})
 
 	// Initialize status line tags status and default phase on session start
