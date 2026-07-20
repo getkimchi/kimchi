@@ -894,6 +894,11 @@ export function createCouncilStream({
 						hasSerializedToolCallMarkup(revisionText) ||
 						finalContent.some((block) => block.type === "toolCall")
 					) {
+						const revisionStage = stages.at(-1)
+						if (revisionStage?.stage === "revision") {
+							revisionStage.status = "error"
+							revisionStage.error = "invalid_output"
+						}
 						if (hasCriticalFindings) {
 							fail(CRITICAL_REVISION_ERROR_MESSAGE)
 							return

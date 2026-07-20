@@ -917,6 +917,7 @@ describe("Council runtime", () => {
 	})
 
 	it("falls back to the lead draft when the revision emits serialized tool-call markup", async () => {
+		let runRecord: CouncilRunRecord | undefined
 		const completeModel = vi.fn(async (model: Model<Api>, context: Context): Promise<AssistantMessage> => {
 			const system = context.systemPrompt ?? ""
 			const lastMessage = context.messages.at(-1)
@@ -952,12 +953,17 @@ describe("Council runtime", () => {
 			config: { ...DEFAULT_COUNCIL_CONFIG, reviewerModels: ["kimchi-dev/glm-5.2-fp8"] },
 			getModelRegistry: () => modelRegistry,
 			completeModel,
+			recordRun: (record) => {
+				runRecord = record
+			},
 		})(councilModel, { messages: [{ role: "user", content: "Answer", timestamp: 1 }] })
 
 		const result = await stream.result()
 
 		expect(result.content).toEqual([{ type: "text", text: "Complete lead draft" }])
 		expect(completeModel).toHaveBeenCalledTimes(4)
+		expect(runRecord?.outcome).toBe("fallback")
+		expect(runRecord?.stages.at(-1)).toMatchObject({ stage: "revision", status: "error", error: "invalid_output" })
 	})
 
 	it("instructs the initial lead to return user-facing output", async () => {
