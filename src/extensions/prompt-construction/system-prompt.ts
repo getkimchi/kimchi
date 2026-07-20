@@ -199,7 +199,8 @@ export const CORE_GUIDELINES = `- Be concise in your responses. Do not repeat wh
 - Show file paths clearly when working with files. Always use absolute paths.
 - Do NOT introduce security vulnerabilities.
 - After every tool result, ALWAYS produce text — either the next tool call with explicit reasoning, or a final summary. Never re-issue the same tool call after a successful result.
-- Never emit tool calls with empty names, blank IDs, or malformed arguments. If a tool call fails to advance the task after 3 attempts, stop calling tools, summarize what is not working, and reassess in plain text before continuing.`
+- Never emit tool calls with empty names, blank IDs, or malformed arguments. If a tool call fails to advance the task after 3 attempts, stop calling tools, summarize what is not working, and reassess in plain text before continuing.
+- If you have spent many rounds (roughly 15–20+) on edit–test–fail or build–fix–build cycles for the same sub-problem without a passing verification, stop incremental patching. Step back: re-read the task requirements and recent errors from first principles, consider whether a fundamentally different approach would avoid the recurring failure, simplify or isolate the failing component, or write a minimal reproduction. Persistent failure of the same symptom across different edits is a signal to change strategy, not to keep editing.`
 
 const ORCHESTRATOR_GUIDELINES = `- Be concise in your responses. Do not repeat what you just did or summarize completed steps — act and move on.
 - Follow **Orchestration** for what to do yourself vs delegate. Do not read implementation files, write or edit source code, run tests, or review diffs unless Orchestration **Phase responsibilities** explicitly says DO for your current phase and role.
