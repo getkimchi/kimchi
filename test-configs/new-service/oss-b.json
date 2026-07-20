@@ -1,0 +1,44 @@
+{
+  "testSet": [
+    "hf-model-inference",
+    "build-cython-ext"
+  ],
+  "taskType": "new-service",
+  "variant": "oss-b",
+  "modelRoles": {
+    "orchestrator": "kimchi-dev/glm-5.2-fp8",
+    "planner": "kimchi-dev/glm-5.2-fp8",
+    "builder": [
+      "kimchi-dev/deepseek-v4-flash"
+    ],
+    "reviewer": [
+      "kimchi-dev/minimax-m3"
+    ],
+    "explorer": [
+      "kimchi-dev/nemotron-3-ultra-fp4"
+    ],
+    "judge": "kimchi-dev/glm-5.2-fp8"
+  },
+  "maxRetries": 6,
+  "modelMetadata": {
+    "kimchi-dev/glm-5.2-fp8": {
+      "tier": "standard",
+      "vision": true
+    },
+    "kimchi-dev/deepseek-v4-flash": {
+      "tier": "standard",
+      "vision": false
+    },
+    "kimchi-dev/minimax-m3": {
+      "tier": "heavy",
+      "vision": true
+    },
+    "kimchi-dev/nemotron-3-ultra-fp4": {
+      "tier": "standard",
+      "vision": false
+    }
+  },
+  "multiModel": true,
+  "hideThinkingBlock": true,
+  "_purpose": "higher-quality OSS \u2014 keep explorer on nemotron-3-ultra-fp4 (consistent with every other profile)"
+}
