@@ -1,12 +1,25 @@
-import { relative } from "node:path"
+import { readFileSync } from "node:fs"
+import { resolve } from "node:path"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
+import { setIdeSelectionIndicator } from "../ui.js"
 import { formatAtMention } from "./at-mentions.js"
+import { applyEditInput } from "./edit-apply.js"
 import { findMatchingLockfile, getLockfileDir, parseLockfile, scanLockfiles } from "./lockfile.js"
 import { connectToIde } from "./mcp-client.js"
 import type { AtMentionNotification, IdeConnection, IdeTool, SelectionChangedNotification } from "./types.js"
 
 const POLL_INTERVAL_MS = 5000
+
+/** Module-level flag indicating whether the current process has an active IDE connection.
+ * Used by other extensions (e.g. permissions) to decide whether to defer to the IDE.
+ * This is coarse-grained by design: there is at most one active IDE session per Kimchi process. */
+let ideConnectionActive = false
+
+/** Return true if an IDE connection is currently active. */
+export function isIdeConnected(): boolean {
+	return ideConnectionActive
+}
 
 /** Max number of at-mentions to queue before dropping oldest. */
 const MAX_PENDING_MENTIONS = 100
@@ -14,10 +27,132 @@ const MAX_PENDING_MENTIONS = 100
 /** Max reconnect attempts before giving up on discovery polling. */
 const MAX_RECONNECT_RETRIES = 3
 
+/** Tool names that mutate files and must be gated by IDE approval when enabled. */
+const APPROVAL_GATED_TOOLS = new Set(["write", "edit"])
+
+/** Short unique id for IDE tool-window queue tracking. */
+function generateChangeId(): string {
+	return `chg_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
+}
+
+/** Read a file's current contents, returning "" if missing or unreadable. */
+function readCurrentContent(filePath: string): string {
+	try {
+		return readFileSync(filePath, "utf-8")
+	} catch {
+		return ""
+	}
+}
+
+/** Compute the proposed new content for a `write`/`edit` call. Returns `null`
+ * on malformed input (e.g. edit `oldText` not found) so the hook defers to
+ * the tool's own validation. */
+function computeProposedChange(
+	toolName: string,
+	input: Record<string, unknown>,
+	cwd: string,
+): { filePath: string; originalContent: string; newContent: string } | null {
+	const rawPath =
+		typeof input.path === "string" ? input.path : typeof input.file_path === "string" ? input.file_path : ""
+	if (!rawPath) return null
+	const filePath = resolve(cwd, rawPath)
+	const originalContent = readCurrentContent(filePath)
+
+	if (toolName === "write") {
+		const newContent = typeof input.content === "string" ? input.content : ""
+		return { filePath, originalContent, newContent }
+	}
+
+	// edit
+	const newContent = applyEditInput(originalContent, input as Parameters<typeof applyEditInput>[1])
+	if (newContent === null) return null
+	return { filePath, originalContent, newContent }
+}
+
+/** Result of an IDE approval request. `approved: true` carries the user's
+ * (possibly hand-edited) `newContent`; `approved: false` means rejected.
+ * `null` means the IDE call failed — the hook falls back to letting the
+ * write proceed (best-effort, never a hard block). */
+interface IdeApprovalResult {
+	approved: boolean
+	newContent: string | null
+}
+
+/** Call the IDE's `proposeChange` tool and return the approval result, or
+ * `null` on failure (network error, malformed response). The MCP response is
+ * an envelope — see `unwrapMcpToolResult`. */
+async function requestIdeApproval(
+	connection: IdeConnection,
+	params: { filePath: string; originalContent: string; newContent: string; changeId: string },
+	signal: AbortSignal | undefined,
+): Promise<IdeApprovalResult | null> {
+	try {
+		const result = await connection.callTool("proposeChange", params)
+		if (signal?.aborted) return null
+		const payload = unwrapMcpToolResult(result)
+		if (payload && typeof payload === "object" && "approved" in payload) {
+			const approved = Boolean((payload as { approved: unknown }).approved)
+			const newContent = approved ? stringValue((payload as { newContent?: unknown }).newContent) : null
+			return { approved, newContent }
+		}
+		return null
+	} catch {
+		return null
+	}
+}
+
+/** Coerce to string or null. */
+function stringValue(value: unknown): string | null {
+	return typeof value === "string" ? value : null
+}
+
+/** Override the agent's write/edit input with the user's hand-edited content
+ * from the IDE diff viewer. `write` sets `input.content`; `edit` rewrites
+ * `input.edits` as a single full-file replacement (robust vs. fragment-level
+ * reconstruction). Both branches normalise `path`/`file_path`. */
+function applyEditedContent(
+	input: Record<string, unknown>,
+	toolName: string,
+	editedNewContent: string,
+	originalContent: string,
+): void {
+	if (toolName === "write") {
+		input.content = editedNewContent
+		if (typeof input.path !== "string" && typeof input.file_path === "string") input.path = input.file_path
+		return
+	}
+	// edit → rewrite as a single full-file replacement.
+	input.edits = [{ oldText: originalContent, newText: editedNewContent }]
+	// Drop legacy single-operation fields so the tool doesn't see conflicting shapes.
+	input.oldText = undefined
+	input.newText = undefined
+	input.old_text = undefined
+	input.new_text = undefined
+	if (typeof input.path !== "string" && typeof input.file_path === "string") input.path = input.file_path
+}
+
+/** Extract the JSON payload from an MCP `CallToolResult` envelope:
+ * `{ content: [{ type: "text", text: "<json-stringified-result>" }] }`.
+ * Returns `null` on malformed envelopes or invalid JSON. */
+function unwrapMcpToolResult(result: unknown): unknown {
+	if (!result || typeof result !== "object") return null
+	const envelope = result as { content?: unknown }
+	const content = envelope.content
+	if (!Array.isArray(content) || content.length === 0) return null
+	const first = content[0]
+	if (!first || typeof first !== "object") return null
+	const text = (first as { text?: unknown }).text
+	if (typeof text !== "string") return null
+	try {
+		return JSON.parse(text)
+	} catch {
+		return null
+	}
+}
+
 export default function ideAdapterExtension(pi: ExtensionAPI): void {
 	let connection: IdeConnection | null = null
 	let pollTimer: ReturnType<typeof setInterval> | null = null
-	let _registeredToolNames: string[] = []
 	let isShuttingDown = false
 	let reconnectRetries = 0
 
@@ -70,6 +205,7 @@ export default function ideAdapterExtension(pi: ExtensionAPI): void {
 				return
 			}
 			connection = newConnection
+			ideConnectionActive = true
 			reconnectRetries = 0
 		} catch (err) {
 			reconnectRetries++
@@ -92,7 +228,7 @@ export default function ideAdapterExtension(pi: ExtensionAPI): void {
 		// Wire disconnect callback so we can null the handle and reconnect later
 		connection.onDisconnect = () => {
 			connection = null
-			_registeredToolNames = []
+			ideConnectionActive = false
 		}
 
 		try {
@@ -101,7 +237,6 @@ export default function ideAdapterExtension(pi: ExtensionAPI): void {
 				if (isShuttingDown) break
 				registerIdeTool(pi, tool)
 			}
-			_registeredToolNames = tools.map((t) => t.name)
 		} catch (err) {
 			console.warn("[ide-adapter] Failed to list IDE tools:", err)
 		}
@@ -162,9 +297,10 @@ export default function ideAdapterExtension(pi: ExtensionAPI): void {
 
 		if (m.method === "at_mentioned") {
 			if (typeof params.filePath === "string") {
-				const filePath = currentCtx?.cwd
-					? relative(currentCtx.cwd, params.filePath).replace(/\\/g, "/")
-					: params.filePath
+				// The IDE is the authority on file paths (CONTRACT.md): it sends
+				// absolute paths and the agent's tools resolve them regardless of
+				// cwd, so pass the path through verbatim.
+				const filePath = params.filePath
 				const mention: AtMentionNotification = {
 					filePath,
 					lineStart: typeof params.lineStart === "number" ? params.lineStart : 0,
@@ -186,11 +322,22 @@ export default function ideAdapterExtension(pi: ExtensionAPI): void {
 			}
 		} else if (m.method === "selection_changed") {
 			if (typeof params.filePath === "string") {
-				localSetLatestSelection({
-					filePath: params.filePath,
+				// Pass the IDE-supplied absolute path through verbatim (see
+				// `at_mentioned` above).
+				const filePath = params.filePath
+				const selection: SelectionChangedNotification = {
+					filePath,
 					lineStart: typeof params.lineStart === "number" ? params.lineStart : 0,
 					lineEnd: typeof params.lineEnd === "number" ? params.lineEnd : 0,
-				})
+				}
+				localSetLatestSelection(selection)
+				// Surface as a right-aligned indicator inside the input box's top
+				// border — a dedicated segment alongside (not replacing) the pending
+				// image indicator. The selection is also kept sticky in
+				// `_latestSelection` for auto-attach on send (see `pi.on('input')`).
+				if (currentCtx?.hasUI) {
+					setIdeSelectionIndicator(formatAtMention(selection))
+				}
 			}
 		}
 	}
@@ -205,10 +352,73 @@ export default function ideAdapterExtension(pi: ExtensionAPI): void {
 			// Prevent onDisconnect from clearing a stale handle after we intentionally close
 			const conn = connection
 			connection = null
-			_registeredToolNames = []
+			ideConnectionActive = false
 			conn.close().catch((err) => console.warn("[ide-adapter] Disconnect error:", err))
 		}
 	}
+
+	pi.on("tool_call", async (event, ctx) => {
+		const toolName = event.toolName
+		if (!toolName || !APPROVAL_GATED_TOOLS.has(toolName)) return undefined
+
+		// No IDE connected → no approval surface is available; let the tool run.
+		// The IDE diff viewer is automatically used whenever an IDE is connected.
+		if (!connection) {
+			return undefined
+		}
+
+		const input = (event.input ?? {}) as Record<string, unknown>
+		const proposed = computeProposedChange(toolName, input, ctx.cwd)
+		if (!proposed) {
+			// Malformed inputs (e.g. edit oldText not found) — defer to the tool's
+			// own validation surface. Don't block; let the tool fail with its own
+			// error message.
+			return undefined
+		}
+
+		const changeId = generateChangeId()
+		const approval = await requestIdeApproval(connection, { ...proposed, changeId }, ctx.signal)
+		if (approval === null) {
+			// IDE call failed — best-effort approval, fall through.
+			console.warn(`[ide-adapter] proposeChange call failed for ${proposed.filePath}; letting ${toolName} proceed`)
+			return undefined
+		}
+		if (!approval.approved) {
+			return {
+				block: true,
+				reason: `User rejected the proposed change to ${proposed.filePath} in the IDE diff viewer.`,
+			}
+		}
+
+		// Approved. If the user hand-edited the proposed content in the IDE diff
+		// viewer, override the tool's input so the agent applies the user's final
+		// version instead of its original proposal.
+		if (approval.newContent !== null && approval.newContent !== proposed.newContent) {
+			applyEditedContent(
+				event.input as Record<string, unknown>,
+				toolName,
+				approval.newContent,
+				proposed.originalContent,
+			)
+			// Steer the LLM so its summary reflects what was actually written, not
+			// its original proposal. Without this, the agent confidently reports
+			// the proposed value even though the user changed it in the diff viewer.
+			pi.sendMessage(
+				{
+					customType: "ide-adapter-edit-steer",
+					content: [
+						{
+							type: "text",
+							text: `The user hand-edited your proposed change to ${proposed.filePath} in the IDE diff viewer before it was applied. The actual content written to disk differs from your original proposal — do not assume your proposed content was applied verbatim. If you need to reference the exact value, read the file from disk.`,
+						},
+					],
+					display: false,
+				},
+				{ deliverAs: "steer" },
+			)
+		}
+		return undefined
+	})
 
 	pi.on("session_start", (_event, ctx: ExtensionContext) => {
 		currentCtx = ctx
@@ -230,12 +440,22 @@ export default function ideAdapterExtension(pi: ExtensionAPI): void {
 	})
 
 	pi.on("input", (event) => {
-		if (!localHasPendingAtMentions()) return
+		// Drain pending at-mentions (manual Cmd+Option+K path). Empty if none queued.
+		const mentions = localHasPendingAtMentions() ? localDrainAtMentions() : []
 
-		const mentions = localDrainAtMentions()
-		if (mentions.length === 0) return
+		// Auto-attach the current IDE selection (sticky). The selection is NOT
+		// consumed — it stays "in sync" with the IDE so every send re-attaches
+		// whatever is currently selected, until a new selection_changed overwrites it.
+		const selectionMention = _latestSelection ? formatAtMention(_latestSelection) : null
 
-		const prefix = mentions.join(" ")
+		// Dedup: if the user explicitly at-mentioned the same range they have
+		// selected (e.g. Cmd+Option+K on the active selection), don't double-prefix.
+		const selectionPrefix = selectionMention && !mentions.includes(selectionMention) ? selectionMention : null
+
+		const prefixes = selectionPrefix ? [...mentions, selectionPrefix] : mentions
+		if (prefixes.length === 0) return
+
+		const prefix = prefixes.join(" ")
 		const text = event.text.trimStart()
 		const newText = text ? `${prefix} ${text}` : prefix
 
@@ -245,6 +465,9 @@ export default function ideAdapterExtension(pi: ExtensionAPI): void {
 	pi.on("session_shutdown", () => {
 		currentCtx = null
 		isShuttingDown = true
+		// Clear the input-box selection indicator so it doesn't persist into
+		// the next session (the PromptEditor instance is reused).
+		setIdeSelectionIndicator(null)
 		disconnect()
 	})
 }
