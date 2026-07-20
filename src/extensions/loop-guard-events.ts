@@ -28,6 +28,7 @@ export type LoopGuardDetector =
 	| "edit_run"
 	| "edit_run_total"
 	| "bash_repetition"
+	| "stuck_session"
 
 export interface LoopGuardWarnPayload {
 	/** The detector that fired this warn. */

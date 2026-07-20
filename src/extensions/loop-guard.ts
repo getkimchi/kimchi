@@ -46,6 +46,17 @@ const BASH_PREFIX_LENGTH = 50 // normalize bash commands by this prefix
 const FINGERPRINT_TAIL_LINES = 20
 const REASON_ARG_PREVIEW = 80
 
+// Stuck-session backstop detector thresholds. This detector is
+// signature-independent: it fires when no signature detector has fired
+// but the agent has been churning through tool calls for a long time
+// without converging. It is the lowest-priority detector in the chain
+// so signature detectors (lower false-positive rate) fire first when
+// they can. Tuned against iteration-0002 traces: passing tasks mostly
+// complete in <40 tool calls; the four timeout traces all exceeded ~80.
+const STUCK_SESSION_THRESHOLD = 40 // first backstop fire after this many tool calls
+const STUCK_RE_FIRE_INTERVAL = 20 // re-fire this many tool calls after any warn
+const STUCK_MAX_STEERS = 5 // cap backstop steers per session (limits cost on long productive tasks)
+
 const STEERING_MESSAGE =
 	"Loop guard: you are repeating the same edit-and-run cycle without making progress. " +
 	"STOP and change your approach. Before your next tool call: " +
@@ -53,6 +64,45 @@ const STEERING_MESSAGE =
 	"(2) List at least two alternative approaches you have NOT tried. " +
 	"(3) Pick the most promising one and try THAT instead. " +
 	"Do not repeat the same file edits or the same commands — the loop guard will keep firing if you do."
+
+// Second-fire escalation. A stronger, more directive message than the
+// first fire — tells the model its previous approach is not converging
+// and demands an explicit strategy change.
+const STEERING_MESSAGE_2 =
+	"Second loop warning. Your previous approach is not converging. " +
+	"You MUST change strategy now: state in one sentence what is failing and why, " +
+	"list two approaches you have NOT tried, and pick the most promising one. " +
+	"Do not repeat the same edits or commands."
+
+// Third-and-beyond escalation. References prior ignored steers explicitly
+// so the agent cannot pattern-match the message as ignorable noise, and
+// offers a graceful exit (partial solution) instead of continued churning.
+// {n} and {prev} are placeholder tokens replaced by buildSteerPrefix().
+const STEERING_MESSAGE_N =
+	"Loop warning #{n}. You have ignored {prev} previous loop-guard steers and are still " +
+	"not making verifiable progress. Stop editing and running the same kinds of commands. " +
+	"Re-read the task requirements from first principles. If you cannot complete the task, " +
+	"write the best partial solution you have, run whatever verification exists, and summarize " +
+	"what is blocking you — do not keep churning."
+
+/** Build the escalating steer prefix for the given session-wide warn count.
+ *  warnCount starts at 1 on the first warn. The first-fire message is
+ *  unchanged from the original advisory to preserve existing behavior for
+ *  signature-detector first fires. */
+function buildSteerPrefix(warnCount: number): string {
+	if (warnCount <= 1) return STEERING_MESSAGE
+	if (warnCount === 2) return STEERING_MESSAGE_2
+	return STEERING_MESSAGE_N.replace("{n}", String(warnCount)).replace("{prev}", String(warnCount - 1))
+}
+
+export interface LoopGuardOptions {
+	/** First backstop fire after this many tool calls. Defaults to STUCK_SESSION_THRESHOLD. */
+	stuckSessionThreshold?: number
+	/** Re-fire this many tool calls after any warn. Defaults to STUCK_RE_FIRE_INTERVAL. */
+	stuckReFireInterval?: number
+	/** Cap on backstop steers per session. Defaults to STUCK_MAX_STEERS. Set to 0 to disable the backstop (used by signature-detector isolation tests). */
+	stuckMaxSteers?: number
+}
 
 /**
  * Detects when an agent is stuck repeating itself across tool calls. Four
@@ -76,6 +126,9 @@ const STEERING_MESSAGE =
  *      miss because the edit args change every iteration.
  */
 export class LoopGuard {
+	private readonly stuckSessionThreshold: number
+	private readonly stuckReFireInterval: number
+	private readonly stuckMaxSteers: number
 	private history: ToolHistoryRecord[] = []
 	private editCounts = new Map<string, number>()
 	private bashCounts = new Map<string, number>()
@@ -92,6 +145,23 @@ export class LoopGuard {
 	private bashCountsNormTotal = new Map<string, number>()
 	private warned = false
 	private triggered = false
+	/** Total tool_result events this session; reset only on session_start/input.
+	 *  Drives the stuck-session backstop detector (STUCK_SESSION_THRESHOLD). */
+	private toolCallCount = 0
+	/** tool_result events since the last warn (any detector). Reset on every
+	 *  warn so the backstop re-fires STUCK_RE_FIRE_INTERVAL calls after any
+	 *  steer, giving sustained pressure without flooding. */
+	private toolCallsSinceLastWarn = 0
+	/** Count of backstop-specific steers; capped at STUCK_MAX_STEERS so a long
+	 *  productive task isn't flooded. Signature steers do NOT consume this
+	 *  budget. */
+	private stuckWarnCount = 0
+
+	constructor(options?: LoopGuardOptions) {
+		this.stuckSessionThreshold = options?.stuckSessionThreshold ?? STUCK_SESSION_THRESHOLD
+		this.stuckReFireInterval = options?.stuckReFireInterval ?? STUCK_RE_FIRE_INTERVAL
+		this.stuckMaxSteers = options?.stuckMaxSteers ?? STUCK_MAX_STEERS
+	}
 
 	reset(): void {
 		this.history = []
@@ -103,6 +173,9 @@ export class LoopGuard {
 		this.bashCountsNormTotal.clear()
 		this.warned = false
 		this.triggered = false
+		this.toolCallCount = 0
+		this.toolCallsSinceLastWarn = 0
+		this.stuckWarnCount = 0
 	}
 
 	isTriggered(): boolean {
@@ -119,6 +192,12 @@ export class LoopGuard {
 	}
 
 	record(rec: ToolHistoryRecord): LoopGuardResult {
+		// Stuck-session backstop counters: increment before detection so the
+		// first record past the threshold can fire. toolCallCount tracks the
+		// whole session; toolCallsSinceLastWarn is reset on every warn.
+		this.toolCallCount++
+		this.toolCallsSinceLastWarn++
+
 		// Increment semantic counters for the new record before pushing.
 		const editTarget = extractEditTarget(rec)
 		if (editTarget) {
@@ -160,6 +239,16 @@ export class LoopGuard {
 		// into no-tool turns which deadlocks with the exploration guard.
 		this.warned = true
 
+		// The backstop re-fires STUCK_RE_FIRE_INTERVAL calls after ANY warn
+		// (signature or backstop), giving sustained pressure without flooding.
+		this.toolCallsSinceLastWarn = 0
+
+		// Backstop-specific budget: each stuck_session fire consumes one of
+		// the STUCK_MAX_STEERS slots. Signature steers don't consume it.
+		if (detected.detector === "stuck_session") {
+			this.stuckWarnCount++
+		}
+
 		// Reset the window counters so the model must loop again before the
 		// next steer fires — avoids flooding the context with steers on
 		// every subsequent tool call.
@@ -179,7 +268,9 @@ export class LoopGuard {
 			this.bashCountsNormTotal.delete(key)
 		}
 
-		return { state: "warn", reason: `${STEERING_MESSAGE} (${detected.reason})`, detector: detected.detector }
+		// Return only the detector-specific detail; the extension builds the
+		// escalating steer prefix from warnCount and appends this in parens.
+		return { state: "warn", reason: detected.reason, detector: detected.detector }
 	}
 
 	/**
@@ -286,7 +377,8 @@ export class LoopGuard {
 			this.detectFuzzyNgram() ??
 			this.detectEditRunCycle() ??
 			this.detectEditRunCycleTotal() ??
-			this.detectBashRepetition()
+			this.detectBashRepetition() ??
+			this.detectStuckSession()
 		)
 	}
 
@@ -443,6 +535,30 @@ export class LoopGuard {
 			}
 		}
 		return undefined
+	}
+
+	/**
+	 * Stuck-session backstop detector. Signature-independent: fires when no
+	 * signature detector has matched but the agent has churned through many
+	 * tool calls without converging. Catches varied-command non-converging
+	 * loops (different files edited, different bash commands each round) that
+	 * the signature detectors structurally cannot see.
+	 *
+	 * Lowest priority in the detect() chain — signature detectors fire first
+	 * when they can because they have a lower false-positive rate. The
+	 * backstop re-fires every STUCK_RE_FIRE_INTERVAL calls after any warn,
+	 * and is capped at STUCK_MAX_STEERS per session to bound the cost on
+	 * long productive tasks.
+	 */
+	private detectStuckSession(): { reason: string; firedKeys: string[]; detector: LoopGuardDetector } | undefined {
+		if (this.stuckWarnCount >= this.stuckMaxSteers) return undefined
+		if (this.toolCallCount < this.stuckSessionThreshold) return undefined
+		if (this.toolCallsSinceLastWarn < this.stuckReFireInterval) return undefined
+		return {
+			reason: `stuck session: ${this.toolCallCount} tool calls with no converging progress`,
+			firedKeys: [],
+			detector: "stuck_session",
+		}
 	}
 }
 
@@ -761,18 +877,31 @@ export default function loopGuardExtension(pi: ExtensionAPI) {
 				count: warnCount,
 				is_subagent: isAgentWorker(),
 			})
+			// Build the escalating steer message. The prefix escalates with
+			// warnCount (first fire unchanged; 2nd stronger; 3rd+ references
+			// prior ignored steers). The detector-specific detail is appended
+			// in parentheses so the agent sees WHICH detector fired.
+			const steerText = `${buildSteerPrefix(warnCount)} (${result.reason})`
 			pi.sendMessage(
 				{
 					customType: "loop-guard-steer",
-					content: [{ type: "text", text: result.reason }],
+					content: [{ type: "text", text: steerText }],
 					display: false,
 				},
 				{ deliverAs: "steer" },
 			)
-			// Subagent: schedule an abort on the next turn_end. The subagent
-			// gets one more turn to produce a summary; that text becomes the
-			// output the orchestrator receives.
-			if (isAgentWorker()) {
+			// Subagent: schedule an abort on the next turn_end for SIGNATURE
+			// detectors only. The stuck_session backstop is advisory-only (per
+			// spec: "purely advisory + escalation — it does not override the
+			// existing design decision against blocking tool calls"). Aborting
+			// a subagent on the backstop would (a) terminate it instead of
+			// steering it, (b) make the escalation logic (warnCount 2, 3+)
+			// dead code in the subagent path, and (c) apply a top-level-
+			// calibrated threshold (40) to subagents without evidence it is
+			// appropriate. Signature detectors retain the existing abort
+			// behavior because a true signature loop is strong evidence the
+			// subagent will not converge.
+			if (isAgentWorker() && result.detector !== "stuck_session") {
 				subagentAbortPending = true
 			}
 		}
