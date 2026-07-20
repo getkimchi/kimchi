@@ -117,6 +117,7 @@ MODEL='kimchi/council' ./scripts/run-local.sh \
 - Coordination and limits are process-local.
 - Each request is one bounded round. Fast omits the judge; normal may omit revision; deep runs the full lead, three-reviewer, judge, and revision path.
 - Council advertises text input, matching the proxy prototype. Reviewers receive a bounded text evidence packet; the lead still sees the original tools and conversation.
+- Reviewer packets and revision history exclude transient injected messages that lack the conversation timestamp required by Pi; the lead still receives them as operational guidance.
 - Raw reviewer, judge, and chain-of-thought content is not persisted or returned.
 - The virtual model advertises zero USD rates; it is not a pricing contract for the physical calls.
 - Child calls use `ModelRegistry` authentication and preserve retry settings and request/response callbacks. Virtual-provider headers and environment values are not forwarded, and Pi's physical-model-specific attribution merge and `before_provider_headers` hook are not rerun.

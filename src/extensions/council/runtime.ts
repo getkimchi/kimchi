@@ -660,10 +660,17 @@ export function createCouncilStream({
 				const draft = textFromAssistant(lead)
 				if (!draft.trim()) throw new Error("Council lead returned no text")
 				if (hasSerializedToolCallMarkup(draft)) throw new Error("Council lead returned serialized tool-call markup")
+				const conversationMessages = context.messages.filter(({ timestamp }) => Number.isFinite(timestamp))
 
 				let canonicalPacket: TaskPacket
 				try {
-					canonicalPacket = await buildTaskPacket(context, runId, draft, true, maxEvidenceBytes)
+					canonicalPacket = await buildTaskPacket(
+						{ ...context, messages: conversationMessages },
+						runId,
+						draft,
+						true,
+						maxEvidenceBytes,
+					)
 				} catch {
 					if (parentAborted()) throw new Error("Council request aborted")
 					finish(virtualize({ ...lead, content: leadContent }, virtualModel, aggregate), "fallback")
@@ -810,7 +817,7 @@ export function createCouncilStream({
 						{
 							systemPrompt: [context.systemPrompt, REVISION_SYSTEM_PROMPT].filter(Boolean).join("\n\n"),
 							messages: [
-								...context.messages,
+								...conversationMessages,
 								{ ...lead, content: leadContent },
 								{
 									role: "user",

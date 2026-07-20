@@ -86,6 +86,7 @@ describe("Council runtime", () => {
 	})
 
 	it("drafts, reviews, judges, and revises a final text response", async () => {
+		let reviewerPacket = ""
 		let revisionPacket = ""
 		const completeModel = vi.fn(
 			async (model: Model<Api>, context: Context, _options?: SimpleStreamOptions): Promise<AssistantMessage> => {
@@ -95,6 +96,7 @@ describe("Council runtime", () => {
 					lastMessage?.role === "user" && typeof lastMessage.content === "string" ? lastMessage.content : ""
 
 				if (system.includes("Council reviewer")) {
+					reviewerPacket ||= lastText
 					return response(
 						model,
 						JSON.stringify({
@@ -143,7 +145,10 @@ describe("Council runtime", () => {
 		})
 		const events = stream(councilModel, {
 			systemPrompt: "Answer accurately.",
-			messages: [{ role: "user", content: "What is two plus two?", timestamp: 1 }],
+			messages: [
+				{ role: "user", content: "What is two plus two?", timestamp: 1 },
+				{ role: "user", content: "context-mode active. Internal tool hierarchy." } as Context["messages"][number],
+			],
 		})
 		const emitted = []
 		for await (const event of events) emitted.push(event)
@@ -162,6 +167,8 @@ describe("Council runtime", () => {
 			"kimchi-dev/kimi-k2.7",
 		])
 		expect(completeModel.mock.calls.every(([, , options]) => options?.reasoning === "medium")).toBe(true)
+		const leadContext = completeModel.mock.calls[0]?.[1]
+		expect(JSON.stringify(leadContext?.messages)).toContain("context-mode active")
 		const revisionContext = completeModel.mock.calls.find(([, context]) =>
 			context.systemPrompt?.includes("Revise the preceding draft"),
 		)?.[1]
@@ -170,12 +177,15 @@ describe("Council runtime", () => {
 		expect(revisionContext?.systemPrompt).toContain("Never invent missing facts")
 		expect(revisionContext?.systemPrompt).toContain("logical key only namespaces entries")
 		expect(revisionContext?.systemPrompt).toContain("never claim an unperformed check passed")
+		expect(JSON.stringify(revisionContext?.messages)).not.toContain("context-mode active")
 		expect(revisionPacket).toContain('"reviews":')
 		expect(revisionPacket).toContain('"judge":')
 		expect(revisionPacket).toContain(
 			'"evidence":[{"id":"artifact_1","type":"message","content":"What is two plus two?"}]',
 		)
 		expect(revisionPacket).toContain('"recommended_changes":["Be precise"]')
+		expect(reviewerPacket).toContain('"objective":"What is two plus two?"')
+		expect(reviewerPacket).not.toContain("context-mode active")
 		const judgeContext = completeModel.mock.calls.find(([, context]) =>
 			context.systemPrompt?.includes("Council judge"),
 		)?.[1]
