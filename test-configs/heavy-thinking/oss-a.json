@@ -1,0 +1,45 @@
+{
+  "testSet": [
+    "fix-code-vulnerability",
+    "pytorch-model-recovery",
+    "cobol-modernization",
+    "merge-diff-arc-agi-task",
+    "bn-fit-modify"
+  ],
+  "taskType": "heavy-thinking",
+  "variant": "oss-a",
+  "modelRoles": {
+    "orchestrator": "kimchi-dev/glm-5.2-fp8",
+    "planner": [
+      "kimchi-dev/kimi-k2.7"
+    ],
+    "builder": [
+      "kimchi-dev/kimi-k2.7"
+    ],
+    "reviewer": [
+      "kimchi-dev/kimi-k2.7"
+    ],
+    "explorer": [
+      "kimchi-dev/nemotron-3-ultra-fp4"
+    ],
+    "judge": "kimchi-dev/glm-5.2-fp8"
+  },
+  "maxRetries": 3,
+  "modelMetadata": {
+    "kimchi-dev/glm-5.2-fp8": {
+      "tier": "standard",
+      "vision": true
+    },
+    "kimchi-dev/kimi-k2.7": {
+      "tier": "heavy",
+      "vision": false
+    },
+    "kimchi-dev/nemotron-3-ultra-fp4": {
+      "tier": "standard",
+      "vision": false
+    }
+  },
+  "multiModel": true,
+  "hideThinkingBlock": true,
+  "_purpose": "cheapest \u2014 kimi-k2.7 is tagged heavy (closest OSS substitute for Opus/Sonnet-level reasoning, not a standard-tier model)"
+}
