@@ -960,6 +960,42 @@ describe("Council runtime", () => {
 		expect(completeModel).toHaveBeenCalledTimes(4)
 	})
 
+	it("instructs the initial lead to return user-facing output", async () => {
+		let leadAttempts = 0
+		const completeModel = vi.fn(async (model: Model<Api>, context: Context): Promise<AssistantMessage> => {
+			const system = context.systemPrompt ?? ""
+			if (system.includes("Council reviewer")) {
+				return response(
+					model,
+					JSON.stringify({ decision: "accept", findings: [], recommended_changes: [], missing_evidence: [] }),
+				)
+			}
+			leadAttempts++
+			return response(model, system.includes("Do not return only internal reasoning") ? "Complete lead" : "")
+		})
+		const stream = createCouncilStream({
+			config: {
+				...DEFAULT_COUNCIL_CONFIG,
+				reviewerModels: ["kimchi-dev/glm-5.2-fp8"],
+				useJudge: false,
+				revisionPolicy: "on-issues",
+			},
+			getModelRegistry: () => modelRegistry,
+			completeModel,
+		})(councilModel, {
+			systemPrompt: "Original lead instructions",
+			messages: [{ role: "user", content: "Answer", timestamp: 1 }],
+		})
+
+		const result = await stream.result()
+
+		expect(result.content).toEqual([{ type: "text", text: "Complete lead" }])
+		expect(leadAttempts).toBe(1)
+		expect(completeModel).toHaveBeenCalledTimes(2)
+		expect(completeModel.mock.calls[0]?.[1].systemPrompt).toContain("Original lead instructions")
+		expect(completeModel.mock.calls[0]?.[1].systemPrompt).toContain("Do not return only internal reasoning")
+	})
+
 	it("retries a stopped empty lead once inside the same Council run", async () => {
 		let leadAttempts = 0
 		let reviewerPacket = ""
@@ -1004,7 +1040,9 @@ describe("Council runtime", () => {
 		expect(result.content).toEqual([{ type: "text", text: "Recovered lead" }])
 		expect(leadAttempts).toBe(2)
 		expect(completeModel).toHaveBeenCalledTimes(3)
+		expect(completeModel.mock.calls[0]?.[1].systemPrompt).not.toContain("previous attempt ended")
 		expect(completeModel.mock.calls[1]?.[1].systemPrompt).toContain("Do not return only internal reasoning")
+		expect(completeModel.mock.calls[1]?.[1].systemPrompt).toContain("previous attempt ended")
 		expect(reviewerPacket).not.toContain("Do not return only internal reasoning")
 		expect(JSON.stringify({ result, reviewerPacket })).not.toContain("LEAD_THINKING_SECRET")
 		expect(runRecord?.stages.map(({ stage }) => stage)).toEqual(["lead", "lead:retry", "review:independent"])
@@ -1593,7 +1631,10 @@ describe("Council runtime", () => {
 
 		const result = await stream.result()
 
-		expect(completeModel.mock.calls[0][1]).toEqual(originalContext)
+		expect(completeModel.mock.calls[0][1].messages).toEqual(originalContext.messages)
+		expect(completeModel.mock.calls[0][1].systemPrompt).toContain(originalContext.systemPrompt)
+		expect(completeModel.mock.calls[0][1].systemPrompt).toContain("Do not return only internal reasoning")
+		expect(originalContext.systemPrompt).toBe("Use repository evidence.")
 		expect(result.content).toEqual([{ type: "text", text: "Final from tool evidence" }])
 	})
 
