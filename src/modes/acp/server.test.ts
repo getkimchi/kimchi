@@ -9,23 +9,25 @@ import type {
 	TextContent,
 } from "@agentclientprotocol/sdk"
 import type { AssistantMessage } from "@earendil-works/pi-ai"
-import type {
-	AgentSession,
-	AgentSessionEvent,
-	AgentSessionEventListener,
-	AuthStorage,
-	ExtensionContext,
-	ExtensionUIContext,
-	ModelRegistry,
-	SessionInfo as PiSessionInfo,
-	SessionManager,
-	Theme,
+import {
+	type AgentSession,
+	type AgentSessionEvent,
+	type AgentSessionEventListener,
+	type AuthStorage,
+	type ExtensionContext,
+	type ExtensionUIContext,
+	type ModelRegistry,
+	type SessionInfo as PiSessionInfo,
+	SessionManager as PiSessionManager,
+	type SessionManager,
+	type Theme,
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const THEME_KEY = Symbol.for("@earendil-works/pi-coding-agent:theme")
 const THEME_KEY_OLD = Symbol.for("@mariozechner/pi-coding-agent:theme")
 
+import councilExtension from "../../extensions/council/index.js"
 import { setProcessOrchestratorRef } from "../../extensions/kimchi-process.js"
 import { getMultiModelEnabled, setMultiModelEnabled } from "../../extensions/multi-model.js"
 import { PERMISSION_MODES, PERMISSIONS_ENV_KEY } from "../../extensions/permissions/constants.js"
@@ -3633,6 +3635,36 @@ describe("KimchiAcpAgent loadSession", () => {
 		await expect(agent.loadSession({ sessionId: "missing", cwd: "/tmp", mcpServers: [] })).rejects.toThrow(
 			/session not found/,
 		)
+	})
+
+	it("restores a persisted Council model after loading ACP extensions", async () => {
+		vi.stubEnv("KIMCHI_COUNCIL_ENABLED", "true")
+		const agentDir = mkdtempSync(join(tmpdir(), "kimchi-acp-council-resume-"))
+		const cwd = join(agentDir, "project")
+		mkdirSync(cwd, { recursive: true })
+		const sessionDir = join(agentDir, "sessions", testEncodeCwdDir(cwd))
+		const persisted = PiSessionManager.create(cwd, sessionDir)
+		persisted.appendMessage({ role: "user", content: "resume council", timestamp: Date.now() })
+		persisted.appendMessage((assistantTextEntry("saved") as { message: AssistantMessage }).message)
+		persisted.appendModelChange("kimchi", "council")
+		const sessionId = persisted.getSessionId()
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [councilExtension],
+			agentDir,
+			sessionFactory: async () => asSession(new FakeAgentSession("unused")),
+		})
+
+		try {
+			const res = await agent.loadSession({ sessionId, cwd, mcpServers: [] })
+
+			expect(res.models?.currentModelId).toBe("kimchi/council")
+			expect(res.models?.availableModels).toContainEqual(expect.objectContaining({ modelId: "kimchi/council" }))
+			await agent.unstable_closeSession({ sessionId })
+		} finally {
+			await agent.shutdown()
+			vi.unstubAllEnvs()
+			rmSync(agentDir, { recursive: true, force: true })
+		}
 	})
 
 	it("rejects default-loaded sessions whose header cwd disagrees before opening", async () => {

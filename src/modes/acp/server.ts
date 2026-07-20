@@ -46,8 +46,8 @@ import type { AgentSessionEvent, ExtensionUIContext } from "@earendil-works/pi-c
 import {
 	type AgentSession,
 	AuthStorage,
-	createAgentSession,
-	DefaultResourceLoader,
+	createAgentSessionFromServices,
+	createAgentSessionServices,
 	type ExtensionFactory,
 	initTheme,
 	ModelRegistry,
@@ -1350,45 +1350,36 @@ function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 			const msg = err instanceof Error ? err.message : String(err)
 			throw RequestError.invalidParams(undefined, `failed to open session: ${msg}`)
 		}
-		const settingsManager = SettingsManager.create(cwd, options.agentDir)
-		initializeHeadlessTheme(settingsManager)
-		const resourceLoader = new DefaultResourceLoader({
-			cwd,
-			agentDir: options.agentDir,
-			settingsManager,
-			extensionFactories: options.extensionFactories,
-		})
-		await resourceLoader.reload()
-		const { session } = await createAgentSession({
-			cwd,
-			agentDir: options.agentDir,
-			settingsManager,
-			resourceLoader,
-			sessionManager,
-		})
-		return session
+		return createDefaultAcpSession(options, cwd, sessionManager)
 	}
+}
+
+async function createDefaultAcpSession(
+	options: RunAcpOptions,
+	cwd: string,
+	sessionManager: SessionManager,
+): Promise<AgentSession> {
+	const settingsManager = SettingsManager.create(cwd, options.agentDir)
+	initializeHeadlessTheme(settingsManager)
+	const services = await createAgentSessionServices({
+		cwd,
+		agentDir: options.agentDir,
+		settingsManager,
+		resourceLoaderOptions: { extensionFactories: options.extensionFactories },
+	})
+	const errors = services.diagnostics.filter((diagnostic) => diagnostic.type === "error")
+	if (errors.length > 0) {
+		throw new Error(`Failed to initialize ACP extensions: ${errors.map((error) => error.message).join("; ")}`)
+	}
+	const { session } = await createAgentSessionFromServices({ services, sessionManager })
+	return session
 }
 
 function defaultSessionFactory(options: RunAcpOptions): AcpSessionFactory {
 	return async (params: NewSessionRequest): Promise<AgentSession> => {
 		const cwd = params.cwd ?? process.cwd()
-		const settingsManager = SettingsManager.create(cwd, options.agentDir)
-		initializeHeadlessTheme(settingsManager)
-		const resourceLoader = new DefaultResourceLoader({
-			cwd,
-			agentDir: options.agentDir,
-			settingsManager,
-			extensionFactories: options.extensionFactories,
-		})
-		await resourceLoader.reload()
-		const { session } = await createAgentSession({
-			cwd,
-			agentDir: options.agentDir,
-			settingsManager,
-			resourceLoader,
-		})
-		return session
+		const sessionDir = join(options.agentDir, "sessions", encodeCwdDir(cwd))
+		return createDefaultAcpSession(options, cwd, SessionManager.create(cwd, sessionDir))
 	}
 }
 
