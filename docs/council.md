@@ -44,6 +44,7 @@ Deep ceilings and physical model defaults:
 | Overall timeout | 1,200 seconds |
 | Lead/revision output | 32,768 tokens each |
 | Reviewer/judge output | 8,192 tokens each |
+| Physical reasoning (capable models) | `medium` |
 | Physical calls | 7 maximum |
 | Parallel reviewers | 3 maximum |
 | Evidence packet | 128 KiB maximum |

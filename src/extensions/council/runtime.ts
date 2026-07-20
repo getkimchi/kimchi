@@ -447,9 +447,11 @@ function safeOptions(
 	auth: { apiKey?: string; headers?: Record<string, string>; env?: Record<string, string> },
 	maxTokens: number,
 	timeoutMs: number,
+	supportsReasoning: boolean,
 ): SimpleStreamOptions {
 	return {
 		temperature: parent.temperature,
+		...(supportsReasoning ? { reasoning: "medium" as const } : {}),
 		transport: parent.transport,
 		cacheRetention: parent.cacheRetention,
 		sessionId: parent.sessionId,
@@ -573,7 +575,7 @@ export function createCouncilStream({
 						completeModel(
 							physical,
 							childContext,
-							safeOptions(options, controller.signal, auth, maxTokens, invocationTimeoutMs),
+							safeOptions(options, controller.signal, auth, maxTokens, invocationTimeoutMs, physical.reasoning),
 						),
 						controller.signal,
 						stage,

@@ -153,6 +153,7 @@ describe("Council runtime", () => {
 			"kimchi-dev/deepseek-v4-flash",
 			"kimchi-dev/kimi-k2.7",
 		])
+		expect(completeModel.mock.calls.every(([, , options]) => options?.reasoning === "medium")).toBe(true)
 		const revisionContext = completeModel.mock.calls.find(([, context]) =>
 			context.systemPrompt?.includes("Revise the preceding draft"),
 		)?.[1]
@@ -887,7 +888,7 @@ describe("Council runtime", () => {
 		expect(result.content).toEqual([{ type: "text", text: "Repaired final" }])
 	})
 
-	it("passes through an exact lead tool call with physical request options", async () => {
+	it("passes through an exact lead tool call without reasoning for an incapable model", async () => {
 		const onPayload = vi.fn()
 		const onResponse = vi.fn()
 		const parentController = new AbortController()
@@ -905,9 +906,16 @@ describe("Council runtime", () => {
 				stopReason: "toolUse",
 			}),
 		)
+		const nonReasoningRegistry = {
+			find: vi.fn((provider: string, id: string) => {
+				const model = modelRegistry.find(provider, id)
+				return model ? { ...model, reasoning: false } : undefined
+			}),
+			getApiKeyAndHeaders: modelRegistry.getApiKeyAndHeaders,
+		} satisfies Pick<ModelRegistry, "find" | "getApiKeyAndHeaders">
 		const stream = createCouncilStream({
 			config: DEFAULT_COUNCIL_CONFIG,
-			getModelRegistry: () => modelRegistry,
+			getModelRegistry: () => nonReasoningRegistry,
 			completeModel,
 		})(
 			councilModel,
