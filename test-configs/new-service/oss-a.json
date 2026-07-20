@@ -1,0 +1,34 @@
+{
+  "testSet": [
+    "hf-model-inference",
+    "build-cython-ext"
+  ],
+  "taskType": "new-service",
+  "variant": "oss-a",
+  "modelRoles": {
+    "orchestrator": "kimchi-dev/glm-5.2-fp8",
+    "planner": "kimchi-dev/glm-5.2-fp8",
+    "builder": [
+      "kimchi-dev/glm-5.2-fp8"
+    ],
+    "reviewer": "kimchi-dev/glm-5.2-fp8",
+    "explorer": [
+      "kimchi-dev/nemotron-3-ultra-fp4"
+    ],
+    "judge": "kimchi-dev/glm-5.2-fp8"
+  },
+  "maxRetries": 5,
+  "modelMetadata": {
+    "kimchi-dev/glm-5.2-fp8": {
+      "tier": "standard",
+      "vision": true
+    },
+    "kimchi-dev/nemotron-3-ultra-fp4": {
+      "tier": "standard",
+      "vision": false
+    }
+  },
+  "multiModel": true,
+  "hideThinkingBlock": true,
+  "_purpose": "cheapest"
+}
