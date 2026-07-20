@@ -102,7 +102,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		cwd = ctx.cwd
-		ui = ctx.hasUI ? ctx.ui : undefined
+		ui = ctx.ui
 		warned = false
 		activeAdapters = detectAdapters(cwd)
 		missingAdapters = detectMissingAdapters(cwd)
@@ -142,13 +142,6 @@ export default function (pi: ExtensionAPI) {
 	// explore/plan, disable DAP tools; when it transitions into build/review,
 	// re-enable them. Idempotent via the lastPhase cache.
 	pi.on("tool_call", (_event, ctx) => {
-		// Recover UI if not available at session_start (same pattern as LSP).
-		// ctx.ui may be present even when hasUI is false.
-		if (!ui && ctx.ui) {
-			ui = ctx.ui
-			updateStatusFooter()
-		}
-
 		const sessionId = ctx.sessionManager.getSessionId()
 		const phase = getCurrentPhase(sessionId)
 		if (phase === lastPhase) return
@@ -163,10 +156,7 @@ export default function (pi: ExtensionAPI) {
 
 	// ── Degraded-state warning: notify once on the first agent turn ─────────────
 
-	pi.on("before_agent_start", async (_event, ctx) => {
-		// UI may not be available at session_start — recover it here.
-		// Use ctx.ui directly (same as LSP) rather than gating on hasUI.
-		if (!ui && ctx.ui) ui = ctx.ui
+	pi.on("before_agent_start", async () => {
 		updateStatusFooter()
 
 		if (warned || missingAdapters.length === 0 || !ui?.notify) return
