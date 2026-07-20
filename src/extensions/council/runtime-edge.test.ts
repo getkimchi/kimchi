@@ -227,6 +227,9 @@ describe("Council runtime adversarial edges", () => {
 		})
 		expect(completeModel.mock.calls.filter(([, context]) => stage(context) === "repair")).toHaveLength(0)
 		expect(record?.outcome).toBe("error")
+		expect(record?.stages).toContainEqual(
+			expect.objectContaining({ stage: "review:independent", status: "error", error: "invalid_output" }),
+		)
 	})
 
 	it("keeps newest bounded evidence and injection strings inside untrusted data", async () => {

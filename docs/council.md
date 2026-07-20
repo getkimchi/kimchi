@@ -27,7 +27,7 @@ Each session stores a `council_run` record with wall-clock duration, outcome, pe
 
 Preset choice is explicit; Council does not guess task complexity. Use fast for small or time-sensitive work, normal for routine engineering, and deep for complex or high-risk work.
 
-| Model | Review path | Revision | Call cap | Lead/internal tokens | Evidence/result | Stage/overall timeout |
+| Model | Review path | Revision | Invocation cap | Lead/internal tokens | Evidence/result | Stage/overall timeout |
 | --- | --- | --- | ---: | ---: | ---: | ---: |
 | `kimchi/council-fast` | critic only; no judge | on critic issues | 5 | 8,192 / 2,048 | 32 / 8 KiB | 60 / 240 seconds |
 | `kimchi/council` | critic + checker; judge | on unresolved issues after judging | 7 | 16,384 / 4,096 | 64 / 16 KiB | 180 / 720 seconds |
@@ -47,7 +47,7 @@ Deep ceilings and physical model defaults:
 | Lead/revision output | 32,768 tokens each |
 | Reviewer/judge output | 8,192 tokens each |
 | Physical reasoning (capable models) | `medium` |
-| Physical calls | 8 maximum |
+| Model invocations | 8 maximum |
 | Parallel reviewers | 3 maximum |
 | Evidence packet | 128 KiB maximum |
 | Structured reviewer/judge result | 32 KiB maximum |
@@ -67,9 +67,11 @@ Environment overrides:
 | `KIMCHI_COUNCIL_INTERNAL_MAX_TOKENS` | Reviewer and judge output budget; default and hard maximum `8192`. |
 | `KIMCHI_COUNCIL_MAX_EVIDENCE_BYTES` | Text evidence packet limit; default and hard maximum `131072`. |
 | `KIMCHI_COUNCIL_MAX_STRUCTURED_BYTES` | Per-review or judge JSON limit; default and hard maximum `32768`. |
-| `KIMCHI_COUNCIL_MAX_CALLS` | Whole-run physical call cap; default `8`. |
+| `KIMCHI_COUNCIL_MAX_CALLS` | Whole-run model-invocation cap; default `8`. |
 
 Numeric values must be positive integers; invalid values fall back to the defaults. Environment values form the deep ceiling; fast and normal apply their lower preset caps after overrides. Physical references must resolve through the normal model registry and may not point back to a Council virtual model.
+
+The call cap counts Council model invocations; provider transport retries remain governed by the inherited retry options.
 
 ## Use
 

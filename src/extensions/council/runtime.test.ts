@@ -1591,6 +1591,13 @@ describe("Council runtime", () => {
 		expect(repairPayload.allowed_evidence_refs).toEqual(["artifact_1"])
 		expect(JSON.stringify(result)).not.toContain(rawInternal)
 		expect(JSON.stringify(runRecord)).not.toContain(rawInternal)
+		expect(runRecord?.stages).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ stage: "review:independent", status: "error", error: "invalid_output" }),
+				expect.objectContaining({ stage: "repair", status: "ok" }),
+				expect.objectContaining({ stage: "judge", status: "error", error: "invalid_output" }),
+			]),
+		)
 	})
 
 	it("reviews a final answer after a prior client tool result in a multi-turn conversation", async () => {

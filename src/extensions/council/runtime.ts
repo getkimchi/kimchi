@@ -542,6 +542,12 @@ export function createCouncilStream({
 			let outcome: CouncilRunRecord["outcome"] = "error"
 
 			const parentAborted = () => options.signal?.aborted === true
+			const markStageError = (stage: string, error: string) => {
+				const record = stages.find((candidate) => candidate.stage === stage)
+				if (record?.status !== "ok") return
+				record.status = "error"
+				record.error = error
+			}
 
 			const invoke = async (
 				stage: string,
@@ -562,7 +568,7 @@ export function createCouncilStream({
 				let result: AssistantMessage | undefined
 				try {
 					if (controller.signal.aborted) throw new Error(`${stage} aborted`)
-					if (++calls > maxCalls) throw new Error("Council physical call limit exceeded")
+					if (++calls > maxCalls) throw new Error("Council model invocation limit exceeded")
 					const ref = splitModelRef(modelRef)
 					if (!ref || (ref.provider === COUNCIL_PROVIDER && ref.modelId === "council")) {
 						throw new Error(`Council requires a physical provider/model reference: ${modelRef}`)
@@ -616,9 +622,18 @@ export function createCouncilStream({
 					options.signal?.removeEventListener("abort", abort)
 				}
 			}
+			const structuredText = (stage: string, message: AssistantMessage): string => {
+				try {
+					return boundedStructuredText(message, maxStructuredBytes)
+				} catch (error) {
+					markStageError(stage, "invalid_output")
+					throw error
+				}
+			}
 
 			const repair = async <T>(
 				kind: "review" | "judge",
+				sourceStage: string,
 				raw: string,
 				parse: (text: string) => T,
 				timeoutMs = stageTimeoutMs,
@@ -627,6 +642,7 @@ export function createCouncilStream({
 				try {
 					return parse(raw)
 				} catch (error) {
+					markStageError(sourceStage, "invalid_output")
 					if (repairUsed) throw error
 					repairUsed = true
 					const fixed = await invoke(
@@ -650,7 +666,13 @@ export function createCouncilStream({
 						internalMaxTokens,
 						timeoutMs,
 					)
-					return parse(boundedStructuredText(fixed, maxStructuredBytes))
+					const repaired = structuredText("repair", fixed)
+					try {
+						return parse(repaired)
+					} catch (error) {
+						markStageError("repair", "invalid_output")
+						throw error
+					}
 				}
 			}
 
@@ -740,11 +762,12 @@ export function createCouncilStream({
 						const role = config.reviewerRoles[index]
 						if (!modelRef || !role) return
 						try {
+							const reviewStage = `review:${role}`
 							const packet = role === "independent" ? independentPacket : canonicalPacket
 							const remainingMs = reviewerDeadline - Date.now()
 							if (remainingMs <= 0 || overall.signal.aborted) return
 							const result = await invoke(
-								`review:${role}`,
+								reviewStage,
 								modelRef,
 								{
 									systemPrompt: reviewerSystemPrompt(role),
@@ -754,15 +777,22 @@ export function createCouncilStream({
 								remainingMs,
 							)
 							const repairRemainingMs = reviewerDeadline - Date.now()
-							if (repairRemainingMs <= 0 || overall.signal.aborted) return
+							if (repairRemainingMs <= 0 || overall.signal.aborted) {
+								markStageError(reviewStage, "timeout_or_abort")
+								return
+							}
 							const parsed = await repair(
 								"review",
-								boundedStructuredText(result, maxStructuredBytes),
+								reviewStage,
+								structuredText(reviewStage, result),
 								(text) => parseMemberResult(text, new Set(packet.evidence.map((item) => item.id))),
 								repairRemainingMs,
 								packet.evidence.map((item) => item.id),
 							)
-							if (Date.now() >= reviewerDeadline || overall.signal.aborted) return
+							if (Date.now() >= reviewerDeadline || overall.signal.aborted) {
+								markStageError(reviewStage, "timeout_or_abort")
+								return
+							}
 							reviewers.push({
 								role,
 								result: parsed,
@@ -835,10 +865,14 @@ export function createCouncilStream({
 							judgeDeadline - Date.now(),
 						)
 						const repairRemainingMs = judgeDeadline - Date.now()
-						if (repairRemainingMs <= 0) throw new Error("judge deadline exceeded")
+						if (repairRemainingMs <= 0) {
+							markStageError("judge", "timeout_or_abort")
+							throw new Error("judge deadline exceeded")
+						}
 						const verdict = await repair(
 							"judge",
-							boundedStructuredText(judge, maxStructuredBytes),
+							"judge",
+							structuredText("judge", judge),
 							parseJudgeResult,
 							repairRemainingMs,
 						)
@@ -899,11 +933,7 @@ export function createCouncilStream({
 						hasSerializedToolCallMarkup(revisionText) ||
 						finalContent.some((block) => block.type === "toolCall")
 					) {
-						const revisionStage = stages.at(-1)
-						if (revisionStage?.stage === "revision") {
-							revisionStage.status = "error"
-							revisionStage.error = "invalid_output"
-						}
+						markStageError("revision", "invalid_output")
 						if (hasCriticalFindings) {
 							fail(CRITICAL_REVISION_ERROR_MESSAGE)
 							return
