@@ -52,7 +52,8 @@ const STEERING_MESSAGE =
 	"(1) State in one sentence what is failing and why. " +
 	"(2) List at least two alternative approaches you have NOT tried. " +
 	"(3) Pick the most promising one and try THAT instead. " +
-	"Do not repeat the same file edits or the same commands — the loop guard will keep firing if you do."
+	"Do not repeat the same file edits or the same commands — the loop guard will keep firing if you do. " +
+	"If you are trying to diagnose runtime behavior, use the DAP debugger tools (debug_state_at, debug_eval) to inspect actual values at a breakpoint instead of guessing through edit-run cycles."
 
 /**
  * Detects when an agent is stuck repeating itself across tool calls. Four

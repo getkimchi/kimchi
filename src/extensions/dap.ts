@@ -12,6 +12,7 @@
  *
  * Usage: kimchi -e extensions/dap.ts
  */
+import { readdirSync } from "node:fs"
 import path from "node:path"
 import type { ExtensionAPI, ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 import { adapterForFile, allAdapters, detectAdapters, detectMissingAdapters } from "./dap/adapters.js"
@@ -24,23 +25,22 @@ import { getCurrentPhase } from "./tags.js"
 
 const DAP_SYSTEM_PROMPT = `## Debugger (DAP)
 
-DAP tools give you a live debugger. Use them to get **ground-truth runtime values** and trace **actual execution flow** — this is faster and more reliable than reasoning about behavior by reading code or writing repro scripts.
+DAP tools give you a live debugger — your first tool for understanding runtime behavior, not a last resort. **Before you trace values by hand or write a repro script, check if the debugger can answer your question directly.** A breakpoint + \`debug_eval\` shows you the actual value in seconds; reasoning through code or building a repro takes minutes and can be wrong.
 
-**Stop reasoning and use the debugger when you catch yourself:**
-- Tracing variable values through code by hand ("if generation is 1 here, then after the loop it becomes...") → use \`debug_state_at\` to see the actual value at that line
-- Wondering which code path runs or in what order → use \`debug_trace_calls\` to get the real call sequence
-- Writing a throwaway repro script to test a hypothesis about runtime behavior → \`debug_state_at\` or \`debug_watch_change\` will show you the value directly, no script needed
+**Use the debugger instead of:**
+- Tracing variable values through code by hand ("if generation is 1 here, then after the loop it becomes...") → \`debug_state_at({file, line, evaluated: ["var"]})\` shows the actual value at that line
+- Writing a throwaway repro script to test a hypothesis → \`debug_state_at\` or \`debug_watch_change\` will show you the value directly, no script needed
 - Adding \`console.log\` / \`fmt.Println\` / \`print()\` to see a value → \`debug_state_at\` with \`evaluated\` gives you the exact value at a breakpoint, with no code to clean up
 - Guessing why a program panics or throws → \`debug_last_error\` captures the exception, locals at the throw site, and the backtrace in one call
+- Reading code to figure out which path runs or in what order → \`debug_trace_calls\` returns the actual call sequence with arguments
 
-A single \`debug_state_at\` call collapses an entire read→reason→repro→re-run cycle into one step. The debugger shows you what *actually happened*, not what you *think should happen*.
+The debugger shows you what *actually happened*, not what you *think should happen*. When you are about to reason about runtime behavior, ask: can the debugger answer this faster?
 
-**When to use which tool:**
+**Quick start — one call answers most questions:**
 - "What is the value of X at line N?" → \`debug_state_at({file, line, evaluated: ["X"]})\`
 - "Why does this throw and what is the state when it does?" → \`debug_last_error({program})\`
 - "Which functions actually run and in what order?" → \`debug_trace_calls({program})\`
 - "How does this value change as the program steps?" → \`debug_watch_change({file, line, expression})\`
-- "I need to step through interactively" → Layer 1 tools (launch → set_breakpoint → continue → locals → step → terminate)
 
 **Layer 2 composed tools** (preferred — one call handles the full launch→breakpoint→inspect→terminate lifecycle):
 - \`debug_state_at({file, line, evaluated?})\` — set a breakpoint, run to it, return locals + backtrace + evaluated expressions + captured stdout/stderr. Auto-launches and terminates a session if no \`session_id\` is given.
@@ -49,7 +49,7 @@ A single \`debug_state_at\` call collapses an entire read→reason→repro→re-
 - \`debug_watch_change({file, line, expression})\` — watch an expression for changes; returns change locations with old/new values.
 
 **Layer 1 primitive tools** (interactive stepping when you need fine control):
-- \`debug_launch({program})\` → returns \`session_id\`
+- \`debug_launch({program, adapter?})\` → returns \`session_id\`. For Go, pass a \`.go\` file or a package directory (e.g. \`./cmd/server\`); set \`adapter: "dlv"\` explicitly if the path has no extension.
 - \`debug_set_breakpoint({session_id, file, line})\` → set a breakpoint
 - \`debug_continue({session_id})\` → run to next stop
 - \`debug_locals({session_id})\` / \`debug_eval({session_id, expression})\` → inspect values (requires a stopped session)
@@ -57,7 +57,7 @@ A single \`debug_state_at\` call collapses an entire read→reason→repro→re-
 - \`step_in\` / \`step_over\` / \`step_out\` → step through code
 - \`debug_terminate({session_id})\` → always clean up when done
 
-The adapter is auto-detected from the program file extension (.ts/.js→js-debug, .go→dlv, .py→debugpy, .rs/.c→lldb-dap).`
+The adapter is auto-detected from the program file extension (.ts/.js→js-debug, .go→dlv, .py→debugpy, .rs/.c→lldb-dap). For Go package directories, the adapter is detected from the presence of \`.go\` files in the directory.`
 
 // All DAP tool names (Layer 1 + Layer 2). Used to toggle visibility based on
 // the current orchestrator phase — DAP tools are hidden during explore/plan
@@ -197,18 +197,57 @@ export default function (pi: ExtensionAPI) {
 		return path.isAbsolute(p) ? p : path.join(cwd, p)
 	}
 
+	/** Detect the language of a program path when the file extension gives no
+	 *  match (e.g. a Go package directory like `./cmd/server`). Checks for the
+	 *  presence of language-specific source files in the directory. Returns the
+	 *  matching adapter, or null if no language is detected. */
+	function adapterForDirectory(dirPath: string, adapters: ReturnType<typeof allAdapters>) {
+		try {
+			const entries = readdirSync(dirPath)
+			// Check for .go files → dlv
+			if (entries.some((e) => e.endsWith(".go"))) {
+				const goAdapter = adapters.find((a) => a.languages.includes("go"))
+				if (goAdapter) return goAdapter
+			}
+			// Check for .py files → debugpy
+			if (entries.some((e) => e.endsWith(".py"))) {
+				const pyAdapter = adapters.find((a) => a.languages.includes("python"))
+				if (pyAdapter) return pyAdapter
+			}
+			// Check for .ts/.js files → js-debug
+			if (entries.some((e) => e.endsWith(".ts") || e.endsWith(".js"))) {
+				const jsAdapter = adapters.find((a) => a.languages.includes("typescript") || a.languages.includes("javascript"))
+				if (jsAdapter) return jsAdapter
+			}
+			// Check for .rs/.c/.cpp files → lldb-dap
+			if (entries.some((e) => e.endsWith(".rs") || e.endsWith(".c") || e.endsWith(".cpp"))) {
+				const nativeAdapter = adapters.find((a) => a.languages.includes("rust") || a.languages.includes("c"))
+				if (nativeAdapter) return nativeAdapter
+			}
+		} catch {
+			// Not a directory or unreadable — fall through to null
+		}
+		return null
+	}
+
 	/** Launch a debug session: resolve the adapter, connect the DapClient, create
 	 *  the DapSession, and call session.launch(). Used by the debug_launch tool. */
 	async function launchSession(opts: LaunchSessionOptions) {
 		const program = resolvePath(opts.program)
 
-		// Resolve adapter by explicit name or by program file extension.
+		// Resolve adapter by explicit name, file extension, or directory contents.
 		// allAdapters() returns the full static registry; getOrCreateClient
 		// will surface a clear error if the binary isn't installed.
 		const adapters = allAdapters()
-		const adapter = opts.adapterName
-			? (adapters.find((a) => a.name === opts.adapterName) ?? null)
-			: adapterForFile(program, adapters)
+		let adapter: (typeof adapters)[0] | null
+		if (opts.adapterName) {
+			adapter = adapters.find((a) => a.name === opts.adapterName) ?? null
+		} else {
+			// Try file extension first, then directory-based detection for
+			// package directories (e.g. ./cmd/server for Go).
+			adapter = adapterForFile(program, adapters)
+			if (!adapter) adapter = adapterForDirectory(program, adapters)
+		}
 
 		if (!adapter) {
 			const supportedExts = allAdapters()
