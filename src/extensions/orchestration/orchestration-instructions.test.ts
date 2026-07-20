@@ -55,7 +55,7 @@ describe("resolveOrchestrationInstructions", () => {
 
 	it("shows Your roles subsection with orchestrator roles", () => {
 		const result = resolveAsString({
-			currentModelId: "kimi-k2.7",
+			currentModelId: "glm-5.2-fp8",
 			registry,
 			roles: DEFAULT_MODEL_ROLES,
 		})
@@ -130,10 +130,14 @@ describe("resolveOrchestrationInstructions", () => {
 	})
 
 	it("instructs orchestrator to write plans itself when orchestrator is planner", () => {
+		// Isolate the sole-planner-equals-orchestrator case: the default planner
+		// pool is multi-model, which renders a Planner team section even when the
+		// orchestrator is a member. Override to a single-model planner == orchestrator
+		// to exercise the suppression path specifically.
 		const result = resolveAsString({
-			currentModelId: "kimi-k2.7",
+			currentModelId: "glm-5.2-fp8",
 			registry,
-			roles: DEFAULT_MODEL_ROLES,
+			roles: { ...DEFAULT_MODEL_ROLES, planner: DEFAULT_MODEL_ROLES.orchestrator },
 		})
 		expect(result).not.toContain("### Planner")
 		expect(result).not.toContain("Decide whether to write the plan yourself")
@@ -254,7 +258,7 @@ describe("resolveOrchestrationInstructions", () => {
 
 	it("allows self-review when orchestrator has reviewer role", () => {
 		const result = resolveAsString({
-			currentModelId: "kimi-k2.7",
+			currentModelId: "glm-5.2-fp8",
 			registry,
 			roles: DEFAULT_MODEL_ROLES,
 		})
@@ -342,7 +346,7 @@ describe("resolveOrchestrationInstructions", () => {
 
 	it("replaces 'self-validate' with 'validate it by re-reading'", () => {
 		const result = resolveAsString({
-			currentModelId: "kimi-k2.7",
+			currentModelId: "glm-5.2-fp8",
 			registry,
 			roles: DEFAULT_MODEL_ROLES,
 		})

@@ -8,23 +8,28 @@ import {
 } from "./orchestrator-roles.js"
 
 describe("resolveModelRoleNames", () => {
-	it("returns orchestrator and planner for default kimi-k2.7 orchestrator", () => {
-		expect(resolveModelRoleNames("kimi-k2.7", DEFAULT_MODEL_ROLES)).toEqual(["orchestrator", "planner", "reviewer"])
+	it("returns orchestrator, planner, builder, and reviewer for default glm-5.2-fp8 orchestrator", () => {
+		expect(resolveModelRoleNames("glm-5.2-fp8", DEFAULT_MODEL_ROLES)).toEqual([
+			"orchestrator",
+			"planner",
+			"builder",
+			"reviewer",
+		])
 	})
 })
 
 describe("orchestratorShouldReceivePhaseGuidelines", () => {
 	it("never includes build or review worker guidelines", () => {
-		expect(orchestratorShouldReceivePhaseGuidelines("build", "kimi-k2.7", DEFAULT_MODEL_ROLES)).toBe(false)
-		expect(orchestratorShouldReceivePhaseGuidelines("review", "kimi-k2.7", DEFAULT_MODEL_ROLES)).toBe(false)
+		expect(orchestratorShouldReceivePhaseGuidelines("build", "glm-5.2-fp8", DEFAULT_MODEL_ROLES)).toBe(false)
+		expect(orchestratorShouldReceivePhaseGuidelines("review", "glm-5.2-fp8", DEFAULT_MODEL_ROLES)).toBe(false)
 	})
 
 	it("includes plan guidelines when orchestrator owns planner", () => {
-		expect(orchestratorShouldReceivePhaseGuidelines("plan", "kimi-k2.7", DEFAULT_MODEL_ROLES)).toBe(true)
+		expect(orchestratorShouldReceivePhaseGuidelines("plan", "glm-5.2-fp8", DEFAULT_MODEL_ROLES)).toBe(true)
 	})
 
 	it("omits explore guidelines when orchestrator lacks explorer", () => {
-		expect(orchestratorShouldReceivePhaseGuidelines("explore", "kimi-k2.7", DEFAULT_MODEL_ROLES)).toBe(false)
+		expect(orchestratorShouldReceivePhaseGuidelines("explore", "glm-5.2-fp8", DEFAULT_MODEL_ROLES)).toBe(false)
 	})
 
 	it("omits guidelines when roles are missing", () => {
@@ -34,7 +39,7 @@ describe("orchestratorShouldReceivePhaseGuidelines", () => {
 
 describe("shouldDelegatePlanning", () => {
 	it("returns false when orchestrator is the planner model", () => {
-		expect(shouldDelegatePlanning("kimi-k2.7", DEFAULT_MODEL_ROLES)).toBe(false)
+		expect(shouldDelegatePlanning("glm-5.2-fp8", DEFAULT_MODEL_ROLES)).toBe(false)
 	})
 
 	it("returns true when orchestrator is not the planner model", () => {
@@ -63,7 +68,7 @@ describe("shouldDelegatePlanning", () => {
 
 describe("shouldDelegateReview", () => {
 	it("returns false when orchestrator is the reviewer model", () => {
-		expect(shouldDelegateReview("kimi-k2.7", DEFAULT_MODEL_ROLES)).toBe(false)
+		expect(shouldDelegateReview("glm-5.2-fp8", DEFAULT_MODEL_ROLES)).toBe(false)
 	})
 
 	it("returns true when orchestrator is not the reviewer model", () => {

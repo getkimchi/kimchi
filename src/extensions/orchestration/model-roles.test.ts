@@ -244,35 +244,37 @@ describe("modelIdFromRef", () => {
 })
 
 describe("DEFAULT_MODEL_ROLES", () => {
-	it("orchestrator is kimi-k2.7", () => {
-		expect(DEFAULT_MODEL_ROLES.orchestrator).toBe("kimchi-dev/kimi-k2.7")
+	it("orchestrator is glm-5.2-fp8", () => {
+		expect(DEFAULT_MODEL_ROLES.orchestrator).toBe("kimchi-dev/glm-5.2-fp8")
 	})
 
-	it("builder pool contains the build role but not nemotron", () => {
+	it("builder pool contains glm-5.2-fp8 and claude-sonnet-4-6", () => {
 		const builders = normalizeRoleModels(DEFAULT_MODEL_ROLES.builder)
-		expect(builders).toContain("kimchi-dev/minimax-m3")
-		expect(builders).not.toContain("kimchi-dev/nemotron-3-ultra-fp4")
+		expect(builders).toContain("kimchi-dev/glm-5.2-fp8")
+		expect(builders).toContain("kimchi-dev/claude-sonnet-4-6")
 	})
 
-	it("reviewer pool contains kimi-k2.7 only", () => {
+	it("reviewer pool contains glm-5.2-fp8 and claude-opus-4-8", () => {
 		const reviewers = normalizeRoleModels(DEFAULT_MODEL_ROLES.reviewer)
-		expect(reviewers).toContain("kimchi-dev/kimi-k2.7")
-		expect(reviewers).not.toContain("kimchi-dev/minimax-m3")
+		expect(reviewers).toContain("kimchi-dev/glm-5.2-fp8")
+		expect(reviewers).toContain("kimchi-dev/claude-opus-4-8")
 	})
 
-	it("explorer pool contains deepseek-v4-flash", () => {
+	it("explorer pool contains nemotron-3-ultra-fp4 and minimax-m3", () => {
 		const explorers = normalizeRoleModels(DEFAULT_MODEL_ROLES.explorer)
-		expect(explorers).toContain("kimchi-dev/deepseek-v4-flash")
+		expect(explorers).toContain("kimchi-dev/nemotron-3-ultra-fp4")
+		expect(explorers).toContain("kimchi-dev/minimax-m3")
 	})
 
-	it("planner pool contains kimi-k2.7", () => {
+	it("planner pool contains claude-opus-4-8 and glm-5.2-fp8", () => {
 		const planners = normalizeRoleModels(DEFAULT_MODEL_ROLES.planner)
-		expect(planners).toContain("kimchi-dev/kimi-k2.7")
+		expect(planners).toContain("kimchi-dev/claude-opus-4-8")
+		expect(planners).toContain("kimchi-dev/glm-5.2-fp8")
 	})
 
-	it("judge defaults to orchestrator model", () => {
+	it("judge is claude-opus-4-8", () => {
 		const judges = normalizeRoleModels(DEFAULT_MODEL_ROLES.judge)
-		expect(judges).toContain(DEFAULT_MODEL_ROLES.orchestrator)
+		expect(judges).toContain("kimchi-dev/claude-opus-4-8")
 	})
 
 	it("all defaults contain a provider prefix", () => {
@@ -370,7 +372,17 @@ describe("saveModelRoles", () => {
 })
 
 describe("validateModelRoles", () => {
-	const available = new Set(["kimi-k2.6", "kimi-k2.7", "minimax-m2.7", "minimax-m3", "deepseek-v4-flash"])
+	const available = new Set([
+		"kimi-k2.6",
+		"kimi-k2.7",
+		"minimax-m2.7",
+		"minimax-m3",
+		"deepseek-v4-flash",
+		"glm-5.2-fp8",
+		"claude-opus-4-8",
+		"claude-sonnet-4-6",
+		"nemotron-3-ultra-fp4",
+	])
 
 	it("returns no unavailable roles when all defaults are available", () => {
 		const result = validateModelRoles(DEFAULT_MODEL_ROLES, available)
@@ -492,9 +504,11 @@ describe("getAllowedMultiModelRefs", () => {
 	it("returns sorted unique refs for default roles", () => {
 		applyRoleAugmentation(() => ({ ...DEFAULT_MODEL_ROLES }))
 		expect(getAllowedMultiModelRefs()).toEqual([
-			"kimchi-dev/deepseek-v4-flash",
-			"kimchi-dev/kimi-k2.7",
+			"kimchi-dev/claude-opus-4-8",
+			"kimchi-dev/claude-sonnet-4-6",
+			"kimchi-dev/glm-5.2-fp8",
 			"kimchi-dev/minimax-m3",
+			"kimchi-dev/nemotron-3-ultra-fp4",
 		])
 	})
 
