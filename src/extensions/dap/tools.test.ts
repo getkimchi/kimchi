@@ -223,6 +223,9 @@ describe("Layer 1 DAP tools", () => {
 		it("returns an error for unknown session_id", async () => {
 			const text = await executeTool(tools, "debug_continue", { session_id: "nope" })
 			expect(text).toContain("Error: No DAP session found for sessionId: nope")
+			// Error hints teach the model correct usage — verify the hint is appended
+			expect(text).toContain("Hint:")
+			expect(text).toContain("debug_launch")
 		})
 	})
 

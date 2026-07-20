@@ -65,8 +65,80 @@ function textResult(text: string): ToolTextResult {
 	return { content: [{ type: "text", text }], details: null }
 }
 
+/** Complete example flow shown in error hints. Kept short so it fits in a
+ *  tool result without overwhelming the context window. */
+const USAGE_EXAMPLE = `Example flow:
+  1. debug_launch(program="/src/app.ts")  → returns session_id
+  2. debug_set_breakpoint(session_id=..., file="/src/app.ts", line=42)
+  3. debug_continue(session_id=...)   → runs to the breakpoint
+  4. debug_locals(session_id=...)      → inspect variable values
+  5. debug_terminate(session_id=...)   → always clean up`
+
+/** Error categories and the hint that helps the model recover. Each entry
+ *  is a substring test on the error message. Order matters: the first match
+ *  wins, so put more-specific patterns before general ones. */
+const ERROR_HINTS: ReadonlyArray<{ match: RegExp; hint: string }> = [
+	{
+		match: /No DAP session found for sessionId/i,
+		hint: `You need an active debug session first. Call debug_launch with the program path, then use the returned session_id for this tool.\n${USAGE_EXAMPLE}`,
+	},
+	{
+		match: /No DAP adapter available for/i,
+		hint: "Check that the correct adapter is installed and on PATH, or specify the adapter explicitly via debug_launch's `adapter` parameter. See the adapter's installHint for setup instructions.",
+	},
+	{
+		match: /DAP adapter exited \(code null\)/i,
+		hint: "The adapter subprocess was killed unexpectedly. Verify the binary is installed, is the correct version, and is on PATH. Check the adapter's installHint.",
+	},
+	{
+		match: /DAP adapter exited/i,
+		hint: "The adapter subprocess exited unexpectedly. Verify the binary is installed and is the correct version. Check the adapter's installHint for setup instructions.",
+	},
+	{
+		match: /no debuggee threads/i,
+		hint: "The program may have terminated before you could inspect it. Verify the breakpoint line is reachable and the program actually reaches that code path. Use debug_state_at for the common case — it sets the breakpoint before launching to avoid this race.",
+	},
+	{
+		match: /No stack frames available/i,
+		hint: "Inspection tools (debug_locals, debug_backtrace, debug_eval) require a stopped session. Call debug_continue or a step tool first to reach a breakpoint, then inspect.",
+	},
+	{
+		match: /Composed operation timed out/i,
+		hint: "The program did not stop within the timeout — it may be in an infinite loop, or the breakpoint line is never reached. Verify the line number and that the breakpoint is on executable code. Pass a larger timeout_ms if the program legitimately needs more time.",
+	},
+	{
+		match: /DAP (continue|stepIn|stepOut|next) failed/i,
+		hint: "The adapter rejected the continue/step request. This usually means the session is not in a stopped state (already running or terminated). Check debug_continue's last result — if the program terminated, launch a new session.",
+	},
+	{
+		match: /DAP evaluate returned no result/i,
+		hint: "The adapter could not evaluate the expression. Verify the expression is valid for the debuggee language and that the session is stopped at a breakpoint (evaluation requires a paused frame).",
+	},
+	{
+		match: /DAP setBreakpoints failed/i,
+		hint: "The adapter could not set the breakpoint. Verify the file path is absolute (or cwd-relative) and the line number is within the file. Some adapters reject breakpoints on non-executable lines (comments, blank lines).",
+	},
+	{
+		match: /DAP launch failed/i,
+		hint: "The adapter could not launch the program. Verify the program path is correct, the file exists, and the adapter matches the language (e.g. dlv for .go, js-debug for .ts/.js). Check the adapter's installHint.",
+	},
+]
+
+/** Format an error message with an actionable hint when we recognize the
+ *  error category. Unrecognized errors pass through unchanged (just the
+ *  `Error:` prefix) — we don't want to add noise for errors we can't
+ *  meaningfully improve. */
+function formatDapError(message: string): string {
+	for (const { match, hint } of ERROR_HINTS) {
+		if (match.test(message)) {
+			return `Error: ${message}\n\nHint: ${hint}`
+		}
+	}
+	return `Error: ${message}`
+}
+
 function errorResult(message: string): ToolTextResult {
-	return { content: [{ type: "text", text: `Error: ${message}` }], details: null }
+	return { content: [{ type: "text", text: formatDapError(message) }], details: null }
 }
 
 /** Look up a session by id and throw a clean error if it doesn't exist. */
