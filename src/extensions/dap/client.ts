@@ -1,4 +1,6 @@
 // extensions/dap/client.ts
+import { spawn } from "node:child_process"
+import net from "node:net"
 import type { BunProcess } from "../lsp/types.js"
 import type {
 	DapAdapterConfig,
@@ -12,6 +14,264 @@ import type {
 	StoppedEvent,
 	TerminatedEvent,
 } from "./types.js"
+
+// =============================================================================
+// TCP transport (js-debug): spawn server, connect socket, wrap as BunProcess
+// =============================================================================
+
+/** Wraps a net.Socket to satisfy the BunProcess interface so the same
+ *  reader/writer code works for TCP-based adapters (js-debug). The socket's
+ *  readable side maps to `stdout`, the write side maps to `stdin`. `kill()`
+ *  destroys the socket; the spawned subprocess is tracked separately so the
+ *  caller can force-kill it. */
+interface TcpProcessHandle extends BunProcess {
+	/** The underlying node:child_process spawn (the dapDebugServer.js process).
+	 *  Tracked so getOrCreateClient can kill it when the client is shut down. */
+	childProc: { kill: (signal?: string) => void; exitCode: number | null; exited: Promise<void> }
+}
+
+function wrapSocketAsProcess(
+	socket: net.Socket,
+	childProc: { kill: (signal?: string) => void; exitCode: number | null; exited: Promise<void> },
+): TcpProcessHandle {
+	const reader = new ReadableStream<Uint8Array>({
+		start(controller) {
+			socket.on("data", (data: Buffer) => controller.enqueue(new Uint8Array(data)))
+			socket.on("end", () => controller.close())
+			socket.on("error", (err: Error) => controller.error(err))
+		},
+	})
+	return {
+		stdin: {
+			write(data: Uint8Array | string) {
+				socket.write(data)
+			},
+			flush() {
+				return Promise.resolve()
+			},
+			end() {
+				socket.end()
+			},
+		},
+		stdout: reader,
+		stderr: new ReadableStream<Uint8Array>({
+			start(c) {
+				c.close()
+			},
+		}),
+		kill() {
+			socket.destroy()
+			childProc.kill("SIGKILL")
+		},
+		exited: childProc.exited,
+		exitCode: null,
+		childProc,
+	}
+}
+
+/** Spawn a stdio-based DAP adapter (dlv, debugpy, lldb-dap) — the adapter
+ *  speaks DAP over stdin/stdout. Uses Bun.spawn when available (dev), falls
+ *  back to node:child_process spawn (production build / vitest forks pool). */
+function spawnStdioAdapter(config: DapAdapterConfig, cwd: string): BunProcess {
+	// biome-ignore lint/suspicious/noExplicitAny: Bun not typed without @types/bun
+	const Bun = (globalThis as any).Bun
+	if (Bun?.spawn) {
+		return Bun.spawn([config.command, ...(config.args ?? [])], {
+			cwd,
+			stdin: "pipe",
+			stdout: "pipe",
+			stderr: "pipe",
+		}) as BunProcess
+	}
+	return spawnChildProcessAsBunProcess([config.command, ...(config.args ?? [])], cwd)
+}
+
+/** Spawn a child process via node:child_process and wrap its stdio to satisfy
+ *  the BunProcess interface. Used when Bun is not available (vitest forks pool,
+ *  production Node build). Mirrors the BunProcess shape Bun.spawn returns. */
+function spawnChildProcessAsBunProcess(argv: string[], cwd: string): BunProcess {
+	if (argv.length === 0) throw new Error("DAP adapter spawn requires a command")
+	const cmd = argv[0]
+	if (!cmd) throw new Error("DAP adapter command is empty")
+	const cp = spawn(cmd, argv.slice(1), { cwd, stdio: ["pipe", "pipe", "pipe"] })
+	const stdinWriter = {
+		write(data: Uint8Array | string) {
+			cp.stdin.write(data)
+		},
+		flush() {
+			return Promise.resolve()
+		},
+		end() {
+			cp.stdin.end()
+		},
+	}
+	// Convert Node's readable streams to web ReadableStream.
+	const toWebStream = (nodeStream: NodeJS.ReadableStream): ReadableStream<Uint8Array> => {
+		return new ReadableStream<Uint8Array>({
+			start(controller) {
+				nodeStream.on("data", (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk)))
+				nodeStream.on("end", () => controller.close())
+				nodeStream.on("error", (err: Error) => controller.error(err))
+			},
+		})
+	}
+	return {
+		stdin: stdinWriter,
+		stdout: toWebStream(cp.stdout),
+		stderr: toWebStream(cp.stderr),
+		kill() {
+			cp.kill("SIGKILL")
+		},
+		exited: new Promise<void>((resolve) => cp.on("exit", () => resolve())),
+		exitCode: null,
+	}
+}
+
+/** Resolve the js-debug dapDebugServer.js script path. Searches common install
+ *  locations: $JS_DEBUG_PATH, node_modules/js-debug-adapter, Mason, and the
+ *  standard global npm prefix. Returns null if not found. */
+function resolveJsDebugScript(): string | null {
+	if (process.env.JS_DEBUG_PATH) return process.env.JS_DEBUG_PATH
+	const fs = require("node:fs")
+	const candidates = [
+		"node_modules/js-debug-adapter/src/dapDebugServer.js",
+		"node_modules/@vscode/js-debug/src/dapDebugServer.js",
+	]
+	for (const c of candidates) {
+		if (fs.existsSync(c)) return c
+	}
+	// npm global prefix
+	try {
+		const { execSync } = require("node:child_process")
+		const prefix = execSync("npm prefix -g", { encoding: "utf-8" }).trim()
+		const globalPath = `${prefix}/lib/node_modules/js-debug-adapter/src/dapDebugServer.js`
+		if (fs.existsSync(globalPath)) return globalPath
+	} catch {
+		// npm not available
+	}
+	return null
+}
+
+/** Spawn a TCP-based DAP adapter (js-debug's dapDebugServer.js), wait for the
+ *  `Debug server listening at <host>:<port>` line, connect a TCP socket, and
+ *  return a BunProcess wrapping the socket. Resolves the script path from
+ *  config.args (if set) or resolveJsDebugScript(). */
+async function spawnTcpAdapterForConfig(config: DapAdapterConfig, cwd: string): Promise<BunProcess> {
+	// Resolve the dapDebugServer.js script path + port arg. config.args may
+	// already contain ["<script>", "0", "127.0.0.1"] if a caller set them;
+	// otherwise resolve the script and append the ephemeral port + host.
+	let argv: string[]
+	if (config.args && config.args.length > 0) {
+		argv = [config.command, ...config.args]
+	} else {
+		const script = resolveJsDebugScript()
+		if (!script) {
+			throw new Error("js-debug dapDebugServer.js not found. Set JS_DEBUG_PATH or install js-debug-adapter.")
+		}
+		const host = config.transport?.kind === "tcp" ? (config.transport.host ?? "127.0.0.1") : "127.0.0.1"
+		argv = [config.command, script, "0", host]
+	}
+	// biome-ignore lint/suspicious/noExplicitAny: Bun not typed without @types/bun
+	const Bun = (globalThis as any).Bun
+	interface ChildProcHandle {
+		kill: () => void
+		exitCode: number | null
+		exited: Promise<void>
+	}
+	let childProc: ChildProcHandle
+	let stdoutBuf = ""
+	const callbacks = {
+		resolve: null as null | ((addr: { host: string; port: number }) => void),
+		reject: null as null | ((err: Error) => void),
+	}
+	const listeningPromise = new Promise<{ host: string; port: number }>((resolve, reject) => {
+		callbacks.resolve = resolve
+		callbacks.reject = reject
+	})
+
+	const parseListeningLine = (line: string): { host: string; port: number } | null => {
+		// js-debug prints: "Debug server listening at 127.0.0.1:65284"
+		// dlv prints:      "DAP server listening at: 127.0.0.1:49223"
+		// Match "listening at" optionally followed by ":" then host:port.
+		const m = line.match(/listening\s+at:?\s+\[?([^:\]]+)\]?:(\d+)/i)
+		if (!m) return null
+		return { host: m[1], port: Number.parseInt(m[2], 10) }
+	}
+
+	const timer = setTimeout(() => {
+		if (callbacks.reject) callbacks.reject(new Error(`Timed out waiting for ${config.name} TCP server to start`))
+	}, 10_000)
+
+	if (Bun?.spawn) {
+		const proc = Bun.spawn(argv, {
+			cwd,
+			stdin: "pipe",
+			stdout: "pipe",
+			stderr: "pipe",
+		}) as BunProcess
+		childProc = {
+			kill: () => proc.kill(),
+			exitCode: null,
+			exited: proc.exited,
+		}
+		const reader = proc.stdout.getReader()
+		;(async () => {
+			try {
+				while (true) {
+					const { done, value } = await reader.read()
+					if (done) break
+					stdoutBuf += Buffer.from(value).toString("utf-8")
+					const lines = stdoutBuf.split("\n")
+					stdoutBuf = lines.pop() ?? ""
+					for (const line of lines) {
+						const addr = parseListeningLine(line)
+						if (addr && callbacks.resolve) {
+							callbacks.resolve(addr)
+							callbacks.resolve = null
+						}
+					}
+				}
+			} catch {
+				// ignore reader errors
+			}
+		})()
+	} else {
+		const cmd = argv[0]
+		if (!cmd) throw new Error("DAP adapter command is empty")
+		const cp = spawn(cmd, argv.slice(1), { cwd, stdio: ["pipe", "pipe", "pipe"] })
+		childProc = {
+			kill: () => cp.kill("SIGKILL"),
+			exitCode: null,
+			exited: new Promise<void>((resolve) => cp.on("exit", () => resolve())),
+		}
+		cp.stdout.on("data", (data: Buffer) => {
+			stdoutBuf += data.toString("utf-8")
+			const lines = stdoutBuf.split("\n")
+			stdoutBuf = lines.pop() ?? ""
+			for (const line of lines) {
+				const addr = parseListeningLine(line)
+				if (addr && callbacks.resolve) {
+					callbacks.resolve(addr)
+					callbacks.resolve = null
+				}
+			}
+		})
+	}
+
+	let addr: { host: string; port: number }
+	try {
+		addr = await listeningPromise
+	} finally {
+		clearTimeout(timer)
+	}
+
+	const socket = net.createConnection({ host: addr.host, port: addr.port })
+	await new Promise<void>((resolve, reject) => {
+		socket.once("connect", resolve)
+		socket.once("error", reject)
+	})
+	return wrapSocketAsProcess(socket, childProc)
+}
 
 // =============================================================================
 // Client State
@@ -37,7 +297,7 @@ function parseMessage(buf: Buffer): { message: DapRequest | DapResponse | DapEve
 	const headerEnd = findHeaderEnd(buf)
 	if (headerEnd === -1) return null
 
-	const headerText = buf.slice(0, headerEnd).toString()
+	const headerText = buf.subarray(0, headerEnd).toString()
 	const lenMatch = headerText.match(/Content-Length: (\d+)/i)
 	if (!lenMatch) return null
 
@@ -47,7 +307,7 @@ function parseMessage(buf: Buffer): { message: DapRequest | DapResponse | DapEve
 	if (buf.length < end) return null
 
 	return {
-		message: JSON.parse(buf.slice(start, end).toString()),
+		message: JSON.parse(buf.subarray(start, end).toString()),
 		remaining: buf.subarray(end),
 	}
 }
@@ -176,14 +436,10 @@ export async function getOrCreateClient(config: DapAdapterConfig, cwd: string): 
 	if (existingLock) return existingLock
 
 	const clientPromise = (async () => {
-		// biome-ignore lint/suspicious/noExplicitAny: Bun not typed without @types/bun
-		const Bun = (globalThis as any).Bun
-		const proc = Bun.spawn([config.command, ...(config.args ?? [])], {
-			cwd,
-			stdin: "pipe",
-			stdout: "pipe",
-			stderr: "pipe",
-		}) as BunProcess
+		// For TCP-based adapters (js-debug), spawn the server and connect a socket.
+		// For stdio adapters (dlv, debugpy, lldb-dap), spawn the adapter directly.
+		const proc =
+			config.transport?.kind === "tcp" ? await spawnTcpAdapterForConfig(config, cwd) : spawnStdioAdapter(config, cwd)
 
 		const client: DapClient = {
 			name: key,

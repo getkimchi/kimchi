@@ -48,6 +48,7 @@ import claudeCodeHooksAdapter from "./extensions/claude-code-hook-adapter/index.
 import claudeCodeSkillsExtension from "./extensions/claude-code-skills/index.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
 import customizeStatusLineExtension from "./extensions/customize-status-line-command.js"
+import dapExtension from "./extensions/dap.js"
 import explorationGuardExtension from "./extensions/exploration-guard.js"
 import fermentExtension from "./extensions/ferment/index.js"
 import helpExtension from "./extensions/help.js"
@@ -597,6 +598,7 @@ try {
 			explorationGuardExtension,
 			reviewWriteGuardExtension,
 			lspExtension,
+			dapExtension,
 			// Always registered — the tool_call handler checks isResourceEnabled
 			// dynamically on every bash call, so enable/disable from /resources
 			// takes effect immediately without a process restart.
