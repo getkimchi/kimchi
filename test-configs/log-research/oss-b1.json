@@ -1,0 +1,39 @@
+{
+  "testSet": [
+    "fix-git",
+    "extract-elf",
+    "mteb-leaderboard"
+  ],
+  "taskType": "log-research",
+  "variant": "oss-b1",
+  "modelRoles": {
+    "orchestrator": "kimchi-dev/glm-5.2-fp8",
+    "planner": "kimchi-dev/glm-5.2-fp8",
+    "builder": [
+      "kimchi-dev/minimax-m3"
+    ],
+    "reviewer": "kimchi-dev/glm-5.2-fp8",
+    "explorer": [
+      "kimchi-dev/nemotron-3-ultra-fp4"
+    ],
+    "judge": "kimchi-dev/glm-5.2-fp8"
+  },
+  "maxRetries": 2,
+  "modelMetadata": {
+    "kimchi-dev/glm-5.2-fp8": {
+      "tier": "standard",
+      "vision": true
+    },
+    "kimchi-dev/minimax-m3": {
+      "tier": "heavy",
+      "vision": true
+    },
+    "kimchi-dev/nemotron-3-ultra-fp4": {
+      "tier": "standard",
+      "vision": false
+    }
+  },
+  "multiModel": true,
+  "hideThinkingBlock": true,
+  "_purpose": "depth (multi-step trace retention) \u2014 best for fix-git"
+}
