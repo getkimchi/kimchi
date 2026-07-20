@@ -314,6 +314,10 @@ const HARD_BLOCK_PROGRAMS = new Set(["sudo", "su", "shutdown", "reboot", "halt",
 //   - `<`: input redirect — also appears twice in a row for heredocs (<<EOF)
 //   - `<(` / `(`: process substitution / subshell — can hide arbitrary code
 //   - `&`: backgrounding
+//   - `&>` (combined stdout+stderr redirect-to-file): shell-quote decomposes
+//      this into `&` + `>`, so it is blocked transitively via the `&` rule.
+//      This safety is incidental — if `&` were ever relaxed, `&>` would need
+//      explicit handling.
 const DANGEROUS_OPS = new Set<ControlOperator>([">", ">>", ">&", "<", "<(", "(", ")", "&"])
 
 // `>` / `>>` targets that are allowed because they discard or duplicate

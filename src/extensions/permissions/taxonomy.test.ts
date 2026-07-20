@@ -426,6 +426,15 @@ describe("isReadOnlyBashCommand", () => {
 		expect(isReadOnlyBashCommand("echo hello >&-")).toBe(false)
 	})
 
+	it("blocks bash &> combined redirect", () => {
+		// `&>` redirects both stdout+stderr to a file — shell-quote decomposes it
+		// into `&` + `>`, so the `&` (backgrounding) op blocks it transitively.
+		// Regression test: pins this incidental safety against future `&` relaxation.
+		expect(isReadOnlyBashCommand("cat foo &> /tmp/out")).toBe(false)
+		expect(isReadOnlyBashCommand("cat foo &>/tmp/out")).toBe(false)
+		expect(isReadOnlyBashCommand("echo hi &> /tmp/evil")).toBe(false)
+	})
+
 	it("blocks hard-blocked patterns", () => {
 		expect(isReadOnlyBashCommand("sudo cat foo")).toBe(false)
 		expect(isReadOnlyBashCommand("rm -rf /")).toBe(false)
