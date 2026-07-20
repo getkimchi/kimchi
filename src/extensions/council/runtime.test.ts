@@ -207,6 +207,118 @@ describe("Council runtime", () => {
 		expect(emitted.map((event) => event.type)).toEqual(["start", "text_start", "text_delta", "text_end", "done"])
 	})
 
+	it("passes through a valid revision tool call for the outer agent", async () => {
+		let revisionContext: Context | undefined
+		let runRecord: CouncilRunRecord | undefined
+		const toolCall = {
+			type: "toolCall" as const,
+			id: "call_fix",
+			name: "write",
+			arguments: { path: "report.md", content: "Add the missing finding" },
+		}
+		const completeModel = vi.fn(async (model: Model<Api>, context: Context): Promise<AssistantMessage> => {
+			const lastMessage = context.messages.at(-1)
+			const lastText =
+				lastMessage?.role === "user" && typeof lastMessage.content === "string" ? lastMessage.content : ""
+			if (context.systemPrompt?.includes("Council reviewer")) {
+				return response(
+					model,
+					JSON.stringify({
+						decision: "revise",
+						findings: [],
+						recommended_changes: ["Add the missing finding"],
+						missing_evidence: [],
+					}),
+				)
+			}
+			if (lastText.includes("<council_review_data>")) {
+				revisionContext = context
+				return {
+					...response(model, ""),
+					content: [{ type: "thinking", thinking: "private" }, toolCall],
+					stopReason: "toolUse",
+				}
+			}
+			return response(model, "Lead draft")
+		})
+		const tools = [{ name: "write", description: "Write a file", parameters: { type: "object" } }]
+		const stream = createCouncilStream({
+			config: {
+				...DEFAULT_COUNCIL_CONFIG,
+				reviewerModels: ["kimchi-dev/glm-5.2-fp8"],
+				useJudge: false,
+			},
+			getModelRegistry: () => modelRegistry,
+			completeModel,
+			recordRun: (record) => {
+				runRecord = record
+			},
+		})(councilModel, {
+			messages: [{ role: "user", content: "Fix the report", timestamp: 1 }],
+			tools,
+		})
+
+		const result = await stream.result()
+
+		expect(result.content).toEqual([toolCall])
+		expect(result.stopReason).toBe("toolUse")
+		expect(revisionContext?.tools).toEqual(tools)
+		expect(runRecord?.outcome).toBe("tool_use")
+		expect(runRecord?.stages).toContainEqual(expect.objectContaining({ stage: "revision", status: "ok" }))
+	})
+
+	it("rejects an unadvertised revision tool call", async () => {
+		let runRecord: CouncilRunRecord | undefined
+		const completeModel = vi.fn(async (model: Model<Api>, context: Context): Promise<AssistantMessage> => {
+			const lastMessage = context.messages.at(-1)
+			const lastText =
+				lastMessage?.role === "user" && typeof lastMessage.content === "string" ? lastMessage.content : ""
+			if (context.systemPrompt?.includes("Council reviewer")) {
+				return response(
+					model,
+					JSON.stringify({
+						decision: "revise",
+						findings: [],
+						recommended_changes: ["Inspect another file"],
+						missing_evidence: [],
+					}),
+				)
+			}
+			if (lastText.includes("<council_review_data>")) {
+				return {
+					...response(model, ""),
+					content: [{ type: "toolCall", id: "call_invalid", name: "write", arguments: {} }],
+					stopReason: "toolUse",
+				}
+			}
+			return response(model, "Lead draft")
+		})
+		const stream = createCouncilStream({
+			config: {
+				...DEFAULT_COUNCIL_CONFIG,
+				reviewerModels: ["kimchi-dev/glm-5.2-fp8"],
+				useJudge: false,
+			},
+			getModelRegistry: () => modelRegistry,
+			completeModel,
+			recordRun: (record) => {
+				runRecord = record
+			},
+		})(councilModel, {
+			messages: [{ role: "user", content: "Fix the report", timestamp: 1 }],
+			tools: [{ name: "read", description: "Read a file", parameters: { type: "object" } }],
+		})
+
+		const result = await stream.result()
+
+		expect(result.content).toEqual([{ type: "text", text: "Lead draft" }])
+		expect(result.stopReason).toBe("stop")
+		expect(runRecord?.outcome).toBe("fallback")
+		expect(runRecord?.stages).toContainEqual(
+			expect.objectContaining({ stage: "revision", status: "error", error: "invalid_output" }),
+		)
+	})
+
 	it("accepts without a judge or revision when the reviewer finds no issues", async () => {
 		let runRecord: CouncilRunRecord | undefined
 		const completeModel = vi.fn(async (model: Model<Api>, context: Context): Promise<AssistantMessage> => {
