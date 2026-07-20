@@ -1,0 +1,54 @@
+{
+  "testSet": [
+    "fix-code-vulnerability",
+    "pytorch-model-recovery",
+    "cobol-modernization",
+    "merge-diff-arc-agi-task",
+    "bn-fit-modify"
+  ],
+  "taskType": "heavy-thinking",
+  "variant": "mixed",
+  "modelRoles": {
+    "orchestrator": "kimchi-dev/glm-5.2-fp8",
+    "planner": [
+      "kimchi-dev/kimi-k2.7"
+    ],
+    "builder": [
+      "kimchi-dev/kimi-k2.7"
+    ],
+    "reviewer": [
+      "kimchi-dev/kimi-k2.7",
+      "kimchi-dev/claude-sonnet-5"
+    ],
+    "explorer": [
+      "kimchi-dev/nemotron-3-ultra-fp4"
+    ],
+    "judge": "kimchi-dev/claude-opus-4-8"
+  },
+  "maxRetries": 2,
+  "modelMetadata": {
+    "kimchi-dev/glm-5.2-fp8": {
+      "tier": "standard",
+      "vision": true
+    },
+    "kimchi-dev/kimi-k2.7": {
+      "tier": "heavy",
+      "vision": false
+    },
+    "kimchi-dev/nemotron-3-ultra-fp4": {
+      "tier": "standard",
+      "vision": false
+    },
+    "kimchi-dev/claude-sonnet-5": {
+      "tier": "heavy",
+      "vision": true
+    },
+    "kimchi-dev/claude-opus-4-8": {
+      "tier": "heavy",
+      "vision": true
+    }
+  },
+  "multiModel": true,
+  "hideThinkingBlock": true,
+  "_purpose": "Claude only where the error cost is highest \u2014 reviewer (escalation only) and judge (always); reserved for cobol-modernization and fix-code-vulnerability where missed errors are costliest"
+}
