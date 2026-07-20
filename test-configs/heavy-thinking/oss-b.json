@@ -1,0 +1,49 @@
+{
+  "testSet": [
+    "fix-code-vulnerability",
+    "pytorch-model-recovery",
+    "cobol-modernization",
+    "merge-diff-arc-agi-task",
+    "bn-fit-modify"
+  ],
+  "taskType": "heavy-thinking",
+  "variant": "oss-b",
+  "modelRoles": {
+    "orchestrator": "kimchi-dev/glm-5.2-fp8",
+    "planner": [
+      "kimchi-dev/kimi-k2.7"
+    ],
+    "builder": [
+      "kimchi-dev/kimi-k2.7"
+    ],
+    "reviewer": [
+      "kimchi-dev/minimax-m3"
+    ],
+    "explorer": [
+      "kimchi-dev/nemotron-3-ultra-fp4"
+    ],
+    "judge": "kimchi-dev/glm-5.2-fp8"
+  },
+  "maxRetries": 2,
+  "modelMetadata": {
+    "kimchi-dev/glm-5.2-fp8": {
+      "tier": "standard",
+      "vision": true
+    },
+    "kimchi-dev/kimi-k2.7": {
+      "tier": "heavy",
+      "vision": false
+    },
+    "kimchi-dev/minimax-m3": {
+      "tier": "heavy",
+      "vision": true
+    },
+    "kimchi-dev/nemotron-3-ultra-fp4": {
+      "tier": "standard",
+      "vision": false
+    }
+  },
+  "multiModel": true,
+  "hideThinkingBlock": true,
+  "_purpose": "independent second reviewer \u2014 two independent heavy models (builder + reviewer) as a cross-check"
+}
