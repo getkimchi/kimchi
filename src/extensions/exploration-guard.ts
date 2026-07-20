@@ -50,7 +50,7 @@ export interface ExplorationGuardOptions {
 
 const HYPOTHESIS_REMINDER_BASE =
 	"Exploration guard: %d consecutive read-only turns. If you have a clear hypothesis, test it with one targeted command. If you are building context before writing or planning, consider whether you have enough — and if so, take the next concrete action. " +
-	"If you are trying to understand runtime behavior (variable values, execution flow, why something throws), use the DAP debugger tools (debug_state_at, debug_eval) instead of reading more code — a breakpoint shows you the actual value in one step."
+	'If you are trying to understand runtime behavior (variable values, execution flow, why something throws), delegate to Agent(type: "Debugger") — it uses DAP tools to inspect actual runtime values at a breakpoint instead of reading more code. A breakpoint + debug_eval shows the ground-truth value in ~500 tokens; reading files and reasoning takes ~50,000 tokens and can still be wrong.'
 
 const MANDATORY_STEER_BASE =
 	"Exploration guard: %d consecutive read-only turns. You must take a concrete action this turn: run a targeted test, make an edit, write a plan, or ask the user a question. Do not read further without a clear reason."
