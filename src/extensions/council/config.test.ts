@@ -6,7 +6,7 @@ describe("readCouncilConfig", () => {
 	it("uses the Council runtime defaults when no overrides are set", () => {
 		expect(readCouncilConfig({})).toEqual(DEFAULT_COUNCIL_CONFIG)
 		expect(DEFAULT_COUNCIL_CONFIG.internalMaxTokens).toBe(8_192)
-		expect(DEFAULT_COUNCIL_CONFIG.maxCalls).toBe(7)
+		expect(DEFAULT_COUNCIL_CONFIG.maxCalls).toBe(8)
 		expect(DEFAULT_COUNCIL_CONFIG.judgeModel).toBe("kimchi-dev/deepseek-v4-flash")
 	})
 
@@ -92,7 +92,7 @@ describe("applyCouncilPreset", () => {
 			internalMaxTokens: 2_048,
 			maxEvidenceBytes: 32_768,
 			maxStructuredBytes: 8_192,
-			maxCalls: 4,
+			maxCalls: 5,
 			useJudge: false,
 			revisionPolicy: "on-issues",
 		})
@@ -107,13 +107,13 @@ describe("applyCouncilPreset", () => {
 			internalMaxTokens: 4_096,
 			maxEvidenceBytes: 65_536,
 			maxStructuredBytes: 16_384,
-			maxCalls: 6,
+			maxCalls: 7,
 			useJudge: true,
 			revisionPolicy: "on-issues",
 		})
 		expect(applyCouncilPreset(DEFAULT_COUNCIL_CONFIG, "deep")).toEqual({
 			...DEFAULT_COUNCIL_CONFIG,
-			maxCalls: 7,
+			maxCalls: 8,
 			useJudge: true,
 			revisionPolicy: "always",
 		})

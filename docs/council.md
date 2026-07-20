@@ -25,11 +25,11 @@ Internal reviewer and judge responses are not replayed or persisted. The public 
 
 Preset choice is explicit; Council does not guess task complexity. Use fast for small or time-sensitive work, normal for routine engineering, and deep for complex or high-risk work.
 
-| Model | Review path | Revision | Calls including one repair | Lead/internal tokens | Evidence/result | Stage/overall timeout |
+| Model | Review path | Revision | Call cap | Lead/internal tokens | Evidence/result | Stage/overall timeout |
 | --- | --- | --- | ---: | ---: | ---: | ---: |
-| `kimchi/council-fast` | critic only; no judge | on critic issues | 4 | 8,192 / 2,048 | 32 / 8 KiB | 60 / 240 seconds |
-| `kimchi/council` | critic + checker; judge | on reviewer or judge issues | 6 | 16,384 / 4,096 | 64 / 16 KiB | 180 / 720 seconds |
-| `kimchi/council-deep` | critic + checker + independent; judge | always | 7 | 32,768 / 8,192 | 128 / 32 KiB | 300 / 1,200 seconds |
+| `kimchi/council-fast` | critic only; no judge | on critic issues | 5 | 8,192 / 2,048 | 32 / 8 KiB | 60 / 240 seconds |
+| `kimchi/council` | critic + checker; judge | on reviewer or judge issues | 7 | 16,384 / 4,096 | 64 / 16 KiB | 180 / 720 seconds |
+| `kimchi/council-deep` | critic + checker + independent; judge | always | 8 | 32,768 / 8,192 | 128 / 32 KiB | 300 / 1,200 seconds |
 
 ## Configuration
 
@@ -45,7 +45,7 @@ Deep ceilings and physical model defaults:
 | Lead/revision output | 32,768 tokens each |
 | Reviewer/judge output | 8,192 tokens each |
 | Physical reasoning (capable models) | `medium` |
-| Physical calls | 7 maximum |
+| Physical calls | 8 maximum |
 | Parallel reviewers | 3 maximum |
 | Evidence packet | 128 KiB maximum |
 | Structured reviewer/judge result | 32 KiB maximum |
@@ -65,7 +65,7 @@ Environment overrides:
 | `KIMCHI_COUNCIL_INTERNAL_MAX_TOKENS` | Reviewer and judge output budget; default and hard maximum `8192`. |
 | `KIMCHI_COUNCIL_MAX_EVIDENCE_BYTES` | Text evidence packet limit; default and hard maximum `131072`. |
 | `KIMCHI_COUNCIL_MAX_STRUCTURED_BYTES` | Per-review or judge JSON limit; default and hard maximum `32768`. |
-| `KIMCHI_COUNCIL_MAX_CALLS` | Whole-run physical call cap; default `7`. |
+| `KIMCHI_COUNCIL_MAX_CALLS` | Whole-run physical call cap; default `8`. |
 
 Numeric values must be positive integers; invalid values fall back to the defaults. Environment values form the deep ceiling; fast and normal apply their lower preset caps after overrides. Physical references must resolve through the normal model registry and may not point back to a Council virtual model.
 
@@ -116,6 +116,7 @@ MODEL='kimchi/council' ./scripts/run-local.sh \
 - Responses are buffered until Council completes; the TUI gets no per-stage progress.
 - Coordination and limits are process-local.
 - Each request is one bounded round. Fast omits the judge; normal may omit revision; deep runs the full lead, three-reviewer, judge, and revision path.
+- A stopped lead with no public answer or tool call is retried once inside the same bounded round; hidden reasoning is never promoted to the answer.
 - Council advertises text input, matching the proxy prototype. Reviewers receive a bounded text evidence packet; the lead still sees the original tools and conversation.
 - Reviewer packets and revision history exclude transient injected messages that lack the conversation timestamp required by Pi; the lead still receives them as operational guidance.
 - Raw reviewer, judge, and chain-of-thought content is not persisted or returned.

@@ -816,6 +816,74 @@ describe("Council runtime", () => {
 		expect(completeModel).toHaveBeenCalledTimes(4)
 	})
 
+	it("retries a stopped empty lead once inside the same Council run", async () => {
+		let leadAttempts = 0
+		let reviewerPacket = ""
+		let runRecord: CouncilRunRecord | undefined
+		const completeModel = vi.fn(async (model: Model<Api>, context: Context): Promise<AssistantMessage> => {
+			const system = context.systemPrompt ?? ""
+			const lastMessage = context.messages.at(-1)
+			const lastText =
+				lastMessage?.role === "user" && typeof lastMessage.content === "string" ? lastMessage.content : ""
+			if (system.includes("Council reviewer")) {
+				reviewerPacket = lastText
+				return response(
+					model,
+					JSON.stringify({ decision: "accept", findings: [], recommended_changes: [], missing_evidence: [] }),
+				)
+			}
+			leadAttempts++
+			if (leadAttempts === 1) {
+				return {
+					...response(model, ""),
+					content: [{ type: "thinking", thinking: "LEAD_THINKING_SECRET" }],
+				}
+			}
+			return response(model, "Recovered lead")
+		})
+		const stream = createCouncilStream({
+			config: {
+				...DEFAULT_COUNCIL_CONFIG,
+				reviewerModels: ["kimchi-dev/glm-5.2-fp8"],
+				useJudge: false,
+				revisionPolicy: "on-issues",
+			},
+			getModelRegistry: () => modelRegistry,
+			completeModel,
+			recordRun: (record) => {
+				runRecord = record
+			},
+		})(councilModel, { messages: [{ role: "user", content: "Answer", timestamp: 1 }] })
+
+		const result = await stream.result()
+
+		expect(result.content).toEqual([{ type: "text", text: "Recovered lead" }])
+		expect(leadAttempts).toBe(2)
+		expect(completeModel).toHaveBeenCalledTimes(3)
+		expect(completeModel.mock.calls[1]?.[1].systemPrompt).toContain("Do not return only internal reasoning")
+		expect(reviewerPacket).not.toContain("Do not return only internal reasoning")
+		expect(JSON.stringify({ result, reviewerPacket })).not.toContain("LEAD_THINKING_SECRET")
+		expect(runRecord?.stages.map(({ stage }) => stage)).toEqual(["lead", "lead:retry", "review:independent"])
+	})
+
+	it("stops after one empty lead retry", async () => {
+		const completeModel = vi.fn(async (model: Model<Api>) => response(model, ""))
+		const stream = createCouncilStream({
+			config: DEFAULT_COUNCIL_CONFIG,
+			getModelRegistry: () => modelRegistry,
+			completeModel,
+		})(councilModel, { messages: [{ role: "user", content: "Answer", timestamp: 1 }] })
+
+		const result = await stream.result()
+
+		expect(result).toMatchObject({
+			content: [],
+			stopReason: "error",
+			errorMessage: "Council could not produce a complete lead response",
+		})
+		expect(completeModel).toHaveBeenCalledTimes(2)
+	})
+
 	it("rejects serialized tool-call markup from the lead", async () => {
 		const completeModel = vi.fn(async (model: Model<Api>) =>
 			response(model, "I'll inspect it. <|tool_calls_section_begin|><|tool_call_begin|>functions.grep"),
