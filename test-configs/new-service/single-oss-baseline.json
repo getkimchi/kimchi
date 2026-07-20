@@ -1,0 +1,26 @@
+{
+  "testSet": [
+    "hf-model-inference",
+    "build-cython-ext"
+  ],
+  "taskType": "new-service",
+  "variant": "single-oss-baseline",
+  "modelRoles": {
+    "orchestrator": "kimchi-dev/glm-5.2-fp8",
+    "planner": "kimchi-dev/glm-5.2-fp8",
+    "builder": "kimchi-dev/glm-5.2-fp8",
+    "reviewer": "kimchi-dev/glm-5.2-fp8",
+    "explorer": "kimchi-dev/glm-5.2-fp8",
+    "judge": "kimchi-dev/glm-5.2-fp8"
+  },
+  "maxRetries": 5,
+  "modelMetadata": {
+    "kimchi-dev/glm-5.2-fp8": {
+      "tier": "standard",
+      "vision": true
+    }
+  },
+  "multiModel": false,
+  "hideThinkingBlock": true,
+  "_purpose": "one model doing every role \u2014 same logic as the log research null hypothesis"
+}
