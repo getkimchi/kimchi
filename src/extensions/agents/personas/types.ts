@@ -82,6 +82,7 @@ export const AGENT_BUILDER = "Builder"
 export const AGENT_REVIEWER = "Reviewer"
 export const AGENT_FIXER = "Fixer"
 export const AGENT_GRADER = "Grader"
+export const AGENT_DEBUGGER = "Debugger"
 
 /** Names of the embedded default agents (in canonical display order). */
 export const DEFAULT_AGENT_NAMES = [
@@ -93,6 +94,7 @@ export const DEFAULT_AGENT_NAMES = [
 	AGENT_REVIEWER,
 	AGENT_FIXER,
 	AGENT_GRADER,
+	AGENT_DEBUGGER,
 ] as const
 
 /** Memory scope for persistent agent memory. */
