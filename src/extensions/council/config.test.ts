@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest"
-import { readCouncilConfig } from "./config.js"
-import { DEFAULT_COUNCIL_CONFIG } from "./runtime.js"
+import { applyCouncilPreset, readCouncilConfig } from "./config.js"
+import { type CouncilConfig, DEFAULT_COUNCIL_CONFIG } from "./runtime.js"
 
 describe("readCouncilConfig", () => {
 	it("uses the Council runtime defaults when no overrides are set", () => {
 		expect(readCouncilConfig({})).toEqual(DEFAULT_COUNCIL_CONFIG)
 		expect(DEFAULT_COUNCIL_CONFIG.internalMaxTokens).toBe(8_192)
+		expect(DEFAULT_COUNCIL_CONFIG.maxCalls).toBe(7)
 		expect(DEFAULT_COUNCIL_CONFIG.judgeModel).toBe("kimchi-dev/deepseek-v4-flash")
 	})
 
@@ -75,5 +76,90 @@ describe("readCouncilConfig", () => {
 		})
 
 		expect(config).toEqual(DEFAULT_COUNCIL_CONFIG)
+	})
+})
+
+describe("applyCouncilPreset", () => {
+	it("applies the fast, normal, and deep call budgets", () => {
+		expect(applyCouncilPreset(DEFAULT_COUNCIL_CONFIG, "fast")).toEqual({
+			...DEFAULT_COUNCIL_CONFIG,
+			reviewerModels: [DEFAULT_COUNCIL_CONFIG.reviewerModels[1]],
+			reviewerRoles: ["critic"],
+			maxParallelReviewers: 1,
+			overallTimeoutMs: 240_000,
+			stageTimeoutMs: 60_000,
+			leadMaxTokens: 8_192,
+			internalMaxTokens: 2_048,
+			maxEvidenceBytes: 32_768,
+			maxStructuredBytes: 8_192,
+			maxCalls: 4,
+			useJudge: false,
+			revisionPolicy: "on-issues",
+		})
+		expect(applyCouncilPreset(DEFAULT_COUNCIL_CONFIG, "normal")).toEqual({
+			...DEFAULT_COUNCIL_CONFIG,
+			reviewerModels: DEFAULT_COUNCIL_CONFIG.reviewerModels.slice(1, 3),
+			reviewerRoles: ["critic", "checker"],
+			maxParallelReviewers: 2,
+			overallTimeoutMs: 720_000,
+			stageTimeoutMs: 180_000,
+			leadMaxTokens: 16_384,
+			internalMaxTokens: 4_096,
+			maxEvidenceBytes: 65_536,
+			maxStructuredBytes: 16_384,
+			maxCalls: 6,
+			useJudge: true,
+			revisionPolicy: "on-issues",
+		})
+		expect(applyCouncilPreset(DEFAULT_COUNCIL_CONFIG, "deep")).toEqual({
+			...DEFAULT_COUNCIL_CONFIG,
+			maxCalls: 7,
+			useJudge: true,
+			revisionPolicy: "always",
+		})
+	})
+
+	it("keeps lower base limits below preset caps", () => {
+		const lower = {
+			...DEFAULT_COUNCIL_CONFIG,
+			maxParallelReviewers: 1,
+			overallTimeoutMs: 120_000,
+			stageTimeoutMs: 30_000,
+			leadMaxTokens: 4_096,
+			internalMaxTokens: 1_024,
+			maxEvidenceBytes: 16_384,
+			maxStructuredBytes: 4_096,
+			maxCalls: 3,
+		}
+
+		for (const preset of ["fast", "normal", "deep"] as const) {
+			expect(applyCouncilPreset(lower, preset)).toMatchObject({
+				maxParallelReviewers: 1,
+				overallTimeoutMs: 120_000,
+				stageTimeoutMs: 30_000,
+				leadMaxTokens: 4_096,
+				internalMaxTokens: 1_024,
+				maxEvidenceBytes: 16_384,
+				maxStructuredBytes: 4_096,
+				maxCalls: 3,
+			})
+		}
+	})
+
+	it("preserves preset roles with a two-model override", () => {
+		const twoModels = {
+			...DEFAULT_COUNCIL_CONFIG,
+			reviewerModels: ["kimchi-dev/independent", "kimchi-dev/critic"],
+			reviewerRoles: ["independent", "critic"] as CouncilConfig["reviewerRoles"],
+		}
+
+		expect(applyCouncilPreset(twoModels, "normal")).toMatchObject({
+			reviewerModels: ["kimchi-dev/critic", "kimchi-dev/independent"],
+			reviewerRoles: ["critic", "checker"],
+		})
+		expect(applyCouncilPreset(twoModels, "deep")).toMatchObject({
+			reviewerModels: ["kimchi-dev/independent", "kimchi-dev/critic", "kimchi-dev/independent"],
+			reviewerRoles: ["independent", "critic", "checker"],
+		})
 	})
 })

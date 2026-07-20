@@ -31,7 +31,14 @@ const councilModel = {
 	input: ["text"] as const,
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 	contextWindow: 262_144,
-	maxTokens: 32_768,
+	maxTokens: 16_384,
+} satisfies Model<Api>
+
+const fastCouncilModel = {
+	...councilModel,
+	id: "council-fast",
+	name: "Kimchi Council Fast",
+	maxTokens: 8_192,
 } satisfies Model<Api>
 
 describe("councilExtension", () => {
@@ -39,7 +46,7 @@ describe("councilExtension", () => {
 		vi.unstubAllEnvs()
 	})
 
-	it("registers kimchi/council as an inert virtual provider", () => {
+	it("registers fast, normal, and deep Council models as one inert virtual provider", () => {
 		const { config } = register()
 
 		expect(config).toMatchObject({
@@ -49,7 +56,9 @@ describe("councilExtension", () => {
 			authHeader: false,
 		})
 		expect(config.models).toEqual([
-			expect.objectContaining({ id: "council", name: "Kimchi Council", reasoning: false }),
+			expect.objectContaining({ id: "council-fast", reasoning: false, maxTokens: 8_192 }),
+			expect.objectContaining({ id: "council", reasoning: false, maxTokens: 16_384 }),
+			expect.objectContaining({ id: "council-deep", reasoning: false, maxTokens: 32_768 }),
 		])
 		expect(config.streamSimple).toBeTypeOf("function")
 	})
@@ -63,7 +72,7 @@ describe("councilExtension", () => {
 		expect(registerProvider).not.toHaveBeenCalled()
 	})
 
-	it("uses the model registry from session_start for physical resolution", async () => {
+	it("uses the session registry and records the selected virtual model", async () => {
 		const { appendEntry, config, on } = register()
 		const find = vi.fn()
 		const registry = { find, getApiKeyAndHeaders: vi.fn() } as unknown as ModelRegistry
@@ -71,14 +80,14 @@ describe("councilExtension", () => {
 		const sessionShutdown = on.mock.calls.find(([event]) => event === "session_shutdown")?.[1]
 		sessionStart({}, { modelRegistry: registry, sessionManager: { getSessionId: () => "session-a" } })
 
-		const result = await config.streamSimple?.(councilModel, { messages: [] }, { sessionId: "session-a" }).result()
+		const result = await config.streamSimple?.(fastCouncilModel, { messages: [] }, { sessionId: "session-a" }).result()
 		sessionShutdown()
 
 		expect(find).toHaveBeenCalledWith("kimchi-dev", "kimi-k2.7")
 		expect(result?.errorMessage).toBe("Council could not produce a complete lead response")
 		expect(appendEntry).toHaveBeenCalledWith(
 			"council_run",
-			expect.objectContaining({ outcome: "error", virtualModel: "kimchi/council" }),
+			expect.objectContaining({ outcome: "error", virtualModel: "kimchi/council-fast" }),
 		)
 	})
 

@@ -52,7 +52,9 @@ function response(model: Model<Api>, text: string): AssistantMessage {
 	}
 }
 
-const models = new Map(["kimi-k2.7", "glm-5.2-fp8", "deepseek-v4-flash"].map((id) => [id, physicalModel(id)]))
+const models = new Map(
+	["kimi-k2.7", "glm-5.2-fp8", "deepseek-v4-flash", "minimax-m3"].map((id) => [id, physicalModel(id)]),
+)
 
 const modelRegistry = {
 	find: vi.fn((provider: string, id: string) => (provider === "kimchi-dev" ? models.get(id) : undefined)),
@@ -84,6 +86,7 @@ describe("Council runtime", () => {
 	})
 
 	it("drafts, reviews, judges, and revises a final text response", async () => {
+		let revisionPacket = ""
 		const completeModel = vi.fn(
 			async (model: Model<Api>, context: Context, _options?: SimpleStreamOptions): Promise<AssistantMessage> => {
 				const system = context.systemPrompt ?? ""
@@ -106,18 +109,21 @@ describe("Council runtime", () => {
 					return response(
 						model,
 						JSON.stringify({
-							decision: "revise",
+							decision: "accept",
 							consensus: ["Tighten the answer"],
 							critical_findings: [],
 							disagreements: [],
 							unsupported_claims: [],
 							required_checks: [],
-							revision_instructions: ["Be precise"],
+							revision_instructions: [],
 							agreement: "high",
 						}),
 					)
 				}
-				if (lastText.includes("<council_review_data>")) return response(model, "Revised answer")
+				if (lastText.includes("<council_review_data>")) {
+					revisionPacket = lastText
+					return response(model, "Revised answer")
+				}
 				return response(model, "Lead draft")
 			},
 		)
@@ -143,14 +149,232 @@ describe("Council runtime", () => {
 			"kimchi-dev/kimi-k2.7",
 			"kimchi-dev/glm-5.2-fp8",
 			"kimchi-dev/deepseek-v4-flash",
-			"kimchi-dev/kimi-k2.7",
+			"kimchi-dev/minimax-m3",
 			"kimchi-dev/deepseek-v4-flash",
 			"kimchi-dev/kimi-k2.7",
 		])
-		const revisionContext = completeModel.mock.calls.at(-1)?.[1]
+		const revisionContext = completeModel.mock.calls.find(([, context]) =>
+			context.systemPrompt?.includes("Revise the preceding draft"),
+		)?.[1]
 		expect(revisionContext?.systemPrompt).toContain("Return only the final user-facing answer")
+		expect(revisionContext?.systemPrompt).toContain("Disposition every material review item")
+		expect(revisionContext?.systemPrompt).toContain("Never invent missing facts")
+		expect(revisionContext?.systemPrompt).toContain("logical key only namespaces entries")
+		expect(revisionContext?.systemPrompt).toContain("never claim an unperformed check passed")
+		expect(revisionPacket).toContain('"reviews":')
+		expect(revisionPacket).toContain('"judge":')
+		expect(revisionPacket).toContain('"recommended_changes":["Be precise"]')
+		const judgeContext = completeModel.mock.calls.find(([, context]) =>
+			context.systemPrompt?.includes("Council judge"),
+		)?.[1]
+		expect(judgeContext?.systemPrompt).toContain("Do not omit a material reviewer concern")
+		const reviewerPrompts = completeModel.mock.calls
+			.map(([, context]) => context.systemPrompt ?? "")
+			.filter((prompt) => prompt.includes("Council reviewer"))
+		expect(reviewerPrompts.some((prompt) => prompt.includes("concrete adverse state transition"))).toBe(true)
+		expect(reviewerPrompts.some((prompt) => prompt.includes("superseded owner or generation"))).toBe(true)
+		expect(reviewerPrompts.some((prompt) => prompt.includes("implemented end to end"))).toBe(true)
+		expect(reviewerPrompts.some((prompt) => prompt.includes("exact current registration"))).toBe(true)
+		expect(reviewerPrompts.some((prompt) => prompt.includes("matching logical key alone"))).toBe(true)
 		expect(revisionContext?.tools).toBeUndefined()
 		expect(emitted.map((event) => event.type)).toEqual(["start", "text_start", "text_delta", "text_end", "done"])
+	})
+
+	it("accepts without a judge or revision when the reviewer finds no issues", async () => {
+		let runRecord: CouncilRunRecord | undefined
+		const completeModel = vi.fn(async (model: Model<Api>, context: Context): Promise<AssistantMessage> => {
+			if (context.systemPrompt?.includes("Council reviewer")) {
+				return response(
+					model,
+					JSON.stringify({
+						decision: "accept",
+						findings: [],
+						recommended_changes: [],
+						missing_evidence: [],
+					}),
+				)
+			}
+			return response(model, "Lead draft")
+		})
+		const stream = createCouncilStream({
+			config: {
+				...DEFAULT_COUNCIL_CONFIG,
+				reviewerModels: ["kimchi-dev/deepseek-v4-flash"],
+				useJudge: false,
+				revisionPolicy: "on-issues",
+			},
+			getModelRegistry: () => modelRegistry,
+			completeModel,
+			recordRun: (record) => {
+				runRecord = record
+			},
+		})(councilModel, {
+			messages: [{ role: "user", content: "Answer this", timestamp: 1 }],
+		})
+
+		const result = await stream.result()
+
+		expect(result.content).toEqual([{ type: "text", text: "Lead draft" }])
+		expect(completeModel).toHaveBeenCalledTimes(2)
+		expect(runRecord?.stages.some(({ stage }) => stage === "judge" || stage === "revision")).toBe(false)
+		expect(runRecord?.outcome).toBe("accepted")
+	})
+
+	it("revises from reviewer feedback without a judge when issues are found", async () => {
+		let revisionPacket = ""
+		const completeModel = vi.fn(async (model: Model<Api>, context: Context): Promise<AssistantMessage> => {
+			const lastMessage = context.messages.at(-1)
+			const lastText =
+				lastMessage?.role === "user" && typeof lastMessage.content === "string" ? lastMessage.content : ""
+			if (context.systemPrompt?.includes("Council reviewer")) {
+				return response(
+					model,
+					JSON.stringify({
+						decision: "accept",
+						findings: [
+							{
+								severity: "high",
+								statement: "Wrong",
+								evidence_refs: [],
+								assumptions: ["The required interface exists"],
+								suggested_check: "Use the counterexample",
+							},
+						],
+						recommended_changes: ["Fix it"],
+						missing_evidence: ["Interface contract"],
+					}),
+				)
+			}
+			if (lastText.includes("<council_review_data>")) {
+				revisionPacket = lastText
+				return response(model, "Revised answer")
+			}
+			return response(model, "Lead draft")
+		})
+		const stream = createCouncilStream({
+			config: {
+				...DEFAULT_COUNCIL_CONFIG,
+				reviewerModels: ["kimchi-dev/deepseek-v4-flash"],
+				useJudge: false,
+				revisionPolicy: "on-issues",
+			},
+			getModelRegistry: () => modelRegistry,
+			completeModel,
+		})(councilModel, {
+			messages: [{ role: "user", content: "Answer this", timestamp: 1 }],
+		})
+
+		const result = await stream.result()
+
+		expect(result.content).toEqual([{ type: "text", text: "Revised answer" }])
+		expect(completeModel).toHaveBeenCalledTimes(3)
+		expect(completeModel.mock.calls.some(([, context]) => context.systemPrompt?.includes("Council judge"))).toBe(false)
+		expect(revisionPacket).toContain('"reviews":')
+		expect(revisionPacket).toContain('"assumptions":["The required interface exists"]')
+		expect(revisionPacket).toContain('"missing_evidence":["Interface contract"]')
+	})
+
+	it("accepts a clean judge verdict without revision in on-issues mode", async () => {
+		let runRecord: CouncilRunRecord | undefined
+		const completeModel = vi.fn(async (model: Model<Api>, context: Context): Promise<AssistantMessage> => {
+			const system = context.systemPrompt ?? ""
+			if (system.includes("Council reviewer")) {
+				return response(
+					model,
+					JSON.stringify({
+						decision: "accept",
+						findings: [],
+						recommended_changes: [],
+						missing_evidence: [],
+					}),
+				)
+			}
+			if (system.includes("Council judge")) {
+				return response(
+					model,
+					JSON.stringify({
+						decision: "accept",
+						consensus: [],
+						critical_findings: [],
+						disagreements: [],
+						unsupported_claims: [],
+						required_checks: [],
+						revision_instructions: [],
+						agreement: "high",
+					}),
+				)
+			}
+			return response(model, "Lead draft")
+		})
+		const stream = createCouncilStream({
+			config: {
+				...DEFAULT_COUNCIL_CONFIG,
+				reviewerModels: ["kimchi-dev/deepseek-v4-flash", "kimchi-dev/kimi-k2.7"],
+				useJudge: true,
+				revisionPolicy: "on-issues",
+			},
+			getModelRegistry: () => modelRegistry,
+			completeModel,
+			recordRun: (record) => {
+				runRecord = record
+			},
+		})(councilModel, {
+			messages: [{ role: "user", content: "Answer this", timestamp: 1 }],
+		})
+
+		const result = await stream.result()
+
+		expect(result.content).toEqual([{ type: "text", text: "Lead draft" }])
+		expect(completeModel).toHaveBeenCalledTimes(4)
+		expect(runRecord?.stages.some(({ stage }) => stage === "revision")).toBe(false)
+		expect(runRecord?.outcome).toBe("accepted")
+	})
+
+	it("revises an accept verdict that still contains revision instructions", async () => {
+		const completeModel = vi.fn(async (model: Model<Api>, context: Context): Promise<AssistantMessage> => {
+			const system = context.systemPrompt ?? ""
+			const lastMessage = context.messages.at(-1)
+			const lastText =
+				lastMessage?.role === "user" && typeof lastMessage.content === "string" ? lastMessage.content : ""
+			if (system.includes("Council reviewer")) {
+				return response(
+					model,
+					JSON.stringify({ decision: "accept", findings: [], recommended_changes: [], missing_evidence: [] }),
+				)
+			}
+			if (system.includes("Council judge")) {
+				return response(
+					model,
+					JSON.stringify({
+						decision: "accept",
+						consensus: [],
+						critical_findings: [],
+						disagreements: [],
+						unsupported_claims: [],
+						required_checks: [],
+						revision_instructions: ["Fix the remaining issue"],
+						agreement: "high",
+					}),
+				)
+			}
+			if (lastText.includes("<council_review_data>")) return response(model, "Revised answer")
+			return response(model, "Lead draft")
+		})
+		const stream = createCouncilStream({
+			config: {
+				...DEFAULT_COUNCIL_CONFIG,
+				reviewerModels: ["kimchi-dev/deepseek-v4-flash", "kimchi-dev/kimi-k2.7"],
+				useJudge: true,
+				revisionPolicy: "on-issues",
+			},
+			getModelRegistry: () => modelRegistry,
+			completeModel,
+		})(councilModel, { messages: [{ role: "user", content: "Answer this", timestamp: 1 }] })
+
+		const result = await stream.result()
+
+		expect(result.content).toEqual([{ type: "text", text: "Revised answer" }])
+		expect(completeModel).toHaveBeenCalledTimes(5)
 	})
 
 	it("continues when one reviewer fails", async () => {
@@ -205,9 +429,13 @@ describe("Council runtime", () => {
 		expect(completeModel).toHaveBeenCalledTimes(6)
 	})
 
-	it("returns the lead draft when the judge fails", async () => {
+	it("revises from validated reviews when judge invocation fails", async () => {
+		let runRecord: CouncilRunRecord | undefined
 		const completeModel = vi.fn(async (model: Model<Api>, context: Context): Promise<AssistantMessage> => {
 			const system = context.systemPrompt ?? ""
+			const lastMessage = context.messages.at(-1)
+			const lastText =
+				lastMessage?.role === "user" && typeof lastMessage.content === "string" ? lastMessage.content : ""
 			if (system.includes("Council reviewer")) {
 				return response(
 					model,
@@ -220,12 +448,21 @@ describe("Council runtime", () => {
 				)
 			}
 			if (system.includes("Council judge")) throw new Error("judge unavailable")
+			if (lastText.includes("<council_review_data>")) return response(model, "Revised without judge")
 			return response(model, "Lead draft survives")
 		})
 		const stream = createCouncilStream({
-			config: DEFAULT_COUNCIL_CONFIG,
+			config: {
+				...DEFAULT_COUNCIL_CONFIG,
+				reviewerModels: ["kimchi-dev/glm-5.2-fp8"],
+				useJudge: true,
+				revisionPolicy: "on-issues",
+			},
 			getModelRegistry: () => modelRegistry,
 			completeModel,
+			recordRun: (record) => {
+				runRecord = record
+			},
 		})(councilModel, {
 			messages: [{ role: "user", content: "Answer this", timestamp: 1 }],
 		})
@@ -233,8 +470,10 @@ describe("Council runtime", () => {
 		const result = await stream.result()
 
 		expect(result.stopReason).toBe("stop")
-		expect(result.content).toEqual([{ type: "text", text: "Lead draft survives" }])
-		expect(completeModel).toHaveBeenCalledTimes(5)
+		expect(result.content).toEqual([{ type: "text", text: "Revised without judge" }])
+		expect(completeModel).toHaveBeenCalledTimes(4)
+		expect(runRecord?.stages.some(({ stage }) => stage === "revision")).toBe(true)
+		expect(runRecord?.outcome).toBe("revised")
 	})
 
 	it("cancels a hung reviewer at the stage timeout and continues", async () => {
@@ -511,6 +750,50 @@ describe("Council runtime", () => {
 		expect(result.stopReason).toBe("stop")
 	})
 
+	it("falls back to the lead draft when the revision emits serialized tool-call markup", async () => {
+		const completeModel = vi.fn(async (model: Model<Api>, context: Context): Promise<AssistantMessage> => {
+			const system = context.systemPrompt ?? ""
+			const lastMessage = context.messages.at(-1)
+			const lastText =
+				lastMessage?.role === "user" && typeof lastMessage.content === "string" ? lastMessage.content : ""
+			if (system.includes("Council reviewer")) {
+				return response(
+					model,
+					JSON.stringify({ decision: "accept", findings: [], recommended_changes: [], missing_evidence: [] }),
+				)
+			}
+			if (system.includes("Council judge")) {
+				return response(
+					model,
+					JSON.stringify({
+						decision: "revise",
+						consensus: [],
+						critical_findings: [],
+						disagreements: [],
+						unsupported_claims: [],
+						required_checks: [],
+						revision_instructions: ["Finish the answer"],
+						agreement: "high",
+					}),
+				)
+			}
+			if (lastText.includes("<council_review_data>")) {
+				return response(model, "I'll inspect it. <|tool_calls_section_begin|><|tool_call_begin|>functions.grep")
+			}
+			return response(model, "Complete lead draft")
+		})
+		const stream = createCouncilStream({
+			config: { ...DEFAULT_COUNCIL_CONFIG, reviewerModels: ["kimchi-dev/glm-5.2-fp8"] },
+			getModelRegistry: () => modelRegistry,
+			completeModel,
+		})(councilModel, { messages: [{ role: "user", content: "Answer", timestamp: 1 }] })
+
+		const result = await stream.result()
+
+		expect(result.content).toEqual([{ type: "text", text: "Complete lead draft" }])
+		expect(completeModel).toHaveBeenCalledTimes(4)
+	})
+
 	it("records one failed stage with returned usage", async () => {
 		let runRecord: CouncilRunRecord | undefined
 		const completeModel = vi.fn(async (model: Model<Api>) => ({
@@ -540,6 +823,7 @@ describe("Council runtime", () => {
 	})
 
 	it("repairs a judge result with unknown nested fields", async () => {
+		let repairTimeoutMs: number | undefined
 		const validJudge = JSON.stringify({
 			decision: "revise",
 			consensus: [],
@@ -550,37 +834,45 @@ describe("Council runtime", () => {
 			revision_instructions: ["Be precise"],
 			agreement: "high",
 		})
-		const completeModel = vi.fn(async (model: Model<Api>, context: Context): Promise<AssistantMessage> => {
-			const system = context.systemPrompt ?? ""
-			const lastMessage = context.messages.at(-1)
-			const lastText =
-				lastMessage?.role === "user" && typeof lastMessage.content === "string" ? lastMessage.content : ""
-			if (system.includes("Council reviewer")) {
-				return response(
-					model,
-					JSON.stringify({
-						decision: "accept",
-						findings: [],
-						recommended_changes: [],
-						missing_evidence: [],
-					}),
-				)
-			}
-			if (system.includes("Repair the supplied object")) return response(model, validJudge)
-			if (system.includes("Council judge")) {
-				return response(
-					model,
-					JSON.stringify({
-						...JSON.parse(validJudge),
-						disagreements: [{ topic: "claim", impact: "high", resolved: true, resolution: "remove", injected: "bad" }],
-					}),
-				)
-			}
-			if (lastText.includes("<council_review_data>")) return response(model, "Repaired final")
-			return response(model, "Lead")
-		})
+		const completeModel = vi.fn(
+			async (model: Model<Api>, context: Context, options?: SimpleStreamOptions): Promise<AssistantMessage> => {
+				const system = context.systemPrompt ?? ""
+				const lastMessage = context.messages.at(-1)
+				const lastText =
+					lastMessage?.role === "user" && typeof lastMessage.content === "string" ? lastMessage.content : ""
+				if (system.includes("Council reviewer")) {
+					return response(
+						model,
+						JSON.stringify({
+							decision: "accept",
+							findings: [],
+							recommended_changes: [],
+							missing_evidence: [],
+						}),
+					)
+				}
+				if (system.includes("Repair the supplied object")) {
+					repairTimeoutMs = options?.timeoutMs
+					return response(model, validJudge)
+				}
+				if (system.includes("Council judge")) {
+					await new Promise((resolve) => setTimeout(resolve, 20))
+					return response(
+						model,
+						JSON.stringify({
+							...JSON.parse(validJudge),
+							disagreements: [
+								{ topic: "claim", impact: "high", resolved: true, resolution: "remove", injected: "bad" },
+							],
+						}),
+					)
+				}
+				if (lastText.includes("<council_review_data>")) return response(model, "Repaired final")
+				return response(model, "Lead")
+			},
+		)
 		const stream = createCouncilStream({
-			config: DEFAULT_COUNCIL_CONFIG,
+			config: { ...DEFAULT_COUNCIL_CONFIG, stageTimeoutMs: 100 },
 			getModelRegistry: () => modelRegistry,
 			completeModel,
 		})(councilModel, { messages: [{ role: "user", content: "Answer", timestamp: 1 }] })
@@ -591,6 +883,7 @@ describe("Council runtime", () => {
 		)
 
 		expect(repairCalls).toHaveLength(1)
+		expect(repairTimeoutMs).toBeLessThan(100)
 		expect(result.content).toEqual([{ type: "text", text: "Repaired final" }])
 	})
 
@@ -656,14 +949,23 @@ describe("Council runtime", () => {
 		expect(childOptions).not.toHaveProperty("thinkingBudgets")
 	})
 
-	it("returns the lead draft when every reviewer fails", async () => {
+	it("returns the lead draft when every reviewer output is unusable", async () => {
 		let runRecord: CouncilRunRecord | undefined
 		const completeModel = vi.fn(async (model: Model<Api>, context: Context): Promise<AssistantMessage> => {
-			if (context.systemPrompt?.includes("Council reviewer")) throw new Error("reviewer failed")
+			const system = context.systemPrompt ?? ""
+			if (system.includes("Repair the supplied object")) return response(model, "still not structured")
+			if (system.includes("Council reviewer")) return response(model, "not structured")
+			if (system.includes("Council judge")) throw new Error("judge should not run without valid reviews")
+			if (system.includes("Revise the preceding draft")) return response(model, "Unexpected revision")
 			return response(model, "Lead fallback")
 		})
 		const stream = createCouncilStream({
-			config: DEFAULT_COUNCIL_CONFIG,
+			config: {
+				...DEFAULT_COUNCIL_CONFIG,
+				reviewerModels: ["kimchi-dev/glm-5.2-fp8"],
+				useJudge: true,
+				revisionPolicy: "on-issues",
+			},
 			getModelRegistry: () => modelRegistry,
 			completeModel,
 			recordRun: (record) => {
@@ -674,7 +976,8 @@ describe("Council runtime", () => {
 		const result = await stream.result()
 
 		expect(result.content).toEqual([{ type: "text", text: "Lead fallback" }])
-		expect(completeModel).toHaveBeenCalledTimes(4)
+		expect(completeModel).toHaveBeenCalledTimes(3)
+		expect(runRecord?.stages.some(({ stage }) => stage === "judge" || stage === "revision")).toBe(false)
 		expect(runRecord?.outcome).toBe("fallback")
 	})
 
@@ -842,7 +1145,7 @@ describe("Council runtime", () => {
 		expect(completeModel).toHaveBeenCalledTimes(1)
 	})
 
-	it("uses one repair call for malformed reviewer JSON without exposing raw output", async () => {
+	it("uses one repair call for malformed reviewer JSON and still revises when the judge is malformed", async () => {
 		const rawInternal = "RAW_INTERNAL_SECRET_123"
 		let runRecord: CouncilRunRecord | undefined
 		const completeModel = vi.fn(async (model: Model<Api>, context: Context): Promise<AssistantMessage> => {
@@ -862,21 +1165,7 @@ describe("Council runtime", () => {
 				)
 			}
 			if (system.includes("Council reviewer")) return response(model, `{broken:${rawInternal}}`)
-			if (system.includes("Council judge")) {
-				return response(
-					model,
-					JSON.stringify({
-						decision: "revise",
-						consensus: [],
-						critical_findings: [],
-						disagreements: [],
-						unsupported_claims: [],
-						required_checks: [],
-						revision_instructions: ["Fix it"],
-						agreement: "high",
-					}),
-				)
-			}
+			if (system.includes("Council judge")) return response(model, "{still malformed")
 			if (lastText.includes("<council_review_data>")) return response(model, "Safe final")
 			return response(model, "Lead")
 		})
@@ -1036,7 +1325,6 @@ describe("Council runtime", () => {
 		const stream = createCouncilStream({
 			config: {
 				...DEFAULT_COUNCIL_CONFIG,
-				reviewerModels: ["kimchi-dev/glm-5.2-fp8"],
 				maxParallelReviewers: 1,
 			},
 			getModelRegistry: () => modelRegistry,
@@ -1051,7 +1339,7 @@ describe("Council runtime", () => {
 
 		await stream.result()
 		const reviewerCall = completeModel.mock.calls.find(([, callContext]) =>
-			callContext.systemPrompt?.includes("Council reviewer"),
+			callContext.systemPrompt?.includes("Produce an independent solution"),
 		)
 		const reviewerMessage = reviewerCall?.[1].messages[0]
 		const packetText =

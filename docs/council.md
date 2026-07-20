@@ -1,6 +1,6 @@
 # Kimchi Council
 
-`kimchi/council` is a normal Kimchi model backed by a bounded, in-process Council workflow. It is a hackathon implementation: no proxy changes or deployment are required.
+Kimchi Council exposes bounded fast, normal, and deep models backed by one in-process workflow. It is a hackathon implementation: no proxy changes or deployment are required.
 
 ## Architecture and ownership
 
@@ -11,24 +11,34 @@ Kimchi CLI / TUI / print / ACP
 Pi custom provider: kimchi/council
           |
           v
-lead -> reviewers (parallel) -> judge -> one revision
-  |              |                |           |
-  +--------------+----------------+-----------+
+lead -> reviewers (parallel) -> optional judge -> optional revision
+  |              |                         |                   |
+  +--------------+-------------------------+-------------------+
                  physical models from ModelRegistry
 ```
 
 Kimchi owns Council orchestration, limits, task-packet construction, structured review parsing, fallback behavior, usage aggregation, and the public response. Pi's `ModelRegistry` owns physical model lookup and credentials. The existing provider implementations still own physical requests. This follows Pi's [custom-provider extension](https://pi.dev/docs/latest/custom-provider) mechanism instead of adding another transport.
 
-Internal reviewer and judge responses are not replayed or persisted. The public message is attributed to `kimchi/council`.
+Internal reviewer and judge responses are not replayed or persisted. The public message is attributed to the selected Council model.
+
+## Presets
+
+Preset choice is explicit; Council does not guess task complexity. Use fast for small or time-sensitive work, normal for routine engineering, and deep for complex or high-risk work.
+
+| Model | Review path | Revision | Calls including one repair | Lead/internal tokens | Evidence/result | Stage/overall timeout |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| `kimchi/council-fast` | critic only; no judge | on critic issues | 4 | 8,192 / 2,048 | 32 / 8 KiB | 60 / 240 seconds |
+| `kimchi/council` | critic + checker; judge | on reviewer or judge issues | 6 | 16,384 / 4,096 | 64 / 16 KiB | 180 / 720 seconds |
+| `kimchi/council-deep` | critic + checker + independent; judge | always | 7 | 32,768 / 8,192 | 128 / 32 KiB | 300 / 1,200 seconds |
 
 ## Configuration
 
-Built-in defaults:
+Deep ceilings and physical model defaults:
 
 | Setting | Default |
 | --- | --- |
 | Lead | `kimchi-dev/kimi-k2.7` |
-| Reviewers | `kimchi-dev/glm-5.2-fp8`, `kimchi-dev/deepseek-v4-flash`, `kimchi-dev/kimi-k2.7` |
+| Reviewers | critic: `kimchi-dev/deepseek-v4-flash`; checker: `kimchi-dev/minimax-m3`; independent: `kimchi-dev/glm-5.2-fp8` |
 | Judge | `kimchi-dev/deepseek-v4-flash` |
 | Stage timeout | 300 seconds |
 | Overall timeout | 1,200 seconds |
@@ -45,8 +55,8 @@ Environment overrides:
 | --- | --- |
 | `KIMCHI_COUNCIL_ENABLED` | `true` or `false`; defaults to enabled. |
 | `KIMCHI_COUNCIL_LEAD_MODEL` | Physical `provider/model` used for lead and revision. |
-| `KIMCHI_COUNCIL_REVIEWER_MODELS` | Comma-separated physical reviewer references; two or three are required and the first three are used. |
-| `KIMCHI_COUNCIL_JUDGE_MODEL` | Physical judge model reference. |
+| `KIMCHI_COUNCIL_REVIEWER_MODELS` | Comma-separated independent, critic, then checker model references; two or three are required and the first three are used. With two models, Council reuses one under the missing role prompt so every preset keeps its documented review roles. |
+| `KIMCHI_COUNCIL_JUDGE_MODEL` | Physical model used for the judge. |
 | `KIMCHI_COUNCIL_TIMEOUT_MS` | Whole-run timeout in milliseconds; default and hard maximum `1200000`. |
 | `KIMCHI_COUNCIL_STAGE_TIMEOUT_MS` | Per-stage timeout in milliseconds; default and hard maximum `300000`. |
 | `KIMCHI_COUNCIL_MAX_PARALLEL_REVIEWERS` | Maximum concurrent reviewers; default `3`. |
@@ -56,7 +66,7 @@ Environment overrides:
 | `KIMCHI_COUNCIL_MAX_STRUCTURED_BYTES` | Per-review or judge JSON limit; default and hard maximum `32768`. |
 | `KIMCHI_COUNCIL_MAX_CALLS` | Whole-run physical call cap; default `7`. |
 
-Numeric values must be positive integers; invalid values fall back to the defaults. Physical references must resolve through the normal model registry and may not point back to `kimchi/council`.
+Numeric values must be positive integers; invalid values fall back to the defaults. Environment values form the deep ceiling; fast and normal apply their lower preset caps after overrides. Physical references must resolve through the normal model registry and may not point back to a Council virtual model.
 
 ## Use
 
@@ -64,11 +74,13 @@ Select Council anywhere a regular model reference is accepted:
 
 ```bash
 export KIMCHI_COUNCIL_ENABLED=true
+kimchi --model kimchi/council-fast
 kimchi --model kimchi/council
+kimchi --model kimchi/council-deep
 kimchi --print --model kimchi/council "Review this repository and fix the failing test"
 ```
 
-Other models remain registered and selectable. Council is not a second multi-model mode: existing `multi-model` behavior is unchanged, and choosing `kimchi/council` only changes the selected model for that run.
+Other models remain registered and selectable. Council is not a second multi-model mode: existing `multi-model` behavior is unchanged, and choosing a Council preset only changes the selected model for that run.
 
 Run the focused test:
 
@@ -78,12 +90,15 @@ pnpm exec vitest run src/extensions/council
 
 ## Terminal Bench comparison
 
-From the repository root, run the same task and attempt count for Council and its lead baseline:
+From the repository root, run the same task and attempt count for each preset and its lead baseline:
 
 ```bash
 cd benchmark/terminal-bench-2
+MODEL='kimchi/council-fast' ./scripts/run-local.sh -i terminal-bench/fix-git -n 1 -k 1
 MODEL='kimchi/council' ./scripts/run-local.sh -i terminal-bench/fix-git -n 1 -k 1
+MODEL='kimchi/council-deep' ./scripts/run-local.sh -i terminal-bench/fix-git -n 1 -k 1
 MODEL='kimchi-dev/kimi-k2.7' ./scripts/run-local.sh -i terminal-bench/fix-git -n 1 -k 1
+MODEL='kimchi-dev/glm-5.2-fp8' ./scripts/run-local.sh -i terminal-bench/fix-git -n 1 -k 1
 ```
 
 The built-in Council defaults need no extra environment forwarding. `run-local.sh` forwards `KIMCHI_API_KEY`; non-default `KIMCHI_COUNCIL_*` values must be forwarded explicitly to Harbor, for example:
@@ -99,7 +114,7 @@ MODEL='kimchi/council' ./scripts/run-local.sh \
 
 - Responses are buffered until Council completes; the TUI gets no per-stage progress.
 - Coordination and limits are process-local.
-- Each request is one bounded round: lead, up to three reviewers, judge, then at most one revision.
+- Each request is one bounded round. Fast omits the judge; normal may omit revision; deep runs the full lead, three-reviewer, judge, and revision path.
 - Council advertises text input, matching the proxy prototype. Reviewers receive a bounded text evidence packet; the lead still sees the original tools and conversation.
 - Raw reviewer, judge, and chain-of-thought content is not persisted or returned.
 - The virtual model advertises zero USD rates; it is not a pricing contract for the physical calls.

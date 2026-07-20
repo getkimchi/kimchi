@@ -1,5 +1,46 @@
 import { type CouncilConfig, DEFAULT_COUNCIL_CONFIG } from "./runtime.js"
 
+export type CouncilPreset = "fast" | "normal" | "deep"
+
+const PRESET_LIMITS = {
+	fast: {
+		reviewerRoles: ["critic"],
+		overallTimeoutMs: 240_000,
+		stageTimeoutMs: 60_000,
+		leadMaxTokens: 8_192,
+		internalMaxTokens: 2_048,
+		maxEvidenceBytes: 32_768,
+		maxStructuredBytes: 8_192,
+		maxCalls: 4,
+		useJudge: false,
+		revisionPolicy: "on-issues",
+	},
+	normal: {
+		reviewerRoles: ["critic", "checker"],
+		overallTimeoutMs: 720_000,
+		stageTimeoutMs: 180_000,
+		leadMaxTokens: 16_384,
+		internalMaxTokens: 4_096,
+		maxEvidenceBytes: 65_536,
+		maxStructuredBytes: 16_384,
+		maxCalls: 6,
+		useJudge: true,
+		revisionPolicy: "on-issues",
+	},
+	deep: {
+		reviewerRoles: ["independent", "critic", "checker"],
+		overallTimeoutMs: DEFAULT_COUNCIL_CONFIG.overallTimeoutMs,
+		stageTimeoutMs: DEFAULT_COUNCIL_CONFIG.stageTimeoutMs,
+		leadMaxTokens: DEFAULT_COUNCIL_CONFIG.leadMaxTokens,
+		internalMaxTokens: DEFAULT_COUNCIL_CONFIG.internalMaxTokens,
+		maxEvidenceBytes: DEFAULT_COUNCIL_CONFIG.maxEvidenceBytes,
+		maxStructuredBytes: DEFAULT_COUNCIL_CONFIG.maxStructuredBytes,
+		maxCalls: DEFAULT_COUNCIL_CONFIG.maxCalls,
+		useJudge: true,
+		revisionPolicy: "always",
+	},
+} as const
+
 function boundedPositiveInteger(value: string | undefined, fallback: number, maximum: number): number {
 	const normalized = value?.trim()
 	if (!normalized || !/^[1-9]\d*$/.test(normalized)) return fallback
@@ -22,6 +63,44 @@ function boolean(value: string | undefined, fallback: boolean): boolean {
 
 function model(value: string | undefined, fallback: string): string {
 	return value?.trim() || fallback
+}
+
+export function applyCouncilPreset(config: CouncilConfig, preset: CouncilPreset): CouncilConfig {
+	const limits = PRESET_LIMITS[preset]
+	const selectedIndices: number[] = []
+	const reviewerModels: string[] = []
+	const reviewerRoles: CouncilConfig["reviewerRoles"] = []
+	for (const role of limits.reviewerRoles) {
+		let index = config.reviewerRoles.findIndex(
+			(candidate, candidateIndex) =>
+				candidate === role &&
+				!selectedIndices.includes(candidateIndex) &&
+				config.reviewerModels[candidateIndex] !== undefined,
+		)
+		if (index < 0)
+			index = config.reviewerModels.findIndex((_, candidateIndex) => !selectedIndices.includes(candidateIndex))
+		if (index < 0 && config.reviewerModels.length > 0) index = reviewerModels.length % config.reviewerModels.length
+		const reviewerModel = config.reviewerModels[index]
+		if (!reviewerModel) continue
+		selectedIndices.push(index)
+		reviewerModels.push(reviewerModel)
+		reviewerRoles.push(role)
+	}
+	return {
+		...config,
+		reviewerModels,
+		reviewerRoles,
+		maxParallelReviewers: Math.min(config.maxParallelReviewers, reviewerModels.length),
+		overallTimeoutMs: Math.min(config.overallTimeoutMs, limits.overallTimeoutMs),
+		stageTimeoutMs: Math.min(config.stageTimeoutMs, limits.stageTimeoutMs),
+		leadMaxTokens: Math.min(config.leadMaxTokens, limits.leadMaxTokens),
+		internalMaxTokens: Math.min(config.internalMaxTokens, limits.internalMaxTokens),
+		maxEvidenceBytes: Math.min(config.maxEvidenceBytes, limits.maxEvidenceBytes),
+		maxStructuredBytes: Math.min(config.maxStructuredBytes, limits.maxStructuredBytes),
+		maxCalls: Math.min(config.maxCalls, limits.maxCalls),
+		useJudge: limits.useJudge,
+		revisionPolicy: limits.revisionPolicy,
+	}
 }
 
 export function readCouncilConfig(env: NodeJS.ProcessEnv = process.env): CouncilConfig {

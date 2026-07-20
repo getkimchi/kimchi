@@ -32,7 +32,9 @@ function physicalModel(id: string): Model<Api> {
 	}
 }
 
-const models = new Map(["kimi-k2.7", "glm-5.2-fp8", "deepseek-v4-flash"].map((id) => [id, physicalModel(id)]))
+const models = new Map(
+	["kimi-k2.7", "glm-5.2-fp8", "deepseek-v4-flash", "minimax-m3"].map((id) => [id, physicalModel(id)]),
+)
 const councilModel = {
 	id: "council",
 	name: "Kimchi Council",
