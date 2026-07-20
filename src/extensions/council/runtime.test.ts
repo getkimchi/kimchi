@@ -1119,6 +1119,33 @@ describe("Council runtime", () => {
 		expect(runRecord?.outcome).toBe("fallback")
 	})
 
+	it("falls back to the lead when task-packet redaction exceeds the overall timeout", async () => {
+		redactObjectStringsMock.mockImplementationOnce(() => new Promise<never>(() => {}))
+		let runRecord: CouncilRunRecord | undefined
+		const completeModel = vi.fn(async (model: Model<Api>) => response(model, "Lead after redaction timeout"))
+		const stream = createCouncilStream({
+			config: { ...DEFAULT_COUNCIL_CONFIG, overallTimeoutMs: 10 },
+			getModelRegistry: () => modelRegistry,
+			completeModel,
+			recordRun: (record) => {
+				runRecord = record
+			},
+		})(councilModel, { messages: [{ role: "user", content: "secret", timestamp: 1 }] })
+		let timeout: ReturnType<typeof setTimeout> | undefined
+		const result = await Promise.race([
+			stream.result(),
+			new Promise<"test-timeout">((resolve) => {
+				timeout = setTimeout(() => resolve("test-timeout"), 100)
+			}),
+		])
+		clearTimeout(timeout)
+		if (result === "test-timeout") throw new Error("Council ignored its overall timeout during redaction")
+
+		expect(result.content).toEqual([{ type: "text", text: "Lead after redaction timeout" }])
+		expect(completeModel).toHaveBeenCalledTimes(1)
+		expect(runRecord?.outcome).toBe("fallback")
+	})
+
 	it("ignores non-final reviewer output even when it contains valid JSON", async () => {
 		const completeModel = vi.fn(async (model: Model<Api>, context: Context): Promise<AssistantMessage> => {
 			if (context.systemPrompt?.includes("Council reviewer")) {

@@ -526,6 +526,9 @@ export function createCouncilStream({
 			)
 			const maxCalls = Math.min(Math.max(1, config.maxCalls), DEFAULT_COUNCIL_CONFIG.maxCalls)
 			const overall = new AbortController()
+			const abortOverall = () => overall.abort()
+			options.signal?.addEventListener("abort", abortOverall, { once: true })
+			if (options.signal?.aborted) overall.abort()
 			const overallTimer = setTimeout(() => overall.abort(), overallTimeoutMs)
 			let calls = 0
 			let repairUsed = false
@@ -683,12 +686,11 @@ export function createCouncilStream({
 
 				let canonicalPacket: TaskPacket
 				try {
-					canonicalPacket = await buildTaskPacket(
-						{ ...context, messages: conversationMessages },
-						runId,
-						draft,
-						true,
-						maxEvidenceBytes,
+					if (overall.signal.aborted) throw new Error("Council task packet aborted")
+					canonicalPacket = await raceAbort(
+						buildTaskPacket({ ...context, messages: conversationMessages }, runId, draft, true, maxEvidenceBytes),
+						overall.signal,
+						"Council task packet",
 					)
 				} catch {
 					if (parentAborted()) throw new Error("Council request aborted")
@@ -882,6 +884,7 @@ export function createCouncilStream({
 				})
 			} finally {
 				clearTimeout(overallTimer)
+				options.signal?.removeEventListener("abort", abortOverall)
 				try {
 					recordRun?.({
 						runId,
