@@ -175,6 +175,13 @@ describe("ContinuationNudge.evaluateTurn", () => {
 		expect(guard.evaluateTurn(aborted)).toBe(false)
 	})
 
+	it("does not nudge a failed turn after an earlier tool call", () => {
+		const guard = new ContinuationNudge()
+		simulateSessionWithPriorToolCall(guard)
+		const failed = { ...textOnlyMessage, stopReason: "error" as const }
+		expect(guard.evaluateTurn(failed)).toBe(false)
+	})
+
 	it("does not consume a nudge slot when the turn was aborted", () => {
 		// An aborted turn must not decrement the per-cycle budget — a subsequent
 		// legitimate text-only turn in the same cycle should still get its nudge.
@@ -529,6 +536,12 @@ describe("EmptyTurnNudge", () => {
 		const guard = new EmptyTurnNudge()
 		const aborted = { ...emptyMessage, stopReason: "aborted" as const }
 		expect(guard.evaluateTurn(aborted)).toBe(false)
+	})
+
+	it("does not nudge an empty failed turn", () => {
+		const guard = new EmptyTurnNudge()
+		const failed = { ...emptyMessage, stopReason: "error" as const }
+		expect(guard.evaluateTurn(failed)).toBe(false)
 	})
 })
 

@@ -772,6 +772,150 @@ describe("Council runtime", () => {
 		expect(result.stopReason).toBe("stop")
 	})
 
+	it.each([
+		"reviewer",
+		"judge",
+		"judge-error",
+	] as const)("fails closed on failed %s critical revision", async (source) => {
+		let runRecord: CouncilRunRecord | undefined
+		const completeModel = vi.fn(async (model: Model<Api>, context: Context): Promise<AssistantMessage> => {
+			const system = context.systemPrompt ?? ""
+			const lastMessage = context.messages.at(-1)
+			const lastText =
+				lastMessage?.role === "user" && typeof lastMessage.content === "string" ? lastMessage.content : ""
+			if (system.includes("Council reviewer")) {
+				return response(
+					model,
+					JSON.stringify({
+						decision: source === "judge" ? "accept" : "revise",
+						findings:
+							source !== "judge"
+								? [
+										{
+											severity: "critical",
+											statement: "The draft is unsafe",
+											evidence_refs: ["artifact_1"],
+											assumptions: [],
+											suggested_check: "Remove the unsafe instruction",
+										},
+									]
+								: [],
+						recommended_changes: [],
+						missing_evidence: [],
+					}),
+				)
+			}
+			if (system.includes("Council judge")) {
+				if (source === "judge-error") throw new Error("judge failed")
+				return response(
+					model,
+					JSON.stringify({
+						decision: "revise",
+						consensus: [],
+						critical_findings: source === "judge" ? ["The draft is unsafe"] : [],
+						disagreements: [],
+						unsupported_claims: [],
+						required_checks: [],
+						revision_instructions: ["Remove the unsafe instruction"],
+						agreement: "high",
+					}),
+				)
+			}
+			if (lastText.includes("<council_review_data>")) {
+				return { ...response(model, "Truncated safe revision"), stopReason: "length" }
+			}
+			return response(model, "Unsafe lead draft")
+		})
+		const stream = createCouncilStream({
+			config: { ...DEFAULT_COUNCIL_CONFIG, reviewerModels: ["kimchi-dev/glm-5.2-fp8"] },
+			getModelRegistry: () => modelRegistry,
+			completeModel,
+			recordRun: (record) => {
+				runRecord = record
+			},
+		})(councilModel, { messages: [{ role: "user", content: "Answer", timestamp: 1 }] })
+
+		const result = await stream.result()
+
+		expect(result).toMatchObject({
+			content: [],
+			stopReason: "error",
+			errorMessage: "Council could not safely finalize the reviewed response.",
+		})
+		expect(JSON.stringify(result)).not.toContain("Unsafe lead draft")
+		expect(runRecord?.outcome).toBe("error")
+	})
+
+	it("lets the judge explicitly resolve a reviewer critical finding", async () => {
+		let runRecord: CouncilRunRecord | undefined
+		const completeModel = vi.fn(async (model: Model<Api>, context: Context): Promise<AssistantMessage> => {
+			const system = context.systemPrompt ?? ""
+			const lastMessage = context.messages.at(-1)
+			const lastText =
+				lastMessage?.role === "user" && typeof lastMessage.content === "string" ? lastMessage.content : ""
+			if (system.includes("Council reviewer")) {
+				return response(
+					model,
+					JSON.stringify({
+						decision: "revise",
+						findings: [
+							{
+								severity: "critical",
+								statement: "The draft is unsafe",
+								evidence_refs: ["artifact_1"],
+								assumptions: [],
+								suggested_check: "Verify the concern",
+							},
+						],
+						recommended_changes: [],
+						missing_evidence: [],
+					}),
+				)
+			}
+			if (system.includes("Council judge")) {
+				return response(
+					model,
+					JSON.stringify({
+						decision: "accept",
+						consensus: [],
+						critical_findings: [],
+						disagreements: [
+							{
+								topic: "The draft is unsafe",
+								impact: "high",
+								resolved: true,
+								resolution: "The cited evidence contradicts this concern.",
+							},
+						],
+						unsupported_claims: [],
+						required_checks: [],
+						revision_instructions: [],
+						agreement: "high",
+					}),
+				)
+			}
+			if (lastText.includes("<council_review_data>")) {
+				return { ...response(model, "Truncated revision"), stopReason: "length" }
+			}
+			return response(model, "Lead draft")
+		})
+		const stream = createCouncilStream({
+			config: { ...DEFAULT_COUNCIL_CONFIG, reviewerModels: ["kimchi-dev/glm-5.2-fp8"] },
+			getModelRegistry: () => modelRegistry,
+			completeModel,
+			recordRun: (record) => {
+				runRecord = record
+			},
+		})(councilModel, { messages: [{ role: "user", content: "Answer", timestamp: 1 }] })
+
+		const result = await stream.result()
+
+		expect(result.content).toEqual([{ type: "text", text: "Lead draft" }])
+		expect(result.stopReason).toBe("stop")
+		expect(runRecord?.outcome).toBe("fallback")
+		expect(completeModel).toHaveBeenCalledTimes(4)
+	})
+
 	it("falls back to the lead draft when the revision emits serialized tool-call markup", async () => {
 		const completeModel = vi.fn(async (model: Model<Api>, context: Context): Promise<AssistantMessage> => {
 			const system = context.systemPrompt ?? ""
@@ -1144,6 +1288,40 @@ describe("Council runtime", () => {
 		expect(result.content).toEqual([{ type: "text", text: "Lead after redaction timeout" }])
 		expect(completeModel).toHaveBeenCalledTimes(1)
 		expect(runRecord?.outcome).toBe("fallback")
+	})
+
+	it("aborts while task-packet redaction is pending", async () => {
+		let markRedactionStarted: (() => void) | undefined
+		const redactionStarted = new Promise<void>((resolve) => {
+			markRedactionStarted = resolve
+		})
+		redactObjectStringsMock.mockImplementationOnce(() => {
+			markRedactionStarted?.()
+			return new Promise<never>(() => {})
+		})
+		const controller = new AbortController()
+		let runRecord: CouncilRunRecord | undefined
+		const completeModel = vi.fn(async (model: Model<Api>) => response(model, "Lead before client abort"))
+		const stream = createCouncilStream({
+			config: DEFAULT_COUNCIL_CONFIG,
+			getModelRegistry: () => modelRegistry,
+			completeModel,
+			recordRun: (record) => {
+				runRecord = record
+			},
+		})(councilModel, { messages: [{ role: "user", content: "secret", timestamp: 1 }] }, { signal: controller.signal })
+
+		await redactionStarted
+		controller.abort()
+		const result = await stream.result()
+
+		expect(result).toMatchObject({
+			content: [],
+			stopReason: "aborted",
+			errorMessage: "Council request aborted",
+		})
+		expect(completeModel).toHaveBeenCalledTimes(1)
+		expect(runRecord?.outcome).toBe("aborted")
 	})
 
 	it("ignores non-final reviewer output even when it contains valid JSON", async () => {

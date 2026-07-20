@@ -120,6 +120,7 @@ MODEL='kimchi/council' ./scripts/run-local.sh \
 - Council advertises text input, matching the proxy prototype. Reviewers receive a bounded text evidence packet; the lead still sees the original tools and conversation.
 - Reviewer packets and revision history exclude transient injected messages that lack the conversation timestamp required by Pi; the lead still receives them as operational guidance.
 - Raw reviewer, judge, and chain-of-thought content is not persisted or returned.
+- A reviewer critical remains authoritative unless a successful judge returns a resolved, high-impact disagreement whose topic exactly matches the finding statement and whose resolution is nonempty. Judge criticals remain authoritative. If a critical remains and revision fails, Council returns an error instead of the flagged lead draft.
 - The virtual model advertises zero USD rates; it is not a pricing contract for the physical calls.
 - Child calls use `ModelRegistry` authentication and preserve retry settings and request/response callbacks. Virtual-provider headers and environment values are not forwarded, and Pi's physical-model-specific attribution merge and `before_provider_headers` hook are not rerun.
 - Catalog metadata does not prove that every physical model is equally reliable at tool calls or structured JSON.
