@@ -125,11 +125,13 @@ import {
 	readOllamaModelsFromConfig,
 	resolveOllamaHost,
 } from "./ollama.js"
+import { resolveStreamIdleTimeoutMs } from "./proxy.js"
 import resourcesExtension from "./resources/extension.js"
 import { enabledExtensionFactories, type ManagedExtensionFactory } from "./resources/filter.js"
 import resourceToolBlockerExtension from "./resources/tool-blocker.js"
 import { runSetupWizard } from "./setup-wizard.js"
 import { setAvailableModels } from "./startup-context.js"
+import { createMergedAbortController, idleTimeoutAbortReason, withStreamingIdleTimeout } from "./stream-idle-timeout.js"
 import { probeTerminalBackground } from "./terminal-bg-probe.js"
 import { installInlineCompactPatch } from "./upstream-inline-compact-patch.js"
 import { installInfrastructureRetryPatch } from "./upstream-retry-patch.js"
@@ -554,10 +556,38 @@ try {
 				if (!headers.has("user-agent")) {
 					headers.set("user-agent", userAgent)
 				}
-				const response = await originalFetch(input, { ...init, headers })
-				return isModelCompletionFetch(input)
-					? withBillingRefreshAfterResponseSettles(response, refreshBilling)
-					: response
+
+				const isModelCompletion = isModelCompletionFetch(input)
+				const idleTimeoutMs = resolveStreamIdleTimeoutMs()
+				const needsIdleTimeout = isModelCompletion && idleTimeoutMs > 0
+
+				// Merge the caller's signal (if any) with our own idle-timeout signal.
+				// Our abort never propagates back to the caller's signal; the caller
+				// just sees the fetch error produced by the abort.
+				const controller = createMergedAbortController(init?.signal)
+
+				// Headers-phase guard: if no response headers arrive within
+				// idleTimeoutMs, abort. Covers the inference_hang variant (request
+				// sent, no response at all). Cleared as soon as headers arrive.
+				let headersTimer: ReturnType<typeof setTimeout> | undefined
+				if (needsIdleTimeout) {
+					headersTimer = setTimeout(() => {
+						controller.abort(idleTimeoutAbortReason("headers", idleTimeoutMs))
+					}, idleTimeoutMs)
+				}
+
+				let response: Response
+				try {
+					response = await originalFetch(input, { ...init, headers, signal: controller.signal })
+				} finally {
+					if (headersTimer !== undefined) clearTimeout(headersTimer)
+				}
+
+				if (needsIdleTimeout && response.body) {
+					response = withStreamingIdleTimeout(response, idleTimeoutMs, controller)
+				}
+
+				return isModelCompletion ? withBillingRefreshAfterResponseSettles(response, refreshBilling) : response
 			}
 			;(patchedFetch as typeof patchedFetch & { [key: symbol]: boolean })[fetchPatchedSymbol] = true
 			globalThis.fetch = patchedFetch

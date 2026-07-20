@@ -82,7 +82,7 @@ const PROVIDER_5XX_TEXT_RE =
 	/bad gateway|service unavailable|gateway timeout|internal server error|overloaded|overloaded_error|cloudflare.*timeout|timeout.*cloudflare/i
 // Named-phrase forms only; numeric statuses are matched via parseHttpStatusCode.
 const TRANSPORT_FAILURE_RE =
-	/\bEOF\b|socket(?: connection was)? closed|socket hang up|other side closed|connection closed|connection reset|connection refused|connection lost|broken pipe|fetch failed|network.?error|connection.?error|upstream.?connect|reset before headers|http2 request did not get a response|i\/o timeout|(?:request|connection|socket|network|fetch|read|write|proxy|http2|tls).{0,30}(?:timeout|timed out)|timed out|EPIPE|ERR_SOCKET_CLOSED|ERR_STREAM_PREMATURE_CLOSE|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN/i
+	/\bEOF\b|socket(?: connection was)? closed|socket hang up|other side closed|connection closed|connection reset|connection refused|connection lost|broken pipe|fetch failed|network.?error|connection.?error|upstream.?connect|reset before headers|http2 request did not get a response|i\/o timeout|UND_ERR_BODY_TIMEOUT|UND_ERR_HEADERS_TIMEOUT|body timeout|headers timeout|idle timeout|(?:request|connection|socket|network|fetch|read|write|proxy|http2|tls).{0,30}(?:timeout|timed out)|timed out|EPIPE|ERR_SOCKET_CLOSED|ERR_STREAM_PREMATURE_CLOSE|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN/i
 const TRANSPORT_TERMINATION_RE =
 	/\b(?:connection|request|stream|response|socket|http2 request)\b.{0,40}\b(?:terminated unexpectedly|unexpectedly (?:ended|closed|terminated)|ended unexpectedly|closed unexpectedly)\b/i
 const BAD_REQUEST_TEXT_RE = /bad request|BadRequest/i

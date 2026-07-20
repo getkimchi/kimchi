@@ -46,6 +46,16 @@ describe("classifyLLMGatewayError", () => {
 			reason: "transport_failure",
 		},
 		{
+			name: "stream idle timeout (Bun patchedFetch abort)",
+			message: "LLM stream idle timeout: no chunks for 120000ms",
+			reason: "transport_failure",
+		},
+		{
+			name: "headers idle timeout (Bun patchedFetch abort)",
+			message: "LLM request idle timeout: no response headers within 120000ms",
+			reason: "transport_failure",
+		},
+		{
 			name: "request unexpectedly ended",
 			message: "request unexpectedly ended while reading upstream response",
 			reason: "transport_failure",
