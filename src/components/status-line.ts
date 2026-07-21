@@ -15,6 +15,7 @@ import { formatFermentStatusLineDisplay } from "../extensions/ferment/status-lin
 import { formatCount } from "../extensions/format.js"
 import { getMultiModelEnabled } from "../extensions/multi-model.js"
 import { getPermissionMode } from "../extensions/permissions/mode-controller.js"
+import { getPrStatusLine } from "../extensions/pr-status.js"
 import { getActiveTags, getCurrentPhase, parseTag } from "../extensions/tags.js"
 
 /** Stable identifier used by compaction steps to find segments. */
@@ -31,6 +32,7 @@ type SegmentId =
 	| "credits"
 	| "budget"
 	| "lsp"
+	| "pr"
 
 /** Raw inputs preserved on segments that have compact forms, so compaction
  *  steps can rebuild the colorized text without round-tripping through ANSI.
@@ -161,6 +163,7 @@ export function buildScriptPayload(
 			enabled: getMultiModelEnabled(ctx.sessionManager),
 		},
 		phase: getCurrentPhase(sessionId),
+		pr: getPrStatusLine(),
 	}
 }
 
@@ -530,6 +533,17 @@ export class StatusLine implements Component {
 		return { id: "agents", text, width: visibleWidth(text) }
 	}
 
+	private prSegment(pinned = false): Segment | null {
+		const pr = getPrStatusLine()
+		if (!pr) {
+			if (!pinned) return null
+			const text = `${this.dim("PR:")} ${this.dim("—")}`
+			return { id: "pr", text, width: visibleWidth(text) }
+		}
+		const text = `${this.dim("PR:")} ${this.accent(`#${pr.number}`)}`
+		return { id: "pr", text, width: visibleWidth(text) }
+	}
+
 	private fermentSegment(pinned = false): Segment | null {
 		const display = formatFermentStatusLineDisplay(getActiveFerment(), getFermentContinuationPolicy(), {
 			dim: (s) => this.dim(s),
@@ -594,6 +608,7 @@ export class StatusLine implements Component {
 			this.tagsSegment(tags, pinnedSet.has("tags")),
 			this.teamSegment(tags, pinnedSet.has("team")),
 			this.lspSegment(),
+			this.prSegment(pinnedSet.has("pr")),
 		].filter((s): s is Segment => s !== null)
 
 		const unpinnedSegments = allSegments.filter((s) => !pinnedSet.has(s.id))

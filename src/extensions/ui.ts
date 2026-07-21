@@ -30,6 +30,7 @@ import {
 } from "./shared-status-line.js"
 import { createWorkingAnimator } from "./spinner.js"
 import { createBranchPoller } from "./ui-branch-poll.js"
+import { createPrStatusWatcher } from "./pr-status.js"
 
 export { requestSharedStatusLineRender, setSessionModeOnboardingStatusLineSuppressed } from "./shared-status-line.js"
 
@@ -246,6 +247,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 	let uiTui: TUI | null = null
 	let headerTui: TUI | null = null
 	let unregisterBillingStatus: (() => void) | undefined
+	let prWatcher: ReturnType<typeof createPrStatusWatcher> | undefined
 	let scriptCmd: string | null = null
 	let scriptPending = false
 	let scriptGeneration = 0
@@ -292,9 +294,20 @@ export default function uiExtension(pi: ExtensionAPI) {
 			uiTui?.requestRender()
 		})
 
+		prWatcher?.stop()
+		prWatcher = createPrStatusWatcher({
+			getCwd: () => ctx.cwd,
+			getBranch: () => branchPoller.getBranch(),
+		})
+		prWatcher.start(() => uiTui?.requestRender())
+
 		ctx.ui.setHeader((tui, theme) => {
 			headerTui = tui
-			branchPoller.start(() => tui.requestRender())
+			branchPoller.start(() => {
+				tui.requestRender()
+				uiTui?.requestRender()
+				prWatcher?.refresh()
+			})
 			const logo = new LogoHeader(theme, {
 				getBranch: () => branchPoller.getBranch(),
 				getRightColumnNotice: getCommunityTierHeaderNotice,
@@ -500,6 +513,8 @@ export default function uiExtension(pi: ExtensionAPI) {
 		stopWorkingAnimation = undefined
 		currentCtx = null
 		branchPoller.stop()
+		prWatcher?.stop()
+		prWatcher = undefined
 	})
 
 	pi.on("input", (event, ctx) => {
