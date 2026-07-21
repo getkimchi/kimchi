@@ -308,9 +308,16 @@ const HARD_BLOCK_PROGRAMS = new Set(["sudo", "su", "shutdown", "reboot", "halt",
 // Operators we never want to see in a read-only command.
 //   - `>` / `>>`: writes (except `/dev/null|stdout|stderr` targets, handled
 //      separately in isReadOnlyBashCommand)
+//   - `>&`: fd/file redirect — safe when target is a pure digit (fd-to-fd
+//      duplication like `2>&1`), handled separately in isReadOnlyBashCommand.
+//      File-target redirects (`>& /tmp/evil`) remain blocked.
 //   - `<`: input redirect — also appears twice in a row for heredocs (<<EOF)
 //   - `<(` / `(`: process substitution / subshell — can hide arbitrary code
 //   - `&`: backgrounding
+//   - `&>` (combined stdout+stderr redirect-to-file): shell-quote decomposes
+//      this into `&` + `>`, so it is blocked transitively via the `&` rule.
+//      This safety is incidental — if `&` were ever relaxed, `&>` would need
+//      explicit handling.
 const DANGEROUS_OPS = new Set<ControlOperator>([">", ">>", ">&", "<", "<(", "(", ")", "&"])
 
 // `>` / `>>` targets that are allowed because they discard or duplicate
@@ -395,11 +402,11 @@ export function splitCompoundCommand(command: string): string[] | null {
 				currentTokens.push(entry.op)
 				continue
 			}
-			if ((op === ">" || op === ">>") && typeof entries[i + 1] === "string") {
-				// Consume the redirect target.
-				// NOTE: We intentionally handle only > and >>. Other redirects (<, >&, <<)
-				// are intentionally not supported — they would not change the program
-				// classification outcome for permission evaluation.
+			if ((op === ">" || op === ">>" || op === ">&") && typeof entries[i + 1] === "string") {
+				// Consume the redirect target (also covers `>&1` fd-to-fd redirects).
+				// NOTE: Other redirects (<, <<) are intentionally not supported —
+				// they would not change the program classification outcome for
+				// permission evaluation.
 				currentTokens.push(entry.op)
 				currentTokens.push(entries[i + 1] as string)
 				i++
@@ -497,6 +504,9 @@ export function isReadOnlyBashCommand(command: string): boolean {
 		for (const op of segment.ops) {
 			if (!DANGEROUS_OPS.has(op.op)) continue
 			if ((op.op === ">" || op.op === ">>") && op.target && READ_ONLY_REDIRECT_TARGETS.has(op.target)) continue
+			// `>&` with a pure-digit target is fd-to-fd duplication (e.g. `2>&1`), which cannot read or write files.
+			// File-target `>& /tmp/evil` stays blocked because the target is not a digit.
+			if (op.op === ">&" && op.target && /^[0-9]+$/.test(op.target)) continue
 			return false
 		}
 		if (!isSegmentReadOnly(segment.tokens)) return false
@@ -604,7 +614,7 @@ export function parseCommandSegments(command: string): Segment[] {
 				current = { tokens: [], ops: [] }
 				continue
 			}
-			if ((op === ">" || op === ">>") && typeof entries[i + 1] === "string") {
+			if ((op === ">" || op === ">>" || op === ">&") && typeof entries[i + 1] === "string") {
 				current.ops.push({ op, target: entries[i + 1] as string })
 				i++ // consume the redirect target
 				continue

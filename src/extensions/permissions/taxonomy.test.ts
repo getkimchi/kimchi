@@ -404,6 +404,37 @@ describe("isReadOnlyBashCommand", () => {
 		expect(isReadOnlyBashCommand("cat foo 2>/dev/null")).toBe(true)
 	})
 
+	it("allows fd-to-fd redirects (2>&1, 1>&2)", () => {
+		// `2>&1` merges stderr into stdout — pure fd duplication, no file access.
+		expect(isReadOnlyBashCommand("git log --oneline HEAD 2>&1")).toBe(true)
+		expect(isReadOnlyBashCommand("git status 2>&1")).toBe(true)
+		expect(isReadOnlyBashCommand("ls -la 2>&1")).toBe(true)
+		// `1>&2` redirects stdout to stderr — also safe
+		expect(isReadOnlyBashCommand("echo hello 1>&2")).toBe(true)
+		// Bare `>&1` (no source fd) is also safe
+		expect(isReadOnlyBashCommand("echo hello >&1")).toBe(true)
+		// In a pipeline — each segment is individually checked
+		expect(isReadOnlyBashCommand("git log --oneline HEAD 2>&1 | head -30")).toBe(true)
+		expect(isReadOnlyBashCommand("git diff HEAD 2>&1 | grep foo")).toBe(true)
+	})
+
+	it("blocks file-target >& redirects", () => {
+		// `>& /tmp/evil` redirects to a file — a write, must be blocked
+		expect(isReadOnlyBashCommand("echo hello >& /tmp/evil")).toBe(false)
+		expect(isReadOnlyBashCommand("cat foo >& /tmp/out")).toBe(false)
+		// `>&-` closes the fd — not a digit, conservatively blocked
+		expect(isReadOnlyBashCommand("echo hello >&-")).toBe(false)
+	})
+
+	it("blocks bash &> combined redirect", () => {
+		// `&>` redirects both stdout+stderr to a file — shell-quote decomposes it
+		// into `&` + `>`, so the `&` (backgrounding) op blocks it transitively.
+		// Regression test: pins this incidental safety against future `&` relaxation.
+		expect(isReadOnlyBashCommand("cat foo &> /tmp/out")).toBe(false)
+		expect(isReadOnlyBashCommand("cat foo &>/tmp/out")).toBe(false)
+		expect(isReadOnlyBashCommand("echo hi &> /tmp/evil")).toBe(false)
+	})
+
 	it("blocks hard-blocked patterns", () => {
 		expect(isReadOnlyBashCommand("sudo cat foo")).toBe(false)
 		expect(isReadOnlyBashCommand("rm -rf /")).toBe(false)
