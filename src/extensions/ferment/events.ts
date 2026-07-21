@@ -5,6 +5,7 @@ import { isAgentWorker } from "../agent-worker-context.js"
 import { deferExtensionAction } from "../deferred-action.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
+import { isStaleCtxError } from "../stale-ctx.js"
 import { maybeTriggerFermentCompaction, maybeTriggerMidTurnFermentCompaction } from "./auto-compaction.js"
 import { formatDuration } from "./colors.js"
 import { extractContextualOptions, extractTrailingQuestion } from "./contextual-options.js"
@@ -32,7 +33,7 @@ import { editPhaseProposal } from "./phase-editor.js"
 import { promptEditor, promptSelect } from "./prompt-ui.js"
 import { loadFermentSilently, resumeFerment } from "./resume.js"
 import { defaultFermentRuntime, type FermentRuntime } from "./runtime.js"
-import { safeSendMessage } from "./safe-send.js"
+import { safeSendMessage, tryPiAction } from "./safe-send.js"
 import { scheduleFermentWakeUp, scheduleNextFermentAction } from "./scheduler.js"
 import { confirmPendingScope } from "./scoping-confirmation.js"
 import { buildStalledPayload } from "./stalled-payload.js"
@@ -48,6 +49,40 @@ import { createApplyAndPersist } from "./tool-helpers.js"
 import { applyFermentRuntimeToolProfile, hasPendingPlanReview, setActiveFermentAndApplyProfile } from "./tool-scope.js"
 
 type AssistantContentPart = { type: string; text?: string; name?: string }
+
+// Telemetry wrapper: reads pi.getFlag(name), appends a ferment_breadcrumb with the
+// result/throw for /export visibility. Returns undefined on throw.
+function readFlag(pi: ExtensionAPI, name: string, location: string, fermentId: string | undefined): unknown {
+	let value: unknown = null
+	let errorName: string | null = null
+	try {
+		value = pi.getFlag?.(name) ?? null
+	} catch (err) {
+		errorName = err instanceof Error ? err.message : String(err)
+	}
+	const threw = errorName !== null
+	const staleCtx = threw && isStaleCtxError(errorName)
+	const payload = {
+		telemetry: "ferment_flag_read",
+		flag: name,
+		location,
+		fermentId: fermentId ?? null,
+		getFlagPresent: typeof pi.getFlag === "function",
+		value,
+		threw,
+		staleCtx,
+		error: errorName,
+	}
+	// Mirror the scheduler/nudge pattern: appendEntry on a ferment_breadcrumb
+	// so it is rendered in the /export HTML session transcript.
+	tryPiAction(() => {
+		pi.appendEntry("ferment_breadcrumb", {
+			text: `flag-read ${name} [${location}] ferment=${fermentId ?? "none"} threw=${threw} staleCtx=${staleCtx} value=${JSON.stringify(value)}${threw ? ` error=${JSON.stringify(errorName)}` : ""}`,
+			telemetry: payload,
+		})
+	})
+	return threw ? undefined : value
+}
 
 function isAssistantContentPart(value: unknown): value is AssistantContentPart {
 	return typeof value === "object" && value !== null && "type" in value && typeof value.type === "string"
@@ -388,7 +423,7 @@ export function registerFermentEvents(
 		if (!f) return
 		if (f.status === "running" || f.status === "planned") {
 			try {
-				const isOneShot = pi.getFlag?.("ferment-oneshot") === true
+				const isOneShot = readFlag(pi, "ferment-oneshot", "session_shutdown", f.id) === true
 				applyAndPersist(f.id, { type: isOneShot ? "abandon" : "pause" })
 			} catch {
 				// If persistence fails during shutdown, we can't fix it here.
@@ -524,7 +559,7 @@ export function registerFermentEvents(
 		// keep the ferment running and inject a continuation nudge so the
 		// orchestrator retries on the next turn — there is no user to resume.
 		if (stopReason === "error") {
-			const isOneShot = pi.getFlag?.("ferment-oneshot") === true
+			const isOneShot = readFlag(pi, "ferment-oneshot", "turn_end_error", activeId) === true
 
 			if (!isOneShot) {
 				const errorMessage = getMessageStringField(event.message, "errorMessage")
