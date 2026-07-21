@@ -5,6 +5,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { AgentSession } from "@earendil-works/pi-coding-agent"
+import { fetch as undiciFetch } from "undici"
 import {
 	getCliModeArg,
 	isCliAtFileArg,
@@ -549,7 +550,17 @@ try {
 		const fetchPatchedSymbol = Symbol.for("kimchi.fetchPatched")
 		if (!(globalThis.fetch as typeof globalThis.fetch & { [key: symbol]: boolean })[fetchPatchedSymbol]) {
 			const userAgent = `kimchi/${getVersion()}`
-			const originalFetch = globalThis.fetch.bind(globalThis)
+			// Use undici.fetch (not Bun's native globalThis.fetch) so that:
+			//   1. AbortController.abort() is honored for in-flight streaming response
+			//      bodies — the withStreamingIdleTimeout wrapper's 120s idle timer now
+			//      actually fires instead of hanging ~660s until the OS closes the socket.
+			//   2. undici's global dispatcher bodyTimeout (set in src/proxy.ts and
+			//      pi-coding-agent's configureHttpDispatcher) is consulted, because
+			//      fetch now routes through undici instead of bypassing it.
+			// Without this, pi-coding-agent's configureHttpDispatcher sees that
+			// globalThis.fetch has already been replaced (by patchedFetch below) and
+			// skips undici.install(), leaving fetch as Bun's native implementation.
+			const originalFetch = undiciFetch as typeof globalThis.fetch
 			const refreshBilling = () => refreshBillingStatusFromConfig({ fetch: originalFetch })
 			const patchedFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
 				const headers = new Headers(init?.headers)

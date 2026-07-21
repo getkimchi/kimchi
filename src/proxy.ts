@@ -6,18 +6,26 @@ import { EnvHttpProxyAgent, setGlobalDispatcher } from "undici"
  * This value is consumed in two places that must stay in sync:
  *
  *   1. `installProxyAgent` below — sets undici's `bodyTimeout` on the global
- *      `EnvHttpProxyAgent`. This is the seam that fires under Node when the
- *      OpenAI SDK routes through undici's fetch (via `globalThis.fetch`).
- *      `bodyTimeout` resets on every received chunk, so it only fires when the
- *      upstream truly stops sending bytes mid-stream.
+ *      `EnvHttpProxyAgent`. `bodyTimeout` resets on every received chunk, so
+ *      it only fires when the upstream truly stops sending bytes mid-stream.
+ *      Note: pi-coding-agent's `configureHttpDispatcher()` (called inside
+ *      `main()`) later overrides this dispatcher with a 300s `bodyTimeout`
+ *      (default `DEFAULT_HTTP_IDLE_TIMEOUT_MS`), so the 120s value set here is
+ *      only effective until `main()` runs. It still documents the intended
+ *      shorter idle window and covers the pre-`main()` startup window.
  *   2. `patchedFetch` in `src/cli.ts` — wraps the response body `ReadableStream`
  *      with an idle timer that aborts the fetch via `AbortController` when no
- *      chunks arrive. This is the seam that fires under the compiled Bun
- *      binary, where Bun's native `globalThis.fetch` bypasses undici entirely.
+ *      chunks arrive. This is the primary 120s seam.
  *
- * Both paths are needed because the harness runs under both runtimes. Under Bun
- * only #2 fires; under Node with undici's fetch both can fire (whichever is
- * shorter wins, which is the desired behaviour).
+ * Both seams are effective under BOTH Node and the compiled Bun binary:
+ * `patchedFetch` calls `undici.fetch` directly as `originalFetch` (not Bun's
+ * native `globalThis.fetch`), so every fetch routes through undici's global
+ * dispatcher. This makes (a) the wrapper's `controller.abort()` honored
+ * mid-stream (undici.fetch propagates the AbortController signal to the body
+ * stream; Bun's native fetch does not) and (b) undici's `bodyTimeout`
+ * consulted as a defense-in-depth backstop. Whichever fires first wins, which
+ * is the desired behaviour — the wrapper's 120s abort is the primary, and the
+ * `bodyTimeout` (300s after `configureHttpDispatcher` runs) is the backstop.
  *
  * Env var:
  *   KIMCHI_STREAM_IDLE_TIMEOUT_MS – positive integer enables that value;
@@ -62,14 +70,24 @@ export function installProxyAgent(): void {
 	setGlobalDispatcher(
 		new EnvHttpProxyAgent({
 			// bodyTimeout is an IDLE timeout (resets on each chunk), not a total
-			// deadline. A stalled SSE stream now aborts after `streamIdleTimeoutMs`
+			// deadline. A stalled SSE stream aborts after `streamIdleTimeoutMs`
 			// of no bytes instead of hanging ~660s until the OS/provider closes
 			// the socket. The provider SDK does NOT enforce its own stream-idle
 			// deadline on the openai-completions path, so this finite value is the
-			// only thing that aborts a dead stream under Node/undici. Defaults to
+			// only dispatcher-level thing that aborts a dead stream. Defaults to
 			// 120000 (2 min) via KIMCHI_STREAM_IDLE_TIMEOUT_MS; set to 0 to disable
-			// (back-compat). The Bun runtime bypasses undici — the parallel guard
-			// for Bun lives in `patchedFetch` (src/cli.ts).
+			// (back-compat).
+			//
+			// Effective under BOTH Node and the compiled Bun binary, because
+			// `patchedFetch` (src/cli.ts) calls `undici.fetch` directly as
+			// `originalFetch` — so every fetch routes through undici's global
+			// dispatcher regardless of runtime. The `withStreamingIdleTimeout`
+			// wrapper in `patchedFetch` provides the primary 120s abort (honored
+			// because undici.fetch propagates AbortController to the body stream);
+			// this `bodyTimeout` is the defense-in-depth backstop. Note:
+			// pi-coding-agent's `configureHttpDispatcher()` (called inside
+			// `main()`) overrides this dispatcher with a 300s `bodyTimeout`, so
+			// this 120s value only holds until `main()` runs.
 			bodyTimeout: streamIdleTimeoutMs,
 			// headersTimeout is intentionally left at 0: headers always arrive in
 			// <1s in the traces, and the original concern about vLLM header

@@ -6,12 +6,18 @@
  * mid-stream, the request hangs for ~660s until the OS/provider closes the
  * socket, burning most of a trial's wall-clock budget per hang.
  *
- * Under the compiled Bun binary, Bun's native `globalThis.fetch` bypasses
- * undici's global dispatcher entirely, so undici's `bodyTimeout` (set in
- * `src/proxy.ts`) has no effect. The only seam where an idle timeout can
- * actually take effect under Bun is inside `patchedFetch` (src/cli.ts), by
- * wrapping the response body `ReadableStream` with a timer that aborts the
- * fetch via `AbortController` when no chunks arrive.
+ * `patchedFetch` in `src/cli.ts` calls `undici.fetch` directly as
+ * `originalFetch` (not Bun's native `globalThis.fetch`), so under BOTH Node
+ * and the compiled Bun binary every fetch routes through undici's global
+ * dispatcher. This makes the `AbortController.abort()` issued by the wrapper
+ * below honored mid-stream — undici.fetch propagates the signal to the
+ * underlying body stream, so a pending `reader.read()` rejects immediately
+ * when the idle timer fires. (Bun's native fetch does NOT honor
+ * `AbortController.abort()` for an in-flight streaming body, which is why
+ * routing through `undici.fetch` is load-bearing.) undici's `bodyTimeout`
+ * (set in `src/proxy.ts`, later overridden to 300s by `configureHttpDispatcher`)
+ * is consulted as a defense-in-depth backstop; this wrapper's 120s abort is
+ * the primary seam and fires first.
  *
  * This module exports the building blocks `patchedFetch` uses:
  *
