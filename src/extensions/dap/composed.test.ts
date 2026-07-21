@@ -45,6 +45,7 @@ interface StubSession extends DapSession {
 	setBreakpoint: ReturnType<typeof vi.fn>
 	continue: ReturnType<typeof vi.fn>
 	stepOver: ReturnType<typeof vi.fn>
+	waitForStop: ReturnType<typeof vi.fn>
 	getStackFrame: ReturnType<typeof vi.fn>
 	getScopes: ReturnType<typeof vi.fn>
 	getVariables: ReturnType<typeof vi.fn>
@@ -77,6 +78,7 @@ function createStubSession(id = "sess-aaa-bbb-ccc"): StubSession {
 		setBreakpoint: vi.fn().mockResolvedValue({ verified: true, line: 10 } as Breakpoint),
 		continue: vi.fn().mockResolvedValue({ reason: "breakpoint", threadId: 1 } as StoppedEvent),
 		stepOver: vi.fn().mockResolvedValue({ reason: "step", threadId: 1 } as StoppedEvent),
+		waitForStop: vi.fn().mockResolvedValue({ reason: "entry", threadId: 1 } as StoppedEvent),
 		getStackFrame: vi.fn().mockResolvedValue([{ id: 1, name: "main", line: 10, column: 1 }] as StackFrame[]),
 		getScopes: vi.fn().mockResolvedValue([{ name: "Locals", variablesReference: 100, expensive: false }] as Scope[]),
 		getVariables: vi

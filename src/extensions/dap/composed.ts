@@ -266,7 +266,16 @@ export async function debugStateAt(deps: ComposedDeps, opts: DebugStateAtOptions
 			await session.completeLaunch()
 			let stop: StoppedEvent
 			try {
-				stop = await session.continue()
+				// After completeLaunch (configurationDone), the program starts running
+				// and stops at the breakpoint automatically. Wait for the stop event
+				// without sending a continue request (which dlv rejects when the
+				// program is already running).
+				stop = await session.waitForStop()
+				// If the program stopped at entry (stopOnEntry), continue to the
+				// actual breakpoint.
+				if (stop.reason === "entry") {
+					stop = await session.continue()
+				}
 			} catch (err) {
 				if (isTerminatedError(err)) {
 					const { stdout, stderr } = collectOutput(session.outputLines)

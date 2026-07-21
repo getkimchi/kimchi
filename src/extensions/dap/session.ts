@@ -166,6 +166,9 @@ export class DapSession {
 	 *  full set for a source, so we resend all tracked breakpoints for that file.
 	 *  Returns the verified status of the breakpoint just set. */
 	async setBreakpoint(file: string, line: number, condition?: string): Promise<Breakpoint> {
+		// Clear the current stopped state — setting a breakpoint means the caller
+		// wants to continue to the new breakpoint, not return the current stop.
+		this.client.stoppedEvent = null
 		const existing = this.breakpoints.get(file) ?? []
 		existing.push({ line, condition })
 		const response = await sendRequest(
@@ -212,8 +215,9 @@ export class DapSession {
 
 	/** Block until the next `stopped` event arrives. Use after `launch()` (with
 	 *  stopOnEntry:false and a pre-set breakpoint) to wait for the breakpoint hit.
-	 *  Rejects on terminate or timeout. */
+	 *  Rejects on terminate or timeout. If already stopped, returns immediately. */
 	async waitForStop(timeoutMs?: number): Promise<StoppedEvent> {
+		if (this.client.stoppedEvent) return this.client.stoppedEvent
 		return this.registerStopWaiter(timeoutMs).promise
 	}
 
@@ -224,7 +228,8 @@ export class DapSession {
 	/** Returns the full call stack for the current thread (top frame is [0]).
 	 *  Underlying DAP request: `stackTrace`. */
 	async getStackFrame(): Promise<StackFrame[]> {
-		const threadId = await this.ensureThreadId()
+		// Use the stopped event's threadId if available — it's the most current.
+		const threadId = this.client.stoppedEvent?.threadId ?? (await this.ensureThreadId())
 		const body = await sendRequest(this.client, "stackTrace", { threadId }, this.timeoutMs)
 		return (body as { stackFrames?: StackFrame[] }).stackFrames ?? []
 	}
@@ -314,11 +319,23 @@ export class DapSession {
 		// (which could let a terminated event be processed before the stop waiter
 		// is registered — a race observed in session.test.ts).
 		if (!this.launchCompleted) await this.completeLaunch()
+
+		// Clear the current stopped state — we're about to resume execution.
+		this.client.stoppedEvent = null
 		const threadId = await this.ensureThreadId()
 		const { promise, cancel } = this.registerStopWaiter()
 		try {
 			await sendRequest(this.client, command, { threadId }, this.timeoutMs)
 		} catch (err) {
+			// For `continue`: if the adapter rejects the request because the
+			// program is already running (e.g. after configurationDone started
+			// it), don't cancel the stop waiter — the program is still executing
+			// and will hit a breakpoint or terminate. The waiter will resolve
+			// when the next stop event arrives.
+			const msg = (err as Error).message
+			if (command === "continue" && /Unable to process|already running/i.test(msg)) {
+				return promise
+			}
 			cancel(err as Error)
 			throw err
 		}
