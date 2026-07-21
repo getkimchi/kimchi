@@ -323,7 +323,10 @@ export default function uiExtension(pi: ExtensionAPI) {
 		})
 		ctx.ui.setFooter((tui, theme, statusLineData) => {
 			uiTui = tui
-			prWatcher?.start(() => uiTui?.requestRender())
+			prWatcher?.start(() => {
+				uiTui?.requestRender()
+				refresh("idle")
+			})
 			const cmd = readStatusLineCommand()
 			if (!cmd) {
 				scriptCmd = null
