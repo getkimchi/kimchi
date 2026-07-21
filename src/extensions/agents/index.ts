@@ -28,7 +28,7 @@ import { filterThinkingForDisplay } from "../hide-thinking.js"
 import { sessionHasImages } from "../model-guard.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { KIMCHI_DEV_PROVIDER, MODEL_CAPABILITIES } from "../orchestration/model-registry/index.js"
-import { getAllowedMultiModelRefs } from "../orchestration/model-roles.js"
+import { getAllowedMultiModelRefs, getModelRoles, normalizeRoleModels } from "../orchestration/model-roles.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { isStaleCtxError } from "../stale-ctx.js"
 import { trackSubagentSpawned } from "../telemetry/index.js"
@@ -96,6 +96,41 @@ import {
 } from "./ui/agent-widget.js"
 
 // ---- Shared helpers ----
+
+/**
+ * Maps an agent persona type to its model-roles key.
+ * Returns null for types that don't have a configured role.
+ */
+export function agentTypeToRoleKey(subagentType: string): keyof typeof DEFAULT_MODEL_ROLES | null {
+	const map: Record<string, keyof typeof DEFAULT_MODEL_ROLES> = {
+		Builder: "builder",
+		Reviewer: "reviewer",
+		Explore: "explorer",
+		Plan: "planner",
+		Researcher: "researcher",
+		Fixer: "builder", // Fixer uses the builder model pool
+		"General-Purpose": "builder", // GP defaults to builder model pool
+	}
+	return map[subagentType] ?? null
+}
+
+/**
+ * When multi-model is enabled and the caller did not specify a model,
+ * resolve the default model ref string from the role config based on
+ * the agent type. Returns the first model ref (e.g. "kimchi-dev/minimax-m3")
+ * or undefined if no role mapping exists.
+ */
+export function resolveRoleModelRef(subagentType: string): string | undefined {
+	const roleKey = agentTypeToRoleKey(subagentType)
+	if (!roleKey) return undefined
+	const roles = getModelRoles()
+	const assignment = roles[roleKey]
+	if (!assignment) return undefined
+	const modelRefs = normalizeRoleModels(assignment)
+	return modelRefs[0]
+}
+
+import type { DEFAULT_MODEL_ROLES } from "../orchestration/model-roles.js"
 
 // Give aborted sub-agents a bounded chance to reach runner finally blocks.
 // If they do not settle, manager.dispose() still runs hard-fallback cleanup.
@@ -1207,6 +1242,20 @@ ${AGENT_TOOL_GUIDELINES}`,
 						if (resolvedConfig.modelFromParams) return textResult(resolvedModel)
 					} else {
 						model = resolvedModel as typeof ctx.model
+					}
+				}
+
+				// When multi-model is enabled and the caller did NOT specify a model,
+				// resolve the default model from the role config based on the agent
+				// type. This ensures Builder calls use the configured builder model,
+				// not the orchestrator's own model.
+				if (getMultiModelEnabled(ctx.sessionManager) && !resolvedConfig.modelFromParams) {
+					const roleModelRef = resolveRoleModelRef(subagentType)
+					if (roleModelRef) {
+						const resolved = resolveModel(roleModelRef, ctx.modelRegistry as ModelRegistry)
+						if (typeof resolved !== "string") {
+							model = resolved as typeof ctx.model
+						}
 					}
 				}
 
