@@ -49,6 +49,4 @@ describe("listAvailableSkillNames", () => {
 			expect(typeof skill.description).toBe("string")
 		}
 	})
-
-
 })
