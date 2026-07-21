@@ -1257,6 +1257,8 @@ ${AGENT_TOOL_GUIDELINES}`,
 					if (roleModelRef) {
 						const resolved = resolveModel(roleModelRef, ctx.modelRegistry as ModelRegistry)
 						if (typeof resolved !== "string") {
+							// resolveModel returns `unknown | string` — the cast is required because
+							// ModelRegistry.find() returns unknown. Same pattern as line 1243.
 							model = resolved as typeof ctx.model
 						}
 					}
