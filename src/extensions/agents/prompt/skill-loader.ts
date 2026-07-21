@@ -46,8 +46,9 @@ export function listAvailableSkillNames(cwd: string): { name: string; descriptio
 					description: skill.description ?? "",
 				})
 			}
-		} catch {
-			// Directory missing or unreadable — skip silently
+		} catch (err) {
+			// Directory missing or unreadable — log so skill-path problems are detectable
+			console.warn(`[skill-loader] Failed to list skills from ${dir}:`, err instanceof Error ? err.message : err)
 		}
 	}
 

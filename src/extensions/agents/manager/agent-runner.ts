@@ -380,8 +380,9 @@ async function runAgentInner(
 Use the Skill tool to load a skill's full instructions when its description matches your task.
 
 ${skillLines}`
-			// Add the Skill tool to the available tools
-			if (!toolNames.includes("Skill")) {
+			// Add the Skill tool to the available tools (unless disallowed by persona config)
+			const disallowed = agentConfig?.disallowedTools ? new Set(agentConfig.disallowedTools) : undefined
+			if (!toolNames.includes("Skill") && !disallowed?.has("Skill")) {
 				toolNames = [...toolNames, "Skill"]
 			}
 		}
