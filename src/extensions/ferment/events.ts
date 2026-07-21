@@ -54,14 +54,14 @@ type AssistantContentPart = { type: string; text?: string; name?: string }
 // result/throw for /export visibility. Returns undefined on throw.
 function readFlag(pi: ExtensionAPI, name: string, location: string, fermentId: string | undefined): unknown {
 	let value: unknown = null
-	let errorName: string | null = null
+	let errorMessage: string | null = null
 	try {
 		value = pi.getFlag?.(name) ?? null
 	} catch (err) {
-		errorName = err instanceof Error ? err.message : String(err)
+		errorMessage = err instanceof Error ? err.message : String(err)
 	}
-	const threw = errorName !== null
-	const staleCtx = threw && isStaleCtxError(errorName)
+	const threw = errorMessage !== null
+	const staleCtx = threw && isStaleCtxError(errorMessage)
 	const payload = {
 		telemetry: "ferment_flag_read",
 		flag: name,
@@ -71,13 +71,13 @@ function readFlag(pi: ExtensionAPI, name: string, location: string, fermentId: s
 		value,
 		threw,
 		staleCtx,
-		error: errorName,
+		error: errorMessage,
 	}
 	// Mirror the scheduler/nudge pattern: appendEntry on a ferment_breadcrumb
 	// so it is rendered in the /export HTML session transcript.
 	tryPiAction(() => {
 		pi.appendEntry("ferment_breadcrumb", {
-			text: `flag-read ${name} [${location}] ferment=${fermentId ?? "none"} threw=${threw} staleCtx=${staleCtx} value=${JSON.stringify(value)}${threw ? ` error=${JSON.stringify(errorName)}` : ""}`,
+			text: `flag-read ${name} [${location}] ferment=${fermentId ?? "none"} threw=${threw} staleCtx=${staleCtx} value=${JSON.stringify(value)}${threw ? ` error=${JSON.stringify(errorMessage)}` : ""}`,
 			telemetry: payload,
 		})
 	})
