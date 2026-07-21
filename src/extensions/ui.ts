@@ -297,7 +297,6 @@ export default function uiExtension(pi: ExtensionAPI) {
 		prWatcher?.stop()
 		prWatcher = createPrStatusWatcher({
 			getCwd: () => ctx.cwd,
-			getBranch: () => branchPoller.getBranch(),
 		})
 		prWatcher.start(() => uiTui?.requestRender())
 
@@ -324,6 +323,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 		})
 		ctx.ui.setFooter((tui, theme, statusLineData) => {
 			uiTui = tui
+			prWatcher?.start(() => uiTui?.requestRender())
 			const cmd = readStatusLineCommand()
 			if (!cmd) {
 				scriptCmd = null

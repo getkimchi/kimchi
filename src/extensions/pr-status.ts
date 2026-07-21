@@ -18,7 +18,7 @@ export function setPrStatusForTest(info: PrInfo | undefined): void {
 
 export interface PrStatusWatcherDeps {
 	getCwd: () => string
-	getBranch: () => string | undefined
+	getBranch?: () => string | undefined
 	spawnGh?: (cwd: string) => ChildProcess
 }
 
@@ -29,7 +29,6 @@ function defaultSpawnGh(cwd: string): ChildProcess {
 }
 
 export function createPrStatusWatcher(deps: PrStatusWatcherDeps) {
-	let lastKnownBranch: string | undefined
 	let timer: ReturnType<typeof setInterval> | undefined
 	let onChangeCallback: (() => void) | undefined
 	let inFlight = false
@@ -86,19 +85,11 @@ export function createPrStatusWatcher(deps: PrStatusWatcherDeps) {
 		})
 	}
 
-	function tick(silent = false): void {
-		const branch = deps.getBranch()
-		const branchChanged = branch !== lastKnownBranch
-		if (!branchChanged && !silent) return
-		lastKnownBranch = branch
-		refresh()
-	}
-
 	function start(onChange: () => void): void {
 		stop()
 		onChangeCallback = onChange
-		tick(true)
-		timer = setInterval(() => tick(), PR_REFRESH_INTERVAL_MS)
+		refresh()
+		timer = setInterval(() => refresh(), PR_REFRESH_INTERVAL_MS)
 	}
 
 	function stop(): void {
@@ -106,7 +97,6 @@ export function createPrStatusWatcher(deps: PrStatusWatcherDeps) {
 			clearInterval(timer)
 			timer = undefined
 		}
-		lastKnownBranch = undefined
 		onChangeCallback = undefined
 		inFlight = false
 		currentPrInfo = undefined

@@ -54,7 +54,7 @@ describe("createPrStatusWatcher", () => {
 		const child = fakeChild()
 		mockSpawn.mockReturnValueOnce(child)
 
-		const watcher = createPrStatusWatcher({ getCwd: () => "/repo", getBranch: () => "feature-x" })
+		const watcher = createPrStatusWatcher({ getCwd: () => "/repo" })
 		const changes: (PrInfo | undefined)[] = []
 		watcher.start(() => changes.push(getPrStatusLine()))
 
@@ -72,7 +72,7 @@ describe("createPrStatusWatcher", () => {
 		const child = fakeChild()
 		mockSpawn.mockReturnValueOnce(child)
 
-		const watcher = createPrStatusWatcher({ getCwd: () => "/repo", getBranch: () => "feature-x" })
+		const watcher = createPrStatusWatcher({ getCwd: () => "/repo" })
 		watcher.start(() => {})
 
 		child.emitStdout("no pull requests match your search")
@@ -83,12 +83,11 @@ describe("createPrStatusWatcher", () => {
 		watcher.stop()
 	})
 
-	it("refreshes when the branch changes", async () => {
+	it("refreshes periodically", async () => {
 		const children = [fakeChild(), fakeChild()]
 		mockSpawn.mockReturnValueOnce(children[0]).mockReturnValueOnce(children[1])
 
-		let branch = "feature-x"
-		const watcher = createPrStatusWatcher({ getCwd: () => "/repo", getBranch: () => branch })
+		const watcher = createPrStatusWatcher({ getCwd: () => "/repo" })
 		watcher.start(() => {})
 
 		children[0].emitStdout(JSON.stringify({ number: 42, url: "https://github.com/owner/repo/pull/42" }))
@@ -96,7 +95,6 @@ describe("createPrStatusWatcher", () => {
 		await vi.advanceTimersByTimeAsync(0)
 		expect(getPrStatusLine()?.number).toBe(42)
 
-		branch = "feature-y"
 		await vi.advanceTimersByTimeAsync(30_000)
 
 		children[1].emitStdout(JSON.stringify({ number: 43, url: "https://github.com/owner/repo/pull/43" }))
@@ -111,7 +109,7 @@ describe("createPrStatusWatcher", () => {
 		const child = fakeChild()
 		mockSpawn.mockReturnValueOnce(child)
 
-		const watcher = createPrStatusWatcher({ getCwd: () => "/repo", getBranch: () => "feature-x" })
+		const watcher = createPrStatusWatcher({ getCwd: () => "/repo" })
 		watcher.start(() => {})
 
 		child.emitStdout(JSON.stringify({ number: 42, url: "https://github.com/owner/repo/pull/42" }))
