@@ -22,6 +22,7 @@
 import { complete } from "@earendil-works/pi-ai"
 import type { Grade } from "../../ferment/types.js"
 import { getModelRoles, splitModelRef } from "../orchestration/model-roles.js"
+import { getFermentSessionState, type FermentSessionState } from "./session-state.js"
 import { getJudgeModel, getJudgeModelRegistry } from "./state.js"
 
 const GRADES: Grade[] = ["A", "B", "C", "D", "F"]
@@ -40,14 +41,19 @@ export type JudgeUnavailableReason = "no_registry" | "no_model" | "no_auth" | "a
 
 export type JudgeApiResult = { ok: true; text: string } | { ok: false; reason: JudgeUnavailableReason; detail?: string }
 
-export async function judgeApiCall(systemPrompt: string, userMsg: string, maxTokens?: number): Promise<JudgeApiResult> {
-	const registry = getJudgeModelRegistry()
+export async function judgeApiCall(
+	systemPrompt: string,
+	userMsg: string,
+	maxTokens?: number,
+	sessionState: FermentSessionState = getFermentSessionState(),
+): Promise<JudgeApiResult> {
+	const registry = getJudgeModelRegistry(sessionState)
 	if (!registry) return { ok: false, reason: "no_registry" }
 
 	const judgeAssignment = getModelRoles().judge
 	const judgeModelStr = Array.isArray(judgeAssignment) ? judgeAssignment[0] : judgeAssignment
 	const judgeRef = judgeModelStr ? splitModelRef(judgeModelStr) : undefined
-	const model = (judgeRef ? registry.find(judgeRef.provider, judgeRef.modelId) : undefined) ?? getJudgeModel()
+	const model = (judgeRef ? registry.find(judgeRef.provider, judgeRef.modelId) : undefined) ?? getJudgeModel(sessionState)
 	if (!model) return { ok: false, reason: "no_model" }
 
 	const auth = await registry.getApiKeyAndHeaders(model)
@@ -154,8 +160,13 @@ function normalizeRecommendations(raw: unknown): string[] {
 	return []
 }
 
-async function judgeCall<T>(systemPrompt: string, userMsg: string, maxTokens: number): Promise<JudgeCallResult<T>> {
-	const api = await judgeApiCall(systemPrompt, userMsg, maxTokens)
+async function judgeCall<T>(
+	systemPrompt: string,
+	userMsg: string,
+	maxTokens: number,
+	sessionState: FermentSessionState = getFermentSessionState(),
+): Promise<JudgeCallResult<T>> {
+	const api = await judgeApiCall(systemPrompt, userMsg, maxTokens, sessionState)
 	if (!api.ok) return { ok: false, reason: api.reason, detail: api.detail }
 	const parsed = tryParseJson<T>(api.text)
 	if (parsed === undefined) return { ok: false, reason: "unparseable", detail: api.text.slice(0, 200) }
@@ -182,6 +193,7 @@ Respond with EXACTLY one JSON object, no markdown, no prose:
 export async function judgeStepVerification(
 	stepDescription: string,
 	verificationCommand: string,
+	sessionState: FermentSessionState = getFermentSessionState(),
 	stdout: string,
 	stderr: string,
 	exitCode: number,
@@ -194,7 +206,7 @@ ${stdout.slice(0, 1200)}
 stderr:
 ${stderr.slice(0, 1200)}`
 
-	const result = await judgeCall<{ verdict?: string; reason?: string }>(STEP_VERIFICATION_SYSTEM, user, 150)
+	const result = await judgeCall<{ verdict?: string; reason?: string }>(STEP_VERIFICATION_SYSTEM, user, 150, sessionState)
 	// Fail-safe default: anything other than a clearly parsed pass/retry is a
 	// fail. False-pass is the worst outcome at this stage.
 	if (!result.ok) {

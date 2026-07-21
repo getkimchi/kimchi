@@ -32,6 +32,7 @@ import { normalizeQuestionType, YES_NO_OPTIONS } from "../questionnaire/index.js
 import { type JudgeApiResult, judgeApiCall } from "./judge.js"
 import { promptForm } from "./prompt-ui.js"
 import type { FermentRuntime } from "./runtime.js"
+import { getFermentSessionState } from "./session-state.js"
 
 export interface AskUserOption {
 	/** Stable id the agent (or judge) returns. */
@@ -541,7 +542,10 @@ export async function askUserForm(
 
 	const oneShot = isOneShotSession(context.pi)
 	if (oneShot) {
-		return askJudgeForm(title, description, questions, context.ferment)
+		const sessionState = getFermentSessionState(context.ctx.sessionManager.getSessionId())
+		return askJudgeForm(title, description, questions, context.ferment, (sys, msg, maxTokens) =>
+			judgeApiCall(sys, msg, maxTokens, sessionState),
+		)
 	}
 
 	const ui = context.ctx?.ui

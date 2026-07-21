@@ -94,7 +94,7 @@ function registerFermentExtension(runtime?: FermentRuntime, flagValues: Record<s
 		events: { emit: vi.fn(), on: vi.fn(() => () => {}) },
 	} as unknown as ExtensionAPI
 
-	fermentExtension(pi, runtime)
+	fermentExtension(pi, runtime ?? createDefaultFermentRuntime())
 
 	/** Fire all registered handlers for an event (mirrors pi-mono broadcast). */
 	const fireAll = async (event: string, eventPayload: unknown, ctx: ExtensionContext) => {

@@ -46,6 +46,7 @@ import {
 	type FermentStepStartedPayload,
 	type FermentSuspendedPayload,
 } from "./domain-events.js"
+import { getFermentSessionState } from "./session-state.js"
 import { getActive } from "./state.js"
 
 // ─── Stable ID tracking ──────────────────────────────────────────────────────
@@ -59,6 +60,10 @@ import { getActive } from "./state.js"
 //   turnsSinceStepTodoWrite: sessionId → count
 
 const todoIdMaps = new Map<string, Map<string, Map<string, number>>>()
+
+function getSessionActive(sessionId: string): ReturnType<typeof getActive> {
+	return getActive(getFermentSessionState(sessionId))
+}
 
 function getOrCreateIdMap(fermentId: string, phaseId: string, sessionId: string): Map<string, number> {
 	let sessionBuckets = todoIdMaps.get(sessionId)
@@ -219,7 +224,7 @@ function syncTodoIds(fermentId: string, phaseId: string, sessionId: string, writ
 
 function handlePhaseStarted(raw: unknown, sessionId: string): void {
 	const payload = raw as FermentPhaseStartedPayload
-	const ferment = getActive()
+	const ferment = getSessionActive(sessionId)
 	if (!ferment || ferment.id !== payload.fermentId) {
 		// Phase started in a different ferment than the currently active one
 		// (unlikely but possible if the runtime state is out of sync). Skip.
@@ -300,7 +305,7 @@ export function getTurnsSinceStepTodoWrite(sessionId: string): number {
 
 function handleStepStarted(raw: unknown, sessionId: string): void {
 	const payload = raw as FermentStepStartedPayload
-	const ferment = getActive()
+	const ferment = getSessionActive(sessionId)
 	if (!ferment || ferment.id !== payload.fermentId) return
 
 	// Track the running step so the scope provider can auto-scope todo calls.
@@ -319,7 +324,7 @@ function clearStepTodos(phaseId: string, stepId: string, sessionId: string): voi
 
 function handleStepCompleted(raw: unknown, sessionId: string): void {
 	const payload = raw as FermentStepCompletedPayload
-	const ferment = getActive()
+	const ferment = getSessionActive(sessionId)
 	if (!ferment || ferment.id !== payload.fermentId) return
 
 	const phase = ferment.phases.find((p) => p.id === payload.phaseId)
@@ -362,7 +367,7 @@ function handleStepCompleted(raw: unknown, sessionId: string): void {
 
 function handleStepFailed(raw: unknown, sessionId: string): void {
 	const payload = raw as FermentStepFailedPayload
-	const ferment = getActive()
+	const ferment = getSessionActive(sessionId)
 	if (!ferment || ferment.id !== payload.fermentId) return
 
 	const phase = ferment.phases.find((p) => p.id === payload.phaseId)
@@ -408,7 +413,7 @@ function handlePhaseCompleted(raw: unknown, sessionId: string): void {
 	// Guard: ignore stale PHASE_COMPLETED events from ferments other than the
 	// currently active one. Without this guard, a late event could mutate the
 	// new ferment's todos (if phaseId collides) and drop its sync state.
-	const ferment = getActive()
+	const ferment = getSessionActive(sessionId)
 	if (!ferment || ferment.id !== payload.fermentId) return
 
 	const currentTodos = getTodosForScope({ kind: "ferment", phaseId: payload.phaseId }, sessionId)
@@ -439,7 +444,7 @@ function handleFermentSuspended(raw: unknown, sessionId: string): void {
 
 	// Active-ferment guard: stale or cross-ferment pause events must not touch
 	// the current ferment's todo state.
-	const ferment = getActive()
+	const ferment = getSessionActive(sessionId)
 	if (!ferment || ferment.id !== payload.fermentId) return
 
 	const phaseIds = new Set(ferment.phases.map((p) => p.id))
@@ -465,7 +470,7 @@ function handleFermentResumed(raw: unknown, sessionId: string): void {
 
 	// Active-ferment guard: stale resume events for a different ferment must
 	// not restore snapshot state into the current ferment's scopes.
-	const ferment = getActive()
+	const ferment = getSessionActive(sessionId)
 	if (!ferment || ferment.id !== payload.fermentId) return
 
 	const sessionBuckets = suspendedSnapshots.get(sessionId)
@@ -487,7 +492,7 @@ function handleFermentCompleted(raw: unknown, sessionId: string): void {
 	const payload = raw as FermentCompletedPayload
 
 	// Active-ferment guard.
-	const ferment = getActive()
+	const ferment = getSessionActive(sessionId)
 	if (!ferment || ferment.id !== payload.fermentId) return
 
 	const phaseIds = new Set(ferment.phases.map((p) => p.id))

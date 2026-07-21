@@ -1,12 +1,15 @@
 /**
- * Ferment shared module state.
+ * Ferment shared state.
  *
- * All ferment files import from here for cross-cutting state — the active
- * ferment, scoping gates, stuck-loop counters, judge model handles, etc.
+ * The mutable stores keyed by ferment ID (stuck-loop counters, block retries,
+ * pending compactions, etc.) remain module-scoped because ferment IDs are
+ * globally unique and safe to share across sessions in the same process.
  *
- * State is intentionally module-scoped (not class-scoped) because the ferment
- * extension is a singleton: there's exactly one active session, one TUI, one
- * judge connection. Encapsulating in a class would add ceremony without value.
+ * Session-scoped state — the active ferment, continuation policy, judge model
+ * handles, and active-ferment change listeners — lives in
+ * {@link FermentSessionState}. Production callers pass an explicit session
+ * state; the legacy no-argument overloads fall back to a default singleton for
+ * backward compatibility with tests and non-session-aware consumers.
  */
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
@@ -17,6 +20,13 @@ import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import type { Ferment } from "../../ferment/types.js"
 import {
+	defaultFermentSessionState,
+	type FermentSessionState,
+	getFermentSessionState,
+	registerFermentSessionState,
+	unregisterFermentSessionState,
+} from "./session-state.js"
+import {
 	deleteRuntimeState,
 	emptyState,
 	loadRuntimeState,
@@ -25,8 +35,6 @@ import {
 } from "./runtime-state-store.js"
 
 // ─── Active ferment ───────────────────────────────────────────────────────────
-
-let activeFerment: Ferment | undefined
 
 /** True only for the genuinely-final statuses (`complete`, `abandoned`).
  *  A missing ferment is NOT terminal — it is simply absent — so `undefined`
@@ -45,12 +53,12 @@ export function isInactiveOrPaused(ferment: Ferment | undefined): boolean {
 	return !ferment || isTerminal(ferment) || ferment.status === "paused"
 }
 
-export function getActive(): Ferment | undefined {
-	return activeFerment
+export function getActive(sessionState: FermentSessionState = defaultFermentSessionState): Ferment | undefined {
+	return sessionState.activeFerment
 }
 
-export function getActiveId(): string | undefined {
-	return activeFerment?.id
+export function getActiveId(sessionState: FermentSessionState = defaultFermentSessionState): string | undefined {
+	return sessionState.activeFerment?.id
 }
 
 export function getActiveFermentId(env: Record<string, string | undefined> = process.env): string | undefined {
@@ -58,39 +66,54 @@ export function getActiveFermentId(env: Record<string, string | undefined> = pro
 	return id || undefined
 }
 
-export function hasActiveFerment(env: Record<string, string | undefined> = process.env): boolean {
-	return getActiveFermentId(env) !== undefined
+export function hasActiveFerment(env?: Record<string, string | undefined>): boolean
+export function hasActiveFerment(sessionState?: FermentSessionState): boolean
+export function hasActiveFerment(
+	arg: Record<string, string | undefined> | FermentSessionState = process.env,
+): boolean {
+	if (arg && "activeFerment" in arg) {
+		return arg.activeFerment !== undefined
+	}
+	return getActiveFermentId(arg as Record<string, string | undefined>) !== undefined
 }
 
 export function clearActiveFermentId(env: Record<string, string | undefined> = process.env): void {
 	Reflect.deleteProperty(env, "KIMCHI_ACTIVE_FERMENT")
 }
 
-let activeFermentChangeListener: ((hasActive: boolean) => void) | undefined
-
-export function onActiveFermentChange(listener: (hasActive: boolean) => void): () => void {
-	activeFermentChangeListener = listener
+export function onActiveFermentChange(
+	listener: (hasActive: boolean) => void,
+	sessionState: FermentSessionState = defaultFermentSessionState,
+): () => void {
+	sessionState.activeFermentChangeListener = listener
 	return () => {
-		if (activeFermentChangeListener === listener) activeFermentChangeListener = undefined
+		if (sessionState.activeFermentChangeListener === listener) sessionState.activeFermentChangeListener = undefined
 	}
 }
 
-export function notifyFermentActive(hasActive: boolean): void {
-	activeFermentChangeListener?.(hasActive)
+export function notifyFermentActive(
+	hasActive: boolean,
+	sessionState: FermentSessionState = defaultFermentSessionState,
+): void {
+	sessionState.activeFermentChangeListener?.(hasActive)
 }
 
 function shouldElevatePermissions(f: Ferment | undefined): boolean {
 	return f?.status === "draft" || f?.status === "planned" || f?.status === "running" || f?.status === "paused"
 }
 
-export function setActive(f: Ferment | undefined): void {
+export function setActive(
+	f: Ferment | undefined,
+	sessionState: FermentSessionState = defaultFermentSessionState,
+): void {
 	// If the active ferment is changing, manage lockfiles: write a lock for the
 	// new active ferment, remove the lock for the old one. Best-effort — errors
 	// are swallowed so they never block a state transition.
-	if (activeFerment?.id && activeFerment.id !== f?.id) {
-		removeFermentLock(activeFerment.id)
+	const previous = sessionState.activeFerment
+	if (previous?.id && previous.id !== f?.id) {
+		removeFermentLock(previous.id)
 	}
-	activeFerment = f
+	sessionState.activeFerment = f
 	const elevatePermissions = shouldElevatePermissions(f)
 	if (elevatePermissions && f) {
 		process.env.KIMCHI_ACTIVE_FERMENT = f.id
@@ -99,7 +122,7 @@ export function setActive(f: Ferment | undefined): void {
 		clearActiveFermentId()
 		if (f?.id) removeFermentLock(f.id)
 	}
-	notifyFermentActive(elevatePermissions)
+	notifyFermentActive(elevatePermissions, sessionState)
 }
 
 // ─── PID-based lockfiles ───────────────────────────────────────────────────────
@@ -221,14 +244,17 @@ export function isFermentLockedByLiveProcess(fermentId: string): boolean {
 
 export type ContinuationPolicy = "manual" | "automated"
 
-let continuationPolicy: ContinuationPolicy = "manual"
-
-export function getContinuationPolicy(): ContinuationPolicy {
-	return continuationPolicy
+export function getContinuationPolicy(
+	sessionState: FermentSessionState = defaultFermentSessionState,
+): ContinuationPolicy {
+	return sessionState.continuationPolicy
 }
 
-export function setContinuationPolicy(policy: ContinuationPolicy): void {
-	continuationPolicy = policy
+export function setContinuationPolicy(
+	policy: ContinuationPolicy,
+	sessionState: FermentSessionState = defaultFermentSessionState,
+): void {
+	sessionState.continuationPolicy = policy
 }
 
 /**
@@ -258,12 +284,17 @@ export function continuationPolicyForNewFerment(hasUI: boolean, isOneShot: boole
 	return isOneShot || !hasUI ? "automated" : "manual"
 }
 
-export function isAutomatedContinuationEnabled(): boolean {
-	return continuationPolicy === "automated"
+export function isAutomatedContinuationEnabled(
+	sessionState: FermentSessionState = defaultFermentSessionState,
+): boolean {
+	return sessionState.continuationPolicy === "automated"
 }
 
-export function setAutomatedContinuationEnabled(v: boolean): void {
-	continuationPolicy = v ? "automated" : "manual"
+export function setAutomatedContinuationEnabled(
+	v: boolean,
+	sessionState: FermentSessionState = defaultFermentSessionState,
+): void {
+	sessionState.continuationPolicy = v ? "automated" : "manual"
 }
 
 // ─── Lifecycle obligation guard retry state ──────────────────────────────────
@@ -300,32 +331,35 @@ export function clearAllLifecycleGuardRetryStates(): void {
 
 // ─── Last human input timestamp (used by the /ferment progress dialog title) ─
 
-let lastHumanInputAt: Date | undefined
-
-export function getLastHumanInputAt(): Date | undefined {
-	return lastHumanInputAt
+export function getLastHumanInputAt(
+	sessionState: FermentSessionState = defaultFermentSessionState,
+): Date | undefined {
+	return sessionState.lastHumanInputAt
 }
 
-export function markHumanInput(): void {
-	lastHumanInputAt = new Date()
+export function markHumanInput(sessionState: FermentSessionState = defaultFermentSessionState): void {
+	sessionState.lastHumanInputAt = new Date()
 }
 
 // ─── Judge model handles (captured opportunistically from ctx) ────────────────
 
-let judgeModel: Model<Api> | undefined
-let judgeModelRegistry: ModelRegistry | undefined
-
-export function getJudgeModel(): Model<Api> | undefined {
-	return judgeModel
+export function getJudgeModel(sessionState: FermentSessionState = defaultFermentSessionState): Model<Api> | undefined {
+	return sessionState.judgeModel
 }
 
-export function getJudgeModelRegistry(): ModelRegistry | undefined {
-	return judgeModelRegistry
+export function getJudgeModelRegistry(
+	sessionState: FermentSessionState = defaultFermentSessionState,
+): ModelRegistry | undefined {
+	return sessionState.judgeModelRegistry
 }
 
-export function captureJudgeContext(model?: Model<Api>, registry?: ModelRegistry): void {
-	if (model) judgeModel = model
-	if (registry) judgeModelRegistry = registry
+export function captureJudgeContext(
+	model?: Model<Api>,
+	registry?: ModelRegistry,
+	sessionState: FermentSessionState = defaultFermentSessionState,
+): void {
+	if (model) sessionState.judgeModel = model
+	if (registry) sessionState.judgeModelRegistry = registry
 }
 
 // ─── Counter abstraction ──────────────────────────────────────────────────────

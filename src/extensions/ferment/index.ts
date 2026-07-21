@@ -29,7 +29,12 @@ import { deletePendingProposal } from "./pending-proposal-store.js"
 import { type PendingPlanReview, promptPlanReview } from "./plan-review.js"
 import { setPendingPlanReviewTrigger } from "./plan-review-trigger.js"
 import { buildFermentPromptBlock } from "./prompt-block.js"
-import { defaultFermentRuntime, type FermentRuntime } from "./runtime.js"
+import { createFermentRuntime, type FermentRuntime } from "./runtime.js"
+import {
+	getFermentSessionState,
+	registerFermentSessionState,
+	unregisterFermentSessionState,
+} from "./session-state.js"
 import { safeSendMessage } from "./safe-send.js"
 import { scheduleFermentWakeUp, scheduleNextFermentAction } from "./scheduler.js"
 import { FERMENT_REQUEST_MESSAGE_TYPE, type FermentRequestMessageDetails } from "./scoping.js"
@@ -45,45 +50,47 @@ import { registerPhaseTools } from "./tools/phases.js"
 import { registerStepTools } from "./tools/steps.js"
 
 // ─── Public exports for cli.ts and components/status-line.ts ───────────────────────
-// Keep the existing signatures so external imports don't break.
+// The no-argument overloads keep existing callers working; the optional
+// sessionId overload lets multi-session transports (ACP) query the right
+// session's ferment state.
 
-export function getActiveFerment() {
-	return getActive()
+export function getActiveFerment(sessionId?: string) {
+	return getActive(getFermentSessionState(sessionId))
 }
 
-export function getFermentContinuationPolicy() {
-	return getContinuationPolicy()
+export function getFermentContinuationPolicy(sessionId?: string) {
+	return getContinuationPolicy(getFermentSessionState(sessionId))
 }
 
 /** 1-based phase index or undefined */
-export function getCurrentPhaseIndex(): number | undefined {
-	const f = getActive()
+export function getCurrentPhaseIndex(sessionId?: string): number | undefined {
+	const f = getActive(getFermentSessionState(sessionId))
 	if (!f?.activePhaseId) return undefined
 	const idx = f.phases.findIndex((p) => p.id === f.activePhaseId)
 	return idx >= 0 ? idx + 1 : undefined
 }
 
 /** Active phase name or undefined */
-export function getCurrentPhaseName(): string | undefined {
-	const f = getActive()
+export function getCurrentPhaseName(sessionId?: string): string | undefined {
+	const f = getActive(getFermentSessionState(sessionId))
 	if (!f?.activePhaseId) return undefined
 	return f.phases.find((p) => p.id === f.activePhaseId)?.name
 }
 
 /** For CLI --ferment resume */
-export function getActiveFermentIdForResume(): string | undefined {
-	return getActiveId()
+export function getActiveFermentIdForResume(sessionId?: string): string | undefined {
+	return getActiveId(getFermentSessionState(sessionId))
 }
 
 /** Backward compat for any code using these names */
-export function getCurrentBatchIndex(): number | undefined {
-	return getCurrentPhaseIndex()
+export function getCurrentBatchIndex(sessionId?: string): number | undefined {
+	return getCurrentPhaseIndex(sessionId)
 }
-export function getCurrentBatchName(): string | undefined {
-	return getCurrentPhaseName()
+export function getCurrentBatchName(sessionId?: string): string | undefined {
+	return getCurrentPhaseName(sessionId)
 }
-export function getCurrentRecipe(): Step[] {
-	const f = getActive()
+export function getCurrentRecipe(sessionId?: string): Step[] {
+	const f = getActive(getFermentSessionState(sessionId))
 	return f?.phases.find((p) => p.id === f.activePhaseId)?.steps ?? []
 }
 
@@ -123,10 +130,20 @@ const fermentRequestRenderer: MessageRenderer<FermentRequestMessageDetails> = (m
 // Extension factory
 // ═══════════════════════════════════════════════════════════════════════════════
 
-export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime) {
+export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRuntime = createFermentRuntime()) {
 	// Wire pi.events into the runtime so createApplyAndPersist can emit domain
 	// events for every state mutation without importing from telemetry.
 	runtime.events = pi.events
+
+	// Register this runtime's session state so non-ferment code (status line,
+	// telemetry, permissions, surveys) can look it up by session ID.
+	pi.on("session_start", (_event, ctx) => {
+		registerFermentSessionState(ctx.sessionManager.getSessionId(), runtime.sessionState)
+	})
+	pi.on("session_shutdown", () => {
+		const sessionId = ctx?.sessionManager.getSessionId()
+		if (sessionId) unregisterFermentSessionState(sessionId)
+	})
 
 	const unregisterFermentTips = registerTipProvider(createFermentTipProvider(runtime))
 	let unregisterFermentTodoSync: (() => void) | undefined
@@ -234,6 +251,8 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 
 	pi.on("session_start", (_event, _ctx) => {
 		ctx = _ctx
+		const sessionId = ctx.sessionManager.getSessionId()
+		registerFermentSessionState(sessionId, runtime.sessionState)
 		runtime.clearMidTurnOneshotWarnings()
 
 		// (Re)wire the ferment todo bridge to the current session id. The
@@ -243,11 +262,12 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 		unregisterFermentTodoSync?.()
 		unregisterFermentTodoSync = undefined
 		if (!isAgentWorker()) {
-			unregisterFermentTodoSync = registerFermentTodoSync(pi, ctx.sessionManager.getSessionId())
+			unregisterFermentTodoSync = registerFermentTodoSync(pi, sessionId)
 		}
 	})
 
 	pi.on("session_shutdown", () => {
+		if (ctx) unregisterFermentSessionState(ctx.sessionManager.getSessionId())
 		clearPlanReviewTimer()
 		runtime.clearAllPendingPlanReviews()
 		unregisterFermentTips()

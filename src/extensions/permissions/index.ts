@@ -23,7 +23,8 @@ import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import { createFerment } from "../ferment/create.js"
 import { emitFermentCreated } from "../ferment/domain-events-emitter.js"
 import { appendRefEntry } from "../ferment/nudge.js"
-import { defaultFermentRuntime } from "../ferment/runtime.js"
+import { createFermentRuntime, type FermentRuntime } from "../ferment/runtime.js"
+import { getFermentSessionState } from "../ferment/session-state.js"
 import { hasActiveFerment, notifyFermentActive, onActiveFermentChange } from "../ferment/state.js"
 import { createApplyAndPersist } from "../ferment/tool-helpers.js"
 import { isFermentToolName, isUserFacingFermentToolName } from "../ferment/tool-names.js"
@@ -346,32 +347,11 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		changeMode(ctx, current, next, "user")
 	}
 
-	// Ferment calls notifyFermentActive() when a ferment is activated or cleared,
-	// so permissions can switch to/from yolo.
-	//
-	// FIXME: ferment isn't tracked per session ID, so we assume that active
-	// ferment change applies to the current session. This is fine for CLI usage,
-	// but incorrect for ACP use where a single process may have multiple sessions (and therefore ferments)
-	// running at the same time. Fix this when introducing ferment commands to ACP.
-	onActiveFermentChange((hasActive) => {
-		if (cliMode) return // explicit CLI flag always wins
-		if (!currentCtx) return // No active session
-		let { mode: current, source } = getRuntimePermissionMode()
-		let next = current
-		if (hasActive) {
-			if (source === "user") preFermentMode = current
-			next = "yolo"
-			source = "ferment"
-		} else if (preFermentMode) {
-			// Clear mode that was set for ferment (not if user changed it manually)
-			next = preFermentMode
-			preFermentMode = undefined
-			source = "user"
-		}
-		if (next && next !== current) {
-			changeMode(currentCtx, current, next, source)
-		}
-	})
+	// Per-session ferment state change listener. Registered inside session_start
+	// so each bound extension instance listens to its own session's ferment
+	// runtime, and unregistered on shutdown to avoid leaking across sessions
+	// (especially important in ACP, where one process hosts many sessions).
+	let unsubscribeFermentActiveChange: (() => void) | undefined
 
 	function doLoadConfig(ctx: ExtensionContext): { errors: string[] } {
 		const { loaded: lc, errors } = loadConfig({
@@ -396,6 +376,32 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				display: false,
 			},
 			{ triggerTurn: true },
+		)
+	}
+
+	const listenToFermentActiveChange = (ctx: ExtensionContext): (() => void) => {
+		const sessionId = ctx.sessionManager.getSessionId()
+		const sessionState = getFermentSessionState(sessionId)
+		return onActiveFermentChange(
+			(hasActive) => {
+				if (cliMode) return // explicit CLI flag always wins
+				let { mode: current, source } = getRuntimePermissionMode()
+				let next = current
+				if (hasActive) {
+					if (source === "user") preFermentMode = current
+					next = "yolo"
+					source = "ferment"
+				} else if (preFermentMode) {
+					// Clear mode that was set for ferment (not if user changed it manually)
+					next = preFermentMode
+					preFermentMode = undefined
+					source = "user"
+				}
+				if (next && next !== current) {
+					changeMode(ctx, current, next, source)
+				}
+			},
+			sessionState,
 		)
 	}
 
@@ -437,12 +443,15 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		// YOLO mode: --yolo and --dangerously-skip-permissions both set yolo mode (no classifier, auto-approve all)
 		else if (pi.getFlag("yolo") || pi.getFlag("dangerously-skip-permissions")) cliMode = "yolo"
 
+		const sessionId = ctx.sessionManager.getSessionId()
+		const fermentSessionState = getFermentSessionState(sessionId)
+
 		let { mode: current, source } = getRuntimePermissionMode()
 		let next = current
 		// Active ferment → auto-yolo so scoping/lifecycle work can proceed without approval prompts.
 		// Permission mode is persisted after the user explicitly approves ferment creation.
 		// Only applies when no explicit CLI mode flag was given.
-		if (!cliMode && hasActiveFerment()) {
+		if (!cliMode && hasActiveFerment(fermentSessionState)) {
 			if (source === "user") preFermentMode = current
 			next = "yolo"
 			source = "ferment"
@@ -450,7 +459,9 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 
 		changeMode(ctx, current, next, source)
 
-		const sessionId = currentCtx.sessionManager.getSessionId()
+		unsubscribeFermentActiveChange?.()
+		unsubscribeFermentActiveChange = listenToFermentActiveChange(ctx)
+
 		unsubscribePermissionFlagController = getSessionPermissionFlagController(sessionId)?.subscribe(({ mode: next }) => {
 			if (!next) return
 
@@ -466,6 +477,8 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	pi.on("session_shutdown", () => {
 		unsubscribePermissionFlagController?.()
 		unsubscribePermissionFlagController = undefined
+		unsubscribeFermentActiveChange?.()
+		unsubscribeFermentActiveChange = undefined
 		currentCtx = undefined
 	})
 
@@ -579,6 +592,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			// Tools UNCHANGED (shared core, visible in both modes):
 			//   - read, grep, find, ls, web_fetch, web_search
 			//   - bash (read-only gate still applies — same per-call enforcement)
+			let runtime: FermentRuntime | undefined
 			try {
 				// Parse the plan against the shared planning process structure first.
 				// Goal / Constraints / Chunks become structured ferment fields;
@@ -587,12 +601,14 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				const parsed = parseSharedPlan(text)
 				// Create a storage instance scoped to ctx.cwd so the ferment artifact
 				// lands in the project's .kimchi/ferments/ directory, not process.cwd().
-				// defaultFermentRuntime.getStorage() always uses process.cwd(); in
-				// production these are the same, but tests (and future multi-root setups)
-				// need the explicit scoping.
+				// Build a per-session runtime so plan promotion mutates this session's
+				// ferment state rather than a global singleton. getStorage() is
+				// overridden to scope persisted ferments to ctx.cwd.
+				const sessionId = ctx.sessionManager.getSessionId()
+				const sessionState = getFermentSessionState(sessionId)
 				const fermentDir = resolveFermentsDir(ctx.cwd)
 				const storage = new FermentEventStore(fermentDir)
-				const runtime = { ...defaultFermentRuntime, getStorage: () => storage }
+				runtime = { ...createFermentRuntime(sessionState), getStorage: () => storage }
 
 				// If the plan doesn't follow the shared structure (no `## Chunks`
 				// section), fall back to draft-only: persist the ferment but do NOT
@@ -608,7 +624,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 						hasUI: ctx.hasUI,
 						isOneShot: pi.getFlag("ferment-oneshot") === true,
 					})
-					defaultFermentRuntime.setActive(draft)
+					runtime.setActive(draft)
 					if (pi.events) emitFermentCreated(pi.events, draft)
 					appendRefEntry(pi, draft.id)
 					changeMode(ctx, "plan", "auto", "user")
@@ -656,8 +672,8 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				if (!activated.ok) throw new Error(activated.error.message)
 				// Register the ferment as active in the runtime, emit the creation
 				// event, and append a session ref so resumed sessions can find it.
-				defaultFermentRuntime.setActive(activated.ferment)
-				setActiveFermentAndApplyProfile(pi, defaultFermentRuntime, activated.ferment)
+				runtime.setActive(activated.ferment)
+				setActiveFermentAndApplyProfile(pi, runtime, activated.ferment)
 				// pi.events may be undefined in headless / test contexts; guard before emitting.
 				if (pi.events) emitFermentCreated(pi.events, activated.ferment)
 				appendRefEntry(pi, activated.ferment.id)
@@ -670,7 +686,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				// silent-invalid-state bug from PR #683 review (comment 3473746278).
 				// Stay in plan mode, clear any half-set runtime state, and surface
 				// the failure so the user knows promotion did not succeed.
-				defaultFermentRuntime.setActive(undefined)
+				runtime?.setActive(undefined)
 				const message = err instanceof Error ? err.message : String(err)
 				ctx.ui?.notify?.(`Could not start this plan as a ferment: ${message}. Staying in plan mode.`)
 			}

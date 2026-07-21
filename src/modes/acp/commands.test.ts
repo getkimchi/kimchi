@@ -14,6 +14,12 @@ describe("AVAILABLE_COMMANDS — ACP advertisement", () => {
 		expect(bug?.description).toBe(SLASH_COMMANDS.bug.hint)
 	})
 
+	it("includes the /ferment command advertised from SLASH_COMMANDS", () => {
+		const ferment = AVAILABLE_COMMANDS.find((c) => c.name === "ferment")
+		expect(ferment).toBeDefined()
+		expect(ferment?.description).toBe(SLASH_COMMANDS.ferment.hint)
+	})
+
 	it("every advertised name is a real slash command", () => {
 		for (const cmd of AVAILABLE_COMMANDS) {
 			expect(SLASH_COMMANDS).toHaveProperty(cmd.name)

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto"
 import type { ExtensionAPI, ExtensionContext, InputEvent } from "@earendil-works/pi-coding-agent"
 import { getActiveFerment } from "../ferment/index.js"
+import { getFermentSessionState } from "../ferment/session-state.js"
 import { trackSurveyAnswered, trackSurveyDismissed, trackSurveyShown } from "../telemetry/index.js"
 import {
 	hasInitialSurveyBeenSeen,
@@ -74,7 +75,10 @@ export default function surveysExtension(options: SurveysExtensionOptions = {}) 
 				})
 		}
 
-		pi.on("session_start", () => {
+		let sessionCtx: ExtensionContext | undefined
+
+		pi.on("session_start", (_event, ctx) => {
+			sessionCtx = ctx
 			standardCodingPromptCount = 0
 			pendingSurveyTrigger = undefined
 		})
@@ -87,7 +91,7 @@ export default function surveysExtension(options: SurveysExtensionOptions = {}) 
 		})
 
 		pi.on("input", (event) => {
-			if (isStandardCodingUserPrompt(event)) {
+			if (isStandardCodingUserPrompt(event, sessionCtx?.sessionManager.getSessionId())) {
 				standardCodingPromptCount += 1
 				if (standardCodingPromptCount === 3) requestSurveyAfterAgent("third_coding_prompt")
 			}
@@ -99,9 +103,9 @@ export default function surveysExtension(options: SurveysExtensionOptions = {}) 
 	}
 }
 
-function isStandardCodingUserPrompt(event: InputEvent): boolean {
+function isStandardCodingUserPrompt(event: InputEvent, sessionId?: string): boolean {
 	if (event.source !== "interactive" && event.source !== "rpc") return false
-	if (getActiveFerment() !== undefined) return false
+	if (getActiveFerment(sessionId) !== undefined) return false
 	const text = event.text.trimStart()
 	return text.length > 0 && !text.startsWith("/")
 }

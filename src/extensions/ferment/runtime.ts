@@ -18,6 +18,11 @@ import {
 	getPendingScope,
 	setPendingScope,
 } from "./scoping.js"
+import {
+	createFermentSessionState,
+	defaultFermentSessionState,
+	type FermentSessionState,
+} from "./session-state.js"
 import type { ContinuationPolicy, PendingCompaction } from "./state.js"
 import {
 	bumpBlockRetry,
@@ -66,6 +71,9 @@ import {
 } from "./state.js"
 
 export interface FermentRuntime {
+	/** Per-session ferment state backing this runtime. Exposed so the extension
+	 *  factory can register the state in the cross-session lookup registry. */
+	sessionState: FermentSessionState
 	/** pi.events bus — set by the ferment extension factory so all mutations
 	 *  can emit domain events for subscribers (e.g. telemetry). Undefined in
 	 *  tests and non-UI code paths that don't have access to pi. */
@@ -130,8 +138,8 @@ export interface FermentRuntime {
 	clearMidTurnOneshotWarnings(): void
 }
 
-function getCurrentPendingPlanReview(): PendingPlanReview | undefined {
-	const activeId = getActiveId()
+function getCurrentPendingPlanReview(sessionState: FermentSessionState): PendingPlanReview | undefined {
+	const activeId = getActiveId(sessionState)
 	return activeId ? getPendingPlanReview(activeId) : undefined
 }
 
@@ -141,29 +149,30 @@ function clearFermentState(fermentId: string): void {
 	clearPendingPlanReview(fermentId)
 }
 
-export function createDefaultFermentRuntime(): FermentRuntime {
+export function createFermentRuntime(sessionState: FermentSessionState = createFermentSessionState()): FermentRuntime {
 	const runtime: FermentRuntime = {
+		sessionState,
 		events: undefined,
 		getStorage,
-		getActive,
-		getActiveId,
-		setActive,
-		getContinuationPolicy,
-		setContinuationPolicy,
-		isAutomatedContinuationEnabled,
-		setAutomatedContinuationEnabled,
+		getActive: () => getActive(sessionState),
+		getActiveId: () => getActiveId(sessionState),
+		setActive: (f) => setActive(f, sessionState),
+		getContinuationPolicy: () => getContinuationPolicy(sessionState),
+		setContinuationPolicy: (policy) => setContinuationPolicy(policy, sessionState),
+		isAutomatedContinuationEnabled: () => isAutomatedContinuationEnabled(sessionState),
+		setAutomatedContinuationEnabled: (enabled) => setAutomatedContinuationEnabled(enabled, sessionState),
 		onLifecycleTransitionApplied: clearLifecycleGuardRetryState,
 		now: () => new Date(),
 		nowIso: () => new Date().toISOString(),
 		markHumanInput: () => {
-			markHumanInput()
-			const active = getActive()
+			markHumanInput(sessionState)
+			const active = getActive(sessionState)
 			if (active && runtime.events) {
 				runtime.events.emit(FERMENT_EVENTS.STEERING, { fermentId: active.id })
 			}
 		},
-		getLastHumanInputAt,
-		captureJudgeContext,
+		getLastHumanInputAt: () => getLastHumanInputAt(sessionState),
+		captureJudgeContext: (model, registry) => captureJudgeContext(model, registry, sessionState),
 		bumpStepStart,
 		clearStepStart,
 		clearAllStepStarts,
@@ -180,7 +189,7 @@ export function createDefaultFermentRuntime(): FermentRuntime {
 		clearAllPendingScopes,
 		setPendingPlanReview,
 		getPendingPlanReview,
-		getCurrentPendingPlanReview,
+		getCurrentPendingPlanReview: () => getCurrentPendingPlanReview(sessionState),
 		clearPendingPlanReview,
 		clearAllPendingPlanReviews,
 		setPhaseStartRef,
@@ -209,4 +218,13 @@ export function createDefaultFermentRuntime(): FermentRuntime {
 	return runtime
 }
 
+/** Backward-compatible runtime factory for tests and single-session callers.
+ *  Uses the default (singleton) session state so existing tests that mutate
+ *  global state see the same runtime. */
+export function createDefaultFermentRuntime(): FermentRuntime {
+	return createFermentRuntime(defaultFermentSessionState)
+}
+
+/** Legacy singleton runtime for callers that do not yet receive a runtime
+ *  instance. Uses the default session state. */
 export const defaultFermentRuntime = createDefaultFermentRuntime()

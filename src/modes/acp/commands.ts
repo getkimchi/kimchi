@@ -16,4 +16,11 @@ export const AVAILABLE_COMMANDS: AcpAvailableCommand[] = [
 			hint: "Provide a concise title (3-5 words) to describe the issue.",
 		},
 	},
+	{
+		name: "ferment",
+		description: SLASH_COMMANDS.ferment.hint,
+		input: {
+			hint: "Describe the task you want kimchi to run in the background.",
+		},
+	},
 ]

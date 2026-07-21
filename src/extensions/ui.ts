@@ -319,7 +319,8 @@ export default function uiExtension(pi: ExtensionAPI) {
 			scriptCmd = cmd
 			const getControlsLine = (): string | null => {
 				const parts: string[] = []
-				const ferment = formatFermentStatusLineDisplay(getActiveFerment(), getFermentContinuationPolicy(), {
+				const sessionId = ctx.sessionManager.getSessionId()
+				const ferment = formatFermentStatusLineDisplay(getActiveFerment(sessionId), getFermentContinuationPolicy(sessionId), {
 					dim: (s) => theme.fg("dim", s),
 					accent: (s) => `${resolvedAccentFg(theme)}${s}${RST_FG}`,
 				})

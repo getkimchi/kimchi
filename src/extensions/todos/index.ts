@@ -130,7 +130,10 @@ function isTerminalAssistantTurn(
 
 export default function todosExtension(pi: ExtensionAPI): void {
 	registerTodosTool(pi)
-	registerTodoPromptBlock(pi)
+
+	pi.on("session_start", (_event, ctx) => {
+		registerTodoPromptBlock(pi, ctx)
+	})
 
 	pi.on("before_agent_start", (event) => {
 		const systemPrompt = appendTodoPromptBlockIfMissing(event.systemPrompt)

@@ -400,7 +400,7 @@ function makeMockCtx(overrides: Partial<ExtensionContext> = {}): ExtensionContex
 		hasUI: false,
 		cwd: "/tmp",
 		ui: {} as ExtensionContext["ui"],
-		sessionManager: {} as ExtensionContext["sessionManager"],
+		sessionManager: { getSessionId: () => "test-session" } as ExtensionContext["sessionManager"],
 		modelRegistry: {} as ExtensionContext["modelRegistry"],
 		isIdle: () => true,
 		signal: undefined,

@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { getActive } from "../ferment/state.js"
+import { getFermentSessionState } from "../ferment/session-state.js"
 import { getTurnsSinceStepTodoWrite } from "../ferment/todo-sync.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import { parseTodoScopeKey } from "./scope.js"
@@ -12,8 +13,8 @@ const TODO_GUIDANCE =
 const FERMENT_TODO_GUIDANCE =
 	"\n\nWhen working inside a ferment step, break the step into concrete sub-tasks using add_todo before writing code. Each sub-task should be a specific verifiable action (run a command, write a file, check an output). Mark each sub-task as you complete it rather than batch-replacing the entire list at the end."
 
-export function renderTodoPromptBlock(): string {
-	const ferment = getActive()
+export function renderTodoPromptBlock(sessionId?: string): string {
+	const ferment = getActive(getFermentSessionState(sessionId))
 	if (ferment) return TODO_GUIDANCE + FERMENT_TODO_GUIDANCE
 	return TODO_GUIDANCE
 }
@@ -23,10 +24,10 @@ export function appendTodoPromptBlockIfMissing(systemPrompt: string): string | u
 	return `${systemPrompt.trimEnd()}\n\n${renderTodoPromptBlock()}`
 }
 
-export function registerTodoPromptBlock(pi: ExtensionAPI): void {
+export function registerTodoPromptBlock(pi: ExtensionAPI, ctx: ExtensionContext): void {
 	createSystemPromptBlocks(pi, "todos").register({
 		id: "todo-guidance",
-		render: renderTodoPromptBlock,
+		render: () => renderTodoPromptBlock(ctx.sessionManager.getSessionId()),
 	})
 }
 

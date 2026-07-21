@@ -2,6 +2,7 @@ import type { AssistantMessage, ImageContent, TextContent, ToolResultMessage, Us
 import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { getCompactionEnabled } from "../settings-watcher.js"
 import { COMPACTION_RESERVE_TOKENS } from "./compaction-thresholds.js"
+import { getFermentSessionState } from "./ferment/session-state.js"
 import { hasActiveFerment } from "./ferment/state.js"
 import { isStaleCtxError } from "./stale-ctx.js"
 
@@ -363,7 +364,7 @@ export default function createModelGuardExtension(_pi: ExtensionAPI) {
 		// (src/extensions/ferment/auto-compaction.ts). It resumes the in-progress
 		// step after compaction. Defer to it whenever a ferment is active so we
 		// don't double-compact and so the ferment continues automatically.
-		if (hasActiveFerment()) return
+		if (hasActiveFerment(getFermentSessionState(ctx.sessionManager.getSessionId()))) return
 
 		const model = ctx.model
 		if (!model) return

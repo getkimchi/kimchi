@@ -23,6 +23,7 @@ import { onStepCompleted } from "../nudge.js"
 import { captureGitHead, gatherPhaseEvidence, type PhaseEvidence } from "../phase-evidence.js"
 import { promptEditor } from "../prompt-ui.js"
 import { defaultFermentRuntime, type FermentRuntime } from "../runtime.js"
+import type { FermentSessionState } from "../session-state.js"
 import { safeSendMessage } from "../safe-send.js"
 import {
 	createApplyAndPersist,
@@ -106,6 +107,7 @@ export interface StepHandlerServices {
 	judgeStepVerification(
 		stepDescription: string,
 		verificationCommand: string,
+		sessionState: FermentSessionState,
 		stdout: string,
 		stderr: string,
 		exitCode: number,
@@ -504,6 +506,7 @@ export async function completeStep(
 	const judgeVerdict = await services.judgeStepVerification(
 		step.description,
 		step.verification.command,
+		runtime.sessionState,
 		stdout,
 		stderr,
 		exitCode,

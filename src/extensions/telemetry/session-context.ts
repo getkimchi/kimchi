@@ -161,8 +161,8 @@ export class SessionContext {
 	}
 
 	emit(eventName: string, attrs: Record<string, string | number | boolean>): void {
-		const sessionType = getSessionType()
-		const ferment = getActiveFerment()
+		const sessionType = getSessionType(this.sessionId)
+		const ferment = getActiveFerment(this.sessionId)
 
 		// Detect and emit session.type_changed when the type transitions
 		if (this.lastSessionType !== undefined && sessionType !== this.lastSessionType) {

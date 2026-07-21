@@ -1776,11 +1776,18 @@ describe("newSession available commands", () => {
 		expect(update?.sessionId).toBe("session-commands")
 
 		const updatePayload = update?.update as { availableCommands: Array<Record<string, unknown>> }
-		expect(updatePayload.availableCommands).toHaveLength(1)
+		expect(updatePayload.availableCommands).toHaveLength(2)
 
-		const cmd = updatePayload.availableCommands[0]
-		expect(cmd).toMatchObject({
+		const bugCmd = updatePayload.availableCommands.find((c) => c.name === "bug")
+		expect(bugCmd).toMatchObject({
 			name: "bug",
+			description: expect.any(String),
+			input: { hint: expect.any(String) },
+		})
+
+		const fermentCmd = updatePayload.availableCommands.find((c) => c.name === "ferment")
+		expect(fermentCmd).toMatchObject({
+			name: "ferment",
 			description: expect.any(String),
 			input: { hint: expect.any(String) },
 		})

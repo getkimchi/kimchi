@@ -70,6 +70,7 @@ function createSurveyCtx(input = "\r", hasUI = true) {
 			custom,
 			notify: vi.fn(),
 		},
+		sessionManager: { getSessionId: () => "survey-test-session" },
 	}
 }
 

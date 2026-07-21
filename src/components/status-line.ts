@@ -531,7 +531,8 @@ export class StatusLine implements Component {
 	}
 
 	private fermentSegment(pinned = false): Segment | null {
-		const display = formatFermentStatusLineDisplay(getActiveFerment(), getFermentContinuationPolicy(), {
+		const sessionId = this.ctx.sessionManager.getSessionId()
+		const display = formatFermentStatusLineDisplay(getActiveFerment(sessionId), getFermentContinuationPolicy(sessionId), {
 			dim: (s) => this.dim(s),
 			accent: (s) => this.accent(s),
 		})
